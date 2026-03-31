@@ -1,0 +1,57 @@
+/**
+ * @skytwin/db - Database layer for SkyTwin.
+ *
+ * Exports connection utilities, type definitions, repositories, and schema helpers.
+ */
+
+// Connection pool
+export { getPool, query, withTransaction, healthCheck, closePool, getPoolStats } from './connection.js';
+export type { DatabaseConfig } from './connection.js';
+
+// Row types
+export type {
+  UserRow,
+  ConnectedAccountRow,
+  TwinProfileRow,
+  TwinProfileVersionRow,
+  PreferenceRow,
+  DecisionRow,
+  CandidateActionRow,
+  DecisionOutcomeRow,
+  ActionPolicyRow,
+  ApprovalRequestRow,
+  ExecutionPlanRow,
+  ExecutionResultRow,
+  ExplanationRecordRow,
+  FeedbackEventRow,
+  PaginationOptions,
+  DateRangeOptions,
+  UserQueryOptions,
+  DecisionWithContext,
+} from './types.js';
+
+// Repositories
+export {
+  userRepository,
+  twinRepository,
+  decisionRepository,
+  policyRepository,
+  explanationRepository,
+  feedbackRepository,
+} from './repositories/index.js';
+export type {
+  CreateUserInput,
+  UpdateUserInput,
+  UpdateProfileInput,
+  CreateDecisionInput,
+  CreateCandidateActionInput,
+  CreateOutcomeInput,
+  CreatePolicyInput,
+  UpdatePolicyInput,
+  CreateExplanationInput,
+  CreateFeedbackInput,
+} from './repositories/index.js';
+
+// Schema metadata
+export { TABLE_NAMES, SCHEMA_PATH } from './schemas/index.js';
+export type { TableName } from './schemas/index.js';
