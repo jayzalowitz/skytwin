@@ -504,7 +504,13 @@ textarea.form-input { resize: vertical; min-height: 60px; }
   .nav-link { padding: 0.6rem 1rem; }
   .nav-link.active { border-right: none; border-left: 2px solid var(--accent); }
 
-  .sidebar-footer { display: none; }
+  .sidebar-footer {
+    display: none;
+    padding: 0.5rem 1rem;
+    border-top: none;
+  }
+
+  .nav-links.open ~ .sidebar-footer { display: flex; }
 
   .content {
     margin-left: 0;
