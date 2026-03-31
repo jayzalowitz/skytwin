@@ -5,8 +5,14 @@ export interface SkyTwinConfig {
   /** CockroachDB connection string */
   databaseUrl: string;
 
-  /** IronClaw API base URL */
+  /** IronClaw API base URL (e.g., http://localhost:4000) */
   ironclawApiUrl: string;
+
+  /** HMAC-SHA256 secret for authenticating with IronClaw's webhook endpoint */
+  ironclawWebhookSecret: string;
+
+  /** Owner ID for IronClaw's multi-tenant model */
+  ironclawOwnerId: string;
 
   /** Port for the API server */
   apiPort: number;
@@ -73,6 +79,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   return {
     databaseUrl: env['DATABASE_URL'] ?? 'postgresql://root@localhost:26257/skytwin?sslmode=disable',
     ironclawApiUrl: env['IRONCLAW_API_URL'] ?? 'http://localhost:4000',
+    ironclawWebhookSecret: env['IRONCLAW_WEBHOOK_SECRET'] ?? '',
+    ironclawOwnerId: env['IRONCLAW_OWNER_ID'] ?? 'skytwin-default',
     apiPort: parseInt(rawPort, 10),
     nodeEnv: isNodeEnv(rawNodeEnv) ? rawNodeEnv : 'development',
     logLevel: isLogLevel(rawLogLevel) ? rawLogLevel : 'info',
