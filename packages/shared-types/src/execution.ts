@@ -48,3 +48,23 @@ export interface RollbackResult {
   success: boolean;
   message: string;
 }
+
+/**
+ * A handler that can execute and roll back a specific type of action.
+ */
+export interface ActionHandler {
+  readonly actionType: string;
+  readonly domain: string;
+  canHandle(actionType: string): boolean;
+  execute(step: ExecutionStep): Promise<StepResult>;
+  rollback(step: ExecutionStep): Promise<StepResult>;
+}
+
+/**
+ * Result of executing or rolling back a single step.
+ */
+export interface StepResult {
+  success: boolean;
+  output?: Record<string, unknown>;
+  error?: string;
+}

@@ -583,7 +583,84 @@ export class DecisionMaker {
     );
     score += alignmentBoost;
 
+    // Pattern alignment: boost if behavioral patterns match this action
+    score += this.calculatePatternBoost(candidate, context);
+
+    // Trait-based risk adjustment: cautious_spender increases scrutiny on costs
+    score += this.calculateTraitAdjustment(candidate, context, assessment);
+
     return score;
+  }
+
+  /**
+   * Boost score when detected behavioral patterns match this candidate action.
+   */
+  private calculatePatternBoost(
+    candidate: CandidateAction,
+    context: DecisionContext,
+  ): number {
+    if (!context.patterns || context.patterns.length === 0) return 0;
+
+    let boost = 0;
+    for (const pattern of context.patterns) {
+      // Match by observed action type
+      if (pattern.observedAction === candidate.actionType) {
+        boost += Math.min(pattern.frequency, 10);
+      }
+      // Match by domain
+      if (pattern.trigger.domain === candidate.domain) {
+        boost += 3;
+      }
+    }
+
+    return Math.min(boost, 20); // Cap at 20
+  }
+
+  /**
+   * Adjust score based on cross-domain traits.
+   */
+  private calculateTraitAdjustment(
+    candidate: CandidateAction,
+    context: DecisionContext,
+    _assessment: RiskAssessment,
+  ): number {
+    if (!context.traits || context.traits.length === 0) return 0;
+
+    let adjustment = 0;
+    for (const trait of context.traits) {
+      switch (trait.traitName) {
+        case 'cautious_spender':
+          // Penalize high-cost actions more
+          if (candidate.estimatedCostCents > 1000) {
+            adjustment -= 10;
+          }
+          break;
+        case 'quick_responder':
+          // Boost actions that respond quickly (accept, reply)
+          if (['accept_invite', 'send_reply'].includes(candidate.actionType)) {
+            adjustment += 5;
+          }
+          break;
+        case 'delegation_averse':
+          // Penalize auto-execution for users who prefer manual control
+          if (!candidate.reversible) {
+            adjustment -= 5;
+          }
+          break;
+        case 'routine_driven':
+          // Boost actions matching established routines
+          adjustment += 3;
+          break;
+        case 'privacy_conscious':
+          // Penalize actions that share data
+          if (['send_reply', 'accept_invite'].includes(candidate.actionType)) {
+            adjustment -= 3;
+          }
+          break;
+      }
+    }
+
+    return adjustment;
   }
 
   private calculatePreferenceAlignment(

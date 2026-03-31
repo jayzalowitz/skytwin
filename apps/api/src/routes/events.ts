@@ -3,12 +3,24 @@ import { SituationInterpreter, DecisionMaker } from '@skytwin/decision-engine';
 import { TwinService } from '@skytwin/twin-model';
 import { PolicyEvaluator } from '@skytwin/policy-engine';
 import { ExplanationGenerator } from '@skytwin/explanations';
-import { BasicMockAdapter } from '@skytwin/ironclaw-adapter';
+import {
+  BasicMockAdapter,
+  RealIronClawAdapter,
+  ActionHandlerRegistry,
+  EmailActionHandler,
+  CalendarActionHandler,
+  GenericActionHandler,
+} from '@skytwin/ironclaw-adapter';
+import type { IronClawAdapter } from '@skytwin/ironclaw-adapter';
+import { loadConfig } from '@skytwin/config';
 import {
   twinRepository,
   decisionRepository,
   policyRepository,
   explanationRepository,
+  approvalRepository,
+  oauthRepository,
+  patternRepository,
 } from '@skytwin/db';
 import type { DecisionContext } from '@skytwin/shared-types';
 import { TrustTier } from '@skytwin/shared-types';
@@ -24,11 +36,22 @@ export function createEventsRouter(): Router {
   // expected by the service classes. At runtime they're compatible for the
   // methods actually called; the `as never` cast bridges the compile-time gap
   // until proper adapter wrappers are built.
-  const twinService = new TwinService(twinRepository as never);
+  const twinService = new TwinService(twinRepository as never, patternRepository as never);
   const policyEvaluator = new PolicyEvaluator(policyRepository as never);
   const decisionMaker = new DecisionMaker(twinService, policyEvaluator, decisionRepository as never);
   const explanationGenerator = new ExplanationGenerator(explanationRepository as never);
-  const ironclawAdapter = new BasicMockAdapter();
+  const eventsConfig = loadConfig();
+  let ironclawAdapter: IronClawAdapter;
+
+  if (eventsConfig.useMockIronclaw) {
+    ironclawAdapter = new BasicMockAdapter();
+  } else {
+    const registry = new ActionHandlerRegistry();
+    registry.register(new EmailActionHandler());
+    registry.register(new CalendarActionHandler());
+    registry.register(new GenericActionHandler());
+    ironclawAdapter = new RealIronClawAdapter(registry);
+  }
 
   /**
    * POST /api/events/ingest
@@ -59,35 +82,69 @@ export function createEventsRouter(): Router {
         decision.summary,
       );
 
-      // 4. Build decision context
+      // 4. Fetch patterns, traits, and temporal profile for richer scoring
+      const [patterns, traits, temporalProfile] = await Promise.all([
+        twinService.getPatterns(userId),
+        twinService.getTraits(userId),
+        twinService.getTemporalProfile(userId),
+      ]);
+
+      // 5. Build decision context
       const context: DecisionContext = {
         userId,
         decision,
         trustTier: (rawEvent['trustTier'] as TrustTier) ?? TrustTier.LOW_AUTONOMY,
         relevantPreferences: preferences,
         timestamp: new Date(),
+        patterns,
+        traits,
+        temporalProfile,
       };
 
-      // 5. Evaluate through decision maker
+      // 6. Evaluate through decision maker
       const outcome = await decisionMaker.evaluate(context);
 
-      // 6. Generate explanation
+      // 7. Generate explanation
       const explanation = await explanationGenerator.generate(
         decision,
         outcome,
         context,
       );
 
-      // 7. Handle outcome
+      // 8. Handle outcome
       let executionResult = null;
+      let approvalRequest = null;
 
-      if (outcome.autoExecute && outcome.selectedAction) {
+      if (outcome.requiresApproval && outcome.selectedAction) {
+        // Create an approval request so the user can review it
+        approvalRequest = await approvalRepository.create({
+          userId,
+          decisionId: decision.id,
+          candidateAction: {
+            actionType: outcome.selectedAction.actionType,
+            description: outcome.selectedAction.description,
+            domain: outcome.selectedAction.domain,
+            estimatedCostCents: outcome.selectedAction.estimatedCostCents,
+            reversible: outcome.selectedAction.reversible,
+            confidence: outcome.selectedAction.confidence,
+            reasoning: outcome.selectedAction.reasoning,
+          },
+          reason: outcome.reasoning,
+          urgency: decision.urgency,
+        });
+      } else if (outcome.autoExecute && outcome.selectedAction) {
+        // Inject OAuth token if available for real execution
+        const tokenRow = await oauthRepository.getToken(userId, 'google');
+        if (tokenRow) {
+          outcome.selectedAction.parameters['accessToken'] = tokenRow.access_token;
+        }
+
         // Auto-execute via IronClaw
         const plan = await ironclawAdapter.buildPlan(outcome.selectedAction);
         executionResult = await ironclawAdapter.execute(plan);
       }
 
-      // 8. Return result
+      // 9. Return result
       res.json({
         decision: {
           id: decision.id,
@@ -113,6 +170,12 @@ export function createEventsRouter(): Router {
           confidence: explanation.overallConfidence,
         },
         execution: executionResult,
+        approval: approvalRequest
+          ? {
+              id: approvalRequest.id,
+              status: approvalRequest.status,
+            }
+          : null,
       });
     } catch (error) {
       next(error);

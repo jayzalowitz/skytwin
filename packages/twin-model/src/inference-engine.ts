@@ -4,8 +4,14 @@ import type {
   TwinProfile,
   Preference,
   FeedbackEvent,
+  BehavioralPattern,
+  CrossDomainTrait,
+  TemporalProfile,
 } from '@skytwin/shared-types';
 import { ConfidenceLevel } from '@skytwin/shared-types';
+import { PatternDetector } from './analyzers/pattern-detector.js';
+import { TemporalAnalyzer } from './analyzers/temporal-analyzer.js';
+import { CrossDomainAnalyzer } from './analyzers/cross-domain-analyzer.js';
 
 /**
  * Report describing contradictions found among preferences.
@@ -27,7 +33,37 @@ export interface Contradiction {
  * about user preferences. It detects patterns, calculates confidence,
  * and identifies contradictions.
  */
+/**
+ * Combined result from the full analysis pipeline.
+ */
+export interface FullAnalysisResult {
+  inferences: Inference[];
+  patterns: BehavioralPattern[];
+  traits: CrossDomainTrait[];
+  temporalProfile: TemporalProfile;
+}
+
 export class InferenceEngine {
+  private readonly patternDetector = new PatternDetector();
+  private readonly temporalAnalyzer = new TemporalAnalyzer();
+  private readonly crossDomainAnalyzer = new CrossDomainAnalyzer();
+
+  /**
+   * Run the full analysis pipeline: basic inference + patterns + temporal + cross-domain.
+   */
+  analyzeWithPatterns(
+    existing: Inference[],
+    newEvidence: TwinEvidence[],
+    existingPatterns: BehavioralPattern[],
+  ): FullAnalysisResult {
+    const inferences = this.analyzeEvidence(existing, newEvidence);
+    const patterns = this.patternDetector.detectHabits(newEvidence, existingPatterns);
+    const temporalProfile = this.temporalAnalyzer.analyzeTemporalPatterns(newEvidence);
+    const traits = this.crossDomainAnalyzer.detectTraits(inferences, patterns);
+
+    return { inferences, patterns, traits, temporalProfile };
+  }
+
   /**
    * Analyze new evidence in the context of existing inferences to produce
    * an updated set of inferences.

@@ -201,6 +201,22 @@ export interface FeedbackEventRow {
 }
 
 // ============================================================================
+// OAuth Tokens
+// ============================================================================
+
+export interface OAuthTokenRow {
+  id: string;
+  user_id: string;
+  provider: string;
+  access_token: string;
+  refresh_token: string;
+  expires_at: Date;
+  scopes: string[];
+  created_at: Date;
+  updated_at: Date;
+}
+
+// ============================================================================
 // Common query options
 // ============================================================================
 

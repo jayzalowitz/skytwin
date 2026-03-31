@@ -4,6 +4,9 @@ import type {
   TwinEvidence,
   Inference,
   FeedbackEvent,
+  BehavioralPattern,
+  CrossDomainTrait,
+  TemporalProfile,
 } from '@skytwin/shared-types';
 import { ConfidenceLevel } from '@skytwin/shared-types';
 import { InferenceEngine } from './inference-engine.js';
@@ -36,15 +39,31 @@ export interface TwinRepositoryPort {
 }
 
 /**
+ * Port interface for behavioral pattern and cross-domain trait persistence.
+ */
+export interface PatternRepositoryPort {
+  getPatterns(userId: string): Promise<BehavioralPattern[]>;
+  upsertPattern(userId: string, pattern: BehavioralPattern): Promise<BehavioralPattern>;
+  getTraits(userId: string): Promise<CrossDomainTrait[]>;
+  upsertTrait(userId: string, trait: CrossDomainTrait): Promise<CrossDomainTrait>;
+}
+
+/**
  * TwinService is the primary interface for managing a user's digital twin.
  * It orchestrates profile CRUD, preference management, evidence collection,
  * and inference updates.
  */
 export class TwinService {
   private readonly inferenceEngine: InferenceEngine;
+  private readonly patternRepository: PatternRepositoryPort | null;
+  private readonly temporalProfiles = new Map<string, TemporalProfile>();
 
-  constructor(private readonly repository: TwinRepositoryPort) {
+  constructor(
+    private readonly repository: TwinRepositoryPort,
+    patternRepository?: PatternRepositoryPort,
+  ) {
     this.inferenceEngine = new InferenceEngine();
+    this.patternRepository = patternRepository ?? null;
   }
 
   /**
@@ -122,6 +141,8 @@ export class TwinService {
 
   /**
    * Add evidence to the twin and potentially update inferences.
+   * When a pattern repository is available, also runs pattern detection
+   * and cross-domain trait analysis.
    */
   async addEvidence(
     userId: string,
@@ -132,13 +153,48 @@ export class TwinService {
 
     const profile = await this.getOrCreateProfile(userId);
 
-    // Run inference engine with the new evidence
+    if (this.patternRepository) {
+      // Run full analysis pipeline
+      const existingPatterns = await this.patternRepository.getPatterns(userId);
+      const allEvidence = await this.repository.getEvidence(userId, 100);
+      const result = this.inferenceEngine.analyzeWithPatterns(
+        profile.inferences,
+        allEvidence,
+        existingPatterns,
+      );
+
+      // Persist patterns and traits
+      for (const pattern of result.patterns) {
+        await this.patternRepository.upsertPattern(userId, pattern);
+      }
+      for (const trait of result.traits) {
+        await this.patternRepository.upsertTrait(userId, trait);
+      }
+
+      // Cache temporal profile
+      this.temporalProfiles.set(userId, result.temporalProfile);
+
+      // Persist updated inferences
+      for (const inference of result.inferences) {
+        await this.repository.upsertInference(userId, inference);
+      }
+
+      const updatedProfile: TwinProfile = {
+        ...profile,
+        inferences: result.inferences,
+        version: profile.version + 1,
+        updatedAt: new Date(),
+      };
+
+      return this.repository.updateProfile(updatedProfile);
+    }
+
+    // Fallback: basic inference only
     const updatedInferences = this.inferenceEngine.analyzeEvidence(
       profile.inferences,
       [evidence],
     );
 
-    // Persist updated inferences
     for (const inference of updatedInferences) {
       await this.repository.upsertInference(userId, inference);
     }
@@ -286,6 +342,49 @@ export class TwinService {
     };
 
     return this.repository.updateProfile(updatedProfile);
+  }
+
+  /**
+   * Get detected behavioral patterns for a user.
+   */
+  async getPatterns(userId: string): Promise<BehavioralPattern[]> {
+    if (!this.patternRepository) return [];
+    return this.patternRepository.getPatterns(userId);
+  }
+
+  /**
+   * Get detected cross-domain traits for a user.
+   */
+  async getTraits(userId: string): Promise<CrossDomainTrait[]> {
+    if (!this.patternRepository) return [];
+    return this.patternRepository.getTraits(userId);
+  }
+
+  /**
+   * Get the temporal profile for a user (cached from last evidence analysis).
+   */
+  async getTemporalProfile(userId: string): Promise<TemporalProfile> {
+    const cached = this.temporalProfiles.get(userId);
+    if (cached) return cached;
+
+    // Build from evidence if not cached
+    const evidence = await this.repository.getEvidence(userId, 100);
+    if (evidence.length === 0) {
+      return {
+        userId,
+        activeHours: { start: 8, end: 22 },
+        peakResponseTimes: {},
+        weekdayPatterns: {},
+        urgencyThresholds: {},
+      };
+    }
+
+    // Import dynamically to avoid circular deps at construction
+    const { TemporalAnalyzer } = await import('./analyzers/temporal-analyzer.js');
+    const analyzer = new TemporalAnalyzer();
+    const profile = analyzer.analyzeTemporalPatterns(evidence);
+    this.temporalProfiles.set(userId, profile);
+    return profile;
   }
 
   // ── Private helpers ──────────────────────────────────────────────

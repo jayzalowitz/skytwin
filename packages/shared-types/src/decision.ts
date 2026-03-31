@@ -29,6 +29,12 @@ export interface DecisionContext {
   trustTier: TrustTier;
   relevantPreferences: Preference[];
   timestamp: Date;
+  /** Behavioral patterns detected from the user's history */
+  patterns?: import('./patterns.js').BehavioralPattern[];
+  /** Cross-domain traits detected across multiple domains */
+  traits?: import('./patterns.js').CrossDomainTrait[];
+  /** Temporal activity profile for the user */
+  temporalProfile?: import('./patterns.js').TemporalProfile;
 }
 
 /**

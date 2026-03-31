@@ -74,7 +74,14 @@ importers:
         version: 1.6.1(@types/node@20.19.37)
 
   apps/web:
+    dependencies:
+      express:
+        specifier: ^4.21.0
+        version: 4.22.1
     devDependencies:
+      '@types/express':
+        specifier: ^4.17.21
+        version: 4.17.25
       typescript:
         specifier: ^5.4.0
         version: 5.9.3

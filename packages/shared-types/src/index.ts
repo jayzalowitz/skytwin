@@ -45,4 +45,24 @@ export type {
   ExecutionResult,
   ExecutionStatus,
   RollbackResult,
+  ActionHandler,
+  StepResult,
 } from './execution.js';
+
+export type {
+  OAuthTokenSet,
+  ConnectorConfig,
+} from './oauth.js';
+
+export type {
+  BehavioralPattern,
+  PatternTrigger,
+  TemporalProfile,
+  CrossDomainTrait,
+} from './patterns.js';
+
+export type {
+  EvalRun,
+  EvalTrend,
+  AccuracyMetric,
+} from './eval-types.js';

@@ -37,6 +37,15 @@ export interface SkyTwinConfig {
 
   /** Approval request expiry in seconds */
   approvalExpirySeconds: number;
+
+  /** Google OAuth client ID */
+  googleClientId: string;
+
+  /** Google OAuth client secret */
+  googleClientSecret: string;
+
+  /** Google OAuth redirect URI */
+  googleRedirectUri: string;
 }
 
 const LOG_LEVELS: readonly LogLevel[] = ['debug', 'info', 'warn', 'error'] as const;
@@ -74,6 +83,9 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     defaultSpendLimitPerAction: parseInt(env['DEFAULT_SPEND_LIMIT_PER_ACTION'] ?? '5000', 10),
     defaultDailySpendLimit: parseInt(env['DEFAULT_DAILY_SPEND_LIMIT'] ?? '50000', 10),
     approvalExpirySeconds: parseInt(env['APPROVAL_EXPIRY_SECONDS'] ?? '3600', 10),
+    googleClientId: env['GOOGLE_CLIENT_ID'] ?? '',
+    googleClientSecret: env['GOOGLE_CLIENT_SECRET'] ?? '',
+    googleRedirectUri: env['GOOGLE_REDIRECT_URI'] ?? 'http://localhost:3100/api/oauth/google/callback',
   };
 }
 

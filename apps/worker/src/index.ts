@@ -1,23 +1,37 @@
 import { loadConfig } from '@skytwin/config';
 import type { SignalConnector, RawSignal } from '@skytwin/connectors';
-import { MockEmailConnector, MockCalendarConnector } from '@skytwin/connectors';
+import {
+  MockEmailConnector,
+  MockCalendarConnector,
+  GmailConnector,
+  GoogleCalendarConnector,
+  DbTokenStore,
+} from '@skytwin/connectors';
+import { oauthRepository } from '@skytwin/db';
 
 const config = loadConfig();
 
 /**
  * SkyTwin Worker Process
  *
- * This worker polls signal connectors for new data and forwards
- * signals to the API for processing through the decision pipeline.
+ * Polls signal connectors for new data and forwards signals to the
+ * API for processing through the decision pipeline.
+ *
+ * Supports multiple users: for each user with active OAuth tokens,
+ * the worker polls their connected services.
  */
 
 let running = true;
-const connectors: SignalConnector[] = [];
+
+interface UserConnectors {
+  userId: string;
+  connectors: SignalConnector[];
+}
 
 /**
  * Forward a signal to the API for processing.
  */
-async function forwardSignalToApi(signal: RawSignal): Promise<void> {
+async function forwardSignalToApi(signal: RawSignal, userId: string): Promise<void> {
   const url = `${config.apiBaseUrl}/api/events/ingest`;
 
   try {
@@ -29,17 +43,17 @@ async function forwardSignalToApi(signal: RawSignal): Promise<void> {
         source: signal.source,
         type: signal.type,
         signalId: signal.id,
-        userId: 'default-user', // In production, this would come from auth context
+        userId,
       }),
     });
 
     if (!response.ok) {
       console.error(
-        `[worker] Failed to forward signal ${signal.id}: HTTP ${response.status}`,
+        `[worker] Failed to forward signal ${signal.id} for user ${userId}: HTTP ${response.status}`,
       );
     } else {
       console.info(
-        `[worker] Forwarded signal ${signal.id} (${signal.source}/${signal.type})`,
+        `[worker] Forwarded signal ${signal.id} (${signal.source}/${signal.type}) for user ${userId}`,
       );
     }
   } catch (error) {
@@ -51,21 +65,89 @@ async function forwardSignalToApi(signal: RawSignal): Promise<void> {
 }
 
 /**
- * Poll all connectors once.
+ * Poll connectors for a single user.
  */
-async function pollAll(): Promise<void> {
-  for (const connector of connectors) {
+async function pollUser(userConnectors: UserConnectors): Promise<void> {
+  for (const connector of userConnectors.connectors) {
     try {
       const signals = await connector.poll();
       for (const signal of signals) {
-        await forwardSignalToApi(signal);
+        await forwardSignalToApi(signal, userConnectors.userId);
       }
     } catch (error) {
       console.error(
-        `[worker] Error polling ${connector.name}:`,
+        `[worker] Error polling ${connector.name} for user ${userConnectors.userId}:`,
         error instanceof Error ? error.message : error,
       );
     }
+  }
+}
+
+/**
+ * Build mock connectors for testing.
+ */
+function buildMockConnectors(): UserConnectors[] {
+  return [{
+    userId: 'default-user',
+    connectors: [new MockEmailConnector(), new MockCalendarConnector()],
+  }];
+}
+
+/**
+ * Discover users with active OAuth tokens and build their connectors.
+ * Falls back to mock connectors if no real tokens exist or in mock mode.
+ */
+async function discoverUsers(): Promise<UserConnectors[]> {
+  if (config.useMockIronclaw) {
+    return buildMockConnectors();
+  }
+
+  try {
+    const tokens = await oauthRepository.getUsersWithActiveTokens();
+    if (tokens.length === 0) {
+      console.info('[worker] No users with active tokens found, using mock connectors');
+      return buildMockConnectors();
+    }
+
+    // Group tokens by user
+    const userTokens = new Map<string, typeof tokens>();
+    for (const token of tokens) {
+      const existing = userTokens.get(token.user_id) ?? [];
+      existing.push(token);
+      userTokens.set(token.user_id, existing);
+    }
+
+    const result: UserConnectors[] = [];
+    for (const [userId, userTokenList] of userTokens) {
+      const connectors: SignalConnector[] = [];
+      const hasGoogle = userTokenList.some((t) => t.provider === 'google');
+
+      if (hasGoogle) {
+        const tokenStore = new DbTokenStore(oauthRepository, {
+          clientId: config.googleClientId,
+          clientSecret: config.googleClientSecret,
+          redirectUri: config.googleRedirectUri,
+        });
+        connectors.push(new GmailConnector(userId, tokenStore));
+        connectors.push(new GoogleCalendarConnector(userId, tokenStore));
+      }
+
+      if (connectors.length > 0) {
+        result.push({ userId, connectors });
+      }
+    }
+
+    if (result.length === 0) {
+      return buildMockConnectors();
+    }
+
+    return result;
+  } catch (error) {
+    console.error(
+      '[worker] Error discovering users, falling back to mock:',
+      error instanceof Error ? error.message : error,
+    );
+    return buildMockConnectors();
   }
 }
 
@@ -76,30 +158,61 @@ async function main(): Promise<void> {
   console.info('[worker] Starting SkyTwin worker...');
   console.info(`[worker] API base URL: ${config.apiBaseUrl}`);
   console.info(`[worker] Poll interval: ${config.workerPollIntervalMs}ms`);
+  console.info(`[worker] Mode: ${config.useMockIronclaw ? 'mock' : 'real'}`);
 
-  // Set up connectors
-  const emailConnector = new MockEmailConnector();
-  const calendarConnector = new MockCalendarConnector();
-
-  connectors.push(emailConnector, calendarConnector);
+  // Discover users and set up connectors
+  let userConnectors = await discoverUsers();
+  console.info(`[worker] Tracking ${userConnectors.length} user(s)`);
 
   // Connect all
-  for (const connector of connectors) {
-    await connector.connect();
-    console.info(`[worker] Connected: ${connector.name}`);
+  for (const uc of userConnectors) {
+    for (const connector of uc.connectors) {
+      await connector.connect();
+      console.info(`[worker] Connected: ${connector.name} for user ${uc.userId}`);
+    }
   }
+
+  let pollCount = 0;
 
   // Poll loop
   while (running) {
-    await pollAll();
+    for (const uc of userConnectors) {
+      await pollUser(uc);
+    }
+
+    pollCount++;
+
+    // Re-discover users every 10 poll cycles to pick up new connections
+    if (pollCount % 10 === 0) {
+      const newUserConnectors = await discoverUsers();
+      if (newUserConnectors.length !== userConnectors.length) {
+        console.info(`[worker] User count changed: ${userConnectors.length} → ${newUserConnectors.length}`);
+        // Disconnect old connectors
+        for (const uc of userConnectors) {
+          for (const connector of uc.connectors) {
+            await connector.disconnect();
+          }
+        }
+        // Connect new ones
+        for (const uc of newUserConnectors) {
+          for (const connector of uc.connectors) {
+            await connector.connect();
+          }
+        }
+        userConnectors = newUserConnectors;
+      }
+    }
+
     await new Promise((resolve) => setTimeout(resolve, config.workerPollIntervalMs));
   }
 
   // Graceful shutdown
   console.info('[worker] Shutting down...');
-  for (const connector of connectors) {
-    await connector.disconnect();
-    console.info(`[worker] Disconnected: ${connector.name}`);
+  for (const uc of userConnectors) {
+    for (const connector of uc.connectors) {
+      await connector.disconnect();
+      console.info(`[worker] Disconnected: ${connector.name} for user ${uc.userId}`);
+    }
   }
   console.info('[worker] Worker stopped.');
 }

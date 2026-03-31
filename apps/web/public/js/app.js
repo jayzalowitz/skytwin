@@ -1,0 +1,143 @@
+import { renderDashboard } from './pages/dashboard.js';
+import { renderApprovals } from './pages/approvals.js';
+import { renderDecisions } from './pages/decisions.js';
+import { renderTwin } from './pages/twin.js';
+import { renderSettings } from './pages/settings.js';
+import { renderOnboarding } from './pages/onboarding.js';
+import { fetchPendingApprovals, fetchHealth } from './api-client.js';
+
+let currentUserId = localStorage.getItem('skytwin_userId') || '';
+
+const routes = {
+  '/': { title: 'Dashboard', render: renderDashboard },
+  '/approvals': { title: 'Approvals', render: renderApprovals },
+  '/decisions': { title: 'Decision History', render: renderDecisions },
+  '/twin': { title: 'What I Know', render: renderTwin },
+  '/settings': { title: 'Settings', render: renderSettings },
+};
+
+/**
+ * Check if onboarding is needed.
+ */
+function needsOnboarding() {
+  return !localStorage.getItem('skytwin_onboarded');
+}
+
+/**
+ * Show the onboarding overlay.
+ */
+function showOnboarding() {
+  const overlay = document.getElementById('onboarding-overlay');
+  overlay.style.display = 'flex';
+  renderOnboarding(
+    document.getElementById('onboarding-content'),
+    (userId) => {
+      currentUserId = userId;
+      localStorage.setItem('skytwin_userId', userId);
+      localStorage.setItem('skytwin_onboarded', 'true');
+      overlay.style.display = 'none';
+      navigate();
+    },
+  );
+}
+
+/**
+ * Update the approval count badge in the sidebar.
+ */
+async function updateApprovalBadge() {
+  if (!currentUserId) return;
+  try {
+    const data = await fetchPendingApprovals(currentUserId);
+    const count = data.approvals?.length ?? 0;
+    const badge = document.getElementById('approval-count');
+    if (badge) {
+      badge.textContent = String(count);
+      badge.style.display = count > 0 ? 'inline-block' : 'none';
+    }
+  } catch {
+    // Silently fail — badge just won't update
+  }
+}
+
+/**
+ * Update the connection status indicator.
+ */
+async function updateConnectionStatus() {
+  const statusEl = document.getElementById('connection-status');
+  if (!statusEl) return;
+
+  try {
+    await fetchHealth();
+    statusEl.innerHTML = '<span class="status-dot connected"></span><span class="status-text">Connected</span>';
+  } catch {
+    statusEl.innerHTML = '<span class="status-dot disconnected"></span><span class="status-text">Offline</span>';
+  }
+}
+
+/**
+ * Navigate to the current hash route.
+ */
+function navigate() {
+  if (!currentUserId) {
+    showOnboarding();
+    return;
+  }
+
+  const hash = window.location.hash.slice(1) || '/';
+  const route = routes[hash] || routes['/'];
+
+  document.getElementById('page-title').textContent = route.title;
+  document.getElementById('user-badge').textContent = currentUserId;
+
+  // Update active nav link
+  document.querySelectorAll('.nav-link').forEach(link => {
+    const page = link.getAttribute('data-page');
+    const isActive = (hash === '/' && page === 'dashboard') ||
+                     hash === `/${page}`;
+    link.classList.toggle('active', isActive);
+  });
+
+  const container = document.getElementById('page-content');
+  container.innerHTML = '<div class="loading">Loading...</div>';
+
+  route.render(container, currentUserId).catch(err => {
+    container.innerHTML = `<div class="error-banner">${err.message}</div>`;
+  });
+
+  // Update sidebar state
+  updateApprovalBadge();
+  updateConnectionStatus();
+}
+
+export function setUserId(id) {
+  currentUserId = id;
+  localStorage.setItem('skytwin_userId', id);
+  navigate();
+}
+
+// Mobile menu toggle
+document.getElementById('mobile-menu-btn')?.addEventListener('click', () => {
+  document.getElementById('nav-links')?.classList.toggle('open');
+});
+
+// Close mobile menu on navigation
+document.querySelectorAll('.nav-link').forEach(link => {
+  link.addEventListener('click', () => {
+    document.getElementById('nav-links')?.classList.remove('open');
+  });
+});
+
+window.addEventListener('hashchange', navigate);
+window.addEventListener('DOMContentLoaded', () => {
+  if (needsOnboarding() || !currentUserId) {
+    showOnboarding();
+  } else {
+    navigate();
+  }
+});
+
+// Make setUserId available globally for settings page
+window.skyTwinSetUserId = setUserId;
+
+// Poll for approval badge updates every 30s
+setInterval(updateApprovalBadge, 30000);

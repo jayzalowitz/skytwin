@@ -27,6 +27,12 @@ export const TABLE_NAMES = {
   executionResults: 'execution_results',
   explanationRecords: 'explanation_records',
   feedbackEvents: 'feedback_events',
+  oauthTokens: 'oauth_tokens',
+  connectorConfigs: 'connector_configs',
+  behavioralPatterns: 'behavioral_patterns',
+  crossDomainTraits: 'cross_domain_traits',
+  evalRuns: 'eval_runs',
+  accuracyMetrics: 'accuracy_metrics',
 } as const;
 
 export type TableName = (typeof TABLE_NAMES)[keyof typeof TABLE_NAMES];

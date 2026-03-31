@@ -5,6 +5,9 @@ import { createTwinRouter } from './routes/twin.js';
 import { createDecisionsRouter } from './routes/decisions.js';
 import { createApprovalsRouter } from './routes/approvals.js';
 import { createFeedbackRouter } from './routes/feedback.js';
+import { createOAuthRouter } from './routes/oauth.js';
+import { createEvalsRouter } from './routes/evals.js';
+import { createUsersRouter } from './routes/users.js';
 
 const config = loadConfig();
 const app: Application = express();
@@ -18,6 +21,9 @@ app.use('/api/twin', createTwinRouter());
 app.use('/api/decisions', createDecisionsRouter());
 app.use('/api/approvals', createApprovalsRouter());
 app.use('/api/feedback', createFeedbackRouter());
+app.use('/api/oauth', createOAuthRouter());
+app.use('/api/evals', createEvalsRouter());
+app.use('/api/users', createUsersRouter());
 
 // Health check
 app.get('/api/health', (_req, res) => {

@@ -24,6 +24,7 @@ export type {
   ExecutionResultRow,
   ExplanationRecordRow,
   FeedbackEventRow,
+  OAuthTokenRow,
   PaginationOptions,
   DateRangeOptions,
   UserQueryOptions,
@@ -51,6 +52,8 @@ export type {
   CreateExplanationInput,
   CreateFeedbackInput,
 } from './repositories/index.js';
+
+export { oauthRepository, approvalRepository, patternRepository } from './repositories/index.js';
 
 // Schema metadata
 export { TABLE_NAMES, SCHEMA_PATH } from './schemas/index.js';
