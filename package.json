@@ -1,0 +1,24 @@
+{
+  "name": "skytwin",
+  "private": true,
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "test": "turbo run test",
+    "lint": "turbo run lint",
+    "db:migrate": "pnpm --filter @skytwin/db migrate",
+    "db:seed": "pnpm --filter @skytwin/db seed"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "eslint": "^8.56.0",
+    "prettier": "^3.2.0",
+    "turbo": "^2.0.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.3.0"
+  },
+  "packageManager": "pnpm@9.1.0",
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

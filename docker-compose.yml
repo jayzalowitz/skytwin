@@ -1,0 +1,40 @@
+version: "3.9"
+
+services:
+  cockroachdb:
+    image: cockroachdb/cockroach:latest-v23.2
+    container_name: skytwin-cockroachdb
+    command: start-single-node --insecure
+    ports:
+      - "26257:26257" # SQL
+      - "8080:8080"   # Admin UI
+    volumes:
+      - cockroach-data:/cockroach/cockroach-data
+    environment:
+      - COCKROACH_DATABASE=skytwin
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    container_name: skytwin-api
+    ports:
+      - "3000:3000"
+    environment:
+      - DATABASE_URL=postgresql://root@cockroachdb:26257/skytwin?sslmode=disable
+      - NODE_ENV=development
+    depends_on:
+      cockroachdb:
+        condition: service_healthy
+    profiles:
+      - with-api
+
+volumes:
+  cockroach-data:
+    driver: local

@@ -1,0 +1,38 @@
+{
+  "name": "@skytwin/db",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "migrate": "tsx src/migrations/001-initial.ts",
+    "seed": "tsx src/seeds/seed.ts",
+    "generate": "tsc --declaration --emitDeclarationOnly",
+    "test": "vitest run",
+    "lint": "eslint src/"
+  },
+  "dependencies": {
+    "pg": "^8.11.3",
+    "@skytwin/shared-types": "workspace:*",
+    "@skytwin/config": "workspace:*",
+    "@skytwin/decision-engine": "workspace:*",
+    "@skytwin/policy-engine": "workspace:*",
+    "@skytwin/explanations": "workspace:*",
+    "@skytwin/twin-model": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.10.9",
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.3.0"
+  }
+}

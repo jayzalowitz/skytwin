@@ -1,0 +1,21 @@
+{
+  "name": "@skytwin/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "SkyTwin dashboard — Express-served SPA for monitoring decisions, approvals, and twin profiles.",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "test": "echo 'No tests yet'",
+    "lint": "echo 'No linting yet'"
+  },
+  "dependencies": {
+    "express": "^4.21.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "typescript": "^5.4.0"
+  }
+}
