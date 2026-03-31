@@ -14,7 +14,7 @@ All notable changes to SkyTwin will be documented in this file.
 - Decision engine with situation interpreter (6 situation types), risk assessor (6 dimensions), and candidate action generation
 - Policy engine with 5 built-in safety policies: spend limits, irreversibility checks, legal review gates, privacy protection, and trust tier gating
 - Explanation generator producing human-readable and structured audit records for every decision
-- IronClaw adapter with handler registry, real adapter (email, calendar, generic action handlers), and mock adapter for development
+- IronClaw adapter with HTTP client (HMAC-SHA256 auth, retries, circuit breaker) for the [IronClaw](https://github.com/nearai/ironclaw/) execution server, DirectExecutionAdapter fallback, and mock adapter for development
 - Real Gmail and Google Calendar signal connectors with OAuth token auto-refresh, plus mock connectors for testing
 - Evaluation harness with scenario framework, email triage scenarios, and safety regression suite
 - Express API server with routes for event ingestion, twin management, decisions, approvals (full CRUD with pending/history/respond), feedback, evals (accuracy/learning/confidence), OAuth flow, and user management
@@ -27,12 +27,19 @@ All notable changes to SkyTwin will be documented in this file.
 - Evals API endpoints calculating real accuracy from feedback data, learning progress aggregation, and per-domain confidence scoring
 - DB migrations for OAuth tokens, behavioral patterns, cross-domain traits, and eval history
 - End-to-end email triage workflow wiring all modules together
-- 89 tests across decision engine, policy engine, twin model, IronClaw adapter, evals, and connectors
+- 119 tests across decision engine, policy engine, twin model, IronClaw adapter (HTTP client, circuit breaker, direct execution, handler registry), evals, and connectors
 - Docker Compose setup with CockroachDB single-node for local development
 - 7 documentation files covering product spec, technical spec, safety model, decision engine, IronClaw integration, CockroachDB architecture, and evals
 - 15 planning artifacts: 5 milestone docs and 10 issue specs
 
 ### Fixed
 
+- IronClaw adapter now actually communicates with the [IronClaw](https://github.com/nearai/ironclaw/) server via HTTP webhook (POST /webhook with HMAC-SHA256 auth) instead of dispatching to local handler classes that called Gmail/Calendar APIs directly
+- Sensitive credentials (OAuth tokens, API keys) are sanitized before being sent to IronClaw, replaced with managed references
+- Config now validates that `IRONCLAW_WEBHOOK_SECRET` is set when mock mode is off
+- Mobile nav menu now has a backdrop overlay and closes when tapping outside
+- Error banners on settings page now clear previous errors before showing new ones
+- HTML in error messages is now escaped to prevent XSS
+- Connection status indicator now visible on mobile when nav menu is open
 - Trust tier default changed from invalid `'new'` to `'observer'` (matching TrustTier enum)
 - Policy evaluator now denies unrecognized trust tiers instead of silently permitting them

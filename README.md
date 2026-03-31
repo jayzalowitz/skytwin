@@ -2,7 +2,7 @@
 
 **Judgment Jay: Mildly Apocalyptic Personal Automation**
 
-SkyTwin is a delegated judgment layer that sits above [IronClaw](https://github.com/your-org/ironclaw). It maintains a digital twin of user preferences, risk tolerances, and decision patterns, then uses that model to act on behalf of the user -- or, when it isn't sure, to ask the right question instead of the wrong one.
+SkyTwin is a delegated judgment layer that sits above [IronClaw](https://github.com/nearai/ironclaw/). It maintains a digital twin of user preferences, risk tolerances, and decision patterns, then uses that model to act on behalf of the user -- or, when it isn't sure, to ask the right question instead of the wrong one.
 
 The core principle: **ask the twin before asking the user.**
 
@@ -56,7 +56,7 @@ pnpm dev
 ### Running Tests
 
 ```bash
-pnpm test          # 89 tests across 12 test files
+pnpm test          # 119 tests across 14 test files
 ```
 
 ## Monorepo Structure
@@ -77,7 +77,7 @@ packages/
   twin-model/     # Twin profile management and preference learning
   decision-engine/# Event interpretation and action selection
   policy-engine/  # Safety constraints, trust tiers, spend limits
-  ironclaw-adapter/ # Adapter layer for IronClaw API
+  ironclaw-adapter/ # HTTP adapter for IronClaw execution server
   explanations/   # Human-readable explanation generation
   connectors/     # Gmail, Google Calendar, and mock connectors with OAuth token management
   evals/          # Evaluation harness for decision quality

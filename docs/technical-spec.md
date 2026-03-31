@@ -21,7 +21,7 @@ skytwin/
     twin-model/      # Twin profile management and preference learning
     decision-engine/ # Event interpretation and action selection
     policy-engine/   # Safety constraints, trust tiers, spend limits
-    ironclaw-adapter/# IronClaw API adapter (interface + mock)
+    ironclaw-adapter/# IronClaw HTTP adapter (HMAC-SHA256 auth, retries, circuit breaker)
     explanations/    # Human-readable explanation generation
     connectors/      # External service integrations (email, calendar, etc.)
     evals/           # Evaluation harness for decision quality

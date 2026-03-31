@@ -2,15 +2,15 @@
 
 ## What IronClaw Is
 
-IronClaw is the downstream execution and runtime layer. SkyTwin decides what should happen; IronClaw makes it happen.
+[IronClaw](https://github.com/nearai/ironclaw/) is a Rust-based autonomous agent server developed by NEAR AI. It runs as a standalone process and exposes an HTTP webhook API for receiving execution requests. SkyTwin decides what should happen; IronClaw makes it happen.
 
-Think of the relationship like this: SkyTwin is the judgment call ("reschedule the standup and send a note to the organizer"), and IronClaw is the hands ("here's the Google Calendar API call and the Slack message").
-
-IronClaw handles:
-- Direct API interactions with external services (Google Calendar, Gmail, Stripe, etc.)
-- Task orchestration (multi-step execution plans)
-- Execution monitoring and status reporting
-- Rollback execution where supported by the downstream service
+IronClaw provides:
+- **Sandboxed tool execution** via WASM containers with capability-based permissions
+- **Credential management** with endpoint allowlisting and leak detection
+- **Multi-provider LLM support** for tool orchestration
+- **Built-in safety** with prompt injection defense and content sanitization
+- **Persistent memory** and workspace filesystem
+- **Routines engine** for cron schedules and event triggers
 
 SkyTwin handles:
 - Deciding *whether* to act
@@ -19,403 +19,230 @@ SkyTwin handles:
 - Enforcing *policy* and *trust constraints*
 - *Explaining* what happened and why
 
-The boundary is clean: SkyTwin never calls external service APIs directly. IronClaw never makes judgment calls about whether an action should happen.
+The boundary is clean: SkyTwin never calls external service APIs directly in production. IronClaw never makes judgment calls about whether an action should happen.
 
-## Integration Boundary
+## Architecture
 
 ```
-SkyTwin                          IronClaw
---------                         ---------
-Decision Engine                  Execution Runtime
-  |                                  |
-  v                                  v
-Policy Engine                    Service Connectors
-  |                              (Gmail, Calendar, Stripe, etc.)
-  v                                  |
-IronClaw Adapter ──────────────> API  |
-  |        <──────────────────── Webhooks/Results
-  v                                  |
-Explanation Layer                Status Monitoring
+SkyTwin                              IronClaw Server (Rust)
+--------                             --------------------
+Decision Engine                      HTTP Webhook (POST /webhook)
+  |                                    |
+  v                                    v
+Policy Engine                        Agent Loop + LLM Reasoning
+  |                                    |
+  v                                    v
+IronClaw Adapter ──── HMAC-SHA256 ──> Tool Dispatch
+  |  (HTTP POST)                       |
+  |                                    v
+  |                                  WASM Sandbox / Docker
+  |                                    |
+  |  <─── JSON Response ─────────────  v
+  v                                  External APIs
+Explanation Layer                    (Gmail, Calendar, Stripe, etc.)
 ```
 
 The `@skytwin/ironclaw-adapter` package is the only code in SkyTwin that communicates with IronClaw. No other package imports IronClaw types or calls IronClaw APIs. This isolation is enforced by the monorepo dependency graph.
 
-## Adapter Pattern
+## Adapter Implementations
 
-The adapter uses a TypeScript interface to define the contract. Both a mock implementation (for development and testing) and a real implementation (`RealIronClawAdapter` with `ActionHandlerRegistry`) are provided. The real adapter dispatches to domain-specific handlers: `EmailActionHandler`, `CalendarActionHandler`, and `GenericActionHandler`.
+### RealIronClawAdapter (Production)
 
-### Interface Definition
+Communicates with an IronClaw server via its HTTP webhook API:
+- Sends structured execution requests to `POST /webhook` with HMAC-SHA256 authentication
+- IronClaw uses its sandboxed tool system to execute actions
+- Parses IronClaw's responses back into SkyTwin's `ExecutionResult` types
+- Includes retry logic with linear backoff and circuit breaker protection
+- Uses `/health` endpoint for health checks
+- Correlates rollback requests via IronClaw thread IDs
+
+### DirectExecutionAdapter (Fallback)
+
+Dispatches actions to locally registered handler classes (`EmailActionHandler`, `CalendarActionHandler`, etc.) that call external APIs directly via `fetch()`. This bypasses IronClaw entirely — useful only when IronClaw is not running.
+
+### MockIronClawAdapter (Development/Testing)
+
+Simulates execution without any external calls. Configurable delays, failure probability, and logging for test scenarios.
+
+## Authentication
+
+IronClaw's webhook endpoint uses HMAC-SHA256 authentication:
+
+1. SkyTwin serializes the message body as JSON
+2. Computes `HMAC-SHA256(body, IRONCLAW_WEBHOOK_SECRET)`
+3. Sends the signature in the `X-Signature-256` header as `sha256=<hex>`
+4. IronClaw verifies the signature before processing
+
+### Configuration
+
+| Environment Variable | Description | Required |
+|---------------------|-------------|----------|
+| `IRONCLAW_API_URL` | Base URL for IronClaw server (e.g., `http://localhost:4000`) | Yes |
+| `IRONCLAW_WEBHOOK_SECRET` | HMAC-SHA256 secret for webhook auth | Yes (when `USE_MOCK_IRONCLAW=false`) |
+| `IRONCLAW_OWNER_ID` | Owner ID for IronClaw's multi-tenant model | No (defaults to `skytwin-default`) |
+| `USE_MOCK_IRONCLAW` | `true` to use mock adapter, `false` for real | No (defaults to `true`) |
+
+## Message Format
+
+### Execution Request
+
+SkyTwin sends a structured message to IronClaw's webhook:
 
 ```typescript
-interface IronClawExecutor {
-  /**
-   * Submit an execution plan for processing.
-   */
+{
+  channel: "skytwin",
+  user_id: "<userId>",
+  owner_id: "<ownerId>",
+  content: "Execute the following action as instructed by SkyTwin...",
+  thread_id: "<planId>",  // Used for rollback correlation
+  attachments: [],
+  metadata: {
+    skytwin: true,
+    message_type: "execute",
+    plan_id: "<planId>",
+    decision_id: "<decisionId>",
+    idempotency_key: "<planId>",
+    action: {
+      type: "archive_email",
+      domain: "email",
+      description: "Archive the newsletter email",
+      parameters: { emailId: "msg_123" },
+      reversible: true,
+      estimated_cost_cents: 0,
+    },
+    steps: [...]
+  }
+}
+```
+
+**Security note:** Sensitive parameters (OAuth tokens, API keys) are sanitized before being included in the message body. Token references (`accessToken_ref: "[managed-by-ironclaw]"`) are sent instead. IronClaw manages credentials through its own credential injection system.
+
+### Execution Response
+
+IronClaw returns:
+
+```typescript
+{
+  content: "Successfully archived email msg_123",
+  thread_id: "thread_abc",
+  attachments: [],
+  metadata: {
+    status: "completed",  // or "failed", "pending", "running"
+    outputs: { messageId: "msg_123", action: "archived" },
+    error: null,          // populated on failure
+  }
+}
+```
+
+### Rollback Request
+
+Uses the same webhook with a rollback message type and the original thread ID:
+
+```typescript
+{
+  channel: "skytwin",
+  user_id: "skytwin-system",
+  owner_id: "<ownerId>",
+  content: "Rollback execution plan <planId>...",
+  thread_id: "<originalThreadId>",
+  metadata: {
+    skytwin: true,
+    message_type: "rollback",
+    plan_id: "<planId>",
+  }
+}
+```
+
+## Adapter Interface
+
+```typescript
+interface IronClawAdapter {
+  buildPlan(action: CandidateAction): Promise<ExecutionPlan>;
   execute(plan: ExecutionPlan): Promise<ExecutionResult>;
-
-  /**
-   * Get the current status of an execution plan.
-   */
-  getStatus(planId: string): Promise<ExecutionStatus>;
-
-  /**
-   * Attempt to roll back a previously executed plan.
-   */
   rollback(planId: string): Promise<RollbackResult>;
-
-  /**
-   * Check if the IronClaw service is healthy.
-   */
-  healthCheck(): Promise<boolean>;
+  healthCheck(): Promise<{ healthy: boolean; latencyMs: number }>;
 }
 ```
 
 ### Why an Adapter
 
-1. **IronClaw's API is not yet stable.** We don't want SkyTwin's decision logic coupled to an API that's still evolving. The adapter absorbs API changes without affecting the rest of the system.
+1. **IronClaw is a Rust binary, not a JS library.** All communication is over HTTP. The adapter normalizes this into a typed TypeScript interface.
 
 2. **Testability.** Every test of the decision pipeline can use the mock adapter. No external service calls during unit or integration tests.
 
 3. **Error normalization.** IronClaw may return errors in various formats. The adapter normalizes them into SkyTwin error types.
 
-4. **Retry encapsulation.** The adapter handles transient failure retries internally. The decision engine doesn't need to know about HTTP timeouts or rate limits.
+4. **Retry encapsulation.** The adapter handles transient failure retries and circuit breaker protection internally.
 
-5. **Future flexibility.** If IronClaw is replaced or supplemented by another execution layer, only the adapter changes.
+5. **Credential isolation.** Sensitive tokens are sanitized before being sent to IronClaw. IronClaw manages its own credential store.
 
-## Expected Capabilities
-
-Based on the workflows SkyTwin needs to support, the IronClaw integration should eventually handle:
-
-### Email Operations
-- Send email (plain text, HTML)
-- Draft email (save without sending)
-- Archive email
-- Label/categorize email
-- Forward email
-
-### Calendar Operations
-- Create event
-- Reschedule event (modify time)
-- Cancel/decline event
-- Accept event
-- Send calendar notification to attendees
-
-### Subscription Management
-- Renew subscription
-- Cancel subscription
-- Modify subscription (upgrade/downgrade)
-
-### Purchase Operations
-- Place order (from template/previous order)
-- Modify order (before fulfillment)
-- Cancel order (before fulfillment)
-
-### Travel Operations
-- Book flight/hotel
-- Select seat preference
-- Cancel booking (within cancellation window)
-
-### Generic Operations
-- HTTP request to arbitrary endpoint (with authentication)
-- Webhook notification
-- Status check on previous execution
-
-Not all of these are implemented in IronClaw today. The adapter interface is designed to support them, with graceful failure for unsupported operations.
-
-## Task Handoff Contract
-
-When SkyTwin decides to execute an action, it converts the `CandidateAction` into an `ExecutionPlan` and hands it to IronClaw.
-
-### ExecutionPlan Format
-
-```typescript
-interface ExecutionPlan {
-  id: string;
-  decisionId: string;
-  action: CandidateAction;
-  steps: ExecutionStep[];
-  rollbackSteps: ExecutionStep[];
-  createdAt: Date;
-}
-
-interface ExecutionStep {
-  id: string;
-  order: number;
-  type: string;
-  description: string;
-  parameters: Record<string, unknown>;
-  timeout: number;
-}
-```
-
-### Key Design Decisions
-
-**Idempotency keys:** Every execution plan includes an idempotency key. If IronClaw receives the same key twice, it should return the result of the first execution rather than executing again. This protects against retry-induced double-execution.
-
-**Timeout:** SkyTwin sets a timeout based on urgency and action type. If IronClaw hasn't completed execution within the timeout, SkyTwin treats it as a failure and may escalate to the user.
-
-**Metadata:** The plan includes metadata about the decision context. IronClaw can use this for logging, monitoring, and priority routing. It should not use it for decision-making -- that's SkyTwin's job.
-
-**Scheduled execution:** Some actions should execute at a specific time (e.g., "send this email at 9am"). The `scheduledFor` field supports deferred execution. IronClaw is responsible for honoring the schedule.
-
-## Execution Result Contract
-
-After IronClaw executes (or attempts to execute) a plan, it returns an `ExecutionResult`:
-
-```typescript
-interface ExecutionResult {
-  planId: string;
-  status: ExecutionStatus;
-  startedAt: Date;
-  completedAt?: Date;
-  error?: string;
-  output?: Record<string, unknown>;
-}
-
-type ExecutionStatus = 'pending' | 'running' | 'completed' | 'failed';
-```
-
-### Status Meanings
-
-| Status | Meaning | SkyTwin Response |
-|--------|---------|-----------------|
-| `pending` | Execution has been submitted but not yet started | Wait for execution to begin |
-| `running` | Execution is in progress | Poll for completion, respect timeout |
-| `completed` | Action executed successfully | Log success, generate explanation |
-| `failed` | Action could not be executed | Log failure, notify user, consider retry |
-
-### Error Classification
-
-Errors are returned as an optional `error` string on `ExecutionResult`. The adapter uses the `error` field and `status` to determine how to handle failures:
-
-- **Retryable failures** (e.g., transient network issues) trigger automatic retry (up to 2 retries with linear backoff).
-- **Permanent failures** (e.g., invalid parameters) are reported to the user immediately. No retry.
-- **Timeouts** are treated as failures. The user is notified. The system does not assume the action completed.
-
-## Failure Handling Strategy
+## Failure Handling
 
 ### Retry Logic
 
-```
-Execute Plan
-    |
-    v
-IronClaw returns result
-    |
-    ├── completed → success path
-    ├── failed (retryable) → retry (max 2)
-    |     |
-    |     └── all retries exhausted → failure path
-    ├── failed (permanent) → failure path
-    ├── pending → poll with timeout
-    |     |
-    |     └── timeout exceeded → failure path
-    └── unknown → failure path
-```
-
-### Failure Path
-
-When execution fails:
-1. Record the failure in the `execution_results` table
-2. Generate an explanation: "I tried to [action] but it failed because [reason]"
-3. Notify the user if the action was auto-executed (they need to know it didn't work)
-4. Do not automatically retry permanent failures
-5. Do not assume partial failures completed the important parts
-6. Record the failure as neutral feedback (don't penalize the twin for IronClaw failures)
+The HTTP client retries transient failures with linear backoff:
+- **Retryable:** 5xx server errors, 429 rate limits, network timeouts
+- **Not retryable:** 4xx client errors (except 429)
+- **Max retries:** 2 (configurable)
+- **Backoff:** 1s, 2s, 3s (linear)
 
 ### Circuit Breaker
 
-If IronClaw fails repeatedly (configurable: 5 failures in 5 minutes), the adapter activates a circuit breaker:
-- All new executions are queued rather than sent
-- Health checks continue
-- When health check succeeds, circuit closes and queued executions resume
-- User is notified that automated actions are temporarily paused
+If IronClaw fails repeatedly (default: 5 failures in 5 minutes):
+- Circuit breaker opens — new executions fail immediately
+- Health checks continue at `/health`
+- When health check succeeds, circuit closes and executions resume
+- Half-open probes allowed after half the window elapses
 
-## Observability Assumptions
+### Error Classification
 
-The adapter provides observability through:
+| Error Type | SkyTwin Response |
+|-----------|-----------------|
+| `completed` | Log success, generate explanation |
+| `failed` (retryable) | Retry with backoff, then escalate |
+| `failed` (permanent) | Notify user immediately |
+| Network timeout | Treat as failure, notify user |
+| Circuit breaker open | Queue or pause automated actions |
 
-### Logging
-- Every execution plan submission is logged with plan ID, action type, and user ID
-- Every result is logged with status, duration, and error details (if any)
-- Retries are logged with attempt number and reason
+## Expected Capabilities
 
-### Metrics (Planned)
-- `ironclaw.execution.duration` -- histogram of execution times
-- `ironclaw.execution.status` -- counter by status (completed, failed, etc.)
-- `ironclaw.execution.retries` -- counter of retry attempts
-- `ironclaw.circuit_breaker.state` -- gauge (open/closed)
-- `ironclaw.health_check.latency` -- histogram of health check response times
+Based on the workflows SkyTwin needs to support, IronClaw should handle:
 
-### Correlation
-Every execution plan includes the `decisionId` from SkyTwin. IronClaw should propagate this ID in its own logs. This enables end-to-end tracing from event ingestion through decision to execution.
+### Email Operations
+- Send email, draft email, archive email, label/categorize, forward
 
-## Rollback Possibilities
+### Calendar Operations
+- Create/reschedule/cancel events, accept/decline invites, notify attendees
 
-Rollback depends entirely on what IronClaw can do with the downstream service:
+### Subscription & Purchase Management
+- Renew/cancel/modify subscriptions, place/modify/cancel orders
 
-### Likely Rollbackable
-- Email archive → unarchive
-- Calendar event creation → delete event
-- Calendar reschedule → reschedule back
-- Draft email → delete draft
-- Order modification → revert modification (before fulfillment)
+### Travel Operations
+- Book flights/hotels, select preferences, cancel within windows
 
-### Possibly Rollbackable
-- Subscription renewal → cancel within grace period
-- Order placement → cancel before fulfillment cutoff
-- Flight booking → cancel within 24-hour window
+### Generic Operations
+- HTTP requests with authentication, webhook notifications, status checks
 
-### Not Rollbackable
-- Email sent → cannot unsend
-- Meeting declined → can re-accept but social damage may be done
-- Subscription canceled → may lose promotional pricing
-- Non-refundable purchase → money is gone
-
-SkyTwin determines rollback availability from the `ExecutionPlan`'s `rollbackSteps` and the `action.reversible` flag. When a user requests an undo, the adapter checks whether rollback steps are defined and the action is marked as reversible, then either initiates rollback or informs the user that rollback is not possible.
-
-## What We Don't Know Yet
-
-Honest accounting of current uncertainties:
-
-### IronClaw API Surface
-We don't know the exact API endpoints, authentication mechanism, request/response formats, or error codes. The adapter interface is based on what we *need* IronClaw to support, not what it currently provides. The mock implementation simulates expected behavior.
-
-### Execution Latency
-We don't know how long IronClaw takes to execute various action types. The mock uses a default base delay of 100ms. Real latency may be significantly different, especially for actions that involve multiple downstream API calls.
-
-### Rollback Granularity
-We don't know exactly which actions IronClaw can roll back and under what conditions. The adapter treats rollback as best-effort and always tells the user the truth about what can and can't be undone.
-
-### Authentication Model
-We don't know how SkyTwin will authenticate with IronClaw. The adapter assumes an API key or token-based authentication. The actual mechanism will be configured via environment variables when known.
-
-### Webhook vs. Polling
-We don't know whether IronClaw will push execution results via webhooks or whether SkyTwin needs to poll. The adapter interface supports both patterns. The mock implementation uses immediate responses (simulating polling).
-
-### Rate Limits
-We don't know IronClaw's rate limits. The adapter includes a placeholder for rate limit handling, but actual limits will need to be configured when known.
-
-### Multi-Step Execution
-We don't know whether IronClaw supports compound execution plans (multiple steps in one request) or whether SkyTwin needs to orchestrate steps individually. The adapter currently sends one plan per action. Multi-step orchestration is a future consideration.
-
-## Mock Adapter Behavior
-
-The mock adapter (`MockIronClawAdapter`) simulates IronClaw for development and testing.
-
-### Default Behavior
-
-```typescript
-class MockIronClawAdapter implements IronClawExecutor {
-  // Configurable behavior (via MockAdapterConfig)
-  private executionDelayMs = 100;        // Base execution delay in milliseconds
-  private failureProbability = 0.05;     // Probability of simulated failure (0-1)
-  private simulateDelays = true;         // Whether to simulate execution delays
-
-  async execute(plan: ExecutionPlan): Promise<ExecutionResult> {
-    // Simulate execution delay
-    if (this.simulateDelays) {
-      await delay(this.executionDelayMs);
-    }
-
-    // Simulate step-by-step execution with possible failure
-    for (const step of plan.steps) {
-      if (Math.random() < this.failureProbability) {
-        return {
-          planId: plan.id,
-          status: 'failed',
-          startedAt: new Date(),
-          completedAt: new Date(),
-          error: `Simulated failure at step ${step.order}: ${step.description}`,
-        };
-      }
-    }
-
-    return {
-      planId: plan.id,
-      status: 'completed',
-      startedAt: new Date(),
-      completedAt: new Date(),
-      output: {
-        stepsCompleted: plan.steps.length,
-        actionType: plan.action.actionType,
-        description: plan.action.description,
-      },
-    };
-  }
-  // ... similar for getStatus, rollback, healthCheck
-}
-```
-
-### Test Configuration
-
-Tests can configure the mock to simulate specific scenarios:
-
-```typescript
-// Simulate IronClaw failing on every execution
-const adapter = new MockIronClawAdapter({ failureProbability: 1.0 });
-
-// Simulate slow execution
-const adapter = new MockIronClawAdapter({ executionDelayMs: 5000 });
-
-// Disable simulated delays for fast tests
-const adapter = new MockIronClawAdapter({ simulateDelays: false });
-
-// Simulate IronClaw being unhealthy
-const adapter = new MockIronClawAdapter();
-adapter.setHealthy(false);
-```
-
-### Idempotency in Mock
-
-The mock adapter tracks idempotency keys. If the same key is submitted twice, it returns the original result without "re-executing." This ensures retry logic is tested correctly even in the mock environment.
-
-### Testing Helpers
-
-The mock adapter provides several methods for inspecting and controlling state in tests:
-
-```typescript
-// Get all operation logs (execute, status_check, rollback, health_check)
-const logs = adapter.getLogs();
-// Returns: readonly OperationLog[]
-
-// Get the result for a specific plan
-const result = adapter.getResult(planId);
-// Returns: ExecutionResult | undefined
-
-// Clear all logs
-adapter.clearLogs();
-
-// Reset all state (plans, logs, health status)
-adapter.reset();
-
-// Control health check responses
-adapter.setHealthy(false);
-```
-
-This makes it easy to assert that the decision pipeline produced the expected execution plans without inspecting IronClaw internals.
+Not all are implemented in IronClaw today. The adapter handles unsupported operations gracefully.
 
 ## Migration Path
 
-### Phase 1: Mock Only (Current)
-- All development and testing uses `MockIronClawAdapter`
-- No real external service calls
+### Phase 1: Mock Only (Complete)
+- Development and testing uses `MockIronClawAdapter`
 - Decision pipeline is fully testable end-to-end
 
-### Phase 2: IronClaw Sandbox
-- Connect to IronClaw's sandbox/staging environment
-- Real API calls but against test accounts
-- Validate the adapter interface against actual API behavior
-- Discover and handle real error patterns
+### Phase 2: IronClaw HTTP Integration (Current)
+- `RealIronClawAdapter` communicates with IronClaw via HTTP webhook
+- HMAC-SHA256 authentication, retries, circuit breaker
+- Credential sanitization in flight
 
-### Phase 3: Production Integration
-- Connect to production IronClaw
+### Phase 3: Production Deployment
+- Connect to production IronClaw with real credentials
 - Start with low-risk action types (archive email, reschedule meeting)
 - Monitor execution results closely
 - Gradually enable more action types as confidence builds
 
 ### Phase 4: Advanced Integration
-- Webhook-based result delivery (if supported)
-- Compound execution plans
-- Real-time status streaming
-- Advanced rollback coordination
+- Leverage IronClaw's routines engine for scheduled actions
+- Real-time status streaming via WebSocket/SSE
+- Advanced rollback coordination through IronClaw's tool system

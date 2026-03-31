@@ -53,7 +53,7 @@ pnpm --filter @skytwin/twin-model test
 | `@skytwin/twin-model` | Twin profile CRUD, preference learning, confidence scoring. |
 | `@skytwin/decision-engine` | Event interpretation, candidate action generation, action selection. |
 | `@skytwin/policy-engine` | Policy evaluation, trust tier enforcement, spend limit checks. |
-| `@skytwin/ironclaw-adapter` | Adapter pattern wrapper around the IronClaw API, with handler registry and real/mock implementations. |
+| `@skytwin/ironclaw-adapter` | HTTP adapter for the [IronClaw](https://github.com/nearai/ironclaw/) execution server. HMAC-SHA256 auth, retries, circuit breaker. Includes DirectExecutionAdapter fallback and mock for testing. |
 | `@skytwin/explanations` | Generates human-readable explanations for decisions and actions. |
 | `@skytwin/connectors` | Gmail, Google Calendar, and mock signal connectors with OAuth token management (DbTokenStore). |
 | `@skytwin/evals` | Evaluation framework for measuring decision quality over time. |
