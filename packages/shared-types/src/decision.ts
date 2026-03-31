@@ -1,0 +1,83 @@
+import {
+  ConfidenceLevel,
+  RiskDimension,
+  RiskTier,
+  SituationType,
+  TrustTier,
+} from './enums.js';
+import { Preference } from './twin.js';
+
+/**
+ * A structured representation of a situation requiring a decision.
+ */
+export interface DecisionObject {
+  id: string;
+  situationType: SituationType;
+  domain: string;
+  urgency: 'low' | 'medium' | 'high' | 'critical';
+  summary: string;
+  rawData: Record<string, unknown>;
+  interpretedAt: Date;
+}
+
+/**
+ * Full context for making a decision: the situation, the user, and the twin state.
+ */
+export interface DecisionContext {
+  userId: string;
+  decision: DecisionObject;
+  trustTier: TrustTier;
+  relevantPreferences: Preference[];
+  timestamp: Date;
+}
+
+/**
+ * A candidate action that SkyTwin could take.
+ */
+export interface CandidateAction {
+  id: string;
+  decisionId: string;
+  actionType: string;
+  description: string;
+  domain: string;
+  parameters: Record<string, unknown>;
+  estimatedCostCents: number;
+  reversible: boolean;
+  confidence: ConfidenceLevel;
+  reasoning: string;
+}
+
+/**
+ * Risk assessment for a candidate action, broken down by dimension.
+ */
+export interface RiskAssessment {
+  actionId: string;
+  overallTier: RiskTier;
+  dimensions: Record<RiskDimension, DimensionAssessment>;
+  reasoning: string;
+  assessedAt: Date;
+}
+
+/**
+ * Assessment for a single risk dimension.
+ */
+export interface DimensionAssessment {
+  tier: RiskTier;
+  score: number;
+  reasoning: string;
+}
+
+/**
+ * The outcome of the decision engine's evaluation.
+ */
+export interface DecisionOutcome {
+  id: string;
+  decisionId: string;
+  selectedAction: CandidateAction | null;
+  allCandidates: CandidateAction[];
+  riskAssessment: RiskAssessment | null;
+  autoExecute: boolean;
+  requiresApproval: boolean;
+  reasoning: string;
+  decidedAt: Date;
+}
