@@ -1,0 +1,352 @@
+import type {
+  TwinProfile,
+  Preference,
+  TwinEvidence,
+  Inference,
+  FeedbackEvent,
+} from '@skytwin/shared-types';
+import { ConfidenceLevel } from '@skytwin/shared-types';
+import { InferenceEngine } from './inference-engine.js';
+
+/**
+ * Port interface for twin profile persistence.
+ *
+ * Business logic depends on this interface, not on a concrete database
+ * implementation. Adapters (e.g., wrapping @skytwin/db's concrete
+ * twinRepository) satisfy this contract at composition time.
+ */
+export interface TwinRepositoryPort {
+  getProfile(userId: string): Promise<TwinProfile | null>;
+  createProfile(profile: TwinProfile): Promise<TwinProfile>;
+  updateProfile(profile: TwinProfile): Promise<TwinProfile>;
+
+  getPreferences(userId: string): Promise<Preference[]>;
+  getPreferencesByDomain(userId: string, domain: string): Promise<Preference[]>;
+  upsertPreference(userId: string, preference: Preference): Promise<Preference>;
+
+  getInferences(userId: string): Promise<Inference[]>;
+  upsertInference(userId: string, inference: Inference): Promise<Inference>;
+
+  addEvidence(evidence: TwinEvidence): Promise<TwinEvidence>;
+  getEvidence(userId: string, limit?: number): Promise<TwinEvidence[]>;
+  getEvidenceByIds(ids: string[]): Promise<TwinEvidence[]>;
+
+  addFeedback(feedback: FeedbackEvent): Promise<FeedbackEvent>;
+  getFeedback(userId: string, limit?: number): Promise<FeedbackEvent[]>;
+}
+
+/**
+ * TwinService is the primary interface for managing a user's digital twin.
+ * It orchestrates profile CRUD, preference management, evidence collection,
+ * and inference updates.
+ */
+export class TwinService {
+  private readonly inferenceEngine: InferenceEngine;
+
+  constructor(private readonly repository: TwinRepositoryPort) {
+    this.inferenceEngine = new InferenceEngine();
+  }
+
+  /**
+   * Get an existing twin profile or create a default one for the user.
+   */
+  async getOrCreateProfile(userId: string): Promise<TwinProfile> {
+    const existing = await this.repository.getProfile(userId);
+    if (existing) {
+      return existing;
+    }
+
+    const defaultProfile: TwinProfile = {
+      id: `twin_${userId}_${Date.now()}`,
+      userId,
+      version: 1,
+      preferences: [],
+      inferences: [],
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    return this.repository.createProfile(defaultProfile);
+  }
+
+  /**
+   * Update a single preference for a user. If a preference with the same
+   * domain+key exists, it is updated (creating a new version). Otherwise
+   * a new preference is created.
+   */
+  async updatePreference(
+    userId: string,
+    preference: Preference,
+  ): Promise<TwinProfile> {
+    const profile = await this.getOrCreateProfile(userId);
+
+    // Find existing preference with same domain+key
+    const existingIdx = profile.preferences.findIndex(
+      (p) => p.domain === preference.domain && p.key === preference.key,
+    );
+
+    const updatedPreferences = [...profile.preferences];
+    const now = new Date();
+
+    if (existingIdx >= 0) {
+      // Update existing preference, preserving history via evidence IDs
+      const existing = updatedPreferences[existingIdx]!;
+      updatedPreferences[existingIdx] = {
+        ...preference,
+        id: existing.id,
+        evidenceIds: [...new Set([...existing.evidenceIds, ...preference.evidenceIds])],
+        updatedAt: now,
+      };
+    } else {
+      // Add new preference
+      updatedPreferences.push({
+        ...preference,
+        id: preference.id || `pref_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+
+    // Also persist via the repository
+    await this.repository.upsertPreference(userId, preference);
+
+    const updatedProfile: TwinProfile = {
+      ...profile,
+      preferences: updatedPreferences,
+      version: profile.version + 1,
+      updatedAt: now,
+    };
+
+    return this.repository.updateProfile(updatedProfile);
+  }
+
+  /**
+   * Add evidence to the twin and potentially update inferences.
+   */
+  async addEvidence(
+    userId: string,
+    evidence: TwinEvidence,
+  ): Promise<TwinProfile> {
+    // Persist the evidence
+    await this.repository.addEvidence(evidence);
+
+    const profile = await this.getOrCreateProfile(userId);
+
+    // Run inference engine with the new evidence
+    const updatedInferences = this.inferenceEngine.analyzeEvidence(
+      profile.inferences,
+      [evidence],
+    );
+
+    // Persist updated inferences
+    for (const inference of updatedInferences) {
+      await this.repository.upsertInference(userId, inference);
+    }
+
+    const updatedProfile: TwinProfile = {
+      ...profile,
+      inferences: updatedInferences,
+      version: profile.version + 1,
+      updatedAt: new Date(),
+    };
+
+    return this.repository.updateProfile(updatedProfile);
+  }
+
+  /**
+   * Given a batch of new signals (evidence), update the twin's inferences.
+   */
+  async inferPreferences(
+    userId: string,
+    signals: TwinEvidence[],
+  ): Promise<TwinProfile> {
+    const profile = await this.getOrCreateProfile(userId);
+
+    // Persist all evidence
+    for (const signal of signals) {
+      await this.repository.addEvidence(signal);
+    }
+
+    // Run inference engine across all new signals
+    const updatedInferences = this.inferenceEngine.analyzeEvidence(
+      profile.inferences,
+      signals,
+    );
+
+    // Convert strong inferences into preferences
+    const newPreferences = this.promoteInferences(
+      profile.preferences,
+      updatedInferences,
+    );
+
+    // Persist
+    for (const inference of updatedInferences) {
+      await this.repository.upsertInference(userId, inference);
+    }
+    for (const pref of newPreferences) {
+      await this.repository.upsertPreference(userId, pref);
+    }
+
+    const updatedProfile: TwinProfile = {
+      ...profile,
+      inferences: updatedInferences,
+      preferences: newPreferences,
+      version: profile.version + 1,
+      updatedAt: new Date(),
+    };
+
+    return this.repository.updateProfile(updatedProfile);
+  }
+
+  /**
+   * Query the twin for preferences relevant to a specific decision domain
+   * and situation.
+   */
+  async getRelevantPreferences(
+    userId: string,
+    domain: string,
+    situation: string,
+  ): Promise<Preference[]> {
+    const domainPreferences = await this.repository.getPreferencesByDomain(userId, domain);
+
+    // Also include "general" preferences that apply across domains
+    const generalPreferences = await this.repository.getPreferencesByDomain(userId, 'general');
+
+    const allRelevant = [...domainPreferences, ...generalPreferences];
+
+    // Filter by situation relevance using keyword matching
+    const situationKeywords = situation.toLowerCase().split(/\s+/);
+
+    return allRelevant.filter((pref) => {
+      // Always include domain-specific preferences
+      if (pref.domain === domain) return true;
+
+      // For general preferences, check if they're relevant to the situation
+      const prefKeywords = [
+        pref.key.toLowerCase(),
+        String(pref.value).toLowerCase(),
+      ].join(' ');
+
+      return situationKeywords.some((keyword) => prefKeywords.includes(keyword));
+    });
+  }
+
+  /**
+   * Get the confidence level for a specific preference key in a domain.
+   */
+  async getConfidenceFor(
+    userId: string,
+    domain: string,
+    key: string,
+  ): Promise<ConfidenceLevel> {
+    const preferences = await this.repository.getPreferencesByDomain(userId, domain);
+    const matching = preferences.find((p) => p.key === key);
+
+    if (matching) {
+      return matching.confidence;
+    }
+
+    // Check inferences
+    const inferences = await this.repository.getInferences(userId);
+    const matchingInference = inferences.find(
+      (inf) => inf.domain === domain && inf.key === key,
+    );
+
+    if (matchingInference) {
+      return matchingInference.confidence;
+    }
+
+    return ConfidenceLevel.SPECULATIVE;
+  }
+
+  /**
+   * Process feedback and update the twin's inferences accordingly.
+   */
+  async processFeedback(
+    userId: string,
+    feedback: FeedbackEvent,
+  ): Promise<TwinProfile> {
+    await this.repository.addFeedback(feedback);
+
+    const profile = await this.getOrCreateProfile(userId);
+    const updatedInferences = this.inferenceEngine.updateInferencesFromFeedback(
+      profile,
+      feedback,
+    );
+
+    for (const inference of updatedInferences) {
+      await this.repository.upsertInference(userId, inference);
+    }
+
+    const updatedProfile: TwinProfile = {
+      ...profile,
+      inferences: updatedInferences,
+      version: profile.version + 1,
+      updatedAt: new Date(),
+    };
+
+    return this.repository.updateProfile(updatedProfile);
+  }
+
+  // ── Private helpers ──────────────────────────────────────────────
+
+  /**
+   * Promote high-confidence inferences into explicit preferences.
+   */
+  private promoteInferences(
+    existingPreferences: Preference[],
+    inferences: Inference[],
+  ): Preference[] {
+    const preferences = [...existingPreferences];
+
+    for (const inference of inferences) {
+      // Only promote inferences with at least high confidence
+      if (
+        inference.confidence !== ConfidenceLevel.HIGH &&
+        inference.confidence !== ConfidenceLevel.CONFIRMED
+      ) {
+        continue;
+      }
+
+      // Check if preference already exists
+      const existingIdx = preferences.findIndex(
+        (p) => p.domain === inference.domain && p.key === inference.key,
+      );
+
+      const promoted: Preference = {
+        id: `pref_promoted_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+        domain: inference.domain,
+        key: inference.key,
+        value: inference.value,
+        confidence: inference.confidence,
+        source: 'inferred',
+        evidenceIds: inference.supportingEvidenceIds,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+
+      if (existingIdx >= 0) {
+        const existing = preferences[existingIdx]!;
+        // Only overwrite if inference is more confident
+        if (this.confidenceRank(inference.confidence) > this.confidenceRank(existing.confidence)) {
+          preferences[existingIdx] = { ...promoted, id: existing.id };
+        }
+      } else {
+        preferences.push(promoted);
+      }
+    }
+
+    return preferences;
+  }
+
+  private confidenceRank(level: ConfidenceLevel): number {
+    const ranks: Record<ConfidenceLevel, number> = {
+      [ConfidenceLevel.SPECULATIVE]: 0,
+      [ConfidenceLevel.LOW]: 1,
+      [ConfidenceLevel.MODERATE]: 2,
+      [ConfidenceLevel.HIGH]: 3,
+      [ConfidenceLevel.CONFIRMED]: 4,
+    };
+    return ranks[level];
+  }
+}
