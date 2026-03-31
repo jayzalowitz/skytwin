@@ -116,15 +116,23 @@ export function setUserId(id) {
 }
 
 // Mobile menu toggle
+function closeMobileMenu() {
+  document.getElementById('nav-links')?.classList.remove('open');
+  document.getElementById('mobile-backdrop')?.classList.remove('visible');
+}
+
 document.getElementById('mobile-menu-btn')?.addEventListener('click', () => {
-  document.getElementById('nav-links')?.classList.toggle('open');
+  const nav = document.getElementById('nav-links');
+  const backdrop = document.getElementById('mobile-backdrop');
+  const isOpen = nav?.classList.toggle('open');
+  backdrop?.classList.toggle('visible', isOpen);
 });
+
+document.getElementById('mobile-backdrop')?.addEventListener('click', closeMobileMenu);
 
 // Close mobile menu on navigation
 document.querySelectorAll('.nav-link').forEach(link => {
-  link.addEventListener('click', () => {
-    document.getElementById('nav-links')?.classList.remove('open');
-  });
+  link.addEventListener('click', closeMobileMenu);
 });
 
 window.addEventListener('hashchange', navigate);
