@@ -1,0 +1,24 @@
+{
+  "name": "@skytwin/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "lint": "eslint src/"
+  },
+  "dependencies": {
+    "@skytwin/shared-types": "workspace:*",
+    "@skytwin/connectors": "workspace:*",
+    "@skytwin/db": "workspace:*",
+    "@skytwin/config": "workspace:*"
+  },
+  "devDependencies": {
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.3.0"
+  }
+}

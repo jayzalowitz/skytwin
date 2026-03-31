@@ -1,0 +1,16 @@
+{
+  "name": "@skytwin/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Future admin/audit UI - will be a Next.js application for monitoring SkyTwin decisions, approvals, and twin profiles.",
+  "scripts": {
+    "build": "tsc",
+    "dev": "echo 'Web UI not yet implemented'",
+    "test": "echo 'No tests yet'",
+    "lint": "echo 'No linting yet'"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0"
+  }
+}
