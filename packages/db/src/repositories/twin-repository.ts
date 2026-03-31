@@ -79,7 +79,13 @@ export const twinRepository = {
 
       // Determine which fields changed
       const changedFields: string[] = [];
-      const updateKeys = Object.keys(updates) as (keyof UpdateProfileInput)[];
+      const ALLOWED_COLUMNS = new Set([
+        'preferences', 'inferences', 'risk_tolerance', 'spend_norms',
+        'communication_style', 'routines', 'domain_heuristics',
+      ]);
+      const updateKeys = Object.keys(updates).filter(
+        (k) => ALLOWED_COLUMNS.has(k),
+      ) as (keyof UpdateProfileInput)[];
       for (const key of updateKeys) {
         if (updates[key] !== undefined) {
           changedFields.push(key);

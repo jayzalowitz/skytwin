@@ -13,6 +13,7 @@ import {
   approvalRepository,
   oauthRepository,
   executionRepository,
+  userRepository,
   TwinRepositoryAdapter,
   PatternRepositoryAdapter,
   decisionRepositoryAdapter,
@@ -65,10 +66,13 @@ export function createEventsRouter(): Router {
       // 1. Interpret the raw event
       const decision = interpreter.interpret(rawEvent);
 
-      // 2. Get the twin profile (used internally for preferences)
+      // 2. Get user record (trust tier must come from DB, never from caller)
+      const user = await userRepository.findById(userId);
+
+      // 3. Get the twin profile (used internally for preferences)
       await twinService.getOrCreateProfile(userId);
 
-      // 3. Get relevant preferences
+      // 4. Get relevant preferences
       const preferences = await twinService.getRelevantPreferences(
         userId,
         decision.domain,
@@ -86,7 +90,7 @@ export function createEventsRouter(): Router {
       const context: DecisionContext = {
         userId,
         decision,
-        trustTier: (rawEvent['trustTier'] as TrustTier) ?? TrustTier.LOW_AUTONOMY,
+        trustTier: user?.trust_tier as TrustTier ?? TrustTier.OBSERVER,
         relevantPreferences: preferences,
         timestamp: new Date(),
         patterns,

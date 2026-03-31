@@ -30,7 +30,7 @@ export async function renderSettings(container, userId) {
 
   container.innerHTML = `
     ${justConnected ? `<div class="card" style="border-left: 3px solid var(--success);">
-      <span style="color: var(--success); font-weight: 600;">Connected!</span> Your ${justConnected} account is now linked. Your twin will start learning from your data.
+      <span style="color: var(--success); font-weight: 600;">Connected!</span> Your ${escapeHtml(justConnected)} account is now linked. Your twin will start learning from your data.
     </div>` : ''}
 
     <div class="card">

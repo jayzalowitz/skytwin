@@ -108,8 +108,9 @@ export class IronClawHttpClient {
         await this.delay(attempt * 1000);
       }
 
+      let response: Response;
       try {
-        const response = await fetch(url, {
+        response = await fetch(url, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -119,25 +120,6 @@ export class IronClawHttpClient {
           body,
           signal: AbortSignal.timeout(this.config.timeoutMs),
         });
-
-        if (!response.ok) {
-          const errorBody = await response.text().catch(() => '');
-          const error = new Error(
-            `IronClaw webhook returned HTTP ${response.status}: ${errorBody}`,
-          );
-
-          // Don't retry client errors (4xx) except 429 (rate limit)
-          if (response.status >= 400 && response.status < 500 && response.status !== 429) {
-            this.recordFailure();
-            throw error;
-          }
-
-          lastError = error;
-          continue;
-        }
-
-        this.resetCircuitBreaker();
-        return (await response.json()) as IronClawResponse;
       } catch (error) {
         if (error instanceof Error && error.name === 'AbortError') {
           lastError = new Error(`IronClaw webhook timed out after ${this.config.timeoutMs}ms`);
@@ -146,9 +128,27 @@ export class IronClawHttpClient {
         } else {
           lastError = new Error(String(error));
         }
-
-        // If it's a non-retryable error we already threw, this won't be reached
+        continue;
       }
+
+      if (!response.ok) {
+        const errorBody = await response.text().catch(() => '');
+        const error = new Error(
+          `IronClaw webhook returned HTTP ${response.status}: ${errorBody}`,
+        );
+
+        // Don't retry client errors (4xx) except 429 (rate limit)
+        if (response.status >= 400 && response.status < 500 && response.status !== 429) {
+          this.recordFailure();
+          throw error;
+        }
+
+        lastError = error;
+        continue;
+      }
+
+      this.resetCircuitBreaker();
+      return (await response.json()) as IronClawResponse;
     }
 
     this.recordFailure();
