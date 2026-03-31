@@ -43,3 +43,6 @@ All notable changes to SkyTwin will be documented in this file.
 - Connection status indicator now visible on mobile when nav menu is open
 - Trust tier default changed from invalid `'new'` to `'observer'` (matching TrustTier enum)
 - Policy evaluator now denies unrecognized trust tiers instead of silently permitting them
+- Trust tier in event ingestion now read from DB user record instead of caller-supplied request body
+- `justConnected` URL parameter in settings page escaped to prevent reflected XSS
+- Twin profile update query now validates column names against an allowlist
