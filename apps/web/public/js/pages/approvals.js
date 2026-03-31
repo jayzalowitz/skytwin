@@ -1,4 +1,4 @@
-import { fetchPendingApprovals, fetchApprovalHistory, respondToApproval } from '../api-client.js';
+import { fetchPendingApprovals, fetchApprovalHistory, respondToApproval, escapeHtml } from '../api-client.js';
 
 export async function renderApprovals(container, userId) {
   const [pendingData, historyData] = await Promise.allSettled([
@@ -144,7 +144,7 @@ window.handleApproval = async function(requestId, action, userId) {
   } catch (err) {
     const el = document.getElementById(`approval-${requestId}`);
     if (el) {
-      el.insertAdjacentHTML('beforeend', `<div class="error-banner" style="margin-top: 0.5rem;">${err.message}</div>`);
+      el.insertAdjacentHTML('beforeend', `<div class="error-banner" style="margin-top: 0.5rem;">${escapeHtml(err.message)}</div>`);
     }
   }
 };

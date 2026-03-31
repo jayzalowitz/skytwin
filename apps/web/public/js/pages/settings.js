@@ -1,4 +1,4 @@
-import { fetchUser, updateTrustTier, fetchOAuthStatus, getGoogleAuthUrl, disconnectProvider } from '../api-client.js';
+import { fetchUser, updateTrustTier, fetchOAuthStatus, getGoogleAuthUrl, disconnectProvider, escapeHtml } from '../api-client.js';
 
 const TIERS = [
   { value: 'observer', name: 'Watch only', desc: 'Your twin observes everything but never takes action. Good for seeing what it would do without any risk.' },
@@ -140,7 +140,7 @@ window.saveTier = async function(userId) {
   } catch (err) {
     btn.textContent = 'Save';
     btn.disabled = false;
-    btn.insertAdjacentHTML('afterend', `<div class="error-banner" style="margin-top: 0.5rem;">${err.message}</div>`);
+    btn.insertAdjacentHTML('afterend', `<div class="error-banner" style="margin-top: 0.5rem;">${escapeHtml(err.message)}</div>`);
   }
 };
 
@@ -158,7 +158,7 @@ window.handleConnectGoogle = async function(userId) {
   } catch (err) {
     document.getElementById('page-content').insertAdjacentHTML(
       'afterbegin',
-      `<div class="error-banner">${err.message}</div>`,
+      `<div class="error-banner">${escapeHtml(err.message)}</div>`,
     );
   }
 };
@@ -171,7 +171,7 @@ window.handleDisconnectGoogle = async function(userId) {
   } catch (err) {
     document.getElementById('page-content').insertAdjacentHTML(
       'afterbegin',
-      `<div class="error-banner">${err.message}</div>`,
+      `<div class="error-banner">${escapeHtml(err.message)}</div>`,
     );
   }
 };
@@ -184,7 +184,7 @@ window.pauseTwin = async function(userId) {
   } catch (err) {
     document.getElementById('page-content').insertAdjacentHTML(
       'afterbegin',
-      `<div class="error-banner">${err.message}</div>`,
+      `<div class="error-banner">${escapeHtml(err.message)}</div>`,
     );
   }
 };

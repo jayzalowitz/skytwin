@@ -1,6 +1,15 @@
 const API = '/api';
 
 /**
+ * Escape HTML special characters to prevent XSS when inserting into innerHTML.
+ */
+export function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+/**
  * Fetch JSON from the API with user-friendly error handling.
  */
 export async function fetchJSON(url, options = {}) {

@@ -1,4 +1,4 @@
-import { fetchTwinProfile, fetchLearning, updatePreference } from '../api-client.js';
+import { fetchTwinProfile, fetchLearning, updatePreference, escapeHtml } from '../api-client.js';
 
 export async function renderTwin(container, userId) {
   let profile = null;
@@ -224,7 +224,7 @@ window.handleAddPreference = async function(event, userId) {
     const { renderTwin } = await import('./twin.js');
     await renderTwin(document.getElementById('page-content'), userId);
   } catch (err) {
-    form.insertAdjacentHTML('afterend', `<div class="error-banner" style="margin-top: 0.5rem;">${err.message}</div>`);
+    form.insertAdjacentHTML('afterend', `<div class="error-banner" style="margin-top: 0.5rem;">${escapeHtml(err.message)}</div>`);
   }
   return false;
 };

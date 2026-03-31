@@ -4,7 +4,7 @@ import { renderDecisions } from './pages/decisions.js';
 import { renderTwin } from './pages/twin.js';
 import { renderSettings } from './pages/settings.js';
 import { renderOnboarding } from './pages/onboarding.js';
-import { fetchPendingApprovals, fetchHealth } from './api-client.js';
+import { fetchPendingApprovals, fetchHealth, escapeHtml } from './api-client.js';
 
 let currentUserId = localStorage.getItem('skytwin_userId') || '';
 
@@ -101,7 +101,7 @@ function navigate() {
   container.innerHTML = '<div class="loading">Loading...</div>';
 
   route.render(container, currentUserId).catch(err => {
-    container.innerHTML = `<div class="error-banner">${err.message}</div>`;
+    container.innerHTML = `<div class="error-banner">${escapeHtml(err.message)}</div>`;
   });
 
   // Update sidebar state
