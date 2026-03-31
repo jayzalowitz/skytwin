@@ -53,7 +53,21 @@ export type {
   CreateFeedbackInput,
 } from './repositories/index.js';
 
-export { oauthRepository, approvalRepository, patternRepository } from './repositories/index.js';
+export { oauthRepository, approvalRepository, patternRepository, executionRepository } from './repositories/index.js';
+export type {
+  CreateExecutionPlanInput,
+  CreateExecutionResultInput,
+  ExecutionPlanWithResult,
+} from './repositories/index.js';
+
+// Adapters
+export {
+  TwinRepositoryAdapter,
+  PatternRepositoryAdapter,
+  decisionRepositoryAdapter,
+  explanationRepositoryAdapter,
+  policyRepositoryAdapter,
+} from './adapters/index.js';
 
 // Schema metadata
 export { TABLE_NAMES, SCHEMA_PATH } from './schemas/index.js';

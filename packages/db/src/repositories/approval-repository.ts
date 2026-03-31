@@ -46,7 +46,7 @@ export const approvalRepository = {
   ): Promise<ApprovalRequestRow | null> {
     const result = await query<ApprovalRequestRow>(
       `UPDATE approval_requests
-       SET status = $1, responded_at = now(), response = $2, updated_at = now()
+       SET status = $1, responded_at = now(), response = $2
        WHERE id = $3
        RETURNING *`,
       [

@@ -23,7 +23,11 @@
   "dependencies": {
     "pg": "^8.11.3",
     "@skytwin/shared-types": "workspace:*",
-    "@skytwin/config": "workspace:*"
+    "@skytwin/config": "workspace:*",
+    "@skytwin/decision-engine": "workspace:*",
+    "@skytwin/policy-engine": "workspace:*",
+    "@skytwin/explanations": "workspace:*",
+    "@skytwin/twin-model": "workspace:*"
   },
   "devDependencies": {
     "@types/pg": "^8.10.9",

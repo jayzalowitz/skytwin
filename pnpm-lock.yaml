@@ -151,9 +151,21 @@ importers:
       '@skytwin/config':
         specifier: workspace:*
         version: link:../config
+      '@skytwin/decision-engine':
+        specifier: workspace:*
+        version: link:../decision-engine
+      '@skytwin/explanations':
+        specifier: workspace:*
+        version: link:../explanations
+      '@skytwin/policy-engine':
+        specifier: workspace:*
+        version: link:../policy-engine
       '@skytwin/shared-types':
         specifier: workspace:*
         version: link:../shared-types
+      '@skytwin/twin-model':
+        specifier: workspace:*
+        version: link:../twin-model
       pg:
         specifier: ^8.11.3
         version: 8.20.0

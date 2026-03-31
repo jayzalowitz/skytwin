@@ -14,13 +14,14 @@ import {
 import type { IronClawAdapter } from '@skytwin/ironclaw-adapter';
 import { loadConfig } from '@skytwin/config';
 import {
-  twinRepository,
-  decisionRepository,
-  policyRepository,
-  explanationRepository,
   approvalRepository,
   oauthRepository,
-  patternRepository,
+  executionRepository,
+  TwinRepositoryAdapter,
+  PatternRepositoryAdapter,
+  decisionRepositoryAdapter,
+  explanationRepositoryAdapter,
+  policyRepositoryAdapter,
 } from '@skytwin/db';
 import type { DecisionContext } from '@skytwin/shared-types';
 import { TrustTier } from '@skytwin/shared-types';
@@ -32,14 +33,10 @@ export function createEventsRouter(): Router {
   const router = Router();
   const interpreter = new SituationInterpreter();
 
-  // The DB repositories have a different shape than the Port interfaces
-  // expected by the service classes. At runtime they're compatible for the
-  // methods actually called; the `as never` cast bridges the compile-time gap
-  // until proper adapter wrappers are built.
-  const twinService = new TwinService(twinRepository as never, patternRepository as never);
-  const policyEvaluator = new PolicyEvaluator(policyRepository as never);
-  const decisionMaker = new DecisionMaker(twinService, policyEvaluator, decisionRepository as never);
-  const explanationGenerator = new ExplanationGenerator(explanationRepository as never);
+  const twinService = new TwinService(new TwinRepositoryAdapter(), new PatternRepositoryAdapter());
+  const policyEvaluator = new PolicyEvaluator(policyRepositoryAdapter);
+  const decisionMaker = new DecisionMaker(twinService, policyEvaluator, decisionRepositoryAdapter);
+  const explanationGenerator = new ExplanationGenerator(explanationRepositoryAdapter);
   const eventsConfig = loadConfig();
   let ironclawAdapter: IronClawAdapter;
 
@@ -142,6 +139,21 @@ export function createEventsRouter(): Router {
         // Auto-execute via IronClaw
         const plan = await ironclawAdapter.buildPlan(outcome.selectedAction);
         executionResult = await ironclawAdapter.execute(plan);
+
+        // Persist execution plan and result
+        const savedPlan = await executionRepository.createPlan({
+          decisionId: decision.id,
+          actionId: outcome.selectedAction.id,
+          status: executionResult.status === 'completed' ? 'completed' : 'failed',
+          steps: plan.steps ?? [],
+        });
+        await executionRepository.createResult({
+          planId: savedPlan.id,
+          success: executionResult.status === 'completed',
+          outputs: executionResult.output ?? {},
+          error: executionResult.error ?? undefined,
+          rollbackAvailable: outcome.selectedAction.reversible,
+        });
       }
 
       // 9. Return result

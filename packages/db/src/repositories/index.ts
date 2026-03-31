@@ -23,3 +23,10 @@ export type { CreateFeedbackInput } from './feedback-repository.js';
 export { oauthRepository } from './oauth-repository.js';
 export { approvalRepository } from './approval-repository.js';
 export { patternRepository } from './pattern-repository.js';
+
+export { executionRepository } from './execution-repository.js';
+export type {
+  CreateExecutionPlanInput,
+  CreateExecutionResultInput,
+  ExecutionPlanWithResult,
+} from './execution-repository.js';
