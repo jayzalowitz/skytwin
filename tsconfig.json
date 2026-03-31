@@ -1,0 +1,37 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022"],
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "outDir": "dist",
+    "rootDir": "src",
+    "incremental": true,
+    "noUncheckedIndexedAccess": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "exactOptionalPropertyTypes": false,
+    "paths": {
+      "@skytwin/shared-types": ["./packages/shared-types/src"],
+      "@skytwin/config": ["./packages/config/src"],
+      "@skytwin/core": ["./packages/core/src"],
+      "@skytwin/db": ["./packages/db/src"],
+      "@skytwin/decision-engine": ["./packages/decision-engine/src"],
+      "@skytwin/twin-model": ["./packages/twin-model/src"],
+      "@skytwin/policy-engine": ["./packages/policy-engine/src"],
+      "@skytwin/ironclaw-adapter": ["./packages/ironclaw-adapter/src"],
+      "@skytwin/explanations": ["./packages/explanations/src"],
+      "@skytwin/connectors": ["./packages/connectors/src"],
+      "@skytwin/evals": ["./packages/evals/src"]
+    }
+  },
+  "exclude": ["node_modules", "dist", "coverage"]
+}
