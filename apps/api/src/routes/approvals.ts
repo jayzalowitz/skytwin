@@ -10,11 +10,7 @@ import {
 import { TwinService } from '@skytwin/twin-model';
 import {
   BasicMockAdapter,
-  DirectExecutionAdapter,
-  ActionHandlerRegistry,
-  EmailActionHandler,
-  CalendarActionHandler,
-  GenericActionHandler,
+  RealIronClawAdapter,
 } from '@skytwin/ironclaw-adapter';
 import type { IronClawAdapter } from '@skytwin/ironclaw-adapter';
 import { loadConfig } from '@skytwin/config';
@@ -33,11 +29,11 @@ export function createApprovalsRouter(): Router {
   if (config.useMockIronclaw) {
     ironclawAdapter = new BasicMockAdapter();
   } else {
-    const registry = new ActionHandlerRegistry();
-    registry.register(new EmailActionHandler());
-    registry.register(new CalendarActionHandler());
-    registry.register(new GenericActionHandler());
-    ironclawAdapter = new DirectExecutionAdapter(registry);
+    ironclawAdapter = new RealIronClawAdapter({
+      apiUrl: config.ironclawApiUrl,
+      webhookSecret: config.ironclawWebhookSecret,
+      ownerId: config.ironclawOwnerId,
+    });
   }
 
   /**

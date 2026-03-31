@@ -32,3 +32,4 @@ pnpm-debug.log*
 
 # Misc
 *.tsbuildinfo
+.gstack/

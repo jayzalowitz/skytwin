@@ -5,11 +5,7 @@ import { PolicyEvaluator } from '@skytwin/policy-engine';
 import { ExplanationGenerator } from '@skytwin/explanations';
 import {
   BasicMockAdapter,
-  DirectExecutionAdapter,
-  ActionHandlerRegistry,
-  EmailActionHandler,
-  CalendarActionHandler,
-  GenericActionHandler,
+  RealIronClawAdapter,
 } from '@skytwin/ironclaw-adapter';
 import type { IronClawAdapter } from '@skytwin/ironclaw-adapter';
 import { loadConfig } from '@skytwin/config';
@@ -43,11 +39,11 @@ export function createEventsRouter(): Router {
   if (eventsConfig.useMockIronclaw) {
     ironclawAdapter = new BasicMockAdapter();
   } else {
-    const registry = new ActionHandlerRegistry();
-    registry.register(new EmailActionHandler());
-    registry.register(new CalendarActionHandler());
-    registry.register(new GenericActionHandler());
-    ironclawAdapter = new DirectExecutionAdapter(registry);
+    ironclawAdapter = new RealIronClawAdapter({
+      apiUrl: eventsConfig.ironclawApiUrl,
+      webhookSecret: eventsConfig.ironclawWebhookSecret,
+      ownerId: eventsConfig.ironclawOwnerId,
+    });
   }
 
   /**

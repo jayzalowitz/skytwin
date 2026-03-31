@@ -126,6 +126,13 @@ export function validate(cfg: SkyTwinConfig): ConfigValidationError[] {
     }
   }
 
+  if (!cfg.useMockIronclaw && !cfg.ironclawWebhookSecret) {
+    errors.push({
+      field: 'ironclawWebhookSecret',
+      message: 'IRONCLAW_WEBHOOK_SECRET is required when USE_MOCK_IRONCLAW is false',
+    });
+  }
+
   if (isNaN(cfg.apiPort) || cfg.apiPort < 1 || cfg.apiPort > 65535) {
     errors.push({ field: 'apiPort', message: 'API_PORT must be a valid port number (1-65535)' });
   }
