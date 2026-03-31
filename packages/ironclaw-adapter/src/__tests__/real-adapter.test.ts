@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { RealIronClawAdapter } from '../real-adapter.js';
+import { DirectExecutionAdapter } from '../direct-execution-adapter.js';
 import { ActionHandlerRegistry } from '../handler-registry.js';
 import { GenericActionHandler } from '../handlers/generic-action-handler.js';
 import type { CandidateAction } from '@skytwin/shared-types';
@@ -21,11 +21,11 @@ function makeAction(overrides: Partial<CandidateAction> = {}): CandidateAction {
   };
 }
 
-describe('RealIronClawAdapter', () => {
+describe('DirectExecutionAdapter', () => {
   it('builds a plan from a candidate action', async () => {
     const registry = new ActionHandlerRegistry();
     registry.register(new GenericActionHandler());
-    const adapter = new RealIronClawAdapter(registry);
+    const adapter = new DirectExecutionAdapter(registry);
 
     const action = makeAction();
     const plan = await adapter.buildPlan(action);
@@ -38,7 +38,7 @@ describe('RealIronClawAdapter', () => {
   it('does not create rollback steps for irreversible actions', async () => {
     const registry = new ActionHandlerRegistry();
     registry.register(new GenericActionHandler());
-    const adapter = new RealIronClawAdapter(registry);
+    const adapter = new DirectExecutionAdapter(registry);
 
     const action = makeAction({ reversible: false });
     const plan = await adapter.buildPlan(action);
@@ -49,7 +49,7 @@ describe('RealIronClawAdapter', () => {
   it('executes a plan using the handler', async () => {
     const registry = new ActionHandlerRegistry();
     registry.register(new GenericActionHandler());
-    const adapter = new RealIronClawAdapter(registry);
+    const adapter = new DirectExecutionAdapter(registry);
 
     const plan = await adapter.buildPlan(makeAction());
     const result = await adapter.execute(plan);
@@ -60,7 +60,7 @@ describe('RealIronClawAdapter', () => {
 
   it('fails execution when no handler is registered', async () => {
     const registry = new ActionHandlerRegistry(); // empty
-    const adapter = new RealIronClawAdapter(registry);
+    const adapter = new DirectExecutionAdapter(registry);
 
     const plan = await adapter.buildPlan(makeAction());
     const result = await adapter.execute(plan);
@@ -72,7 +72,7 @@ describe('RealIronClawAdapter', () => {
   it('supports rollback for executed plans', async () => {
     const registry = new ActionHandlerRegistry();
     registry.register(new GenericActionHandler());
-    const adapter = new RealIronClawAdapter(registry);
+    const adapter = new DirectExecutionAdapter(registry);
 
     const plan = await adapter.buildPlan(makeAction());
     await adapter.execute(plan);
@@ -84,7 +84,7 @@ describe('RealIronClawAdapter', () => {
   it('healthCheck returns healthy when handlers are registered', async () => {
     const registry = new ActionHandlerRegistry();
     registry.register(new GenericActionHandler());
-    const adapter = new RealIronClawAdapter(registry);
+    const adapter = new DirectExecutionAdapter(registry);
 
     const health = await adapter.healthCheck();
     expect(health.healthy).toBe(true);
@@ -92,7 +92,7 @@ describe('RealIronClawAdapter', () => {
 
   it('healthCheck returns unhealthy when no handlers', async () => {
     const registry = new ActionHandlerRegistry();
-    const adapter = new RealIronClawAdapter(registry);
+    const adapter = new DirectExecutionAdapter(registry);
 
     const health = await adapter.healthCheck();
     expect(health.healthy).toBe(false);

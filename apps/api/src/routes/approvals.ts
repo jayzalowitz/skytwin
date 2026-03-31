@@ -10,7 +10,7 @@ import {
 import { TwinService } from '@skytwin/twin-model';
 import {
   BasicMockAdapter,
-  RealIronClawAdapter,
+  DirectExecutionAdapter,
   ActionHandlerRegistry,
   EmailActionHandler,
   CalendarActionHandler,
@@ -37,7 +37,7 @@ export function createApprovalsRouter(): Router {
     registry.register(new EmailActionHandler());
     registry.register(new CalendarActionHandler());
     registry.register(new GenericActionHandler());
-    ironclawAdapter = new RealIronClawAdapter(registry);
+    ironclawAdapter = new DirectExecutionAdapter(registry);
   }
 
   /**

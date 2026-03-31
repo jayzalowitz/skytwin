@@ -5,7 +5,7 @@ import { PolicyEvaluator } from '@skytwin/policy-engine';
 import { ExplanationGenerator } from '@skytwin/explanations';
 import {
   BasicMockAdapter,
-  RealIronClawAdapter,
+  DirectExecutionAdapter,
   ActionHandlerRegistry,
   EmailActionHandler,
   CalendarActionHandler,
@@ -47,7 +47,7 @@ export function createEventsRouter(): Router {
     registry.register(new EmailActionHandler());
     registry.register(new CalendarActionHandler());
     registry.register(new GenericActionHandler());
-    ironclawAdapter = new RealIronClawAdapter(registry);
+    ironclawAdapter = new DirectExecutionAdapter(registry);
   }
 
   /**
