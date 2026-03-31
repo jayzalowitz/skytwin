@@ -53,9 +53,9 @@ pnpm --filter @skytwin/twin-model test
 | `@skytwin/twin-model` | Twin profile CRUD, preference learning, confidence scoring. |
 | `@skytwin/decision-engine` | Event interpretation, candidate action generation, action selection. |
 | `@skytwin/policy-engine` | Policy evaluation, trust tier enforcement, spend limit checks. |
-| `@skytwin/ironclaw-adapter` | Adapter pattern wrapper around the IronClaw API. |
+| `@skytwin/ironclaw-adapter` | Adapter pattern wrapper around the IronClaw API, with handler registry and real/mock implementations. |
 | `@skytwin/explanations` | Generates human-readable explanations for decisions and actions. |
-| `@skytwin/connectors` | Integrations with external services (email, calendar, etc.). |
+| `@skytwin/connectors` | Gmail, Google Calendar, and mock signal connectors with OAuth token management (DbTokenStore). |
 | `@skytwin/evals` | Evaluation framework for measuring decision quality over time. |
 
 ### Apps
@@ -79,9 +79,9 @@ All IronClaw API access goes through `@skytwin/ironclaw-adapter`. Never call the
 
 Every decision flows through a structured pipeline:
 1. `DecisionObject` -- the raw event and interpreted situation
-2. `DecisionContext` -- enriched with twin profile, policies, and history
-3. `CandidateAction[]` -- possible actions with risk assessments
-4. `DecisionOutcome` -- the selected action and whether it auto-executes
+2. `DecisionContext` -- enriched with twin profile, policies, behavioral patterns, cross-domain traits, and temporal profile
+3. `CandidateAction[]` -- possible actions with risk assessments, scored with pattern boosts and trait adjustments
+4. `DecisionOutcome` -- the selected action and whether it auto-executes or requires approval
 
 All of these types live in `@skytwin/shared-types`. Use them. Do not create ad-hoc objects for decision data.
 

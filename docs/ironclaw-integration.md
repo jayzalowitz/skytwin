@@ -42,7 +42,7 @@ The `@skytwin/ironclaw-adapter` package is the only code in SkyTwin that communi
 
 ## Adapter Pattern
 
-The adapter uses a TypeScript interface to define the contract. A mock implementation is provided for development and testing. The real implementation will be built when IronClaw's API stabilizes.
+The adapter uses a TypeScript interface to define the contract. Both a mock implementation (for development and testing) and a real implementation (`RealIronClawAdapter` with `ActionHandlerRegistry`) are provided. The real adapter dispatches to domain-specific handlers: `EmailActionHandler`, `CalendarActionHandler`, and `GenericActionHandler`.
 
 ### Interface Definition
 

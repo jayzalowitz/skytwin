@@ -12,11 +12,11 @@ Most personal automation fails because it either does too much (surprise charges
 
 SkyTwin is structured as a pipeline:
 
-1. **Events arrive** from connected accounts (email, calendar, subscriptions, etc.) via signal connectors.
-2. The **decision engine** interprets each event, queries the user's twin profile, and evaluates candidate actions.
+1. **Events arrive** from connected accounts (Gmail, Google Calendar, etc.) via signal connectors, with OAuth tokens auto-refreshed from the database.
+2. The **decision engine** interprets each event, queries the user's twin profile (including behavioral patterns, cross-domain traits, and temporal activity), and evaluates candidate actions.
 3. The **policy engine** applies safety constraints, spend limits, and trust tiers before anything executes.
-4. Actions are either auto-executed (with an explanation logged) or escalated to the user with a clear rationale.
-5. User feedback (approvals, rejections, edits, undos) flows back to update the twin model.
+4. Actions are either auto-executed via IronClaw (with an explanation logged) or escalated as an **approval request** the user can review in the web dashboard.
+5. User feedback (approvals, rejections, edits, undos) flows back to update the twin model, improving future decisions.
 
 CockroachDB is the source of truth for twin profiles, decision history, and policy state. The system is designed so that every automated action can be explained, audited, and reversed.
 
@@ -56,7 +56,7 @@ pnpm dev
 ### Running Tests
 
 ```bash
-pnpm test
+pnpm test          # 89 tests across 12 test files
 ```
 
 ## Monorepo Structure
@@ -79,7 +79,7 @@ packages/
   policy-engine/  # Safety constraints, trust tiers, spend limits
   ironclaw-adapter/ # Adapter layer for IronClaw API
   explanations/   # Human-readable explanation generation
-  connectors/     # External service integrations
+  connectors/     # Gmail, Google Calendar, and mock connectors with OAuth token management
   evals/          # Evaluation harness for decision quality
 ```
 

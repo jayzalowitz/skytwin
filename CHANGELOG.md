@@ -14,13 +14,20 @@ All notable changes to SkyTwin will be documented in this file.
 - Decision engine with situation interpreter (6 situation types), risk assessor (6 dimensions), and candidate action generation
 - Policy engine with 5 built-in safety policies: spend limits, irreversibility checks, legal review gates, privacy protection, and trust tier gating
 - Explanation generator producing human-readable and structured audit records for every decision
-- IronClaw adapter interface with mock implementation for development
-- Signal connectors with mock email and calendar integrations
+- IronClaw adapter with handler registry, real adapter (email, calendar, generic action handlers), and mock adapter for development
+- Real Gmail and Google Calendar signal connectors with OAuth token auto-refresh, plus mock connectors for testing
 - Evaluation harness with scenario framework, email triage scenarios, and safety regression suite
-- Express API server with routes for event ingestion, twin management, decisions, approvals, and feedback
-- Worker service for polling signal connectors
+- Express API server with routes for event ingestion, twin management, decisions, approvals (full CRUD with pending/history/respond), feedback, evals (accuracy/learning/confidence), OAuth flow, and user management
+- Multi-user worker service that discovers users with active OAuth tokens from CockroachDB, creates per-user real connectors, and re-discovers every 10 poll cycles
+- Google OAuth2 flow with authorization, token exchange, DB-persisted tokens, and auto-refresh via DbTokenStore adapter
+- Approval pipeline: events create approval requests when confidence is low, users review in the web dashboard, responses feed back into the twin model
+- Behavioral pattern and cross-domain trait persistence via PatternRepositoryPort backed by CockroachDB
+- Pattern-aware decision scoring: DecisionMaker uses pattern boosts and trait adjustments (5 cross-domain traits) when evaluating candidate actions
+- Web dashboard SPA with hash-based routing: dashboard (confidence bars, accuracy, patterns), approval cards with human-readable descriptions, twin profile grouped by domain, settings with tier selector and Google connection, onboarding wizard
+- Evals API endpoints calculating real accuracy from feedback data, learning progress aggregation, and per-domain confidence scoring
+- DB migrations for OAuth tokens, behavioral patterns, cross-domain traits, and eval history
 - End-to-end email triage workflow wiring all modules together
-- 48 tests across decision engine, policy engine, and twin model
+- 89 tests across decision engine, policy engine, twin model, IronClaw adapter, evals, and connectors
 - Docker Compose setup with CockroachDB single-node for local development
 - 7 documentation files covering product spec, technical spec, safety model, decision engine, IronClaw integration, CockroachDB architecture, and evals
 - 15 planning artifacts: 5 milestone docs and 10 issue specs
