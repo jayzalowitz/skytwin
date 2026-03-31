@@ -140,6 +140,8 @@ window.saveTier = async function(userId) {
   } catch (err) {
     btn.textContent = 'Save';
     btn.disabled = false;
+    // Remove any previous error banner before showing a new one
+    btn.parentElement?.querySelector('.error-banner')?.remove();
     btn.insertAdjacentHTML('afterend', `<div class="error-banner" style="margin-top: 0.5rem;">${escapeHtml(err.message)}</div>`);
   }
 };
