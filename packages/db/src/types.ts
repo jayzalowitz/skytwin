@@ -306,6 +306,21 @@ export interface BriefingRow {
 }
 
 // ============================================================================
+// Trust Tier Audit
+// ============================================================================
+
+export interface TrustTierAuditRow {
+  id: string;
+  user_id: string;
+  old_tier: string;
+  new_tier: string;
+  direction: string;
+  trigger_reason: string;
+  evidence: Record<string, unknown>;
+  created_at: Date;
+}
+
+// ============================================================================
 // Common query options
 // ============================================================================
 

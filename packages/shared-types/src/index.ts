@@ -44,6 +44,10 @@ export type {
   PolicyRule,
   PolicyCondition,
   ApprovalRequest,
+  TrustTierAudit,
+  TierChangeEvidence,
+  ApprovalStats,
+  TierEvaluation,
 } from './policy.js';
 
 export type {

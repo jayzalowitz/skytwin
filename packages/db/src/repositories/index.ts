@@ -42,3 +42,6 @@ export type { CreateSkillGapInput } from './skill-gap-repository.js';
 
 export { proactiveScanRepository } from './proactive-scan-repository.js';
 export type { CreateScanInput, CreateBriefingInput } from './proactive-scan-repository.js';
+
+export { trustTierAuditRepository } from './trust-tier-audit-repository.js';
+export type { CreateTierAuditInput } from './trust-tier-audit-repository.js';
