@@ -134,13 +134,14 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 12px;
   margin-bottom: 2rem;
   padding-bottom: 1rem;
   border-bottom: 1px solid var(--border);
 }
 
-.page-header h2 { font-size: 1.5rem; }
-.user-badge { font-size: 0.8rem; color: var(--text-muted); background: var(--bg-card); padding: 0.4rem 0.8rem; border-radius: var(--radius-sm); }
+.page-header h2 { font-size: 1.5rem; flex-shrink: 0; }
+.user-badge { font-size: 0.8rem; color: var(--text-muted); background: var(--bg-card); padding: 0.4rem 0.8rem; border-radius: var(--radius-sm); flex-shrink: 0; margin-left: auto; }
 
 /* ── Cards ───────────────────────────────────────────── */
 
