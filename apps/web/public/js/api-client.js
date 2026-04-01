@@ -130,3 +130,42 @@ export function disconnectProvider(provider, userId) {
     body: JSON.stringify({ userId }),
   });
 }
+
+// ── Settings (M2) ──────────────────────────────────────
+
+export function fetchSettings(userId) {
+  return fetchJSON(`${API}/settings/${userId}`);
+}
+
+export function updateAutonomySettings(userId, settings) {
+  return fetchJSON(`${API}/settings/${userId}/autonomy`, {
+    method: 'PUT',
+    body: JSON.stringify(settings),
+  });
+}
+
+export function upsertDomainPolicy(userId, domain, trustTier, maxSpendPerActionCents) {
+  return fetchJSON(`${API}/settings/${userId}/domains/${encodeURIComponent(domain)}`, {
+    method: 'PUT',
+    body: JSON.stringify({ trustTier, maxSpendPerActionCents }),
+  });
+}
+
+export function deleteDomainPolicy(userId, domain) {
+  return fetchJSON(`${API}/settings/${userId}/domains/${encodeURIComponent(domain)}`, {
+    method: 'DELETE',
+  });
+}
+
+export function createEscalationTrigger(userId, triggerType, conditions, enabled = true) {
+  return fetchJSON(`${API}/settings/${userId}/escalation-triggers`, {
+    method: 'POST',
+    body: JSON.stringify({ triggerType, conditions, enabled }),
+  });
+}
+
+export function deleteEscalationTrigger(userId, triggerId) {
+  return fetchJSON(`${API}/settings/${userId}/escalation-triggers/${triggerId}`, {
+    method: 'DELETE',
+  });
+}
