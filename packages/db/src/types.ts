@@ -217,6 +217,95 @@ export interface OAuthTokenRow {
 }
 
 // ============================================================================
+// Signals (cross-domain correlation)
+// ============================================================================
+
+export interface SignalRow {
+  id: string;
+  user_id: string;
+  source: string;
+  type: string;
+  domain: string;
+  data: Record<string, unknown>;
+  timestamp: Date;
+  retention_until: Date;
+  created_at: Date;
+}
+
+// ============================================================================
+// Preference Proposals (archaeology)
+// ============================================================================
+
+export interface PreferenceProposalRow {
+  id: string;
+  user_id: string;
+  domain: string;
+  key: string;
+  value: unknown;
+  confidence: string;
+  supporting_evidence: unknown[];
+  status: string;
+  detected_at: Date;
+  responded_at: Date | null;
+  expires_at: Date;
+  created_at: Date;
+}
+
+// ============================================================================
+// Twin Exports
+// ============================================================================
+
+export interface TwinExportRow {
+  id: string;
+  user_id: string;
+  format: string;
+  exported_at: Date;
+}
+
+// ============================================================================
+// Skill Gap Log
+// ============================================================================
+
+export interface SkillGapRow {
+  id: string;
+  action_type: string;
+  action_description: string;
+  attempted_adapters: unknown[];
+  user_id: string;
+  decision_id: string | null;
+  ironclaw_issue_url: string | null;
+  logged_at: Date;
+}
+
+// ============================================================================
+// Proactive Scans
+// ============================================================================
+
+export interface ProactiveScanRow {
+  id: string;
+  user_id: string;
+  scan_type: string;
+  items_found: number;
+  items_auto_executed: number;
+  items_queued_approval: number;
+  started_at: Date;
+  completed_at: Date | null;
+}
+
+// ============================================================================
+// Briefings
+// ============================================================================
+
+export interface BriefingRow {
+  id: string;
+  user_id: string;
+  scan_id: string | null;
+  items: unknown[];
+  email_sent: boolean;
+  created_at: Date;
+}
+
+// ============================================================================
 // Common query options
 // ============================================================================
 

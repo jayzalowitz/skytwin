@@ -207,6 +207,15 @@ importers:
       '@skytwin/decision-engine':
         specifier: workspace:*
         version: link:../decision-engine
+      '@skytwin/execution-router':
+        specifier: workspace:*
+        version: link:../execution-router
+      '@skytwin/explanations':
+        specifier: workspace:*
+        version: link:../explanations
+      '@skytwin/ironclaw-adapter':
+        specifier: workspace:*
+        version: link:../ironclaw-adapter
       '@skytwin/policy-engine':
         specifier: workspace:*
         version: link:../policy-engine
@@ -220,6 +229,22 @@ importers:
       tsx:
         specifier: ^4.7.0
         version: 4.21.0
+      typescript:
+        specifier: ^5.4.0
+        version: 5.9.3
+      vitest:
+        specifier: ^1.3.0
+        version: 1.6.1(@types/node@20.19.37)
+
+  packages/execution-router:
+    dependencies:
+      '@skytwin/ironclaw-adapter':
+        specifier: workspace:*
+        version: link:../ironclaw-adapter
+      '@skytwin/shared-types':
+        specifier: workspace:*
+        version: link:../shared-types
+    devDependencies:
       typescript:
         specifier: ^5.4.0
         version: 5.9.3
