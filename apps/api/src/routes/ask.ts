@@ -35,7 +35,7 @@ function createNoOpDecisionRepository(): DecisionRepositoryPort {
 
 // ── Rate limit configuration by trust tier ────────────────────────
 
-const RATE_LIMITS: Record<TrustTier, number> = {
+export const RATE_LIMITS: Record<TrustTier, number> = {
   [TrustTier.OBSERVER]: 60,
   [TrustTier.SUGGEST]: 120,
   [TrustTier.LOW_AUTONOMY]: 240,
@@ -50,7 +50,7 @@ interface RateLimitEntry {
 
 const rateLimitMap = new Map<string, RateLimitEntry>();
 
-function checkRateLimit(userId: string, trustTier: TrustTier): { allowed: boolean; remaining: number; resetAt: number } {
+export function checkRateLimit(userId: string, trustTier: TrustTier): { allowed: boolean; remaining: number; resetAt: number } {
   const now = Date.now();
   const limit = RATE_LIMITS[trustTier];
   const oneHourMs = 60 * 60 * 1000;

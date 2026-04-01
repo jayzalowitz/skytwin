@@ -6,7 +6,7 @@ import type { FeedbackEvent, UndoReasoning } from '@skytwin/shared-types';
 /**
  * Map route-level feedback types to the FeedbackEvent feedbackType union.
  */
-function mapFeedbackType(
+export function mapFeedbackType(
   routeType: string,
 ): FeedbackEvent['feedbackType'] {
   switch (routeType) {
@@ -32,7 +32,7 @@ const VALID_SEVERITIES = new Set(['minor', 'moderate', 'severe']);
  * Validate and narrow an unknown payload into UndoReasoning.
  * Returns the validated object or null if invalid.
  */
-function parseUndoReasoning(raw: unknown): UndoReasoning | null {
+export function parseUndoReasoning(raw: unknown): UndoReasoning | null {
   if (raw === null || raw === undefined || typeof raw !== 'object') return null;
   const obj = raw as Record<string, unknown>;
 
