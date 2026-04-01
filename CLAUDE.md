@@ -145,3 +145,18 @@ Key routing rules:
 - Design system, brand → invoke design-consultation
 - Visual audit, design polish → invoke design-review
 - Architecture review → invoke plan-eng-review
+
+## Deploy Configuration (configured by /setup-deploy)
+- Platform: None (pre-deployment)
+- Production URL: Not configured
+- Deploy workflow: None
+- Deploy status command: None
+- Merge method: squash
+- Project type: Monorepo (API + web dashboard + worker), not yet deployed
+- Post-deploy health check: None
+
+### Custom deploy hooks
+- Pre-merge: none
+- Deploy trigger: none (merge to main only)
+- Deploy status: none
+- Health check: none
