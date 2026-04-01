@@ -19,3 +19,15 @@ export {
   type SpendCheckResult,
   type ReconciliationResult,
 } from './spend-tracker.js';
+export {
+  DomainAutonomyManager,
+  type DomainAutonomyPolicy,
+  type DomainAutonomyRepositoryPort,
+} from './domain-autonomy.js';
+export {
+  EscalationTriggerEngine,
+  type EscalationTrigger,
+  type EscalationTriggerType,
+  type EscalationResult,
+  type EscalationContext,
+} from './escalation-triggers.js';

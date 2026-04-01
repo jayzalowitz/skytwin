@@ -48,3 +48,9 @@ export type { CreateTierAuditInput } from './trust-tier-audit-repository.js';
 
 export { spendRepository } from './spend-repository.js';
 export type { CreateSpendRecordInput } from './spend-repository.js';
+
+export { domainAutonomyRepository } from './domain-autonomy-repository.js';
+export type { UpsertDomainAutonomyInput } from './domain-autonomy-repository.js';
+
+export { escalationTriggerRepository } from './escalation-trigger-repository.js';
+export type { CreateEscalationTriggerInput } from './escalation-trigger-repository.js';

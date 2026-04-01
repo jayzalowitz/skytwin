@@ -308,6 +308,33 @@ export interface BriefingRow {
 }
 
 // ============================================================================
+// Domain Autonomy Policies
+// ============================================================================
+
+export interface DomainAutonomyPolicyRow {
+  id: string;
+  user_id: string;
+  domain: string;
+  trust_tier: string;
+  max_spend_per_action_cents: number | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+// ============================================================================
+// Escalation Triggers
+// ============================================================================
+
+export interface EscalationTriggerRow {
+  id: string;
+  user_id: string;
+  trigger_type: string;
+  conditions: Record<string, unknown>;
+  enabled: boolean;
+  created_at: Date;
+}
+
+// ============================================================================
 // Spend Records
 // ============================================================================
 
