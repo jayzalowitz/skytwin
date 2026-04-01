@@ -3,6 +3,9 @@ import type { EvalScenario, EvalResult } from './scenario.js';
 import type { EvalRunner } from './runner.js';
 import { RegressionDetector } from './regression-detector.js';
 import { AccuracyTracker } from './accuracy-tracker.js';
+import { EscalationCorrectnessTracker } from './metrics/escalation-correctness.js';
+import { CalibrationErrorTracker } from './metrics/calibration-error.js';
+import { DecisionLatencyTracker } from './metrics/decision-latency.js';
 
 /**
  * Port interface for persisting eval history.
@@ -31,6 +34,9 @@ export interface EvalSuite {
  */
 export class ContinuousEvalRunner {
   private readonly regressionDetector = new RegressionDetector();
+  readonly escalationTracker = new EscalationCorrectnessTracker();
+  readonly calibrationTracker = new CalibrationErrorTracker();
+  readonly latencyTracker = new DecisionLatencyTracker();
 
   constructor(
     private readonly evalRunner: EvalRunner,
