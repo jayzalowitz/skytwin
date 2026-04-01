@@ -2,6 +2,40 @@
 
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.2.0.0] - 2026-04-01
+
+### Added
+
+- **Execution Router** (`@skytwin/execution-router`): Adapter selection between IronClaw, OpenClaw, and Direct execution with trust-ranked fallback chains, risk modifiers for irreversible actions, and skill gap detection that logs unhandled action types
+- **Twin Query API**: `whatWouldIDo()` endpoint at POST /ask/:userId that predicts what the twin would do in a hypothetical situation without persisting state, using a no-op decision repository to prevent synthetic query records in the DB
+- **Twin Export**: Export your full twin profile as JSON or Markdown at GET /export/:userId, including preferences, inferences, behavioral patterns, cross-domain traits, and temporal profile
+- **Proactive Mode**: ProactiveEvaluator scans incoming signals, partitions into auto-executable actions (HIGH confidence only) and approval-needed items, and generates urgency-sorted morning briefings
+- **Preference Archaeology**: PreferenceArchaeologist analyzes accumulated evidence to detect implicit behavioral patterns and surfaces them as preference proposals for user confirmation (5+ consistent signals required, confidence scales with count)
+- **Undo-with-Learning**: Extended feedback system accepts structured undo reasoning (whatWentWrong, severity, whichStep, preferredAlternative) and applies 2x weight correction to the twin model, with severe undos triggering extra confidence reduction
+- **Cross-Domain Correlation**: Four correlation rules detect relationships across domains: calendar-email links, same-sender threading within 24h, calendar time conflicts, and subscription-financial connections
+- **Phase 1 DB Migrations**: Six new tables (signals, preference_proposals, twin_exports, skill_gap_log, proactive_scans, briefings) and four column additions using CockroachDB-safe 3-step pattern (ADD nullable, UPDATE, SET NOT NULL)
+- Token-scoped rate limiting on /ask endpoint, tiered by trust level (60-600 requests/hour)
+- Briefing schedule configuration via PUT /briefings/:userId/preferences
+- API routes for proposals (GET + POST accept/reject) and skill gaps (GET)
+- OpenClaw adapter with mock-first implementation and declared skill set
+- 96 new tests covering inference engine, decision maker branches, rate limiting, and feedback validation (260 total, up from 164)
+- 8 planning documents for the scope expansion milestone
+
+### Changed
+
+- ExecutionRouter fallback logic now only retries on thrown errors (safe to retry); non-completed status returns immediately to prevent double-execution of partially-completed actions
+- OpenClaw trust profile corrected: reversibilityGuarantee changed from 'partial' to 'none' (rollback always fails)
+- RoutingDecision now includes modifiedRiskAssessment so callers can see the post-modifier risk tier
+
+### Fixed
+
+- Trust tier in /ask endpoint is now server-determined (defaults to OBSERVER per Safety Invariant #3) instead of accepting client-supplied values
+- Ask endpoint uses real DB-backed TwinService and PolicyEvaluator instead of mocks, with a no-op DecisionRepository to prevent synthetic records polluting decision history
+- Twin export route (/export/:userId) moved before the wildcard (/:userId) to prevent Express matching "export" as a userId
+- Undo feedback validation relaxed from mandatory to optional for API backwards compatibility
+- Migration safety: NOT NULL DEFAULT on existing CockroachDB tables split into 3-step pattern to avoid table-level locks
+- Added missing foreign key indexes on skill_gap_log, twin_exports, and briefings tables
+
 ## [0.1.0.0] - 2026-03-31
 
 ### Added
