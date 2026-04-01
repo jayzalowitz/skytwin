@@ -237,6 +237,7 @@ export interface RoutingDecision {
   selectedAdapter: string;
   trustProfile: AdapterTrustProfile;
   riskModifierApplied: number;
+  modifiedRiskAssessment: import('./decision.js').RiskAssessment;
   fallbackChain: string[];
   reasoning: string;
 }

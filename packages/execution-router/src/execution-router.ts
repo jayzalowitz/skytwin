@@ -112,6 +112,7 @@ export class ExecutionRouter {
       selectedAdapter: primaryName,
       trustProfile: entry.trustProfile,
       riskModifierApplied,
+      modifiedRiskAssessment: modifiedAssessment,
       fallbackChain,
       reasoning,
     };
@@ -130,8 +131,16 @@ export class ExecutionRouter {
 
     const adapterChain = [routingDecision.selectedAdapter, ...routingDecision.fallbackChain];
     const attemptedAdapters: string[] = [];
+    let firstAttemptCompleted = false;
 
     for (const adapterName of adapterChain) {
+      // Guard against duplicate execution: if a previous adapter returned a
+      // non-'completed' status (rather than throwing), the action may have been
+      // partially executed. Only fall back on thrown errors, not on soft failures.
+      if (firstAttemptCompleted) {
+        break;
+      }
+
       attemptedAdapters.push(adapterName);
       const entry = this.registry.get(adapterName);
       if (!entry) {
@@ -154,13 +163,25 @@ export class ExecutionRouter {
           };
         }
 
-        // Execution failed — try next adapter in the chain
+        // Adapter returned a non-completed status (partial execution possible).
+        // Do NOT fall through to the next adapter — that risks duplicate actions.
+        firstAttemptCompleted = true;
+        return {
+          ...result,
+          output: {
+            ...result.output,
+            adapter_used: adapterName,
+            routing_decision: routingDecision.selectedAdapter,
+            fallbacks_attempted: attemptedAdapters.length - 1,
+            fallback_skipped_reason: 'previous adapter returned non-completed status, fallback unsafe',
+          },
+        };
       } catch {
-        // Adapter threw — try next in the chain
+        // Adapter threw before execution started — safe to try next in chain
       }
     }
 
-    // All adapters failed
+    // All adapters failed (threw errors)
     const gap = logSkillGap(
       action.actionType,
       action.description,

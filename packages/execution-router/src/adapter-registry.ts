@@ -22,7 +22,7 @@ export const IRONCLAW_TRUST_PROFILE: AdapterTrustProfile = {
 
 export const OPENCLAW_TRUST_PROFILE: AdapterTrustProfile = {
   name: 'openclaw',
-  reversibilityGuarantee: 'partial',
+  reversibilityGuarantee: 'none', // rollback() always fails — do not claim partial
   authModel: 'api_key',
   auditTrail: true,
   riskModifier: 1,

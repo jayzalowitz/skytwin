@@ -11,6 +11,39 @@ export function createTwinRouter(): Router {
   const twinService = new TwinService(twinRepository as never);
 
   /**
+   * GET /api/twin/export/:userId
+   *
+   * Export the complete twin profile as JSON or Markdown.
+   * Query param: ?format=json (default) or ?format=markdown
+   *
+   * NOTE: This route must be defined before /:userId to avoid
+   * Express matching "export" as a userId parameter.
+   */
+  router.get('/export/:userId', async (req, res, next) => {
+    try {
+      const { userId } = req.params;
+      if (!userId) {
+        res.status(400).json({ error: 'Missing userId parameter' });
+        return;
+      }
+
+      const format = (req.query['format'] as string) === 'markdown' ? 'markdown' : 'json';
+      const exportData = await twinService.exportTwin(userId, format);
+
+      if (format === 'markdown') {
+        const markdown = twinService.formatAsMarkdown(exportData);
+        res.setHeader('Content-Type', 'text/markdown');
+        res.send(markdown);
+      } else {
+        res.setHeader('Content-Type', 'application/json');
+        res.json(exportData);
+      }
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /**
    * GET /api/twin/:userId
    *
    * Get the current twin profile for a user.
@@ -91,36 +124,6 @@ export function createTwinRouter(): Router {
         },
         updatedPreference: preference,
       });
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  /**
-   * GET /api/twin/export/:userId
-   *
-   * Export the complete twin profile as JSON or Markdown.
-   * Query param: ?format=json (default) or ?format=markdown
-   */
-  router.get('/export/:userId', async (req, res, next) => {
-    try {
-      const { userId } = req.params;
-      if (!userId) {
-        res.status(400).json({ error: 'Missing userId parameter' });
-        return;
-      }
-
-      const format = (req.query['format'] as string) === 'markdown' ? 'markdown' : 'json';
-      const exportData = await twinService.exportTwin(userId, format);
-
-      if (format === 'markdown') {
-        const markdown = twinService.formatAsMarkdown(exportData);
-        res.setHeader('Content-Type', 'text/markdown');
-        res.send(markdown);
-      } else {
-        res.setHeader('Content-Type', 'application/json');
-        res.json(exportData);
-      }
     } catch (error) {
       next(error);
     }

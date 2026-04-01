@@ -1,8 +1,37 @@
 import { Router } from 'express';
-import type { WhatWouldIDoRequest, WhatWouldIDoResponse, TwinProfile, Preference } from '@skytwin/shared-types';
+import type { WhatWouldIDoRequest, WhatWouldIDoResponse } from '@skytwin/shared-types';
 import { TrustTier } from '@skytwin/shared-types';
 import { DecisionMaker } from '@skytwin/decision-engine';
 import type { DecisionRepositoryPort } from '@skytwin/decision-engine';
+import { TwinService } from '@skytwin/twin-model';
+import { PolicyEvaluator } from '@skytwin/policy-engine';
+import {
+  twinRepository,
+  patternRepository,
+  policyRepositoryAdapter,
+} from '@skytwin/db';
+
+/**
+ * No-op decision repository for the prediction endpoint.
+ *
+ * whatWouldIDo() internally calls evaluate() which persists decisions,
+ * candidates, outcomes, and risk assessments. For read-only predictions
+ * we use this no-op repo to prevent polluting real decision history
+ * with synthetic query_* records.
+ */
+function createNoOpDecisionRepository(): DecisionRepositoryPort {
+  return {
+    saveDecision: async (d) => d,
+    getDecision: async () => null,
+    saveOutcome: async (o) => o,
+    getOutcome: async () => null,
+    saveCandidates: async (c) => c,
+    getCandidates: async () => [],
+    saveRiskAssessment: async (a) => a,
+    getRiskAssessment: async () => null,
+    getRecentDecisions: async () => [],
+  };
+}
 
 // ── Rate limit configuration by trust tier ────────────────────────
 
@@ -40,62 +69,6 @@ function checkRateLimit(userId: string, trustTier: TrustTier): { allowed: boolea
   return { allowed: true, remaining: limit - entry.count, resetAt: entry.resetAt };
 }
 
-// ── Mock dependencies for scaffold ───────────────────────────────
-
-function createMockDecisionRepository(): DecisionRepositoryPort {
-  return {
-    saveDecision: async (d) => d,
-    getDecision: async () => null,
-    saveOutcome: async (o) => o,
-    getOutcome: async () => null,
-    saveCandidates: async (c) => c,
-    getCandidates: async () => [],
-    saveRiskAssessment: async (a) => a,
-    getRiskAssessment: async () => null,
-    getRecentDecisions: async () => [],
-  };
-}
-
-function createMockTwinService() {
-  const defaultProfile: TwinProfile = {
-    id: 'twin_mock',
-    userId: 'mock',
-    version: 1,
-    preferences: [],
-    inferences: [],
-    createdAt: new Date(),
-    updatedAt: new Date(),
-  };
-
-  return {
-    getOrCreateProfile: async (_userId: string): Promise<TwinProfile> => defaultProfile,
-    getRelevantPreferences: async (_userId: string, _domain: string, _situation: string): Promise<Preference[]> => [],
-    getPatterns: async (_userId: string): Promise<unknown[]> => [],
-    getTraits: async (_userId: string): Promise<unknown[]> => [],
-    getTemporalProfile: async (_userId: string): Promise<unknown> => ({
-      userId: _userId,
-      activeHours: { start: 8, end: 22 },
-      peakResponseTimes: {},
-      weekdayPatterns: {},
-      urgencyThresholds: {},
-    }),
-  };
-}
-
-function createMockPolicyEvaluator() {
-  return {
-    evaluate: async () => ({
-      allowed: true,
-      requiresApproval: false,
-      reason: 'Mock policy check passed.',
-    }),
-    loadPolicies: async () => [],
-    checkSpendLimit: () => true,
-    checkReversibility: () => true,
-    checkDomainAllowlist: () => true,
-  };
-}
-
 // ── Router ───────────────────────────────────────────────────────
 
 /**
@@ -106,6 +79,18 @@ function createMockPolicyEvaluator() {
  */
 export function createAskRouter(): Router {
   const router = Router();
+
+  // Real TwinService + PolicyEvaluator for accurate reads.
+  // No-op DecisionRepository because whatWouldIDo() is read-only:
+  // it must not persist synthetic query_* decisions to the DB.
+  const twinService = new TwinService(twinRepository as never, patternRepository as never);
+  const policyEvaluator = new PolicyEvaluator(policyRepositoryAdapter as never);
+  const noOpDecisionRepo = createNoOpDecisionRepository();
+  const decisionMaker = new DecisionMaker(
+    twinService as never,
+    policyEvaluator as never,
+    noOpDecisionRepo,
+  );
 
   router.post('/ask/:userId', async (req, res, next) => {
     try {
@@ -122,8 +107,10 @@ export function createAskRouter(): Router {
         return;
       }
 
-      // Determine user trust tier (scaffold: default to SUGGEST)
-      const userTrustTier = (body['trustTier'] as TrustTier) ?? TrustTier.SUGGEST;
+      // Trust tier is server-determined, not client-supplied.
+      // TODO: Look up user's earned trust tier from the users table.
+      // New users default to OBSERVER (Safety Invariant #3).
+      const userTrustTier = TrustTier.OBSERVER;
 
       // Rate limit check
       const rateLimitResult = checkRateLimit(userId, userTrustTier);
@@ -144,21 +131,10 @@ export function createAskRouter(): Router {
           : undefined,
       };
 
-      // Create mock dependencies (scaffold -- replace with real DI later)
-      const mockDecisionRepo = createMockDecisionRepository();
-      const mockTwinService = createMockTwinService();
-      const mockPolicyEvaluator = createMockPolicyEvaluator();
-
-      const decisionMaker = new DecisionMaker(
-        mockTwinService as never,
-        mockPolicyEvaluator as never,
-        mockDecisionRepo as never,
-      );
-
       const response: WhatWouldIDoResponse = await decisionMaker.whatWouldIDo(
         userId,
         request,
-        mockTwinService,
+        twinService,
         userTrustTier,
       );
 

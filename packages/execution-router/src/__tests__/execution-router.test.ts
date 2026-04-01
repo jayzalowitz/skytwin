@@ -96,7 +96,39 @@ function createMockAdapter(name: string, skills?: Set<string>): IronClawAdapter 
   };
 }
 
-function createFailingAdapter(name: string): IronClawAdapter {
+/**
+ * Adapter that throws from execute() — simulates failure before execution started.
+ * Safe to fall back from because no action was performed.
+ */
+function createThrowingAdapter(name: string): IronClawAdapter {
+  return {
+    async buildPlan(action: CandidateAction): Promise<ExecutionPlan> {
+      return {
+        id: `${name}_plan_1`,
+        decisionId: action.decisionId,
+        action,
+        steps: [],
+        rollbackSteps: [],
+        createdAt: new Date(),
+      };
+    },
+    async execute(_plan: ExecutionPlan): Promise<ExecutionResult> {
+      throw new Error(`${name} execution failed`);
+    },
+    async rollback(_planId: string): Promise<RollbackResult> {
+      return { success: false, message: 'Rollback failed' };
+    },
+    async healthCheck(): Promise<{ healthy: boolean; latencyMs: number }> {
+      return { healthy: false, latencyMs: 0 };
+    },
+  };
+}
+
+/**
+ * Adapter that returns a non-completed status — simulates partial execution.
+ * NOT safe to fall back from because the action may have been partially performed.
+ */
+function createSoftFailAdapter(name: string): IronClawAdapter {
   return {
     async buildPlan(action: CandidateAction): Promise<ExecutionPlan> {
       return {
@@ -228,8 +260,8 @@ describe('ExecutionRouter', () => {
       expect(result.output?.['fallbacks_attempted']).toBe(0);
     });
 
-    it('falls back to next adapter when primary fails', async () => {
-      registry.register('ironclaw', createFailingAdapter('ironclaw'), IRONCLAW_TRUST_PROFILE);
+    it('falls back to next adapter when primary throws', async () => {
+      registry.register('ironclaw', createThrowingAdapter('ironclaw'), IRONCLAW_TRUST_PROFILE);
       registry.register('direct', createMockAdapter('direct'), DIRECT_TRUST_PROFILE);
 
       const action = makeAction();
@@ -242,9 +274,9 @@ describe('ExecutionRouter', () => {
       expect(result.output?.['fallbacks_attempted']).toBe(1);
     });
 
-    it('throws NoAdapterError when all adapters fail', async () => {
-      registry.register('ironclaw', createFailingAdapter('ironclaw'), IRONCLAW_TRUST_PROFILE);
-      registry.register('direct', createFailingAdapter('direct'), DIRECT_TRUST_PROFILE);
+    it('throws NoAdapterError when all adapters throw', async () => {
+      registry.register('ironclaw', createThrowingAdapter('ironclaw'), IRONCLAW_TRUST_PROFILE);
+      registry.register('direct', createThrowingAdapter('direct'), DIRECT_TRUST_PROFILE);
 
       const action = makeAction();
       const risk = makeRiskAssessment();
@@ -252,6 +284,21 @@ describe('ExecutionRouter', () => {
       await expect(router.executeWithRouting(action, risk, 'user-1')).rejects.toThrow(
         NoAdapterError,
       );
+    });
+
+    it('does not fall back when adapter returns non-completed status (partial execution risk)', async () => {
+      registry.register('ironclaw', createSoftFailAdapter('ironclaw'), IRONCLAW_TRUST_PROFILE);
+      registry.register('direct', createMockAdapter('direct'), DIRECT_TRUST_PROFILE);
+
+      const action = makeAction();
+      const risk = makeRiskAssessment();
+
+      const result = await router.executeWithRouting(action, risk, 'user-1');
+
+      // Should return the failed result, NOT fall back to direct adapter
+      expect(result.status).toBe('failed');
+      expect(result.output?.['adapter_used']).toBe('ironclaw');
+      expect(result.output?.['fallback_skipped_reason']).toContain('fallback unsafe');
     });
   });
 });

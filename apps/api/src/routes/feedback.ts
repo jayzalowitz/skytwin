@@ -110,14 +110,14 @@ export function createFeedbackRouter(): Router {
         return;
       }
 
-      // Validate undoReasoning when feedback type is 'undo'
+      // Parse undoReasoning when feedback type is 'undo' (optional for API compat)
       let undoReasoning: UndoReasoning | undefined;
-      if (body.type === 'undo') {
+      if (body.type === 'undo' && body.undoReasoning !== undefined) {
         const parsed = parseUndoReasoning(body.undoReasoning);
         if (!parsed) {
           res.status(400).json({
             error:
-              'Undo feedback requires a valid undoReasoning object with ' +
+              'undoReasoning, if provided, must include ' +
               'whatWentWrong (string) and severity (minor|moderate|severe).',
           });
           return;
