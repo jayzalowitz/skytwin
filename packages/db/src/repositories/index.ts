@@ -45,3 +45,6 @@ export type { CreateScanInput, CreateBriefingInput } from './proactive-scan-repo
 
 export { trustTierAuditRepository } from './trust-tier-audit-repository.js';
 export type { CreateTierAuditInput } from './trust-tier-audit-repository.js';
+
+export { spendRepository } from './spend-repository.js';
+export type { CreateSpendRecordInput } from './spend-repository.js';

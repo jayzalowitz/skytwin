@@ -308,6 +308,21 @@ export interface BriefingRow {
 }
 
 // ============================================================================
+// Spend Records
+// ============================================================================
+
+export interface SpendRecordRow {
+  id: string;
+  user_id: string;
+  action_id: string;
+  decision_id: string;
+  estimated_cost_cents: number;
+  actual_cost_cents: number | null;
+  recorded_at: Date;
+  reconciled_at: Date | null;
+}
+
+// ============================================================================
 // Trust Tier Audit
 // ============================================================================
 
