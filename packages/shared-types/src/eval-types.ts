@@ -13,6 +13,8 @@ export interface EvalRun {
   regressions: string[];
   improvements: string[];
   runAt: Date;
+  /** Per-scenario pass/fail results, stored for regression comparison. */
+  scenarioResults?: Array<{ scenarioId: string; passed: boolean }>;
 }
 
 /**

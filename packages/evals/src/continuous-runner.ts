@@ -88,6 +88,7 @@ export class ContinuousEvalRunner {
       regressions,
       improvements,
       runAt: new Date(),
+      scenarioResults: results.map((r) => ({ scenarioId: r.scenarioId, passed: r.passed })),
     };
 
     return this.repository.saveRun(run);
@@ -185,10 +186,22 @@ export class ContinuousEvalRunner {
     return this.accuracyTracker.calculateAccuracy(userId, domain, periodStart, periodEnd);
   }
 
-  private reconstructResults(_run: EvalRun): EvalResult[] {
-    // Full result reconstruction requires storing per-scenario results in the run.
-    // For now, return empty — regression detection will compare whatever
-    // results are available from the current run against this baseline.
-    return [];
+  /**
+   * Reconstruct minimal EvalResults from the stored scenarioResults on an EvalRun.
+   * Only scenarioId and passed are needed for regression detection.
+   */
+  private reconstructResults(run: EvalRun): EvalResult[] {
+    if (!run.scenarioResults || run.scenarioResults.length === 0) {
+      return [];
+    }
+
+    return run.scenarioResults.map((sr) => ({
+      scenarioId: sr.scenarioId,
+      passed: sr.passed,
+      // Minimal stubs for the type — regression detector only reads scenarioId and passed
+      actual: {} as EvalResult['actual'],
+      expected: {} as EvalResult['expected'],
+      discrepancies: [],
+    }));
   }
 }
