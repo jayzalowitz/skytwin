@@ -56,7 +56,7 @@ pnpm dev
 ### Running Tests
 
 ```bash
-pnpm test          # 119 tests across 14 test files
+pnpm test          # 260 tests across 18 test files
 ```
 
 ## Monorepo Structure
@@ -78,6 +78,7 @@ packages/
   decision-engine/# Event interpretation and action selection
   policy-engine/  # Safety constraints, trust tiers, spend limits
   ironclaw-adapter/ # HTTP adapter for IronClaw execution server
+  execution-router/ # Adapter selection, fallback chains, and risk modifiers
   explanations/   # Human-readable explanation generation
   connectors/     # Gmail, Google Calendar, and mock connectors with OAuth token management
   evals/          # Evaluation harness for decision quality
