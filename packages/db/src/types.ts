@@ -365,6 +365,23 @@ export interface TrustTierAuditRow {
 }
 
 // ============================================================================
+// Preference History
+// ============================================================================
+
+export interface PreferenceHistoryRow {
+  id: string;
+  preference_id: string;
+  user_id: string;
+  previous_value: unknown;
+  new_value: unknown;
+  previous_confidence: string | null;
+  new_confidence: string;
+  attribution_type: string;
+  attribution_id: string | null;
+  changed_at: Date;
+}
+
+// ============================================================================
 // Common query options
 // ============================================================================
 

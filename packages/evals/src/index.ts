@@ -25,3 +25,14 @@ export {
   type EvalRepositoryPort,
   type EvalSuite,
 } from './continuous-runner.js';
+
+// Temporal replay
+export {
+  TemporalReplayEngine,
+  type TwinVersionRepositoryPort,
+  type PreferenceHistoryReplayPort,
+  type TwinProfileSnapshot,
+  type PreferenceSnapshot,
+  type ReplayResult,
+  type ReplayDiff,
+} from './replay.js';

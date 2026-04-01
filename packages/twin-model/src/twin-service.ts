@@ -11,6 +11,7 @@ import type {
 } from '@skytwin/shared-types';
 import { ConfidenceLevel } from '@skytwin/shared-types';
 import { InferenceEngine } from './inference-engine.js';
+import { PreferenceEvolutionTracker, type PreferenceHistoryRepositoryPort } from './preference-evolution.js';
 
 /**
  * Port interface for twin profile persistence.
@@ -57,14 +58,17 @@ export interface PatternRepositoryPort {
 export class TwinService {
   private readonly inferenceEngine: InferenceEngine;
   private readonly patternRepository: PatternRepositoryPort | null;
+  readonly evolutionTracker: PreferenceEvolutionTracker;
   private readonly temporalProfiles = new Map<string, TemporalProfile>();
 
   constructor(
     private readonly repository: TwinRepositoryPort,
     patternRepository?: PatternRepositoryPort,
+    preferenceHistoryRepository?: PreferenceHistoryRepositoryPort,
   ) {
     this.inferenceEngine = new InferenceEngine();
     this.patternRepository = patternRepository ?? null;
+    this.evolutionTracker = new PreferenceEvolutionTracker(preferenceHistoryRepository ?? null);
   }
 
   /**
@@ -129,6 +133,10 @@ export class TwinService {
 
     // Also persist via the repository
     await this.repository.upsertPreference(userId, preference);
+
+    // Track preference evolution
+    const previousPref = existingIdx >= 0 ? profile.preferences[existingIdx]! : null;
+    await this.evolutionTracker.recordChange(userId, previousPref, preference, 'explicit');
 
     const updatedProfile: TwinProfile = {
       ...profile,
@@ -356,6 +364,46 @@ export class TwinService {
 
     for (const inference of updatedInferences) {
       await this.repository.upsertInference(userId, inference);
+    }
+
+    // Track inference changes as preference evolution (feedback attribution)
+    for (const updated of updatedInferences) {
+      const original = profile.inferences.find(
+        (inf) => inf.domain === updated.domain && inf.key === updated.key,
+      );
+      if (
+        original &&
+        (original.confidence !== updated.confidence ||
+          JSON.stringify(original.value) !== JSON.stringify(updated.value))
+      ) {
+        await this.evolutionTracker.recordChange(
+          userId,
+          {
+            id: original.id,
+            domain: original.domain,
+            key: original.key,
+            value: original.value,
+            confidence: original.confidence,
+            source: 'inferred',
+            evidenceIds: original.supportingEvidenceIds,
+            createdAt: original.createdAt,
+            updatedAt: original.updatedAt,
+          },
+          {
+            id: updated.id,
+            domain: updated.domain,
+            key: updated.key,
+            value: updated.value,
+            confidence: updated.confidence,
+            source: 'inferred',
+            evidenceIds: updated.supportingEvidenceIds,
+            createdAt: updated.createdAt,
+            updatedAt: updated.updatedAt,
+          },
+          'feedback',
+          feedback.id,
+        );
+      }
     }
 
     const updatedProfile: TwinProfile = {
