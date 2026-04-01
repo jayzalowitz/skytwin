@@ -127,3 +127,21 @@ These are non-negotiable rules. Do not write code that violates them.
 - Error handling: use typed result objects (`{ success: true, data } | { success: false, error }`) rather than thrown exceptions for expected failure modes.
 - Tests go in `__tests__/` directories adjacent to source, or in files named `*.test.ts`.
 - Use vitest for all tests.
+
+## Skill routing
+
+When the user's request matches an available skill, ALWAYS invoke it using the Skill
+tool as your FIRST action. Do NOT answer directly, do NOT use other tools first.
+The skill has specialized workflows that produce better results than ad-hoc answers.
+
+Key routing rules:
+- Product ideas, "is this worth building", brainstorming → invoke office-hours
+- Bugs, errors, "why is this broken", 500 errors → invoke investigate
+- Ship, deploy, push, create PR → invoke ship
+- QA, test the site, find bugs → invoke qa
+- Code review, check my diff → invoke review
+- Update docs after shipping → invoke document-release
+- Weekly retro → invoke retro
+- Design system, brand → invoke design-consultation
+- Visual audit, design polish → invoke design-review
+- Architecture review → invoke plan-eng-review
