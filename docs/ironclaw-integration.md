@@ -235,6 +235,9 @@ Not all are implemented in IronClaw today. The adapter handles unsupported opera
 - `RealIronClawAdapter` communicates with IronClaw via HTTP webhook
 - HMAC-SHA256 authentication, retries, circuit breaker
 - Credential sanitization in flight
+- Contract tests validate mock and real adapter produce compatible outputs
+- Rollback E2E tests verify execute-then-rollback lifecycle
+- `MockIronClawServer` provides a local test server with HMAC verification
 
 ### Phase 3: Production Deployment
 - Connect to production IronClaw with real credentials
