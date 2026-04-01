@@ -1,5 +1,5 @@
 {
-  "name": "@skytwin/evals",
+  "name": "@skytwin/execution-router",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -15,20 +15,13 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "test": "vitest run",
-    "lint": "eslint src/",
-    "eval": "tsx src/runner.ts"
+    "lint": "eslint src/"
   },
   "dependencies": {
     "@skytwin/shared-types": "workspace:*",
-    "@skytwin/decision-engine": "workspace:*",
-    "@skytwin/twin-model": "workspace:*",
-    "@skytwin/policy-engine": "workspace:*",
-    "@skytwin/execution-router": "workspace:*",
-    "@skytwin/ironclaw-adapter": "workspace:*",
-    "@skytwin/explanations": "workspace:*"
+    "@skytwin/ironclaw-adapter": "workspace:*"
   },
   "devDependencies": {
-    "tsx": "^4.7.0",
     "typescript": "^5.4.0",
     "vitest": "^1.3.0"
   }

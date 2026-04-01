@@ -7,6 +7,7 @@ import type {
   BehavioralPattern,
   CrossDomainTrait,
   TemporalProfile,
+  TwinExport,
 } from '@skytwin/shared-types';
 import { ConfidenceLevel } from '@skytwin/shared-types';
 import { InferenceEngine } from './inference-engine.js';
@@ -317,6 +318,11 @@ export class TwinService {
 
   /**
    * Process feedback and update the twin's inferences accordingly.
+   *
+   * Undo feedback receives special treatment: the correction is applied
+   * twice (2x weight) so the model learns more aggressively from undone
+   * actions.  For "severe" undo reasoning the confidence of every
+   * affected inference is additionally reduced by one level.
    */
   async processFeedback(
     userId: string,
@@ -325,10 +331,28 @@ export class TwinService {
     await this.repository.addFeedback(feedback);
 
     const profile = await this.getOrCreateProfile(userId);
-    const updatedInferences = this.inferenceEngine.updateInferencesFromFeedback(
+    let updatedInferences = this.inferenceEngine.updateInferencesFromFeedback(
       profile,
       feedback,
     );
+
+    // Undo feedback gets 2x weight — apply correction twice
+    if (feedback.feedbackType === 'undo' && feedback.undoReasoning) {
+      updatedInferences = this.inferenceEngine.updateInferencesFromFeedback(
+        { ...profile, inferences: updatedInferences },
+        feedback,
+      );
+
+      // Severe undo reasoning triggers an extra confidence reduction
+      if (feedback.undoReasoning.severity === 'severe') {
+        for (const inference of updatedInferences) {
+          if (inference.supportingEvidenceIds.length > 0) {
+            inference.confidence = this.decreaseConfidence(inference.confidence);
+            inference.updatedAt = new Date();
+          }
+        }
+      }
+    }
 
     for (const inference of updatedInferences) {
       await this.repository.upsertInference(userId, inference);
@@ -385,6 +409,120 @@ export class TwinService {
     const profile = analyzer.analyzeTemporalPatterns(evidence);
     this.temporalProfiles.set(userId, profile);
     return profile;
+  }
+
+  // ── Export / Portability ────────────────────────────────────────
+
+  /**
+   * Export a complete, portable snapshot of the user's digital twin.
+   */
+  async exportTwin(userId: string, format: 'json' | 'markdown'): Promise<TwinExport> {
+    const profile = await this.getOrCreateProfile(userId);
+    const patterns = await this.getPatterns(userId);
+    const traits = await this.getTraits(userId);
+    const temporalProfile = await this.getTemporalProfile(userId);
+
+    return {
+      userId,
+      exportedAt: new Date(),
+      format,
+      profile,
+      patterns,
+      traits,
+      temporalProfile,
+    };
+  }
+
+  /**
+   * Convert a TwinExport to a human-readable markdown document.
+   */
+  formatAsMarkdown(exportData: TwinExport): string {
+    const lines: string[] = [];
+
+    lines.push(`# Twin Export for ${exportData.userId}`);
+    lines.push('');
+
+    // Profile section
+    lines.push('## Profile');
+    lines.push('');
+    lines.push(`- **Version:** ${exportData.profile.version}`);
+    lines.push(`- **Created:** ${exportData.profile.createdAt.toISOString()}`);
+    lines.push(`- **Updated:** ${exportData.profile.updatedAt.toISOString()}`);
+    lines.push('');
+
+    // Preferences section
+    lines.push('## Preferences');
+    lines.push('');
+    if (exportData.profile.preferences.length === 0) {
+      lines.push('_No preferences recorded._');
+    } else {
+      lines.push('| Domain | Key | Value | Confidence | Source |');
+      lines.push('|--------|-----|-------|------------|--------|');
+      for (const pref of exportData.profile.preferences) {
+        lines.push(
+          `| ${pref.domain} | ${pref.key} | ${String(pref.value)} | ${pref.confidence} | ${pref.source} |`,
+        );
+      }
+    }
+    lines.push('');
+
+    // Inferences section
+    lines.push('## Inferences');
+    lines.push('');
+    if (exportData.profile.inferences.length === 0) {
+      lines.push('_No inferences recorded._');
+    } else {
+      lines.push('| Domain | Key | Value | Confidence |');
+      lines.push('|--------|-----|-------|------------|');
+      for (const inf of exportData.profile.inferences) {
+        lines.push(
+          `| ${inf.domain} | ${inf.key} | ${String(inf.value)} | ${inf.confidence} |`,
+        );
+      }
+    }
+    lines.push('');
+
+    // Behavioral Patterns section
+    lines.push('## Behavioral Patterns');
+    lines.push('');
+    if (exportData.patterns.length === 0) {
+      lines.push('_No behavioral patterns detected._');
+    } else {
+      for (const pattern of exportData.patterns) {
+        lines.push(`- **${pattern.description}**`);
+        lines.push(`  - Trigger: ${JSON.stringify(pattern.trigger.conditions)}`);
+        lines.push(`  - Frequency: ${pattern.frequency}`);
+        lines.push('');
+      }
+    }
+
+    // Cross-Domain Traits section
+    lines.push('## Cross-Domain Traits');
+    lines.push('');
+    if (exportData.traits.length === 0) {
+      lines.push('_No cross-domain traits detected._');
+    } else {
+      for (const trait of exportData.traits) {
+        lines.push(`- **${trait.traitName}** (confidence: ${trait.confidence})`);
+        lines.push(`  - Domains: ${trait.supportingDomains.join(', ')}`);
+        lines.push('');
+      }
+    }
+
+    // Temporal Profile section
+    lines.push('## Temporal Profile');
+    lines.push('');
+    lines.push(`- **Active Hours:** ${exportData.temporalProfile.activeHours.start}:00 – ${exportData.temporalProfile.activeHours.end}:00`);
+
+    const peakTimes = Object.entries(exportData.temporalProfile.peakResponseTimes);
+    if (peakTimes.length > 0) {
+      lines.push('- **Peak Response Times:**');
+      for (const [key, value] of peakTimes) {
+        lines.push(`  - ${key}: ${value}`);
+      }
+    }
+
+    return lines.join('\n');
   }
 
   // ── Private helpers ──────────────────────────────────────────────
@@ -447,5 +585,17 @@ export class TwinService {
       [ConfidenceLevel.CONFIRMED]: 4,
     };
     return ranks[level];
+  }
+
+  private decreaseConfidence(current: ConfidenceLevel): ConfidenceLevel {
+    const levels = [
+      ConfidenceLevel.SPECULATIVE,
+      ConfidenceLevel.LOW,
+      ConfidenceLevel.MODERATE,
+      ConfidenceLevel.HIGH,
+      ConfidenceLevel.CONFIRMED,
+    ];
+    const idx = levels.indexOf(current);
+    return levels[Math.max(idx - 1, 0)]!;
   }
 }

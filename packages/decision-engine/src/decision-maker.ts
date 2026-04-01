@@ -7,6 +7,8 @@ import type {
   ActionPolicy,
   TwinProfile,
   Preference,
+  WhatWouldIDoRequest,
+  WhatWouldIDoResponse,
 } from '@skytwin/shared-types';
 import {
   ConfidenceLevel,
@@ -173,6 +175,90 @@ export class DecisionMaker {
     await this.decisionRepository.saveCandidates(candidates);
 
     return outcome;
+  }
+
+  /**
+   * Predict what the twin would do in a hypothetical situation without
+   * persisting any state. This is a read-only query against the decision
+   * pipeline.
+   */
+  async whatWouldIDo(
+    userId: string,
+    request: WhatWouldIDoRequest,
+    twinService: {
+      getOrCreateProfile: (userId: string) => Promise<TwinProfile>;
+      getRelevantPreferences: (userId: string, domain: string, situation: string) => Promise<Preference[]>;
+      getPatterns: (userId: string) => Promise<unknown[]>;
+      getTraits: (userId: string) => Promise<unknown[]>;
+      getTemporalProfile: (userId: string) => Promise<unknown>;
+    },
+    userTrustTier: TrustTier,
+  ): Promise<WhatWouldIDoResponse> {
+    // Step 1: Create a synthetic DecisionObject from the request
+    const situationType = this.inferSituationType(request.domain);
+    const decision: DecisionObject = {
+      id: `query_${Date.now()}`,
+      situationType,
+      domain: request.domain ?? 'general',
+      urgency: request.urgency ?? 'medium',
+      summary: request.situation,
+      rawData: { query: true, situation: request.situation },
+      interpretedAt: new Date(),
+    };
+
+    // Step 2: Build a DecisionContext
+    const relevantPreferences = await twinService.getRelevantPreferences(
+      userId,
+      decision.domain,
+      decision.summary,
+    );
+    const patterns = await twinService.getPatterns(userId);
+    const traits = await twinService.getTraits(userId);
+    const temporalProfile = await twinService.getTemporalProfile(userId);
+
+    const context: DecisionContext = {
+      userId,
+      decision,
+      trustTier: userTrustTier,
+      relevantPreferences,
+      timestamp: new Date(),
+      patterns: patterns as DecisionContext['patterns'],
+      traits: traits as DecisionContext['traits'],
+      temporalProfile: temporalProfile as DecisionContext['temporalProfile'],
+    };
+
+    // Step 3: Evaluate through the standard pipeline
+    const outcome = await this.evaluate(context);
+
+    // Step 4: Build WhatWouldIDoResponse
+    return {
+      predictedAction: outcome.selectedAction,
+      confidence: outcome.selectedAction?.confidence ?? ConfidenceLevel.SPECULATIVE,
+      reasoning: outcome.reasoning,
+      wouldAutoExecute: outcome.autoExecute,
+      policyNotes: outcome.requiresApproval ? outcome.reasoning : undefined,
+      alternativeActions: outcome.allCandidates.filter(
+        (c) => c !== outcome.selectedAction,
+      ),
+      predictionId: `pred_${Date.now()}`,
+    };
+  }
+
+  /**
+   * Infer a SituationType from a domain string.
+   */
+  private inferSituationType(domain?: string): SituationType {
+    if (!domain) return SituationType.GENERIC;
+
+    const domainMap: Record<string, SituationType> = {
+      email: SituationType.EMAIL_TRIAGE,
+      calendar: SituationType.CALENDAR_CONFLICT,
+      subscriptions: SituationType.SUBSCRIPTION_RENEWAL,
+      shopping: SituationType.GROCERY_REORDER,
+      travel: SituationType.TRAVEL_DECISION,
+    };
+
+    return domainMap[domain.toLowerCase()] ?? SituationType.GENERIC;
   }
 
   /**

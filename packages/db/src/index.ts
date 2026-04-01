@@ -25,6 +25,12 @@ export type {
   ExplanationRecordRow,
   FeedbackEventRow,
   OAuthTokenRow,
+  SignalRow,
+  PreferenceProposalRow,
+  TwinExportRow,
+  SkillGapRow,
+  ProactiveScanRow,
+  BriefingRow,
   PaginationOptions,
   DateRangeOptions,
   UserQueryOptions,
@@ -58,6 +64,15 @@ export type {
   CreateExecutionPlanInput,
   CreateExecutionResultInput,
   ExecutionPlanWithResult,
+} from './repositories/index.js';
+
+export { signalRepository, proposalRepository, skillGapRepository, proactiveScanRepository } from './repositories/index.js';
+export type {
+  CreateSignalInput,
+  CreateProposalInput,
+  CreateSkillGapInput,
+  CreateScanInput,
+  CreateBriefingInput,
 } from './repositories/index.js';
 
 // Adapters

@@ -1,12 +1,12 @@
 import { Router } from 'express';
 import { feedbackRepository, twinRepository, patternRepository } from '@skytwin/db';
 import { TwinService } from '@skytwin/twin-model';
-import type { FeedbackEvent } from '@skytwin/shared-types';
+import type { FeedbackEvent, UndoReasoning } from '@skytwin/shared-types';
 
 /**
  * Map route-level feedback types to the FeedbackEvent feedbackType union.
  */
-function mapFeedbackType(
+export function mapFeedbackType(
   routeType: string,
 ): FeedbackEvent['feedbackType'] {
   switch (routeType) {
@@ -16,13 +16,46 @@ function mapFeedbackType(
     case 'reject':
     case 'punish':
       return 'reject';
-    case 'edit':
     case 'undo':
+      return 'undo';
+    case 'edit':
     case 'restate_preference':
       return 'correct';
     default:
       return 'ignore';
   }
+}
+
+const VALID_SEVERITIES = new Set(['minor', 'moderate', 'severe']);
+
+/**
+ * Validate and narrow an unknown payload into UndoReasoning.
+ * Returns the validated object or null if invalid.
+ */
+export function parseUndoReasoning(raw: unknown): UndoReasoning | null {
+  if (raw === null || raw === undefined || typeof raw !== 'object') return null;
+  const obj = raw as Record<string, unknown>;
+
+  if (typeof obj['whatWentWrong'] !== 'string' || obj['whatWentWrong'].length === 0) {
+    return null;
+  }
+  if (!VALID_SEVERITIES.has(obj['severity'] as string)) {
+    return null;
+  }
+
+  const reasoning: UndoReasoning = {
+    whatWentWrong: obj['whatWentWrong'] as string,
+    severity: obj['severity'] as UndoReasoning['severity'],
+  };
+
+  if (typeof obj['whichStep'] === 'string' && obj['whichStep'].length > 0) {
+    reasoning.whichStep = obj['whichStep'];
+  }
+  if (typeof obj['preferredAlternative'] === 'string' && obj['preferredAlternative'].length > 0) {
+    reasoning.preferredAlternative = obj['preferredAlternative'];
+  }
+
+  return reasoning;
 }
 
 /**
@@ -36,6 +69,21 @@ export function createFeedbackRouter(): Router {
    * POST /api/feedback
    *
    * Submit feedback about a decision and update the twin model.
+   *
+   * For undo feedback, the body should include an `undoReasoning` object:
+   * ```json
+   * {
+   *   "userId": "...",
+   *   "decisionId": "...",
+   *   "type": "undo",
+   *   "undoReasoning": {
+   *     "whatWentWrong": "...",
+   *     "whichStep": "...",
+   *     "preferredAlternative": "...",
+   *     "severity": "minor|moderate|severe"
+   *   }
+   * }
+   * ```
    */
   router.post('/', async (req, res, next) => {
     try {
@@ -44,6 +92,7 @@ export function createFeedbackRouter(): Router {
         decisionId: string;
         type: string;
         data?: Record<string, unknown>;
+        undoReasoning?: unknown;
       };
 
       if (!body.userId || !body.decisionId || !body.type) {
@@ -61,12 +110,30 @@ export function createFeedbackRouter(): Router {
         return;
       }
 
+      // Parse undoReasoning when feedback type is 'undo' (optional for API compat)
+      let undoReasoning: UndoReasoning | undefined;
+      if (body.type === 'undo' && body.undoReasoning !== undefined) {
+        const parsed = parseUndoReasoning(body.undoReasoning);
+        if (!parsed) {
+          res.status(400).json({
+            error:
+              'undoReasoning, if provided, must include ' +
+              'whatWentWrong (string) and severity (minor|moderate|severe).',
+          });
+          return;
+        }
+        undoReasoning = parsed;
+      }
+
       // 1. Persist raw feedback event
       const savedFeedback = await feedbackRepository.create({
         userId: body.userId,
         decisionId: body.decisionId,
         type: body.type,
-        data: body.data ?? {},
+        data: {
+          ...(body.data ?? {}),
+          ...(undoReasoning ? { undoReasoning } : {}),
+        },
       });
 
       // 2. Build a FeedbackEvent for the twin model
@@ -78,6 +145,7 @@ export function createFeedbackRouter(): Router {
         correctedAction: body.data?.['correctedAction'] as string | undefined,
         correctedValue: body.data?.['correctedValue'],
         reason: body.data?.['reason'] as string | undefined,
+        undoReasoning,
         timestamp: new Date(),
       };
 

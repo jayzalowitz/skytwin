@@ -8,6 +8,10 @@ import { createFeedbackRouter } from './routes/feedback.js';
 import { createOAuthRouter } from './routes/oauth.js';
 import { createEvalsRouter } from './routes/evals.js';
 import { createUsersRouter } from './routes/users.js';
+import { createProposalsRouter } from './routes/proposals.js';
+import { createAskRouter } from './routes/ask.js';
+import { createBriefingsRouter } from './routes/briefings.js';
+import { createSkillGapsRouter } from './routes/skill-gaps.js';
 
 const config = loadConfig();
 const app: Application = express();
@@ -24,6 +28,10 @@ app.use('/api/feedback', createFeedbackRouter());
 app.use('/api/oauth', createOAuthRouter());
 app.use('/api/evals', createEvalsRouter());
 app.use('/api/users', createUsersRouter());
+app.use('/api/proposals', createProposalsRouter());
+app.use('/api/v1/twin', createAskRouter());
+app.use('/api/v1/briefings', createBriefingsRouter());
+app.use('/api/v1/skill-gaps', createSkillGapsRouter());
 
 // Health check
 app.get('/api/health', (_req, res) => {

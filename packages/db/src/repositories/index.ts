@@ -30,3 +30,15 @@ export type {
   CreateExecutionResultInput,
   ExecutionPlanWithResult,
 } from './execution-repository.js';
+
+export { signalRepository } from './signal-repository.js';
+export type { CreateSignalInput } from './signal-repository.js';
+
+export { proposalRepository } from './proposal-repository.js';
+export type { CreateProposalInput } from './proposal-repository.js';
+
+export { skillGapRepository } from './skill-gap-repository.js';
+export type { CreateSkillGapInput } from './skill-gap-repository.js';
+
+export { proactiveScanRepository } from './proactive-scan-repository.js';
+export type { CreateScanInput, CreateBriefingInput } from './proactive-scan-repository.js';

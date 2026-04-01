@@ -15,6 +15,19 @@ export type {
   Inference,
   TwinEvidence,
   FeedbackEvent,
+  UndoReasoning,
+  PreferenceProposal,
+  StoredSignal,
+  SignalCorrelation,
+  WhatWouldIDoRequest,
+  WhatWouldIDoResponse,
+  TwinExport,
+  BriefingItem,
+  Briefing,
+  ProactiveScanResult,
+  SkillGap,
+  AdapterTrustProfile,
+  RoutingDecision,
 } from './twin.js';
 
 export type {

@@ -28,6 +28,7 @@
       "@skytwin/twin-model": ["./packages/twin-model/src"],
       "@skytwin/policy-engine": ["./packages/policy-engine/src"],
       "@skytwin/ironclaw-adapter": ["./packages/ironclaw-adapter/src"],
+      "@skytwin/execution-router": ["./packages/execution-router/src"],
       "@skytwin/explanations": ["./packages/explanations/src"],
       "@skytwin/connectors": ["./packages/connectors/src"],
       "@skytwin/evals": ["./packages/evals/src"]

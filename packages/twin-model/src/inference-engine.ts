@@ -257,6 +257,20 @@ export class InferenceEngine {
         break;
       }
 
+      case 'undo': {
+        // Undo is a strong signal that the action was wrong — weaken
+        // related inferences similarly to a reject.  The caller
+        // (TwinService) applies additional 2x weight and severity
+        // adjustments on top of this base correction.
+        for (const inference of updatedInferences) {
+          if (inference.supportingEvidenceIds.length > 0) {
+            inference.confidence = this.decreaseConfidence(inference.confidence);
+            inference.updatedAt = new Date();
+          }
+        }
+        break;
+      }
+
       case 'ignore': {
         // No inference update for ignored feedback
         break;
