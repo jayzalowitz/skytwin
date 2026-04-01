@@ -145,6 +145,8 @@ export interface ApprovalRequestRow {
   requested_at: Date;
   responded_at: Date | null;
   response: Record<string, unknown> | null;
+  expires_at: Date;
+  batch_id: string | null;
 }
 
 // ============================================================================
