@@ -21,7 +21,12 @@ import {
   policyRepositoryAdapter,
 } from '@skytwin/db';
 import type { DecisionContext } from '@skytwin/shared-types';
-import { TrustTier } from '@skytwin/shared-types';
+import { SituationType, TrustTier } from '@skytwin/shared-types';
+import { WorkflowHandlerRegistry } from '../workflows/registry.js';
+import { processCalendarConflict } from '../workflows/calendar-conflict.js';
+import { processSubscriptionRenewal } from '../workflows/subscription-renewal.js';
+import { processGroceryReorder } from '../workflows/grocery-reorder.js';
+import { processTravelDecision } from '../workflows/travel-decision.js';
 
 /**
  * Create the events router for ingesting raw events.
@@ -34,6 +39,13 @@ export function createEventsRouter(): Router {
   const policyEvaluator = new PolicyEvaluator(policyRepositoryAdapter);
   const decisionMaker = new DecisionMaker(twinService, policyEvaluator, decisionRepositoryAdapter);
   const explanationGenerator = new ExplanationGenerator(explanationRepositoryAdapter);
+  // Set up workflow registry
+  const workflowRegistry = new WorkflowHandlerRegistry();
+  workflowRegistry.register(SituationType.CALENDAR_CONFLICT, processCalendarConflict);
+  workflowRegistry.register(SituationType.SUBSCRIPTION_RENEWAL, processSubscriptionRenewal);
+  workflowRegistry.register(SituationType.GROCERY_REORDER, processGroceryReorder);
+  workflowRegistry.register(SituationType.TRAVEL_DECISION, processTravelDecision);
+
   const eventsConfig = loadConfig();
   let ironclawAdapter: IronClawAdapter;
 
