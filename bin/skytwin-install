@@ -1,0 +1,291 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# skytwin-install — safely install all SkyTwin dependencies
+#
+# Detects your OS (macOS / Windows via WSL / Linux) and installs only what's
+# missing. Never overwrites existing installations. Uses Homebrew on Mac,
+# winget/choco on Windows, apt on Debian/Ubuntu.
+#
+# What it installs (only if missing):
+#   - Node.js >= 20 (via nvm, to avoid conflicting with system node)
+#   - pnpm 9.x (via corepack)
+#   - Docker Desktop (or Docker Engine on Linux)
+#   - Ollama (optional, for local LLM reasoning)
+#   - CockroachDB database (via Docker, not a system install)
+#
+# Safe behaviors:
+#   - Checks before installing — never reinstalls what you already have
+#   - Uses nvm for Node so it doesn't touch /usr/local/bin/node
+#   - CockroachDB runs in Docker — no system-level database install
+#   - Ollama installs to its own directory, no conflicts
+#   - All port bindings are configurable via .env
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+OS="unknown"
+case "$(uname -s)" in
+  Darwin*) OS="mac" ;;
+  Linux*)
+    if grep -qi microsoft /proc/version 2>/dev/null; then
+      OS="wsl"
+    else
+      OS="linux"
+    fi
+    ;;
+  MINGW*|MSYS*|CYGWIN*) OS="windows" ;;
+esac
+
+echo -e "${BLUE}=== SkyTwin Installer ===${NC}"
+echo -e "  Detected: ${GREEN}${OS}${NC}"
+echo ""
+echo "This will install missing dependencies. Existing installs are left untouched."
+echo ""
+
+INSTALLED=()
+SKIPPED=()
+FAILED=()
+
+ok()   { INSTALLED+=("$1"); echo -e "  ${GREEN}Installed${NC} $1"; }
+skip() { SKIPPED+=("$1");  echo -e "  ${YELLOW}Already installed${NC} $1 ($2)"; }
+fail() { FAILED+=("$1");   echo -e "  ${RED}Failed${NC} $1 — $2"; }
+
+# ── Homebrew (macOS only) ──────────────────────────────────────────
+
+install_homebrew() {
+  if [ "$OS" != "mac" ]; then return; fi
+  if command -v brew &>/dev/null; then
+    skip "Homebrew" "$(brew --version | head -1)"
+    return
+  fi
+  echo -e "${YELLOW}Installing Homebrew...${NC}"
+  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" \
+    && ok "Homebrew" \
+    || fail "Homebrew" "see https://brew.sh"
+}
+
+# ── Node.js ────────────────────────────────────────────────────────
+
+install_node() {
+  if command -v node &>/dev/null; then
+    NODE_VER=$(node -v)
+    NODE_MAJOR=$(echo "$NODE_VER" | sed 's/v//' | cut -d. -f1)
+    if [ "$NODE_MAJOR" -ge 20 ]; then
+      skip "Node.js" "$NODE_VER"
+      return
+    fi
+    echo -e "  ${YELLOW}Node.js ${NODE_VER} found but >= 20 required. Installing via nvm...${NC}"
+  fi
+
+  # Use nvm to avoid conflicting with any existing system node
+  if [ ! -d "${HOME}/.nvm" ]; then
+    echo -e "${YELLOW}Installing nvm (Node Version Manager)...${NC}"
+    curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash 2>/dev/null
+  fi
+
+  export NVM_DIR="${HOME}/.nvm"
+  [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+
+  if command -v nvm &>/dev/null; then
+    nvm install 22 --default 2>/dev/null && ok "Node.js 22 (via nvm)" || fail "Node.js" "nvm install failed"
+  else
+    # Fallback: try Homebrew or apt
+    case "$OS" in
+      mac) brew install node@22 2>/dev/null && ok "Node.js 22 (via Homebrew)" || fail "Node.js" "install manually from nodejs.org" ;;
+      linux|wsl) sudo apt-get update -qq && sudo apt-get install -y -qq nodejs npm 2>/dev/null && ok "Node.js (via apt)" || fail "Node.js" "install manually from nodejs.org" ;;
+      *) fail "Node.js" "install manually from https://nodejs.org" ;;
+    esac
+  fi
+}
+
+# ── pnpm ───────────────────────────────────────────────────────────
+
+install_pnpm() {
+  if command -v pnpm &>/dev/null; then
+    skip "pnpm" "$(pnpm -v)"
+    return
+  fi
+
+  echo -e "${YELLOW}Installing pnpm via corepack...${NC}"
+  if command -v corepack &>/dev/null; then
+    corepack enable 2>/dev/null
+    corepack prepare pnpm@9.1.0 --activate 2>/dev/null \
+      && ok "pnpm 9.1.0 (via corepack)" \
+      || {
+        # corepack might not have permissions, fall back to npm
+        npm install -g pnpm@9 2>/dev/null && ok "pnpm (via npm)" || fail "pnpm" "run: npm install -g pnpm"
+      }
+  else
+    npm install -g pnpm@9 2>/dev/null && ok "pnpm (via npm)" || fail "pnpm" "run: npm install -g pnpm"
+  fi
+}
+
+# ── Docker ─────────────────────────────────────────────────────────
+
+install_docker() {
+  if command -v docker &>/dev/null; then
+    skip "Docker" "$(docker --version)"
+    return
+  fi
+
+  echo -e "${YELLOW}Installing Docker...${NC}"
+  case "$OS" in
+    mac)
+      if command -v brew &>/dev/null; then
+        brew install --cask docker 2>/dev/null \
+          && ok "Docker Desktop (via Homebrew)" \
+          || fail "Docker" "install Docker Desktop from https://docker.com/products/docker-desktop"
+        echo -e "  ${YELLOW}Note:${NC} Open Docker Desktop once to complete setup."
+      else
+        fail "Docker" "install Docker Desktop from https://docker.com/products/docker-desktop"
+      fi
+      ;;
+    linux)
+      curl -fsSL https://get.docker.com | sh 2>/dev/null \
+        && ok "Docker Engine" \
+        || fail "Docker" "install from https://docs.docker.com/engine/install"
+      # Add user to docker group to avoid sudo
+      sudo usermod -aG docker "$USER" 2>/dev/null || true
+      echo -e "  ${YELLOW}Note:${NC} Log out and back in for docker group to take effect."
+      ;;
+    wsl)
+      echo -e "  ${YELLOW}For WSL:${NC} Install Docker Desktop for Windows and enable WSL integration."
+      echo -e "  Download: https://docker.com/products/docker-desktop"
+      fail "Docker" "install Docker Desktop for Windows with WSL integration"
+      ;;
+    *)
+      fail "Docker" "install from https://docker.com/products/docker-desktop"
+      ;;
+  esac
+}
+
+# ── Ollama ─────────────────────────────────────────────────────────
+
+install_ollama() {
+  if command -v ollama &>/dev/null; then
+    skip "Ollama" "$(ollama -v 2>/dev/null || echo 'installed')"
+    return
+  fi
+
+  echo -e "${YELLOW}Installing Ollama (optional, for local LLM reasoning)...${NC}"
+  case "$OS" in
+    mac)
+      if command -v brew &>/dev/null; then
+        brew install ollama 2>/dev/null && ok "Ollama (via Homebrew)" || {
+          curl -fsSL https://ollama.ai/install.sh | sh 2>/dev/null && ok "Ollama" || fail "Ollama" "install from https://ollama.ai (optional)"
+        }
+      else
+        curl -fsSL https://ollama.ai/install.sh | sh 2>/dev/null && ok "Ollama" || fail "Ollama" "install from https://ollama.ai (optional)"
+      fi
+      ;;
+    linux|wsl)
+      curl -fsSL https://ollama.ai/install.sh | sh 2>/dev/null && ok "Ollama" || fail "Ollama" "install from https://ollama.ai (optional)"
+      ;;
+    *)
+      echo -e "  ${YELLOW}Download Ollama from https://ollama.ai (optional)${NC}"
+      ;;
+  esac
+}
+
+# ── Pull Ollama model ──────────────────────────────────────────────
+
+pull_ollama_model() {
+  if ! command -v ollama &>/dev/null; then return; fi
+
+  if ollama list 2>/dev/null | grep -q "gemma4"; then
+    skip "gemma4 model" "already pulled"
+    return
+  fi
+
+  echo -e "${YELLOW}Pulling gemma4 model (9.6 GB, may take a few minutes)...${NC}"
+  ollama pull gemma4:latest 2>&1 | tail -3 \
+    && ok "gemma4:latest model" \
+    || fail "gemma4 model" "run: ollama pull gemma4:latest"
+}
+
+# ── Project setup ──────────────────────────────────────────────────
+
+setup_project() {
+  echo ""
+  echo -e "${YELLOW}Setting up project...${NC}"
+
+  # .env file
+  if [ ! -f "$ROOT/.env" ]; then
+    cp "$ROOT/.env.example" "$ROOT/.env" 2>/dev/null && echo -e "  ${GREEN}Created${NC} .env from .env.example" || true
+  else
+    echo -e "  ${YELLOW}Already exists${NC} .env"
+  fi
+
+  # Install node deps
+  echo -e "  Installing node dependencies..."
+  pnpm install 2>&1 | tail -2
+
+  # Build
+  echo -e "  Building packages..."
+  pnpm build 2>&1 | tail -3
+
+  # Start CockroachDB + migrate + seed
+  if command -v docker &>/dev/null; then
+    echo -e "  Starting CockroachDB..."
+    docker compose up -d cockroachdb 2>&1 | tail -2
+
+    # Wait for CRDB
+    for i in $(seq 1 30); do
+      curl -sf http://localhost:8080/health &>/dev/null && break
+      sleep 1
+    done
+
+    docker exec skytwin-cockroachdb cockroach sql --insecure -e "CREATE DATABASE IF NOT EXISTS skytwin;" 2>/dev/null || true
+
+    echo -e "  Running migrations..."
+    pnpm db:migrate 2>&1 | tail -3
+
+    echo -e "  Seeding database..."
+    pnpm db:seed 2>&1 | tail -5
+  fi
+
+  echo -e "  ${GREEN}Project setup complete${NC}"
+}
+
+# ── Run everything ─────────────────────────────────────────────────
+
+install_homebrew
+install_node
+install_pnpm
+install_docker
+install_ollama
+pull_ollama_model
+setup_project
+
+echo ""
+echo -e "${BLUE}=== Installation Summary ===${NC}"
+echo ""
+
+if [ ${#INSTALLED[@]} -gt 0 ]; then
+  echo -e "  ${GREEN}Installed:${NC}"
+  for item in "${INSTALLED[@]}"; do echo "    - $item"; done
+fi
+
+if [ ${#SKIPPED[@]} -gt 0 ]; then
+  echo -e "  ${YELLOW}Already had:${NC}"
+  for item in "${SKIPPED[@]}"; do echo "    - $item"; done
+fi
+
+if [ ${#FAILED[@]} -gt 0 ]; then
+  echo ""
+  echo -e "  ${RED}Failed (install manually):${NC}"
+  for item in "${FAILED[@]}"; do echo "    - $item"; done
+fi
+
+echo ""
+echo -e "${GREEN}Ready to go!${NC} Start with:"
+echo ""
+echo -e "  ${BLUE}./bin/skytwin-dev${NC}"
+echo ""

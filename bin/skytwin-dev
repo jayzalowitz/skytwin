@@ -1,0 +1,197 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# skytwin-dev — one-liner to start all SkyTwin services for development
+#
+# Usage:
+#   ./bin/skytwin-dev           # start everything
+#   ./bin/skytwin-dev --no-ollama   # skip OpenClaw bridge / Ollama
+#   ./bin/skytwin-dev --stop    # tear everything down
+#
+# Starts: CockroachDB (Docker), API, Web, Worker, OpenClaw Bridge (Ollama)
+# Ports:  3100 (API), 3200 (Web), 3101 (Worker), 3456 (OpenClaw), 26257 (CRDB)
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+PIDFILE="$ROOT/.skytwin-pids"
+SKIP_OLLAMA=false
+
+for arg in "$@"; do
+  case "$arg" in
+    --no-ollama) SKIP_OLLAMA=true ;;
+    --stop)
+      echo -e "${YELLOW}Stopping SkyTwin services...${NC}"
+      if [ -f "$PIDFILE" ]; then
+        while read -r pid name; do
+          if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null && echo -e "  ${RED}Stopped${NC} $name (PID $pid)"
+          fi
+        done < "$PIDFILE"
+        rm -f "$PIDFILE"
+      fi
+      docker compose stop cockroachdb 2>/dev/null && echo -e "  ${RED}Stopped${NC} CockroachDB" || true
+      echo -e "${GREEN}All services stopped.${NC}"
+      exit 0
+      ;;
+    --help|-h)
+      echo "Usage: ./bin/skytwin-dev [--no-ollama] [--stop]"
+      echo ""
+      echo "  --no-ollama   Skip OpenClaw bridge (no Ollama required)"
+      echo "  --stop        Stop all running SkyTwin services"
+      exit 0
+      ;;
+  esac
+done
+
+# Clean up any previous run
+if [ -f "$PIDFILE" ]; then
+  "$0" --stop 2>/dev/null || true
+fi
+
+echo -e "${BLUE}=== SkyTwin Development Server ===${NC}"
+echo ""
+
+# 1. Check prerequisites
+echo -e "${YELLOW}Checking prerequisites...${NC}"
+
+if ! command -v node &>/dev/null; then
+  echo -e "  ${RED}Node.js not found.${NC} Run: ./bin/skytwin-install"
+  exit 1
+fi
+
+NODE_MAJOR=$(node -v | sed 's/v//' | cut -d. -f1)
+if [ "$NODE_MAJOR" -lt 20 ]; then
+  echo -e "  ${RED}Node.js >= 20 required${NC} (found $(node -v)). Run: ./bin/skytwin-install"
+  exit 1
+fi
+echo -e "  ${GREEN}Node.js${NC} $(node -v)"
+
+if ! command -v pnpm &>/dev/null; then
+  echo -e "  ${RED}pnpm not found.${NC} Run: corepack enable && corepack prepare pnpm@9.1.0 --activate"
+  exit 1
+fi
+echo -e "  ${GREEN}pnpm${NC} $(pnpm -v)"
+
+if ! command -v docker &>/dev/null; then
+  echo -e "  ${RED}Docker not found.${NC} Run: ./bin/skytwin-install"
+  exit 1
+fi
+echo -e "  ${GREEN}Docker${NC} available"
+
+if [ "$SKIP_OLLAMA" = false ] && ! command -v ollama &>/dev/null; then
+  echo -e "  ${YELLOW}Ollama not found${NC} — will skip OpenClaw bridge. Pass --no-ollama to suppress."
+  SKIP_OLLAMA=true
+fi
+
+if [ "$SKIP_OLLAMA" = false ]; then
+  echo -e "  ${GREEN}Ollama${NC} available"
+fi
+
+echo ""
+
+# 2. Start CockroachDB
+echo -e "${YELLOW}Starting CockroachDB...${NC}"
+if curl -sf http://localhost:26257/ &>/dev/null || curl -sf http://localhost:8080/health &>/dev/null; then
+  echo -e "  ${GREEN}Already running${NC} on port 26257"
+else
+  docker compose up -d cockroachdb 2>&1 | tail -2
+  echo -n "  Waiting for health"
+  for i in $(seq 1 30); do
+    if curl -sf http://localhost:8080/health &>/dev/null; then
+      echo -e " ${GREEN}ready${NC}"
+      break
+    fi
+    echo -n "."
+    sleep 1
+  done
+fi
+
+# 3. Create database if needed
+echo -e "${YELLOW}Ensuring database exists...${NC}"
+docker exec skytwin-cockroachdb cockroach sql --insecure -e "CREATE DATABASE IF NOT EXISTS skytwin;" 2>/dev/null \
+  && echo -e "  ${GREEN}Database 'skytwin' ready${NC}" \
+  || echo -e "  ${YELLOW}Could not verify database (may already exist)${NC}"
+
+# 4. Install deps + build + migrate + seed (if needed)
+if [ ! -d "node_modules" ]; then
+  echo -e "${YELLOW}Installing dependencies...${NC}"
+  pnpm install
+fi
+
+echo -e "${YELLOW}Building...${NC}"
+pnpm build 2>&1 | tail -3
+
+echo -e "${YELLOW}Running migrations...${NC}"
+pnpm db:migrate 2>&1 | tail -3
+
+# Seed only if no users exist
+USER_COUNT=$(docker exec skytwin-cockroachdb cockroach sql --insecure -e "SELECT count(*) FROM skytwin.users;" --format=csv 2>/dev/null | tail -1 || echo "0")
+if [ "$USER_COUNT" = "0" ] || [ "$USER_COUNT" = "count" ]; then
+  echo -e "${YELLOW}Seeding database...${NC}"
+  pnpm db:seed 2>&1 | tail -5
+fi
+
+echo ""
+
+# 5. Start services
+rm -f "$PIDFILE"
+
+echo -e "${YELLOW}Starting services...${NC}"
+
+# .env defaults
+export DATABASE_URL="${DATABASE_URL:-postgresql://root@localhost:26257/skytwin?sslmode=disable}"
+export NODE_ENV="${NODE_ENV:-development}"
+export API_PORT="${API_PORT:-3100}"
+export OPENCLAW_API_URL="${OPENCLAW_API_URL:-http://localhost:3456}"
+
+# API
+node apps/api/dist/index.js &>/tmp/skytwin-api.log &
+API_PID=$!
+echo "$API_PID api" >> "$PIDFILE"
+echo -e "  ${GREEN}API${NC}            http://localhost:${API_PORT}  (PID $API_PID)"
+
+# Wait for API
+for i in $(seq 1 15); do
+  curl -sf "http://localhost:${API_PORT}/api/health" &>/dev/null && break
+  sleep 1
+done
+
+# Web
+node apps/web/dist/index.js &>/tmp/skytwin-web.log &
+WEB_PID=$!
+echo "$WEB_PID web" >> "$PIDFILE"
+echo -e "  ${GREEN}Web Dashboard${NC}  http://localhost:3200  (PID $WEB_PID)"
+
+# Worker
+node apps/worker/dist/index.js &>/tmp/skytwin-worker.log &
+WORKER_PID=$!
+echo "$WORKER_PID worker" >> "$PIDFILE"
+echo -e "  ${GREEN}Worker${NC}         port 3101  (PID $WORKER_PID)"
+
+# OpenClaw Bridge (if Ollama available)
+if [ "$SKIP_OLLAMA" = false ]; then
+  # Pull gemma4 if not available
+  if ! ollama list 2>/dev/null | grep -q "gemma4"; then
+    echo -e "  ${YELLOW}Pulling gemma4 model...${NC} (this may take a few minutes)"
+    ollama pull gemma4:latest 2>&1 | tail -2
+  fi
+
+  BRIDGE_PORT=3456 node apps/openclaw-bridge/server.mjs &>/tmp/skytwin-openclaw.log &
+  BRIDGE_PID=$!
+  echo "$BRIDGE_PID openclaw-bridge" >> "$PIDFILE"
+  echo -e "  ${GREEN}OpenClaw Bridge${NC} http://localhost:3456  (PID $BRIDGE_PID)  [gemma4]"
+fi
+
+echo ""
+echo -e "${GREEN}=== SkyTwin is running ===${NC}"
+echo -e "  Open ${BLUE}http://localhost:3200${NC} in your browser"
+echo -e "  Logs: /tmp/skytwin-{api,web,worker,openclaw}.log"
+echo -e "  Stop: ${YELLOW}./bin/skytwin-dev --stop${NC}"
+echo ""

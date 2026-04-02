@@ -2,6 +2,9 @@
   "name": "skytwin",
   "private": true,
   "scripts": {
+    "start": "./bin/skytwin-dev",
+    "stop": "./bin/skytwin-dev --stop",
+    "setup": "./bin/skytwin-install",
     "build": "turbo run build",
     "dev": "turbo run dev",
     "test": "turbo run test",
