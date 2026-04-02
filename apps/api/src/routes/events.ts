@@ -160,12 +160,14 @@ export function createEventsRouter(): Router {
           userId,
         );
 
-        // Persist execution plan and result
+        // Persist execution plan and result (include steps for rollback support)
         const savedPlan = await executionRepository.createPlan({
           decisionId: decision.id,
           actionId: outcome.selectedAction.id,
           status: result.status === 'completed' ? 'completed' : 'failed',
-          steps: [],
+          steps: result.output?.['stepsCompleted']
+            ? [{ type: outcome.selectedAction.actionType, status: result.status }]
+            : [],
         });
         await executionRepository.createResult({
           planId: savedPlan.id,

@@ -16,6 +16,7 @@ const VALID_DOMAINS = [
  */
 export function createUsersRouter(): Router {
   const router = Router();
+  const twinService = new TwinService(new TwinRepositoryAdapter(), new PatternRepositoryAdapter());
 
   /**
    * POST /api/users
@@ -25,7 +26,7 @@ export function createUsersRouter(): Router {
    */
   router.post('/', async (req, res, next) => {
     try {
-      const body = req.body as { name?: string; email?: string; trustTier?: string };
+      const body = req.body as { name?: string; email?: string };
       const email = body.email?.trim();
       const name = body.name?.trim() || email || 'Anonymous';
 
@@ -41,9 +42,9 @@ export function createUsersRouter(): Router {
         return;
       }
 
-      const trustTier = body.trustTier && VALID_TIERS.includes(body.trustTier)
-        ? body.trustTier
-        : 'suggest';
+      // Trust tier is always 'suggest' for new users — must be earned, not declared.
+      // Callers cannot self-escalate via the creation endpoint.
+      const trustTier = 'suggest';
 
       const user = await userRepository.create({
         email,
@@ -197,30 +198,27 @@ export function createUsersRouter(): Router {
         resolvedId = byEmail.id;
       }
 
-      const twinService = new TwinService(
-        new TwinRepositoryAdapter(),
-        new PatternRepositoryAdapter(),
+      const MAX_SEED_PREFERENCES = 100;
+      const prefs = body.preferences.slice(0, MAX_SEED_PREFERENCES);
+
+      const validPrefs = prefs.filter((pref) => pref.domain && pref.key);
+      await Promise.all(
+        validPrefs.map((pref) =>
+          twinService.updatePreference(resolvedId, {
+            id: `pref_seed_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+            domain: pref.domain,
+            key: pref.key,
+            value: pref.value,
+            confidence: ConfidenceLevel.HIGH,
+            source: 'explicit',
+            evidenceIds: [],
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          }),
+        ),
       );
 
-      let savedCount = 0;
-      for (const pref of body.preferences) {
-        if (!pref.domain || !pref.key) continue;
-
-        await twinService.updatePreference(resolvedId, {
-          id: `pref_seed_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
-          domain: pref.domain,
-          key: pref.key,
-          value: pref.value,
-          confidence: ConfidenceLevel.HIGH,
-          source: 'explicit',
-          evidenceIds: [],
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        });
-        savedCount++;
-      }
-
-      res.json({ seeded: savedCount });
+      res.json({ seeded: validPrefs.length });
     } catch (error) {
       next(error);
     }

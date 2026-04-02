@@ -16,7 +16,7 @@ import { createServer } from 'node:http';
 
 const OLLAMA_HOST = process.env['OLLAMA_HOST'] || 'http://localhost:11434';
 const OLLAMA_MODEL = process.env['OLLAMA_MODEL'] || 'gemma4:latest';
-const PORT = parseInt(process.env['BRIDGE_PORT'] || '4100', 10);
+const PORT = parseInt(process.env['BRIDGE_PORT'] || '3456', 10);
 
 // ── Helpers ────────────────────────────────────────────
 
@@ -46,6 +46,7 @@ async function askOllama(prompt) {
         num_predict: 512,
       },
     }),
+    signal: AbortSignal.timeout(30000),
   });
 
   if (!response.ok) {
@@ -104,7 +105,7 @@ Respond in this JSON format only:
         parsed = JSON.parse(jsonMatch[0]);
       }
     } catch {
-      parsed = { summary: llmResponse.slice(0, 200), success: true };
+      parsed = { summary: llmResponse.slice(0, 200), success: false };
     }
 
     json(res, 200, {

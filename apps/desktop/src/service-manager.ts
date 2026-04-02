@@ -53,8 +53,17 @@ export class ServiceManager {
   async startAll(): Promise<void> {
     await this.startApi();
     // Wait for API to be ready before starting worker
-    await this.waitForApi(10000);
+    const apiReady = await this.waitForApi(10000);
+    if (apiReady) {
+      this.api.restartCount = 0; // Only reset after health check passes
+    }
     await this.startWorker();
+    // Worker doesn't have a health endpoint, so reset after a short delay
+    setTimeout(() => {
+      if (this.worker.status === 'running') {
+        this.worker.restartCount = 0;
+      }
+    }, 3000);
   }
 
   private async startApi(): Promise<void> {
@@ -94,7 +103,7 @@ export class ServiceManager {
       });
 
       this.api.status = 'running';
-      this.api.restartCount = 0;
+      // restartCount is reset only after health check confirms the process is alive
       this.emitStatus();
     } catch (err) {
       console.error('[api] Failed to start:', err);
@@ -140,7 +149,7 @@ export class ServiceManager {
       });
 
       this.worker.status = 'running';
-      this.worker.restartCount = 0;
+      // restartCount is reset only after health check confirms the process is alive
       this.emitStatus();
     } catch (err) {
       console.error('[worker] Failed to start:', err);
@@ -174,17 +183,18 @@ export class ServiceManager {
     this.onStatusChange?.(this.getStatus());
   }
 
-  private async waitForApi(timeoutMs: number): Promise<void> {
+  private async waitForApi(timeoutMs: number): Promise<boolean> {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
       try {
         const response = await fetch('http://localhost:3100/api/health');
-        if (response.ok) return;
+        if (response.ok) return true;
       } catch {
         // API not ready yet
       }
       await new Promise((r) => setTimeout(r, 500));
     }
     console.warn('[api] Health check timed out, starting worker anyway');
+    return false;
   }
 }
