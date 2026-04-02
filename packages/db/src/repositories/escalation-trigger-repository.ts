@@ -34,6 +34,17 @@ export const escalationTriggerRepository = {
   },
 
   /**
+   * Find a single trigger by ID.
+   */
+  async findById(id: string): Promise<EscalationTriggerRow | null> {
+    const result = await query<EscalationTriggerRow>(
+      `SELECT * FROM escalation_triggers WHERE id = $1`,
+      [id],
+    );
+    return result.rows[0] ?? null;
+  },
+
+  /**
    * Get all escalation triggers for a user.
    */
   async getForUser(userId: string): Promise<EscalationTriggerRow[]> {

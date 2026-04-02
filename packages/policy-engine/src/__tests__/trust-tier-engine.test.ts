@@ -152,9 +152,10 @@ describe('TrustTierEngine', () => {
       const result = engine.evaluateRegression(TrustTier.MODERATE_AUTONOMY, stats);
 
       expect(result.shouldChange).toBe(true);
-      expect(result.recommendedTier).toBe(TrustTier.LOW_AUTONOMY);
+      expect(result.recommendedTier).toBe(TrustTier.OBSERVER);
       expect(result.direction).toBe('regression');
       expect(result.reason).toContain('Critical undo');
+      expect(result.reason).toContain('OBSERVER');
     });
 
     it('should demote on 3+ recent rejections', () => {

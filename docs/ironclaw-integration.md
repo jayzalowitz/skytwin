@@ -249,3 +249,36 @@ Not all are implemented in IronClaw today. The adapter handles unsupported opera
 - Leverage IronClaw's routines engine for scheduled actions
 - Real-time status streaming via WebSocket/SSE
 - Advanced rollback coordination through IronClaw's tool system
+
+### Phase 5: Native Desktop Apps (Mac & Windows)
+
+Package the SkyTwin web dashboard and local IronClaw adapter as native desktop applications for macOS and Windows.
+
+#### Mac App
+- **Framework:** Electron or Tauri (Tauri preferred for smaller binary and native Rust interop with IronClaw)
+- **Distribution:** `.dmg` installer + Mac App Store (optional)
+- **Code signing:** Apple Developer ID for notarization; required for Gatekeeper
+- **Auto-update:** Sparkle (Tauri) or `electron-updater` (Electron) for delta updates
+- **System integration:**
+  - Menu bar agent for background decision monitoring
+  - Native macOS notifications for approval requests and execution results
+  - Keychain integration for credential storage (replaces env-var secrets)
+  - Universal binary (x86_64 + arm64) for Intel and Apple Silicon
+
+#### Windows App
+- **Framework:** Same Electron/Tauri choice as Mac for shared codebase
+- **Distribution:** `.msi` or `.exe` installer via WiX/NSIS; optional Microsoft Store submission
+- **Code signing:** EV code signing certificate for SmartScreen reputation
+- **Auto-update:** WinSparkle (Tauri) or `electron-updater` (Electron)
+- **System integration:**
+  - System tray agent for background decision monitoring
+  - Windows Toast notifications for approval requests and execution results
+  - Windows Credential Manager for credential storage
+  - Support for x64 and ARM64 (Windows on ARM)
+
+#### Shared Considerations
+- **Local IronClaw bundling:** Embed the IronClaw Rust binary inside the app bundle so users don't need a separate server process. The app manages the IronClaw lifecycle (start on launch, stop on quit).
+- **Offline-first:** Queue decisions locally when network is unavailable; sync when connectivity returns.
+- **CockroachDB connectivity:** Desktop apps connect to a hosted CockroachDB instance. Optionally support embedded SQLite for fully offline single-user mode with sync-on-reconnect.
+- **Build pipeline:** CI produces platform-specific artifacts (`.dmg`, `.msi`) on each release tag. Use GitHub Actions with `tauri-action` or `electron-builder`.
+- **Security:** All HMAC secrets and OAuth tokens stored in OS-native credential stores, never on disk. App sandbox enabled where supported.

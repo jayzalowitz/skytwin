@@ -77,7 +77,7 @@ export const trustTierAuditRepository = {
       `SELECT COUNT(*) as count FROM trust_tier_audit
        WHERE user_id = $1
          AND direction = $2
-         AND created_at >= now() - ($3 || ' days')::INTERVAL`,
+         AND created_at >= now() - ($3::int * INTERVAL '1 day')`,
       [userId, direction, windowDays],
     );
     return parseInt(result.rows[0]?.count ?? '0', 10);

@@ -6,6 +6,15 @@ import type { AutonomySettings } from '@skytwin/shared-types';
 export interface SpendRepositoryPort {
   getDailyTotal(userId: string, windowHours?: number): Promise<number>;
   reconcile(actionId: string, actualCostCents: number): Promise<unknown>;
+  /**
+   * Atomically check limit and record spend in one transaction.
+   * Optional: if not provided, falls back to non-atomic check.
+   */
+  checkAndRecordSpend?(
+    input: { userId: string; actionId: string; decisionId: string; estimatedCostCents: number },
+    dailyLimitCents: number,
+    windowHours?: number,
+  ): Promise<{ allowed: boolean; currentTotal: number; record: unknown | null }>;
 }
 
 /**
@@ -51,8 +60,20 @@ export class SpendTracker {
     settings: AutonomySettings,
     windowHours: number = 24,
   ): Promise<SpendCheckResult> {
+    // Reject negative costs — these could bypass spend tracking
+    if (proposedCostCents < 0) {
+      return {
+        allowed: false,
+        currentDailySpendCents: 0,
+        proposedActionCents: proposedCostCents,
+        dailyLimitCents: settings.maxDailySpendCents,
+        remainingCents: 0,
+        reason: `Invalid negative cost (${proposedCostCents} cents). Actions cannot have negative costs.`,
+      };
+    }
+
     // Zero-cost actions always pass
-    if (proposedCostCents <= 0) {
+    if (proposedCostCents === 0) {
       return {
         allowed: true,
         currentDailySpendCents: 0,

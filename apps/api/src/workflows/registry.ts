@@ -9,6 +9,7 @@ import type { SituationInterpreter, DecisionMaker } from '@skytwin/decision-engi
 import type { TwinService } from '@skytwin/twin-model';
 import type { ExplanationGenerator } from '@skytwin/explanations';
 import type { IronClawAdapter } from '@skytwin/ironclaw-adapter';
+import { userRepository } from '@skytwin/db';
 
 /**
  * Common dependencies shared by all workflow handlers.
@@ -96,7 +97,9 @@ export async function genericWorkflowHandler(
     deps.twinService.getTemporalProfile(userId),
   ]);
 
-  const trustTier = (event['trustTier'] as TrustTier) ?? TrustTier.MODERATE_AUTONOMY;
+  // Trust tier must come from DB, never from the event payload
+  const user = await userRepository.findById(userId);
+  const trustTier = (user?.trust_tier as TrustTier) ?? TrustTier.OBSERVER;
   const context: DecisionContext = {
     userId,
     decision,

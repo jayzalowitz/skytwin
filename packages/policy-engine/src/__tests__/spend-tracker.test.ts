@@ -80,14 +80,15 @@ describe('SpendTracker', () => {
       // Should not even query the repo for zero-cost
     });
 
-    it('should allow negative cost (refund scenario)', async () => {
+    it('should reject negative cost (prevents spend bypass)', async () => {
       const repo = createMockRepo(5000);
       const tracker = new SpendTracker(repo);
       const settings = createSettings({ maxDailySpendCents: 5000 });
 
       const result = await tracker.checkDailyLimit('user1', -500, settings);
 
-      expect(result.allowed).toBe(true);
+      expect(result.allowed).toBe(false);
+      expect(result.reason).toContain('negative cost');
     });
 
     it('should block when daily spend is already at limit', async () => {

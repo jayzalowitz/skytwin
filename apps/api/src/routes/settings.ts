@@ -78,6 +78,20 @@ export function createSettingsRouter(): Router {
         requireApprovalForIrreversible,
       } = req.body as Record<string, unknown>;
 
+      // Validate spend limit values
+      if (maxSpendPerActionCents !== undefined) {
+        if (typeof maxSpendPerActionCents !== 'number' || maxSpendPerActionCents < 0) {
+          res.status(400).json({ error: 'maxSpendPerActionCents must be a non-negative number' });
+          return;
+        }
+      }
+      if (maxDailySpendCents !== undefined) {
+        if (typeof maxDailySpendCents !== 'number' || maxDailySpendCents < 0) {
+          res.status(400).json({ error: 'maxDailySpendCents must be a non-negative number' });
+          return;
+        }
+      }
+
       const updatedSettings: Record<string, unknown> = {
         ...user.autonomy_settings,
       };
@@ -217,11 +231,18 @@ export function createSettingsRouter(): Router {
    */
   router.patch('/:userId/escalation-triggers/:triggerId', async (req, res, next) => {
     try {
-      const { triggerId } = req.params;
+      const { userId, triggerId } = req.params;
       const { enabled, conditions } = req.body as {
         enabled?: boolean;
         conditions?: Record<string, unknown>;
       };
+
+      // Verify the trigger belongs to this user before updating
+      const existing = await escalationTriggerRepository.findById(triggerId!);
+      if (!existing || existing.user_id !== userId) {
+        res.status(404).json({ error: 'Trigger not found' });
+        return;
+      }
 
       const updated = await escalationTriggerRepository.update(triggerId!, {
         enabled,
@@ -251,7 +272,15 @@ export function createSettingsRouter(): Router {
    */
   router.delete('/:userId/escalation-triggers/:triggerId', async (req, res, next) => {
     try {
-      const { triggerId } = req.params;
+      const { userId, triggerId } = req.params;
+
+      // Verify the trigger belongs to this user before deleting
+      const existing = await escalationTriggerRepository.findById(triggerId!);
+      if (!existing || existing.user_id !== userId) {
+        res.status(404).json({ error: 'Trigger not found' });
+        return;
+      }
+
       const deleted = await escalationTriggerRepository.delete(triggerId!);
 
       if (!deleted) {

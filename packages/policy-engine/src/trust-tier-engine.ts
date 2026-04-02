@@ -165,15 +165,16 @@ export class TrustTierEngine {
     const currentIndex = tierIndex(currentTier);
     const lowerTier = TIER_ORDER[currentIndex - 1]!;
 
-    // Trigger 1: Critical undo
+    // Trigger 1: Critical undo — drop to OBSERVER (maximum safety)
     if (stats.hasCriticalUndo) {
       return {
         shouldChange: true,
         currentTier,
-        recommendedTier: lowerTier,
+        recommendedTier: TrustTier.OBSERVER,
         direction: 'regression',
         reason:
-          'Critical undo detected. Demoting one tier as a safety measure.',
+          'Critical undo detected. Demoting to OBSERVER as a safety measure. ' +
+          'Trust must be rebuilt from the ground up after a critical incident.',
       };
     }
 

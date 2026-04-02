@@ -114,7 +114,8 @@ export class EscalationTriggerEngine {
       case 'consecutive_rejections':
         return this.checkConsecutiveRejections(trigger, context);
       default:
-        return null;
+        // Fail-closed: unknown trigger types escalate rather than silently pass
+        return `Unknown escalation trigger type "${trigger.triggerType}". Escalating as a safety precaution.`;
     }
   }
 
