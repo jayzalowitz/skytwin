@@ -70,15 +70,12 @@ describe('DirectExecutionAdapter', () => {
     expect(result.output).toBeDefined();
   });
 
-  it('fails execution when no handler is registered', async () => {
+  it('throws when no handler is registered (enables fallback chain)', async () => {
     const registry = new ActionHandlerRegistry(); // empty
     const adapter = new DirectExecutionAdapter(registry);
 
     const plan = await adapter.buildPlan(makeAction());
-    const result = await adapter.execute(plan);
-
-    expect(result.status).toBe('failed');
-    expect(result.error).toContain('No handler registered');
+    await expect(adapter.execute(plan)).rejects.toThrow('No handler');
   });
 
   it('supports rollback for executed plans', async () => {

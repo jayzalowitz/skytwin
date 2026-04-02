@@ -224,16 +224,14 @@ describe('Adapter-Specific Behavior', () => {
       expect(plan.rollbackSteps).toHaveLength(0);
     });
 
-    it('execute() fails when no handler is registered', async () => {
+    it('execute() throws when no handler is registered (enables fallback chain)', async () => {
       const emptyRegistry = new ActionHandlerRegistry();
       const adapter = new DirectExecutionAdapter(emptyRegistry);
 
       const action = makeAction({ actionType: 'unknown_action' });
       const plan = makePlan(action);
 
-      const result = await adapter.execute(plan);
-      expect(result.status).toBe('failed');
-      expect(result.error).toContain('No handler');
+      await expect(adapter.execute(plan)).rejects.toThrow('No handler');
     });
 
     it('healthCheck() reports unhealthy with no handlers', async () => {
