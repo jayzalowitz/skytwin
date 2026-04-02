@@ -80,10 +80,11 @@ export class DirectExecutionAdapter implements IronClawAdapter {
       const handler = this.registry.getHandler(step.type);
 
       if (!handler) {
-        result.status = 'failed';
-        result.completedAt = new Date();
-        result.error = `No handler registered for action type: ${step.type}`;
-        return result;
+        // Throw (not soft-fail) so the execution router's fallback chain
+        // continues to the next adapter (e.g. OpenClaw).
+        throw new Error(
+          `No handler registered for action type: ${step.type} — falling back to next adapter`,
+        );
       }
 
       const stepResult = await handler.execute(step);

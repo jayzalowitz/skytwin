@@ -5,15 +5,30 @@ import { policyRepository } from '../repositories/policy-repository.js';
 import type { ActionPolicyRow } from '../types.js';
 
 /**
+ * Check whether a raw rule from the DB has the structured
+ * `{condition: {field, operator, value}}` shape the policy engine expects.
+ * Seed data may use a simpler `{action, condition: "string"}` format that
+ * cannot be evaluated by the engine — those are filtered out.
+ */
+function isStructuredRule(raw: unknown): raw is PolicyRule {
+  if (!raw || typeof raw !== 'object') return false;
+  const r = raw as Record<string, unknown>;
+  if (!r['condition'] || typeof r['condition'] !== 'object') return false;
+  const cond = r['condition'] as Record<string, unknown>;
+  return typeof cond['field'] === 'string';
+}
+
+/**
  * Maps a database `ActionPolicyRow` to the domain `ActionPolicy` type
  * expected by the policy engine.
  */
 function toDomain(row: ActionPolicyRow): ActionPolicy {
+  const rawRules = (Array.isArray(row.rules) ? row.rules : []) as unknown[];
   return {
     id: row.id,
     name: row.name,
     description: '',
-    rules: row.rules as PolicyRule[],
+    rules: rawRules.filter(isStructuredRule),
     priority: row.priority,
     enabled: row.is_active,
     builtIn: false,

@@ -51,6 +51,12 @@ export enum SituationType {
   SUBSCRIPTION_RENEWAL = 'subscription_renewal',
   GROCERY_REORDER = 'grocery_reorder',
   TRAVEL_DECISION = 'travel_decision',
+  FINANCE_OPERATION = 'finance_operation',
+  SMART_HOME = 'smart_home',
+  TASK_MANAGEMENT = 'task_management',
+  SOCIAL_MEDIA = 'social_media',
+  DOCUMENT_MANAGEMENT = 'document_management',
+  HEALTH_WELLNESS = 'health_wellness',
   GENERIC = 'generic',
 }
 

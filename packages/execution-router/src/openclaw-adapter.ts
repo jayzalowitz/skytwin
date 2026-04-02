@@ -13,19 +13,83 @@ import type { IronClawAdapter } from '@skytwin/ironclaw-adapter';
  * including social media, web search, data analysis, and content generation.
  */
 export const OPENCLAW_SKILLS = new Set([
-  // Standard action types (shared with IronClaw)
+  // Standard email action types (shared with IronClaw)
   'send_email',
   'archive_email',
+  'label_email',
   'reply_email',
   'forward_email',
+  // Extended email action types
+  'snooze_email',
+  'unsubscribe_email',
+  'create_filter',
+  'move_to_folder',
+  // Standard calendar action types (shared with IronClaw)
   'create_calendar_event',
   'update_calendar_event',
   'delete_calendar_event',
+  'reschedule_event',
+  'decline_event',
+  // Extended calendar action types
+  'set_out_of_office',
+  'block_focus_time',
+  'find_meeting_time',
   // Extended action types (OpenClaw-specific)
   'social_media_post',
   'web_search',
   'data_analysis',
   'content_generation',
+  // Subscription and shopping action types
+  'cancel_subscription',
+  'downgrade_subscription',
+  'renew_subscription',
+  'reorder_items',
+  'add_to_list',
+  // Travel action types
+  'book_travel',
+  'set_travel_alert',
+  // Finance action types
+  'pay_bill',
+  'categorize_transaction',
+  'flag_suspicious_transaction',
+  'transfer_funds',
+  'record_expense',
+  'set_budget_alert',
+  // Smart home action types
+  'set_thermostat',
+  'toggle_lights',
+  'lock_door',
+  'set_alarm',
+  'run_routine',
+  // Task management action types
+  'create_task',
+  'complete_task',
+  'assign_task',
+  'set_reminder',
+  'update_task_priority',
+  // Social media action types
+  'draft_social_post',
+  'schedule_social_post',
+  'respond_to_mention',
+  'mute_conversation',
+  'share_content',
+  // Document management action types
+  'organize_file',
+  'share_document',
+  'summarize_document',
+  'create_document',
+  // Health & wellness action types
+  'log_health_metric',
+  'set_medication_reminder',
+  'book_appointment',
+  'reschedule_appointment',
+  'flag_health_anomaly',
+  // General action types
+  'create_note',
+  'escalate_to_user',
+  'snooze_reminder',
+  'save_option',
+  'place_order',
 ]);
 
 /**
@@ -36,8 +100,8 @@ export const OPENCLAW_SKILLS = new Set([
  * around reversibility and sandboxing.
  *
  * This adapter communicates with an OpenClaw server via HTTP POST to its
- * /execute endpoint. When no server is configured, it falls back to logging
- * the action and returning a completed result (dry-run mode).
+ * /execute endpoint. When no server is configured, execute() throws an error
+ * and healthCheck() reports unhealthy — no silent dry-run fallback.
  */
 export class OpenClawAdapter implements IronClawAdapter {
   private readonly apiUrl: string | null;
@@ -164,24 +228,11 @@ export class OpenClawAdapter implements IronClawAdapter {
       }
     }
 
-    // No server configured — dry-run mode (log and return completed)
-    console.info(
-      `[openclaw] Dry-run: ${plan.action.actionType} — ${plan.action.description} (plan ${plan.id})`,
+    // No server configured — fail explicitly (never silently succeed)
+    throw new Error(
+      `OpenClaw not configured: set OPENCLAW_API_URL to enable. ` +
+      `Cannot execute ${plan.action.actionType} (plan ${plan.id})`,
     );
-
-    return {
-      planId: plan.id,
-      status: 'completed',
-      startedAt,
-      completedAt: new Date(),
-      output: {
-        adapter_used: 'openclaw',
-        mode: 'dry_run',
-        stepsCompleted: plan.steps.length,
-        actionType: plan.action.actionType,
-        description: plan.action.description,
-      },
-    };
   }
 
   async rollback(planId: string): Promise<RollbackResult> {
@@ -247,18 +298,17 @@ export class OpenClawAdapter implements IronClawAdapter {
       }
     }
 
-    // Dry-run mode
-    console.info(`[openclaw] Dry-run rollback for plan ${planId}`);
+    // No server configured — fail explicitly
     return {
-      success: true,
-      message: `Dry-run rollback: ${plan.rollbackSteps.length} step(s) would be rolled back.`,
+      success: false,
+      message: 'OpenClaw not configured: set OPENCLAW_API_URL to enable rollback.',
     };
   }
 
   async healthCheck(): Promise<{ healthy: boolean; latencyMs: number }> {
     if (!this.apiUrl) {
-      // No server configured — report healthy in dry-run mode
-      return { healthy: true, latencyMs: 0 };
+      // No server configured — report unhealthy
+      return { healthy: false, latencyMs: 0 };
     }
 
     const start = Date.now();

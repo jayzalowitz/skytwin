@@ -62,9 +62,9 @@ function renderApprovalCard(a) {
         <span>${action.confidence ? `Confidence: ${action.confidence}` : ''}</span>
       </div>
       <div class="approval-actions">
-        <button class="btn btn-success btn-sm" onclick="handleApproval('${a.id}', 'approve', '${a.userId || ''}')">Approve</button>
-        <button class="btn btn-danger btn-sm" onclick="handleApproval('${a.id}', 'reject', '${a.userId || ''}')">Reject</button>
-        <input class="form-input" id="reason-${a.id}" placeholder="Tell me why (optional)" style="flex: 1; font-size: 0.8rem;">
+        <button class="btn btn-success btn-sm" onclick="handleApproval('${a.id}', 'approve', '${a.userId || ''}')">Yes, go ahead</button>
+        <button class="btn btn-danger btn-sm" onclick="handleApproval('${a.id}', 'reject', '${a.userId || ''}')">No, don't do this</button>
+        <input class="form-input" id="reason-${a.id}" placeholder="Want to tell me why? (optional)" style="flex: 1; font-size: 0.8rem;">
       </div>
     </div>
   `;
@@ -126,6 +126,18 @@ function formatTime(dateStr) {
   return d.toLocaleDateString();
 }
 
+function showToast(message, type = 'success') {
+  const toast = document.createElement('div');
+  toast.className = `toast toast-${type}`;
+  toast.textContent = message;
+  document.body.appendChild(toast);
+  requestAnimationFrame(() => toast.classList.add('visible'));
+  setTimeout(() => {
+    toast.classList.remove('visible');
+    setTimeout(() => toast.remove(), 300);
+  }, 2500);
+}
+
 window.handleApproval = async function(requestId, action, userId) {
   const reasonInput = document.getElementById(`reason-${requestId}`);
   const reason = reasonInput?.value?.trim() || undefined;
@@ -141,6 +153,9 @@ window.handleApproval = async function(requestId, action, userId) {
       const label = action === 'approve' ? 'Approved' : 'Rejected';
       el.querySelector('.approval-actions').innerHTML = `<span class="badge ${badge}">${label}</span>`;
     }
+
+    const toastMsg = action === 'approve' ? 'Got it — I\'ll handle this for you.' : 'Noted — I won\'t do that.';
+    showToast(toastMsg);
   } catch (err) {
     const el = document.getElementById(`approval-${requestId}`);
     if (el) {

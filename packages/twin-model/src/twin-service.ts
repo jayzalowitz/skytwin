@@ -81,7 +81,7 @@ export class TwinService {
     }
 
     const defaultProfile: TwinProfile = {
-      id: `twin_${userId}_${Date.now()}`,
+      id: crypto.randomUUID(),
       userId,
       version: 1,
       preferences: [],

@@ -1,4 +1,4 @@
-import { fetchTwinProfile, fetchLearning, updatePreference, escapeHtml } from '../api-client.js';
+import { fetchTwinProfile, fetchLearning, updatePreference, submitFeedback, escapeHtml } from '../api-client.js';
 
 export async function renderTwin(container, userId) {
   let profile = null;
@@ -31,25 +31,27 @@ export async function renderTwin(container, userId) {
   // Group by domain
   const domainGroups = new Map();
   for (const pref of preferences) {
-    const group = domainGroups.get(pref.domain) ?? { preferences: [], inferences: [] };
+    const d = pref.domain || 'general';
+    const group = domainGroups.get(d) ?? { preferences: [], inferences: [] };
     group.preferences.push(pref);
-    domainGroups.set(pref.domain, group);
+    domainGroups.set(d, group);
   }
   for (const inf of inferences) {
-    const group = domainGroups.get(inf.domain) ?? { preferences: [], inferences: [] };
+    const d = inf.domain || 'general';
+    const group = domainGroups.get(d) ?? { preferences: [], inferences: [] };
     group.inferences.push(inf);
-    domainGroups.set(inf.domain, group);
+    domainGroups.set(d, group);
   }
 
   container.innerHTML = `
     <div class="card">
       <div class="card-header">
-        <span class="card-title">Your twin's understanding (v${profile.version ?? 1})</span>
-        <span class="badge badge-info">${preferences.length} preferences, ${inferences.length} inferences</span>
+        <span class="card-title">What I've learned about you</span>
+        <span class="badge badge-info">${preferences.length + inferences.length} things</span>
       </div>
       <div class="card-subtitle">
-        This is everything your twin has learned about how you like things done.
-        You can correct anything that's wrong — just click "That's not right" to fix it.
+        Here's everything I think I know about how you like things done.
+        If something's wrong, click "That's not right" and I'll learn from the correction.
       </div>
     </div>
 
@@ -86,13 +88,13 @@ export async function renderTwin(container, userId) {
 
     <div class="card">
       <div class="card-header">
-        <span class="card-title">Tell your twin something</span>
+        <span class="card-title">Tell me something about yourself</span>
       </div>
-      <div class="card-subtitle" style="margin-bottom: 1rem;">Explicitly set a preference so your twin knows right away.</div>
+      <div class="card-subtitle" style="margin-bottom: 1rem;">Want me to know something right away instead of waiting for me to figure it out? Tell me here.</div>
       <form id="add-pref-form" onsubmit="return handleAddPreference(event, '${userId}')">
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-bottom: 0.5rem;">
           <div class="form-group">
-            <label>Area</label>
+            <label>What area is this about?</label>
             <select class="form-input" name="domain">
               <option value="email">Email</option>
               <option value="calendar">Calendar</option>
@@ -103,15 +105,15 @@ export async function renderTwin(container, userId) {
             </select>
           </div>
           <div class="form-group">
-            <label>What should I know?</label>
-            <input class="form-input" name="key" placeholder="e.g. auto_archive_newsletters" required>
+            <label>What's the rule?</label>
+            <input class="form-input" name="key" placeholder="e.g. archive_newsletters" required>
           </div>
         </div>
         <div class="form-group">
-          <label>Value / instruction</label>
-          <input class="form-input" name="value" placeholder="e.g. true, or: always archive newsletters from marketing" required>
+          <label>How should I handle it?</label>
+          <input class="form-input" name="value" placeholder="e.g. Always archive newsletters from marketing" required>
         </div>
-        <button type="submit" class="btn btn-primary">Save preference</button>
+        <button type="submit" class="btn btn-primary">Teach me this</button>
       </form>
     </div>
   `;
@@ -144,8 +146,9 @@ function renderInsightItem(item, userId) {
     : item.source === 'inferred' ? 'I figured this out'
     : 'Learned from defaults';
 
+  const itemId = `insight-${item.domain}-${item.key || ''}`.replace(/[^a-zA-Z0-9-]/g, '_');
   return `
-    <div class="insight-card">
+    <div class="insight-card" id="${itemId}">
       <div class="insight-content">
         <div class="insight-title">${description}</div>
         <div class="insight-desc">
@@ -154,6 +157,7 @@ function renderInsightItem(item, userId) {
           ${item.reasoning ? `<br><span style="font-size: 0.75rem; color: var(--text-dim);">${item.reasoning}</span>` : ''}
         </div>
       </div>
+      <button class="btn btn-outline btn-sm" style="flex-shrink: 0; align-self: center;" onclick="correctInsight('${userId}', '${escapeHtml(item.domain)}', '${escapeHtml(item.key || '')}', this)">That's not right</button>
     </div>
   `;
 }
@@ -193,7 +197,7 @@ function domainLabel(domain) {
     general: 'General preferences',
     correction: 'Your corrections',
   };
-  return labels[domain] || domain.charAt(0).toUpperCase() + domain.slice(1);
+  return labels[domain] || (domain ? domain.charAt(0).toUpperCase() + domain.slice(1) : 'General');
 }
 
 function confidenceBadge(level) {
@@ -227,4 +231,34 @@ window.handleAddPreference = async function(event, userId) {
     form.insertAdjacentHTML('afterend', `<div class="error-banner" style="margin-top: 0.5rem;">${escapeHtml(err.message)}</div>`);
   }
   return false;
+};
+
+window.correctInsight = async function(userId, domain, key, btnEl) {
+  const correction = prompt('What should I know instead? (Leave blank to just remove this.)');
+  if (correction === null) return; // cancelled
+
+  btnEl.disabled = true;
+  btnEl.textContent = 'Updating...';
+
+  try {
+    if (correction.trim()) {
+      await updatePreference(userId, {
+        domain,
+        key,
+        value: correction.trim(),
+        confidence: 'confirmed',
+        source: 'corrected',
+      });
+    } else {
+      // Submit feedback that this was wrong
+      await submitFeedback(userId, null, 'correction', { domain, key, note: 'User marked as incorrect' });
+    }
+    const { renderTwin } = await import('./twin.js');
+    await renderTwin(document.getElementById('page-content'), userId);
+  } catch (err) {
+    btnEl.textContent = 'That\'s not right';
+    btnEl.disabled = false;
+    btnEl.closest('.insight-card')?.insertAdjacentHTML('afterend',
+      `<div class="error-banner" style="margin-top: 0.5rem;">${escapeHtml(err.message)}</div>`);
+  }
 };

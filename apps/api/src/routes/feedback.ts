@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { feedbackRepository, twinRepository, patternRepository } from '@skytwin/db';
+import { feedbackRepository, TwinRepositoryAdapter, PatternRepositoryAdapter } from '@skytwin/db';
 import { TwinService } from '@skytwin/twin-model';
 import type { FeedbackEvent, UndoReasoning } from '@skytwin/shared-types';
 
@@ -63,7 +63,7 @@ export function parseUndoReasoning(raw: unknown): UndoReasoning | null {
  */
 export function createFeedbackRouter(): Router {
   const router = Router();
-  const twinService = new TwinService(twinRepository as never, patternRepository as never);
+  const twinService = new TwinService(new TwinRepositoryAdapter(), new PatternRepositoryAdapter());
 
   /**
    * POST /api/feedback

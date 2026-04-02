@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { TwinService } from '@skytwin/twin-model';
-import { twinRepository } from '@skytwin/db';
+import { TwinRepositoryAdapter, PatternRepositoryAdapter } from '@skytwin/db';
 import { ConfidenceLevel } from '@skytwin/shared-types';
 
 /**
@@ -8,7 +8,7 @@ import { ConfidenceLevel } from '@skytwin/shared-types';
  */
 export function createTwinRouter(): Router {
   const router = Router();
-  const twinService = new TwinService(twinRepository as never);
+  const twinService = new TwinService(new TwinRepositoryAdapter(), new PatternRepositoryAdapter());
 
   /**
    * GET /api/twin/export/:userId

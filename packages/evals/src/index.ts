@@ -11,6 +11,12 @@ export { SUBSCRIPTION_SCENARIOS } from './scenarios/subscription-scenarios.js';
 export { GROCERY_SCENARIOS } from './scenarios/grocery-scenarios.js';
 export { TRAVEL_SCENARIOS } from './scenarios/travel-scenarios.js';
 export { CROSS_DOMAIN_SCENARIOS } from './scenarios/cross-domain-scenarios.js';
+export { FINANCE_SCENARIOS } from './scenarios/finance-scenarios.js';
+export { SMART_HOME_SCENARIOS } from './scenarios/smart-home-scenarios.js';
+export { TASK_SCENARIOS } from './scenarios/task-scenarios.js';
+export { SOCIAL_SCENARIOS } from './scenarios/social-scenarios.js';
+export { DOCUMENT_SCENARIOS } from './scenarios/document-scenarios.js';
+export { HEALTH_SCENARIOS } from './scenarios/health-scenarios.js';
 
 // Metrics
 export { EscalationCorrectnessTracker } from './metrics/escalation-correctness.js';

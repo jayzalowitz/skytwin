@@ -8,14 +8,9 @@ import {
   PatternRepositoryAdapter,
 } from '@skytwin/db';
 import { TwinService } from '@skytwin/twin-model';
-import {
-  BasicMockAdapter,
-  RealIronClawAdapter,
-} from '@skytwin/ironclaw-adapter';
-import type { IronClawAdapter } from '@skytwin/ironclaw-adapter';
-import { loadConfig } from '@skytwin/config';
-import type { FeedbackEvent, CandidateAction } from '@skytwin/shared-types';
-import { ConfidenceLevel } from '@skytwin/shared-types';
+import type { FeedbackEvent, CandidateAction, RiskAssessment, DimensionAssessment } from '@skytwin/shared-types';
+import { ConfidenceLevel, RiskTier, RiskDimension } from '@skytwin/shared-types';
+import { getExecutionRouter } from '../execution-setup.js';
 
 /**
  * Create the approvals handling router.
@@ -23,18 +18,7 @@ import { ConfidenceLevel } from '@skytwin/shared-types';
 export function createApprovalsRouter(): Router {
   const router = Router();
   const twinService = new TwinService(new TwinRepositoryAdapter(), new PatternRepositoryAdapter());
-
-  const config = loadConfig();
-  let ironclawAdapter: IronClawAdapter;
-  if (config.useMockIronclaw) {
-    ironclawAdapter = new BasicMockAdapter();
-  } else {
-    ironclawAdapter = new RealIronClawAdapter({
-      apiUrl: config.ironclawApiUrl,
-      webhookSecret: config.ironclawWebhookSecret,
-      ownerId: config.ironclawOwnerId,
-    });
-  }
+  const executionRouter = getExecutionRouter();
 
   /**
    * GET /api/approvals/:userId/pending
@@ -146,12 +130,12 @@ export function createApprovalsRouter(): Router {
 
       const updatedProfile = await twinService.processFeedback(body.userId, feedbackEvent);
 
-      // If approved, execute the action via IronClaw
+      // If approved, execute via the trust-ranked execution router
       let executionResult = null;
       if (body.action === 'approve') {
         const storedAction = approval.candidate_action as Record<string, unknown>;
         const candidateAction: CandidateAction = {
-          id: `action_${approval.id}`,
+          id: crypto.randomUUID(),
           decisionId: approval.decision_id,
           actionType: (storedAction['actionType'] as string) ?? 'unknown',
           description: (storedAction['description'] as string) ?? '',
@@ -169,15 +153,34 @@ export function createApprovalsRouter(): Router {
           candidateAction.parameters['accessToken'] = tokenRow.access_token;
         }
 
-        const plan = await ironclawAdapter.buildPlan(candidateAction);
-        const result = await ironclawAdapter.execute(plan);
+        // Build risk assessment for routing (user-approved = low risk)
+        const approvedDim: DimensionAssessment = { tier: RiskTier.LOW, score: 0.1, reasoning: 'User-approved action' };
+        const riskAssessment: RiskAssessment = {
+          actionId: candidateAction.id,
+          overallTier: RiskTier.LOW,
+          dimensions: {
+            [RiskDimension.REVERSIBILITY]: approvedDim,
+            [RiskDimension.FINANCIAL_IMPACT]: approvedDim,
+            [RiskDimension.LEGAL_SENSITIVITY]: approvedDim,
+            [RiskDimension.PRIVACY_SENSITIVITY]: approvedDim,
+            [RiskDimension.RELATIONSHIP_SENSITIVITY]: approvedDim,
+            [RiskDimension.OPERATIONAL_RISK]: approvedDim,
+          },
+          reasoning: 'Action was explicitly approved by user',
+          assessedAt: new Date(),
+        };
+
+        const result = await executionRouter.executeWithRouting(
+          candidateAction,
+          riskAssessment,
+          body.userId,
+        );
 
         // Persist execution
         const savedPlan = await executionRepository.createPlan({
           decisionId: approval.decision_id,
-          actionId: candidateAction.id,
           status: result.status === 'completed' ? 'completed' : 'failed',
-          steps: plan.steps ?? [],
+          steps: [],
         });
         await executionRepository.createResult({
           planId: savedPlan.id,
@@ -190,6 +193,7 @@ export function createApprovalsRouter(): Router {
         executionResult = {
           status: result.status,
           planId: savedPlan.id,
+          adapterUsed: result.output?.['adapter_used'] ?? 'unknown',
         };
       }
 

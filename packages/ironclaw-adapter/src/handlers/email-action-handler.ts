@@ -20,10 +20,10 @@ export class EmailActionHandler implements ActionHandler {
     const messageId = step.parameters['emailId'] as string | undefined;
 
     if (!accessToken) {
-      return { success: false, error: 'Missing accessToken in step parameters' };
+      throw new Error('Missing accessToken — no OAuth token available for Gmail. Falling back to next adapter.');
     }
     if (!messageId) {
-      return { success: false, error: 'Missing emailId in step parameters' };
+      throw new Error('Missing emailId in step parameters');
     }
 
     switch (actionType) {

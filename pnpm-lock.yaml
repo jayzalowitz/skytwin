@@ -41,6 +41,9 @@ importers:
       '@skytwin/decision-engine':
         specifier: workspace:*
         version: link:../../packages/decision-engine
+      '@skytwin/execution-router':
+        specifier: workspace:*
+        version: link:../../packages/execution-router
       '@skytwin/explanations':
         specifier: workspace:*
         version: link:../../packages/explanations

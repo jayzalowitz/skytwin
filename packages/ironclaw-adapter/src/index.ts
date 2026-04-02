@@ -23,6 +23,12 @@ export { ActionHandlerRegistry } from './handler-registry.js';
 export { EmailActionHandler } from './handlers/email-action-handler.js';
 export { CalendarActionHandler } from './handlers/calendar-action-handler.js';
 export { GenericActionHandler } from './handlers/generic-action-handler.js';
+export { FinanceActionHandler } from './handlers/finance-action-handler.js';
+export { TaskActionHandler } from './handlers/task-action-handler.js';
+export { SmartHomeActionHandler } from './handlers/smart-home-action-handler.js';
+export { SocialActionHandler } from './handlers/social-action-handler.js';
+export { DocumentActionHandler } from './handlers/document-action-handler.js';
+export { HealthActionHandler } from './handlers/health-action-handler.js';
 
 // Mock implementations for development and testing
 export { MockIronClawAdapter as BasicMockAdapter } from './mock-ironclaw-adapter.js';

@@ -1,0 +1,60 @@
+{
+  "name": "@skytwin/desktop",
+  "version": "0.3.0.0",
+  "description": "SkyTwin Desktop — Your personal AI assistant",
+  "private": true,
+  "main": "dist/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "tsc && electron .",
+    "build": "echo 'Desktop build requires: pnpm --filter @skytwin/desktop install && pnpm --filter @skytwin/desktop package:mac'",
+    "package:mac": "tsc && electron-builder --mac",
+    "package:win": "tsc && electron-builder --win"
+  },
+  "build": {
+    "appId": "com.skytwin.desktop",
+    "productName": "SkyTwin",
+    "directories": {
+      "output": "dist-electron"
+    },
+    "mac": {
+      "target": ["dmg", "zip"],
+      "category": "public.app-category.productivity"
+    },
+    "win": {
+      "target": ["nsis"]
+    },
+    "files": [
+      "dist/**/*",
+      "src/splash.html",
+      "assets/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "../../packages",
+        "to": "packages",
+        "filter": ["**/dist/**", "**/package.json"]
+      },
+      {
+        "from": "../../apps/api/dist",
+        "to": "api"
+      },
+      {
+        "from": "../../apps/worker/dist",
+        "to": "worker"
+      },
+      {
+        "from": "../../apps/web/public",
+        "to": "web"
+      }
+    ]
+  },
+  "dependencies": {
+    "electron-store": "^8.1.0"
+  },
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-builder": "^24.0.0",
+    "typescript": "^5.4.0"
+  }
+}

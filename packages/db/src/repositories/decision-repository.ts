@@ -13,6 +13,7 @@ import type {
  * Input for creating a decision record.
  */
 export interface CreateDecisionInput {
+  id?: string;
   userId: string;
   situationType: string;
   rawEvent: Record<string, unknown>;
@@ -26,6 +27,7 @@ export interface CreateDecisionInput {
  * Input for adding a candidate action to a decision.
  */
 export interface CreateCandidateActionInput {
+  id?: string;
   decisionId: string;
   actionType: string;
   description: string;
@@ -57,6 +59,26 @@ export const decisionRepository = {
    * Create a new decision record.
    */
   async create(input: CreateDecisionInput): Promise<DecisionRow> {
+    // If an explicit ID is provided, use it (allows in-memory decisions to
+    // keep their UUID through to persistence for FK consistency).
+    if (input.id) {
+      const result = await query<DecisionRow>(
+        `INSERT INTO decisions (id, user_id, situation_type, raw_event, interpreted_situation, domain, urgency, metadata)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         RETURNING *`,
+        [
+          input.id,
+          input.userId,
+          input.situationType,
+          JSON.stringify(input.rawEvent),
+          JSON.stringify(input.interpretedSituation),
+          input.domain,
+          input.urgency ?? 'normal',
+          JSON.stringify(input.metadata ?? {}),
+        ],
+      );
+      return result.rows[0]!;
+    }
     const result = await query<DecisionRow>(
       `INSERT INTO decisions (user_id, situation_type, raw_event, interpreted_situation, domain, urgency, metadata)
        VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -140,6 +162,28 @@ export const decisionRepository = {
   async addCandidateAction(
     input: CreateCandidateActionInput,
   ): Promise<CandidateActionRow> {
+    if (input.id) {
+      const result = await query<CandidateActionRow>(
+        `INSERT INTO candidate_actions (
+          id, decision_id, action_type, description, parameters,
+          predicted_user_preference, risk_assessment, reversible, estimated_cost
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        RETURNING *`,
+        [
+          input.id,
+          input.decisionId,
+          input.actionType,
+          input.description,
+          JSON.stringify(input.parameters ?? {}),
+          input.predictedUserPreference,
+          JSON.stringify(input.riskAssessment),
+          input.reversible ?? true,
+          input.estimatedCost ?? null,
+        ],
+      );
+      return result.rows[0]!;
+    }
     const result = await query<CandidateActionRow>(
       `INSERT INTO candidate_actions (
         decision_id, action_type, description, parameters,

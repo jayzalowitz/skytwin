@@ -1,8 +1,6 @@
 import { loadConfig } from '@skytwin/config';
 import type { SignalConnector, RawSignal } from '@skytwin/connectors';
 import {
-  MockEmailConnector,
-  MockCalendarConnector,
   GmailConnector,
   GoogleCalendarConnector,
   DbTokenStore,
@@ -84,29 +82,14 @@ async function pollUser(userConnectors: UserConnectors): Promise<void> {
 }
 
 /**
- * Build mock connectors for testing.
- */
-function buildMockConnectors(): UserConnectors[] {
-  return [{
-    userId: 'default-user',
-    connectors: [new MockEmailConnector(), new MockCalendarConnector()],
-  }];
-}
-
-/**
  * Discover users with active OAuth tokens and build their connectors.
- * Falls back to mock connectors if no real tokens exist or in mock mode.
+ * Returns empty array if no users have connected accounts yet.
  */
 async function discoverUsers(): Promise<UserConnectors[]> {
-  if (config.useMockIronclaw) {
-    return buildMockConnectors();
-  }
-
   try {
     const tokens = await oauthRepository.getUsersWithActiveTokens();
     if (tokens.length === 0) {
-      console.info('[worker] No users with active tokens found, using mock connectors');
-      return buildMockConnectors();
+      return [];
     }
 
     // Group tokens by user
@@ -137,17 +120,13 @@ async function discoverUsers(): Promise<UserConnectors[]> {
       }
     }
 
-    if (result.length === 0) {
-      return buildMockConnectors();
-    }
-
     return result;
   } catch (error) {
     console.error(
-      '[worker] Error discovering users, falling back to mock:',
+      '[worker] Error discovering users:',
       error instanceof Error ? error.message : error,
     );
-    return buildMockConnectors();
+    return [];
   }
 }
 
@@ -158,11 +137,14 @@ async function main(): Promise<void> {
   console.info('[worker] Starting SkyTwin worker...');
   console.info(`[worker] API base URL: ${config.apiBaseUrl}`);
   console.info(`[worker] Poll interval: ${config.workerPollIntervalMs}ms`);
-  console.info(`[worker] Mode: ${config.useMockIronclaw ? 'mock' : 'real'}`);
 
   // Discover users and set up connectors
   let userConnectors = await discoverUsers();
-  console.info(`[worker] Tracking ${userConnectors.length} user(s)`);
+  if (userConnectors.length === 0) {
+    console.info('[worker] No users with connected accounts yet — waiting for first connection');
+  } else {
+    console.info(`[worker] Tracking ${userConnectors.length} user(s)`);
+  }
 
   // Connect all
   for (const uc of userConnectors) {

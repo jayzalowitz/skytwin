@@ -14,23 +14,25 @@ export class GenericActionHandler implements ActionHandler {
   }
 
   async execute(step: ExecutionStep): Promise<StepResult> {
-    console.info(
-      `[generic-handler] Action logged but not executed: ${step.type} — ${step.description}`,
+    console.warn(
+      `[generic-handler] No handler for action type "${step.type}" — failing explicitly`,
     );
 
     return {
-      success: true,
+      success: false,
+      error: `No handler registered for action type "${step.type}". ` +
+        `Register a specific handler or configure an external adapter (IronClaw/OpenClaw).`,
       output: {
-        note: 'Action logged but not executed — no specific handler registered',
         actionType: step.type,
         description: step.description,
-        parameters: step.parameters,
       },
     };
   }
 
   async rollback(_step: ExecutionStep): Promise<StepResult> {
-    // Nothing to undo for a logged-only action
-    return { success: true, output: { note: 'Nothing to rollback — action was only logged' } };
+    return {
+      success: false,
+      error: 'Cannot rollback — no handler was registered for this action type.',
+    };
   }
 }

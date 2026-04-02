@@ -43,8 +43,8 @@ export const executionRepository = {
        VALUES ($1, $2, $3, $4)
        RETURNING *`,
       [
-        input.decisionId,
-        input.actionId ?? null,
+        input.decisionId || null,
+        input.actionId || null,
         input.status ?? 'pending',
         JSON.stringify(input.steps ?? []),
       ],

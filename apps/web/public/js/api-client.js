@@ -83,6 +83,13 @@ export function updatePreference(userId, preference) {
 
 // ── Users ───────────────────────────────────────────────
 
+export function createUser(email, name, trustTier) {
+  return fetchJSON(`${API}/users`, {
+    method: 'POST',
+    body: JSON.stringify({ email, name, trustTier }),
+  });
+}
+
 export function fetchUser(userId) {
   return fetchJSON(`${API}/users/${userId}`).catch(() => null);
 }

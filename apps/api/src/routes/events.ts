@@ -4,12 +4,6 @@ import { TwinService } from '@skytwin/twin-model';
 import { PolicyEvaluator } from '@skytwin/policy-engine';
 import { ExplanationGenerator } from '@skytwin/explanations';
 import {
-  BasicMockAdapter,
-  RealIronClawAdapter,
-} from '@skytwin/ironclaw-adapter';
-import type { IronClawAdapter } from '@skytwin/ironclaw-adapter';
-import { loadConfig } from '@skytwin/config';
-import {
   approvalRepository,
   oauthRepository,
   executionRepository,
@@ -20,13 +14,14 @@ import {
   explanationRepositoryAdapter,
   policyRepositoryAdapter,
 } from '@skytwin/db';
-import type { DecisionContext } from '@skytwin/shared-types';
-import { SituationType, TrustTier } from '@skytwin/shared-types';
+import type { DecisionContext, RiskAssessment, DimensionAssessment } from '@skytwin/shared-types';
+import { SituationType, TrustTier, RiskTier, RiskDimension } from '@skytwin/shared-types';
 import { WorkflowHandlerRegistry } from '../workflows/registry.js';
 import { processCalendarConflict } from '../workflows/calendar-conflict.js';
 import { processSubscriptionRenewal } from '../workflows/subscription-renewal.js';
 import { processGroceryReorder } from '../workflows/grocery-reorder.js';
 import { processTravelDecision } from '../workflows/travel-decision.js';
+import { getExecutionRouter } from '../execution-setup.js';
 
 /**
  * Create the events router for ingesting raw events.
@@ -46,18 +41,7 @@ export function createEventsRouter(): Router {
   workflowRegistry.register(SituationType.GROCERY_REORDER, processGroceryReorder);
   workflowRegistry.register(SituationType.TRAVEL_DECISION, processTravelDecision);
 
-  const eventsConfig = loadConfig();
-  let ironclawAdapter: IronClawAdapter;
-
-  if (eventsConfig.useMockIronclaw) {
-    ironclawAdapter = new BasicMockAdapter();
-  } else {
-    ironclawAdapter = new RealIronClawAdapter({
-      apiUrl: eventsConfig.ironclawApiUrl,
-      webhookSecret: eventsConfig.ironclawWebhookSecret,
-      ownerId: eventsConfig.ironclawOwnerId,
-    });
-  }
+  const executionRouter = getExecutionRouter();
 
   /**
    * POST /api/events/ingest
@@ -78,6 +62,9 @@ export function createEventsRouter(): Router {
       // 1. Interpret the raw event
       const decision = interpreter.interpret(rawEvent);
 
+      // 1b. Persist the decision to DB so foreign keys (outcomes, candidates) work
+      await decisionRepositoryAdapter.saveDecision(decision);
+
       // 2. Get user record (trust tier must come from DB, never from caller)
       const user = await userRepository.findById(userId);
 
@@ -91,14 +78,14 @@ export function createEventsRouter(): Router {
         decision.summary,
       );
 
-      // 4. Fetch patterns, traits, and temporal profile for richer scoring
+      // 5. Fetch patterns, traits, and temporal profile for richer scoring
       const [patterns, traits, temporalProfile] = await Promise.all([
         twinService.getPatterns(userId),
         twinService.getTraits(userId),
         twinService.getTemporalProfile(userId),
       ]);
 
-      // 5. Build decision context
+      // 6. Build decision context
       const context: DecisionContext = {
         userId,
         decision,
@@ -110,17 +97,17 @@ export function createEventsRouter(): Router {
         temporalProfile,
       };
 
-      // 6. Evaluate through decision maker
+      // 7. Evaluate through decision maker
       const outcome = await decisionMaker.evaluate(context);
 
-      // 7. Generate explanation
+      // 8. Generate explanation
       const explanation = await explanationGenerator.generate(
         decision,
         outcome,
         context,
       );
 
-      // 8. Handle outcome
+      // 9. Handle outcome
       let executionResult = null;
       let approvalRequest = null;
 
@@ -148,27 +135,54 @@ export function createEventsRouter(): Router {
           outcome.selectedAction.parameters['accessToken'] = tokenRow.access_token;
         }
 
-        // Auto-execute via IronClaw
-        const plan = await ironclawAdapter.buildPlan(outcome.selectedAction);
-        executionResult = await ironclawAdapter.execute(plan);
+        // Build risk assessment for routing
+        const tier = explanation.riskTier as RiskTier ?? RiskTier.LOW;
+        const defaultDim: DimensionAssessment = { tier, score: 0.5, reasoning: outcome.reasoning };
+        const riskAssessment: RiskAssessment = {
+          actionId: outcome.selectedAction.id,
+          overallTier: tier,
+          dimensions: {
+            [RiskDimension.REVERSIBILITY]: defaultDim,
+            [RiskDimension.FINANCIAL_IMPACT]: defaultDim,
+            [RiskDimension.LEGAL_SENSITIVITY]: defaultDim,
+            [RiskDimension.PRIVACY_SENSITIVITY]: defaultDim,
+            [RiskDimension.RELATIONSHIP_SENSITIVITY]: defaultDim,
+            [RiskDimension.OPERATIONAL_RISK]: defaultDim,
+          },
+          reasoning: outcome.reasoning,
+          assessedAt: new Date(),
+        };
+
+        // Execute via the trust-ranked execution router (IronClaw > Direct > OpenClaw)
+        const result = await executionRouter.executeWithRouting(
+          outcome.selectedAction,
+          riskAssessment,
+          userId,
+        );
 
         // Persist execution plan and result
         const savedPlan = await executionRepository.createPlan({
           decisionId: decision.id,
           actionId: outcome.selectedAction.id,
-          status: executionResult.status === 'completed' ? 'completed' : 'failed',
-          steps: plan.steps ?? [],
+          status: result.status === 'completed' ? 'completed' : 'failed',
+          steps: [],
         });
         await executionRepository.createResult({
           planId: savedPlan.id,
-          success: executionResult.status === 'completed',
-          outputs: executionResult.output ?? {},
-          error: executionResult.error ?? undefined,
+          success: result.status === 'completed',
+          outputs: result.output ?? {},
+          error: result.error ?? undefined,
           rollbackAvailable: outcome.selectedAction.reversible,
         });
+
+        executionResult = {
+          status: result.status,
+          planId: savedPlan.id,
+          adapterUsed: result.output?.['adapter_used'] ?? 'unknown',
+        };
       }
 
-      // 9. Return result
+      // 10. Return result
       res.json({
         decision: {
           id: decision.id,

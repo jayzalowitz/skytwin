@@ -199,8 +199,12 @@ export const explanationRepositoryAdapter: ExplanationRepositoryPort = {
         }),
     );
 
+    // Decision IDs from the in-memory engine may not be UUIDs; pass null
+    // so the DB default (gen_random_uuid) generates a proper one.
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const safeDecisionId = uuidRegex.test(record.decisionId) ? record.decisionId : null;
     const row = await explanationRepository.create({
-      decisionId: record.decisionId,
+      decisionId: safeDecisionId as string,
       whatHappened: record.summary,
       evidenceUsed: evidenceSerialized,
       preferencesInvoked: preferencesSerialized,
