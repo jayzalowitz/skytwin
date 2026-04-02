@@ -1,9 +1,21 @@
 import { describe, it, expect } from 'vitest';
 import { DirectExecutionAdapter } from '../direct-execution-adapter.js';
 import { ActionHandlerRegistry } from '../handler-registry.js';
-import { GenericActionHandler } from '../handlers/generic-action-handler.js';
-import type { CandidateAction } from '@skytwin/shared-types';
+import type { CandidateAction, ActionHandler, ExecutionStep, StepResult } from '@skytwin/shared-types';
 import { ConfidenceLevel } from '@skytwin/shared-types';
+
+/** Test handler that always succeeds for test_action type. */
+class TestActionHandler implements ActionHandler {
+  readonly actionType = 'test_action';
+  readonly domain = 'testing';
+  canHandle(actionType: string): boolean { return actionType === 'test_action'; }
+  async execute(_step: ExecutionStep): Promise<StepResult> {
+    return { success: true, output: { test: true } };
+  }
+  async rollback(_step: ExecutionStep): Promise<StepResult> {
+    return { success: true, output: { rollback: true } };
+  }
+}
 
 function makeAction(overrides: Partial<CandidateAction> = {}): CandidateAction {
   return {
@@ -24,7 +36,7 @@ function makeAction(overrides: Partial<CandidateAction> = {}): CandidateAction {
 describe('DirectExecutionAdapter', () => {
   it('builds a plan from a candidate action', async () => {
     const registry = new ActionHandlerRegistry();
-    registry.register(new GenericActionHandler());
+    registry.register(new TestActionHandler());
     const adapter = new DirectExecutionAdapter(registry);
 
     const action = makeAction();
@@ -37,7 +49,7 @@ describe('DirectExecutionAdapter', () => {
 
   it('does not create rollback steps for irreversible actions', async () => {
     const registry = new ActionHandlerRegistry();
-    registry.register(new GenericActionHandler());
+    registry.register(new TestActionHandler());
     const adapter = new DirectExecutionAdapter(registry);
 
     const action = makeAction({ reversible: false });
@@ -48,7 +60,7 @@ describe('DirectExecutionAdapter', () => {
 
   it('executes a plan using the handler', async () => {
     const registry = new ActionHandlerRegistry();
-    registry.register(new GenericActionHandler());
+    registry.register(new TestActionHandler());
     const adapter = new DirectExecutionAdapter(registry);
 
     const plan = await adapter.buildPlan(makeAction());
@@ -58,20 +70,17 @@ describe('DirectExecutionAdapter', () => {
     expect(result.output).toBeDefined();
   });
 
-  it('fails execution when no handler is registered', async () => {
+  it('throws when no handler is registered (enables fallback chain)', async () => {
     const registry = new ActionHandlerRegistry(); // empty
     const adapter = new DirectExecutionAdapter(registry);
 
     const plan = await adapter.buildPlan(makeAction());
-    const result = await adapter.execute(plan);
-
-    expect(result.status).toBe('failed');
-    expect(result.error).toContain('No handler registered');
+    await expect(adapter.execute(plan)).rejects.toThrow('No handler');
   });
 
   it('supports rollback for executed plans', async () => {
     const registry = new ActionHandlerRegistry();
-    registry.register(new GenericActionHandler());
+    registry.register(new TestActionHandler());
     const adapter = new DirectExecutionAdapter(registry);
 
     const plan = await adapter.buildPlan(makeAction());
@@ -83,7 +92,7 @@ describe('DirectExecutionAdapter', () => {
 
   it('healthCheck returns healthy when handlers are registered', async () => {
     const registry = new ActionHandlerRegistry();
-    registry.register(new GenericActionHandler());
+    registry.register(new TestActionHandler());
     const adapter = new DirectExecutionAdapter(registry);
 
     const health = await adapter.healthCheck();

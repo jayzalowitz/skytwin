@@ -4,16 +4,16 @@ import { renderDecisions } from './pages/decisions.js';
 import { renderTwin } from './pages/twin.js';
 import { renderSettings } from './pages/settings.js';
 import { renderOnboarding } from './pages/onboarding.js';
-import { fetchPendingApprovals, fetchHealth, escapeHtml } from './api-client.js';
+import { fetchPendingApprovals, fetchHealth, fetchUser, escapeHtml } from './api-client.js';
 import { mountThemeSwitcher, initTheme } from './theme-switcher.js';
 
 let currentUserId = localStorage.getItem('skytwin_userId') || '';
 
 const routes = {
-  '/': { title: 'Dashboard', render: renderDashboard },
-  '/approvals': { title: 'Approvals', render: renderApprovals },
-  '/decisions': { title: 'Decision History', render: renderDecisions },
-  '/twin': { title: 'What I Know', render: renderTwin },
+  '/': { title: 'Home', render: renderDashboard },
+  '/approvals': { title: 'Needs your OK', render: renderApprovals },
+  '/decisions': { title: 'What happened', render: renderDecisions },
+  '/twin': { title: 'What I\'ve learned', render: renderTwin },
   '/settings': { title: 'Settings', render: renderSettings },
 };
 
@@ -88,7 +88,14 @@ function navigate() {
   const route = routes[hash] || routes['/'];
 
   document.getElementById('page-title').textContent = route.title;
-  document.getElementById('user-badge').textContent = currentUserId;
+  // Show friendly name instead of UUID
+  const badge = document.getElementById('user-badge');
+  fetchUser(currentUserId).then(data => {
+    const u = data?.user ?? data;
+    badge.textContent = u?.name || u?.email || currentUserId;
+  }).catch(() => {
+    badge.textContent = currentUserId;
+  });
 
   // Update active nav link
   document.querySelectorAll('.nav-link').forEach(link => {

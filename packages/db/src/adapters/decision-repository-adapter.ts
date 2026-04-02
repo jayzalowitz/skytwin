@@ -131,6 +131,7 @@ export const decisionRepositoryAdapter: DecisionRepositoryPort = {
       (decision.rawData['userId'] as string | undefined) ?? '';
 
     const row = await decisionRepository.create({
+      id: decision.id,
       userId,
       situationType: decision.situationType,
       rawEvent: decision.rawData,
@@ -202,6 +203,7 @@ export const decisionRepositoryAdapter: DecisionRepositoryPort = {
 
     for (const candidate of candidates) {
       const row = await decisionRepository.addCandidateAction({
+        id: candidate.id,
         decisionId: candidate.decisionId,
         actionType: candidate.actionType,
         description: candidate.description,
@@ -228,8 +230,13 @@ export const decisionRepositoryAdapter: DecisionRepositoryPort = {
   async saveRiskAssessment(
     assessment: RiskAssessment,
   ): Promise<RiskAssessment> {
-    // Persist the full risk assessment into the candidate_actions row's
-    // risk_assessment JSONB column.
+    // Skip persistence if the action ID isn't a valid UUID (e.g. in-memory
+    // candidate IDs like "cand_123_archive" from the decision engine).
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(assessment.actionId)) {
+      return assessment;
+    }
+
     const serialised = {
       actionId: assessment.actionId,
       overallTier: assessment.overallTier,

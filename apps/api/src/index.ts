@@ -1,5 +1,5 @@
 import express, { type Application } from 'express';
-import { loadConfig } from '@skytwin/config';
+import { loadConfig, validate } from '@skytwin/config';
 import { createEventsRouter } from './routes/events.js';
 import { createTwinRouter } from './routes/twin.js';
 import { createDecisionsRouter } from './routes/decisions.js';
@@ -13,8 +13,25 @@ import { createAskRouter } from './routes/ask.js';
 import { createBriefingsRouter } from './routes/briefings.js';
 import { createSkillGapsRouter } from './routes/skill-gaps.js';
 import { createSettingsRouter } from './routes/settings.js';
+import { getExecutionRouter } from './execution-setup.js';
 
 const config = loadConfig();
+
+// Validate config on startup (warn but don't crash in development)
+const configErrors = validate(config);
+if (configErrors.length > 0) {
+  const messages = configErrors.map((e) => `  - ${e.field}: ${e.message}`).join('\n');
+  if (config.nodeEnv === 'production') {
+    console.error(`[api] Fatal: invalid configuration:\n${messages}`);
+    process.exit(1);
+  } else {
+    console.warn(`[api] Configuration warnings (non-fatal in development):\n${messages}`);
+  }
+}
+
+// Initialize the execution router early to log adapter registration
+getExecutionRouter();
+
 const app: Application = express();
 
 // Middleware
@@ -42,6 +59,9 @@ app.get('/api/health', (_req, res) => {
     service: 'skytwin-api',
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
+    adapters: {
+      note: 'Execution router initialized with trust-ranked adapters',
+    },
   });
 });
 

@@ -1,7 +1,23 @@
 import { describe, it, expect } from 'vitest';
 import { ConfidenceLevel } from '@skytwin/shared-types';
-import type { CandidateAction, ExecutionPlan, ExecutionStep } from '@skytwin/shared-types';
-import { MockIronClawAdapter, DirectExecutionAdapter, ActionHandlerRegistry, GenericActionHandler } from '@skytwin/ironclaw-adapter';
+import type { CandidateAction, ExecutionPlan, ExecutionStep, ActionHandler, StepResult } from '@skytwin/shared-types';
+import { MockIronClawAdapter, DirectExecutionAdapter, ActionHandlerRegistry } from '@skytwin/ironclaw-adapter';
+
+/**
+ * Test handler that always succeeds. Used instead of TestActionHandler
+ * because TestActionHandler correctly fails for unregistered types.
+ */
+class TestActionHandler implements ActionHandler {
+  readonly actionType = 'test_action';
+  readonly domain = 'testing';
+  canHandle(actionType: string): boolean { return actionType === 'test_action'; }
+  async execute(_step: ExecutionStep): Promise<StepResult> {
+    return { success: true, output: { test: true } };
+  }
+  async rollback(_step: ExecutionStep): Promise<StepResult> {
+    return { success: true, output: { rollback: true } };
+  }
+}
 
 /**
  * Contract tests: verify that both MockIronClawAdapter and DirectExecutionAdapter
@@ -56,7 +72,7 @@ function makePlan(action: CandidateAction, withRollback = true): ExecutionPlan {
 
 function createAdapters(): Array<{ name: string; adapter: MockIronClawAdapter | DirectExecutionAdapter }> {
   const registry = new ActionHandlerRegistry();
-  registry.register(new GenericActionHandler());
+  registry.register(new TestActionHandler());
 
   return [
     { name: 'MockIronClawAdapter', adapter: new MockIronClawAdapter({ failureProbability: 0, simulateDelays: false }) },
@@ -184,7 +200,7 @@ describe('Adapter-Specific Behavior', () => {
   describe('DirectExecutionAdapter', () => {
     it('buildPlan() creates plan with rollback steps for reversible actions', async () => {
       const registry = new ActionHandlerRegistry();
-      registry.register(new GenericActionHandler());
+      registry.register(new TestActionHandler());
       const adapter = new DirectExecutionAdapter(registry);
 
       const action = makeAction({ reversible: true });
@@ -199,7 +215,7 @@ describe('Adapter-Specific Behavior', () => {
 
     it('buildPlan() creates plan without rollback steps for irreversible actions', async () => {
       const registry = new ActionHandlerRegistry();
-      registry.register(new GenericActionHandler());
+      registry.register(new TestActionHandler());
       const adapter = new DirectExecutionAdapter(registry);
 
       const action = makeAction({ reversible: false });
@@ -208,16 +224,14 @@ describe('Adapter-Specific Behavior', () => {
       expect(plan.rollbackSteps).toHaveLength(0);
     });
 
-    it('execute() fails when no handler is registered', async () => {
+    it('execute() throws when no handler is registered (enables fallback chain)', async () => {
       const emptyRegistry = new ActionHandlerRegistry();
       const adapter = new DirectExecutionAdapter(emptyRegistry);
 
       const action = makeAction({ actionType: 'unknown_action' });
       const plan = makePlan(action);
 
-      const result = await adapter.execute(plan);
-      expect(result.status).toBe('failed');
-      expect(result.error).toContain('No handler');
+      await expect(adapter.execute(plan)).rejects.toThrow('No handler');
     });
 
     it('healthCheck() reports unhealthy with no handlers', async () => {

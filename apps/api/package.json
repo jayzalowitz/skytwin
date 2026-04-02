@@ -20,7 +20,8 @@
     "@skytwin/explanations": "workspace:*",
     "@skytwin/ironclaw-adapter": "workspace:*",
     "@skytwin/config": "workspace:*",
-    "@skytwin/connectors": "workspace:*"
+    "@skytwin/connectors": "workspace:*",
+    "@skytwin/execution-router": "workspace:*"
   },
   "devDependencies": {
     "@types/express": "^4.17.21",

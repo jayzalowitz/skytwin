@@ -1,11 +1,11 @@
 import { fetchUser, updateTrustTier, fetchOAuthStatus, getGoogleAuthUrl, disconnectProvider, escapeHtml, fetchSettings, updateAutonomySettings, upsertDomainPolicy, deleteDomainPolicy, createEscalationTrigger, deleteEscalationTrigger } from '../api-client.js';
 
 const TIERS = [
-  { value: 'observer', name: 'Watch only', desc: 'Your twin observes everything but never takes action. Good for seeing what it would do without any risk.' },
-  { value: 'suggest', name: 'Suggest first', desc: 'Your twin suggests actions and waits for you to approve each one. The safest way to get started.' },
-  { value: 'low_autonomy', name: 'Handle routine stuff', desc: 'Auto-handles low-risk repetitive tasks (like archiving junk emails). Asks about everything else.' },
-  { value: 'moderate_autonomy', name: 'Mostly autonomous', desc: 'Handles most things on its own. Only asks about high-risk or unusual situations.' },
-  { value: 'high_autonomy', name: 'Full autopilot', desc: 'Handles everything within your policies. Only stops for critical decisions or spending limits.' },
+  { value: 'observer', name: 'Just watch', desc: 'Your assistant watches but never does anything. Good for seeing what it would do.' },
+  { value: 'suggest', name: 'Ask me first', desc: 'Your assistant suggests actions and waits for your OK. The safest way to start.' },
+  { value: 'low_autonomy', name: 'Handle small stuff', desc: 'Handles small, routine tasks (like archiving junk mail). Asks about everything else.' },
+  { value: 'moderate_autonomy', name: 'Handle most things', desc: 'Handles most things on its own. Only asks about big or unusual decisions.' },
+  { value: 'high_autonomy', name: 'Full autopilot', desc: 'Handles everything within your rules. Only stops for important decisions or spending limits.' },
 ];
 
 export async function renderSettings(container, userId) {
@@ -126,86 +126,99 @@ export async function renderSettings(container, userId) {
 
     <div class="card">
       <div class="card-header">
-        <span class="card-title">Spend limits</span>
+        <span class="card-title">Spending guardrails</span>
       </div>
       <div class="card-subtitle" style="margin-bottom: 1rem;">
-        Set maximum amounts your twin can spend per action and per day.
+        Put a cap on how much your assistant can spend without asking you first.
       </div>
       <div class="form-group">
-        <label>Max per action (cents)</label>
+        <label>Most I can spend at once (in cents)</label>
         <input class="form-input" type="number" id="max-per-action" value="${autonomy.maxSpendPerActionCents ?? 10000}" min="0">
+        <div style="font-size: 0.75rem; color: var(--text-dim); margin-top: 0.25rem;">e.g. 10000 = $100.00</div>
       </div>
       <div class="form-group">
-        <label>Max per day (cents)</label>
+        <label>Most I can spend in one day (in cents)</label>
         <input class="form-input" type="number" id="max-daily" value="${autonomy.maxDailySpendCents ?? 50000}" min="0">
+        <div style="font-size: 0.75rem; color: var(--text-dim); margin-top: 0.25rem;">e.g. 50000 = $500.00</div>
       </div>
       <div class="form-group">
         <label>
           <input type="checkbox" id="irreversible-approval" ${autonomy.requireApprovalForIrreversible !== false ? 'checked' : ''}>
-          Require approval for irreversible actions
+          Always ask before doing something that can't be undone
         </label>
       </div>
-      <button class="btn btn-primary btn-sm" onclick="saveSpendLimits('${userId}')">Save limits</button>
+      <button class="btn btn-primary btn-sm" onclick="saveSpendLimits('${userId}')">Save</button>
     </div>
 
-    <div class="card">
-      <div class="card-header">
-        <span class="card-title">Domain overrides</span>
-      </div>
-      <div class="card-subtitle" style="margin-bottom: 1rem;">
-        Set different autonomy levels for specific domains. The more restrictive of global and domain tier applies.
-      </div>
-      <div id="domain-policies">
-        ${domainPolicies.map(p => `
-          <div style="display: flex; align-items: center; justify-content: space-between; padding: 0.5rem 0.75rem; background: var(--bg); border-radius: var(--radius-sm); margin-bottom: 0.5rem;">
-            <div>
-              <span style="font-weight: 600;">${escapeHtml(p.domain)}</span>
-              <span style="color: var(--text-muted); margin-left: 0.5rem;">${escapeHtml(p.trustTier)}</span>
-              ${p.maxSpendPerActionCents != null ? `<span style="color: var(--text-muted); margin-left: 0.5rem;">(max ${p.maxSpendPerActionCents}c/action)</span>` : ''}
+    <details class="card collapsible-card">
+      <summary class="card-header collapsible-header">
+        <span class="card-title">Domain overrides (advanced)</span>
+        <span class="collapse-icon"></span>
+      </summary>
+      <div class="collapsible-body">
+        <div class="card-subtitle" style="margin-bottom: 1rem;">
+          Want different rules for different areas? For example, stricter controls for shopping but more freedom for email. Most people don't need this.
+        </div>
+        <div id="domain-policies-inner">
+          ${domainPolicies.map(p => `
+            <div style="display: flex; align-items: center; justify-content: space-between; padding: 0.5rem 0.75rem; background: var(--bg); border-radius: var(--radius-sm); margin-bottom: 0.5rem;">
+              <div>
+                <span style="font-weight: 600;">${escapeHtml(p.domain)}</span>
+                <span style="color: var(--text-muted); margin-left: 0.5rem;">${escapeHtml(p.trustTier)}</span>
+                ${p.maxSpendPerActionCents != null ? `<span style="color: var(--text-muted); margin-left: 0.5rem;">(max ${p.maxSpendPerActionCents}c/action)</span>` : ''}
+              </div>
+              <button class="btn btn-outline btn-sm" onclick="removeDomainPolicy('${userId}', '${escapeHtml(p.domain)}')">Remove</button>
             </div>
-            <button class="btn btn-outline btn-sm" onclick="removeDomainPolicy('${userId}', '${escapeHtml(p.domain)}')">Remove</button>
-          </div>
-        `).join('')}
+          `).join('')}
+        </div>
+        <div style="display: flex; gap: 0.5rem; margin-top: 0.75rem;">
+          <input class="form-input" id="new-domain" placeholder="Area (e.g. finance)" style="flex: 1;">
+          <select class="form-input" id="new-domain-tier" style="flex: 1;">
+            ${TIERS.map(t => `<option value="${t.value}">${t.name}</option>`).join('')}
+          </select>
+          <button class="btn btn-primary btn-sm" onclick="addDomainPolicy('${userId}')">Add</button>
+        </div>
       </div>
-      <div style="display: flex; gap: 0.5rem; margin-top: 0.75rem;">
-        <input class="form-input" id="new-domain" placeholder="Domain (e.g. finance)" style="flex: 1;">
-        <select class="form-input" id="new-domain-tier" style="flex: 1;">
-          ${TIERS.map(t => `<option value="${t.value}">${t.name}</option>`).join('')}
-        </select>
-        <button class="btn btn-primary btn-sm" onclick="addDomainPolicy('${userId}')">Add</button>
-      </div>
-    </div>
+    </details>
 
-    <div class="card">
-      <div class="card-header">
-        <span class="card-title">Escalation triggers</span>
-      </div>
-      <div class="card-subtitle" style="margin-bottom: 1rem;">
-        Configure when your twin should stop and ask for your approval.
-      </div>
-      <div id="escalation-triggers">
-        ${escalationTriggers.map(t => `
-          <div style="display: flex; align-items: center; justify-content: space-between; padding: 0.5rem 0.75rem; background: var(--bg); border-radius: var(--radius-sm); margin-bottom: 0.5rem;">
-            <div>
-              <span style="font-weight: 600;">${escapeHtml(t.triggerType)}</span>
-              <span style="color: var(--text-muted); margin-left: 0.5rem;">${escapeHtml(JSON.stringify(t.conditions))}</span>
-              <span style="color: ${t.enabled ? 'var(--success)' : 'var(--text-muted)'}; margin-left: 0.5rem;">${t.enabled ? 'active' : 'disabled'}</span>
+    <details class="card collapsible-card">
+      <summary class="card-header collapsible-header">
+        <span class="card-title">Escalation triggers (advanced)</span>
+        <span class="collapse-icon"></span>
+      </summary>
+      <div class="collapsible-body">
+        <div class="card-subtitle" style="margin-bottom: 1rem;">
+          Tell your assistant when to stop and ask. For example: "Always ask me if it costs more than $50." Most people don't need to change these.
+        </div>
+        <div id="escalation-triggers">
+          ${escalationTriggers.map(t => `
+            <div style="display: flex; align-items: center; justify-content: space-between; padding: 0.5rem 0.75rem; background: var(--bg); border-radius: var(--radius-sm); margin-bottom: 0.5rem;">
+              <div>
+                <span style="font-weight: 600;">${escapeHtml(t.triggerType)}</span>
+                <span style="color: var(--text-muted); margin-left: 0.5rem;">${escapeHtml(JSON.stringify(t.conditions))}</span>
+                <span style="color: ${t.enabled ? 'var(--success)' : 'var(--text-muted)'}; margin-left: 0.5rem;">${t.enabled ? 'active' : 'disabled'}</span>
+              </div>
+              <button class="btn btn-outline btn-sm" onclick="removeEscalationTrigger('${userId}', '${escapeHtml(t.id)}')">Remove</button>
             </div>
-            <button class="btn btn-outline btn-sm" onclick="removeEscalationTrigger('${userId}', '${escapeHtml(t.id)}')">Remove</button>
-          </div>
-        `).join('')}
+          `).join('')}
+        </div>
+        <div style="display: flex; gap: 0.5rem; margin-top: 0.75rem;">
+          <select class="form-input" id="new-trigger-type" style="flex: 1;">
+            <option value="amount_threshold">Costs more than...</option>
+            <option value="risk_tier_threshold">Risk is above...</option>
+            <option value="low_confidence">Not sure enough</option>
+            <option value="novel_situation">Never seen before</option>
+            <option value="consecutive_rejections">You said no several times</option>
+          </select>
+          <input class="form-input" id="new-trigger-value" placeholder="Value (e.g. 5000)" style="flex: 1;">
+          <button class="btn btn-primary btn-sm" onclick="addEscalationTrigger('${userId}')">Add</button>
+        </div>
       </div>
-      <div style="display: flex; gap: 0.5rem; margin-top: 0.75rem;">
-        <select class="form-input" id="new-trigger-type" style="flex: 1;">
-          <option value="amount_threshold">Amount threshold</option>
-          <option value="risk_tier_threshold">Risk tier threshold</option>
-          <option value="low_confidence">Low confidence</option>
-          <option value="novel_situation">Novel situation</option>
-          <option value="consecutive_rejections">Consecutive rejections</option>
-        </select>
-        <input class="form-input" id="new-trigger-value" placeholder="Value (e.g. 5000)" style="flex: 1;">
-        <button class="btn btn-primary btn-sm" onclick="addEscalationTrigger('${userId}')">Add</button>
-      </div>
+    </details>
+
+    <div class="card" style="margin-top: 2rem; text-align: center;">
+      <div class="card-subtitle" style="margin-bottom: 0.75rem;">Signed in as <strong>${escapeHtml(userId)}</strong></div>
+      <button class="btn btn-outline" onclick="signOut()">Sign out</button>
     </div>
   `;
 }
@@ -360,4 +373,11 @@ window.removeEscalationTrigger = async function(userId, triggerId) {
       `<div class="error-banner">${escapeHtml(err.message)}</div>`,
     );
   }
+};
+
+window.signOut = function() {
+  localStorage.removeItem('skytwin_userId');
+  localStorage.removeItem('skytwin_onboarded');
+  window.location.hash = '#/';
+  window.location.reload();
 };

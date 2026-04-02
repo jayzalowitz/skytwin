@@ -17,7 +17,7 @@ async function seed(): Promise<void> {
          'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d',
          'alex@example.com',
          'Alex Thompson',
-         'established',
+         'moderate_autonomy',
          $1
        )
        ON CONFLICT (id) DO UPDATE SET
@@ -94,16 +94,18 @@ async function seed(): Promise<void> {
         JSON.stringify([
           {
             type: 'behavioral',
+            domain: 'calendar',
             key: 'morning_person',
             value: true,
-            confidence: 0.85,
+            confidence: 'high',
             observedFrom: 'calendar_patterns',
           },
           {
             type: 'preference',
+            domain: 'email',
             key: 'prefers_async',
             value: true,
-            confidence: 0.72,
+            confidence: 'moderate',
             observedFrom: 'communication_history',
           },
         ]),
@@ -454,6 +456,366 @@ async function seed(): Promise<void> {
       ],
     );
     console.log('[seed] Created 3 normalized preferences.');
+
+    // ========================================================================
+    // 6. Additional sample users
+    // ========================================================================
+
+    // Power User Pat — moderate_autonomy, all domains enabled
+    const patResult = await client.query(
+      `INSERT INTO users (id, email, name, trust_tier, autonomy_settings)
+       VALUES (
+         'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+         'pat@example.com',
+         'Power User Pat',
+         'moderate_autonomy',
+         $1
+       )
+       ON CONFLICT (id) DO UPDATE SET
+         email = EXCLUDED.email,
+         name = EXCLUDED.name,
+         trust_tier = EXCLUDED.trust_tier,
+         autonomy_settings = EXCLUDED.autonomy_settings,
+         updated_at = now()
+       RETURNING id`,
+      [
+        JSON.stringify({
+          maxAutoSpend: 10000,
+          autoApproveRecurring: true,
+          requireApprovalForNewVendors: false,
+          allowCalendarManagement: true,
+          allowEmailDrafts: true,
+          allowEmailSend: true,
+          enabledDomains: [
+            'email', 'calendar', 'subscriptions', 'shopping', 'travel',
+            'finance', 'smart_home', 'tasks', 'social_media', 'documents', 'health',
+          ],
+          notificationPreferences: {
+            email: true,
+            push: true,
+            sms: true,
+          },
+        }),
+      ],
+    );
+    console.log(`[seed] Created user: Power User Pat (${patResult.rows[0].id})`);
+
+    // Cautious Carol — observer, email only
+    const carolResult = await client.query(
+      `INSERT INTO users (id, email, name, trust_tier, autonomy_settings)
+       VALUES (
+         'c3d4e5f6-a7b8-4c9d-0e1f-2a3b4c5d6e7a',
+         'carol@example.com',
+         'Cautious Carol',
+         'observer',
+         $1
+       )
+       ON CONFLICT (id) DO UPDATE SET
+         email = EXCLUDED.email,
+         name = EXCLUDED.name,
+         trust_tier = EXCLUDED.trust_tier,
+         autonomy_settings = EXCLUDED.autonomy_settings,
+         updated_at = now()
+       RETURNING id`,
+      [
+        JSON.stringify({
+          maxAutoSpend: 0,
+          autoApproveRecurring: false,
+          requireApprovalForNewVendors: true,
+          allowCalendarManagement: false,
+          allowEmailDrafts: false,
+          allowEmailSend: false,
+          enabledDomains: ['email'],
+          notificationPreferences: {
+            email: true,
+            push: false,
+            sms: false,
+          },
+        }),
+      ],
+    );
+    console.log(`[seed] Created user: Cautious Carol (${carolResult.rows[0].id})`);
+
+    // ========================================================================
+    // 7. Sample decisions for new domains (Alex user)
+    // ========================================================================
+
+    // Finance domain decision: auto-categorize coffee charge
+    const finDecisionResult = await client.query(
+      `INSERT INTO decisions (id, user_id, situation_type, raw_event, interpreted_situation, domain, urgency, metadata)
+       VALUES (
+         'b8c9d0e1-f2a3-4b4c-5d6e-7f8091021314',
+         $1, 'finance_operation', $2, $3, 'finance', 'low', $4
+       )
+       ON CONFLICT (id) DO NOTHING
+       RETURNING id`,
+      [
+        userId,
+        JSON.stringify({
+          type: 'transaction',
+          vendor: 'Starbucks',
+          amount: 575,
+          currency: 'USD',
+          description: 'Grande latte',
+        }),
+        JSON.stringify({
+          type: 'small_known_vendor_charge',
+          amountCents: 575,
+          isRecurring: true,
+          vendorKnown: true,
+          categoryMatch: 'food_beverage',
+        }),
+        JSON.stringify({
+          source: 'bank_feed',
+          transactionId: 'txn_fin_001',
+        }),
+      ],
+    );
+
+    if (finDecisionResult.rows.length > 0) {
+      const finDecisionId = finDecisionResult.rows[0].id;
+      await client.query(
+        `INSERT INTO decision_outcomes (id, decision_id, selected_action_id, auto_executed, requires_approval, explanation, confidence)
+         VALUES (
+           'c9d0e1f2-a3b4-4c5d-6e7f-809102131415',
+           $1, NULL, true, false,
+           'Auto-categorized small coffee charge from known vendor Starbucks as food_beverage.',
+           0.95
+         )
+         ON CONFLICT (id) DO NOTHING`,
+        [finDecisionId],
+      );
+      console.log(`[seed] Created finance domain decision for Alex.`);
+    }
+
+    // Smart home domain decision: morning routine activation
+    const homeDecisionResult = await client.query(
+      `INSERT INTO decisions (id, user_id, situation_type, raw_event, interpreted_situation, domain, urgency, metadata)
+       VALUES (
+         'd0e1f2a3-b4c5-4d6e-7f80-910213141516',
+         $1, 'smart_home', $2, $3, 'smart_home', 'normal', $4
+       )
+       ON CONFLICT (id) DO NOTHING
+       RETURNING id`,
+      [
+        userId,
+        JSON.stringify({
+          type: 'routine_trigger',
+          trigger: 'morning_schedule',
+          devices: ['lights', 'coffee_maker', 'speaker'],
+        }),
+        JSON.stringify({
+          type: 'scheduled_routine',
+          routineName: 'morning_routine',
+          devicesAffected: 3,
+          isEstablishedRoutine: true,
+        }),
+        JSON.stringify({
+          source: 'smart_home_hub',
+          routineId: 'routine_morning_001',
+        }),
+      ],
+    );
+
+    if (homeDecisionResult.rows.length > 0) {
+      const homeDecisionId = homeDecisionResult.rows[0].id;
+      await client.query(
+        `INSERT INTO decision_outcomes (id, decision_id, selected_action_id, auto_executed, requires_approval, explanation, confidence)
+         VALUES (
+           'e1f2a3b4-c5d6-4e7f-8091-021314151617',
+           $1, NULL, true, false,
+           'Activated morning routine: turned on lights, started coffee maker, began news briefing.',
+           0.97
+         )
+         ON CONFLICT (id) DO NOTHING`,
+        [homeDecisionId],
+      );
+      console.log(`[seed] Created smart home domain decision for Alex.`);
+    }
+
+    // Task domain decision: create task from email
+    const taskDecisionResult = await client.query(
+      `INSERT INTO decisions (id, user_id, situation_type, raw_event, interpreted_situation, domain, urgency, metadata)
+       VALUES (
+         'f2a3b4c5-d6e7-4f80-9102-131415161718',
+         $1, 'task_management', $2, $3, 'tasks', 'normal', $4
+       )
+       ON CONFLICT (id) DO NOTHING
+       RETURNING id`,
+      [
+        userId,
+        JSON.stringify({
+          type: 'task_create',
+          origin: 'email',
+          emailFrom: 'manager@company.com',
+          subject: 'Update Q2 report by Friday',
+        }),
+        JSON.stringify({
+          type: 'email_action_item',
+          extractedTask: 'Update Q2 report',
+          dueDate: '2026-04-04',
+          priority: 'normal',
+        }),
+        JSON.stringify({
+          source: 'email_parser',
+          emailId: 'msg_task_001',
+        }),
+      ],
+    );
+
+    if (taskDecisionResult.rows.length > 0) {
+      const taskDecisionId = taskDecisionResult.rows[0].id;
+      await client.query(
+        `INSERT INTO decision_outcomes (id, decision_id, selected_action_id, auto_executed, requires_approval, explanation, confidence)
+         VALUES (
+           'a3b4c5d6-e7f8-4091-0213-141516171819',
+           $1, NULL, true, false,
+           'Created task "Update Q2 report" with due date April 4 from manager email.',
+           0.88
+         )
+         ON CONFLICT (id) DO NOTHING`,
+        [taskDecisionId],
+      );
+      console.log(`[seed] Created task domain decision for Alex.`);
+    }
+
+    // Document domain decision: auto-file invoice
+    const docDecisionResult = await client.query(
+      `INSERT INTO decisions (id, user_id, situation_type, raw_event, interpreted_situation, domain, urgency, metadata)
+       VALUES (
+         'b4c5d6e7-f809-4102-1314-151617181920',
+         $1, 'document_management', $2, $3, 'documents', 'low', $4
+       )
+       ON CONFLICT (id) DO NOTHING
+       RETURNING id`,
+      [
+        userId,
+        JSON.stringify({
+          type: 'document_file',
+          documentName: 'Invoice-2026-0342.pdf',
+          documentType: 'invoice',
+        }),
+        JSON.stringify({
+          type: 'auto_file_recognized_document',
+          documentType: 'invoice',
+          targetFolder: 'Finance/Invoices/2026',
+          matchConfidence: 0.94,
+        }),
+        JSON.stringify({
+          source: 'document_scanner',
+          documentId: 'doc_inv_001',
+        }),
+      ],
+    );
+
+    if (docDecisionResult.rows.length > 0) {
+      const docDecisionId = docDecisionResult.rows[0].id;
+      await client.query(
+        `INSERT INTO decision_outcomes (id, decision_id, selected_action_id, auto_executed, requires_approval, explanation, confidence)
+         VALUES (
+           'c5d6e7f8-0910-4213-1415-161718192021',
+           $1, NULL, true, false,
+           'Auto-filed Invoice-2026-0342.pdf to Finance/Invoices/2026 folder.',
+           0.94
+         )
+         ON CONFLICT (id) DO NOTHING`,
+        [docDecisionId],
+      );
+      console.log(`[seed] Created document domain decision for Alex.`);
+    }
+
+    // Health domain decision: log daily weight
+    const healthDecisionResult = await client.query(
+      `INSERT INTO decisions (id, user_id, situation_type, raw_event, interpreted_situation, domain, urgency, metadata)
+       VALUES (
+         'd6e7f809-1021-4314-1516-171819202122',
+         $1, 'health_wellness', $2, $3, 'health', 'low', $4
+       )
+       ON CONFLICT (id) DO NOTHING
+       RETURNING id`,
+      [
+        userId,
+        JSON.stringify({
+          type: 'metric_log',
+          metric: 'weight',
+          value: 175.2,
+          unit: 'lbs',
+          device: 'smart_scale',
+        }),
+        JSON.stringify({
+          type: 'routine_health_metric',
+          metric: 'weight',
+          withinNormalRange: true,
+          isEstablishedPattern: true,
+        }),
+        JSON.stringify({
+          source: 'health_device',
+          deviceId: 'scale_001',
+        }),
+      ],
+    );
+
+    if (healthDecisionResult.rows.length > 0) {
+      const healthDecisionId = healthDecisionResult.rows[0].id;
+      await client.query(
+        `INSERT INTO decision_outcomes (id, decision_id, selected_action_id, auto_executed, requires_approval, explanation, confidence)
+         VALUES (
+           'e7f80910-2131-4415-1617-181920212223',
+           $1, NULL, true, false,
+           'Auto-logged daily weight measurement of 175.2 lbs from smart scale.',
+           0.99
+         )
+         ON CONFLICT (id) DO NOTHING`,
+        [healthDecisionId],
+      );
+      console.log(`[seed] Created health domain decision for Alex.`);
+    }
+
+    // Social domain decision: mute spam conversation
+    const socialDecisionResult = await client.query(
+      `INSERT INTO decisions (id, user_id, situation_type, raw_event, interpreted_situation, domain, urgency, metadata)
+       VALUES (
+         'f8091021-3141-4516-1718-192021222324',
+         $1, 'social_media', $2, $3, 'social_media', 'low', $4
+       )
+       ON CONFLICT (id) DO NOTHING
+       RETURNING id`,
+      [
+        userId,
+        JSON.stringify({
+          type: 'spam_detected',
+          platform: 'twitter',
+          author: '@bot98765',
+          content: 'Win FREE crypto NOW! Click here!!!',
+        }),
+        JSON.stringify({
+          type: 'detected_spam',
+          spamScore: 0.98,
+          platform: 'twitter',
+          action: 'mute',
+        }),
+        JSON.stringify({
+          source: 'social_connector',
+          postId: 'tw_spam_001',
+        }),
+      ],
+    );
+
+    if (socialDecisionResult.rows.length > 0) {
+      const socialDecisionId = socialDecisionResult.rows[0].id;
+      await client.query(
+        `INSERT INTO decision_outcomes (id, decision_id, selected_action_id, auto_executed, requires_approval, explanation, confidence)
+         VALUES (
+           '09102131-4151-4617-1819-202122232425',
+           $1, NULL, true, false,
+           'Auto-muted spam conversation from @bot98765 (spam score: 0.98).',
+           0.98
+         )
+         ON CONFLICT (id) DO NOTHING`,
+        [socialDecisionId],
+      );
+      console.log(`[seed] Created social domain decision for Alex.`);
+    }
 
     console.log('[seed] Seeding complete!');
   });

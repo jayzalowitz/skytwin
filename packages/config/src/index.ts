@@ -2,7 +2,7 @@ export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 export type NodeEnv = 'development' | 'production' | 'test';
 
 export interface SkyTwinConfig {
-  /** CockroachDB connection string */
+  /** Database connection string (postgresql:// or sqlite:// or .sqlite file path) */
   databaseUrl: string;
 
   /** IronClaw API base URL (e.g., http://localhost:4000) */
@@ -13,6 +13,12 @@ export interface SkyTwinConfig {
 
   /** Owner ID for IronClaw's multi-tenant model */
   ironclawOwnerId: string;
+
+  /** OpenClaw API base URL */
+  openclawApiUrl: string;
+
+  /** OpenClaw API key for authentication */
+  openclawApiKey: string;
 
   /** Port for the API server */
   apiPort: number;
@@ -32,8 +38,11 @@ export interface SkyTwinConfig {
   /** Worker polling interval in milliseconds */
   workerPollIntervalMs: number;
 
-  /** Whether to use mock IronClaw adapter */
+  /** Use mock adapters instead of real IronClaw/OpenClaw (only for automated tests) */
   useMockIronclaw: boolean;
+
+  /** Desktop mode: bundles API+worker into a single process, auto-starts services */
+  desktopMode: boolean;
 
   /** Default spend limit per action in cents */
   defaultSpendLimitPerAction: number;
@@ -87,7 +96,10 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     workerPort: parseInt(env['WORKER_PORT'] ?? '3101', 10),
     apiBaseUrl: env['API_BASE_URL'] ?? 'http://localhost:3100',
     workerPollIntervalMs: parseInt(env['WORKER_POLL_INTERVAL_MS'] ?? '10000', 10),
-    useMockIronclaw: (env['USE_MOCK_IRONCLAW'] ?? 'true') === 'true',
+    openclawApiUrl: env['OPENCLAW_API_URL'] ?? '',
+    openclawApiKey: env['OPENCLAW_API_KEY'] ?? '',
+    useMockIronclaw: (env['USE_MOCK_IRONCLAW'] ?? 'false') === 'true',
+    desktopMode: (env['DESKTOP_MODE'] ?? 'false') === 'true',
     defaultSpendLimitPerAction: parseInt(env['DEFAULT_SPEND_LIMIT_PER_ACTION'] ?? '5000', 10),
     defaultDailySpendLimit: parseInt(env['DEFAULT_DAILY_SPEND_LIMIT'] ?? '50000', 10),
     approvalExpirySeconds: parseInt(env['APPROVAL_EXPIRY_SECONDS'] ?? '3600', 10),

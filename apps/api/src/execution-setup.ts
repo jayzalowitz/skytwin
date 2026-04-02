@@ -1,0 +1,94 @@
+import { loadConfig } from '@skytwin/config';
+import {
+  RealIronClawAdapter,
+  DirectExecutionAdapter,
+  ActionHandlerRegistry,
+  EmailActionHandler,
+  CalendarActionHandler,
+  FinanceActionHandler,
+  TaskActionHandler,
+  SmartHomeActionHandler,
+  SocialActionHandler,
+  DocumentActionHandler,
+  HealthActionHandler,
+} from '@skytwin/ironclaw-adapter';
+import type { IronClawAdapter } from '@skytwin/ironclaw-adapter';
+import {
+  ExecutionRouter,
+  AdapterRegistry,
+  OpenClawAdapter,
+  IRONCLAW_TRUST_PROFILE,
+  OPENCLAW_TRUST_PROFILE,
+  DIRECT_TRUST_PROFILE,
+  OPENCLAW_SKILLS,
+} from '@skytwin/execution-router';
+
+/**
+ * Build the execution router with all available adapters registered.
+ *
+ * Adapter availability depends on configuration:
+ * - IronClaw: registered if IRONCLAW_API_URL and IRONCLAW_WEBHOOK_SECRET are set
+ * - Direct: always registered (local Gmail/Calendar handlers)
+ * - OpenClaw: registered if OPENCLAW_API_URL is set
+ *
+ * The router selects the most trusted available adapter per action and
+ * falls back through the chain on failure.
+ */
+export function createExecutionRouter(): ExecutionRouter {
+  const config = loadConfig();
+  const registry = new AdapterRegistry();
+
+  // IronClaw — highest trust, requires a running IronClaw server
+  if (config.ironclawApiUrl && config.ironclawWebhookSecret) {
+    const ironclawAdapter: IronClawAdapter = new RealIronClawAdapter({
+      apiUrl: config.ironclawApiUrl,
+      webhookSecret: config.ironclawWebhookSecret,
+      ownerId: config.ironclawOwnerId,
+    });
+    registry.register('ironclaw', ironclawAdapter, IRONCLAW_TRUST_PROFILE);
+    console.info('[execution] Registered IronClaw adapter:', config.ironclawApiUrl);
+  } else {
+    console.info('[execution] IronClaw not configured (no URL or secret) — skipping');
+  }
+
+  // Direct — local handler dispatch, always available
+  const handlerRegistry = new ActionHandlerRegistry();
+  handlerRegistry.register(new EmailActionHandler());
+  handlerRegistry.register(new CalendarActionHandler());
+  handlerRegistry.register(new FinanceActionHandler());
+  handlerRegistry.register(new TaskActionHandler());
+  handlerRegistry.register(new SmartHomeActionHandler());
+  handlerRegistry.register(new SocialActionHandler());
+  handlerRegistry.register(new DocumentActionHandler());
+  handlerRegistry.register(new HealthActionHandler());
+  const directAdapter = new DirectExecutionAdapter(handlerRegistry);
+  registry.register('direct', directAdapter, DIRECT_TRUST_PROFILE);
+  console.info('[execution] Registered Direct adapter (local handlers: email, calendar, finance, task, smart-home, social, document, health)');
+
+  // OpenClaw — community execution engine, only if configured
+  if (config.openclawApiUrl) {
+    const openclawAdapter = new OpenClawAdapter({
+      apiUrl: config.openclawApiUrl,
+      apiKey: config.openclawApiKey || undefined,
+    });
+    registry.register('openclaw', openclawAdapter, OPENCLAW_TRUST_PROFILE, OPENCLAW_SKILLS);
+    console.info('[execution] Registered OpenClaw adapter:', config.openclawApiUrl);
+  } else {
+    console.info('[execution] OpenClaw not configured (no URL) — skipping');
+  }
+
+  return new ExecutionRouter(registry);
+}
+
+/**
+ * Singleton execution router instance.
+ * Created once at startup and shared across all routes.
+ */
+let _router: ExecutionRouter | null = null;
+
+export function getExecutionRouter(): ExecutionRouter {
+  if (!_router) {
+    _router = createExecutionRouter();
+  }
+  return _router;
+}

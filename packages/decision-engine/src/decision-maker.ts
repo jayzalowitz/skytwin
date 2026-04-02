@@ -89,7 +89,7 @@ export class DecisionMaker {
 
     if (candidates.length === 0) {
       const outcome: DecisionOutcome = {
-        id: `outcome_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+        id: crypto.randomUUID(),
         decisionId: context.decision.id,
         selectedAction: null,
         allCandidates: [],
@@ -160,7 +160,7 @@ export class DecisionMaker {
     }
 
     const outcome: DecisionOutcome = {
-      id: `outcome_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+      id: crypto.randomUUID(),
       decisionId: context.decision.id,
       selectedAction,
       allCandidates: candidates,
@@ -171,8 +171,8 @@ export class DecisionMaker {
       decidedAt: new Date(),
     };
 
-    await this.decisionRepository.saveOutcome(outcome);
     await this.decisionRepository.saveCandidates(candidates);
+    await this.decisionRepository.saveOutcome(outcome);
 
     return outcome;
   }
@@ -256,6 +256,12 @@ export class DecisionMaker {
       subscriptions: SituationType.SUBSCRIPTION_RENEWAL,
       shopping: SituationType.GROCERY_REORDER,
       travel: SituationType.TRAVEL_DECISION,
+      finance: SituationType.FINANCE_OPERATION,
+      smart_home: SituationType.SMART_HOME,
+      tasks: SituationType.TASK_MANAGEMENT,
+      social_media: SituationType.SOCIAL_MEDIA,
+      documents: SituationType.DOCUMENT_MANAGEMENT,
+      health: SituationType.HEALTH_WELLNESS,
     };
 
     return domainMap[domain.toLowerCase()] ?? SituationType.GENERIC;
@@ -280,6 +286,18 @@ export class DecisionMaker {
         return this.generateGroceryCandidates(decision, profile);
       case SituationType.TRAVEL_DECISION:
         return this.generateTravelCandidates(decision, profile);
+      case SituationType.FINANCE_OPERATION:
+        return this.generateFinanceCandidates(decision, profile);
+      case SituationType.SMART_HOME:
+        return this.generateSmartHomeCandidates(decision, profile);
+      case SituationType.TASK_MANAGEMENT:
+        return this.generateTaskManagementCandidates(decision, profile);
+      case SituationType.SOCIAL_MEDIA:
+        return this.generateSocialMediaCandidates(decision, profile);
+      case SituationType.DOCUMENT_MANAGEMENT:
+        return this.generateDocumentCandidates(decision, profile);
+      case SituationType.HEALTH_WELLNESS:
+        return this.generateHealthCandidates(decision, profile);
       case SituationType.GENERIC:
       default:
         return this.generateGenericCandidates(decision, profile);
@@ -340,11 +358,11 @@ export class DecisionMaker {
     profile: TwinProfile,
   ): CandidateAction[] {
     const candidates: CandidateAction[] = [];
-    const baseId = `cand_${Date.now()}`;
+    // IDs generated inline via crypto.randomUUID()
 
     // Archive low-priority emails
     candidates.push({
-      id: `${baseId}_archive`,
+      id: crypto.randomUUID(),
       decisionId: decision.id,
       actionType: 'archive_email',
       description: 'Archive this email for later review.',
@@ -358,7 +376,7 @@ export class DecisionMaker {
 
     // Label and categorize
     candidates.push({
-      id: `${baseId}_label`,
+      id: crypto.randomUUID(),
       decisionId: decision.id,
       actionType: 'label_email',
       description: 'Apply appropriate labels to this email.',
@@ -376,7 +394,7 @@ export class DecisionMaker {
     // Reply with acknowledgment
     if (decision.rawData['requiresResponse']) {
       candidates.push({
-        id: `${baseId}_reply`,
+        id: crypto.randomUUID(),
         decisionId: decision.id,
         actionType: 'send_reply',
         description: 'Send a brief acknowledgment reply.',
@@ -400,11 +418,11 @@ export class DecisionMaker {
     profile: TwinProfile,
   ): CandidateAction[] {
     const candidates: CandidateAction[] = [];
-    const baseId = `cand_${Date.now()}`;
+    // IDs generated inline via crypto.randomUUID()
 
     // Accept the meeting
     candidates.push({
-      id: `${baseId}_accept`,
+      id: crypto.randomUUID(),
       decisionId: decision.id,
       actionType: 'accept_invite',
       description: 'Accept this calendar invitation.',
@@ -418,7 +436,7 @@ export class DecisionMaker {
 
     // Decline the meeting
     candidates.push({
-      id: `${baseId}_decline`,
+      id: crypto.randomUUID(),
       decisionId: decision.id,
       actionType: 'decline_invite',
       description: 'Decline this calendar invitation.',
@@ -432,7 +450,7 @@ export class DecisionMaker {
 
     // Propose alternative time
     candidates.push({
-      id: `${baseId}_propose`,
+      id: crypto.randomUUID(),
       decisionId: decision.id,
       actionType: 'propose_alternative',
       description: 'Propose an alternative time for this meeting.',
@@ -455,12 +473,14 @@ export class DecisionMaker {
     profile: TwinProfile,
   ): CandidateAction[] {
     const candidates: CandidateAction[] = [];
-    const baseId = `cand_${Date.now()}`;
-    const cost = Number(decision.rawData['amount'] ?? decision.rawData['costCents'] ?? 0);
+    // IDs generated inline via crypto.randomUUID()
+    const rawAmount = Number(decision.rawData['amount'] ?? decision.rawData['costCents'] ?? 0);
+    // If amount looks like dollars (has decimal or < 100), convert to cents; otherwise treat as cents
+    const cost = rawAmount > 0 && rawAmount < 100 ? Math.round(rawAmount * 100) : Math.round(rawAmount);
 
     // Renew the subscription
     candidates.push({
-      id: `${baseId}_renew`,
+      id: crypto.randomUUID(),
       decisionId: decision.id,
       actionType: 'renew_subscription',
       description: `Renew subscription for $${(cost / 100).toFixed(2)}.`,
@@ -477,7 +497,7 @@ export class DecisionMaker {
 
     // Cancel the subscription
     candidates.push({
-      id: `${baseId}_cancel`,
+      id: crypto.randomUUID(),
       decisionId: decision.id,
       actionType: 'cancel_subscription',
       description: 'Cancel this subscription.',
@@ -493,7 +513,7 @@ export class DecisionMaker {
 
     // Snooze / remind later
     candidates.push({
-      id: `${baseId}_snooze`,
+      id: crypto.randomUUID(),
       decisionId: decision.id,
       actionType: 'snooze_reminder',
       description: 'Snooze this renewal reminder for 3 days.',
@@ -516,7 +536,7 @@ export class DecisionMaker {
     profile: TwinProfile,
   ): CandidateAction[] {
     const candidates: CandidateAction[] = [];
-    const baseId = `cand_${Date.now()}`;
+    // IDs generated inline via crypto.randomUUID()
     const items = (decision.rawData['items'] as Array<Record<string, unknown>>) ?? [];
     const estimatedCost = items.reduce(
       (sum, item) => sum + (Number(item['priceCents']) || 300),
@@ -525,7 +545,7 @@ export class DecisionMaker {
 
     // Reorder all items
     candidates.push({
-      id: `${baseId}_reorder_all`,
+      id: crypto.randomUUID(),
       decisionId: decision.id,
       actionType: 'place_order',
       description: `Reorder ${items.length} grocery item(s).`,
@@ -539,7 +559,7 @@ export class DecisionMaker {
 
     // Add to shopping list only
     candidates.push({
-      id: `${baseId}_add_list`,
+      id: crypto.randomUUID(),
       decisionId: decision.id,
       actionType: 'add_to_list',
       description: `Add ${items.length} item(s) to the shopping list.`,
@@ -559,12 +579,12 @@ export class DecisionMaker {
     profile: TwinProfile,
   ): CandidateAction[] {
     const candidates: CandidateAction[] = [];
-    const baseId = `cand_${Date.now()}`;
+    // IDs generated inline via crypto.randomUUID()
     const cost = Number(decision.rawData['costCents'] ?? 0);
 
     // Book the travel
     candidates.push({
-      id: `${baseId}_book`,
+      id: crypto.randomUUID(),
       decisionId: decision.id,
       actionType: 'book_travel',
       description: 'Book this travel arrangement.',
@@ -582,7 +602,7 @@ export class DecisionMaker {
 
     // Save for later review
     candidates.push({
-      id: `${baseId}_save`,
+      id: crypto.randomUUID(),
       decisionId: decision.id,
       actionType: 'save_option',
       description: 'Save this travel option for later review.',
@@ -600,16 +620,343 @@ export class DecisionMaker {
     return candidates;
   }
 
+  private generateFinanceCandidates(
+    decision: DecisionObject,
+    profile: TwinProfile,
+  ): CandidateAction[] {
+    const candidates: CandidateAction[] = [];
+    // IDs generated inline via crypto.randomUUID()
+    const billCost = Number(decision.rawData['costCents'] ?? decision.rawData['amount'] ?? 0);
+
+    // Categorize transaction
+    candidates.push({
+      id: crypto.randomUUID(),
+      decisionId: decision.id,
+      actionType: 'categorize_transaction',
+      description: 'Categorize this transaction',
+      domain: 'finance',
+      parameters: { transactionId: decision.rawData['transactionId'] },
+      estimatedCostCents: 0,
+      reversible: true,
+      confidence: this.getPreferenceConfidence(profile, 'finance', 'auto_categorize'),
+      reasoning: 'Categorizing is zero-cost and fully reversible.',
+    });
+
+    // Pay bill
+    candidates.push({
+      id: crypto.randomUUID(),
+      decisionId: decision.id,
+      actionType: 'pay_bill',
+      description: 'Pay this bill',
+      domain: 'finance',
+      parameters: { billId: decision.rawData['billId'], amount: billCost },
+      estimatedCostCents: billCost,
+      reversible: false,
+      confidence: this.getPreferenceConfidence(profile, 'finance', 'auto_pay'),
+      reasoning: 'Paying a bill is irreversible and involves spending.',
+    });
+
+    // Flag suspicious transaction
+    candidates.push({
+      id: crypto.randomUUID(),
+      decisionId: decision.id,
+      actionType: 'flag_suspicious_transaction',
+      description: 'Flag this transaction for review',
+      domain: 'finance',
+      parameters: { transactionId: decision.rawData['transactionId'] },
+      estimatedCostCents: 0,
+      reversible: true,
+      confidence: this.getPreferenceConfidence(profile, 'finance', 'auto_flag'),
+      reasoning: 'Flagging is zero-cost and reversible, erring on the side of caution.',
+    });
+
+    // Record expense
+    candidates.push({
+      id: crypto.randomUUID(),
+      decisionId: decision.id,
+      actionType: 'record_expense',
+      description: 'Record this expense',
+      domain: 'finance',
+      parameters: { transactionId: decision.rawData['transactionId'], amount: billCost },
+      estimatedCostCents: 0,
+      reversible: true,
+      confidence: this.getPreferenceConfidence(profile, 'finance', 'auto_record'),
+      reasoning: 'Recording an expense is zero-cost and reversible.',
+    });
+
+    return candidates;
+  }
+
+  private generateSmartHomeCandidates(
+    decision: DecisionObject,
+    profile: TwinProfile,
+  ): CandidateAction[] {
+    const candidates: CandidateAction[] = [];
+    // IDs generated inline via crypto.randomUUID()
+
+    // Run routine
+    candidates.push({
+      id: crypto.randomUUID(),
+      decisionId: decision.id,
+      actionType: 'run_routine',
+      description: 'Run the suggested routine',
+      domain: 'smart_home',
+      parameters: { routineId: decision.rawData['routineId'] },
+      estimatedCostCents: 0,
+      reversible: true,
+      confidence: this.getPreferenceConfidence(profile, 'smart_home', 'auto_routine'),
+      reasoning: 'Running a home routine is reversible and low-risk.',
+    });
+
+    // Set thermostat
+    candidates.push({
+      id: crypto.randomUUID(),
+      decisionId: decision.id,
+      actionType: 'set_thermostat',
+      description: 'Adjust thermostat to recommended temperature',
+      domain: 'smart_home',
+      parameters: { temperature: decision.rawData['temperature'] },
+      estimatedCostCents: 0,
+      reversible: true,
+      confidence: this.getPreferenceConfidence(profile, 'smart_home', 'auto_thermostat'),
+      reasoning: 'Thermostat adjustments are reversible and zero-cost.',
+    });
+
+    // Escalate to user
+    candidates.push({
+      id: crypto.randomUUID(),
+      decisionId: decision.id,
+      actionType: 'escalate_to_user',
+      description: 'Alert user about this home event',
+      domain: 'smart_home',
+      parameters: { eventType: decision.rawData['eventType'], summary: decision.summary },
+      estimatedCostCents: 0,
+      reversible: true,
+      confidence: ConfidenceLevel.HIGH,
+      reasoning: 'Alerting the user is the safest option for home events.',
+    });
+
+    return candidates;
+  }
+
+  private generateTaskManagementCandidates(
+    decision: DecisionObject,
+    profile: TwinProfile,
+  ): CandidateAction[] {
+    const candidates: CandidateAction[] = [];
+    // IDs generated inline via crypto.randomUUID()
+
+    // Create task
+    candidates.push({
+      id: crypto.randomUUID(),
+      decisionId: decision.id,
+      actionType: 'create_task',
+      description: 'Create a new task from this',
+      domain: 'tasks',
+      parameters: { title: decision.rawData['title'], summary: decision.summary },
+      estimatedCostCents: 0,
+      reversible: true,
+      confidence: this.getPreferenceConfidence(profile, 'tasks', 'auto_create_task'),
+      reasoning: 'Creating a task is zero-cost and reversible.',
+    });
+
+    // Set reminder
+    candidates.push({
+      id: crypto.randomUUID(),
+      decisionId: decision.id,
+      actionType: 'set_reminder',
+      description: 'Set a reminder',
+      domain: 'tasks',
+      parameters: { taskId: decision.rawData['taskId'], reminderTime: decision.rawData['reminderTime'] },
+      estimatedCostCents: 0,
+      reversible: true,
+      confidence: this.getPreferenceConfidence(profile, 'tasks', 'auto_reminder'),
+      reasoning: 'Setting a reminder is zero-cost and reversible.',
+    });
+
+    // Complete task
+    candidates.push({
+      id: crypto.randomUUID(),
+      decisionId: decision.id,
+      actionType: 'complete_task',
+      description: 'Mark this task as done',
+      domain: 'tasks',
+      parameters: { taskId: decision.rawData['taskId'] },
+      estimatedCostCents: 0,
+      reversible: false,
+      confidence: this.getPreferenceConfidence(profile, 'tasks', 'auto_complete'),
+      reasoning: 'Completing a task is irreversible and should match confirmed intent.',
+    });
+
+    return candidates;
+  }
+
+  private generateSocialMediaCandidates(
+    decision: DecisionObject,
+    profile: TwinProfile,
+  ): CandidateAction[] {
+    const candidates: CandidateAction[] = [];
+    // IDs generated inline via crypto.randomUUID()
+
+    // Draft social post
+    candidates.push({
+      id: crypto.randomUUID(),
+      decisionId: decision.id,
+      actionType: 'draft_social_post',
+      description: 'Draft a response',
+      domain: 'social_media',
+      parameters: { postId: decision.rawData['postId'], platform: decision.rawData['platform'] },
+      estimatedCostCents: 0,
+      reversible: true,
+      confidence: this.getPreferenceConfidence(profile, 'social_media', 'auto_draft'),
+      reasoning: 'Drafting a response is reversible and requires user review before posting.',
+    });
+
+    // Mute conversation
+    candidates.push({
+      id: crypto.randomUUID(),
+      decisionId: decision.id,
+      actionType: 'mute_conversation',
+      description: 'Mute this conversation',
+      domain: 'social_media',
+      parameters: { conversationId: decision.rawData['conversationId'] },
+      estimatedCostCents: 0,
+      reversible: true,
+      confidence: this.getPreferenceConfidence(profile, 'social_media', 'auto_mute'),
+      reasoning: 'Muting is reversible and reduces notification noise.',
+    });
+
+    // Respond to mention
+    candidates.push({
+      id: crypto.randomUUID(),
+      decisionId: decision.id,
+      actionType: 'respond_to_mention',
+      description: 'Reply to this mention',
+      domain: 'social_media',
+      parameters: { mentionId: decision.rawData['mentionId'], platform: decision.rawData['platform'] },
+      estimatedCostCents: 0,
+      reversible: false,
+      confidence: this.getPreferenceConfidence(profile, 'social_media', 'auto_respond'),
+      reasoning: 'Replying to a mention is irreversible and publicly visible.',
+    });
+
+    return candidates;
+  }
+
+  private generateDocumentCandidates(
+    decision: DecisionObject,
+    profile: TwinProfile,
+  ): CandidateAction[] {
+    const candidates: CandidateAction[] = [];
+    // IDs generated inline via crypto.randomUUID()
+
+    // Organize file
+    candidates.push({
+      id: crypto.randomUUID(),
+      decisionId: decision.id,
+      actionType: 'organize_file',
+      description: 'Move to appropriate folder',
+      domain: 'documents',
+      parameters: { documentId: decision.rawData['documentId'], targetFolder: decision.rawData['targetFolder'] },
+      estimatedCostCents: 0,
+      reversible: true,
+      confidence: this.getPreferenceConfidence(profile, 'documents', 'auto_organize'),
+      reasoning: 'Organizing files is reversible and keeps documents tidy.',
+    });
+
+    // Summarize document
+    candidates.push({
+      id: crypto.randomUUID(),
+      decisionId: decision.id,
+      actionType: 'summarize_document',
+      description: 'Generate a summary',
+      domain: 'documents',
+      parameters: { documentId: decision.rawData['documentId'] },
+      estimatedCostCents: 0,
+      reversible: true,
+      confidence: this.getPreferenceConfidence(profile, 'documents', 'auto_summarize'),
+      reasoning: 'Generating a summary is zero-cost and reversible.',
+    });
+
+    // Share document
+    candidates.push({
+      id: crypto.randomUUID(),
+      decisionId: decision.id,
+      actionType: 'share_document',
+      description: 'Share with relevant people',
+      domain: 'documents',
+      parameters: { documentId: decision.rawData['documentId'], recipients: decision.rawData['recipients'] },
+      estimatedCostCents: 0,
+      reversible: false,
+      confidence: this.getPreferenceConfidence(profile, 'documents', 'auto_share'),
+      reasoning: 'Sharing a document is irreversible and exposes content to others.',
+    });
+
+    return candidates;
+  }
+
+  private generateHealthCandidates(
+    decision: DecisionObject,
+    profile: TwinProfile,
+  ): CandidateAction[] {
+    const candidates: CandidateAction[] = [];
+    // IDs generated inline via crypto.randomUUID()
+
+    // Log health metric
+    candidates.push({
+      id: crypto.randomUUID(),
+      decisionId: decision.id,
+      actionType: 'log_health_metric',
+      description: 'Log this health data',
+      domain: 'health',
+      parameters: { metricType: decision.rawData['metricType'], value: decision.rawData['value'] },
+      estimatedCostCents: 0,
+      reversible: true,
+      confidence: this.getPreferenceConfidence(profile, 'health', 'auto_log'),
+      reasoning: 'Logging health data is zero-cost and reversible.',
+    });
+
+    // Set medication reminder
+    candidates.push({
+      id: crypto.randomUUID(),
+      decisionId: decision.id,
+      actionType: 'set_medication_reminder',
+      description: 'Set a medication reminder',
+      domain: 'health',
+      parameters: { medication: decision.rawData['medication'], schedule: decision.rawData['schedule'] },
+      estimatedCostCents: 0,
+      reversible: true,
+      confidence: this.getPreferenceConfidence(profile, 'health', 'auto_medication_reminder'),
+      reasoning: 'Setting a medication reminder is zero-cost and reversible.',
+    });
+
+    // Book appointment
+    candidates.push({
+      id: crypto.randomUUID(),
+      decisionId: decision.id,
+      actionType: 'book_appointment',
+      description: 'Book an appointment',
+      domain: 'health',
+      parameters: { provider: decision.rawData['provider'], appointmentType: decision.rawData['appointmentType'] },
+      estimatedCostCents: 0,
+      reversible: false,
+      confidence: this.getPreferenceConfidence(profile, 'health', 'auto_book_appointment'),
+      reasoning: 'Booking an appointment is irreversible and may incur cancellation fees.',
+    });
+
+    return candidates;
+  }
+
   private generateGenericCandidates(
     decision: DecisionObject,
     _profile: TwinProfile,
   ): CandidateAction[] {
-    const baseId = `cand_${Date.now()}`;
+    // IDs generated inline via crypto.randomUUID()
 
     // For generic situations, create a "note for review" action
     return [
       {
-        id: `${baseId}_note`,
+        id: crypto.randomUUID(),
         decisionId: decision.id,
         actionType: 'create_note',
         description: `Create a note about: ${decision.summary}`,
@@ -621,7 +968,7 @@ export class DecisionMaker {
         reasoning: 'Creating a note is a safe default action for unrecognized situations.',
       },
       {
-        id: `${baseId}_escalate`,
+        id: crypto.randomUUID(),
         decisionId: decision.id,
         actionType: 'escalate_to_user',
         description: `Escalate to user: ${decision.summary}`,

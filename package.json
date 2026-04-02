@@ -2,12 +2,19 @@
   "name": "skytwin",
   "private": true,
   "scripts": {
+    "start": "./bin/skytwin-dev",
+    "stop": "./bin/skytwin-dev --stop",
+    "setup": "./bin/skytwin-install",
     "build": "turbo run build",
     "dev": "turbo run dev",
     "test": "turbo run test",
     "lint": "turbo run lint",
     "db:migrate": "pnpm --filter @skytwin/db migrate",
-    "db:seed": "pnpm --filter @skytwin/db seed"
+    "db:seed": "pnpm --filter @skytwin/db seed",
+    "desktop": "pnpm --filter @skytwin/desktop start",
+    "desktop:dev": "pnpm --filter @skytwin/desktop dev",
+    "desktop:build:mac": "pnpm build && pnpm --filter @skytwin/desktop package:mac",
+    "desktop:build:win": "pnpm build && pnpm --filter @skytwin/desktop package:win"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",

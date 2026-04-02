@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { PreferenceArchaeologist, TwinService } from '@skytwin/twin-model';
-import { twinRepository, proposalRepository, patternRepository } from '@skytwin/db';
+import { TwinRepositoryAdapter, PatternRepositoryAdapter, proposalRepository } from '@skytwin/db';
 import type { PreferenceProposalRow } from '@skytwin/db';
 
 /**
@@ -8,8 +8,10 @@ import type { PreferenceProposalRow } from '@skytwin/db';
  */
 export function createProposalsRouter(): Router {
   const router = Router();
-  const archaeologist = new PreferenceArchaeologist(twinRepository as never);
-  const twinService = new TwinService(twinRepository as never, patternRepository as never);
+  const twinRepo = new TwinRepositoryAdapter();
+  const patternRepo = new PatternRepositoryAdapter();
+  const archaeologist = new PreferenceArchaeologist(twinRepo);
+  const twinService = new TwinService(twinRepo, patternRepo);
 
   /**
    * GET /api/proposals/:userId

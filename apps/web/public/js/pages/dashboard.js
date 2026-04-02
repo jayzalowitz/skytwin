@@ -31,24 +31,24 @@ export async function renderDashboard(container, userId) {
     <div class="stats-grid">
       <div class="card stat-card">
         <div class="stat-value">${overallConf}%</div>
-        <div class="stat-label">Twin Confidence</div>
+        <div class="stat-label">How well I know you</div>
         <div class="stat-sublabel">${confLabel}</div>
         <div class="confidence-bar"><div class="confidence-fill ${confClass}" style="width: ${overallConf}%"></div></div>
       </div>
       <div class="card stat-card">
         <div class="stat-value">${acc ? `${Math.round(acc.accuracyRate * 100)}%` : '--'}</div>
-        <div class="stat-label">Accuracy</div>
-        <div class="stat-sublabel">${acc ? `${acc.approved} approved of ${acc.totalDecisions}` : 'No feedback yet'}</div>
+        <div class="stat-label">Getting it right</div>
+        <div class="stat-sublabel">${acc ? `You approved ${acc.approved} of ${acc.totalDecisions}` : 'No feedback yet'}</div>
       </div>
       <div class="card stat-card">
         <div class="stat-value">${learn?.totalPreferences ?? 0}</div>
-        <div class="stat-label">Learned Preferences</div>
-        <div class="stat-sublabel">${learn?.totalInferences ?? 0} inferences</div>
+        <div class="stat-label">Things I've learned</div>
+        <div class="stat-sublabel">${learn?.totalInferences ?? 0} figured out on my own</div>
       </div>
       <div class="card stat-card">
         <div class="stat-value">${learn?.totalPatterns ?? 0}</div>
-        <div class="stat-label">Detected Patterns</div>
-        <div class="stat-sublabel">${learn?.totalTraits ?? 0} traits</div>
+        <div class="stat-label">Habits I've noticed</div>
+        <div class="stat-sublabel">${learn?.totalTraits ?? 0} personality traits</div>
       </div>
     </div>
 
@@ -119,7 +119,7 @@ function domainLabel(domain) {
     general: 'General',
     correction: 'Corrections',
   };
-  return labels[domain] || domain.charAt(0).toUpperCase() + domain.slice(1);
+  return labels[domain] || (domain ? domain.charAt(0).toUpperCase() + domain.slice(1) : 'General');
 }
 
 function traitLabel(name) {

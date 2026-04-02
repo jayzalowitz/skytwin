@@ -7,8 +7,8 @@ import { TwinService } from '@skytwin/twin-model';
 import { PolicyEvaluator } from '@skytwin/policy-engine';
 import {
   userRepository,
-  twinRepository,
-  patternRepository,
+  TwinRepositoryAdapter,
+  PatternRepositoryAdapter,
   policyRepositoryAdapter,
 } from '@skytwin/db';
 
@@ -98,7 +98,7 @@ export function createAskRouter(): Router {
   // Real TwinService + PolicyEvaluator for accurate reads.
   // No-op DecisionRepository because whatWouldIDo() is read-only:
   // it must not persist synthetic query_* decisions to the DB.
-  const twinService = new TwinService(twinRepository as never, patternRepository as never);
+  const twinService = new TwinService(new TwinRepositoryAdapter(), new PatternRepositoryAdapter());
   const policyEvaluator = new PolicyEvaluator(policyRepositoryAdapter as never);
   const noOpDecisionRepo = createNoOpDecisionRepository();
   const decisionMaker = new DecisionMaker(

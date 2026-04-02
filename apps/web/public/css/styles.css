@@ -448,6 +448,186 @@ textarea.form-input { resize: vertical; min-height: 60px; }
   color: var(--danger);
 }
 
+/* ── Toast notifications ─────────────────────────────── */
+
+.toast {
+  position: fixed;
+  bottom: 1.5rem;
+  right: 1.5rem;
+  padding: 0.75rem 1.25rem;
+  border-radius: var(--radius);
+  font-size: 0.85rem;
+  font-weight: 500;
+  z-index: 2000;
+  opacity: 0;
+  transform: translateY(10px);
+  transition: opacity 0.3s, transform 0.3s;
+  pointer-events: none;
+}
+
+.toast.visible { opacity: 1; transform: translateY(0); }
+.toast-success { background: var(--success); color: #000; }
+.toast-error { background: var(--danger); color: white; }
+
+/* ── Collapsible cards ───────────────────────────────── */
+
+.collapsible-card { padding: 0; }
+.collapsible-card > .collapsible-header {
+  list-style: none;
+  padding: 1.25rem;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0;
+}
+
+.collapsible-card > .collapsible-header::-webkit-details-marker { display: none; }
+.collapsible-card > .collapsible-header .collapse-icon::after { content: '+ Show'; font-size: 0.75rem; color: var(--text-muted); }
+.collapsible-card[open] > .collapsible-header .collapse-icon::after { content: '- Hide'; }
+
+.collapsible-body {
+  padding: 0 1.25rem 1.25rem;
+}
+
+/* ── Domain cards (onboarding) ───────────────────────── */
+
+.domain-showcase {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 1.25rem;
+}
+
+.domain-icon-preview {
+  font-size: 1.5rem;
+  display: inline-block;
+}
+
+.domain-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 0.75rem;
+}
+
+.domain-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 1rem 0.75rem;
+  background: var(--bg);
+  border: 2px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: all 0.15s;
+  user-select: none;
+}
+
+.domain-card:hover {
+  border-color: var(--accent);
+}
+
+.domain-card.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.domain-card-icon {
+  font-size: 1.75rem;
+  margin-bottom: 0.35rem;
+}
+
+.domain-card-name {
+  font-size: 0.85rem;
+  font-weight: 600;
+  margin-bottom: 0.2rem;
+}
+
+.domain-card-desc {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+/* ── Preference questions (onboarding) ──────────────── */
+
+.pref-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  max-height: 320px;
+  overflow-y: auto;
+  padding-right: 0.25rem;
+}
+
+.pref-section {
+  background: var(--bg);
+  border-radius: var(--radius-sm);
+  padding: 0.75rem 1rem;
+}
+
+.pref-section-header {
+  font-size: 0.85rem;
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+}
+
+.pref-question {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 0;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+}
+
+.pref-question:last-child {
+  border-bottom: none;
+}
+
+.pref-label {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  flex: 1;
+}
+
+.pref-toggle {
+  display: none;
+}
+
+.pref-switch {
+  position: relative;
+  width: 38px;
+  height: 20px;
+  background: var(--border);
+  border-radius: 10px;
+  flex-shrink: 0;
+  margin-left: 0.75rem;
+  transition: background 0.2s;
+}
+
+.pref-switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  transition: transform 0.2s, background 0.2s;
+}
+
+.pref-toggle:checked + .pref-switch {
+  background: var(--accent);
+}
+
+.pref-toggle:checked + .pref-switch::after {
+  transform: translateX(18px);
+  background: white;
+}
+
 /* ── Responsive ──────────────────────────────────────── */
 
 @media (max-width: 768px) {
@@ -528,6 +708,10 @@ textarea.form-input { resize: vertical; min-height: 60px; }
   .onboarding-card { padding: 1.5rem; }
 
   .tier-options { gap: 0.4rem; }
+
+  .domain-grid { grid-template-columns: repeat(2, 1fr); }
+
+  .pref-sections { max-height: 260px; }
 }
 
 @media (max-width: 480px) {
