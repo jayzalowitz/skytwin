@@ -1,5 +1,23 @@
 import { Router } from 'express';
 import type { SkillGap } from '@skytwin/shared-types';
+import { skillGapRepository } from '@skytwin/db';
+import type { SkillGapRow } from '@skytwin/db';
+
+/**
+ * Map a DB row to the SkillGap domain type.
+ */
+function toSkillGap(row: SkillGapRow): SkillGap {
+  return {
+    id: row.id,
+    actionType: row.action_type,
+    actionDescription: row.action_description,
+    attemptedAdapters: row.attempted_adapters as string[],
+    userId: row.user_id,
+    decisionId: row.decision_id ?? undefined,
+    ironclawIssueUrl: row.ironclaw_issue_url ?? undefined,
+    loggedAt: row.logged_at,
+  };
+}
 
 /**
  * Create the skill-gaps router.
@@ -16,15 +34,25 @@ export function createSkillGapsRouter(): Router {
    * Query params:
    *   ?limit=50       — Maximum number of results (default 50)
    *   ?actionType=... — Filter by action type
-   *
-   * Scaffold: returns an empty array.
    */
-  router.get('/', async (_req, res, next) => {
+  router.get('/', async (req, res, next) => {
     try {
-      // Scaffold: return empty array (no persistence layer yet)
-      const skillGaps: SkillGap[] = [];
+      const limit = Math.min(
+        Math.max(parseInt(req.query['limit'] as string, 10) || 50, 1),
+        200,
+      );
+      const actionType = req.query['actionType'] as string | undefined;
 
-      res.json({ skillGaps });
+      let rows;
+      if (actionType) {
+        rows = await skillGapRepository.getByActionType(actionType);
+      } else {
+        rows = await skillGapRepository.getAll(limit);
+      }
+
+      const skillGaps: SkillGap[] = rows.map(toSkillGap);
+
+      res.json({ skillGaps, total: skillGaps.length });
     } catch (error) {
       next(error);
     }

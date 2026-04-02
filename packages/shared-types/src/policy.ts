@@ -1,6 +1,60 @@
 import { RiskTier, TrustTier } from './enums.js';
 
 /**
+ * Audit record for trust tier changes.
+ */
+export interface TrustTierAudit {
+  id: string;
+  userId: string;
+  oldTier: TrustTier;
+  newTier: TrustTier;
+  direction: 'promotion' | 'regression';
+  triggerReason: string;
+  evidence: TierChangeEvidence;
+  createdAt: Date;
+}
+
+/**
+ * Evidence snapshot attached to a trust tier change.
+ */
+export interface TierChangeEvidence {
+  totalApprovals: number;
+  totalRejections: number;
+  consecutiveApprovals: number;
+  approvalRatio: number;
+  recentRejections: number;
+  windowDays: number;
+  hasCriticalUndo: boolean;
+}
+
+/**
+ * Statistics about a user's approval history, used by the tier engine.
+ */
+export interface ApprovalStats {
+  totalApprovals: number;
+  totalRejections: number;
+  totalUndos: number;
+  consecutiveApprovals: number;
+  /** Rejections in the rolling window (default 7 days) */
+  recentRejections: number;
+  /** Whether any undo with severity 'critical' exists in the window */
+  hasCriticalUndo: boolean;
+  /** approvals / (approvals + rejections), 0-1 */
+  approvalRatio: number;
+}
+
+/**
+ * Result of evaluating whether a tier change should happen.
+ */
+export interface TierEvaluation {
+  shouldChange: boolean;
+  currentTier: TrustTier;
+  recommendedTier?: TrustTier;
+  reason: string;
+  direction?: 'promotion' | 'regression';
+}
+
+/**
  * A policy that governs whether an action is allowed.
  */
 export interface ActionPolicy {

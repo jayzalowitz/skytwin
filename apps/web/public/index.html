@@ -5,6 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>SkyTwin — Your Digital Twin</title>
   <link rel="stylesheet" href="/css/styles.css">
+  <link rel="stylesheet" href="/css/themes.css">
+  <script type="module">
+    // Apply theme before paint to prevent flash
+    const v = localStorage.getItem('skytwin_theme_variant') || 'quiet-confidence';
+    const m = localStorage.getItem('skytwin_theme_mode') || 'dark';
+    document.documentElement.setAttribute('data-variant', v);
+    document.documentElement.setAttribute('data-mode', m);
+  </script>
 </head>
 <body>
   <!-- Onboarding overlay (shown on first visit) -->

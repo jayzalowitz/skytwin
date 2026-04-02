@@ -315,9 +315,8 @@ When an action requires approval:
    - Normal: Add to review queue
    - Low: Batch with other pending approvals
 
-2. **Set expiry:** Approval requests have a TTL based on urgency:
-   - Immediate: 1 hour
-   - Soon: 4 hours
+2. **Set expiry:** Approval requests have a TTL based on urgency (implemented in `ApprovalRouter`):
+   - Immediate: 15 minutes
    - Normal: 24 hours
    - Low: 72 hours
 

@@ -286,6 +286,23 @@ describe('ExecutionRouter', () => {
       );
     });
 
+    it('rollback flows through the selected adapter after execution', async () => {
+      const mockIronclaw = createMockAdapter('ironclaw');
+      registry.register('ironclaw', mockIronclaw, IRONCLAW_TRUST_PROFILE);
+
+      const action = makeAction({ reversible: true });
+      const risk = makeRiskAssessment();
+
+      // Execute
+      const execResult = await router.executeWithRouting(action, risk, 'user-1');
+      expect(execResult.status).toBe('completed');
+
+      // Rollback through the adapter
+      const rollbackResult = await mockIronclaw.rollback(execResult.planId);
+      expect(rollbackResult.success).toBe(true);
+      expect(rollbackResult.message).toContain('ironclaw');
+    });
+
     it('does not fall back when adapter returns non-completed status (partial execution risk)', async () => {
       registry.register('ironclaw', createSoftFailAdapter('ironclaw'), IRONCLAW_TRUST_PROFILE);
       registry.register('direct', createMockAdapter('direct'), DIRECT_TRUST_PROFILE);

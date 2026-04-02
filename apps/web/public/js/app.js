@@ -5,6 +5,7 @@ import { renderTwin } from './pages/twin.js';
 import { renderSettings } from './pages/settings.js';
 import { renderOnboarding } from './pages/onboarding.js';
 import { fetchPendingApprovals, fetchHealth, escapeHtml } from './api-client.js';
+import { mountThemeSwitcher, initTheme } from './theme-switcher.js';
 
 let currentUserId = localStorage.getItem('skytwin_userId') || '';
 
@@ -107,6 +108,9 @@ function navigate() {
   // Update sidebar state
   updateApprovalBadge();
   updateConnectionStatus();
+
+  // Mount theme switcher in the page header
+  mountThemeSwitcher();
 }
 
 export function setUserId(id) {

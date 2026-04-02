@@ -1,4 +1,4 @@
-import { fetchUser, updateTrustTier, fetchOAuthStatus, getGoogleAuthUrl, disconnectProvider, escapeHtml } from '../api-client.js';
+import { fetchUser, updateTrustTier, fetchOAuthStatus, getGoogleAuthUrl, disconnectProvider, escapeHtml, fetchSettings, updateAutonomySettings, upsertDomainPolicy, deleteDomainPolicy, createEscalationTrigger, deleteEscalationTrigger } from '../api-client.js';
 
 const TIERS = [
   { value: 'observer', name: 'Watch only', desc: 'Your twin observes everything but never takes action. Good for seeing what it would do without any risk.' },
@@ -11,18 +11,24 @@ const TIERS = [
 export async function renderSettings(container, userId) {
   let user = null;
   let googleStatus = null;
+  let settings = null;
 
   try {
-    const [userResult, oauthResult] = await Promise.allSettled([
+    const [userResult, oauthResult, settingsResult] = await Promise.allSettled([
       fetchUser(userId),
       fetchOAuthStatus(userId, 'google'),
+      fetchSettings(userId),
     ]);
     user = userResult.status === 'fulfilled' ? userResult.value?.user : null;
     googleStatus = oauthResult.status === 'fulfilled' ? oauthResult.value : null;
+    settings = settingsResult.status === 'fulfilled' ? settingsResult.value : null;
   } catch { /* empty */ }
 
   const currentTier = user?.trust_tier ?? 'suggest';
   const googleConnected = googleStatus?.connected ?? false;
+  const domainPolicies = settings?.domainPolicies ?? [];
+  const escalationTriggers = settings?.escalationTriggers ?? [];
+  const autonomy = settings?.autonomySettings ?? {};
 
   // Check for ?connected= query param after OAuth redirect
   const params = new URLSearchParams(window.location.hash.split('?')[1] || '');
@@ -117,6 +123,90 @@ export async function renderSettings(container, userId) {
         ${currentTier === 'observer' ? 'Twin is paused (watch only)' : 'Pause twin'}
       </button>
     </div>
+
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Spend limits</span>
+      </div>
+      <div class="card-subtitle" style="margin-bottom: 1rem;">
+        Set maximum amounts your twin can spend per action and per day.
+      </div>
+      <div class="form-group">
+        <label>Max per action (cents)</label>
+        <input class="form-input" type="number" id="max-per-action" value="${autonomy.maxSpendPerActionCents ?? 10000}" min="0">
+      </div>
+      <div class="form-group">
+        <label>Max per day (cents)</label>
+        <input class="form-input" type="number" id="max-daily" value="${autonomy.maxDailySpendCents ?? 50000}" min="0">
+      </div>
+      <div class="form-group">
+        <label>
+          <input type="checkbox" id="irreversible-approval" ${autonomy.requireApprovalForIrreversible !== false ? 'checked' : ''}>
+          Require approval for irreversible actions
+        </label>
+      </div>
+      <button class="btn btn-primary btn-sm" onclick="saveSpendLimits('${userId}')">Save limits</button>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Domain overrides</span>
+      </div>
+      <div class="card-subtitle" style="margin-bottom: 1rem;">
+        Set different autonomy levels for specific domains. The more restrictive of global and domain tier applies.
+      </div>
+      <div id="domain-policies">
+        ${domainPolicies.map(p => `
+          <div style="display: flex; align-items: center; justify-content: space-between; padding: 0.5rem 0.75rem; background: var(--bg); border-radius: var(--radius-sm); margin-bottom: 0.5rem;">
+            <div>
+              <span style="font-weight: 600;">${escapeHtml(p.domain)}</span>
+              <span style="color: var(--text-muted); margin-left: 0.5rem;">${escapeHtml(p.trustTier)}</span>
+              ${p.maxSpendPerActionCents != null ? `<span style="color: var(--text-muted); margin-left: 0.5rem;">(max ${p.maxSpendPerActionCents}c/action)</span>` : ''}
+            </div>
+            <button class="btn btn-outline btn-sm" onclick="removeDomainPolicy('${userId}', '${escapeHtml(p.domain)}')">Remove</button>
+          </div>
+        `).join('')}
+      </div>
+      <div style="display: flex; gap: 0.5rem; margin-top: 0.75rem;">
+        <input class="form-input" id="new-domain" placeholder="Domain (e.g. finance)" style="flex: 1;">
+        <select class="form-input" id="new-domain-tier" style="flex: 1;">
+          ${TIERS.map(t => `<option value="${t.value}">${t.name}</option>`).join('')}
+        </select>
+        <button class="btn btn-primary btn-sm" onclick="addDomainPolicy('${userId}')">Add</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Escalation triggers</span>
+      </div>
+      <div class="card-subtitle" style="margin-bottom: 1rem;">
+        Configure when your twin should stop and ask for your approval.
+      </div>
+      <div id="escalation-triggers">
+        ${escalationTriggers.map(t => `
+          <div style="display: flex; align-items: center; justify-content: space-between; padding: 0.5rem 0.75rem; background: var(--bg); border-radius: var(--radius-sm); margin-bottom: 0.5rem;">
+            <div>
+              <span style="font-weight: 600;">${escapeHtml(t.triggerType)}</span>
+              <span style="color: var(--text-muted); margin-left: 0.5rem;">${escapeHtml(JSON.stringify(t.conditions))}</span>
+              <span style="color: ${t.enabled ? 'var(--success)' : 'var(--text-muted)'}; margin-left: 0.5rem;">${t.enabled ? 'active' : 'disabled'}</span>
+            </div>
+            <button class="btn btn-outline btn-sm" onclick="removeEscalationTrigger('${userId}', '${escapeHtml(t.id)}')">Remove</button>
+          </div>
+        `).join('')}
+      </div>
+      <div style="display: flex; gap: 0.5rem; margin-top: 0.75rem;">
+        <select class="form-input" id="new-trigger-type" style="flex: 1;">
+          <option value="amount_threshold">Amount threshold</option>
+          <option value="risk_tier_threshold">Risk tier threshold</option>
+          <option value="low_confidence">Low confidence</option>
+          <option value="novel_situation">Novel situation</option>
+          <option value="consecutive_rejections">Consecutive rejections</option>
+        </select>
+        <input class="form-input" id="new-trigger-value" placeholder="Value (e.g. 5000)" style="flex: 1;">
+        <button class="btn btn-primary btn-sm" onclick="addEscalationTrigger('${userId}')">Add</button>
+      </div>
+    </div>
   `;
 }
 
@@ -181,6 +271,87 @@ window.handleDisconnectGoogle = async function(userId) {
 window.pauseTwin = async function(userId) {
   try {
     await updateTrustTier(userId, 'observer');
+    const { renderSettings } = await import('./settings.js');
+    await renderSettings(document.getElementById('page-content'), userId);
+  } catch (err) {
+    document.getElementById('page-content').insertAdjacentHTML(
+      'afterbegin',
+      `<div class="error-banner">${escapeHtml(err.message)}</div>`,
+    );
+  }
+};
+
+window.saveSpendLimits = async function(userId) {
+  try {
+    await updateAutonomySettings(userId, {
+      maxSpendPerActionCents: parseInt(document.getElementById('max-per-action').value, 10),
+      maxDailySpendCents: parseInt(document.getElementById('max-daily').value, 10),
+      requireApprovalForIrreversible: document.getElementById('irreversible-approval').checked,
+    });
+    const { renderSettings } = await import('./settings.js');
+    await renderSettings(document.getElementById('page-content'), userId);
+  } catch (err) {
+    document.getElementById('page-content').insertAdjacentHTML(
+      'afterbegin',
+      `<div class="error-banner">${escapeHtml(err.message)}</div>`,
+    );
+  }
+};
+
+window.addDomainPolicy = async function(userId) {
+  const domain = document.getElementById('new-domain').value.trim();
+  const tier = document.getElementById('new-domain-tier').value;
+  if (!domain) return;
+  try {
+    await upsertDomainPolicy(userId, domain, tier);
+    const { renderSettings } = await import('./settings.js');
+    await renderSettings(document.getElementById('page-content'), userId);
+  } catch (err) {
+    document.getElementById('page-content').insertAdjacentHTML(
+      'afterbegin',
+      `<div class="error-banner">${escapeHtml(err.message)}</div>`,
+    );
+  }
+};
+
+window.removeDomainPolicy = async function(userId, domain) {
+  try {
+    await deleteDomainPolicy(userId, domain);
+    const { renderSettings } = await import('./settings.js');
+    await renderSettings(document.getElementById('page-content'), userId);
+  } catch (err) {
+    document.getElementById('page-content').insertAdjacentHTML(
+      'afterbegin',
+      `<div class="error-banner">${escapeHtml(err.message)}</div>`,
+    );
+  }
+};
+
+window.addEscalationTrigger = async function(userId) {
+  const triggerType = document.getElementById('new-trigger-type').value;
+  const rawValue = document.getElementById('new-trigger-value').value.trim();
+  const conditionMap = {
+    amount_threshold: { thresholdCents: parseInt(rawValue, 10) || 5000 },
+    risk_tier_threshold: { minRiskTier: rawValue || 'high' },
+    low_confidence: { minConfidence: rawValue || 'moderate' },
+    novel_situation: {},
+    consecutive_rejections: { count: parseInt(rawValue, 10) || 3 },
+  };
+  try {
+    await createEscalationTrigger(userId, triggerType, conditionMap[triggerType] ?? {});
+    const { renderSettings } = await import('./settings.js');
+    await renderSettings(document.getElementById('page-content'), userId);
+  } catch (err) {
+    document.getElementById('page-content').insertAdjacentHTML(
+      'afterbegin',
+      `<div class="error-banner">${escapeHtml(err.message)}</div>`,
+    );
+  }
+};
+
+window.removeEscalationTrigger = async function(userId, triggerId) {
+  try {
+    await deleteEscalationTrigger(userId, triggerId);
     const { renderSettings } = await import('./settings.js');
     await renderSettings(document.getElementById('page-content'), userId);
   } catch (err) {

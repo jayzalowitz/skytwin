@@ -12,6 +12,7 @@ import { createProposalsRouter } from './routes/proposals.js';
 import { createAskRouter } from './routes/ask.js';
 import { createBriefingsRouter } from './routes/briefings.js';
 import { createSkillGapsRouter } from './routes/skill-gaps.js';
+import { createSettingsRouter } from './routes/settings.js';
 
 const config = loadConfig();
 const app: Application = express();
@@ -32,6 +33,7 @@ app.use('/api/proposals', createProposalsRouter());
 app.use('/api/v1/twin', createAskRouter());
 app.use('/api/v1/briefings', createBriefingsRouter());
 app.use('/api/v1/skill-gaps', createSkillGapsRouter());
+app.use('/api/settings', createSettingsRouter());
 
 // Health check
 app.get('/api/health', (_req, res) => {

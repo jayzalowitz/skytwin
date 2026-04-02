@@ -145,6 +145,8 @@ export interface ApprovalRequestRow {
   requested_at: Date;
   responded_at: Date | null;
   response: Record<string, unknown> | null;
+  expires_at: Date;
+  batch_id: string | null;
 }
 
 // ============================================================================
@@ -303,6 +305,80 @@ export interface BriefingRow {
   items: unknown[];
   email_sent: boolean;
   created_at: Date;
+}
+
+// ============================================================================
+// Domain Autonomy Policies
+// ============================================================================
+
+export interface DomainAutonomyPolicyRow {
+  id: string;
+  user_id: string;
+  domain: string;
+  trust_tier: string;
+  max_spend_per_action_cents: number | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+// ============================================================================
+// Escalation Triggers
+// ============================================================================
+
+export interface EscalationTriggerRow {
+  id: string;
+  user_id: string;
+  trigger_type: string;
+  conditions: Record<string, unknown>;
+  enabled: boolean;
+  created_at: Date;
+}
+
+// ============================================================================
+// Spend Records
+// ============================================================================
+
+export interface SpendRecordRow {
+  id: string;
+  user_id: string;
+  action_id: string;
+  decision_id: string;
+  estimated_cost_cents: number;
+  actual_cost_cents: number | null;
+  recorded_at: Date;
+  reconciled_at: Date | null;
+}
+
+// ============================================================================
+// Trust Tier Audit
+// ============================================================================
+
+export interface TrustTierAuditRow {
+  id: string;
+  user_id: string;
+  old_tier: string;
+  new_tier: string;
+  direction: string;
+  trigger_reason: string;
+  evidence: Record<string, unknown>;
+  created_at: Date;
+}
+
+// ============================================================================
+// Preference History
+// ============================================================================
+
+export interface PreferenceHistoryRow {
+  id: string;
+  preference_id: string;
+  user_id: string;
+  previous_value: unknown;
+  new_value: unknown;
+  previous_confidence: string | null;
+  new_confidence: string;
+  attribution_type: string;
+  attribution_id: string | null;
+  changed_at: Date;
 }
 
 // ============================================================================

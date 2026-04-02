@@ -35,6 +35,11 @@ export type {
   DateRangeOptions,
   UserQueryOptions,
   DecisionWithContext,
+  SpendRecordRow,
+  TrustTierAuditRow,
+  DomainAutonomyPolicyRow,
+  EscalationTriggerRow,
+  PreferenceHistoryRow,
 } from './types.js';
 
 // Repositories
@@ -67,6 +72,13 @@ export type {
 } from './repositories/index.js';
 
 export { signalRepository, proposalRepository, skillGapRepository, proactiveScanRepository } from './repositories/index.js';
+
+export { trustTierAuditRepository, spendRepository, domainAutonomyRepository, escalationTriggerRepository, preferenceHistoryRepository } from './repositories/index.js';
+export type { CreateTierAuditInput } from './repositories/index.js';
+export type { CreateSpendRecordInput } from './repositories/index.js';
+export type { UpsertDomainAutonomyInput } from './repositories/index.js';
+export type { CreateEscalationTriggerInput } from './repositories/index.js';
+export type { CreatePreferenceHistoryInput } from './repositories/index.js';
 export type {
   CreateSignalInput,
   CreateProposalInput,

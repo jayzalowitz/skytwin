@@ -1,6 +1,7 @@
 import { Router } from 'express';
-import { PreferenceArchaeologist } from '@skytwin/twin-model';
-import { twinRepository } from '@skytwin/db';
+import { PreferenceArchaeologist, TwinService } from '@skytwin/twin-model';
+import { twinRepository, proposalRepository, patternRepository } from '@skytwin/db';
+import type { PreferenceProposalRow } from '@skytwin/db';
 
 /**
  * Create the preference proposals router.
@@ -8,6 +9,7 @@ import { twinRepository } from '@skytwin/db';
 export function createProposalsRouter(): Router {
   const router = Router();
   const archaeologist = new PreferenceArchaeologist(twinRepository as never);
+  const twinService = new TwinService(twinRepository as never, patternRepository as never);
 
   /**
    * GET /api/proposals/:userId
@@ -39,6 +41,10 @@ export function createProposalsRouter(): Router {
    *
    * Accept or reject a preference proposal.
    * Body: { accepted: boolean }
+   *
+   * On accept: updates proposal status to 'accepted' in DB and creates
+   * the preference on the user's twin profile.
+   * On reject: updates proposal status to 'rejected' in DB.
    */
   router.post('/:userId/:id', async (req, res, next) => {
     try {
@@ -54,16 +60,46 @@ export function createProposalsRouter(): Router {
         return;
       }
 
-      // In a full implementation, we would look up the proposal by id,
-      // update its status, and if accepted, create the preference.
-      // For now, we scaffold the response.
-      const status = body.accepted ? 'accepted' : 'rejected';
+      // Look up the proposal to verify it exists and belongs to this user
+      const proposal: PreferenceProposalRow | null = await proposalRepository.getById(id);
+      if (!proposal) {
+        res.status(404).json({ error: 'Proposal not found' });
+        return;
+      }
+      if (proposal.user_id !== userId) {
+        res.status(403).json({ error: 'Proposal does not belong to this user' });
+        return;
+      }
+      if (proposal.status !== 'pending') {
+        res.status(409).json({ error: `Proposal already ${proposal.status}` });
+        return;
+      }
+
+      // Update proposal status in the database
+      const updatedProposal = await proposalRepository.respond(id, body.accepted);
+
+      // If accepted, create the preference on the twin profile
+      if (body.accepted) {
+        await twinService.updatePreference(userId, {
+          id: `pref_from_proposal_${id}`,
+          domain: proposal.domain,
+          key: proposal.key,
+          value: proposal.value,
+          confidence: proposal.confidence as never,
+          source: 'inferred',
+          evidenceIds: ((proposal.supporting_evidence ?? []) as Array<{ evidenceId: string }>).map(
+            (e) => e.evidenceId,
+          ),
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+      }
 
       res.json({
         proposalId: id,
         userId,
-        status,
-        respondedAt: new Date().toISOString(),
+        status: updatedProposal.status,
+        respondedAt: updatedProposal.responded_at?.toISOString() ?? new Date().toISOString(),
       });
     } catch (error) {
       next(error);

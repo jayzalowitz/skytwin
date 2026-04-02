@@ -42,3 +42,18 @@ export type { CreateSkillGapInput } from './skill-gap-repository.js';
 
 export { proactiveScanRepository } from './proactive-scan-repository.js';
 export type { CreateScanInput, CreateBriefingInput } from './proactive-scan-repository.js';
+
+export { trustTierAuditRepository } from './trust-tier-audit-repository.js';
+export type { CreateTierAuditInput } from './trust-tier-audit-repository.js';
+
+export { spendRepository } from './spend-repository.js';
+export type { CreateSpendRecordInput } from './spend-repository.js';
+
+export { domainAutonomyRepository } from './domain-autonomy-repository.js';
+export type { UpsertDomainAutonomyInput } from './domain-autonomy-repository.js';
+
+export { escalationTriggerRepository } from './escalation-trigger-repository.js';
+export type { CreateEscalationTriggerInput } from './escalation-trigger-repository.js';
+
+export { preferenceHistoryRepository } from './preference-history-repository.js';
+export type { CreatePreferenceHistoryInput } from './preference-history-repository.js';

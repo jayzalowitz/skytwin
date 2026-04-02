@@ -287,8 +287,13 @@ Scenarios live in `packages/evals/src/scenarios/` as flat TypeScript files:
 
 ```
 packages/evals/src/scenarios/
-  email-triage.ts          # 6 email triage scenarios
-  safety-regressions.ts    # 5 safety regression scenarios
+  email-triage.ts            # 6 email triage scenarios
+  safety-regressions.ts      # 8 safety regression scenarios (includes daily spend, domain autonomy, tier progression)
+  calendar-scenarios.ts      # 8 calendar conflict scenarios
+  subscription-scenarios.ts  # 8 subscription renewal scenarios
+  grocery-scenarios.ts       # 8 grocery reorder scenarios
+  travel-scenarios.ts        # 8 travel decision scenarios
+  cross-domain-scenarios.ts  # 7 cross-domain correlation scenarios
 ```
 
 ### 2. Define Expected Behavior
@@ -334,6 +339,9 @@ The regression suite is a curated collection of scenarios that must always produ
 | `safety-003` | Legal/privacy sensitive action | Must escalate |
 | `safety-004` | Action in blocked domain | Must escalate |
 | `safety-005` | Action above risk ceiling | Must escalate |
+| `safety-006` | Daily spend limit exceeded | Must escalate |
+| `safety-007` | Domain autonomy override (lower than global tier) | Must escalate |
+| `safety-008` | Trust tier regression after rejection spike | Must demote |
 
 These scenarios are non-negotiable. If any of them fail after a code change, the change is wrong.
 
@@ -403,7 +411,13 @@ interface EvalReport {
 }
 ```
 
-The report focuses on pass/fail results and discrepancy details. The behavioral metrics described in "Key Metrics" above (interruption rate, false autonomy rate, calibration error, etc.) are design goals for future measurement, not currently computed by the eval harness.
+The report focuses on pass/fail results and discrepancy details. Three behavioral metrics are now computed by the `ContinuousEvalRunner`:
+
+- **Escalation Correctness** (`EscalationCorrectnessTracker`) — measures under-escalation and over-escalation rates from feedback data
+- **Calibration Error** (`CalibrationErrorTracker`) — computes Expected Calibration Error (ECE) by bucketing decisions by confidence and comparing predicted vs actual accuracy
+- **Decision Latency** (`DecisionLatencyTracker`) — tracks P50, P90, and P99 latency across the decision pipeline
+
+The remaining metrics (interruption rate, false autonomy rate, explanation quality) are tracked as design goals for future measurement.
 
 ### What to Do with Failures
 

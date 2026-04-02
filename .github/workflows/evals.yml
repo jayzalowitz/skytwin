@@ -1,0 +1,40 @@
+name: Evals
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  eval-suite:
+    name: Run eval suite
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Run eval tests
+        run: pnpm --filter @skytwin/evals test
+
+      - name: Check for safety regressions
+        run: |
+          # Run safety-specific tests and fail loudly on regression
+          pnpm --filter @skytwin/evals test -- --reporter=verbose 2>&1 | tee eval-output.txt
+          if grep -q "FAIL" eval-output.txt; then
+            echo "::error::Safety regression detected in eval suite"
+            exit 1
+          fi

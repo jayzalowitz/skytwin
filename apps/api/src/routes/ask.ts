@@ -6,6 +6,7 @@ import type { DecisionRepositoryPort } from '@skytwin/decision-engine';
 import { TwinService } from '@skytwin/twin-model';
 import { PolicyEvaluator } from '@skytwin/policy-engine';
 import {
+  userRepository,
   twinRepository,
   patternRepository,
   policyRepositoryAdapter,
@@ -69,6 +70,20 @@ export function checkRateLimit(userId: string, trustTier: TrustTier): { allowed:
   return { allowed: true, remaining: limit - entry.count, resetAt: entry.resetAt };
 }
 
+/**
+ * Map the trust_tier DB string to the TrustTier enum.
+ */
+function parseTrustTier(dbTier: string): TrustTier {
+  const mapping: Record<string, TrustTier> = {
+    observer: TrustTier.OBSERVER,
+    suggest: TrustTier.SUGGEST,
+    low_autonomy: TrustTier.LOW_AUTONOMY,
+    moderate_autonomy: TrustTier.MODERATE_AUTONOMY,
+    high_autonomy: TrustTier.HIGH_AUTONOMY,
+  };
+  return mapping[dbTier] ?? TrustTier.OBSERVER;
+}
+
 // ── Router ───────────────────────────────────────────────────────
 
 /**
@@ -107,10 +122,13 @@ export function createAskRouter(): Router {
         return;
       }
 
-      // Trust tier is server-determined, not client-supplied.
-      // TODO: Look up user's earned trust tier from the users table.
+      // Look up user's earned trust tier from the database.
       // New users default to OBSERVER (Safety Invariant #3).
-      const userTrustTier = TrustTier.OBSERVER;
+      let userTrustTier = TrustTier.OBSERVER;
+      const user = await userRepository.findById(userId);
+      if (user) {
+        userTrustTier = parseTrustTier(user.trust_tier);
+      }
 
       // Rate limit check
       const rateLimitResult = checkRateLimit(userId, userTrustTier);

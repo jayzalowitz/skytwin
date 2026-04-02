@@ -10,7 +10,7 @@ SkyTwin is a TypeScript monorepo managed by pnpm workspaces and built with Turbo
 skytwin/
   apps/
     api/             # HTTP API server (Express)
-    web/             # Web dashboard (Next.js, future)
+    web/             # Web dashboard (vanilla SPA with hash-based routing)
     worker/          # Background job processor
 
   packages/
@@ -22,6 +22,7 @@ skytwin/
     decision-engine/ # Event interpretation and action selection
     policy-engine/   # Safety constraints, trust tiers, spend limits
     ironclaw-adapter/# IronClaw HTTP adapter (HMAC-SHA256 auth, retries, circuit breaker)
+    execution-router/# Adapter selection, fallback chains, risk modifiers, skill gap detection
     explanations/    # Human-readable explanation generation
     connectors/      # External service integrations (email, calendar, etc.)
     evals/           # Evaluation harness for decision quality
@@ -43,7 +44,7 @@ skytwin/
 | Testing | Vitest | Fast, TypeScript-native, compatible with Jest API |
 | Containerization | Docker Compose | Local CockroachDB, optional API container |
 | API framework | Express | Mature, widely supported, simple middleware model |
-| Web dashboard | Next.js (future) | React-based, SSR, fits the admin UI pattern |
+| Web dashboard | Vanilla SPA | Hash-based routing, no build step, plain JS + CSS |
 
 ## Data Flow
 
@@ -220,6 +221,10 @@ FeedbackEvent → user response, feeds back to twin
 (depends on: shared-types, core)
     |
     v
+@skytwin/execution-router
+(depends on: shared-types, ironclaw-adapter, policy-engine, core)
+    |
+    v
 @skytwin/explanations
 (depends on: shared-types, core, db)
     |
@@ -281,6 +286,41 @@ PUT    /api/v1/policies/:userId/domain/:domain  # Update domain policy
 ```
 GET    /api/v1/explanations/:decisionId  # Get explanation for a decision
 GET    /api/v1/explanations?userId=      # List recent explanations
+```
+
+### Ask API (Twin Query)
+
+```
+POST   /api/v1/twin/:userId/ask          # Predict what the twin would do (read-only)
+```
+
+### Briefing API
+
+```
+GET    /api/v1/briefings/:userId         # Get latest morning briefing
+PUT    /api/v1/briefings/:userId/preferences  # Update briefing schedule
+```
+
+### Proposal API (Preference Archaeology)
+
+```
+GET    /api/v1/preferences/:userId/proposals  # List pending proposals
+POST   /api/v1/preferences/:userId/proposals/:id/respond  # Accept or reject
+```
+
+### Skill Gaps API
+
+```
+GET    /api/v1/skill-gaps                # List unhandled action types
+```
+
+### Settings API
+
+```
+GET    /api/v1/settings/:userId          # Get all user settings
+PUT    /api/v1/settings/:userId/autonomy # Update autonomy settings
+PUT    /api/v1/settings/:userId/domains/:domain  # Update domain-specific autonomy
+POST   /api/v1/settings/:userId/escalation-triggers  # Configure escalation triggers
 ```
 
 ### Health and Operations

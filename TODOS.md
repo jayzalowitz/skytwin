@@ -1,8 +1,32 @@
 # SkyTwin TODOs
 
-Generated from CEO review on 2026-04-01. See `planning/milestone-1.5-scope-expansion.md` for full context.
+Generated from CEO review on 2026-04-01. Updated through M2/M3/M4 completion.
 
-## Completed
+## Completed (v0.3.0.0 — M2/M3/M4)
+
+- [x] M2 Phase 1: TrustTierEngine with auto-promotion (OBSERVER→MODERATE_AUTONOMY) and rolling-window regression **Completed:** v0.3.0.0 (2026-04-01)
+- [x] M2 Phase 1: trust_tier_audit table + repository **Completed:** v0.3.0.0 (2026-04-01)
+- [x] M2 Phase 2: ApprovalRouter with urgency-based expiry (15min/24h/72h) **Completed:** v0.3.0.0 (2026-04-01)
+- [x] M2 Phase 2: Batch respond endpoint + worker expiry cron **Completed:** v0.3.0.0 (2026-04-01)
+- [x] M2 Phase 3: SpendTracker with rolling 24h window + reconciliation **Completed:** v0.3.0.0 (2026-04-01)
+- [x] M2 Phase 3: Daily spend limit enforcement in PolicyEvaluator **Completed:** v0.3.0.0 (2026-04-01)
+- [x] M2 Phase 4: DomainAutonomyManager with per-domain trust tier overrides **Completed:** v0.3.0.0 (2026-04-01)
+- [x] M2 Phase 4: EscalationTriggerEngine with configurable triggers **Completed:** v0.3.0.0 (2026-04-01)
+- [x] M2 Phase 5: 7 safety invariant integration tests **Completed:** v0.3.0.0 (2026-04-01)
+- [x] M3 Phase 6: WorkflowHandlerRegistry + 4 situation-type handlers with E2E tests **Completed:** v0.3.0.0 (2026-04-01)
+- [x] M3 Phase 7: IronClaw contract tests (mock vs real adapter compatibility) **Completed:** v0.3.0.0 (2026-04-01)
+- [x] M3 Phase 7: Rollback E2E tests + MockIronClawServer **Completed:** v0.3.0.0 (2026-04-01)
+- [x] M3 Phase 8: Settings API (GET/PUT /api/settings/:userId) **Completed:** v0.3.0.0 (2026-04-01)
+- [x] M3 Phase 8: Settings page with tier display, autonomy controls, domain overrides **Completed:** v0.3.0.0 (2026-04-01)
+- [x] M4 Phase 9: 3 new metrics (escalation correctness, calibration error, decision latency) **Completed:** v0.3.0.0 (2026-04-01)
+- [x] M4 Phase 9: 39 eval scenarios across 5 domains (50+ total) **Completed:** v0.3.0.0 (2026-04-01)
+- [x] M4 Phase 10: PreferenceEvolutionTracker with attribution **Completed:** v0.3.0.0 (2026-04-01)
+- [x] M4 Phase 10: TemporalReplayEngine for point-in-time twin reconstruction **Completed:** v0.3.0.0 (2026-04-01)
+- [x] M4 Phase 10: CI workflow (.github/workflows/evals.yml) **Completed:** v0.3.0.0 (2026-04-01)
+- [x] De-mock: Real DB-backed /ask, /briefings, /skill-gaps, /proposals routes **Completed:** v0.3.0.0 (2026-04-01)
+- [x] De-mock: OpenClaw adapter upgraded to real HTTP client **Completed:** v0.3.0.0 (2026-04-01)
+
+## Completed (v0.2.0.0 — M1.5)
 
 - [x] Issue 018: Run all schema migrations (signals, preference_proposals, twin_exports, skill_gap_log, proactive_scans, briefings tables + column additions) **Completed:** v0.2.0.0 (2026-04-01)
 - [x] Issue 011: Create @skytwin/execution-router package **Completed:** v0.2.0.0 (2026-04-01)

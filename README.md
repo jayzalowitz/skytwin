@@ -56,7 +56,7 @@ pnpm dev
 ### Running Tests
 
 ```bash
-pnpm test          # 260 tests across 18 test files
+pnpm test          # 432 tests across 40+ test files
 ```
 
 ## Monorepo Structure
