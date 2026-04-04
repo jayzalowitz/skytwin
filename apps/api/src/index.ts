@@ -16,6 +16,7 @@ import { createSettingsRouter } from './routes/settings.js';
 import { createSessionsRouter } from './routes/sessions.js';
 import { createAuditRouter } from './routes/audit.js';
 import { sessionAuth } from './middleware/session-auth.js';
+import { createPoliciesRouter } from './routes/policies.js';
 import { getExecutionRouter } from './execution-setup.js';
 
 const config = loadConfig();
@@ -71,6 +72,7 @@ app.use('/api/v1/skill-gaps', createSkillGapsRouter());
 app.use('/api/settings', createSettingsRouter());
 app.use('/api/sessions', createSessionsRouter());
 app.use('/api/audit', createAuditRouter());
+app.use('/api/policies', createPoliciesRouter());
 
 // Error handling middleware
 app.use(

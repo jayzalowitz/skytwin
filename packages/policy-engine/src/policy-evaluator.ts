@@ -72,6 +72,14 @@ export class PolicyEvaluator {
       }
     }
 
+    // Check quiet hours — escalate auto-execute to approval (not blocking urgent escalations)
+    if (autonomySettings) {
+      const quietDecision = this.checkQuietHours(autonomySettings);
+      if (quietDecision) {
+        return quietDecision;
+      }
+    }
+
     // Evaluate each policy's rules
     let requiresApproval = false;
     let approvalReason = '';
@@ -362,6 +370,29 @@ export class PolicyEvaluator {
     return null;
   }
 
+  /**
+   * Check if the current time falls within quiet hours.
+   * Escalates auto-execute to approval but does not block.
+   * Handles midnight wrap-around (e.g. 22:00 → 07:00).
+   */
+  private checkQuietHours(
+    settings: AutonomySettings,
+  ): PolicyDecision | null {
+    if (!settings.quietHoursStart || !settings.quietHoursEnd) {
+      return null;
+    }
+
+    if (!isWithinQuietHours(settings.quietHoursStart, settings.quietHoursEnd)) {
+      return null;
+    }
+
+    return {
+      allowed: true,
+      requiresApproval: true,
+      reason: `Quiet hours active (${settings.quietHoursStart}–${settings.quietHoursEnd}). Action escalated to approval.`,
+    };
+  }
+
   private isRiskTierString(value: unknown): boolean {
     const tiers = ['negligible', 'low', 'moderate', 'high', 'critical'];
     return typeof value === 'string' && tiers.includes(value);
@@ -377,4 +408,32 @@ export class PolicyEvaluator {
     };
     return ranks[tier] ?? -1;
   }
+}
+
+/**
+ * Check if the current time is within a quiet hours window.
+ * Handles midnight wrap-around (e.g. start=22:00, end=07:00).
+ *
+ * @param start - HH:MM format
+ * @param end - HH:MM format
+ * @param now - optional Date for testing
+ */
+export function isWithinQuietHours(start: string, end: string, now?: Date): boolean {
+  const current = now ?? new Date();
+  const currentMinutes = current.getHours() * 60 + current.getMinutes();
+  const startMinutes = parseTimeToMinutes(start);
+  const endMinutes = parseTimeToMinutes(end);
+
+  if (startMinutes <= endMinutes) {
+    // Normal range (e.g. 09:00 - 17:00)
+    return currentMinutes >= startMinutes && currentMinutes < endMinutes;
+  } else {
+    // Midnight wrap (e.g. 22:00 - 07:00)
+    return currentMinutes >= startMinutes || currentMinutes < endMinutes;
+  }
+}
+
+function parseTimeToMinutes(time: string): number {
+  const [hours, minutes] = time.split(':').map(Number);
+  return (hours ?? 0) * 60 + (minutes ?? 0);
 }

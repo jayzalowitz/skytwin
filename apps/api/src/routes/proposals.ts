@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { PreferenceArchaeologist, TwinService } from '@skytwin/twin-model';
 import { TwinRepositoryAdapter, PatternRepositoryAdapter, proposalRepository } from '@skytwin/db';
 import type { PreferenceProposalRow } from '@skytwin/db';
+import type { ConfidenceLevel } from '@skytwin/shared-types';
 
 /**
  * Create the preference proposals router.
@@ -87,7 +88,7 @@ export function createProposalsRouter(): Router {
           domain: proposal.domain,
           key: proposal.key,
           value: proposal.value,
-          confidence: proposal.confidence as never,
+          confidence: proposal.confidence as ConfidenceLevel,
           source: 'inferred',
           evidenceIds: ((proposal.supporting_evidence ?? []) as Array<{ evidenceId: string }>).map(
             (e) => e.evidenceId,
