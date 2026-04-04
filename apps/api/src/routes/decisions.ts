@@ -23,12 +23,39 @@ export function createDecisionsRouter(): Router {
       const domain = req.query['domain'] as string | undefined;
       const limit = parseInt(req.query['limit'] as string ?? '50', 10);
       const offset = parseInt(req.query['offset'] as string ?? '0', 10);
+      const from = req.query['from'] ? new Date(req.query['from'] as string) : undefined;
+      const to = req.query['to'] ? new Date(req.query['to'] as string) : undefined;
+      const situationType = req.query['situationType'] as string | undefined;
+      const search = req.query['search'] as string | undefined;
 
-      const decisions = await decisionRepository.findByUser(userId, {
+      let decisions = await decisionRepository.findByUser(userId, {
         domain,
-        limit,
-        offset,
+        limit: search || situationType ? 500 : limit, // fetch more for client-side filters
+        offset: search || situationType ? 0 : offset,
+        from,
+        to,
       });
+
+      // Server-side filter: situation type
+      if (situationType) {
+        decisions = decisions.filter((d) => d.situation_type === situationType);
+      }
+
+      // Server-side filter: text search across situation type, domain
+      if (search) {
+        const q = search.toLowerCase();
+        decisions = decisions.filter((d) =>
+          d.situation_type?.toLowerCase().includes(q) ||
+          d.domain?.toLowerCase().includes(q) ||
+          d.urgency?.toLowerCase().includes(q),
+        );
+      }
+
+      // Apply pagination after filters
+      const total = decisions.length;
+      if (search || situationType) {
+        decisions = decisions.slice(offset, offset + limit);
+      }
 
       res.json({
         decisions: decisions.map((d) => ({
@@ -38,7 +65,7 @@ export function createDecisionsRouter(): Router {
           urgency: d.urgency,
           createdAt: d.created_at,
         })),
-        total: decisions.length,
+        total,
         limit,
         offset,
       });

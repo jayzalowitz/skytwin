@@ -3,6 +3,7 @@ import { renderApprovals } from './pages/approvals.js';
 import { renderDecisions } from './pages/decisions.js';
 import { renderTwin } from './pages/twin.js';
 import { renderSettings } from './pages/settings.js';
+import { renderAudit } from './pages/audit.js';
 import { renderOnboarding } from './pages/onboarding.js';
 import { fetchPendingApprovals, fetchHealth, fetchUser, escapeHtml } from './api-client.js';
 import { mountThemeSwitcher, initTheme } from './theme-switcher.js';
@@ -15,6 +16,7 @@ const routes = {
   '/decisions': { title: 'What happened', render: renderDecisions },
   '/twin': { title: 'What I\'ve learned', render: renderTwin },
   '/settings': { title: 'Settings', render: renderSettings },
+  '/audit': { title: 'Audit Trail', render: renderAudit },
 };
 
 /**
