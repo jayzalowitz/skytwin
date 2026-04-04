@@ -1,4 +1,4 @@
-import { fetchUser, updateTrustTier, fetchOAuthStatus, getGoogleAuthUrl, disconnectProvider, escapeHtml, fetchSettings, updateAutonomySettings, upsertDomainPolicy, deleteDomainPolicy, createEscalationTrigger, deleteEscalationTrigger } from '../api-client.js';
+import { fetchUser, updateTrustTier, fetchOAuthStatus, getGoogleAuthUrl, disconnectProvider, escapeHtml, fetchSettings, updateAutonomySettings, upsertDomainPolicy, deleteDomainPolicy, createEscalationTrigger, deleteEscalationTrigger, createSession, fetchSessions, revokeSession } from '../api-client.js';
 
 const TIERS = [
   { value: 'observer', name: 'Just watch', desc: 'Your assistant watches but never does anything. Good for seeing what it would do.' },
@@ -12,16 +12,19 @@ export async function renderSettings(container, userId) {
   let user = null;
   let googleStatus = null;
   let settings = null;
+  let sessions = [];
 
   try {
-    const [userResult, oauthResult, settingsResult] = await Promise.allSettled([
+    const [userResult, oauthResult, settingsResult, sessionsResult] = await Promise.allSettled([
       fetchUser(userId),
       fetchOAuthStatus(userId, 'google'),
       fetchSettings(userId),
+      fetchSessions(userId),
     ]);
     user = userResult.status === 'fulfilled' ? userResult.value?.user : null;
     googleStatus = oauthResult.status === 'fulfilled' ? oauthResult.value : null;
     settings = settingsResult.status === 'fulfilled' ? settingsResult.value : null;
+    sessions = sessionsResult.status === 'fulfilled' ? (sessionsResult.value?.sessions ?? []) : [];
   } catch { /* empty */ }
 
   const currentTier = user?.trust_tier ?? 'suggest';
@@ -216,6 +219,33 @@ export async function renderSettings(container, userId) {
       </div>
     </details>
 
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Phone access</span>
+      </div>
+      <div class="card-subtitle" style="margin-bottom: 1rem;">
+        Access your dashboard from your phone on the same WiFi network.
+        Click "Generate QR" then scan with your phone camera.
+      </div>
+      <div id="qr-container" style="text-align: center; margin-bottom: 1rem;"></div>
+      <button class="btn btn-primary btn-sm" onclick="generateQR('${userId}')">Generate QR code</button>
+
+      ${sessions.length > 0 ? `
+        <div style="margin-top: 1.5rem;">
+          <div style="font-weight: 600; font-size: 0.85rem; margin-bottom: 0.5rem;">Active sessions</div>
+          ${sessions.map(s => `
+            <div style="display: flex; align-items: center; justify-content: space-between; padding: 0.5rem 0.75rem; background: var(--bg); border-radius: var(--radius-sm); margin-bottom: 0.5rem;">
+              <div>
+                <span style="font-weight: 600; font-size: 0.85rem;">${escapeHtml(s.deviceName)}</span>
+                <span style="color: var(--text-muted); font-size: 0.75rem; margin-left: 0.5rem;">Last active: ${formatRelativeTime(s.lastActiveAt)}</span>
+              </div>
+              <button class="btn btn-outline btn-sm" onclick="revokeSessionHandler('${escapeHtml(s.id)}', '${userId}')">Revoke</button>
+            </div>
+          `).join('')}
+        </div>
+      ` : ''}
+    </div>
+
     <div class="card" style="margin-top: 2rem; text-align: center;">
       <div class="card-subtitle" style="margin-bottom: 0.75rem;">Signed in as <strong>${escapeHtml(userId)}</strong></div>
       <button class="btn btn-outline" onclick="signOut()">Sign out</button>
@@ -374,6 +404,53 @@ window.removeEscalationTrigger = async function(userId, triggerId) {
     );
   }
 };
+
+window.generateQR = async function(userId) {
+  const container = document.getElementById('qr-container');
+  try {
+    container.innerHTML = '<div style="color: var(--text-muted); font-size: 0.85rem;">Generating...</div>';
+    const data = await createSession(userId, 'Phone');
+    // Render a text-based QR representation (URL)
+    container.innerHTML = `
+      <div style="background: white; display: inline-block; padding: 1rem; border-radius: 8px; margin-bottom: 0.5rem;">
+        <div style="color: #000; font-size: 0.75rem; word-break: break-all; max-width: 300px;">${escapeHtml(data.qrUrl)}</div>
+      </div>
+      <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.5rem;">
+        Open this URL on your phone, or copy and paste it.<br>
+        Expires: ${new Date(data.expiresAt).toLocaleDateString()}
+      </div>
+    `;
+  } catch (err) {
+    container.innerHTML = `<div class="error-banner">${escapeHtml(err.message)}</div>`;
+  }
+};
+
+window.revokeSessionHandler = async function(sessionId, userId) {
+  try {
+    await revokeSession(sessionId);
+    const { renderSettings } = await import('./settings.js');
+    await renderSettings(document.getElementById('page-content'), userId);
+  } catch (err) {
+    document.getElementById('page-content').insertAdjacentHTML(
+      'afterbegin',
+      `<div class="error-banner">${escapeHtml(err.message)}</div>`,
+    );
+  }
+};
+
+function formatRelativeTime(dateStr) {
+  if (!dateStr) return 'unknown';
+  const d = new Date(dateStr);
+  const now = new Date();
+  const diffMs = now.getTime() - d.getTime();
+  const diffMin = Math.floor(diffMs / 60000);
+  if (diffMin < 1) return 'just now';
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}h ago`;
+  const diffDays = Math.floor(diffHr / 24);
+  return `${diffDays}d ago`;
+}
 
 window.signOut = function() {
   localStorage.removeItem('skytwin_userId');

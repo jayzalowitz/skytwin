@@ -13,6 +13,8 @@ import { createAskRouter } from './routes/ask.js';
 import { createBriefingsRouter } from './routes/briefings.js';
 import { createSkillGapsRouter } from './routes/skill-gaps.js';
 import { createSettingsRouter } from './routes/settings.js';
+import { createSessionsRouter } from './routes/sessions.js';
+import { sessionAuth } from './middleware/session-auth.js';
 import { getExecutionRouter } from './execution-setup.js';
 
 const config = loadConfig();
@@ -36,6 +38,7 @@ const app: Application = express();
 
 // Middleware
 app.use(express.json());
+app.use(sessionAuth);
 
 // Routes
 app.use('/api/events', createEventsRouter());
@@ -51,6 +54,7 @@ app.use('/api/v1/twin', createAskRouter());
 app.use('/api/v1/briefings', createBriefingsRouter());
 app.use('/api/v1/skill-gaps', createSkillGapsRouter());
 app.use('/api/settings', createSettingsRouter());
+app.use('/api/sessions', createSessionsRouter());
 
 // Health check
 app.get('/api/health', (_req, res) => {

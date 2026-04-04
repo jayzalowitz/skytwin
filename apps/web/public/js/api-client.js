@@ -176,3 +176,22 @@ export function deleteEscalationTrigger(userId, triggerId) {
     method: 'DELETE',
   });
 }
+
+// ── Sessions ──────────────────────────────────────────
+
+export function createSession(userId, deviceName) {
+  return fetchJSON(`${API}/sessions`, {
+    method: 'POST',
+    body: JSON.stringify({ userId, deviceName }),
+  });
+}
+
+export function fetchSessions(userId) {
+  return fetchJSON(`${API}/sessions/${userId}`);
+}
+
+export function revokeSession(sessionId) {
+  return fetchJSON(`${API}/sessions/${sessionId}`, {
+    method: 'DELETE',
+  });
+}
