@@ -353,6 +353,72 @@ const STEPS = [
 ];
 
 /**
+ * Show a "connecting to your accounts" screen after onboarding completes.
+ * Polls for signals/decisions and shows the first few as they arrive.
+ */
+async function showSignalPreview(container, userId) {
+  container.innerHTML = `
+    <div class="onboarding-step">Almost ready</div>
+    <div class="onboarding-title">Connecting to your accounts...</div>
+    <div class="onboarding-desc">
+      I'm checking your email and calendar for things I can help with.
+    </div>
+    <div id="signal-preview-list" style="min-height: 100px;">
+      <div class="loading" style="text-align: center; padding: 1.5rem; color: var(--text-muted);">
+        Looking for signals...
+      </div>
+    </div>
+    <div class="onboarding-actions" style="margin-top: 1.5rem;">
+      <button class="btn btn-primary btn-lg" id="onb-continue-to-dashboard" style="display: none;">Continue to dashboard</button>
+    </div>
+  `;
+
+  const listEl = document.getElementById('signal-preview-list');
+  const btnEl = document.getElementById('onb-continue-to-dashboard');
+  let found = false;
+
+  // Poll for decisions up to 6 times (30 seconds total)
+  for (let attempt = 0; attempt < 6; attempt++) {
+    await new Promise((r) => setTimeout(r, 5000));
+    try {
+      const data = await fetchJSON(`/api/decisions/${encodeURIComponent(userId)}?limit=5`);
+      const decisions = data.decisions ?? [];
+      if (decisions.length > 0) {
+        found = true;
+        listEl.innerHTML = decisions.slice(0, 3).map((d) => `
+          <div class="insight-card" style="margin-bottom: 0.5rem;">
+            <div class="insight-icon" style="background: var(--accent-soft, #e3f2fd); color: var(--accent, #1976d2);">
+              ${d.domain === 'email' ? 'E' : d.domain === 'calendar' ? 'C' : '?'}
+            </div>
+            <div class="insight-content">
+              <div class="insight-title">${d.domain ? d.domain.charAt(0).toUpperCase() + d.domain.slice(1) : 'Signal'}</div>
+              <div class="insight-desc">${d.situation_type || d.situationType || 'Processing...'}</div>
+            </div>
+          </div>
+        `).join('');
+        break;
+      }
+    } catch {
+      // API not ready yet, keep polling
+    }
+  }
+
+  if (!found) {
+    listEl.innerHTML = `
+      <div style="text-align: center; padding: 1rem; color: var(--text-muted);">
+        No signals yet — I'll check again shortly. You can start exploring the dashboard now.
+      </div>
+    `;
+  }
+
+  // Show the continue button and wait for click
+  btnEl.style.display = 'inline-block';
+  return new Promise((resolve) => {
+    btnEl.addEventListener('click', resolve);
+  });
+}
+
+/**
  * Render the onboarding flow.
  */
 export function renderOnboarding(container, onComplete) {
@@ -415,7 +481,10 @@ export function renderOnboarding(container, onComplete) {
           // Non-fatal
         }
 
-        // 5. Navigate to the dashboard
+        // 5. Show signal preview before navigating to dashboard
+        await showSignalPreview(container, userId);
+
+        // 6. Navigate to the dashboard
         onComplete(userId);
       },
       state,
