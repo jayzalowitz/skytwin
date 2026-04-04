@@ -9,7 +9,9 @@
     "dev": "tsc && electron .",
     "build": "echo 'Desktop build requires: pnpm --filter @skytwin/desktop install && pnpm --filter @skytwin/desktop package:mac'",
     "package:mac": "tsc && electron-builder --mac",
-    "package:win": "tsc && electron-builder --win"
+    "package:win": "tsc && electron-builder --win",
+    "package:linux": "tsc && electron-builder --linux",
+    "package:all": "tsc && electron-builder --mac --win --linux"
   },
   "build": {
     "appId": "com.skytwin.desktop",
@@ -19,10 +21,29 @@
     },
     "mac": {
       "target": ["dmg", "zip"],
-      "category": "public.app-category.productivity"
+      "category": "public.app-category.productivity",
+      "icon": "assets/icon.icns"
     },
     "win": {
-      "target": ["nsis"]
+      "target": ["nsis"],
+      "icon": "assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "SkyTwin"
+    },
+    "linux": {
+      "target": ["AppImage", "deb", "rpm"],
+      "category": "Utility",
+      "icon": "assets/icons",
+      "desktop": {
+        "Name": "SkyTwin",
+        "Comment": "Your personal AI assistant",
+        "Categories": "Utility;Office;"
+      }
     },
     "files": [
       "dist/**/*",
