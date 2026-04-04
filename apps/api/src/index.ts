@@ -40,16 +40,40 @@ const app: Application = express();
 // Middleware
 app.use(express.json());
 
-// Health check (before auth — must be reachable without a session)
+// Health checks (before auth — must be reachable without a session)
+
+// Liveness: process is alive and can handle HTTP requests
+app.get('/api/health/live', (_req, res) => {
+  res.json({ status: 'ok', service: 'skytwin-api' });
+});
+
+// Readiness: process is ready to serve traffic (dependencies available)
+app.get('/api/health/ready', async (_req, res) => {
+  const { healthCheck } = await import('@skytwin/db');
+  const dbHealth = await healthCheck();
+
+  const checks: Record<string, string> = {
+    database: dbHealth.healthy ? 'ok' : 'unavailable',
+  };
+  const allOk = Object.values(checks).every((v) => v === 'ok');
+
+  res.status(allOk ? 200 : 503).json({
+    status: allOk ? 'ok' : 'degraded',
+    service: 'skytwin-api',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    checks,
+    dbLatencyMs: dbHealth.latencyMs,
+  });
+});
+
+// Legacy health check (backwards compatible)
 app.get('/api/health', (_req, res) => {
   res.json({
     status: 'ok',
     service: 'skytwin-api',
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
-    adapters: {
-      note: 'Execution router initialized with trust-ranked adapters',
-    },
   });
 });
 

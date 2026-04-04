@@ -1,5 +1,6 @@
 import type { SignalConnector, RawSignal, SignalHandler } from './connector-interface.js';
 import type { OAuthTokenStore } from './oauth/token-store.js';
+import { withRetry, RetryableHttpError, parseRetryAfter } from '@skytwin/core';
 
 const GMAIL_API = 'https://gmail.googleapis.com/gmail/v1';
 
@@ -52,33 +53,36 @@ export class GmailConnector implements SignalConnector {
       throw new Error('GmailConnector is not connected. Call connect() first.');
     }
 
-    const token = await this.tokenStore.refreshIfExpired(this.userId, 'google');
-    const headers = { Authorization: `Bearer ${token.accessToken}` };
-
     // List recent unread messages
     const query = this.lastHistoryId
       ? `is:unread`
       : `is:unread newer_than:1d`;
 
     const listUrl = `${GMAIL_API}/users/me/messages?q=${encodeURIComponent(query)}&maxResults=10`;
-    const listResponse = await fetch(listUrl, { headers });
 
-    if (!listResponse.ok) {
-      if (listResponse.status === 401) {
-        // Token expired mid-request, try once more
-        const refreshed = await this.tokenStore.refreshIfExpired(this.userId, 'google');
-        const retryResponse = await fetch(listUrl, {
-          headers: { Authorization: `Bearer ${refreshed.accessToken}` },
-        });
-        if (!retryResponse.ok) {
-          throw new Error(`Gmail API list failed: ${retryResponse.status}`);
+    const listResponse = await withRetry(async () => {
+      const currentToken = await this.tokenStore.refreshIfExpired(this.userId, 'google');
+      const response = await fetch(listUrl, {
+        headers: { Authorization: `Bearer ${currentToken.accessToken}` },
+      });
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          // Token expired — refresh will happen on next attempt
+          throw new RetryableHttpError(401, 'Gmail token expired', null);
         }
-        return this.processListResponse(retryResponse, refreshed.accessToken);
+        if ([429, 500, 502, 503].includes(response.status)) {
+          const retryAfterMs = parseRetryAfter(response.headers.get('Retry-After'));
+          throw new RetryableHttpError(response.status, `Gmail API list failed: ${response.status}`, retryAfterMs);
+        }
+        throw new Error(`Gmail API list failed: ${response.status}`);
       }
-      throw new Error(`Gmail API list failed: ${listResponse.status}`);
-    }
 
-    return this.processListResponse(listResponse, token.accessToken);
+      return response;
+    }, { maxRetries: 3, baseDelayMs: 1000 });
+
+    const currentToken = await this.tokenStore.refreshIfExpired(this.userId, 'google');
+    return this.processListResponse(listResponse, currentToken.accessToken);
   }
 
   onSignal(handler: SignalHandler): void {
@@ -120,12 +124,24 @@ export class GmailConnector implements SignalConnector {
     accessToken: string,
   ): Promise<GmailMessage | null> {
     const url = `${GMAIL_API}/users/me/messages/${messageId}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`;
-    const response = await fetch(url, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
 
-    if (!response.ok) return null;
-    return response.json() as Promise<GmailMessage>;
+    try {
+      const response = await withRetry(async () => {
+        const resp = await fetch(url, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        if (!resp.ok && [429, 500, 502, 503].includes(resp.status)) {
+          const retryAfterMs = parseRetryAfter(resp.headers.get('Retry-After'));
+          throw new RetryableHttpError(resp.status, `Gmail detail failed: ${resp.status}`, retryAfterMs);
+        }
+        return resp;
+      }, { maxRetries: 2, baseDelayMs: 500 });
+
+      if (!response.ok) return null;
+      return response.json() as Promise<GmailMessage>;
+    } catch {
+      return null;
+    }
   }
 
   private messageToSignal(message: GmailMessage): RawSignal {

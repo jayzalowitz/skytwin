@@ -4,6 +4,23 @@
 
 import { randomUUID } from 'node:crypto';
 
+export {
+  withRetry,
+  fetchWithRetry,
+  parseRetryAfter,
+  calculateDelay,
+  RetryableHttpError,
+  type RetryConfig,
+} from './retry.js';
+
+export {
+  CircuitBreaker,
+  CircuitOpenError,
+  withCircuitBreaker,
+  type CircuitBreakerConfig,
+  type CircuitState,
+} from './circuit-breaker.js';
+
 /**
  * Generate a new UUID.
  */

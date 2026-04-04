@@ -113,6 +113,9 @@ importers:
       '@skytwin/connectors':
         specifier: workspace:*
         version: link:../../packages/connectors
+      '@skytwin/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@skytwin/db':
         specifier: workspace:*
         version: link:../../packages/db
@@ -141,6 +144,9 @@ importers:
 
   packages/connectors:
     dependencies:
+      '@skytwin/core':
+        specifier: workspace:*
+        version: link:../core
       '@skytwin/shared-types':
         specifier: workspace:*
         version: link:../shared-types
