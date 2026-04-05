@@ -14,6 +14,7 @@ import { PolicyEvaluator } from '@skytwin/policy-engine';
 import type { FeedbackEvent, CandidateAction, RiskAssessment, DimensionAssessment } from '@skytwin/shared-types';
 import { ConfidenceLevel, RiskTier, RiskDimension, TrustTier } from '@skytwin/shared-types';
 import { getExecutionRouter } from '../execution-setup.js';
+import { sseManager } from '../sse.js';
 
 /**
  * Create the approvals handling router.
@@ -228,6 +229,14 @@ export function createApprovalsRouter(): Router {
         };
       }
 
+      // Notify via SSE
+      sseManager.emit(body.userId, 'approval:resolved', {
+        requestId,
+        action: body.action,
+        decisionId: approval.decision_id,
+        execution: executionResult,
+      });
+
       res.json({
         requestId,
         action: body.action,
@@ -241,6 +250,20 @@ export function createApprovalsRouter(): Router {
         twinProfileVersion: updatedProfile.version,
         processedAt: new Date().toISOString(),
       });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /**
+   * POST /api/approvals/expire-sweep
+   *
+   * Manually trigger expiry of stale pending approvals.
+   */
+  router.post('/expire-sweep', async (_req, res, next) => {
+    try {
+      const count = await approvalRepository.expirePending();
+      res.json({ expired: count });
     } catch (error) {
       next(error);
     }

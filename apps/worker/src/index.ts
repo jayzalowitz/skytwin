@@ -5,7 +5,7 @@ import {
   GoogleCalendarConnector,
   DbTokenStore,
 } from '@skytwin/connectors';
-import { oauthRepository } from '@skytwin/db';
+import { oauthRepository, approvalRepository } from '@skytwin/db';
 
 const config = loadConfig();
 
@@ -163,6 +163,21 @@ async function main(): Promise<void> {
     }
 
     pollCount++;
+
+    // Expire stale approval requests every 10 poll cycles
+    if (pollCount % 10 === 0) {
+      try {
+        const expired = await approvalRepository.expirePending();
+        if (expired > 0) {
+          console.info(`[worker] Expired ${expired} stale approval request(s)`);
+        }
+      } catch (error) {
+        console.error(
+          '[worker] Error expiring approvals:',
+          error instanceof Error ? error.message : error,
+        );
+      }
+    }
 
     // Re-discover users every 10 poll cycles to pick up new connections
     if (pollCount % 10 === 0) {
