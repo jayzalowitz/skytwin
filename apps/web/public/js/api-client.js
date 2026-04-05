@@ -81,6 +81,14 @@ export function updatePreference(userId, preference) {
   });
 }
 
+export function fetchTrustProgress(userId) {
+  return fetchJSON(`${API}/twin/${userId}/progress`);
+}
+
+export function fetchLearned(userId) {
+  return fetchJSON(`${API}/twin/${userId}/learned`);
+}
+
 // ── Users ───────────────────────────────────────────────
 
 export function createUser(email, name, trustTier) {

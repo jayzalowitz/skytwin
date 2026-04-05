@@ -1,15 +1,20 @@
-import { fetchPendingApprovals, fetchApprovalHistory, respondToApproval, escapeHtml } from '../api-client.js';
+import { fetchPendingApprovals, fetchApprovalHistory, respondToApproval, escapeHtml, fetchTrustProgress } from '../api-client.js';
+import { renderTrustProgress } from '../components/progress-bar.js';
 
 export async function renderApprovals(container, userId) {
-  const [pendingData, historyData] = await Promise.allSettled([
+  const [pendingData, historyData, progressData] = await Promise.allSettled([
     fetchPendingApprovals(userId),
     fetchApprovalHistory(userId, 20),
+    fetchTrustProgress(userId),
   ]);
 
   const pending = pendingData.status === 'fulfilled' ? (pendingData.value.approvals ?? []) : [];
   const history = historyData.status === 'fulfilled' ? (historyData.value.approvals ?? []) : [];
+  const prog = progressData.status === 'fulfilled' ? progressData.value : null;
 
   container.innerHTML = `
+    ${prog ? renderTrustProgress({ approvalCount: prog.approvalCount, currentTier: prog.currentTier }) : ''}
+
     <div class="card">
       <div class="card-header">
         <span class="card-title">Pending approvals</span>

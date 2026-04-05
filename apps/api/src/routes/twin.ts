@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { TwinService } from '@skytwin/twin-model';
-import { TwinRepositoryAdapter, PatternRepositoryAdapter } from '@skytwin/db';
+import { TwinRepositoryAdapter, PatternRepositoryAdapter, feedbackRepository, userRepository } from '@skytwin/db';
 import { ConfidenceLevel } from '@skytwin/shared-types';
 
 /**
@@ -129,5 +129,116 @@ export function createTwinRouter(): Router {
     }
   });
 
+  /**
+   * GET /api/twin/:userId/progress
+   *
+   * Trust tier progress: current tier, approval count, and threshold for next tier.
+   */
+  router.get('/:userId/progress', async (req, res, next) => {
+    try {
+      const { userId } = req.params;
+      const user = await userRepository.findById(userId);
+      const currentTier = user?.trust_tier ?? 'observer';
+
+      // Count approvals (feedback events with type 'approve')
+      const feedback = await feedbackRepository.findByUser(userId, { limit: 1000 });
+      const approvalCount = feedback.filter((f) => f.type === 'approve').length;
+
+      const thresholds: Record<string, number> = {
+        observer: 10,
+        suggest: 20,
+        low_autonomy: 50,
+        moderate_autonomy: 100,
+      };
+      const threshold = thresholds[currentTier] ?? null;
+
+      res.json({ currentTier, approvalCount, threshold });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /**
+   * GET /api/twin/:userId/learned
+   *
+   * "What I learned" summary: natural-language descriptions of recently
+   * learned preferences, derived from the twin profile.
+   */
+  router.get('/:userId/learned', async (req, res, next) => {
+    try {
+      const { userId } = req.params;
+      const profile = await twinService.getOrCreateProfile(userId);
+
+      // Build human-readable summaries from preferences
+      const summaries: { domain: string; description: string }[] = [];
+
+      for (const pref of profile.preferences) {
+        const desc = describePreference(pref.domain, pref.key, pref.value);
+        if (desc) {
+          summaries.push({ domain: pref.domain, description: desc });
+        }
+      }
+
+      // Also include inferred preferences
+      for (const inf of profile.inferences) {
+        const desc = describePreference(inf.domain, inf.key, inf.value);
+        if (desc) {
+          summaries.push({ domain: inf.domain, description: `I noticed: ${desc}` });
+        }
+      }
+
+      res.json({
+        summaries: summaries.slice(0, 10),
+        totalPreferences: profile.preferences.length,
+        totalInferences: profile.inferences.length,
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   return router;
+}
+
+function describePreference(domain: string, key: string, value: unknown): string | null {
+  const domainLabels: Record<string, string> = {
+    email: 'Email',
+    calendar: 'Calendar',
+    finance: 'Finance',
+    shopping: 'Shopping',
+    travel: 'Travel',
+    subscriptions: 'Subscriptions',
+  };
+  const domainLabel = domainLabels[domain] ?? domain;
+
+  const descriptions: Record<string, Record<string, (v: unknown) => string>> = {
+    email: {
+      auto_archive_promo: (v) => v ? 'you prefer to archive promotional emails' : 'you want to keep promotional emails in your inbox',
+      draft_work_replies: (v) => v ? 'you like having draft replies prepared for work emails' : 'you prefer to write work replies yourself',
+    },
+    calendar: {
+      protect_morning_focus: (v) => v ? 'you like to keep mornings free for focus time' : 'you\'re open to morning meetings',
+      auto_accept_recurring: (v) => v ? 'you\'re fine auto-accepting recurring meeting invites' : 'you want to review recurring meetings individually',
+    },
+    finance: {
+      alert_large_charges: (v) => v ? 'you want alerts for charges over $50' : 'you don\'t need large charge alerts',
+    },
+    shopping: {
+      track_price_drops: (v) => v ? 'you want to know about price drops' : 'you\'re not interested in price tracking',
+    },
+  };
+
+  const domainDescs = descriptions[domain];
+  if (domainDescs?.[key]) {
+    return domainDescs[key](value);
+  }
+
+  // Generic fallback
+  if (typeof value === 'boolean') {
+    return `${domainLabel}: ${key.replace(/_/g, ' ')} is ${value ? 'enabled' : 'disabled'}`;
+  }
+  if (value !== null && value !== undefined) {
+    return `${domainLabel}: ${key.replace(/_/g, ' ')} = ${String(value)}`;
+  }
+  return null;
 }
