@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getPool, closePool } from '../connection.js';
@@ -9,7 +9,7 @@ const __dirname = dirname(__filename);
 const SCHEMA_PATH = join(__dirname, '..', 'schemas', 'schema.sql');
 
 /**
- * Run the initial migration: create all tables from schema.sql.
+ * Run all migrations: schema.sql first, then SQL files 002–011 in order.
  */
 export async function up(): Promise<void> {
   const pool = getPool();
@@ -21,30 +21,63 @@ export async function up(): Promise<void> {
     // Database may already exist or we may not have permissions; continue
   }
 
-  // Read and execute the schema
+  // Read and execute the entire schema as one batch.
+  // Running it as a single query preserves statement ordering so FK
+  // references resolve correctly (e.g. connected_accounts → users).
   const schema = readFileSync(SCHEMA_PATH, 'utf-8');
 
-  // Split on semicolons but respect multi-line statements
-  const statements = schema
-    .split(/;\s*$/m)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0 && !s.startsWith('--'));
-
-  for (const statement of statements) {
-    try {
-      await pool.query(statement);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      // Skip "already exists" errors for idempotency
-      if (!message.includes('already exists')) {
-        console.error(`[migration] Failed to execute statement:`);
-        console.error(statement.substring(0, 200));
-        throw error;
-      }
+  try {
+    await pool.query(schema);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    // Skip "already exists" errors for idempotency
+    if (!message.includes('already exists')) {
+      console.error(`[migration] Failed to execute schema`);
+      throw error;
     }
   }
 
   console.log('[migration] 001-initial: All tables created successfully.');
+
+  // Run incremental SQL migrations (002-xxx.sql, 003-xxx.sql, …)
+  // These must be executed statement-by-statement because CockroachDB
+  // cannot run ALTER+UPDATE+ALTER in a single batch (backfill conflict).
+  const sqlFiles = readdirSync(__dirname)
+    .filter((f) => f.endsWith('.sql'))
+    .sort();
+
+  for (const file of sqlFiles) {
+    const sql = readFileSync(join(__dirname, file), 'utf-8');
+    const statements = sql
+      .split(/;\s*$/m)
+      .map((s) => s.trim())
+      .filter((s) => {
+        // Keep blocks that contain at least one non-comment SQL line
+        const sqlLines = s.split('\n').filter((l) => l.trim() && !l.trim().startsWith('--'));
+        return sqlLines.length > 0;
+      });
+
+    let applied = 0;
+    for (const stmt of statements) {
+      try {
+        await pool.query(stmt);
+        applied++;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (
+          message.includes('already exists') ||
+          message.includes('duplicate key') ||
+          message.includes('duplicate column name')
+        ) {
+          // Idempotent — skip
+          continue;
+        }
+        console.error(`[migration] ${file}: statement failed:\n${stmt.substring(0, 120)}`);
+        throw error;
+      }
+    }
+    console.log(`[migration] ${file}: applied ${applied} statement(s).`);
+  }
 }
 
 /**
@@ -54,6 +87,26 @@ export async function down(): Promise<void> {
   const pool = getPool();
 
   const dropOrder = [
+    // Added by migrations 002–011 (reverse dependency order)
+    'sessions',
+    'preference_history',
+    'escalation_triggers',
+    'domain_autonomy_policies',
+    'spend_records',
+    'trust_tier_audit',
+    'briefings',
+    'proactive_scans',
+    'skill_gap_log',
+    'twin_exports',
+    'preference_proposals',
+    'signals',
+    'accuracy_metrics',
+    'eval_runs',
+    'cross_domain_traits',
+    'behavioral_patterns',
+    'connector_configs',
+    'oauth_tokens',
+    // Base schema tables
     'feedback_events',
     'explanation_records',
     'execution_results',

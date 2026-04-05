@@ -84,24 +84,19 @@ CREATE TABLE IF NOT EXISTS briefings (
 
 -- ============================================================================
 -- Column Additions (safe for existing tables)
--- Step 1: Add columns as nullable
--- Step 2: Backfill defaults
--- Step 3: Set NOT NULL constraint
--- This avoids table-level locks from ADD COLUMN NOT NULL DEFAULT on CockroachDB.
+-- Single-statement ADD COLUMN with DEFAULT + NOT NULL avoids CockroachDB
+-- async schema-change conflicts (the 3-step ALTER→UPDATE→ALTER pattern
+-- fails because the column isn't visible until the backfill job completes).
 -- ============================================================================
 
 -- decisions.source
-ALTER TABLE decisions ADD COLUMN IF NOT EXISTS source STRING;
-UPDATE decisions SET source = 'reactive' WHERE source IS NULL;
-ALTER TABLE decisions ALTER COLUMN source SET NOT NULL;
+ALTER TABLE decisions ADD COLUMN IF NOT EXISTS source STRING NOT NULL DEFAULT 'reactive';
 
 -- execution_results.adapter_used (nullable, no backfill needed)
 ALTER TABLE execution_results ADD COLUMN IF NOT EXISTS adapter_used STRING;
 
 -- explanation_records.type
-ALTER TABLE explanation_records ADD COLUMN IF NOT EXISTS type STRING;
-UPDATE explanation_records SET type = 'action' WHERE type IS NULL;
-ALTER TABLE explanation_records ALTER COLUMN type SET NOT NULL;
+ALTER TABLE explanation_records ADD COLUMN IF NOT EXISTS type STRING NOT NULL DEFAULT 'action';
 
 -- feedback_events.undo_reasoning (nullable JSONB, no constraint needed)
 ALTER TABLE feedback_events ADD COLUMN IF NOT EXISTS undo_reasoning JSONB;

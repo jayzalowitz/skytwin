@@ -226,10 +226,10 @@ async function seed(): Promise<void> {
 
     // Decision 1: A scheduling decision that was auto-executed
     const decision1Result = await client.query(
-      `INSERT INTO decisions (id, user_id, situation_type, raw_event, interpreted_situation, domain, urgency, metadata)
+      `INSERT INTO decisions (id, user_id, situation_type, raw_event, interpreted_situation, domain, urgency, metadata, source)
        VALUES (
          'f6a7b8c9-d0e1-4f2a-3b4c-5d6e7f809102',
-         $1, 'meeting_request', $2, $3, 'scheduling', 'normal', $4
+         $1, 'meeting_request', $2, $3, 'scheduling', 'normal', $4, 'google_calendar'
        )
        ON CONFLICT (id) DO NOTHING
        RETURNING id`,
@@ -289,7 +289,7 @@ async function seed(): Promise<void> {
 
       // Explanation for decision 1
       await client.query(
-        `INSERT INTO explanation_records (id, decision_id, what_happened, evidence_used, preferences_invoked, confidence_reasoning, action_rationale, correction_guidance)
+        `INSERT INTO explanation_records (id, decision_id, what_happened, evidence_used, preferences_invoked, confidence_reasoning, action_rationale, correction_guidance, type)
          VALUES (
            '31a2b3c4-d5e6-4f7a-8b9c-0d1e2f3a4b5f',
            $1,
@@ -298,7 +298,8 @@ async function seed(): Promise<void> {
            $3,
            'High confidence (0.92) based on: recurring meeting pattern, known sender, no scheduling conflicts, and matching calendar management policy.',
            'The meeting matches the auto-accept policy for recurring meetings from known colleagues with no conflicts.',
-           'If you prefer not to auto-accept this type of meeting, update the calendar management policy or lower the trust tier for scheduling actions.'
+           'If you prefer not to auto-accept this type of meeting, update the calendar management policy or lower the trust tier for scheduling actions.',
+           'auto_execution'
          )
          ON CONFLICT (id) DO NOTHING`,
         [
@@ -316,10 +317,10 @@ async function seed(): Promise<void> {
 
     // Decision 2: A purchasing decision that required approval
     const decision2Result = await client.query(
-      `INSERT INTO decisions (id, user_id, situation_type, raw_event, interpreted_situation, domain, urgency, metadata)
+      `INSERT INTO decisions (id, user_id, situation_type, raw_event, interpreted_situation, domain, urgency, metadata, source)
        VALUES (
          'a7b8c9d0-e1f2-4a3b-4c5d-6e7f80910213',
-         $1, 'purchase_suggestion', $2, $3, 'purchasing', 'low', $4
+         $1, 'purchase_suggestion', $2, $3, 'purchasing', 'low', $4, 'email_parser'
        )
        ON CONFLICT (id) DO NOTHING
        RETURNING id`,
@@ -388,12 +389,12 @@ async function seed(): Promise<void> {
 
       // Approval request for decision 2
       await client.query(
-        `INSERT INTO approval_requests (id, user_id, decision_id, candidate_action, reason, urgency, status)
+        `INSERT INTO approval_requests (id, user_id, decision_id, candidate_action, reason, urgency, status, expires_at)
          VALUES (
            '71a2b3c4-d5e6-4f7a-8b9c-0d1e2f3a4b63',
            $1, $2, $3,
            'Subscription renewal of $79.99 from NewService Inc. exceeds auto-approve limit and is from a new vendor.',
-           'low', 'pending'
+           'low', 'pending', now() + INTERVAL '7 days'
          )
          ON CONFLICT (id) DO NOTHING`,
         [
@@ -542,10 +543,10 @@ async function seed(): Promise<void> {
 
     // Finance domain decision: auto-categorize coffee charge
     const finDecisionResult = await client.query(
-      `INSERT INTO decisions (id, user_id, situation_type, raw_event, interpreted_situation, domain, urgency, metadata)
+      `INSERT INTO decisions (id, user_id, situation_type, raw_event, interpreted_situation, domain, urgency, metadata, source)
        VALUES (
          'b8c9d0e1-f2a3-4b4c-5d6e-7f8091021314',
-         $1, 'finance_operation', $2, $3, 'finance', 'low', $4
+         $1, 'finance_operation', $2, $3, 'finance', 'low', $4, 'bank_feed'
        )
        ON CONFLICT (id) DO NOTHING
        RETURNING id`,
@@ -590,10 +591,10 @@ async function seed(): Promise<void> {
 
     // Smart home domain decision: morning routine activation
     const homeDecisionResult = await client.query(
-      `INSERT INTO decisions (id, user_id, situation_type, raw_event, interpreted_situation, domain, urgency, metadata)
+      `INSERT INTO decisions (id, user_id, situation_type, raw_event, interpreted_situation, domain, urgency, metadata, source)
        VALUES (
          'd0e1f2a3-b4c5-4d6e-7f80-910213141516',
-         $1, 'smart_home', $2, $3, 'smart_home', 'normal', $4
+         $1, 'smart_home', $2, $3, 'smart_home', 'normal', $4, 'smart_home_hub'
        )
        ON CONFLICT (id) DO NOTHING
        RETURNING id`,
@@ -635,10 +636,10 @@ async function seed(): Promise<void> {
 
     // Task domain decision: create task from email
     const taskDecisionResult = await client.query(
-      `INSERT INTO decisions (id, user_id, situation_type, raw_event, interpreted_situation, domain, urgency, metadata)
+      `INSERT INTO decisions (id, user_id, situation_type, raw_event, interpreted_situation, domain, urgency, metadata, source)
        VALUES (
          'f2a3b4c5-d6e7-4f80-9102-131415161718',
-         $1, 'task_management', $2, $3, 'tasks', 'normal', $4
+         $1, 'task_management', $2, $3, 'tasks', 'normal', $4, 'email_parser'
        )
        ON CONFLICT (id) DO NOTHING
        RETURNING id`,
@@ -681,10 +682,10 @@ async function seed(): Promise<void> {
 
     // Document domain decision: auto-file invoice
     const docDecisionResult = await client.query(
-      `INSERT INTO decisions (id, user_id, situation_type, raw_event, interpreted_situation, domain, urgency, metadata)
+      `INSERT INTO decisions (id, user_id, situation_type, raw_event, interpreted_situation, domain, urgency, metadata, source)
        VALUES (
          'b4c5d6e7-f809-4102-1314-151617181920',
-         $1, 'document_management', $2, $3, 'documents', 'low', $4
+         $1, 'document_management', $2, $3, 'documents', 'low', $4, 'document_scanner'
        )
        ON CONFLICT (id) DO NOTHING
        RETURNING id`,
@@ -726,10 +727,10 @@ async function seed(): Promise<void> {
 
     // Health domain decision: log daily weight
     const healthDecisionResult = await client.query(
-      `INSERT INTO decisions (id, user_id, situation_type, raw_event, interpreted_situation, domain, urgency, metadata)
+      `INSERT INTO decisions (id, user_id, situation_type, raw_event, interpreted_situation, domain, urgency, metadata, source)
        VALUES (
          'd6e7f809-1021-4314-1516-171819202122',
-         $1, 'health_wellness', $2, $3, 'health', 'low', $4
+         $1, 'health_wellness', $2, $3, 'health', 'low', $4, 'health_device'
        )
        ON CONFLICT (id) DO NOTHING
        RETURNING id`,
@@ -773,10 +774,10 @@ async function seed(): Promise<void> {
 
     // Social domain decision: mute spam conversation
     const socialDecisionResult = await client.query(
-      `INSERT INTO decisions (id, user_id, situation_type, raw_event, interpreted_situation, domain, urgency, metadata)
+      `INSERT INTO decisions (id, user_id, situation_type, raw_event, interpreted_situation, domain, urgency, metadata, source)
        VALUES (
          'f8091021-3141-4516-1718-192021222324',
-         $1, 'social_media', $2, $3, 'social_media', 'low', $4
+         $1, 'social_media', $2, $3, 'social_media', 'low', $4, 'social_connector'
        )
        ON CONFLICT (id) DO NOTHING
        RETURNING id`,

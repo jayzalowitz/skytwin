@@ -30,6 +30,9 @@ pnpm-debug.log*
 *.swp
 *.swo
 
+# CockroachDB
+heap_profiler/
+
 # Misc
 *.tsbuildinfo
 .gstack/
