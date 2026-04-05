@@ -22,6 +22,7 @@ import { processSubscriptionRenewal } from '../workflows/subscription-renewal.js
 import { processGroceryReorder } from '../workflows/grocery-reorder.js';
 import { processTravelDecision } from '../workflows/travel-decision.js';
 import { getExecutionRouter } from '../execution-setup.js';
+import { sseManager } from '../sse.js';
 
 /**
  * Create the events router for ingesting raw events.
@@ -29,6 +30,26 @@ import { getExecutionRouter } from '../execution-setup.js';
 export function createEventsRouter(): Router {
   const router = Router();
   const interpreter = new SituationInterpreter();
+
+  /**
+   * GET /api/events/stream/:userId
+   *
+   * Server-Sent Events stream for live notifications.
+   * Sends: decision:executed, approval:new, twin:updated
+   */
+  router.get('/stream/:userId', (req, res) => {
+    const { userId } = req.params;
+    if (!userId) {
+      res.status(400).json({ error: 'Missing userId' });
+      return;
+    }
+
+    sseManager.addConnection(userId, res);
+
+    req.on('close', () => {
+      sseManager.removeConnection(userId, res);
+    });
+  });
 
   const twinService = new TwinService(new TwinRepositoryAdapter(), new PatternRepositoryAdapter());
   const policyEvaluator = new PolicyEvaluator(policyRepositoryAdapter);
@@ -182,6 +203,24 @@ export function createEventsRouter(): Router {
           planId: savedPlan.id,
           adapterUsed: result.output?.['adapter_used'] ?? 'unknown',
         };
+
+        // Notify via SSE
+        sseManager.emit(userId, 'decision:executed', {
+          decisionId: decision.id,
+          actionType: outcome.selectedAction.actionType,
+          description: outcome.selectedAction.description,
+          status: result.status,
+        });
+      }
+
+      // Notify if a new approval was created
+      if (approvalRequest) {
+        sseManager.emit(userId, 'approval:new', {
+          id: approvalRequest.id,
+          decisionId: decision.id,
+          reason: outcome.reasoning,
+          urgency: decision.urgency,
+        });
       }
 
       // 10. Return result

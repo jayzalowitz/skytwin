@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { feedbackRepository, TwinRepositoryAdapter, PatternRepositoryAdapter } from '@skytwin/db';
 import { TwinService } from '@skytwin/twin-model';
 import type { FeedbackEvent, UndoReasoning } from '@skytwin/shared-types';
+import { sseManager } from '../sse.js';
 
 /**
  * Map route-level feedback types to the FeedbackEvent feedbackType union.
@@ -154,6 +155,13 @@ export function createFeedbackRouter(): Router {
         body.userId,
         feedbackEvent,
       );
+
+      // Notify via SSE
+      sseManager.emit(body.userId, 'twin:updated', {
+        profileVersion: updatedProfile.version,
+        feedbackType: body.type,
+        decisionId: body.decisionId,
+      });
 
       res.status(201).json({
         feedback: {

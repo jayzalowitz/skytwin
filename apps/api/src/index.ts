@@ -13,6 +13,7 @@ import { createAskRouter } from './routes/ask.js';
 import { createBriefingsRouter } from './routes/briefings.js';
 import { createSkillGapsRouter } from './routes/skill-gaps.js';
 import { createSettingsRouter } from './routes/settings.js';
+import { createAuditRouter } from './routes/audit.js';
 import { getExecutionRouter } from './execution-setup.js';
 
 const config = loadConfig();
@@ -51,6 +52,7 @@ app.use('/api/v1/twin', createAskRouter());
 app.use('/api/v1/briefings', createBriefingsRouter());
 app.use('/api/v1/skill-gaps', createSkillGapsRouter());
 app.use('/api/settings', createSettingsRouter());
+app.use('/api/audit', createAuditRouter());
 
 // Health check
 app.get('/api/health', (_req, res) => {

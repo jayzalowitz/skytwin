@@ -1,14 +1,15 @@
-import { fetchHealth, fetchDecisions, fetchAccuracy, fetchConfidence, fetchLearning, fetchPendingApprovals, fetchTrustProgress, fetchLearned } from '../api-client.js';
+import { fetchHealth, fetchDecisions, fetchAccuracy, fetchConfidence, fetchLearning, fetchPendingApprovals, fetchSkillGaps, fetchTrustProgress, fetchLearned } from '../api-client.js';
 import { renderTrustProgress } from '../components/progress-bar.js';
 
 export async function renderDashboard(container, userId) {
-  const [health, accuracy, confidence, learning, approvals, decisions, progress, learned] = await Promise.allSettled([
+  const [health, accuracy, confidence, learning, approvals, decisions, skillGaps, progress, learned] = await Promise.allSettled([
     fetchHealth(),
     fetchAccuracy(userId),
     fetchConfidence(userId),
     fetchLearning(userId),
     fetchPendingApprovals(userId),
     fetchDecisions(userId, { limit: 10 }),
+    fetchSkillGaps(userId),
     fetchTrustProgress(userId),
     fetchLearned(userId),
   ]);
@@ -118,6 +119,8 @@ export async function renderDashboard(container, userId) {
       </div>
     ` : ''}
 
+    ${renderSkillGaps(skillGaps)}
+
     <div class="card">
       <div class="card-header">
         <span class="card-title">Recent activity</span>
@@ -174,6 +177,28 @@ function traitIcon(name) {
     delegation_averse: '*',
   };
   return icons[name] || '?';
+}
+
+function renderSkillGaps(skillGapsResult) {
+  const gaps = skillGapsResult.status === 'fulfilled' ? (skillGapsResult.value.gaps ?? []) : [];
+  if (gaps.length === 0) return '';
+
+  return `
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Where I need your help</span>
+      </div>
+      ${gaps.map(g => `
+        <div class="insight-card">
+          <div class="insight-icon" style="background: var(--warning-soft, #fff3cd); color: var(--warning, #856404);">?</div>
+          <div class="insight-content">
+            <div class="insight-title">${g.domain ? domainLabel(g.domain) : 'General'}</div>
+            <div class="insight-desc">${g.description || g.gap || 'I haven\'t learned enough about this area yet.'}</div>
+          </div>
+        </div>
+      `).join('')}
+    </div>
+  `;
 }
 
 function formatTime(dateStr) {

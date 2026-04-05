@@ -8,7 +8,7 @@ contextBridge.exposeInMainWorld('skytwinDesktop', {
   /** Check if running inside the desktop app */
   isDesktop: true,
 
-  /** Get service status (API + Worker) */
+  /** Get service status (API + Worker + overall) */
   getServiceStatus: () => ipcRenderer.invoke('get-service-status'),
 
   /** Get the app version */
@@ -16,4 +16,12 @@ contextBridge.exposeInMainWorld('skytwinDesktop', {
 
   /** Platform info */
   platform: process.platform,
+
+  /** Auto-launch at login */
+  getLaunchAtLogin: () => ipcRenderer.invoke('get-launch-at-login'),
+  setLaunchAtLogin: (enabled: boolean) => ipcRenderer.invoke('set-launch-at-login', enabled),
+
+  /** Pause/resume the twin (worker) */
+  pauseTwin: () => ipcRenderer.invoke('pause-twin'),
+  resumeTwin: () => ipcRenderer.invoke('resume-twin'),
 });
