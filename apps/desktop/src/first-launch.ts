@@ -1,5 +1,6 @@
 import { dialog } from 'electron';
-import { execSync, exec } from 'child_process';
+import { execSync, execFile } from 'child_process';
+import { join } from 'path';
 
 interface DependencyCheck {
   name: string;
@@ -79,8 +80,8 @@ export async function showDependencyDialog(
  */
 export async function runMigrations(resourcePath: string): Promise<boolean> {
   return new Promise((resolve) => {
-    const migrationCmd = `node ${resourcePath}/packages/db/dist/migrations/run.js`;
-    exec(migrationCmd, { timeout: 30000 }, (error) => {
+    const script = join(resourcePath, 'packages', 'db', 'dist', 'migrations', 'run.js');
+    execFile('node', [script], { timeout: 30000 }, (error) => {
       if (error) {
         console.error('[first-launch] Migration failed:', error.message);
         resolve(false);
@@ -97,8 +98,8 @@ export async function runMigrations(resourcePath: string): Promise<boolean> {
  */
 export async function runSeed(resourcePath: string): Promise<boolean> {
   return new Promise((resolve) => {
-    const seedCmd = `node ${resourcePath}/packages/db/dist/seeds/run.js`;
-    exec(seedCmd, { timeout: 30000 }, (error) => {
+    const script = join(resourcePath, 'packages', 'db', 'dist', 'seeds', 'run.js');
+    execFile('node', [script], { timeout: 30000 }, (error) => {
       if (error) {
         console.warn('[first-launch] Seeding failed (may be fine):', error.message);
         resolve(false);
