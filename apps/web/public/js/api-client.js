@@ -176,3 +176,16 @@ export function deleteEscalationTrigger(userId, triggerId) {
     method: 'DELETE',
   });
 }
+
+// ── Audit ──────────────────────────────────────────────
+
+export function fetchAudit(userId, options = {}) {
+  const params = new URLSearchParams(options);
+  return fetchJSON(`${API}/audit/${userId}?${params}`);
+}
+
+// ── Skill Gaps ─────────────────────────────────────────
+
+export function fetchSkillGaps(userId) {
+  return fetchJSON(`${API}/v1/skill-gaps/${userId}`);
+}
