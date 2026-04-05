@@ -190,8 +190,9 @@ export function fetchSessions(userId) {
   return fetchJSON(`${API}/sessions/${userId}`);
 }
 
-export function revokeSession(sessionId) {
+export function revokeSession(sessionId, userId) {
   return fetchJSON(`${API}/sessions/${sessionId}`, {
     method: 'DELETE',
+    body: JSON.stringify({ userId }),
   });
 }

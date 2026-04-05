@@ -38,6 +38,20 @@ const app: Application = express();
 
 // Middleware
 app.use(express.json());
+
+// Health check (before auth — must be reachable without a session)
+app.get('/api/health', (_req, res) => {
+  res.json({
+    status: 'ok',
+    service: 'skytwin-api',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    adapters: {
+      note: 'Execution router initialized with trust-ranked adapters',
+    },
+  });
+});
+
 app.use(sessionAuth);
 
 // Routes
@@ -55,19 +69,6 @@ app.use('/api/v1/briefings', createBriefingsRouter());
 app.use('/api/v1/skill-gaps', createSkillGapsRouter());
 app.use('/api/settings', createSettingsRouter());
 app.use('/api/sessions', createSessionsRouter());
-
-// Health check
-app.get('/api/health', (_req, res) => {
-  res.json({
-    status: 'ok',
-    service: 'skytwin-api',
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime(),
-    adapters: {
-      note: 'Execution router initialized with trust-ranked adapters',
-    },
-  });
-});
 
 // Error handling middleware
 app.use(

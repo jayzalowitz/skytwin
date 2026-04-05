@@ -87,6 +87,20 @@ export function createSessionsRouter(): Router {
   router.delete('/:sessionId', async (req, res, next) => {
     try {
       const { sessionId } = req.params;
+      const body = req.body as { userId?: string };
+      if (!body.userId) {
+        res.status(400).json({ error: 'Missing userId' });
+        return;
+      }
+
+      // Verify the session belongs to the requesting user
+      const sessions = await sessionRepository.findActiveByUser(body.userId);
+      const owns = sessions.some((s) => s.id === sessionId);
+      if (!owns) {
+        res.status(403).json({ error: 'Session not found or not owned by user' });
+        return;
+      }
+
       await sessionRepository.revoke(sessionId);
       res.json({ revoked: true });
     } catch (error) {

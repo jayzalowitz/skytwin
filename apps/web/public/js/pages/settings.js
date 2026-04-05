@@ -427,7 +427,7 @@ window.generateQR = async function(userId) {
 
 window.revokeSessionHandler = async function(sessionId, userId) {
   try {
-    await revokeSession(sessionId);
+    await revokeSession(sessionId, userId);
     const { renderSettings } = await import('./settings.js');
     await renderSettings(document.getElementById('page-content'), userId);
   } catch (err) {
