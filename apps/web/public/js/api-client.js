@@ -81,6 +81,14 @@ export function updatePreference(userId, preference) {
   });
 }
 
+export function fetchTrustProgress(userId) {
+  return fetchJSON(`${API}/twin/${userId}/progress`);
+}
+
+export function fetchLearned(userId) {
+  return fetchJSON(`${API}/twin/${userId}/learned`);
+}
+
 // ── Users ───────────────────────────────────────────────
 
 export function createUser(email, name, trustTier) {
@@ -195,4 +203,17 @@ export function revokeSession(sessionId, userId) {
     method: 'DELETE',
     body: JSON.stringify({ userId }),
   });
+}
+
+// ── Audit ──────────────────────────────────────────────
+
+export function fetchAudit(userId, options = {}) {
+  const params = new URLSearchParams(options);
+  return fetchJSON(`${API}/audit/${userId}?${params}`);
+}
+
+// ── Skill Gaps ─────────────────────────────────────────
+
+export function fetchSkillGaps(userId) {
+  return fetchJSON(`${API}/v1/skill-gaps/${userId}`);
 }

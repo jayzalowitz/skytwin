@@ -1,13 +1,17 @@
-import { fetchHealth, fetchDecisions, fetchAccuracy, fetchConfidence, fetchLearning, fetchPendingApprovals } from '../api-client.js';
+import { fetchHealth, fetchDecisions, fetchAccuracy, fetchConfidence, fetchLearning, fetchPendingApprovals, fetchSkillGaps, fetchTrustProgress, fetchLearned } from '../api-client.js';
+import { renderTrustProgress } from '../components/progress-bar.js';
 
 export async function renderDashboard(container, userId) {
-  const [health, accuracy, confidence, learning, approvals, decisions] = await Promise.allSettled([
+  const [health, accuracy, confidence, learning, approvals, decisions, skillGaps, progress, learned] = await Promise.allSettled([
     fetchHealth(),
     fetchAccuracy(userId),
     fetchConfidence(userId),
     fetchLearning(userId),
     fetchPendingApprovals(userId),
     fetchDecisions(userId, { limit: 10 }),
+    fetchSkillGaps(userId),
+    fetchTrustProgress(userId),
+    fetchLearned(userId),
   ]);
 
   const healthOk = health.status === 'fulfilled';
@@ -16,6 +20,9 @@ export async function renderDashboard(container, userId) {
   const learn = learning.status === 'fulfilled' ? learning.value : null;
   const pending = approvals.status === 'fulfilled' ? (approvals.value.approvals?.length ?? 0) : 0;
   const recentDecisions = decisions.status === 'fulfilled' ? (decisions.value.decisions ?? []) : [];
+
+  const prog = progress.status === 'fulfilled' ? progress.value : null;
+  const learnedData = learned.status === 'fulfilled' ? learned.value : null;
 
   const overallConf = conf?.overallConfidence ?? 0;
   const confLabel = overallConf >= 75 ? 'Very confident' : overallConf >= 50 ? 'Getting there' : overallConf >= 25 ? 'Still learning' : 'Just started';
@@ -27,6 +34,27 @@ export async function renderDashboard(container, userId) {
       <span style="font-weight: 600;">You have ${pending} pending approval${pending > 1 ? 's' : ''}</span>
       <span style="color: var(--text-muted); font-size: 0.85rem;"> — your twin wants to do something and needs your OK.</span>
     </div>` : ''}
+
+    ${prog ? renderTrustProgress({ approvalCount: prog.approvalCount, currentTier: prog.currentTier }) : ''}
+
+    ${learnedData && learnedData.summaries && learnedData.summaries.length >= 2 ? `
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">What I've learned so far</span>
+        </div>
+        ${learnedData.summaries.slice(0, 5).map(s => `
+          <div class="insight-card">
+            <div class="insight-icon" style="background: var(--accent-soft, #e3f2fd); color: var(--accent, #1976d2);">
+              ${domainIcon(s.domain)}
+            </div>
+            <div class="insight-content">
+              <div class="insight-title">${domainLabel(s.domain)}</div>
+              <div class="insight-desc">${s.description}</div>
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    ` : ''}
 
     <div class="stats-grid">
       <div class="card stat-card">
@@ -91,6 +119,8 @@ export async function renderDashboard(container, userId) {
       </div>
     ` : ''}
 
+    ${renderSkillGaps(skillGaps)}
+
     <div class="card">
       <div class="card-header">
         <span class="card-title">Recent activity</span>
@@ -107,6 +137,11 @@ export async function renderDashboard(container, userId) {
       }
     </div>
   `;
+}
+
+function domainIcon(domain) {
+  const icons = { email: 'E', calendar: 'C', finance: '$', shopping: 'S', travel: 'T', subscriptions: 'R', general: 'G' };
+  return icons[domain] || '?';
 }
 
 function domainLabel(domain) {
@@ -142,6 +177,28 @@ function traitIcon(name) {
     delegation_averse: '*',
   };
   return icons[name] || '?';
+}
+
+function renderSkillGaps(skillGapsResult) {
+  const gaps = skillGapsResult.status === 'fulfilled' ? (skillGapsResult.value.gaps ?? []) : [];
+  if (gaps.length === 0) return '';
+
+  return `
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Where I need your help</span>
+      </div>
+      ${gaps.map(g => `
+        <div class="insight-card">
+          <div class="insight-icon" style="background: var(--warning-soft, #fff3cd); color: var(--warning, #856404);">?</div>
+          <div class="insight-content">
+            <div class="insight-title">${g.domain ? domainLabel(g.domain) : 'General'}</div>
+            <div class="insight-desc">${g.description || g.gap || 'I haven\'t learned enough about this area yet.'}</div>
+          </div>
+        </div>
+      `).join('')}
+    </div>
+  `;
 }
 
 function formatTime(dateStr) {

@@ -3,9 +3,11 @@ import { renderApprovals } from './pages/approvals.js';
 import { renderDecisions } from './pages/decisions.js';
 import { renderTwin } from './pages/twin.js';
 import { renderSettings } from './pages/settings.js';
+import { renderAudit } from './pages/audit.js';
 import { renderOnboarding } from './pages/onboarding.js';
 import { fetchPendingApprovals, fetchHealth, fetchUser, escapeHtml } from './api-client.js';
 import { mountThemeSwitcher, initTheme } from './theme-switcher.js';
+import { connectSSE, disconnectSSE, isConnected } from './sse-client.js';
 
 let currentUserId = localStorage.getItem('skytwin_userId') || '';
 
@@ -15,6 +17,7 @@ const routes = {
   '/decisions': { title: 'What happened', render: renderDecisions },
   '/twin': { title: 'What I\'ve learned', render: renderTwin },
   '/settings': { title: 'Settings', render: renderSettings },
+  '/audit': { title: 'Audit Trail', render: renderAudit },
 };
 
 /**
@@ -72,6 +75,11 @@ async function updateConnectionStatus() {
   const statusEl = document.getElementById('connection-status');
   if (!statusEl) return;
 
+  if (isConnected()) {
+    statusEl.innerHTML = '<span class="status-dot connected"></span><span class="status-text">Live</span>';
+    return;
+  }
+
   try {
     await fetchHealth();
     statusEl.innerHTML = '<span class="status-dot connected"></span><span class="status-text">Connected</span>';
@@ -128,6 +136,7 @@ function navigate() {
 export function setUserId(id) {
   currentUserId = id;
   localStorage.setItem('skytwin_userId', id);
+  connectSSE(id);
   navigate();
 }
 
@@ -171,6 +180,7 @@ window.addEventListener('DOMContentLoaded', () => {
   if (needsOnboarding() || !currentUserId) {
     showOnboarding();
   } else {
+    connectSSE(currentUserId);
     navigate();
   }
 });
@@ -178,5 +188,25 @@ window.addEventListener('DOMContentLoaded', () => {
 // Make setUserId available globally for settings page
 window.skyTwinSetUserId = setUserId;
 
-// Poll for approval badge updates every 30s
+// Poll for approval badge updates every 30s (fallback if SSE not connected)
 setInterval(updateApprovalBadge, 30000);
+
+// ── SSE-driven live updates ─────────────────────────────
+
+// Refresh approval badge immediately when SSE reports a new or resolved approval
+window.addEventListener('sse:approval:new', () => updateApprovalBadge());
+window.addEventListener('sse:approval:resolved', () => updateApprovalBadge());
+
+// Update connection status dot when SSE connects/disconnects
+window.addEventListener('sse:connected', () => updateConnectionStatus());
+window.addEventListener('sse:disconnected', () => updateConnectionStatus());
+
+// Re-render current page when twin is updated (e.g. after feedback)
+window.addEventListener('sse:twin:updated', () => {
+  const hash = window.location.hash.slice(1) || '/';
+  if (hash === '/' || hash === '/twin') {
+    const route = routes[hash] || routes['/'];
+    const container = document.getElementById('page-content');
+    route.render(container, currentUserId).catch(() => {});
+  }
+});

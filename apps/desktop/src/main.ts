@@ -2,13 +2,14 @@ import { app, BrowserWindow, ipcMain, type Tray } from 'electron';
 import { join } from 'path';
 import { ServiceManager } from './service-manager.js';
 import { createTray } from './tray.js';
+import { getSavedBounds, trackWindowState } from './window-state.js';
+import { checkDependencies, showDependencyDialog } from './first-launch.js';
 
 const serviceManager = new ServiceManager();
 let mainWindow: BrowserWindow | null = null;
 let splashWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 
-// Extend BrowserWindow type for our isQuitting flag
 declare module 'electron' {
   interface BrowserWindow {
     isQuitting?: boolean;
@@ -31,9 +32,12 @@ function createSplashWindow(): BrowserWindow {
 }
 
 function createMainWindow(): BrowserWindow {
+  const saved = getSavedBounds();
+
   const win = new BrowserWindow({
-    width: 1200,
-    height: 800,
+    width: saved.width,
+    height: saved.height,
+    ...(saved.x !== undefined && saved.y !== undefined ? { x: saved.x, y: saved.y } : {}),
     minWidth: 800,
     minHeight: 600,
     show: false,
@@ -46,7 +50,15 @@ function createMainWindow(): BrowserWindow {
     },
   });
 
-  // Load the web dashboard from the API proxy (avoids CORS)
+  // Restore maximized state
+  if (saved.isMaximized) {
+    win.maximize();
+  }
+
+  // Track window state for persistence
+  trackWindowState(win);
+
+  // Load the web dashboard
   win.loadURL('http://localhost:3200');
 
   // On macOS, clicking the close button minimizes to tray
@@ -60,7 +72,23 @@ function createMainWindow(): BrowserWindow {
   return win;
 }
 
+async function runFirstLaunchChecks(): Promise<boolean> {
+  const missing = checkDependencies();
+  if (missing.length > 0) {
+    const resolved = await showDependencyDialog(missing);
+    if (!resolved) {
+      app.quit();
+      return false;
+    }
+  }
+  return true;
+}
+
 async function startApp(): Promise<void> {
+  // First-launch dependency check
+  const depsOk = await runFirstLaunchChecks();
+  if (!depsOk) return;
+
   // Show splash screen
   splashWindow = createSplashWindow();
 
@@ -107,19 +135,33 @@ async function waitForWeb(timeoutMs: number): Promise<boolean> {
 // IPC handlers
 ipcMain.handle('get-service-status', () => serviceManager.getStatus());
 ipcMain.handle('get-version', () => app.getVersion());
+ipcMain.handle('get-launch-at-login', () => {
+  const settings = app.getLoginItemSettings();
+  return settings.openAtLogin;
+});
+ipcMain.handle('set-launch-at-login', (_event, enabled: boolean) => {
+  app.setLoginItemSettings({ openAtLogin: enabled });
+  return enabled;
+});
+ipcMain.handle('pause-twin', async () => {
+  await serviceManager.pause();
+  return serviceManager.getStatus();
+});
+ipcMain.handle('resume-twin', async () => {
+  await serviceManager.resume();
+  return serviceManager.getStatus();
+});
 
 // App lifecycle
 app.whenReady().then(startApp);
 
 app.on('window-all-closed', () => {
-  // On macOS, apps stay in the dock
   if (process.platform !== 'darwin') {
     serviceManager.stopAll().then(() => app.quit());
   }
 });
 
 app.on('activate', () => {
-  // On macOS, re-show the window when clicking the dock icon
   if (mainWindow) {
     mainWindow.show();
     mainWindow.focus();

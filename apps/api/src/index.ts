@@ -14,6 +14,7 @@ import { createBriefingsRouter } from './routes/briefings.js';
 import { createSkillGapsRouter } from './routes/skill-gaps.js';
 import { createSettingsRouter } from './routes/settings.js';
 import { createSessionsRouter } from './routes/sessions.js';
+import { createAuditRouter } from './routes/audit.js';
 import { sessionAuth } from './middleware/session-auth.js';
 import { getExecutionRouter } from './execution-setup.js';
 
@@ -69,6 +70,7 @@ app.use('/api/v1/briefings', createBriefingsRouter());
 app.use('/api/v1/skill-gaps', createSkillGapsRouter());
 app.use('/api/settings', createSettingsRouter());
 app.use('/api/sessions', createSessionsRouter());
+app.use('/api/audit', createAuditRouter());
 
 // Error handling middleware
 app.use(
