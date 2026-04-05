@@ -104,10 +104,18 @@ export function createAuditRouter(): Router {
 
       if (from) {
         const fromDate = new Date(from);
+        if (isNaN(fromDate.getTime())) {
+          res.status(400).json({ error: 'Invalid "from" date parameter' });
+          return;
+        }
         filtered = filtered.filter((e) => e.timestamp >= fromDate);
       }
       if (to) {
         const toDate = new Date(to);
+        if (isNaN(toDate.getTime())) {
+          res.status(400).json({ error: 'Invalid "to" date parameter' });
+          return;
+        }
         filtered = filtered.filter((e) => e.timestamp <= toDate);
       }
 
