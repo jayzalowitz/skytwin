@@ -57,3 +57,6 @@ export type { CreateEscalationTriggerInput } from './escalation-trigger-reposito
 
 export { preferenceHistoryRepository } from './preference-history-repository.js';
 export type { CreatePreferenceHistoryInput } from './preference-history-repository.js';
+
+export { sessionRepository } from './session-repository.js';
+export type { SessionRow } from './session-repository.js';

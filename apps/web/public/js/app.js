@@ -58,6 +58,11 @@ async function updateApprovalBadge() {
       badge.textContent = String(count);
       badge.style.display = count > 0 ? 'inline-block' : 'none';
     }
+    const mobileBadge = document.getElementById('mobile-approval-count');
+    if (mobileBadge) {
+      mobileBadge.textContent = String(count);
+      mobileBadge.style.display = count > 0 ? 'inline-block' : 'none';
+    }
   } catch {
     // Silently fail — badge just won't update
   }
@@ -105,8 +110,8 @@ function navigate() {
     badge.textContent = currentUserId;
   });
 
-  // Update active nav link
-  document.querySelectorAll('.nav-link').forEach(link => {
+  // Update active nav link (sidebar + bottom nav)
+  document.querySelectorAll('.nav-link, .bottom-nav-link').forEach(link => {
     const page = link.getAttribute('data-page');
     const isActive = (hash === '/' && page === 'dashboard') ||
                      hash === `/${page}`;
@@ -157,6 +162,21 @@ document.querySelectorAll('.nav-link').forEach(link => {
 
 window.addEventListener('hashchange', navigate);
 window.addEventListener('DOMContentLoaded', () => {
+  // Handle mobile QR pairing entry (/mobile?token=...&userId=...)
+  const urlParams = new URLSearchParams(window.location.search);
+  const mobileToken = urlParams.get('token');
+  const mobileUserId = urlParams.get('userId');
+  if (mobileToken && mobileUserId) {
+    localStorage.setItem('skytwin_session_token', mobileToken);
+    localStorage.setItem('skytwin_userId', mobileUserId);
+    localStorage.setItem('skytwin_onboarded', 'true');
+    currentUserId = mobileUserId;
+    // Clean up URL
+    window.history.replaceState({}, '', '/');
+    navigate();
+    return;
+  }
+
   if (needsOnboarding() || !currentUserId) {
     showOnboarding();
   } else {

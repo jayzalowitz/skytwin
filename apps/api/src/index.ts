@@ -13,7 +13,9 @@ import { createAskRouter } from './routes/ask.js';
 import { createBriefingsRouter } from './routes/briefings.js';
 import { createSkillGapsRouter } from './routes/skill-gaps.js';
 import { createSettingsRouter } from './routes/settings.js';
+import { createSessionsRouter } from './routes/sessions.js';
 import { createAuditRouter } from './routes/audit.js';
+import { sessionAuth } from './middleware/session-auth.js';
 import { getExecutionRouter } from './execution-setup.js';
 
 const config = loadConfig();
@@ -38,6 +40,21 @@ const app: Application = express();
 // Middleware
 app.use(express.json());
 
+// Health check (before auth — must be reachable without a session)
+app.get('/api/health', (_req, res) => {
+  res.json({
+    status: 'ok',
+    service: 'skytwin-api',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    adapters: {
+      note: 'Execution router initialized with trust-ranked adapters',
+    },
+  });
+});
+
+app.use(sessionAuth);
+
 // Routes
 app.use('/api/events', createEventsRouter());
 app.use('/api/twin', createTwinRouter());
@@ -52,20 +69,8 @@ app.use('/api/v1/twin', createAskRouter());
 app.use('/api/v1/briefings', createBriefingsRouter());
 app.use('/api/v1/skill-gaps', createSkillGapsRouter());
 app.use('/api/settings', createSettingsRouter());
+app.use('/api/sessions', createSessionsRouter());
 app.use('/api/audit', createAuditRouter());
-
-// Health check
-app.get('/api/health', (_req, res) => {
-  res.json({
-    status: 'ok',
-    service: 'skytwin-api',
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime(),
-    adapters: {
-      note: 'Execution router initialized with trust-ranked adapters',
-    },
-  });
-});
 
 // Error handling middleware
 app.use(

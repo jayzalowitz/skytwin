@@ -185,6 +185,26 @@ export function deleteEscalationTrigger(userId, triggerId) {
   });
 }
 
+// ── Sessions ──────────────────────────────────────────
+
+export function createSession(userId, deviceName) {
+  return fetchJSON(`${API}/sessions`, {
+    method: 'POST',
+    body: JSON.stringify({ userId, deviceName }),
+  });
+}
+
+export function fetchSessions(userId) {
+  return fetchJSON(`${API}/sessions/${userId}`);
+}
+
+export function revokeSession(sessionId, userId) {
+  return fetchJSON(`${API}/sessions/${sessionId}`, {
+    method: 'DELETE',
+    body: JSON.stringify({ userId }),
+  });
+}
+
 // ── Audit ──────────────────────────────────────────────
 
 export function fetchAudit(userId, options = {}) {

@@ -73,7 +73,8 @@ export type {
 
 export { signalRepository, proposalRepository, skillGapRepository, proactiveScanRepository } from './repositories/index.js';
 
-export { trustTierAuditRepository, spendRepository, domainAutonomyRepository, escalationTriggerRepository, preferenceHistoryRepository } from './repositories/index.js';
+export { trustTierAuditRepository, spendRepository, domainAutonomyRepository, escalationTriggerRepository, preferenceHistoryRepository, sessionRepository } from './repositories/index.js';
+export type { SessionRow } from './repositories/index.js';
 export type { CreateTierAuditInput } from './repositories/index.js';
 export type { CreateSpendRecordInput } from './repositories/index.js';
 export type { UpsertDomainAutonomyInput } from './repositories/index.js';
