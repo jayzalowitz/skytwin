@@ -165,22 +165,23 @@ describe('approvalRepository', () => {
       const row = fakeApprovalRow({ status: 'approved' });
       mockQuery.mockResolvedValue({ rows: [row], rowCount: 1 });
 
-      await approvalRepository.respond('ar-001', 'approve', 'LGTM');
+      await approvalRepository.respond('ar-001', 'approve', 'user-1', 'LGTM');
 
       const [sql, params] = mockQuery.mock.calls[0]!;
       // This is the critical safety check -- only pending approvals can be responded to
       expect(sql).toContain("status = 'pending'");
-      expect(sql).toContain('WHERE id = $3 AND');
+      expect(sql).toContain('AND user_id = $4');
       expect(sql).toContain('RETURNING *');
       expect(params![0]).toBe('approved');
       expect(params![2]).toBe('ar-001');
+      expect(params![3]).toBe('user-1');
     });
 
     it('maps "approve" action to "approved" status', async () => {
       const row = fakeApprovalRow({ status: 'approved' });
       mockQuery.mockResolvedValue({ rows: [row], rowCount: 1 });
 
-      await approvalRepository.respond('ar-001', 'approve');
+      await approvalRepository.respond('ar-001', 'approve', 'user-1');
 
       const [_sql, params] = mockQuery.mock.calls[0]!;
       expect(params![0]).toBe('approved');
@@ -191,7 +192,7 @@ describe('approvalRepository', () => {
       const row = fakeApprovalRow({ status: 'rejected' });
       mockQuery.mockResolvedValue({ rows: [row], rowCount: 1 });
 
-      await approvalRepository.respond('ar-001', 'reject', 'Too expensive');
+      await approvalRepository.respond('ar-001', 'reject', 'user-1', 'Too expensive');
 
       const [_sql, params] = mockQuery.mock.calls[0]!;
       expect(params![0]).toBe('rejected');
@@ -201,14 +202,14 @@ describe('approvalRepository', () => {
     it('returns null when no pending approval is found (already responded or wrong id)', async () => {
       mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
 
-      const result = await approvalRepository.respond('ar-already-done', 'approve');
+      const result = await approvalRepository.respond('ar-already-done', 'approve', 'user-1');
       expect(result).toBeNull();
     });
 
     it('serializes reason as null when omitted', async () => {
       mockQuery.mockResolvedValue({ rows: [fakeApprovalRow()], rowCount: 1 });
 
-      await approvalRepository.respond('ar-001', 'approve');
+      await approvalRepository.respond('ar-001', 'approve', 'user-1');
 
       const [_sql, params] = mockQuery.mock.calls[0]!;
       const parsedResponse = JSON.parse(params![1] as string);

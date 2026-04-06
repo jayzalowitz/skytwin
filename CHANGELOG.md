@@ -12,6 +12,10 @@ All notable changes to SkyTwin will be documented in this file.
 - **Circuit Breaker Probe Latch Tests**: Verifies only one probe is allowed in half-open state, preventing thundering herd
 - **Retry TypeError Distinction Tests**: Verifies network TypeErrors are retried while programming TypeErrors are not
 
+### Changed (Breaking)
+
+- **Approval respond returns 409**: POST `/api/approvals/:requestId/respond` now returns HTTP 409 (Conflict) instead of 404 when an approval has already been responded to. Clients should handle both 404 (not found) and 409 (already handled).
+
 ### Fixed
 
 - **Process supervision PID orphan**: `bin/skytwin-dev` now properly tracks child process PIDs and forwards SIGTERM/SIGINT, preventing orphaned node processes on `--stop`

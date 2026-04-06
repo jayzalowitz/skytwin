@@ -121,7 +121,7 @@ export function createApprovalsRouter(): Router {
       }
 
       // Atomically update only if still pending (prevents double-execution)
-      const approval = await approvalRepository.respond(requestId, body.action, body.reason);
+      const approval = await approvalRepository.respond(requestId, body.action, body.userId, body.reason);
       if (!approval) {
         res.status(409).json({ error: 'Approval request is no longer pending' });
         return;
@@ -212,6 +212,9 @@ export function createApprovalsRouter(): Router {
             body.userId,
           );
 
+          // Strip sensitive credentials before persisting execution output
+          delete candidateAction.parameters['accessToken'];
+
           // Persist execution plan + result atomically
           const savedPlan = await withTransaction(async (client) => {
             const planResult = await client.query(
@@ -271,10 +274,10 @@ export function createApprovalsRouter(): Router {
               return plan;
             });
 
-            executionResult = { status: 'failed', planId: failedPlan.id, error: errMsg };
+            executionResult = { status: 'failed', planId: failedPlan.id, error: 'Execution failed' };
           } catch (persistError) {
             console.error('[approvals] Failed to persist execution failure record:', persistError);
-            executionResult = { status: 'failed', error: errMsg };
+            executionResult = { status: 'failed', error: 'Execution failed' };
           }
         }
       }

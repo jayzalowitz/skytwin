@@ -50,17 +50,19 @@ export const approvalRepository = {
   async respond(
     id: string,
     action: 'approve' | 'reject',
+    userId: string,
     reason?: string,
   ): Promise<ApprovalRequestRow | null> {
     const result = await query<ApprovalRequestRow>(
       `UPDATE approval_requests
        SET status = $1, responded_at = now(), response = $2
-       WHERE id = $3 AND status = 'pending'
+       WHERE id = $3 AND status = 'pending' AND user_id = $4
        RETURNING *`,
       [
         action === 'approve' ? 'approved' : 'rejected',
         JSON.stringify({ action, reason: reason ?? null }),
         id,
+        userId,
       ],
     );
     return result.rows[0] ?? null;

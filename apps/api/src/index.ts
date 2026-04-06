@@ -122,11 +122,16 @@ const server = app.listen(port, () => {
   console.info(`[api] SkyTwin API server listening on port ${port}`);
   console.info(`[api] Environment: ${config.nodeEnv}`);
   console.info(`[api] Health check: http://localhost:${port}/api/health`);
-  startMdnsAdvertisement(port);
+  if (config.nodeEnv !== 'production') {
+    startMdnsAdvertisement(port);
+  }
 });
 
 // Graceful shutdown
+let shuttingDown = false;
 function handleShutdown(signal: string): void {
+  if (shuttingDown) return;
+  shuttingDown = true;
   console.info(`[api] Received ${signal}, shutting down gracefully...`);
   stopMdnsAdvertisement();
   // Force exit after 10s if connections don't drain (e.g. SSE keep-alive)

@@ -235,9 +235,8 @@ async function main(): Promise<void> {
         userConnectors = newUserConnectors;
 
         // Prune circuit breakers for users no longer tracked
-        const activeUserIds = new Set(newUserConnectors.map((uc) => uc.userId));
         for (const userId of userCircuitBreakers.keys()) {
-          if (!activeUserIds.has(userId)) {
+          if (!newUserIds.has(userId)) {
             userCircuitBreakers.delete(userId);
           }
         }
