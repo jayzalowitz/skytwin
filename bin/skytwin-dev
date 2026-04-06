@@ -162,10 +162,16 @@ supervised_run() {
   shift 2
 
   (
+    child_pid=""
+    trap 'if [ -n "$child_pid" ]; then kill "$child_pid" 2>/dev/null; wait "$child_pid" 2>/dev/null; fi; exit' TERM INT
+
     restarts=0
     while [ "$restarts" -lt "$MAX_RESTARTS" ]; do
-      "$@" >>"$logfile" 2>&1
+      "$@" >>"$logfile" 2>&1 &
+      child_pid=$!
+      wait "$child_pid"
       exit_code=$?
+      child_pid=""
       if [ $exit_code -eq 0 ]; then
         break
       fi

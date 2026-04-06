@@ -14,7 +14,8 @@
     "desktop": "pnpm --filter @skytwin/desktop start",
     "desktop:dev": "pnpm --filter @skytwin/desktop dev",
     "desktop:build:mac": "pnpm build && pnpm --filter @skytwin/desktop package:mac",
-    "desktop:build:win": "pnpm build && pnpm --filter @skytwin/desktop package:win"
+    "desktop:build:win": "pnpm build && pnpm --filter @skytwin/desktop package:win",
+    "test:e2e": "./bin/skytwin-e2e-test"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
