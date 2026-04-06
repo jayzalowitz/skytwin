@@ -1,0 +1,283 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# skytwin-e2e-test — run E2E tests against a real CockroachDB instance
+#
+# Usage:
+#   ./bin/skytwin-e2e-test              # run all E2E tests
+#   ./bin/skytwin-e2e-test --db-only    # run only database E2E tests
+#   ./bin/skytwin-e2e-test --api-only   # run only API E2E tests
+#
+# Prerequisites:
+#   - Docker installed and running
+#   - pnpm installed
+#   - Project built (runs build automatically if dist/ missing)
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+TEST_DB="skytwin_e2e_test"
+CRDB_PORT=26257
+CRDB_ADMIN_PORT=8080
+CRDB_CONTAINER="skytwin-cockroachdb"
+API_PORT=3199  # Use a non-standard port to avoid conflicting with dev server
+API_PID=""
+CRDB_STARTED_BY_US=false
+
+DB_ONLY=false
+API_ONLY=false
+
+for arg in "$@"; do
+  case "$arg" in
+    --db-only)  DB_ONLY=true ;;
+    --api-only) API_ONLY=true ;;
+    --help|-h)
+      echo "Usage: ./bin/skytwin-e2e-test [--db-only] [--api-only]"
+      echo ""
+      echo "  --db-only   Run only database integration tests"
+      echo "  --api-only  Run only API integration tests"
+      exit 0
+      ;;
+  esac
+done
+
+export DATABASE_URL="postgresql://root@localhost:${CRDB_PORT}/${TEST_DB}?sslmode=disable"
+export DATABASE_NAME="$TEST_DB"
+export API_PORT
+export NODE_ENV="test"
+export E2E="true"
+
+# ---------------------------------------------------------------------------
+# Cleanup handler
+# ---------------------------------------------------------------------------
+
+cleanup() {
+  local exit_code=$?
+  echo ""
+  echo -e "${YELLOW}Cleaning up...${NC}"
+
+  # Stop API server if we started it
+  if [ -n "$API_PID" ] && kill -0 "$API_PID" 2>/dev/null; then
+    kill "$API_PID" 2>/dev/null || true
+    wait "$API_PID" 2>/dev/null || true
+    echo -e "  ${RED}Stopped${NC} API server (PID $API_PID)"
+  fi
+
+  # Drop the test database
+  if docker exec "$CRDB_CONTAINER" cockroach sql --insecure \
+      -e "DROP DATABASE IF EXISTS ${TEST_DB} CASCADE;" 2>/dev/null; then
+    echo -e "  ${RED}Dropped${NC} test database '${TEST_DB}'"
+  fi
+
+  # Stop CockroachDB if we started it
+  if [ "$CRDB_STARTED_BY_US" = true ]; then
+    docker compose stop cockroachdb 2>/dev/null || true
+    echo -e "  ${RED}Stopped${NC} CockroachDB"
+  fi
+
+  if [ $exit_code -eq 0 ]; then
+    echo ""
+    echo -e "${GREEN}E2E tests passed.${NC}"
+  else
+    echo ""
+    echo -e "${RED}E2E tests failed (exit code $exit_code).${NC}"
+  fi
+
+  exit $exit_code
+}
+
+trap cleanup EXIT INT TERM
+
+# ---------------------------------------------------------------------------
+# 1. Check prerequisites
+# ---------------------------------------------------------------------------
+
+echo -e "${BLUE}=== SkyTwin E2E Test Runner ===${NC}"
+echo ""
+echo -e "${YELLOW}Checking prerequisites...${NC}"
+
+if ! command -v docker &>/dev/null; then
+  echo -e "  ${RED}Docker not found.${NC} Install Docker first."
+  exit 1
+fi
+echo -e "  ${GREEN}Docker${NC} available"
+
+if ! command -v pnpm &>/dev/null; then
+  echo -e "  ${RED}pnpm not found.${NC} Run: corepack enable"
+  exit 1
+fi
+echo -e "  ${GREEN}pnpm${NC} $(pnpm -v)"
+
+if ! command -v node &>/dev/null; then
+  echo -e "  ${RED}Node.js not found.${NC}"
+  exit 1
+fi
+echo -e "  ${GREEN}Node.js${NC} $(node -v)"
+echo ""
+
+# ---------------------------------------------------------------------------
+# 2. Ensure CockroachDB is running
+# ---------------------------------------------------------------------------
+
+echo -e "${YELLOW}Ensuring CockroachDB is running...${NC}"
+
+if curl -sf "http://localhost:${CRDB_ADMIN_PORT}/health" &>/dev/null; then
+  echo -e "  ${GREEN}Already running${NC} on port ${CRDB_PORT}"
+else
+  echo -e "  Starting CockroachDB via Docker Compose..."
+  docker compose up -d cockroachdb 2>&1 | tail -2
+  CRDB_STARTED_BY_US=true
+
+  echo -n "  Waiting for health"
+  for i in $(seq 1 45); do
+    if curl -sf "http://localhost:${CRDB_ADMIN_PORT}/health" &>/dev/null; then
+      echo -e " ${GREEN}ready${NC}"
+      break
+    fi
+    if [ "$i" -eq 45 ]; then
+      echo -e " ${RED}timed out${NC}"
+      echo "CockroachDB failed to become healthy within 45 seconds."
+      exit 1
+    fi
+    echo -n "."
+    sleep 1
+  done
+fi
+echo ""
+
+# ---------------------------------------------------------------------------
+# 3. Create test database and run migrations
+# ---------------------------------------------------------------------------
+
+echo -e "${YELLOW}Setting up test database '${TEST_DB}'...${NC}"
+
+# Drop if it already exists (clean slate)
+docker exec "$CRDB_CONTAINER" cockroach sql --insecure \
+  -e "DROP DATABASE IF EXISTS ${TEST_DB} CASCADE;" 2>/dev/null || true
+
+# Create fresh
+docker exec "$CRDB_CONTAINER" cockroach sql --insecure \
+  -e "CREATE DATABASE ${TEST_DB};" 2>/dev/null
+echo -e "  ${GREEN}Created${NC} database '${TEST_DB}'"
+
+# Build if needed
+if [ ! -d "packages/db/dist" ]; then
+  echo -e "${YELLOW}Building packages...${NC}"
+  pnpm build 2>&1 | tail -5
+fi
+
+# Run migrations against the test database
+echo -e "  Running migrations..."
+pnpm --filter @skytwin/db migrate 2>&1 | tail -5
+echo -e "  ${GREEN}Migrations complete${NC}"
+echo ""
+
+# ---------------------------------------------------------------------------
+# 4. Run database E2E tests
+# ---------------------------------------------------------------------------
+
+DB_EXIT=0
+API_EXIT=0
+
+if [ "$API_ONLY" = false ]; then
+  echo -e "${BLUE}--- Database E2E Tests ---${NC}"
+  echo ""
+
+  if pnpm --filter @skytwin/db exec vitest run \
+      --config "$ROOT/vitest.config.ts" \
+      src/__tests__/e2e-db.test.ts 2>&1; then
+    echo -e "${GREEN}Database E2E tests passed.${NC}"
+  else
+    DB_EXIT=$?
+    echo -e "${RED}Database E2E tests failed.${NC}"
+  fi
+  echo ""
+fi
+
+# ---------------------------------------------------------------------------
+# 5. Start API server for API E2E tests
+# ---------------------------------------------------------------------------
+
+if [ "$DB_ONLY" = false ]; then
+  # Build API if needed
+  if [ ! -d "apps/api/dist" ]; then
+    echo -e "${YELLOW}Building API...${NC}"
+    pnpm build 2>&1 | tail -5
+  fi
+
+  echo -e "${YELLOW}Starting API server on port ${API_PORT}...${NC}"
+
+  node apps/api/dist/index.js > /tmp/skytwin-e2e-api.log 2>&1 &
+  API_PID=$!
+  echo -e "  API PID: $API_PID"
+
+  # Wait for API to be ready
+  echo -n "  Waiting for API health"
+  for i in $(seq 1 30); do
+    if curl -sf "http://localhost:${API_PORT}/api/health/live" &>/dev/null; then
+      echo -e " ${GREEN}ready${NC}"
+      break
+    fi
+    if [ "$i" -eq 30 ]; then
+      echo -e " ${RED}timed out${NC}"
+      echo "API server failed to start. Log output:"
+      tail -20 /tmp/skytwin-e2e-api.log
+      exit 1
+    fi
+    echo -n "."
+    sleep 1
+  done
+  echo ""
+
+  # -------------------------------------------------------------------------
+  # 6. Run API E2E tests
+  # -------------------------------------------------------------------------
+
+  echo -e "${BLUE}--- API E2E Tests ---${NC}"
+  echo ""
+
+  if E2E_API_PORT="$API_PORT" pnpm --filter @skytwin/api exec vitest run \
+      --config "$ROOT/vitest.config.ts" \
+      src/__tests__/e2e-api.test.ts 2>&1; then
+    echo -e "${GREEN}API E2E tests passed.${NC}"
+  else
+    API_EXIT=$?
+    echo -e "${RED}API E2E tests failed.${NC}"
+  fi
+  echo ""
+fi
+
+# ---------------------------------------------------------------------------
+# 7. Report results
+# ---------------------------------------------------------------------------
+
+echo -e "${BLUE}=== Results ===${NC}"
+if [ "$API_ONLY" = false ]; then
+  if [ $DB_EXIT -eq 0 ]; then
+    echo -e "  Database tests: ${GREEN}PASS${NC}"
+  else
+    echo -e "  Database tests: ${RED}FAIL${NC}"
+  fi
+fi
+if [ "$DB_ONLY" = false ]; then
+  if [ $API_EXIT -eq 0 ]; then
+    echo -e "  API tests:      ${GREEN}PASS${NC}"
+  else
+    echo -e "  API tests:      ${RED}FAIL${NC}"
+  fi
+fi
+
+# Exit with failure if any suite failed
+if [ $DB_EXIT -ne 0 ] || [ $API_EXIT -ne 0 ]; then
+  exit 1
+fi

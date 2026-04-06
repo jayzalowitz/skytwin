@@ -214,8 +214,12 @@ async function main(): Promise<void> {
     // Re-discover users every 10 poll cycles to pick up new connections
     if (pollCount % 10 === 0) {
       const newUserConnectors = await discoverUsers();
-      if (newUserConnectors.length !== userConnectors.length) {
-        log.info(`User count changed: ${userConnectors.length} → ${newUserConnectors.length}`);
+      const oldUserIds = new Set(userConnectors.map((uc) => uc.userId));
+      const newUserIds = new Set(newUserConnectors.map((uc) => uc.userId));
+      const usersChanged = oldUserIds.size !== newUserIds.size
+        || [...oldUserIds].some((id) => !newUserIds.has(id));
+      if (usersChanged) {
+        log.info(`User set changed: ${[...oldUserIds].join(',')} → ${[...newUserIds].join(',')}`);
         // Disconnect old connectors
         for (const uc of userConnectors) {
           for (const connector of uc.connectors) {
@@ -229,6 +233,13 @@ async function main(): Promise<void> {
           }
         }
         userConnectors = newUserConnectors;
+
+        // Prune circuit breakers for users no longer tracked
+        for (const userId of userCircuitBreakers.keys()) {
+          if (!newUserIds.has(userId)) {
+            userCircuitBreakers.delete(userId);
+          }
+        }
       }
     }
 

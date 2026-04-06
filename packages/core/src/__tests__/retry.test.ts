@@ -88,6 +88,27 @@ describe('withRetry', () => {
     expect(fn).toHaveBeenCalledTimes(2);
   });
 
+  it('retries on TypeError with fetch-related message (network failure)', async () => {
+    const typeError = new TypeError('fetch failed: unable to connect');
+    const fn = vi.fn()
+      .mockRejectedValueOnce(typeError)
+      .mockResolvedValue('recovered');
+
+    const result = await withRetry(fn, { maxRetries: 3, baseDelayMs: 10 });
+    expect(result).toBe('recovered');
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not retry on TypeError from programming errors', async () => {
+    const typeError = new TypeError('Cannot read properties of null (reading "foo")');
+    const fn = vi.fn().mockRejectedValue(typeError);
+
+    await expect(
+      withRetry(fn, { maxRetries: 3, baseDelayMs: 10 }),
+    ).rejects.toThrow('Cannot read properties of null');
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
   it('does not retry on non-retryable errors', async () => {
     const fn = vi.fn().mockRejectedValue(new Error('Not found'));
 

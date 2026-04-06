@@ -2,6 +2,29 @@
 
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.3.1.0] - 2026-04-06
+
+### Added
+
+- **mDNS Service Advertisement**: SkyTwin API now advertises itself on the local network via Bonjour/mDNS (`_skytwin._tcp`), enabling automatic discovery by mobile and desktop clients
+- **Database Repository Tests**: 76 unit tests covering user, approval, decision, and policy repositories with full mock isolation
+- **E2E Test Infrastructure**: Real CockroachDB integration tests (15 DB tests + 22 API tests) behind `E2E=true` gate, with `bin/skytwin-e2e-test` orchestration script for Docker-based runs
+- **Circuit Breaker Probe Latch Tests**: Verifies only one probe is allowed in half-open state, preventing thundering herd
+- **Retry TypeError Distinction Tests**: Verifies network TypeErrors are retried while programming TypeErrors are not
+
+### Changed (Breaking)
+
+- **Approval respond returns 409**: POST `/api/approvals/:requestId/respond` now returns HTTP 409 (Conflict) instead of 404 when an approval has already been responded to. Clients should handle both 404 (not found) and 409 (already handled).
+
+### Fixed
+
+- **Process supervision PID orphan**: `bin/skytwin-dev` now properly tracks child process PIDs and forwards SIGTERM/SIGINT, preventing orphaned node processes on `--stop`
+- **Circuit breaker thundering herd**: Half-open state now uses a probe-in-flight latch so only one request probes recovery at a time
+- **Retry false positive on TypeError**: `isNetworkError()` no longer classifies programming TypeErrors (e.g., null dereference) as retryable network errors
+- **Approval double-execution race condition**: `approval_requests` UPDATE now includes `AND status = 'pending'` for atomic check-and-set, with ownership verified before mutation and 409 returned for already-responded requests
+- **Worker circuit breaker memory leak**: Circuit breakers for removed users are now pruned during connector rediscovery
+- **API graceful shutdown**: Server now handles SIGTERM/SIGINT with mDNS cleanup and HTTP connection draining
+
 ## [0.3.0.0] - 2026-04-01
 
 ### Added

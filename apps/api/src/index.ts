@@ -18,6 +18,8 @@ import { createAuditRouter } from './routes/audit.js';
 import { sessionAuth } from './middleware/session-auth.js';
 import { createPoliciesRouter } from './routes/policies.js';
 import { getExecutionRouter } from './execution-setup.js';
+import { startMdnsAdvertisement, stopMdnsAdvertisement } from './mdns.js';
+import { closePool } from '@skytwin/db';
 
 const config = loadConfig();
 
@@ -116,10 +118,41 @@ app.use(
 
 // Start server
 const port = config.apiPort;
-app.listen(port, () => {
+const server = app.listen(port, () => {
   console.info(`[api] SkyTwin API server listening on port ${port}`);
   console.info(`[api] Environment: ${config.nodeEnv}`);
   console.info(`[api] Health check: http://localhost:${port}/api/health`);
+  if (config.nodeEnv !== 'production') {
+    startMdnsAdvertisement(port);
+  }
 });
+
+// Graceful shutdown
+let shuttingDown = false;
+function handleShutdown(signal: string): void {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.info(`[api] Received ${signal}, shutting down gracefully...`);
+  stopMdnsAdvertisement();
+  // Force exit after 10s if connections don't drain (e.g. SSE keep-alive)
+  const forceTimer = setTimeout(() => {
+    console.warn('[api] Shutdown timeout, forcing exit');
+    process.exit(1);
+  }, 10_000);
+  forceTimer.unref();
+  server.close(async () => {
+    console.info('[api] HTTP server closed');
+    try {
+      await closePool();
+      console.info('[api] Database pool closed');
+    } catch (err) {
+      console.warn('[api] Error closing database pool:', err);
+    }
+    process.exit(0);
+  });
+}
+
+process.on('SIGTERM', () => handleShutdown('SIGTERM'));
+process.on('SIGINT', () => handleShutdown('SIGINT'));
 
 export default app;

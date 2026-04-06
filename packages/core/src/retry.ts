@@ -155,16 +155,23 @@ export async function fetchWithRetry(
 function isNetworkError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   const msg = error.message.toLowerCase();
-  return (
+  if (
     msg.includes('fetch failed') ||
     msg.includes('network') ||
     msg.includes('econnrefused') ||
     msg.includes('econnreset') ||
     msg.includes('etimedout') ||
     msg.includes('dns') ||
-    error.name === 'AbortError' ||
-    error.name === 'TypeError' // Node fetch throws TypeError for network failures
-  );
+    error.name === 'AbortError'
+  ) {
+    return true;
+  }
+  // Node fetch throws TypeError for network failures, but only when the message
+  // indicates a fetch/request issue (not a programming TypeError like null dereference)
+  if (error.name === 'TypeError' && (msg.includes('fetch') || msg.includes('request') || msg.includes('url'))) {
+    return true;
+  }
+  return false;
 }
 
 function sleep(ms: number): Promise<void> {

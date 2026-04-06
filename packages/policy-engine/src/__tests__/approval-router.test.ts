@@ -115,6 +115,7 @@ describe('ApprovalRouter', () => {
       const result = await router.batchRespond(
         ['a', 'b', 'c'],
         'approve',
+        'user-1',
         'Batch approved',
       );
 
@@ -122,6 +123,7 @@ describe('ApprovalRouter', () => {
       expect(repo.batchRespond).toHaveBeenCalledWith(
         ['a', 'b', 'c'],
         'approve',
+        'user-1',
         'Batch approved',
       );
     });
@@ -133,7 +135,7 @@ describe('ApprovalRouter', () => {
       ]);
       const router = new ApprovalRouter(repo);
 
-      const result = await router.batchRespond(['x', 'y'], 'reject');
+      const result = await router.batchRespond(['x', 'y'], 'reject', 'user-1');
 
       // Only 1 was actually pending and got updated
       expect(result.processed).toBe(1);
@@ -143,7 +145,7 @@ describe('ApprovalRouter', () => {
       const repo = createMockRepo();
       const router = new ApprovalRouter(repo);
 
-      const result = await router.batchRespond([], 'approve');
+      const result = await router.batchRespond([], 'approve', 'user-1');
 
       expect(result.processed).toBe(0);
     });
