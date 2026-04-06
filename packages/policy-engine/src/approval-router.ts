@@ -29,6 +29,7 @@ export interface ApprovalRepositoryPort {
   batchRespond(
     ids: string[],
     action: 'approve' | 'reject',
+    userId: string,
     reason?: string,
   ): Promise<unknown[]>;
 }
@@ -65,9 +66,10 @@ export class ApprovalRouter {
   async batchRespond(
     ids: string[],
     action: 'approve' | 'reject',
+    userId: string,
     reason?: string,
   ): Promise<{ processed: number }> {
-    const results = await this.repository.batchRespond(ids, action, reason);
+    const results = await this.repository.batchRespond(ids, action, userId, reason);
     return { processed: results.length };
   }
 

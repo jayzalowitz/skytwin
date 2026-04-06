@@ -147,7 +147,7 @@ export function createApprovalsRouter(): Router {
       const updatedProfile = await twinService.processFeedback(body.userId, feedbackEvent);
 
       // If approved, execute via the trust-ranked execution router
-      let executionResult = null;
+      let executionResult: { status: string; planId?: string; adapterUsed?: unknown; error?: string } | null = null;
       if (body.action === 'approve') {
         const storedAction = approval.candidate_action as Record<string, unknown>;
         const candidateAction: CandidateAction = {
@@ -205,48 +205,78 @@ export function createApprovalsRouter(): Router {
           assessedAt: new Date(),
         };
 
-        const result = await executionRouter.executeWithRouting(
-          candidateAction,
-          riskAssessment,
-          body.userId,
-        );
-
-        // Persist execution plan + result atomically
-        const savedPlan = await withTransaction(async (client) => {
-          const planResult = await client.query(
-            `INSERT INTO execution_plans (id, decision_id, status, steps, created_at)
-             VALUES (gen_random_uuid(), $1, $2, $3, now())
-             RETURNING *`,
-            [
-              approval.decision_id,
-              result.status === 'completed' ? 'completed' : 'failed',
-              JSON.stringify(result.output?.['stepsCompleted']
-                ? [{ type: candidateAction.actionType, status: result.status }]
-                : []),
-            ],
-          );
-          const plan = planResult.rows[0]!;
-
-          await client.query(
-            `INSERT INTO execution_results (id, plan_id, success, outputs, error, rollback_available, created_at)
-             VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, now())`,
-            [
-              plan.id,
-              result.status === 'completed',
-              JSON.stringify(result.output ?? {}),
-              result.error ?? null,
-              candidateAction.reversible,
-            ],
+        try {
+          const result = await executionRouter.executeWithRouting(
+            candidateAction,
+            riskAssessment,
+            body.userId,
           );
 
-          return plan;
-        });
+          // Persist execution plan + result atomically
+          const savedPlan = await withTransaction(async (client) => {
+            const planResult = await client.query(
+              `INSERT INTO execution_plans (id, decision_id, status, steps, created_at)
+               VALUES (gen_random_uuid(), $1, $2, $3, now())
+               RETURNING *`,
+              [
+                approval.decision_id,
+                result.status === 'completed' ? 'completed' : 'failed',
+                JSON.stringify(result.output?.['stepsCompleted']
+                  ? [{ type: candidateAction.actionType, status: result.status }]
+                  : []),
+              ],
+            );
+            const plan = planResult.rows[0]!;
 
-        executionResult = {
-          status: result.status,
-          planId: savedPlan.id,
-          adapterUsed: result.output?.['adapter_used'] ?? 'unknown',
-        };
+            await client.query(
+              `INSERT INTO execution_results (id, plan_id, success, outputs, error, rollback_available, created_at)
+               VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, now())`,
+              [
+                plan.id,
+                result.status === 'completed',
+                JSON.stringify(result.output ?? {}),
+                result.error ?? null,
+                candidateAction.reversible,
+              ],
+            );
+
+            return plan;
+          });
+
+          executionResult = {
+            status: result.status,
+            planId: savedPlan.id,
+            adapterUsed: result.output?.['adapter_used'] ?? 'unknown',
+          };
+        } catch (execError) {
+          // Execution failed after approval was recorded. Log the failure and persist
+          // a failed plan so the approval isn't silently orphaned with no execution record.
+          const errMsg = execError instanceof Error ? execError.message : String(execError);
+          console.error(`[approvals] Execution failed for approval ${requestId}:`, errMsg);
+
+          try {
+            const failedPlan = await withTransaction(async (client) => {
+              const planResult = await client.query(
+                `INSERT INTO execution_plans (id, decision_id, status, steps, created_at)
+                 VALUES (gen_random_uuid(), $1, 'failed', $2, now())
+                 RETURNING *`,
+                [approval.decision_id, JSON.stringify([{ type: candidateAction.actionType, status: 'error' }])],
+              );
+              const plan = planResult.rows[0]!;
+              await client.query(
+                `INSERT INTO execution_results (id, plan_id, success, outputs, error, rollback_available, created_at)
+                 VALUES (gen_random_uuid(), $1, false, '{}', $2, $3, now())`,
+                [plan.id, errMsg, candidateAction.reversible],
+              );
+              return plan;
+            });
+
+            executionResult = { status: 'failed', planId: failedPlan.id, error: errMsg };
+          } catch (persistError) {
+            console.error('[approvals] Failed to persist execution failure record:', persistError);
+            executionResult = { status: 'failed', error: errMsg };
+          }
+        }
       }
 
       // Notify via SSE

@@ -307,7 +307,7 @@ describe('approvalRepository', () => {
 
   describe('batchRespond', () => {
     it('returns empty array for empty ids list', async () => {
-      const result = await approvalRepository.batchRespond([], 'approve');
+      const result = await approvalRepository.batchRespond([], 'approve', 'user-1');
 
       expect(result).toEqual([]);
       expect(mockQuery).not.toHaveBeenCalled();
@@ -323,19 +323,22 @@ describe('approvalRepository', () => {
       const result = await approvalRepository.batchRespond(
         ['ar-001', 'ar-002', 'ar-003'],
         'approve',
+        'user-1',
         'Bulk approve',
       );
 
       expect(result).toEqual(rows);
 
       const [sql, params] = mockQuery.mock.calls[0]!;
-      // IDs start at $3, $4, $5
-      expect(sql).toContain('WHERE id IN ($3, $4, $5)');
+      // IDs start at $4, $5, $6
+      expect(sql).toContain('WHERE id IN ($4, $5, $6)');
       expect(sql).toContain("AND status = 'pending'");
+      expect(sql).toContain('AND user_id = $3');
       expect(sql).toContain('RETURNING *');
       expect(params).toEqual([
         'approved',
         JSON.stringify({ action: 'approve', reason: 'Bulk approve' }),
+        'user-1',
         'ar-001',
         'ar-002',
         'ar-003',
@@ -345,23 +348,24 @@ describe('approvalRepository', () => {
     it('uses "rejected" status for reject action', async () => {
       mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
 
-      await approvalRepository.batchRespond(['ar-001'], 'reject', 'Nope');
+      await approvalRepository.batchRespond(['ar-001'], 'reject', 'user-1', 'Nope');
 
       const [sql, params] = mockQuery.mock.calls[0]!;
-      expect(sql).toContain('WHERE id IN ($3)');
+      expect(sql).toContain('WHERE id IN ($4)');
       expect(params![0]).toBe('rejected');
     });
 
     it('generates sequential placeholders for single id', async () => {
       mockQuery.mockResolvedValue({ rows: [fakeApprovalRow()], rowCount: 1 });
 
-      await approvalRepository.batchRespond(['ar-only'], 'approve');
+      await approvalRepository.batchRespond(['ar-only'], 'approve', 'user-1');
 
       const [sql, params] = mockQuery.mock.calls[0]!;
-      expect(sql).toContain('WHERE id IN ($3)');
+      expect(sql).toContain('WHERE id IN ($4)');
       expect(params).toEqual([
         'approved',
         JSON.stringify({ action: 'approve', reason: null }),
+        'user-1',
         'ar-only',
       ]);
     });
@@ -369,10 +373,11 @@ describe('approvalRepository', () => {
     it('only affects pending approvals (includes status = pending in WHERE)', async () => {
       mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
 
-      await approvalRepository.batchRespond(['ar-001'], 'approve');
+      await approvalRepository.batchRespond(['ar-001'], 'approve', 'user-1');
 
       const [sql] = mockQuery.mock.calls[0]!;
       expect(sql).toContain("AND status = 'pending'");
+      expect(sql).toContain('AND user_id = $3');
     });
   });
 });

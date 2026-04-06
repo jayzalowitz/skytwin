@@ -19,6 +19,7 @@ import { sessionAuth } from './middleware/session-auth.js';
 import { createPoliciesRouter } from './routes/policies.js';
 import { getExecutionRouter } from './execution-setup.js';
 import { startMdnsAdvertisement, stopMdnsAdvertisement } from './mdns.js';
+import { closePool } from '@skytwin/db';
 
 const config = loadConfig();
 
@@ -134,8 +135,14 @@ function handleShutdown(signal: string): void {
     process.exit(1);
   }, 10_000);
   forceTimer.unref();
-  server.close(() => {
+  server.close(async () => {
     console.info('[api] HTTP server closed');
+    try {
+      await closePool();
+      console.info('[api] Database pool closed');
+    } catch (err) {
+      console.warn('[api] Error closing database pool:', err);
+    }
     process.exit(0);
   });
 }

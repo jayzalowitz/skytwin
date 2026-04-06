@@ -106,26 +106,29 @@ export const approvalRepository = {
 
   /**
    * Respond to multiple approval requests at once.
+   * Only updates requests owned by the given userId and still pending.
    * Returns the updated rows.
    */
   async batchRespond(
     ids: string[],
     action: 'approve' | 'reject',
+    userId: string,
     reason?: string,
   ): Promise<ApprovalRequestRow[]> {
     if (ids.length === 0) return [];
 
-    const placeholders = ids.map((_, i) => `$${i + 3}`).join(', ');
+    const placeholders = ids.map((_, i) => `$${i + 4}`).join(', ');
     const status = action === 'approve' ? 'approved' : 'rejected';
 
     const result = await query<ApprovalRequestRow>(
       `UPDATE approval_requests
        SET status = $1, responded_at = now(), response = $2
-       WHERE id IN (${placeholders}) AND status = 'pending'
+       WHERE id IN (${placeholders}) AND status = 'pending' AND user_id = $3
        RETURNING *`,
       [
         status,
         JSON.stringify({ action, reason: reason ?? null }),
+        userId,
         ...ids,
       ],
     );
