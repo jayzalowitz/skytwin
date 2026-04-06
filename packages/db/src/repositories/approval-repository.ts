@@ -55,7 +55,7 @@ export const approvalRepository = {
     const result = await query<ApprovalRequestRow>(
       `UPDATE approval_requests
        SET status = $1, responded_at = now(), response = $2
-       WHERE id = $3
+       WHERE id = $3 AND status = 'pending'
        RETURNING *`,
       [
         action === 'approve' ? 'approved' : 'rejected',
