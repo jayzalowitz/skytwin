@@ -18,6 +18,7 @@ import { createAuditRouter } from './routes/audit.js';
 import { sessionAuth } from './middleware/session-auth.js';
 import { createPoliciesRouter } from './routes/policies.js';
 import { getExecutionRouter } from './execution-setup.js';
+import { startMdnsAdvertisement, stopMdnsAdvertisement } from './mdns.js';
 
 const config = loadConfig();
 
@@ -116,10 +117,24 @@ app.use(
 
 // Start server
 const port = config.apiPort;
-app.listen(port, () => {
+const server = app.listen(port, () => {
   console.info(`[api] SkyTwin API server listening on port ${port}`);
   console.info(`[api] Environment: ${config.nodeEnv}`);
   console.info(`[api] Health check: http://localhost:${port}/api/health`);
+  startMdnsAdvertisement(port);
 });
+
+// Graceful shutdown
+function handleShutdown(signal: string): void {
+  console.info(`[api] Received ${signal}, shutting down gracefully...`);
+  stopMdnsAdvertisement();
+  server.close(() => {
+    console.info('[api] HTTP server closed');
+    process.exit(0);
+  });
+}
+
+process.on('SIGTERM', () => handleShutdown('SIGTERM'));
+process.on('SIGINT', () => handleShutdown('SIGINT'));
 
 export default app;

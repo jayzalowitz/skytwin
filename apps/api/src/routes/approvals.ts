@@ -109,16 +109,21 @@ export function createApprovalsRouter(): Router {
         return;
       }
 
-      // Update the approval request
-      const approval = await approvalRepository.respond(requestId, body.action, body.reason);
-      if (!approval) {
+      // Verify ownership before mutating state
+      const existing = await approvalRepository.findById(requestId);
+      if (!existing) {
         res.status(404).json({ error: 'Approval request not found' });
         return;
       }
-
-      // Verify the caller is the owner of this approval request
-      if (approval.user_id !== body.userId) {
+      if (existing.user_id !== body.userId) {
         res.status(403).json({ error: 'You can only respond to your own approval requests.' });
+        return;
+      }
+
+      // Atomically update only if still pending (prevents double-execution)
+      const approval = await approvalRepository.respond(requestId, body.action, body.reason);
+      if (!approval) {
+        res.status(409).json({ error: 'Approval request already responded to or expired' });
         return;
       }
 
