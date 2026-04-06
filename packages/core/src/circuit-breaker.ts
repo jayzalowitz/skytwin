@@ -37,6 +37,7 @@ export class CircuitBreaker {
   private openedAt: number | null = null;
   private currentResetTimeout: number;
   private openCount = 0;
+  private halfOpenProbeInFlight = false;
   readonly name: string;
 
   constructor(name: string, config: Partial<CircuitBreakerConfig> = {}) {
@@ -55,12 +56,17 @@ export class CircuitBreaker {
       const elapsed = Date.now() - (this.openedAt ?? 0);
       if (elapsed >= this.currentResetTimeout) {
         this.state = 'half_open';
+        this.halfOpenProbeInFlight = true;
         return true;
       }
       return false;
     }
 
-    // half_open — allow one probe
+    // half_open — only allow one probe at a time
+    if (this.halfOpenProbeInFlight) {
+      return false;
+    }
+    this.halfOpenProbeInFlight = true;
     return true;
   }
 
@@ -69,6 +75,7 @@ export class CircuitBreaker {
    */
   recordSuccess(): void {
     this.consecutiveFailures = 0;
+    this.halfOpenProbeInFlight = false;
     if (this.state !== 'closed') {
       this.state = 'closed';
       this.openCount = 0;
@@ -81,6 +88,7 @@ export class CircuitBreaker {
    */
   recordFailure(): void {
     this.consecutiveFailures++;
+    this.halfOpenProbeInFlight = false;
 
     if (this.state === 'half_open') {
       // Probe failed — reopen with increased backoff
@@ -125,6 +133,7 @@ export class CircuitBreaker {
     this.state = 'closed';
     this.openedAt = null;
     this.openCount = 0;
+    this.halfOpenProbeInFlight = false;
     this.currentResetTimeout = this.config.resetTimeoutMs;
   }
 

@@ -64,6 +64,44 @@ describe('CircuitBreaker', () => {
     expect(breaker.getState()).toBe('closed');
   });
 
+  it('allows only one probe at a time in half_open state', async () => {
+    // Open the circuit
+    breaker.recordFailure();
+    breaker.recordFailure();
+    breaker.recordFailure();
+
+    // Wait for reset timeout to transition to half_open
+    await new Promise((r) => setTimeout(r, 120));
+
+    // First probe should be allowed
+    expect(breaker.canExecute()).toBe(true);
+    // Second concurrent probe should be rejected (latch prevents stampede)
+    expect(breaker.canExecute()).toBe(false);
+    expect(breaker.canExecute()).toBe(false);
+
+    // After success, probe latch resets and new probes are allowed
+    breaker.recordSuccess();
+    expect(breaker.getState()).toBe('closed');
+    expect(breaker.canExecute()).toBe(true);
+  });
+
+  it('clears probe latch on failure in half_open', async () => {
+    breaker.recordFailure();
+    breaker.recordFailure();
+    breaker.recordFailure();
+
+    await new Promise((r) => setTimeout(r, 120));
+    expect(breaker.canExecute()).toBe(true); // first probe
+
+    // Probe fails — circuit reopens
+    breaker.recordFailure();
+    expect(breaker.getState()).toBe('open');
+
+    // After backoff timeout, a new probe should be allowed
+    await new Promise((r) => setTimeout(r, 220)); // backoff is 200ms
+    expect(breaker.canExecute()).toBe(true);
+  });
+
   it('reopens with backoff on failure in half_open', async () => {
     // First open
     breaker.recordFailure();
