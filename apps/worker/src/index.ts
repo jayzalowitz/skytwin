@@ -6,8 +6,27 @@ import {
   DbTokenStore,
 } from '@skytwin/connectors';
 import { oauthRepository, approvalRepository } from '@skytwin/db';
+import { withRetry, RetryableHttpError, CircuitBreaker, createLogger } from '@skytwin/core';
 
 const config = loadConfig();
+const log = createLogger('worker');
+
+/** Per-user circuit breakers to skip users with persistent failures. */
+const userCircuitBreakers = new Map<string, CircuitBreaker>();
+
+function getCircuitBreaker(userId: string): CircuitBreaker {
+  let breaker = userCircuitBreakers.get(userId);
+  if (!breaker) {
+    breaker = new CircuitBreaker(`user:${userId}`, {
+      failureThreshold: 3,
+      resetTimeoutMs: 300_000,   // 5 minutes
+      backoffMultiplier: 2,
+      maxResetTimeoutMs: 1_200_000, // 20 minutes
+    });
+    userCircuitBreakers.set(userId, breaker);
+  }
+  return breaker;
+}
 
 /**
  * SkyTwin Worker Process
@@ -27,45 +46,53 @@ interface UserConnectors {
 }
 
 /**
- * Forward a signal to the API for processing.
+ * Forward a signal to the API for processing, with retry on transient failures.
  */
 async function forwardSignalToApi(signal: RawSignal, userId: string): Promise<void> {
   const url = `${config.apiBaseUrl}/api/events/ingest`;
+  const body = JSON.stringify({
+    ...signal.data,
+    source: signal.source,
+    type: signal.type,
+    signalId: signal.id,
+    userId,
+  });
 
-  try {
-    const response = await fetch(url, {
+  await withRetry(async () => {
+    const resp = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        ...signal.data,
-        source: signal.source,
-        type: signal.type,
-        signalId: signal.id,
-        userId,
-      }),
+      body,
     });
 
-    if (!response.ok) {
-      console.error(
-        `[worker] Failed to forward signal ${signal.id} for user ${userId}: HTTP ${response.status}`,
-      );
-    } else {
-      console.info(
-        `[worker] Forwarded signal ${signal.id} (${signal.source}/${signal.type}) for user ${userId}`,
-      );
+    if (!resp.ok) {
+      if ([429, 500, 502, 503].includes(resp.status)) {
+        throw new RetryableHttpError(resp.status, `API ingest failed: ${resp.status}`, null);
+      }
+      throw new Error(`API ingest failed: ${resp.status}`);
     }
-  } catch (error) {
-    console.error(
-      `[worker] Error forwarding signal ${signal.id}:`,
-      error instanceof Error ? error.message : error,
-    );
-  }
+
+    return resp;
+  }, { maxRetries: 2, baseDelayMs: 500 });
+
+  log.info(`Forwarded signal ${signal.id} (${signal.source}/${signal.type}) for user ${userId}`);
 }
 
 /**
- * Poll connectors for a single user.
+ * Poll connectors for a single user, guarded by per-user circuit breaker.
  */
 async function pollUser(userConnectors: UserConnectors): Promise<void> {
+  const breaker = getCircuitBreaker(userConnectors.userId);
+
+  if (!breaker.canExecute()) {
+    log.debug(`Skipping user ${userConnectors.userId} — circuit open`, {
+      retryInMs: breaker.getTimeUntilRetryMs(),
+    });
+    return;
+  }
+
+  let hadFailure = false;
+
   for (const connector of userConnectors.connectors) {
     try {
       const signals = await connector.poll();
@@ -73,11 +100,17 @@ async function pollUser(userConnectors: UserConnectors): Promise<void> {
         await forwardSignalToApi(signal, userConnectors.userId);
       }
     } catch (error) {
-      console.error(
-        `[worker] Error polling ${connector.name} for user ${userConnectors.userId}:`,
-        error instanceof Error ? error.message : error,
-      );
+      hadFailure = true;
+      log.error(`Error polling ${connector.name} for user ${userConnectors.userId}`, {
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
+  }
+
+  if (hadFailure) {
+    breaker.recordFailure();
+  } else {
+    breaker.recordSuccess();
   }
 }
 
@@ -122,10 +155,9 @@ async function discoverUsers(): Promise<UserConnectors[]> {
 
     return result;
   } catch (error) {
-    console.error(
-      '[worker] Error discovering users:',
-      error instanceof Error ? error.message : error,
-    );
+    log.error('Error discovering users', {
+      error: error instanceof Error ? error.message : String(error),
+    });
     return [];
   }
 }
@@ -134,23 +166,23 @@ async function discoverUsers(): Promise<UserConnectors[]> {
  * Main worker loop.
  */
 async function main(): Promise<void> {
-  console.info('[worker] Starting SkyTwin worker...');
-  console.info(`[worker] API base URL: ${config.apiBaseUrl}`);
-  console.info(`[worker] Poll interval: ${config.workerPollIntervalMs}ms`);
+  log.info('Starting SkyTwin worker...');
+  log.info(`API base URL: ${config.apiBaseUrl}`);
+  log.info(`Poll interval: ${config.workerPollIntervalMs}ms`);
 
   // Discover users and set up connectors
   let userConnectors = await discoverUsers();
   if (userConnectors.length === 0) {
-    console.info('[worker] No users with connected accounts yet — waiting for first connection');
+    log.info('No users with connected accounts yet — waiting for first connection');
   } else {
-    console.info(`[worker] Tracking ${userConnectors.length} user(s)`);
+    log.info(`Tracking ${userConnectors.length} user(s)`);
   }
 
   // Connect all
   for (const uc of userConnectors) {
     for (const connector of uc.connectors) {
       await connector.connect();
-      console.info(`[worker] Connected: ${connector.name} for user ${uc.userId}`);
+      log.info(`Connected: ${connector.name} for user ${uc.userId}`);
     }
   }
 
@@ -183,7 +215,7 @@ async function main(): Promise<void> {
     if (pollCount % 10 === 0) {
       const newUserConnectors = await discoverUsers();
       if (newUserConnectors.length !== userConnectors.length) {
-        console.info(`[worker] User count changed: ${userConnectors.length} → ${newUserConnectors.length}`);
+        log.info(`User count changed: ${userConnectors.length} → ${newUserConnectors.length}`);
         // Disconnect old connectors
         for (const uc of userConnectors) {
           for (const connector of uc.connectors) {
@@ -204,29 +236,29 @@ async function main(): Promise<void> {
   }
 
   // Graceful shutdown
-  console.info('[worker] Shutting down...');
+  log.info('Shutting down...');
   for (const uc of userConnectors) {
     for (const connector of uc.connectors) {
       await connector.disconnect();
-      console.info(`[worker] Disconnected: ${connector.name} for user ${uc.userId}`);
+      log.info(`Disconnected: ${connector.name} for user ${uc.userId}`);
     }
   }
-  console.info('[worker] Worker stopped.');
+  log.info('Worker stopped.');
 }
 
 // Graceful shutdown handlers
 process.on('SIGINT', () => {
-  console.info('[worker] Received SIGINT, shutting down gracefully...');
+  log.info('Received SIGINT, shutting down gracefully...');
   running = false;
 });
 
 process.on('SIGTERM', () => {
-  console.info('[worker] Received SIGTERM, shutting down gracefully...');
+  log.info('Received SIGTERM, shutting down gracefully...');
   running = false;
 });
 
 // Start the worker
 void main().catch((error) => {
-  console.error('[worker] Fatal error:', error);
+  log.error('Fatal error', { error: error instanceof Error ? error.message : String(error) });
   process.exit(1);
 });

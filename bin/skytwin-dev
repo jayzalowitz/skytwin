@@ -140,7 +140,7 @@ fi
 
 echo ""
 
-# 5. Start services
+# 5. Start services with process supervision
 rm -f "$PIDFILE"
 
 echo -e "${YELLOW}Starting services...${NC}"
@@ -151,10 +151,39 @@ export NODE_ENV="${NODE_ENV:-development}"
 export API_PORT="${API_PORT:-3100}"
 export OPENCLAW_API_URL="${OPENCLAW_API_URL:-http://localhost:3456}"
 
+MAX_RESTARTS=5
+RESTART_DELAY=2
+
+# supervised_run <name> <logfile> <command...>
+# Runs a process in the background and restarts it on crash (up to MAX_RESTARTS).
+supervised_run() {
+  local name="$1"
+  local logfile="$2"
+  shift 2
+
+  (
+    restarts=0
+    while [ "$restarts" -lt "$MAX_RESTARTS" ]; do
+      "$@" >>"$logfile" 2>&1
+      exit_code=$?
+      if [ $exit_code -eq 0 ]; then
+        break
+      fi
+      restarts=$((restarts + 1))
+      echo "[$(date -Iseconds)] $name exited with code $exit_code, restart $restarts/$MAX_RESTARTS" >> "$logfile"
+      sleep "$RESTART_DELAY"
+    done
+    if [ "$restarts" -ge "$MAX_RESTARTS" ]; then
+      echo "[$(date -Iseconds)] $name exceeded max restarts ($MAX_RESTARTS), giving up" >> "$logfile"
+    fi
+  ) &
+  local pid=$!
+  echo "$pid $name" >> "$PIDFILE"
+  echo "$pid"
+}
+
 # API
-node apps/api/dist/index.js &>/tmp/skytwin-api.log &
-API_PID=$!
-echo "$API_PID api" >> "$PIDFILE"
+API_PID=$(supervised_run api /tmp/skytwin-api.log node apps/api/dist/index.js)
 echo -e "  ${GREEN}API${NC}            http://localhost:${API_PORT}  (PID $API_PID)"
 
 # Wait for API
@@ -164,15 +193,11 @@ for i in $(seq 1 15); do
 done
 
 # Web
-node apps/web/dist/index.js &>/tmp/skytwin-web.log &
-WEB_PID=$!
-echo "$WEB_PID web" >> "$PIDFILE"
+WEB_PID=$(supervised_run web /tmp/skytwin-web.log node apps/web/dist/index.js)
 echo -e "  ${GREEN}Web Dashboard${NC}  http://localhost:3200  (PID $WEB_PID)"
 
 # Worker
-node apps/worker/dist/index.js &>/tmp/skytwin-worker.log &
-WORKER_PID=$!
-echo "$WORKER_PID worker" >> "$PIDFILE"
+WORKER_PID=$(supervised_run worker /tmp/skytwin-worker.log node apps/worker/dist/index.js)
 echo -e "  ${GREEN}Worker${NC}         port 3101  (PID $WORKER_PID)"
 
 # OpenClaw Bridge (if Ollama available)
@@ -183,9 +208,7 @@ if [ "$SKIP_OLLAMA" = false ]; then
     ollama pull gemma4:latest 2>&1 | tail -2
   fi
 
-  BRIDGE_PORT=3456 node apps/openclaw-bridge/server.mjs &>/tmp/skytwin-openclaw.log &
-  BRIDGE_PID=$!
-  echo "$BRIDGE_PID openclaw-bridge" >> "$PIDFILE"
+  BRIDGE_PID=$(BRIDGE_PORT=3456 supervised_run openclaw-bridge /tmp/skytwin-openclaw.log node apps/openclaw-bridge/server.mjs)
   echo -e "  ${GREEN}OpenClaw Bridge${NC} http://localhost:3456  (PID $BRIDGE_PID)  [gemma4]"
 fi
 
@@ -194,4 +217,5 @@ echo -e "${GREEN}=== SkyTwin is running ===${NC}"
 echo -e "  Open ${BLUE}http://localhost:3200${NC} in your browser"
 echo -e "  Logs: /tmp/skytwin-{api,web,worker,openclaw}.log"
 echo -e "  Stop: ${YELLOW}./bin/skytwin-dev --stop${NC}"
+echo -e "  Processes auto-restart on crash (max ${MAX_RESTARTS} times)"
 echo ""

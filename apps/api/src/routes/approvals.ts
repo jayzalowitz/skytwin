@@ -3,11 +3,11 @@ import {
   approvalRepository,
   feedbackRepository,
   oauthRepository,
-  executionRepository,
   userRepository,
   TwinRepositoryAdapter,
   PatternRepositoryAdapter,
   policyRepositoryAdapter,
+  withTransaction,
 } from '@skytwin/db';
 import { TwinService } from '@skytwin/twin-model';
 import { PolicyEvaluator } from '@skytwin/policy-engine';
@@ -206,20 +206,35 @@ export function createApprovalsRouter(): Router {
           body.userId,
         );
 
-        // Persist execution (include steps for rollback support)
-        const savedPlan = await executionRepository.createPlan({
-          decisionId: approval.decision_id,
-          status: result.status === 'completed' ? 'completed' : 'failed',
-          steps: result.output?.['stepsCompleted']
-            ? [{ type: candidateAction.actionType, status: result.status }]
-            : [],
-        });
-        await executionRepository.createResult({
-          planId: savedPlan.id,
-          success: result.status === 'completed',
-          outputs: result.output ?? {},
-          error: result.error ?? undefined,
-          rollbackAvailable: candidateAction.reversible,
+        // Persist execution plan + result atomically
+        const savedPlan = await withTransaction(async (client) => {
+          const planResult = await client.query(
+            `INSERT INTO execution_plans (id, decision_id, status, steps, created_at)
+             VALUES (gen_random_uuid(), $1, $2, $3, now())
+             RETURNING *`,
+            [
+              approval.decision_id,
+              result.status === 'completed' ? 'completed' : 'failed',
+              JSON.stringify(result.output?.['stepsCompleted']
+                ? [{ type: candidateAction.actionType, status: result.status }]
+                : []),
+            ],
+          );
+          const plan = planResult.rows[0]!;
+
+          await client.query(
+            `INSERT INTO execution_results (id, plan_id, success, outputs, error, rollback_available, created_at)
+             VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, now())`,
+            [
+              plan.id,
+              result.status === 'completed',
+              JSON.stringify(result.output ?? {}),
+              result.error ?? null,
+              candidateAction.reversible,
+            ],
+          );
+
+          return plan;
         });
 
         executionResult = {

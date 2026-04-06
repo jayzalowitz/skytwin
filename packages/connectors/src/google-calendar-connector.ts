@@ -1,5 +1,6 @@
 import type { SignalConnector, RawSignal, SignalHandler } from './connector-interface.js';
 import type { OAuthTokenStore } from './oauth/token-store.js';
+import { withRetry, RetryableHttpError, parseRetryAfter } from '@skytwin/core';
 
 const CALENDAR_API = 'https://www.googleapis.com/calendar/v3';
 
@@ -60,9 +61,6 @@ export class GoogleCalendarConnector implements SignalConnector {
       throw new Error('GoogleCalendarConnector is not connected. Call connect() first.');
     }
 
-    const token = await this.tokenStore.refreshIfExpired(this.userId, 'google');
-    const headers = { Authorization: `Bearer ${token.accessToken}` };
-
     const params = new URLSearchParams({
       singleEvents: 'true',
       orderBy: 'startTime',
@@ -80,15 +78,40 @@ export class GoogleCalendarConnector implements SignalConnector {
     }
 
     const url = `${CALENDAR_API}/calendars/${encodeURIComponent(this.calendarId)}/events?${params}`;
-    const response = await fetch(url, { headers });
 
-    if (!response.ok) {
-      if (response.status === 410) {
-        // Sync token expired, do a full resync
+    const response = await withRetry(async () => {
+      const currentToken = await this.tokenStore.refreshIfExpired(this.userId, 'google');
+      const resp = await fetch(url, {
+        headers: { Authorization: `Bearer ${currentToken.accessToken}` },
+      });
+
+      if (!resp.ok) {
+        if (resp.status === 410) {
+          // Sync token expired — not retryable, needs full resync
+          throw new Error('SYNC_TOKEN_EXPIRED');
+        }
+        if (resp.status === 401) {
+          throw new RetryableHttpError(401, 'Calendar token expired', null);
+        }
+        if ([429, 500, 502, 503].includes(resp.status)) {
+          const retryAfterMs = parseRetryAfter(resp.headers.get('Retry-After'));
+          throw new RetryableHttpError(resp.status, `Calendar API failed: ${resp.status}`, retryAfterMs);
+        }
+        throw new Error(`Calendar API failed: ${resp.status}`);
+      }
+
+      return resp;
+    }, { maxRetries: 3, baseDelayMs: 1000 }).catch((error) => {
+      if (error instanceof Error && error.message === 'SYNC_TOKEN_EXPIRED') {
         this.syncToken = null;
         return this.poll();
       }
-      throw new Error(`Calendar API failed: ${response.status}`);
+      throw error;
+    });
+
+    // If poll() returned an array from sync token reset, pass through
+    if (Array.isArray(response)) {
+      return response;
     }
 
     const data = await response.json() as {
