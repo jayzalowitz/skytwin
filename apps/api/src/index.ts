@@ -128,6 +128,12 @@ const server = app.listen(port, () => {
 function handleShutdown(signal: string): void {
   console.info(`[api] Received ${signal}, shutting down gracefully...`);
   stopMdnsAdvertisement();
+  // Force exit after 10s if connections don't drain (e.g. SSE keep-alive)
+  const forceTimer = setTimeout(() => {
+    console.warn('[api] Shutdown timeout, forcing exit');
+    process.exit(1);
+  }, 10_000);
+  forceTimer.unref();
   server.close(() => {
     console.info('[api] HTTP server closed');
     process.exit(0);

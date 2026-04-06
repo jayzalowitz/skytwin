@@ -161,8 +161,8 @@ describe.skipIf(!E2E)('E2E: CockroachDB integration', () => {
         createTestUser('e2e-unique@test.local', 'User Two'),
       ).rejects.toThrow(/duplicate key|unique/i);
 
-      // Pop the tracked ID since the second insert failed
-      createdUserIds.pop();
+      // The second insert threw, so createTestUser never pushed an ID.
+      // No pop needed — the only tracked ID belongs to the first (valid) user.
     });
 
     it('updates a user and verifies the change', async () => {

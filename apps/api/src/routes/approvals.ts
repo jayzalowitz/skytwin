@@ -123,7 +123,7 @@ export function createApprovalsRouter(): Router {
       // Atomically update only if still pending (prevents double-execution)
       const approval = await approvalRepository.respond(requestId, body.action, body.reason);
       if (!approval) {
-        res.status(409).json({ error: 'Approval request already responded to or expired' });
+        res.status(409).json({ error: 'Approval request is no longer pending' });
         return;
       }
 

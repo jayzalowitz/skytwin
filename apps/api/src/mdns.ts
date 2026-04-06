@@ -1,6 +1,17 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { Bonjour } from 'bonjour-service';
 
 let bonjourInstance: Bonjour | null = null;
+
+// Read project version once at module load
+const PROJECT_VERSION = (() => {
+  try {
+    return readFileSync(join(__dirname, '../../../VERSION'), 'utf8').trim();
+  } catch {
+    return '0.0.0';
+  }
+})();
 
 /**
  * Start advertising the SkyTwin API via mDNS/Bonjour so that
@@ -22,7 +33,7 @@ export function startMdnsAdvertisement(port: number): void {
       port,
       txt: {
         path: '/',
-        version: '0.4',
+        version: PROJECT_VERSION,
       },
     });
 
