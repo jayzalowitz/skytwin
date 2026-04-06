@@ -99,11 +99,11 @@ export function createAskRouter(): Router {
   // No-op DecisionRepository because whatWouldIDo() is read-only:
   // it must not persist synthetic query_* decisions to the DB.
   const twinService = new TwinService(new TwinRepositoryAdapter(), new PatternRepositoryAdapter());
-  const policyEvaluator = new PolicyEvaluator(policyRepositoryAdapter as never);
+  const policyEvaluator = new PolicyEvaluator(policyRepositoryAdapter);
   const noOpDecisionRepo = createNoOpDecisionRepository();
   const decisionMaker = new DecisionMaker(
-    twinService as never,
-    policyEvaluator as never,
+    twinService,
+    policyEvaluator,
     noOpDecisionRepo,
   );
 
