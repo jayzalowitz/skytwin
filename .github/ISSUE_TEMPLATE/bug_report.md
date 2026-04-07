@@ -25,7 +25,7 @@ What should have happened instead.
 - OS: [e.g., macOS 15, Ubuntu 24.04]
 - Node.js version: [e.g., 20.11]
 - App: [API / Web Dashboard / Desktop / Mobile]
-- SkyTwin version: [e.g., 0.3.2]
+- SkyTwin version: [e.g., 0.3.2.1]
 
 ## Relevant logs or screenshots
 

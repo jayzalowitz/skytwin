@@ -229,7 +229,7 @@ Trust is **domain-specific**. You might be at `moderate_autonomy` for email but 
 
 ## Project Status
 
-SkyTwin is in **active development** (v0.3.2). The core decision pipeline, twin model, policy engine, and memory palace are functional. Gmail and Google Calendar connectors work with real OAuth. Desktop builds ship for all three platforms. The mobile app pairs via QR code.
+SkyTwin is in **active development** (v0.3.2.1). The core decision pipeline, twin model, policy engine, and memory palace are functional. Gmail and Google Calendar connectors work with real OAuth. Desktop builds ship for all three platforms. The mobile app pairs via QR code.
 
 **What works today:**
 - Full decision pipeline: signal → interpret → decide → policy check → execute/escalate → explain → learn
@@ -249,6 +249,10 @@ SkyTwin is in **active development** (v0.3.2). The core decision pipeline, twin 
 ## Contributing
 
 We welcome contributions. See [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines on getting started, running tests, and submitting pull requests.
+
+## Security
+
+Found a vulnerability? See [SECURITY.md](./SECURITY.md) for responsible disclosure instructions.
 
 ## License
 
