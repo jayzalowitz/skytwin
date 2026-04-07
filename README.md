@@ -63,6 +63,41 @@ SkyTwin is different. It builds a structured model of your preferences, risk tol
 
 Every path produces an explanation. Every outcome feeds back into the twin. The system gets better at predicting what you want over time.
 
+## Screenshots
+
+<table>
+<tr>
+<td width="50%">
+<p align="center"><strong>Onboarding</strong></p>
+<img src="docs/screenshots/onboarding.png" alt="Onboarding — pick the domains you want help with">
+</td>
+<td width="50%">
+<p align="center"><strong>Dashboard</strong></p>
+<img src="docs/screenshots/dashboard.png" alt="Dashboard — twin confidence, learnings, and recent activity">
+</td>
+</tr>
+<tr>
+<td width="50%">
+<p align="center"><strong>Approvals</strong></p>
+<img src="docs/screenshots/approvals.png" alt="Approvals — pending actions that need your OK">
+</td>
+<td width="50%">
+<p align="center"><strong>Decision History</strong></p>
+<img src="docs/screenshots/decisions.png" alt="Decision history — filterable log of every decision with reasoning">
+</td>
+</tr>
+<tr>
+<td width="50%">
+<p align="center"><strong>Twin Learnings</strong></p>
+<img src="docs/screenshots/twin.png" alt="Twin learnings — what your digital twin has learned about you">
+</td>
+<td width="50%">
+<p align="center"><strong>Settings</strong></p>
+<img src="docs/screenshots/settings.png" alt="Settings — autonomy level, spend limits, connected accounts, privacy controls">
+</td>
+</tr>
+</table>
+
 ## Concrete Examples
 
 | Scenario | What SkyTwin Does |
