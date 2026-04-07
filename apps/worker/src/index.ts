@@ -170,6 +170,13 @@ async function main(): Promise<void> {
   log.info(`API base URL: ${config.apiBaseUrl}`);
   log.info(`Poll interval: ${config.workerPollIntervalMs}ms`);
 
+  // Detect startup hangs (discoverUsers or connect hanging on a broken DB/network)
+  const startupTimer = setTimeout(() => {
+    log.error('Worker startup timed out after 30s — possible hang in discoverUsers() or connect()');
+    process.exit(1);
+  }, 30_000);
+  startupTimer.unref();
+
   // Discover users and set up connectors
   let userConnectors = await discoverUsers();
   if (userConnectors.length === 0) {
@@ -186,6 +193,7 @@ async function main(): Promise<void> {
     }
   }
 
+  clearTimeout(startupTimer);
   let pollCount = 0;
 
   // Poll loop

@@ -24,14 +24,21 @@ import { closePool } from '@skytwin/db';
 
 const config = loadConfig();
 
-// Validate config on startup (warn but don't crash in development)
+// Validate config on startup
 const configErrors = validate(config);
 if (configErrors.length > 0) {
+  const criticalFields = new Set(['databaseUrl', 'apiPort', 'nodeEnv']);
+  const criticalErrors = configErrors.filter((e) => criticalFields.has(e.field));
+  const warningErrors = configErrors.filter((e) => !criticalFields.has(e.field));
   const messages = configErrors.map((e) => `  - ${e.field}: ${e.message}`).join('\n');
-  if (config.nodeEnv === 'production') {
+
+  if (criticalErrors.length > 0) {
     console.error(`[api] Fatal: invalid configuration:\n${messages}`);
     process.exit(1);
-  } else {
+  } else if (config.nodeEnv === 'production') {
+    console.error(`[api] Fatal: invalid configuration:\n${messages}`);
+    process.exit(1);
+  } else if (warningErrors.length > 0) {
     console.warn(`[api] Configuration warnings (non-fatal in development):\n${messages}`);
   }
 }
@@ -136,11 +143,13 @@ function handleShutdown(signal: string): void {
   shuttingDown = true;
   console.info(`[api] Received ${signal}, shutting down gracefully...`);
   stopMdnsAdvertisement();
-  // Force exit after 10s if connections don't drain (e.g. SSE keep-alive)
+  // Force exit after 25s if connections don't drain (e.g. SSE keep-alive).
+  // Set below K8s default terminationGracePeriodSeconds (30s) so we clean up
+  // before the orchestrator sends SIGKILL.
   const forceTimer = setTimeout(() => {
     console.warn('[api] Shutdown timeout, forcing exit');
     process.exit(1);
-  }, 10_000);
+  }, 25_000);
   forceTimer.unref();
   server.close(async () => {
     console.info('[api] HTTP server closed');

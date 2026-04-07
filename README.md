@@ -68,6 +68,8 @@ apps/
   api/            # HTTP API server
   web/            # Web dashboard
   worker/         # Background job processor
+  desktop/        # Electron desktop app (macOS, Windows, Linux)
+  mobile/         # React Native mobile app (Expo)
 
 packages/
   shared-types/   # TypeScript type definitions shared across all packages

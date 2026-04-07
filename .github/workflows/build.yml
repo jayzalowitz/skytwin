@@ -1,0 +1,291 @@
+name: Build & Package
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+# Cancel in-progress runs for the same branch/PR
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '20'
+
+jobs:
+  # ──────────────────────────────────────────────
+  # Tests — gate all builds behind passing tests
+  # ──────────────────────────────────────────────
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm test
+
+  # ──────────────────────────────────────────────
+  # Desktop — one job per OS, uploads installer artifacts
+  # ──────────────────────────────────────────────
+  desktop-mac:
+    name: Desktop — macOS (DMG + ZIP)
+    needs: test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+
+      - name: Package macOS desktop app
+        run: pnpm --filter @skytwin/desktop package:mac
+        env:
+          # Skip code signing for CI builds (not notarized)
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Upload macOS DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: SkyTwin-macOS-dmg
+          path: apps/desktop/dist-electron/*.dmg
+          if-no-files-found: error
+
+      - name: Upload macOS ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: SkyTwin-macOS-zip
+          path: apps/desktop/dist-electron/*.zip
+          if-no-files-found: error
+
+  desktop-windows:
+    name: Desktop — Windows (NSIS installer)
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+
+      - name: Package Windows desktop app
+        run: pnpm --filter @skytwin/desktop package:win
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: SkyTwin-Windows-installer
+          path: apps/desktop/dist-electron/*.exe
+          if-no-files-found: error
+
+  desktop-linux:
+    name: Desktop — Linux (AppImage + deb + rpm)
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+
+      - name: Package Linux desktop app
+        run: pnpm --filter @skytwin/desktop package:linux
+
+      - name: Upload Linux AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: SkyTwin-Linux-AppImage
+          path: apps/desktop/dist-electron/*.AppImage
+          if-no-files-found: error
+
+      - name: Upload Linux deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: SkyTwin-Linux-deb
+          path: apps/desktop/dist-electron/*.deb
+          if-no-files-found: error
+
+      - name: Upload Linux rpm
+        uses: actions/upload-artifact@v4
+        with:
+          name: SkyTwin-Linux-rpm
+          path: apps/desktop/dist-electron/*.rpm
+          if-no-files-found: error
+
+  # ──────────────────────────────────────────────
+  # Mobile — Android APK (no signing certs needed for internal distribution)
+  # ──────────────────────────────────────────────
+  mobile-android:
+    name: Mobile — Android APK
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Install Expo CLI
+        run: npx expo --version
+        working-directory: apps/mobile
+
+      - name: Prebuild Android project
+        run: npx expo prebuild --platform android --no-install
+        working-directory: apps/mobile
+
+      - name: Build Android APK
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleRelease
+        working-directory: apps/mobile
+
+      - name: Upload Android APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: SkyTwin-Android-apk
+          path: apps/mobile/android/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+
+  # ──────────────────────────────────────────────
+  # Mobile — iOS (unsigned .app for simulator / TestFlight prep)
+  # ──────────────────────────────────────────────
+  mobile-ios:
+    name: Mobile — iOS (simulator build)
+    needs: test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Install Expo CLI
+        run: npx expo --version
+        working-directory: apps/mobile
+
+      - name: Prebuild iOS project
+        run: npx expo prebuild --platform ios --no-install
+        working-directory: apps/mobile
+
+      - name: Install CocoaPods
+        run: |
+          cd ios
+          pod install
+        working-directory: apps/mobile
+
+      - name: Build iOS simulator app
+        run: |
+          xcodebuild \
+            -workspace ios/SkyTwin.xcworkspace \
+            -scheme SkyTwin \
+            -configuration Release \
+            -sdk iphonesimulator \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            | xcpretty
+        working-directory: apps/mobile
+
+      - name: Package iOS simulator build
+        run: |
+          cd build/Build/Products/Release-iphonesimulator
+          zip -r ../../../../SkyTwin-iOS-simulator.zip SkyTwin.app
+        working-directory: apps/mobile
+
+      - name: Upload iOS simulator build
+        uses: actions/upload-artifact@v4
+        with:
+          name: SkyTwin-iOS-simulator
+          path: apps/mobile/SkyTwin-iOS-simulator.zip
+          if-no-files-found: error
+
+  # ──────────────────────────────────────────────
+  # Release — attach all artifacts to GitHub Release on tag push
+  # ──────────────────────────────────────────────
+  release:
+    name: Create GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - desktop-mac
+      - desktop-windows
+      - desktop-linux
+      - mobile-android
+      - mobile-ios
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: find artifacts -type f | sort
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          files: |
+            artifacts/SkyTwin-macOS-dmg/*
+            artifacts/SkyTwin-macOS-zip/*
+            artifacts/SkyTwin-Windows-installer/*
+            artifacts/SkyTwin-Linux-AppImage/*
+            artifacts/SkyTwin-Linux-deb/*
+            artifacts/SkyTwin-Linux-rpm/*
+            artifacts/SkyTwin-Android-apk/*
+            artifacts/SkyTwin-iOS-simulator/*

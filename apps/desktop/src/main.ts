@@ -41,7 +41,7 @@ function createMainWindow(): BrowserWindow {
     minWidth: 800,
     minHeight: 600,
     show: false,
-    titleBarStyle: 'hiddenInset',
+    ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' as const } : {}),
     backgroundColor: '#09090b',
     webPreferences: {
       preload: join(__dirname, 'preload.js'),

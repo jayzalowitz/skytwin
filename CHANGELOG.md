@@ -1,5 +1,3 @@
-# Changelog
-
 All notable changes to SkyTwin will be documented in this file.
 
 ## [0.3.2.0] - 2026-04-07

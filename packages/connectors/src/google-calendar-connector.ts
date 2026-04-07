@@ -4,6 +4,8 @@ import { withRetry, RetryableHttpError, parseRetryAfter } from '@skytwin/core';
 
 const CALENDAR_API = 'https://www.googleapis.com/calendar/v3';
 
+let signalCounter = 0;
+
 interface CalendarEvent {
   id: string;
   summary: string;
@@ -56,6 +58,8 @@ export class GoogleCalendarConnector implements SignalConnector {
     this.syncToken = null;
   }
 
+  private syncRetryCount = 0;
+
   async poll(): Promise<RawSignal[]> {
     if (!this.connected) {
       throw new Error('GoogleCalendarConnector is not connected. Call connect() first.');
@@ -102,11 +106,15 @@ export class GoogleCalendarConnector implements SignalConnector {
 
       return resp;
     }, { maxRetries: 3, baseDelayMs: 1000 }).catch((error) => {
-      if (error instanceof Error && error.message === 'SYNC_TOKEN_EXPIRED') {
+      if (error instanceof Error && error.message === 'SYNC_TOKEN_EXPIRED' && this.syncRetryCount < 1) {
         this.syncToken = null;
+        this.syncRetryCount++;
         return this.poll();
       }
       throw error;
+    }).then((result) => {
+      this.syncRetryCount = 0;
+      return result;
     });
 
     // If poll() returned an array from sync token reset, pass through
@@ -152,7 +160,7 @@ export class GoogleCalendarConnector implements SignalConnector {
     const needsResponse = selfAttendee?.responseStatus === 'needsAction';
 
     return {
-      id: `sig_cal_${event.id}_${Date.now()}`,
+      id: `sig_cal_${event.id}_${Date.now()}_${signalCounter++}`,
       source: 'google_calendar',
       type: needsResponse ? 'meeting_invite' : 'calendar_event',
       data: {
