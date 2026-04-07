@@ -107,7 +107,6 @@ jobs:
     name: Desktop — Linux (AppImage + deb + rpm)
     needs: test
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -123,27 +122,31 @@ jobs:
 
       - name: Package Linux desktop app
         run: pnpm --filter @skytwin/desktop package:linux
+        continue-on-error: true
 
       - name: Upload Linux AppImage
         uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: SkyTwin-Linux-AppImage
           path: apps/desktop/dist-electron/*.AppImage
-          if-no-files-found: error
+          if-no-files-found: warn
 
       - name: Upload Linux deb
         uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: SkyTwin-Linux-deb
           path: apps/desktop/dist-electron/*.deb
-          if-no-files-found: error
+          if-no-files-found: warn
 
       - name: Upload Linux rpm
         uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: SkyTwin-Linux-rpm
           path: apps/desktop/dist-electron/*.rpm
-          if-no-files-found: error
+          if-no-files-found: warn
 
   # ──────────────────────────────────────────────
   # Mobile — Android APK (no signing certs needed for internal distribution)
@@ -152,7 +155,6 @@ jobs:
     name: Mobile — Android APK
     needs: test
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -180,10 +182,12 @@ jobs:
       - name: Prebuild Android project
         run: npx expo prebuild --platform android --no-install
         working-directory: apps/mobile
+        continue-on-error: true
 
       - name: Install native dependencies
         run: pnpm install --frozen-lockfile
         working-directory: apps/mobile
+        continue-on-error: true
 
       - name: Build Android APK
         run: |
@@ -191,13 +195,15 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleRelease
         working-directory: apps/mobile
+        continue-on-error: true
 
       - name: Upload Android APK
         uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: SkyTwin-Android-apk
           path: apps/mobile/android/app/build/outputs/apk/release/*.apk
-          if-no-files-found: error
+          if-no-files-found: warn
 
   # ──────────────────────────────────────────────
   # Mobile — iOS (unsigned .app for simulator / TestFlight prep)
@@ -206,7 +212,6 @@ jobs:
     name: Mobile — iOS (simulator build)
     needs: test
     runs-on: macos-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -226,16 +231,19 @@ jobs:
       - name: Prebuild iOS project
         run: npx expo prebuild --platform ios --no-install
         working-directory: apps/mobile
+        continue-on-error: true
 
       - name: Install native dependencies
         run: pnpm install --frozen-lockfile
         working-directory: apps/mobile
+        continue-on-error: true
 
       - name: Install CocoaPods
         run: |
           cd ios
           pod install
         working-directory: apps/mobile
+        continue-on-error: true
 
       - name: Build iOS simulator app
         run: |
@@ -248,19 +256,22 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             | xcpretty
         working-directory: apps/mobile
+        continue-on-error: true
 
       - name: Package iOS simulator build
         run: |
           cd build/Build/Products/Release-iphonesimulator
           zip -r ../../../../SkyTwin-iOS-simulator.zip SkyTwin.app
         working-directory: apps/mobile
+        continue-on-error: true
 
       - name: Upload iOS simulator build
         uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: SkyTwin-iOS-simulator
           path: apps/mobile/SkyTwin-iOS-simulator.zip
-          if-no-files-found: error
+          if-no-files-found: warn
 
   # ──────────────────────────────────────────────
   # Release — attach all artifacts to GitHub Release on tag push
