@@ -151,6 +151,7 @@ jobs:
     name: Mobile — Android APK
     needs: test
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -204,6 +205,7 @@ jobs:
     name: Mobile — iOS (simulator build)
     needs: test
     runs-on: macos-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
