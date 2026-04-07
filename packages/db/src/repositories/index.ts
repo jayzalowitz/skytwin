@@ -60,3 +60,14 @@ export type { CreatePreferenceHistoryInput } from './preference-history-reposito
 
 export { sessionRepository } from './session-repository.js';
 export type { SessionRow } from './session-repository.js';
+
+export { mempalaceRepository } from './mempalace-repository.js';
+export type {
+  CreateWingInput,
+  CreateRoomInput,
+  CreateDrawerInput,
+  CreateClosetInput,
+  CreateEpisodeInput,
+  CreateEntityInput,
+  CreateTripleInput,
+} from './mempalace-repository.js';

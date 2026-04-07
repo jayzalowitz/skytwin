@@ -35,6 +35,10 @@ export interface DecisionContext {
   traits?: import('./patterns.js').CrossDomainTrait[];
   /** Temporal activity profile for the user */
   temporalProfile?: import('./patterns.js').TemporalProfile;
+  /** Episodic memories relevant to this decision situation */
+  episodicMemories?: import('./mempalace.js').EpisodicMemory[];
+  /** Wake-up context (L0+L1) from the memory palace */
+  wakeUpContext?: import('./mempalace.js').WakeUpContext;
 }
 
 /**

@@ -83,3 +83,27 @@ export type {
   EvalTrend,
   AccuracyMetric,
 } from './eval-types.js';
+
+export { MemoryLayer } from './mempalace.js';
+
+export type {
+  MemoryWing,
+  MemoryRoom,
+  MemoryHall,
+  MemoryDrawer,
+  DrawerSource,
+  DrawerMetadata,
+  MemoryCloset,
+  MemoryTunnel,
+  KnowledgeEntity,
+  KnowledgeTriple,
+  EpisodicMemory,
+  EpisodeContext,
+  EpisodeOutcome,
+  WakeUpContext,
+  MemorySearchResult,
+  RecallResult,
+  EntityCode,
+  AAAKFlag,
+  PalaceStatus,
+} from './mempalace.js';

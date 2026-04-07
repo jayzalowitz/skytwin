@@ -306,6 +306,19 @@ importers:
         specifier: ^1.3.0
         version: 1.6.1(@types/node@20.19.37)
 
+  packages/mempalace:
+    dependencies:
+      '@skytwin/shared-types':
+        specifier: workspace:*
+        version: link:../shared-types
+    devDependencies:
+      typescript:
+        specifier: ^5.4.0
+        version: 5.9.3
+      vitest:
+        specifier: ^1.3.0
+        version: 1.6.1(@types/node@20.19.37)
+
   packages/policy-engine:
     dependencies:
       '@skytwin/shared-types':

@@ -40,6 +40,15 @@ export type {
   DomainAutonomyPolicyRow,
   EscalationTriggerRow,
   PreferenceHistoryRow,
+  MemoryWingRow,
+  MemoryRoomRow,
+  MemoryDrawerRow,
+  MemoryClosetRow,
+  MemoryTunnelRow,
+  KnowledgeEntityRow,
+  KnowledgeTripleRow,
+  EpisodicMemoryRow,
+  EntityCodeRow,
 } from './types.js';
 
 // Repositories
@@ -73,7 +82,7 @@ export type {
 
 export { signalRepository, proposalRepository, skillGapRepository, proactiveScanRepository } from './repositories/index.js';
 
-export { trustTierAuditRepository, spendRepository, domainAutonomyRepository, escalationTriggerRepository, preferenceHistoryRepository, sessionRepository } from './repositories/index.js';
+export { trustTierAuditRepository, spendRepository, domainAutonomyRepository, escalationTriggerRepository, preferenceHistoryRepository, sessionRepository, mempalaceRepository } from './repositories/index.js';
 export type { SessionRow } from './repositories/index.js';
 export type { CreateTierAuditInput } from './repositories/index.js';
 export type { CreateSpendRecordInput } from './repositories/index.js';

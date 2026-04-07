@@ -31,7 +31,8 @@
       "@skytwin/execution-router": ["./packages/execution-router/src"],
       "@skytwin/explanations": ["./packages/explanations/src"],
       "@skytwin/connectors": ["./packages/connectors/src"],
-      "@skytwin/evals": ["./packages/evals/src"]
+      "@skytwin/evals": ["./packages/evals/src"],
+      "@skytwin/mempalace": ["./packages/mempalace/src"]
     }
   },
   "exclude": ["node_modules", "dist", "coverage"]
