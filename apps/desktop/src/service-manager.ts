@@ -1,4 +1,4 @@
-import { fork, type ChildProcess } from 'child_process';
+import { fork, execSync, type ChildProcess } from 'child_process';
 import { join } from 'path';
 import { app } from 'electron';
 
@@ -246,25 +246,47 @@ export class ServiceManager {
     const proc = managed.process;
     managed.process = null;
 
-    proc.kill('SIGTERM');
-
-    // Wait up to 5s, then SIGKILL
-    await new Promise<void>((resolve) => {
-      const forceKillTimer = setTimeout(() => {
-        try {
-          proc.kill('SIGKILL');
-          console.warn(`[${name}] Force-killed after 5s timeout`);
-        } catch {
-          // Already dead
+    if (process.platform === 'win32') {
+      // Windows: SIGTERM is unreliable, use taskkill for force termination
+      try {
+        if (proc.pid) {
+          execSync(`taskkill /F /T /PID ${proc.pid}`, { stdio: 'ignore' });
+          console.log(`[${name}] Terminated via taskkill (PID ${proc.pid})`);
         }
-        resolve();
-      }, 5000);
+      } catch {
+        // Process may already be dead
+        console.warn(`[${name}] taskkill failed — process may have already exited`);
+      }
 
-      proc.on('exit', () => {
-        clearTimeout(forceKillTimer);
-        resolve();
+      // Wait briefly for the exit event to propagate
+      await new Promise<void>((resolve) => {
+        const exitTimer = setTimeout(() => resolve(), 2000);
+        proc.on('exit', () => {
+          clearTimeout(exitTimer);
+          resolve();
+        });
       });
-    });
+    } else {
+      // Unix (macOS/Linux): graceful SIGTERM then force SIGKILL
+      proc.kill('SIGTERM');
+
+      await new Promise<void>((resolve) => {
+        const forceKillTimer = setTimeout(() => {
+          try {
+            proc.kill('SIGKILL');
+            console.warn(`[${name}] Force-killed after 5s timeout`);
+          } catch {
+            // Already dead
+          }
+          resolve();
+        }, 5000);
+
+        proc.on('exit', () => {
+          clearTimeout(forceKillTimer);
+          resolve();
+        });
+      });
+    }
 
     managed.status = 'stopped';
   }

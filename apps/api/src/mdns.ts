@@ -55,10 +55,21 @@ export function startMdnsAdvertisement(port: number): void {
 export function stopMdnsAdvertisement(): void {
   try {
     if (bonjourInstance) {
-      bonjourInstance.unpublishAll(() => {
+      let cleaned = false;
+      const doCleanup = (source: string) => {
+        if (cleaned) return;
+        cleaned = true;
         bonjourInstance?.destroy();
         bonjourInstance = null;
-        console.info('[mdns] mDNS advertisement stopped');
+        console.info(`[mdns] mDNS advertisement stopped (${source})`);
+      };
+
+      const cleanupTimeout = setTimeout(() => doCleanup('timeout'), 2000);
+      cleanupTimeout.unref();
+
+      bonjourInstance.unpublishAll(() => {
+        clearTimeout(cleanupTimeout);
+        doCleanup('unpublish');
       });
     }
   } catch (err: unknown) {

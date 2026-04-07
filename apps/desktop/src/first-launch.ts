@@ -1,6 +1,7 @@
 import { dialog } from 'electron';
 import { execSync, execFile } from 'child_process';
 import { join } from 'path';
+import { readFileSync } from 'fs';
 
 interface DependencyCheck {
   name: string;
@@ -8,15 +9,76 @@ interface DependencyCheck {
   installHint: string;
 }
 
+function hasCommand(cmd: string): boolean {
+  try {
+    execSync(process.platform === 'win32' ? `where ${cmd}` : `which ${cmd}`, {
+      stdio: 'ignore',
+      timeout: 3000,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function getLinuxDistro(): string {
+  try {
+    const osRelease = readFileSync('/etc/os-release', 'utf-8');
+    const idMatch = osRelease.match(/^ID=(.*)$/m);
+    if (idMatch) {
+      const id = idMatch[1].replace(/"/g, '').trim().toLowerCase();
+      if (['ubuntu', 'debian', 'pop', 'mint', 'elementary'].includes(id)) return 'debian';
+      if (['fedora', 'rhel', 'centos', 'rocky', 'alma'].includes(id)) return 'redhat';
+      if (['arch', 'manjaro', 'endeavouros'].includes(id)) return 'arch';
+      if (['opensuse', 'sles'].some((d) => id.includes(d))) return 'suse';
+    }
+  } catch {
+    // /etc/os-release not available
+  }
+  return 'unknown';
+}
+
+function getPlatformInstallHint(dep: string): string {
+  if (dep === 'CockroachDB') {
+    if (process.platform === 'darwin') {
+      return 'brew install cockroachdb/tap/cockroach';
+    }
+
+    if (process.platform === 'win32') {
+      if (hasCommand('choco')) {
+        return 'choco install cockroachdb -y';
+      }
+      if (hasCommand('scoop')) {
+        return 'scoop install cockroach';
+      }
+      return 'Download from https://www.cockroachlabs.com/docs/releases/ — or install Chocolatey (choco) / Scoop first';
+    }
+
+    // Linux
+    const distro = getLinuxDistro();
+    switch (distro) {
+      case 'debian':
+        return 'sudo apt-get install -y cockroachdb  (or: sudo snap install cockroachdb)';
+      case 'redhat':
+        return 'sudo dnf install -y cockroachdb  (or: sudo snap install cockroachdb)';
+      case 'arch':
+        return 'yay -S cockroachdb-bin  (AUR)';
+      default:
+        if (hasCommand('snap')) {
+          return 'sudo snap install cockroachdb';
+        }
+        return 'curl https://binaries.cockroachdb.com/cockroach-latest.linux-amd64.tgz | tar xz && sudo mv cockroach-*/cockroach /usr/local/bin/';
+    }
+  }
+
+  return 'See project README for install instructions';
+}
+
 const DEPENDENCIES: DependencyCheck[] = [
   {
     name: 'CockroachDB',
-    command: 'cockroach version',
-    installHint: process.platform === 'darwin'
-      ? 'brew install cockroachdb/tap/cockroach'
-      : process.platform === 'win32'
-        ? 'scoop install cockroach'
-        : 'curl https://binaries.cockroachdb.com/cockroach-latest.linux-amd64.tgz | tar xz',
+    command: process.platform === 'win32' ? 'cockroach.exe version' : 'cockroach version',
+    installHint: getPlatformInstallHint('CockroachDB'),
   },
 ];
 

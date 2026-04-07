@@ -212,9 +212,6 @@ export function createApprovalsRouter(): Router {
             body.userId,
           );
 
-          // Strip sensitive credentials before persisting execution output
-          delete candidateAction.parameters['accessToken'];
-
           // Persist execution plan + result atomically
           const savedPlan = await withTransaction(async (client) => {
             const planResult = await client.query(
@@ -229,7 +226,8 @@ export function createApprovalsRouter(): Router {
                   : []),
               ],
             );
-            const plan = planResult.rows[0]!;
+            const plan = planResult.rows[0];
+            if (!plan) throw new Error('Failed to persist execution plan');
 
             await client.query(
               `INSERT INTO execution_results (id, plan_id, success, outputs, error, rollback_available, created_at)
@@ -265,7 +263,8 @@ export function createApprovalsRouter(): Router {
                  RETURNING *`,
                 [approval.decision_id, JSON.stringify([{ type: candidateAction.actionType, status: 'error' }])],
               );
-              const plan = planResult.rows[0]!;
+              const plan = planResult.rows[0];
+              if (!plan) throw new Error('Failed to persist failed execution plan');
               await client.query(
                 `INSERT INTO execution_results (id, plan_id, success, outputs, error, rollback_available, created_at)
                  VALUES (gen_random_uuid(), $1, false, '{}', $2, $3, now())`,
@@ -279,6 +278,9 @@ export function createApprovalsRouter(): Router {
             console.error('[approvals] Failed to persist execution failure record:', persistError);
             executionResult = { status: 'failed', error: 'Execution failed' };
           }
+        } finally {
+          // Always strip sensitive credentials, even on error paths
+          delete candidateAction.parameters['accessToken'];
         }
       }
 
@@ -311,10 +313,18 @@ export function createApprovalsRouter(): Router {
   /**
    * POST /api/approvals/expire-sweep
    *
-   * Manually trigger expiry of stale pending approvals.
+   * Trigger expiry of stale pending approvals. Restricted to localhost
+   * callers (worker process) to prevent any authenticated user from
+   * expiring global approval state.
    */
-  router.post('/expire-sweep', async (_req, res, next) => {
+  router.post('/expire-sweep', async (req, res, next) => {
     try {
+      const remoteIp = req.ip ?? req.socket.remoteAddress ?? '';
+      const isLocal = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(remoteIp);
+      if (!isLocal) {
+        res.status(403).json({ error: 'Expire sweep is restricted to internal callers' });
+        return;
+      }
       const count = await approvalRepository.expirePending();
       res.json({ expired: count });
     } catch (error) {
