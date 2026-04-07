@@ -62,6 +62,7 @@ function createMockRepo(): PalaceRepositoryPort {
     }),
     getDrawers: vi.fn(async () => drawers),
     searchDrawers: vi.fn(async () => []),
+    findDrawerBySourceId: vi.fn(async () => null),
     deleteDrawer: vi.fn(async () => true),
 
     upsertTunnel: vi.fn(async (_userId, topic, roomIds, wingIds, strength) => ({

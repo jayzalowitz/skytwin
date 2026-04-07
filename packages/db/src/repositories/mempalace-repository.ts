@@ -236,6 +236,16 @@ export const mempalaceRepository = {
     return result.rows;
   },
 
+  async findDrawerBySourceId(userId: string, sourceType: string, sourceId: string): Promise<MemoryDrawerRow | null> {
+    const result = await query<MemoryDrawerRow>(
+      `SELECT * FROM memory_drawers
+       WHERE user_id = $1 AND source_type = $2 AND source_id = $3
+       LIMIT 1`,
+      [userId, sourceType, sourceId],
+    );
+    return result.rows[0] ?? null;
+  },
+
   async deleteDrawer(drawerId: string): Promise<boolean> {
     const drawer = await query<MemoryDrawerRow>(
       'SELECT room_id, wing_id FROM memory_drawers WHERE id = $1',

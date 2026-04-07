@@ -1,6 +1,53 @@
 import { Router } from 'express';
 import { mempalaceRepository } from '@skytwin/db';
-import type { PalaceStatus } from '@skytwin/shared-types';
+import type { PalaceStatus, MemoryHall, DrawerSource } from '@skytwin/shared-types';
+import { ConfidenceLevel } from '@skytwin/shared-types';
+
+// ── Input validation helpers ───────────────────────────────────────
+
+const VALID_HALLS: ReadonlySet<string> = new Set<MemoryHall>([
+  'facts', 'events', 'discoveries', 'preferences', 'advice', 'diary',
+]);
+
+const VALID_SOURCES: ReadonlySet<string> = new Set<DrawerSource>([
+  'signal', 'decision', 'feedback', 'inference', 'explicit', 'mined',
+]);
+
+const VALID_CONFIDENCE: ReadonlySet<string> = new Set<string>(
+  Object.values(ConfidenceLevel),
+);
+
+/** Coerce a query-string value to a safe positive integer within [1, max]. */
+function safeInt(raw: unknown, fallback: number, max: number = 1000): number {
+  if (raw === undefined || raw === null) return fallback;
+  const n = typeof raw === 'number' ? raw : parseInt(String(raw), 10);
+  if (!Number.isFinite(n) || n < 1) return fallback;
+  return Math.min(n, max);
+}
+
+/** Coerce a query-string value to a finite float within [min, max]. */
+function safeFloat(raw: unknown, fallback: number | undefined, min: number = 0, max: number = 1): number | undefined {
+  if (raw === undefined || raw === null) return fallback;
+  const n = typeof raw === 'number' ? raw : parseFloat(String(raw));
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(n, max));
+}
+
+/** Validate that a string is a non-empty trimmed value. Returns null if invalid. */
+function requireString(val: unknown, name: string): { value: string } | { error: string } {
+  if (typeof val !== 'string' || val.trim().length === 0) {
+    return { error: `${name} must be a non-empty string` };
+  }
+  return { value: val.trim() };
+}
+
+/** Parse a date from an ISO string. Returns undefined for missing, error message for invalid. */
+function safeDateParam(raw: unknown): Date | undefined | string {
+  if (raw === undefined || raw === null) return undefined;
+  const d = new Date(String(raw));
+  if (isNaN(d.getTime())) return 'Invalid date format';
+  return d;
+}
 
 /**
  * Create the memory palace router.
@@ -91,10 +138,19 @@ export function createMempalaceRouter(): Router {
       const hall = req.query['hall'] as string | undefined;
       const wingId = req.query['wingId'] as string | undefined;
       const roomId = req.query['roomId'] as string | undefined;
-      const limit = parseInt(req.query['limit'] as string ?? '50', 10);
+      const limit = safeInt(req.query['limit'], 50, 500);
+
+      if (hall && !VALID_HALLS.has(hall)) {
+        res.status(400).json({ error: `Invalid hall. Must be one of: ${[...VALID_HALLS].join(', ')}` });
+        return;
+      }
 
       if (search) {
         const terms = search.split(/\s+/).filter((t) => t.length > 0);
+        if (terms.length === 0) {
+          res.status(400).json({ error: 'Search query must contain at least one non-empty term' });
+          return;
+        }
         const drawers = await mempalaceRepository.searchDrawers(userId, terms, limit);
         res.json({ drawers, total: drawers.length });
       } else {
@@ -127,15 +183,35 @@ export function createMempalaceRouter(): Router {
         return;
       }
 
+      if (typeof hall !== 'string' || !VALID_HALLS.has(hall)) {
+        res.status(400).json({ error: `Invalid hall. Must be one of: ${[...VALID_HALLS].join(', ')}` });
+        return;
+      }
+
+      const resolvedSource = typeof sourceType === 'string' ? sourceType : 'explicit';
+      if (!VALID_SOURCES.has(resolvedSource)) {
+        res.status(400).json({ error: `Invalid sourceType. Must be one of: ${[...VALID_SOURCES].join(', ')}` });
+        return;
+      }
+
+      const roomIdStr = requireString(roomId, 'roomId');
+      if ('error' in roomIdStr) { res.status(400).json({ error: roomIdStr.error }); return; }
+      const wingIdStr = requireString(wingId, 'wingId');
+      if ('error' in wingIdStr) { res.status(400).json({ error: wingIdStr.error }); return; }
+      const contentStr = requireString(content, 'content');
+      if ('error' in contentStr) { res.status(400).json({ error: contentStr.error }); return; }
+
       const drawer = await mempalaceRepository.createDrawer({
-        roomId: roomId as string,
-        wingId: wingId as string,
+        roomId: roomIdStr.value,
+        wingId: wingIdStr.value,
         userId,
         hall: hall as string,
-        content: content as string,
-        metadata: (metadata as Record<string, unknown>) ?? {},
-        sourceType: (sourceType as string) ?? 'explicit',
-        sourceId: sourceId as string | undefined,
+        content: contentStr.value,
+        metadata: (metadata && typeof metadata === 'object' && !Array.isArray(metadata))
+          ? metadata as Record<string, unknown>
+          : {},
+        sourceType: resolvedSource,
+        sourceId: typeof sourceId === 'string' ? sourceId : undefined,
       });
 
       res.status(201).json({ drawer });
@@ -188,10 +264,8 @@ export function createMempalaceRouter(): Router {
 
       const domain = req.query['domain'] as string | undefined;
       const situationType = req.query['situationType'] as string | undefined;
-      const limit = parseInt(req.query['limit'] as string ?? '50', 10);
-      const minUtility = req.query['minUtility']
-        ? parseFloat(req.query['minUtility'] as string)
-        : undefined;
+      const limit = safeInt(req.query['limit'], 50, 500);
+      const minUtility = safeFloat(req.query['minUtility'], undefined, 0, 1);
 
       const episodes = await mempalaceRepository.getEpisodes(userId, {
         domain,
@@ -220,8 +294,12 @@ export function createMempalaceRouter(): Router {
         return;
       }
 
-      const limit = parseInt(req.query['limit'] as string ?? '20', 10);
+      const limit = safeInt(req.query['limit'], 20, 500);
       const terms = search.split(/\s+/).filter((t) => t.length > 0);
+      if (terms.length === 0) {
+        res.status(400).json({ error: 'Search query must contain at least one non-empty term' });
+        return;
+      }
       const episodes = await mempalaceRepository.searchEpisodes(userId, terms, limit);
 
       res.json({ episodes, total: episodes.length });
@@ -260,17 +338,27 @@ export function createMempalaceRouter(): Router {
       const body = req.body as Record<string, unknown>;
       const { name, entityType, properties, aliases } = body;
 
-      if (!name || !entityType) {
-        res.status(400).json({ error: 'Missing required fields: name, entityType' });
+      const nameResult = requireString(name, 'name');
+      if ('error' in nameResult) { res.status(400).json({ error: nameResult.error }); return; }
+      const typeResult = requireString(entityType, 'entityType');
+      if ('error' in typeResult) { res.status(400).json({ error: typeResult.error }); return; }
+
+      if (aliases !== undefined && !Array.isArray(aliases)) {
+        res.status(400).json({ error: 'aliases must be an array of strings' });
         return;
       }
+      const safeAliases = Array.isArray(aliases)
+        ? aliases.filter((a): a is string => typeof a === 'string')
+        : [];
 
       const entity = await mempalaceRepository.upsertEntity({
         userId,
-        name: name as string,
-        entityType: entityType as string,
-        properties: (properties as Record<string, unknown>) ?? {},
-        aliases: (aliases as string[]) ?? [],
+        name: nameResult.value,
+        entityType: typeResult.value,
+        properties: (properties && typeof properties === 'object' && !Array.isArray(properties))
+          ? properties as Record<string, unknown>
+          : {},
+        aliases: safeAliases,
       });
 
       res.status(201).json({ entity });
@@ -290,8 +378,13 @@ export function createMempalaceRouter(): Router {
       const subject = req.query['subject'] as string | undefined;
       const predicate = req.query['predicate'] as string | undefined;
       const object = req.query['object'] as string | undefined;
-      const asOf = req.query['asOf'] ? new Date(req.query['asOf'] as string) : undefined;
-      const limit = parseInt(req.query['limit'] as string ?? '100', 10);
+      const asOfRaw = safeDateParam(req.query['asOf']);
+      if (typeof asOfRaw === 'string') {
+        res.status(400).json({ error: `Invalid asOf: ${asOfRaw}` });
+        return;
+      }
+      const asOf = asOfRaw;
+      const limit = safeInt(req.query['limit'], 100, 1000);
 
       const triples = await mempalaceRepository.queryTriples(userId, {
         subject,
@@ -318,18 +411,32 @@ export function createMempalaceRouter(): Router {
       const body = req.body as Record<string, unknown>;
       const { subject, predicate, object, confidence, validFrom } = body;
 
-      if (!subject || !predicate || !object) {
-        res.status(400).json({ error: 'Missing required fields: subject, predicate, object' });
+      const subjectResult = requireString(subject, 'subject');
+      if ('error' in subjectResult) { res.status(400).json({ error: subjectResult.error }); return; }
+      const predicateResult = requireString(predicate, 'predicate');
+      if ('error' in predicateResult) { res.status(400).json({ error: predicateResult.error }); return; }
+      const objectResult = requireString(object, 'object');
+      if ('error' in objectResult) { res.status(400).json({ error: objectResult.error }); return; }
+
+      const resolvedConfidence = typeof confidence === 'string' ? confidence : 'moderate';
+      if (!VALID_CONFIDENCE.has(resolvedConfidence)) {
+        res.status(400).json({ error: `Invalid confidence. Must be one of: ${[...VALID_CONFIDENCE].join(', ')}` });
+        return;
+      }
+
+      const validFromDate = safeDateParam(validFrom);
+      if (typeof validFromDate === 'string') {
+        res.status(400).json({ error: `Invalid validFrom: ${validFromDate}` });
         return;
       }
 
       const triple = await mempalaceRepository.addTriple({
         userId,
-        subject: subject as string,
-        predicate: predicate as string,
-        object: object as string,
-        confidence: (confidence as string) ?? 'moderate',
-        validFrom: validFrom ? new Date(validFrom as string) : undefined,
+        subject: subjectResult.value,
+        predicate: predicateResult.value,
+        object: objectResult.value,
+        confidence: resolvedConfidence,
+        validFrom: validFromDate,
       });
 
       res.status(201).json({ triple });

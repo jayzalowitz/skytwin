@@ -40,6 +40,7 @@ export interface PalaceRepositoryPort {
     limit?: number;
   }): Promise<MemoryDrawer[]>;
   searchDrawers(userId: string, terms: string[], limit?: number): Promise<MemoryDrawer[]>;
+  findDrawerBySourceId(userId: string, sourceType: DrawerSource, sourceId: string): Promise<MemoryDrawer | null>;
   deleteDrawer(drawerId: string): Promise<boolean>;
 
   upsertTunnel(userId: string, topic: string, roomIds: string[], wingIds: string[], strength: number): Promise<MemoryTunnel>;
