@@ -6,6 +6,9 @@ import { describe, it, expect, beforeAll } from 'vitest';
  * Tests run against the real API server (localhost:3100) and validate
  * the exact request/response contracts that the mobile app depends on.
  * Each test mirrors a real mobile user flow.
+ *
+ * These tests are automatically skipped when the API server is not running
+ * (e.g. in CI). Run with a live server for full coverage.
  */
 
 const API_BASE = 'http://localhost:3100';
@@ -19,11 +22,13 @@ async function isServerUp(): Promise<boolean> {
   }
 }
 
+const serverAvailable = await isServerUp();
+
 // ────────────────────────────────────────────────
 // Flow 1: mDNS discovery → health check → connection confirmed
 // ────────────────────────────────────────────────
 
-describe('mobile discovery flow', () => {
+describe.runIf(serverAvailable)('mobile discovery flow', () => {
   it('health endpoint responds with expected shape', async () => {
     const res = await fetch(`${API_BASE}/api/health`);
     expect(res.ok).toBe(true);
@@ -51,7 +56,7 @@ describe('mobile discovery flow', () => {
 // Flow 2: QR scan → create session → Bearer token auth
 // ────────────────────────────────────────────────
 
-describe('mobile QR pairing flow', () => {
+describe.runIf(serverAvailable)('mobile QR pairing flow', () => {
   it('POST /api/sessions validates required userId field', async () => {
     const res = await fetch(`${API_BASE}/api/sessions`, {
       method: 'POST',
@@ -120,7 +125,7 @@ describe('mobile QR pairing flow', () => {
 // Flow 3: Approvals list → pull to refresh → swipe to approve/reject
 // ────────────────────────────────────────────────
 
-describe('mobile approvals flow', () => {
+describe.runIf(serverAvailable)('mobile approvals flow', () => {
   it('GET /api/approvals/:userId/pending returns array (with DB)', async () => {
     const res = await fetch(`${API_BASE}/api/approvals/mobile-test-user/pending`);
     if (res.ok) {
@@ -172,7 +177,7 @@ describe('mobile approvals flow', () => {
 // Flow 4: Decision history for dashboard
 // ────────────────────────────────────────────────
 
-describe('mobile dashboard — decision history', () => {
+describe.runIf(serverAvailable)('mobile dashboard — decision history', () => {
   it('GET /api/decisions/:userId returns decisions array', async () => {
     const res = await fetch(`${API_BASE}/api/decisions/mobile-test-user`);
     if (res.ok) {
@@ -207,7 +212,7 @@ describe('mobile dashboard — decision history', () => {
 // Flow 5: Twin profile for trust tier display
 // ────────────────────────────────────────────────
 
-describe('mobile dashboard — twin profile', () => {
+describe.runIf(serverAvailable)('mobile dashboard — twin profile', () => {
   it('GET /api/twin/:userId returns profile or error', async () => {
     const res = await fetch(`${API_BASE}/api/twin/mobile-test-user`);
     if (res.ok) {
@@ -232,7 +237,7 @@ describe('mobile dashboard — twin profile', () => {
 // Flow 6: Session management (settings screen)
 // ────────────────────────────────────────────────
 
-describe('mobile settings — session management', () => {
+describe.runIf(serverAvailable)('mobile settings — session management', () => {
   it('GET /api/sessions/:userId lists active sessions', async () => {
     const res = await fetch(`${API_BASE}/api/sessions/mobile-test-user`);
     if (res.ok) {
@@ -260,7 +265,7 @@ describe('mobile settings — session management', () => {
 // Flow 7: SSE connection (real-time approvals)
 // ────────────────────────────────────────────────
 
-describe('mobile SSE — real-time events', () => {
+describe.runIf(serverAvailable)('mobile SSE — real-time events', () => {
   it('SSE endpoint exists and accepts connections', async () => {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 3000);
@@ -302,7 +307,7 @@ describe('mobile SSE — real-time events', () => {
 // API contract: error response shape
 // ────────────────────────────────────────────────
 
-describe('API error response contract', () => {
+describe.runIf(serverAvailable)('API error response contract', () => {
   it('400 errors return JSON with error field', async () => {
     const res = await fetch(`${API_BASE}/api/sessions`, {
       method: 'POST',
@@ -333,7 +338,7 @@ describe('API error response contract', () => {
 // Mobile API client contract verification
 // ────────────────────────────────────────────────
 
-describe('mobile API client URL contract', () => {
+describe.runIf(serverAvailable)('mobile API client URL contract', () => {
   it('all mobile API paths start with /api/', () => {
     const paths = [
       '/api/health',
@@ -376,7 +381,7 @@ describe('mobile API client URL contract', () => {
 // Cross-platform: web dashboard over API proxy
 // ────────────────────────────────────────────────
 
-describe('web proxy (mobile browser fallback path)', () => {
+describe.runIf(serverAvailable)('web proxy (mobile browser fallback path)', () => {
   it('web dashboard proxies API requests correctly', async () => {
     const directRes = await fetch(`${API_BASE}/api/health`);
     const proxiedRes = await fetch('http://localhost:3200/api/health');
@@ -404,7 +409,7 @@ describe('web proxy (mobile browser fallback path)', () => {
 // Concurrent request handling (multiple mobile devices)
 // ────────────────────────────────────────────────
 
-describe('concurrent requests (simulating multiple mobile devices)', () => {
+describe.runIf(serverAvailable)('concurrent requests (simulating multiple mobile devices)', () => {
   it('handles 10 concurrent health checks without errors', async () => {
     const requests = Array.from({ length: 10 }, () =>
       fetch(`${API_BASE}/api/health`).then((r) => r.status),

@@ -1,10 +1,12 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect } from 'vitest';
 
 /**
  * Live integration tests for desktop + API interaction.
  *
  * These tests run against the real API server (expected on localhost:3100)
  * and validate the full request/response cycle that the desktop app depends on.
+ *
+ * Automatically skipped when the API server is not running (e.g. in CI).
  */
 
 const API_BASE = 'http://localhost:3100';
@@ -19,13 +21,9 @@ async function isServerUp(url: string): Promise<boolean> {
   }
 }
 
-describe('API server health (desktop process supervision target)', () => {
-  beforeAll(async () => {
-    const up = await isServerUp(`${API_BASE}/api/health/live`);
-    if (!up) {
-      console.warn('API server not running — skipping live tests');
-    }
-  });
+const serverAvailable = await isServerUp(`${API_BASE}/api/health/live`);
+
+describe.runIf(serverAvailable)('API server health (desktop process supervision target)', () => {
 
   it('GET /api/health returns ok status', async () => {
     const res = await fetch(`${API_BASE}/api/health`);
@@ -56,7 +54,7 @@ describe('API server health (desktop process supervision target)', () => {
   });
 });
 
-describe('web dashboard proxy (desktop embeds this)', () => {
+describe.runIf(serverAvailable)('web dashboard proxy (desktop embeds this)', () => {
   it('GET / returns 200 with HTML', async () => {
     const res = await fetch(WEB_BASE);
     expect(res.ok).toBe(true);
@@ -80,7 +78,7 @@ describe('web dashboard proxy (desktop embeds this)', () => {
   });
 });
 
-describe('session management (QR pairing flow)', () => {
+describe.runIf(serverAvailable)('session management (QR pairing flow)', () => {
   it('POST /api/sessions without userId returns 400', async () => {
     const res = await fetch(`${API_BASE}/api/sessions`, {
       method: 'POST',
@@ -117,7 +115,7 @@ describe('session management (QR pairing flow)', () => {
   });
 });
 
-describe('session auth middleware (mobile auth flow)', () => {
+describe.runIf(serverAvailable)('session auth middleware (mobile auth flow)', () => {
   it('localhost requests bypass auth', async () => {
     // Requests from localhost should pass without Bearer token
     const res = await fetch(`${API_BASE}/api/health`);
@@ -131,7 +129,7 @@ describe('session auth middleware (mobile auth flow)', () => {
   });
 });
 
-describe('mDNS advertisement (mobile discovery)', () => {
+describe.runIf(serverAvailable)('mDNS advertisement (mobile discovery)', () => {
   it('API logs show mDNS advertisement started', async () => {
     // We verify mDNS was started by checking the API is advertising
     // In integration, we can check the health endpoint includes proper info
@@ -143,7 +141,7 @@ describe('mDNS advertisement (mobile discovery)', () => {
   });
 });
 
-describe('approval endpoints (mobile approve/reject flow)', () => {
+describe.runIf(serverAvailable)('approval endpoints (mobile approve/reject flow)', () => {
   it('GET /api/approvals/:userId/pending returns list (may need DB)', async () => {
     const res = await fetch(`${API_BASE}/api/approvals/test-user-1/pending`);
     if (res.ok) {
@@ -177,7 +175,7 @@ describe('approval endpoints (mobile approve/reject flow)', () => {
   });
 });
 
-describe('decision history (mobile dashboard)', () => {
+describe.runIf(serverAvailable)('decision history (mobile dashboard)', () => {
   it('GET /api/decisions/:userId returns list (may need DB)', async () => {
     const res = await fetch(`${API_BASE}/api/decisions/test-user-1`);
     if (res.ok) {
@@ -200,7 +198,7 @@ describe('decision history (mobile dashboard)', () => {
   });
 });
 
-describe('twin profile (mobile dashboard)', () => {
+describe.runIf(serverAvailable)('twin profile (mobile dashboard)', () => {
   it('GET /api/twin/:userId returns profile (may need DB)', async () => {
     const res = await fetch(`${API_BASE}/api/twin/test-user-1`);
     if (res.ok) {
@@ -212,7 +210,7 @@ describe('twin profile (mobile dashboard)', () => {
   });
 });
 
-describe('policies endpoint (engine gaps feature)', () => {
+describe.runIf(serverAvailable)('policies endpoint (engine gaps feature)', () => {
   it('GET /api/policies/:userId responds (may need DB)', async () => {
     const res = await fetch(`${API_BASE}/api/policies/test-user-1`);
     // 200 (with data), 500 (DB not available) — route exists either way
@@ -220,14 +218,14 @@ describe('policies endpoint (engine gaps feature)', () => {
   });
 });
 
-describe('audit endpoint (dashboard feature)', () => {
+describe.runIf(serverAvailable)('audit endpoint (dashboard feature)', () => {
   it('GET /api/audit/:userId responds (may need DB)', async () => {
     const res = await fetch(`${API_BASE}/api/audit/test-user-1`);
     expect([200, 500, 502, 503]).toContain(res.status);
   });
 });
 
-describe('API CORS and content type', () => {
+describe.runIf(serverAvailable)('API CORS and content type', () => {
   it('JSON responses have correct content-type', async () => {
     const res = await fetch(`${API_BASE}/api/health`);
     const ct = res.headers.get('content-type') ?? '';
@@ -241,7 +239,7 @@ describe('API CORS and content type', () => {
   });
 });
 
-describe('desktop service manager targets', () => {
+describe.runIf(serverAvailable)('desktop service manager targets', () => {
   it('API health check matches service-manager polling URL', async () => {
     // ServiceManager polls http://localhost:3100/api/health every 5s
     const res = await fetch('http://localhost:3100/api/health');
