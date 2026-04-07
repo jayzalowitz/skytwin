@@ -1,106 +1,220 @@
-# SkyTwin
+<p align="center">
+  <h1 align="center">SkyTwin</h1>
+  <p align="center">
+    <strong>A digital twin that learns what you'd want — and does it.</strong>
+  </p>
+  <p align="center">
+    <a href="https://github.com/jayzalowitz/skytwin/actions/workflows/build.yml"><img src="https://github.com/jayzalowitz/skytwin/actions/workflows/build.yml/badge.svg" alt="Build"></a>
+    <a href="https://github.com/jayzalowitz/skytwin/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"></a>
+    <img src="https://img.shields.io/badge/version-0.3.2-green.svg" alt="Version">
+    <img src="https://img.shields.io/badge/tests-589%20passing-brightgreen.svg" alt="Tests">
+    <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux%20%7C%20iOS%20%7C%20Android-lightgrey.svg" alt="Platform">
+  </p>
+</p>
 
-**Judgment Jay: Mildly Apocalyptic Personal Automation**
+---
 
-SkyTwin is a delegated judgment layer that sits above [IronClaw](https://github.com/nearai/ironclaw/). It maintains a digital twin of user preferences, risk tolerances, and decision patterns, then uses that model to act on behalf of the user -- or, when it isn't sure, to ask the right question instead of the wrong one.
+Every personal assistant today has amnesia. You tell it you prefer aisle seats three times. It asks again. You archive the same newsletter every morning. It keeps notifying you. Every interaction starts from scratch.
 
-The core principle: **ask the twin before asking the user.**
+SkyTwin is different. It builds a structured model of your preferences, risk tolerances, and decision patterns — a **digital twin** — then uses that model to act on your behalf. When it's confident, it just handles things. When it's not, it asks the right question instead of the wrong one.
 
-Most personal automation fails because it either does too much (surprise charges, awkward emails) or too little (another notification to ignore). SkyTwin tries to thread the needle: build a real model of what you'd want, act on it when confidence is high, and escalate with context when it isn't.
+**The core principle: ask the twin before asking the user.**
 
-## Architecture
+## How It Works
 
-SkyTwin is structured as a pipeline:
+```
+  Gmail, Calendar, etc.
+         │
+         ▼
+  ┌──────────────┐
+  │   Connectors  │  Ingest signals from your accounts
+  └──────┬───────┘
+         ▼
+  ┌──────────────┐
+  │   Decision    │  "What's happening? What would
+  │   Engine      │   the user want here?"
+  └──────┬───────┘
+         ▼
+  ┌──────────────┐
+  │  Twin Model   │  Your preferences, patterns,
+  │  + MemPalace  │  and episodic memory
+  └──────┬───────┘
+         ▼
+  ┌──────────────┐
+  │   Policy      │  Spend limits, trust tiers,
+  │   Engine      │  safety constraints
+  └──────┬───────┘
+         ▼
+    ┌────┴────┐
+    ▼         ▼
+ Auto-     Escalate
+ execute   with context
+    │         │
+    ▼         ▼
+ Explain   You decide
+    │         │
+    └────┬────┘
+         ▼
+  ┌──────────────┐
+  │  Feedback     │  Your response trains the twin
+  │  Loop         │  to be better next time
+  └──────────────┘
+```
 
-1. **Events arrive** from connected accounts (Gmail, Google Calendar, etc.) via signal connectors, with OAuth tokens auto-refreshed from the database.
-2. The **decision engine** interprets each event, queries the user's twin profile (including behavioral patterns, cross-domain traits, temporal activity, and episodic memories from the Memory Palace), and evaluates candidate actions.
-3. The **policy engine** applies safety constraints, spend limits, and trust tiers before anything executes.
-4. Actions are either auto-executed via IronClaw (with an explanation logged) or escalated as an **approval request** the user can review in the web dashboard.
-5. User feedback (approvals, rejections, edits, undos) flows back to update the twin model, improving future decisions.
+Every path produces an explanation. Every outcome feeds back into the twin. The system gets better at predicting what you want over time.
 
-CockroachDB is the source of truth for twin profiles, decision history, and policy state. The system is designed so that every automated action can be explained, audited, and reversed.
+## Concrete Examples
+
+| Scenario | What SkyTwin Does |
+|----------|-------------------|
+| **Newsletter arrives** | Your twin knows you archive these without reading. Auto-archived. Explanation logged. You never see it. |
+| **Calendar conflict** | You always prioritize skip-level 1:1s over standups. Standup rescheduled with a note to the organizer. |
+| **Subscription renewal** | $15.99/mo streaming service, used 3x this month, 18 months of renewals. Auto-renewed within your spend norms. |
+| **Grocery reorder** | Repeats your last order with your substitution rules. Flags the one item that jumped 15% in price. |
+| **Flight booking** | Finds the United aisle seat, morning departure, direct, $380. At high trust: books it. At low trust: presents top 3 options. |
+| **Unknown sender email** | Low confidence. Escalates with a one-line summary so you can decide in 5 seconds instead of 5 minutes. |
+
+## What Makes This Different
+
+**It's not a chatbot.** SkyTwin is operational, not conversational. It doesn't wait for you to type a prompt — it watches your connected accounts and acts when opportunities arise.
+
+**It earns trust incrementally.** New users start at `observer` — the system only suggests. As you approve and correct, it earns autonomy domain by domain. Trust in email triage doesn't mean trust with your calendar.
+
+**Safety constraints are the product.** Every action passes through a policy engine with hard spend limits, trust tier gating, reversibility checks, and sensitivity classification. The system can be inspected, overridden, narrowed, and shut off at any time. [Read the full safety model →](./docs/safety-model.md)
+
+**Every action is explainable.** No black boxes. Every automated decision produces an explanation record: what happened, what evidence was used, what preferences were invoked, why this action over alternatives, and how to correct it.
+
+**Your twin is inspectable.** It's not a vector embedding or a bag of keywords. It's a typed, versioned data structure where every preference has a confidence level, supporting evidence, and provenance. Contradictions are tracked, not hidden.
 
 ## Quick Start
 
 ### Prerequisites
 
-- Node.js >= 20
-- pnpm >= 9
-- Docker (for CockroachDB)
+- [Node.js](https://nodejs.org/) >= 20
+- [pnpm](https://pnpm.io/) >= 9
+- [Docker](https://www.docker.com/) (for CockroachDB)
 
 ### Setup
 
 ```bash
-# Clone and install
-git clone <repo-url> && cd skytwin
+git clone https://github.com/jayzalowitz/skytwin.git && cd skytwin
 pnpm install
 
-# Start CockroachDB
+# Start the database
 docker-compose up -d cockroachdb
 
-# Configure environment
-cp .env.example .env
-# Edit .env with your values
+# Configure
+cp .env.example .env   # edit with your values
 
-# Run migrations and seed data
+# Migrate and seed
 pnpm db:migrate
 pnpm db:seed
 
-# Build all packages
+# Build and run
 pnpm build
-
-# Start development
 pnpm dev
 ```
+
+The API starts on `localhost:3100`, the web dashboard on `localhost:3200`.
 
 ### Running Tests
 
 ```bash
-pnpm test          # 589 tests across 50+ test files
+pnpm test   # 589 tests across 50+ files
 ```
 
-## Monorepo Structure
+## Architecture
 
-This is a pnpm workspace managed by Turborepo.
+SkyTwin is a TypeScript monorepo (pnpm + Turborepo) with 12 packages and 5 apps:
 
 ```
 apps/
-  api/            # HTTP API server
-  web/            # Web dashboard
-  worker/         # Background job processor
-  desktop/        # Electron desktop app (macOS, Windows, Linux)
-  mobile/         # React Native mobile app (Expo)
+  api/              HTTP API — decisions, user management, webhooks
+  web/              Dashboard — review decisions, manage preferences, configure policies
+  worker/           Background jobs — async execution, feedback processing
+  desktop/          Electron app — macOS (.dmg), Windows (.exe), Linux (.AppImage)
+  mobile/           React Native (Expo) — QR pairing, push notifications, SSE streaming
 
 packages/
-  shared-types/   # TypeScript type definitions shared across all packages
-  config/         # Environment config loading and validation
-  core/           # Core utilities and shared logic
-  db/             # Database client, migrations, and queries
-  twin-model/     # Twin profile management and preference learning
-  decision-engine/# Event interpretation and action selection
-  policy-engine/  # Safety constraints, trust tiers, spend limits
-  ironclaw-adapter/ # HTTP adapter for IronClaw execution server
-  execution-router/ # Adapter selection, fallback chains, and risk modifiers
-  explanations/   # Human-readable explanation generation
-  connectors/     # Gmail, Google Calendar, and mock connectors with OAuth token management
-  evals/          # Evaluation harness for decision quality
-  mempalace/      # Memory Palace: episodic memory, knowledge graph, 4-layer retrieval stack
+  shared-types/     TypeScript interfaces — the dependency root for everything
+  config/           Env var loading and validation
+  core/             Retry logic, circuit breaker, error types, logging
+  db/               CockroachDB client, migrations, repositories
+  twin-model/       Twin profile CRUD, preference learning, confidence scoring
+  decision-engine/  Event interpretation, candidate generation, action selection
+  policy-engine/    Trust tiers, spend limits, domain policies, safety checks
+  ironclaw-adapter/ Execution adapter with HMAC auth, retries, circuit breaker
+  execution-router/ Adapter selection, fallback chains, risk modifiers
+  explanations/     Human-readable explanation generation
+  connectors/       Gmail, Calendar, and mock connectors with OAuth management
+  mempalace/        Episodic memory, knowledge graph, 4-layer retrieval stack
+  evals/            Decision quality evaluation and regression testing
 ```
 
-Packages reference each other via `@skytwin/*` workspace imports. The `shared-types` package is the dependency root -- everything else builds on its type definitions.
+### Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Language | TypeScript (strict, ES2022) |
+| Database | CockroachDB (PostgreSQL wire protocol) |
+| Runtime | Node.js >= 20 |
+| Package Manager | pnpm with workspaces |
+| Build | Turborepo |
+| Desktop | Electron + electron-builder |
+| Mobile | React Native + Expo |
+| Testing | Vitest (589 tests) |
+| CI/CD | GitHub Actions |
+| Execution | [IronClaw](https://github.com/nearai/ironclaw/) |
+
+## Trust Tiers
+
+SkyTwin uses a progressive trust model. Autonomy is earned, not assumed.
+
+| Tier | What It Means |
+|------|---------------|
+| `observer` | System watches and suggests. Never acts. Default for new users. |
+| `suggest` | Drafts actions for your review. You approve or edit before anything happens. |
+| `low_autonomy` | Auto-executes low-risk, reversible actions in trusted domains. Escalates everything else. |
+| `moderate_autonomy` | Handles most routine decisions. Escalates novel situations and high-cost actions. |
+| `high_autonomy` | Acts on your behalf across domains. Still respects hard limits and irreversibility checks. |
+
+Trust is **domain-specific**. You might be at `moderate_autonomy` for email but `suggest` for calendar. A bad decision in one domain can reduce trust in that domain without affecting others.
 
 ## Documentation
 
-Detailed documentation lives in [docs/](./docs/):
+| Document | What's Inside |
+|----------|---------------|
+| [Product Spec](./docs/product-spec.md) | Vision, target user, operating principles, example workflows |
+| [Technical Spec](./docs/technical-spec.md) | Architecture, data flow, API endpoints, database schema |
+| [Safety Model](./docs/safety-model.md) | Threat model, trust tiers, defense layers, safety philosophy |
+| [Decision Engine](./docs/decision-engine.md) | Situation interpretation, risk assessment, confidence scoring |
+| [IronClaw Integration](./docs/ironclaw-integration.md) | Execution adapter, HMAC auth, failure handling |
+| [CockroachDB Architecture](./docs/cockroach-architecture.md) | Schema design (18+ tables), query patterns, versioning |
+| [Evals](./docs/evals.md) | Evaluation harness, scenario simulation, calibration metrics |
 
-- [Product Specification](./docs/product-spec.md) — vision, target user, operating principles
-- [Technical Specification](./docs/technical-spec.md) — architecture, data flow, API endpoints
-- [Safety Model](./docs/safety-model.md) — threat model, trust tiers, defense layers
-- [Decision Engine](./docs/decision-engine.md) — how situations are interpreted and actions selected
-- [IronClaw Integration](./docs/ironclaw-integration.md) — execution adapter, contracts, failure handling
-- [CockroachDB Architecture](./docs/cockroach-architecture.md) — schema design, query patterns, versioning
-- [Evals](./docs/evals.md) — evaluation harness, scenarios, metrics
+## Project Status
+
+SkyTwin is in **active development** (v0.3.2). The core decision pipeline, twin model, policy engine, and memory palace are functional. Gmail and Google Calendar connectors work with real OAuth. Desktop builds ship for all three platforms. The mobile app pairs via QR code.
+
+**What works today:**
+- Full decision pipeline: signal → interpret → decide → policy check → execute/escalate → explain → learn
+- Twin model with versioned profiles, confidence scoring, and preference learning
+- Policy engine with spend limits, trust tiers, and domain-specific rules
+- Memory Palace with episodic memory, knowledge graph, and 4-layer retrieval
+- Web dashboard for reviewing decisions, managing preferences, and auditing
+- Desktop app (macOS, Windows, Linux) and mobile app (iOS, Android)
+- 589 tests with CI/CD on GitHub Actions
+
+**What's next:**
+- More connectors (Slack, Notion, bank feeds)
+- Hosted version with multi-tenant support
+- Plugin system for custom domains
+- Improved preference learning from implicit signals
+
+## Contributing
+
+We welcome contributions. See [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines on getting started, running tests, and submitting pull requests.
 
 ## License
 
-Proprietary. All rights reserved.
+[Apache License 2.0](./LICENSE) — use it, modify it, build on it.
