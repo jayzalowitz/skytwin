@@ -100,6 +100,9 @@ importers:
 
   apps/mobile:
     dependencies:
+      '@babel/runtime':
+        specifier: ^7.24.0
+        version: 7.29.2
       '@react-navigation/native':
         specifier: ^7.0.0
         version: 7.2.2(react-native@0.76.0(@babel/core@7.29.0)(@babel/preset-env@7.29.2(@babel/core@7.29.0))(@types/react@18.3.28)(react@18.3.1))(react@18.3.1)
