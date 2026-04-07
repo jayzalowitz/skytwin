@@ -18,7 +18,7 @@ All notable changes to SkyTwin will be documented in this file.
 - 19 new shared types for the memory palace data model
 - 43 new tests across 6 test files covering palace structure, episode lifecycle, knowledge graph, AAAK compression, memory mining, and decision context enrichment (589 total, up from 546)
 
-## [0.3.1.0] - 2026-04-06
+## [0.3.1.1] - 2026-04-07
 
 ### Added
 
