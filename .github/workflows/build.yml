@@ -63,14 +63,14 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
       - name: Upload macOS DMG
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: SkyTwin-macOS-dmg
           path: apps/desktop/dist-electron/*.dmg
           if-no-files-found: error
 
       - name: Upload macOS ZIP
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: SkyTwin-macOS-zip
           path: apps/desktop/dist-electron/*.zip
@@ -97,7 +97,7 @@ jobs:
         run: pnpm --filter @skytwin/desktop package:win
 
       - name: Upload Windows installer
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: SkyTwin-Windows-installer
           path: apps/desktop/dist-electron/*.exe
@@ -125,7 +125,7 @@ jobs:
         continue-on-error: true
 
       - name: Upload Linux AppImage
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: SkyTwin-Linux-AppImage
@@ -133,7 +133,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Upload Linux deb
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: SkyTwin-Linux-deb
@@ -141,7 +141,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Upload Linux rpm
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: SkyTwin-Linux-rpm
@@ -198,7 +198,7 @@ jobs:
         continue-on-error: true
 
       - name: Upload Android APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: SkyTwin-Android-apk
@@ -266,7 +266,7 @@ jobs:
         continue-on-error: true
 
       - name: Upload iOS simulator build
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: SkyTwin-iOS-simulator
