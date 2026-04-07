@@ -1,6 +1,6 @@
 {
   "name": "@skytwin/desktop",
-  "version": "0.3.0.0",
+  "version": "0.3.0",
   "description": "SkyTwin Desktop — Your personal AI assistant",
   "private": true,
   "main": "dist/main.js",
