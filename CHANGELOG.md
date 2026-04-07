@@ -6,6 +6,10 @@ All notable changes to SkyTwin will be documented in this file.
 
 ### Added
 
+- **Electron Desktop App**: Cross-platform desktop builds via electron-builder, producing macOS `.dmg`, Windows `.exe` NSIS installer, and Linux `.AppImage`/`.deb` packages with platform-specific icon assets and auto-generated icons script
+- **React Native Mobile App**: Expo-based mobile app with QR code pairing to the local API, mDNS automatic server discovery, SSE real-time event streaming, push notification support, and four screens (Dashboard, Approvals, Pairing, Settings)
+- **GitHub Actions CI Workflow**: Build pipeline producing 8 platform artifacts (macOS arm64/x64, Windows x64, Linux x64 for desktop + iOS/Android for mobile) with pnpm caching, parallel matrix builds, and artifact upload
+- **Health Check Endpoints**: Liveness (`/api/health/live`) and readiness (`/api/health/ready`) endpoints with database health probing and latency reporting, separate from the legacy `/api/health` endpoint
 - **mDNS Service Advertisement**: SkyTwin API now advertises itself on the local network via Bonjour/mDNS (`_skytwin._tcp`), enabling automatic discovery by mobile and desktop clients
 - **Database Repository Tests**: 76 unit tests covering user, approval, decision, and policy repositories with full mock isolation
 - **E2E Test Infrastructure**: Real CockroachDB integration tests (15 DB tests + 22 API tests) behind `E2E=true` gate, with `bin/skytwin-e2e-test` orchestration script for Docker-based runs
@@ -23,7 +27,14 @@ All notable changes to SkyTwin will be documented in this file.
 - **Retry false positive on TypeError**: `isNetworkError()` no longer classifies programming TypeErrors (e.g., null dereference) as retryable network errors
 - **Approval double-execution race condition**: `approval_requests` UPDATE now includes `AND status = 'pending'` for atomic check-and-set, with ownership verified before mutation and 409 returned for already-responded requests
 - **Worker circuit breaker memory leak**: Circuit breakers for removed users are now pruned during connector rediscovery
-- **API graceful shutdown**: Server now handles SIGTERM/SIGINT with mDNS cleanup and HTTP connection draining
+- **API graceful shutdown**: Server now handles SIGTERM/SIGINT with mDNS cleanup and HTTP connection draining (25s timeout, K8s-aware)
+- **API config validation**: Critical config fields (databaseUrl, apiPort, nodeEnv) now fail hard in all environments, not just production
+- **Gmail connector token race**: Token captured from the successful retry iteration instead of re-fetching, preventing stale token reuse across retries
+- **Calendar connector sync retry**: Sync token retry counter moved from constructor parameter to private field, preventing external bypass
+- **Worker startup hang detection**: 30-second startup timer catches hangs in user discovery or connector initialization
+- **Approval OAuth token cleanup**: Token deletion moved to `finally` block so cleanup runs even when approval execution fails
+- **Approval expire-sweep restricted**: Expire-sweep endpoint now restricted to localhost IPs (127.0.0.1, ::1)
+- **mDNS double-destroy race**: Stop function uses guard boolean and 2-second timeout to prevent double-destroy when unpublish callback races with shutdown
 
 ## [0.3.0.0] - 2026-04-01
 
