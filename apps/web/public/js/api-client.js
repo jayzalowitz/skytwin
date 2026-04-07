@@ -217,3 +217,9 @@ export function fetchAudit(userId, options = {}) {
 export function fetchSkillGaps(userId) {
   return fetchJSON(`${API}/v1/skill-gaps/${userId}`);
 }
+
+// ── Credentials / Setup ───────────────────────────────
+
+export function fetchUnmetCredentials() {
+  return fetchJSON(`${API}/credentials/unmet`);
+}
