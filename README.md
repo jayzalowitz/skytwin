@@ -1,16 +1,16 @@
-<p align="center">
-  <h1 align="center">SkyTwin</h1>
-  <p align="center">
-    <strong>A digital twin that learns what you'd want — and does it.</strong>
-  </p>
-  <p align="center">
-    <a href="https://github.com/jayzalowitz/skytwin/actions/workflows/build.yml"><img src="https://github.com/jayzalowitz/skytwin/actions/workflows/build.yml/badge.svg" alt="Build"></a>
-    <a href="https://github.com/jayzalowitz/skytwin/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"></a>
-    <img src="https://img.shields.io/badge/version-0.3.2-green.svg" alt="Version">
-    <img src="https://img.shields.io/badge/tests-589%20passing-brightgreen.svg" alt="Tests">
-    <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux%20%7C%20iOS%20%7C%20Android-lightgrey.svg" alt="Platform">
-  </p>
-</p>
+<div align="center">
+
+# SkyTwin
+
+**A digital twin that learns what you'd want — and does it.**
+
+<a href="https://github.com/jayzalowitz/skytwin/actions/workflows/build.yml"><img src="https://github.com/jayzalowitz/skytwin/actions/workflows/build.yml/badge.svg" alt="Build"></a>
+<a href="https://github.com/jayzalowitz/skytwin/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"></a>
+<img src="https://img.shields.io/badge/version-0.3.2.0-green.svg" alt="Version">
+<img src="https://img.shields.io/badge/tests-589%20passing-brightgreen.svg" alt="Tests">
+<img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux%20%7C%20iOS%20%7C%20Android-lightgrey.svg" alt="Platform">
+
+</div>
 
 ---
 
