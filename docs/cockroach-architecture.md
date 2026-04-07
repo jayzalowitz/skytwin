@@ -48,6 +48,23 @@ decisions
 
 execution_plans
   |-- 1:1 --→ execution_results
+
+users (Memory Palace)
+  |-- 1:N --→ memory_wings
+  |-- 1:N --→ memory_tunnels
+  |-- 1:N --→ knowledge_entities
+  |-- 1:N --→ knowledge_triples
+  |-- 1:N --→ episodic_memories
+  |-- 1:N --→ entity_codes
+
+memory_wings
+  |-- 1:N --→ memory_rooms
+  |-- 1:N --→ memory_drawers
+  |-- 1:N --→ memory_closets
+
+memory_rooms
+  |-- 1:N --→ memory_drawers
+  |-- 1:N --→ memory_closets
 ```
 
 ### Table Descriptions
@@ -68,6 +85,15 @@ execution_plans
 | `execution_results` | Results from IronClaw | On execution completion | Audit, failure analysis |
 | `explanation_records` | Human-readable explanations | Per-decision | User review, audit |
 | `feedback_events` | User responses (approve/reject/edit/undo) | On user interaction | Twin model updates, evals |
+| `memory_wings` | Top-level memory palace groupings by domain | On new domain encountered | Palace status, memory retrieval |
+| `memory_rooms` | Topics within a wing | On new topic encountered | Memory filing, tunnel detection |
+| `memory_drawers` | Individual memory chunks (atomic unit) | Per-signal, per-decision | Search, L2/L3 retrieval |
+| `memory_closets` | Compressed summaries (AAAK dialect) | Periodic compression | L1/L2 context loading |
+| `memory_tunnels` | Cross-wing connections via shared topics | On tunnel detection | Cross-domain memory recall |
+| `knowledge_entities` | People, places, projects, concepts | On entity extraction | Knowledge graph queries |
+| `knowledge_triples` | Temporal fact triples (subject-predicate-object) | On fact extraction | Point-in-time queries, timelines |
+| `episodic_memories` | Full decision episodes (situation→action→outcome) | Per-decision | Similar episode retrieval for decisions |
+| `entity_codes` | 3-letter AAAK compression codes | On compression | AAAK encoding/decoding |
 
 ### Primary Keys
 

@@ -26,6 +26,7 @@ skytwin/
     explanations/    # Human-readable explanation generation
     connectors/      # External service integrations (email, calendar, etc.)
     evals/           # Evaluation harness for decision quality
+    mempalace/       # Memory Palace: episodic memory, knowledge graph, 4-layer retrieval
 
   docs/              # Architecture and design documentation
   planning/          # Milestone and issue tracking documents
