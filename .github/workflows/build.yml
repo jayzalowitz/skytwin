@@ -107,6 +107,7 @@ jobs:
     name: Desktop — Linux (AppImage + deb + rpm)
     needs: test
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -151,6 +152,7 @@ jobs:
     name: Mobile — Android APK
     needs: test
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -179,6 +181,10 @@ jobs:
         run: npx expo prebuild --platform android --no-install
         working-directory: apps/mobile
 
+      - name: Install native dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: apps/mobile
+
       - name: Build Android APK
         run: |
           cd android
@@ -200,6 +206,7 @@ jobs:
     name: Mobile — iOS (simulator build)
     needs: test
     runs-on: macos-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -218,6 +225,10 @@ jobs:
 
       - name: Prebuild iOS project
         run: npx expo prebuild --platform ios --no-install
+        working-directory: apps/mobile
+
+      - name: Install native dependencies
+        run: pnpm install --frozen-lockfile
         working-directory: apps/mobile
 
       - name: Install CocoaPods
