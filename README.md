@@ -88,8 +88,8 @@ Every path produces an explanation. Every outcome feeds back into the twin. The 
 </tr>
 <tr>
 <td width="50%">
-<p align="center"><strong>Twin Learnings</strong></p>
-<img src="docs/screenshots/twin.png" alt="Twin learnings — what your digital twin has learned about you">
+<p align="center"><strong>Setup &amp; Credentials</strong></p>
+<img src="docs/screenshots/setup.png" alt="Setup — execution engines, Google OAuth walkthrough, credential management">
 </td>
 <td width="50%">
 <p align="center"><strong>Settings</strong></p>
