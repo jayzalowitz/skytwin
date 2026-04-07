@@ -399,6 +399,121 @@ export interface UserQueryOptions extends PaginationOptions, DateRangeOptions {
   domain?: string;
 }
 
+// ============================================================================
+// Memory Palace
+// ============================================================================
+
+export interface MemoryWingRow {
+  id: string;
+  user_id: string;
+  name: string;
+  description: string;
+  domains: string[];
+  drawer_count: number;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export interface MemoryRoomRow {
+  id: string;
+  wing_id: string;
+  name: string;
+  description: string;
+  halls: string[];
+  drawer_count: number;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export interface MemoryDrawerRow {
+  id: string;
+  room_id: string;
+  wing_id: string;
+  user_id: string;
+  hall: string;
+  content: string;
+  metadata: Record<string, unknown>;
+  source_type: string;
+  source_id: string | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export interface MemoryClosetRow {
+  id: string;
+  room_id: string;
+  wing_id: string;
+  user_id: string;
+  compressed_content: string;
+  source_drawer_ids: string[];
+  drawer_count: number;
+  token_count: number;
+  created_at: Date;
+}
+
+export interface MemoryTunnelRow {
+  id: string;
+  user_id: string;
+  topic: string;
+  connected_room_ids: string[];
+  connected_wing_ids: string[];
+  strength: number;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export interface KnowledgeEntityRow {
+  id: string;
+  user_id: string;
+  name: string;
+  entity_type: string;
+  properties: Record<string, unknown>;
+  aliases: string[];
+  created_at: Date;
+  updated_at: Date;
+}
+
+export interface KnowledgeTripleRow {
+  id: string;
+  user_id: string;
+  subject: string;
+  predicate: string;
+  object: string;
+  valid_from: Date;
+  valid_to: Date | null;
+  confidence: string;
+  source_closet_id: string | null;
+  source_drawer_id: string | null;
+  extracted_at: Date;
+}
+
+export interface EpisodicMemoryRow {
+  id: string;
+  user_id: string;
+  situation_summary: string;
+  domain: string;
+  situation_type: string;
+  context_snapshot: Record<string, unknown>;
+  action_taken: string | null;
+  outcome: Record<string, unknown> | null;
+  feedback_type: string | null;
+  feedback_detail: string | null;
+  decision_id: string | null;
+  signal_ids: string[];
+  drawer_ids: string[];
+  utility_score: number;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export interface EntityCodeRow {
+  id: string;
+  user_id: string;
+  code: string;
+  full_name: string;
+  entity_id: string | null;
+}
+
 /**
  * Represents the full decision context including related records.
  */

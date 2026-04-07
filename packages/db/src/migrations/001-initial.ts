@@ -87,6 +87,16 @@ export async function down(): Promise<void> {
   const pool = getPool();
 
   const dropOrder = [
+    // Added by migration 012 (mempalace)
+    'entity_codes',
+    'episodic_memories',
+    'knowledge_triples',
+    'knowledge_entities',
+    'memory_tunnels',
+    'memory_closets',
+    'memory_drawers',
+    'memory_rooms',
+    'memory_wings',
     // Added by migrations 002–011 (reverse dependency order)
     'sessions',
     'preference_history',

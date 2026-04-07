@@ -13,7 +13,7 @@ Most personal automation fails because it either does too much (surprise charges
 SkyTwin is structured as a pipeline:
 
 1. **Events arrive** from connected accounts (Gmail, Google Calendar, etc.) via signal connectors, with OAuth tokens auto-refreshed from the database.
-2. The **decision engine** interprets each event, queries the user's twin profile (including behavioral patterns, cross-domain traits, and temporal activity), and evaluates candidate actions.
+2. The **decision engine** interprets each event, queries the user's twin profile (including behavioral patterns, cross-domain traits, temporal activity, and episodic memories from the Memory Palace), and evaluates candidate actions.
 3. The **policy engine** applies safety constraints, spend limits, and trust tiers before anything executes.
 4. Actions are either auto-executed via IronClaw (with an explanation logged) or escalated as an **approval request** the user can review in the web dashboard.
 5. User feedback (approvals, rejections, edits, undos) flows back to update the twin model, improving future decisions.
@@ -56,7 +56,7 @@ pnpm dev
 ### Running Tests
 
 ```bash
-pnpm test          # Unit and integration tests across all packages
+pnpm test          # 589 tests across 50+ test files
 ```
 
 ## Monorepo Structure
@@ -84,6 +84,7 @@ packages/
   explanations/   # Human-readable explanation generation
   connectors/     # Gmail, Google Calendar, and mock connectors with OAuth token management
   evals/          # Evaluation harness for decision quality
+  mempalace/      # Memory Palace: episodic memory, knowledge graph, 4-layer retrieval stack
 ```
 
 Packages reference each other via `@skytwin/*` workspace imports. The `shared-types` package is the dependency root -- everything else builds on its type definitions.

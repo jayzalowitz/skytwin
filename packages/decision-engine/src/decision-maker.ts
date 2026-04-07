@@ -1022,6 +1022,9 @@ export class DecisionMaker {
     // Trait-based risk adjustment: cautious_spender increases scrutiny on costs
     score += this.calculateTraitAdjustment(candidate, context, assessment);
 
+    // Episodic memory boost: past episodes with positive outcomes boost similar actions
+    score += this.calculateEpisodicBoost(candidate, context);
+
     return score;
   }
 
@@ -1094,6 +1097,49 @@ export class DecisionMaker {
     }
 
     return adjustment;
+  }
+
+  /**
+   * Boost score based on episodic memories from the memory palace.
+   * Past episodes where a similar action was approved get a positive boost.
+   * Past episodes where a similar action was rejected get a penalty.
+   */
+  private calculateEpisodicBoost(
+    candidate: CandidateAction,
+    context: DecisionContext,
+  ): number {
+    if (!context.episodicMemories || context.episodicMemories.length === 0) return 0;
+
+    let boost = 0;
+
+    for (const episode of context.episodicMemories) {
+      // Check domain match
+      if (episode.domain !== candidate.domain) continue;
+
+      // Check if the action type is similar
+      const actionMatch = episode.actionTaken?.toLowerCase().includes(candidate.actionType.replace(/_/g, ' '));
+
+      if (actionMatch || episode.situationType === context.decision.situationType) {
+        // Positive feedback on similar action = boost
+        if (episode.feedbackType === 'approve') {
+          boost += 10 * episode.utilityScore;
+        }
+        // Negative feedback = penalty
+        else if (episode.feedbackType === 'reject' || episode.feedbackType === 'undo') {
+          boost -= 8 * (1 - episode.utilityScore);
+        }
+        // Correction = mild penalty for the original action
+        else if (episode.feedbackType === 'correct') {
+          boost -= 3;
+        }
+        // No feedback yet but was auto-executed = slight boost
+        else if (!episode.feedbackType && episode.outcome?.success) {
+          boost += 3;
+        }
+      }
+    }
+
+    return Math.max(-15, Math.min(boost, 20)); // Cap between -15 and +20
   }
 
   private calculatePreferenceAlignment(

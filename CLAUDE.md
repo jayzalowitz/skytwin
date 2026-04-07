@@ -57,6 +57,7 @@ pnpm --filter @skytwin/twin-model test
 | `@skytwin/execution-router` | Adapter selection between IronClaw, OpenClaw, and Direct execution with trust-ranked fallback chains, risk modifiers, and skill gap detection. |
 | `@skytwin/explanations` | Generates human-readable explanations for decisions and actions. |
 | `@skytwin/connectors` | Gmail, Google Calendar, and mock signal connectors with OAuth token management (DbTokenStore). |
+| `@skytwin/mempalace` | Memory Palace system: spatial memory organization (wings/rooms/drawers), 4-layer retrieval stack, knowledge graph with temporal triples, episodic memory, AAAK compression. Enriches DecisionContext with past episodes. |
 | `@skytwin/evals` | Evaluation framework for measuring decision quality over time. |
 
 ### Apps

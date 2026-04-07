@@ -315,9 +315,11 @@ DecisionObject created
     |-- fetch applicable ActionPolicies
     |-- fetch user TrustTier
     |-- fetch relevant history (recent decisions in this domain)
+    |-- retrieve episodic memories from Memory Palace (similar past episodes)
+    |-- load wake-up context (L0 identity + L1 essential story)
     |
     v
-DecisionContext assembled
+DecisionContext assembled (now includes episodicMemories + wakeUpContext)
     |
     v
 [Generate Candidates]
@@ -344,6 +346,7 @@ CandidateAction[] generated
 [Rank Candidates]
     |-- primary: predicted user preference (highest confidence first)
     |-- secondary: risk (lower risk preferred when confidence is similar)
+    |-- episodic boost: past episodes with positive feedback boost similar actions
     |-- tiebreaker: reversibility (prefer reversible)
     |
     v
