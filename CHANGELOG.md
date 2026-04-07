@@ -1,5 +1,20 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.3.2.1] - 2026-04-07
+
+### Added
+
+- **Launch-ready README**: Complete rewrite with value proposition, ASCII architecture diagram, concrete scenario examples, trust tier documentation, version badges, and 6 dashboard screenshots
+- **Apache 2.0 License**: Open-source licensing replaces proprietary notice
+- **Community files**: CONTRIBUTING.md (dev workflow, safety invariants), SECURITY.md (vulnerability reporting, threat scope), CODE_OF_CONDUCT.md (Contributor Covenant)
+- **GitHub templates**: Bug report and feature request issue templates, PR template with safety checklist
+- **Dependabot**: Weekly automated dependency updates for npm and GitHub Actions
+- **Dashboard screenshots**: Onboarding, dashboard, approvals, decision history, setup/credentials, and settings pages captured and embedded in README
+
+### Changed
+
+- Package.json enriched with description, repository URL, homepage, author, license, and keyword metadata
+
 ## [0.3.2.0] - 2026-04-07
 
 ### Added
