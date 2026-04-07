@@ -7,7 +7,7 @@
   "scripts": {
     "start": "electron .",
     "dev": "tsc && electron .",
-    "build": "echo 'Desktop build requires: pnpm --filter @skytwin/desktop install && pnpm --filter @skytwin/desktop package:mac'",
+    "build": "node -e \"console.log('Desktop build requires: pnpm --filter @skytwin/desktop package:[mac|win|linux]')\"",
     "test": "vitest run",
     "package:mac": "tsc && electron-builder --mac",
     "package:win": "tsc && electron-builder --win",

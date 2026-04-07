@@ -7,9 +7,9 @@
     "start": "expo start",
     "android": "expo start --android",
     "ios": "expo start --ios",
-    "build": "echo 'Mobile build requires: npx expo prebuild && npx expo build'",
+    "build": "node -e \"console.log('Mobile build requires: npx expo prebuild && npx expo build')\"",
     "test": "vitest run",
-    "lint": "echo 'Mobile lint not configured'"
+    "lint": "node -e \"console.log('Mobile lint not configured')\""
   },
   "dependencies": {
     "expo": "~52.0.0",
