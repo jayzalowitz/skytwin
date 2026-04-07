@@ -48,7 +48,7 @@ pnpm --filter @skytwin/twin-model test
 |---------|---------|
 | `@skytwin/shared-types` | All TypeScript interfaces and type definitions. The dependency root. |
 | `@skytwin/config` | Environment variable loading, validation, and typed config objects. |
-| `@skytwin/core` | Shared utilities, error types, logging helpers. |
+| `@skytwin/core` | Shared utilities, error types, logging helpers. Includes retry with exponential backoff (`withRetry`) and circuit breaker (`CircuitBreaker`). |
 | `@skytwin/db` | CockroachDB client, migrations, query builders, and repository layer. |
 | `@skytwin/twin-model` | Twin profile CRUD, preference learning, confidence scoring. |
 | `@skytwin/decision-engine` | Event interpretation, candidate action generation, action selection. |
@@ -63,9 +63,11 @@ pnpm --filter @skytwin/twin-model test
 
 | App | Purpose |
 |-----|---------|
-| `api` | HTTP API server exposing decision endpoints, user management, and webhooks. |
+| `api` | HTTP API server exposing decision endpoints, user management, and webhooks. Includes liveness/readiness health checks and mDNS service advertisement. |
 | `web` | Web dashboard for reviewing decisions, managing preferences, and configuring policies. |
-| `worker` | Background job processor for async decision execution and feedback processing. |
+| `worker` | Background job processor for async decision execution and feedback processing. Includes startup hang detection and graceful shutdown. |
+| `desktop` | Electron desktop app with electron-builder. Cross-platform builds for macOS (.dmg), Windows (.exe), and Linux (.AppImage/.deb). |
+| `mobile` | React Native mobile app (Expo). QR code pairing, mDNS API discovery, SSE real-time streaming, push notifications. |
 
 ## Key Patterns
 

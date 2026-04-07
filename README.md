@@ -56,7 +56,7 @@ pnpm dev
 ### Running Tests
 
 ```bash
-pnpm test          # 432 tests across 40+ test files
+pnpm test          # Unit and integration tests across all packages
 ```
 
 ## Monorepo Structure
@@ -68,6 +68,8 @@ apps/
   api/            # HTTP API server
   web/            # Web dashboard
   worker/         # Background job processor
+  desktop/        # Electron desktop app (macOS, Windows, Linux)
+  mobile/         # React Native mobile app (Expo)
 
 packages/
   shared-types/   # TypeScript type definitions shared across all packages

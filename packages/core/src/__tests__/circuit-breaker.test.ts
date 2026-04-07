@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import {
   CircuitBreaker,
   CircuitOpenError,
@@ -9,12 +9,17 @@ describe('CircuitBreaker', () => {
   let breaker: CircuitBreaker;
 
   beforeEach(() => {
+    vi.useFakeTimers();
     breaker = new CircuitBreaker('test', {
       failureThreshold: 3,
       resetTimeoutMs: 100,
       backoffMultiplier: 2,
       maxResetTimeoutMs: 400,
     });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('starts in closed state', () => {
@@ -38,40 +43,40 @@ describe('CircuitBreaker', () => {
     expect(breaker.canExecute()).toBe(false);
   });
 
-  it('transitions to half_open after reset timeout', async () => {
+  it('transitions to half_open after reset timeout', () => {
     // Open the circuit
     breaker.recordFailure();
     breaker.recordFailure();
     breaker.recordFailure();
     expect(breaker.getState()).toBe('open');
 
-    // Wait for reset timeout
-    await new Promise((r) => setTimeout(r, 120));
+    // Advance past reset timeout
+    vi.advanceTimersByTime(100);
 
     expect(breaker.getState()).toBe('half_open');
     expect(breaker.canExecute()).toBe(true);
   });
 
-  it('closes on success after half_open', async () => {
+  it('closes on success after half_open', () => {
     breaker.recordFailure();
     breaker.recordFailure();
     breaker.recordFailure();
 
-    await new Promise((r) => setTimeout(r, 120));
+    vi.advanceTimersByTime(100);
     expect(breaker.canExecute()).toBe(true);
 
     breaker.recordSuccess();
     expect(breaker.getState()).toBe('closed');
   });
 
-  it('allows only one probe at a time in half_open state', async () => {
+  it('allows only one probe at a time in half_open state', () => {
     // Open the circuit
     breaker.recordFailure();
     breaker.recordFailure();
     breaker.recordFailure();
 
     // Wait for reset timeout to transition to half_open
-    await new Promise((r) => setTimeout(r, 120));
+    vi.advanceTimersByTime(100);
 
     // First probe should be allowed
     expect(breaker.canExecute()).toBe(true);
@@ -85,42 +90,42 @@ describe('CircuitBreaker', () => {
     expect(breaker.canExecute()).toBe(true);
   });
 
-  it('clears probe latch on failure in half_open', async () => {
+  it('clears probe latch on failure in half_open', () => {
     breaker.recordFailure();
     breaker.recordFailure();
     breaker.recordFailure();
 
-    await new Promise((r) => setTimeout(r, 120));
+    vi.advanceTimersByTime(100);
     expect(breaker.canExecute()).toBe(true); // first probe
 
     // Probe fails — circuit reopens
     breaker.recordFailure();
     expect(breaker.getState()).toBe('open');
 
-    // After backoff timeout, a new probe should be allowed
-    await new Promise((r) => setTimeout(r, 220)); // backoff is 200ms
+    // After backoff timeout (200ms = 100 * 2), a new probe should be allowed
+    vi.advanceTimersByTime(200);
     expect(breaker.canExecute()).toBe(true);
   });
 
-  it('reopens with backoff on failure in half_open', async () => {
+  it('reopens with backoff on failure in half_open', () => {
     // First open
     breaker.recordFailure();
     breaker.recordFailure();
     breaker.recordFailure();
 
-    await new Promise((r) => setTimeout(r, 120));
+    vi.advanceTimersByTime(100);
     expect(breaker.getState()).toBe('half_open');
 
     // Probe fails — should reopen with longer timeout
     breaker.recordFailure();
     expect(breaker.getState()).toBe('open');
 
-    // Still open after original timeout
-    await new Promise((r) => setTimeout(r, 120));
-    expect(breaker.getState()).toBe('open'); // backoff doubled to 200ms
+    // Still open after original timeout (backoff doubled to 200ms)
+    vi.advanceTimersByTime(100);
+    expect(breaker.getState()).toBe('open');
 
-    // Wait for backoff timeout
-    await new Promise((r) => setTimeout(r, 100));
+    // Wait for remaining backoff
+    vi.advanceTimersByTime(100);
     expect(breaker.getState()).toBe('half_open');
   });
 
@@ -150,6 +155,14 @@ describe('CircuitBreaker', () => {
 });
 
 describe('withCircuitBreaker', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('executes fn when circuit is closed', async () => {
     const breaker = new CircuitBreaker('test', { failureThreshold: 3, resetTimeoutMs: 100 });
     const result = await withCircuitBreaker(breaker, async () => 'ok');

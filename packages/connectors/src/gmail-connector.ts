@@ -60,10 +60,12 @@ export class GmailConnector implements SignalConnector {
 
     const listUrl = `${GMAIL_API}/users/me/messages?q=${encodeURIComponent(query)}&maxResults=10`;
 
+    let capturedAccessToken = '';
     const listResponse = await withRetry(async () => {
       const currentToken = await this.tokenStore.refreshIfExpired(this.userId, 'google');
+      capturedAccessToken = currentToken.accessToken;
       const response = await fetch(listUrl, {
-        headers: { Authorization: `Bearer ${currentToken.accessToken}` },
+        headers: { Authorization: `Bearer ${capturedAccessToken}` },
       });
 
       if (!response.ok) {
@@ -81,8 +83,11 @@ export class GmailConnector implements SignalConnector {
       return response;
     }, { maxRetries: 3, baseDelayMs: 1000 });
 
-    const currentToken = await this.tokenStore.refreshIfExpired(this.userId, 'google');
-    return this.processListResponse(listResponse, currentToken.accessToken);
+    // Reuse the same token that produced the successful list response
+    if (!capturedAccessToken) {
+      throw new Error('GmailConnector: no access token captured from successful list request');
+    }
+    return this.processListResponse(listResponse, capturedAccessToken);
   }
 
   onSignal(handler: SignalHandler): void {
@@ -137,9 +142,16 @@ export class GmailConnector implements SignalConnector {
         return resp;
       }, { maxRetries: 2, baseDelayMs: 500 });
 
-      if (!response.ok) return null;
+      if (!response.ok) {
+        console.warn(`[gmail] Failed to fetch message ${messageId}: HTTP ${response.status}`);
+        return null;
+      }
       return response.json() as Promise<GmailMessage>;
-    } catch {
+    } catch (error) {
+      console.warn(
+        `[gmail] Error fetching message ${messageId}:`,
+        error instanceof Error ? error.message : String(error),
+      );
       return null;
     }
   }

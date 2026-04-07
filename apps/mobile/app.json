@@ -1,0 +1,55 @@
+{
+  "expo": {
+    "name": "SkyTwin",
+    "slug": "skytwin-mobile",
+    "version": "0.4.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#1a1a2e"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.skytwin.mobile",
+      "infoPlist": {
+        "NSCameraUsageDescription": "SkyTwin needs camera access to scan QR codes for pairing with your desktop.",
+        "NSLocalNetworkUsageDescription": "SkyTwin needs local network access to discover and communicate with the SkyTwin API on your computer.",
+        "NSBonjourServices": [
+          "_skytwin._tcp."
+        ]
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#1a1a2e"
+      },
+      "package": "com.skytwin.mobile",
+      "permissions": [
+        "CAMERA",
+        "VIBRATE"
+      ]
+    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "SkyTwin needs camera access to scan QR codes for pairing."
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/notification-icon.png",
+          "color": "#4a90d9"
+        }
+      ]
+    ]
+  }
+}

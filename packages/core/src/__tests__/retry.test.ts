@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   withRetry,
   RetryableHttpError,
@@ -60,6 +60,10 @@ describe('calculateDelay', () => {
 });
 
 describe('withRetry', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('returns immediately on success', async () => {
     const fn = vi.fn().mockResolvedValue('ok');
     const result = await withRetry(fn, { maxRetries: 3, baseDelayMs: 10 });
@@ -130,15 +134,18 @@ describe('withRetry', () => {
   });
 
   it('respects retryAfterMs from RetryableHttpError', async () => {
+    vi.useFakeTimers();
     const fn = vi.fn()
       .mockRejectedValueOnce(new RetryableHttpError(429, 'Rate limited', 50))
       .mockResolvedValue('ok');
 
-    const start = Date.now();
-    await withRetry(fn, { maxRetries: 1, baseDelayMs: 10 });
-    const elapsed = Date.now() - start;
+    const promise = withRetry(fn, { maxRetries: 1, baseDelayMs: 10 });
 
-    // Should have waited at least 50ms (the retryAfterMs)
-    expect(elapsed).toBeGreaterThanOrEqual(40); // allow small timing variance
+    // Advance past the 50ms retryAfterMs delay
+    await vi.advanceTimersByTimeAsync(50);
+    const result = await promise;
+    expect(result).toBe('ok');
+    expect(fn).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
   });
 });
