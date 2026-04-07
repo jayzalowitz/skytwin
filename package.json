@@ -1,6 +1,25 @@
 {
   "name": "skytwin",
+  "version": "0.3.2.1",
+  "description": "A delegated judgment layer that builds a digital twin of your preferences and acts on your behalf — with safety constraints, explanations, and progressive trust.",
   "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jayzalowitz/skytwin.git"
+  },
+  "homepage": "https://github.com/jayzalowitz/skytwin",
+  "author": "Jay Zalowitz <jay@skytwin.dev>",
+  "license": "Apache-2.0",
+  "keywords": [
+    "digital-twin",
+    "personal-automation",
+    "decision-engine",
+    "ai-agent",
+    "preference-learning",
+    "policy-engine",
+    "cockroachdb",
+    "typescript"
+  ],
   "scripts": {
     "start": "./bin/skytwin-dev",
     "stop": "./bin/skytwin-dev --stop",
