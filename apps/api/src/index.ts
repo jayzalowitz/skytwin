@@ -18,6 +18,7 @@ import { createAuditRouter } from './routes/audit.js';
 import { sessionAuth } from './middleware/session-auth.js';
 import { createPoliciesRouter } from './routes/policies.js';
 import { createMempalaceRouter } from './routes/mempalace.js';
+import { createCredentialsRouter } from './routes/credentials.js';
 import { getExecutionRouter } from './execution-setup.js';
 import { startMdnsAdvertisement, stopMdnsAdvertisement } from './mdns.js';
 import { closePool } from '@skytwin/db';
@@ -108,6 +109,7 @@ app.use('/api/sessions', createSessionsRouter());
 app.use('/api/audit', createAuditRouter());
 app.use('/api/policies', createPoliciesRouter());
 app.use('/api/mempalace', createMempalaceRouter());
+app.use('/api/credentials', createCredentialsRouter());
 
 // Error handling middleware
 app.use(
