@@ -71,3 +71,9 @@ export type {
   CreateEntityInput,
   CreateTripleInput,
 } from './mempalace-repository.js';
+
+export { serviceCredentialRepository } from './service-credential-repository.js';
+export type { UpsertServiceCredentialInput } from './service-credential-repository.js';
+
+export { credentialRequirementRepository } from './credential-requirement-repository.js';
+export type { RegisterCredentialRequirementInput } from './credential-requirement-repository.js';
