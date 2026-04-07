@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { MemoryMiner } from '../miner.js';
-import type { Palace } from '../palace.js';
+import type { Palace, PalaceRepositoryPort } from '../palace.js';
 import type { KnowledgeGraph } from '../knowledge-graph.js';
-import type { EpisodeStore } from '../episode-store.js';
+import type { EpisodeStore, EpisodeRepositoryPort } from '../episode-store.js';
 import type { TwinEvidence, DecisionOutcome, FeedbackEvent, MemoryDrawer } from '@skytwin/shared-types';
 import { ConfidenceLevel } from '@skytwin/shared-types';
 
@@ -28,6 +28,28 @@ function createMockPalace(): Palace {
     }),
     _filed: filed,
   } as unknown as Palace;
+}
+
+function createMockPalaceRepo(existingDrawers: MemoryDrawer[] = []): PalaceRepositoryPort {
+  return {
+    findDrawerBySourceId: vi.fn(async (_userId, _sourceType, sourceId) =>
+      existingDrawers.find((d) => d.sourceId === sourceId) ?? null,
+    ),
+    createWing: vi.fn(), getWings: vi.fn(), getWingByName: vi.fn(),
+    createRoom: vi.fn(), getRooms: vi.fn(), getRoomByName: vi.fn(), getRoomsByTopic: vi.fn(),
+    createDrawer: vi.fn(), getDrawers: vi.fn(), searchDrawers: vi.fn(), deleteDrawer: vi.fn(),
+    upsertTunnel: vi.fn(), getTunnels: vi.fn(), getStatus: vi.fn(),
+  } as unknown as PalaceRepositoryPort;
+}
+
+function createMockEpisodeRepo(): EpisodeRepositoryPort {
+  return {
+    createEpisode: vi.fn(),
+    getEpisodes: vi.fn(async () => []),
+    getEpisodeByDecision: vi.fn(async () => null),
+    updateEpisode: vi.fn(),
+    searchEpisodes: vi.fn(async () => []),
+  };
 }
 
 function createMockKG(): KnowledgeGraph {
@@ -80,13 +102,17 @@ describe('MemoryMiner', () => {
   let palace: Palace;
   let kg: KnowledgeGraph;
   let episodeStore: EpisodeStore;
+  let palaceRepo: PalaceRepositoryPort;
+  let episodeRepo: EpisodeRepositoryPort;
   let miner: MemoryMiner;
 
   beforeEach(() => {
     palace = createMockPalace();
     kg = createMockKG();
     episodeStore = createMockEpisodeStore();
-    miner = new MemoryMiner(palace, kg, episodeStore);
+    palaceRepo = createMockPalaceRepo();
+    episodeRepo = createMockEpisodeRepo();
+    miner = new MemoryMiner(palace, kg, episodeStore, palaceRepo, episodeRepo);
   });
 
   describe('mineEvidence', () => {
@@ -234,6 +260,105 @@ describe('MemoryMiner', () => {
 
       await miner.mineFeedback('user1', feedback);
       expect(palace.fileMemory).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('deduplication', () => {
+    it('should skip mining evidence when a drawer already exists for the sourceId', async () => {
+      const existingDrawer: MemoryDrawer = {
+        id: 'drawer_existing',
+        roomId: 'room_1',
+        wingId: 'wing_1',
+        userId: 'user1',
+        hall: 'events',
+        content: 'Already mined',
+        metadata: { importance: 0.5 },
+        sourceType: 'signal',
+        sourceId: 'ev_dup',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+
+      const dedupPalaceRepo = createMockPalaceRepo([existingDrawer]);
+      const dedupMiner = new MemoryMiner(palace, kg, episodeStore, dedupPalaceRepo, episodeRepo);
+
+      const evidence: TwinEvidence = {
+        id: 'ev_dup',
+        userId: 'user1',
+        source: 'gmail',
+        type: 'email',
+        domain: 'email',
+        data: { subject: 'Hello' },
+        timestamp: new Date(),
+      };
+
+      const result = await dedupMiner.mineEvidence('user1', evidence);
+
+      expect(result.id).toBe('drawer_existing');
+      expect(palace.fileMemory).not.toHaveBeenCalled();
+      expect(kg.extractEntitiesFromText).not.toHaveBeenCalled();
+    });
+
+    it('should skip mining a decision when an episode already exists for the decisionId', async () => {
+      const dedupEpisodeRepo = createMockEpisodeRepo();
+      (dedupEpisodeRepo.getEpisodeByDecision as ReturnType<typeof vi.fn>).mockResolvedValue({
+        id: 'ep_existing',
+        userId: 'user1',
+        situationSummary: 'Already recorded',
+        domain: 'email',
+        situationType: 'email_triage',
+        contextSnapshot: {},
+        utilityScore: 0.7,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+
+      const dedupMiner = new MemoryMiner(palace, kg, episodeStore, palaceRepo, dedupEpisodeRepo);
+
+      const outcome: DecisionOutcome = {
+        id: 'out_dup',
+        decisionId: 'dec_dup',
+        selectedAction: {
+          id: 'act_1',
+          decisionId: 'dec_dup',
+          actionType: 'archive_email',
+          description: 'Archive',
+          domain: 'email',
+          parameters: {},
+          estimatedCostCents: 0,
+          reversible: true,
+          confidence: ConfidenceLevel.HIGH,
+          reasoning: 'Low priority',
+        },
+        allCandidates: [],
+        riskAssessment: null,
+        autoExecute: true,
+        requiresApproval: false,
+        reasoning: 'Auto-archive',
+        decidedAt: new Date(),
+      };
+
+      await dedupMiner.mineDecision('user1', 'email', 'email_triage', 'Newsletter', outcome, [], []);
+
+      expect(episodeStore.recordFromDecision).not.toHaveBeenCalled();
+      expect(palace.fileMemory).not.toHaveBeenCalled();
+    });
+
+    it('should proceed normally when palaceRepo is not provided (backward compat)', async () => {
+      const minerWithoutRepos = new MemoryMiner(palace, kg, episodeStore);
+
+      const evidence: TwinEvidence = {
+        id: 'ev_new',
+        userId: 'user1',
+        source: 'gmail',
+        type: 'email',
+        domain: 'email',
+        data: { subject: 'Hi' },
+        timestamp: new Date(),
+      };
+
+      await minerWithoutRepos.mineEvidence('user1', evidence);
+      expect(palace.fileMemory).toHaveBeenCalledOnce();
     });
   });
 });

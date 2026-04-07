@@ -8,9 +8,9 @@ import type {
   MemoryHall,
   DrawerMetadata,
 } from '@skytwin/shared-types';
-import type { Palace } from './palace.js';
+import type { Palace, PalaceRepositoryPort } from './palace.js';
 import type { KnowledgeGraph } from './knowledge-graph.js';
-import type { EpisodeStore } from './episode-store.js';
+import type { EpisodeStore, EpisodeRepositoryPort } from './episode-store.js';
 
 /**
  * The MemoryMiner extracts structured memories from raw signals,
@@ -22,13 +22,23 @@ export class MemoryMiner {
     private readonly palace: Palace,
     private readonly knowledgeGraph: KnowledgeGraph,
     private readonly episodeStore: EpisodeStore,
+    private readonly palaceRepo?: PalaceRepositoryPort,
+    private readonly episodeRepo?: EpisodeRepositoryPort,
   ) {}
 
   /**
    * Mine a new piece of evidence (signal) into the memory palace.
    * Creates drawers in the appropriate wing/room and extracts entities.
+   * Idempotent: if a drawer already exists for this evidence's sourceId,
+   * it is returned without creating a duplicate.
    */
   async mineEvidence(userId: string, evidence: TwinEvidence): Promise<MemoryDrawer> {
+    // Dedup: check if this evidence has already been mined
+    if (this.palaceRepo && evidence.id) {
+      const existing = await this.palaceRepo.findDrawerBySourceId(userId, 'signal', evidence.id);
+      if (existing) return existing;
+    }
+
     const hall = this.evidenceToHall(evidence);
     const topic = this.evidenceToTopic(evidence);
     const content = this.evidenceToContent(evidence);
@@ -73,6 +83,7 @@ export class MemoryMiner {
   /**
    * Mine a decision outcome into the memory palace.
    * Creates an episodic memory and records decision-related drawers.
+   * Idempotent: skips if an episode already exists for this decision.
    */
   async mineDecision(
     userId: string,
@@ -83,6 +94,12 @@ export class MemoryMiner {
     activePreferences: Preference[],
     activePatterns: BehavioralPattern[],
   ): Promise<void> {
+    // Dedup: check if this decision has already been mined as an episode
+    if (this.episodeRepo && outcome.decisionId) {
+      const existing = await this.episodeRepo.getEpisodeByDecision(outcome.decisionId);
+      if (existing) return;
+    }
+
     // Create the episodic memory
     await this.episodeStore.recordFromDecision(
       userId,
