@@ -514,6 +514,35 @@ export interface EntityCodeRow {
   entity_id: string | null;
 }
 
+// ============================================================================
+// Service Credentials
+// ============================================================================
+
+export interface ServiceCredentialRow {
+  id: string;
+  service: string;
+  credential_key: string;
+  credential_value: string;
+  label: string | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export interface CredentialRequirementRow {
+  id: string;
+  adapter: string;
+  integration: string;
+  integration_label: string;
+  description: string | null;
+  field_key: string;
+  field_label: string;
+  field_placeholder: string | null;
+  is_secret: boolean;
+  is_optional: boolean;
+  skills: string[];
+  created_at: Date;
+}
+
 /**
  * Represents the full decision context including related records.
  */

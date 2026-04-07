@@ -8,6 +8,31 @@ import type {
 import type { IronClawAdapter } from '@skytwin/ironclaw-adapter';
 
 /**
+ * Credential requirement reported by an OpenClaw server.
+ * When a skill needs external API credentials that haven't been configured,
+ * OpenClaw returns this in its response so SkyTwin can flag it to the user.
+ */
+export interface OpenClawCredentialRequirement {
+  integration: string;
+  integrationLabel: string;
+  description?: string;
+  fields: Array<{
+    key: string;
+    label: string;
+    placeholder?: string;
+    secret?: boolean;
+    optional?: boolean;
+  }>;
+  skills: string[];
+}
+
+/**
+ * Callback for when OpenClaw reports a credential requirement.
+ * The API layer provides an implementation that persists to the DB and notifies users.
+ */
+export type OnCredentialNeeded = (requirement: OpenClawCredentialRequirement) => void | Promise<void>;
+
+/**
  * The set of action types the OpenClaw adapter can handle.
  * OpenClaw supports a broader range of action types than IronClaw,
  * including social media, web search, data analysis, and content generation.
@@ -107,10 +132,12 @@ export class OpenClawAdapter implements IronClawAdapter {
   private readonly apiUrl: string | null;
   private readonly apiKey: string | null;
   private readonly executedPlans = new Map<string, ExecutionPlan>();
+  private readonly onCredentialNeeded: OnCredentialNeeded | null;
 
-  constructor(config?: { apiUrl?: string; apiKey?: string }) {
+  constructor(config?: { apiUrl?: string; apiKey?: string; onCredentialNeeded?: OnCredentialNeeded }) {
     this.apiUrl = config?.apiUrl ?? null;
     this.apiKey = config?.apiKey ?? null;
+    this.onCredentialNeeded = config?.onCredentialNeeded ?? null;
   }
 
   async buildPlan(action: CandidateAction): Promise<ExecutionPlan> {
@@ -203,6 +230,35 @@ export class OpenClawAdapter implements IronClawAdapter {
         }
 
         const result = await response.json() as Record<string, unknown>;
+
+        // Check if OpenClaw is reporting that this skill needs credentials
+        if (result['credential_required'] && this.onCredentialNeeded) {
+          const credReq = result['credential_required'] as Record<string, unknown>;
+          try {
+            await this.onCredentialNeeded({
+              integration: (credReq['integration'] as string) ?? plan.action.actionType,
+              integrationLabel: (credReq['label'] as string) ?? plan.action.actionType,
+              description: credReq['description'] as string | undefined,
+              fields: (credReq['fields'] as Array<{ key: string; label: string; placeholder?: string; secret?: boolean; optional?: boolean }>) ?? [],
+              skills: (credReq['skills'] as string[]) ?? [plan.action.actionType],
+            });
+          } catch {
+            // Don't let callback errors block the response
+          }
+
+          return {
+            planId: plan.id,
+            status: 'failed',
+            startedAt,
+            completedAt: new Date(),
+            error: `Credentials needed for ${(credReq['label'] as string) ?? plan.action.actionType}. Check the Setup page.`,
+            output: {
+              adapter_used: 'openclaw',
+              credential_required: true,
+              integration: credReq['integration'],
+            },
+          };
+        }
 
         return {
           planId: plan.id,

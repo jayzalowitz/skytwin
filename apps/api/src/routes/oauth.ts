@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { loadConfig } from '@skytwin/config';
-import { oauthRepository } from '@skytwin/db';
+import { oauthRepository, serviceCredentialRepository } from '@skytwin/db';
 import {
   generateAuthUrl,
   exchangeCode,
@@ -19,28 +19,55 @@ const CALENDAR_SCOPES = [
 ];
 
 /**
+ * Build the Google OAuth config, preferring DB-stored credentials from
+ * the Setup page over environment variables.
+ */
+async function resolveGoogleConfig(): Promise<GoogleOAuthConfig> {
+  const config = loadConfig();
+
+  // Start with env-var values
+  let clientId = config.googleClientId;
+  let clientSecret = config.googleClientSecret;
+  let redirectUri = config.googleRedirectUri;
+
+  // If env vars are empty, check the DB (credentials set via Setup page)
+  if (!clientId || !clientSecret) {
+    try {
+      const dbCreds = await serviceCredentialRepository.getAsMap('google');
+      if (dbCreds['client_id'] && !clientId) clientId = dbCreds['client_id'];
+      if (dbCreds['client_secret'] && !clientSecret) clientSecret = dbCreds['client_secret'];
+      if (dbCreds['redirect_uri'] && redirectUri === 'http://localhost:3100/api/oauth/google/callback') {
+        redirectUri = dbCreds['redirect_uri'];
+      }
+    } catch {
+      // DB may not have the table yet — fall through to env-var values
+    }
+  }
+
+  return { clientId, clientSecret, redirectUri };
+}
+
+/**
  * Create the OAuth router for connecting external accounts.
  */
 export function createOAuthRouter(): Router {
   const router = Router();
-  const config = loadConfig();
-
-  const googleConfig: GoogleOAuthConfig = {
-    clientId: config.googleClientId,
-    clientSecret: config.googleClientSecret,
-    redirectUri: config.googleRedirectUri,
-  };
 
   /**
    * GET /api/oauth/google/authorize
    *
    * Returns a Google OAuth authorization URL. The client redirects the user here.
    */
-  router.get('/google/authorize', (req, res) => {
-    const scopes = [...GMAIL_SCOPES, ...CALENDAR_SCOPES];
-    const state = req.query['userId'] as string | undefined;
-    const url = generateAuthUrl(googleConfig, scopes, state);
-    res.json({ url });
+  router.get('/google/authorize', async (req, res, next) => {
+    try {
+      const googleConfig = await resolveGoogleConfig();
+      const scopes = [...GMAIL_SCOPES, ...CALENDAR_SCOPES];
+      const state = req.query['userId'] as string | undefined;
+      const url = generateAuthUrl(googleConfig, scopes, state);
+      res.json({ url });
+    } catch (error) {
+      next(error);
+    }
   });
 
   /**
@@ -59,6 +86,7 @@ export function createOAuthRouter(): Router {
       }
 
       const userId = state ?? 'default-user';
+      const googleConfig = await resolveGoogleConfig();
       const tokenSet = await exchangeCode(googleConfig, code);
 
       // Persist tokens to the database

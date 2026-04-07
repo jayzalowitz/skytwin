@@ -52,6 +52,13 @@ export class ExecutionRouter {
   }
 
   /**
+   * Expose the registry for status/health queries (e.g. the Setup page).
+   */
+  getRegistry(): AdapterRegistry {
+    return this.registry;
+  }
+
+  /**
    * Select the best adapter for the given action and return a routing decision.
    */
   async route(

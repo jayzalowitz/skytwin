@@ -1,8 +1,8 @@
-import { fetchHealth, fetchDecisions, fetchAccuracy, fetchConfidence, fetchLearning, fetchPendingApprovals, fetchSkillGaps, fetchTrustProgress, fetchLearned } from '../api-client.js';
+import { fetchHealth, fetchDecisions, fetchAccuracy, fetchConfidence, fetchLearning, fetchPendingApprovals, fetchSkillGaps, fetchTrustProgress, fetchLearned, fetchUnmetCredentials, escapeHtml } from '../api-client.js';
 import { renderTrustProgress } from '../components/progress-bar.js';
 
 export async function renderDashboard(container, userId) {
-  const [health, accuracy, confidence, learning, approvals, decisions, skillGaps, progress, learned] = await Promise.allSettled([
+  const [health, accuracy, confidence, learning, approvals, decisions, skillGaps, progress, learned, unmetCreds] = await Promise.allSettled([
     fetchHealth(),
     fetchAccuracy(userId),
     fetchConfidence(userId),
@@ -12,6 +12,7 @@ export async function renderDashboard(container, userId) {
     fetchSkillGaps(userId),
     fetchTrustProgress(userId),
     fetchLearned(userId),
+    fetchUnmetCredentials(),
   ]);
 
   const healthOk = health.status === 'fulfilled';
@@ -34,6 +35,8 @@ export async function renderDashboard(container, userId) {
       <span style="font-weight: 600;">You have ${pending} pending approval${pending > 1 ? 's' : ''}</span>
       <span style="color: var(--text-muted); font-size: 0.85rem;"> — your twin wants to do something and needs your OK.</span>
     </div>` : ''}
+
+    ${renderUnmetCredentials(unmetCreds)}
 
     ${prog ? renderTrustProgress({ approvalCount: prog.approvalCount, currentTier: prog.currentTier }) : ''}
 
@@ -177,6 +180,31 @@ function traitIcon(name) {
     delegation_averse: '*',
   };
   return icons[name] || '?';
+}
+
+function renderUnmetCredentials(unmetCredsResult) {
+  const unmet = unmetCredsResult.status === 'fulfilled' ? (unmetCredsResult.value.unmet ?? []) : [];
+  if (unmet.length === 0) return '';
+
+  return `
+    <div class="card" style="border-left: 3px solid var(--warning, #e6a700); cursor: pointer;" onclick="location.hash='#/setup'">
+      <div class="card-header">
+        <span class="card-title">Integrations needed</span>
+      </div>
+      <div class="card-subtitle" style="margin-bottom: 0.75rem;">
+        Some skills need external accounts to work. Head to <a href="#/setup">Setup</a> to add credentials.
+      </div>
+      ${unmet.map(u => `
+        <div class="insight-card">
+          <div class="insight-icon" style="background: var(--warning-soft, #fff3cd); color: var(--warning, #856404);">!</div>
+          <div class="insight-content">
+            <div class="insight-title">${escapeHtml(u.label)}</div>
+            <div class="insight-desc">Missing: ${u.missingFields.map(f => escapeHtml(f)).join(', ')}</div>
+          </div>
+        </div>
+      `).join('')}
+    </div>
+  `;
 }
 
 function renderSkillGaps(skillGapsResult) {

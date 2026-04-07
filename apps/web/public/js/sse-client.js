@@ -52,6 +52,16 @@ export function connectSSE(userId) {
     window.dispatchEvent(new CustomEvent('sse:twin:updated', { detail: data }));
   });
 
+  eventSource.addEventListener('credential:needed', (e) => {
+    const data = JSON.parse(e.data);
+    window.dispatchEvent(new CustomEvent('sse:credential:needed', { detail: data }));
+    showToast(
+      'Integration needed',
+      `${data.label || data.integration} needs credentials. Go to Setup to configure.`,
+      'warning',
+    );
+  });
+
   eventSource.onerror = () => {
     eventSource.close();
     eventSource = null;

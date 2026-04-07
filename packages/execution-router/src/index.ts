@@ -9,6 +9,7 @@ export {
 } from './adapter-registry.js';
 
 export { OpenClawAdapter, OPENCLAW_SKILLS } from './openclaw-adapter.js';
+export type { OpenClawCredentialRequirement, OnCredentialNeeded } from './openclaw-adapter.js';
 
 export { applyAdapterRiskModifier } from './risk-modifier.js';
 

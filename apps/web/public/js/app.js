@@ -4,6 +4,7 @@ import { renderDecisions } from './pages/decisions.js';
 import { renderTwin } from './pages/twin.js';
 import { renderSettings } from './pages/settings.js';
 import { renderAudit } from './pages/audit.js';
+import { renderSetup } from './pages/setup.js';
 import { renderOnboarding } from './pages/onboarding.js';
 import { fetchPendingApprovals, fetchHealth, fetchUser, escapeHtml } from './api-client.js';
 import { mountThemeSwitcher, initTheme } from './theme-switcher.js';
@@ -18,6 +19,7 @@ const routes = {
   '/twin': { title: 'What I\'ve learned', render: renderTwin },
   '/settings': { title: 'Settings', render: renderSettings },
   '/audit': { title: 'Audit Trail', render: renderAudit },
+  '/setup': { title: 'Setup', render: renderSetup },
 };
 
 /**
@@ -205,6 +207,16 @@ window.addEventListener('sse:disconnected', () => updateConnectionStatus());
 window.addEventListener('sse:twin:updated', () => {
   const hash = window.location.hash.slice(1) || '/';
   if (hash === '/' || hash === '/twin') {
+    const route = routes[hash] || routes['/'];
+    const container = document.getElementById('page-content');
+    route.render(container, currentUserId).catch(() => {});
+  }
+});
+
+// Re-render dashboard or setup page when new credentials are needed
+window.addEventListener('sse:credential:needed', () => {
+  const hash = window.location.hash.slice(1) || '/';
+  if (hash === '/' || hash === '/setup') {
     const route = routes[hash] || routes['/'];
     const container = document.getElementById('page-content');
     route.render(container, currentUserId).catch(() => {});

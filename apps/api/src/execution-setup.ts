@@ -22,6 +22,9 @@ import {
   DIRECT_TRUST_PROFILE,
   OPENCLAW_SKILLS,
 } from '@skytwin/execution-router';
+import type { OpenClawCredentialRequirement } from '@skytwin/execution-router';
+import { credentialRequirementRepository } from '@skytwin/db';
+import { sseManager } from './sse.js';
 
 /**
  * Build the execution router with all available adapters registered.
@@ -70,6 +73,32 @@ export function createExecutionRouter(): ExecutionRouter {
     const openclawAdapter = new OpenClawAdapter({
       apiUrl: config.openclawApiUrl,
       apiKey: config.openclawApiKey || undefined,
+      onCredentialNeeded: async (req: OpenClawCredentialRequirement) => {
+        // Persist the requirement so the Setup page discovers it
+        for (const field of req.fields) {
+          await credentialRequirementRepository.register({
+            adapter: 'openclaw',
+            integration: req.integration,
+            integrationLabel: req.integrationLabel,
+            description: req.description,
+            fieldKey: field.key,
+            fieldLabel: field.label,
+            fieldPlaceholder: field.placeholder,
+            isSecret: field.secret,
+            isOptional: field.optional,
+            skills: req.skills,
+          });
+        }
+        // Notify all connected users
+        sseManager.emitAll('credential:needed', {
+          adapter: 'openclaw',
+          integration: req.integration,
+          label: req.integrationLabel,
+          description: req.description,
+          skills: req.skills,
+        });
+        console.info(`[execution] OpenClaw needs credentials for "${req.integrationLabel}" — registered requirement`);
+      },
     });
     registry.register('openclaw', openclawAdapter, OPENCLAW_TRUST_PROFILE, OPENCLAW_SKILLS);
     console.info('[execution] Registered OpenClaw adapter:', config.openclawApiUrl);
