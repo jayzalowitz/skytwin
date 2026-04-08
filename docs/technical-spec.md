@@ -22,7 +22,8 @@ skytwin/
     decision-engine/ # Event interpretation and action selection
     policy-engine/   # Safety constraints, trust tiers, spend limits
     ironclaw-adapter/# IronClaw HTTP adapter (HMAC-SHA256 auth, retries, circuit breaker)
-    execution-router/# Adapter selection, fallback chains, risk modifiers, skill gap detection
+    execution-router/# Adapter selection, fallback chains, risk modifiers, skill gap detection, plugin discovery
+    llm-client/      # Unified LLM client — provider chain, circuit breakers, SSRF-safe URL validation
     explanations/    # Human-readable explanation generation
     connectors/      # External service integrations (email, calendar, etc.)
     evals/           # Evaluation harness for decision quality

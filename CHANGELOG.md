@@ -13,14 +13,14 @@ All notable changes to SkyTwin will be documented in this file.
 
 ### Fixed
 
-- **API keys silently erased on save**: The replaceAll operation now reads existing keys before deleting and preserves them when the client sends an empty key (which happens on every save since the UI only has the masked preview)
-- **Per-request circuit breaker defeat**: Circuit breakers are now cached at module level so failure counts persist across requests. Previously, a new LlmClient per request meant a downed provider was retried on every single event
+- **API keys silently erased on save**: Saving your AI provider settings no longer wipes your API keys. The server preserves existing keys when the UI sends masked previews back
+- **Per-request circuit breaker defeat**: A downed AI provider is now remembered across requests. Previously, the system forgot failures between events and kept retrying a broken provider on every single decision
 - **SSRF via user-controlled baseUrl**: All LLM providers now validate baseUrl against private IP ranges (RFC 1918, link-local, cloud metadata, 0.0.0.0, octal/hex encodings, IPv6-mapped IPv4). Ollama is exempted for loopback addresses only
 - **Google API key leaked in URL**: Moved from query parameter (`?key=`) to `x-goog-api-key` header
 - **Path traversal in adapter plugins**: Entry point paths are resolved via realpathSync (following symlinks) and checked with trailing separator to prevent both symlink escape and directory prefix confusion
 - **Plugin name collision**: Discovered adapters cannot use reserved names (ironclaw, direct, openclaw), preventing overwrites of built-in adapters
 - **Race condition in execution router init**: Singleton now stores the initialization promise (not the result) to prevent duplicate router creation under concurrent requests, with error recovery on rejection
-- **LLM-controlled safety fields**: `estimatedCostCents` and `reversible` on LLM-generated candidates are now overridden with safe defaults (0 and false). The deterministic scoring and policy layers handle the real values
+- **LLM-controlled safety fields**: The LLM can no longer set its own cost estimates or reversibility flags on candidate actions. These safety-critical values are overridden with conservative defaults, and the deterministic scoring and policy layers handle the real values
 - **XSS in settings page**: userId now escaped in all onclick handlers to prevent injection via mobile pairing URL
 - **NaN/Infinity in adapter manifest**: riskModifier validated with Number.isFinite before use
 - **N+1 on decisions page**: batch-fetches decision outcomes in a single query instead of one per row

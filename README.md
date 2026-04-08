@@ -6,8 +6,8 @@
 
 <a href="https://github.com/jayzalowitz/skytwin/actions/workflows/build.yml"><img src="https://github.com/jayzalowitz/skytwin/actions/workflows/build.yml/badge.svg" alt="Build"></a>
 <a href="https://github.com/jayzalowitz/skytwin/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"></a>
-<img src="https://img.shields.io/badge/version-0.3.3.0-green.svg" alt="Version">
-<img src="https://img.shields.io/badge/tests-589%20passing-brightgreen.svg" alt="Tests">
+<img src="https://img.shields.io/badge/version-0.4.0.0-green.svg" alt="Version">
+<img src="https://img.shields.io/badge/tests-1069%20passing-brightgreen.svg" alt="Tests">
 <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux%20%7C%20iOS%20%7C%20Android-lightgrey.svg" alt="Platform">
 
 </div>
@@ -163,12 +163,12 @@ The API starts on `localhost:3100`, the web dashboard on `localhost:3200`.
 ### Running Tests
 
 ```bash
-pnpm test   # 589 tests across 50+ files
+pnpm test   # 1,069 tests across 71 files
 ```
 
 ## Architecture
 
-SkyTwin is a TypeScript monorepo (pnpm + Turborepo) with 13 packages and 6 apps:
+SkyTwin is a TypeScript monorepo (pnpm + Turborepo) with 14 packages and 6 apps:
 
 ```
 apps/
@@ -188,7 +188,8 @@ packages/
   decision-engine/  Event interpretation, candidate generation, action selection
   policy-engine/    Trust tiers, spend limits, domain policies, safety checks
   ironclaw-adapter/ Execution adapter with HMAC auth, retries, circuit breaker
-  execution-router/ Adapter selection, fallback chains, risk modifiers
+  execution-router/ Adapter selection, fallback chains, risk modifiers, plugin discovery
+  llm-client/       Unified LLM client — Anthropic, OpenAI, Google, Ollama with provider chain
   explanations/     Human-readable explanation generation
   connectors/       Gmail, Calendar, and mock connectors with OAuth management
   mempalace/        Episodic memory, knowledge graph, 4-layer retrieval stack
@@ -206,7 +207,7 @@ packages/
 | Build | Turborepo |
 | Desktop | Electron + electron-builder |
 | Mobile | React Native + Expo |
-| Testing | Vitest (589 tests) |
+| Testing | Vitest (1,069 tests) |
 | CI/CD | GitHub Actions |
 | Execution | [IronClaw](https://github.com/nearai/ironclaw/) |
 
@@ -238,21 +239,22 @@ Trust is **domain-specific**. You might be at `moderate_autonomy` for email but 
 
 ## Project Status
 
-SkyTwin is in **active development** (v0.3.2.1). The core decision pipeline, twin model, policy engine, and memory palace are functional. Gmail and Google Calendar connectors work with real OAuth. Desktop builds ship for all three platforms. The mobile app pairs via QR code.
+SkyTwin is in **active development** (v0.4.0.0). The core decision pipeline, twin model, policy engine, and memory palace are functional. Gmail and Google Calendar connectors work with real OAuth. Desktop builds ship for all three platforms. The mobile app pairs via QR code.
 
 **What works today:**
 - Full decision pipeline: signal → interpret → decide → policy check → execute/escalate → explain → learn
+- LLM-powered decisions via configurable provider chain (Claude, GPT, Gemini, Ollama) with automatic fallback to built-in rules
 - Twin model with versioned profiles, confidence scoring, and preference learning
 - Policy engine with spend limits, trust tiers, and domain-specific rules
 - Memory Palace with episodic memory, knowledge graph, and 4-layer retrieval
-- Web dashboard for reviewing decisions, managing preferences, and auditing
+- Web dashboard for reviewing decisions, managing preferences, configuring AI providers, and auditing
 - Desktop app (macOS, Windows, Linux) and mobile app (iOS, Android)
-- 589 tests with CI/CD on GitHub Actions
+- Dynamic adapter discovery for third-party execution plugins
+- 1,069 tests with CI/CD on GitHub Actions
 
 **What's next:**
 - More connectors (Slack, Notion, bank feeds)
 - Hosted version with multi-tenant support
-- Plugin system for custom domains
 - Improved preference learning from implicit signals
 
 ## Contributing
