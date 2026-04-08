@@ -547,4 +547,61 @@ describe('decisionRepository', () => {
       expect(result!.feedback).toEqual([]);
     });
   });
+
+  // -----------------------------------------------------------------------
+  // findByIds (batch)
+  // -----------------------------------------------------------------------
+
+  describe('findByIds', () => {
+    it('returns empty array for empty ids list', async () => {
+      const result = await decisionRepository.findByIds([]);
+      expect(result).toEqual([]);
+      expect(mockQuery).not.toHaveBeenCalled();
+    });
+
+    it('batch-fetches decisions using ANY($1)', async () => {
+      const rows = [
+        fakeDecisionRow({ id: 'd-001' }),
+        fakeDecisionRow({ id: 'd-002' }),
+      ];
+      mockQuery.mockResolvedValue({ rows, rowCount: 2 });
+
+      const result = await decisionRepository.findByIds(['d-001', 'd-002']);
+
+      expect(result).toEqual(rows);
+
+      const [sql, params] = mockQuery.mock.calls[0]!;
+      expect(sql).toContain('WHERE id = ANY($1)');
+      expect(params).toEqual([['d-001', 'd-002']]);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // getCandidateActionsForDecisions (batch)
+  // -----------------------------------------------------------------------
+
+  describe('getCandidateActionsForDecisions', () => {
+    it('returns empty array for empty ids list', async () => {
+      const result = await decisionRepository.getCandidateActionsForDecisions([]);
+      expect(result).toEqual([]);
+      expect(mockQuery).not.toHaveBeenCalled();
+    });
+
+    it('batch-fetches candidate actions using ANY($1)', async () => {
+      const rows = [
+        fakeCandidateActionRow({ id: 'ca-001', decision_id: 'd-001' }),
+        fakeCandidateActionRow({ id: 'ca-002', decision_id: 'd-002' }),
+      ];
+      mockQuery.mockResolvedValue({ rows, rowCount: 2 });
+
+      const result = await decisionRepository.getCandidateActionsForDecisions(['d-001', 'd-002']);
+
+      expect(result).toEqual(rows);
+
+      const [sql, params] = mockQuery.mock.calls[0]!;
+      expect(sql).toContain('WHERE decision_id = ANY($1)');
+      expect(sql).toContain('ORDER BY created_at');
+      expect(params).toEqual([['d-001', 'd-002']]);
+    });
+  });
 });
