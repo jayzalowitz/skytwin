@@ -18,7 +18,8 @@ export function validateBaseUrl(baseUrl: string, provider: string): void {
     throw new Error(`Unsupported protocol for ${provider}: ${parsed.protocol}`);
   }
 
-  const hostname = parsed.hostname.toLowerCase();
+  // URL parser keeps brackets around IPv6: [::1] → strip them for matching
+  const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
 
   // Block cloud metadata endpoints (all providers, including Ollama)
   if (hostname === '169.254.169.254' || hostname === 'metadata.google.internal') {
