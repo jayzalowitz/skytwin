@@ -1,4 +1,4 @@
-import { fetchTwinProfile, fetchLearning, updatePreference, submitFeedback, escapeHtml } from '../api-client.js';
+import { fetchTwinProfile, fetchLearning, updatePreference, deleteInsight, escapeHtml } from '../api-client.js';
 
 export async function renderTwin(container, userId) {
   let profile = null;
@@ -51,7 +51,7 @@ export async function renderTwin(container, userId) {
       </div>
       <div class="card-subtitle">
         Here's everything I think I know about how you like things done.
-        If something's wrong, click "That's not right" and I'll learn from the correction.
+        Click "Edit" to tweak something, or "That's not right" to correct or remove it.
       </div>
     </div>
 
@@ -147,6 +147,9 @@ function renderInsightItem(item, userId) {
     : 'Learned from defaults';
 
   const itemId = `insight-${item.domain}-${item.key || ''}`.replace(/[^a-zA-Z0-9-]/g, '_');
+  const escapedDomain = escapeHtml(item.domain);
+  const escapedKey = escapeHtml(item.key || '');
+  const escapedValue = escapeHtml(String(item.value || ''));
   return `
     <div class="insight-card" id="${itemId}">
       <div class="insight-content">
@@ -154,10 +157,13 @@ function renderInsightItem(item, userId) {
         <div class="insight-desc">
           <span class="badge badge-${confBadge}">${confLbl}</span>
           <span style="margin-left: 0.5rem;">${sourceLabel}</span>
-          ${item.reasoning ? `<br><span style="font-size: 0.75rem; color: var(--text-dim);">${item.reasoning}</span>` : ''}
+          ${item.reasoning ? `<br><span style="font-size: 0.75rem; color: var(--text-dim);">${escapeHtml(item.reasoning)}</span>` : ''}
         </div>
       </div>
-      <button class="btn btn-outline btn-sm" style="flex-shrink: 0; align-self: center;" onclick="correctInsight('${userId}', '${escapeHtml(item.domain)}', '${escapeHtml(item.key || '')}', this)">That's not right</button>
+      <div class="insight-actions" style="display: flex; gap: 0.35rem; flex-shrink: 0; align-self: center;">
+        <button class="btn btn-ghost btn-sm" onclick="editInsight('${userId}', '${escapedDomain}', '${escapedKey}', '${escapedValue}')">Edit</button>
+        <button class="btn btn-outline btn-sm" onclick="correctInsight('${userId}', '${escapedDomain}', '${escapedKey}', '${escapedValue}')">That's not right</button>
+      </div>
     </div>
   `;
 }
@@ -233,32 +239,180 @@ window.handleAddPreference = async function(event, userId) {
   return false;
 };
 
-window.correctInsight = async function(userId, domain, key, btnEl) {
-  const correction = prompt('What should I know instead? (Leave blank to just remove this.)');
-  if (correction === null) return; // cancelled
+window.correctInsight = function(userId, domain, key, currentValue) {
+  // Remove any existing correction modal
+  document.getElementById('correction-modal')?.remove();
 
-  btnEl.disabled = true;
-  btnEl.textContent = 'Updating...';
+  const readableKey = key.replace(/_/g, ' ');
+  const displayValue = currentValue || readableKey;
+
+  const modal = document.createElement('div');
+  modal.id = 'correction-modal';
+  modal.className = 'modal-overlay';
+  modal.innerHTML = `
+    <div class="modal-card" style="max-width: 460px;">
+      <h3>Correct this insight</h3>
+      <div class="modal-desc">
+        I currently think: <strong>${escapeHtml(displayValue)}</strong>
+        <br>Tell me what's right, or remove it entirely.
+      </div>
+      <div class="modal-field">
+        <label>What should I know instead?</label>
+        <textarea id="correction-value" class="form-input" rows="3"
+          placeholder="e.g. I actually prefer to keep newsletters in my inbox"></textarea>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-sm btn-outline" id="correction-remove" style="margin-right: auto;">
+          Remove this
+        </button>
+        <button class="btn btn-sm btn-ghost" id="correction-cancel">Cancel</button>
+        <button class="btn btn-sm btn-primary" id="correction-save">Save correction</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  // Focus the textarea
+  const input = modal.querySelector('#correction-value');
+  setTimeout(() => input.focus(), 50);
+
+  // Close handlers
+  const close = () => modal.remove();
+  modal.querySelector('#correction-cancel').addEventListener('click', close);
+  modal.addEventListener('click', (e) => { if (e.target === modal) close(); });
+
+  // Submit correction (with value)
+  modal.querySelector('#correction-save').addEventListener('click', async () => {
+    const newValue = input.value.trim();
+    if (!newValue) {
+      input.focus();
+      input.style.borderColor = 'var(--danger)';
+      return;
+    }
+    await submitCorrection(modal, userId, domain, key, newValue);
+  });
+
+  // Allow Cmd/Ctrl+Enter to submit
+  input.addEventListener('keydown', async (e) => {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+      const newValue = input.value.trim();
+      if (newValue) await submitCorrection(modal, userId, domain, key, newValue);
+    }
+    if (e.key === 'Escape') close();
+  });
+
+  // Remove insight entirely
+  modal.querySelector('#correction-remove').addEventListener('click', async () => {
+    await submitCorrection(modal, userId, domain, key, undefined);
+  });
+};
+
+window.editInsight = function(userId, domain, key, currentValue) {
+  // Remove any existing modal
+  document.getElementById('correction-modal')?.remove();
+
+  const readableKey = key.replace(/_/g, ' ');
+
+  const modal = document.createElement('div');
+  modal.id = 'correction-modal';
+  modal.className = 'modal-overlay';
+  modal.innerHTML = `
+    <div class="modal-card" style="max-width: 460px;">
+      <h3>Edit insight</h3>
+      <div class="modal-desc">
+        Update what I know about <strong>${escapeHtml(readableKey)}</strong>.
+      </div>
+      <div class="modal-field">
+        <label>Value</label>
+        <textarea id="correction-value" class="form-input" rows="3"
+          placeholder="What should this be?">${escapeHtml(currentValue)}</textarea>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-sm btn-outline" id="correction-remove" style="margin-right: auto;">
+          Remove this
+        </button>
+        <button class="btn btn-sm btn-ghost" id="correction-cancel">Cancel</button>
+        <button class="btn btn-sm btn-primary" id="correction-save">Save</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  // Focus and select the textarea content
+  const input = modal.querySelector('#correction-value');
+  setTimeout(() => { input.focus(); input.select(); }, 50);
+
+  // Close handlers
+  const close = () => modal.remove();
+  modal.querySelector('#correction-cancel').addEventListener('click', close);
+  modal.addEventListener('click', (e) => { if (e.target === modal) close(); });
+
+  // Save edited value
+  modal.querySelector('#correction-save').addEventListener('click', async () => {
+    const newValue = input.value.trim();
+    if (!newValue) {
+      input.focus();
+      input.style.borderColor = 'var(--danger)';
+      return;
+    }
+    await submitCorrection(modal, userId, domain, key, newValue);
+  });
+
+  // Cmd/Ctrl+Enter to save, Escape to close
+  input.addEventListener('keydown', async (e) => {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+      const newValue = input.value.trim();
+      if (newValue) await submitCorrection(modal, userId, domain, key, newValue);
+    }
+    if (e.key === 'Escape') close();
+  });
+
+  // Remove
+  modal.querySelector('#correction-remove').addEventListener('click', async () => {
+    await submitCorrection(modal, userId, domain, key, undefined);
+  });
+};
+
+let _correctionInFlight = false;
+async function submitCorrection(modal, userId, domain, key, newValue) {
+  if (_correctionInFlight || !document.contains(modal)) return;
+  _correctionInFlight = true;
+  const buttons = modal.querySelectorAll('button');
+  buttons.forEach(b => b.disabled = true);
+  const saveBtn = modal.querySelector('#correction-save');
+  const removeBtn = modal.querySelector('#correction-remove');
+  const activeBtn = newValue ? saveBtn : removeBtn;
+  activeBtn._origLabel = activeBtn.textContent;
+  activeBtn.textContent = 'Updating...';
 
   try {
-    if (correction.trim()) {
-      await updatePreference(userId, {
-        domain,
-        key,
-        value: correction.trim(),
-        confidence: 'confirmed',
-        source: 'corrected',
-      });
-    } else {
-      // Submit feedback that this was wrong
-      await submitFeedback(userId, null, 'correction', { domain, key, note: 'User marked as incorrect' });
-    }
+    await deleteInsight(userId, domain, key, newValue);
+    modal.remove();
+
+    // Show success toast
+    const toast = document.createElement('div');
+    toast.className = 'toast toast-success';
+    toast.textContent = newValue ? "Got it, I'll remember that." : 'Removed. Thanks for the correction.';
+    document.body.appendChild(toast);
+    requestAnimationFrame(() => toast.classList.add('visible'));
+    setTimeout(() => toast.remove(), 3500);
+
+    // Re-render the twin page
     const { renderTwin } = await import('./twin.js');
     await renderTwin(document.getElementById('page-content'), userId);
   } catch (err) {
-    btnEl.textContent = 'That\'s not right';
-    btnEl.disabled = false;
-    btnEl.closest('.insight-card')?.insertAdjacentHTML('afterend',
-      `<div class="error-banner" style="margin-top: 0.5rem;">${escapeHtml(err.message)}</div>`);
+    _correctionInFlight = false;
+    buttons.forEach(b => b.disabled = false);
+    activeBtn.textContent = activeBtn._origLabel || (newValue ? 'Save correction' : 'Remove this');
+
+    // Show error inline in the modal
+    let errEl = modal.querySelector('.modal-error');
+    if (!errEl) {
+      errEl = document.createElement('div');
+      errEl.className = 'modal-error';
+      errEl.style.cssText = 'color: var(--danger); font-size: 0.8rem; margin-top: 0.5rem;';
+      modal.querySelector('.modal-actions').before(errEl);
+    }
+    errEl.textContent = err.message;
   }
-};
+}
