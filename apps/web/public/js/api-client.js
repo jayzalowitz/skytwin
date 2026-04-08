@@ -6,7 +6,7 @@ const API = '/api';
 export function escapeHtml(str) {
   const div = document.createElement('div');
   div.textContent = str;
-  return div.innerHTML;
+  return div.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 /**
@@ -78,6 +78,13 @@ export function updatePreference(userId, preference) {
   return fetchJSON(`${API}/twin/${userId}/preferences`, {
     method: 'PUT',
     body: JSON.stringify(preference),
+  });
+}
+
+export function deleteInsight(userId, domain, key, newValue) {
+  return fetchJSON(`${API}/twin/${userId}/insights`, {
+    method: 'DELETE',
+    body: JSON.stringify({ domain, key, newValue }),
   });
 }
 

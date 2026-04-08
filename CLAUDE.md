@@ -69,6 +69,7 @@ pnpm --filter @skytwin/twin-model test
 | `worker` | Background job processor for async decision execution and feedback processing. Includes startup hang detection and graceful shutdown. |
 | `desktop` | Electron desktop app with electron-builder. Cross-platform builds for macOS (.dmg), Windows (.exe), and Linux (.AppImage/.deb). |
 | `mobile` | React Native mobile app (Expo). QR code pairing, mDNS API discovery, SSE real-time streaming, push notifications. |
+| `openclaw-bridge` | Lightweight bridge server connecting SkyTwin's OpenClaw adapter to a local Ollama instance for LLM reasoning. |
 
 ## Key Patterns
 

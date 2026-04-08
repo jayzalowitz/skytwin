@@ -6,7 +6,7 @@
 
 <a href="https://github.com/jayzalowitz/skytwin/actions/workflows/build.yml"><img src="https://github.com/jayzalowitz/skytwin/actions/workflows/build.yml/badge.svg" alt="Build"></a>
 <a href="https://github.com/jayzalowitz/skytwin/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"></a>
-<img src="https://img.shields.io/badge/version-0.3.2.1-green.svg" alt="Version">
+<img src="https://img.shields.io/badge/version-0.3.3.0-green.svg" alt="Version">
 <img src="https://img.shields.io/badge/tests-589%20passing-brightgreen.svg" alt="Tests">
 <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux%20%7C%20iOS%20%7C%20Android-lightgrey.svg" alt="Platform">
 
@@ -96,6 +96,14 @@ Every path produces an explanation. Every outcome feeds back into the twin. The 
 <img src="docs/screenshots/settings.png" alt="Settings — autonomy level, spend limits, connected accounts, privacy controls">
 </td>
 </tr>
+<tr>
+<td width="50%">
+<p align="center"><strong>My Learnings</strong></p>
+<img src="docs/screenshots/twin.png" alt="My Learnings — preferences, inferences, and corrections your twin has learned">
+</td>
+<td width="50%">
+</td>
+</tr>
 </table>
 
 ## Concrete Examples
@@ -160,7 +168,7 @@ pnpm test   # 589 tests across 50+ files
 
 ## Architecture
 
-SkyTwin is a TypeScript monorepo (pnpm + Turborepo) with 12 packages and 5 apps:
+SkyTwin is a TypeScript monorepo (pnpm + Turborepo) with 13 packages and 6 apps:
 
 ```
 apps/
@@ -169,6 +177,7 @@ apps/
   worker/           Background jobs — async execution, feedback processing
   desktop/          Electron app — macOS (.dmg), Windows (.exe), Linux (.AppImage)
   mobile/           React Native (Expo) — QR pairing, push notifications, SSE streaming
+  openclaw-bridge/  OpenClaw proxy — bridges local API to OpenClaw execution service
 
 packages/
   shared-types/     TypeScript interfaces — the dependency root for everything

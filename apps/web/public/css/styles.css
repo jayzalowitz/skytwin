@@ -234,6 +234,9 @@ tr:hover td { background: var(--bg-hover); }
 .btn-danger:hover:not(:disabled) { opacity: 0.9; }
 .btn-outline { background: transparent; color: var(--text-muted); border: 1px solid var(--border); }
 .btn-outline:hover:not(:disabled) { color: var(--text); border-color: var(--text-muted); }
+.btn-ghost { background: transparent; color: var(--text-muted); border: 1px solid transparent; }
+.btn-ghost:hover:not(:disabled) { color: var(--text); background: rgba(255,255,255,0.06); }
+.btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .btn-sm { padding: 0.3rem 0.6rem; font-size: 0.75rem; }
 .btn-lg { padding: 0.75rem 1.5rem; font-size: 1rem; }
 .btn-block { display: block; width: 100%; }
@@ -462,6 +465,76 @@ textarea.form-input { resize: vertical; min-height: 60px; }
   margin-bottom: 1rem;
   font-size: 0.85rem;
   color: var(--danger);
+}
+
+/* ── Modal overlay ──────────────────────────────────── */
+
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0,0,0,.7);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  animation: modal-fade-in 0.15s ease-out;
+}
+
+@keyframes modal-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.modal-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  width: 100%;
+  padding: 1.75rem;
+  max-height: calc(100vh - 2rem);
+  overflow-y: auto;
+  animation: modal-slide-up 0.2s ease-out;
+}
+
+@keyframes modal-slide-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.modal-card h3 {
+  font-size: 1.1rem;
+  font-weight: 700;
+  margin-bottom: 0.25rem;
+}
+
+.modal-card .modal-desc {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+  margin-bottom: 1rem;
+}
+
+.modal-card .modal-actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+  margin-top: 1.25rem;
+}
+
+.modal-card .modal-field {
+  margin-bottom: 0.75rem;
+}
+
+.modal-card .modal-field label {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 600;
+  margin-bottom: 0.25rem;
+  color: var(--text-muted);
 }
 
 /* ── Toast notifications ─────────────────────────────── */

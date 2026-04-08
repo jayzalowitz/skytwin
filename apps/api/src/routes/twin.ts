@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { randomUUID } from 'node:crypto';
 import { TwinService } from '@skytwin/twin-model';
 import { TwinRepositoryAdapter, PatternRepositoryAdapter, feedbackRepository, userRepository } from '@skytwin/db';
 import { ConfidenceLevel } from '@skytwin/shared-types';
@@ -153,6 +154,80 @@ export function createTwinRouter(): Router {
       const threshold = thresholds[currentTier] ?? null;
 
       res.json({ currentTier, approvalCount, threshold });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /**
+   * DELETE /api/twin/:userId/insights
+   *
+   * Remove (or correct) a preference or inference from the twin profile.
+   * Body: { domain, key, newValue? }
+   *   - If newValue is provided, updates the matching insight to use that value.
+   *   - If newValue is omitted/empty, removes the matching insight entirely.
+   */
+  router.delete('/:userId/insights', async (req, res, next) => {
+    try {
+      const { userId } = req.params;
+      if (!userId) {
+        res.status(400).json({ error: 'Missing userId parameter' });
+        return;
+      }
+
+      const body = req.body as { domain: string; key: string; newValue?: string };
+      if (!body.domain || !body.key) {
+        res.status(400).json({ error: 'Missing required fields: domain, key' });
+        return;
+      }
+
+      if (body.domain.length > 64 || body.key.length > 128 || (body.newValue && body.newValue.length > 10000)) {
+        res.status(400).json({ error: 'Field length exceeds limit' });
+        return;
+      }
+
+      const profile = await twinService.getOrCreateProfile(userId);
+
+      // Filter out matching inference in both paths
+      const filteredInferences = profile.inferences.filter(
+        (inf) => !(inf.domain === body.domain && inf.key === body.key),
+      );
+
+      let updated;
+      if (body.newValue && body.newValue.trim()) {
+        // Correct: replace matching pref with corrected value, drop matching inference
+        const correctedPref = {
+          id: `pref_${Date.now()}_${randomUUID().slice(0, 8)}`,
+          domain: body.domain,
+          key: body.key,
+          value: body.newValue.trim(),
+          confidence: ConfidenceLevel.CONFIRMED,
+          source: 'corrected' as const,
+          evidenceIds: [] as string[],
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        };
+        const updatedPrefs = profile.preferences.filter(
+          (p) => !(p.domain === body.domain && p.key === body.key),
+        );
+        updatedPrefs.push(correctedPref);
+        updated = await twinService.replaceProfileInsights(userId, updatedPrefs, filteredInferences);
+      } else {
+        // Remove: drop the matching preference and inference
+        const filteredPrefs = profile.preferences.filter(
+          (p) => !(p.domain === body.domain && p.key === body.key),
+        );
+        updated = await twinService.replaceProfileInsights(userId, filteredPrefs, filteredInferences);
+      }
+
+      res.json({
+        profile: {
+          id: updated.id,
+          version: updated.version,
+          preferencesCount: updated.preferences.length,
+          inferencesCount: updated.inferences.length,
+        },
+      });
     } catch (error) {
       next(error);
     }

@@ -321,6 +321,56 @@ describe('TwinService', () => {
     });
   });
 
+  describe('Insight correction and removal', () => {
+    it('updateProfileInferences removes an inference and increments version', async () => {
+      const inf1 = {
+        id: 'inf_1', domain: 'email', key: 'reply_style', value: 'brief',
+        confidence: ConfidenceLevel.MODERATE, supportingEvidenceIds: [], contradictingEvidenceIds: [],
+        reasoning: '', createdAt: new Date(), updatedAt: new Date(),
+      };
+      const inf2 = {
+        id: 'inf_2', domain: 'calendar', key: 'morning_free', value: true,
+        confidence: ConfidenceLevel.LOW, supportingEvidenceIds: [], contradictingEvidenceIds: [],
+        reasoning: '', createdAt: new Date(), updatedAt: new Date(),
+      };
+      repo._setProfile({
+        id: 'twin_1', userId: 'user_1', version: 5,
+        preferences: [], inferences: [inf1, inf2],
+        createdAt: new Date(), updatedAt: new Date(),
+      });
+
+      const result = await service.updateProfileInferences('user_1', [inf2]);
+
+      expect(result.version).toBe(6);
+      expect(result.inferences).toHaveLength(1);
+      expect(result.inferences[0]?.key).toBe('morning_free');
+    });
+
+    it('replaceProfileInsights replaces both preferences and inferences', async () => {
+      const pref = {
+        id: 'pref_1', domain: 'email', key: 'auto_archive', value: true,
+        confidence: ConfidenceLevel.HIGH, source: 'explicit' as const,
+        evidenceIds: [], createdAt: new Date(), updatedAt: new Date(),
+      };
+      const inf = {
+        id: 'inf_1', domain: 'email', key: 'reply_style', value: 'brief',
+        confidence: ConfidenceLevel.MODERATE, supportingEvidenceIds: [], contradictingEvidenceIds: [],
+        reasoning: '', createdAt: new Date(), updatedAt: new Date(),
+      };
+      repo._setProfile({
+        id: 'twin_1', userId: 'user_1', version: 3,
+        preferences: [pref], inferences: [inf],
+        createdAt: new Date(), updatedAt: new Date(),
+      });
+
+      const result = await service.replaceProfileInsights('user_1', [], []);
+
+      expect(result.version).toBe(4);
+      expect(result.preferences).toHaveLength(0);
+      expect(result.inferences).toHaveLength(0);
+    });
+  });
+
   describe('Relevant preferences', () => {
     it('should return preferences matching the domain', async () => {
       repo._setProfile({
