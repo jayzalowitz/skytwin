@@ -125,7 +125,10 @@ let _routerPromise: Promise<ExecutionRouter> | null = null;
 
 export async function getExecutionRouter(): Promise<ExecutionRouter> {
   if (!_routerPromise) {
-    _routerPromise = createExecutionRouter();
+    _routerPromise = createExecutionRouter().catch((err) => {
+      _routerPromise = null; // Allow retry on next call
+      throw err;
+    });
   }
   return _routerPromise;
 }

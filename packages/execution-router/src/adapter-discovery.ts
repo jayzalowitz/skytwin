@@ -65,17 +65,26 @@ export async function discoverAdapters(
       }
 
       const { manifest } = result;
-      const entryPath = resolve(dirPath, manifest.entryPoint);
 
-      // Prevent path traversal — entry point must stay within plugin dir
-      const realDir = realpathSync(dirPath);
-      if (!entryPath.startsWith(realDir)) {
-        console.warn(`[adapter-discovery] Path traversal blocked in ${dirName}: ${manifest.entryPoint}`);
+      // Block plugins that try to use reserved built-in adapter names
+      const RESERVED_NAMES = new Set(['ironclaw', 'direct', 'openclaw']);
+      if (RESERVED_NAMES.has(manifest.name)) {
+        console.warn(`[adapter-discovery] Plugin "${dirName}" tried to use reserved name "${manifest.name}" — skipped`);
         continue;
       }
 
+      const entryPath = resolve(dirPath, manifest.entryPoint);
+
+      // Prevent path traversal — resolve symlinks on BOTH sides before comparison.
+      // Use trailing separator to prevent prefix confusion (/plugins/foo vs /plugins/foobar).
+      const realDir = realpathSync(dirPath);
       if (!existsSync(entryPath)) {
         console.warn(`[adapter-discovery] Entry point not found: ${entryPath}`);
+        continue;
+      }
+      const realEntry = realpathSync(entryPath);
+      if (!realEntry.startsWith(realDir + '/')) {
+        console.warn(`[adapter-discovery] Path traversal blocked in ${dirName}: ${manifest.entryPoint} (resolved to ${realEntry})`);
         continue;
       }
 

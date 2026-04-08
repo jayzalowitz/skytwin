@@ -65,7 +65,9 @@ export function validateManifest(raw: unknown): { valid: true; manifest: Adapter
       reversibilityGuarantee: profile['reversibilityGuarantee'] as 'full' | 'partial' | 'none',
       authModel: profile['authModel'] as 'hmac' | 'oauth' | 'api_key' | 'none',
       auditTrail: profile['auditTrail'] === true,
-      riskModifier: typeof profile['riskModifier'] === 'number' ? Math.max(profile['riskModifier'], 2) : 2,
+      riskModifier: (typeof profile['riskModifier'] === 'number' && Number.isFinite(profile['riskModifier']))
+        ? Math.max(Math.round(profile['riskModifier']), 2)
+        : 2,
     },
     skills: (obj['skills'] as unknown[]).filter((s) => typeof s === 'string') as string[],
     healthEndpoint: typeof obj['healthEndpoint'] === 'string' ? obj['healthEndpoint'] : undefined,

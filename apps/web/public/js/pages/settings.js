@@ -50,7 +50,7 @@ export async function renderSettings(container, userId) {
       <div class="form-group">
         <label>User ID</label>
         <div style="display: flex; gap: 0.5rem;">
-          <input class="form-input" id="userId-input" value="${userId}">
+          <input class="form-input" id="userId-input" value="${escapeHtml(userId)}">
           <button class="btn btn-outline btn-sm" onclick="window.skyTwinSetUserId(document.getElementById('userId-input').value)">Switch</button>
         </div>
       </div>
@@ -74,7 +74,7 @@ export async function renderSettings(container, userId) {
           </div>
         `).join('')}
       </div>
-      <button class="btn btn-primary" style="margin-top: 1rem;" id="save-tier-btn" onclick="saveTier('${userId}')">Save</button>
+      <button class="btn btn-primary" style="margin-top: 1rem;" id="save-tier-btn" onclick="saveTier('${escapeHtml(userId)}')">Save</button>
     </div>
 
     <div class="card">
@@ -94,8 +94,8 @@ export async function renderSettings(container, userId) {
         </div>
         <div>
           ${googleConnected
-            ? `<button class="btn btn-outline btn-sm" onclick="handleDisconnectGoogle('${userId}')">Disconnect</button>`
-            : `<button class="btn btn-primary btn-sm" onclick="handleConnectGoogle('${userId}')">Connect</button>`
+            ? `<button class="btn btn-outline btn-sm" onclick="handleDisconnectGoogle('${escapeHtml(userId)}')">Disconnect</button>`
+            : `<button class="btn btn-primary btn-sm" onclick="handleConnectGoogle('${escapeHtml(userId)}')">Connect</button>`
           }
         </div>
       </div>
@@ -122,7 +122,7 @@ export async function renderSettings(container, userId) {
       </div>
       <div style="margin-top: 0.75rem; display: flex; gap: 0.5rem; justify-content: space-between; align-items: center;">
         <div style="font-size: 0.75rem; color: var(--text-dim);">If all providers fail, your twin falls back to built-in rules automatically.</div>
-        <button id="save-ai-btn" class="btn btn-primary btn-sm" onclick="saveAIProvidersHandler('${userId}')">Save</button>
+        <button id="save-ai-btn" class="btn btn-primary btn-sm" onclick="saveAIProvidersHandler('${escapeHtml(userId)}')">Save</button>
       </div>
     </div>
 
@@ -148,7 +148,7 @@ export async function renderSettings(container, userId) {
         Temporarily stop all auto-execution without disconnecting accounts.
         Your twin will continue watching but won't take any action.
       </div>
-      <button class="btn btn-outline btn-sm" onclick="pauseTwin('${userId}')">
+      <button class="btn btn-outline btn-sm" onclick="pauseTwin('${escapeHtml(userId)}')">
         ${currentTier === 'observer' ? 'Twin is paused (watch only)' : 'Pause twin'}
       </button>
     </div>
@@ -176,7 +176,7 @@ export async function renderSettings(container, userId) {
           Always ask before doing something that can't be undone
         </label>
       </div>
-      <button class="btn btn-primary btn-sm" onclick="saveSpendLimits('${userId}')">Save</button>
+      <button class="btn btn-primary btn-sm" onclick="saveSpendLimits('${escapeHtml(userId)}')">Save</button>
     </div>
 
     <details class="card collapsible-card">
@@ -196,7 +196,7 @@ export async function renderSettings(container, userId) {
                 <span style="color: var(--text-muted); margin-left: 0.5rem;">${escapeHtml(p.trustTier)}</span>
                 ${p.maxSpendPerActionCents != null ? `<span style="color: var(--text-muted); margin-left: 0.5rem;">(max ${p.maxSpendPerActionCents}c/action)</span>` : ''}
               </div>
-              <button class="btn btn-outline btn-sm" onclick="removeDomainPolicy('${userId}', '${escapeHtml(p.domain)}')">Remove</button>
+              <button class="btn btn-outline btn-sm" onclick="removeDomainPolicy('${escapeHtml(userId)}', '${escapeHtml(p.domain)}')">Remove</button>
             </div>
           `).join('')}
         </div>
@@ -205,7 +205,7 @@ export async function renderSettings(container, userId) {
           <select class="form-input" id="new-domain-tier" style="flex: 1;">
             ${TIERS.map(t => `<option value="${t.value}">${t.name}</option>`).join('')}
           </select>
-          <button class="btn btn-primary btn-sm" onclick="addDomainPolicy('${userId}')">Add</button>
+          <button class="btn btn-primary btn-sm" onclick="addDomainPolicy('${escapeHtml(userId)}')">Add</button>
         </div>
       </div>
     </details>
@@ -227,7 +227,7 @@ export async function renderSettings(container, userId) {
                 <span style="color: var(--text-muted); margin-left: 0.5rem;">${escapeHtml(JSON.stringify(t.conditions))}</span>
                 <span style="color: ${t.enabled ? 'var(--success)' : 'var(--text-muted)'}; margin-left: 0.5rem;">${t.enabled ? 'active' : 'disabled'}</span>
               </div>
-              <button class="btn btn-outline btn-sm" onclick="removeEscalationTrigger('${userId}', '${escapeHtml(t.id)}')">Remove</button>
+              <button class="btn btn-outline btn-sm" onclick="removeEscalationTrigger('${escapeHtml(userId)}', '${escapeHtml(t.id)}')">Remove</button>
             </div>
           `).join('')}
         </div>
@@ -240,7 +240,7 @@ export async function renderSettings(container, userId) {
             <option value="consecutive_rejections">You said no several times</option>
           </select>
           <input class="form-input" id="new-trigger-value" placeholder="Value (e.g. 5000)" style="flex: 1;">
-          <button class="btn btn-primary btn-sm" onclick="addEscalationTrigger('${userId}')">Add</button>
+          <button class="btn btn-primary btn-sm" onclick="addEscalationTrigger('${escapeHtml(userId)}')">Add</button>
         </div>
       </div>
     </details>
@@ -254,7 +254,7 @@ export async function renderSettings(container, userId) {
         Click "Generate QR" then scan with your phone camera.
       </div>
       <div id="qr-container" style="text-align: center; margin-bottom: 1rem;"></div>
-      <button class="btn btn-primary btn-sm" onclick="generateQR('${userId}')">Generate QR code</button>
+      <button class="btn btn-primary btn-sm" onclick="generateQR('${escapeHtml(userId)}')">Generate QR code</button>
 
       ${sessions.length > 0 ? `
         <div style="margin-top: 1.5rem;">
@@ -265,7 +265,7 @@ export async function renderSettings(container, userId) {
                 <span style="font-weight: 600; font-size: 0.85rem;">${escapeHtml(s.deviceName)}</span>
                 <span style="color: var(--text-muted); font-size: 0.75rem; margin-left: 0.5rem;">Last active: ${formatRelativeTime(s.lastActiveAt)}</span>
               </div>
-              <button class="btn btn-outline btn-sm" onclick="revokeSessionHandler('${escapeHtml(s.id)}', '${userId}')">Revoke</button>
+              <button class="btn btn-outline btn-sm" onclick="revokeSessionHandler('${escapeHtml(s.id)}', '${escapeHtml(userId)}')">Revoke</button>
             </div>
           `).join('')}
         </div>
