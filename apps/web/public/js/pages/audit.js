@@ -77,7 +77,7 @@ export async function renderAudit(container, userId) {
               <time class="audit-time">${formatTimestamp(entry.timestamp)}</time>
             </div>
             <div class="audit-description">${escapeHtml(entry.description)}</div>
-            ${entry.detail.decisionId ? `<a href="#/decisions" class="audit-link">View decision</a>` : ''}
+            ${entry.detail?.decisionId ? `<a href="#/decisions" class="audit-link">View decision</a>` : ''}
           </div>
         </div>
       `).join('');

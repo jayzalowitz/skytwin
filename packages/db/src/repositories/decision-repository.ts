@@ -282,6 +282,18 @@ export const decisionRepository = {
   },
 
   /**
+   * Batch-fetch outcomes for multiple decisions in a single query.
+   */
+  async getOutcomesForDecisions(decisionIds: string[]): Promise<Pick<DecisionOutcomeRow, 'decision_id' | 'auto_executed'>[]> {
+    if (decisionIds.length === 0) return [];
+    const result = await query<Pick<DecisionOutcomeRow, 'decision_id' | 'auto_executed'>>(
+      'SELECT decision_id, auto_executed FROM decision_outcomes WHERE decision_id = ANY($1)',
+      [decisionIds],
+    );
+    return result.rows;
+  },
+
+  /**
    * Get the full context for a decision, including candidate actions,
    * outcome, explanation, and feedback.
    */

@@ -4,8 +4,9 @@ const API = '/api';
  * Escape HTML special characters to prevent XSS when inserting into innerHTML.
  */
 export function escapeHtml(str) {
+  if (str == null) return '';
   const div = document.createElement('div');
-  div.textContent = str;
+  div.textContent = String(str);
   return div.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 

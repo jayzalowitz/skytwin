@@ -67,7 +67,7 @@ export async function renderDashboard(container, userId) {
         <div class="confidence-bar"><div class="confidence-fill ${confClass}" style="width: ${overallConf}%"></div></div>
       </div>
       <div class="card stat-card" title="How often your twin picks the right action. Based on your approvals and rejections.">
-        <div class="stat-value">${acc ? `${Math.round(acc.accuracyRate * 100)}%` : '--'}</div>
+        <div class="stat-value">${acc ? (acc.totalDecisions === 0 ? '--' : `${Math.round(acc.accuracyRate * 100)}%`) : '--'}</div>
         <div class="stat-label">Getting it right</div>
         <div class="stat-sublabel">${acc
           ? (acc.totalDecisions === 0 ? 'Approve or reject decisions to train me' : `You approved ${acc.approved} of ${acc.totalDecisions}`)
@@ -134,8 +134,8 @@ export async function renderDashboard(container, userId) {
         ? recentDecisions.map(d => `
           <div class="activity-item">
             <span class="activity-time">${formatTime(d.createdAt || d.created_at)}</span>
-            <span class="activity-desc">${domainLabel(d.domain)} — ${d.situationType || d.situation_type}</span>
-            <span class="badge badge-info">${d.domain}</span>
+            <span class="activity-desc">${escapeHtml(domainLabel(d.domain))} — ${escapeHtml(d.situationType || d.situation_type || '')}</span>
+            <span class="badge badge-info">${escapeHtml(d.domain)}</span>
           </div>
         `).join('')
         : '<div class="empty-state"><div class="empty-state-title">No activity yet</div><div class="empty-state-desc">Once your twin starts processing events, you\'ll see them here.</div></div>'

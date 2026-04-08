@@ -105,9 +105,11 @@ export async function renderDecisions(container, userId) {
                     <td><span class="badge badge-info">${escapeHtml(domainLabel(d.domain))}</span></td>
                     <td>${escapeHtml(d.situationType || d.situation_type || '--')}</td>
                     <td><span class="badge badge-${urgencyBadge(d.urgency)}">${escapeHtml(d.urgency || '--')}</span></td>
-                    <td>${d.autoExecuted
+                    <td>${d.autoExecuted === true
                       ? '<span class="badge badge-accent" title="Your twin handled this automatically">Auto</span>'
-                      : '<span class="badge badge-success" title="You approved this action">You OK\'d</span>'
+                      : d.autoExecuted === false
+                        ? '<span class="badge badge-success" title="You approved this action">You OK\'d</span>'
+                        : '<span class="badge badge-muted" title="Decision pending">Pending</span>'
                     }</td>
                     <td>
                       <button class="btn btn-sm btn-ghost undo-btn" data-decision-id="${escapeHtml(d.id)}"
