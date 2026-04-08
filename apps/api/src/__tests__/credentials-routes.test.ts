@@ -273,7 +273,7 @@ describe('Credentials API routes', () => {
     function setupExecutionRouterMock(
       adapters: Map<string, { adapter: { healthCheck: () => Promise<{ healthy: boolean }> } }> = new Map(),
     ) {
-      mockGetExecutionRouter.mockReturnValue({
+      mockGetExecutionRouter.mockResolvedValue({
         getRegistry: () => ({
           getAll: () => adapters,
         }),

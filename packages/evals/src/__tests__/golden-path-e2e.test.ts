@@ -295,7 +295,7 @@ describe('Golden Path E2E Integration', () => {
     };
 
     // ── 3. Interpret the signal ──
-    const decision = interpreter.interpret(rawSignal);
+    const decision = await interpreter.interpret(rawSignal);
     expect(decision.situationType).toBe(SituationType.EMAIL_TRIAGE);
     expect(decision.domain).toBe('email');
     expect(decision.summary).toBeTruthy();

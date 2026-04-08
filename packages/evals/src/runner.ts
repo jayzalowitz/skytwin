@@ -33,7 +33,7 @@ export class EvalRunner {
     };
 
     // Interpret the raw event
-    const decision = this.interpreter.interpret(scenario.event);
+    const decision = await this.interpreter.interpret(scenario.event);
 
     // Build decision context
     const context: DecisionContext = {

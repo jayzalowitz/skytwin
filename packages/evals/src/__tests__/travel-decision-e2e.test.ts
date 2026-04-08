@@ -120,7 +120,7 @@ describe('Travel Decision E2E', () => {
       updatedAt: new Date(),
     });
 
-    const decision = interpreter.interpret({
+    const decision = await interpreter.interpret({
       source: 'travel',
       type: 'travel_booking',
       userId,

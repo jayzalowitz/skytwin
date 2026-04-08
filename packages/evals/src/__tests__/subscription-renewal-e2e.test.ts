@@ -120,7 +120,7 @@ describe('Subscription Renewal E2E', () => {
       updatedAt: new Date(),
     });
 
-    const decision = interpreter.interpret({
+    const decision = await interpreter.interpret({
       source: 'billing',
       type: 'subscription_renewal',
       userId,

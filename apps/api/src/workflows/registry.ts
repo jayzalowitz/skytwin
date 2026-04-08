@@ -83,7 +83,7 @@ export async function genericWorkflowHandler(
     throw new Error('Event must include a userId field');
   }
 
-  const decision = deps.interpreter.interpret(event);
+  const decision = await deps.interpreter.interpret(event);
   await deps.twinService.getOrCreateProfile(userId);
   const preferences = await deps.twinService.getRelevantPreferences(
     userId,
