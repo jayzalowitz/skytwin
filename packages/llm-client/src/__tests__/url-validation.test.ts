@@ -148,4 +148,23 @@ describe('validateBaseUrl', () => {
       expect(() => validateBaseUrl('http://192.168.1.1', 'openai')).toThrow('Private/internal URL not allowed');
     });
   });
+
+  describe('IPv6 ULA and link-local blocking', () => {
+    it('blocks fd00::/8 unique local addresses', () => {
+      expect(() => validateBaseUrl('http://[fd12::1]:8080', 'openai')).toThrow('Private/internal URL not allowed');
+      expect(() => validateBaseUrl('http://[fd00::1]', 'anthropic')).toThrow('Private/internal URL not allowed');
+    });
+
+    it('blocks fc00::/8 unique local addresses', () => {
+      expect(() => validateBaseUrl('http://[fc00::1]', 'openai')).toThrow('Private/internal URL not allowed');
+    });
+
+    it('blocks fe80::/10 link-local addresses', () => {
+      expect(() => validateBaseUrl('http://[fe80::1]', 'openai')).toThrow('Private/internal URL not allowed');
+    });
+
+    it('blocks IPv6 ULA for ollama (non-loopback private)', () => {
+      expect(() => validateBaseUrl('http://[fd12::1]:11434', 'ollama')).toThrow('only localhost is allowed');
+    });
+  });
 });

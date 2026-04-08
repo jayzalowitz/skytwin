@@ -83,5 +83,13 @@ function isPrivateHost(hostname: string): boolean {
     return isPrivateHost(mapped);
   }
 
+  // IPv6 unique local addresses (fc00::/7 → fc.. and fd..)
+  if (hostname.startsWith('fc') || hostname.startsWith('fd')) {
+    if (/^f[cd][0-9a-f]{0,2}:/.test(hostname)) return true;
+  }
+
+  // IPv6 link-local (fe80::/10)
+  if (/^fe[89ab][0-9a-f]?:/.test(hostname)) return true;
+
   return false;
 }

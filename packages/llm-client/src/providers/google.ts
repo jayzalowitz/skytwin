@@ -23,7 +23,7 @@ export async function generate(
     contents.push({ role: 'user', parts: [{ text: prompt }] });
 
     const res = await fetch(
-      `${baseUrl}/v1beta/models/${model}:generateContent`,
+      `${baseUrl}/v1beta/models/${encodeURIComponent(model)}:generateContent`,
       {
         method: 'POST',
         headers: {
