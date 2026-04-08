@@ -149,6 +149,44 @@ export class TwinService {
   }
 
   /**
+   * Replace the inferences array on a user's profile (e.g. to remove a
+   * dismissed inference while leaving preferences intact).
+   */
+  async updateProfileInferences(
+    userId: string,
+    inferences: Inference[],
+  ): Promise<TwinProfile> {
+    const profile = await this.getOrCreateProfile(userId);
+    const updatedProfile: TwinProfile = {
+      ...profile,
+      inferences,
+      version: profile.version + 1,
+      updatedAt: new Date(),
+    };
+    return this.repository.updateProfile(updatedProfile);
+  }
+
+  /**
+   * Replace both preferences and inferences on a user's profile
+   * (used for removing/dismissing insights from the twin page).
+   */
+  async replaceProfileInsights(
+    userId: string,
+    preferences: Preference[],
+    inferences: Inference[],
+  ): Promise<TwinProfile> {
+    const profile = await this.getOrCreateProfile(userId);
+    const updatedProfile: TwinProfile = {
+      ...profile,
+      preferences,
+      inferences,
+      version: profile.version + 1,
+      updatedAt: new Date(),
+    };
+    return this.repository.updateProfile(updatedProfile);
+  }
+
+  /**
    * Add evidence to the twin and potentially update inferences.
    * When a pattern repository is available, also runs pattern detection
    * and cross-domain trait analysis.
