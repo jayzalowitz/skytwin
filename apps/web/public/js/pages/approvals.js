@@ -409,7 +409,7 @@ function describeAction(action) {
     save_option: 'Save for later review',
   };
 
-  return descriptions[action.actionType] || action.description || action.actionType || 'Take action';
+  return descriptions[action.actionType] || escapeHtml(action.description || action.actionType || 'Take action');
 }
 
 /**
@@ -454,7 +454,7 @@ function renderHistoryDetails(a) {
   if (action.reversible === true) meta.push('↩ Reversible');
   if (action.reversible === false) meta.push('⚠ Irreversible');
   if (action.estimatedCostCents > 0) meta.push(`$${(action.estimatedCostCents / 100).toFixed(2)}`);
-  if (action.domain) meta.push(action.domain);
+  if (action.domain) meta.push(escapeHtml(action.domain));
 
   const statusNote = a.status === 'approved' ? 'Executed via worker' :
     a.status === 'rejected' ? 'Skipped — you said no' :
@@ -473,7 +473,7 @@ function renderHistoryDetails(a) {
 }
 
 function explainReason(action, reason) {
-  if (reason) return reason;
+  if (reason) return escapeHtml(reason);
 
   const explanations = {
     archive_email: 'I noticed you usually archive emails like this. Want me to handle it?',

@@ -219,18 +219,18 @@ async function main(): Promise<void> {
       }
       // Clean up expired escalations — separate try/catch so expiry failures
       // don't block cleanup and vice versa
-      try {
-        for (const uc of userConnectors) {
+      for (const uc of userConnectors) {
+        try {
           const cleaned = await approvalRepository.deleteStaleEscalations(uc.userId);
           if (cleaned > 0) {
             console.info(`[worker] Cleaned ${cleaned} stale escalation(s) for user ${uc.userId}`);
           }
+        } catch (error) {
+          console.error(
+            `[worker] Error cleaning stale escalations for user ${uc.userId}:`,
+            error instanceof Error ? error.message : error,
+          );
         }
-      } catch (error) {
-        console.error(
-          '[worker] Error cleaning stale escalations:',
-          error instanceof Error ? error.message : error,
-        );
       }
     }
 

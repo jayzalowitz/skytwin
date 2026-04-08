@@ -123,7 +123,7 @@ export function createApprovalsRouter(): Router {
   router.get('/:userId/history', async (req, res, next) => {
     try {
       const { userId } = req.params;
-      const limit = parseInt(req.query['limit'] as string ?? '50', 10);
+      const limit = Math.min(Number(req.query['limit']) || 50, 500);
       const approvals = await approvalRepository.findByUser(userId, limit);
 
       res.json({
