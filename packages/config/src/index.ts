@@ -61,6 +61,9 @@ export interface SkyTwinConfig {
 
   /** Google OAuth redirect URI */
   googleRedirectUri: string;
+
+  /** Directory to scan for adapter plugins (empty = no discovery) */
+  adapterPluginDir: string;
 }
 
 const LOG_LEVELS: readonly LogLevel[] = ['debug', 'info', 'warn', 'error'] as const;
@@ -106,6 +109,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     googleClientId: env['GOOGLE_CLIENT_ID'] ?? '',
     googleClientSecret: env['GOOGLE_CLIENT_SECRET'] ?? '',
     googleRedirectUri: env['GOOGLE_REDIRECT_URI'] ?? 'http://localhost:3100/api/oauth/google/callback',
+    adapterPluginDir: env['ADAPTER_PLUGIN_DIR'] ?? '',
   };
 }
 

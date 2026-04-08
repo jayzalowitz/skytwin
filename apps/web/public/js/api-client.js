@@ -212,6 +212,26 @@ export function revokeSession(sessionId, userId) {
   });
 }
 
+// ── AI Provider Settings ──────────────────────────────
+
+export function fetchAISettings(userId) {
+  return fetchSettings(userId).then(s => s?.aiProviders ?? []);
+}
+
+export function saveAIProviders(userId, providers) {
+  return fetchJSON(`${API}/settings/${userId}/ai`, {
+    method: 'PUT',
+    body: JSON.stringify({ providers }),
+  });
+}
+
+export function testAIProvider(userId, providerConfig) {
+  return fetchJSON(`${API}/settings/${userId}/ai/test`, {
+    method: 'POST',
+    body: JSON.stringify(providerConfig),
+  });
+}
+
 // ── Audit ──────────────────────────────────────────────
 
 export function fetchAudit(userId, options = {}) {

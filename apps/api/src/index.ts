@@ -45,7 +45,7 @@ if (configErrors.length > 0) {
 }
 
 // Initialize the execution router early to log adapter registration
-getExecutionRouter();
+getExecutionRouter().catch((err) => console.error('[api] Failed to initialize execution router:', err));
 
 const app: Application = express();
 

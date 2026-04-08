@@ -18,6 +18,7 @@
     "@skytwin/execution-router": "workspace:*",
     "@skytwin/explanations": "workspace:*",
     "@skytwin/ironclaw-adapter": "workspace:*",
+    "@skytwin/llm-client": "workspace:*",
     "@skytwin/policy-engine": "workspace:*",
     "@skytwin/shared-types": "workspace:*",
     "@skytwin/twin-model": "workspace:*",
