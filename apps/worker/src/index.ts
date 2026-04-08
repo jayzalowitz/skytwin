@@ -217,10 +217,27 @@ async function main(): Promise<void> {
           error instanceof Error ? error.message : error,
         );
       }
+      // Clean up expired escalations — separate try/catch so expiry failures
+      // don't block cleanup and vice versa
+      try {
+        for (const uc of userConnectors) {
+          const cleaned = await approvalRepository.deleteStaleEscalations(uc.userId);
+          if (cleaned > 0) {
+            console.info(`[worker] Cleaned ${cleaned} stale escalation(s) for user ${uc.userId}`);
+          }
+        }
+      } catch (error) {
+        console.error(
+          '[worker] Error cleaning stale escalations:',
+          error instanceof Error ? error.message : error,
+        );
+      }
     }
 
-    // Re-discover users every 10 poll cycles to pick up new connections
-    if (pollCount % 10 === 0) {
+    // Re-discover users every 10 poll cycles to pick up new connections.
+    // When no users are tracked yet, check every cycle so first-time
+    // connections are picked up within one poll interval (~10s).
+    if (userConnectors.length === 0 || pollCount % 10 === 0) {
       const newUserConnectors = await discoverUsers();
       const oldUserIds = new Set(userConnectors.map((uc) => uc.userId));
       const newUserIds = new Set(newUserConnectors.map((uc) => uc.userId));

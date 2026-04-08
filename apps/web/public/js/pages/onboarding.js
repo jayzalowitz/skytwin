@@ -481,10 +481,15 @@ export function renderOnboarding(container, onComplete) {
           // Non-fatal
         }
 
-        // 5. Show signal preview before navigating to dashboard
+        // 5. Persist onboarding completion early so navigating away
+        //    during the signal preview doesn't restart the wizard.
+        localStorage.setItem('skytwin_userId', userId);
+        localStorage.setItem('skytwin_onboarded', 'true');
+
+        // 6. Show signal preview before navigating to dashboard
         await showSignalPreview(container, userId);
 
-        // 6. Navigate to the dashboard
+        // 7. Navigate to the dashboard
         onComplete(userId);
       },
       state,

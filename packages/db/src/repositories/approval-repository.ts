@@ -29,12 +29,13 @@ export const approvalRepository = {
     return result.rows[0]!;
   },
 
-  async findPending(userId: string): Promise<ApprovalRequestRow[]> {
+  async findPending(userId: string, limit: number = 100): Promise<ApprovalRequestRow[]> {
     const result = await query<ApprovalRequestRow>(
       `SELECT * FROM approval_requests
        WHERE user_id = $1 AND status = 'pending'
-       ORDER BY requested_at DESC`,
-      [userId],
+       ORDER BY requested_at DESC
+       LIMIT $2`,
+      [userId, limit],
     );
     return result.rows;
   },
@@ -71,7 +72,7 @@ export const approvalRepository = {
   async findByUser(userId: string, limit: number = 50): Promise<ApprovalRequestRow[]> {
     const result = await query<ApprovalRequestRow>(
       `SELECT * FROM approval_requests
-       WHERE user_id = $1
+       WHERE user_id = $1 AND status != 'cleaned'
        ORDER BY requested_at DESC
        LIMIT $2`,
       [userId, limit],
@@ -89,6 +90,24 @@ export const approvalRepository = {
        SET status = 'expired', responded_at = now()
        WHERE status = 'pending' AND expires_at < now()`,
       [],
+    );
+    return result.rowCount ?? 0;
+  },
+
+  /**
+   * Soft-delete stale escalation-only approval requests by setting status = 'cleaned'.
+   * These are "escalate_to_user" actions that expired without user response.
+   * Keeps the records for pattern analysis while hiding them from the active UI.
+   */
+  async deleteStaleEscalations(userId: string): Promise<number> {
+    const result = await query(
+      `UPDATE approval_requests
+       SET status = 'cleaned', responded_at = now()
+       WHERE user_id = $1
+         AND candidate_action->>'actionType' = 'escalate_to_user'
+         AND status IN ('expired', 'pending')
+         AND (status = 'expired' OR expires_at < now())`,
+      [userId],
     );
     return result.rowCount ?? 0;
   },

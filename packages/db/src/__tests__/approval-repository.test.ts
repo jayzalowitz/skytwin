@@ -124,7 +124,8 @@ describe('approvalRepository', () => {
       expect(sql).toContain("status = 'pending'");
       expect(sql).toContain('user_id = $1');
       expect(sql).toContain('ORDER BY requested_at DESC');
-      expect(params).toEqual(['u-001']);
+      expect(sql).toContain('LIMIT $2');
+      expect(params).toEqual(['u-001', 100]);
     });
 
     it('returns empty array when no pending approvals exist', async () => {
@@ -132,6 +133,16 @@ describe('approvalRepository', () => {
 
       const result = await approvalRepository.findPending('u-001');
       expect(result).toEqual([]);
+    });
+
+    it('respects custom limit parameter', async () => {
+      mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
+
+      await approvalRepository.findPending('u-001', 50);
+
+      const [sql, params] = mockQuery.mock.calls[0]!;
+      expect(sql).toContain('LIMIT $2');
+      expect(params).toEqual(['u-001', 50]);
     });
   });
 

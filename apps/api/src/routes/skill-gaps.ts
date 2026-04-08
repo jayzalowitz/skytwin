@@ -58,5 +58,22 @@ export function createSkillGapsRouter(): Router {
     }
   });
 
+  /**
+   * GET /api/v1/skill-gaps/:userId
+   *
+   * List skill gaps for a specific user.
+   */
+  router.get('/:userId', async (req, res, next) => {
+    try {
+      const { userId } = req.params;
+      const rows = await skillGapRepository.getByUserId(userId);
+      const skillGaps: SkillGap[] = rows.map(toSkillGap);
+
+      res.json({ gaps: skillGaps, total: skillGaps.length });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   return router;
 }

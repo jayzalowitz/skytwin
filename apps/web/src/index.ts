@@ -22,7 +22,7 @@ app.all('/api/*', async (req, res) => {
         'Content-Type': 'application/json',
         ...(req.headers['authorization'] ? { Authorization: req.headers['authorization'] as string } : {}),
       },
-      body: ['POST', 'PUT', 'PATCH'].includes(req.method) ? JSON.stringify(req.body) : undefined,
+      body: ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method) ? JSON.stringify(req.body) : undefined,
     });
 
     const data = await response.text();
