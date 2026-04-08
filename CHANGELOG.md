@@ -1,5 +1,25 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.3.3.1] - 2026-04-08
+
+### Added
+
+- **Twin insight editing**: Edit button on each insight card opens a styled modal to update what the twin knows
+- **Correction modal**: "That's not right" now opens a proper modal (replaces browser prompt) with save, remove, cancel, and keyboard shortcuts (Cmd+Enter, Escape)
+- **DELETE /api/twin/:userId/insights endpoint**: atomic insight correction and removal with input validation and length limits
+
+### Fixed
+
+- **Twin feedback was broken**: feedback buttons on the My Learnings page called invalid API endpoints (null decisionId, wrong type). Replaced with dedicated insight management endpoint
+- **XSS in insight rendering**: `escapeHtml()` now escapes quotes for HTML attribute safety, `item.reasoning` is escaped before innerHTML injection
+- **Double-submit prevention**: correction modal guards against concurrent API calls from click + keyboard
+- **Redundant DB queries**: correction path reduced from 4 sequential CockroachDB calls to 2 (one read, one atomic write)
+- **Predictable IDs**: preference IDs use `crypto.randomUUID()` instead of `Math.random()`
+
+### Changed
+
+- **btn-ghost CSS class**: added missing button variant used by Edit buttons, with hover state and focus-visible keyboard indicator
+
 ## [0.3.3.0] - 2026-04-08
 
 ### Added
