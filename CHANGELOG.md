@@ -23,6 +23,17 @@ All notable changes to SkyTwin will be documented in this file.
 - **LLM-controlled safety fields**: `estimatedCostCents` and `reversible` on LLM-generated candidates are now overridden with safe defaults (0 and false). The deterministic scoring and policy layers handle the real values
 - **XSS in settings page**: userId now escaped in all onclick handlers to prevent injection via mobile pairing URL
 - **NaN/Infinity in adapter manifest**: riskModifier validated with Number.isFinite before use
+- **N+1 on decisions page**: batch-fetches decision outcomes in a single query instead of one per row
+- **XSS in dashboard activity**: domain and situationType now escaped with escapeHtml in recent activity feed
+- **Null crash in audit trail**: optional chaining on `entry.detail?.decisionId` prevents TypeError on malformed entries
+- **escapeHtml null guard**: `escapeHtml(null)` no longer throws, returns empty string
+- **0% accuracy on empty data**: dashboard shows "--" instead of "0%" when no decisions exist
+- **Decisions limit injection**: limit/offset parameters clamped to [1, 200] with NaN fallback
+
+### Changed
+
+- **Decision status badges**: decisions page now shows Auto / You OK'd / Pending based on three-way outcome state (auto-executed true, false, or missing)
+- **Stat card tooltips**: all four dashboard stat cards have title attributes explaining what each metric means
 
 ## [0.3.3.1] - 2026-04-08
 
