@@ -57,12 +57,24 @@ export function createDecisionsRouter(): Router {
         decisions = decisions.slice(offset, offset + limit);
       }
 
+      // Batch-fetch outcomes to get auto_executed status
+      const outcomeMap = new Map<string, boolean>();
+      await Promise.all(
+        decisions.map(async (d) => {
+          const outcome = await decisionRepository.getOutcome(d.id);
+          if (outcome) {
+            outcomeMap.set(d.id, outcome.auto_executed);
+          }
+        }),
+      );
+
       res.json({
         decisions: decisions.map((d) => ({
           id: d.id,
           situationType: d.situation_type,
           domain: d.domain,
           urgency: d.urgency,
+          autoExecuted: outcomeMap.get(d.id) ?? false,
           createdAt: d.created_at,
         })),
         total,

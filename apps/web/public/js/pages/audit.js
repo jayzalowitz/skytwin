@@ -61,7 +61,10 @@ export async function renderAudit(container, userId) {
       }
 
       if (allEntries.length === 0) {
-        timeline.innerHTML = '<div class="empty-state">No audit events yet. Events will appear as you use SkyTwin.</div>';
+        timeline.innerHTML = `<div class="empty-state">
+          <div class="empty-state-title">No audit events yet</div>
+          <div class="empty-state-desc">Once your twin starts making decisions, every action will be logged here — trust tier changes, spending, and what it learns about you. This is your full paper trail.</div>
+        </div>`;
         return;
       }
 

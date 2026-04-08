@@ -85,7 +85,7 @@ function createDropdown() {
   wrapper.id = 'theme-switcher-root';
   wrapper.className = 'theme-switcher';
   wrapper.innerHTML = `
-    <button class="theme-switcher-btn" aria-label="Change theme">
+    <button class="theme-switcher-btn" aria-label="Change visual theme" title="Visual theme — click to change">
       <span class="mode-icon">${mode === 'dark' ? '\u263E' : '\u2600'}</span>
       <span class="current-theme-name">${currentV.name}</span>
       <span class="chevron">\u25BE</span>

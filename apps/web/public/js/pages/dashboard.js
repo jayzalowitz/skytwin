@@ -60,26 +60,28 @@ export async function renderDashboard(container, userId) {
     ` : ''}
 
     <div class="stats-grid">
-      <div class="card stat-card">
+      <div class="card stat-card" title="How much of your routine, preferences, and style your twin understands. Grows as you use SkyTwin and give feedback.">
         <div class="stat-value">${overallConf}%</div>
         <div class="stat-label">How well I know you</div>
-        <div class="stat-sublabel">${confLabel}</div>
+        <div class="stat-sublabel">${overallConf === 0 ? 'Connect your accounts and I\'ll start learning' : confLabel}</div>
         <div class="confidence-bar"><div class="confidence-fill ${confClass}" style="width: ${overallConf}%"></div></div>
       </div>
-      <div class="card stat-card">
+      <div class="card stat-card" title="How often your twin picks the right action. Based on your approvals and rejections.">
         <div class="stat-value">${acc ? `${Math.round(acc.accuracyRate * 100)}%` : '--'}</div>
         <div class="stat-label">Getting it right</div>
-        <div class="stat-sublabel">${acc ? `You approved ${acc.approved} of ${acc.totalDecisions}` : 'No feedback yet'}</div>
+        <div class="stat-sublabel">${acc
+          ? (acc.totalDecisions === 0 ? 'Approve or reject decisions to train me' : `You approved ${acc.approved} of ${acc.totalDecisions}`)
+          : 'Approve or reject decisions to train me'}</div>
       </div>
-      <div class="card stat-card">
+      <div class="card stat-card" title="Preferences and facts your twin has learned about you, from your feedback and behavior patterns.">
         <div class="stat-value">${learn?.totalPreferences ?? 0}</div>
         <div class="stat-label">Things I've learned</div>
-        <div class="stat-sublabel">${learn?.totalInferences ?? 0} figured out on my own</div>
+        <div class="stat-sublabel">${(learn?.totalPreferences ?? 0) === 0 ? 'Your preferences will appear here' : `${learn?.totalInferences ?? 0} figured out on my own`}</div>
       </div>
-      <div class="card stat-card">
+      <div class="card stat-card" title="Recurring patterns your twin has detected in your behavior, like when you check email or how you respond to invites.">
         <div class="stat-value">${learn?.totalPatterns ?? 0}</div>
         <div class="stat-label">Habits I've noticed</div>
-        <div class="stat-sublabel">${learn?.totalTraits ?? 0} personality traits</div>
+        <div class="stat-sublabel">${(learn?.totalPatterns ?? 0) === 0 ? 'I\'ll spot your patterns over time' : `${learn?.totalTraits ?? 0} personality traits`}</div>
       </div>
     </div>
 
