@@ -1,5 +1,26 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.4.0.0] - 2026-04-08
+
+### Added
+
+- **LLM-powered decisions**: Your twin can now use Claude, GPT, Gemini, or a local Ollama model to interpret events and generate candidate actions, instead of relying solely on keyword matching and hardcoded rules
+- **Provider chain with automatic fallback**: Configure multiple AI providers in priority order. If Anthropic is down, the system tries OpenAI, then Ollama, then falls back to built-in rules. Per-provider circuit breakers prevent repeated timeouts
+- **AI brain settings UI**: New drag-and-drop card in Settings to add, reorder, test, enable/disable, and remove AI providers. One-click connection test shows latency and model info
+- **`@skytwin/llm-client` package**: Unified LLM client with provider chain, circuit breakers, prompt builder, and response parser. Supports Anthropic, OpenAI, Google, and Ollama via raw fetch (no SDK dependencies)
+- **Strategy pattern in decision-engine**: `SituationInterpreter` and `DecisionMaker` now accept pluggable strategies. LLM strategies wrap the client; rule-based strategies preserve all existing logic as fallback
+- **Dynamic adapter discovery**: Execution router can scan a plugin directory for adapter manifests, dynamically importing and registering third-party execution adapters with enforced minimum trust scores
+
+### Fixed
+
+- **API keys silently erased on save**: The replaceAll operation now reads existing keys before deleting and preserves them when the client sends an empty key (which happens on every save since the UI only has the masked preview)
+- **Per-request circuit breaker defeat**: Circuit breakers are now cached at module level so failure counts persist across requests. Previously, a new LlmClient per request meant a downed provider was retried on every single event
+- **SSRF via user-controlled baseUrl**: All LLM providers now validate baseUrl against private IP ranges (RFC 1918, link-local, cloud metadata). Ollama is exempted for localhost only
+- **Google API key leaked in URL**: Moved from query parameter (`?key=`) to `x-goog-api-key` header
+- **Path traversal in adapter plugins**: Entry point paths are resolved and checked to stay within the plugin directory
+- **Race condition in execution router init**: Singleton now stores the initialization promise (not the result) to prevent duplicate router creation under concurrent requests
+- **LLM-controlled safety fields**: `estimatedCostCents` and `reversible` on LLM-generated candidates are now overridden with safe defaults (0 and false). The deterministic scoring and policy layers handle the real values
+
 ## [0.3.3.1] - 2026-04-08
 
 ### Added
