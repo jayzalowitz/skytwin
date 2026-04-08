@@ -85,6 +85,10 @@ export function createOAuthRouter(): Router {
         return;
       }
 
+      if (!state) {
+        console.error('[oauth] WARNING: state param is missing — userId will not be associated with token');
+      }
+
       const userId = state ?? 'default-user';
       const googleConfig = await resolveGoogleConfig();
       const tokenSet = await exchangeCode(googleConfig, code);
@@ -99,8 +103,9 @@ export function createOAuthRouter(): Router {
         tokenSet.scopes,
       );
 
-      // Redirect back to the dashboard with success
-      res.redirect('/#/settings?connected=google');
+      // Redirect back to the web dashboard with success.
+      const webBase = process.env['WEB_BASE_URL'] ?? `http://localhost:${process.env['WEB_PORT'] ?? '3200'}`;
+      res.redirect(`${webBase}/#/settings?connected=google`);
     } catch (error) {
       next(error);
     }

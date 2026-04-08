@@ -124,7 +124,8 @@ describe('approvalRepository', () => {
       expect(sql).toContain("status = 'pending'");
       expect(sql).toContain('user_id = $1');
       expect(sql).toContain('ORDER BY requested_at DESC');
-      expect(params).toEqual(['u-001']);
+      expect(sql).toContain('LIMIT $2');
+      expect(params).toEqual(['u-001', 100]);
     });
 
     it('returns empty array when no pending approvals exist', async () => {
@@ -132,6 +133,16 @@ describe('approvalRepository', () => {
 
       const result = await approvalRepository.findPending('u-001');
       expect(result).toEqual([]);
+    });
+
+    it('respects custom limit parameter', async () => {
+      mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
+
+      await approvalRepository.findPending('u-001', 50);
+
+      const [sql, params] = mockQuery.mock.calls[0]!;
+      expect(sql).toContain('LIMIT $2');
+      expect(params).toEqual(['u-001', 50]);
     });
   });
 
@@ -379,6 +390,57 @@ describe('approvalRepository', () => {
       const [sql] = mockQuery.mock.calls[0]!;
       expect(sql).toContain("AND status = 'pending'");
       expect(sql).toContain('AND user_id = $3');
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // findByUser — cleaned filter
+  // -----------------------------------------------------------------------
+
+  describe('findByUser', () => {
+    it('excludes cleaned status from results', async () => {
+      mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
+
+      await approvalRepository.findByUser('u-001');
+
+      const [sql] = mockQuery.mock.calls[0]!;
+      expect(sql).toContain("status != 'cleaned'");
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // deleteStaleEscalations (soft-delete)
+  // -----------------------------------------------------------------------
+
+  describe('deleteStaleEscalations', () => {
+    it('soft-deletes stale escalations by setting status to cleaned', async () => {
+      mockQuery.mockResolvedValue({ rows: [], rowCount: 3 });
+
+      const count = await approvalRepository.deleteStaleEscalations('u-001');
+
+      expect(count).toBe(3);
+
+      const [sql, params] = mockQuery.mock.calls[0]!;
+      expect(sql).toContain("SET status = 'cleaned'");
+      expect(sql).toContain('responded_at = now()');
+      expect(sql).toContain('user_id = $1');
+      expect(sql).toContain("candidate_action->>'actionType' = 'escalate_to_user'");
+      expect(sql).toContain("status IN ('expired', 'pending')");
+      expect(params).toEqual(['u-001']);
+    });
+
+    it('returns 0 when no stale escalations exist', async () => {
+      mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
+
+      const count = await approvalRepository.deleteStaleEscalations('u-001');
+      expect(count).toBe(0);
+    });
+
+    it('returns 0 when rowCount is null', async () => {
+      mockQuery.mockResolvedValue({ rows: [], rowCount: null });
+
+      const count = await approvalRepository.deleteStaleEscalations('u-001');
+      expect(count).toBe(0);
     });
   });
 });

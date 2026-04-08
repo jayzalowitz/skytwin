@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import {
   approvalRepository,
+  decisionRepository,
   feedbackRepository,
   oauthRepository,
   userRepository,
@@ -33,19 +34,82 @@ export function createApprovalsRouter(): Router {
   router.get('/:userId/pending', async (req, res, next) => {
     try {
       const { userId } = req.params;
-      const approvals = await approvalRepository.findPending(userId);
+      const limit = Math.min(Number(req.query['limit']) || 100, 500);
+      const approvals = await approvalRepository.findPending(userId, limit);
 
-      res.json({
-        approvals: approvals.map((a) => ({
+      // Batch-fetch decisions and candidate actions in two queries instead of N+1
+      const decisionIds = [...new Set(approvals.map((a) => a.decision_id).filter(Boolean))] as string[];
+      const [decisions, allCandidates] = await Promise.all([
+        decisionRepository.findByIds(decisionIds),
+        decisionRepository.getCandidateActionsForDecisions(decisionIds),
+      ]);
+
+      const decisionMap = new Map(decisions.map((d) => [d.id, d]));
+      const candidateMap = new Map<string, typeof allCandidates>();
+      for (const c of allCandidates) {
+        const list = candidateMap.get(c.decision_id) ?? [];
+        list.push(c);
+        candidateMap.set(c.decision_id, list);
+      }
+
+      const sensitiveKeys = new Set(['accessToken', 'oauthToken', 'refreshToken', 'credentials']);
+
+      const enriched = approvals.map((a) => {
+        const action = a.candidate_action as Record<string, unknown>;
+        const isEscalation = action?.['actionType'] === 'escalate_to_user';
+
+        let signalContext: Record<string, unknown> | null = null;
+        let alternatives: Array<Record<string, unknown>> = [];
+
+        if (a.decision_id) {
+          const decision = decisionMap.get(a.decision_id);
+          if (decision) {
+            const raw = decision.raw_event ?? {};
+            signalContext = {
+              summary: (decision.interpreted_situation?.['summary'] as string) ?? decision.domain,
+              source: raw['source'] ?? raw['type'] ?? decision.domain,
+              from: raw['from'] ?? null,
+              subject: raw['subject'] ?? null,
+              body: raw['body'] ?? null,
+              receivedAt: raw['receivedAt'] ?? null,
+            };
+
+            if (isEscalation) {
+              const candidates = candidateMap.get(a.decision_id) ?? [];
+              alternatives = candidates
+                .filter((c) => c.action_type !== 'escalate_to_user')
+                .map((c) => {
+                  const rawParams = (c.parameters ?? {}) as Record<string, unknown>;
+                  const safeParams = Object.fromEntries(
+                    Object.entries(rawParams).filter(([k]) => !sensitiveKeys.has(k)),
+                  );
+                  return {
+                    actionType: c.action_type,
+                    description: c.description,
+                    parameters: safeParams,
+                    reversible: c.reversible,
+                    estimatedCost: c.estimated_cost,
+                  };
+                });
+            }
+          }
+        }
+
+        return {
           id: a.id,
+          userId: a.user_id,
           decisionId: a.decision_id,
           candidateAction: a.candidate_action,
+          signalContext,
+          alternatives,
           reason: a.reason,
           urgency: a.urgency,
           status: a.status,
           requestedAt: a.requested_at,
-        })),
+        };
       });
+
+      res.json({ approvals: enriched });
     } catch (error) {
       next(error);
     }
@@ -59,12 +123,13 @@ export function createApprovalsRouter(): Router {
   router.get('/:userId/history', async (req, res, next) => {
     try {
       const { userId } = req.params;
-      const limit = parseInt(req.query['limit'] as string ?? '50', 10);
+      const limit = Math.min(Number(req.query['limit']) || 50, 500);
       const approvals = await approvalRepository.findByUser(userId, limit);
 
       res.json({
         approvals: approvals.map((a) => ({
           id: a.id,
+          userId: a.user_id,
           decisionId: a.decision_id,
           candidateAction: a.candidate_action,
           reason: a.reason,
@@ -305,6 +370,29 @@ export function createApprovalsRouter(): Router {
         twinProfileVersion: updatedProfile.version,
         processedAt: new Date().toISOString(),
       });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /**
+   * POST /api/approvals/:userId/cleanup-escalations
+   *
+   * Soft-delete stale escalation-only requests from history.
+   * These are "escalate_to_user" actions that expired or went past their window
+   * without user response — marks them as 'cleaned' to hide from UI.
+   */
+  router.post('/:userId/cleanup-escalations', async (req, res, next) => {
+    try {
+      const { userId } = req.params;
+      const body = req.body as Record<string, unknown>;
+      const requestingUser = (body['userId'] as string) ?? '';
+      if (requestingUser && requestingUser !== userId) {
+        res.status(403).json({ error: 'You can only clean up your own escalations.' });
+        return;
+      }
+      const cleaned = await approvalRepository.deleteStaleEscalations(userId);
+      res.json({ cleaned });
     } catch (error) {
       next(error);
     }

@@ -313,6 +313,7 @@ POST   /api/v1/preferences/:userId/proposals/:id/respond  # Accept or reject
 
 ```
 GET    /api/v1/skill-gaps                # List unhandled action types
+GET    /api/v1/skill-gaps/:userId        # List skill gaps for a specific user
 ```
 
 ### Settings API

@@ -36,6 +36,14 @@ export const skillGapRepository = {
     return result.rows;
   },
 
+  async getByUserId(userId: string, limit: number = 50): Promise<SkillGapRow[]> {
+    const result = await query<SkillGapRow>(
+      'SELECT * FROM skill_gap_log WHERE user_id = $1 ORDER BY logged_at DESC LIMIT $2',
+      [userId, limit],
+    );
+    return result.rows;
+  },
+
   async setIssueUrl(id: string, url: string): Promise<void> {
     await query(
       'UPDATE skill_gap_log SET ironclaw_issue_url = $1 WHERE id = $2',

@@ -128,6 +128,21 @@ export function createEventsRouter(): Router {
         context,
       );
 
+      // 8b. Persist candidate actions so alternatives are available for approval UI
+      if (outcome.allCandidates.length > 0) {
+        try {
+          await decisionRepositoryAdapter.saveCandidates(outcome.allCandidates);
+        } catch (err: unknown) {
+          // Duplicate key (PG 23505) is expected from prior runs or the engine itself.
+          // Log anything else so real failures aren't silently swallowed.
+          const code = (err as { code?: string }).code;
+          if (code !== '23505') {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.error('[events] Failed to persist candidate actions:', msg);
+          }
+        }
+      }
+
       // 9. Handle outcome
       let executionResult = null;
       let approvalRequest = null;

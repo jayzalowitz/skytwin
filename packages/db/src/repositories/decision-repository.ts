@@ -219,6 +219,32 @@ export const decisionRepository = {
   },
 
   /**
+   * Batch-fetch decisions by an array of IDs.
+   */
+  async findByIds(ids: string[]): Promise<DecisionRow[]> {
+    if (ids.length === 0) return [];
+    const result = await query<DecisionRow>(
+      'SELECT * FROM decisions WHERE id = ANY($1)',
+      [ids],
+    );
+    return result.rows;
+  },
+
+  /**
+   * Batch-fetch candidate actions for multiple decisions.
+   */
+  async getCandidateActionsForDecisions(
+    decisionIds: string[],
+  ): Promise<CandidateActionRow[]> {
+    if (decisionIds.length === 0) return [];
+    const result = await query<CandidateActionRow>(
+      'SELECT * FROM candidate_actions WHERE decision_id = ANY($1) ORDER BY created_at',
+      [decisionIds],
+    );
+    return result.rows;
+  },
+
+  /**
    * Record the outcome of a decision.
    */
   async recordOutcome(
