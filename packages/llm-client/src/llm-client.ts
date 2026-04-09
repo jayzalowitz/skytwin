@@ -15,18 +15,20 @@ const PROVIDER_FNS: Record<AIProviderName, ProviderGenerateFn> = {
 
 /**
  * Module-level circuit breaker cache so state persists across requests.
- * Keyed by provider name (e.g. "anthropic", "ollama").
+ * Keyed by userId:providerName to prevent cross-tenant interference
+ * (one user's bad key shouldn't trip the breaker for all users).
  */
 const CIRCUIT_BREAKERS = new Map<string, CircuitBreaker>();
 
-function getCircuitBreaker(providerName: string): CircuitBreaker {
-  let cb = CIRCUIT_BREAKERS.get(providerName);
+function getCircuitBreaker(userId: string, providerName: string): CircuitBreaker {
+  const key = `${userId}:${providerName}`;
+  let cb = CIRCUIT_BREAKERS.get(key);
   if (!cb) {
-    cb = new CircuitBreaker(`llm:${providerName}`, {
+    cb = new CircuitBreaker(`llm:${key}`, {
       failureThreshold: 3,
       resetTimeoutMs: 60_000,
     });
-    CIRCUIT_BREAKERS.set(providerName, cb);
+    CIRCUIT_BREAKERS.set(key, cb);
   }
   return cb;
 }
@@ -58,11 +60,12 @@ export class AllProvidersFailedError extends Error {
 export class LlmClient {
   private readonly chain: ChainEntry[];
 
-  constructor(providers: ProviderEntry[]) {
+  constructor(providers: ProviderEntry[], userId?: string) {
+    const cbOwner = userId ?? 'shared';
     this.chain = providers.map((p) => ({
       provider: p,
       generateFn: PROVIDER_FNS[p.name],
-      circuitBreaker: getCircuitBreaker(p.name),
+      circuitBreaker: getCircuitBreaker(cbOwner, p.name),
     }));
   }
 

@@ -7,7 +7,7 @@ import {
 } from '@skytwin/db';
 import type { DomainAutonomyPolicyRow, EscalationTriggerRow, AIProviderSettingsRow } from '@skytwin/db';
 import { TrustTier } from '@skytwin/shared-types';
-import { LlmClient } from '@skytwin/llm-client';
+import { LlmClient, validateBaseUrl } from '@skytwin/llm-client';
 import type { ProviderEntry } from '@skytwin/llm-client';
 
 /**
@@ -335,6 +335,7 @@ export function createSettingsRouter(): Router {
       }
 
       const validProviders = new Set(['anthropic', 'openai', 'google', 'ollama']);
+      const seenProviders = new Set<string>();
       for (const p of providers) {
         if (!validProviders.has(p.provider)) {
           res.status(400).json({ error: `Invalid provider: ${p.provider}` });
@@ -343,6 +344,19 @@ export function createSettingsRouter(): Router {
         if (!p.model) {
           res.status(400).json({ error: `Model is required for provider ${p.provider}` });
           return;
+        }
+        if (seenProviders.has(p.provider)) {
+          res.status(400).json({ error: `Duplicate provider: ${p.provider}. Each provider can only appear once.` });
+          return;
+        }
+        seenProviders.add(p.provider);
+        if (p.baseUrl) {
+          try {
+            validateBaseUrl(p.baseUrl, p.provider);
+          } catch (err) {
+            res.status(400).json({ error: err instanceof Error ? err.message : 'Invalid base URL' });
+            return;
+          }
         }
       }
 

@@ -54,7 +54,7 @@ async function buildLlmClientForUser(userId: string): Promise<LlmClient | null> 
     baseUrl: r.base_url ?? undefined,
   }));
 
-  return new LlmClient(providers);
+  return new LlmClient(providers, userId);
 }
 
 export function createEventsRouter(): Router {
