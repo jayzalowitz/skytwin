@@ -359,6 +359,50 @@ describe('DecisionMaker', () => {
       }
     });
 
+    it('CALENDAR_INVITE should generate accept, tentative, and decline candidates', () => {
+      const dm = makeDecisionMaker();
+      const decision: DecisionObject = {
+        id: 'dec_inv_001',
+        situationType: SituationType.CALENDAR_INVITE,
+        domain: 'calendar',
+        urgency: 'medium',
+        summary: 'New invite: Weekly sync',
+        rawData: { eventId: 'evt_456' },
+        interpretedAt: new Date(),
+      };
+
+      const candidates = dm.generateCandidates(decision, emptyProfile);
+
+      expect(candidates.length).toBe(3);
+      const actionTypes = candidates.map((c) => c.actionType);
+      expect(actionTypes).toContain('accept_invite');
+      expect(actionTypes).toContain('tentative_accept');
+      expect(actionTypes).toContain('decline_invite');
+      for (const c of candidates) {
+        expect(c.domain).toBe('calendar');
+      }
+    });
+
+    it('CALENDAR_UPDATE should generate acknowledge and dismiss candidates', () => {
+      const dm = makeDecisionMaker();
+      const decision: DecisionObject = {
+        id: 'dec_upd_001',
+        situationType: SituationType.CALENDAR_UPDATE,
+        domain: 'calendar',
+        urgency: 'low',
+        summary: 'Calendar update for sprint review',
+        rawData: { eventId: 'evt_789' },
+        interpretedAt: new Date(),
+      };
+
+      const candidates = dm.generateCandidates(decision, emptyProfile);
+
+      expect(candidates.length).toBe(2);
+      const actionTypes = candidates.map((c) => c.actionType);
+      expect(actionTypes).toContain('acknowledge');
+      expect(actionTypes).toContain('dismiss');
+    });
+
     it('SUBSCRIPTION_RENEWAL should generate renew, cancel, and snooze candidates', () => {
       const dm = makeDecisionMaker();
       const decision: DecisionObject = {

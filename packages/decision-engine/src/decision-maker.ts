@@ -284,8 +284,12 @@ export class DecisionMaker {
     switch (decision.situationType) {
       case SituationType.EMAIL_TRIAGE:
         return this.generateEmailTriageCandidates(decision, profile);
+      case SituationType.CALENDAR_INVITE:
+        return this.generateCalendarInviteCandidates(decision, profile);
       case SituationType.CALENDAR_CONFLICT:
         return this.generateCalendarCandidates(decision, profile);
+      case SituationType.CALENDAR_UPDATE:
+        return this.generateCalendarUpdateCandidates(decision, profile);
       case SituationType.SUBSCRIPTION_RENEWAL:
         return this.generateSubscriptionCandidates(decision, profile);
       case SituationType.GROCERY_REORDER:
@@ -469,6 +473,94 @@ export class DecisionMaker {
       reversible: true,
       confidence: ConfidenceLevel.LOW,
       reasoning: 'Proposing alternatives is collaborative but needs user input.',
+    });
+
+    return candidates;
+  }
+
+  private generateCalendarInviteCandidates(
+    decision: DecisionObject,
+    profile: TwinProfile,
+  ): CandidateAction[] {
+    const candidates: CandidateAction[] = [];
+
+    // Accept the invite
+    candidates.push({
+      id: crypto.randomUUID(),
+      decisionId: decision.id,
+      actionType: 'accept_invite',
+      description: 'Accept this calendar invitation.',
+      domain: 'calendar',
+      parameters: { eventId: decision.rawData['eventId'] },
+      estimatedCostCents: 0,
+      reversible: true,
+      confidence: this.getPreferenceConfidence(profile, 'calendar', 'auto_accept'),
+      reasoning: 'Accepting the invite commits time but can be changed later.',
+    });
+
+    // Tentatively accept
+    candidates.push({
+      id: crypto.randomUUID(),
+      decisionId: decision.id,
+      actionType: 'tentative_accept',
+      description: 'Tentatively accept this calendar invitation.',
+      domain: 'calendar',
+      parameters: { eventId: decision.rawData['eventId'] },
+      estimatedCostCents: 0,
+      reversible: true,
+      confidence: this.getPreferenceConfidence(profile, 'calendar', 'default_response'),
+      reasoning: 'Tentative acceptance signals interest without full commitment.',
+    });
+
+    // Decline the invite
+    candidates.push({
+      id: crypto.randomUUID(),
+      decisionId: decision.id,
+      actionType: 'decline_invite',
+      description: 'Decline this calendar invitation.',
+      domain: 'calendar',
+      parameters: { eventId: decision.rawData['eventId'] },
+      estimatedCostCents: 0,
+      reversible: false,
+      confidence: this.getPreferenceConfidence(profile, 'calendar', 'auto_decline'),
+      reasoning: 'Declining may affect the relationship with the organizer.',
+    });
+
+    return candidates;
+  }
+
+  private generateCalendarUpdateCandidates(
+    decision: DecisionObject,
+    _profile: TwinProfile,
+  ): CandidateAction[] {
+    const candidates: CandidateAction[] = [];
+
+    // Acknowledge the update (no action needed)
+    candidates.push({
+      id: crypto.randomUUID(),
+      decisionId: decision.id,
+      actionType: 'acknowledge',
+      description: 'Acknowledge this calendar update. No action required.',
+      domain: 'calendar',
+      parameters: { eventId: decision.rawData['eventId'] },
+      estimatedCostCents: 0,
+      reversible: true,
+      confidence: ConfidenceLevel.HIGH,
+      reasoning: 'Calendar updates are informational and rarely need action.',
+    });
+
+    // Dismiss (mark as seen)
+    candidates.push({
+      id: crypto.randomUUID(),
+      decisionId: decision.id,
+      actionType: 'dismiss',
+      description: 'Dismiss this calendar notification.',
+      domain: 'calendar',
+      parameters: { eventId: decision.rawData['eventId'] },
+      estimatedCostCents: 0,
+      reversible: true,
+      confidence: ConfidenceLevel.MODERATE,
+      reasoning: 'Dismissing clears the notification without further action.',
     });
 
     return candidates;

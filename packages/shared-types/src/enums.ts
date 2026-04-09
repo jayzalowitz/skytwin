@@ -47,7 +47,9 @@ export enum ConfidenceLevel {
  */
 export enum SituationType {
   EMAIL_TRIAGE = 'email_triage',
+  CALENDAR_INVITE = 'calendar_invite',
   CALENDAR_CONFLICT = 'calendar_conflict',
+  CALENDAR_UPDATE = 'calendar_update',
   SUBSCRIPTION_RENEWAL = 'subscription_renewal',
   GROCERY_REORDER = 'grocery_reorder',
   TRAVEL_DECISION = 'travel_decision',
