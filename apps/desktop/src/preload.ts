@@ -24,4 +24,7 @@ contextBridge.exposeInMainWorld('skytwinDesktop', {
   /** Pause/resume the twin (worker) */
   pauseTwin: () => ipcRenderer.invoke('pause-twin'),
   resumeTwin: () => ipcRenderer.invoke('resume-twin'),
+
+  /** Open a URL in the system default browser (used for OAuth) */
+  openExternal: (url: string) => ipcRenderer.invoke('open-external', url),
 });

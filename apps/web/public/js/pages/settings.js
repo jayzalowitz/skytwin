@@ -309,7 +309,38 @@ window.handleConnectGoogle = async function(userId) {
   try {
     const data = await getGoogleAuthUrl(userId);
     if (data.url) {
-      window.location.href = data.url;
+      // In the desktop app, open OAuth in the system browser to support
+      // passkeys/WebAuthn which Electron's BrowserWindow cannot handle.
+      if (window.skytwinDesktop?.isDesktop && window.skytwinDesktop.openExternal) {
+        // Add source=desktop so the callback renders a close-tab page
+        // instead of redirecting back to localhost.
+        const oauthUrl = new URL(data.url);
+        const currentState = oauthUrl.searchParams.get('state') || '';
+        oauthUrl.searchParams.set('state', currentState ? `${currentState}|desktop` : `|desktop`);
+        await window.skytwinDesktop.openExternal(oauthUrl.toString());
+
+        // Poll for OAuth completion
+        const pageContent = document.getElementById('page-content');
+        pageContent.insertAdjacentHTML(
+          'afterbegin',
+          '<div class="info-banner" id="oauth-polling-banner">Waiting for Google sign-in to complete in your browser\u2026</div>',
+        );
+        const pollInterval = setInterval(async () => {
+          try {
+            const status = await fetchOAuthStatus(userId, 'google');
+            if (status.connected) {
+              clearInterval(pollInterval);
+              document.getElementById('oauth-polling-banner')?.remove();
+              const { renderSettings } = await import('./settings.js');
+              await renderSettings(pageContent, userId);
+            }
+          } catch {
+            // Ignore transient fetch errors during polling
+          }
+        }, 2000);
+      } else {
+        window.location.href = data.url;
+      }
     } else {
       document.getElementById('page-content').insertAdjacentHTML(
         'afterbegin',
