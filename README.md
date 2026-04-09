@@ -248,7 +248,9 @@ SkyTwin is in **active development** (v0.4.0.0). The core decision pipeline, twi
 - Policy engine with spend limits, trust tiers, and domain-specific rules
 - Memory Palace with episodic memory, knowledge graph, and 4-layer retrieval
 - Web dashboard for reviewing decisions, managing preferences, configuring AI providers, and auditing
-- Desktop app (macOS, Windows, Linux) and mobile app (iOS, Android)
+- Desktop app (macOS, Windows, Linux) with system-browser OAuth for Google accounts
+- Mobile app (iOS, Android) with QR pairing and push notifications
+- SSRF-safe URL validation for all LLM provider endpoints, with DNS rebinding protection
 - Dynamic adapter discovery for third-party execution plugins
 - 1,069 tests with CI/CD on GitHub Actions
 

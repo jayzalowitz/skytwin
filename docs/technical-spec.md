@@ -12,6 +12,9 @@ skytwin/
     api/             # HTTP API server (Express)
     web/             # Web dashboard (vanilla SPA with hash-based routing)
     worker/          # Background job processor
+    desktop/         # Electron desktop app (macOS, Windows, Linux)
+    mobile/          # React Native (Expo) mobile app
+    openclaw-bridge/ # OpenClaw proxy to local Ollama instance
 
   packages/
     shared-types/    # TypeScript interfaces and type definitions
@@ -231,17 +234,28 @@ FeedbackEvent → user response, feeds back to twin
 (depends on: shared-types, core, db)
     |
     v
+@skytwin/llm-client
+(depends on: shared-types, core)
+    |
+    v
 @skytwin/connectors
 (depends on: shared-types, core)
+    |
+    v
+@skytwin/mempalace
+(depends on: shared-types, db, core)
     |
     v
 @skytwin/evals
 (depends on: shared-types, decision-engine, twin-model, policy-engine, db, core)
 
 Apps:
-  api    → depends on most packages
-  worker → depends on decision-engine, ironclaw-adapter, db, connectors
-  web    → depends on shared-types, api client
+  api             → depends on most packages
+  worker          → depends on decision-engine, ironclaw-adapter, db, connectors, llm-client
+  web             → depends on shared-types, api client
+  desktop         → depends on api client (Electron shell)
+  mobile          → depends on api client (React Native + Expo)
+  openclaw-bridge → depends on llm-client (bridges OpenClaw to local Ollama)
 ```
 
 ## API Endpoints
