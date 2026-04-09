@@ -36,3 +36,9 @@ heap_profiler/
 # Misc
 *.tsbuildinfo
 .gstack/
+
+# Playwright MCP
+.playwright-mcp/
+
+# Screenshots from QA/review sessions
+*.png

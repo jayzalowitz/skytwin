@@ -73,6 +73,23 @@ export async function exchangeCode(
 }
 
 /**
+ * Error indicating that the OAuth refresh token is permanently invalid.
+ * The user must re-authorize — retrying will not help.
+ */
+export class OAuthRefreshError extends Error {
+  readonly statusCode: number;
+  readonly permanent: boolean;
+
+  constructor(statusCode: number, detail: string) {
+    const permanent = statusCode === 400 || statusCode === 401 || statusCode === 403;
+    super(`Google OAuth token refresh failed (${permanent ? 'permanent' : 'transient'}): ${statusCode} ${detail}`);
+    this.name = 'OAuthRefreshError';
+    this.statusCode = statusCode;
+    this.permanent = permanent;
+  }
+}
+
+/**
  * Refresh an expired access token using a refresh token.
  */
 export async function refreshAccessToken(
@@ -92,7 +109,7 @@ export async function refreshAccessToken(
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Google OAuth token refresh failed: ${response.status} ${errorText}`);
+    throw new OAuthRefreshError(response.status, errorText);
   }
 
   const data = await response.json() as {
