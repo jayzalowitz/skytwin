@@ -86,6 +86,13 @@ export type {
 
 export { MemoryLayer } from './mempalace.js';
 
+export { PROVIDER_MODELS, PROVIDER_INFO } from './ai-provider.js';
+export type {
+  AIProviderName,
+  AIProviderConfig,
+  ProviderChain,
+} from './ai-provider.js';
+
 export type {
   MemoryWing,
   MemoryRoom,

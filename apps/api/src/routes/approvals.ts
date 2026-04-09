@@ -24,7 +24,7 @@ export function createApprovalsRouter(): Router {
   const router = Router();
   const twinService = new TwinService(new TwinRepositoryAdapter(), new PatternRepositoryAdapter());
   const policyEvaluator = new PolicyEvaluator(policyRepositoryAdapter);
-  const executionRouter = getExecutionRouter();
+  const getRouter = () => getExecutionRouter();
 
   /**
    * GET /api/approvals/:userId/pending
@@ -271,6 +271,7 @@ export function createApprovalsRouter(): Router {
         };
 
         try {
+          const executionRouter = await getRouter();
           const result = await executionRouter.executeWithRouting(
             candidateAction,
             riskAssessment,

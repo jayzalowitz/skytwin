@@ -1,4 +1,4 @@
-import { fetchUser, updateTrustTier, fetchOAuthStatus, getGoogleAuthUrl, disconnectProvider, escapeHtml, fetchSettings, updateAutonomySettings, upsertDomainPolicy, deleteDomainPolicy, createEscalationTrigger, deleteEscalationTrigger, createSession, fetchSessions, revokeSession } from '../api-client.js';
+import { fetchUser, updateTrustTier, fetchOAuthStatus, getGoogleAuthUrl, disconnectProvider, escapeHtml, fetchSettings, updateAutonomySettings, upsertDomainPolicy, deleteDomainPolicy, createEscalationTrigger, deleteEscalationTrigger, createSession, fetchSessions, revokeSession, saveAIProviders, testAIProvider } from '../api-client.js';
 
 const TIERS = [
   { value: 'observer', name: 'Just watch', desc: 'Your assistant watches but never does anything. Good for seeing what it would do.' },
@@ -32,6 +32,7 @@ export async function renderSettings(container, userId) {
   const domainPolicies = settings?.domainPolicies ?? [];
   const escalationTriggers = settings?.escalationTriggers ?? [];
   const autonomy = settings?.autonomySettings ?? {};
+  const aiProviders = settings?.aiProviders ?? [];
 
   // Check for ?connected= query param after OAuth redirect
   const params = new URLSearchParams(window.location.hash.split('?')[1] || '');
@@ -49,7 +50,7 @@ export async function renderSettings(container, userId) {
       <div class="form-group">
         <label>User ID</label>
         <div style="display: flex; gap: 0.5rem;">
-          <input class="form-input" id="userId-input" value="${userId}">
+          <input class="form-input" id="userId-input" value="${escapeHtml(userId)}">
           <button class="btn btn-outline btn-sm" onclick="window.skyTwinSetUserId(document.getElementById('userId-input').value)">Switch</button>
         </div>
       </div>
@@ -73,7 +74,7 @@ export async function renderSettings(container, userId) {
           </div>
         `).join('')}
       </div>
-      <button class="btn btn-primary" style="margin-top: 1rem;" id="save-tier-btn" onclick="saveTier('${userId}')">Save</button>
+      <button class="btn btn-primary" style="margin-top: 1rem;" id="save-tier-btn" onclick="saveTier('${escapeHtml(userId)}')">Save</button>
     </div>
 
     <div class="card">
@@ -93,10 +94,35 @@ export async function renderSettings(container, userId) {
         </div>
         <div>
           ${googleConnected
-            ? `<button class="btn btn-outline btn-sm" onclick="handleDisconnectGoogle('${userId}')">Disconnect</button>`
-            : `<button class="btn btn-primary btn-sm" onclick="handleConnectGoogle('${userId}')">Connect</button>`
+            ? `<button class="btn btn-outline btn-sm" onclick="handleDisconnectGoogle('${escapeHtml(userId)}')">Disconnect</button>`
+            : `<button class="btn btn-primary btn-sm" onclick="handleConnectGoogle('${escapeHtml(userId)}')">Connect</button>`
           }
         </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">AI brain</span>
+      </div>
+      <div class="card-subtitle" style="margin-bottom: 1rem;">
+        Choose which AI powers your twin's thinking. Add multiple providers — your twin tries them in order and falls back automatically.
+      </div>
+      <div id="ai-provider-chain">
+        ${renderProviderChain(aiProviders)}
+      </div>
+      <div style="margin-top: 0.75rem; display: flex; gap: 0.5rem; align-items: center;">
+        <select class="form-input" id="add-provider-select" style="flex: 1;">
+          <option value="">+ Add provider...</option>
+          <option value="anthropic">Anthropic (Claude)</option>
+          <option value="openai">OpenAI (GPT)</option>
+          <option value="google">Google (Gemini)</option>
+          <option value="ollama">Ollama (local)</option>
+        </select>
+      </div>
+      <div style="margin-top: 0.75rem; display: flex; gap: 0.5rem; justify-content: space-between; align-items: center;">
+        <div style="font-size: 0.75rem; color: var(--text-dim);">If all providers fail, your twin falls back to built-in rules automatically.</div>
+        <button id="save-ai-btn" class="btn btn-primary btn-sm" onclick="saveAIProvidersHandler('${escapeHtml(userId)}')">Save</button>
       </div>
     </div>
 
@@ -122,7 +148,7 @@ export async function renderSettings(container, userId) {
         Temporarily stop all auto-execution without disconnecting accounts.
         Your twin will continue watching but won't take any action.
       </div>
-      <button class="btn btn-outline btn-sm" onclick="pauseTwin('${userId}')">
+      <button class="btn btn-outline btn-sm" onclick="pauseTwin('${escapeHtml(userId)}')">
         ${currentTier === 'observer' ? 'Twin is paused (watch only)' : 'Pause twin'}
       </button>
     </div>
@@ -150,7 +176,7 @@ export async function renderSettings(container, userId) {
           Always ask before doing something that can't be undone
         </label>
       </div>
-      <button class="btn btn-primary btn-sm" onclick="saveSpendLimits('${userId}')">Save</button>
+      <button class="btn btn-primary btn-sm" onclick="saveSpendLimits('${escapeHtml(userId)}')">Save</button>
     </div>
 
     <details class="card collapsible-card">
@@ -170,7 +196,7 @@ export async function renderSettings(container, userId) {
                 <span style="color: var(--text-muted); margin-left: 0.5rem;">${escapeHtml(p.trustTier)}</span>
                 ${p.maxSpendPerActionCents != null ? `<span style="color: var(--text-muted); margin-left: 0.5rem;">(max ${p.maxSpendPerActionCents}c/action)</span>` : ''}
               </div>
-              <button class="btn btn-outline btn-sm" onclick="removeDomainPolicy('${userId}', '${escapeHtml(p.domain)}')">Remove</button>
+              <button class="btn btn-outline btn-sm" onclick="removeDomainPolicy('${escapeHtml(userId)}', '${escapeHtml(p.domain)}')">Remove</button>
             </div>
           `).join('')}
         </div>
@@ -179,7 +205,7 @@ export async function renderSettings(container, userId) {
           <select class="form-input" id="new-domain-tier" style="flex: 1;">
             ${TIERS.map(t => `<option value="${t.value}">${t.name}</option>`).join('')}
           </select>
-          <button class="btn btn-primary btn-sm" onclick="addDomainPolicy('${userId}')">Add</button>
+          <button class="btn btn-primary btn-sm" onclick="addDomainPolicy('${escapeHtml(userId)}')">Add</button>
         </div>
       </div>
     </details>
@@ -201,7 +227,7 @@ export async function renderSettings(container, userId) {
                 <span style="color: var(--text-muted); margin-left: 0.5rem;">${escapeHtml(JSON.stringify(t.conditions))}</span>
                 <span style="color: ${t.enabled ? 'var(--success)' : 'var(--text-muted)'}; margin-left: 0.5rem;">${t.enabled ? 'active' : 'disabled'}</span>
               </div>
-              <button class="btn btn-outline btn-sm" onclick="removeEscalationTrigger('${userId}', '${escapeHtml(t.id)}')">Remove</button>
+              <button class="btn btn-outline btn-sm" onclick="removeEscalationTrigger('${escapeHtml(userId)}', '${escapeHtml(t.id)}')">Remove</button>
             </div>
           `).join('')}
         </div>
@@ -214,7 +240,7 @@ export async function renderSettings(container, userId) {
             <option value="consecutive_rejections">You said no several times</option>
           </select>
           <input class="form-input" id="new-trigger-value" placeholder="Value (e.g. 5000)" style="flex: 1;">
-          <button class="btn btn-primary btn-sm" onclick="addEscalationTrigger('${userId}')">Add</button>
+          <button class="btn btn-primary btn-sm" onclick="addEscalationTrigger('${escapeHtml(userId)}')">Add</button>
         </div>
       </div>
     </details>
@@ -228,7 +254,7 @@ export async function renderSettings(container, userId) {
         Click "Generate QR" then scan with your phone camera.
       </div>
       <div id="qr-container" style="text-align: center; margin-bottom: 1rem;"></div>
-      <button class="btn btn-primary btn-sm" onclick="generateQR('${userId}')">Generate QR code</button>
+      <button class="btn btn-primary btn-sm" onclick="generateQR('${escapeHtml(userId)}')">Generate QR code</button>
 
       ${sessions.length > 0 ? `
         <div style="margin-top: 1.5rem;">
@@ -239,7 +265,7 @@ export async function renderSettings(container, userId) {
                 <span style="font-weight: 600; font-size: 0.85rem;">${escapeHtml(s.deviceName)}</span>
                 <span style="color: var(--text-muted); font-size: 0.75rem; margin-left: 0.5rem;">Last active: ${formatRelativeTime(s.lastActiveAt)}</span>
               </div>
-              <button class="btn btn-outline btn-sm" onclick="revokeSessionHandler('${escapeHtml(s.id)}', '${userId}')">Revoke</button>
+              <button class="btn btn-outline btn-sm" onclick="revokeSessionHandler('${escapeHtml(s.id)}', '${escapeHtml(userId)}')">Revoke</button>
             </div>
           `).join('')}
         </div>
@@ -283,7 +309,47 @@ window.handleConnectGoogle = async function(userId) {
   try {
     const data = await getGoogleAuthUrl(userId);
     if (data.url) {
-      window.location.href = data.url;
+      // In the desktop app, open OAuth in the system browser to support
+      // passkeys/WebAuthn which Electron's BrowserWindow cannot handle.
+      if (window.skytwinDesktop?.isDesktop && window.skytwinDesktop.openExternal) {
+        // Add source=desktop so the callback renders a close-tab page
+        // instead of redirecting back to localhost.
+        const oauthUrl = new URL(data.url);
+        const currentState = oauthUrl.searchParams.get('state') || '';
+        oauthUrl.searchParams.set('state', currentState ? `${currentState}|desktop` : `|desktop`);
+        await window.skytwinDesktop.openExternal(oauthUrl.toString());
+
+        // Poll for OAuth completion (max 5 minutes, then give up)
+        const pageContent = document.getElementById('page-content');
+        pageContent.insertAdjacentHTML(
+          'afterbegin',
+          '<div class="info-banner" id="oauth-polling-banner">Waiting for Google sign-in to complete in your browser\u2026</div>',
+        );
+        let pollCount = 0;
+        const maxPolls = 150; // 5 minutes at 2s intervals
+        const pollInterval = setInterval(async () => {
+          pollCount++;
+          if (pollCount >= maxPolls) {
+            clearInterval(pollInterval);
+            const banner = document.getElementById('oauth-polling-banner');
+            if (banner) banner.textContent = 'Sign-in timed out. Refresh the page to try again.';
+            return;
+          }
+          try {
+            const status = await fetchOAuthStatus(userId, 'google');
+            if (status.connected) {
+              clearInterval(pollInterval);
+              document.getElementById('oauth-polling-banner')?.remove();
+              const { renderSettings } = await import('./settings.js');
+              await renderSettings(pageContent, userId);
+            }
+          } catch {
+            // Ignore transient fetch errors during polling
+          }
+        }, 2000);
+      } else {
+        window.location.href = data.url;
+      }
     } else {
       document.getElementById('page-content').insertAdjacentHTML(
         'afterbegin',
@@ -451,6 +517,221 @@ function formatRelativeTime(dateStr) {
   const diffDays = Math.floor(diffHr / 24);
   return `${diffDays}d ago`;
 }
+
+// ── AI Provider Chain: drag-and-drop + CRUD ─────────────────
+
+const PROVIDER_MODELS = {
+  anthropic: [
+    { id: 'claude-sonnet-4-5-20250514', label: 'Claude Sonnet 4.5' },
+    { id: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5' },
+  ],
+  openai: [
+    { id: 'gpt-4o', label: 'GPT-4o' },
+    { id: 'gpt-4o-mini', label: 'GPT-4o Mini' },
+  ],
+  google: [
+    { id: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash' },
+    { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
+  ],
+  ollama: [
+    { id: 'gemma3', label: 'Gemma 3' },
+    { id: 'llama3.1', label: 'Llama 3.1' },
+    { id: 'mistral', label: 'Mistral' },
+  ],
+};
+
+const PROVIDER_LABELS = {
+  anthropic: 'Anthropic (Claude)',
+  openai: 'OpenAI (GPT)',
+  google: 'Google (Gemini)',
+  ollama: 'Ollama (local)',
+};
+
+// In-memory state for the current chain being edited
+let _aiChain = [];
+
+function renderProviderChain(providers) {
+  _aiChain = providers.map((p, i) => ({ ...p, priority: i }));
+
+  if (_aiChain.length === 0) {
+    return '<div style="font-size: 0.85rem; color: var(--text-muted); padding: 0.75rem; background: var(--bg); border-radius: var(--radius-sm);">No AI providers configured. Your twin uses built-in rules only.</div>';
+  }
+
+  return _aiChain.map((p, idx) => `
+    <div class="ai-provider-card" draggable="true" data-idx="${idx}"
+         ondragstart="aiDragStart(event, ${idx})"
+         ondragover="aiDragOver(event, ${idx})"
+         ondragleave="aiDragLeave(event)"
+         ondrop="aiDrop(event, ${idx})"
+         style="display: flex; gap: 0.5rem; align-items: flex-start; padding: 0.75rem; background: var(--bg); border-radius: var(--radius-sm); margin-bottom: 0.5rem; border: 2px solid transparent; cursor: grab; transition: border-color 0.15s, opacity 0.15s;">
+      <div style="display: flex; flex-direction: column; align-items: center; gap: 0.25rem; padding-top: 0.25rem; color: var(--text-dim); font-size: 0.75rem; user-select: none;">
+        <span style="font-size: 1rem; line-height: 1;">&#x2800;&#x2801;&#x2802;&#x2803;</span>
+        <span>${idx + 1}</span>
+      </div>
+      <div style="flex: 1; min-width: 0;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+          <span style="font-weight: 600; font-size: 0.9rem;">${escapeHtml(PROVIDER_LABELS[p.provider] || p.provider)}</span>
+          <div style="display: flex; gap: 0.25rem; align-items: center;">
+            <label style="font-size: 0.75rem; display: flex; align-items: center; gap: 0.25rem; cursor: pointer;">
+              <input type="checkbox" ${p.enabled !== false ? 'checked' : ''} onchange="aiToggleEnabled(${idx}, this.checked)">
+              on
+            </label>
+            <button class="btn btn-outline btn-sm" style="padding: 0.15rem 0.4rem; font-size: 0.7rem;" onclick="aiTestProvider(${idx}, '${escapeHtml(getCurrentUserId())}')">Test</button>
+            <button class="btn btn-outline btn-sm" style="padding: 0.15rem 0.4rem; font-size: 0.7rem; color: var(--danger);" onclick="aiRemoveProvider(${idx}, '${escapeHtml(getCurrentUserId())}')">×</button>
+          </div>
+        </div>
+        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+          <div style="flex: 1; min-width: 120px;">
+            <label style="font-size: 0.7rem; color: var(--text-dim);">Model</label>
+            ${p.provider === 'ollama'
+              ? `<input class="form-input" style="font-size: 0.8rem; padding: 0.3rem 0.5rem;" value="${escapeHtml(p.model || '')}" onchange="aiUpdateField(${idx}, 'model', this.value)">`
+              : `<select class="form-input" style="font-size: 0.8rem; padding: 0.3rem 0.5rem;" onchange="aiUpdateField(${idx}, 'model', this.value)">
+                  ${(PROVIDER_MODELS[p.provider] || []).map(m => `<option value="${m.id}" ${m.id === p.model ? 'selected' : ''}>${m.label}</option>`).join('')}
+                </select>`
+            }
+          </div>
+          ${p.provider === 'ollama'
+            ? `<div style="flex: 1; min-width: 150px;">
+                <label style="font-size: 0.7rem; color: var(--text-dim);">URL</label>
+                <input class="form-input" style="font-size: 0.8rem; padding: 0.3rem 0.5rem;" value="${escapeHtml(p.baseUrl || 'http://localhost:11434')}" placeholder="http://localhost:11434" onchange="aiUpdateField(${idx}, 'baseUrl', this.value)">
+              </div>`
+            : `<div style="flex: 1; min-width: 150px;">
+                <label style="font-size: 0.7rem; color: var(--text-dim);">API Key</label>
+                <input class="form-input" type="password" style="font-size: 0.8rem; padding: 0.3rem 0.5rem;" value="${escapeHtml(p.apiKey || '')}" placeholder="${p.apiKeyPreview || 'Paste your API key'}" onchange="aiUpdateField(${idx}, 'apiKey', this.value)">
+              </div>`
+          }
+        </div>
+        <div id="ai-test-result-${idx}" style="margin-top: 0.25rem;"></div>
+      </div>
+    </div>
+  `).join('');
+}
+
+function getCurrentUserId() {
+  return localStorage.getItem('skytwin_userId') || 'default-user';
+}
+
+// Drag and drop state
+let _aiDragIdx = null;
+
+window.aiDragStart = function(e, idx) {
+  _aiDragIdx = idx;
+  e.dataTransfer.effectAllowed = 'move';
+  e.currentTarget.style.opacity = '0.5';
+};
+
+window.aiDragOver = function(e, idx) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  if (_aiDragIdx !== null && _aiDragIdx !== idx) {
+    e.currentTarget.style.borderColor = 'var(--accent)';
+  }
+};
+
+window.aiDragLeave = function(e) {
+  e.currentTarget.style.borderColor = 'transparent';
+};
+
+window.aiDrop = function(e, targetIdx) {
+  e.preventDefault();
+  e.currentTarget.style.borderColor = 'transparent';
+  if (_aiDragIdx === null || _aiDragIdx === targetIdx) return;
+
+  const item = _aiChain.splice(_aiDragIdx, 1)[0];
+  _aiChain.splice(targetIdx, 0, item);
+  _aiChain.forEach((p, i) => { p.priority = i; });
+  _aiDragIdx = null;
+
+  document.getElementById('ai-provider-chain').innerHTML = renderProviderChain(_aiChain);
+};
+
+window.aiToggleEnabled = function(idx, checked) {
+  _aiChain[idx].enabled = checked;
+};
+
+window.aiUpdateField = function(idx, field, value) {
+  _aiChain[idx][field] = value;
+};
+
+window.aiRemoveProvider = function(idx, userId) {
+  _aiChain.splice(idx, 1);
+  _aiChain.forEach((p, i) => { p.priority = i; });
+  document.getElementById('ai-provider-chain').innerHTML = renderProviderChain(_aiChain);
+};
+
+window.aiTestProvider = async function(idx, userId) {
+  const p = _aiChain[idx];
+  const resultEl = document.getElementById(`ai-test-result-${idx}`);
+  resultEl.innerHTML = '<span style="font-size: 0.75rem; color: var(--text-muted);">Testing...</span>';
+
+  try {
+    const result = await testAIProvider(userId, {
+      provider: p.provider,
+      apiKey: p.apiKey || '',
+      model: p.model,
+      baseUrl: p.baseUrl,
+    });
+
+    if (result.success) {
+      resultEl.innerHTML = `<span style="font-size: 0.75rem; color: var(--success);">Connected — ${escapeHtml(result.model)} responding in ~${result.latencyMs}ms</span>`;
+    } else {
+      resultEl.innerHTML = `<span style="font-size: 0.75rem; color: var(--danger);">Failed: ${escapeHtml(result.error || 'Unknown error')}</span>`;
+    }
+  } catch (err) {
+    resultEl.innerHTML = `<span style="font-size: 0.75rem; color: var(--danger);">Error: ${escapeHtml(err instanceof Error ? err.message : String(err))}</span>`;
+  }
+};
+
+window.saveAIProvidersHandler = async function(userId) {
+  const btn = document.getElementById('save-ai-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
+
+  try {
+    await saveAIProviders(userId, _aiChain.map((p, i) => ({
+      provider: p.provider,
+      apiKey: p.apiKey || '',
+      model: p.model,
+      baseUrl: p.baseUrl,
+      priority: i,
+      enabled: p.enabled !== false,
+    })));
+    if (btn) { btn.textContent = 'Saved!'; }
+    setTimeout(async () => {
+      const { renderSettings } = await import('./settings.js');
+      await renderSettings(document.getElementById('page-content'), userId);
+    }, 800);
+  } catch (err) {
+    if (btn) { btn.textContent = 'Save'; btn.disabled = false; }
+    document.getElementById('page-content').insertAdjacentHTML(
+      'afterbegin',
+      `<div class="error-banner">${escapeHtml(err.message)}</div>`,
+    );
+  }
+};
+
+// Handle the "Add provider" dropdown
+document.addEventListener('change', (e) => {
+  if (e.target?.id !== 'add-provider-select') return;
+  const provider = e.target.value;
+  if (!provider) return;
+  e.target.value = '';
+
+  const models = PROVIDER_MODELS[provider] || [];
+  const defaultModel = models[0]?.id || '';
+
+  _aiChain.push({
+    provider,
+    model: defaultModel,
+    apiKey: '',
+    baseUrl: provider === 'ollama' ? 'http://localhost:11434' : undefined,
+    priority: _aiChain.length,
+    enabled: true,
+    hasApiKey: false,
+    apiKeyPreview: '',
+  });
+
+  document.getElementById('ai-provider-chain').innerHTML = renderProviderChain(_aiChain);
+});
 
 window.signOut = function() {
   localStorage.removeItem('skytwin_userId');

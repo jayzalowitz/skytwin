@@ -51,6 +51,7 @@ export type {
   EntityCodeRow,
   ServiceCredentialRow,
   CredentialRequirementRow,
+  AIProviderSettingsRow,
 } from './types.js';
 
 // Repositories
@@ -84,7 +85,7 @@ export type {
 
 export { signalRepository, proposalRepository, skillGapRepository, proactiveScanRepository } from './repositories/index.js';
 
-export { trustTierAuditRepository, spendRepository, domainAutonomyRepository, escalationTriggerRepository, preferenceHistoryRepository, sessionRepository, mempalaceRepository, serviceCredentialRepository, credentialRequirementRepository } from './repositories/index.js';
+export { trustTierAuditRepository, spendRepository, domainAutonomyRepository, escalationTriggerRepository, preferenceHistoryRepository, sessionRepository, mempalaceRepository, serviceCredentialRepository, credentialRequirementRepository, aiProviderRepository } from './repositories/index.js';
 export type { SessionRow } from './repositories/index.js';
 export type { UpsertServiceCredentialInput } from './repositories/index.js';
 export type { RegisterCredentialRequirementInput } from './repositories/index.js';

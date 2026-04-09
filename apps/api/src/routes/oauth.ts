@@ -89,7 +89,9 @@ export function createOAuthRouter(): Router {
         console.error('[oauth] WARNING: state param is missing — userId will not be associated with token');
       }
 
-      const userId = state ?? 'default-user';
+      // State may contain "|desktop" suffix when OAuth was opened from the Electron app
+      const isDesktop = state?.endsWith('|desktop') ?? false;
+      const userId = (isDesktop ? state?.replace(/\|desktop$/, '') : state) || 'default-user';
       const googleConfig = await resolveGoogleConfig();
       const tokenSet = await exchangeCode(googleConfig, code);
 
@@ -102,6 +104,17 @@ export function createOAuthRouter(): Router {
         tokenSet.expiresAt,
         tokenSet.scopes,
       );
+
+      if (isDesktop) {
+        // OAuth was opened in the system browser from the Electron app.
+        // Render a simple page instead of redirecting to localhost.
+        res.send(`<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>SkyTwin</title>
+<style>body{font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#09090b;color:#fafafa}
+.card{text-align:center;padding:2rem}.check{font-size:3rem;margin-bottom:1rem}</style></head>
+<body><div class="card"><div class="check">&#10003;</div><h2>Google account connected</h2><p>You can close this tab and return to SkyTwin.</p></div></body></html>`);
+        return;
+      }
 
       // Redirect back to the web dashboard with success.
       const webBase = process.env['WEB_BASE_URL'] ?? `http://localhost:${process.env['WEB_PORT'] ?? '3200'}`;

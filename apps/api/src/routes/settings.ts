@@ -3,9 +3,12 @@ import {
   userRepository,
   domainAutonomyRepository,
   escalationTriggerRepository,
+  aiProviderRepository,
 } from '@skytwin/db';
-import type { DomainAutonomyPolicyRow, EscalationTriggerRow } from '@skytwin/db';
+import type { DomainAutonomyPolicyRow, EscalationTriggerRow, AIProviderSettingsRow } from '@skytwin/db';
 import { TrustTier } from '@skytwin/shared-types';
+import { LlmClient, validateBaseUrlWithDns } from '@skytwin/llm-client';
+import type { ProviderEntry } from '@skytwin/llm-client';
 
 /**
  * Create the settings router for user autonomy configuration.
@@ -29,9 +32,10 @@ export function createSettingsRouter(): Router {
         return;
       }
 
-      const [domainPolicies, escalationTriggers] = await Promise.all([
+      const [domainPolicies, escalationTriggers, aiProviders] = await Promise.all([
         domainAutonomyRepository.getForUser(userId!),
         escalationTriggerRepository.getForUser(userId!),
+        aiProviderRepository.getForUser(userId!),
       ]);
 
       res.json({
@@ -48,6 +52,15 @@ export function createSettingsRouter(): Router {
           triggerType: t.trigger_type,
           conditions: t.conditions,
           enabled: t.enabled,
+        })),
+        aiProviders: aiProviders.map((p: AIProviderSettingsRow) => ({
+          provider: p.provider,
+          model: p.model,
+          baseUrl: p.base_url,
+          priority: Number(p.priority),
+          enabled: p.enabled,
+          hasApiKey: p.api_key.length > 0,
+          apiKeyPreview: p.api_key.length > 8 ? `${p.api_key.slice(0, 4)}${'•'.repeat(8)}${p.api_key.slice(-4)}` : (p.api_key.length > 0 ? '••••••••' : ''),
         })),
       });
     } catch (error) {
@@ -291,6 +304,130 @@ export function createSettingsRouter(): Router {
       res.json({ deleted: true });
     } catch (error) {
       next(error);
+    }
+  });
+
+  // ── AI Provider Settings ─────────────────────────────────────
+
+  /**
+   * PUT /api/settings/:userId/ai
+   *
+   * Save the user's full AI provider chain.
+   * Replaces all existing providers atomically.
+   */
+  router.put('/:userId/ai', async (req, res, next) => {
+    try {
+      const { userId } = req.params;
+      const { providers } = req.body as {
+        providers: {
+          provider: string;
+          apiKey?: string;
+          model: string;
+          baseUrl?: string;
+          priority: number;
+          enabled?: boolean;
+        }[];
+      };
+
+      if (!Array.isArray(providers)) {
+        res.status(400).json({ error: 'providers must be an array' });
+        return;
+      }
+
+      const validProviders = new Set(['anthropic', 'openai', 'google', 'ollama']);
+      const seenProviders = new Set<string>();
+      for (const p of providers) {
+        if (!validProviders.has(p.provider)) {
+          res.status(400).json({ error: `Invalid provider: ${p.provider}` });
+          return;
+        }
+        if (!p.model) {
+          res.status(400).json({ error: `Model is required for provider ${p.provider}` });
+          return;
+        }
+        if (seenProviders.has(p.provider)) {
+          res.status(400).json({ error: `Duplicate provider: ${p.provider}. Each provider can only appear once.` });
+          return;
+        }
+        seenProviders.add(p.provider);
+        if (p.baseUrl) {
+          try {
+            await validateBaseUrlWithDns(p.baseUrl, p.provider);
+          } catch (err) {
+            res.status(400).json({ error: err instanceof Error ? err.message : 'Invalid base URL' });
+            return;
+          }
+        }
+      }
+
+      const rows = await aiProviderRepository.replaceAll(
+        userId!,
+        providers.map((p) => ({
+          provider: p.provider,
+          apiKey: p.apiKey,
+          model: p.model,
+          baseUrl: p.baseUrl,
+          priority: p.priority,
+          enabled: p.enabled,
+        })),
+      );
+
+      res.json({
+        providers: rows.map((r: AIProviderSettingsRow) => ({
+          provider: r.provider,
+          model: r.model,
+          baseUrl: r.base_url,
+          priority: Number(r.priority),
+          enabled: r.enabled,
+          hasApiKey: r.api_key.length > 0,
+        })),
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /**
+   * POST /api/settings/:userId/ai/test
+   *
+   * Test a single AI provider configuration.
+   */
+  router.post('/:userId/ai/test', async (req, res, _next) => {
+    try {
+      const { userId } = req.params;
+      const { provider, apiKey, model, baseUrl } = req.body as {
+        provider: string;
+        apiKey?: string;
+        model: string;
+        baseUrl?: string;
+      };
+
+      const validProviders = new Set(['anthropic', 'openai', 'google', 'ollama']);
+      if (!validProviders.has(provider)) {
+        res.status(400).json({ error: `Invalid provider: ${provider}` });
+        return;
+      }
+
+      // If no API key in request, fall back to the stored key for this provider
+      let resolvedKey = apiKey ?? '';
+      if (!resolvedKey && userId) {
+        const rows = await aiProviderRepository.getForUser(userId);
+        const stored = rows.find((r) => r.provider === provider);
+        resolvedKey = stored?.api_key ?? '';
+      }
+
+      const entry: ProviderEntry = {
+        name: provider as ProviderEntry['name'],
+        apiKey: resolvedKey,
+        model,
+        baseUrl,
+      };
+
+      const result = await LlmClient.testProvider(entry);
+      res.json({ success: true, ...result, provider });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Connection failed';
+      res.json({ success: false, error: message, provider: req.body?.provider });
     }
   });
 

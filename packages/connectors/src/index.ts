@@ -20,7 +20,7 @@ export { GmailConnector } from './gmail-connector.js';
 export { GoogleCalendarConnector } from './google-calendar-connector.js';
 
 // OAuth
-export { generateAuthUrl, exchangeCode, refreshAccessToken, revokeToken } from './oauth/google-oauth.js';
+export { generateAuthUrl, exchangeCode, refreshAccessToken, revokeToken, OAuthRefreshError } from './oauth/google-oauth.js';
 export type { GoogleOAuthConfig } from './oauth/google-oauth.js';
 export type { OAuthTokenStore } from './oauth/token-store.js';
 export { DbTokenStore } from './oauth/db-token-store.js';

@@ -21,8 +21,8 @@ export function createDecisionsRouter(): Router {
       }
 
       const domain = req.query['domain'] as string | undefined;
-      const limit = parseInt(req.query['limit'] as string ?? '50', 10);
-      const offset = parseInt(req.query['offset'] as string ?? '0', 10);
+      const limit = Math.min(Math.max(parseInt(req.query['limit'] as string ?? '50', 10) || 50, 1), 200);
+      const offset = Math.max(parseInt(req.query['offset'] as string ?? '0', 10) || 0, 0);
       const from = req.query['from'] ? new Date(req.query['from'] as string) : undefined;
       const to = req.query['to'] ? new Date(req.query['to'] as string) : undefined;
       const situationType = req.query['situationType'] as string | undefined;
@@ -57,12 +57,21 @@ export function createDecisionsRouter(): Router {
         decisions = decisions.slice(offset, offset + limit);
       }
 
+      // Batch-fetch outcomes in a single query (avoids N+1)
+      const outcomes = await decisionRepository.getOutcomesForDecisions(
+        decisions.map((d) => d.id),
+      );
+      const outcomeMap = new Map(
+        outcomes.map((o) => [o.decision_id, o.auto_executed]),
+      );
+
       res.json({
         decisions: decisions.map((d) => ({
           id: d.id,
           situationType: d.situation_type,
           domain: d.domain,
           urgency: d.urgency,
+          autoExecuted: outcomeMap.has(d.id) ? outcomeMap.get(d.id) : null,
           createdAt: d.created_at,
         })),
         total,

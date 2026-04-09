@@ -17,6 +17,9 @@ importers:
       prettier:
         specifier: ^3.2.0
         version: 3.8.1
+      tsx:
+        specifier: ^4.7.0
+        version: 4.21.0
       turbo:
         specifier: ^2.0.0
         version: 2.9.1
@@ -50,6 +53,9 @@ importers:
       '@skytwin/ironclaw-adapter':
         specifier: workspace:*
         version: link:../../packages/ironclaw-adapter
+      '@skytwin/llm-client':
+        specifier: workspace:*
+        version: link:../../packages/llm-client
       '@skytwin/policy-engine':
         specifier: workspace:*
         version: link:../../packages/policy-engine
@@ -274,6 +280,9 @@ importers:
 
   packages/decision-engine:
     dependencies:
+      '@skytwin/llm-client':
+        specifier: workspace:*
+        version: link:../llm-client
       '@skytwin/policy-engine':
         specifier: workspace:*
         version: link:../policy-engine
@@ -356,6 +365,22 @@ importers:
 
   packages/ironclaw-adapter:
     dependencies:
+      '@skytwin/shared-types':
+        specifier: workspace:*
+        version: link:../shared-types
+    devDependencies:
+      typescript:
+        specifier: ^5.4.0
+        version: 5.9.3
+      vitest:
+        specifier: ^1.3.0
+        version: 1.6.1(@types/node@20.19.37)(lightningcss@1.27.0)(terser@5.46.1)
+
+  packages/llm-client:
+    dependencies:
+      '@skytwin/core':
+        specifier: workspace:*
+        version: link:../core
       '@skytwin/shared-types':
         specifier: workspace:*
         version: link:../shared-types

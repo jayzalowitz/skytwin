@@ -1,5 +1,13 @@
 import { Router } from 'express';
-import { SituationInterpreter, DecisionMaker } from '@skytwin/decision-engine';
+import {
+  SituationInterpreter,
+  DecisionMaker,
+  LlmSituationStrategy,
+  LlmCandidateGenerator,
+  FallbackSituationStrategy,
+  FallbackCandidateGenerator,
+  RuleBasedCandidateGenerator,
+} from '@skytwin/decision-engine';
 import { TwinService } from '@skytwin/twin-model';
 import { PolicyEvaluator } from '@skytwin/policy-engine';
 import { ExplanationGenerator } from '@skytwin/explanations';
@@ -8,6 +16,7 @@ import {
   oauthRepository,
   executionRepository,
   userRepository,
+  aiProviderRepository,
   TwinRepositoryAdapter,
   PatternRepositoryAdapter,
   decisionRepositoryAdapter,
@@ -16,6 +25,9 @@ import {
 } from '@skytwin/db';
 import type { DecisionContext, RiskAssessment, DimensionAssessment } from '@skytwin/shared-types';
 import { SituationType, TrustTier, RiskTier, RiskDimension } from '@skytwin/shared-types';
+import type { AIProviderName } from '@skytwin/shared-types';
+import { LlmClient } from '@skytwin/llm-client';
+import type { ProviderEntry } from '@skytwin/llm-client';
 import { WorkflowHandlerRegistry } from '../workflows/registry.js';
 import { processCalendarConflict } from '../workflows/calendar-conflict.js';
 import { processSubscriptionRenewal } from '../workflows/subscription-renewal.js';
@@ -27,9 +39,26 @@ import { sseManager } from '../sse.js';
 /**
  * Create the events router for ingesting raw events.
  */
+/**
+ * Build an LlmClient from the user's enabled AI provider settings.
+ * Returns null if the user has no enabled providers.
+ */
+async function buildLlmClientForUser(userId: string): Promise<LlmClient | null> {
+  const rows = await aiProviderRepository.getEnabledForUser(userId);
+  if (rows.length === 0) return null;
+
+  const providers: ProviderEntry[] = rows.map((r: { provider: string; api_key: string; model: string; base_url: string | null }) => ({
+    name: r.provider as AIProviderName,
+    apiKey: r.api_key,
+    model: r.model,
+    baseUrl: r.base_url ?? undefined,
+  }));
+
+  return new LlmClient(providers, userId);
+}
+
 export function createEventsRouter(): Router {
   const router = Router();
-  const interpreter = new SituationInterpreter();
 
   /**
    * GET /api/events/stream/:userId
@@ -53,8 +82,10 @@ export function createEventsRouter(): Router {
 
   const twinService = new TwinService(new TwinRepositoryAdapter(), new PatternRepositoryAdapter());
   const policyEvaluator = new PolicyEvaluator(policyRepositoryAdapter);
-  const decisionMaker = new DecisionMaker(twinService, policyEvaluator, decisionRepositoryAdapter);
   const explanationGenerator = new ExplanationGenerator(explanationRepositoryAdapter);
+  // Rule-based fallbacks (always available)
+  const ruleBasedInterpreter = new SituationInterpreter();
+  const ruleBasedDecisionMaker = new DecisionMaker(twinService, policyEvaluator, decisionRepositoryAdapter);
   // Set up workflow registry
   const workflowRegistry = new WorkflowHandlerRegistry();
   workflowRegistry.register(SituationType.CALENDAR_CONFLICT, processCalendarConflict);
@@ -62,7 +93,7 @@ export function createEventsRouter(): Router {
   workflowRegistry.register(SituationType.GROCERY_REORDER, processGroceryReorder);
   workflowRegistry.register(SituationType.TRAVEL_DECISION, processTravelDecision);
 
-  const executionRouter = getExecutionRouter();
+  const getRouter = () => getExecutionRouter();
 
   /**
    * POST /api/events/ingest
@@ -80,8 +111,27 @@ export function createEventsRouter(): Router {
         return;
       }
 
+      // 0. Build per-user LLM client and strategies (or fall back to rule-based)
+      const llmClient = await buildLlmClientForUser(userId);
+
+      let interpreter: SituationInterpreter;
+      let decisionMaker: DecisionMaker;
+
+      if (llmClient && llmClient.hasProviders) {
+        const llmSituation = new LlmSituationStrategy(llmClient);
+        const llmCandidates = new LlmCandidateGenerator(llmClient);
+        const ruleBasedCandidates = new RuleBasedCandidateGenerator(ruleBasedDecisionMaker);
+        const situationStrategy = new FallbackSituationStrategy(llmSituation, ruleBasedInterpreter);
+        const candidateStrategy = new FallbackCandidateGenerator(llmCandidates, ruleBasedCandidates);
+        interpreter = new SituationInterpreter(situationStrategy);
+        decisionMaker = new DecisionMaker(twinService, policyEvaluator, decisionRepositoryAdapter, candidateStrategy);
+      } else {
+        interpreter = ruleBasedInterpreter;
+        decisionMaker = ruleBasedDecisionMaker;
+      }
+
       // 1. Interpret the raw event
-      const decision = interpreter.interpret(rawEvent);
+      const decision = await interpreter.interpret(rawEvent);
 
       // 1b. Persist the decision to DB so foreign keys (outcomes, candidates) work
       await decisionRepositoryAdapter.saveDecision(decision);
@@ -190,6 +240,7 @@ export function createEventsRouter(): Router {
         };
 
         // Execute via the trust-ranked execution router (IronClaw > Direct > OpenClaw)
+        const executionRouter = await getRouter();
         const result = await executionRouter.executeWithRouting(
           outcome.selectedAction,
           riskAssessment,

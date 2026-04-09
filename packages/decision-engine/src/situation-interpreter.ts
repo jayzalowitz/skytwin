@@ -1,16 +1,38 @@
 import type { DecisionObject } from '@skytwin/shared-types';
 import { SituationType } from '@skytwin/shared-types';
+import type { SituationStrategy } from './strategies/situation-strategy.js';
 
 /**
  * The SituationInterpreter examines raw events from signal connectors and
  * creates typed DecisionObjects. It classifies the situation type, determines
  * urgency, and extracts a structured representation of the decision at hand.
+ *
+ * Optionally accepts a SituationStrategy (e.g., LLM-powered) that replaces
+ * the built-in rule-based classification. When no strategy is provided,
+ * the original keyword-matching logic is used.
  */
 export class SituationInterpreter {
+  private readonly strategy: SituationStrategy | null;
+
+  constructor(strategy?: SituationStrategy) {
+    this.strategy = strategy ?? null;
+  }
+
   /**
    * Interpret a raw event into a structured DecisionObject.
+   * If a strategy is configured, delegates to it. Otherwise uses built-in rules.
    */
-  interpret(rawEvent: Record<string, unknown>): DecisionObject {
+  async interpret(rawEvent: Record<string, unknown>): Promise<DecisionObject> {
+    if (this.strategy) {
+      return this.strategy.interpret(rawEvent);
+    }
+    return this.interpretRuleBased(rawEvent);
+  }
+
+  /**
+   * Built-in rule-based interpretation (original logic).
+   */
+  interpretRuleBased(rawEvent: Record<string, unknown>): DecisionObject {
     const situationType = this.classifySituation(rawEvent);
     const domain = this.extractDomain(rawEvent, situationType);
     const urgency = this.assessUrgency(rawEvent, situationType);

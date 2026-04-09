@@ -120,7 +120,7 @@ describe('Grocery Reorder E2E', () => {
       updatedAt: new Date(),
     });
 
-    const decision = interpreter.interpret({
+    const decision = await interpreter.interpret({
       source: 'shopping',
       type: 'grocery_reorder',
       userId,

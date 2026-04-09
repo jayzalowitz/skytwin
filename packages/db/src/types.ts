@@ -543,6 +543,23 @@ export interface CredentialRequirementRow {
   created_at: Date;
 }
 
+// ============================================================================
+// AI Provider Settings
+// ============================================================================
+
+export interface AIProviderSettingsRow {
+  id: string;
+  user_id: string;
+  provider: string;
+  api_key: string;
+  model: string;
+  base_url: string | null;
+  priority: number;
+  enabled: boolean;
+  created_at: Date;
+  updated_at: Date;
+}
+
 /**
  * Represents the full decision context including related records.
  */

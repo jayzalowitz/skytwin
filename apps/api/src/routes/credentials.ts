@@ -125,7 +125,7 @@ export function createCredentialsRouter(): Router {
   router.get('/status', async (_req, res, next) => {
     try {
       const config = loadConfig();
-      const executionRouter = getExecutionRouter();
+      const executionRouter = await getExecutionRouter();
       const registry = executionRouter.getRegistry();
       const entries = registry.getAll();
 

@@ -21,6 +21,7 @@ import {
   OPENCLAW_TRUST_PROFILE,
   DIRECT_TRUST_PROFILE,
   OPENCLAW_SKILLS,
+  discoverAdapters,
 } from '@skytwin/execution-router';
 import type { OpenClawCredentialRequirement } from '@skytwin/execution-router';
 import { credentialRequirementRepository } from '@skytwin/db';
@@ -37,7 +38,7 @@ import { sseManager } from './sse.js';
  * The router selects the most trusted available adapter per action and
  * falls back through the chain on failure.
  */
-export function createExecutionRouter(): ExecutionRouter {
+export async function createExecutionRouter(): Promise<ExecutionRouter> {
   const config = loadConfig();
   const registry = new AdapterRegistry();
 
@@ -106,18 +107,28 @@ export function createExecutionRouter(): ExecutionRouter {
     console.info('[execution] OpenClaw not configured (no URL) — skipping');
   }
 
+  // Discover plugin adapters from filesystem (if configured)
+  if (config.adapterPluginDir) {
+    const discovered = await discoverAdapters(config.adapterPluginDir, registry);
+    console.info(`[execution] Discovered ${discovered.length} plugin adapter(s) from ${config.adapterPluginDir}`);
+  }
+
   return new ExecutionRouter(registry);
 }
 
 /**
  * Singleton execution router instance.
- * Created once at startup and shared across all routes.
+ * Stores the promise (not the result) to prevent TOCTOU race conditions
+ * when multiple requests trigger initialization concurrently.
  */
-let _router: ExecutionRouter | null = null;
+let _routerPromise: Promise<ExecutionRouter> | null = null;
 
-export function getExecutionRouter(): ExecutionRouter {
-  if (!_router) {
-    _router = createExecutionRouter();
+export async function getExecutionRouter(): Promise<ExecutionRouter> {
+  if (!_routerPromise) {
+    _routerPromise = createExecutionRouter().catch((err) => {
+      _routerPromise = null; // Allow retry on next call
+      throw err;
+    });
   }
-  return _router;
+  return _routerPromise;
 }

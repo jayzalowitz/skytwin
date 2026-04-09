@@ -10,11 +10,10 @@ import { applyAdapterRiskModifier } from './risk-modifier.js';
 import { logSkillGap } from './skill-gap-logger.js';
 
 /**
- * Trust ranking for adapter selection. Lower index = higher trust.
- * When multiple adapters can handle an action, the router prefers the
- * most trusted adapter.
+ * Built-in trust ranking for adapter selection. Lower index = higher trust.
+ * Dynamically discovered adapters are appended after these, sorted by riskModifier.
  */
-const TRUST_RANKING: readonly string[] = ['ironclaw', 'direct', 'openclaw'];
+const BUILTIN_TRUST_RANKING: readonly string[] = ['ironclaw', 'direct', 'openclaw'];
 
 /**
  * Error thrown when no adapter in the registry can handle an action.
@@ -205,11 +204,20 @@ export class ExecutionRouter {
    */
   private sortByTrust(names: string[]): string[] {
     return [...names].sort((a, b) => {
-      const aIndex = TRUST_RANKING.indexOf(a);
-      const bIndex = TRUST_RANKING.indexOf(b);
-      const aRank = aIndex === -1 ? TRUST_RANKING.length : aIndex;
-      const bRank = bIndex === -1 ? TRUST_RANKING.length : bIndex;
-      return aRank - bRank;
+      const aBuiltin = BUILTIN_TRUST_RANKING.indexOf(a);
+      const bBuiltin = BUILTIN_TRUST_RANKING.indexOf(b);
+
+      // Built-in adapters always rank first, in their declared order
+      if (aBuiltin !== -1 && bBuiltin !== -1) return aBuiltin - bBuiltin;
+      if (aBuiltin !== -1) return -1;
+      if (bBuiltin !== -1) return 1;
+
+      // Discovered adapters: sort by riskModifier (lower = more trusted)
+      const aEntry = this.registry.get(a);
+      const bEntry = this.registry.get(b);
+      const aRisk = aEntry?.trustProfile.riskModifier ?? 99;
+      const bRisk = bEntry?.trustProfile.riskModifier ?? 99;
+      return aRisk - bRisk;
     });
   }
 

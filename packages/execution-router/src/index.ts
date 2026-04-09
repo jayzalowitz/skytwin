@@ -14,3 +14,7 @@ export type { OpenClawCredentialRequirement, OnCredentialNeeded } from './opencl
 export { applyAdapterRiskModifier } from './risk-modifier.js';
 
 export { logSkillGap } from './skill-gap-logger.js';
+
+export { discoverAdapters } from './adapter-discovery.js';
+export { validateManifest } from './adapter-manifest.js';
+export type { AdapterManifest } from './adapter-manifest.js';

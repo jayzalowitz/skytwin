@@ -94,6 +94,7 @@ export async function renderDecisions(container, userId) {
                   <th>Area</th>
                   <th>What happened</th>
                   <th>Urgency</th>
+                  <th>How</th>
                   <th>Actions</th>
                 </tr>
               </thead>
@@ -104,6 +105,12 @@ export async function renderDecisions(container, userId) {
                     <td><span class="badge badge-info">${escapeHtml(domainLabel(d.domain))}</span></td>
                     <td>${escapeHtml(d.situationType || d.situation_type || '--')}</td>
                     <td><span class="badge badge-${urgencyBadge(d.urgency)}">${escapeHtml(d.urgency || '--')}</span></td>
+                    <td>${d.autoExecuted === true
+                      ? '<span class="badge badge-accent" title="Your twin handled this automatically">Auto</span>'
+                      : d.autoExecuted === false
+                        ? '<span class="badge badge-success" title="You approved this action">You OK\'d</span>'
+                        : '<span class="badge badge-muted" title="Decision pending">Pending</span>'
+                    }</td>
                     <td>
                       <button class="btn btn-sm btn-ghost undo-btn" data-decision-id="${escapeHtml(d.id)}"
                               onclick="event.stopPropagation(); showUndoModal('${escapeHtml(d.id)}')">
@@ -112,7 +119,7 @@ export async function renderDecisions(container, userId) {
                     </td>
                   </tr>
                   <tr class="explanation-row" id="explain-${escapeHtml(d.id)}" style="display: none;">
-                    <td colspan="5" style="background: var(--bg); padding: 1rem;">
+                    <td colspan="6" style="background: var(--bg); padding: 1rem;">
                       <div class="loading" style="padding: 0.5rem;">Loading explanation...</div>
                     </td>
                   </tr>

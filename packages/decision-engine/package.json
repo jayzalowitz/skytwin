@@ -20,7 +20,8 @@
   "dependencies": {
     "@skytwin/shared-types": "workspace:*",
     "@skytwin/twin-model": "workspace:*",
-    "@skytwin/policy-engine": "workspace:*"
+    "@skytwin/policy-engine": "workspace:*",
+    "@skytwin/llm-client": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.4.0",

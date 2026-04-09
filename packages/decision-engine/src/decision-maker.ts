@@ -19,6 +19,7 @@ import {
 import type { TwinService } from '@skytwin/twin-model';
 import type { PolicyEvaluator } from '@skytwin/policy-engine';
 import { RiskAssessor } from './risk-assessor.js';
+import type { CandidateGenerator } from './strategies/candidate-strategy.js';
 
 /**
  * Port interface for decision persistence.
@@ -46,13 +47,16 @@ export interface DecisionRepositoryPort {
  */
 export class DecisionMaker {
   private readonly riskAssessor: RiskAssessor;
+  private readonly candidateGenerator: CandidateGenerator | null;
 
   constructor(
     private readonly twinService: TwinService,
     private readonly policyEvaluator: PolicyEvaluator,
     private readonly decisionRepository: DecisionRepositoryPort,
+    candidateGenerator?: CandidateGenerator,
   ) {
     this.riskAssessor = new RiskAssessor();
+    this.candidateGenerator = candidateGenerator ?? null;
   }
 
   /**
@@ -84,8 +88,10 @@ export class DecisionMaker {
     // Step 2: Get profile for candidate generation
     const profile = await this.twinService.getOrCreateProfile(context.userId);
 
-    // Step 3: Generate candidate actions
-    const candidates = this.generateCandidates(context.decision, profile);
+    // Step 3: Generate candidate actions (LLM strategy or built-in rules)
+    const candidates = this.candidateGenerator
+      ? await this.candidateGenerator.generate(context.decision, profile, enrichedContext)
+      : this.generateCandidates(context.decision, profile);
 
     if (candidates.length === 0) {
       const outcome: DecisionOutcome = {

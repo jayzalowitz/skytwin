@@ -241,7 +241,7 @@ describe('Safety Invariant 1: Never auto-execute without a policy check', () => 
 
     const context = {
       userId,
-      decision: new SituationInterpreter().interpret({
+      decision: await new SituationInterpreter().interpret({
         source: 'gmail',
         type: 'new_email',
         subject: 'Test email',
@@ -292,7 +292,7 @@ describe('Safety Invariant 2: Always log explanations', () => {
     await twinService.getOrCreateProfile(userId);
 
     const interpreter = new SituationInterpreter();
-    const decision = interpreter.interpret({
+    const decision = await interpreter.interpret({
       source: 'gmail',
       type: 'new_email',
       subject: 'Newsletter',
@@ -611,7 +611,7 @@ describe('Safety Invariant 7: Risk assessment is mandatory', () => {
     const userId = 'user_invariant7';
     await twinService.getOrCreateProfile(userId);
 
-    const decision = new SituationInterpreter().interpret({
+    const decision = await new SituationInterpreter().interpret({
       source: 'gmail',
       type: 'new_email',
       subject: 'Test',

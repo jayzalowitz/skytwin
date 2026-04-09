@@ -4,6 +4,7 @@ import {
   GmailConnector,
   GoogleCalendarConnector,
   DbTokenStore,
+  OAuthRefreshError,
 } from '@skytwin/connectors';
 import { oauthRepository, approvalRepository } from '@skytwin/db';
 import { withRetry, RetryableHttpError, CircuitBreaker, createLogger } from '@skytwin/core';
@@ -85,7 +86,7 @@ async function pollUser(userConnectors: UserConnectors): Promise<void> {
   const breaker = getCircuitBreaker(userConnectors.userId);
 
   if (!breaker.canExecute()) {
-    log.debug(`Skipping user ${userConnectors.userId} — circuit open`, {
+    log.warn(`Skipping user ${userConnectors.userId} — circuit open, retry in ${Math.round(breaker.getTimeUntilRetryMs() / 1000)}s`, {
       retryInMs: breaker.getTimeUntilRetryMs(),
     });
     return;
@@ -101,6 +102,20 @@ async function pollUser(userConnectors: UserConnectors): Promise<void> {
       }
     } catch (error) {
       hadFailure = true;
+
+      if (error instanceof OAuthRefreshError && error.permanent) {
+        log.error(`Permanent OAuth failure for user ${userConnectors.userId} on ${connector.name} — user must re-authorize`, {
+          error: error.message,
+          statusCode: error.statusCode,
+        });
+        // Force-open circuit immediately — no point retrying a revoked token.
+        // Stop once breaker transitions to open to avoid extending backoff.
+        for (let i = 0; i < 3 && breaker.canExecute(); i++) {
+          breaker.recordFailure();
+        }
+        return;
+      }
+
       log.error(`Error polling ${connector.name} for user ${userConnectors.userId}`, {
         error: error instanceof Error ? error.message : String(error),
       });

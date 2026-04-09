@@ -4,8 +4,9 @@ const API = '/api';
  * Escape HTML special characters to prevent XSS when inserting into innerHTML.
  */
 export function escapeHtml(str) {
+  if (str == null) return '';
   const div = document.createElement('div');
-  div.textContent = str;
+  div.textContent = String(str);
   return div.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
@@ -209,6 +210,26 @@ export function revokeSession(sessionId, userId) {
   return fetchJSON(`${API}/sessions/${sessionId}`, {
     method: 'DELETE',
     body: JSON.stringify({ userId }),
+  });
+}
+
+// ── AI Provider Settings ──────────────────────────────
+
+export function fetchAISettings(userId) {
+  return fetchSettings(userId).then(s => s?.aiProviders ?? []);
+}
+
+export function saveAIProviders(userId, providers) {
+  return fetchJSON(`${API}/settings/${userId}/ai`, {
+    method: 'PUT',
+    body: JSON.stringify({ providers }),
+  });
+}
+
+export function testAIProvider(userId, providerConfig) {
+  return fetchJSON(`${API}/settings/${userId}/ai/test`, {
+    method: 'POST',
+    body: JSON.stringify(providerConfig),
   });
 }
 

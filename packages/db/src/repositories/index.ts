@@ -77,3 +77,6 @@ export type { UpsertServiceCredentialInput } from './service-credential-reposito
 
 export { credentialRequirementRepository } from './credential-requirement-repository.js';
 export type { RegisterCredentialRequirementInput } from './credential-requirement-repository.js';
+
+export { aiProviderRepository } from './ai-provider-repository.js';
+export type { UpsertAIProviderInput } from './ai-provider-repository.js';

@@ -69,7 +69,7 @@ export async function processEmailEvent(
   }
 
   // Step 1: Interpret the raw email event
-  const decision = interpreter.interpret({
+  const decision = await interpreter.interpret({
     source: 'email',
     type: 'email_received',
     ...event,

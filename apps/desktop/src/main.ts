@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, type Tray } from 'electron';
+import { app, BrowserWindow, ipcMain, shell, type Tray } from 'electron';
 import { join } from 'path';
 import { ServiceManager } from './service-manager.js';
 import { createTray } from './tray.js';
@@ -142,6 +142,12 @@ ipcMain.handle('get-launch-at-login', () => {
 ipcMain.handle('set-launch-at-login', (_event, enabled: boolean) => {
   app.setLoginItemSettings({ openAtLogin: enabled });
   return enabled;
+});
+ipcMain.handle('open-external', async (_event, url: string) => {
+  // Only allow http/https URLs to prevent shell injection
+  if (typeof url === 'string' && /^https?:\/\//.test(url)) {
+    await shell.openExternal(url);
+  }
 });
 ipcMain.handle('pause-twin', async () => {
   await serviceManager.pause();
