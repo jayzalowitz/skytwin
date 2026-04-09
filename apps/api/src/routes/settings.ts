@@ -7,7 +7,7 @@ import {
 } from '@skytwin/db';
 import type { DomainAutonomyPolicyRow, EscalationTriggerRow, AIProviderSettingsRow } from '@skytwin/db';
 import { TrustTier } from '@skytwin/shared-types';
-import { LlmClient, validateBaseUrl } from '@skytwin/llm-client';
+import { LlmClient, validateBaseUrlWithDns } from '@skytwin/llm-client';
 import type { ProviderEntry } from '@skytwin/llm-client';
 
 /**
@@ -352,7 +352,7 @@ export function createSettingsRouter(): Router {
         seenProviders.add(p.provider);
         if (p.baseUrl) {
           try {
-            validateBaseUrl(p.baseUrl, p.provider);
+            await validateBaseUrlWithDns(p.baseUrl, p.provider);
           } catch (err) {
             res.status(400).json({ error: err instanceof Error ? err.message : 'Invalid base URL' });
             return;
@@ -394,6 +394,7 @@ export function createSettingsRouter(): Router {
    */
   router.post('/:userId/ai/test', async (req, res, _next) => {
     try {
+      const { userId } = req.params;
       const { provider, apiKey, model, baseUrl } = req.body as {
         provider: string;
         apiKey?: string;
@@ -407,9 +408,17 @@ export function createSettingsRouter(): Router {
         return;
       }
 
+      // If no API key in request, fall back to the stored key for this provider
+      let resolvedKey = apiKey ?? '';
+      if (!resolvedKey && userId) {
+        const rows = await aiProviderRepository.getForUser(userId);
+        const stored = rows.find((r) => r.provider === provider);
+        resolvedKey = stored?.api_key ?? '';
+      }
+
       const entry: ProviderEntry = {
         name: provider as ProviderEntry['name'],
-        apiKey: apiKey ?? '',
+        apiKey: resolvedKey,
         model,
         baseUrl,
       };

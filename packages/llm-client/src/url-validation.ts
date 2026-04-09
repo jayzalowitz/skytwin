@@ -4,6 +4,9 @@
  *
  * Ollama gets a loopback-only exemption (localhost, 127.0.0.1, ::1).
  * All other private ranges are blocked for every provider.
+ *
+ * Note: This checks literal hostnames/IPs only. For DNS rebinding protection,
+ * use validateBaseUrlWithDns() at save time.
  */
 export function validateBaseUrl(baseUrl: string, provider: string): void {
   let parsed: URL;
@@ -37,6 +40,41 @@ export function validateBaseUrl(baseUrl: string, provider: string): void {
     if (isPrivateHost(hostname)) {
       throw new Error(`Private/internal URL not allowed for ${provider}: ${hostname}`);
     }
+  }
+
+}
+
+/**
+ * Extended validation that also resolves DNS to catch rebinding attacks
+ * (e.g. 127.0.0.1.nip.io resolving to a private IP). Use at save time.
+ */
+export async function validateBaseUrlWithDns(baseUrl: string, provider: string): Promise<void> {
+  // Run all synchronous checks first
+  validateBaseUrl(baseUrl, provider);
+
+  const { lookup } = await import('node:dns/promises');
+  const hostname = new URL(baseUrl).hostname.toLowerCase().replace(/^\[|\]$/g, '');
+
+  // Skip literal IPs and localhost — already validated above
+  if (hostname === 'localhost' || /^\d{1,3}(\.\d{1,3}){3}$/.test(hostname) || hostname.includes(':')) {
+    return;
+  }
+
+  try {
+    const { address } = await lookup(hostname);
+    if (isPrivateHost(address)) {
+      if (provider === 'ollama') {
+        const isLoopback = address === '127.0.0.1' || address === '::1';
+        if (!isLoopback) {
+          throw new Error(`DNS for ${hostname} resolves to private address ${address}, not allowed for ${provider}`);
+        }
+      } else {
+        throw new Error(`DNS for ${hostname} resolves to private address ${address}, not allowed for ${provider}`);
+      }
+    }
+  } catch (err) {
+    if (err instanceof Error && err.message.includes('not allowed')) throw err;
+    // DNS resolution failure — allow through (may be unresolvable at save time)
   }
 }
 

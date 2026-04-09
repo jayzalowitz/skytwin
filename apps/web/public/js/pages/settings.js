@@ -319,13 +319,22 @@ window.handleConnectGoogle = async function(userId) {
         oauthUrl.searchParams.set('state', currentState ? `${currentState}|desktop` : `|desktop`);
         await window.skytwinDesktop.openExternal(oauthUrl.toString());
 
-        // Poll for OAuth completion
+        // Poll for OAuth completion (max 5 minutes, then give up)
         const pageContent = document.getElementById('page-content');
         pageContent.insertAdjacentHTML(
           'afterbegin',
           '<div class="info-banner" id="oauth-polling-banner">Waiting for Google sign-in to complete in your browser\u2026</div>',
         );
+        let pollCount = 0;
+        const maxPolls = 150; // 5 minutes at 2s intervals
         const pollInterval = setInterval(async () => {
+          pollCount++;
+          if (pollCount >= maxPolls) {
+            clearInterval(pollInterval);
+            const banner = document.getElementById('oauth-polling-banner');
+            if (banner) banner.textContent = 'Sign-in timed out. Refresh the page to try again.';
+            return;
+          }
           try {
             const status = await fetchOAuthStatus(userId, 'google');
             if (status.connected) {
@@ -669,7 +678,7 @@ window.aiTestProvider = async function(idx, userId) {
       resultEl.innerHTML = `<span style="font-size: 0.75rem; color: var(--danger);">Failed: ${escapeHtml(result.error || 'Unknown error')}</span>`;
     }
   } catch (err) {
-    resultEl.innerHTML = `<span style="font-size: 0.75rem; color: var(--danger);">Error: ${escapeHtml(err.message)}</span>`;
+    resultEl.innerHTML = `<span style="font-size: 0.75rem; color: var(--danger);">Error: ${escapeHtml(err instanceof Error ? err.message : String(err))}</span>`;
   }
 };
 
