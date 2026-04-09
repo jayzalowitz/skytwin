@@ -33,7 +33,7 @@ export function validateBaseUrl(baseUrl: string, provider: string): void {
     // Ollama: only allow loopback addresses, block all other private ranges
     const isLoopback = hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
     if (!isLoopback && isPrivateHost(hostname)) {
-      throw new Error(`Private/internal URL not allowed for ${provider}: ${hostname} (only localhost is allowed)`);
+      throw new Error(`Private/internal URL not allowed for ${provider}: ${hostname} (only loopback addresses are allowed: localhost, 127.0.0.1, ::1)`);
     }
   } else {
     // All other providers: block all private/internal addresses
@@ -61,15 +61,17 @@ export async function validateBaseUrlWithDns(baseUrl: string, provider: string):
   }
 
   try {
-    const { address } = await lookup(hostname);
-    if (isPrivateHost(address)) {
-      if (provider === 'ollama') {
-        const isLoopback = address === '127.0.0.1' || address === '::1';
-        if (!isLoopback) {
+    const results = await lookup(hostname, { all: true });
+    for (const { address } of results) {
+      if (isPrivateHost(address)) {
+        if (provider === 'ollama') {
+          const isLoopback = address === '127.0.0.1' || address === '::1';
+          if (!isLoopback) {
+            throw new Error(`DNS for ${hostname} resolves to private address ${address}, not allowed for ${provider}`);
+          }
+        } else {
           throw new Error(`DNS for ${hostname} resolves to private address ${address}, not allowed for ${provider}`);
         }
-      } else {
-        throw new Error(`DNS for ${hostname} resolves to private address ${address}, not allowed for ${provider}`);
       }
     }
   } catch (err) {
@@ -118,7 +120,18 @@ function isPrivateHost(hostname: string): boolean {
   // ::1 handled above; also catch IPv6-mapped IPv4
   if (hostname.startsWith('::ffff:')) {
     const mapped = hostname.slice(7); // strip ::ffff:
-    return isPrivateHost(mapped);
+    // Check dotted-quad form (::ffff:10.0.0.1)
+    if (mapped.includes('.')) {
+      return isPrivateHost(mapped);
+    }
+    // Check hex-pair form (::ffff:a00:1 → 10.0.0.1)
+    const hexMatch = mapped.match(/^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+    if (hexMatch) {
+      const hi = parseInt(hexMatch[1]!, 16);
+      const lo = parseInt(hexMatch[2]!, 16);
+      const ipv4 = `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+      return isPrivateHost(ipv4);
+    }
   }
 
   // IPv6 unique local addresses (fc00::/7 → fc.. and fd..)

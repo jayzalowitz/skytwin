@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync, existsSync, realpathSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join, resolve, sep, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { IronClawAdapter } from '@skytwin/ironclaw-adapter';
 import type { AdapterTrustProfile } from '@skytwin/shared-types';
@@ -83,7 +83,8 @@ export async function discoverAdapters(
         continue;
       }
       const realEntry = realpathSync(entryPath);
-      if (!realEntry.startsWith(realDir + '/')) {
+      const rel = relative(realDir, realEntry);
+      if (rel.startsWith('..') || rel.startsWith(sep) || resolve(realDir, rel) !== realEntry) {
         console.warn(`[adapter-discovery] Path traversal blocked in ${dirName}: ${manifest.entryPoint} (resolved to ${realEntry})`);
         continue;
       }

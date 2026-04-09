@@ -97,16 +97,16 @@ describe('validateBaseUrl', () => {
       expect(() => validateBaseUrl('http://127.0.0.1:11434', 'ollama')).not.toThrow();
     });
 
-    it('allows bracketed ::1 for ollama (not recognized as private due to brackets)', () => {
-      // URL parser keeps brackets: hostname is "[::1]" not "::1".
-      // Not matched as loopback, but also not matched as private, so it passes.
+    it('allows bracketed ::1 for ollama (recognized as loopback after bracket stripping)', () => {
+      // URL parser wraps IPv6 in brackets, but validateBaseUrl strips them
+      // before matching, so [::1] → ::1 is correctly recognized as loopback.
       expect(() => validateBaseUrl('http://[::1]:11434', 'ollama')).not.toThrow();
     });
 
     it('blocks non-loopback private IPs for ollama', () => {
-      expect(() => validateBaseUrl('http://10.0.0.1:11434', 'ollama')).toThrow('only localhost is allowed');
-      expect(() => validateBaseUrl('http://192.168.1.1:11434', 'ollama')).toThrow('only localhost is allowed');
-      expect(() => validateBaseUrl('http://172.16.0.1:11434', 'ollama')).toThrow('only localhost is allowed');
+      expect(() => validateBaseUrl('http://10.0.0.1:11434', 'ollama')).toThrow('only loopback addresses are allowed');
+      expect(() => validateBaseUrl('http://192.168.1.1:11434', 'ollama')).toThrow('only loopback addresses are allowed');
+      expect(() => validateBaseUrl('http://172.16.0.1:11434', 'ollama')).toThrow('only loopback addresses are allowed');
     });
 
     it('allows public URLs for ollama', () => {
@@ -164,7 +164,7 @@ describe('validateBaseUrl', () => {
     });
 
     it('blocks IPv6 ULA for ollama (non-loopback private)', () => {
-      expect(() => validateBaseUrl('http://[fd12::1]:11434', 'ollama')).toThrow('only localhost is allowed');
+      expect(() => validateBaseUrl('http://[fd12::1]:11434', 'ollama')).toThrow('only loopback addresses are allowed');
     });
   });
 });

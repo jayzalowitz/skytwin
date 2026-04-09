@@ -103,7 +103,7 @@ function validateCandidate(
 
   const description = typeof item['description'] === 'string' ? item['description'] : actionType;
   const domain = typeof item['domain'] === 'string' ? item['domain'] : 'generic';
-  const parameters = (typeof item['parameters'] === 'object' && item['parameters'] !== null)
+  const parameters = (typeof item['parameters'] === 'object' && item['parameters'] !== null && !Array.isArray(item['parameters']))
     ? item['parameters'] as Record<string, unknown>
     : {};
   // Safety invariant: LLM must not control spend limits or reversibility.

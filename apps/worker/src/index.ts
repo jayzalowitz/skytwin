@@ -108,10 +108,11 @@ async function pollUser(userConnectors: UserConnectors): Promise<void> {
           error: error.message,
           statusCode: error.statusCode,
         });
-        // Force-open circuit immediately — no point retrying a revoked token
-        breaker.recordFailure();
-        breaker.recordFailure();
-        breaker.recordFailure();
+        // Force-open circuit immediately — no point retrying a revoked token.
+        // Stop once breaker transitions to open to avoid extending backoff.
+        for (let i = 0; i < 3 && breaker.canExecute(); i++) {
+          breaker.recordFailure();
+        }
         return;
       }
 
