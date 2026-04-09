@@ -91,7 +91,7 @@ export class SituationInterpreter {
     if (
       source.includes('calendar') ||
       type.includes('calendar') ||
-      type.includes('event') ||
+      type === 'event' ||
       type.includes('meeting')
     ) {
       // Actual time overlap between events

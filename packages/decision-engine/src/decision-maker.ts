@@ -258,7 +258,7 @@ export class DecisionMaker {
 
     const domainMap: Record<string, SituationType> = {
       email: SituationType.EMAIL_TRIAGE,
-      calendar: SituationType.CALENDAR_CONFLICT,
+      calendar: SituationType.CALENDAR_INVITE,
       subscriptions: SituationType.SUBSCRIPTION_RENEWAL,
       shopping: SituationType.GROCERY_REORDER,
       travel: SituationType.TRAVEL_DECISION,

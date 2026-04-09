@@ -14,9 +14,9 @@ export async function processCalendarConflict(
   deps: WorkflowDependencies,
 ): Promise<WorkflowResult> {
   const enriched: Record<string, unknown> = {
+    ...event,
     source: 'calendar',
     type: event['type'] ?? 'calendar_event',
-    ...event,
   };
 
   return genericWorkflowHandler(enriched, deps);
