@@ -82,19 +82,35 @@ export class SituationInterpreter {
         subject.includes('invite') ||
         subject.includes('calendar')
       ) {
-        return SituationType.CALENDAR_CONFLICT;
+        return SituationType.CALENDAR_INVITE;
       }
       return SituationType.EMAIL_TRIAGE;
     }
 
-    // Calendar events
+    // Calendar events — sub-classify using connector-provided signals
     if (
       source.includes('calendar') ||
       type.includes('calendar') ||
-      type.includes('event') ||
+      type === 'event' ||
       type.includes('meeting')
     ) {
-      return SituationType.CALENDAR_CONFLICT;
+      // Actual time overlap between events
+      const data = (typeof rawEvent['data'] === 'object' && rawEvent['data'] !== null)
+        ? rawEvent['data'] as Record<string, unknown>
+        : rawEvent;
+      if (data['hasConflict'] === true || type === 'calendar_conflict') {
+        return SituationType.CALENDAR_CONFLICT;
+      }
+      // New invite requiring a response
+      if (
+        data['requiresResponse'] === true ||
+        type === 'meeting_invite' ||
+        type.includes('invite')
+      ) {
+        return SituationType.CALENDAR_INVITE;
+      }
+      // Everything else: updates, cancellations, info-only events
+      return SituationType.CALENDAR_UPDATE;
     }
 
     // Subscription/billing
@@ -267,7 +283,9 @@ export class SituationInterpreter {
     // Derive from situation type
     const domainMap: Record<SituationType, string> = {
       [SituationType.EMAIL_TRIAGE]: 'email',
+      [SituationType.CALENDAR_INVITE]: 'calendar',
       [SituationType.CALENDAR_CONFLICT]: 'calendar',
+      [SituationType.CALENDAR_UPDATE]: 'calendar',
       [SituationType.SUBSCRIPTION_RENEWAL]: 'subscriptions',
       [SituationType.GROCERY_REORDER]: 'shopping',
       [SituationType.TRAVEL_DECISION]: 'travel',
@@ -315,7 +333,9 @@ export class SituationInterpreter {
     // Default urgency by situation type
     const defaultUrgency: Record<SituationType, 'low' | 'medium' | 'high' | 'critical'> = {
       [SituationType.EMAIL_TRIAGE]: 'low',
+      [SituationType.CALENDAR_INVITE]: 'medium',
       [SituationType.CALENDAR_CONFLICT]: 'high',
+      [SituationType.CALENDAR_UPDATE]: 'low',
       [SituationType.SUBSCRIPTION_RENEWAL]: 'medium',
       [SituationType.GROCERY_REORDER]: 'low',
       [SituationType.TRAVEL_DECISION]: 'medium',
@@ -348,11 +368,23 @@ export class SituationInterpreter {
         return `Email triage needed for ${emailSubject}${sender}.`;
       }
 
+      case SituationType.CALENDAR_INVITE: {
+        const eventName = subject ? `"${String(subject)}"` : 'a meeting';
+        const time = rawEvent['startTime'] ?? rawEvent['time'];
+        const timeStr = time ? ` at ${String(time)}` : '';
+        return `New calendar invite for ${eventName}${timeStr}.`;
+      }
+
       case SituationType.CALENDAR_CONFLICT: {
         const eventName = subject ? `"${String(subject)}"` : 'a calendar event';
         const time = rawEvent['startTime'] ?? rawEvent['time'];
         const timeStr = time ? ` at ${String(time)}` : '';
         return `Calendar conflict detected for ${eventName}${timeStr}.`;
+      }
+
+      case SituationType.CALENDAR_UPDATE: {
+        const eventName = subject ? `"${String(subject)}"` : 'a calendar event';
+        return `Calendar update for ${eventName}.`;
       }
 
       case SituationType.SUBSCRIPTION_RENEWAL: {

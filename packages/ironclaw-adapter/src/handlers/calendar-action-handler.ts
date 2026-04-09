@@ -10,7 +10,10 @@ export class CalendarActionHandler implements ActionHandler {
   readonly domain = 'calendar';
 
   canHandle(actionType: string): boolean {
-    return ['accept_invite', 'decline_invite', 'propose_alternative'].includes(actionType);
+    return [
+      'accept_invite', 'decline_invite', 'propose_alternative',
+      'tentative_accept', 'acknowledge', 'dismiss',
+    ].includes(actionType);
   }
 
   async execute(step: ExecutionStep): Promise<StepResult> {
@@ -32,6 +35,11 @@ export class CalendarActionHandler implements ActionHandler {
         return this.respondToEvent(accessToken, eventId, 'declined');
       case 'propose_alternative':
         return this.proposeAlternative(accessToken, eventId, step.parameters);
+      case 'tentative_accept':
+        return this.respondToEvent(accessToken, eventId, 'tentative');
+      case 'acknowledge':
+      case 'dismiss':
+        return { success: true, output: { action: actionType, eventId } };
       default:
         return { success: false, error: `Unknown calendar action: ${actionType}` };
     }
