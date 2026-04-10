@@ -7,6 +7,8 @@ import {
   revokeToken,
 } from '@skytwin/connectors';
 import type { GoogleOAuthConfig } from '@skytwin/connectors';
+import { sessionAuth } from '../middleware/session-auth.js';
+import { requireOwnership } from '../middleware/require-ownership.js';
 
 const GMAIL_SCOPES = [
   'https://www.googleapis.com/auth/gmail.readonly',
@@ -53,6 +55,18 @@ async function resolveGoogleConfig(): Promise<GoogleOAuthConfig> {
 export function createOAuthRouter(): Router {
   const router = Router();
 
+  // All OAuth management endpoints require an authenticated user except the
+  // provider callback itself, which must remain public for the browser redirect.
+  router.use((req, res, next) => {
+    if (req.path === '/google/callback') {
+      next();
+      return;
+    }
+
+    void sessionAuth(req, res, next);
+  });
+  router.use(requireOwnership);
+
   /**
    * GET /api/oauth/google/authorize
    *
@@ -62,7 +76,13 @@ export function createOAuthRouter(): Router {
     try {
       const googleConfig = await resolveGoogleConfig();
       const scopes = [...GMAIL_SCOPES, ...CALENDAR_SCOPES];
-      const state = req.query['userId'] as string | undefined;
+      const state =
+        (typeof req.query['userId'] === 'string' ? req.query['userId'] : undefined) ??
+        req.authenticatedUserId;
+      if (!state) {
+        res.status(400).json({ error: 'Missing userId' });
+        return;
+      }
       const url = generateAuthUrl(googleConfig, scopes, state);
       res.json({ url });
     } catch (error) {
@@ -86,12 +106,13 @@ export function createOAuthRouter(): Router {
       }
 
       if (!state) {
-        console.error('[oauth] WARNING: state param is missing — userId will not be associated with token');
+        res.status(400).json({ error: 'Missing state parameter' });
+        return;
       }
 
       // State may contain "|desktop" suffix when OAuth was opened from the Electron app
       const isDesktop = state?.endsWith('|desktop') ?? false;
-      const userId = (isDesktop ? state?.replace(/\|desktop$/, '') : state) || 'default-user';
+      const userId = isDesktop ? state.replace(/\|desktop$/, '') : state;
       const googleConfig = await resolveGoogleConfig();
       const tokenSet = await exchangeCode(googleConfig, code);
 
@@ -132,7 +153,13 @@ export function createOAuthRouter(): Router {
   router.get('/:provider/status', async (req, res, next) => {
     try {
       const { provider } = req.params;
-      const userId = req.query['userId'] as string ?? 'default-user';
+      const userId =
+        (typeof req.query['userId'] === 'string' ? req.query['userId'] : undefined) ??
+        req.authenticatedUserId;
+      if (!userId) {
+        res.status(400).json({ error: 'Missing userId' });
+        return;
+      }
 
       const token = await oauthRepository.getToken(userId, provider);
 
@@ -156,7 +183,13 @@ export function createOAuthRouter(): Router {
   router.delete('/:provider/disconnect', async (req, res, next) => {
     try {
       const { provider } = req.params;
-      const userId = req.body?.['userId'] as string ?? 'default-user';
+      const userId =
+        (typeof req.body?.['userId'] === 'string' ? req.body['userId'] : undefined) ??
+        req.authenticatedUserId;
+      if (!userId) {
+        res.status(400).json({ error: 'Missing userId' });
+        return;
+      }
 
       if (provider !== 'google') {
         res.status(400).json({ error: `Unsupported provider: ${provider}` });

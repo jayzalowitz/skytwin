@@ -4,6 +4,7 @@ import {
   proactiveScanRepository,
   userRepository,
 } from '@skytwin/db';
+import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
 
 /**
  * Create the briefings router.
@@ -13,6 +14,7 @@ import {
  */
 export function createBriefingsRouter(): Router {
   const router = Router();
+  bindUserIdParamOwnership(router);
 
   /**
    * GET /api/v1/briefings/:userId

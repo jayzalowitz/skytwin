@@ -2,7 +2,8 @@ import { Router } from 'express';
 import { randomUUID } from 'crypto';
 import { sessionRepository } from '@skytwin/db';
 import { hashToken } from '../middleware/session-auth.js';
-import { loadConfig } from '@skytwin/config';
+import { sessionAuth } from '../middleware/session-auth.js';
+import { requireOwnership } from '../middleware/require-ownership.js';
 
 const SESSION_DURATION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
@@ -12,7 +13,6 @@ const SESSION_DURATION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
  */
 export function createSessionsRouter(): Router {
   const router = Router();
-  const config = loadConfig();
 
   /**
    * POST /api/sessions
@@ -40,9 +40,10 @@ export function createSessionsRouter(): Router {
         expiresAt,
       });
 
-      // Build the QR URL
-      const port = config.apiPort;
-      const qrUrl = `http://skytwin.local:${port}/mobile?token=${encodeURIComponent(rawToken)}&userId=${encodeURIComponent(body.userId)}`;
+      // Build the QR URL — point to the web app (not the API) so the mobile
+      // browser loads the SPA which stores the token and redirects to the dashboard.
+      const webPort = parseInt(process.env['WEB_PORT'] ?? '3200', 10);
+      const qrUrl = `http://skytwin.local:${webPort}/mobile?token=${encodeURIComponent(rawToken)}&userId=${encodeURIComponent(body.userId)}`;
 
       res.status(201).json({
         sessionId: session.id,
@@ -60,9 +61,13 @@ export function createSessionsRouter(): Router {
    *
    * List active sessions for a user.
    */
-  router.get('/:userId', async (req, res, next) => {
+  router.get('/:userId', sessionAuth, requireOwnership, async (req, res, next) => {
     try {
       const { userId } = req.params;
+      if (!userId) {
+        res.status(400).json({ error: 'Missing userId' });
+        return;
+      }
       const sessions = await sessionRepository.findActiveByUser(userId);
 
       res.json({
@@ -84,10 +89,14 @@ export function createSessionsRouter(): Router {
    *
    * Revoke a specific session.
    */
-  router.delete('/:sessionId', async (req, res, next) => {
+  router.delete('/:sessionId', sessionAuth, requireOwnership, async (req, res, next) => {
     try {
       const { sessionId } = req.params;
       const body = req.body as { userId?: string };
+      if (!sessionId) {
+        res.status(400).json({ error: 'Missing sessionId' });
+        return;
+      }
       if (!body.userId) {
         res.status(400).json({ error: 'Missing userId' });
         return;

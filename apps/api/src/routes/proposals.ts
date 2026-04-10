@@ -3,12 +3,14 @@ import { PreferenceArchaeologist, TwinService } from '@skytwin/twin-model';
 import { TwinRepositoryAdapter, PatternRepositoryAdapter, proposalRepository } from '@skytwin/db';
 import type { PreferenceProposalRow } from '@skytwin/db';
 import type { ConfidenceLevel } from '@skytwin/shared-types';
+import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
 
 /**
  * Create the preference proposals router.
  */
 export function createProposalsRouter(): Router {
   const router = Router();
+  bindUserIdParamOwnership(router);
   const twinRepo = new TwinRepositoryAdapter();
   const patternRepo = new PatternRepositoryAdapter();
   const archaeologist = new PreferenceArchaeologist(twinRepo);

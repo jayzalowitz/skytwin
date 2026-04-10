@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { TwinService } from '@skytwin/twin-model';
 import { TwinRepositoryAdapter, PatternRepositoryAdapter, feedbackRepository } from '@skytwin/db';
+import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
 
 /**
  * Normalize confidence from either a string label or a numeric 0–1 score.
@@ -22,6 +23,7 @@ function normalizeConfidence(confidence: unknown): string {
  */
 export function createEvalsRouter(): Router {
   const router = Router();
+  bindUserIdParamOwnership(router);
   const twinService = new TwinService(new TwinRepositoryAdapter(), new PatternRepositoryAdapter());
 
   /**

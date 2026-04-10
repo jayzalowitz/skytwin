@@ -18,7 +18,12 @@ export function connectSSE(userId) {
   disconnectSSE();
 
   try {
-    eventSource = new EventSource(`/api/events/stream/${encodeURIComponent(userId)}`);
+    const token = localStorage.getItem('skytwin_session_token');
+    const url = new URL(`/api/events/stream/${encodeURIComponent(userId)}`, window.location.origin);
+    if (token) {
+      url.searchParams.set('token', token);
+    }
+    eventSource = new EventSource(url);
   } catch {
     // EventSource not supported — fall back to polling only
     return;

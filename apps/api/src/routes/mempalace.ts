@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { mempalaceRepository } from '@skytwin/db';
 import type { PalaceStatus, MemoryHall, DrawerSource } from '@skytwin/shared-types';
 import { ConfidenceLevel } from '@skytwin/shared-types';
+import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
 
 // ── Input validation helpers ───────────────────────────────────────
 
@@ -67,6 +68,7 @@ function safeDateParam(raw: unknown): Date | undefined | string {
  */
 export function createMempalaceRouter(): Router {
   const router = Router();
+  bindUserIdParamOwnership(router);
 
   // ── Palace Status ──────────────────────────────────────────────
 

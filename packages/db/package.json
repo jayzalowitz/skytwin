@@ -18,7 +18,7 @@
     "seed": "tsx src/seeds/seed.ts",
     "generate": "tsc --declaration --emitDeclarationOnly",
     "test": "vitest run",
-    "lint": "eslint src/"
+    "lint": "tsc --noEmit"
   },
   "dependencies": {
     "pg": "^8.11.3",

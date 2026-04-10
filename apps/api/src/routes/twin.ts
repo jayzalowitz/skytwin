@@ -3,12 +3,14 @@ import { randomUUID } from 'node:crypto';
 import { TwinService } from '@skytwin/twin-model';
 import { TwinRepositoryAdapter, PatternRepositoryAdapter, feedbackRepository, userRepository } from '@skytwin/db';
 import { ConfidenceLevel } from '@skytwin/shared-types';
+import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
 
 /**
  * Create the twin management router.
  */
 export function createTwinRouter(): Router {
   const router = Router();
+  bindUserIdParamOwnership(router);
   const twinService = new TwinService(new TwinRepositoryAdapter(), new PatternRepositoryAdapter());
 
   /**
