@@ -142,15 +142,15 @@ describe.runIf(serverAvailable)('mDNS advertisement (mobile discovery)', () => {
 });
 
 describe.runIf(serverAvailable)('approval endpoints (mobile approve/reject flow)', () => {
-  it('GET /api/approvals/:userId/pending returns list (may need DB)', async () => {
+  it('GET /api/approvals/:userId/pending returns list (may need DB or auth)', async () => {
     const res = await fetch(`${API_BASE}/api/approvals/test-user-1/pending`);
     if (res.ok) {
       const body = await res.json() as Record<string, unknown>;
       expect(body).toHaveProperty('approvals');
       expect(Array.isArray((body as { approvals: unknown[] }).approvals)).toBe(true);
     } else {
-      // DB not available — verify it's a server error
-      expect(res.status).toBeGreaterThanOrEqual(500);
+      // 401 (auth required), 403 (ownership), or 500+ (DB not available)
+      expect(res.status).toBeGreaterThanOrEqual(400);
     }
   });
 
@@ -176,13 +176,14 @@ describe.runIf(serverAvailable)('approval endpoints (mobile approve/reject flow)
 });
 
 describe.runIf(serverAvailable)('decision history (mobile dashboard)', () => {
-  it('GET /api/decisions/:userId returns list (may need DB)', async () => {
+  it('GET /api/decisions/:userId returns list (may need DB or auth)', async () => {
     const res = await fetch(`${API_BASE}/api/decisions/test-user-1`);
     if (res.ok) {
       const body = await res.json() as Record<string, unknown>;
       expect(body).toHaveProperty('decisions');
     } else {
-      expect(res.status).toBeGreaterThanOrEqual(500);
+      // 401 (auth required), 403 (ownership), or 500+ (DB not available)
+      expect(res.status).toBeGreaterThanOrEqual(400);
     }
   });
 
@@ -199,29 +200,31 @@ describe.runIf(serverAvailable)('decision history (mobile dashboard)', () => {
 });
 
 describe.runIf(serverAvailable)('twin profile (mobile dashboard)', () => {
-  it('GET /api/twin/:userId returns profile (may need DB)', async () => {
+  it('GET /api/twin/:userId returns profile (may need DB or auth)', async () => {
     const res = await fetch(`${API_BASE}/api/twin/test-user-1`);
     if (res.ok) {
       const body = await res.json() as Record<string, unknown>;
       expect(body).toHaveProperty('profile');
     } else {
+      // 401 (auth required), 403 (ownership), or 500+ (DB not available)
       expect(res.status).toBeGreaterThanOrEqual(400);
     }
   });
 });
 
 describe.runIf(serverAvailable)('policies endpoint (engine gaps feature)', () => {
-  it('GET /api/policies/:userId responds (may need DB)', async () => {
+  it('GET /api/policies/:userId responds (may need DB or auth)', async () => {
     const res = await fetch(`${API_BASE}/api/policies/test-user-1`);
-    // 200 (with data), 500 (DB not available) — route exists either way
-    expect([200, 500, 502, 503]).toContain(res.status);
+    // 200 (with data), 401/403 (auth/ownership), 500+ (DB not available)
+    expect([200, 401, 403, 500, 502, 503]).toContain(res.status);
   });
 });
 
 describe.runIf(serverAvailable)('audit endpoint (dashboard feature)', () => {
-  it('GET /api/audit/:userId responds (may need DB)', async () => {
+  it('GET /api/audit/:userId responds (may need DB or auth)', async () => {
     const res = await fetch(`${API_BASE}/api/audit/test-user-1`);
-    expect([200, 500, 502, 503]).toContain(res.status);
+    // 200 (with data), 401/403 (auth/ownership), 500+ (DB not available)
+    expect([200, 401, 403, 500, 502, 503]).toContain(res.status);
   });
 });
 
