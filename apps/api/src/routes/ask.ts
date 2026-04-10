@@ -11,6 +11,7 @@ import {
   PatternRepositoryAdapter,
   policyRepositoryAdapter,
 } from '@skytwin/db';
+import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
 
 /**
  * No-op decision repository for the prediction endpoint.
@@ -94,6 +95,7 @@ function parseTrustTier(dbTier: string): TrustTier {
  */
 export function createAskRouter(): Router {
   const router = Router();
+  bindUserIdParamOwnership(router);
 
   // Real TwinService + PolicyEvaluator for accurate reads.
   // No-op DecisionRepository because whatWouldIDo() is read-only:

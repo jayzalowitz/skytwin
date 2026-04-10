@@ -3,6 +3,8 @@ import { userRepository } from '@skytwin/db';
 import { TwinService } from '@skytwin/twin-model';
 import { TwinRepositoryAdapter, PatternRepositoryAdapter } from '@skytwin/db';
 import { ConfidenceLevel } from '@skytwin/shared-types';
+import { sessionAuth } from '../middleware/session-auth.js';
+import { requireOwnership } from '../middleware/require-ownership.js';
 
 const VALID_TIERS = ['observer', 'suggest', 'low_autonomy', 'moderate_autonomy', 'high_autonomy'];
 
@@ -17,6 +19,9 @@ const VALID_DOMAINS = [
 export function createUsersRouter(): Router {
   const router = Router();
   const twinService = new TwinService(new TwinRepositoryAdapter(), new PatternRepositoryAdapter());
+
+  // Everything under /:userId is user-scoped and must be authenticated.
+  router.use('/:userId', sessionAuth, requireOwnership);
 
   /**
    * POST /api/users

@@ -115,6 +115,28 @@ describe('sessionAuth middleware', () => {
     expect(req.authenticatedSessionId).toBe('session-1');
   });
 
+  it('accepts token from query string for EventSource-based clients', async () => {
+    process.env['SKYTWIN_DEV_AUTH_BYPASS'] = 'false';
+    const mod = await import('../middleware/session-auth.js');
+    sessionAuth = mod.sessionAuth;
+    const db = await import('@skytwin/db');
+    (db.sessionRepository.findByTokenHash as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: 'session-2',
+      user_id: 'user-sse',
+      expires_at: new Date(Date.now() + 86400000 * 3),
+    });
+    (db.sessionRepository.touchLastActive as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+
+    const req = mockReq({ query: { token: 'sse-token' } });
+    const res = mockRes();
+    const next = vi.fn();
+
+    await sessionAuth(req, res, next);
+
+    expect(next).toHaveBeenCalled();
+    expect(req.authenticatedUserId).toBe('user-sse');
+  });
+
   it('rejects expired sessions', async () => {
     process.env['SKYTWIN_DEV_AUTH_BYPASS'] = 'false';
     const mod = await import('../middleware/session-auth.js');
@@ -189,6 +211,30 @@ describe('requireOwnership middleware', () => {
 
   it('blocks when authenticated user does not match :userId', () => {
     const req = mockReq({ params: { userId: 'user-abc' } });
+    req.authenticatedUserId = 'user-other';
+    const res = mockRes();
+    const next = vi.fn();
+
+    requireOwnership(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(403);
+  });
+
+  it('blocks when authenticated user does not match body.userId', () => {
+    const req = mockReq({ body: { userId: 'user-abc' } });
+    req.authenticatedUserId = 'user-other';
+    const res = mockRes();
+    const next = vi.fn();
+
+    requireOwnership(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(403);
+  });
+
+  it('blocks when authenticated user does not match query.userId', () => {
+    const req = mockReq({ query: { userId: 'user-abc' } });
     req.authenticatedUserId = 'user-other';
     const res = mockRes();
     const next = vi.fn();

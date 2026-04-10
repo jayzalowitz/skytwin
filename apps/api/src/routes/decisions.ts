@@ -1,11 +1,13 @@
 import { Router } from 'express';
 import { decisionRepository, explanationRepository } from '@skytwin/db';
+import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
 
 /**
  * Create the decisions query router.
  */
 export function createDecisionsRouter(): Router {
   const router = Router();
+  bindUserIdParamOwnership(router);
 
   /**
    * GET /api/decisions/:userId
@@ -93,6 +95,19 @@ export function createDecisionsRouter(): Router {
       const { decisionId } = req.params;
       if (!decisionId) {
         res.status(400).json({ error: 'Missing decisionId parameter' });
+        return;
+      }
+
+      const decision = await decisionRepository.findById(decisionId);
+      if (!decision) {
+        res.status(404).json({ error: 'Decision not found' });
+        return;
+      }
+      if (
+        req.authenticatedUserId !== undefined &&
+        decision.user_id !== req.authenticatedUserId
+      ) {
+        res.status(403).json({ error: 'You do not have access to this decision' });
         return;
       }
 

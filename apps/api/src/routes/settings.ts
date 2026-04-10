@@ -9,12 +9,14 @@ import type { DomainAutonomyPolicyRow, EscalationTriggerRow, AIProviderSettingsR
 import { TrustTier } from '@skytwin/shared-types';
 import { LlmClient, validateBaseUrlWithDns } from '@skytwin/llm-client';
 import type { ProviderEntry } from '@skytwin/llm-client';
+import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
 
 /**
  * Create the settings router for user autonomy configuration.
  */
 export function createSettingsRouter(): Router {
   const router = Router();
+  bindUserIdParamOwnership(router);
 
   /**
    * GET /api/settings/:userId

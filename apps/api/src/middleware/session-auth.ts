@@ -50,6 +50,7 @@ function isLocalhost(req: Request): boolean {
  *
  * - When DEV_AUTH_BYPASS is true AND request is from localhost, auth is skipped.
  * - Otherwise, `Authorization: Bearer <token>` is required.
+ * - SSE clients may pass `?token=<token>` because EventSource cannot set headers.
  * - On success, attaches `req.authenticatedUserId` and `req.authenticatedSessionId`.
  * - Auto-refreshes sessions within 1 day of expiry.
  */
@@ -72,15 +73,19 @@ export async function sessionAuth(
   }
 
   const authHeader = req.headers['authorization'];
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+  const query = req.query ?? {};
+  const queryToken = typeof query['token'] === 'string' ? query['token'] : undefined;
+  const token = authHeader?.startsWith('Bearer ')
+    ? authHeader.slice(7)
+    : queryToken;
+
+  if (!token) {
     res.status(401).json({
       error: 'Authentication required',
       message: 'Scan the QR code from your desktop to connect.',
     });
     return;
   }
-
-  const token = authHeader.slice(7);
   const tokenHash = hashToken(token);
 
   const session = await sessionRepository.findByTokenHash(tokenHash);

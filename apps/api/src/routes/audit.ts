@@ -4,6 +4,7 @@ import {
   spendRepository,
   preferenceHistoryRepository,
 } from '@skytwin/db';
+import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
 
 interface AuditEntry {
   id: string;
@@ -21,6 +22,7 @@ interface AuditEntry {
  */
 export function createAuditRouter(): Router {
   const router = Router();
+  bindUserIdParamOwnership(router);
 
   /**
    * GET /api/audit/:userId

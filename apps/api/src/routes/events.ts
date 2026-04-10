@@ -34,6 +34,7 @@ import { processSubscriptionRenewal } from '../workflows/subscription-renewal.js
 import { processGroceryReorder } from '../workflows/grocery-reorder.js';
 import { processTravelDecision } from '../workflows/travel-decision.js';
 import { getExecutionRouter } from '../execution-setup.js';
+import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
 import { sseManager } from '../sse.js';
 
 /**
@@ -59,6 +60,7 @@ async function buildLlmClientForUser(userId: string): Promise<LlmClient | null> 
 
 export function createEventsRouter(): Router {
   const router = Router();
+  bindUserIdParamOwnership(router);
 
   /**
    * GET /api/events/stream/:userId

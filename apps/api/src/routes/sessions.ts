@@ -2,6 +2,8 @@ import { Router } from 'express';
 import { randomUUID } from 'crypto';
 import { sessionRepository } from '@skytwin/db';
 import { hashToken } from '../middleware/session-auth.js';
+import { sessionAuth } from '../middleware/session-auth.js';
+import { requireOwnership } from '../middleware/require-ownership.js';
 
 const SESSION_DURATION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
@@ -59,9 +61,13 @@ export function createSessionsRouter(): Router {
    *
    * List active sessions for a user.
    */
-  router.get('/:userId', async (req, res, next) => {
+  router.get('/:userId', sessionAuth, requireOwnership, async (req, res, next) => {
     try {
       const { userId } = req.params;
+      if (!userId) {
+        res.status(400).json({ error: 'Missing userId' });
+        return;
+      }
       const sessions = await sessionRepository.findActiveByUser(userId);
 
       res.json({
@@ -83,10 +89,14 @@ export function createSessionsRouter(): Router {
    *
    * Revoke a specific session.
    */
-  router.delete('/:sessionId', async (req, res, next) => {
+  router.delete('/:sessionId', sessionAuth, requireOwnership, async (req, res, next) => {
     try {
       const { sessionId } = req.params;
       const body = req.body as { userId?: string };
+      if (!sessionId) {
+        res.status(400).json({ error: 'Missing sessionId' });
+        return;
+      }
       if (!body.userId) {
         res.status(400).json({ error: 'Missing userId' });
         return;

@@ -15,6 +15,7 @@ import { PolicyEvaluator } from '@skytwin/policy-engine';
 import type { FeedbackEvent, CandidateAction, RiskAssessment, DimensionAssessment } from '@skytwin/shared-types';
 import { ConfidenceLevel, RiskTier, RiskDimension, TrustTier } from '@skytwin/shared-types';
 import { getExecutionRouter } from '../execution-setup.js';
+import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
 import { sseManager } from '../sse.js';
 
 /**
@@ -22,6 +23,7 @@ import { sseManager } from '../sse.js';
  */
 export function createApprovalsRouter(): Router {
   const router = Router();
+  bindUserIdParamOwnership(router);
   const twinService = new TwinService(new TwinRepositoryAdapter(), new PatternRepositoryAdapter());
   const policyEvaluator = new PolicyEvaluator(policyRepositoryAdapter);
   const getRouter = () => getExecutionRouter();
