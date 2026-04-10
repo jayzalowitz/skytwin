@@ -16,6 +16,7 @@ import { createSettingsRouter } from './routes/settings.js';
 import { createSessionsRouter } from './routes/sessions.js';
 import { createAuditRouter } from './routes/audit.js';
 import { sessionAuth } from './middleware/session-auth.js';
+import { requireOwnership } from './middleware/require-ownership.js';
 import { createPoliciesRouter } from './routes/policies.js';
 import { createMempalaceRouter } from './routes/mempalace.js';
 import { createCredentialsRouter } from './routes/credentials.js';
@@ -92,21 +93,24 @@ app.get('/api/health', (_req, res) => {
 app.use(sessionAuth);
 
 // Routes
+// User-scoped routes get ownership enforcement (authenticated user must match :userId)
+app.use('/api/twin', requireOwnership, createTwinRouter());
+app.use('/api/decisions', requireOwnership, createDecisionsRouter());
+app.use('/api/approvals', requireOwnership, createApprovalsRouter());
+app.use('/api/evals', requireOwnership, createEvalsRouter());
+app.use('/api/settings', requireOwnership, createSettingsRouter());
+app.use('/api/sessions', createSessionsRouter()); // has its own ownership checks
+app.use('/api/audit', requireOwnership, createAuditRouter());
+app.use('/api/v1/skill-gaps', requireOwnership, createSkillGapsRouter());
+
+// Non-user-scoped routes (no :userId param, or own auth model)
 app.use('/api/events', createEventsRouter());
-app.use('/api/twin', createTwinRouter());
-app.use('/api/decisions', createDecisionsRouter());
-app.use('/api/approvals', createApprovalsRouter());
 app.use('/api/feedback', createFeedbackRouter());
 app.use('/api/oauth', createOAuthRouter());
-app.use('/api/evals', createEvalsRouter());
 app.use('/api/users', createUsersRouter());
 app.use('/api/proposals', createProposalsRouter());
 app.use('/api/v1/twin', createAskRouter());
 app.use('/api/v1/briefings', createBriefingsRouter());
-app.use('/api/v1/skill-gaps', createSkillGapsRouter());
-app.use('/api/settings', createSettingsRouter());
-app.use('/api/sessions', createSessionsRouter());
-app.use('/api/audit', createAuditRouter());
 app.use('/api/policies', createPoliciesRouter());
 app.use('/api/mempalace', createMempalaceRouter());
 app.use('/api/credentials', createCredentialsRouter());

@@ -11,13 +11,22 @@ export function escapeHtml(str) {
 }
 
 /**
+ * Build the Authorization header from the stored session token (if any).
+ */
+function authHeaders() {
+  const token = localStorage.getItem('skytwin_session_token');
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+/**
  * Fetch JSON from the API with user-friendly error handling.
+ * Automatically attaches the session token if one is stored.
  */
 export async function fetchJSON(url, options = {}) {
   let res;
   try {
     res = await fetch(url, {
-      headers: { 'Content-Type': 'application/json', ...options.headers },
+      headers: { 'Content-Type': 'application/json', ...authHeaders(), ...options.headers },
       ...options,
     });
   } catch {

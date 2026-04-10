@@ -2,7 +2,6 @@ import { Router } from 'express';
 import { randomUUID } from 'crypto';
 import { sessionRepository } from '@skytwin/db';
 import { hashToken } from '../middleware/session-auth.js';
-import { loadConfig } from '@skytwin/config';
 
 const SESSION_DURATION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
@@ -12,7 +11,6 @@ const SESSION_DURATION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
  */
 export function createSessionsRouter(): Router {
   const router = Router();
-  const config = loadConfig();
 
   /**
    * POST /api/sessions
@@ -40,9 +38,10 @@ export function createSessionsRouter(): Router {
         expiresAt,
       });
 
-      // Build the QR URL
-      const port = config.apiPort;
-      const qrUrl = `http://skytwin.local:${port}/mobile?token=${encodeURIComponent(rawToken)}&userId=${encodeURIComponent(body.userId)}`;
+      // Build the QR URL — point to the web app (not the API) so the mobile
+      // browser loads the SPA which stores the token and redirects to the dashboard.
+      const webPort = parseInt(process.env['WEB_PORT'] ?? '3200', 10);
+      const qrUrl = `http://skytwin.local:${webPort}/mobile?token=${encodeURIComponent(rawToken)}&userId=${encodeURIComponent(body.userId)}`;
 
       res.status(201).json({
         sessionId: session.id,
