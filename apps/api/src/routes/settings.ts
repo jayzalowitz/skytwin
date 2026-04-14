@@ -11,6 +11,8 @@ import { LlmClient, validateBaseUrlWithDns } from '@skytwin/llm-client';
 import type { ProviderEntry } from '@skytwin/llm-client';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
 
+const VALID_IRONCLAW_CHANNEL = /^[a-zA-Z0-9_.:-]{1,64}$/;
+
 /**
  * Create the settings router for user autonomy configuration.
  */
@@ -43,6 +45,8 @@ export function createSettingsRouter(): Router {
       res.json({
         userId: user.id,
         trustTier: user.trust_tier,
+        ironclawChannel: user.ironclaw_channel ?? 'skytwin',
+        ironclawChannels: ['skytwin', 'telegram', 'discord', 'slack', 'signal'],
         autonomySettings: user.autonomy_settings,
         domainPolicies: domainPolicies.map((p: DomainAutonomyPolicyRow) => ({
           domain: p.domain,
@@ -64,6 +68,38 @@ export function createSettingsRouter(): Router {
           hasApiKey: p.api_key.length > 0,
           apiKeyPreview: p.api_key.length > 8 ? `${p.api_key.slice(0, 4)}${'•'.repeat(8)}${p.api_key.slice(-4)}` : (p.api_key.length > 0 ? '••••••••' : ''),
         })),
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /**
+   * PUT /api/settings/:userId/ironclaw-channel
+   *
+   * Update the user's preferred IronClaw channel for execution routing.
+   */
+  router.put('/:userId/ironclaw-channel', async (req, res, next) => {
+    try {
+      const { userId } = req.params;
+      const { ironclawChannel } = req.body as { ironclawChannel?: string };
+
+      if (!ironclawChannel || !VALID_IRONCLAW_CHANNEL.test(ironclawChannel)) {
+        res.status(400).json({
+          error: 'Invalid IronClaw channel. Use 1-64 letters, numbers, dot, underscore, colon, or dash characters.',
+        });
+        return;
+      }
+
+      const updated = await userRepository.updateIronClawChannel(userId!, ironclawChannel);
+      if (!updated) {
+        res.status(404).json({ error: 'User not found' });
+        return;
+      }
+
+      res.json({
+        userId: updated.id,
+        ironclawChannel: updated.ironclaw_channel ?? 'skytwin',
       });
     } catch (error) {
       next(error);

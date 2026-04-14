@@ -18,6 +18,8 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
+    "@skytwin/config": "workspace:*",
+    "@skytwin/db": "workspace:*",
     "@skytwin/shared-types": "workspace:*"
   },
   "devDependencies": {

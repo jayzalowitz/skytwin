@@ -4,8 +4,6 @@ import { withRetry, RetryableHttpError, parseRetryAfter } from '@skytwin/core';
 
 const CALENDAR_API = 'https://www.googleapis.com/calendar/v3';
 
-let signalCounter = 0;
-
 interface CalendarEvent {
   id: string;
   summary: string;
@@ -158,9 +156,11 @@ export class GoogleCalendarConnector implements SignalConnector {
   private eventToSignal(event: CalendarEvent, hasConflict: boolean): RawSignal {
     const selfAttendee = event.attendees?.find((a) => a.self);
     const needsResponse = selfAttendee?.responseStatus === 'needsAction';
+    const version = (event.updated ?? event.created ?? event.start.dateTime ?? event.start.date ?? 'unknown')
+      .replace(/[^a-zA-Z0-9]/g, '');
 
     return {
-      id: `sig_cal_${event.id}_${Date.now()}_${signalCounter++}`,
+      id: `sig_cal_${event.id}_${version || 'unknown'}`,
       source: 'google_calendar',
       type: needsResponse ? 'meeting_invite' : 'calendar_event',
       data: {

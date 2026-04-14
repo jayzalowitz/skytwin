@@ -1,5 +1,12 @@
-import type { ExecutionPlan, ExecutionResult, ExecutionStatus, RollbackResult } from '@skytwin/shared-types';
-import type { IronClawExecutor } from './adapter-interface.js';
+import type {
+  CandidateAction,
+  ExecutionPlan,
+  ExecutionResult,
+  ExecutionStatus,
+  ExecutionStep,
+  RollbackResult,
+} from '@skytwin/shared-types';
+import type { IronClawAdapter } from './ironclaw-adapter.js';
 
 /**
  * A log entry recording an operation performed by the mock adapter.
@@ -39,7 +46,7 @@ const DEFAULT_CONFIG: MockAdapterConfig = {
  * - Supports rollback for plans with rollback steps
  * - Logs all operations for inspection
  */
-export class MockIronClawAdapter implements IronClawExecutor {
+export class MockIronClawAdapter implements IronClawAdapter {
   private readonly config: MockAdapterConfig;
   private readonly plans: Map<string, ExecutionResult> = new Map();
   private readonly planData: Map<string, ExecutionPlan> = new Map();
@@ -48,6 +55,41 @@ export class MockIronClawAdapter implements IronClawExecutor {
 
   constructor(config: Partial<MockAdapterConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
+  }
+
+  async buildPlan(action: CandidateAction): Promise<ExecutionPlan> {
+    const planId = (action.parameters['executionPlanId'] as string | undefined)
+      ?? `mock_plan_${action.id}_${Date.now()}`;
+    const step: ExecutionStep = {
+      id: `step_${planId}_1`,
+      order: 1,
+      type: action.actionType,
+      description: action.description,
+      parameters: {
+        ...action.parameters,
+        actionType: action.actionType,
+        domain: action.domain,
+      },
+      timeout: 30_000,
+    };
+
+    return {
+      id: planId,
+      decisionId: action.decisionId,
+      action,
+      steps: [step],
+      rollbackSteps: action.reversible
+        ? [{
+            id: `step_${planId}_rollback_1`,
+            order: 1,
+            type: `rollback_${action.actionType}`,
+            description: `Rollback: ${action.description}`,
+            parameters: { ...action.parameters, originalActionType: action.actionType },
+            timeout: 30_000,
+          }]
+        : [],
+      createdAt: new Date(),
+    };
   }
 
   /**
@@ -218,9 +260,9 @@ export class MockIronClawAdapter implements IronClawExecutor {
   /**
    * Check if the mock service is "healthy".
    */
-  async healthCheck(): Promise<boolean> {
+  async healthCheck(): Promise<{ healthy: boolean; latencyMs: number }> {
     this.log('health_check', null, this.healthy ? 'healthy' : 'unhealthy');
-    return this.healthy;
+    return { healthy: this.healthy, latencyMs: 0 };
   }
 
   // ── Testing helpers ──────────────────────────────────────────────

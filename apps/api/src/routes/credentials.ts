@@ -1,7 +1,13 @@
 import { Router } from 'express';
 import { loadConfig } from '@skytwin/config';
 import { serviceCredentialRepository, credentialRequirementRepository } from '@skytwin/db';
-import { getExecutionRouter } from '../execution-setup.js';
+import {
+  getExecutionRouter,
+  getIronClawEnhancedAdapter,
+  ironClawCredentialName,
+  revokeCredentialFromIronClaw,
+  syncCredentialToIronClaw,
+} from '../execution-setup.js';
 import { sseManager } from '../sse.js';
 
 /**
@@ -319,6 +325,50 @@ export function createCredentialsRouter(): Router {
   });
 
   /**
+   * GET /api/credentials/ironclaw-status
+   *
+   * Compare SkyTwin's stored service credentials with IronClaw's credential
+   * store so the setup page can show sync status.
+   */
+  router.get('/ironclaw-status', async (_req, res, next) => {
+    try {
+      const [rows, adapter] = await Promise.all([
+        serviceCredentialRepository.getAll(),
+        getIronClawEnhancedAdapter(),
+      ]);
+
+      let ironclawCredentials = new Set<string>();
+      let reachable = false;
+      if (adapter) {
+        try {
+          const list = await adapter.listCredentials();
+          ironclawCredentials = new Set(list.map((credential) => credential.name));
+          reachable = true;
+        } catch {
+          reachable = false;
+        }
+      }
+
+      res.json({
+        reachable,
+        credentials: rows.map((row) => {
+          const name = ironClawCredentialName(row.service, row.credential_key);
+          return {
+            service: row.service,
+            credentialKey: row.credential_key,
+            ironclawName: name,
+            synced: Boolean(row.ironclaw_synced_at) && ironclawCredentials.has(name),
+            syncedAt: row.ironclaw_synced_at,
+            presentInIronClaw: ironclawCredentials.has(name),
+          };
+        }),
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /**
    * GET /api/credentials
    *
    * List all stored credentials (values masked for secret fields).
@@ -337,6 +387,30 @@ export function createCredentialsRouter(): Router {
   });
 
   /**
+   * POST /api/credentials/:service/sync
+   *
+   * Manually re-sync one service's stored credentials to IronClaw.
+   */
+  router.post('/:service/sync', async (req, res, next) => {
+    try {
+      const { service } = req.params;
+      const rows = await serviceCredentialRepository.getByService(service);
+      let synced = 0;
+      for (const row of rows) {
+        const ok = await syncCredentialToIronClaw(
+          row.service,
+          row.credential_key,
+          row.credential_value,
+        );
+        if (ok) synced++;
+      }
+      res.json({ service, synced, total: rows.length });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /**
    * GET /api/credentials/:service
    *
    * Get credentials for a specific service (values masked for secret fields).
@@ -344,7 +418,7 @@ export function createCredentialsRouter(): Router {
   router.get('/:service', async (req, res, next) => {
     try {
       const { service } = req.params;
-      if (['status', 'schema', 'requirements', 'unmet'].includes(service)) { next(); return; }
+      if (['status', 'schema', 'requirements', 'unmet', 'ironclaw-status'].includes(service)) { next(); return; }
       const [rows, dynamicSecrets] = await Promise.all([
         serviceCredentialRepository.getByService(service),
         getDynamicSecretKeys(),
@@ -407,10 +481,12 @@ export function createCredentialsRouter(): Router {
           credentialValue: value.trim(),
           label: key,
         });
+        const ironclawSynced = await syncCredentialToIronClaw(service, key, value.trim());
         saved.push({
           service: row.service,
           credentialKey: row.credential_key,
           hasValue: true,
+          ironclawSynced,
         });
       }
 
@@ -429,6 +505,9 @@ export function createCredentialsRouter(): Router {
     try {
       const { service, key } = req.params;
       const deleted = await serviceCredentialRepository.delete(service, key);
+      if (deleted) {
+        await revokeCredentialFromIronClaw(service, key);
+      }
       res.json({ deleted, service, key });
     } catch (error) {
       next(error);

@@ -13,6 +13,10 @@ const {
   mockLoadConfig,
   mockSseManager,
   mockGetExecutionRouter,
+  mockGetIronClawEnhancedAdapter,
+  mockIronClawCredentialName,
+  mockRevokeCredentialFromIronClaw,
+  mockSyncCredentialToIronClaw,
 } = vi.hoisted(() => ({
   mockServiceCredentialRepository: {
     getAll: vi.fn(),
@@ -34,6 +38,10 @@ const {
     emitAll: vi.fn(),
   },
   mockGetExecutionRouter: vi.fn(),
+  mockGetIronClawEnhancedAdapter: vi.fn(),
+  mockIronClawCredentialName: vi.fn((service: string, credentialKey: string) => `${service}.${credentialKey}`),
+  mockRevokeCredentialFromIronClaw: vi.fn(),
+  mockSyncCredentialToIronClaw: vi.fn(),
 }));
 
 vi.mock('@skytwin/db', () => ({
@@ -51,6 +59,10 @@ vi.mock('../sse.js', () => ({
 
 vi.mock('../execution-setup.js', () => ({
   getExecutionRouter: mockGetExecutionRouter,
+  getIronClawEnhancedAdapter: mockGetIronClawEnhancedAdapter,
+  ironClawCredentialName: mockIronClawCredentialName,
+  revokeCredentialFromIronClaw: mockRevokeCredentialFromIronClaw,
+  syncCredentialToIronClaw: mockSyncCredentialToIronClaw,
 }));
 
 // ---------------------------------------------------------------------------
@@ -179,6 +191,9 @@ describe('Credentials API routes', () => {
     vi.clearAllMocks();
     // Default: no dynamic credential requirements (used by maskRow's secret detection)
     mockCredentialRequirementRepository.getAll.mockResolvedValue([]);
+    mockGetIronClawEnhancedAdapter.mockResolvedValue(null);
+    mockRevokeCredentialFromIronClaw.mockResolvedValue(false);
+    mockSyncCredentialToIronClaw.mockResolvedValue(false);
     app = buildApp();
   });
 

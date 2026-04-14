@@ -207,21 +207,19 @@ export function createUsersRouter(): Router {
       const prefs = body.preferences.slice(0, MAX_SEED_PREFERENCES);
 
       const validPrefs = prefs.filter((pref) => pref.domain && pref.key);
-      await Promise.all(
-        validPrefs.map((pref) =>
-          twinService.updatePreference(resolvedId, {
-            id: `pref_seed_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
-            domain: pref.domain,
-            key: pref.key,
-            value: pref.value,
-            confidence: ConfidenceLevel.HIGH,
-            source: 'explicit',
-            evidenceIds: [],
-            createdAt: new Date(),
-            updatedAt: new Date(),
-          }),
-        ),
-      );
+      for (const pref of validPrefs) {
+        await twinService.updatePreference(resolvedId, {
+          id: `pref_seed_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+          domain: pref.domain,
+          key: pref.key,
+          value: pref.value,
+          confidence: ConfidenceLevel.HIGH,
+          source: 'explicit',
+          evidenceIds: [],
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+      }
 
       res.json({ seeded: validPrefs.length });
     } catch (error) {

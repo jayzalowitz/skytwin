@@ -2,6 +2,7 @@ import type {
   CandidateAction,
   ExecutionPlan,
   ExecutionResult,
+  ExecutionStatus,
   ExecutionStep,
   RollbackResult,
 } from '@skytwin/shared-types';
@@ -132,6 +133,7 @@ export class OpenClawAdapter implements IronClawAdapter {
   private readonly apiUrl: string | null;
   private readonly apiKey: string | null;
   private readonly executedPlans = new Map<string, ExecutionPlan>();
+  private readonly executionResults = new Map<string, ExecutionResult>();
   private readonly onCredentialNeeded: OnCredentialNeeded | null;
 
   constructor(config?: { apiUrl?: string; apiKey?: string; onCredentialNeeded?: OnCredentialNeeded }) {
@@ -141,7 +143,8 @@ export class OpenClawAdapter implements IronClawAdapter {
   }
 
   async buildPlan(action: CandidateAction): Promise<ExecutionPlan> {
-    const planId = `openclaw_plan_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    const planId = (action.parameters['executionPlanId'] as string | undefined)
+      ?? `openclaw_plan_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
     const now = new Date();
 
     const step: ExecutionStep = {
@@ -190,6 +193,7 @@ export class OpenClawAdapter implements IronClawAdapter {
   async execute(plan: ExecutionPlan): Promise<ExecutionResult> {
     this.executedPlans.set(plan.id, plan);
     const startedAt = new Date();
+    this.executionResults.set(plan.id, { planId: plan.id, status: 'running', startedAt });
 
     // If a server is configured, send the request
     if (this.apiUrl) {
@@ -220,13 +224,13 @@ export class OpenClawAdapter implements IronClawAdapter {
         });
 
         if (!response.ok) {
-          return {
+          return this.recordExecutionResult({
             planId: plan.id,
             status: 'failed',
             startedAt,
             completedAt: new Date(),
             error: `OpenClaw returned ${response.status}: ${await response.text()}`,
-          };
+          });
         }
 
         const result = await response.json() as Record<string, unknown>;
@@ -246,7 +250,7 @@ export class OpenClawAdapter implements IronClawAdapter {
             // Don't let callback errors block the response
           }
 
-          return {
+          return this.recordExecutionResult({
             planId: plan.id,
             status: 'failed',
             startedAt,
@@ -257,10 +261,10 @@ export class OpenClawAdapter implements IronClawAdapter {
               credential_required: true,
               integration: credReq['integration'],
             },
-          };
+          });
         }
 
-        return {
+        return this.recordExecutionResult({
           planId: plan.id,
           status: 'completed',
           startedAt,
@@ -272,15 +276,15 @@ export class OpenClawAdapter implements IronClawAdapter {
             description: plan.action.description,
             ...(result as Record<string, unknown>),
           },
-        };
+        });
       } catch (err) {
-        return {
+        return this.recordExecutionResult({
           planId: plan.id,
           status: 'failed',
           startedAt,
           completedAt: new Date(),
           error: `OpenClaw execution error: ${err instanceof Error ? err.message : String(err)}`,
-        };
+        });
       }
     }
 
@@ -289,6 +293,39 @@ export class OpenClawAdapter implements IronClawAdapter {
       `OpenClaw not configured: set OPENCLAW_API_URL to enable. ` +
       `Cannot execute ${plan.action.actionType} (plan ${plan.id})`,
     );
+  }
+
+  async getStatus(planId: string): Promise<ExecutionStatus> {
+    if (this.apiUrl) {
+      try {
+        const response = await fetch(`${this.apiUrl}/status/${encodeURIComponent(planId)}`, {
+          method: 'GET',
+          headers: {
+            ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
+          },
+          signal: AbortSignal.timeout(5000),
+        });
+
+        if (response.ok) {
+          const payload = await response.json() as Record<string, unknown>;
+          const rawStatus = payload['status'];
+          if (
+            rawStatus === 'pending' ||
+            rawStatus === 'running' ||
+            rawStatus === 'completed' ||
+            rawStatus === 'failed'
+          ) {
+            return rawStatus;
+          }
+        }
+      } catch {
+        // Fall back to local cache below.
+      }
+    }
+
+    const cached = this.executionResults.get(planId);
+    if (cached) return cached.status;
+    throw new Error(`No execution result found for plan ID: ${planId}`);
   }
 
   async rollback(planId: string): Promise<RollbackResult> {
@@ -377,5 +414,10 @@ export class OpenClawAdapter implements IronClawAdapter {
     } catch {
       return { healthy: false, latencyMs: Date.now() - start };
     }
+  }
+
+  private recordExecutionResult(result: ExecutionResult): ExecutionResult {
+    this.executionResults.set(result.planId, result);
+    return result;
   }
 }

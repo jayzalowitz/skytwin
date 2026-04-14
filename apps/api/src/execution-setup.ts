@@ -11,8 +11,10 @@ import {
   SocialActionHandler,
   DocumentActionHandler,
   HealthActionHandler,
+  DbCredentialProvider,
+  isIronClawEnhancedAdapter,
 } from '@skytwin/ironclaw-adapter';
-import type { IronClawAdapter } from '@skytwin/ironclaw-adapter';
+import type { IronClawAdapter, IronClawEnhancedAdapter } from '@skytwin/ironclaw-adapter';
 import {
   ExecutionRouter,
   AdapterRegistry,
@@ -24,7 +26,7 @@ import {
   discoverAdapters,
 } from '@skytwin/execution-router';
 import type { OpenClawCredentialRequirement } from '@skytwin/execution-router';
-import { credentialRequirementRepository } from '@skytwin/db';
+import { credentialRequirementRepository, ironClawToolRepository, serviceCredentialRepository } from '@skytwin/db';
 import { sseManager } from './sse.js';
 
 /**
@@ -47,9 +49,18 @@ export async function createExecutionRouter(): Promise<ExecutionRouter> {
     const ironclawAdapter: IronClawAdapter = new RealIronClawAdapter({
       apiUrl: config.ironclawApiUrl,
       webhookSecret: config.ironclawWebhookSecret,
+      gatewayToken: config.ironclawGatewayToken,
       ownerId: config.ironclawOwnerId,
+      defaultChannel: config.ironclawDefaultChannel,
+      preferChatCompletions: config.ironclawPreferChat,
     });
-    registry.register('ironclaw', ironclawAdapter, IRONCLAW_TRUST_PROFILE);
+    const ironclawSkills = isIronClawEnhancedAdapter(ironclawAdapter)
+      ? await refreshIronClawToolCache(ironclawAdapter)
+      : new Set<string>();
+    registry.register('ironclaw', ironclawAdapter, IRONCLAW_TRUST_PROFILE, ironclawSkills);
+    if (isIronClawEnhancedAdapter(ironclawAdapter)) {
+      await syncUnsyncedCredentialsToIronClaw(ironclawAdapter);
+    }
     console.info('[execution] Registered IronClaw adapter:', config.ironclawApiUrl);
   } else {
     console.info('[execution] IronClaw not configured (no URL or secret) — skipping');
@@ -57,8 +68,9 @@ export async function createExecutionRouter(): Promise<ExecutionRouter> {
 
   // Direct — local handler dispatch, always available
   const handlerRegistry = new ActionHandlerRegistry();
-  handlerRegistry.register(new EmailActionHandler());
-  handlerRegistry.register(new CalendarActionHandler());
+  const credentialProvider = new DbCredentialProvider();
+  handlerRegistry.register(new EmailActionHandler(credentialProvider));
+  handlerRegistry.register(new CalendarActionHandler(credentialProvider));
   handlerRegistry.register(new FinanceActionHandler());
   handlerRegistry.register(new TaskActionHandler());
   handlerRegistry.register(new SmartHomeActionHandler());
@@ -114,6 +126,100 @@ export async function createExecutionRouter(): Promise<ExecutionRouter> {
   }
 
   return new ExecutionRouter(registry);
+}
+
+export async function getIronClawEnhancedAdapter(): Promise<IronClawEnhancedAdapter | null> {
+  const router = await getExecutionRouter();
+  const entry = router.getRegistry().get('ironclaw');
+  if (!entry || !isIronClawEnhancedAdapter(entry.adapter)) return null;
+  return entry.adapter;
+}
+
+export function ironClawCredentialName(service: string, credentialKey: string): string {
+  return `${service}.${credentialKey}`;
+}
+
+export async function syncUnsyncedCredentialsToIronClaw(
+  adapter: IronClawEnhancedAdapter,
+): Promise<void> {
+  let configured = new Set<string>();
+  try {
+    configured = new Set((await adapter.listCredentials()).map((credential) => credential.name));
+  } catch (error) {
+    console.warn('[execution] Could not list IronClaw credentials before sync:', error instanceof Error ? error.message : String(error));
+  }
+
+  const unsynced = await serviceCredentialRepository.getUnsyncedCredentials().catch(() => []);
+  for (const credential of unsynced) {
+    const name = ironClawCredentialName(credential.service, credential.credential_key);
+    try {
+      if (!configured.has(name)) {
+        await adapter.registerCredential(name, credential.credential_value);
+      }
+      await serviceCredentialRepository.markSynced(credential.service, credential.credential_key);
+    } catch (error) {
+      console.warn(`[execution] Failed to sync credential ${name} to IronClaw:`, error instanceof Error ? error.message : String(error));
+    }
+  }
+}
+
+export async function syncCredentialToIronClaw(
+  service: string,
+  credentialKey: string,
+  credentialValue: string,
+): Promise<boolean> {
+  const adapter = await getIronClawEnhancedAdapter();
+  if (!adapter) return false;
+
+  const name = ironClawCredentialName(service, credentialKey);
+  try {
+    await adapter.registerCredential(name, credentialValue);
+    await serviceCredentialRepository.markSynced(service, credentialKey);
+    return true;
+  } catch (error) {
+    console.warn(`[execution] Failed to sync credential ${name} to IronClaw:`, error instanceof Error ? error.message : String(error));
+    return false;
+  }
+}
+
+export async function revokeCredentialFromIronClaw(
+  service: string,
+  credentialKey: string,
+): Promise<boolean> {
+  const adapter = await getIronClawEnhancedAdapter();
+  if (!adapter) return false;
+
+  try {
+    await adapter.revokeCredential(ironClawCredentialName(service, credentialKey));
+    return true;
+  } catch (error) {
+    console.warn(`[execution] Failed to revoke credential ${service}.${credentialKey} from IronClaw:`, error instanceof Error ? error.message : String(error));
+    return false;
+  }
+}
+
+export async function refreshIronClawToolCache(
+  adapter?: IronClawEnhancedAdapter,
+): Promise<Set<string>> {
+  const enhanced = adapter ?? await getIronClawEnhancedAdapter();
+  if (!enhanced) return await ironClawToolRepository.getSkillSet().catch(() => new Set<string>());
+
+  try {
+    const tools = await enhanced.discoverTools();
+    if (tools.length > 0) {
+      await ironClawToolRepository.upsertMany(tools.map((tool) => ({
+        toolName: tool.name,
+        description: tool.description,
+        actionTypes: tool.actionTypes,
+        requiresCredentials: tool.requiresCredentials,
+      })));
+      return new Set(tools.flatMap((tool) => tool.actionTypes));
+    }
+  } catch (error) {
+    console.warn('[execution] IronClaw tool discovery failed, using cache if available:', error instanceof Error ? error.message : String(error));
+  }
+
+  return await ironClawToolRepository.getSkillSet().catch(() => new Set<string>());
 }
 
 /**

@@ -42,6 +42,17 @@ export interface ExecutionResult {
 export type ExecutionStatus = 'pending' | 'running' | 'completed' | 'failed';
 
 /**
+ * Event emitted while an execution plan is running.
+ */
+export interface ExecutionEvent {
+  planId: string;
+  stepId?: string;
+  eventType: 'plan_started' | 'step_started' | 'step_completed' | 'step_failed' | 'plan_completed' | 'plan_failed';
+  timestamp: Date;
+  payload?: Record<string, unknown>;
+}
+
+/**
  * Result of a rollback attempt.
  */
 export interface RollbackResult {
@@ -67,4 +78,40 @@ export interface StepResult {
   success: boolean;
   output?: Record<string, unknown>;
   error?: string;
+}
+
+export interface ChatMessage {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+}
+
+export interface ChatCompletionResponse {
+  content: string;
+  model: string;
+  usage: {
+    promptTokens: number;
+    completionTokens: number;
+  };
+  metadata?: Record<string, unknown>;
+}
+
+export interface ChatCompletionChunk {
+  delta: string;
+  finished: boolean;
+}
+
+export interface IronClawToolManifest {
+  name: string;
+  description: string;
+  actionTypes: string[];
+  requiresCredentials: string[];
+}
+
+export interface IronClawRoutine {
+  id: string;
+  schedule: string;
+  planSummary: string;
+  lastRunAt?: Date;
+  nextRunAt?: Date;
+  enabled: boolean;
 }

@@ -14,6 +14,15 @@ export interface SkyTwinConfig {
   /** Owner ID for IronClaw's multi-tenant model */
   ironclawOwnerId: string;
 
+  /** Bearer token for IronClaw's gateway/chat-compatible endpoints */
+  ironclawGatewayToken: string;
+
+  /** Prefer IronClaw's OpenAI-compatible chat completions endpoint */
+  ironclawPreferChat: boolean;
+
+  /** Default IronClaw channel for execution routing */
+  ironclawDefaultChannel: string;
+
   /** OpenClaw API base URL */
   openclawApiUrl: string;
 
@@ -93,6 +102,9 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     ironclawApiUrl: env['IRONCLAW_API_URL'] ?? 'http://localhost:4000',
     ironclawWebhookSecret: env['IRONCLAW_WEBHOOK_SECRET'] ?? '',
     ironclawOwnerId: env['IRONCLAW_OWNER_ID'] ?? 'skytwin-default',
+    ironclawGatewayToken: env['IRONCLAW_GATEWAY_TOKEN'] ?? env['GATEWAY_AUTH_TOKEN'] ?? '',
+    ironclawPreferChat: (env['IRONCLAW_PREFER_CHAT'] ?? 'false') === 'true',
+    ironclawDefaultChannel: env['IRONCLAW_DEFAULT_CHANNEL'] ?? env['IRONCLAW_CHANNEL'] ?? 'skytwin',
     apiPort: parseInt(rawPort, 10),
     nodeEnv: isNodeEnv(rawNodeEnv) ? rawNodeEnv : 'development',
     logLevel: isLogLevel(rawLogLevel) ? rawLogLevel : 'info',

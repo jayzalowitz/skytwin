@@ -1,4 +1,4 @@
-import { fetchUser, updateTrustTier, fetchOAuthStatus, getGoogleAuthUrl, disconnectProvider, escapeHtml, fetchSettings, updateAutonomySettings, upsertDomainPolicy, deleteDomainPolicy, createEscalationTrigger, deleteEscalationTrigger, createSession, fetchSessions, revokeSession, saveAIProviders, testAIProvider } from '../api-client.js';
+import { fetchUser, updateTrustTier, fetchOAuthStatus, getGoogleAuthUrl, disconnectProvider, escapeHtml, fetchSettings, updateAutonomySettings, updateIronClawChannel, upsertDomainPolicy, deleteDomainPolicy, createEscalationTrigger, deleteEscalationTrigger, createSession, fetchSessions, revokeSession, saveAIProviders, testAIProvider, fetchRoutines, deleteRoutine } from '../api-client.js';
 
 const TIERS = [
   { value: 'observer', name: 'Just watch', desc: 'Your assistant watches but never does anything. Good for seeing what it would do.' },
@@ -13,18 +13,21 @@ export async function renderSettings(container, userId) {
   let googleStatus = null;
   let settings = null;
   let sessions = [];
+  let routines = [];
 
   try {
-    const [userResult, oauthResult, settingsResult, sessionsResult] = await Promise.allSettled([
+    const [userResult, oauthResult, settingsResult, sessionsResult, routinesResult] = await Promise.allSettled([
       fetchUser(userId),
       fetchOAuthStatus(userId, 'google'),
       fetchSettings(userId),
       fetchSessions(userId),
+      fetchRoutines(userId),
     ]);
     user = userResult.status === 'fulfilled' ? userResult.value?.user : null;
     googleStatus = oauthResult.status === 'fulfilled' ? oauthResult.value : null;
     settings = settingsResult.status === 'fulfilled' ? settingsResult.value : null;
     sessions = sessionsResult.status === 'fulfilled' ? (sessionsResult.value?.sessions ?? []) : [];
+    routines = routinesResult.status === 'fulfilled' ? (routinesResult.value?.routines ?? []) : [];
   } catch { /* empty */ }
 
   const currentTier = user?.trust_tier ?? 'suggest';
@@ -33,6 +36,8 @@ export async function renderSettings(container, userId) {
   const escalationTriggers = settings?.escalationTriggers ?? [];
   const autonomy = settings?.autonomySettings ?? {};
   const aiProviders = settings?.aiProviders ?? [];
+  const ironclawChannel = settings?.ironclawChannel ?? 'skytwin';
+  const ironclawChannels = settings?.ironclawChannels ?? ['skytwin', 'telegram', 'discord', 'slack', 'signal'];
 
   // Check for ?connected= query param after OAuth redirect
   const params = new URLSearchParams(window.location.hash.split('?')[1] || '');
@@ -124,6 +129,40 @@ export async function renderSettings(container, userId) {
         <div style="font-size: 0.75rem; color: var(--text-dim);">If all providers fail, your twin falls back to built-in rules automatically.</div>
         <button id="save-ai-btn" class="btn btn-primary btn-sm" onclick="saveAIProvidersHandler('${escapeHtml(userId)}')">Save</button>
       </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">IronClaw channel</span>
+      </div>
+      <div class="card-subtitle" style="margin-bottom: 1rem;">
+        Choose where IronClaw should route action execution.
+      </div>
+      <div style="display: flex; gap: 0.5rem; align-items: center;">
+        <select class="form-input" id="ironclaw-channel-select" style="flex: 1;">
+          ${ironclawChannels.map(channel => `<option value="${escapeHtml(channel)}" ${channel === ironclawChannel ? 'selected' : ''}>${escapeHtml(channel)}</option>`).join('')}
+        </select>
+        <button class="btn btn-primary btn-sm" onclick="saveIronClawChannel('${escapeHtml(userId)}')">Save</button>
+      </div>
+      <div id="ironclaw-channel-status" style="font-size: 0.8rem; margin-top: 0.5rem;"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Routines</span>
+      </div>
+      <div class="card-subtitle" style="margin-bottom: 1rem;">
+        Scheduled actions delegated to IronClaw.
+      </div>
+      ${routines.length > 0 ? routines.map(routine => `
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; padding: 0.5rem 0.75rem; background: var(--bg); border-radius: var(--radius-sm); margin-bottom: 0.5rem;">
+          <div style="min-width: 0;">
+            <div style="font-weight: 600; font-size: 0.9rem;">${escapeHtml(routine.planSummary || routine.id)}</div>
+            <div style="font-size: 0.8rem; color: var(--text-muted);">${escapeHtml(routine.schedule)}${routine.nextRunAt ? ` · next ${formatRelativeTime(routine.nextRunAt)}` : ''}</div>
+          </div>
+          <button class="btn btn-outline btn-sm" onclick="deleteRoutineHandler('${escapeHtml(routine.id)}', '${escapeHtml(userId)}')">Delete</button>
+        </div>
+      `).join('') : '<div style="font-size: 0.85rem; color: var(--text-muted); padding: 0.75rem; background: var(--bg); border-radius: var(--radius-sm);">No routines scheduled.</div>'}
     </div>
 
     <div class="card">
@@ -397,6 +436,30 @@ window.saveSpendLimits = async function(userId) {
       maxDailySpendCents: parseInt(document.getElementById('max-daily').value, 10),
       requireApprovalForIrreversible: document.getElementById('irreversible-approval').checked,
     });
+    const { renderSettings } = await import('./settings.js');
+    await renderSettings(document.getElementById('page-content'), userId);
+  } catch (err) {
+    document.getElementById('page-content').insertAdjacentHTML(
+      'afterbegin',
+      `<div class="error-banner">${escapeHtml(err.message)}</div>`,
+    );
+  }
+};
+
+window.saveIronClawChannel = async function(userId) {
+  const select = document.getElementById('ironclaw-channel-select');
+  const status = document.getElementById('ironclaw-channel-status');
+  try {
+    await updateIronClawChannel(userId, select.value);
+    status.innerHTML = '<span style="color: var(--success);">Saved</span>';
+  } catch (err) {
+    status.innerHTML = `<span style="color: var(--danger);">${escapeHtml(err.message)}</span>`;
+  }
+};
+
+window.deleteRoutineHandler = async function(routineId, userId) {
+  try {
+    await deleteRoutine(routineId, userId);
     const { renderSettings } = await import('./settings.js');
     await renderSettings(document.getElementById('page-content'), userId);
   } catch (err) {

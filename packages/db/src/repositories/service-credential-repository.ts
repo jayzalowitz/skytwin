@@ -36,6 +36,7 @@ export const serviceCredentialRepository = {
        ON CONFLICT (service, credential_key) DO UPDATE SET
          credential_value = EXCLUDED.credential_value,
          label = COALESCE(EXCLUDED.label, service_credentials.label),
+         ironclaw_synced_at = NULL,
          updated_at = now()
        RETURNING *`,
       [input.service, input.credentialKey, input.credentialValue, input.label ?? null],
@@ -63,6 +64,26 @@ export const serviceCredentialRepository = {
       'SELECT * FROM service_credentials ORDER BY service, credential_key',
     );
     return result.rows;
+  },
+
+  async getUnsyncedCredentials(): Promise<ServiceCredentialRow[]> {
+    const result = await query<ServiceCredentialRow>(
+      `SELECT * FROM service_credentials
+       WHERE ironclaw_synced_at IS NULL
+       ORDER BY service, credential_key`,
+    );
+    return result.rows;
+  },
+
+  async markSynced(service: string, credentialKey: string, syncedAt: Date = new Date()): Promise<ServiceCredentialRow | null> {
+    const result = await query<ServiceCredentialRow>(
+      `UPDATE service_credentials
+       SET ironclaw_synced_at = $1, updated_at = now()
+       WHERE service = $2 AND credential_key = $3
+       RETURNING *`,
+      [syncedAt, service, credentialKey],
+    );
+    return result.rows[0] ?? null;
   },
 
   /**

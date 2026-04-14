@@ -233,6 +233,9 @@ export function createApprovalsRouter(): Router {
         // Run policy check even on approved actions (spend limits, domain restrictions still apply)
         const user = await userRepository.findById(body.userId);
         const userTier = user?.trust_tier as TrustTier ?? TrustTier.OBSERVER;
+        if (user?.ironclaw_channel) {
+          candidateAction.parameters['ironclawChannel'] = user.ironclaw_channel;
+        }
         const policies = await policyRepositoryAdapter.getAllPolicies();
         const policyResult = await policyEvaluator.evaluate(
           candidateAction,
@@ -283,8 +286,8 @@ export function createApprovalsRouter(): Router {
           // Persist execution plan + result atomically
           const savedPlan = await withTransaction(async (client) => {
             const planResult = await client.query(
-              `INSERT INTO execution_plans (id, decision_id, status, steps, created_at)
-               VALUES (gen_random_uuid(), $1, $2, $3, now())
+              `INSERT INTO execution_plans (id, decision_id, action_id, status, steps, created_at)
+               VALUES (gen_random_uuid(), $1, NULL, $2, $3, now())
                RETURNING *`,
               [
                 approval.decision_id,
@@ -298,7 +301,7 @@ export function createApprovalsRouter(): Router {
             if (!plan) throw new Error('Failed to persist execution plan');
 
             await client.query(
-              `INSERT INTO execution_results (id, plan_id, success, outputs, error, rollback_available, created_at)
+              `INSERT INTO execution_results (id, plan_id, success, outputs, error, rollback_available, completed_at)
                VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, now())`,
               [
                 plan.id,
@@ -326,15 +329,15 @@ export function createApprovalsRouter(): Router {
           try {
             const failedPlan = await withTransaction(async (client) => {
               const planResult = await client.query(
-                `INSERT INTO execution_plans (id, decision_id, status, steps, created_at)
-                 VALUES (gen_random_uuid(), $1, 'failed', $2, now())
+                `INSERT INTO execution_plans (id, decision_id, action_id, status, steps, created_at)
+                 VALUES (gen_random_uuid(), $1, NULL, 'failed', $2, now())
                  RETURNING *`,
                 [approval.decision_id, JSON.stringify([{ type: candidateAction.actionType, status: 'error' }])],
               );
               const plan = planResult.rows[0];
               if (!plan) throw new Error('Failed to persist failed execution plan');
               await client.query(
-                `INSERT INTO execution_results (id, plan_id, success, outputs, error, rollback_available, created_at)
+                `INSERT INTO execution_results (id, plan_id, success, outputs, error, rollback_available, completed_at)
                  VALUES (gen_random_uuid(), $1, false, '{}', $2, $3, now())`,
                 [plan.id, errMsg, candidateAction.reversible],
               );

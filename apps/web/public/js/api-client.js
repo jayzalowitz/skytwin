@@ -176,6 +176,13 @@ export function updateAutonomySettings(userId, settings) {
   });
 }
 
+export function updateIronClawChannel(userId, ironclawChannel) {
+  return fetchJSON(`${API}/settings/${userId}/ironclaw-channel`, {
+    method: 'PUT',
+    body: JSON.stringify({ ironclawChannel }),
+  });
+}
+
 export function upsertDomainPolicy(userId, domain, trustTier, maxSpendPerActionCents) {
   return fetchJSON(`${API}/settings/${userId}/domains/${encodeURIComponent(domain)}`, {
     method: 'PUT',
@@ -259,4 +266,23 @@ export function fetchSkillGaps(userId) {
 
 export function fetchUnmetCredentials() {
   return fetchJSON(`${API}/credentials/unmet`);
+}
+
+// ── IronClaw Routines ─────────────────────────────────
+
+export function fetchRoutines(userId) {
+  return fetchJSON(`${API}/routines/${encodeURIComponent(userId)}`);
+}
+
+export function createRoutine(userId, schedule, plan) {
+  return fetchJSON(`${API}/routines`, {
+    method: 'POST',
+    body: JSON.stringify({ userId, schedule, plan }),
+  });
+}
+
+export function deleteRoutine(routineId, userId) {
+  return fetchJSON(`${API}/routines/${encodeURIComponent(routineId)}?userId=${encodeURIComponent(userId)}`, {
+    method: 'DELETE',
+  });
 }

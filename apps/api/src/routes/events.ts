@@ -23,7 +23,7 @@ import {
   explanationRepositoryAdapter,
   policyRepositoryAdapter,
 } from '@skytwin/db';
-import type { DecisionContext, RiskAssessment, DimensionAssessment } from '@skytwin/shared-types';
+import type { DecisionContext, ExecutionEvent, RiskAssessment, DimensionAssessment } from '@skytwin/shared-types';
 import { SituationType, TrustTier, RiskTier, RiskDimension } from '@skytwin/shared-types';
 import type { AIProviderName } from '@skytwin/shared-types';
 import { LlmClient } from '@skytwin/llm-client';
@@ -241,35 +241,63 @@ export function createEventsRouter(): Router {
           assessedAt: new Date(),
         };
 
-        // Execute via the trust-ranked execution router (IronClaw > Direct > OpenClaw)
-        const executionRouter = await getRouter();
-        const result = await executionRouter.executeWithRouting(
-          outcome.selectedAction,
-          riskAssessment,
-          userId,
-        );
-
-        // Persist execution plan and result (include steps for rollback support)
+        // Persist the DB execution plan before routing so streaming events can
+        // reference it via execution_events.plan_id.
         const savedPlan = await executionRepository.createPlan({
           decisionId: decision.id,
           actionId: outcome.selectedAction.id,
-          status: result.status === 'completed' ? 'completed' : 'failed',
-          steps: result.output?.['stepsCompleted']
-            ? [{ type: outcome.selectedAction.actionType, status: result.status }]
-            : [],
+          status: 'running',
+          steps: [{ type: outcome.selectedAction.actionType, status: 'pending' }],
         });
+        outcome.selectedAction.parameters['executionPlanId'] = savedPlan.id;
+        if (user?.ironclaw_channel) {
+          outcome.selectedAction.parameters['ironclawChannel'] = user.ironclaw_channel;
+        }
+
+        // Execute via the trust-ranked execution router (IronClaw > Direct > OpenClaw)
+        const executionRouter = await getRouter();
+        let terminalEvent: ExecutionEvent | null = null;
+        let terminalStatus: 'completed' | 'failed' = 'failed';
+        let terminalPayload: Record<string, unknown> = {};
+
+        for await (const event of executionRouter.executeWithRoutingStreaming(
+          outcome.selectedAction,
+          riskAssessment,
+          userId,
+        )) {
+          terminalPayload = event.payload ?? terminalPayload;
+          await executionRepository.createEvent({
+            planId: savedPlan.id,
+            stepId: event.stepId,
+            eventType: event.eventType,
+            payload: event.payload ?? {},
+          });
+          sseManager.emit(userId, 'decision:step', {
+            decisionId: decision.id,
+            actionType: outcome.selectedAction.actionType,
+            description: outcome.selectedAction.description,
+            ...event,
+          });
+
+          if (event.eventType === 'plan_completed' || event.eventType === 'plan_failed') {
+            terminalEvent = event;
+            terminalStatus = event.eventType === 'plan_completed' ? 'completed' : 'failed';
+          }
+        }
+
+        await executionRepository.updatePlanStatus(savedPlan.id, terminalStatus);
         await executionRepository.createResult({
           planId: savedPlan.id,
-          success: result.status === 'completed',
-          outputs: result.output ?? {},
-          error: result.error ?? undefined,
+          success: terminalStatus === 'completed',
+          outputs: terminalPayload,
+          error: typeof terminalPayload['error'] === 'string' ? terminalPayload['error'] : undefined,
           rollbackAvailable: outcome.selectedAction.reversible,
         });
 
         executionResult = {
-          status: result.status,
+          status: terminalStatus,
           planId: savedPlan.id,
-          adapterUsed: result.output?.['adapter_used'] ?? 'unknown',
+          adapterUsed: terminalPayload['adapter_used'] ?? 'unknown',
         };
 
         // Notify via SSE
@@ -277,7 +305,8 @@ export function createEventsRouter(): Router {
           decisionId: decision.id,
           actionType: outcome.selectedAction.actionType,
           description: outcome.selectedAction.description,
-          status: result.status,
+          status: terminalStatus,
+          eventType: terminalEvent?.eventType,
         });
       }
 

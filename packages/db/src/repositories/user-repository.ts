@@ -131,6 +131,20 @@ export const userRepository = {
     return result.rows[0] ?? null;
   },
 
+  async updateIronClawChannel(
+    id: string,
+    channel: string,
+  ): Promise<UserRow | null> {
+    const result = await query<UserRow>(
+      `UPDATE users
+       SET ironclaw_channel = $1, updated_at = now()
+       WHERE id = $2
+       RETURNING *`,
+      [channel, id],
+    );
+    return result.rows[0] ?? null;
+  },
+
   /**
    * Delete a user and all related data within a transaction.
    */
@@ -142,6 +156,14 @@ export const userRepository = {
       await client.query(
         `DELETE FROM explanation_records WHERE decision_id IN
          (SELECT id FROM decisions WHERE user_id = $1)`,
+        [id],
+      );
+      await client.query(
+        `DELETE FROM execution_events WHERE plan_id IN
+         (SELECT ep.id FROM execution_plans ep
+          JOIN candidate_actions ca ON ep.action_id = ca.id
+          JOIN decisions d ON ca.decision_id = d.id
+          WHERE d.user_id = $1)`,
         [id],
       );
       await client.query(

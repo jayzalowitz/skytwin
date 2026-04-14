@@ -189,6 +189,9 @@ importers:
       '@skytwin/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@skytwin/ironclaw-adapter':
+        specifier: workspace:*
+        version: link:../../packages/ironclaw-adapter
       '@skytwin/shared-types':
         specifier: workspace:*
         version: link:../../packages/shared-types
@@ -365,6 +368,12 @@ importers:
 
   packages/ironclaw-adapter:
     dependencies:
+      '@skytwin/config':
+        specifier: workspace:*
+        version: link:../config
+      '@skytwin/db':
+        specifier: workspace:*
+        version: link:../db
       '@skytwin/shared-types':
         specifier: workspace:*
         version: link:../shared-types

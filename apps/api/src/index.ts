@@ -20,6 +20,7 @@ import { requireOwnership } from './middleware/require-ownership.js';
 import { createPoliciesRouter } from './routes/policies.js';
 import { createMempalaceRouter } from './routes/mempalace.js';
 import { createCredentialsRouter } from './routes/credentials.js';
+import { createRoutinesRouter } from './routes/routines.js';
 import { getExecutionRouter } from './execution-setup.js';
 import { startMdnsAdvertisement, stopMdnsAdvertisement } from './mdns.js';
 import { closePool } from '@skytwin/db';
@@ -110,6 +111,7 @@ app.use('/api/audit', sessionAuth, requireOwnership, createAuditRouter());
 app.use('/api/policies', sessionAuth, requireOwnership, createPoliciesRouter());
 app.use('/api/mempalace', sessionAuth, requireOwnership, createMempalaceRouter());
 app.use('/api/credentials', sessionAuth, createCredentialsRouter());
+app.use('/api/routines', sessionAuth, requireOwnership, createRoutinesRouter());
 
 // Error handling middleware
 app.use(

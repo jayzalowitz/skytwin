@@ -1,4 +1,5 @@
 import type { ActionHandler, ExecutionStep, StepResult } from '@skytwin/shared-types';
+import type { CredentialProvider } from '../credential-provider.js';
 
 const GMAIL_API = 'https://gmail.googleapis.com/gmail/v1';
 
@@ -10,18 +11,17 @@ export class EmailActionHandler implements ActionHandler {
   readonly actionType = 'email';
   readonly domain = 'email';
 
+  constructor(private readonly credentialProvider?: CredentialProvider) {}
+
   canHandle(actionType: string): boolean {
     return ['archive_email', 'label_email', 'send_reply', 'delete_email'].includes(actionType);
   }
 
   async execute(step: ExecutionStep): Promise<StepResult> {
     const actionType = (step.parameters['actionType'] as string) ?? step.type;
-    const accessToken = step.parameters['accessToken'] as string | undefined;
+    const accessToken = await this.resolveAccessToken(step);
     const messageId = step.parameters['emailId'] as string | undefined;
 
-    if (!accessToken) {
-      throw new Error('Missing accessToken — no OAuth token available for Gmail. Falling back to next adapter.');
-    }
     if (!messageId) {
       throw new Error('Missing emailId in step parameters');
     }
@@ -50,11 +50,11 @@ export class EmailActionHandler implements ActionHandler {
 
   async rollback(step: ExecutionStep): Promise<StepResult> {
     const originalAction = (step.parameters['originalActionType'] as string) ?? step.type;
-    const accessToken = step.parameters['accessToken'] as string | undefined;
+    const accessToken = await this.resolveAccessToken(step);
     const messageId = step.parameters['emailId'] as string | undefined;
 
-    if (!accessToken || !messageId) {
-      return { success: false, error: 'Missing accessToken or emailId for rollback' };
+    if (!messageId) {
+      return { success: false, error: 'Missing emailId for rollback' };
     }
 
     switch (originalAction) {
@@ -72,6 +72,19 @@ export class EmailActionHandler implements ActionHandler {
       default:
         return { success: false, error: `Cannot rollback action: ${originalAction}` };
     }
+  }
+
+  private async resolveAccessToken(step: ExecutionStep): Promise<string> {
+    const userId = step.parameters['userId'] as string | undefined;
+    if (this.credentialProvider && userId) {
+      return this.credentialProvider.getAccessToken(userId, 'google');
+    }
+
+    const accessToken = step.parameters['accessToken'] as string | undefined;
+    if (!accessToken) {
+      throw new Error('Missing accessToken — no OAuth token available for Gmail. Falling back to next adapter.');
+    }
+    return accessToken;
   }
 
   private async archiveEmail(accessToken: string, messageId: string): Promise<StepResult> {

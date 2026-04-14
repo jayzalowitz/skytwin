@@ -269,6 +269,31 @@ describe('RealIronClawAdapter (HTTP)', () => {
     });
   });
 
+  describe('getStatus', () => {
+    it('sends a status query through IronClaw webhook', async () => {
+      const adapter = makeAdapter();
+
+      fetchMock.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            content: 'Plan is running',
+            attachments: [],
+            metadata: { status: 'running' },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      );
+
+      const status = await adapter.getStatus('plan_status_1');
+
+      expect(status).toBe('running');
+      const [, options] = getFetchCall(fetchMock, 0);
+      const body = JSON.parse(options.body as string);
+      expect(body.metadata.message_type).toBe('status');
+      expect(body.metadata.plan_id).toBe('plan_status_1');
+    });
+  });
+
   describe('rollback', () => {
     it('sends rollback request to IronClaw with thread correlation', async () => {
       const adapter = makeAdapter();

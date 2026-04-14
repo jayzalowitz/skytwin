@@ -22,6 +22,7 @@ export type {
   ApprovalRequestRow,
   ExecutionPlanRow,
   ExecutionResultRow,
+  ExecutionEventRow,
   ExplanationRecordRow,
   FeedbackEventRow,
   OAuthTokenRow,
@@ -51,6 +52,7 @@ export type {
   EntityCodeRow,
   ServiceCredentialRow,
   CredentialRequirementRow,
+  IronClawToolRow,
   AIProviderSettingsRow,
 } from './types.js';
 
@@ -80,15 +82,17 @@ export { oauthRepository, approvalRepository, patternRepository, executionReposi
 export type {
   CreateExecutionPlanInput,
   CreateExecutionResultInput,
+  CreateExecutionEventInput,
   ExecutionPlanWithResult,
 } from './repositories/index.js';
 
 export { signalRepository, proposalRepository, skillGapRepository, proactiveScanRepository } from './repositories/index.js';
 
-export { trustTierAuditRepository, spendRepository, domainAutonomyRepository, escalationTriggerRepository, preferenceHistoryRepository, sessionRepository, mempalaceRepository, serviceCredentialRepository, credentialRequirementRepository, aiProviderRepository } from './repositories/index.js';
+export { trustTierAuditRepository, spendRepository, domainAutonomyRepository, escalationTriggerRepository, preferenceHistoryRepository, sessionRepository, mempalaceRepository, serviceCredentialRepository, credentialRequirementRepository, aiProviderRepository, ironClawToolRepository } from './repositories/index.js';
 export type { SessionRow } from './repositories/index.js';
 export type { UpsertServiceCredentialInput } from './repositories/index.js';
 export type { RegisterCredentialRequirementInput } from './repositories/index.js';
+export type { UpsertIronClawToolInput } from './repositories/index.js';
 export type { CreateTierAuditInput } from './repositories/index.js';
 export type { CreateSpendRecordInput } from './repositories/index.js';
 export type { UpsertDomainAutonomyInput } from './repositories/index.js';
