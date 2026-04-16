@@ -52,22 +52,25 @@ describe('DbCredentialProvider', () => {
       scopes: ['email', 'calendar'],
     });
 
-    const token = await provider.getAccessToken('user_1', 'google');
+    const result = await provider.getAccessToken('user_1', 'google');
 
-    expect(token).toBe('access-123');
+    expect(result).toEqual({ success: true, accessToken: 'access-123' });
     expect(fetchMock).not.toHaveBeenCalled();
     expect(mockOauthRepository.saveToken).not.toHaveBeenCalled();
   });
 
-  it('throws when no token found for provider', async () => {
+  it('returns error when no token found for provider', async () => {
     mockOauthRepository.getToken.mockResolvedValue(null);
 
-    await expect(provider.getAccessToken('user_1', 'google')).rejects.toThrow(
-      'No OAuth token found for google. Connect the account first.',
-    );
+    const result = await provider.getAccessToken('user_1', 'google');
+
+    expect(result).toEqual({
+      success: false,
+      error: 'No OAuth token found for google. Connect the account first.',
+    });
   });
 
-  it('throws when provider is not google and token is expired', async () => {
+  it('returns error when provider is not google and token is expired', async () => {
     mockOauthRepository.getToken.mockResolvedValue({
       access_token: 'access-123',
       refresh_token: 'refresh-123',
@@ -75,12 +78,15 @@ describe('DbCredentialProvider', () => {
       scopes: ['scope1'],
     });
 
-    await expect(provider.getAccessToken('user_1', 'outlook')).rejects.toThrow(
-      'OAuth refresh is not implemented for outlook. Reconnect the account.',
-    );
+    const result = await provider.getAccessToken('user_1', 'outlook');
+
+    expect(result).toEqual({
+      success: false,
+      error: 'OAuth refresh is not implemented for outlook. Reconnect the account.',
+    });
   });
 
-  it('throws when google token is expired and has no refresh_token', async () => {
+  it('returns error when google token is expired and has no refresh_token', async () => {
     mockOauthRepository.getToken.mockResolvedValue({
       access_token: 'access-123',
       refresh_token: null,
@@ -88,9 +94,12 @@ describe('DbCredentialProvider', () => {
       scopes: ['email'],
     });
 
-    await expect(provider.getAccessToken('user_1', 'google')).rejects.toThrow(
-      'Google OAuth token is expired and has no refresh token. Reconnect Google.',
-    );
+    const result = await provider.getAccessToken('user_1', 'google');
+
+    expect(result).toEqual({
+      success: false,
+      error: 'Google OAuth token is expired and has no refresh token. Reconnect Google.',
+    });
   });
 
   it('successfully refreshes an expired Google token', async () => {
@@ -114,9 +123,9 @@ describe('DbCredentialProvider', () => {
       access_token: 'new-access-456',
     });
 
-    const token = await provider.getAccessToken('user_1', 'google');
+    const result = await provider.getAccessToken('user_1', 'google');
 
-    expect(token).toBe('new-access-456');
+    expect(result).toEqual({ success: true, accessToken: 'new-access-456' });
     expect(fetchMock).toHaveBeenCalledOnce();
 
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
@@ -164,10 +173,10 @@ describe('DbCredentialProvider', () => {
       }),
     } as Response);
 
-    const [token1, token2] = await Promise.all([promise1, promise2]);
+    const [result1, result2] = await Promise.all([promise1, promise2]);
 
-    expect(token1).toBe('new-access-456');
-    expect(token2).toBe('new-access-456');
+    expect(result1).toEqual({ success: true, accessToken: 'new-access-456' });
+    expect(result2).toEqual({ success: true, accessToken: 'new-access-456' });
     // fetch should have been called only once despite two getAccessToken calls
     expect(fetchMock).toHaveBeenCalledOnce();
   });
@@ -187,9 +196,11 @@ describe('DbCredentialProvider', () => {
       text: async () => 'Internal Server Error',
     });
 
-    await expect(provider.getAccessToken('user_1', 'google')).rejects.toThrow(
-      'Google OAuth refresh failed: HTTP 500 Internal Server Error',
-    );
+    const failResult = await provider.getAccessToken('user_1', 'google');
+    expect(failResult).toEqual({
+      success: false,
+      error: 'Google OAuth refresh failed: HTTP 500 Internal Server Error',
+    });
 
     // Second attempt: fetch succeeds (lock should be cleared)
     fetchMock.mockResolvedValueOnce({
@@ -204,8 +215,8 @@ describe('DbCredentialProvider', () => {
       access_token: 'retry-access',
     });
 
-    const token = await provider.getAccessToken('user_1', 'google');
-    expect(token).toBe('retry-access');
+    const retryResult = await provider.getAccessToken('user_1', 'google');
+    expect(retryResult).toEqual({ success: true, accessToken: 'retry-access' });
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
@@ -239,9 +250,9 @@ describe('DbCredentialProvider', () => {
       access_token: 'new-access-from-db-creds',
     });
 
-    const token = await provider.getAccessToken('user_1', 'google');
+    const result = await provider.getAccessToken('user_1', 'google');
 
-    expect(token).toBe('new-access-from-db-creds');
+    expect(result).toEqual({ success: true, accessToken: 'new-access-from-db-creds' });
     expect(mockServiceCredentialRepository.getAsMap).toHaveBeenCalledWith('google');
 
     // Verify the fetch used the DB credentials
@@ -251,7 +262,7 @@ describe('DbCredentialProvider', () => {
     expect(body.get('client_secret')).toBe('db-client-secret');
   });
 
-  it('throws when neither config nor DB has Google client credentials', async () => {
+  it('returns error when neither config nor DB has Google client credentials', async () => {
     mockLoadConfig.mockReturnValue({
       googleClientId: '',
       googleClientSecret: '',
@@ -266,18 +277,24 @@ describe('DbCredentialProvider', () => {
       scopes: ['email'],
     });
 
-    await expect(provider.getAccessToken('user_1', 'google')).rejects.toThrow(
-      'Google OAuth client credentials are not configured.',
-    );
+    const result = await provider.getAccessToken('user_1', 'google');
+
+    expect(result).toEqual({
+      success: false,
+      error: 'Google OAuth client credentials are not configured.',
+    });
   });
 });
 
 describe('NoopCredentialProvider', () => {
-  it('throws for any provider', async () => {
+  it('returns error for any provider', async () => {
     const provider = new NoopCredentialProvider();
 
-    await expect(provider.getAccessToken('user_1', 'google')).rejects.toThrow(
-      'No credential provider configured for google.',
-    );
+    const result = await provider.getAccessToken('user_1', 'google');
+
+    expect(result).toEqual({
+      success: false,
+      error: 'No credential provider configured for google.',
+    });
   });
 });

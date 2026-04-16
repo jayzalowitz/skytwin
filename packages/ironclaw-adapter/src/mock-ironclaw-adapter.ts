@@ -14,7 +14,7 @@ import type { IronClawAdapter } from './ironclaw-adapter.js';
  * Simulates execution by logging actions and returning synthetic results.
  * All "executions" succeed after a small simulated delay.
  */
-export class MockIronClawAdapter implements IronClawAdapter {
+export class SimpleIronClawMock implements IronClawAdapter {
   private readonly _executedPlans = new Map<string, ExecutionPlan>();
   private readonly _planStatuses = new Map<string, ExecutionStatus>();
 

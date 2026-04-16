@@ -116,6 +116,30 @@ describe('IronClawHttpClient', () => {
       expect(fetchMock).toHaveBeenCalledTimes(3);
     });
 
+    it('uses a fresh timeout signal for each retry attempt', async () => {
+      const client = makeClient({ maxRetries: 2 });
+
+      fetchMock
+        .mockResolvedValueOnce(new Response('Error', { status: 500 }))
+        .mockResolvedValueOnce(new Response('Error', { status: 500 }))
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ content: 'ok', attachments: [], metadata: {} }), {
+            status: 200,
+          }),
+        );
+
+      await client.sendMessage(makeMessage());
+
+      const firstSignal = getFetchCall(fetchMock, 0)[1].signal;
+      const secondSignal = getFetchCall(fetchMock, 1)[1].signal;
+      const thirdSignal = getFetchCall(fetchMock, 2)[1].signal;
+      expect(firstSignal).toBeInstanceOf(AbortSignal);
+      expect(secondSignal).toBeInstanceOf(AbortSignal);
+      expect(thirdSignal).toBeInstanceOf(AbortSignal);
+      expect(secondSignal).not.toBe(firstSignal);
+      expect(thirdSignal).not.toBe(secondSignal);
+    });
+
     it('retries on 429 rate limit', async () => {
       const client = makeClient({ maxRetries: 1 });
 
@@ -468,7 +492,7 @@ describe('IronClawHttpClient', () => {
         new Response(JSON.stringify({ routineId: 'routine_abc' }), { status: 200 }),
       );
 
-      const result = await client.createRoutine('0 9 * * *', { steps: ['archive'] });
+      const result = await client.createRoutine('user_1', '0 9 * * *', { steps: ['archive'] });
 
       expect(result).toEqual({ routineId: 'routine_abc' });
 
@@ -480,6 +504,7 @@ describe('IronClawHttpClient', () => {
       expect(headers['Authorization']).toBe('Bearer test-gw-token');
 
       const body = JSON.parse(options.body as string);
+      expect(body.user_id).toBe('user_1');
       expect(body.schedule).toBe('0 9 * * *');
       expect(body.plan).toEqual({ steps: ['archive'] });
     });
@@ -491,7 +516,7 @@ describe('IronClawHttpClient', () => {
         new Response(JSON.stringify({ routine_id: 'routine_def' }), { status: 200 }),
       );
 
-      const result = await client.createRoutine('0 9 * * *', { steps: [] });
+      const result = await client.createRoutine('user_1', '0 9 * * *', { steps: [] });
       expect(result).toEqual({ routineId: 'routine_def' });
     });
 
@@ -502,7 +527,7 @@ describe('IronClawHttpClient', () => {
         new Response(JSON.stringify({ id: 'routine_ghi' }), { status: 200 }),
       );
 
-      const result = await client.createRoutine('0 9 * * *', { steps: [] });
+      const result = await client.createRoutine('user_1', '0 9 * * *', { steps: [] });
       expect(result).toEqual({ routineId: 'routine_ghi' });
     });
 
@@ -514,7 +539,7 @@ describe('IronClawHttpClient', () => {
       );
 
       await expect(
-        client.createRoutine('0 9 * * *', { steps: [] }),
+        client.createRoutine('user_1', '0 9 * * *', { steps: [] }),
       ).rejects.toThrow('routine ID');
     });
   });

@@ -91,7 +91,7 @@ async function forwardSignalToApi(signal: RawSignal, userId: string): Promise<vo
   log.info(`Forwarded signal ${signal.id} (${signal.source}/${signal.type}) for user ${userId}`);
 }
 
-function shouldForwardSignal(signal: RawSignal, userId: string): boolean {
+function getSignalDedupeMap(userId: string): Map<string, number> {
   const now = Date.now();
   let seen = seenSignalIdsByUser.get(userId);
   if (!seen) {
@@ -118,14 +118,20 @@ function shouldForwardSignal(signal: RawSignal, userId: string): boolean {
     }
   }
 
+  return seen;
+}
+
+function hasForwardedSignal(signal: RawSignal, userId: string): boolean {
+  const now = Date.now();
+  const seen = getSignalDedupeMap(userId);
   const key = `${signal.source}:${signal.id}`;
   const seenAt = seen.get(key);
-  if (seenAt && now - seenAt < SIGNAL_DEDUPE_TTL_MS) {
-    return false;
-  }
+  return Boolean(seenAt && now - seenAt < SIGNAL_DEDUPE_TTL_MS);
+}
 
-  seen.set(key, now);
-  return true;
+function markSignalForwarded(signal: RawSignal, userId: string): void {
+  const seen = getSignalDedupeMap(userId);
+  seen.set(`${signal.source}:${signal.id}`, Date.now());
 }
 
 /**
@@ -147,10 +153,11 @@ async function pollUser(userConnectors: UserConnectors): Promise<void> {
     try {
       const signals = await connector.poll();
       for (const signal of signals) {
-        if (!shouldForwardSignal(signal, userConnectors.userId)) {
+        if (hasForwardedSignal(signal, userConnectors.userId)) {
           continue;
         }
         await forwardSignalToApi(signal, userConnectors.userId);
+        markSignalForwarded(signal, userConnectors.userId);
       }
     } catch (error) {
       hadFailure = true;
@@ -305,7 +312,9 @@ async function discoverUsers(): Promise<UserConnectors[]> {
   }
 }
 
-// Singleton IronClaw adapter for tool refresh — preserves circuit breaker state
+// Worker runs in a separate process from the API, so it needs its own IronClaw adapter
+// with independent circuit breaker state. This is intentional — the worker's view of
+// IronClaw health should reflect the worker's own request patterns, not the API's.
 let workerIronClawAdapter: RealIronClawAdapter | null = null;
 function getWorkerIronClawAdapter(): RealIronClawAdapter {
   if (!workerIronClawAdapter) {
@@ -430,10 +439,15 @@ async function main(): Promise<void> {
         }
         userConnectors = newUserConnectors;
 
-        // Prune circuit breakers for users no longer tracked
+        // Prune circuit breakers and signal dedupe maps for users no longer tracked
         for (const userId of userCircuitBreakers.keys()) {
           if (!newUserIds.has(userId)) {
             userCircuitBreakers.delete(userId);
+          }
+        }
+        for (const userId of seenSignalIdsByUser.keys()) {
+          if (!newUserIds.has(userId)) {
+            seenSignalIdsByUser.delete(userId);
           }
         }
       }

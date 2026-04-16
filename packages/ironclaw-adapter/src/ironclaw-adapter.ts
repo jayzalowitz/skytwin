@@ -58,7 +58,7 @@ export interface IronClawEnhancedAdapter extends IronClawAdapter {
   listCredentials(): Promise<IronClawCredentialInfo[]>;
   sendChatCompletion(messages: ChatMessage[], opts?: { model?: string }): Promise<ChatCompletionResponse>;
   discoverTools(): Promise<IronClawToolManifest[]>;
-  createRoutine(schedule: string, plan: ExecutionPlan): Promise<{ routineId: string }>;
+  createRoutine(userId: string, schedule: string, plan: ExecutionPlan): Promise<{ routineId: string }>;
   listRoutines(userId?: string): Promise<IronClawRoutine[]>;
   deleteRoutine(routineId: string): Promise<{ success: boolean }>;
 }

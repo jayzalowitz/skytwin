@@ -174,7 +174,9 @@ export async function syncUnsyncedCredentialsToIronClaw(
   }
   // Batch markSynced for all successful registrations
   for (const { service, key } of synced) {
-    await serviceCredentialRepository.markSynced(service, key).catch(() => {});
+    await serviceCredentialRepository.markSynced(service, key).catch((err) => {
+      console.warn('[execution] markSynced failed:', err instanceof Error ? err.message : String(err));
+    });
   }
 }
 

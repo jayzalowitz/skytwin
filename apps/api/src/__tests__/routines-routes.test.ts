@@ -164,7 +164,17 @@ describe('Routines API routes', () => {
       expect(body.userId).toBe('user-1');
       expect(body.schedule).toBe('0 9 * * *');
       expect(body.routineId).toBe('routine-1');
-      expect(mockAdapter.createRoutine).toHaveBeenCalledWith('0 9 * * *', validPlan);
+      expect(mockAdapter.createRoutine).toHaveBeenCalledWith(
+        'user-1',
+        '0 9 * * *',
+        {
+          ...validPlan,
+          action: {
+            ...validPlan.action,
+            parameters: { userId: 'user-1' },
+          },
+        },
+      );
     });
 
     it('returns 400 for missing fields', async () => {

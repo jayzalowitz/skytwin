@@ -1,30 +1,42 @@
 import { loadConfig } from '@skytwin/config';
 import { oauthRepository, serviceCredentialRepository } from '@skytwin/db';
 
+export interface CredentialResult {
+  success: true;
+  accessToken: string;
+}
+
+export interface CredentialError {
+  success: false;
+  error: string;
+}
+
+export type CredentialOutcome = CredentialResult | CredentialError;
+
 export interface CredentialProvider {
-  getAccessToken(userId: string, provider: string): Promise<string>;
+  getAccessToken(userId: string, provider: string): Promise<CredentialOutcome>;
 }
 
 export class DbCredentialProvider implements CredentialProvider {
   // Per-user+provider lock to prevent concurrent refresh races
-  private readonly refreshLocks = new Map<string, Promise<string>>();
+  private readonly refreshLocks = new Map<string, Promise<CredentialOutcome>>();
 
-  async getAccessToken(userId: string, provider: string): Promise<string> {
+  async getAccessToken(userId: string, provider: string): Promise<CredentialOutcome> {
     const token = await oauthRepository.getToken(userId, provider);
     if (!token) {
-      throw new Error(`No OAuth token found for ${provider}. Connect the account first.`);
+      return { success: false, error: `No OAuth token found for ${provider}. Connect the account first.` };
     }
 
     if (token.expires_at.getTime() > Date.now() + 60_000) {
-      return token.access_token;
+      return { success: true, accessToken: token.access_token };
     }
 
     if (provider !== 'google') {
-      throw new Error(`OAuth refresh is not implemented for ${provider}. Reconnect the account.`);
+      return { success: false, error: `OAuth refresh is not implemented for ${provider}. Reconnect the account.` };
     }
 
     if (!token.refresh_token) {
-      throw new Error('Google OAuth token is expired and has no refresh token. Reconnect Google.');
+      return { success: false, error: 'Google OAuth token is expired and has no refresh token. Reconnect Google.' };
     }
 
     // Serialize concurrent refresh requests for the same user+provider
@@ -44,8 +56,10 @@ export class DbCredentialProvider implements CredentialProvider {
     provider: string,
     refreshToken: string,
     scopes: string[],
-  ): Promise<string> {
+  ): Promise<CredentialOutcome> {
     const googleConfig = await this.getGoogleOAuthConfig();
+    if (!googleConfig.success) return googleConfig;
+
     const response = await fetch('https://oauth2.googleapis.com/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -59,7 +73,7 @@ export class DbCredentialProvider implements CredentialProvider {
 
     if (!response.ok) {
       const body = await response.text().catch(() => '');
-      throw new Error(`Google OAuth refresh failed: HTTP ${response.status} ${body}`);
+      return { success: false, error: `Google OAuth refresh failed: HTTP ${response.status} ${body}` };
     }
 
     const payload = await response.json() as {
@@ -69,7 +83,7 @@ export class DbCredentialProvider implements CredentialProvider {
     };
 
     if (!payload.access_token) {
-      throw new Error('Google OAuth refresh response did not include an access token.');
+      return { success: false, error: 'Google OAuth refresh response did not include an access token.' };
     }
 
     const expiresAt = new Date(Date.now() + (payload.expires_in ?? 3600) * 1000);
@@ -82,10 +96,10 @@ export class DbCredentialProvider implements CredentialProvider {
       scopes,
     );
 
-    return saved.access_token;
+    return { success: true, accessToken: saved.access_token };
   }
 
-  private async getGoogleOAuthConfig(): Promise<{ clientId: string; clientSecret: string }> {
+  private async getGoogleOAuthConfig(): Promise<{ success: true; clientId: string; clientSecret: string } | CredentialError> {
     const config = loadConfig();
     let clientId = config.googleClientId;
     let clientSecret = config.googleClientSecret;
@@ -97,15 +111,15 @@ export class DbCredentialProvider implements CredentialProvider {
     }
 
     if (!clientId || !clientSecret) {
-      throw new Error('Google OAuth client credentials are not configured.');
+      return { success: false, error: 'Google OAuth client credentials are not configured.' };
     }
 
-    return { clientId, clientSecret };
+    return { success: true, clientId, clientSecret };
   }
 }
 
 export class NoopCredentialProvider implements CredentialProvider {
-  async getAccessToken(_userId: string, provider: string): Promise<string> {
-    throw new Error(`No credential provider configured for ${provider}.`);
+  async getAccessToken(_userId: string, provider: string): Promise<CredentialOutcome> {
+    return { success: false, error: `No credential provider configured for ${provider}.` };
   }
 }

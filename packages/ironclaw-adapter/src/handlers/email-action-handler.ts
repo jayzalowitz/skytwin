@@ -77,7 +77,9 @@ export class EmailActionHandler implements ActionHandler {
   private async resolveAccessToken(step: ExecutionStep): Promise<string> {
     const userId = step.parameters['userId'] as string | undefined;
     if (this.credentialProvider && userId) {
-      return this.credentialProvider.getAccessToken(userId, 'google');
+      const result = await this.credentialProvider.getAccessToken(userId, 'google');
+      if (!result.success) throw new Error(result.error);
+      return result.accessToken;
     }
 
     const accessToken = step.parameters['accessToken'] as string | undefined;

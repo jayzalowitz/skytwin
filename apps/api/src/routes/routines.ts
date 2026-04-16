@@ -8,6 +8,7 @@ import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
 
 // Cron expression: 5 or 6 space-separated fields, each containing digits, *, /, -, or ,
 const CRON_REGEX = /^[0-9*/,-]+( [0-9*/,-]+){4,5}$/;
+const MAX_CRON_LENGTH = 128;
 
 export function createRoutinesRouter(): Router {
   const router = Router();
@@ -28,7 +29,7 @@ export function createRoutinesRouter(): Router {
       }
 
       // Validate cron schedule format
-      if (!CRON_REGEX.test(schedule)) {
+      if (schedule.length > MAX_CRON_LENGTH || !CRON_REGEX.test(schedule)) {
         res.status(400).json({ error: 'Invalid schedule format. Expected a cron expression (e.g., "0 9 * * *").' });
         return;
       }
@@ -63,7 +64,18 @@ export function createRoutinesRouter(): Router {
         return;
       }
 
-      const result = await adapter.createRoutine(schedule, plan);
+      const scopedPlan: ExecutionPlan = {
+        ...plan,
+        action: {
+          ...plan.action,
+          parameters: {
+            ...plan.action.parameters,
+            userId,
+          },
+        },
+      };
+
+      const result = await adapter.createRoutine(userId, schedule, scopedPlan);
       res.status(201).json({ userId, schedule, routineId: result.routineId });
     } catch (error) {
       next(error);
@@ -89,8 +101,11 @@ export function createRoutinesRouter(): Router {
   router.delete('/:routineId', async (req, res, next) => {
     try {
       const { routineId } = req.params;
-      const userId = (req.body as Record<string, unknown>)?.['userId'] as string
-        ?? (req.query['userId'] as string);
+      const bodyUserId = (req.body as Record<string, unknown>)?.['userId'];
+      const queryUserId = req.query['userId'];
+      const userId = typeof bodyUserId === 'string' ? bodyUserId
+        : typeof queryUserId === 'string' ? queryUserId
+        : undefined;
       if (!userId) {
         res.status(400).json({ error: 'Missing required userId' });
         return;

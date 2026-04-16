@@ -110,7 +110,7 @@ app.use('/api/sessions', createSessionsRouter()); // POST pairing is public; oth
 app.use('/api/audit', sessionAuth, requireOwnership, createAuditRouter());
 app.use('/api/policies', sessionAuth, requireOwnership, createPoliciesRouter());
 app.use('/api/mempalace', sessionAuth, requireOwnership, createMempalaceRouter());
-app.use('/api/credentials', sessionAuth, createCredentialsRouter());
+app.use('/api/credentials', sessionAuth, requireOwnership, createCredentialsRouter());
 app.use('/api/routines', sessionAuth, requireOwnership, createRoutinesRouter());
 
 // Error handling middleware

@@ -338,11 +338,11 @@ export class IronClawHttpClient {
       }));
   }
 
-  async createRoutine(schedule: string, plan: unknown): Promise<{ routineId: string }> {
+  async createRoutine(userId: string, schedule: string, plan: Record<string, unknown>): Promise<{ routineId: string }> {
     const response = await this.fetchWithRetries('routines', `${this.config.apiUrl}/routines`, {
       method: 'POST',
       headers: this.bearerJsonHeaders(),
-      body: JSON.stringify({ schedule, plan }),
+      body: JSON.stringify({ user_id: userId, schedule, plan }),
       signal: AbortSignal.timeout(this.config.timeoutMs),
     }, 'IronClaw routine creation');
 
@@ -435,8 +435,8 @@ export class IronClawHttpClient {
    */
   parseExecutionResult(planId: string, response: IronClawResponse, startedAt: Date): ExecutionResult {
     const metadata = response.metadata ?? {};
-    const metadataError = metadata['error'] as string | undefined;
-    const metadataOutputs = metadata['outputs'] as Record<string, unknown> | undefined;
+    const metadataError = this.readString(metadata, ['error']);
+    const metadataOutputs = this.asRecord(metadata['outputs']);
     const status = this.parseExecutionStatus(response);
 
     const result: ExecutionResult = {
@@ -450,8 +450,9 @@ export class IronClawHttpClient {
       result.error = metadataError ?? response.content;
     }
 
+    const hasOutputs = Object.keys(metadataOutputs).length > 0;
     result.output = {
-      ...metadataOutputs,
+      ...(hasOutputs ? metadataOutputs : undefined),
       ironclawResponse: response.content,
       ironclawThreadId: response.thread_id,
     };
@@ -485,7 +486,7 @@ export class IronClawHttpClient {
    */
   parseRollbackResult(response: IronClawResponse): RollbackResult {
     const metadata = response.metadata ?? {};
-    const metadataStatus = metadata['status'] as string | undefined;
+    const metadataStatus = this.readString(metadata, ['status']);
 
     if (metadataStatus === 'completed' || metadataStatus === 'success') {
       return { success: true, message: response.content ?? 'Rollback completed.' };
@@ -494,7 +495,7 @@ export class IronClawHttpClient {
     if (metadataStatus === 'failed' || metadataStatus === 'error') {
       return {
         success: false,
-        message: (metadata['error'] as string) ?? response.content ?? 'Rollback failed.',
+        message: this.readString(metadata, ['error']) ?? response.content ?? 'Rollback failed.',
       };
     }
 
@@ -508,7 +509,7 @@ export class IronClawHttpClient {
 
   parseExecutionStatus(response: IronClawResponse): ExecutionStatus {
     const metadata = response.metadata ?? {};
-    const metadataStatus = metadata['status'] as string | undefined;
+    const metadataStatus = this.readString(metadata, ['status']);
 
     if (metadataStatus === 'completed' || metadataStatus === 'success') {
       return 'completed';
@@ -585,7 +586,10 @@ export class IronClawHttpClient {
 
       let response: Response;
       try {
-        response = await fetch(url, init);
+        response = await fetch(url, {
+          ...init,
+          signal: AbortSignal.timeout(this.config.timeoutMs),
+        });
       } catch (error) {
         lastError = this.normalizeFetchError(error, label);
         continue;
@@ -648,15 +652,17 @@ export class IronClawHttpClient {
     try {
       while (true) {
         const readPromise = reader.read();
+        let timerId: ReturnType<typeof setTimeout> | undefined;
         const timeoutPromise = new Promise<never>((_, reject) => {
-          const timer = setTimeout(
+          timerId = setTimeout(
             () => reject(new Error(`IronClaw SSE stream for ${contextId} stalled — no data received in ${chunkTimeoutMs}ms`)),
             chunkTimeoutMs,
           );
           // Allow Node to exit even if this timer is pending
-          if (typeof timer === 'object' && 'unref' in timer) timer.unref();
+          if (typeof timerId === 'object' && 'unref' in timerId) timerId.unref();
         });
         const { done, value } = await Promise.race([readPromise, timeoutPromise]);
+        if (timerId !== undefined) clearTimeout(timerId);
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });

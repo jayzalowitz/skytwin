@@ -6,9 +6,6 @@ export type {
 } from './ironclaw-adapter.js';
 export { isIronClawEnhancedAdapter } from './ironclaw-adapter.js';
 
-/** @deprecated Use IronClawAdapter instead. Will be removed in a future release. */
-export type { IronClawAdapter as IronClawExecutor } from './ironclaw-adapter.js';
-
 // Real adapter: talks to IronClaw's HTTP webhook API
 export { RealIronClawAdapter } from './real-adapter.js';
 
@@ -38,7 +35,7 @@ export { DocumentActionHandler } from './handlers/document-action-handler.js';
 export { HealthActionHandler } from './handlers/health-action-handler.js';
 
 // Mock implementations for development and testing
-export { MockIronClawAdapter as BasicMockAdapter } from './mock-ironclaw-adapter.js';
+export { SimpleIronClawMock, SimpleIronClawMock as BasicMockAdapter } from './mock-ironclaw-adapter.js';
 export {
   MockIronClawAdapter,
   type OperationLog,

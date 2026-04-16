@@ -42,9 +42,22 @@ export class RealIronClawAdapter implements IronClawEnhancedAdapter {
   private readonly channelId: string;
   private readonly ownerId: string;
 
-  /** Track thread IDs for rollback correlation */
+  /** Track thread IDs for rollback correlation (bounded to prevent unbounded growth) */
+  private static readonly MAX_TRACKED_PLANS = 1000;
   private readonly planThreads = new Map<string, string>();
   private readonly planStatuses = new Map<string, ExecutionStatus>();
+
+  private evictOldPlans(): void {
+    if (this.planStatuses.size <= RealIronClawAdapter.MAX_TRACKED_PLANS) return;
+    const excess = this.planStatuses.size - RealIronClawAdapter.MAX_TRACKED_PLANS;
+    let removed = 0;
+    for (const key of this.planStatuses.keys()) {
+      if (removed >= excess) break;
+      this.planStatuses.delete(key);
+      this.planThreads.delete(key);
+      removed++;
+    }
+  }
 
   constructor(config: IronClawClientConfig) {
     this.client = new IronClawHttpClient(config);
@@ -98,6 +111,7 @@ export class RealIronClawAdapter implements IronClawEnhancedAdapter {
 
   async execute(plan: ExecutionPlan): Promise<ExecutionResult> {
     const startedAt = new Date();
+    this.evictOldPlans();
     this.planStatuses.set(plan.id, 'running');
 
     try {
@@ -237,8 +251,8 @@ export class RealIronClawAdapter implements IronClawEnhancedAdapter {
     return this.client.discoverTools();
   }
 
-  createRoutine(schedule: string, plan: ExecutionPlan): Promise<{ routineId: string }> {
-    return this.client.createRoutine(schedule, plan);
+  createRoutine(userId: string, schedule: string, plan: ExecutionPlan): Promise<{ routineId: string }> {
+    return this.client.createRoutine(userId, schedule, { ...plan } as Record<string, unknown>);
   }
 
   listRoutines(userId?: string): Promise<IronClawRoutine[]> {
