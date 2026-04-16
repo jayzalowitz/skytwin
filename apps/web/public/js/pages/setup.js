@@ -1,5 +1,8 @@
 import { fetchJSON, escapeHtml } from '../api-client.js';
 
+// Module-level sync lookup for dynamic integration card rendering
+let _syncLookup = {};
+
 /**
  * Render the service setup page.
  *
@@ -389,7 +392,7 @@ function renderDynamicIntegrations(integrations, credLookup) {
           <button class="btn btn-primary btn-sm" data-save-service="${escapeHtml(serviceKey)}">${allSet ? 'Update' : 'Save'}</button>
           <span id="save-status-${escapeHtml(serviceKey)}" style="font-size: 0.85rem;"></span>
         </div>
-        ${renderIronClawSyncSummary(serviceKey, window.__skytwinSyncLookup || {})}
+        ${renderIronClawSyncSummary(serviceKey, _syncLookup || {})}
       </div>
     `;
   }).join('');
@@ -401,7 +404,7 @@ function buildSyncLookup(ironclawSync) {
     if (!lookup[row.service]) lookup[row.service] = [];
     lookup[row.service].push(row);
   }
-  window.__skytwinSyncLookup = lookup;
+  _syncLookup = lookup;
   return lookup;
 }
 

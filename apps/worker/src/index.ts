@@ -99,10 +99,21 @@ function shouldForwardSignal(signal: RawSignal, userId: string): boolean {
     seenSignalIdsByUser.set(userId, seen);
   }
 
+  // Evict expired entries first, then trim oldest if still over limit
   if (seen.size > SIGNAL_DEDUPE_MAX_PER_USER) {
     for (const [key, seenAt] of seen) {
-      if (now - seenAt > SIGNAL_DEDUPE_TTL_MS || seen.size > SIGNAL_DEDUPE_MAX_PER_USER) {
+      if (now - seenAt > SIGNAL_DEDUPE_TTL_MS) {
         seen.delete(key);
+      }
+    }
+    // If still over limit after expiry sweep, trim oldest entries (Map preserves insertion order)
+    if (seen.size > SIGNAL_DEDUPE_MAX_PER_USER) {
+      const excess = seen.size - SIGNAL_DEDUPE_MAX_PER_USER;
+      let removed = 0;
+      for (const key of seen.keys()) {
+        if (removed >= excess) break;
+        seen.delete(key);
+        removed++;
       }
     }
   }
@@ -294,6 +305,22 @@ async function discoverUsers(): Promise<UserConnectors[]> {
   }
 }
 
+// Singleton IronClaw adapter for tool refresh — preserves circuit breaker state
+let workerIronClawAdapter: RealIronClawAdapter | null = null;
+function getWorkerIronClawAdapter(): RealIronClawAdapter {
+  if (!workerIronClawAdapter) {
+    workerIronClawAdapter = new RealIronClawAdapter({
+      apiUrl: config.ironclawApiUrl!,
+      webhookSecret: config.ironclawWebhookSecret!,
+      gatewayToken: config.ironclawGatewayToken,
+      ownerId: config.ironclawOwnerId,
+      defaultChannel: config.ironclawDefaultChannel,
+      preferChatCompletions: config.ironclawPreferChat,
+    });
+  }
+  return workerIronClawAdapter;
+}
+
 async function refreshIronClawToolsIfDue(force = false): Promise<void> {
   if (!config.ironclawApiUrl || !config.ironclawWebhookSecret) return;
   const now = Date.now();
@@ -301,14 +328,7 @@ async function refreshIronClawToolsIfDue(force = false): Promise<void> {
   lastIronClawToolRefreshAt = now;
 
   try {
-    const adapter = new RealIronClawAdapter({
-      apiUrl: config.ironclawApiUrl,
-      webhookSecret: config.ironclawWebhookSecret,
-      gatewayToken: config.ironclawGatewayToken,
-      ownerId: config.ironclawOwnerId,
-      defaultChannel: config.ironclawDefaultChannel,
-      preferChatCompletions: config.ironclawPreferChat,
-    });
+    const adapter = getWorkerIronClawAdapter();
     const tools = await adapter.discoverTools();
     if (tools.length === 0) return;
 

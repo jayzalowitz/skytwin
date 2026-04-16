@@ -158,7 +158,7 @@ export async function renderSettings(container, userId) {
         <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; padding: 0.5rem 0.75rem; background: var(--bg); border-radius: var(--radius-sm); margin-bottom: 0.5rem;">
           <div style="min-width: 0;">
             <div style="font-weight: 600; font-size: 0.9rem;">${escapeHtml(routine.planSummary || routine.id)}</div>
-            <div style="font-size: 0.8rem; color: var(--text-muted);">${escapeHtml(routine.schedule)}${routine.nextRunAt ? ` · next ${formatRelativeTime(routine.nextRunAt)}` : ''}</div>
+            <div style="font-size: 0.8rem; color: var(--text-muted);">${escapeHtml(routine.schedule)}${routine.nextRunAt ? ` · next ${escapeHtml(formatRelativeTime(routine.nextRunAt))}` : ''}</div>
           </div>
           <button class="btn btn-outline btn-sm" onclick="deleteRoutineHandler('${escapeHtml(routine.id)}', '${escapeHtml(userId)}')">Delete</button>
         </div>

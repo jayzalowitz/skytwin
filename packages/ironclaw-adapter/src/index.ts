@@ -6,6 +6,9 @@ export type {
 } from './ironclaw-adapter.js';
 export { isIronClawEnhancedAdapter } from './ironclaw-adapter.js';
 
+/** @deprecated Use IronClawAdapter instead. Will be removed in a future release. */
+export type { IronClawAdapter as IronClawExecutor } from './ironclaw-adapter.js';
+
 // Real adapter: talks to IronClaw's HTTP webhook API
 export { RealIronClawAdapter } from './real-adapter.js';
 

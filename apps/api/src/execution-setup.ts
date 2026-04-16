@@ -150,16 +150,31 @@ export async function syncUnsyncedCredentialsToIronClaw(
   }
 
   const unsynced = await serviceCredentialRepository.getUnsyncedCredentials().catch(() => []);
-  for (const credential of unsynced) {
-    const name = ironClawCredentialName(credential.service, credential.credential_key);
-    try {
-      if (!configured.has(name)) {
-        await adapter.registerCredential(name, credential.credential_value);
+  // Register concurrently in bounded batches of 5
+  const BATCH_SIZE = 5;
+  const synced: Array<{ service: string; key: string }> = [];
+  for (let i = 0; i < unsynced.length; i += BATCH_SIZE) {
+    const batch = unsynced.slice(i, i + BATCH_SIZE);
+    const results = await Promise.allSettled(
+      batch.map(async (credential) => {
+        const name = ironClawCredentialName(credential.service, credential.credential_key);
+        if (!configured.has(name)) {
+          await adapter.registerCredential(name, credential.credential_value);
+        }
+        return { service: credential.service, key: credential.credential_key };
+      }),
+    );
+    for (const result of results) {
+      if (result.status === 'fulfilled') {
+        synced.push(result.value);
+      } else {
+        console.warn('[execution] Failed to sync a credential to IronClaw:', result.reason instanceof Error ? result.reason.message : String(result.reason));
       }
-      await serviceCredentialRepository.markSynced(credential.service, credential.credential_key);
-    } catch (error) {
-      console.warn(`[execution] Failed to sync credential ${name} to IronClaw:`, error instanceof Error ? error.message : String(error));
     }
+  }
+  // Batch markSynced for all successful registrations
+  for (const { service, key } of synced) {
+    await serviceCredentialRepository.markSynced(service, key).catch(() => {});
   }
 }
 
@@ -177,7 +192,7 @@ export async function syncCredentialToIronClaw(
     await serviceCredentialRepository.markSynced(service, credentialKey);
     return true;
   } catch (error) {
-    console.warn(`[execution] Failed to sync credential ${name} to IronClaw:`, error instanceof Error ? error.message : String(error));
+    console.warn(`[execution] Failed to sync credential for ${service} to IronClaw:`, error instanceof Error ? error.message : String(error));
     return false;
   }
 }
@@ -193,7 +208,7 @@ export async function revokeCredentialFromIronClaw(
     await adapter.revokeCredential(ironClawCredentialName(service, credentialKey));
     return true;
   } catch (error) {
-    console.warn(`[execution] Failed to revoke credential ${service}.${credentialKey} from IronClaw:`, error instanceof Error ? error.message : String(error));
+    console.warn(`[execution] Failed to revoke credential for ${service} from IronClaw:`, error instanceof Error ? error.message : String(error));
     return false;
   }
 }

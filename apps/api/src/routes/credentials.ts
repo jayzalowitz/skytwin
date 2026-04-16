@@ -394,15 +394,23 @@ export function createCredentialsRouter(): Router {
   router.post('/:service/sync', async (req, res, next) => {
     try {
       const { service } = req.params;
+      const adapter = await getIronClawEnhancedAdapter();
+      if (!adapter) {
+        res.status(503).json({ error: 'IronClaw is unavailable for credential sync.' });
+        return;
+      }
+
       const rows = await serviceCredentialRepository.getByService(service);
       let synced = 0;
       for (const row of rows) {
-        const ok = await syncCredentialToIronClaw(
-          row.service,
-          row.credential_key,
-          row.credential_value,
-        );
-        if (ok) synced++;
+        const name = ironClawCredentialName(row.service, row.credential_key);
+        try {
+          await adapter.registerCredential(name, row.credential_value);
+          await serviceCredentialRepository.markSynced(row.service, row.credential_key);
+          synced++;
+        } catch {
+          // Individual credential sync failure is non-fatal
+        }
       }
       res.json({ service, synced, total: rows.length });
     } catch (error) {

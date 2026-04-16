@@ -258,6 +258,7 @@ export function createEventsRouter(): Router {
         const executionRouter = await getRouter();
         let terminalEvent: ExecutionEvent | null = null;
         let terminalStatus: 'completed' | 'failed' = 'failed';
+        const stepOutputs: Array<{ stepId?: string; eventType: string; payload: Record<string, unknown> }> = [];
         let terminalPayload: Record<string, unknown> = {};
 
         for await (const event of executionRouter.executeWithRoutingStreaming(
@@ -265,6 +266,9 @@ export function createEventsRouter(): Router {
           riskAssessment,
           userId,
         )) {
+          if (event.payload && Object.keys(event.payload).length > 0) {
+            stepOutputs.push({ stepId: event.stepId, eventType: event.eventType, payload: event.payload });
+          }
           terminalPayload = event.payload ?? terminalPayload;
           await executionRepository.createEvent({
             planId: savedPlan.id,
@@ -286,10 +290,14 @@ export function createEventsRouter(): Router {
         }
 
         await executionRepository.updatePlanStatus(savedPlan.id, terminalStatus);
+        const fullOutputs: Record<string, unknown> = {
+          ...terminalPayload,
+          steps: stepOutputs,
+        };
         await executionRepository.createResult({
           planId: savedPlan.id,
           success: terminalStatus === 'completed',
-          outputs: terminalPayload,
+          outputs: fullOutputs,
           error: typeof terminalPayload['error'] === 'string' ? terminalPayload['error'] : undefined,
           rollbackAvailable: outcome.selectedAction.reversible,
         });

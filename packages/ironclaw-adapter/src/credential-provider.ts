@@ -6,6 +6,9 @@ export interface CredentialProvider {
 }
 
 export class DbCredentialProvider implements CredentialProvider {
+  // Per-user+provider lock to prevent concurrent refresh races
+  private readonly refreshLocks = new Map<string, Promise<string>>();
+
   async getAccessToken(userId: string, provider: string): Promise<string> {
     const token = await oauthRepository.getToken(userId, provider);
     if (!token) {
@@ -24,6 +27,24 @@ export class DbCredentialProvider implements CredentialProvider {
       throw new Error('Google OAuth token is expired and has no refresh token. Reconnect Google.');
     }
 
+    // Serialize concurrent refresh requests for the same user+provider
+    const lockKey = `${userId}:${provider}`;
+    const existing = this.refreshLocks.get(lockKey);
+    if (existing) return existing;
+
+    const scopes = Array.isArray(token.scopes) ? token.scopes : token.scopes ? [token.scopes] : [];
+    const refreshPromise = this.doGoogleRefresh(userId, provider, token.refresh_token, scopes)
+      .finally(() => this.refreshLocks.delete(lockKey));
+    this.refreshLocks.set(lockKey, refreshPromise);
+    return refreshPromise;
+  }
+
+  private async doGoogleRefresh(
+    userId: string,
+    provider: string,
+    refreshToken: string,
+    scopes: string[],
+  ): Promise<string> {
     const googleConfig = await this.getGoogleOAuthConfig();
     const response = await fetch('https://oauth2.googleapis.com/token', {
       method: 'POST',
@@ -31,7 +52,7 @@ export class DbCredentialProvider implements CredentialProvider {
       body: new URLSearchParams({
         client_id: googleConfig.clientId,
         client_secret: googleConfig.clientSecret,
-        refresh_token: token.refresh_token,
+        refresh_token: refreshToken,
         grant_type: 'refresh_token',
       }),
     });
@@ -56,9 +77,9 @@ export class DbCredentialProvider implements CredentialProvider {
       userId,
       provider,
       payload.access_token,
-      payload.refresh_token ?? token.refresh_token,
+      payload.refresh_token ?? refreshToken,
       expiresAt,
-      token.scopes,
+      scopes,
     );
 
     return saved.access_token;

@@ -161,24 +161,18 @@ export const userRepository = {
       await client.query(
         `DELETE FROM execution_events WHERE plan_id IN
          (SELECT ep.id FROM execution_plans ep
-          JOIN candidate_actions ca ON ep.action_id = ca.id
-          JOIN decisions d ON ca.decision_id = d.id
-          WHERE d.user_id = $1)`,
+          WHERE ep.decision_id IN (SELECT id FROM decisions WHERE user_id = $1))`,
         [id],
       );
       await client.query(
         `DELETE FROM execution_results WHERE plan_id IN
          (SELECT ep.id FROM execution_plans ep
-          JOIN candidate_actions ca ON ep.action_id = ca.id
-          JOIN decisions d ON ca.decision_id = d.id
-          WHERE d.user_id = $1)`,
+          WHERE ep.decision_id IN (SELECT id FROM decisions WHERE user_id = $1))`,
         [id],
       );
       await client.query(
-        `DELETE FROM execution_plans WHERE action_id IN
-         (SELECT ca.id FROM candidate_actions ca
-          JOIN decisions d ON ca.decision_id = d.id
-          WHERE d.user_id = $1)`,
+        `DELETE FROM execution_plans WHERE decision_id IN
+         (SELECT id FROM decisions WHERE user_id = $1)`,
         [id],
       );
       await client.query(

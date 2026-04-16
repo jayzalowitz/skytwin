@@ -411,7 +411,10 @@ export class IronClawHttpClient {
       const latencyMs = Date.now() - start;
 
       if (response.ok) {
-        this.resetAllCircuitBreakers();
+        // Only reset the health endpoint breaker — other endpoints may still be down
+        // even if /health is responding. Individual endpoint breakers reset on their
+        // own successful requests via fetchWithRetries.
+        this.resetCircuitBreaker('health');
         return { healthy: true, latencyMs };
       }
 
@@ -639,24 +642,39 @@ export class IronClawHttpClient {
     const reader = body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
+    // Per-chunk read timeout: if no data arrives within 2x the request timeout, abort.
+    const chunkTimeoutMs = this.config.timeoutMs * 2;
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
+    try {
+      while (true) {
+        const readPromise = reader.read();
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          const timer = setTimeout(
+            () => reject(new Error(`IronClaw SSE stream for ${contextId} stalled — no data received in ${chunkTimeoutMs}ms`)),
+            chunkTimeoutMs,
+          );
+          // Allow Node to exit even if this timer is pending
+          if (typeof timer === 'object' && 'unref' in timer) timer.unref();
+        });
+        const { done, value } = await Promise.race([readPromise, timeoutPromise]);
+        if (done) break;
 
-      buffer += decoder.decode(value, { stream: true });
-      const messages = buffer.split('\n\n');
-      buffer = messages.pop() ?? '';
+        buffer += decoder.decode(value, { stream: true });
+        const messages = buffer.split('\n\n');
+        buffer = messages.pop() ?? '';
 
-      for (const message of messages) {
-        const parsed = this.parseSseMessage(message);
+        for (const message of messages) {
+          const parsed = this.parseSseMessage(message);
+          if (parsed !== null) yield parsed;
+        }
+      }
+
+      if (buffer.trim()) {
+        const parsed = this.parseSseMessage(buffer);
         if (parsed !== null) yield parsed;
       }
-    }
-
-    if (buffer.trim()) {
-      const parsed = this.parseSseMessage(buffer);
-      if (parsed !== null) yield parsed;
+    } finally {
+      reader.releaseLock();
     }
   }
 
@@ -903,11 +921,6 @@ export class IronClawHttpClient {
     breaker.cooldownMs = this.config.circuitBreakerWindowMs / 2;
   }
 
-  private resetAllCircuitBreakers(): void {
-    for (const endpoint of this.circuitBreakers.keys()) {
-      this.resetCircuitBreaker(endpoint);
-    }
-  }
 
   private delay(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
