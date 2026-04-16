@@ -52,6 +52,16 @@ export function connectSSE(userId) {
     showToast(`Action ${verb}`, data.description || data.actionType, data.status === 'completed' ? 'success' : 'warning');
   });
 
+  eventSource.addEventListener('decision:step', (e) => {
+    const data = JSON.parse(e.data);
+    window.dispatchEvent(new CustomEvent('sse:decision:step', { detail: data }));
+    if (data.eventType === 'step_started') {
+      showToast('Action in progress', data.description || data.actionType || 'Working on a step', 'info');
+    } else if (data.eventType === 'step_failed' || data.eventType === 'plan_failed') {
+      showToast('Action needs attention', data.description || data.actionType || 'Execution stopped', 'warning');
+    }
+  });
+
   eventSource.addEventListener('twin:updated', (e) => {
     const data = JSON.parse(e.data);
     window.dispatchEvent(new CustomEvent('sse:twin:updated', { detail: data }));

@@ -17,6 +17,19 @@ class TestActionHandler implements ActionHandler {
   }
 }
 
+class SlowActionHandler implements ActionHandler {
+  readonly actionType = 'test_action';
+  readonly domain = 'testing';
+  canHandle(actionType: string): boolean { return actionType === 'test_action'; }
+  async execute(_step: ExecutionStep): Promise<StepResult> {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    return { success: true };
+  }
+  async rollback(_step: ExecutionStep): Promise<StepResult> {
+    return { success: true };
+  }
+}
+
 function makeAction(overrides: Partial<CandidateAction> = {}): CandidateAction {
   return {
     id: 'act_1',
@@ -68,6 +81,45 @@ describe('DirectExecutionAdapter', () => {
 
     expect(result.status).toBe('completed');
     expect(result.output).toBeDefined();
+  });
+
+  it('tracks execution status for completed plans', async () => {
+    const registry = new ActionHandlerRegistry();
+    registry.register(new TestActionHandler());
+    const adapter = new DirectExecutionAdapter(registry);
+
+    const plan = await adapter.buildPlan(makeAction());
+    await adapter.execute(plan);
+
+    await expect(adapter.getStatus(plan.id)).resolves.toBe('completed');
+    await expect(adapter.getStatus('missing-plan')).rejects.toThrow('No executed plan');
+  });
+
+  it('streams per-step execution events', async () => {
+    const registry = new ActionHandlerRegistry();
+    registry.register(new TestActionHandler());
+    const adapter = new DirectExecutionAdapter(registry);
+
+    const plan = await adapter.buildPlan(makeAction());
+    const events: string[] = [];
+    for await (const event of adapter.executeStreaming(plan)) {
+      events.push(event.eventType);
+    }
+
+    expect(events).toEqual(['plan_started', 'step_started', 'step_completed', 'plan_completed']);
+  });
+
+  it('enforces step timeout', async () => {
+    const registry = new ActionHandlerRegistry();
+    registry.register(new SlowActionHandler());
+    const adapter = new DirectExecutionAdapter(registry);
+
+    const plan = await adapter.buildPlan(makeAction());
+    plan.steps[0]!.timeout = 5;
+
+    const result = await adapter.execute(plan);
+    expect(result.status).toBe('failed');
+    expect(result.error).toContain('Step timed out after 5ms');
   });
 
   it('throws when no handler is registered (enables fallback chain)', async () => {

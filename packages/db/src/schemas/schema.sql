@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS users (
   name STRING NOT NULL,
   trust_tier STRING NOT NULL DEFAULT 'observer',
   autonomy_settings JSONB NOT NULL DEFAULT '{}',
+  ironclaw_channel STRING DEFAULT 'skytwin',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -164,10 +165,11 @@ CREATE TABLE IF NOT EXISTS approval_requests (
 CREATE TABLE IF NOT EXISTS execution_plans (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   decision_id UUID NOT NULL REFERENCES decisions(id),
-  action_id UUID NOT NULL REFERENCES candidate_actions(id),
+  action_id UUID REFERENCES candidate_actions(id),
   status STRING NOT NULL DEFAULT 'pending',
   steps JSONB NOT NULL DEFAULT '[]',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   INDEX (decision_id)
 );
 
@@ -180,6 +182,16 @@ CREATE TABLE IF NOT EXISTS execution_results (
   rollback_available BOOL NOT NULL DEFAULT false,
   completed_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS execution_events (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  plan_id UUID NOT NULL REFERENCES execution_plans(id),
+  step_id STRING,
+  event_type STRING NOT NULL,
+  payload JSONB NOT NULL DEFAULT '{}',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_execution_events_plan ON execution_events (plan_id, created_at ASC);
 
 -- ============================================================================
 -- Explanation / Audit
@@ -213,3 +225,63 @@ CREATE TABLE IF NOT EXISTS feedback_events (
   INDEX (user_id, created_at DESC),
   INDEX (decision_id)
 );
+
+-- ============================================================================
+-- Service Credentials & IronClaw Integration
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS service_credentials (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  service STRING NOT NULL,
+  credential_key STRING NOT NULL,
+  credential_value STRING NOT NULL,
+  label STRING,
+  ironclaw_synced_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (service, credential_key)
+);
+CREATE INDEX idx_service_credentials_service ON service_credentials (service);
+
+CREATE TABLE IF NOT EXISTS credential_requirements (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  adapter STRING NOT NULL,
+  integration STRING NOT NULL,
+  integration_label STRING NOT NULL,
+  description STRING,
+  field_key STRING NOT NULL,
+  field_label STRING NOT NULL,
+  field_placeholder STRING,
+  is_secret BOOLEAN NOT NULL DEFAULT false,
+  is_optional BOOLEAN NOT NULL DEFAULT false,
+  skills STRING[] NOT NULL DEFAULT ARRAY[]::STRING[],
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (adapter, integration, field_key)
+);
+CREATE INDEX idx_credential_requirements_adapter ON credential_requirements (adapter);
+CREATE INDEX idx_credential_requirements_integration ON credential_requirements (integration);
+
+CREATE TABLE IF NOT EXISTS ai_provider_settings (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  provider STRING NOT NULL,
+  api_key STRING NOT NULL DEFAULT '',
+  model STRING NOT NULL,
+  base_url STRING,
+  priority INT NOT NULL DEFAULT 0,
+  enabled BOOLEAN NOT NULL DEFAULT true,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (user_id, provider)
+);
+CREATE INDEX idx_ai_provider_settings_user ON ai_provider_settings (user_id, priority);
+
+CREATE TABLE IF NOT EXISTS ironclaw_tools (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tool_name STRING NOT NULL UNIQUE,
+  description STRING,
+  action_types STRING[] NOT NULL DEFAULT '{}',
+  requires_credentials STRING[] NOT NULL DEFAULT '{}',
+  discovered_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_ironclaw_tools_discovered ON ironclaw_tools (discovered_at DESC);

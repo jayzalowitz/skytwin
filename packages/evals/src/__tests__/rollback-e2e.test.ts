@@ -126,9 +126,9 @@ describe('Rollback E2E', () => {
   });
 
   it('reports unhealthy when configured', async () => {
-    expect(await adapter.healthCheck()).toBe(true);
+    expect((await adapter.healthCheck()).healthy).toBe(true);
     adapter.setHealthy(false);
-    expect(await adapter.healthCheck()).toBe(false);
+    expect((await adapter.healthCheck()).healthy).toBe(false);
   });
 
   it('resets all state cleanly', async () => {

@@ -13,6 +13,7 @@
   "dependencies": {
     "@skytwin/core": "workspace:*",
     "@skytwin/shared-types": "workspace:*",
+    "@skytwin/ironclaw-adapter": "workspace:*",
     "@skytwin/connectors": "workspace:*",
     "@skytwin/db": "workspace:*",
     "@skytwin/config": "workspace:*"

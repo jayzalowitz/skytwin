@@ -1,5 +1,6 @@
 import type { AdapterTrustProfile } from '@skytwin/shared-types';
 import type { IronClawAdapter } from '@skytwin/ironclaw-adapter';
+import { isIronClawEnhancedAdapter } from '@skytwin/ironclaw-adapter';
 
 /**
  * Entry in the adapter registry: an adapter implementation paired with its trust profile.
@@ -73,6 +74,14 @@ export class AdapterRegistry {
    */
   getAll(): Map<string, AdapterEntry> {
     return new Map(this.entries);
+  }
+
+  /**
+   * Check if a registered adapter implements the enhanced IronClaw API.
+   */
+  isEnhanced(name: string): boolean {
+    const entry = this.entries.get(name);
+    return entry ? isIronClawEnhancedAdapter(entry.adapter) : false;
   }
 
   /**

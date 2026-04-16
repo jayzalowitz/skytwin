@@ -44,6 +44,7 @@ export const twinRepository = {
         spend_norms, communication_style, routines, domain_heuristics
       )
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      ON CONFLICT (user_id) DO NOTHING
       RETURNING *`,
       [
         userId,
@@ -56,7 +57,15 @@ export const twinRepository = {
         JSON.stringify(initial?.domain_heuristics ?? {}),
       ],
     );
-    return result.rows[0]!;
+    if (result.rows[0]) {
+      return result.rows[0];
+    }
+
+    const existing = await this.getProfile(userId);
+    if (!existing) {
+      throw new Error(`Failed to create or load twin profile for user ${userId}`);
+    }
+    return existing;
   },
 
   /**

@@ -1,12 +1,19 @@
 import { loadConfig } from '@skytwin/config';
+import { RealIronClawAdapter } from '@skytwin/ironclaw-adapter';
 import type { SignalConnector, RawSignal } from '@skytwin/connectors';
 import {
   GmailConnector,
   GoogleCalendarConnector,
   DbTokenStore,
   OAuthRefreshError,
+  type GoogleOAuthConfig,
 } from '@skytwin/connectors';
-import { oauthRepository, approvalRepository } from '@skytwin/db';
+import {
+  oauthRepository,
+  approvalRepository,
+  ironClawToolRepository,
+  serviceCredentialRepository,
+} from '@skytwin/db';
 import { withRetry, RetryableHttpError, CircuitBreaker, createLogger } from '@skytwin/core';
 
 const config = loadConfig();
@@ -14,6 +21,9 @@ const log = createLogger('worker');
 
 /** Per-user circuit breakers to skip users with persistent failures. */
 const userCircuitBreakers = new Map<string, CircuitBreaker>();
+const seenSignalIdsByUser = new Map<string, Map<string, number>>();
+const SIGNAL_DEDUPE_TTL_MS = 24 * 60 * 60 * 1000;
+const SIGNAL_DEDUPE_MAX_PER_USER = 5_000;
 
 function getCircuitBreaker(userId: string): CircuitBreaker {
   let breaker = userCircuitBreakers.get(userId);
@@ -40,6 +50,8 @@ function getCircuitBreaker(userId: string): CircuitBreaker {
  */
 
 let running = true;
+let lastIronClawToolRefreshAt = 0;
+const IRONCLAW_TOOL_REFRESH_MS = 15 * 60 * 1000;
 
 interface UserConnectors {
   userId: string;
@@ -79,6 +91,49 @@ async function forwardSignalToApi(signal: RawSignal, userId: string): Promise<vo
   log.info(`Forwarded signal ${signal.id} (${signal.source}/${signal.type}) for user ${userId}`);
 }
 
+function getSignalDedupeMap(userId: string): Map<string, number> {
+  const now = Date.now();
+  let seen = seenSignalIdsByUser.get(userId);
+  if (!seen) {
+    seen = new Map();
+    seenSignalIdsByUser.set(userId, seen);
+  }
+
+  // Evict expired entries first, then trim oldest if still over limit
+  if (seen.size > SIGNAL_DEDUPE_MAX_PER_USER) {
+    for (const [key, seenAt] of seen) {
+      if (now - seenAt > SIGNAL_DEDUPE_TTL_MS) {
+        seen.delete(key);
+      }
+    }
+    // If still over limit after expiry sweep, trim oldest entries (Map preserves insertion order)
+    if (seen.size > SIGNAL_DEDUPE_MAX_PER_USER) {
+      const excess = seen.size - SIGNAL_DEDUPE_MAX_PER_USER;
+      let removed = 0;
+      for (const key of seen.keys()) {
+        if (removed >= excess) break;
+        seen.delete(key);
+        removed++;
+      }
+    }
+  }
+
+  return seen;
+}
+
+function hasForwardedSignal(signal: RawSignal, userId: string): boolean {
+  const now = Date.now();
+  const seen = getSignalDedupeMap(userId);
+  const key = `${signal.source}:${signal.id}`;
+  const seenAt = seen.get(key);
+  return Boolean(seenAt && now - seenAt < SIGNAL_DEDUPE_TTL_MS);
+}
+
+function markSignalForwarded(signal: RawSignal, userId: string): void {
+  const seen = getSignalDedupeMap(userId);
+  seen.set(`${signal.source}:${signal.id}`, Date.now());
+}
+
 /**
  * Poll connectors for a single user, guarded by per-user circuit breaker.
  */
@@ -98,7 +153,11 @@ async function pollUser(userConnectors: UserConnectors): Promise<void> {
     try {
       const signals = await connector.poll();
       for (const signal of signals) {
+        if (hasForwardedSignal(signal, userConnectors.userId)) {
+          continue;
+        }
         await forwardSignalToApi(signal, userConnectors.userId);
+        markSignalForwarded(signal, userConnectors.userId);
       }
     } catch (error) {
       hadFailure = true;
@@ -129,6 +188,80 @@ async function pollUser(userConnectors: UserConnectors): Promise<void> {
   }
 }
 
+async function resolveGoogleConfig(): Promise<GoogleOAuthConfig | null> {
+  let clientId = config.googleClientId;
+  let clientSecret = config.googleClientSecret;
+  let redirectUri = config.googleRedirectUri;
+
+  if (!clientId || !clientSecret) {
+    try {
+      const dbCreds = await serviceCredentialRepository.getAsMap('google');
+      clientId = clientId || dbCreds['client_id'] || '';
+      clientSecret = clientSecret || dbCreds['client_secret'] || '';
+      if (dbCreds['redirect_uri'] && redirectUri === 'http://localhost:3100/api/oauth/google/callback') {
+        redirectUri = dbCreds['redirect_uri'];
+      }
+    } catch (error) {
+      log.warn('Could not load Google OAuth credentials from DB', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  if (!clientId || !clientSecret) {
+    log.warn('Google OAuth tokens exist, but Google client credentials are not configured; skipping Google connectors');
+    return null;
+  }
+
+  return { clientId, clientSecret, redirectUri };
+}
+
+async function connectUserConnectors(discovered: UserConnectors[]): Promise<UserConnectors[]> {
+  const connectedUsers: UserConnectors[] = [];
+
+  for (const uc of discovered) {
+    const breaker = getCircuitBreaker(uc.userId);
+    if (!breaker.canExecute()) {
+      log.warn(`Skipping connector startup for user ${uc.userId} — circuit open, retry in ${Math.round(breaker.getTimeUntilRetryMs() / 1000)}s`, {
+        retryInMs: breaker.getTimeUntilRetryMs(),
+      });
+      continue;
+    }
+
+    const connected: SignalConnector[] = [];
+    for (const connector of uc.connectors) {
+      try {
+        await connector.connect();
+        connected.push(connector);
+        log.info(`Connected: ${connector.name} for user ${uc.userId}`);
+      } catch (error) {
+        if (error instanceof OAuthRefreshError && error.permanent) {
+          log.error(`Permanent OAuth failure for user ${uc.userId} on ${connector.name} — user must re-authorize`, {
+            error: error.message,
+            statusCode: error.statusCode,
+          });
+          for (let i = 0; i < 3 && breaker.canExecute(); i++) {
+            breaker.recordFailure();
+          }
+          break;
+        }
+
+        log.error(`Error connecting ${connector.name} for user ${uc.userId}`, {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        breaker.recordFailure();
+      }
+    }
+
+    if (connected.length > 0) {
+      connectedUsers.push({ userId: uc.userId, connectors: connected });
+      breaker.recordSuccess();
+    }
+  }
+
+  return connectedUsers;
+}
+
 /**
  * Discover users with active OAuth tokens and build their connectors.
  * Returns empty array if no users have connected accounts yet.
@@ -148,19 +281,21 @@ async function discoverUsers(): Promise<UserConnectors[]> {
       userTokens.set(token.user_id, existing);
     }
 
+    let googleConfig: GoogleOAuthConfig | null | undefined;
     const result: UserConnectors[] = [];
     for (const [userId, userTokenList] of userTokens) {
       const connectors: SignalConnector[] = [];
       const hasGoogle = userTokenList.some((t) => t.provider === 'google');
 
       if (hasGoogle) {
-        const tokenStore = new DbTokenStore(oauthRepository, {
-          clientId: config.googleClientId,
-          clientSecret: config.googleClientSecret,
-          redirectUri: config.googleRedirectUri,
-        });
-        connectors.push(new GmailConnector(userId, tokenStore));
-        connectors.push(new GoogleCalendarConnector(userId, tokenStore));
+        if (googleConfig === undefined) {
+          googleConfig = await resolveGoogleConfig();
+        }
+        if (googleConfig) {
+          const tokenStore = new DbTokenStore(oauthRepository, googleConfig);
+          connectors.push(new GmailConnector(userId, tokenStore));
+          connectors.push(new GoogleCalendarConnector(userId, tokenStore));
+        }
       }
 
       if (connectors.length > 0) {
@@ -174,6 +309,49 @@ async function discoverUsers(): Promise<UserConnectors[]> {
       error: error instanceof Error ? error.message : String(error),
     });
     return [];
+  }
+}
+
+// Worker runs in a separate process from the API, so it needs its own IronClaw adapter
+// with independent circuit breaker state. This is intentional — the worker's view of
+// IronClaw health should reflect the worker's own request patterns, not the API's.
+let workerIronClawAdapter: RealIronClawAdapter | null = null;
+function getWorkerIronClawAdapter(): RealIronClawAdapter {
+  if (!workerIronClawAdapter) {
+    workerIronClawAdapter = new RealIronClawAdapter({
+      apiUrl: config.ironclawApiUrl!,
+      webhookSecret: config.ironclawWebhookSecret!,
+      gatewayToken: config.ironclawGatewayToken,
+      ownerId: config.ironclawOwnerId,
+      defaultChannel: config.ironclawDefaultChannel,
+      preferChatCompletions: config.ironclawPreferChat,
+    });
+  }
+  return workerIronClawAdapter;
+}
+
+async function refreshIronClawToolsIfDue(force = false): Promise<void> {
+  if (!config.ironclawApiUrl || !config.ironclawWebhookSecret) return;
+  const now = Date.now();
+  if (!force && now - lastIronClawToolRefreshAt < IRONCLAW_TOOL_REFRESH_MS) return;
+  lastIronClawToolRefreshAt = now;
+
+  try {
+    const adapter = getWorkerIronClawAdapter();
+    const tools = await adapter.discoverTools();
+    if (tools.length === 0) return;
+
+    await ironClawToolRepository.upsertMany(tools.map((tool) => ({
+      toolName: tool.name,
+      description: tool.description,
+      actionTypes: tool.actionTypes,
+      requiresCredentials: tool.requiresCredentials,
+    })));
+    log.info(`Refreshed ${tools.length} IronClaw tool manifest(s)`);
+  } catch (error) {
+    log.warn('IronClaw tool refresh failed', {
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 }
 
@@ -193,20 +371,13 @@ async function main(): Promise<void> {
   startupTimer.unref();
 
   // Discover users and set up connectors
-  let userConnectors = await discoverUsers();
+  let userConnectors = await connectUserConnectors(await discoverUsers());
   if (userConnectors.length === 0) {
     log.info('No users with connected accounts yet — waiting for first connection');
   } else {
     log.info(`Tracking ${userConnectors.length} user(s)`);
   }
-
-  // Connect all
-  for (const uc of userConnectors) {
-    for (const connector of uc.connectors) {
-      await connector.connect();
-      log.info(`Connected: ${connector.name} for user ${uc.userId}`);
-    }
-  }
+  await refreshIronClawToolsIfDue(true);
 
   clearTimeout(startupTimer);
   let pollCount = 0;
@@ -253,7 +424,7 @@ async function main(): Promise<void> {
     // When no users are tracked yet, check every cycle so first-time
     // connections are picked up within one poll interval (~10s).
     if (userConnectors.length === 0 || pollCount % 10 === 0) {
-      const newUserConnectors = await discoverUsers();
+      const newUserConnectors = await connectUserConnectors(await discoverUsers());
       const oldUserIds = new Set(userConnectors.map((uc) => uc.userId));
       const newUserIds = new Set(newUserConnectors.map((uc) => uc.userId));
       const usersChanged = oldUserIds.size !== newUserIds.size
@@ -266,22 +437,23 @@ async function main(): Promise<void> {
             await connector.disconnect();
           }
         }
-        // Connect new ones
-        for (const uc of newUserConnectors) {
-          for (const connector of uc.connectors) {
-            await connector.connect();
-          }
-        }
         userConnectors = newUserConnectors;
 
-        // Prune circuit breakers for users no longer tracked
+        // Prune circuit breakers and signal dedupe maps for users no longer tracked
         for (const userId of userCircuitBreakers.keys()) {
           if (!newUserIds.has(userId)) {
             userCircuitBreakers.delete(userId);
           }
         }
+        for (const userId of seenSignalIdsByUser.keys()) {
+          if (!newUserIds.has(userId)) {
+            seenSignalIdsByUser.delete(userId);
+          }
+        }
       }
     }
+
+    await refreshIronClawToolsIfDue();
 
     await new Promise((resolve) => setTimeout(resolve, config.workerPollIntervalMs));
   }

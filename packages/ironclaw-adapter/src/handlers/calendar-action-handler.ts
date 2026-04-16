@@ -1,4 +1,5 @@
 import type { ActionHandler, ExecutionStep, StepResult } from '@skytwin/shared-types';
+import type { CredentialProvider } from '../credential-provider.js';
 
 const CALENDAR_API = 'https://www.googleapis.com/calendar/v3';
 
@@ -9,6 +10,8 @@ export class CalendarActionHandler implements ActionHandler {
   readonly actionType = 'calendar';
   readonly domain = 'calendar';
 
+  constructor(private readonly credentialProvider?: CredentialProvider) {}
+
   canHandle(actionType: string): boolean {
     return [
       'accept_invite', 'decline_invite', 'propose_alternative',
@@ -18,12 +21,9 @@ export class CalendarActionHandler implements ActionHandler {
 
   async execute(step: ExecutionStep): Promise<StepResult> {
     const actionType = (step.parameters['actionType'] as string) ?? step.type;
-    const accessToken = step.parameters['accessToken'] as string | undefined;
+    const accessToken = await this.resolveAccessToken(step);
     const eventId = step.parameters['eventId'] as string | undefined;
 
-    if (!accessToken) {
-      return { success: false, error: 'Missing accessToken in step parameters' };
-    }
     if (!eventId) {
       return { success: false, error: 'Missing eventId in step parameters' };
     }
@@ -46,15 +46,30 @@ export class CalendarActionHandler implements ActionHandler {
   }
 
   async rollback(step: ExecutionStep): Promise<StepResult> {
-    const accessToken = step.parameters['accessToken'] as string | undefined;
+    const accessToken = await this.resolveAccessToken(step);
     const eventId = step.parameters['eventId'] as string | undefined;
 
-    if (!accessToken || !eventId) {
-      return { success: false, error: 'Missing accessToken or eventId for rollback' };
+    if (!eventId) {
+      return { success: false, error: 'Missing eventId for rollback' };
     }
 
     // Reset response to needsAction
     return this.respondToEvent(accessToken, eventId, 'needsAction');
+  }
+
+  private async resolveAccessToken(step: ExecutionStep): Promise<string> {
+    const userId = step.parameters['userId'] as string | undefined;
+    if (this.credentialProvider && userId) {
+      const result = await this.credentialProvider.getAccessToken(userId, 'google');
+      if (!result.success) throw new Error(result.error);
+      return result.accessToken;
+    }
+
+    const accessToken = step.parameters['accessToken'] as string | undefined;
+    if (!accessToken) {
+      throw new Error('Missing accessToken — no OAuth token available for Google Calendar.');
+    }
+    return accessToken;
   }
 
   private async respondToEvent(

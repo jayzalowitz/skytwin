@@ -1,5 +1,8 @@
 import { fetchJSON, escapeHtml } from '../api-client.js';
 
+// Module-level sync lookup for dynamic integration card rendering
+let _syncLookup = {};
+
 /**
  * Render the service setup page.
  *
@@ -13,16 +16,19 @@ export async function renderSetup(container, _userId) {
   let status = null;
   let credentials = [];
   let schema = null;
+  let ironclawSync = null;
 
   try {
-    const [statusResult, credsResult, schemaResult] = await Promise.allSettled([
+    const [statusResult, credsResult, schemaResult, ironclawSyncResult] = await Promise.allSettled([
       fetchJSON('/api/credentials/status'),
       fetchJSON('/api/credentials'),
       fetchJSON('/api/credentials/schema'),
+      fetchJSON('/api/credentials/ironclaw-status'),
     ]);
     status = statusResult.status === 'fulfilled' ? statusResult.value : null;
     credentials = credsResult.status === 'fulfilled' ? (credsResult.value?.credentials ?? []) : [];
     schema = schemaResult.status === 'fulfilled' ? schemaResult.value : null;
+    ironclawSync = ironclawSyncResult.status === 'fulfilled' ? ironclawSyncResult.value : null;
   } catch { /* empty */ }
 
   // Build credential lookup
@@ -31,6 +37,7 @@ export async function renderSetup(container, _userId) {
     if (!credLookup[cred.service]) credLookup[cred.service] = {};
     credLookup[cred.service][cred.credentialKey] = cred;
   }
+  const syncLookup = buildSyncLookup(ironclawSync);
 
   const googleCreds = credLookup['google'] || {};
   const googleConfigured = status?.google?.configured ?? false;
@@ -206,6 +213,7 @@ export async function renderSetup(container, _userId) {
         </button>
         <span id="save-status-google" style="font-size: 0.85rem;"></span>
       </div>
+      ${renderIronClawSyncSummary('google', syncLookup)}
     </div>
 
     <!-- ── What's next ── -->
@@ -242,8 +250,8 @@ export async function renderSetup(container, _userId) {
       </summary>
       <div class="collapsible-body">
         <div class="card-subtitle" style="margin-bottom: 1rem;">
-          The execution engines auto-detect when running locally. Only use these overrides if you're
-          connecting to a remote instance or need to change the default configuration.
+          The execution engines auto-detect when running locally. Saved values become the active
+          API connection after the server refreshes its execution router.
         </div>
 
         <div style="margin-bottom: 1.5rem;">
@@ -271,7 +279,7 @@ export async function renderSetup(container, _userId) {
               data-service="ironclaw" data-key="owner_id" autocomplete="off">
           </div>
           <div style="display: flex; gap: 0.5rem; align-items: center;">
-            <button class="btn btn-outline btn-sm" onclick="saveServiceCredentials('ironclaw')">Save override</button>
+            <button class="btn btn-outline btn-sm" onclick="saveServiceCredentials('ironclaw')">Save connection</button>
             <span id="save-status-ironclaw" style="font-size: 0.85rem;"></span>
           </div>
         </div>
@@ -294,7 +302,7 @@ export async function renderSetup(container, _userId) {
             ${credLookup['openclaw']?.['api_key']?.hasValue ? '<div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem;">Currently set. Leave blank to keep.</div>' : ''}
           </div>
           <div style="display: flex; gap: 0.5rem; align-items: center;">
-            <button class="btn btn-outline btn-sm" onclick="saveServiceCredentials('openclaw')">Save override</button>
+            <button class="btn btn-outline btn-sm" onclick="saveServiceCredentials('openclaw')">Save connection</button>
             <span id="save-status-openclaw" style="font-size: 0.85rem;"></span>
           </div>
         </div>
@@ -313,6 +321,12 @@ export async function renderSetup(container, _userId) {
     btn.addEventListener('click', () => {
       const service = btn.getAttribute('data-save-service');
       if (service) window.saveServiceCredentials(service);
+    });
+  });
+  container.querySelectorAll('button[data-sync-service]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const service = btn.getAttribute('data-sync-service');
+      if (service) window.syncServiceToIronClaw(service);
     });
   });
 }
@@ -377,9 +391,39 @@ function renderDynamicIntegrations(integrations, credLookup) {
           <button class="btn btn-primary btn-sm" data-save-service="${escapeHtml(serviceKey)}">${allSet ? 'Update' : 'Save'}</button>
           <span id="save-status-${escapeHtml(serviceKey)}" style="font-size: 0.85rem;"></span>
         </div>
+        ${renderIronClawSyncSummary(serviceKey, _syncLookup || {})}
       </div>
     `;
   }).join('');
+}
+
+function buildSyncLookup(ironclawSync) {
+  const lookup = {};
+  for (const row of ironclawSync?.credentials ?? []) {
+    if (!lookup[row.service]) lookup[row.service] = [];
+    lookup[row.service].push(row);
+  }
+  _syncLookup = lookup;
+  return lookup;
+}
+
+function renderIronClawSyncSummary(service, syncLookup) {
+  if (service === 'ironclaw' || service === 'openclaw') return '';
+  const rows = syncLookup[service] || [];
+  if (rows.length === 0) return '';
+  const syncedCount = rows.filter(row => row.synced).length;
+  const allSynced = syncedCount === rows.length;
+  const text = allSynced
+    ? `Synced to IronClaw (${syncedCount}/${rows.length})`
+    : `Not fully synced to IronClaw (${syncedCount}/${rows.length})`;
+  const color = allSynced ? 'var(--success)' : 'var(--warning, #e6a700)';
+
+  return `
+    <div style="display: flex; justify-content: space-between; align-items: center; gap: 0.75rem; margin-top: 0.75rem; padding: 0.5rem 0.75rem; background: var(--bg); border-radius: var(--radius-sm);">
+      <span style="font-size: 0.8rem; color: ${color};">${escapeHtml(text)}</span>
+      <button class="btn btn-outline btn-sm" data-sync-service="${escapeHtml(service)}">Sync to IronClaw</button>
+    </div>
+  `;
 }
 
 function renderAdapterStatus(name, adapter, description) {
@@ -454,5 +498,21 @@ window.saveServiceCredentials = async function(service) {
     }, 800);
   } catch (err) {
     statusEl.innerHTML = `<span style="color: var(--danger);">${escapeHtml(err.message)}</span>`;
+  }
+};
+
+window.syncServiceToIronClaw = async function(service) {
+  const statusEl = document.getElementById(`save-status-${service}`);
+  if (statusEl) statusEl.innerHTML = '<span style="color: var(--text-muted);">Syncing...</span>';
+
+  try {
+    await fetchJSON(`/api/credentials/${service}/sync`, { method: 'POST' });
+    if (statusEl) statusEl.innerHTML = '<span style="color: var(--success);">Synced!</span>';
+    setTimeout(async () => {
+      const { renderSetup } = await import('./setup.js');
+      await renderSetup(document.getElementById('page-content'), localStorage.getItem('skytwin_userId'));
+    }, 800);
+  } catch (err) {
+    if (statusEl) statusEl.innerHTML = `<span style="color: var(--danger);">${escapeHtml(err.message)}</span>`;
   }
 };

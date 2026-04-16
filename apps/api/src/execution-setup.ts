@@ -11,8 +11,10 @@ import {
   SocialActionHandler,
   DocumentActionHandler,
   HealthActionHandler,
+  DbCredentialProvider,
+  isIronClawEnhancedAdapter,
 } from '@skytwin/ironclaw-adapter';
-import type { IronClawAdapter } from '@skytwin/ironclaw-adapter';
+import type { IronClawAdapter, IronClawEnhancedAdapter } from '@skytwin/ironclaw-adapter';
 import {
   ExecutionRouter,
   AdapterRegistry,
@@ -24,7 +26,7 @@ import {
   discoverAdapters,
 } from '@skytwin/execution-router';
 import type { OpenClawCredentialRequirement } from '@skytwin/execution-router';
-import { credentialRequirementRepository } from '@skytwin/db';
+import { credentialRequirementRepository, ironClawToolRepository, serviceCredentialRepository } from '@skytwin/db';
 import { sseManager } from './sse.js';
 
 /**
@@ -41,24 +43,36 @@ import { sseManager } from './sse.js';
 export async function createExecutionRouter(): Promise<ExecutionRouter> {
   const config = loadConfig();
   const registry = new AdapterRegistry();
+  const ironclawConfig = await resolveIronClawConfig(config);
+  const openclawConfig = await resolveOpenClawConfig(config);
 
   // IronClaw — highest trust, requires a running IronClaw server
-  if (config.ironclawApiUrl && config.ironclawWebhookSecret) {
+  if (ironclawConfig.apiUrl && ironclawConfig.webhookSecret) {
     const ironclawAdapter: IronClawAdapter = new RealIronClawAdapter({
-      apiUrl: config.ironclawApiUrl,
-      webhookSecret: config.ironclawWebhookSecret,
-      ownerId: config.ironclawOwnerId,
+      apiUrl: ironclawConfig.apiUrl,
+      webhookSecret: ironclawConfig.webhookSecret,
+      gatewayToken: ironclawConfig.gatewayToken,
+      ownerId: ironclawConfig.ownerId,
+      defaultChannel: ironclawConfig.defaultChannel,
+      preferChatCompletions: ironclawConfig.preferChatCompletions,
     });
-    registry.register('ironclaw', ironclawAdapter, IRONCLAW_TRUST_PROFILE);
-    console.info('[execution] Registered IronClaw adapter:', config.ironclawApiUrl);
+    const ironclawSkills = isIronClawEnhancedAdapter(ironclawAdapter)
+      ? await refreshIronClawToolCache(ironclawAdapter)
+      : undefined;
+    registry.register('ironclaw', ironclawAdapter, IRONCLAW_TRUST_PROFILE, ironclawSkills);
+    if (isIronClawEnhancedAdapter(ironclawAdapter)) {
+      await syncUnsyncedCredentialsToIronClaw(ironclawAdapter);
+    }
+    console.info('[execution] Registered IronClaw adapter:', ironclawConfig.apiUrl);
   } else {
     console.info('[execution] IronClaw not configured (no URL or secret) — skipping');
   }
 
   // Direct — local handler dispatch, always available
   const handlerRegistry = new ActionHandlerRegistry();
-  handlerRegistry.register(new EmailActionHandler());
-  handlerRegistry.register(new CalendarActionHandler());
+  const credentialProvider = new DbCredentialProvider();
+  handlerRegistry.register(new EmailActionHandler(credentialProvider));
+  handlerRegistry.register(new CalendarActionHandler(credentialProvider));
   handlerRegistry.register(new FinanceActionHandler());
   handlerRegistry.register(new TaskActionHandler());
   handlerRegistry.register(new SmartHomeActionHandler());
@@ -70,10 +84,10 @@ export async function createExecutionRouter(): Promise<ExecutionRouter> {
   console.info('[execution] Registered Direct adapter (local handlers: email, calendar, finance, task, smart-home, social, document, health)');
 
   // OpenClaw — community execution engine, only if configured
-  if (config.openclawApiUrl) {
+  if (openclawConfig.apiUrl) {
     const openclawAdapter = new OpenClawAdapter({
-      apiUrl: config.openclawApiUrl,
-      apiKey: config.openclawApiKey || undefined,
+      apiUrl: openclawConfig.apiUrl,
+      apiKey: openclawConfig.apiKey || undefined,
       onCredentialNeeded: async (req: OpenClawCredentialRequirement) => {
         // Persist the requirement so the Setup page discovers it
         for (const field of req.fields) {
@@ -102,7 +116,7 @@ export async function createExecutionRouter(): Promise<ExecutionRouter> {
       },
     });
     registry.register('openclaw', openclawAdapter, OPENCLAW_TRUST_PROFILE, OPENCLAW_SKILLS);
-    console.info('[execution] Registered OpenClaw adapter:', config.openclawApiUrl);
+    console.info('[execution] Registered OpenClaw adapter:', openclawConfig.apiUrl);
   } else {
     console.info('[execution] OpenClaw not configured (no URL) — skipping');
   }
@@ -114,6 +128,152 @@ export async function createExecutionRouter(): Promise<ExecutionRouter> {
   }
 
   return new ExecutionRouter(registry);
+}
+
+async function getStoredCredentials(service: string): Promise<Record<string, string>> {
+  try {
+    return await serviceCredentialRepository.getAsMap(service);
+  } catch {
+    return {};
+  }
+}
+
+async function resolveIronClawConfig(config: ReturnType<typeof loadConfig>): Promise<{
+  apiUrl: string;
+  webhookSecret: string;
+  gatewayToken: string;
+  ownerId: string;
+  defaultChannel: string;
+  preferChatCompletions: boolean;
+}> {
+  const stored = await getStoredCredentials('ironclaw');
+  return {
+    apiUrl: stored['api_url'] || config.ironclawApiUrl,
+    webhookSecret: stored['webhook_secret'] || config.ironclawWebhookSecret,
+    gatewayToken: stored['gateway_token'] || config.ironclawGatewayToken,
+    ownerId: stored['owner_id'] || config.ironclawOwnerId,
+    defaultChannel: stored['default_channel'] || config.ironclawDefaultChannel,
+    preferChatCompletions: config.ironclawPreferChat,
+  };
+}
+
+async function resolveOpenClawConfig(config: ReturnType<typeof loadConfig>): Promise<{
+  apiUrl: string;
+  apiKey: string;
+}> {
+  const stored = await getStoredCredentials('openclaw');
+  return {
+    apiUrl: stored['api_url'] || config.openclawApiUrl,
+    apiKey: stored['api_key'] || config.openclawApiKey,
+  };
+}
+
+export async function getIronClawEnhancedAdapter(): Promise<IronClawEnhancedAdapter | null> {
+  const router = await getExecutionRouter();
+  const entry = router.getRegistry().get('ironclaw');
+  if (!entry || !isIronClawEnhancedAdapter(entry.adapter)) return null;
+  return entry.adapter;
+}
+
+export function ironClawCredentialName(service: string, credentialKey: string): string {
+  return `${service}.${credentialKey}`;
+}
+
+export async function syncUnsyncedCredentialsToIronClaw(
+  adapter: IronClawEnhancedAdapter,
+): Promise<void> {
+  const unsynced = await serviceCredentialRepository.getUnsyncedCredentials().catch(() => []);
+  // Register concurrently in bounded batches of 5
+  const BATCH_SIZE = 5;
+  const synced: Array<{ service: string; key: string }> = [];
+  for (let i = 0; i < unsynced.length; i += BATCH_SIZE) {
+    const batch = unsynced.slice(i, i + BATCH_SIZE);
+    const results = await Promise.allSettled(
+      batch.map(async (credential) => {
+        const name = ironClawCredentialName(credential.service, credential.credential_key);
+        await adapter.registerCredential(name, credential.credential_value);
+        return { service: credential.service, key: credential.credential_key };
+      }),
+    );
+    for (const result of results) {
+      if (result.status === 'fulfilled') {
+        synced.push(result.value);
+      } else {
+        console.warn('[execution] Failed to sync a credential to IronClaw:', result.reason instanceof Error ? result.reason.message : String(result.reason));
+      }
+    }
+  }
+  // Batch markSynced for all successful registrations
+  for (const { service, key } of synced) {
+    await serviceCredentialRepository.markSynced(service, key).catch((err) => {
+      console.warn('[execution] markSynced failed:', err instanceof Error ? err.message : String(err));
+    });
+  }
+}
+
+export async function syncCredentialToIronClaw(
+  service: string,
+  credentialKey: string,
+  credentialValue: string,
+): Promise<boolean> {
+  const adapter = await getIronClawEnhancedAdapter();
+  if (!adapter) return false;
+
+  const name = ironClawCredentialName(service, credentialKey);
+  try {
+    await adapter.registerCredential(name, credentialValue);
+    await serviceCredentialRepository.markSynced(service, credentialKey);
+    return true;
+  } catch (error) {
+    console.warn(`[execution] Failed to sync credential for ${service} to IronClaw:`, error instanceof Error ? error.message : String(error));
+    return false;
+  }
+}
+
+export async function revokeCredentialFromIronClaw(
+  service: string,
+  credentialKey: string,
+): Promise<boolean> {
+  const adapter = await getIronClawEnhancedAdapter();
+  if (!adapter) return false;
+
+  try {
+    await adapter.revokeCredential(ironClawCredentialName(service, credentialKey));
+    return true;
+  } catch (error) {
+    console.warn(`[execution] Failed to revoke credential for ${service} from IronClaw:`, error instanceof Error ? error.message : String(error));
+    return false;
+  }
+}
+
+export async function refreshIronClawToolCache(
+  adapter?: IronClawEnhancedAdapter,
+): Promise<Set<string> | undefined> {
+  const enhanced = adapter ?? await getIronClawEnhancedAdapter();
+  if (!enhanced) return await readCachedIronClawSkills();
+
+  try {
+    const tools = await enhanced.discoverTools();
+    if (tools.length > 0) {
+      await ironClawToolRepository.upsertMany(tools.map((tool) => ({
+        toolName: tool.name,
+        description: tool.description,
+        actionTypes: tool.actionTypes,
+        requiresCredentials: tool.requiresCredentials,
+      })));
+      return new Set(tools.flatMap((tool) => tool.actionTypes));
+    }
+    return await readCachedIronClawSkills() ?? new Set<string>();
+  } catch (error) {
+    console.warn('[execution] IronClaw tool discovery failed, using cache if available:', error instanceof Error ? error.message : String(error));
+  }
+
+  return await readCachedIronClawSkills();
+}
+
+async function readCachedIronClawSkills(): Promise<Set<string> | undefined> {
+  const cached = await ironClawToolRepository.getSkillSet().catch(() => new Set<string>());
+  return cached.size > 0 ? cached : undefined;
 }
 
 /**
@@ -131,4 +291,8 @@ export async function getExecutionRouter(): Promise<ExecutionRouter> {
     });
   }
   return _routerPromise;
+}
+
+export function resetExecutionRouterForConfigChange(): void {
+  _routerPromise = null;
 }

@@ -61,9 +61,15 @@ export type {
   ExecutionStep,
   ExecutionResult,
   ExecutionStatus,
+  ExecutionEvent,
   RollbackResult,
   ActionHandler,
   StepResult,
+  ChatMessage,
+  ChatCompletionResponse,
+  ChatCompletionChunk,
+  IronClawToolManifest,
+  IronClawRoutine,
 } from './execution.js';
 
 export type {

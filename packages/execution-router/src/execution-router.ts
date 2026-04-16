@@ -1,5 +1,7 @@
 import type {
   CandidateAction,
+  ExecutionEvent,
+  ExecutionPlan,
   RiskAssessment,
   ExecutionResult,
   RoutingDecision,
@@ -199,6 +201,103 @@ export class ExecutionRouter {
   }
 
   /**
+   * Route to the best adapter and stream execution progress when supported.
+   * Falls back to the existing synchronous execution path for adapters without
+   * streaming support.
+   */
+  async *executeWithRoutingStreaming(
+    action: CandidateAction,
+    riskAssessment: RiskAssessment,
+    userId: string,
+  ): AsyncIterable<ExecutionEvent> {
+    const routingDecision = await this.route(action, riskAssessment, userId);
+    const adapterChain = [routingDecision.selectedAdapter, ...routingDecision.fallbackChain];
+    const attemptedAdapters: string[] = [];
+    let firstAttemptCompleted = false;
+
+    for (const adapterName of adapterChain) {
+      if (firstAttemptCompleted) {
+        break;
+      }
+
+      attemptedAdapters.push(adapterName);
+      const entry = this.registry.get(adapterName);
+      if (!entry) continue;
+
+      try {
+        const plan = await entry.adapter.buildPlan(action);
+
+        if (hasStreamingExecution(entry.adapter)) {
+          let sawTerminalEvent = false;
+          for await (const event of entry.adapter.executeStreaming(plan)) {
+            const terminalEvent = event.eventType === 'plan_completed' || event.eventType === 'plan_failed';
+            if (terminalEvent) {
+              sawTerminalEvent = true;
+              firstAttemptCompleted = true;
+            }
+
+            yield {
+              ...event,
+              payload: {
+                ...event.payload,
+                adapter_used: adapterName,
+                routing_decision: routingDecision.selectedAdapter,
+                fallbacks_attempted: attemptedAdapters.length - 1,
+              },
+            };
+          }
+
+          if (sawTerminalEvent) return;
+          firstAttemptCompleted = true;
+          yield {
+            planId: plan.id,
+            eventType: 'plan_completed',
+            timestamp: new Date(),
+            payload: {
+              adapter_used: adapterName,
+              routing_decision: routingDecision.selectedAdapter,
+              fallbacks_attempted: attemptedAdapters.length - 1,
+            },
+          };
+          return;
+        }
+
+        const result = await entry.adapter.execute(plan);
+        const status = result.status === 'completed' ? 'plan_completed' : 'plan_failed';
+        firstAttemptCompleted = true;
+
+        yield {
+          planId: result.planId,
+          eventType: status,
+          timestamp: result.completedAt ?? new Date(),
+          payload: {
+            ...result.output,
+            error: result.error,
+            adapter_used: adapterName,
+            routing_decision: routingDecision.selectedAdapter,
+            fallbacks_attempted: attemptedAdapters.length - 1,
+            fallback_skipped_reason: result.status === 'completed'
+              ? undefined
+              : 'previous adapter returned non-completed status, fallback unsafe',
+          },
+        };
+        return;
+      } catch {
+        // Adapter threw before execution started — safe to try next in chain.
+      }
+    }
+
+    const gap = logSkillGap(
+      action.actionType,
+      action.description,
+      attemptedAdapters,
+      userId,
+      action.decisionId,
+    );
+    throw new NoAdapterError(gap);
+  }
+
+  /**
    * Sort adapter names by trust ranking. Adapters not in the ranking
    * are placed at the end in their original order.
    */
@@ -249,4 +348,10 @@ export class ExecutionRouter {
 
     return parts.join(' ');
   }
+}
+
+function hasStreamingExecution(
+  adapter: unknown,
+): adapter is { executeStreaming(plan: ExecutionPlan): AsyncIterable<ExecutionEvent> } {
+  return typeof (adapter as { executeStreaming?: unknown }).executeStreaming === 'function';
 }

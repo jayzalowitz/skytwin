@@ -13,6 +13,7 @@ export interface UserRow {
   name: string;
   trust_tier: string;
   autonomy_settings: Record<string, unknown>;
+  ironclaw_channel: string | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -156,10 +157,11 @@ export interface ApprovalRequestRow {
 export interface ExecutionPlanRow {
   id: string;
   decision_id: string;
-  action_id: string;
+  action_id: string | null;
   status: string;
   steps: unknown[];
   created_at: Date;
+  updated_at: Date;
 }
 
 export interface ExecutionResultRow {
@@ -170,6 +172,15 @@ export interface ExecutionResultRow {
   error: string | null;
   rollback_available: boolean;
   completed_at: Date;
+}
+
+export interface ExecutionEventRow {
+  id: string;
+  plan_id: string;
+  step_id: string | null;
+  event_type: string;
+  payload: Record<string, unknown>;
+  created_at: Date;
 }
 
 // ============================================================================
@@ -524,6 +535,7 @@ export interface ServiceCredentialRow {
   credential_key: string;
   credential_value: string;
   label: string | null;
+  ironclaw_synced_at: Date | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -541,6 +553,15 @@ export interface CredentialRequirementRow {
   is_optional: boolean;
   skills: string[];
   created_at: Date;
+}
+
+export interface IronClawToolRow {
+  id: string;
+  tool_name: string;
+  description: string | null;
+  action_types: string[];
+  requires_credentials: string[];
+  discovered_at: Date;
 }
 
 // ============================================================================

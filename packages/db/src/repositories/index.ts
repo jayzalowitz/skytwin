@@ -28,6 +28,7 @@ export { executionRepository } from './execution-repository.js';
 export type {
   CreateExecutionPlanInput,
   CreateExecutionResultInput,
+  CreateExecutionEventInput,
   ExecutionPlanWithResult,
 } from './execution-repository.js';
 
@@ -80,3 +81,6 @@ export type { RegisterCredentialRequirementInput } from './credential-requiremen
 
 export { aiProviderRepository } from './ai-provider-repository.js';
 export type { UpsertAIProviderInput } from './ai-provider-repository.js';
+
+export { ironClawToolRepository } from './ironclaw-tool-repository.js';
+export type { UpsertIronClawToolInput } from './ironclaw-tool-repository.js';

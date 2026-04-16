@@ -2,6 +2,7 @@ import type {
   CandidateAction,
   ExecutionPlan,
   ExecutionResult,
+  ExecutionStatus,
   ExecutionStep,
   RollbackResult,
 } from '@skytwin/shared-types';
@@ -13,8 +14,9 @@ import type { IronClawAdapter } from './ironclaw-adapter.js';
  * Simulates execution by logging actions and returning synthetic results.
  * All "executions" succeed after a small simulated delay.
  */
-export class MockIronClawAdapter implements IronClawAdapter {
+export class SimpleIronClawMock implements IronClawAdapter {
   private readonly _executedPlans = new Map<string, ExecutionPlan>();
+  private readonly _planStatuses = new Map<string, ExecutionStatus>();
 
   async buildPlan(action: CandidateAction): Promise<ExecutionPlan> {
     const steps: ExecutionStep[] = [
@@ -58,7 +60,7 @@ export class MockIronClawAdapter implements IronClawAdapter {
       : [];
 
     const plan: ExecutionPlan = {
-      id: `plan_${action.id}_${Date.now()}`,
+      id: (action.parameters['executionPlanId'] as string | undefined) ?? `plan_${action.id}_${Date.now()}`,
       decisionId: action.decisionId,
       action,
       steps,
@@ -74,6 +76,7 @@ export class MockIronClawAdapter implements IronClawAdapter {
     await new Promise((resolve) => setTimeout(resolve, 50));
 
     this._executedPlans.set(plan.id, plan);
+    this._planStatuses.set(plan.id, 'completed');
 
     console.info(
       `[MockIronClaw] Executed plan ${plan.id}: ${plan.action.actionType} - ${plan.action.description}`,
@@ -91,6 +94,14 @@ export class MockIronClawAdapter implements IronClawAdapter {
         executedSteps: plan.steps.length,
       },
     };
+  }
+
+  async getStatus(planId: string): Promise<ExecutionStatus> {
+    const status = this._planStatuses.get(planId);
+    if (!status) {
+      throw new Error(`Plan ${planId} not found or was not executed.`);
+    }
+    return status;
   }
 
   async rollback(planId: string): Promise<RollbackResult> {
@@ -111,6 +122,7 @@ export class MockIronClawAdapter implements IronClawAdapter {
     }
 
     this._executedPlans.delete(planId);
+    this._planStatuses.set(planId, 'completed');
 
     console.info(
       `[MockIronClaw] Rolled back plan ${planId}: ${plan.action.actionType}`,

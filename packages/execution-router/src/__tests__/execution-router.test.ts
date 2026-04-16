@@ -87,6 +87,9 @@ function createMockAdapter(name: string, skills?: Set<string>): IronClawAdapter 
         output: { adapter_used: name },
       };
     },
+    async getStatus(_planId: string) {
+      return 'completed';
+    },
     async rollback(_planId: string): Promise<RollbackResult> {
       return { success: true, message: `Rolled back by ${name}` };
     },
@@ -114,6 +117,9 @@ function createThrowingAdapter(name: string): IronClawAdapter {
     },
     async execute(_plan: ExecutionPlan): Promise<ExecutionResult> {
       throw new Error(`${name} execution failed`);
+    },
+    async getStatus(_planId: string) {
+      return 'failed';
     },
     async rollback(_planId: string): Promise<RollbackResult> {
       return { success: false, message: 'Rollback failed' };
@@ -148,6 +154,9 @@ function createSoftFailAdapter(name: string): IronClawAdapter {
         completedAt: new Date(),
         error: `${name} execution failed`,
       };
+    },
+    async getStatus(_planId: string) {
+      return 'failed';
     },
     async rollback(_planId: string): Promise<RollbackResult> {
       return { success: false, message: 'Rollback failed' };
@@ -243,6 +252,50 @@ describe('ExecutionRouter', () => {
       expect(error.skillGap.userId).toBe('user-1');
       expect(error.skillGap.attemptedAdapters).toHaveLength(0);
     }
+  });
+
+  it('detects enhanced IronClaw adapters', () => {
+    const basic = createMockAdapter('basic');
+    registry.register('basic', basic, DIRECT_TRUST_PROFILE);
+    expect(registry.isEnhanced('basic')).toBe(false);
+
+    const enhanced = {
+      ...createMockAdapter('enhanced'),
+      async *executeStreaming(plan: ExecutionPlan) {
+        yield {
+          planId: plan.id,
+          eventType: 'plan_completed' as const,
+          timestamp: new Date(),
+        };
+      },
+      async registerCredential() {
+        return { success: true };
+      },
+      async revokeCredential() {
+        return { success: true };
+      },
+      async listCredentials() {
+        return [];
+      },
+      async sendChatCompletion() {
+        return { content: 'ok', model: 'test', usage: { promptTokens: 0, completionTokens: 0 } };
+      },
+      async discoverTools() {
+        return [];
+      },
+      async createRoutine() {
+        return { routineId: 'routine_1' };
+      },
+      async listRoutines() {
+        return [];
+      },
+      async deleteRoutine() {
+        return { success: true };
+      },
+    };
+
+    registry.register('enhanced', enhanced, IRONCLAW_TRUST_PROFILE);
+    expect(registry.isEnhanced('enhanced')).toBe(true);
   });
 
   describe('executeWithRouting', () => {

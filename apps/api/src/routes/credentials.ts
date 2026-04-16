@@ -1,7 +1,14 @@
 import { Router } from 'express';
 import { loadConfig } from '@skytwin/config';
 import { serviceCredentialRepository, credentialRequirementRepository } from '@skytwin/db';
-import { getExecutionRouter } from '../execution-setup.js';
+import {
+  getExecutionRouter,
+  getIronClawEnhancedAdapter,
+  ironClawCredentialName,
+  revokeCredentialFromIronClaw,
+  resetExecutionRouterForConfigChange,
+  syncCredentialToIronClaw,
+} from '../execution-setup.js';
 import { sseManager } from '../sse.js';
 
 /**
@@ -65,6 +72,9 @@ const SERVICE_SCHEMAS: Record<
     ],
   },
 };
+
+const EXECUTION_ENGINE_SERVICES = new Set(['ironclaw', 'openclaw']);
+const EXECUTION_ENGINE_URL_KEYS = new Set(['api_url']);
 
 /**
  * Create the credentials management router.
@@ -319,6 +329,50 @@ export function createCredentialsRouter(): Router {
   });
 
   /**
+   * GET /api/credentials/ironclaw-status
+   *
+   * Compare SkyTwin's stored service credentials with IronClaw's credential
+   * store so the setup page can show sync status.
+   */
+  router.get('/ironclaw-status', async (_req, res, next) => {
+    try {
+      const [rows, adapter] = await Promise.all([
+        serviceCredentialRepository.getAll(),
+        getIronClawEnhancedAdapter(),
+      ]);
+
+      let ironclawCredentials = new Set<string>();
+      let reachable = false;
+      if (adapter) {
+        try {
+          const list = await adapter.listCredentials();
+          ironclawCredentials = new Set(list.map((credential) => credential.name));
+          reachable = true;
+        } catch {
+          reachable = false;
+        }
+      }
+
+      res.json({
+        reachable,
+        credentials: rows.map((row) => {
+          const name = ironClawCredentialName(row.service, row.credential_key);
+          return {
+            service: row.service,
+            credentialKey: row.credential_key,
+            ironclawName: name,
+            synced: Boolean(row.ironclaw_synced_at) && ironclawCredentials.has(name),
+            syncedAt: row.ironclaw_synced_at,
+            presentInIronClaw: ironclawCredentials.has(name),
+          };
+        }),
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /**
    * GET /api/credentials
    *
    * List all stored credentials (values masked for secret fields).
@@ -337,6 +391,38 @@ export function createCredentialsRouter(): Router {
   });
 
   /**
+   * POST /api/credentials/:service/sync
+   *
+   * Manually re-sync one service's stored credentials to IronClaw.
+   */
+  router.post('/:service/sync', async (req, res, next) => {
+    try {
+      const { service } = req.params;
+      const adapter = await getIronClawEnhancedAdapter();
+      if (!adapter) {
+        res.status(503).json({ error: 'IronClaw is unavailable for credential sync.' });
+        return;
+      }
+
+      const rows = await serviceCredentialRepository.getByService(service);
+      let synced = 0;
+      for (const row of rows) {
+        const name = ironClawCredentialName(row.service, row.credential_key);
+        try {
+          await adapter.registerCredential(name, row.credential_value);
+          await serviceCredentialRepository.markSynced(row.service, row.credential_key);
+          synced++;
+        } catch {
+          // Individual credential sync failure is non-fatal
+        }
+      }
+      res.json({ service, synced, total: rows.length });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /**
    * GET /api/credentials/:service
    *
    * Get credentials for a specific service (values masked for secret fields).
@@ -344,7 +430,7 @@ export function createCredentialsRouter(): Router {
   router.get('/:service', async (req, res, next) => {
     try {
       const { service } = req.params;
-      if (['status', 'schema', 'requirements', 'unmet'].includes(service)) { next(); return; }
+      if (['status', 'schema', 'requirements', 'unmet', 'ironclaw-status'].includes(service)) { next(); return; }
       const [rows, dynamicSecrets] = await Promise.all([
         serviceCredentialRepository.getByService(service),
         getDynamicSecretKeys(),
@@ -400,18 +486,32 @@ export function createCredentialsRouter(): Router {
       for (const [key, value] of Object.entries(credentials)) {
         if (!validKeys.has(key)) continue;
         if (typeof value !== 'string' || value.trim() === '') continue;
+        const trimmedValue = value.trim();
+        const validationError = validateCredentialValue(service, key, trimmedValue);
+        if (validationError) {
+          res.status(400).json({ error: validationError });
+          return;
+        }
 
         const row = await serviceCredentialRepository.upsert({
           service,
           credentialKey: key,
-          credentialValue: value.trim(),
+          credentialValue: trimmedValue,
           label: key,
         });
+        const ironclawSynced = EXECUTION_ENGINE_SERVICES.has(service)
+          ? false
+          : await syncCredentialToIronClaw(service, key, trimmedValue);
         saved.push({
           service: row.service,
           credentialKey: row.credential_key,
           hasValue: true,
+          ironclawSynced,
         });
+      }
+
+      if (EXECUTION_ENGINE_SERVICES.has(service) && saved.length > 0) {
+        resetExecutionRouterForConfigChange();
       }
 
       res.json({ saved, status: 'ok' });
@@ -429,6 +529,13 @@ export function createCredentialsRouter(): Router {
     try {
       const { service, key } = req.params;
       const deleted = await serviceCredentialRepository.delete(service, key);
+      if (deleted) {
+        if (EXECUTION_ENGINE_SERVICES.has(service)) {
+          resetExecutionRouterForConfigChange();
+        } else {
+          await revokeCredentialFromIronClaw(service, key);
+        }
+      }
       res.json({ deleted, service, key });
     } catch (error) {
       next(error);
@@ -436,6 +543,34 @@ export function createCredentialsRouter(): Router {
   });
 
   return router;
+}
+
+function validateCredentialValue(service: string, key: string, value: string): string | null {
+  if (!EXECUTION_ENGINE_SERVICES.has(service) || !EXECUTION_ENGINE_URL_KEYS.has(key)) {
+    return null;
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return `Invalid ${service} API URL. Enter a valid http:// or https:// URL.`;
+  }
+
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return `Invalid ${service} API URL. Only http:// and https:// are supported.`;
+  }
+
+  const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (hostname === '169.254.169.254' || hostname === 'metadata.google.internal') {
+    return `Invalid ${service} API URL. Metadata service endpoints are not allowed.`;
+  }
+
+  if (parsed.username || parsed.password) {
+    return `Invalid ${service} API URL. Put credentials in the credential fields, not in the URL.`;
+  }
+
+  return null;
 }
 
 /**

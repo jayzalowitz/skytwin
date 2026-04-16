@@ -170,8 +170,7 @@ describe('IronClaw Adapter Contract', () => {
 describe('Adapter-Specific Behavior', () => {
   describe('MockIronClawAdapter', () => {
     it('buildPlan() creates valid execution plans', async () => {
-      // MockIronClawAdapter implements IronClawExecutor which doesn't have buildPlan
-      // but it tracks plans internally via execute()
+      // MockIronClawAdapter tracks plans internally via execute().
       const adapter = new MockIronClawAdapter({ failureProbability: 0, simulateDelays: false });
       const action = makeAction();
       const plan = makePlan(action);

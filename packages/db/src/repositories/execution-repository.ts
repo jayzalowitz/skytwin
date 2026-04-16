@@ -1,5 +1,5 @@
 import { query } from '../connection.js';
-import type { ExecutionPlanRow, ExecutionResultRow } from '../types.js';
+import type { ExecutionEventRow, ExecutionPlanRow, ExecutionResultRow } from '../types.js';
 
 /**
  * Input for creating an execution plan.
@@ -20,6 +20,13 @@ export interface CreateExecutionResultInput {
   outputs?: Record<string, unknown>;
   error?: string;
   rollbackAvailable?: boolean;
+}
+
+export interface CreateExecutionEventInput {
+  planId: string;
+  stepId?: string;
+  eventType: string;
+  payload?: Record<string, unknown>;
 }
 
 /**
@@ -107,7 +114,7 @@ export const executionRepository = {
     if (!plan) return null;
 
     const resultResult = await query<ExecutionResultRow>(
-      'SELECT * FROM execution_results WHERE plan_id = $1 ORDER BY started_at DESC LIMIT 1',
+      'SELECT * FROM execution_results WHERE plan_id = $1 ORDER BY completed_at DESC LIMIT 1',
       [plan.id],
     );
 
@@ -125,9 +132,32 @@ export const executionRepository = {
     planId: string,
   ): Promise<ExecutionResultRow | null> {
     const result = await query<ExecutionResultRow>(
-      'SELECT * FROM execution_results WHERE plan_id = $1 ORDER BY started_at DESC LIMIT 1',
+      'SELECT * FROM execution_results WHERE plan_id = $1 ORDER BY completed_at DESC LIMIT 1',
       [planId],
     );
     return result.rows[0] ?? null;
+  },
+
+  async createEvent(input: CreateExecutionEventInput): Promise<ExecutionEventRow> {
+    const result = await query<ExecutionEventRow>(
+      `INSERT INTO execution_events (plan_id, step_id, event_type, payload)
+       VALUES ($1, $2, $3, $4)
+       RETURNING *`,
+      [
+        input.planId,
+        input.stepId ?? null,
+        input.eventType,
+        JSON.stringify(input.payload ?? {}),
+      ],
+    );
+    return result.rows[0]!;
+  },
+
+  async getEventsByPlan(planId: string): Promise<ExecutionEventRow[]> {
+    const result = await query<ExecutionEventRow>(
+      'SELECT * FROM execution_events WHERE plan_id = $1 ORDER BY created_at ASC',
+      [planId],
+    );
+    return result.rows;
   },
 };

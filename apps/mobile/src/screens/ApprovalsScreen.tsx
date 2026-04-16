@@ -41,6 +41,7 @@ export function ApprovalsScreen(): React.JSX.Element {
   const [rejectModalVisible, setRejectModalVisible] = useState(false);
   const [rejectTargetId, setRejectTargetId] = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState('');
+  const [executionProgress, setExecutionProgress] = useState<string | null>(null);
 
   const clientRef = useRef<SkyTwinApiClient | null>(null);
   const userIdRef = useRef<string>('');
@@ -108,7 +109,7 @@ export function ApprovalsScreen(): React.JSX.Element {
 
   const handleSSEEvent = useCallback(
     (event: SSEEvent) => {
-      if (event.type === 'new-approval') {
+      if (event.type === 'new-approval' || event.type === 'approval:new') {
         // Refresh the list and show a notification
         fetchApprovals();
         const data = event.data as Record<string, unknown>;
@@ -121,6 +122,19 @@ export function ApprovalsScreen(): React.JSX.Element {
         );
       } else if (event.type === 'approval-expired' || event.type === 'approval:resolved') {
         fetchApprovals();
+      } else if (event.type === 'decision:step') {
+        const data = event.data as Record<string, unknown>;
+        const eventType = data['eventType'] as string | undefined;
+        const description = (data['description'] as string | undefined) ?? (data['actionType'] as string | undefined) ?? 'Action';
+        if (eventType === 'step_started') {
+          setExecutionProgress(`${description} in progress`);
+        } else if (eventType === 'plan_completed') {
+          setExecutionProgress(`${description} completed`);
+          setTimeout(() => setExecutionProgress(null), 3000);
+        } else if (eventType === 'step_failed' || eventType === 'plan_failed') {
+          setExecutionProgress(`${description} needs attention`);
+          setTimeout(() => setExecutionProgress(null), 5000);
+        }
       }
     },
     [fetchApprovals],
@@ -256,6 +270,12 @@ export function ApprovalsScreen(): React.JSX.Element {
           <TouchableOpacity onPress={handleRefresh}>
             <Text style={styles.retryText}>Retry</Text>
           </TouchableOpacity>
+        </View>
+      ) : null}
+
+      {executionProgress ? (
+        <View style={styles.progressBanner}>
+          <Text style={styles.progressText}>{executionProgress}</Text>
         </View>
       ) : null}
 
@@ -440,6 +460,15 @@ const styles = StyleSheet.create({
     fontSize: 13,
     flex: 1,
     marginRight: 12,
+  },
+  progressBanner: {
+    backgroundColor: '#22384a',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  progressText: {
+    color: '#d7ecff',
+    fontSize: 13,
   },
   retryText: {
     color: '#4a90d9',

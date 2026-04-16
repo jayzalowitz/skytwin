@@ -99,6 +99,7 @@ export async function down(): Promise<void> {
     'memory_wings',
     // Added by migrations 002–011 (reverse dependency order)
     'sessions',
+    'ironclaw_tools',
     'preference_history',
     'escalation_triggers',
     'domain_autonomy_policies',
@@ -117,6 +118,7 @@ export async function down(): Promise<void> {
     'connector_configs',
     'oauth_tokens',
     // Base schema tables
+    'execution_events',
     'feedback_events',
     'explanation_records',
     'execution_results',

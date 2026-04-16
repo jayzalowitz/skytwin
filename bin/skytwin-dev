@@ -163,6 +163,7 @@ supervised_run() {
 
   (
     child_pid=""
+    trap '' HUP
     trap 'if [ -n "$child_pid" ]; then kill "$child_pid" 2>/dev/null; wait "$child_pid" 2>/dev/null; fi; exit' TERM INT
 
     restarts=0
@@ -182,7 +183,7 @@ supervised_run() {
     if [ "$restarts" -ge "$MAX_RESTARTS" ]; then
       echo "[$(date -Iseconds)] $name exceeded max restarts ($MAX_RESTARTS), giving up" >> "$logfile"
     fi
-  ) &
+  ) >/dev/null 2>&1 &
   local pid=$!
   echo "$pid $name" >> "$PIDFILE"
   echo "$pid"

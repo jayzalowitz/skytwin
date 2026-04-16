@@ -7,7 +7,7 @@
  */
 
 export interface SSEEvent {
-  type: 'new-approval' | 'approval-expired' | 'status-change' | 'connected' | 'approval:resolved';
+  type: 'new-approval' | 'approval-expired' | 'status-change' | 'connected' | 'approval:resolved' | 'decision:step' | 'approval:new' | 'decision:executed';
   data: unknown;
 }
 
@@ -100,7 +100,7 @@ export function connectSSE(
     if (stopped) return;
 
     abortController = new AbortController();
-    const url = `${baseUrl.replace(/\/+$/, '')}/api/events/${encodeURIComponent(userId)}/stream`;
+    const url = `${baseUrl.replace(/\/+$/, '')}/api/events/stream/${encodeURIComponent(userId)}`;
 
     try {
       const response = await fetch(url, {
