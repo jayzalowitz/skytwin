@@ -261,32 +261,57 @@ export function createEventsRouter(): Router {
         const stepOutputs: Array<{ stepId?: string; eventType: string; payload: Record<string, unknown> }> = [];
         let terminalPayload: Record<string, unknown> = {};
 
-        for await (const event of executionRouter.executeWithRoutingStreaming(
-          outcome.selectedAction,
-          riskAssessment,
-          userId,
-        )) {
-          if (event.payload && Object.keys(event.payload).length > 0) {
-            stepOutputs.push({ stepId: event.stepId, eventType: event.eventType, payload: event.payload });
+        try {
+          for await (const event of executionRouter.executeWithRoutingStreaming(
+            outcome.selectedAction,
+            riskAssessment,
+            userId,
+          )) {
+            if (event.payload && Object.keys(event.payload).length > 0) {
+              stepOutputs.push({ stepId: event.stepId, eventType: event.eventType, payload: event.payload });
+            }
+            terminalPayload = event.payload ?? terminalPayload;
+            await executionRepository.createEvent({
+              planId: savedPlan.id,
+              stepId: event.stepId,
+              eventType: event.eventType,
+              payload: event.payload ?? {},
+            });
+            sseManager.emit(userId, 'decision:step', {
+              decisionId: decision.id,
+              actionType: outcome.selectedAction.actionType,
+              description: outcome.selectedAction.description,
+              ...event,
+            });
+
+            if (event.eventType === 'plan_completed' || event.eventType === 'plan_failed') {
+              terminalEvent = event;
+              terminalStatus = event.eventType === 'plan_completed' ? 'completed' : 'failed';
+            }
           }
-          terminalPayload = event.payload ?? terminalPayload;
+        } catch (error) {
+          terminalStatus = 'failed';
+          terminalPayload = {
+            error: error instanceof Error ? error.message : String(error),
+          };
+          terminalEvent = {
+            planId: savedPlan.id,
+            eventType: 'plan_failed',
+            timestamp: new Date(),
+            payload: terminalPayload,
+          };
+          stepOutputs.push({ eventType: 'plan_failed', payload: terminalPayload });
           await executionRepository.createEvent({
             planId: savedPlan.id,
-            stepId: event.stepId,
-            eventType: event.eventType,
-            payload: event.payload ?? {},
+            eventType: 'plan_failed',
+            payload: terminalPayload,
           });
           sseManager.emit(userId, 'decision:step', {
             decisionId: decision.id,
             actionType: outcome.selectedAction.actionType,
             description: outcome.selectedAction.description,
-            ...event,
+            ...terminalEvent,
           });
-
-          if (event.eventType === 'plan_completed' || event.eventType === 'plan_failed') {
-            terminalEvent = event;
-            terminalStatus = event.eventType === 'plan_completed' ? 'completed' : 'failed';
-          }
         }
 
         await executionRepository.updatePlanStatus(savedPlan.id, terminalStatus);

@@ -114,7 +114,7 @@ export const executionRepository = {
     if (!plan) return null;
 
     const resultResult = await query<ExecutionResultRow>(
-      'SELECT * FROM execution_results WHERE plan_id = $1 ORDER BY started_at DESC LIMIT 1',
+      'SELECT * FROM execution_results WHERE plan_id = $1 ORDER BY completed_at DESC LIMIT 1',
       [plan.id],
     );
 
@@ -132,7 +132,7 @@ export const executionRepository = {
     planId: string,
   ): Promise<ExecutionResultRow | null> {
     const result = await query<ExecutionResultRow>(
-      'SELECT * FROM execution_results WHERE plan_id = $1 ORDER BY started_at DESC LIMIT 1',
+      'SELECT * FROM execution_results WHERE plan_id = $1 ORDER BY completed_at DESC LIMIT 1',
       [planId],
     );
     return result.rows[0] ?? null;

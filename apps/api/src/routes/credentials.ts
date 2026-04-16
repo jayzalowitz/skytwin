@@ -6,6 +6,7 @@ import {
   getIronClawEnhancedAdapter,
   ironClawCredentialName,
   revokeCredentialFromIronClaw,
+  resetExecutionRouterForConfigChange,
   syncCredentialToIronClaw,
 } from '../execution-setup.js';
 import { sseManager } from '../sse.js';
@@ -71,6 +72,9 @@ const SERVICE_SCHEMAS: Record<
     ],
   },
 };
+
+const EXECUTION_ENGINE_SERVICES = new Set(['ironclaw', 'openclaw']);
+const EXECUTION_ENGINE_URL_KEYS = new Set(['api_url']);
 
 /**
  * Create the credentials management router.
@@ -482,20 +486,32 @@ export function createCredentialsRouter(): Router {
       for (const [key, value] of Object.entries(credentials)) {
         if (!validKeys.has(key)) continue;
         if (typeof value !== 'string' || value.trim() === '') continue;
+        const trimmedValue = value.trim();
+        const validationError = validateCredentialValue(service, key, trimmedValue);
+        if (validationError) {
+          res.status(400).json({ error: validationError });
+          return;
+        }
 
         const row = await serviceCredentialRepository.upsert({
           service,
           credentialKey: key,
-          credentialValue: value.trim(),
+          credentialValue: trimmedValue,
           label: key,
         });
-        const ironclawSynced = await syncCredentialToIronClaw(service, key, value.trim());
+        const ironclawSynced = EXECUTION_ENGINE_SERVICES.has(service)
+          ? false
+          : await syncCredentialToIronClaw(service, key, trimmedValue);
         saved.push({
           service: row.service,
           credentialKey: row.credential_key,
           hasValue: true,
           ironclawSynced,
         });
+      }
+
+      if (EXECUTION_ENGINE_SERVICES.has(service) && saved.length > 0) {
+        resetExecutionRouterForConfigChange();
       }
 
       res.json({ saved, status: 'ok' });
@@ -514,7 +530,11 @@ export function createCredentialsRouter(): Router {
       const { service, key } = req.params;
       const deleted = await serviceCredentialRepository.delete(service, key);
       if (deleted) {
-        await revokeCredentialFromIronClaw(service, key);
+        if (EXECUTION_ENGINE_SERVICES.has(service)) {
+          resetExecutionRouterForConfigChange();
+        } else {
+          await revokeCredentialFromIronClaw(service, key);
+        }
       }
       res.json({ deleted, service, key });
     } catch (error) {
@@ -523,6 +543,34 @@ export function createCredentialsRouter(): Router {
   });
 
   return router;
+}
+
+function validateCredentialValue(service: string, key: string, value: string): string | null {
+  if (!EXECUTION_ENGINE_SERVICES.has(service) || !EXECUTION_ENGINE_URL_KEYS.has(key)) {
+    return null;
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return `Invalid ${service} API URL. Enter a valid http:// or https:// URL.`;
+  }
+
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return `Invalid ${service} API URL. Only http:// and https:// are supported.`;
+  }
+
+  const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (hostname === '169.254.169.254' || hostname === 'metadata.google.internal') {
+    return `Invalid ${service} API URL. Metadata service endpoints are not allowed.`;
+  }
+
+  if (parsed.username || parsed.password) {
+    return `Invalid ${service} API URL. Put credentials in the credential fields, not in the URL.`;
+  }
+
+  return null;
 }
 
 /**

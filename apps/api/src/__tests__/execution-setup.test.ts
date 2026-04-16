@@ -27,6 +27,7 @@ const {
 
   return {
     mockServiceCredentialRepository: {
+      getAsMap: vi.fn(),
       getUnsyncedCredentials: vi.fn(),
       markSynced: vi.fn(),
     },
@@ -93,6 +94,7 @@ import {
   syncCredentialToIronClaw,
   revokeCredentialFromIronClaw,
   ironClawCredentialName,
+  createExecutionRouter,
 } from '../execution-setup.js';
 
 // ---------------------------------------------------------------------------
@@ -170,6 +172,7 @@ describe('execution-setup', () => {
     mockLoadConfig.mockReturnValue({});
     mockIsIronClawEnhancedAdapter.mockReturnValue(false);
     mockAdapterRegistry._map.clear();
+    mockServiceCredentialRepository.getAsMap.mockResolvedValue({});
   });
 
   // =========================================================================
@@ -207,7 +210,7 @@ describe('execution-setup', () => {
       expect(mockServiceCredentialRepository.markSynced).toHaveBeenCalledWith('google', 'client_secret');
     });
 
-    it('skips credentials already configured in IronClaw', async () => {
+    it('re-registers unsynced credentials even when IronClaw already has the name', async () => {
       const adapter = makeAdapter({
         listCredentials: vi.fn().mockResolvedValue([
           { name: 'google.client_id', configuredAt: '2026-01-01T00:00:00Z' },
@@ -222,12 +225,12 @@ describe('execution-setup', () => {
 
       await syncUnsyncedCredentialsToIronClaw(adapter as never);
 
-      // Only client_secret should be registered (client_id was already configured)
-      expect(adapter.registerCredential).toHaveBeenCalledTimes(1);
+      // Unsynced rows mean the local value changed or was never confirmed, so
+      // every row must be sent to IronClaw even if the remote already has a name.
+      expect(adapter.registerCredential).toHaveBeenCalledTimes(2);
+      expect(adapter.registerCredential).toHaveBeenCalledWith('google.client_id', 'id-val');
       expect(adapter.registerCredential).toHaveBeenCalledWith('google.client_secret', 'secret-val');
 
-      // Both should be marked synced (the already-configured one skips registerCredential
-      // but is still fulfilled by Promise.allSettled)
       expect(mockServiceCredentialRepository.markSynced).toHaveBeenCalledTimes(2);
     });
 
@@ -274,9 +277,10 @@ describe('execution-setup', () => {
       expect(mockServiceCredentialRepository.markSynced).toHaveBeenCalledTimes(7);
     });
 
-    it('handles listCredentials failure gracefully', async () => {
+    it('does not depend on listCredentials before syncing unsynced rows', async () => {
+      const listCredentials = vi.fn().mockRejectedValue(new Error('connection refused'));
       const adapter = makeAdapter({
-        listCredentials: vi.fn().mockRejectedValue(new Error('connection refused')),
+        listCredentials,
       });
       const rows = [
         makeCredentialRow({ service: 'google', credential_key: 'client_id', credential_value: 'val' }),
@@ -284,9 +288,9 @@ describe('execution-setup', () => {
       mockServiceCredentialRepository.getUnsyncedCredentials.mockResolvedValue(rows);
       mockServiceCredentialRepository.markSynced.mockResolvedValue(null);
 
-      // Should not throw -- falls back to empty configured set
       await syncUnsyncedCredentialsToIronClaw(adapter as never);
 
+      expect(listCredentials).not.toHaveBeenCalled();
       expect(adapter.registerCredential).toHaveBeenCalledTimes(1);
       expect(mockServiceCredentialRepository.markSynced).toHaveBeenCalledTimes(1);
     });
@@ -365,7 +369,7 @@ describe('execution-setup', () => {
       expect(mockIronClawToolRepository.upsertMany).not.toHaveBeenCalled();
     });
 
-    it('returns empty set when no adapter provided and getIronClawEnhancedAdapter returns null and cache fails', async () => {
+    it('returns undefined when no adapter is available and no cached skills exist', async () => {
       // When no adapter is passed, refreshIronClawToolCache calls getIronClawEnhancedAdapter
       // which goes through getExecutionRouter. Set up the router with no ironclaw adapter.
       setupRouterWithAdapter(null);
@@ -373,7 +377,7 @@ describe('execution-setup', () => {
 
       const result = await refreshIronClawToolCache();
 
-      expect(result).toEqual(new Set());
+      expect(result).toBeUndefined();
     });
 
     it('uses cached skills when no adapter is available', async () => {
@@ -384,6 +388,64 @@ describe('execution-setup', () => {
       const result = await refreshIronClawToolCache();
 
       expect(result).toEqual(cachedSkills);
+    });
+
+    it('returns undefined when discovery fails and the cache is empty', async () => {
+      const adapter = makeAdapter({
+        discoverTools: vi.fn().mockRejectedValue(new Error('timeout')),
+      });
+      mockIronClawToolRepository.getSkillSet.mockResolvedValue(new Set());
+
+      const result = await refreshIronClawToolCache(adapter as never);
+
+      expect(result).toBeUndefined();
+    });
+  });
+
+  describe('createExecutionRouter', () => {
+    it('uses DB execution engine overrides when constructing adapters', async () => {
+      const ironclawAdapter = makeAdapter();
+      mockRealIronClawAdapter.mockImplementation(() => ironclawAdapter);
+      mockIsIronClawEnhancedAdapter.mockReturnValue(true);
+      mockLoadConfig.mockReturnValue({
+        ironclawApiUrl: 'http://env-ironclaw:4000',
+        ironclawWebhookSecret: 'env-secret',
+        ironclawGatewayToken: '',
+        ironclawOwnerId: 'env-owner',
+        ironclawDefaultChannel: 'env-channel',
+        ironclawPreferChat: false,
+        openclawApiUrl: '',
+        openclawApiKey: '',
+        adapterPluginDir: '',
+      });
+      mockServiceCredentialRepository.getAsMap.mockImplementation(async (service: string) => {
+        if (service === 'ironclaw') {
+          return {
+            api_url: 'http://db-ironclaw:4000',
+            webhook_secret: 'db-secret',
+            owner_id: 'db-owner',
+            default_channel: 'db-channel',
+          };
+        }
+        return {};
+      });
+      mockIronClawToolRepository.getSkillSet.mockResolvedValue(new Set(['send_email']));
+      mockServiceCredentialRepository.getUnsyncedCredentials.mockResolvedValue([]);
+
+      await createExecutionRouter();
+
+      expect(mockRealIronClawAdapter).toHaveBeenCalledWith(expect.objectContaining({
+        apiUrl: 'http://db-ironclaw:4000',
+        webhookSecret: 'db-secret',
+        ownerId: 'db-owner',
+        defaultChannel: 'db-channel',
+      }));
+      expect(mockAdapterRegistry.register).toHaveBeenCalledWith(
+        'ironclaw',
+        ironclawAdapter,
+        expect.anything(),
+        new Set(['send_email']),
+      );
     });
   });
 

@@ -157,7 +157,7 @@ export interface ApprovalRequestRow {
 export interface ExecutionPlanRow {
   id: string;
   decision_id: string;
-  action_id: string;
+  action_id: string | null;
   status: string;
   steps: unknown[];
   created_at: Date;

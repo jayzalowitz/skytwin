@@ -16,6 +16,7 @@ const {
   mockGetIronClawEnhancedAdapter,
   mockIronClawCredentialName,
   mockRevokeCredentialFromIronClaw,
+  mockResetExecutionRouterForConfigChange,
   mockSyncCredentialToIronClaw,
 } = vi.hoisted(() => ({
   mockServiceCredentialRepository: {
@@ -41,6 +42,7 @@ const {
   mockGetIronClawEnhancedAdapter: vi.fn(),
   mockIronClawCredentialName: vi.fn((service: string, credentialKey: string) => `${service}.${credentialKey}`),
   mockRevokeCredentialFromIronClaw: vi.fn(),
+  mockResetExecutionRouterForConfigChange: vi.fn(),
   mockSyncCredentialToIronClaw: vi.fn(),
 }));
 
@@ -62,6 +64,7 @@ vi.mock('../execution-setup.js', () => ({
   getIronClawEnhancedAdapter: mockGetIronClawEnhancedAdapter,
   ironClawCredentialName: mockIronClawCredentialName,
   revokeCredentialFromIronClaw: mockRevokeCredentialFromIronClaw,
+  resetExecutionRouterForConfigChange: mockResetExecutionRouterForConfigChange,
   syncCredentialToIronClaw: mockSyncCredentialToIronClaw,
 }));
 
@@ -979,6 +982,47 @@ describe('Credentials API routes', () => {
       expect(mockServiceCredentialRepository.upsert).toHaveBeenCalledTimes(2);
     });
 
+    it('saves IronClaw connection overrides and resets the execution router', async () => {
+      mockServiceCredentialRepository.upsert.mockImplementation(
+        async (input: { service: string; credentialKey: string; credentialValue: string }) => ({
+          id: 'cred-new',
+          service: input.service,
+          credential_key: input.credentialKey,
+          credential_value: input.credentialValue,
+          label: input.credentialKey,
+          created_at: new Date(),
+          updated_at: new Date(),
+        }),
+      );
+
+      const res = await request(app, 'PUT', '/api/credentials/ironclaw', {
+        credentials: {
+          api_url: 'http://localhost:4000',
+          webhook_secret: 'new-secret',
+          owner_id: 'owner-1',
+        },
+      });
+
+      expect(res.status).toBe(200);
+      expect(mockServiceCredentialRepository.upsert).toHaveBeenCalledTimes(3);
+      expect(mockSyncCredentialToIronClaw).not.toHaveBeenCalled();
+      expect(mockResetExecutionRouterForConfigChange).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects invalid execution engine API URLs before saving', async () => {
+      const res = await request(app, 'PUT', '/api/credentials/ironclaw', {
+        credentials: {
+          api_url: 'file:///etc/passwd',
+        },
+      });
+
+      expect(res.status).toBe(400);
+      const body = res.body as { error: string };
+      expect(body.error).toMatch(/Only http:\/\/ and https:\/\//);
+      expect(mockServiceCredentialRepository.upsert).not.toHaveBeenCalled();
+      expect(mockResetExecutionRouterForConfigChange).not.toHaveBeenCalled();
+    });
+
     it('saves credentials for a dynamic integration (adapter:integration format)', async () => {
       // Set up dynamic requirements lookup
       mockCredentialRequirementRepository.getByAdapter.mockResolvedValue([
@@ -1172,6 +1216,16 @@ describe('Credentials API routes', () => {
       expect(body.service).toBe('google');
       expect(body.key).toBe('client_id');
       expect(mockServiceCredentialRepository.delete).toHaveBeenCalledWith('google', 'client_id');
+    });
+
+    it('resets the execution router when deleting an execution engine credential', async () => {
+      mockServiceCredentialRepository.delete.mockResolvedValue(true);
+
+      const res = await request(app, 'DELETE', '/api/credentials/ironclaw/api_url');
+
+      expect(res.status).toBe(200);
+      expect(mockResetExecutionRouterForConfigChange).toHaveBeenCalledTimes(1);
+      expect(mockRevokeCredentialFromIronClaw).not.toHaveBeenCalled();
     });
 
     it('returns false when credential does not exist', async () => {

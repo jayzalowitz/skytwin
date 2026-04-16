@@ -250,8 +250,8 @@ export async function renderSetup(container, _userId) {
       </summary>
       <div class="collapsible-body">
         <div class="card-subtitle" style="margin-bottom: 1rem;">
-          The execution engines auto-detect when running locally. Only use these overrides if you're
-          connecting to a remote instance or need to change the default configuration.
+          The execution engines auto-detect when running locally. Saved values become the active
+          API connection after the server refreshes its execution router.
         </div>
 
         <div style="margin-bottom: 1.5rem;">
@@ -279,10 +279,9 @@ export async function renderSetup(container, _userId) {
               data-service="ironclaw" data-key="owner_id" autocomplete="off">
           </div>
           <div style="display: flex; gap: 0.5rem; align-items: center;">
-            <button class="btn btn-outline btn-sm" onclick="saveServiceCredentials('ironclaw')">Save override</button>
+            <button class="btn btn-outline btn-sm" onclick="saveServiceCredentials('ironclaw')">Save connection</button>
             <span id="save-status-ironclaw" style="font-size: 0.85rem;"></span>
           </div>
-          ${renderIronClawSyncSummary('ironclaw', syncLookup)}
         </div>
 
         <div>
@@ -303,7 +302,7 @@ export async function renderSetup(container, _userId) {
             ${credLookup['openclaw']?.['api_key']?.hasValue ? '<div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem;">Currently set. Leave blank to keep.</div>' : ''}
           </div>
           <div style="display: flex; gap: 0.5rem; align-items: center;">
-            <button class="btn btn-outline btn-sm" onclick="saveServiceCredentials('openclaw')">Save override</button>
+            <button class="btn btn-outline btn-sm" onclick="saveServiceCredentials('openclaw')">Save connection</button>
             <span id="save-status-openclaw" style="font-size: 0.85rem;"></span>
           </div>
         </div>
@@ -409,6 +408,7 @@ function buildSyncLookup(ironclawSync) {
 }
 
 function renderIronClawSyncSummary(service, syncLookup) {
+  if (service === 'ironclaw' || service === 'openclaw') return '';
   const rows = syncLookup[service] || [];
   if (rows.length === 0) return '';
   const syncedCount = rows.filter(row => row.synced).length;
