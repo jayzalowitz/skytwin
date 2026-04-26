@@ -67,6 +67,25 @@ describe('ExplanationGenerator.generate', () => {
     expect(record.actionRationale).toContain('All candidates blocked by policy.');
   });
 
+  it('persists escalationRationale for blocked-by-policy outcomes (Safety Invariant #2)', async () => {
+    const repo = new InMemoryExplanationRepo();
+    const gen = new ExplanationGenerator(repo);
+
+    const decision = makeDecision();
+    const outcome = makeOutcome({
+      selectedAction: null,
+      allCandidates: [],
+      riskAssessment: null,
+      requiresApproval: false,
+      autoExecute: false,
+      reasoning: 'All 3 candidates blocked by policy "no-spending".',
+    });
+
+    const record = await gen.generate(decision, outcome, makeContext({ decision }));
+
+    expect(record.escalationRationale).toBe('All 3 candidates blocked by policy "no-spending".');
+  });
+
   it('persists the record exactly once and returns the saved object', async () => {
     const repo = new InMemoryExplanationRepo();
     const gen = new ExplanationGenerator(repo);
@@ -395,6 +414,40 @@ describe('ExplanationGenerator.formatForUser', () => {
     );
     const out = gen.formatForUser(record);
     expect(out).not.toContain('Why approval was needed:');
+  });
+
+  it('uses "Why no action was taken" label for blocked-by-policy records', async () => {
+    const record = await gen.generate(
+      makeDecision(),
+      makeOutcome({
+        selectedAction: null,
+        allCandidates: [],
+        riskAssessment: null,
+        autoExecute: false,
+        requiresApproval: false,
+        reasoning: 'All candidates blocked by spending policy.',
+      }),
+      makeContext(),
+    );
+    const out = gen.formatForUser(record);
+    expect(out).toContain('Why no action was taken:');
+    expect(out).toContain('blocked by spending policy');
+    expect(out).not.toContain('Why approval was needed:');
+  });
+
+  it('uses "Why approval was needed" label for requires-approval records', async () => {
+    const record = await gen.generate(
+      makeDecision(),
+      makeOutcome({
+        requiresApproval: true,
+        autoExecute: false,
+        reasoning: 'High-risk action requires user approval.',
+      }),
+      makeContext(),
+    );
+    const out = gen.formatForUser(record);
+    expect(out).toContain('Why approval was needed:');
+    expect(out).not.toContain('Why no action was taken:');
   });
 });
 

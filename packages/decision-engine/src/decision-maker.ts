@@ -5,6 +5,7 @@ import type {
   CandidateAction,
   RiskAssessment,
   ActionPolicy,
+  PolicyVerdict,
   TwinProfile,
   Preference,
   WhatWouldIDoRequest,
@@ -129,12 +130,16 @@ export class DecisionMaker {
       }))
       .sort((a, b) => b.score - a.score);
 
-    // Step 7: Find the best action that passes policy checks
+    // Step 7: Evaluate every candidate against policy. We record a verdict for
+    // each so downstream consumers (e.g. whatWouldIDo) can distinguish blocked
+    // candidates from un-evaluated ones. Safety Invariant #1.
+    const policyVerdicts: Record<string, PolicyVerdict> = {};
     let selectedAction: CandidateAction | null = null;
     let selectedAssessment: RiskAssessment | null = null;
     let autoExecute = false;
     let requiresApproval = true;
     let reasoning = '';
+    let lastBlockedReason = '';
 
     for (const { candidate, assessment } of scoredCandidates) {
       const policyDecision = await this.policyEvaluator.evaluate(
@@ -144,7 +149,21 @@ export class DecisionMaker {
         assessment,
       );
 
-      if (policyDecision.allowed) {
+      const verdict: PolicyVerdict = !policyDecision.allowed
+        ? 'denied'
+        : policyDecision.requiresApproval
+          ? 'requires-approval'
+          : 'allowed';
+      policyVerdicts[candidate.id] = verdict;
+
+      if (verdict === 'denied') {
+        lastBlockedReason = `Candidate "${candidate.description}" blocked: ${policyDecision.reason}`;
+        continue;
+      }
+
+      // First non-denied candidate wins. Lower-scored candidates still get
+      // evaluated so verdicts are complete, but we don't switch winners.
+      if (selectedAction === null) {
         selectedAction = candidate;
         selectedAssessment = assessment;
         requiresApproval = policyDecision.requiresApproval;
@@ -155,14 +174,11 @@ export class DecisionMaker {
           : policyDecision.requiresApproval
             ? `Selected "${candidate.description}" but requires approval. ${policyDecision.reason}`
             : `Selected "${candidate.description}". ${policyDecision.reason}`;
-        break;
-      } else {
-        reasoning = `Candidate "${candidate.description}" blocked: ${policyDecision.reason}`;
       }
     }
 
     if (!selectedAction) {
-      reasoning = `All ${candidates.length} candidate(s) were blocked by policies. ` + reasoning;
+      reasoning = `All ${candidates.length} candidate(s) were blocked by policies. ` + lastBlockedReason;
     }
 
     const outcome: DecisionOutcome = {
@@ -175,6 +191,7 @@ export class DecisionMaker {
       requiresApproval: selectedAction ? requiresApproval : true,
       reasoning,
       decidedAt: new Date(),
+      policyVerdicts,
     };
 
     await this.decisionRepository.saveCandidates(candidates);
@@ -237,12 +254,18 @@ export class DecisionMaker {
     const outcome = await this.evaluate(context);
 
     // Step 4: Build WhatWouldIDoResponse.
-    // When no candidate was allowed by policy (selectedAction is null), do not
-    // surface the blocked candidates as "alternatives" — that leaks options the
-    // user would not actually be permitted to take. Safety Invariant #1.
-    const alternativeActions = outcome.selectedAction
-      ? outcome.allCandidates.filter((c) => c !== outcome.selectedAction)
-      : [];
+    // Filter alternatives to candidates that policy actually allowed (or
+    // permitted under approval). Blocked candidates must NOT surface as
+    // options — they would mislead the user about what their twin can do.
+    // Safety Invariant #1.
+    const verdicts = outcome.policyVerdicts ?? {};
+    const alternativeActions = outcome.allCandidates.filter((c) => {
+      if (c === outcome.selectedAction) return false;
+      const verdict = verdicts[c.id];
+      // Conservative default: if no verdict was recorded, drop the candidate.
+      // Better to under-suggest than to leak a blocked one.
+      return verdict === 'allowed' || verdict === 'requires-approval';
+    });
     const policyNotes = outcome.requiresApproval || !outcome.selectedAction
       ? outcome.reasoning
       : undefined;
