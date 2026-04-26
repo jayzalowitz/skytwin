@@ -124,18 +124,34 @@ export function createEvalsRouter(): Router {
       const { userId } = req.params;
       const profile = await twinService.getOrCreateProfile(userId);
 
-      const domainConfidence = new Map<string, { total: number; confirmed: number; high: number; moderate: number; low: number; speculative: number }>();
-
-      for (const inf of profile.inferences) {
-        const stats = domainConfidence.get(inf.domain) ?? { total: 0, confirmed: 0, high: 0, moderate: 0, low: 0, speculative: 0 };
+      // "How well I know you" should reflect both explicit preferences and
+      // auto-detected inferences — the user has no concept of the distinction
+      // and was seeing 0% with 5 preferences learned (#53). Combine them and
+      // weight explicit preferences as 'confirmed' (the user told us directly).
+      type ConfStats = { total: number; confirmed: number; high: number; moderate: number; low: number; speculative: number };
+      const empty = (): ConfStats => ({ total: 0, confirmed: 0, high: 0, moderate: 0, low: 0, speculative: 0 });
+      const domainConfidence = new Map<string, ConfStats>();
+      const bump = (domain: string, level: string) => {
+        const stats = domainConfidence.get(domain) ?? empty();
         stats.total++;
-        const level = normalizeConfidence(inf.confidence);
         if (level === 'confirmed') stats.confirmed++;
         else if (level === 'high') stats.high++;
         else if (level === 'moderate') stats.moderate++;
         else if (level === 'low') stats.low++;
         else stats.speculative++;
-        domainConfidence.set(inf.domain, stats);
+        domainConfidence.set(domain, stats);
+      };
+
+      for (const inf of profile.inferences) {
+        bump(inf.domain, normalizeConfidence(inf.confidence));
+      }
+      // Explicit preferences from the user count as the highest confidence —
+      // they told us directly. Inferred preferences carry their own level.
+      for (const pref of profile.preferences) {
+        const level = pref.source === 'explicit' || pref.source === 'corrected'
+          ? 'confirmed'
+          : normalizeConfidence(pref.confidence);
+        bump(pref.domain, level);
       }
 
       // Calculate overall confidence per domain (weighted score)
@@ -146,19 +162,27 @@ export function createEvalsRouter(): Router {
         domains[domain] = Math.round(weighted);
       }
 
-      // Overall confidence
-      const allInferences = profile.inferences.length;
-      const totalWeighted = profile.inferences.reduce((sum, inf) => {
+      // Overall confidence — mean of preferences + inferences combined.
+      const totalSignals = profile.inferences.length + profile.preferences.length;
+      const totalWeighted = [
+        ...profile.inferences.map((inf) => normalizeConfidence(inf.confidence)),
+        ...profile.preferences.map((pref) =>
+          pref.source === 'explicit' || pref.source === 'corrected'
+            ? 'confirmed'
+            : normalizeConfidence(pref.confidence),
+        ),
+      ].reduce((sum, level) => {
         const weights: Record<string, number> = { confirmed: 4, high: 3, moderate: 2, low: 1, speculative: 0 };
-        return sum + (weights[normalizeConfidence(inf.confidence)] ?? 0);
+        return sum + (weights[level] ?? 0);
       }, 0);
-      const overallConfidence = allInferences > 0 ? Math.round((totalWeighted / (allInferences * 4)) * 100) : 0;
+      const overallConfidence = totalSignals > 0 ? Math.round((totalWeighted / (totalSignals * 4)) * 100) : 0;
 
       res.json({
         userId,
         overallConfidence,
         domains,
-        totalInferences: allInferences,
+        totalInferences: profile.inferences.length,
+        totalPreferences: profile.preferences.length,
       });
     } catch (error) {
       next(error);

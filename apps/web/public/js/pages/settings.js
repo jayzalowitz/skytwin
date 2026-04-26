@@ -200,14 +200,18 @@ export async function renderSettings(container, userId) {
         Put a cap on how much your assistant can spend without asking you first.
       </div>
       <div class="form-group">
-        <label>Most I can spend at once (in cents)</label>
-        <input class="form-input" type="number" id="max-per-action" value="${autonomy.maxSpendPerActionCents ?? 10000}" min="0">
-        <div style="font-size: 0.75rem; color: var(--text-dim); margin-top: 0.25rem;">e.g. 10000 = $100.00</div>
+        <label>Most I can spend at once</label>
+        <div style="position: relative;">
+          <span style="position: absolute; left: 0.6rem; top: 50%; transform: translateY(-50%); color: var(--text-dim);">$</span>
+          <input class="form-input" type="number" id="max-per-action" value="${((autonomy.maxSpendPerActionCents ?? 10000) / 100).toFixed(2)}" min="0" step="0.01" style="padding-left: 1.4rem;">
+        </div>
       </div>
       <div class="form-group">
-        <label>Most I can spend in one day (in cents)</label>
-        <input class="form-input" type="number" id="max-daily" value="${autonomy.maxDailySpendCents ?? 50000}" min="0">
-        <div style="font-size: 0.75rem; color: var(--text-dim); margin-top: 0.25rem;">e.g. 50000 = $500.00</div>
+        <label>Most I can spend in one day</label>
+        <div style="position: relative;">
+          <span style="position: absolute; left: 0.6rem; top: 50%; transform: translateY(-50%); color: var(--text-dim);">$</span>
+          <input class="form-input" type="number" id="max-daily" value="${((autonomy.maxDailySpendCents ?? 50000) / 100).toFixed(2)}" min="0" step="0.01" style="padding-left: 1.4rem;">
+        </div>
       </div>
       <div class="form-group">
         <label>
@@ -233,7 +237,7 @@ export async function renderSettings(container, userId) {
               <div>
                 <span style="font-weight: 600;">${escapeHtml(p.domain)}</span>
                 <span style="color: var(--text-muted); margin-left: 0.5rem;">${escapeHtml(p.trustTier)}</span>
-                ${p.maxSpendPerActionCents != null ? `<span style="color: var(--text-muted); margin-left: 0.5rem;">(max ${p.maxSpendPerActionCents}c/action)</span>` : ''}
+                ${p.maxSpendPerActionCents != null ? `<span style="color: var(--text-muted); margin-left: 0.5rem;">(max $${(p.maxSpendPerActionCents / 100).toFixed(2)}/action)</span>` : ''}
               </div>
               <button class="btn btn-outline btn-sm" onclick="removeDomainPolicy('${escapeHtml(userId)}', '${escapeHtml(p.domain)}')">Remove</button>
             </div>
@@ -431,9 +435,12 @@ window.pauseTwin = async function(userId) {
 
 window.saveSpendLimits = async function(userId) {
   try {
+    // Inputs are dollars; convert to cents for the API. Round to avoid
+    // float drift (e.g. 100.10 → 10010, not 10009.999...).
+    const dollarsToCents = (id) => Math.round(parseFloat(document.getElementById(id).value) * 100);
     await updateAutonomySettings(userId, {
-      maxSpendPerActionCents: parseInt(document.getElementById('max-per-action').value, 10),
-      maxDailySpendCents: parseInt(document.getElementById('max-daily').value, 10),
+      maxSpendPerActionCents: dollarsToCents('max-per-action'),
+      maxDailySpendCents: dollarsToCents('max-daily'),
       requireApprovalForIrreversible: document.getElementById('irreversible-approval').checked,
     });
     const { renderSettings } = await import('./settings.js');

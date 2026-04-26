@@ -310,12 +310,21 @@ function describePreference(domain: string, key: string, value: unknown): string
     return domainDescs[key](value);
   }
 
-  // Generic fallback
+  // Generic fallback. Goal: produce something a user would write themselves,
+  // not a debug dump. Boolean prefs read as "enabled/disabled". Free-form
+  // string preferences read as "{Domain}: {their words}". Numeric and
+  // structured values include the key for context.
+  const humanKey = key.replace(/_/g, ' ');
   if (typeof value === 'boolean') {
-    return `${domainLabel}: ${key.replace(/_/g, ' ')} is ${value ? 'enabled' : 'disabled'}`;
+    return `${domainLabel}: ${humanKey} is ${value ? 'enabled' : 'disabled'}`;
+  }
+  if (typeof value === 'string' && value.trim().length > 0) {
+    // The string IS the preference — surface it directly so it doesn't read
+    // like a config file ("find_travel_deals = i love travel deals").
+    return `${domainLabel}: ${value.trim()}`;
   }
   if (value !== null && value !== undefined) {
-    return `${domainLabel}: ${key.replace(/_/g, ' ')} = ${String(value)}`;
+    return `${domainLabel}: ${humanKey} — ${String(value)}`;
   }
   return null;
 }
