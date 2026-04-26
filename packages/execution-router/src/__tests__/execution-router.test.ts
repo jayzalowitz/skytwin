@@ -388,6 +388,13 @@ describe('ExecutionRouter', () => {
       ).rejects.toBeInstanceOf(InvariantViolationError);
     });
 
+    it('throws InvariantViolationError when executeWithRouting is called without a CandidateAction', async () => {
+      const assessment = makeRiskAssessment();
+      await expect(
+        router.executeWithRouting(null as unknown as CandidateAction, assessment, 'user-1'),
+      ).rejects.toThrow(/without a CandidateAction/);
+    });
+
     it('throws InvariantViolationError when executeWithRouting is given a mismatched assessment', async () => {
       const action = makeAction({ id: 'action-A' });
       const assessment = makeRiskAssessment({ actionId: 'action-B' });
