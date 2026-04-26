@@ -47,7 +47,7 @@ export async function renderTwin(container, userId) {
     <div class="card">
       <div class="card-header">
         <span class="card-title">What I've learned about you</span>
-        <span class="badge badge-info">${preferences.length + inferences.length} things</span>
+        <span class="badge badge-info">${preferences.length + inferences.length} ${preferences.length + inferences.length === 1 ? 'thing' : 'things'}</span>
       </div>
       <div class="card-subtitle">
         Here's everything I think I know about how you like things done.
@@ -130,7 +130,7 @@ function renderDomainGroup(domain, group, userId) {
     <div class="card">
       <div class="card-header">
         <span class="card-title">${domainName}</span>
-        <span class="badge badge-accent">${group.preferences.length} prefs, ${group.inferences.length} inferences</span>
+        <span class="badge badge-accent">${group.preferences.length} ${group.preferences.length === 1 ? 'pref' : 'prefs'}, ${group.inferences.length} ${group.inferences.length === 1 ? 'inference' : 'inferences'}</span>
       </div>
       ${allItems.map(item => renderInsightItem(item, userId)).join('')}
     </div>
