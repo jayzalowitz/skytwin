@@ -103,7 +103,7 @@ export async function renderDecisions(container, userId) {
                   <tr style="cursor: pointer;" onclick="toggleExplanation('${escapeHtml(d.id)}', this)">
                     <td>${formatTime(d.createdAt || d.created_at)}</td>
                     <td><span class="badge badge-info">${escapeHtml(domainLabel(d.domain))}</span></td>
-                    <td>${escapeHtml(d.situationType || d.situation_type || '--')}</td>
+                    <td>${escapeHtml(situationLabel(d.situationType || d.situation_type))}</td>
                     <td><span class="badge badge-${urgencyBadge(d.urgency)}">${escapeHtml(d.urgency || '--')}</span></td>
                     <td>${d.autoExecuted === true
                       ? '<span class="badge badge-accent" title="Your twin handled this automatically">Auto</span>'
@@ -160,6 +160,28 @@ function domainLabel(domain) {
   return labels[domain] || domain;
 }
 
+function situationLabel(type) {
+  if (!type) return '--';
+  const labels = {
+    email_triage: 'Email triage',
+    calendar_invite: 'Calendar invite',
+    calendar_conflict: 'Calendar conflict',
+    calendar_update: 'Calendar update',
+    subscription_renewal: 'Subscription renewal',
+    grocery_reorder: 'Grocery reorder',
+    travel_decision: 'Travel decision',
+    finance_operation: 'Finance',
+    smart_home: 'Smart home',
+    task_management: 'Task',
+    social_media: 'Social media',
+    document_management: 'Document',
+    health_wellness: 'Health',
+    generic: 'General',
+  };
+  // Fallback: snake_case → "Title case" so even unknown types read cleanly.
+  return labels[type] || type.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 function urgencyBadge(urgency) {
   const map = { critical: 'danger', high: 'warning', medium: 'info', low: 'muted' };
   return map[urgency] || 'muted';
@@ -170,10 +192,22 @@ function formatTime(dateStr) {
   const d = new Date(dateStr);
   const now = new Date();
   const diffMs = now.getTime() - d.getTime();
+  const diffMin = Math.floor(diffMs / 60000);
   const diffHr = Math.floor(diffMs / 3600000);
-  if (diffHr < 24) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  if (diffHr < 168) return d.toLocaleDateString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' });
-  return d.toLocaleDateString();
+
+  // Recent: relative time so the user knows it just happened.
+  if (diffMin < 1) return 'just now';
+  if (diffMin < 60) return `${diffMin}m ago`;
+  if (diffHr < 24) return `${diffHr}h ago`;
+
+  // Older: always include the date so identical times don't blur together.
+  // Within the same year: "Apr 7, 9:44 PM". Otherwise include the year.
+  const sameYear = d.getFullYear() === now.getFullYear();
+  const datePart = d.toLocaleDateString([], sameYear
+    ? { month: 'short', day: 'numeric' }
+    : { month: 'short', day: 'numeric', year: 'numeric' });
+  const timePart = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return `${datePart}, ${timePart}`;
 }
 
 window.toggleExplanation = async function(decisionId, row) {
