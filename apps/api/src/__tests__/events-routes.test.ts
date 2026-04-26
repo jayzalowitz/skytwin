@@ -167,6 +167,39 @@ describe('Events API routes', () => {
     mockExecutionRepository.createResult.mockResolvedValue({});
   });
 
+  it('emits decision:blocked-by-policy when no action was selected (Safety Invariant #1)', async () => {
+    mockEvaluate.mockResolvedValue({
+      autoExecute: false,
+      requiresApproval: false,
+      reasoning: 'All candidates blocked by policy "No travel auto-bookings".',
+      selectedAction: null,
+      allCandidates: [],
+    });
+
+    const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+      userId: 'user-1',
+      source: 'test',
+      type: 'travel_decision',
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockSseManager.emit).toHaveBeenCalledWith(
+      'user-1',
+      'decision:blocked-by-policy',
+      expect.objectContaining({
+        decisionId: 'decision-1',
+        reason: expect.stringContaining('blocked by policy'),
+      }),
+    );
+    // Must not have emitted execution events
+    expect(mockSseManager.emit).not.toHaveBeenCalledWith(
+      'user-1',
+      'decision:executed',
+      expect.anything(),
+    );
+    expect(mockExecutionRepository.createPlan).not.toHaveBeenCalled();
+  });
+
   it('marks the execution plan failed when streaming execution throws before a terminal event', async () => {
     async function* throwingStream() {
       throw new Error('No adapter can handle action type "create_calendar_event"');

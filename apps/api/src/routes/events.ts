@@ -353,6 +353,22 @@ export function createEventsRouter(): Router {
         });
       }
 
+      // Surface "no action taken" outcomes (every candidate blocked, or none
+      // generated) so the user can see why nothing happened. Without this the
+      // event ingest is silent and the policy decision is invisible — Safety
+      // Invariant #1 (every auto-execute path went through a policy check) is
+      // structurally enforced upstream, but the *result* of that check needs
+      // to be observable.
+      if (!outcome.selectedAction && !approvalRequest && !executionResult) {
+        sseManager.emit(userId, 'decision:blocked-by-policy', {
+          decisionId: decision.id,
+          reason: outcome.reasoning,
+          domain: decision.domain,
+          situationType: decision.situationType,
+          urgency: decision.urgency,
+        });
+      }
+
       // 10. Return result
       res.json({
         decision: {

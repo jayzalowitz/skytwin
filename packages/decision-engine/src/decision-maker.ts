@@ -236,16 +236,24 @@ export class DecisionMaker {
     // Step 3: Evaluate through the standard pipeline
     const outcome = await this.evaluate(context);
 
-    // Step 4: Build WhatWouldIDoResponse
+    // Step 4: Build WhatWouldIDoResponse.
+    // When no candidate was allowed by policy (selectedAction is null), do not
+    // surface the blocked candidates as "alternatives" — that leaks options the
+    // user would not actually be permitted to take. Safety Invariant #1.
+    const alternativeActions = outcome.selectedAction
+      ? outcome.allCandidates.filter((c) => c !== outcome.selectedAction)
+      : [];
+    const policyNotes = outcome.requiresApproval || !outcome.selectedAction
+      ? outcome.reasoning
+      : undefined;
+
     return {
       predictedAction: outcome.selectedAction,
       confidence: outcome.selectedAction?.confidence ?? ConfidenceLevel.SPECULATIVE,
       reasoning: outcome.reasoning,
       wouldAutoExecute: outcome.autoExecute,
-      policyNotes: outcome.requiresApproval ? outcome.reasoning : undefined,
-      alternativeActions: outcome.allCandidates.filter(
-        (c) => c !== outcome.selectedAction,
-      ),
+      policyNotes,
+      alternativeActions,
       predictionId: `pred_${Date.now()}`,
     };
   }

@@ -1,4 +1,4 @@
-export { ExecutionRouter, NoAdapterError } from './execution-router.js';
+export { ExecutionRouter, NoAdapterError, InvariantViolationError } from './execution-router.js';
 
 export {
   AdapterRegistry,
