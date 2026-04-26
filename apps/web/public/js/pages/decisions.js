@@ -112,7 +112,7 @@ export async function renderDecisions(container, userId) {
                         : '<span class="badge badge-muted" title="Decision pending">Pending</span>'
                     }</td>
                     <td>
-                      <button class="btn btn-sm btn-ghost undo-btn" data-decision-id="${escapeHtml(d.id)}"
+                      <button class="btn btn-sm btn-outline undo-btn" data-decision-id="${escapeHtml(d.id)}"
                               onclick="event.stopPropagation(); showUndoModal('${escapeHtml(d.id)}')">
                         Undo
                       </button>
