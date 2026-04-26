@@ -34,6 +34,41 @@ export class NoAdapterError extends Error {
 }
 
 /**
+ * Thrown when a caller violates an execution-pipeline invariant — for example,
+ * invoking the router without a `RiskAssessment` (Safety Invariant #7) or with
+ * an action whose id does not match the assessment it was paired with.
+ *
+ * These are programmer errors, not runtime conditions to recover from.
+ */
+export class InvariantViolationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'InvariantViolationError';
+  }
+}
+
+function assertValidExecutionInputs(
+  action: CandidateAction,
+  riskAssessment: RiskAssessment,
+): void {
+  if (!riskAssessment) {
+    throw new InvariantViolationError(
+      'ExecutionRouter called without a RiskAssessment. Safety Invariant #7 ' +
+        '("Risk assessment is mandatory") forbids executing actions without one.',
+    );
+  }
+  if (!action) {
+    throw new InvariantViolationError('ExecutionRouter called without a CandidateAction.');
+  }
+  if (action.id !== riskAssessment.actionId) {
+    throw new InvariantViolationError(
+      `RiskAssessment.actionId (${riskAssessment.actionId}) does not match ` +
+        `CandidateAction.id (${action.id}). Refusing to execute with a mismatched assessment.`,
+    );
+  }
+}
+
+/**
  * Execution router that selects the best adapter for a given action,
  * applies adapter-specific risk modifiers, and executes with fallback.
  *
@@ -135,6 +170,7 @@ export class ExecutionRouter {
     riskAssessment: RiskAssessment,
     userId: string,
   ): Promise<ExecutionResult> {
+    assertValidExecutionInputs(action, riskAssessment);
     const routingDecision = await this.route(action, riskAssessment, userId);
 
     const adapterChain = [routingDecision.selectedAdapter, ...routingDecision.fallbackChain];
@@ -210,6 +246,7 @@ export class ExecutionRouter {
     riskAssessment: RiskAssessment,
     userId: string,
   ): AsyncIterable<ExecutionEvent> {
+    assertValidExecutionInputs(action, riskAssessment);
     const routingDecision = await this.route(action, riskAssessment, userId);
     const adapterChain = [routingDecision.selectedAdapter, ...routingDecision.fallbackChain];
     const attemptedAdapters: string[] = [];

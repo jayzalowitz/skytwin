@@ -1098,6 +1098,59 @@ describe('DecisionMaker', () => {
       expect(actionTypes).toContain('create_note');
       expect(actionTypes).toContain('escalate_to_user');
     });
+
+    it('returns no predicted action and no alternatives when policy blocks every candidate', async () => {
+      const twinService = createMockTwinService();
+      const policyEvaluator = createMockPolicyEvaluator({
+        allowed: false,
+        requiresApproval: false,
+        reason: 'All candidates blocked.',
+      });
+      const decisionRepo = createMockDecisionRepository();
+      const dm = new DecisionMaker(
+        twinService as never,
+        policyEvaluator as never,
+        decisionRepo as never,
+      );
+
+      const mockTwinServiceForQuery = {
+        getOrCreateProfile: vi.fn().mockResolvedValue({
+          id: 'twin_test',
+          userId: 'user_test',
+          version: 1,
+          preferences: [],
+          inferences: [],
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        }),
+        getRelevantPreferences: vi.fn().mockResolvedValue([]),
+        getPatterns: vi.fn().mockResolvedValue([]),
+        getTraits: vi.fn().mockResolvedValue([]),
+        getTemporalProfile: vi.fn().mockResolvedValue({
+          userId: 'user_test',
+          activeHours: { start: 8, end: 22 },
+          peakResponseTimes: {},
+          weekdayPatterns: {},
+          urgencyThresholds: {},
+        }),
+      };
+
+      const response = await dm.whatWouldIDo(
+        'user_test',
+        { situation: 'New email', domain: 'email' },
+        mockTwinServiceForQuery,
+        TrustTier.HIGH_AUTONOMY,
+      );
+
+      // Safety Invariant #1: predict path must not leak blocked candidates
+      expect(response.predictedAction).toBeNull();
+      expect(response.alternativeActions).toEqual([]);
+      expect(response.wouldAutoExecute).toBe(false);
+      expect(response.confidence).toBe(ConfidenceLevel.SPECULATIVE);
+      // policyNotes should surface the blocking reason so the user understands
+      expect(response.policyNotes).toBeDefined();
+      expect(response.policyNotes).toContain('blocked');
+    });
   });
 
   // ── All candidates blocked by policy ──────────────────────────────

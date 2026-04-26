@@ -8,7 +8,7 @@ import type {
   RollbackResult,
 } from '@skytwin/shared-types';
 import type { IronClawAdapter } from '@skytwin/ironclaw-adapter';
-import { ExecutionRouter, NoAdapterError } from '../execution-router.js';
+import { ExecutionRouter, NoAdapterError, InvariantViolationError } from '../execution-router.js';
 import {
   AdapterRegistry,
   IRONCLAW_TRUST_PROFILE,
@@ -369,6 +369,56 @@ describe('ExecutionRouter', () => {
       expect(result.status).toBe('failed');
       expect(result.output?.['adapter_used']).toBe('ironclaw');
       expect(result.output?.['fallback_skipped_reason']).toContain('fallback unsafe');
+    });
+  });
+
+  describe('safety invariant guards', () => {
+    let router: ExecutionRouter;
+
+    beforeEach(() => {
+      const registry = new AdapterRegistry();
+      registry.register('ironclaw', createMockAdapter('ironclaw'), IRONCLAW_TRUST_PROFILE);
+      router = new ExecutionRouter(registry);
+    });
+
+    it('throws InvariantViolationError when executeWithRouting is called without a RiskAssessment', async () => {
+      const action = makeAction();
+      await expect(
+        router.executeWithRouting(action, null as unknown as RiskAssessment, 'user-1'),
+      ).rejects.toBeInstanceOf(InvariantViolationError);
+    });
+
+    it('throws InvariantViolationError when executeWithRouting is given a mismatched assessment', async () => {
+      const action = makeAction({ id: 'action-A' });
+      const assessment = makeRiskAssessment({ actionId: 'action-B' });
+      await expect(
+        router.executeWithRouting(action, assessment, 'user-1'),
+      ).rejects.toThrow(/does not match/);
+    });
+
+    it('throws InvariantViolationError from executeWithRoutingStreaming on null assessment', async () => {
+      const action = makeAction();
+      const stream = router.executeWithRoutingStreaming(
+        action,
+        null as unknown as RiskAssessment,
+        'user-1',
+      );
+      await expect((async () => {
+        for await (const _ of stream) {
+          // noop
+        }
+      })()).rejects.toBeInstanceOf(InvariantViolationError);
+    });
+
+    it('throws InvariantViolationError from executeWithRoutingStreaming on mismatched id', async () => {
+      const action = makeAction({ id: 'action-A' });
+      const assessment = makeRiskAssessment({ actionId: 'action-B' });
+      const stream = router.executeWithRoutingStreaming(action, assessment, 'user-1');
+      await expect((async () => {
+        for await (const _ of stream) {
+          // noop
+        }
+      })()).rejects.toThrow(/does not match/);
     });
   });
 });
