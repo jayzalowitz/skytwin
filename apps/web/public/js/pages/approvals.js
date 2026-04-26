@@ -1,6 +1,13 @@
 import { fetchPendingApprovals, fetchApprovalHistory, respondToApproval, escapeHtml, fetchTrustProgress } from '../api-client.js';
 import { renderTrustProgress } from '../components/progress-bar.js';
 
+const PENDING_PAGE_SIZE = 10;
+
+// Held in module scope so the "Show more" button can re-render the pending
+// list without re-fetching. Reset on every full renderApprovals() call.
+let cachedPending = [];
+let visiblePendingCount = PENDING_PAGE_SIZE;
+
 export async function renderApprovals(container, userId) {
   const [pendingData, historyData, progressData] = await Promise.allSettled([
     fetchPendingApprovals(userId),
@@ -11,6 +18,9 @@ export async function renderApprovals(container, userId) {
   const pending = pendingData.status === 'fulfilled' ? (pendingData.value.approvals ?? []) : [];
   const rawHistory = historyData.status === 'fulfilled' ? (historyData.value.approvals ?? []) : [];
   const prog = progressData.status === 'fulfilled' ? progressData.value : null;
+
+  cachedPending = pending;
+  visiblePendingCount = PENDING_PAGE_SIZE;
 
   // Filter out expired escalations from history — they're noise (twin didn't know what
   // to do and the user never responded, so there's nothing useful to show)
@@ -31,12 +41,7 @@ export async function renderApprovals(container, userId) {
     </div>
 
     <div id="pending-list">
-      ${pending.length > 0 ? pending.map(renderApprovalCard).join('') : `
-        <div class="empty-state">
-          <div class="empty-state-title">All clear</div>
-          <div class="empty-state-desc">Your twin doesn't need any approvals right now. It's either handling things automatically or waiting for new events.</div>
-        </div>
-      `}
+      ${renderPendingList(pending, visiblePendingCount)}
     </div>
 
     ${history.length > 0 ? `
@@ -58,6 +63,38 @@ export async function renderApprovals(container, userId) {
     ` : ''}
   `;
 }
+
+function renderPendingList(pending, visibleCount) {
+  if (pending.length === 0) {
+    return `
+      <div class="empty-state">
+        <div class="empty-state-title">All clear</div>
+        <div class="empty-state-desc">Your twin doesn't need any approvals right now. It's either handling things automatically or waiting for new events.</div>
+      </div>
+    `;
+  }
+
+  const visible = pending.slice(0, visibleCount);
+  const remaining = pending.length - visible.length;
+  const cards = visible.map(renderApprovalCard).join('');
+
+  if (remaining <= 0) return cards;
+
+  const nextBatch = Math.min(PENDING_PAGE_SIZE, remaining);
+  return cards + `
+    <div style="text-align: center; margin: 1rem 0;">
+      <button class="btn btn-outline" onclick="window.showMoreApprovals()">
+        Show ${nextBatch} more (${remaining} remaining)
+      </button>
+    </div>
+  `;
+}
+
+window.showMoreApprovals = function() {
+  visiblePendingCount += PENDING_PAGE_SIZE;
+  const list = document.getElementById('pending-list');
+  if (list) list.innerHTML = renderPendingList(cachedPending, visiblePendingCount);
+};
 
 function renderApprovalCard(a) {
   const action = a.candidateAction || {};
