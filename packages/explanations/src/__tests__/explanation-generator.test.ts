@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { ConfidenceLevel, RiskTier } from '@skytwin/shared-types';
 import { ExplanationGenerator } from '../explanation-generator.js';
 import {
@@ -99,8 +99,13 @@ describe('ExplanationGenerator.generate', () => {
 });
 
 describe('ExplanationGenerator buildSummary branches', () => {
-  const repo = new InMemoryExplanationRepo();
-  const gen = new ExplanationGenerator(repo);
+  let repo: InMemoryExplanationRepo;
+  let gen: ExplanationGenerator;
+
+  beforeEach(() => {
+    repo = new InMemoryExplanationRepo();
+    gen = new ExplanationGenerator(repo);
+  });
 
   it('escalation summary when no action selected', async () => {
     const record = await gen.generate(
@@ -141,8 +146,13 @@ describe('ExplanationGenerator buildSummary branches', () => {
 });
 
 describe('ExplanationGenerator buildConfidenceReasoning branches', () => {
-  const repo = new InMemoryExplanationRepo();
-  const gen = new ExplanationGenerator(repo);
+  let repo: InMemoryExplanationRepo;
+  let gen: ExplanationGenerator;
+
+  beforeEach(() => {
+    repo = new InMemoryExplanationRepo();
+    gen = new ExplanationGenerator(repo);
+  });
 
   it('notes when no preferences are available', async () => {
     const record = await gen.generate(
@@ -182,8 +192,13 @@ describe('ExplanationGenerator buildConfidenceReasoning branches', () => {
 });
 
 describe('ExplanationGenerator buildActionRationale branches', () => {
-  const repo = new InMemoryExplanationRepo();
-  const gen = new ExplanationGenerator(repo);
+  let repo: InMemoryExplanationRepo;
+  let gen: ExplanationGenerator;
+
+  beforeEach(() => {
+    repo = new InMemoryExplanationRepo();
+    gen = new ExplanationGenerator(repo);
+  });
 
   it('starts with "No action was selected" when no action chosen', async () => {
     const record = await gen.generate(
@@ -215,8 +230,13 @@ describe('ExplanationGenerator buildActionRationale branches', () => {
 });
 
 describe('ExplanationGenerator buildCorrectionGuidance branches', () => {
-  const repo = new InMemoryExplanationRepo();
-  const gen = new ExplanationGenerator(repo);
+  let repo: InMemoryExplanationRepo;
+  let gen: ExplanationGenerator;
+
+  beforeEach(() => {
+    repo = new InMemoryExplanationRepo();
+    gen = new ExplanationGenerator(repo);
+  });
 
   it('offers undo for auto-executed reversible actions', async () => {
     const action = makeAction({ reversible: true });
@@ -256,8 +276,13 @@ describe('ExplanationGenerator buildCorrectionGuidance branches', () => {
 });
 
 describe('ExplanationGenerator gatherEvidenceReferences', () => {
-  const repo = new InMemoryExplanationRepo();
-  const gen = new ExplanationGenerator(repo);
+  let repo: InMemoryExplanationRepo;
+  let gen: ExplanationGenerator;
+
+  beforeEach(() => {
+    repo = new InMemoryExplanationRepo();
+    gen = new ExplanationGenerator(repo);
+  });
 
   it('includes a raw-data reference when decision.rawData.source is present', async () => {
     const decision = makeDecision({ rawData: { source: 'gmail', subject: 'X' } });
@@ -291,8 +316,13 @@ describe('ExplanationGenerator gatherEvidenceReferences', () => {
 });
 
 describe('ExplanationGenerator gatherPreferenceReferences', () => {
-  const repo = new InMemoryExplanationRepo();
-  const gen = new ExplanationGenerator(repo);
+  let repo: InMemoryExplanationRepo;
+  let gen: ExplanationGenerator;
+
+  beforeEach(() => {
+    repo = new InMemoryExplanationRepo();
+    gen = new ExplanationGenerator(repo);
+  });
 
   it('returns an empty array when no preferences are present', async () => {
     const record = await gen.generate(
@@ -322,8 +352,13 @@ describe('ExplanationGenerator gatherPreferenceReferences', () => {
 });
 
 describe('ExplanationGenerator.formatForUser', () => {
-  const repo = new InMemoryExplanationRepo();
-  const gen = new ExplanationGenerator(repo);
+  let repo: InMemoryExplanationRepo;
+  let gen: ExplanationGenerator;
+
+  beforeEach(() => {
+    repo = new InMemoryExplanationRepo();
+    gen = new ExplanationGenerator(repo);
+  });
 
   it('contains all required sections in order for an approval outcome', async () => {
     const record = await gen.generate(
@@ -364,8 +399,13 @@ describe('ExplanationGenerator.formatForUser', () => {
 });
 
 describe('ExplanationGenerator.formatForAudit', () => {
-  const repo = new InMemoryExplanationRepo();
-  const gen = new ExplanationGenerator(repo);
+  let repo: InMemoryExplanationRepo;
+  let gen: ExplanationGenerator;
+
+  beforeEach(() => {
+    repo = new InMemoryExplanationRepo();
+    gen = new ExplanationGenerator(repo);
+  });
 
   it('reports autoExecuted=false when escalationRationale is set', async () => {
     const record = await gen.generate(
