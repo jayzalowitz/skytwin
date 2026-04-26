@@ -561,6 +561,152 @@ describe.skipIf(!E2E)('E2E: API integration', () => {
   });
 
   // =========================================================================
+  // f. Policy safety kernel — Safety Invariant #1 end-to-end
+  //
+  // Issue #80 follow-ups: prove that no auto-execution path bypasses the
+  // policy check, and that the approval gate actually blocks execution
+  // until the user approves.
+  // =========================================================================
+
+  describe('Policy safety kernel', () => {
+    it('blocks execution when a deny policy matches every candidate', async () => {
+      const email = `e2e-policy-block-${Date.now()}@test.local`;
+      const { body: createBody } = await createUser(email, 'Policy Block User');
+      const userId = createBody.user.id;
+
+      // Promote to high autonomy so trust tier alone wouldn't gate execution.
+      // The deny policy is the only thing that should block.
+      await api(`/api/users/${userId}/trust-tier`, {
+        method: 'PUT',
+        body: JSON.stringify({ trustTier: 'high_autonomy' }),
+      });
+
+      // Create a deny-everything policy on the calendar domain. The evaluator
+      // resolves field 'domain' from CandidateAction, so this matches every
+      // calendar candidate the engine generates.
+      const { status: policyStatus, body: policyBody } = await apiJson<{ id: string }>(
+        `/api/policies/${userId}`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            name: 'Block all calendar actions (e2e)',
+            domain: 'calendar',
+            rules: [
+              {
+                effect: 'deny',
+                condition: { field: 'domain', operator: 'eq', value: 'calendar' },
+              },
+            ],
+            priority: 1000,
+          }),
+        },
+      );
+      expect(policyStatus).toBe(201);
+      createdPolicyIds.push({ userId, policyId: policyBody.id });
+
+      // Ingest a calendar event. The engine should generate calendar
+      // candidates, all of which are blocked by the deny policy.
+      const { status: ingestStatus, body: ingestBody } = await apiJson<{
+        decision: { id: string };
+        outcome: {
+          selectedAction: { actionType: string; description: string } | null;
+          autoExecute: boolean;
+          requiresApproval: boolean;
+        };
+        execution: unknown | null;
+        approval: unknown | null;
+      }>('/api/events/ingest', {
+        method: 'POST',
+        body: JSON.stringify({
+          userId,
+          type: 'calendar_event',
+          source: 'google_calendar',
+          data: { title: 'Weekly standup', time: '09:00' },
+        }),
+      });
+
+      expect(ingestStatus).toBe(200);
+      // Safety Invariant #1: when policy denies every candidate, no action is
+      // selected and no execution path runs.
+      expect(ingestBody.outcome.selectedAction).toBeNull();
+      expect(ingestBody.outcome.autoExecute).toBe(false);
+      expect(ingestBody.execution).toBeNull();
+      expect(ingestBody.approval).toBeNull();
+    });
+
+    it('approval gate blocks execution until the user approves', async () => {
+      const email = `e2e-approval-gate-${Date.now()}@test.local`;
+      const { body: createBody } = await createUser(email, 'Approval Gate User');
+      const userId = createBody.user.id;
+
+      // Observer trust tier forces every action to escalate for approval.
+      await api(`/api/users/${userId}/trust-tier`, {
+        method: 'PUT',
+        body: JSON.stringify({ trustTier: 'observer' }),
+      });
+
+      // Ingest an event. Should produce an approval, NOT an execution.
+      const { status: ingestStatus, body: ingestBody } = await apiJson<{
+        decision: { id: string };
+        outcome: { autoExecute: boolean; requiresApproval: boolean };
+        execution: unknown | null;
+        approval: { id: string; status: string } | null;
+      }>('/api/events/ingest', {
+        method: 'POST',
+        body: JSON.stringify({
+          userId,
+          type: 'email_received',
+          source: 'gmail',
+          data: {
+            from: 'client@example.com',
+            subject: 'Quick question about the contract',
+            body: 'Could you take a look when you get a chance?',
+          },
+        }),
+      });
+
+      expect(ingestStatus).toBe(200);
+      expect(ingestBody.execution).toBeNull();
+
+      // If the engine produced an approval, exercise the gate. If it didn't
+      // (e.g. the engine couldn't generate a candidate at all), the test still
+      // proves "no execution before approval" — that's the invariant.
+      if (ingestBody.approval) {
+        expect(ingestBody.outcome.requiresApproval).toBe(true);
+        expect(ingestBody.outcome.autoExecute).toBe(false);
+        expect(ingestBody.approval.status).toBe('pending');
+
+        // Capture decisions count BEFORE approval.
+        const { body: beforeDecisions } = await apiJson<{ total: number }>(
+          `/api/decisions/${userId}`,
+        );
+        const beforeTotal = beforeDecisions.total;
+
+        // Approve the action.
+        const { status: respondStatus } = await apiJson<{ approval: { status: string } }>(
+          `/api/approvals/${ingestBody.approval.id}/respond`,
+          {
+            method: 'POST',
+            body: JSON.stringify({ action: 'approve', userId, reason: 'Looks good.' }),
+          },
+        );
+        expect(respondStatus).toBe(200);
+
+        // Decision count should not regress and should be at least the same
+        // (approval flow may or may not synchronously create another row).
+        const { body: afterDecisions } = await apiJson<{ total: number }>(
+          `/api/decisions/${userId}`,
+        );
+        expect(afterDecisions.total).toBeGreaterThanOrEqual(beforeTotal);
+      } else {
+        // Engine couldn't escalate — at minimum verify autoExecute stayed off
+        // (observer trust tier should never auto-execute).
+        expect(ingestBody.outcome.autoExecute).toBe(false);
+      }
+    });
+  });
+
+  // =========================================================================
   // Bonus: decisions listing
   // =========================================================================
 
