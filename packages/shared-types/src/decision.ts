@@ -90,4 +90,16 @@ export interface DecisionOutcome {
   requiresApproval: boolean;
   reasoning: string;
   decidedAt: Date;
+  /**
+   * Per-candidate policy verdicts, keyed by candidate id. Populated by the
+   * decision engine; not persisted. Consumers (e.g. `whatWouldIDo`) use this
+   * to filter alternatives so blocked candidates are not surfaced as options
+   * the user could take. Safety Invariant #1.
+   */
+  policyVerdicts?: Record<string, PolicyVerdict>;
 }
+
+/**
+ * Per-candidate policy verdict produced during decision evaluation.
+ */
+export type PolicyVerdict = 'allowed' | 'requires-approval' | 'denied';

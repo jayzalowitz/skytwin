@@ -37,6 +37,7 @@ export type {
   RiskAssessment,
   DimensionAssessment,
   DecisionOutcome,
+  PolicyVerdict,
 } from './decision.js';
 
 export type {

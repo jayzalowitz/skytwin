@@ -1178,5 +1178,147 @@ describe('DecisionMaker', () => {
       expect(outcome.requiresApproval).toBe(true);
       expect(outcome.reasoning).toContain('blocked by policies');
     });
+
+    it('records every candidate verdict on outcome.policyVerdicts', async () => {
+      const twinService = createMockTwinService();
+      const policyEvaluator = createMockPolicyEvaluator({
+        allowed: false,
+        reason: 'Blocked.',
+      });
+      const decisionRepo = createMockDecisionRepository();
+      const dm = new DecisionMaker(
+        twinService as never,
+        policyEvaluator as never,
+        decisionRepo as never,
+      );
+
+      const context = createContext(TrustTier.HIGH_AUTONOMY);
+      const outcome = await dm.evaluate(context);
+
+      expect(outcome.policyVerdicts).toBeDefined();
+      const verdicts = outcome.policyVerdicts!;
+      const ids = outcome.allCandidates.map((c) => c.id);
+      // Every candidate has a recorded verdict
+      for (const id of ids) {
+        expect(verdicts[id]).toBe('denied');
+      }
+      expect(Object.keys(verdicts)).toHaveLength(ids.length);
+    });
+  });
+
+  // ── Partial-block: some candidates allowed, some denied ──────────
+  // Issue #80: whatWouldIDo must not leak denied candidates as alternatives.
+
+  describe('Mixed verdicts (partial-block)', () => {
+    it('whatWouldIDo filters denied candidates out of alternativeActions', async () => {
+      const twinService = createMockTwinService();
+      // Policy evaluator returns 'denied' for the first candidate evaluated
+      // and 'allowed' for everything after — simulates a real policy where
+      // some action types are blocked and others pass.
+      let callCount = 0;
+      const policyEvaluator = {
+        evaluate: vi.fn().mockImplementation(async () => {
+          callCount += 1;
+          if (callCount === 1) {
+            return { allowed: false, requiresApproval: false, reason: 'First blocked.' };
+          }
+          return { allowed: true, requiresApproval: false, reason: 'OK.' };
+        }),
+        loadPolicies: vi.fn().mockResolvedValue([]),
+        checkSpendLimit: vi.fn().mockReturnValue(true),
+        checkReversibility: vi.fn().mockReturnValue(true),
+        checkDomainAllowlist: vi.fn().mockReturnValue(true),
+      };
+      const decisionRepo = createMockDecisionRepository();
+      const dm = new DecisionMaker(
+        twinService as never,
+        policyEvaluator as never,
+        decisionRepo as never,
+      );
+
+      const mockTwinServiceForQuery = {
+        getOrCreateProfile: vi.fn().mockResolvedValue({
+          id: 'twin_test',
+          userId: 'user_test',
+          version: 1,
+          preferences: [],
+          inferences: [],
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        }),
+        getRelevantPreferences: vi.fn().mockResolvedValue([]),
+        getPatterns: vi.fn().mockResolvedValue([]),
+        getTraits: vi.fn().mockResolvedValue([]),
+        getTemporalProfile: vi.fn().mockResolvedValue({
+          userId: 'user_test',
+          activeHours: { start: 8, end: 22 },
+          peakResponseTimes: {},
+          weekdayPatterns: {},
+          urgencyThresholds: {},
+        }),
+      };
+
+      const response = await dm.whatWouldIDo(
+        'user_test',
+        { situation: 'Calendar conflict at 3pm', domain: 'calendar' },
+        mockTwinServiceForQuery,
+        TrustTier.HIGH_AUTONOMY,
+      );
+
+      // A winner exists (one of the allowed ones)
+      expect(response.predictedAction).not.toBeNull();
+      // The blocked candidate must NOT appear in alternativeActions
+      // (calendar generates 3 candidates: accept/decline/propose; one was denied)
+      const allReturnedIds = [
+        response.predictedAction?.id,
+        ...response.alternativeActions.map((a) => a.id),
+      ].filter(Boolean) as string[];
+      // We had 3 candidates total, 1 was denied → 2 should surface
+      expect(allReturnedIds).toHaveLength(2);
+    });
+
+    it('whatWouldIDo with a legacy outcome (no policyVerdicts) drops alternatives conservatively', async () => {
+      // Simulates an outcome from a code path that didn't populate verdicts
+      // (e.g. an older serialized outcome). The filter falls back to dropping
+      // candidates whose verdict is unknown — better to under-suggest than
+      // leak something the user might not be allowed to take.
+      const twinService = createMockTwinService();
+      const policyEvaluator = createMockPolicyEvaluator({ allowed: true, requiresApproval: false });
+      const decisionRepo = createMockDecisionRepository();
+      const dm = new DecisionMaker(
+        twinService as never,
+        policyEvaluator as never,
+        decisionRepo as never,
+      );
+
+      // Override evaluate to return an outcome with policyVerdicts deleted
+      // (simulates a stale / legacy code path).
+      const realEvaluate = dm.evaluate.bind(dm);
+      vi.spyOn(dm, 'evaluate').mockImplementation(async (ctx) => {
+        const outcome = await realEvaluate(ctx);
+        return { ...outcome, policyVerdicts: undefined };
+      });
+
+      const mockTwinServiceForQuery = {
+        getOrCreateProfile: vi.fn().mockResolvedValue({
+          id: 'twin_test', userId: 'user_test', version: 1,
+          preferences: [], inferences: [], createdAt: new Date(), updatedAt: new Date(),
+        }),
+        getRelevantPreferences: vi.fn().mockResolvedValue([]),
+        getPatterns: vi.fn().mockResolvedValue([]),
+        getTraits: vi.fn().mockResolvedValue([]),
+        getTemporalProfile: vi.fn().mockResolvedValue({}),
+      };
+
+      const response = await dm.whatWouldIDo(
+        'user_test',
+        { situation: 'Test', domain: 'calendar' },
+        mockTwinServiceForQuery,
+        TrustTier.HIGH_AUTONOMY,
+      );
+
+      // Conservative fallback: alternatives empty when verdicts unavailable
+      expect(response.alternativeActions).toEqual([]);
+    });
   });
 });

@@ -59,7 +59,11 @@ export class ExplanationGenerator {
     const preferencesInvoked = this.gatherPreferenceReferences(context);
     const confidenceReasoning = this.buildConfidenceReasoning(outcome, context);
     const actionRationale = this.buildActionRationale(outcome);
-    const escalationRationale = outcome.requiresApproval
+    // Capture the non-execution reason for both the requires-approval path AND
+    // the no-action / all-blocked-by-policy path. Without this, blocked
+    // decisions would persist with `escalationRationale: undefined` and the
+    // audit log would lose the policy-block reason. Safety Invariant #2.
+    const escalationRationale = outcome.requiresApproval || !outcome.selectedAction
       ? this.buildEscalationRationale(outcome)
       : undefined;
     const correctionGuidance = this.buildCorrectionGuidance(outcome);
@@ -117,9 +121,13 @@ export class ExplanationGenerator {
     lines.push(`Risk level: ${record.riskTier}`);
     lines.push('');
 
-    // Escalation
+    // Escalation / blocked-by-policy. Label depends on whether SkyTwin
+    // selected an action that needs approval, or could not select any action
+    // at all because policy blocked every candidate.
     if (record.escalationRationale) {
-      lines.push(`Why approval was needed: ${record.escalationRationale}`);
+      const blocked = record.actionRationale.startsWith('No action was selected');
+      const label = blocked ? 'Why no action was taken' : 'Why approval was needed';
+      lines.push(`${label}: ${record.escalationRationale}`);
       lines.push('');
     }
 
