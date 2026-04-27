@@ -155,4 +155,142 @@ describe('PreferenceArchaeologist', () => {
     expect(highProposals.length).toBe(1);
     expect(highProposals[0]!.confidence).toBe(ConfidenceLevel.HIGH);
   });
+
+  // ── Action key fallback chain ─────────────────────────────────────
+
+  it('extracts action from data.preference_key when data.action is absent', async () => {
+    const evidence: TwinEvidence[] = [];
+    for (let i = 0; i < 6; i++) {
+      evidence.push({
+        id: `ev_${i}`,
+        userId: 'user_1',
+        source: 'test',
+        type: 'observation',
+        data: { preference_key: 'protect_morning_focus' },
+        domain: 'calendar',
+        timestamp: new Date(),
+      });
+    }
+    repo._setEvidence(evidence);
+    const proposals = await archaeologist.analyze('user_1');
+    expect(proposals).toHaveLength(1);
+    expect(proposals[0]!.key).toBe('protect_morning_focus');
+  });
+
+  it('extracts action from data.behavior when neither action nor preference_key present', async () => {
+    const evidence: TwinEvidence[] = [];
+    for (let i = 0; i < 6; i++) {
+      evidence.push({
+        id: `ev_${i}`,
+        userId: 'user_1',
+        source: 'test',
+        type: 'observation',
+        data: { behavior: 'late_replier' },
+        domain: 'email',
+        timestamp: new Date(),
+      });
+    }
+    repo._setEvidence(evidence);
+    const proposals = await archaeologist.analyze('user_1');
+    expect(proposals).toHaveLength(1);
+    expect(proposals[0]!.key).toBe('late_replier');
+  });
+
+  it('skips evidence items where no recognizable action key exists', async () => {
+    const evidence: TwinEvidence[] = [];
+    // 6 items but none have action/preference_key/behavior — should be skipped
+    for (let i = 0; i < 6; i++) {
+      evidence.push({
+        id: `ev_${i}`,
+        userId: 'user_1',
+        source: 'test',
+        type: 'observation',
+        data: { unrelated: 'value' },
+        domain: 'email',
+        timestamp: new Date(),
+      });
+    }
+    repo._setEvidence(evidence);
+    const proposals = await archaeologist.analyze('user_1');
+    expect(proposals).toEqual([]);
+  });
+
+  // ── Multiple groups in one analysis ───────────────────────────────
+
+  it('produces a proposal per group when multiple distinct domain:action pairs each meet threshold', async () => {
+    const evidence: TwinEvidence[] = [];
+    for (let i = 0; i < 6; i++) {
+      evidence.push(makeEvidence(`ev_email_${i}`, 'email', 'archive'));
+      evidence.push(makeEvidence(`ev_cal_${i}`, 'calendar', 'decline'));
+    }
+    repo._setEvidence(evidence);
+    const proposals = await archaeologist.analyze('user_1');
+    expect(proposals).toHaveLength(2);
+    const keys = proposals.map((p) => `${p.domain}:${p.key}`).sort();
+    expect(keys).toEqual(['calendar:decline', 'email:archive']);
+  });
+
+  it('only emits groups that meet the threshold; sub-threshold groups are dropped', async () => {
+    const evidence: TwinEvidence[] = [];
+    // archive: 6 (above), label: 3 (below)
+    for (let i = 0; i < 6; i++) evidence.push(makeEvidence(`ev_a_${i}`, 'email', 'archive'));
+    for (let i = 0; i < 3; i++) evidence.push(makeEvidence(`ev_l_${i}`, 'email', 'label'));
+    repo._setEvidence(evidence);
+    const proposals = await archaeologist.analyze('user_1');
+    expect(proposals).toHaveLength(1);
+    expect(proposals[0]!.key).toBe('archive');
+  });
+
+  // ── supportingEvidence cap ───────────────────────────────────────
+
+  it('caps supportingEvidence at 10 even when many items exist', async () => {
+    const evidence: TwinEvidence[] = [];
+    for (let i = 0; i < 25; i++) {
+      evidence.push(makeEvidence(`ev_${i}`, 'email', 'archive'));
+    }
+    repo._setEvidence(evidence);
+    const proposals = await archaeologist.analyze('user_1');
+    expect(proposals).toHaveLength(1);
+    expect(proposals[0]!.supportingEvidence).toHaveLength(10);
+  });
+
+  // ── Expiry window ─────────────────────────────────────────────────
+
+  it('sets expiresAt approximately 30 days from detectedAt', async () => {
+    const evidence: TwinEvidence[] = [];
+    for (let i = 0; i < 6; i++) evidence.push(makeEvidence(`ev_${i}`, 'email', 'archive'));
+    repo._setEvidence(evidence);
+    const before = Date.now();
+    const proposals = await archaeologist.analyze('user_1');
+    expect(proposals).toHaveLength(1);
+    const proposal = proposals[0]!;
+    const expectedMs = 30 * 24 * 60 * 60 * 1000;
+    const actualMs = proposal.expiresAt.getTime() - before;
+    // Allow some slack for the few ms between `before` capture and proposal creation
+    expect(actualMs).toBeGreaterThan(expectedMs - 5_000);
+    expect(actualMs).toBeLessThan(expectedMs + 5_000);
+  });
+
+  // ── Existing inferred preferences are NOT skipped (only explicit are) ─
+
+  it('still proposes when matching key exists with source != explicit', async () => {
+    const evidence: TwinEvidence[] = [];
+    for (let i = 0; i < 6; i++) evidence.push(makeEvidence(`ev_${i}`, 'email', 'archive'));
+    repo._setEvidence(evidence);
+    repo._setPreferences([
+      {
+        id: 'pref_1',
+        domain: 'email',
+        key: 'archive',
+        value: true,
+        confidence: ConfidenceLevel.LOW,
+        source: 'inferred',
+        evidenceIds: [],
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ]);
+    const proposals = await archaeologist.analyze('user_1');
+    expect(proposals).toHaveLength(1);
+  });
 });
