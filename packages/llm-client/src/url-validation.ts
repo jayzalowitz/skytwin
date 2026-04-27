@@ -21,8 +21,7 @@ export function validateBaseUrl(baseUrl: string, provider: string): void {
     throw new Error(`Unsupported protocol for ${provider}: ${parsed.protocol}`);
   }
 
-  // URL parser keeps brackets around IPv6: [::1] → strip them for matching
-  const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  const hostname = normalizeHostname(parsed.hostname);
 
   // Block cloud metadata endpoints (all providers, including Ollama)
   if (hostname === '169.254.169.254' || hostname === 'metadata.google.internal') {
@@ -53,7 +52,7 @@ export async function validateBaseUrlWithDns(baseUrl: string, provider: string):
   validateBaseUrl(baseUrl, provider);
 
   const { lookup } = await import('node:dns/promises');
-  const hostname = new URL(baseUrl).hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  const hostname = normalizeHostname(new URL(baseUrl).hostname);
 
   // Skip literal IPs and localhost — already validated above
   if (hostname === 'localhost' || /^\d{1,3}(\.\d{1,3}){3}$/.test(hostname) || hostname.includes(':')) {
@@ -80,9 +79,34 @@ export async function validateBaseUrlWithDns(baseUrl: string, provider: string):
   }
 }
 
+/**
+ * Normalize a hostname for safe matching:
+ * - lowercase
+ * - strip surrounding [] (URL parser leaves brackets on IPv6)
+ * - strip trailing dot (DNS root marker — `localhost.` should match `localhost`)
+ * - strip IPv6 zone id (`fe80::1%eth0` → `fe80::1`)
+ *
+ * Bypasses we are guarding against:
+ * - `LOCALHOST` (case): caught by lowercase
+ * - `localhost.` (trailing dot): caught by dot strip
+ * - `[fe80::1%eth0]` (IPv6 link-local with zone): caught by zone strip + bracket strip
+ */
+function normalizeHostname(raw: string): string {
+  let h = raw.toLowerCase().replace(/^\[|\]$/g, '');
+  if (h.endsWith('.')) h = h.slice(0, -1);
+  const zoneIdx = h.indexOf('%');
+  if (zoneIdx >= 0) h = h.slice(0, zoneIdx);
+  return h;
+}
+
 function isPrivateHost(hostname: string): boolean {
   // Loopback
   if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') {
+    return true;
+  }
+
+  // IPv6 unspecified — equivalent to 0.0.0.0
+  if (hostname === '::' || hostname === '0:0:0:0:0:0:0:0') {
     return true;
   }
 
@@ -113,6 +137,9 @@ function isPrivateHost(hostname: string): boolean {
       if (nums[0] === 127) return true;
       // 0.0.0.0/8
       if (nums[0] === 0) return true;
+      // 100.64.0.0/10 (Carrier-Grade NAT, RFC 6598) — provider-internal,
+      // shouldn't be a target for outbound LLM calls.
+      if (nums[0] === 100 && nums[1]! >= 64 && nums[1]! <= 127) return true;
     }
   }
 
