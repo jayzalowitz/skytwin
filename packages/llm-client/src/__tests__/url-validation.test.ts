@@ -167,4 +167,57 @@ describe('validateBaseUrl', () => {
       expect(() => validateBaseUrl('http://[fd12::1]:11434', 'ollama')).toThrow('only loopback addresses are allowed');
     });
   });
+
+  describe('hostname normalization (hardening)', () => {
+    it('blocks trailing-dot localhost ("localhost.")', () => {
+      expect(() => validateBaseUrl('http://localhost./api', 'openai')).toThrow('Private/internal URL not allowed');
+    });
+
+    it('blocks trailing-dot 127.0.0.1 ("127.0.0.1.")', () => {
+      expect(() => validateBaseUrl('http://127.0.0.1./api', 'openai')).toThrow('Private/internal URL not allowed');
+    });
+
+    it('blocks IPv6 zone id ([fe80::1%eth0])', () => {
+      // Node's URL parser rejects bracketed IPv6 with a zone id outright as
+      // an invalid URL. That's defense-in-depth — either an "Invalid base
+      // URL" or "Private/internal URL not allowed" is acceptable; the URL
+      // must NOT pass through.
+      expect(() => validateBaseUrl('http://[fe80::1%25eth0]:8080', 'openai'))
+        .toThrow(/Invalid base URL|Private\/internal URL not allowed/);
+    });
+
+    it('blocks bracketed link-local without zone id ([fe80::1])', () => {
+      // The non-zone form parses fine and must be caught by isPrivateHost.
+      expect(() => validateBaseUrl('http://[fe80::1]:8080', 'openai'))
+        .toThrow('Private/internal URL not allowed');
+    });
+
+    it('blocks uppercase LOCALHOST', () => {
+      expect(() => validateBaseUrl('http://LOCALHOST:8080', 'openai')).toThrow('Private/internal URL not allowed');
+    });
+
+    it('blocks the IPv6 unspecified address [::]', () => {
+      expect(() => validateBaseUrl('http://[::]:8080', 'openai')).toThrow('Private/internal URL not allowed');
+    });
+
+    it('blocks long-form IPv6 unspecified [0:0:0:0:0:0:0:0]', () => {
+      // Node URL parser may collapse this to [::], either way it should block
+      expect(() => validateBaseUrl('http://[0:0:0:0:0:0:0:0]:8080', 'openai')).toThrow('Private/internal URL not allowed');
+    });
+  });
+
+  describe('CGNAT (RFC 6598) blocking', () => {
+    it('blocks 100.64.0.0/10 (CGNAT range start)', () => {
+      expect(() => validateBaseUrl('http://100.64.0.1', 'openai')).toThrow('Private/internal URL not allowed');
+    });
+
+    it('blocks 100.127.255.254 (CGNAT range end)', () => {
+      expect(() => validateBaseUrl('http://100.127.255.254', 'openai')).toThrow('Private/internal URL not allowed');
+    });
+
+    it('allows 100.63.x.x and 100.128.x.x (outside CGNAT)', () => {
+      expect(() => validateBaseUrl('http://100.63.0.1', 'openai')).not.toThrow();
+      expect(() => validateBaseUrl('http://100.128.0.1', 'openai')).not.toThrow();
+    });
+  });
 });
