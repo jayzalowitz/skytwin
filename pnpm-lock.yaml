@@ -149,8 +149,8 @@ importers:
         specifier: ~4.23.0
         version: 4.23.0(react-native@0.85.0(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.5))(react@19.2.5)
       react-native-zeroconf:
-        specifier: ^0.13.0
-        version: 0.13.8(react-native@0.85.0(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.5))
+        specifier: ^0.14.0
+        version: 0.14.0(react-native@0.85.0(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.5))
     devDependencies:
       '@types/react':
         specifier: ~19.2.14
@@ -1857,6 +1857,7 @@ packages:
   '@xmldom/xmldom@0.8.12':
     resolution: {integrity: sha512-9k/gHF6n/pAi/9tqr3m3aqkuiNosYTurLLUtc7xQ9sxB/wm7WPygCv8GYa6mS0fLJEHhqMC1ATYhz++U/lRHqg==}
     engines: {node: '>=10.0.0'}
+    deprecated: this version has critical issues, please update to the latest version
 
   abort-controller@3.0.0:
     resolution: {integrity: sha512-h8lQ8tacZYnR3vNQTgibj+tODHI5/+l06Au2Pcriv/Gmet0eaj4TwWH41sO9wnHDiQsEj19q0drzdWdeAHtweg==}
@@ -4069,8 +4070,8 @@ packages:
       react: '*'
       react-native: '*'
 
-  react-native-zeroconf@0.13.8:
-    resolution: {integrity: sha512-frGS1xNbNCA7BfETSubNYODu7s7mlU55vgArEzZW9EuSQ8SYqlNQC5zpKHDZEAXy4fFqe+CgnMCxKAjQqYM6XA==}
+  react-native-zeroconf@0.14.0:
+    resolution: {integrity: sha512-TqjORroaVZrBYLzk3YtviQy8lUl/iiMacknxixRYlmGaqgsv4LJXIYafpnvPa3y2SC4/qu2mvF8D1/VTTxylgQ==}
     peerDependencies:
       react-native: '>=0.60'
 
@@ -9146,7 +9147,7 @@ snapshots:
       react-native: 0.85.0(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.5)
       warn-once: 0.1.1
 
-  react-native-zeroconf@0.13.8(react-native@0.85.0(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.5)):
+  react-native-zeroconf@0.14.0(react-native@0.85.0(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.5)):
     dependencies:
       events: 3.3.0
       react-native: 0.85.0(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.5)
