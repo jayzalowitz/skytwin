@@ -6,7 +6,9 @@ import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { getSession } from './services/session-store';
 import { registerForPushNotifications } from './services/notifications';
+import { hasSeenWelcome } from './services/welcome-store';
 import { PairingScreen } from './screens/PairingScreen';
+import { WelcomeScreen } from './screens/WelcomeScreen';
 import { ApprovalsScreen } from './screens/ApprovalsScreen';
 import { DashboardScreen } from './screens/DashboardScreen';
 import { SettingsScreen } from './screens/SettingsScreen';
@@ -95,15 +97,19 @@ function TabButton({
 export default function App(): React.JSX.Element {
   const [initializing, setInitializing] = useState(true);
   const [hasSession, setHasSession] = useState(false);
+  const [welcomeSeen, setWelcomeSeen] = useState(true);
 
   useEffect(() => {
     const init = async (): Promise<void> => {
       try {
-        // Check for existing session
         const session = await getSession();
         setHasSession(session !== null);
 
-        // Register for notifications (non-blocking)
+        // Welcome state is read here so it's already known by the time the
+        // user finishes pairing — no flash of MainWithTabs first.
+        const seen = await hasSeenWelcome();
+        setWelcomeSeen(seen);
+
         registerForPushNotifications().catch((err: unknown) => {
           console.warn('[app] Failed to register notifications:', err);
         });
@@ -122,6 +128,10 @@ export default function App(): React.JSX.Element {
     setHasSession(true);
   }, []);
 
+  const handleWelcomeDone = useCallback(() => {
+    setWelcomeSeen(true);
+  }, []);
+
   const handleDisconnect = useCallback(() => {
     setHasSession(false);
   }, []);
@@ -138,18 +148,25 @@ export default function App(): React.JSX.Element {
     );
   }
 
+  let content: React.JSX.Element;
+  if (!hasSession) {
+    content = (
+      <RootStack.Navigator screenOptions={{ headerShown: false }}>
+        <RootStack.Screen name="Pairing">
+          {() => <PairingScreen onPaired={handlePaired} />}
+        </RootStack.Screen>
+      </RootStack.Navigator>
+    );
+  } else if (!welcomeSeen) {
+    content = <WelcomeScreen onDone={handleWelcomeDone} />;
+  } else {
+    content = <MainWithTabs onDisconnect={handleDisconnect} />;
+  }
+
   return (
     <SafeAreaProvider>
       <NavigationContainer theme={SkyTwinTheme}>
-        {hasSession ? (
-          <MainWithTabs onDisconnect={handleDisconnect} />
-        ) : (
-          <RootStack.Navigator screenOptions={{ headerShown: false }}>
-            <RootStack.Screen name="Pairing">
-              {() => <PairingScreen onPaired={handlePaired} />}
-            </RootStack.Screen>
-          </RootStack.Navigator>
-        )}
+        {content}
       </NavigationContainer>
       <StatusBar style="light" />
     </SafeAreaProvider>
