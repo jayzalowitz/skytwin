@@ -57,7 +57,7 @@ vi.mock('@skytwin/db', () => ({
   approvalRepository: { create: vi.fn() },
   oauthRepository: { getToken: vi.fn().mockResolvedValue(null) },
   executionRepository: mockExecutionRepository,
-  userRepository: { findById: vi.fn().mockResolvedValue({ id: 'user-1', trust_tier: 'observer', ironclaw_channel: 'skytwin' }) },
+  userRepository: { findById: vi.fn().mockResolvedValue({ id: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', trust_tier: 'observer', ironclaw_channel: 'skytwin' }) },
   aiProviderRepository: { getEnabledForUser: vi.fn().mockResolvedValue([]) },
   TwinRepositoryAdapter: vi.fn(),
   PatternRepositoryAdapter: vi.fn(),
@@ -177,14 +177,14 @@ describe('Events API routes', () => {
     });
 
     const res = await request(buildApp(), 'POST', '/api/events/ingest', {
-      userId: 'user-1',
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
       source: 'test',
       type: 'travel_decision',
     });
 
     expect(res.status).toBe(200);
     expect(mockSseManager.emit).toHaveBeenCalledWith(
-      'user-1',
+      'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
       'decision:blocked-by-policy',
       expect.objectContaining({
         decisionId: 'decision-1',
@@ -193,7 +193,7 @@ describe('Events API routes', () => {
     );
     // Must not have emitted execution events
     expect(mockSseManager.emit).not.toHaveBeenCalledWith(
-      'user-1',
+      'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
       'decision:executed',
       expect.anything(),
     );
@@ -209,7 +209,7 @@ describe('Events API routes', () => {
     });
 
     const res = await request(buildApp(), 'POST', '/api/events/ingest', {
-      userId: 'user-1',
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
       source: 'test',
       type: 'calendar_event',
     });
