@@ -15,15 +15,14 @@ import {
   serviceCredentialRepository,
 } from '@skytwin/db';
 import { withRetry, RetryableHttpError, CircuitBreaker, createLogger } from '@skytwin/core';
+import { SignalDeduper } from './signal-dedupe.js';
 
 const config = loadConfig();
 const log = createLogger('worker');
 
 /** Per-user circuit breakers to skip users with persistent failures. */
 const userCircuitBreakers = new Map<string, CircuitBreaker>();
-const seenSignalIdsByUser = new Map<string, Map<string, number>>();
-const SIGNAL_DEDUPE_TTL_MS = 24 * 60 * 60 * 1000;
-const SIGNAL_DEDUPE_MAX_PER_USER = 5_000;
+const signalDeduper = new SignalDeduper();
 
 function getCircuitBreaker(userId: string): CircuitBreaker {
   let breaker = userCircuitBreakers.get(userId);
@@ -91,47 +90,12 @@ async function forwardSignalToApi(signal: RawSignal, userId: string): Promise<vo
   log.info(`Forwarded signal ${signal.id} (${signal.source}/${signal.type}) for user ${userId}`);
 }
 
-function getSignalDedupeMap(userId: string): Map<string, number> {
-  const now = Date.now();
-  let seen = seenSignalIdsByUser.get(userId);
-  if (!seen) {
-    seen = new Map();
-    seenSignalIdsByUser.set(userId, seen);
-  }
-
-  // Evict expired entries first, then trim oldest if still over limit
-  if (seen.size > SIGNAL_DEDUPE_MAX_PER_USER) {
-    for (const [key, seenAt] of seen) {
-      if (now - seenAt > SIGNAL_DEDUPE_TTL_MS) {
-        seen.delete(key);
-      }
-    }
-    // If still over limit after expiry sweep, trim oldest entries (Map preserves insertion order)
-    if (seen.size > SIGNAL_DEDUPE_MAX_PER_USER) {
-      const excess = seen.size - SIGNAL_DEDUPE_MAX_PER_USER;
-      let removed = 0;
-      for (const key of seen.keys()) {
-        if (removed >= excess) break;
-        seen.delete(key);
-        removed++;
-      }
-    }
-  }
-
-  return seen;
-}
-
 function hasForwardedSignal(signal: RawSignal, userId: string): boolean {
-  const now = Date.now();
-  const seen = getSignalDedupeMap(userId);
-  const key = `${signal.source}:${signal.id}`;
-  const seenAt = seen.get(key);
-  return Boolean(seenAt && now - seenAt < SIGNAL_DEDUPE_TTL_MS);
+  return signalDeduper.has(signal, userId);
 }
 
 function markSignalForwarded(signal: RawSignal, userId: string): void {
-  const seen = getSignalDedupeMap(userId);
-  seen.set(`${signal.source}:${signal.id}`, Date.now());
+  signalDeduper.mark(signal, userId);
 }
 
 /**
@@ -445,11 +409,7 @@ async function main(): Promise<void> {
             userCircuitBreakers.delete(userId);
           }
         }
-        for (const userId of seenSignalIdsByUser.keys()) {
-          if (!newUserIds.has(userId)) {
-            seenSignalIdsByUser.delete(userId);
-          }
-        }
+        signalDeduper.pruneUsers(newUserIds);
       }
     }
 
