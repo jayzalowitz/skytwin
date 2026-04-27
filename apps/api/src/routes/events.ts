@@ -36,6 +36,7 @@ import { processTravelDecision } from '../workflows/travel-decision.js';
 import { getExecutionRouter } from '../execution-setup.js';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
 import { sseManager } from '../sse.js';
+import { validateEventIngest } from '../validators/event-ingest.js';
 
 /**
  * Create the events router for ingesting raw events.
@@ -105,13 +106,20 @@ export function createEventsRouter(): Router {
    */
   router.post('/ingest', async (req, res, next) => {
     try {
-      const rawEvent = req.body as Record<string, unknown>;
-      const userId = rawEvent['userId'] as string | undefined;
-
-      if (!userId) {
-        res.status(400).json({ error: 'Missing userId in event data' });
+      // Validate the request body against the documented event-ingest contract
+      // BEFORE handing it to the interpreter. Catches malformed payloads at
+      // the boundary instead of failing later with a TypeError. Also blocks
+      // caller-supplied trustTier (must come from the user record).
+      const validation = validateEventIngest(req.body);
+      if (!validation.ok) {
+        res.status(400).json({
+          error: 'Invalid event payload',
+          details: validation.errors,
+        });
         return;
       }
+      const rawEvent = validation.event;
+      const userId = validation.userId;
 
       // 0. Build per-user LLM client and strategies (or fall back to rule-based)
       const llmClient = await buildLlmClientForUser(userId);
