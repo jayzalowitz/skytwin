@@ -1,6 +1,7 @@
 import { loadConfig } from '@skytwin/config';
 import {
   RealIronClawAdapter,
+  MockIronClawAdapter,
   DirectExecutionAdapter,
   ActionHandlerRegistry,
   EmailActionHandler,
@@ -46,8 +47,15 @@ export async function createExecutionRouter(): Promise<ExecutionRouter> {
   const ironclawConfig = await resolveIronClawConfig(config);
   const openclawConfig = await resolveOpenClawConfig(config);
 
-  // IronClaw — highest trust, requires a running IronClaw server
-  if (ironclawConfig.apiUrl && ironclawConfig.webhookSecret) {
+  // IronClaw — highest trust, requires a running IronClaw server.
+  // Mock mode (USE_MOCK_IRONCLAW=true) registers an in-process simulator so
+  // the execution router still has a primary adapter to route through in dev
+  // and tests. Real mode registers the HTTP adapter when URL + secret exist.
+  if (config.useMockIronclaw) {
+    const ironclawAdapter: IronClawAdapter = new MockIronClawAdapter();
+    registry.register('ironclaw', ironclawAdapter, IRONCLAW_TRUST_PROFILE);
+    console.info('[execution] Registered Mock IronClaw adapter (USE_MOCK_IRONCLAW=true)');
+  } else if (ironclawConfig.apiUrl && ironclawConfig.webhookSecret) {
     const ironclawAdapter: IronClawAdapter = new RealIronClawAdapter({
       apiUrl: ironclawConfig.apiUrl,
       webhookSecret: ironclawConfig.webhookSecret,

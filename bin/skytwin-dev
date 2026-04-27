@@ -58,6 +58,14 @@ fi
 echo -e "${BLUE}=== SkyTwin Development Server ===${NC}"
 echo ""
 
+# Default IronClaw to mock mode in dev unless the operator has wired up real
+# credentials. Without this, the API logs "IronClaw not configured (no URL or
+# secret) — skipping" and the execution router silently runs without it, which
+# looks like a bug in the dashboard.
+if [ -z "${IRONCLAW_API_URL:-}" ] && [ -z "${IRONCLAW_WEBHOOK_SECRET:-}" ]; then
+  export USE_MOCK_IRONCLAW="${USE_MOCK_IRONCLAW:-true}"
+fi
+
 # 1. Check prerequisites
 echo -e "${YELLOW}Checking prerequisites...${NC}"
 

@@ -9,6 +9,11 @@
  */
 
 const VALID_URGENCIES = new Set(['low', 'medium', 'high', 'critical']);
+// User ids in this codebase are PostgreSQL uuids (gen_random_uuid()).
+// Reject anything that is not the canonical 8-4-4-4-12 hex-with-dashes form
+// here at the boundary so the DB layer doesn't crash with a 500 on every
+// typo'd test client or stale session token.
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Discriminated result type. Errors are field-keyed so the API can echo
  *  them back to the caller without leaking internal structure. */
@@ -28,6 +33,8 @@ export function validateEventIngest(raw: unknown): EventIngestValidationResult {
 
   if (typeof userId !== 'string' || userId.trim().length === 0) {
     errors.push({ field: 'userId', message: 'userId is required and must be a non-empty string' });
+  } else if (!UUID_REGEX.test(userId)) {
+    errors.push({ field: 'userId', message: 'userId must be a valid UUID' });
   }
 
   // Source and type are not strictly required (the interpreter falls back),
