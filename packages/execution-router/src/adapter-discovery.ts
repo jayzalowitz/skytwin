@@ -3,7 +3,7 @@ import { join, resolve, sep, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { IronClawAdapter } from '@skytwin/ironclaw-adapter';
 import type { AdapterTrustProfile } from '@skytwin/shared-types';
-import { validateManifest } from './adapter-manifest.js';
+import { validateManifest, isAdapterShape, REQUIRED_ADAPTER_METHODS } from './adapter-manifest.js';
 import type { AdapterManifest } from './adapter-manifest.js';
 import type { AdapterRegistry } from './adapter-registry.js';
 
@@ -97,7 +97,23 @@ export async function discoverAdapters(
         continue;
       }
 
-      const adapter = factory({});
+      // Pass manifest.defaultConfig if declared so plugins can receive their
+      // bootstrap settings instead of always getting an empty object.
+      let adapter: IronClawAdapter;
+      try {
+        adapter = factory(manifest.defaultConfig ?? {});
+      } catch (err) {
+        console.warn(`[adapter-discovery] ${dirName}: factory threw during construction: ${err instanceof Error ? err.message : String(err)}`);
+        continue;
+      }
+
+      // Validate the adapter implements the contract before registering.
+      // A plugin that returns a malformed object would otherwise surface as a
+      // NoAdapterError under load — fail fast at load time instead.
+      if (!isAdapterShape(adapter)) {
+        console.warn(`[adapter-discovery] ${dirName}: factory result is not a valid adapter (missing one of: ${REQUIRED_ADAPTER_METHODS.join(', ')})`);
+        continue;
+      }
 
       const trustProfile: AdapterTrustProfile = {
         name: manifest.name,

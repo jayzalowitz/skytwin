@@ -16,6 +16,13 @@ export interface AdapterManifest {
   };
   skills: string[];
   healthEndpoint?: string;
+  /**
+   * Default config passed to the plugin's factory function. Use this when
+   * the adapter needs configuration to construct correctly (e.g. an API
+   * URL, channel id). Without this, the loader falls back to passing an
+   * empty object and the adapter is responsible for its own defaults.
+   */
+  defaultConfig?: Record<string, unknown>;
 }
 
 /**
@@ -71,7 +78,28 @@ export function validateManifest(raw: unknown): { valid: true; manifest: Adapter
     },
     skills: (obj['skills'] as unknown[]).filter((s) => typeof s === 'string') as string[],
     healthEndpoint: typeof obj['healthEndpoint'] === 'string' ? obj['healthEndpoint'] : undefined,
+    defaultConfig: (obj['defaultConfig'] && typeof obj['defaultConfig'] === 'object' && !Array.isArray(obj['defaultConfig']))
+      ? obj['defaultConfig'] as Record<string, unknown>
+      : undefined,
   };
 
   return { valid: true, manifest };
+}
+
+/**
+ * Required methods on an `IronClawAdapter` instance. The discovery loader
+ * checks for these so plugins that silently return malformed objects fail
+ * fast at load time rather than surfacing as a NoAdapterError under load.
+ */
+export const REQUIRED_ADAPTER_METHODS: readonly string[] = [
+  'buildPlan',
+  'execute',
+  'rollback',
+  'healthCheck',
+] as const;
+
+export function isAdapterShape(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const obj = value as Record<string, unknown>;
+  return REQUIRED_ADAPTER_METHODS.every((m) => typeof obj[m] === 'function');
 }
