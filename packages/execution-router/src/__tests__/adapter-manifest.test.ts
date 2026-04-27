@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { validateManifest } from '../adapter-manifest.js';
+import { validateManifest, isAdapterShape, REQUIRED_ADAPTER_METHODS } from '../adapter-manifest.js';
 // ── Test helpers ─────────────────────────────────────────────────────
 
 function makeValidManifestInput(): Record<string, unknown> {
@@ -332,5 +332,76 @@ describe('validateManifest', () => {
         expect(result.manifest.trustProfile.riskModifier).toBe(2);
       }
     });
+
+    it('parses defaultConfig when present and a plain object', () => {
+      const input = makeValidManifestInput();
+      input['defaultConfig'] = { apiUrl: 'https://x.example.com', channel: 'main' };
+      const result = validateManifest(input);
+      expect(result.valid).toBe(true);
+      if (result.valid) {
+        expect(result.manifest.defaultConfig).toEqual({ apiUrl: 'https://x.example.com', channel: 'main' });
+      }
+    });
+
+    it('drops defaultConfig when missing', () => {
+      const result = validateManifest(makeValidManifestInput());
+      expect(result.valid).toBe(true);
+      if (result.valid) {
+        expect(result.manifest.defaultConfig).toBeUndefined();
+      }
+    });
+
+    it('drops defaultConfig when not an object (string, array, number)', () => {
+      const inputs = ['hello', [1, 2, 3], 42, true];
+      for (const v of inputs) {
+        const input = makeValidManifestInput();
+        input['defaultConfig'] = v as unknown;
+        const result = validateManifest(input);
+        expect(result.valid).toBe(true);
+        if (result.valid) {
+          expect(result.manifest.defaultConfig).toBeUndefined();
+        }
+      }
+    });
+  });
+});
+
+describe('isAdapterShape', () => {
+  function validShape(): Record<string, unknown> {
+    return {
+      buildPlan: () => ({}),
+      execute: () => ({}),
+      rollback: () => ({}),
+      healthCheck: () => ({ healthy: true, latencyMs: 0 }),
+    };
+  }
+
+  it('accepts a value that has every required method', () => {
+    expect(isAdapterShape(validShape())).toBe(true);
+  });
+
+  it('rejects a value missing any single required method', () => {
+    for (const m of REQUIRED_ADAPTER_METHODS) {
+      const obj = validShape();
+      delete obj[m];
+      expect(isAdapterShape(obj)).toBe(false);
+    }
+  });
+
+  it('rejects a value where a required method is not a function', () => {
+    const obj = validShape();
+    obj['execute'] = 'not a function';
+    expect(isAdapterShape(obj)).toBe(false);
+  });
+
+  it('rejects null and undefined', () => {
+    expect(isAdapterShape(null)).toBe(false);
+    expect(isAdapterShape(undefined)).toBe(false);
+  });
+
+  it('rejects primitives', () => {
+    expect(isAdapterShape('hello')).toBe(false);
+    expect(isAdapterShape(42)).toBe(false);
+    expect(isAdapterShape(true)).toBe(false);
   });
 });
