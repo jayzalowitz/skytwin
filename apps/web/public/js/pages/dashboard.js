@@ -207,13 +207,25 @@ export async function renderDashboard(container, userId) {
         <span class="card-title">Recent activity</span>
       </div>
       ${recentDecisions.length > 0
-        ? recentDecisions.map(d => `
-          <div class="activity-item">
-            <span class="activity-time">${formatTime(d.createdAt || d.created_at)}</span>
-            <span class="activity-desc">${escapeHtml(domainLabel(d.domain))} — ${escapeHtml(d.situationType || d.situation_type || '')}</span>
-            <span class="badge badge-info">${escapeHtml(d.domain)}</span>
-          </div>
-        `).join('')
+        ? recentDecisions.map(d => {
+          const auto = d.autoExecuted === true;
+          const pending = d.autoExecuted == null;
+          const verb = auto ? 'I handled' : pending ? 'I noticed' : 'You OK\'d';
+          const verbColor = auto ? 'var(--success)' : pending ? 'var(--text-muted)' : 'var(--accent, #1976d2)';
+          const situation = situationLabel(d.situationType || d.situation_type);
+          const dom = escapeHtml(domainLabel(d.domain));
+          return `
+            <div class="activity-item">
+              <span class="activity-time">${formatTime(d.createdAt || d.created_at)}</span>
+              <span class="activity-desc">
+                <span style="color: ${verbColor}; font-weight: 600;">${verb}</span>
+                <span style="color: var(--text-muted);">·</span>
+                ${escapeHtml(situation)}
+                <span style="color: var(--text-muted); font-size: 0.85em;">in ${dom}</span>
+              </span>
+            </div>
+          `;
+        }).join('')
         : `<div class="empty-state">
             <div class="empty-state-title">${googleConnected ? 'Watching for the first signal' : 'Nothing to act on yet'}</div>
             <div class="empty-state-desc">
@@ -301,6 +313,28 @@ export async function renderDashboard(container, userId) {
     window._skytwinFirstScanTimer = null;
     window._skytwinFirstScanStartedAt = null;
   }
+}
+
+function situationLabel(type) {
+  if (!type) return 'something';
+  const labels = {
+    email_triage: 'an email',
+    calendar_invite: 'a calendar invite',
+    calendar_conflict: 'a calendar conflict',
+    calendar_update: 'a calendar update',
+    subscription_renewal: 'a subscription renewal',
+    grocery_reorder: 'a grocery reorder',
+    travel_decision: 'a travel decision',
+    finance_operation: 'something financial',
+    smart_home: 'a smart-home thing',
+    task_management: 'a task',
+    social_media: 'a social-media thing',
+    document_management: 'a document',
+    health_wellness: 'something health-related',
+    newsletter_archive: 'a newsletter',
+    generic: 'something',
+  };
+  return labels[type] || type.replace(/_/g, ' ');
 }
 
 function domainIcon(domain) {

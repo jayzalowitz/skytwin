@@ -679,7 +679,20 @@ window.handleApproval = async function(requestId, action, userId) {
       el.querySelector('.approval-actions').innerHTML = `<span class="badge ${badge}">${label}</span>`;
     }
 
-    const toastMsg = action === 'approve' ? 'Got it — I\'ll handle this for you.' : 'Noted — I won\'t do that.';
+    // Reflect the user's reason back in the toast — they feel heard,
+    // and it surfaces what the twin will actually remember vs. just
+    // saying a generic "noted." If no reason was given, fall back to
+    // a friendly default keyed off approve vs. reject.
+    let toastMsg;
+    if (action === 'approve') {
+      toastMsg = reason
+        ? `Got it — I'll handle this for you. Noting: "${reason.length > 80 ? reason.slice(0, 77) + '…' : reason}"`
+        : 'Got it — I\'ll handle this for you.';
+    } else {
+      toastMsg = reason
+        ? `Got it — I'll remember: "${reason.length > 80 ? reason.slice(0, 77) + '…' : reason}" for next time.`
+        : 'Noted — I won\'t do that.';
+    }
     showToast(toastMsg);
 
     // Visibly tick up the trust progress bar right after an approval, so
