@@ -50,6 +50,32 @@ export async function renderDashboard(container, userId) {
 
   const tourMode = (() => { try { return localStorage.getItem('skytwin_tour_mode') === '1'; } catch { return false; } })();
 
+  // "While you were away" — count anything new since the last visit so the
+  // user feels like the twin has been working for them, not just sitting
+  // there. We don't show this for the very first load (no prior visit) or
+  // for visits within the last 5 minutes (would just be noise).
+  const sinceLastVisit = (() => {
+    try {
+      const key = `skytwin_last_visit_${userId}`;
+      const lastVisitMs = parseInt(localStorage.getItem(key) || '0', 10);
+      const now = Date.now();
+      // Always update the timestamp so subsequent renders this session
+      // measure against the freshest baseline.
+      localStorage.setItem(key, String(now));
+      if (!lastVisitMs || (now - lastVisitMs) < 5 * 60 * 1000) return null;
+      const newDecisions = recentDecisions.filter((d) => {
+        const t = Date.parse(d.createdAt || d.created_at || '');
+        return Number.isFinite(t) && t > lastVisitMs;
+      }).length;
+      if (newDecisions === 0) return null;
+      const hours = Math.round((now - lastVisitMs) / (60 * 60 * 1000));
+      const ago = hours < 1 ? 'a few minutes ago'
+        : hours < 24 ? `${hours}h ago`
+        : `${Math.round(hours / 24)}d ago`;
+      return { newDecisions, ago };
+    } catch { return null; }
+  })();
+
   // A new user (no decisions, no learnings, no patterns) gets an
   // intentionally-empty dashboard: hero CTAs + Ask + a "what's coming"
   // preview, instead of a wall of "0%" stat cards that read as failure.
@@ -63,6 +89,7 @@ export async function renderDashboard(container, userId) {
     ${!healthOk ? '<div class="error-banner">Unable to reach the API server. Your twin may not be processing events.</div>' : ''}
     ${tourMode ? renderTourBanner() : ''}
     ${renderJustConnectedCelebration({ justConnectedProvider, justConnectedAccount, recentDecisionsCount: recentDecisions.length, learnedCount: learn?.totalPreferences ?? 0 })}
+    ${sinceLastVisit && !tourMode ? renderSinceLastVisit(sinceLastVisit) : ''}
     ${tourMode ? '' : renderConnectGoogleHero({ googleConnected, googleSystemConfigured, userId })}
     ${renderAskTwinWidget({ userId, tourMode })}
     ${pending > 0 ? `<div class="card" style="border-left: 3px solid var(--warning); cursor: pointer;" onclick="location.hash='#/approvals'">
@@ -209,6 +236,37 @@ export async function renderDashboard(container, userId) {
     }
   } catch { /* localStorage unavailable */ }
 
+  // Trust-tier threshold celebration: when the approval count just crossed
+  // the threshold to unlock the next tier, fire a one-time toast so the
+  // moment lands. The progress bar already shows "Ready to level up!" but
+  // a returning user might miss that — the toast catches their eye.
+  try {
+    const TIER_THRESHOLDS = { observer: 10, suggest: 20, low_autonomy: 50, moderate_autonomy: 100 };
+    const TIER_NEXT = { observer: 'Ask me first', suggest: 'Handle small stuff', low_autonomy: 'Handle most things', moderate_autonomy: 'Full autopilot' };
+    const tier = prog?.currentTier;
+    const count = prog?.approvalCount ?? 0;
+    const threshold = tier ? TIER_THRESHOLDS[tier] : null;
+    if (
+      !tourMode
+      && tier
+      && threshold
+      && count >= threshold
+      && typeof window !== 'undefined'
+    ) {
+      const tierKey = `skytwin_tier_celebrated_${userId}_${tier}`;
+      if (!localStorage.getItem(tierKey)) {
+        localStorage.setItem(tierKey, '1');
+        import('../sse-client.js').then(({ showToast }) => {
+          showToast(
+            'You\'ve unlocked the next trust level',
+            `Bump to "${TIER_NEXT[tier]}" in Settings whenever you're ready — I'll start handling more on my own.`,
+            'success',
+          );
+        }).catch(() => { /* noop */ });
+      }
+    }
+  } catch { /* localStorage unavailable */ }
+
   // While we're in the post-OAuth first-scan window, gently auto-refresh
   // so the user sees their first decisions land without hitting reload.
   // We stop as soon as decisions show up (the celebration card flips state)
@@ -271,6 +329,17 @@ function traitIcon(name) {
     delegation_averse: '*',
   };
   return icons[name] || '?';
+}
+
+function renderSinceLastVisit({ newDecisions, ago }) {
+  return `
+    <div class="card" style="border-left: 3px solid var(--success); cursor: pointer;" onclick="location.hash='#/decisions'">
+      <span style="font-weight: 600;">While you were away —</span>
+      <span style="color: var(--text-muted); font-size: 0.9rem;">
+        I handled or weighed in on <strong>${newDecisions}</strong> new ${newDecisions === 1 ? 'thing' : 'things'} since you last checked in (${escapeHtml(ago)}). Click to see what.
+      </span>
+    </div>
+  `;
 }
 
 function renderEmptyDashboardPreview({ googleConnected }) {
@@ -343,16 +412,20 @@ function renderAskTwinWidget({ userId, tourMode }) {
         and how confident I am — without actually doing anything.
       </div>
       <div style="display: flex; gap: 0.5rem; align-items: stretch; margin-bottom: 0.5rem;">
-        <input
+        <textarea
           class="form-input"
           id="ask-twin-input"
-          placeholder="e.g. What would you do if my mom emails asking me to call her tonight?"
-          style="flex: 1;"
-          onkeydown="if(event.key==='Enter') window.handleAskTwin('${escapeHtml(userId)}')"
-        >
-        <button class="btn btn-primary" onclick="window.handleAskTwin('${escapeHtml(userId)}')" id="ask-twin-btn">
+          placeholder="e.g. What would you do if my mom emails asking me to call her tonight, but I have a meeting at 8?"
+          rows="2"
+          style="flex: 1; resize: vertical; font-family: inherit; line-height: 1.4;"
+          onkeydown="if(event.key==='Enter' && !event.shiftKey) { event.preventDefault(); window.handleAskTwin('${escapeHtml(userId)}'); }"
+        ></textarea>
+        <button class="btn btn-primary" onclick="window.handleAskTwin('${escapeHtml(userId)}')" id="ask-twin-btn" style="align-self: stretch;">
           Ask
         </button>
+      </div>
+      <div style="font-size: 0.7rem; color: var(--text-muted); margin: -0.25rem 0 0.4rem;">
+        Press <kbd style="font-family: inherit; padding: 0 0.3rem; background: var(--bg); border-radius: 3px; border: 1px solid var(--border); font-size: 0.7rem;">Enter</kbd> to ask · <kbd style="font-family: inherit; padding: 0 0.3rem; background: var(--bg); border-radius: 3px; border: 1px solid var(--border); font-size: 0.7rem;">Shift+Enter</kbd> for a new line
       </div>
       <div style="display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.5rem;" id="ask-twin-examples" data-user-id="${escapeHtml(userId)}">
         ${examples.map(ex => `
