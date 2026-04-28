@@ -88,6 +88,8 @@ export interface DecisionRow {
   domain: string;
   urgency: string;
   metadata: Record<string, unknown>;
+  /** Source signal id (e.g. `sig_gmail_19dd2…`); null for legacy rows. */
+  signal_id: string | null;
   created_at: Date;
 }
 
