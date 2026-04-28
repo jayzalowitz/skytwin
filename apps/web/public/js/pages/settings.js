@@ -106,30 +106,34 @@ export async function renderSettings(container, userId) {
       </div>
     </div>
 
-    <div class="card">
-      <div class="card-header">
-        <span class="card-title">AI brain</span>
+    <details class="card collapsible-card">
+      <summary class="card-header collapsible-header">
+        <span class="card-title">${aiProviders.length > 0 ? 'AI brain — connected providers' : 'Add a smarter AI brain (optional)'}</span>
+        <span class="collapse-icon"></span>
+      </summary>
+      <div class="collapsible-body">
+        <div class="card-subtitle" style="margin-bottom: 1rem;">
+          Out of the box your twin uses the local AI on your machine plus built-in rules — that's enough for most decisions.
+          Add a paid provider here if you want sharper reasoning on the tricky calls. Multiple are tried in order with automatic fallback.
+        </div>
+        <div id="ai-provider-chain">
+          ${renderProviderChain(aiProviders)}
+        </div>
+        <div style="margin-top: 0.75rem; display: flex; gap: 0.5rem; align-items: center;">
+          <select class="form-input" id="add-provider-select" style="flex: 1;">
+            <option value="">+ Add a provider…</option>
+            <option value="anthropic">Anthropic (Claude)</option>
+            <option value="openai">OpenAI (GPT)</option>
+            <option value="google">Google (Gemini)</option>
+            <option value="ollama">Local AI on this machine (Ollama)</option>
+          </select>
+        </div>
+        <div style="margin-top: 0.75rem; display: flex; gap: 0.5rem; justify-content: space-between; align-items: center;">
+          <div style="font-size: 0.75rem; color: var(--text-dim);">If every provider you add is unreachable, your twin falls back to local AI + built-in rules.</div>
+          <button id="save-ai-btn" class="btn btn-primary btn-sm" onclick="saveAIProvidersHandler('${escapeHtml(userId)}')">Save</button>
+        </div>
       </div>
-      <div class="card-subtitle" style="margin-bottom: 1rem;">
-        Choose which AI powers your twin's thinking. Add multiple providers — your twin tries them in order and falls back automatically.
-      </div>
-      <div id="ai-provider-chain">
-        ${renderProviderChain(aiProviders)}
-      </div>
-      <div style="margin-top: 0.75rem; display: flex; gap: 0.5rem; align-items: center;">
-        <select class="form-input" id="add-provider-select" style="flex: 1;">
-          <option value="">+ Add provider...</option>
-          <option value="anthropic">Anthropic (Claude)</option>
-          <option value="openai">OpenAI (GPT)</option>
-          <option value="google">Google (Gemini)</option>
-          <option value="ollama">Ollama (local)</option>
-        </select>
-      </div>
-      <div style="margin-top: 0.75rem; display: flex; gap: 0.5rem; justify-content: space-between; align-items: center;">
-        <div style="font-size: 0.75rem; color: var(--text-dim);">If all providers fail, your twin falls back to built-in rules automatically.</div>
-        <button id="save-ai-btn" class="btn btn-primary btn-sm" onclick="saveAIProvidersHandler('${escapeHtml(userId)}')">Save</button>
-      </div>
-    </div>
+    </details>
 
     ${routines.length > 0 ? `
     <div class="card">
@@ -158,7 +162,7 @@ export async function renderSettings(container, userId) {
       </summary>
       <div class="collapsible-body">
         <div class="card-subtitle" style="margin-bottom: 1rem;">
-          Where the sandboxed execution server (IronClaw) routes actions. Most people leave this on the default.
+          Which channel actions are dispatched through. Most people leave this on the default — this is for setups that route actions to a separate inbox or chat tool.
         </div>
         <div style="display: flex; gap: 0.5rem; align-items: center;">
           <select class="form-input" id="ironclaw-channel-select" style="flex: 1;">
@@ -184,17 +188,18 @@ export async function renderSettings(container, userId) {
       </div>
     </div>
 
-    <div class="card" style="border-left: 3px solid var(--danger);">
+    <div class="card" style="border-left: 3px solid var(--warning, #e6a700);">
       <div class="card-header">
-        <span class="card-title">Pause your twin</span>
+        <span class="card-title">${currentTier === 'observer' ? 'Your twin is on standby' : 'Put your twin on standby'}</span>
       </div>
       <div class="card-subtitle" style="margin-bottom: 0.75rem;">
-        Temporarily stop all auto-execution without disconnecting accounts.
-        Your twin will continue watching but won't take any action.
+        ${currentTier === 'observer'
+          ? 'Right now your twin is watching everything but not doing anything on its own. Bump the autonomy level above when you\'re ready to let it act.'
+          : 'Need a break? This pauses every automatic action — your twin keeps watching but won\'t do anything until you turn it back on. Your accounts stay linked.'}
       </div>
-      <button class="btn btn-outline btn-sm" onclick="pauseTwin('${escapeHtml(userId)}')">
-        ${currentTier === 'observer' ? 'Twin is paused (watch only)' : 'Pause twin'}
-      </button>
+      ${currentTier !== 'observer' ? `
+        <button class="btn btn-outline btn-sm" onclick="pauseTwin('${escapeHtml(userId)}')">Pause everything</button>
+      ` : ''}
     </div>
 
     <div class="card">
@@ -629,7 +634,7 @@ function renderProviderChain(providers) {
   _aiChain = providers.map((p, i) => ({ ...p, priority: i }));
 
   if (_aiChain.length === 0) {
-    return '<div style="font-size: 0.85rem; color: var(--text-muted); padding: 0.75rem; background: var(--bg); border-radius: var(--radius-sm);">No AI providers configured. Your twin uses built-in rules only.</div>';
+    return '<div style="font-size: 0.85rem; color: var(--text-muted); padding: 0.75rem; background: var(--bg); border-radius: var(--radius-sm);">No paid providers added. Your twin runs on the local AI on this machine plus built-in rules — that\'s the default.</div>';
   }
 
   return _aiChain.map((p, idx) => `

@@ -50,6 +50,15 @@ export async function renderDashboard(container, userId) {
 
   const tourMode = (() => { try { return localStorage.getItem('skytwin_tour_mode') === '1'; } catch { return false; } })();
 
+  // A new user (no decisions, no learnings, no patterns) gets an
+  // intentionally-empty dashboard: hero CTAs + Ask + a "what's coming"
+  // preview, instead of a wall of "0%" stat cards that read as failure.
+  // Once anything lands, the full dashboard takes over naturally.
+  const hasAnyData = (recentDecisions.length > 0)
+    || ((learn?.totalPreferences ?? 0) > 0)
+    || ((learn?.totalPatterns ?? 0) > 0);
+  const showEmptyPreview = !tourMode && !hasAnyData;
+
   container.innerHTML = `
     ${!healthOk ? '<div class="error-banner">Unable to reach the API server. Your twin may not be processing events.</div>' : ''}
     ${tourMode ? renderTourBanner() : ''}
@@ -84,31 +93,33 @@ export async function renderDashboard(container, userId) {
       </div>
     ` : ''}
 
-    <div class="stats-grid">
-      <div class="card stat-card" title="How much of your routine, preferences, and style your twin understands. Grows as you use SkyTwin and give feedback.">
-        <div class="stat-value">${overallConf}%</div>
-        <div class="stat-label">How well I know you</div>
-        <div class="stat-sublabel">${overallConf === 0 ? 'Connect your accounts and I\'ll start learning' : confLabel}</div>
-        <div class="confidence-bar"><div class="confidence-fill ${confClass}" style="width: ${overallConf}%"></div></div>
+    ${showEmptyPreview ? renderEmptyDashboardPreview({ googleConnected }) : `
+      <div class="stats-grid">
+        <div class="card stat-card" title="How much of your routine, preferences, and style your twin understands. Grows as you use SkyTwin and give feedback.">
+          <div class="stat-value">${overallConf}%</div>
+          <div class="stat-label">How well I know you</div>
+          <div class="stat-sublabel">${overallConf === 0 ? 'Just getting started' : confLabel}</div>
+          <div class="confidence-bar"><div class="confidence-fill ${confClass}" style="width: ${overallConf}%"></div></div>
+        </div>
+        <div class="card stat-card" title="How often your twin picks the right action. Based on your approvals and rejections.">
+          <div class="stat-value">${acc ? (acc.totalDecisions === 0 ? '--' : `${Math.round(acc.accuracyRate * 100)}%`) : '--'}</div>
+          <div class="stat-label">Getting it right</div>
+          <div class="stat-sublabel">${acc
+            ? (acc.totalDecisions === 0 ? 'Approve or reject decisions to train me' : `You approved ${acc.approved} of ${acc.totalDecisions}`)
+            : 'Approve or reject decisions to train me'}</div>
+        </div>
+        <div class="card stat-card" title="Preferences and facts your twin has learned about you, from your feedback and behavior patterns.">
+          <div class="stat-value">${learn?.totalPreferences ?? 0}</div>
+          <div class="stat-label">Things I've learned</div>
+          <div class="stat-sublabel">${(learn?.totalPreferences ?? 0) === 0 ? 'Your preferences will appear here' : `${learn?.totalInferences ?? 0} figured out on my own`}</div>
+        </div>
+        <div class="card stat-card" title="Recurring patterns your twin has detected in your behavior, like when you check email or how you respond to invites.">
+          <div class="stat-value">${learn?.totalPatterns ?? 0}</div>
+          <div class="stat-label">Habits I've noticed</div>
+          <div class="stat-sublabel">${(learn?.totalPatterns ?? 0) === 0 ? 'I\'ll spot your patterns over time' : `${learn?.totalTraits ?? 0} personality traits`}</div>
+        </div>
       </div>
-      <div class="card stat-card" title="How often your twin picks the right action. Based on your approvals and rejections.">
-        <div class="stat-value">${acc ? (acc.totalDecisions === 0 ? '--' : `${Math.round(acc.accuracyRate * 100)}%`) : '--'}</div>
-        <div class="stat-label">Getting it right</div>
-        <div class="stat-sublabel">${acc
-          ? (acc.totalDecisions === 0 ? 'Approve or reject decisions to train me' : `You approved ${acc.approved} of ${acc.totalDecisions}`)
-          : 'Approve or reject decisions to train me'}</div>
-      </div>
-      <div class="card stat-card" title="Preferences and facts your twin has learned about you, from your feedback and behavior patterns.">
-        <div class="stat-value">${learn?.totalPreferences ?? 0}</div>
-        <div class="stat-label">Things I've learned</div>
-        <div class="stat-sublabel">${(learn?.totalPreferences ?? 0) === 0 ? 'Your preferences will appear here' : `${learn?.totalInferences ?? 0} figured out on my own`}</div>
-      </div>
-      <div class="card stat-card" title="Recurring patterns your twin has detected in your behavior, like when you check email or how you respond to invites.">
-        <div class="stat-value">${learn?.totalPatterns ?? 0}</div>
-        <div class="stat-label">Habits I've noticed</div>
-        <div class="stat-sublabel">${(learn?.totalPatterns ?? 0) === 0 ? 'I\'ll spot your patterns over time' : `${learn?.totalTraits ?? 0} personality traits`}</div>
-      </div>
-    </div>
+    `}
 
     ${conf?.domains && Object.keys(conf.domains).length > 0 ? `
       <div class="card">
@@ -151,6 +162,7 @@ export async function renderDashboard(container, userId) {
 
     ${renderSkillGaps(skillGaps)}
 
+    ${showEmptyPreview ? '' : `
     <div class="card">
       <div class="card-header">
         <span class="card-title">Recent activity</span>
@@ -173,6 +185,7 @@ export async function renderDashboard(container, userId) {
           </div>`
       }
     </div>
+    `}
   `;
 
   // First-decision celebration: a one-time "look — your twin just acted!"
@@ -258,6 +271,50 @@ function traitIcon(name) {
     delegation_averse: '*',
   };
   return icons[name] || '?';
+}
+
+function renderEmptyDashboardPreview({ googleConnected }) {
+  // Sells the value before any data has flowed in. Used when there are no
+  // decisions, learnings, or patterns yet — replaces the wall of "0%" stat
+  // cards which read as failure for a brand-new user.
+  const subtitle = googleConnected
+    ? 'I\'m connected and listening. The first time something interesting happens, you\'ll see what I made of it. Here\'s the kind of thing I\'ll be deciding on:'
+    : 'Once your accounts are connected, here\'s the kind of thing I\'ll be deciding on for you:';
+
+  return `
+    <div class="card" style="border-left: 3px solid var(--primary);">
+      <div class="card-header">
+        <span class="card-title">What I'll handle for you</span>
+      </div>
+      <div class="card-subtitle" style="margin-bottom: 1rem;">${subtitle}</div>
+      <div class="insight-card">
+        <div class="insight-icon" style="background: var(--accent-soft); color: var(--accent);">E</div>
+        <div class="insight-content">
+          <div class="insight-title">Newsletter you usually skim</div>
+          <div class="insight-desc">"You've archived the last 11 of these without opening. Want me to start handling them automatically?"</div>
+        </div>
+      </div>
+      <div class="insight-card">
+        <div class="insight-icon" style="background: var(--accent-soft); color: var(--accent);">C</div>
+        <div class="insight-content">
+          <div class="insight-title">Calendar conflict</div>
+          <div class="insight-desc">"This invite overlaps with your skip-level — based on past behavior I'd suggest declining and proposing Thursday."</div>
+        </div>
+      </div>
+      <div class="insight-card">
+        <div class="insight-icon" style="background: var(--accent-soft); color: var(--accent);">$</div>
+        <div class="insight-content">
+          <div class="insight-title">Subscription about to renew</div>
+          <div class="insight-desc">"Streaming, $15.99/mo. You used it 3× this month — within your auto-renew rules, so I'll let it through."</div>
+        </div>
+      </div>
+      <div style="margin-top: 0.5rem; font-size: 0.8rem; color: var(--text-muted);">
+        ${googleConnected
+          ? 'You can preview my judgement on any situation right now using "Ask your twin" above — I\'ll explain what I\'d do and why.'
+          : 'Want to feel how this works before connecting? Try the "Ask your twin" box above with any situation.'}
+      </div>
+    </div>
+  `;
 }
 
 function renderAskTwinWidget({ userId, tourMode }) {
