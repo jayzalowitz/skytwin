@@ -94,10 +94,11 @@ export const oauthRepository = {
   },
 
   /**
-   * Legacy single-account save. Persists to the row keyed on the user's
-   * primary email if a multi-account row doesn't already exist; otherwise
-   * updates the most recently touched row. Kept for callers that haven't
-   * migrated to the multi-account flow yet.
+   * Legacy single-account save. When a row already exists for this
+   * (userId, provider) we update it in place; otherwise we look up the
+   * user's primary email and key the new row on that, so legacy callers
+   * never produce a placeholder `account_email = ''` row that would
+   * shadow the real per-account row created by /google/callback.
    */
   async saveToken(
     userId: string,
@@ -108,12 +109,20 @@ export const oauthRepository = {
     scopes: string[],
   ): Promise<OAuthTokenRow> {
     const existing = await this.getToken(userId, provider);
-    const accountEmail = existing?.account_email ?? '';
+    let accountEmail = existing?.account_email ?? '';
+    let accountProviderId = existing?.account_provider_id ?? null;
+    if (!accountEmail) {
+      const userRow = await query<{ email: string }>(
+        'SELECT email FROM users WHERE id = $1',
+        [userId],
+      );
+      accountEmail = userRow.rows[0]?.email ?? '';
+    }
     return this.saveTokenForAccount({
       userId,
       provider,
       accountEmail,
-      accountProviderId: existing?.account_provider_id ?? null,
+      accountProviderId,
       accessToken,
       refreshToken,
       expiresAt,

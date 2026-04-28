@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { createHmac, timingSafeEqual } from 'crypto';
 import { loadConfig } from '@skytwin/config';
 import { oauthRepository, serviceCredentialRepository, userRepository } from '@skytwin/db';
 import {
@@ -9,6 +10,15 @@ import {
 import type { GoogleOAuthConfig } from '@skytwin/connectors';
 import { sessionAuth } from '../middleware/session-auth.js';
 import { requireOwnership } from '../middleware/require-ownership.js';
+
+/**
+ * Secret used to HMAC-sign OAuth state. Reuses SESSION_SECRET (same secret
+ * the session middleware hashes bearer tokens with) so deployments don't
+ * have to manage a second secret.
+ */
+const STATE_SECRET = process.env['SESSION_SECRET'] ?? 'skytwin-dev-secret';
+const STATE_TTL_MS = 10 * 60 * 1000; // 10 minutes — plenty for the consent screen
+const STATE_VERSION = 'v2';
 
 /**
  * Google's userinfo response. We don't depend on the Google SDK so this is
@@ -33,15 +43,22 @@ async function fetchGoogleUserInfo(accessToken: string): Promise<GoogleUserInfo>
 }
 
 /**
- * State carries the caller's intent across the OAuth round-trip. Encoded as
- * a pipe-delimited string for easy debugging in browser history/logs:
+ * State carries the caller's intent across the OAuth round-trip and is
+ * HMAC-signed so the public /google/callback endpoint can't be spoofed.
  *
+ * Wire format: `v2.<payload>.<expiresAtMs>.<hmacHex>` where the hmac
+ * covers `<payload>.<expiresAtMs>`.
+ *
+ * Payload is the original pipe-delimited intent string:
  *   <userId>            associate token with this existing user
- *   <userId>|desktop    same, but the OAuth flow was opened from Electron
- *   <userId>|new        adding another account to this user (same as default)
- *   new                 no user yet — auto-create one keyed on the verified
- *                       Google email returned by userinfo
- *   new|desktop         same, desktop flow
+ *   <userId>|desktop    same, OAuth opened from Electron
+ *   <userId>|new        adding another account to this user
+ *   new                 no user yet — auto-create from verified email
+ *   new|desktop
+ *
+ * Without the signature, an attacker could mint their own Google
+ * authorization code and call /google/callback with state=<victim-id>
+ * to attach their account to someone else's user.
  */
 interface ParsedState {
   userId: string | null; // null = auto-create user from email
@@ -49,16 +66,65 @@ interface ParsedState {
   newAccount: boolean;
 }
 
-function parseState(state: string): ParsedState {
-  const parts = state.split('|');
-  const head = parts[0];
-  const tags = new Set(parts.slice(1));
+function signStatePayload(payload: string, expiresAtMs: number): string {
+  const mac = createHmac('sha256', STATE_SECRET)
+    .update(`${payload}.${expiresAtMs}`)
+    .digest('hex');
+  return `${STATE_VERSION}.${payload}.${expiresAtMs}.${mac}`;
+}
+
+class InvalidStateError extends Error {
+  constructor(reason: string) {
+    super(`Invalid OAuth state: ${reason}`);
+  }
+}
+
+function parseSignedState(state: string): ParsedState {
+  const parts = state.split('.');
+  if (parts.length !== 4 || parts[0] !== STATE_VERSION) {
+    throw new InvalidStateError('unrecognised format');
+  }
+  const [, payload, expiresAtRaw, providedMac] = parts as [string, string, string, string];
+
+  const expiresAtMs = Number(expiresAtRaw);
+  if (!Number.isFinite(expiresAtMs)) {
+    throw new InvalidStateError('expiry not a number');
+  }
+
+  const expectedMac = createHmac('sha256', STATE_SECRET)
+    .update(`${payload}.${expiresAtMs}`)
+    .digest('hex');
+
+  // Constant-time compare so we don't leak the secret one byte at a time.
+  const providedBuf = Buffer.from(providedMac, 'hex');
+  const expectedBuf = Buffer.from(expectedMac, 'hex');
+  if (
+    providedBuf.length !== expectedBuf.length ||
+    !timingSafeEqual(providedBuf, expectedBuf)
+  ) {
+    throw new InvalidStateError('signature mismatch');
+  }
+
+  if (Date.now() > expiresAtMs) {
+    throw new InvalidStateError('expired');
+  }
+
+  const head = payload.split('|')[0];
+  const tags = new Set(payload.split('|').slice(1));
   return {
     userId: head === 'new' ? null : (head ?? null),
     desktop: tags.has('desktop'),
     newAccount: tags.has('new'),
   };
 }
+
+/**
+ * `openid` + `email` are required for the userinfo endpoint to return the
+ * verified email used as the per-account row key. `profile` gives us a
+ * display name for auto-created users so they don't show up as raw UUIDs
+ * in the dashboard.
+ */
+const IDENTITY_SCOPES = ['openid', 'email', 'profile'];
 
 const GMAIL_SCOPES = [
   'https://www.googleapis.com/auth/gmail.readonly',
@@ -105,17 +171,34 @@ async function resolveGoogleConfig(): Promise<GoogleOAuthConfig> {
 export function createOAuthRouter(): Router {
   const router = Router();
 
-  // All OAuth management endpoints require an authenticated user except the
-  // provider callback itself, which must remain public for the browser redirect.
+  // All OAuth management endpoints require an authenticated user except:
+  //   - /google/callback        public (browser redirect from Google)
+  //   - /google/authorize?newUser=true   public (sign-in-with-Google)
+  // For the new-user flow there's no session yet, so requiring sessionAuth
+  // would 401 before the user could even start consenting.
   router.use((req, res, next) => {
     if (req.path === '/google/callback') {
+      next();
+      return;
+    }
+    if (req.path === '/google/authorize' && req.query['newUser'] === 'true') {
       next();
       return;
     }
 
     void sessionAuth(req, res, next);
   });
-  router.use(requireOwnership);
+  router.use((req, res, next) => {
+    if (req.path === '/google/callback') {
+      next();
+      return;
+    }
+    if (req.path === '/google/authorize' && req.query['newUser'] === 'true') {
+      next();
+      return;
+    }
+    void requireOwnership(req, res, next);
+  });
 
   /**
    * GET /api/oauth/google/authorize
@@ -132,7 +215,7 @@ export function createOAuthRouter(): Router {
   router.get('/google/authorize', async (req, res, next) => {
     try {
       const googleConfig = await resolveGoogleConfig();
-      const scopes = [...GMAIL_SCOPES, ...CALENDAR_SCOPES];
+      const scopes = [...IDENTITY_SCOPES, ...GMAIL_SCOPES, ...CALENDAR_SCOPES];
 
       const queryUserId =
         typeof req.query['userId'] === 'string' ? req.query['userId'] : undefined;
@@ -156,7 +239,8 @@ export function createOAuthRouter(): Router {
       if (desktop) tags.push('desktop');
       if (newAccount) tags.push('new');
 
-      const state = [stateHead, ...tags].join('|');
+      const payload = [stateHead, ...tags].join('|');
+      const state = signStatePayload(payload, Date.now() + STATE_TTL_MS);
       const url = generateAuthUrl(googleConfig, scopes, state);
       res.json({ url });
     } catch (error) {
@@ -184,7 +268,16 @@ export function createOAuthRouter(): Router {
         return;
       }
 
-      const parsed = parseState(state);
+      let parsed: ParsedState;
+      try {
+        parsed = parseSignedState(state);
+      } catch (err) {
+        res.status(400).json({
+          error: err instanceof InvalidStateError ? err.message : 'Invalid state',
+        });
+        return;
+      }
+
       const googleConfig = await resolveGoogleConfig();
       const tokenSet = await exchangeCode(googleConfig, code);
 
@@ -192,8 +285,23 @@ export function createOAuthRouter(): Router {
       // the actual account email (rather than guessing from state) and
       // optionally materialize a user.
       const userInfo = await fetchGoogleUserInfo(tokenSet.accessToken);
-      const accountEmail = userInfo.email;
+      const accountEmail = typeof userInfo.email === 'string' ? userInfo.email.trim() : '';
       const accountProviderId = userInfo.id;
+
+      if (!accountEmail) {
+        res.status(502).json({
+          error:
+            'Google userinfo did not include an email. Ensure the authorize URL requests "openid email".',
+        });
+        return;
+      }
+      // Treat the email as identity only if Google says it's verified —
+      // otherwise an attacker could create a Google account with someone
+      // else's address and use this flow to attach to or impersonate them.
+      if (userInfo.verified_email !== true) {
+        res.status(401).json({ error: 'Google account email is not verified.' });
+        return;
+      }
 
       // Resolve target userId.
       let userId = parsed.userId;
@@ -251,16 +359,19 @@ export function createOAuthRouter(): Router {
         return;
       }
 
-      // Redirect back to the web dashboard. ?userId is included so the
-      // dashboard can sync the active user (especially after auto-create);
-      // ?account is informational so the UI can highlight the new row.
+      // Redirect back to the web dashboard. The dashboard parses both the
+      // top-level query string (for the user-switcher's `?userId=` handler)
+      // and the hash route's query (`#/settings?connected=…`), so include
+      // userId at the top level so the active user syncs on auto-create,
+      // and include `connected/account` in the hash for the Settings page's
+      // banner.
       const webBase = process.env['WEB_BASE_URL'] ?? `http://localhost:${process.env['WEB_PORT'] ?? '3200'}`;
-      const params = new URLSearchParams({
+      const topLevel = new URLSearchParams({ userId }).toString();
+      const hashQuery = new URLSearchParams({
         connected: 'google',
-        userId,
         account: accountEmail,
-      });
-      res.redirect(`${webBase}/?${params.toString()}#/settings`);
+      }).toString();
+      res.redirect(`${webBase}/?${topLevel}#/settings?${hashQuery}`);
     } catch (error) {
       next(error);
     }
@@ -346,8 +457,11 @@ export function createOAuthRouter(): Router {
         return;
       }
 
+      // Google docs: revoking the refresh_token invalidates the entire
+      // grant; revoking only the access_token still leaves the long-lived
+      // grant active. Prefer refresh, fall back to access if missing.
       try {
-        await revokeToken(token.access_token);
+        await revokeToken(token.refresh_token || token.access_token);
       } catch {
         // Already revoked / expired — proceed with local cleanup.
       }
@@ -382,10 +496,12 @@ export function createOAuthRouter(): Router {
       }
 
       // Revoke each connected account in turn, then drop all rows.
+      // Prefer refresh_token (invalidates the full grant); access_token
+      // alone leaves the grant active per Google's revocation semantics.
       const accounts = await oauthRepository.listAccountsForUser(userId, provider);
       for (const acct of accounts) {
         try {
-          await revokeToken(acct.access_token);
+          await revokeToken(acct.refresh_token || acct.access_token);
         } catch {
           // Revocation can fail if a token is already expired — continue.
         }

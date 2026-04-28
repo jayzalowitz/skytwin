@@ -164,10 +164,17 @@ describe('oauthRepository (multi-account)', () => {
       expect(upsertArgs[3]).toBe('sub-7');
     });
 
-    it('falls back to empty account_email when no existing row', async () => {
+    it('looks up the user\'s primary email when no existing row exists', async () => {
+      // No existing oauth_tokens row.
       mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+      // SELECT email FROM users — returns the primary email.
       mockQuery.mockResolvedValueOnce({
-        rows: [fakeRow({ account_email: '' })],
+        rows: [{ email: 'fresh@example.com' }],
+        rowCount: 1,
+      });
+      // saveTokenForAccount upsert.
+      mockQuery.mockResolvedValueOnce({
+        rows: [fakeRow({ account_email: 'fresh@example.com' })],
         rowCount: 1,
       });
 
@@ -180,9 +187,33 @@ describe('oauthRepository (multi-account)', () => {
         [],
       );
 
-      const upsertArgs = mockQuery.mock.calls[1]![1] as unknown[];
-      expect(upsertArgs[2]).toBe('');
+      const lookupArgs = mockQuery.mock.calls[1]![1] as unknown[];
+      expect(lookupArgs).toEqual(['user-fresh']);
+
+      const upsertArgs = mockQuery.mock.calls[2]![1] as unknown[];
+      expect(upsertArgs[2]).toBe('fresh@example.com');
       expect(upsertArgs[3]).toBeNull();
+    });
+
+    it('falls back to empty account_email when the user row is missing', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+      mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+      mockQuery.mockResolvedValueOnce({
+        rows: [fakeRow({ account_email: '' })],
+        rowCount: 1,
+      });
+
+      await oauthRepository.saveToken(
+        'user-orphan',
+        'google',
+        'access',
+        'refresh',
+        new Date(),
+        [],
+      );
+
+      const upsertArgs = mockQuery.mock.calls[2]![1] as unknown[];
+      expect(upsertArgs[2]).toBe('');
     });
   });
 });
