@@ -293,31 +293,31 @@ window.showUndoModal = function(decisionId) {
   modal.className = 'modal-overlay';
   modal.innerHTML = `
     <div class="modal-card" style="max-width: 480px;">
-      <h3>Undo This Action</h3>
-      <p style="font-size: 0.85rem; color: var(--text-muted);">
-        Help your twin learn by explaining what went wrong.
+      <h3 style="margin: 0 0 0.25rem;">Walk me back</h3>
+      <p style="font-size: 0.85rem; color: var(--text-muted); margin: 0 0 1rem;">
+        Tell me what I got wrong and I'll learn from it. The more specific you are, the less likely I am to do it again.
       </p>
-      <div style="display: flex; flex-direction: column; gap: 0.75rem; margin-top: 1rem;">
+      <div style="display: flex; flex-direction: column; gap: 0.85rem;">
         <div>
-          <label style="font-size: 0.75rem; font-weight: 600;">What went wrong? *</label>
-          <textarea id="undo-what-went-wrong" rows="3" required style="width: 100%;"></textarea>
+          <label style="font-size: 0.8rem; font-weight: 600;">What was off about this? *</label>
+          <textarea id="undo-what-went-wrong" rows="3" required style="width: 100%;" placeholder="e.g. Sarah's emails are personal — never archive these without me reading them first"></textarea>
         </div>
         <div>
-          <label style="font-size: 0.75rem; font-weight: 600;">Severity</label>
+          <label style="font-size: 0.8rem; font-weight: 600;">How big a deal was it?</label>
           <select id="undo-severity" style="width: 100%;">
-            <option value="minor">Minor</option>
-            <option value="moderate" selected>Moderate</option>
-            <option value="severe">Severe</option>
+            <option value="minor">Small thing — easy to recover</option>
+            <option value="moderate" selected>A real miss — please remember</option>
+            <option value="severe">Hard miss — never do this again</option>
           </select>
         </div>
         <div>
-          <label style="font-size: 0.75rem; font-weight: 600;">What would have been better?</label>
-          <input type="text" id="undo-preferred" style="width: 100%;">
+          <label style="font-size: 0.8rem; font-weight: 600;">What should I have done instead? <span style="color: var(--text-muted); font-weight: 400;">(optional)</span></label>
+          <input type="text" id="undo-preferred" style="width: 100%;" placeholder="e.g. Forwarded it to my work email and snoozed for 24h">
         </div>
       </div>
       <div style="display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 1rem;">
-        <button class="btn btn-sm btn-ghost" id="undo-cancel">Cancel</button>
-        <button class="btn btn-sm btn-danger" id="undo-submit">Undo Action</button>
+        <button class="btn btn-sm btn-ghost" id="undo-cancel">Never mind</button>
+        <button class="btn btn-sm btn-primary" id="undo-submit">Walk this back</button>
       </div>
     </div>
   `;
@@ -347,23 +347,25 @@ window.showUndoModal = function(decisionId) {
 
       modal.remove();
 
-      // Show success toast
+      // Show a success toast that quotes the user's reason back so they
+      // see exactly what the twin will remember from this correction.
       const toast = document.createElement('div');
       toast.className = 'toast toast-success';
-      toast.textContent = "Action reversed. I'll remember this for next time.";
+      const reasonSnippet = whatWentWrong.length > 70 ? whatWentWrong.slice(0, 67) + '…' : whatWentWrong;
+      toast.textContent = `Walked back. I'll remember: "${reasonSnippet}"`;
       document.body.appendChild(toast);
       setTimeout(() => toast.remove(), 4000);
 
       // Update the undo button
       const btn = document.querySelector(`[data-decision-id="${decisionId}"]`);
       if (btn) {
-        btn.textContent = 'Undone';
+        btn.textContent = 'Walked back';
         btn.disabled = true;
       }
     } catch (err) {
       const toast = document.createElement('div');
       toast.className = 'toast toast-error';
-      toast.textContent = `Undo failed: ${err.message}`;
+      toast.textContent = `Couldn't walk that back: ${err.message}`;
       document.body.appendChild(toast);
       setTimeout(() => toast.remove(), 4000);
     }
