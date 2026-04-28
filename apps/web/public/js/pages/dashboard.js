@@ -1,8 +1,8 @@
-import { fetchHealth, fetchDecisions, fetchAccuracy, fetchConfidence, fetchLearning, fetchPendingApprovals, fetchSkillGaps, fetchTrustProgress, fetchLearned, fetchUnmetCredentials, escapeHtml } from '../api-client.js';
+import { fetchHealth, fetchDecisions, fetchAccuracy, fetchConfidence, fetchLearning, fetchPendingApprovals, fetchSkillGaps, fetchTrustProgress, fetchLearned, fetchUnmetCredentials, fetchOAuthStatus, fetchCredentialsStatus, escapeHtml } from '../api-client.js';
 import { renderTrustProgress } from '../components/progress-bar.js';
 
 export async function renderDashboard(container, userId) {
-  const [health, accuracy, confidence, learning, approvals, decisions, skillGaps, progress, learned, unmetCreds] = await Promise.allSettled([
+  const [health, accuracy, confidence, learning, approvals, decisions, skillGaps, progress, learned, unmetCreds, googleOAuth, credsStatus] = await Promise.allSettled([
     fetchHealth(),
     fetchAccuracy(userId),
     fetchConfidence(userId),
@@ -13,6 +13,8 @@ export async function renderDashboard(container, userId) {
     fetchTrustProgress(userId),
     fetchLearned(userId),
     fetchUnmetCredentials(),
+    fetchOAuthStatus(userId, 'google'),
+    fetchCredentialsStatus(),
   ]);
 
   const healthOk = health.status === 'fulfilled';
@@ -25,12 +27,16 @@ export async function renderDashboard(container, userId) {
   const prog = progress.status === 'fulfilled' ? progress.value : null;
   const learnedData = learned.status === 'fulfilled' ? learned.value : null;
 
+  const googleConnected = googleOAuth.status === 'fulfilled' && (googleOAuth.value?.connected ?? false);
+  const googleSystemConfigured = credsStatus.status === 'fulfilled' && (credsStatus.value?.google?.configured ?? false);
+
   const overallConf = conf?.overallConfidence ?? 0;
   const confLabel = overallConf >= 75 ? 'Very confident' : overallConf >= 50 ? 'Getting there' : overallConf >= 25 ? 'Still learning' : 'Just started';
   const confClass = overallConf >= 75 ? 'high' : overallConf >= 50 ? 'moderate' : overallConf >= 25 ? 'low' : 'speculative';
 
   container.innerHTML = `
     ${!healthOk ? '<div class="error-banner">Unable to reach the API server. Your twin may not be processing events.</div>' : ''}
+    ${renderConnectGoogleHero({ googleConnected, googleSystemConfigured, userId })}
     ${pending > 0 ? `<div class="card" style="border-left: 3px solid var(--warning); cursor: pointer;" onclick="location.hash='#/approvals'">
       <span style="font-weight: 600;">You have ${pending} pending approval${pending > 1 ? 's' : ''}</span>
       <span style="color: var(--text-muted); font-size: 0.85rem;"> — your twin wants to do something and needs your OK.</span>
@@ -182,6 +188,60 @@ function traitIcon(name) {
     delegation_averse: '*',
   };
   return icons[name] || '?';
+}
+
+function renderConnectGoogleHero({ googleConnected, googleSystemConfigured, userId }) {
+  if (googleConnected) return '';
+
+  const safeUserId = escapeHtml(userId);
+
+  if (!googleSystemConfigured) {
+    return `
+      <div class="card" style="border-left: 3px solid var(--primary); background: linear-gradient(135deg, var(--bg-card) 0%, var(--bg) 100%);">
+        <div class="card-header">
+          <span class="card-title">Let's get you connected</span>
+        </div>
+        <div class="card-subtitle" style="margin-bottom: 1rem;">
+          To start handling email and calendar for you, SkyTwin needs to be linked to your Google account.
+          The one-time setup takes about 5 minutes — we'll walk you through every click.
+        </div>
+        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+          <a class="btn btn-primary" href="#/setup">Set up Google access →</a>
+          <a class="btn btn-outline" href="#/decisions">See what it can do first</a>
+        </div>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="card" style="border-left: 3px solid var(--primary); background: linear-gradient(135deg, var(--bg-card) 0%, var(--bg) 100%);">
+      <div class="card-header">
+        <span class="card-title">One last step — connect your Google account</span>
+      </div>
+      <div class="card-subtitle" style="margin-bottom: 1rem;">
+        Your twin is ready, but it can't see anything yet. Connect Google so it can start learning from your inbox and calendar.
+      </div>
+      <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+        <button class="btn btn-primary" onclick="window.handleConnectGoogleFromDashboard('${safeUserId}')">Connect Google</button>
+        <a class="btn btn-outline" href="#/settings">Manage connections</a>
+      </div>
+    </div>
+  `;
+}
+
+if (typeof window !== 'undefined') {
+  window.handleConnectGoogleFromDashboard = async function(userId) {
+    try {
+      const { getGoogleAuthUrl } = await import('../api-client.js');
+      const data = await getGoogleAuthUrl(userId);
+      if (data?.url) {
+        window.location.href = data.url;
+      }
+    } catch (err) {
+      console.error('Could not start Google connect flow:', err);
+      window.location.hash = '#/settings';
+    }
+  };
 }
 
 function renderUnmetCredentials(unmetCredsResult) {

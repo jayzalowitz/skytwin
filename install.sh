@@ -101,6 +101,56 @@ fi
 # real failure, so we forward its exit code rather than burying it.
 ./bin/skytwin-install
 
+# ── Step 2.5: make sure the Docker daemon is actually reachable ────────
+#
+# A fresh `brew install --cask docker` leaves Docker Desktop installed but
+# not running, which only surfaces later as a confusing CockroachDB startup
+# error. Catch it here with a clear message instead.
+
+step "Checking that Docker is running"
+if ! command -v docker >/dev/null 2>&1; then
+  warn "Docker isn't on PATH yet. If you just installed Docker Desktop, open it once and re-run this script."
+elif docker info >/dev/null 2>&1; then
+  ok "Docker daemon is running"
+else
+  warn "Docker is installed but the daemon isn't responding yet."
+  case "$OS" in
+    mac)
+      if [ -d "/Applications/Docker.app" ]; then
+        echo "  Starting Docker Desktop…"
+        open -a Docker || true
+        echo -n "  Waiting for Docker to come up "
+        for _ in $(seq 1 60); do
+          if docker info >/dev/null 2>&1; then echo ""; ok "Docker is ready"; break; fi
+          echo -n "."
+          sleep 1
+        done
+        if ! docker info >/dev/null 2>&1; then
+          echo ""
+          fail "Docker still isn't responding. Open Docker Desktop manually, wait for the whale icon to settle, then re-run this script."
+        fi
+      else
+        fail "Docker Desktop isn't installed in /Applications. Install it from https://docker.com and re-run this script."
+      fi
+      ;;
+    linux)
+      echo "  Trying: sudo systemctl start docker"
+      sudo systemctl start docker 2>/dev/null || true
+      sleep 2
+      if ! docker info >/dev/null 2>&1; then
+        fail "Docker daemon isn't running. Start it with: sudo systemctl start docker"
+      fi
+      ok "Docker is ready"
+      ;;
+    wsl)
+      fail "Docker isn't reachable from WSL. Open Docker Desktop on Windows and enable 'Use the WSL 2 based engine' + 'WSL integration' for this distro, then re-run."
+      ;;
+    *)
+      fail "Docker isn't running. Start it and re-run this script."
+      ;;
+  esac
+fi
+
 # ── Step 3: start everything ───────────────────────────────────────────
 
 step "Starting SkyTwin services"
@@ -155,5 +205,18 @@ echo -e "  Logs:         ${BLUE}$INSTALL_DIR/.logs/skytwin-dev.log${NC}"
 echo -e "  Stop:         ${YELLOW}cd $INSTALL_DIR && ./bin/skytwin-dev --stop${NC}"
 echo -e "  Restart:      ${YELLOW}cd $INSTALL_DIR && ./install.sh${NC}"
 echo ""
-echo "Next: sign in with Google in the dashboard. The first run will guide"
-echo "you through connecting your inbox and setting your trust level."
+
+# Tailor the next-step message to whether Google credentials are wired up.
+# /api/credentials/status returns { google: { configured: bool }, ... } and
+# is reachable on localhost without auth in dev mode.
+GOOGLE_STATUS="$(curl -sf "http://localhost:3100/api/credentials/status" 2>/dev/null || true)"
+if echo "$GOOGLE_STATUS" | grep -q '"configured":true'; then
+  echo "Next: open the dashboard and click 'Continue with Google' to sign in."
+  echo "Your twin will start learning from your inbox and calendar right away."
+else
+  echo "Next: open the dashboard. You'll see a 'Set up Google access' card —"
+  echo "click it for a 5-minute walkthrough that wires up your Gmail + Calendar."
+  echo ""
+  echo "Already done that elsewhere? Paste your existing Google OAuth Client ID"
+  echo "and Secret in Setup → Google account credentials and you're off."
+fi

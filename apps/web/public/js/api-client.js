@@ -156,6 +156,10 @@ export function fetchOAuthStatus(userId, provider = 'google') {
   return fetchJSON(`${API}/oauth/${provider}/status?userId=${encodeURIComponent(userId)}`);
 }
 
+export function fetchCredentialsStatus() {
+  return fetchJSON(`${API}/credentials/status`);
+}
+
 export function getGoogleAuthUrl(userId) {
   return fetchJSON(`${API}/oauth/google/authorize?userId=${encodeURIComponent(userId)}`);
 }
