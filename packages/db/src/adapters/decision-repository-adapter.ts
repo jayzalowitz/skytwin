@@ -140,6 +140,18 @@ export const decisionRepositoryAdapter: DecisionRepositoryPort = {
       urgency: urgencyToDb(decision.urgency),
     });
 
+    // Mutate the caller's in-memory decision to match the persisted id.
+    // When a duplicate (user_id, signal_id) hits the create() pre-check
+    // (migration 023 + decision-repository.ts), the persisted row's id is
+    // the *existing* row's id — different from the freshly-generated
+    // decision.id the interpreter produced. Subsequent candidate inserts
+    // FK against this id; without the rewrite they hit
+    // candidate_actions_decision_id_fkey violations because the engine's
+    // in-memory id never landed in the decisions table.
+    if (row.id !== decision.id) {
+      decision.id = row.id;
+    }
+
     return decisionRowToDomain(row);
   },
 

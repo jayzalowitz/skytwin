@@ -511,6 +511,24 @@ describe('decisionRepository', () => {
         0.95,
       ]);
     });
+
+    it('upserts on decision_id (re-ingest replaces the prior outcome)', async () => {
+      mockQuery.mockResolvedValue({ rows: [fakeOutcomeRow()], rowCount: 1 });
+
+      await decisionRepository.recordOutcome({
+        decisionId: 'd-001',
+        explanation: 'Re-evaluated outcome',
+        confidence: 0.9,
+      });
+
+      const [sql] = mockQuery.mock.calls[0]!;
+      expect(sql).toContain('ON CONFLICT (decision_id) DO UPDATE');
+      // Every column except decision_id and the immutable id/created_at
+      // should appear in the SET clause so re-ingest fully overwrites.
+      expect(sql).toContain('selected_action_id = EXCLUDED.selected_action_id');
+      expect(sql).toContain('explanation = EXCLUDED.explanation');
+      expect(sql).toContain('confidence = EXCLUDED.confidence');
+    });
   });
 
   // -----------------------------------------------------------------------
