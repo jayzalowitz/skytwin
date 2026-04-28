@@ -108,6 +108,7 @@ export async function renderDashboard(container, userId) {
       <span style="font-weight: 600;">You have ${pending} pending approval${pending > 1 ? 's' : ''}</span>
       <span style="color: var(--text-muted); font-size: 0.85rem;"> — your twin wants to do something and needs your OK.</span>
     </div>` : ''}
+    ${pending > 0 ? renderNotificationOptIn() : ''}
 
     ${renderUnmetCredentials(unmetCreds)}
 
@@ -375,6 +376,59 @@ function traitIcon(name) {
     delegation_averse: '*',
   };
   return icons[name] || '?';
+}
+
+function renderNotificationOptIn() {
+  // Only render in the "we should ask" state: notifications supported,
+  // permission still 'default' (not asked or already granted), and the
+  // user hasn't said "maybe later" already.
+  if (typeof window === 'undefined') return '';
+  let state = 'unsupported';
+  let dismissed = false;
+  try {
+    state = window.skyTwinNotificationsState ? window.skyTwinNotificationsState() : 'unsupported';
+    dismissed = localStorage.getItem('skytwin_notif_dismissed') === '1';
+  } catch { /* noop */ }
+  if (state !== 'default' || dismissed) return '';
+
+  return `
+    <div class="card" id="notif-opt-in" style="border-left: 3px solid var(--primary);">
+      <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; gap: 0.5rem;">
+        <span class="card-title">Want a heads-up when I need you?</span>
+      </div>
+      <div class="card-subtitle" style="margin-bottom: 0.75rem;">
+        I can ping your computer with a quick notification when something needs your OK, so you don't have to keep this tab open.
+        Click below and your browser will ask for permission.
+      </div>
+      <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+        <button class="btn btn-primary btn-sm" onclick="window.handleEnableNotifications()">Yes, ping me</button>
+        <button class="btn btn-outline btn-sm" onclick="window.dismissNotifOptIn()">Maybe later</button>
+      </div>
+    </div>
+  `;
+}
+
+if (typeof window !== 'undefined') {
+  window.handleEnableNotifications = async function() {
+    try {
+      const res = await window.skyTwinRequestNotifications();
+      if (res === 'granted') {
+        const card = document.getElementById('notif-opt-in');
+        if (card) card.remove();
+        const { showToast } = await import('../sse-client.js');
+        showToast('Notifications on', 'I\'ll ping you when something needs your OK.', 'success');
+      } else if (res === 'denied') {
+        const card = document.getElementById('notif-opt-in');
+        if (card) card.remove();
+        try { localStorage.setItem('skytwin_notif_dismissed', '1'); } catch { /* noop */ }
+      }
+    } catch { /* user dismissed the OS prompt */ }
+  };
+
+  window.dismissNotifOptIn = function() {
+    try { localStorage.setItem('skytwin_notif_dismissed', '1'); } catch { /* noop */ }
+    document.getElementById('notif-opt-in')?.remove();
+  };
 }
 
 function renderBriefingCard({ items, createdAt }) {

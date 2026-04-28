@@ -390,24 +390,20 @@ function _twinNotificationsAllowed() {
   return Notification.permission === 'granted';
 }
 
-async function _maybeAskForNotificationPermission() {
-  if (!('Notification' in window)) return;
-  if (Notification.permission !== 'default') return;
-  // Don't ask before there's reason to — wait until the user has at
-  // least one pending approval visible. That way the prompt arrives
-  // right when notifications would actually be useful.
-  try {
-    const data = await fetchPendingApprovals(currentUserId);
-    const count = data.approvals?.length ?? 0;
-    if (count === 0) return;
-    if (localStorage.getItem('skytwin_notif_asked') === '1') return;
-    localStorage.setItem('skytwin_notif_asked', '1');
-    Notification.requestPermission().catch(() => { /* user dismissed */ });
-  } catch { /* noop */ }
-}
+// Expose helpers so the dashboard can render a friendly "want pings?" card
+// in the right context, and trigger the OS prompt only when the user has
+// affirmatively asked for it.
+window.skyTwinNotificationsState = function() {
+  if (!('Notification' in window)) return 'unsupported';
+  return Notification.permission; // 'granted' | 'denied' | 'default'
+};
+
+window.skyTwinRequestNotifications = function() {
+  if (!('Notification' in window)) return Promise.resolve('unsupported');
+  return Notification.requestPermission();
+};
 
 window.addEventListener('sse:approval:new', (e) => {
-  _maybeAskForNotificationPermission();
   if (!_twinNotificationsAllowed()) return;
   if (document.visibilityState === 'visible' && document.hasFocus()) return;
   const detail = e.detail || {};
