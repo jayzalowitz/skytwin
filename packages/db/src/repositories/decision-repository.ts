@@ -274,12 +274,23 @@ export const decisionRepository = {
   async recordOutcome(
     input: CreateOutcomeInput,
   ): Promise<DecisionOutcomeRow> {
+    // Idempotent on decision_id — re-ingesting the same signal (worker
+    // dedup miss, manual replay) re-runs the engine, and the new outcome
+    // replaces the prior one. The unique constraint at the DB layer keeps
+    // "one outcome per decision" but doesn't pin which outcome.
     const result = await query<DecisionOutcomeRow>(
       `INSERT INTO decision_outcomes (
         decision_id, selected_action_id, auto_executed,
         requires_approval, escalation_reason, explanation, confidence
       )
       VALUES ($1, $2, $3, $4, $5, $6, $7)
+      ON CONFLICT (decision_id) DO UPDATE SET
+        selected_action_id = EXCLUDED.selected_action_id,
+        auto_executed = EXCLUDED.auto_executed,
+        requires_approval = EXCLUDED.requires_approval,
+        escalation_reason = EXCLUDED.escalation_reason,
+        explanation = EXCLUDED.explanation,
+        confidence = EXCLUDED.confidence
       RETURNING *`,
       [
         input.decisionId,
