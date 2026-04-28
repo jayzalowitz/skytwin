@@ -127,16 +127,22 @@ export class ServiceManager {
    * Probe whether an external API/worker is already running. In `pnpm dev`
    * and similar dev flows, the standalone services own port 3100, so forking
    * our own would just collide and crash on EADDRINUSE.
+   *
+   * Only runs in unpackaged (dev) builds — a packaged install must never
+   * attach to whatever stranger happens to be answering on localhost:3100,
+   * since that could be a wildly different version (or untrusted).
    */
   private async detectExternalApi(): Promise<boolean> {
+    if (app.isPackaged) return false;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 500);
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 500);
       const res = await fetch('http://localhost:3100/api/health', { signal: controller.signal });
-      clearTimeout(timer);
       return res.ok;
     } catch {
       return false;
+    } finally {
+      clearTimeout(timer);
     }
   }
 
