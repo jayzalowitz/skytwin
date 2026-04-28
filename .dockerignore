@@ -1,0 +1,64 @@
+# Keep the docker build context small. Without this, every Docker build
+# uploads node_modules, dist, .git, etc. — slow and a privacy hole.
+
+# Dependencies (re-installed inside the build stage)
+node_modules/
+**/node_modules/
+
+# Build outputs (re-built inside the build stage)
+dist/
+**/dist/
+.turbo/
+**/.turbo/
+
+# Test coverage
+coverage/
+**/coverage/
+
+# Environment files (NEVER bake into images)
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+**/!.env.example
+
+# Local pids and logs
+.skytwin-pids
+*.log
+**/*.log
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+.github/
+
+# Docs and meta — not needed at runtime
+README.md
+CHANGELOG.md
+CONTRIBUTING.md
+CODE_OF_CONDUCT.md
+LICENSE
+SECURITY.md
+TODOS.md
+docs/
+planning/
+
+# Conductor / agent-tool scratch
+.context/
+.claude/
+.conductor/
+
+# Mobile + desktop builds (large, not needed for server image)
+apps/mobile/.expo/
+apps/desktop/dist-electron/
+
+# Docker meta itself
+Dockerfile*
+.dockerignore
