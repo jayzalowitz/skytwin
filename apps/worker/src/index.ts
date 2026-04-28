@@ -9,20 +9,42 @@ import {
   type GoogleOAuthConfig,
 } from '@skytwin/connectors';
 import {
+  forwardedSignalsRepository,
   oauthRepository,
   approvalRepository,
   ironClawToolRepository,
   serviceCredentialRepository,
 } from '@skytwin/db';
 import { withRetry, RetryableHttpError, CircuitBreaker, createLogger } from '@skytwin/core';
-import { SignalDeduper } from './signal-dedupe.js';
+import { SignalDeduper, DEFAULT_TTL_MS } from './signal-dedupe.js';
 
 const config = loadConfig();
 const log = createLogger('worker');
 
 /** Per-user circuit breakers to skip users with persistent failures. */
 const userCircuitBreakers = new Map<string, CircuitBreaker>();
-const signalDeduper = new SignalDeduper();
+
+/**
+ * Dedup state survives restarts via forwarded_signals: the in-memory map
+ * is hydrated at startup from the persistent ledger, and every mark()
+ * write-throughs back to the table. Without this, `tsx watch` reloads
+ * (or any worker crash/restart) cause every still-matching gmail thread
+ * to re-emit and create duplicate approvals downstream — see #102.
+ */
+const signalDeduper = new SignalDeduper({
+  persistence: {
+    async mark(userId: string, signalKey: string): Promise<void> {
+      await forwardedSignalsRepository.mark(userId, signalKey);
+    },
+  },
+  onPersistenceError: (err, userId, signalKey) => {
+    log.warn('Failed to persist signal dedupe entry', {
+      userId,
+      signalKey,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  },
+});
 
 function getCircuitBreaker(userId: string): CircuitBreaker {
   let breaker = userCircuitBreakers.get(userId);
@@ -326,6 +348,30 @@ async function main(): Promise<void> {
   log.info('Starting SkyTwin worker...');
   log.info(`API base URL: ${config.apiBaseUrl}`);
   log.info(`Poll interval: ${config.workerPollIntervalMs}ms`);
+
+  // Hydrate the dedup window from the persistent ledger before we start
+  // polling, so already-forwarded signals are recognised on the very first
+  // poll after a restart. Failures are non-fatal: the worker can still run,
+  // it'll just have its previous behaviour of re-emitting on reload.
+  try {
+    const rows = await forwardedSignalsRepository.listSince(DEFAULT_TTL_MS);
+    signalDeduper.hydrate(
+      rows.map((r) => ({
+        userId: r.user_id,
+        signalKey: r.signal_key,
+        forwardedAt: r.forwarded_at,
+      })),
+    );
+    log.info(`Hydrated dedupe ledger: ${rows.length} entries`);
+
+    // Best-effort GC of expired rows so the table doesn't grow unbounded.
+    const removed = await forwardedSignalsRepository.gcOlderThan(DEFAULT_TTL_MS);
+    if (removed > 0) log.info(`GC'd ${removed} expired forwarded_signals rows`);
+  } catch (error) {
+    log.warn('Could not hydrate dedupe ledger — proceeding with empty state', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 
   // Detect startup hangs (discoverUsers or connect hanging on a broken DB/network)
   const startupTimer = setTimeout(() => {

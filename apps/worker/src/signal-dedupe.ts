@@ -13,11 +13,25 @@ import type { RawSignal } from '@skytwin/connectors';
  * by constructing a SignalDeduper with custom bounds and a clock.
  */
 
+/**
+ * Optional persistence layer that lets the deduper survive worker restarts.
+ * Pure interface — the worker wires it to forwardedSignalsRepository, tests
+ * pass a stub, and the deduper itself stays free of DB dependencies.
+ */
+export interface DeduperPersistence {
+  /** Append a (userId, signalKey) pair to durable storage. Best-effort. */
+  mark(userId: string, signalKey: string): Promise<void>;
+}
+
 export interface DeduperOptions {
   ttlMs?: number;
   maxPerUser?: number;
   /** Time source — exposed so tests can advance it deterministically. */
   now?: () => number;
+  /** Persistence layer for write-through and hydration. Optional. */
+  persistence?: DeduperPersistence;
+  /** Logger for failed persistence writes. Optional. */
+  onPersistenceError?: (err: unknown, userId: string, signalKey: string) => void;
 }
 
 export const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
@@ -27,12 +41,32 @@ export class SignalDeduper {
   private readonly ttlMs: number;
   private readonly maxPerUser: number;
   private readonly now: () => number;
+  private readonly persistence: DeduperPersistence | undefined;
+  private readonly onPersistenceError: NonNullable<DeduperOptions['onPersistenceError']> | undefined;
   private readonly seenByUser = new Map<string, Map<string, number>>();
 
   constructor(opts: DeduperOptions = {}) {
     this.ttlMs = opts.ttlMs ?? DEFAULT_TTL_MS;
     this.maxPerUser = opts.maxPerUser ?? DEFAULT_MAX_PER_USER;
     this.now = opts.now ?? Date.now;
+    this.persistence = opts.persistence;
+    this.onPersistenceError = opts.onPersistenceError;
+  }
+
+  /**
+   * Replay a batch of `(userId, signalKey, forwardedAt)` tuples into the
+   * in-memory map. Used at startup to hydrate from the persistent ledger
+   * so the worker doesn't re-emit signals it had already forwarded before
+   * the last restart. Skips entries past the TTL.
+   */
+  hydrate(rows: Array<{ userId: string; signalKey: string; forwardedAt: Date }>): void {
+    const cutoff = this.now() - this.ttlMs;
+    for (const row of rows) {
+      const ts = row.forwardedAt.getTime();
+      if (ts < cutoff) continue;
+      const map = this.getOrCreate(row.userId);
+      map.set(row.signalKey, ts);
+    }
   }
 
   /** True if this signal has been forwarded for this user within the TTL window. */
@@ -43,10 +77,31 @@ export class SignalDeduper {
     return Boolean(seenAt && this.now() - seenAt < this.ttlMs);
   }
 
-  /** Record that a signal was forwarded for this user. */
+  /**
+   * Record that a signal was forwarded for this user. Writes through to
+   * the persistence layer (if configured) so the mark survives a restart.
+   * Persistence errors do not throw — they're reported via
+   * `onPersistenceError` and the in-memory entry is still recorded.
+   */
   mark(signal: RawSignal, userId: string): void {
+    const key = this.key(signal);
     const map = this.getOrCreate(userId);
-    map.set(this.key(signal), this.now());
+    map.set(key, this.now());
+
+    if (this.persistence) {
+      const handle = this.onPersistenceError;
+      this.persistence.mark(userId, key).catch((err) => {
+        if (!handle) return;
+        // Defensive: a throwing error handler on a fire-and-forget promise
+        // would surface as an unhandled rejection, which can crash the
+        // worker. Swallow rather than rethrow.
+        try {
+          handle(err, userId, key);
+        } catch {
+          /* swallow */
+        }
+      });
+    }
   }
 
   /** Test/observability helper: how many entries are currently held for a user. */

@@ -134,4 +134,75 @@ describe('SignalDeduper', () => {
     expect(DEFAULT_TTL_MS).toBe(24 * 60 * 60 * 1000);
     expect(DEFAULT_MAX_PER_USER).toBe(5_000);
   });
+
+  // ── Persistence ─────────────────────────────────────────────────────────
+
+  describe('persistence', () => {
+    it('mark() write-throughs to the persistence layer', async () => {
+      const persisted: Array<{ userId: string; signalKey: string }> = [];
+      const dedup = new SignalDeduper({
+        persistence: {
+          mark: async (userId, signalKey) => {
+            persisted.push({ userId, signalKey });
+          },
+        },
+      });
+
+      dedup.mark(makeSignal('s1'), 'user1');
+
+      // Persistence is async — wait a tick.
+      await new Promise((r) => setImmediate(r));
+      expect(persisted).toEqual([{ userId: 'user1', signalKey: 'gmail:s1' }]);
+    });
+
+    it('persistence failures are reported but do not throw', async () => {
+      const errors: Array<{ userId: string; signalKey: string }> = [];
+      const dedup = new SignalDeduper({
+        persistence: {
+          mark: async () => {
+            throw new Error('db down');
+          },
+        },
+        onPersistenceError: (_err, userId, signalKey) => {
+          errors.push({ userId, signalKey });
+        },
+      });
+
+      // Should not throw synchronously or via unhandled rejection.
+      dedup.mark(makeSignal('s1'), 'user1');
+
+      // The in-memory entry should still be recorded.
+      expect(dedup.has(makeSignal('s1'), 'user1')).toBe(true);
+
+      await new Promise((r) => setImmediate(r));
+      expect(errors).toEqual([{ userId: 'user1', signalKey: 'gmail:s1' }]);
+    });
+
+    it('hydrate() repopulates the in-memory map from persisted rows', () => {
+      let now = 1_000_000;
+      const dedup = new SignalDeduper({ ttlMs: 60_000, now: () => now });
+
+      dedup.hydrate([
+        { userId: 'user1', signalKey: 'gmail:s1', forwardedAt: new Date(now - 10_000) },
+        { userId: 'user2', signalKey: 'gmail:s2', forwardedAt: new Date(now - 1_000) },
+      ]);
+
+      expect(dedup.has(makeSignal('s1'), 'user1')).toBe(true);
+      expect(dedup.has(makeSignal('s2'), 'user2')).toBe(true);
+      expect(dedup.has(makeSignal('s2'), 'user1')).toBe(false);
+    });
+
+    it('hydrate() skips rows past the TTL', () => {
+      const now = 1_000_000;
+      const dedup = new SignalDeduper({ ttlMs: 5_000, now: () => now });
+
+      dedup.hydrate([
+        { userId: 'user1', signalKey: 'gmail:old', forwardedAt: new Date(now - 60_000) },
+        { userId: 'user1', signalKey: 'gmail:fresh', forwardedAt: new Date(now - 1_000) },
+      ]);
+
+      expect(dedup.has(makeSignal('old'), 'user1')).toBe(false);
+      expect(dedup.has(makeSignal('fresh'), 'user1')).toBe(true);
+    });
+  });
 });
