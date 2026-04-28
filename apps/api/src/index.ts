@@ -25,6 +25,7 @@ import { createPoliciesRouter } from './routes/policies.js';
 import { createMempalaceRouter } from './routes/mempalace.js';
 import { createCredentialsRouter } from './routes/credentials.js';
 import { createRoutinesRouter } from './routes/routines.js';
+import { createDemoRouter } from './routes/demo.js';
 import { getExecutionRouter } from './execution-setup.js';
 import { startMdnsAdvertisement, stopMdnsAdvertisement } from './mdns.js';
 import { closePool } from '@skytwin/db';
@@ -136,6 +137,7 @@ app.use('/api/policies', sessionAuth, requireOwnership, createPoliciesRouter());
 app.use('/api/mempalace', sessionAuth, requireOwnership, createMempalaceRouter());
 app.use('/api/credentials', sessionAuth, requireOwnership, createCredentialsRouter());
 app.use('/api/routines', sessionAuth, requireOwnership, createRoutinesRouter());
+app.use('/api/demo', createDemoRouter()); // public — onboarding tour discovery
 
 // Error handling middleware
 app.use(

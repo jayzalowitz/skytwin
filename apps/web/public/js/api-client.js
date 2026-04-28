@@ -160,6 +160,10 @@ export function fetchCredentialsStatus() {
   return fetchJSON(`${API}/credentials/status`);
 }
 
+export function fetchDemoInfo() {
+  return fetchJSON(`${API}/demo/info`);
+}
+
 export function getGoogleAuthUrl(userId) {
   return fetchJSON(`${API}/oauth/google/authorize?userId=${encodeURIComponent(userId)}`);
 }

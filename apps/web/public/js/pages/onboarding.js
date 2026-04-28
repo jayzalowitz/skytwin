@@ -1,4 +1,4 @@
-import { createUser, updateTrustTier, fetchJSON, fetchTwinProfile } from '../api-client.js';
+import { createUser, updateTrustTier, fetchJSON, fetchTwinProfile, fetchDemoInfo } from '../api-client.js';
 
 // ── Domain definitions ──────────────────────────────────────────────
 
@@ -135,12 +135,40 @@ const STEPS = [
           </div>
         </details>
 
-        <div class="onboarding-actions" style="margin-top: 1rem;">
+        <div class="onboarding-actions" style="margin-top: 1rem; display: flex; justify-content: space-between; align-items: center; gap: 0.5rem;">
           <button class="btn btn-outline" id="onb-back-2">Back</button>
+          <a href="#" id="onb-tour-link" style="font-size: 0.85rem; color: var(--text-muted); display: none;">Or explore with a sample profile first →</a>
         </div>
       `;
 
       document.getElementById('onb-back-2').addEventListener('click', back);
+
+      // Surface the tour link only when the seeded demo user actually exists
+      // (it's created by `pnpm db:seed`, which the installer runs by default).
+      // We want to fail closed: if the API or seed isn't there, the tour
+      // option just doesn't appear.
+      fetchDemoInfo().then((info) => {
+        if (info?.available && info?.userId) {
+          const link = document.getElementById('onb-tour-link');
+          if (!link) return;
+          link.style.display = 'inline';
+          link.addEventListener('click', (ev) => {
+            ev.preventDefault();
+            // Skip the rest of the wizard — the demo user already has
+            // domains, preferences, and a trust tier from the seed. Mark
+            // the session as touring so the dashboard banner can offer a
+            // graceful exit back to real onboarding.
+            try {
+              localStorage.setItem('skytwin_tour_mode', '1');
+              localStorage.setItem('skytwin_userId', info.userId);
+              localStorage.setItem('skytwin_onboarded', 'true');
+            } catch { /* private mode etc. */ }
+            const overlay = document.getElementById('onboarding-overlay');
+            if (overlay) overlay.style.display = 'none';
+            window.skyTwinSetUserId(info.userId);
+          });
+        }
+      }).catch(() => { /* tour link stays hidden */ });
 
       // ── Google sign-in: front door ──────────────────────────────────
       document.getElementById('onb-google-signin').addEventListener('click', async () => {

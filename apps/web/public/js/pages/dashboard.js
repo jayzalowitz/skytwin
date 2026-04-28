@@ -48,10 +48,13 @@ export async function renderDashboard(container, userId) {
   const confLabel = overallConf >= 75 ? 'Very confident' : overallConf >= 50 ? 'Getting there' : overallConf >= 25 ? 'Still learning' : 'Just started';
   const confClass = overallConf >= 75 ? 'high' : overallConf >= 50 ? 'moderate' : overallConf >= 25 ? 'low' : 'speculative';
 
+  const tourMode = (() => { try { return localStorage.getItem('skytwin_tour_mode') === '1'; } catch { return false; } })();
+
   container.innerHTML = `
     ${!healthOk ? '<div class="error-banner">Unable to reach the API server. Your twin may not be processing events.</div>' : ''}
+    ${tourMode ? renderTourBanner() : ''}
     ${renderJustConnectedCelebration({ justConnectedProvider, justConnectedAccount, recentDecisionsCount: recentDecisions.length, learnedCount: learn?.totalPreferences ?? 0 })}
-    ${renderConnectGoogleHero({ googleConnected, googleSystemConfigured, userId })}
+    ${tourMode ? '' : renderConnectGoogleHero({ googleConnected, googleSystemConfigured, userId })}
     ${pending > 0 ? `<div class="card" style="border-left: 3px solid var(--warning); cursor: pointer;" onclick="location.hash='#/approvals'">
       <span style="font-weight: 600;">You have ${pending} pending approval${pending > 1 ? 's' : ''}</span>
       <span style="color: var(--text-muted); font-size: 0.85rem;"> — your twin wants to do something and needs your OK.</span>
@@ -233,6 +236,36 @@ function traitIcon(name) {
     delegation_averse: '*',
   };
   return icons[name] || '?';
+}
+
+function renderTourBanner() {
+  return `
+    <div class="card" style="border-left: 3px solid var(--warning, #e6a700); background: linear-gradient(135deg, var(--bg-card) 0%, var(--bg) 100%);">
+      <div class="card-header">
+        <span class="card-title">You're exploring with a sample profile</span>
+      </div>
+      <div class="card-subtitle" style="margin-bottom: 0.75rem;">
+        Everything you see — the decisions, the learnings, the approvals — belongs to a fictional user named Alex.
+        Click around freely, then start your own when you're ready. Nothing you do here touches your real accounts.
+      </div>
+      <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+        <button class="btn btn-primary btn-sm" onclick="window.skyTwinExitTour()">Start my own setup</button>
+        <a class="btn btn-outline btn-sm" href="#/decisions">See what Alex's twin has been doing</a>
+        <a class="btn btn-outline btn-sm" href="#/twin">See what it learned about Alex</a>
+      </div>
+    </div>
+  `;
+}
+
+if (typeof window !== 'undefined') {
+  window.skyTwinExitTour = function() {
+    try {
+      localStorage.removeItem('skytwin_tour_mode');
+      localStorage.removeItem('skytwin_userId');
+      localStorage.removeItem('skytwin_onboarded');
+    } catch { /* noop */ }
+    window.location.reload();
+  };
 }
 
 function renderJustConnectedCelebration({ justConnectedProvider, justConnectedAccount, recentDecisionsCount, learnedCount }) {
