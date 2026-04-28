@@ -1,4 +1,4 @@
-import { createUser, updateTrustTier, fetchJSON, fetchTwinProfile, fetchDemoInfo } from '../api-client.js';
+import { createUser, updateTrustTier, fetchJSON, fetchTwinProfile, fetchDemoInfo, previewDemoDecision } from '../api-client.js';
 
 // ── Domain definitions ──────────────────────────────────────────────
 
@@ -63,7 +63,7 @@ const DOMAIN_QUESTIONS = {
 // ── Steps ───────────────────────────────────────────────────────────
 
 const STEPS = [
-  // Step 1: Welcome
+  // Step 1: Welcome — show, don't tell
   {
     render: (container, next) => {
       container.innerHTML = `
@@ -71,31 +71,85 @@ const STEPS = [
         <div class="onboarding-title">A twin that learns what you'd want — and does it.</div>
         <div class="onboarding-desc">
           Most assistants have amnesia. You tell them you prefer aisle seats three times. They keep asking.
-          Your twin builds a real model of how you make decisions, then handles routine ones without bothering you —
-          and asks the right question on the few that genuinely need you.
+          Your twin builds a real model of how you make decisions, then handles routine ones on its own.
         </div>
-        <div class="domain-showcase">
-          <span class="domain-icon-preview">📧</span>
-          <span class="domain-icon-preview">📅</span>
-          <span class="domain-icon-preview">💰</span>
-          <span class="domain-icon-preview">🛒</span>
-          <span class="domain-icon-preview">✈️</span>
-          <span class="domain-icon-preview">✅</span>
-          <span class="domain-icon-preview">🏠</span>
-          <span class="domain-icon-preview">💬</span>
-          <span class="domain-icon-preview">📄</span>
-          <span class="domain-icon-preview">❤️</span>
+
+        <div id="onb-preview-card" class="card" style="margin: 1rem 0; padding: 0.85rem 1rem; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg);">
+          <div style="font-weight: 600; font-size: 0.9rem; margin-bottom: 0.4rem;">Try one — see how it thinks</div>
+          <div style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 0.75rem;">
+            Tap a situation and watch a real prediction come back. (We're using a sample profile to answer — no signup needed yet.)
+          </div>
+          <div style="display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.5rem;" id="onb-preview-chips">
+            <button class="btn btn-outline btn-sm onb-preview-chip" data-prompt="A recruiter at a company I've never heard of just emailed me about a senior role." style="font-size: 0.78rem; text-align: left;">Recruiter email →</button>
+            <button class="btn btn-outline btn-sm onb-preview-chip" data-prompt="My streaming subscription is up for renewal at $15.99/month — I used it 3 times this month." style="font-size: 0.78rem; text-align: left;">Subscription renewal →</button>
+            <button class="btn btn-outline btn-sm onb-preview-chip" data-prompt="A friend just sent a calendar invite for dinner Friday at 7pm. What would you do?" style="font-size: 0.78rem; text-align: left;">Dinner invite →</button>
+          </div>
+          <div id="onb-preview-result" style="font-size: 0.85rem;"></div>
         </div>
-        <ul class="feature-list">
-          <li><strong>It earns trust gradually.</strong> Starts by watching, then suggesting, then handling — at the pace you set.</li>
-          <li><strong>Every action is explained.</strong> What it did, why, and how to correct it if you disagree.</li>
-          <li><strong>You can stop or undo any of it.</strong> The twin works for you, not the other way around.</li>
+
+        <ul class="feature-list" style="font-size: 0.85rem;">
+          <li><strong>Earns trust gradually.</strong> Starts by watching, then suggesting, then handling — at the pace you set.</li>
+          <li><strong>Every action is explained.</strong> What it did, why, and how to correct it.</li>
+          <li><strong>You can stop or undo any of it.</strong> The twin works for you.</li>
         </ul>
         <div class="onboarding-actions">
           <button class="btn btn-primary btn-lg" id="onb-next-1">Let's get started</button>
         </div>
       `;
       document.getElementById('onb-next-1').addEventListener('click', next);
+
+      // Wire the preview chips. They call the public /api/demo/preview
+      // endpoint, which runs whatWouldIDo() against the seeded user.
+      // Fail closed: if the demo isn't available (seed not run, server
+      // down) we hide the whole panel rather than show a broken widget.
+      const previewCard = document.getElementById('onb-preview-card');
+      const resultEl = document.getElementById('onb-preview-result');
+      const chips = container.querySelectorAll('.onb-preview-chip');
+
+      fetchDemoInfo().then((info) => {
+        if (!info?.available) {
+          if (previewCard) previewCard.style.display = 'none';
+        }
+      }).catch(() => {
+        if (previewCard) previewCard.style.display = 'none';
+      });
+
+      chips.forEach((chip) => {
+        chip.addEventListener('click', async () => {
+          const prompt = chip.getAttribute('data-prompt');
+          if (!prompt || !resultEl) return;
+          chips.forEach((c) => { c.disabled = true; });
+          resultEl.innerHTML = `<div style="padding: 0.5rem 0.75rem; color: var(--text-muted);">Thinking it through…</div>`;
+          try {
+            const r = await previewDemoDecision(prompt);
+            const action = r?.predictedAction;
+            const conf = (r?.confidence || 'unknown').toString().replace(/_/g, ' ');
+            const autoVerb = r?.wouldAutoExecute ? "I'd handle this on my own" : "I'd ask you first";
+            const autoColor = r?.wouldAutoExecute ? 'var(--success)' : 'var(--warning, #e6a700)';
+            resultEl.innerHTML = `
+              <div style="padding: 0.75rem; border-left: 3px solid ${autoColor}; background: var(--bg-card); border-radius: var(--radius-sm);">
+                <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.25rem;">"${escapeForDisplay(prompt)}"</div>
+                <div style="display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem;">
+                  <strong>${escapeForDisplay(action?.description || action?.actionType || "I'm not sure — I'd ask")}</strong>
+                  <span style="font-size: 0.75rem; color: ${autoColor}; font-weight: 600;">${autoVerb}</span>
+                </div>
+                ${r?.reasoning ? `<div style="font-size: 0.82rem; line-height: 1.55;">${escapeForDisplay(r.reasoning)}</div>` : ''}
+                <div style="font-size: 0.72rem; color: var(--text-muted); margin-top: 0.4rem;">Confidence: ${escapeForDisplay(conf)}</div>
+              </div>
+            `;
+          } catch (err) {
+            resultEl.innerHTML = `<div style="font-size: 0.82rem; color: var(--text-muted); padding: 0.5rem 0;">Couldn't reach the preview right now — let's keep going and you'll see this in real life on the next page.</div>`;
+          } finally {
+            chips.forEach((c) => { c.disabled = false; });
+          }
+        });
+      });
+
+      function escapeForDisplay(s) {
+        const div = document.createElement('div');
+        div.textContent = String(s ?? '');
+        return div.innerHTML;
+      }
     },
   },
 

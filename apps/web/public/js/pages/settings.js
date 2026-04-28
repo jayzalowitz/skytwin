@@ -48,18 +48,25 @@ export async function renderSettings(container, userId) {
       <span style="color: var(--success); font-weight: 600;">Connected!</span> Your ${escapeHtml(justConnected)} account is now linked. Your twin will start learning from your data.
     </div>` : ''}
 
-    <div class="card">
-      <div class="card-header">
-        <span class="card-title">Your identity</span>
-      </div>
-      <div class="form-group">
-        <label>User ID</label>
-        <div style="display: flex; gap: 0.5rem;">
-          <input class="form-input" id="userId-input" value="${escapeHtml(userId)}">
-          <button class="btn btn-outline btn-sm" onclick="window.skyTwinSetUserId(document.getElementById('userId-input').value)">Switch</button>
+    <details class="card collapsible-card">
+      <summary class="card-header collapsible-header">
+        <span class="card-title">Advanced — switch user (developer)</span>
+        <span class="collapse-icon"></span>
+      </summary>
+      <div class="collapsible-body">
+        <div class="card-subtitle" style="margin-bottom: 0.75rem;">
+          Paste another user's ID to switch into their twin. Mostly useful while you're setting up multiple
+          accounts on the same machine — most people never need this.
+        </div>
+        <div class="form-group">
+          <label>User ID</label>
+          <div style="display: flex; gap: 0.5rem;">
+            <input class="form-input" id="userId-input" value="${escapeHtml(userId)}">
+            <button class="btn btn-outline btn-sm" onclick="window.skyTwinSetUserId(document.getElementById('userId-input').value)">Switch</button>
+          </div>
         </div>
       </div>
-    </div>
+    </details>
 
     <div class="card">
       <div class="card-header">

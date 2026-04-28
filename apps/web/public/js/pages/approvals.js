@@ -22,6 +22,22 @@ export async function renderApprovals(container, userId) {
   cachedPending = pending;
   visiblePendingCount = PENDING_PAGE_SIZE;
 
+  // First-approval tutorial: a single dismissible card that explains
+  // how this page works the first time the user has anything to approve.
+  // Dismissed via localStorage so it never repeats. Skipped in tour mode
+  // because Alex already has plenty of pending approvals — context is
+  // implicit there.
+  let tourMode = false;
+  let firstApprovalIntroKey = '';
+  let showFirstApprovalIntro = false;
+  try {
+    tourMode = localStorage.getItem('skytwin_tour_mode') === '1';
+    firstApprovalIntroKey = `skytwin_first_approval_intro_seen_${userId}`;
+    showFirstApprovalIntro = !tourMode
+      && pending.length > 0
+      && !localStorage.getItem(firstApprovalIntroKey);
+  } catch { /* private mode */ }
+
   // Filter out expired escalations from history — they're noise (twin didn't know what
   // to do and the user never responded, so there's nothing useful to show)
   const history = rawHistory.filter(a => {
@@ -31,6 +47,21 @@ export async function renderApprovals(container, userId) {
 
   container.innerHTML = `
     ${prog ? renderTrustProgress({ approvalCount: prog.approvalCount, currentTier: prog.currentTier }) : ''}
+
+    ${showFirstApprovalIntro ? `
+      <div class="card" id="first-approval-intro" style="border-left: 3px solid var(--primary); background: linear-gradient(135deg, var(--bg-card) 0%, var(--bg) 100%);">
+        <div class="card-header">
+          <span class="card-title">Here's how this works</span>
+          <button class="btn btn-outline btn-sm" onclick="window.dismissFirstApprovalIntro('${escapeHtml(firstApprovalIntroKey)}')" style="padding: 0.15rem 0.5rem; font-size: 0.7rem;">Got it</button>
+        </div>
+        <div class="card-subtitle" style="line-height: 1.65;">
+          Each card below is a call I want to make on your behalf. I'll show you the email or invite that
+          triggered it, what I'd do, and why. <strong>Yes, do it</strong> approves and I'll handle it; <strong>Not this time</strong>
+          tells me to skip — and if you add a reason, I learn so the next one of these comes out right.
+          Every yes nudges your trust level up, so eventually I'll just handle this kind of thing on my own.
+        </div>
+      </div>
+    ` : ''}
 
     <div class="card" style="border-left: 3px solid var(--primary);">
       <div class="card-header">
@@ -96,6 +127,11 @@ function renderPendingList(pending, visibleCount) {
     </div>
   `;
 }
+
+window.dismissFirstApprovalIntro = function(key) {
+  try { localStorage.setItem(key, '1'); } catch { /* noop */ }
+  document.getElementById('first-approval-intro')?.remove();
+};
 
 window.showMoreApprovals = function() {
   visiblePendingCount += PENDING_PAGE_SIZE;

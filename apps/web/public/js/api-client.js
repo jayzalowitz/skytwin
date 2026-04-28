@@ -164,6 +164,13 @@ export function fetchDemoInfo() {
   return fetchJSON(`${API}/demo/info`);
 }
 
+export function previewDemoDecision(situation) {
+  return fetchJSON(`${API}/demo/preview`, {
+    method: 'POST',
+    body: JSON.stringify({ situation }),
+  });
+}
+
 export function askTwin(userId, situation, opts = {}) {
   return fetchJSON(`${API}/v1/twin/ask/${encodeURIComponent(userId)}`, {
     method: 'POST',
