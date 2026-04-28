@@ -28,7 +28,21 @@ const STATE_VERSION = 'v2';
  */
 export const NEW_USER_RATE_LIMIT_MAX = 5;
 export const NEW_USER_RATE_LIMIT_WINDOW_MS = 60 * 1000;
+/**
+ * Bucket cap. Without this the Map grows once per unique attacker IP and
+ * never shrinks — a real source of slow memory growth in long-running
+ * processes. When we hit the cap we sweep expired buckets first, then drop
+ * the oldest insertion-order entry. The constant is loose: we never expect
+ * thousands of legitimate IPs hitting `?newUser=true` per process.
+ */
+export const NEW_USER_RATE_LIMIT_MAX_BUCKETS = 5_000;
 const newUserRateBuckets = new Map<string, { count: number; resetAt: number }>();
+
+function evictExpiredBuckets(now: number): void {
+  for (const [ip, bucket] of newUserRateBuckets) {
+    if (bucket.resetAt <= now) newUserRateBuckets.delete(ip);
+  }
+}
 
 export function checkNewUserRateLimit(
   ip: string,
@@ -36,6 +50,16 @@ export function checkNewUserRateLimit(
 ): { allowed: boolean; resetAt: number } {
   let bucket = newUserRateBuckets.get(ip);
   if (!bucket || bucket.resetAt <= now) {
+    // Pre-emptively evict when at the cap so the Map can't grow without
+    // bound across many distinct IPs (the leak class motivating this).
+    if (newUserRateBuckets.size >= NEW_USER_RATE_LIMIT_MAX_BUCKETS) {
+      evictExpiredBuckets(now);
+      while (newUserRateBuckets.size >= NEW_USER_RATE_LIMIT_MAX_BUCKETS) {
+        const oldest = newUserRateBuckets.keys().next().value;
+        if (oldest === undefined) break;
+        newUserRateBuckets.delete(oldest);
+      }
+    }
     bucket = { count: 0, resetAt: now + NEW_USER_RATE_LIMIT_WINDOW_MS };
     newUserRateBuckets.set(ip, bucket);
   }
@@ -49,6 +73,11 @@ export function checkNewUserRateLimit(
 /** Test helper — clears all rate-limit buckets between cases. */
 export function _resetNewUserRateLimitForTests(): void {
   newUserRateBuckets.clear();
+}
+
+/** Test/observability helper: current bucket count. */
+export function _newUserRateLimitBucketCountForTests(): number {
+  return newUserRateBuckets.size;
 }
 
 /**

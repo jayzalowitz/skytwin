@@ -6,7 +6,7 @@
   "description": "SkyTwin dashboard — Express-served SPA for monitoring decisions, approvals, and twin profiles.",
   "scripts": {
     "build": "tsc",
-    "dev": "tsx watch src/index.ts",
+    "dev": "NODE_OPTIONS='--max-old-space-size=384' tsx watch src/index.ts",
     "start": "node dist/index.js",
     "test": "echo 'No tests yet'",
     "lint": "echo 'No linting yet'"

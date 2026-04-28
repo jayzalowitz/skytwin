@@ -51,6 +51,14 @@ interface RateLimitEntry {
 }
 
 const rateLimitMap = new Map<string, RateLimitEntry>();
+/**
+ * Hard cap on bucket count. The Map otherwise grows once per unique userId
+ * forever — fine for one user, a slow leak in any multi-user deploy. When
+ * the cap is reached we evict expired entries first, then drop the oldest
+ * insertion-order entry. Loose limit; we never expect thousands of
+ * concurrent active users on a single process.
+ */
+const MAX_RATE_LIMIT_BUCKETS = 10_000;
 
 export function checkRateLimit(userId: string, trustTier: TrustTier): { allowed: boolean; remaining: number; resetAt: number } {
   const now = Date.now();
@@ -59,6 +67,16 @@ export function checkRateLimit(userId: string, trustTier: TrustTier): { allowed:
 
   let entry = rateLimitMap.get(userId);
   if (!entry || entry.resetAt <= now) {
+    if (rateLimitMap.size >= MAX_RATE_LIMIT_BUCKETS) {
+      for (const [k, v] of rateLimitMap) {
+        if (v.resetAt <= now) rateLimitMap.delete(k);
+      }
+      while (rateLimitMap.size >= MAX_RATE_LIMIT_BUCKETS) {
+        const oldest = rateLimitMap.keys().next().value;
+        if (oldest === undefined) break;
+        rateLimitMap.delete(oldest);
+      }
+    }
     entry = { count: 0, resetAt: now + oneHourMs };
     rateLimitMap.set(userId, entry);
   }
