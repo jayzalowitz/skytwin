@@ -1,6 +1,9 @@
 import { createHmac } from 'crypto';
 import type { Request, Response, NextFunction } from 'express';
 import { sessionRepository } from '@skytwin/db';
+import { createLogger } from '@skytwin/core';
+
+const log = createLogger('api:auth');
 
 // Extend Express Request to carry authenticated identity
 declare global {
@@ -62,8 +65,8 @@ export async function sessionAuth(
   // Dev-only localhost bypass (must be explicitly enabled or NODE_ENV=development)
   if (DEV_AUTH_BYPASS && isLocalhost(req)) {
     if (!bypassWarned) {
-      console.warn(
-        '[auth] Localhost auth bypass is ACTIVE. Set SKYTWIN_DEV_AUTH_BYPASS=false or NODE_ENV=production to require real auth.',
+      log.warn(
+        'Localhost auth bypass is ACTIVE. Set SKYTWIN_DEV_AUTH_BYPASS=false or NODE_ENV=production to require real auth.',
       );
       bypassWarned = true;
     }

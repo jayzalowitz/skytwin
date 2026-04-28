@@ -28,7 +28,10 @@ import {
 } from '@skytwin/execution-router';
 import type { OpenClawCredentialRequirement } from '@skytwin/execution-router';
 import { credentialRequirementRepository, ironClawToolRepository, serviceCredentialRepository } from '@skytwin/db';
+import { createLogger } from '@skytwin/core';
 import { sseManager } from './sse.js';
+
+const log = createLogger('api:execution');
 
 /**
  * Build the execution router with all available adapters registered.
@@ -54,7 +57,7 @@ export async function createExecutionRouter(): Promise<ExecutionRouter> {
   if (config.useMockIronclaw) {
     const ironclawAdapter: IronClawAdapter = new MockIronClawAdapter();
     registry.register('ironclaw', ironclawAdapter, IRONCLAW_TRUST_PROFILE);
-    console.info('[execution] Registered Mock IronClaw adapter (USE_MOCK_IRONCLAW=true)');
+    log.info('Registered Mock IronClaw adapter (USE_MOCK_IRONCLAW=true)');
   } else if (ironclawConfig.apiUrl && ironclawConfig.webhookSecret) {
     const ironclawAdapter: IronClawAdapter = new RealIronClawAdapter({
       apiUrl: ironclawConfig.apiUrl,
@@ -71,9 +74,9 @@ export async function createExecutionRouter(): Promise<ExecutionRouter> {
     if (isIronClawEnhancedAdapter(ironclawAdapter)) {
       await syncUnsyncedCredentialsToIronClaw(ironclawAdapter);
     }
-    console.info('[execution] Registered IronClaw adapter:', ironclawConfig.apiUrl);
+    log.info('Registered IronClaw adapter', { apiUrl: ironclawConfig.apiUrl });
   } else {
-    console.info('[execution] IronClaw not configured (no URL or secret) — skipping');
+    log.info('IronClaw not configured (no URL or secret) — skipping');
   }
 
   // Direct — local handler dispatch, always available
@@ -89,7 +92,7 @@ export async function createExecutionRouter(): Promise<ExecutionRouter> {
   handlerRegistry.register(new HealthActionHandler());
   const directAdapter = new DirectExecutionAdapter(handlerRegistry);
   registry.register('direct', directAdapter, DIRECT_TRUST_PROFILE);
-  console.info('[execution] Registered Direct adapter (local handlers: email, calendar, finance, task, smart-home, social, document, health)');
+  log.info('Registered Direct adapter (local handlers: email, calendar, finance, task, smart-home, social, document, health)');
 
   // OpenClaw — community execution engine, only if configured
   if (openclawConfig.apiUrl) {
@@ -120,19 +123,19 @@ export async function createExecutionRouter(): Promise<ExecutionRouter> {
           description: req.description,
           skills: req.skills,
         });
-        console.info(`[execution] OpenClaw needs credentials for "${req.integrationLabel}" — registered requirement`);
+        log.info(`OpenClaw needs credentials for "${req.integrationLabel}" — registered requirement`);
       },
     });
     registry.register('openclaw', openclawAdapter, OPENCLAW_TRUST_PROFILE, OPENCLAW_SKILLS);
-    console.info('[execution] Registered OpenClaw adapter:', openclawConfig.apiUrl);
+    log.info('Registered OpenClaw adapter', { apiUrl: openclawConfig.apiUrl });
   } else {
-    console.info('[execution] OpenClaw not configured (no URL) — skipping');
+    log.info('OpenClaw not configured (no URL) — skipping');
   }
 
   // Discover plugin adapters from filesystem (if configured)
   if (config.adapterPluginDir) {
     const discovered = await discoverAdapters(config.adapterPluginDir, registry);
-    console.info(`[execution] Discovered ${discovered.length} plugin adapter(s) from ${config.adapterPluginDir}`);
+    log.info(`Discovered ${discovered.length} plugin adapter(s) from ${config.adapterPluginDir}`);
   }
 
   return new ExecutionRouter(registry);
@@ -207,14 +210,14 @@ export async function syncUnsyncedCredentialsToIronClaw(
       if (result.status === 'fulfilled') {
         synced.push(result.value);
       } else {
-        console.warn('[execution] Failed to sync a credential to IronClaw:', result.reason instanceof Error ? result.reason.message : String(result.reason));
+        log.warn('Failed to sync a credential to IronClaw', { error: result.reason instanceof Error ? result.reason.message : String(result.reason) });
       }
     }
   }
   // Batch markSynced for all successful registrations
   for (const { service, key } of synced) {
     await serviceCredentialRepository.markSynced(service, key).catch((err) => {
-      console.warn('[execution] markSynced failed:', err instanceof Error ? err.message : String(err));
+      log.warn('markSynced failed', { error: err instanceof Error ? err.message : String(err) });
     });
   }
 }
@@ -233,7 +236,7 @@ export async function syncCredentialToIronClaw(
     await serviceCredentialRepository.markSynced(service, credentialKey);
     return true;
   } catch (error) {
-    console.warn(`[execution] Failed to sync credential for ${service} to IronClaw:`, error instanceof Error ? error.message : String(error));
+    log.warn(`Failed to sync credential for ${service} to IronClaw`, { error: error instanceof Error ? error.message : String(error) });
     return false;
   }
 }
@@ -249,7 +252,7 @@ export async function revokeCredentialFromIronClaw(
     await adapter.revokeCredential(ironClawCredentialName(service, credentialKey));
     return true;
   } catch (error) {
-    console.warn(`[execution] Failed to revoke credential for ${service} from IronClaw:`, error instanceof Error ? error.message : String(error));
+    log.warn(`Failed to revoke credential for ${service} from IronClaw`, { error: error instanceof Error ? error.message : String(error) });
     return false;
   }
 }
@@ -273,7 +276,7 @@ export async function refreshIronClawToolCache(
     }
     return await readCachedIronClawSkills() ?? new Set<string>();
   } catch (error) {
-    console.warn('[execution] IronClaw tool discovery failed, using cache if available:', error instanceof Error ? error.message : String(error));
+    log.warn('IronClaw tool discovery failed, using cache if available', { error: error instanceof Error ? error.message : String(error) });
   }
 
   return await readCachedIronClawSkills();

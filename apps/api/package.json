@@ -13,6 +13,7 @@
   "dependencies": {
     "@skytwin/config": "workspace:*",
     "@skytwin/connectors": "workspace:*",
+    "@skytwin/core": "workspace:*",
     "@skytwin/db": "workspace:*",
     "@skytwin/decision-engine": "workspace:*",
     "@skytwin/execution-router": "workspace:*",
