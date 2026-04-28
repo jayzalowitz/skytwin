@@ -21,6 +21,37 @@ const STATE_TTL_MS = 10 * 60 * 1000; // 10 minutes — plenty for the consent sc
 const STATE_VERSION = 'v2';
 
 /**
+ * Rate limit for the public /google/authorize?newUser=true path. Anyone can
+ * hit it (it's the front door for sign-in-with-Google), so without a cap an
+ * attacker could mint authorize URLs in a loop and/or burn the project's
+ * Google OAuth quota. Per-IP, sliding minute window.
+ */
+export const NEW_USER_RATE_LIMIT_MAX = 5;
+export const NEW_USER_RATE_LIMIT_WINDOW_MS = 60 * 1000;
+const newUserRateBuckets = new Map<string, { count: number; resetAt: number }>();
+
+export function checkNewUserRateLimit(
+  ip: string,
+  now: number = Date.now(),
+): { allowed: boolean; resetAt: number } {
+  let bucket = newUserRateBuckets.get(ip);
+  if (!bucket || bucket.resetAt <= now) {
+    bucket = { count: 0, resetAt: now + NEW_USER_RATE_LIMIT_WINDOW_MS };
+    newUserRateBuckets.set(ip, bucket);
+  }
+  if (bucket.count >= NEW_USER_RATE_LIMIT_MAX) {
+    return { allowed: false, resetAt: bucket.resetAt };
+  }
+  bucket.count += 1;
+  return { allowed: true, resetAt: bucket.resetAt };
+}
+
+/** Test helper — clears all rate-limit buckets between cases. */
+export function _resetNewUserRateLimitForTests(): void {
+  newUserRateBuckets.clear();
+}
+
+/**
  * Google's userinfo response. We don't depend on the Google SDK so this is
  * just the fields we read after a successful token exchange.
  */
@@ -214,12 +245,29 @@ export function createOAuthRouter(): Router {
    */
   router.get('/google/authorize', async (req, res, next) => {
     try {
+      const newUser = req.query['newUser'] === 'true';
+
+      // Rate-limit the public new-user variant by IP. The authenticated
+      // path is already gated by sessionAuth so it's implicitly throttled
+      // by login, but anyone can hit ?newUser=true.
+      if (newUser) {
+        const ip = req.ip ?? req.socket.remoteAddress ?? 'unknown';
+        const { allowed, resetAt } = checkNewUserRateLimit(ip, Date.now());
+        if (!allowed) {
+          res.set('Retry-After', String(Math.ceil((resetAt - Date.now()) / 1000)));
+          res.status(429).json({
+            error: 'Too many sign-in attempts. Try again in a minute.',
+            resetAt: new Date(resetAt).toISOString(),
+          });
+          return;
+        }
+      }
+
       const googleConfig = await resolveGoogleConfig();
       const scopes = [...IDENTITY_SCOPES, ...GMAIL_SCOPES, ...CALENDAR_SCOPES];
 
       const queryUserId =
         typeof req.query['userId'] === 'string' ? req.query['userId'] : undefined;
-      const newUser = req.query['newUser'] === 'true';
       const newAccount = req.query['newAccount'] === 'true';
       const desktop = req.query['desktop'] === 'true';
 
@@ -304,6 +352,14 @@ export function createOAuthRouter(): Router {
       }
 
       // Resolve target userId.
+      //
+      // Auto-created users start at 'observer' (read-only). The interactive
+      // POST /api/users path uses 'suggest' — there a real human is filling
+      // out a form — but a passive sign-in-with-Google grant shouldn't
+      // unlock action suggestions on day one. The user earns 'suggest' via
+      // approval feedback through the trust-tier audit pipeline.
+      const NEW_USER_TIER = 'observer';
+
       let userId = parsed.userId;
       if (!userId) {
         // Auto-create or attach to a user keyed on the verified Google email.
@@ -314,8 +370,7 @@ export function createOAuthRouter(): Router {
           const created = await userRepository.create({
             email: accountEmail,
             name: userInfo.name ?? accountEmail,
-            // New users start at 'suggest'. Trust must be earned via feedback.
-            trustTier: 'suggest',
+            trustTier: NEW_USER_TIER,
           });
           userId = created.id;
         }
@@ -331,7 +386,7 @@ export function createOAuthRouter(): Router {
             const created = await userRepository.create({
               email: accountEmail,
               name: userInfo.name ?? accountEmail,
-              trustTier: 'suggest',
+              trustTier: NEW_USER_TIER,
             });
             userId = created.id;
           }

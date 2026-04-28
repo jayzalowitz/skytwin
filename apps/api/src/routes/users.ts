@@ -26,22 +26,49 @@ export function createUsersRouter(): Router {
   /**
    * GET /api/users
    *
-   * List all users. Used by the dashboard's user-switcher in dev. Gated by
-   * the same sessionAuth as the per-user routes — when SKYTWIN_DEV_AUTH_BYPASS
-   * is on (localhost dev) it returns the full set; otherwise the caller must
-   * be authenticated.
+   * Returns the list of users *visible to the caller*:
+   *   - With dev auth bypass active (localhost, NODE_ENV=development):
+   *     the full set, so the dashboard's user-switcher works.
+   *   - With a real authenticated session: only the caller's own user row.
+   *     We intentionally don't 403 — the user-switcher renders a single-row
+   *     dropdown which is correct in production.
+   *
+   * Without this scoping any authenticated user could enumerate every other
+   * user's id+email — a privacy bug found pre-launch.
    */
-  router.get('/', sessionAuth, async (_req, res, next) => {
+  router.get('/', sessionAuth, async (req, res, next) => {
     try {
-      const users = await userRepository.findAll();
+      const requesterId = req.authenticatedUserId;
+
+      // Dev auth bypass: req.authenticatedUserId is undefined and the
+      // sessionAuth middleware has already let us through (its only path
+      // that doesn't set the field). Return everything.
+      if (!requesterId) {
+        const users = await userRepository.findAll();
+        res.json({
+          users: users.map((u) => ({
+            id: u.id,
+            email: u.email,
+            name: u.name,
+            trustTier: u.trust_tier,
+            createdAt: u.created_at,
+          })),
+        });
+        return;
+      }
+
+      // Authenticated path: return only the caller.
+      const me = await userRepository.findById(requesterId);
       res.json({
-        users: users.map((u) => ({
-          id: u.id,
-          email: u.email,
-          name: u.name,
-          trustTier: u.trust_tier,
-          createdAt: u.created_at,
-        })),
+        users: me
+          ? [{
+              id: me.id,
+              email: me.email,
+              name: me.name,
+              trustTier: me.trust_tier,
+              createdAt: me.created_at,
+            }]
+          : [],
       });
     } catch (error) {
       next(error);
