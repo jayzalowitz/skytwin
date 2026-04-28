@@ -297,7 +297,7 @@ async function discoverUsers(): Promise<UserConnectors[]> {
         if (googleConfig) {
           const tokenStore = new DbTokenStore(oauthRepository, googleConfig);
           connectors.push(new GmailConnector(userId, tokenStore, gmailCursorStore));
-          connectors.push(new GoogleCalendarConnector(userId, tokenStore));
+          connectors.push(new GoogleCalendarConnector(userId, tokenStore, gmailCursorStore));
         }
       }
 
