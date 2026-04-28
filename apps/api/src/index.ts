@@ -1,5 +1,6 @@
 import express, { type Application } from 'express';
 import { loadConfig, validate } from '@skytwin/config';
+import { assertSessionSecret } from './startup-assertions.js';
 import { createEventsRouter } from './routes/events.js';
 import { createTwinRouter } from './routes/twin.js';
 import { createDecisionsRouter } from './routes/decisions.js';
@@ -26,6 +27,22 @@ import { startMdnsAdvertisement, stopMdnsAdvertisement } from './mdns.js';
 import { closePool } from '@skytwin/db';
 
 const config = loadConfig();
+
+// SESSION_SECRET is the HMAC key for bearer-token hashing AND for OAuth
+// state signatures (see apps/api/src/routes/oauth.ts). Both fall back to
+// the literal `'skytwin-dev-secret'` if unset, which is fine in dev but
+// a security hole anywhere else — the default is in the open-source code.
+// See startup-assertions.ts for the policy and unit tests.
+{
+  const result = assertSessionSecret({
+    nodeEnv: config.nodeEnv,
+    sessionSecret: process.env['SESSION_SECRET'],
+  });
+  if (!result.ok && result.fatal) {
+    console.error(`[api] Fatal: ${result.message}`);
+    process.exit(1);
+  }
+}
 
 // Validate config on startup
 const configErrors = validate(config);
