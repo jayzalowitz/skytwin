@@ -221,6 +221,10 @@ export interface OAuthTokenRow {
   id: string;
   user_id: string;
   provider: string;
+  /** Email reported by the provider's userinfo (e.g. work@example.com). */
+  account_email: string;
+  /** Provider's stable account id (Google `sub`); null for legacy rows. */
+  account_provider_id: string | null;
   access_token: string;
   refresh_token: string;
   expires_at: Date;
