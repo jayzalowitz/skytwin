@@ -15,10 +15,14 @@ export async function renderTwin(container, userId) {
 
   if (!profile) {
     container.innerHTML = `
-      <div class="empty-state">
-        <div class="empty-state-title">Your twin hasn't learned anything yet</div>
-        <div class="empty-state-desc">
-          Once events start flowing in from your email and calendar, your twin will begin building a profile of your preferences here.
+      <div class="card" style="border-left: 3px solid var(--primary);">
+        <div class="card-header">
+          <span class="card-title">Still getting to know you</span>
+        </div>
+        <div class="card-subtitle">
+          As your email and calendar flow through, I'll start building a portrait of how you like things done —
+          which newsletters you read, which meetings you protect, which subscriptions you actually use.
+          Everything I learn shows up here, and you can correct anything I get wrong.
         </div>
       </div>
     `;
@@ -44,14 +48,14 @@ export async function renderTwin(container, userId) {
   }
 
   container.innerHTML = `
-    <div class="card">
+    <div class="card" style="border-left: 3px solid var(--primary);">
       <div class="card-header">
-        <span class="card-title">What I've learned about you</span>
-        <span class="badge badge-info">${preferences.length + inferences.length} ${preferences.length + inferences.length === 1 ? 'thing' : 'things'}</span>
+        <span class="card-title">A portrait of how you do things</span>
+        <span class="badge badge-info">${preferences.length + inferences.length} ${preferences.length + inferences.length === 1 ? 'thing' : 'things'} known</span>
       </div>
       <div class="card-subtitle">
-        Here's everything I think I know about how you like things done.
-        Click "Edit" to tweak something, or "That's not right" to correct or remove it.
+        Everything I've picked up about how you like things handled. Hit "Edit" to refine an entry,
+        or "That's not right" to correct or remove it — corrections are the fastest way I get smarter.
       </div>
     </div>
 
@@ -90,8 +94,14 @@ export async function renderTwin(container, userId) {
       <div class="card-header">
         <span class="card-title">Tell me something about yourself</span>
       </div>
-      <div class="card-subtitle" style="margin-bottom: 1rem;">Want me to know something right away instead of waiting for me to figure it out? Tell me here.</div>
+      <div class="card-subtitle" style="margin-bottom: 1rem;">
+        Skip the wait — if you already know how you like something handled, just tell me directly.
+      </div>
       <form id="add-pref-form" onsubmit="return handleAddPreference(event, '${userId}')">
+        <div class="form-group">
+          <label>In plain words, what should I know?</label>
+          <input class="form-input" name="value" placeholder="e.g. Always archive newsletters from Substack — I never read them" required>
+        </div>
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-bottom: 0.5rem;">
           <div class="form-group">
             <label>What area is this about?</label>
@@ -105,15 +115,11 @@ export async function renderTwin(container, userId) {
             </select>
           </div>
           <div class="form-group">
-            <label>What's the rule?</label>
+            <label>Short tag (so I can find it again)</label>
             <input class="form-input" name="key" placeholder="e.g. archive_newsletters" required>
           </div>
         </div>
-        <div class="form-group">
-          <label>How should I handle it?</label>
-          <input class="form-input" name="value" placeholder="e.g. Always archive newsletters from marketing" required>
-        </div>
-        <button type="submit" class="btn btn-primary">Teach me this</button>
+        <button type="submit" class="btn btn-primary">Save this preference</button>
       </form>
     </div>
   `;

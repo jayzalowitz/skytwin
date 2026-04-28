@@ -159,7 +159,14 @@ export async function renderDashboard(container, userId) {
             <span class="badge badge-info">${escapeHtml(d.domain)}</span>
           </div>
         `).join('')
-        : '<div class="empty-state"><div class="empty-state-title">No activity yet</div><div class="empty-state-desc">Once your twin starts processing events, you\'ll see them here.</div></div>'
+        : `<div class="empty-state">
+            <div class="empty-state-title">${googleConnected ? 'Watching for the first signal' : 'Nothing to act on yet'}</div>
+            <div class="empty-state-desc">
+              ${googleConnected
+                ? 'I\'m connected and listening. As soon as a signal lands — a new email, an invite, a renewal — you\'ll see what I made of it right here.'
+                : 'Once your accounts are connected and a signal comes in, I\'ll show you what I did and why, here.'}
+            </div>
+          </div>`
       }
     </div>
   `;

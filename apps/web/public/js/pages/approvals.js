@@ -32,12 +32,16 @@ export async function renderApprovals(container, userId) {
   container.innerHTML = `
     ${prog ? renderTrustProgress({ approvalCount: prog.approvalCount, currentTier: prog.currentTier }) : ''}
 
-    <div class="card">
+    <div class="card" style="border-left: 3px solid var(--primary);">
       <div class="card-header">
-        <span class="card-title">Pending approvals</span>
-        <span class="badge ${pending.length > 0 ? 'badge-warning' : 'badge-success'}">${pending.length} pending</span>
+        <span class="card-title">${pending.length > 0 ? 'I want to handle these — OK?' : 'Needs your OK'}</span>
+        <span class="badge ${pending.length > 0 ? 'badge-warning' : 'badge-success'}">${pending.length} waiting</span>
       </div>
-      <div class="card-subtitle">Your twin wants to take these actions and needs your OK.</div>
+      <div class="card-subtitle">
+        ${pending.length > 0
+          ? 'Your call. I\'ll explain the why on each one — say yes if it sounds right, or tell me why not so I learn for next time.'
+          : 'Nothing\'s waiting on you right now.'}
+      </div>
     </div>
 
     <div id="pending-list">
@@ -68,8 +72,11 @@ function renderPendingList(pending, visibleCount) {
   if (pending.length === 0) {
     return `
       <div class="empty-state">
-        <div class="empty-state-title">All clear</div>
-        <div class="empty-state-desc">Your twin doesn't need any approvals right now. It's either handling things automatically or waiting for new events.</div>
+        <div class="empty-state-title">You're all caught up</div>
+        <div class="empty-state-desc">
+          Either I'm handling things on my own (within the rules you set), or nothing new has come in yet.
+          As I get more confident in an area, this list gets shorter — that's the goal.
+        </div>
       </div>
     `;
   }
@@ -165,9 +172,9 @@ function renderStandardCard(a, action) {
       <span>${action.confidence ? `Confidence: ${action.confidence}` : ''}</span>
     </div>
     <div class="approval-actions">
-      <button class="btn btn-success btn-sm" onclick="handleApproval('${a.id}', 'approve', '${a.userId || ''}')">Yes, go ahead</button>
-      <button class="btn btn-danger btn-sm" onclick="handleApproval('${a.id}', 'reject', '${a.userId || ''}')">No, don't do this</button>
-      <input class="form-input" id="reason-${a.id}" placeholder="Want to tell me why? (optional)" style="flex: 1; font-size: 0.8rem;">
+      <button class="btn btn-success btn-sm" onclick="handleApproval('${a.id}', 'approve', '${a.userId || ''}')">Yes, do it</button>
+      <button class="btn btn-outline btn-sm" onclick="handleApproval('${a.id}', 'reject', '${a.userId || ''}')">Not this time</button>
+      <input class="form-input" id="reason-${a.id}" placeholder="Tell me why so I learn (optional)" style="flex: 1; font-size: 0.8rem;">
     </div>
   `;
 }
@@ -516,12 +523,20 @@ function explainReason(action, reason) {
     archive_email: 'I noticed you usually archive emails like this. Want me to handle it?',
     label_email: 'Based on the content, I think this should be categorized.',
     send_reply: 'This looks like it needs a response. I drafted a quick acknowledgment.',
+    delete_email: 'You\'ve trashed messages like this before — looks like spam to me.',
     accept_invite: 'This meeting fits your schedule. Should I accept?',
-    decline_invite: 'This conflicts with your existing plans or you\'ve declined similar ones before.',
-    renew_subscription: 'This subscription is coming up for renewal. Should I go ahead?',
+    decline_invite: 'This conflicts with your existing plans, or you\'ve declined similar ones before.',
+    propose_alternative: 'This invite clashes with something. I can suggest a time that actually works.',
+    renew_subscription: 'This subscription is coming up for renewal. Should I let it go through?',
+    cancel_subscription: 'You haven\'t used this lately — worth letting it lapse?',
+    snooze_reminder: 'Looks like something to come back to later, not right now.',
+    place_order: 'Matches your usual reorder pattern. Want me to place it?',
+    add_to_list: 'Looks like something to add to your list rather than buy now.',
+    book_travel: 'Found a match for your usual preferences. Worth your call before booking.',
+    save_option: 'Worth setting aside for you to look at when you have time.',
   };
 
-  return explanations[action?.actionType] || 'This requires your approval before I can proceed.';
+  return explanations[action?.actionType] || 'I think this is the right call here, but I want your OK before I act.';
 }
 
 function urgencyBadge(urgency) {

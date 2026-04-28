@@ -7,47 +7,60 @@ export async function renderDecisions(container, userId) {
 
   container.innerHTML = `
     <div class="decisions-page">
-      <h2>Decision History</h2>
-      <p class="subtitle">Every decision your twin has made, with the reasoning behind it.</p>
-
-      <div class="decision-filters card" style="margin-bottom: 1rem; padding: 1rem;">
-        <div style="display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: end;">
-          <div>
-            <label style="font-size: 0.75rem; display: block;">Domain</label>
-            <select id="filter-domain">
-              <option value="">All domains</option>
-              <option value="email">Email</option>
-              <option value="calendar">Calendar</option>
-              <option value="subscriptions">Subscriptions</option>
-              <option value="shopping">Shopping</option>
-              <option value="travel">Travel</option>
-              <option value="communication">Communication</option>
-              <option value="finance">Finance</option>
-              <option value="health">Health</option>
-              <option value="home">Home</option>
-              <option value="food">Food</option>
-            </select>
-          </div>
-          <div>
-            <label style="font-size: 0.75rem; display: block;">From</label>
-            <input type="date" id="filter-from">
-          </div>
-          <div>
-            <label style="font-size: 0.75rem; display: block;">To</label>
-            <input type="date" id="filter-to">
-          </div>
-          <div>
-            <label style="font-size: 0.75rem; display: block;">Search</label>
-            <input type="text" id="filter-search" placeholder="Search decisions..." style="width: 160px;">
-          </div>
-          <button id="filter-apply" class="btn btn-sm">Filter</button>
-          <button id="filter-clear" class="btn btn-sm btn-ghost">Clear</button>
+      <div class="card" style="border-left: 3px solid var(--primary);">
+        <div class="card-header">
+          <span class="card-title">What I've been doing for you</span>
         </div>
-        <div id="filter-count" style="font-size: 0.75rem; margin-top: 0.5rem; color: var(--text-muted);"></div>
+        <div class="card-subtitle">
+          A running log of every call your twin has made on your behalf — what it saw, what it
+          decided, and why. Click any row to read the full reasoning.
+        </div>
       </div>
 
+      <details class="card collapsible-card" style="margin-bottom: 1rem;">
+        <summary class="card-header collapsible-header">
+          <span class="card-title" style="font-size: 0.9rem;">Filter or search</span>
+          <span class="collapse-icon"></span>
+        </summary>
+        <div class="collapsible-body">
+          <div style="display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: end;">
+            <div>
+              <label style="font-size: 0.75rem; display: block;">Area</label>
+              <select id="filter-domain">
+                <option value="">All</option>
+                <option value="email">Email</option>
+                <option value="calendar">Calendar</option>
+                <option value="subscriptions">Subscriptions</option>
+                <option value="shopping">Shopping</option>
+                <option value="travel">Travel</option>
+                <option value="communication">Communication</option>
+                <option value="finance">Finance</option>
+                <option value="health">Health</option>
+                <option value="home">Home</option>
+                <option value="food">Food</option>
+              </select>
+            </div>
+            <div>
+              <label style="font-size: 0.75rem; display: block;">From</label>
+              <input type="date" id="filter-from">
+            </div>
+            <div>
+              <label style="font-size: 0.75rem; display: block;">To</label>
+              <input type="date" id="filter-to">
+            </div>
+            <div>
+              <label style="font-size: 0.75rem; display: block;">Search</label>
+              <input type="text" id="filter-search" placeholder="Search…" style="width: 160px;">
+            </div>
+            <button id="filter-apply" class="btn btn-sm">Apply</button>
+            <button id="filter-clear" class="btn btn-sm btn-ghost">Clear</button>
+          </div>
+          <div id="filter-count" style="font-size: 0.75rem; margin-top: 0.5rem; color: var(--text-muted);"></div>
+        </div>
+      </details>
+
       <div id="decisions-list">
-        <div class="loading">Loading decisions...</div>
+        <div class="loading">Loading…</div>
       </div>
     </div>
   `;
@@ -75,12 +88,45 @@ export async function renderDecisions(container, userId) {
         `${result.total} decision${result.total !== 1 ? 's' : ''} found`;
 
       if (decisions.length === 0) {
-        listEl.innerHTML = `
-          <div class="empty-state">
-            <div class="empty-state-title">No decisions found</div>
-            <div class="empty-state-desc">Try adjusting your filters or wait for new signals.</div>
-          </div>
-        `;
+        const hasFilters = !!(domain || from || to || search);
+        listEl.innerHTML = hasFilters
+          ? `
+            <div class="empty-state">
+              <div class="empty-state-title">Nothing matches those filters</div>
+              <div class="empty-state-desc">Try widening the date range or clearing the search.</div>
+            </div>
+          `
+          : `
+            <div class="card">
+              <div class="card-header">
+                <span class="card-title">Nothing yet — but here's what I'll handle</span>
+              </div>
+              <div class="card-subtitle" style="margin-bottom: 1rem;">
+                Once your accounts are connected and a signal comes in, every call I make will land here. A few of the kinds of things I'll be deciding on:
+              </div>
+              <div class="insight-card">
+                <div class="insight-icon" style="background: var(--accent-soft); color: var(--accent);">E</div>
+                <div class="insight-content">
+                  <div class="insight-title">Newsletter you usually archive</div>
+                  <div class="insight-desc">"You've archived the last 11 of these without reading. Want me to start handling them?"</div>
+                </div>
+              </div>
+              <div class="insight-card">
+                <div class="insight-icon" style="background: var(--accent-soft); color: var(--accent);">C</div>
+                <div class="insight-content">
+                  <div class="insight-title">Calendar conflict</div>
+                  <div class="insight-desc">"This new invite overlaps with your skip-level — based on your past behavior I'd suggest declining and asking for a reschedule."</div>
+                </div>
+              </div>
+              <div class="insight-card">
+                <div class="insight-icon" style="background: var(--accent-soft); color: var(--accent);">$</div>
+                <div class="insight-content">
+                  <div class="insight-title">Subscription renewal</div>
+                  <div class="insight-desc">"Streaming service, $15.99/mo. You used it 3× this month — within your auto-renew rules, so I'll let it through."</div>
+                </div>
+              </div>
+            </div>
+          `;
         return;
       }
 

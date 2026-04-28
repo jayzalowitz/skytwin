@@ -165,7 +165,7 @@ const STEPS = [
           // Most likely: Google client_id/secret not configured yet.
           showError(
             err.message?.includes('credentials')
-              ? 'Google credentials are not configured yet. Continue with an email below for now and connect Google later in Settings.'
+              ? 'I need a Google API key before Sign in works — it\'s a 5-minute one-time setup. Continue with email below to get into the app, then I\'ll walk you through linking Google on the home page.'
               : (err.message || 'Could not start Google sign-in. Try the email option below, or try again.'),
           );
         }
