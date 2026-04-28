@@ -681,6 +681,22 @@ window.handleApproval = async function(requestId, action, userId) {
 
     const toastMsg = action === 'approve' ? 'Got it — I\'ll handle this for you.' : 'Noted — I won\'t do that.';
     showToast(toastMsg);
+
+    // Visibly tick up the trust progress bar right after an approval, so
+    // the user feels the trust building rather than having to look up.
+    // Re-fetch the trust progress and swap the existing bar in-place.
+    if (action === 'approve') {
+      try {
+        const fresh = await fetchTrustProgress(userId);
+        const existing = document.querySelector('.trust-progress');
+        if (existing && fresh) {
+          const tmp = document.createElement('div');
+          tmp.innerHTML = renderTrustProgress({ approvalCount: fresh.approvalCount, currentTier: fresh.currentTier });
+          const next = tmp.firstElementChild;
+          if (next) existing.replaceWith(next);
+        }
+      } catch { /* non-critical */ }
+    }
   } catch (err) {
     const el = document.getElementById(`approval-${requestId}`);
     if (el) {

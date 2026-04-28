@@ -121,8 +121,14 @@ function renderUserBadge() {
   });
 }
 
+// Default tab title — captured once so we can restore it after the
+// pending-count prefix gets prepended/cleared.
+const DEFAULT_DOC_TITLE = document.title;
+
 /**
- * Update the approval count badge in the sidebar.
+ * Update the approval count badge in the sidebar — and the browser tab
+ * title, so a user with the tab in the background sees there's something
+ * waiting on them without having to switch.
  */
 async function updateApprovalBadge() {
   if (!currentUserId) return;
@@ -138,6 +144,14 @@ async function updateApprovalBadge() {
     if (mobileBadge) {
       mobileBadge.textContent = String(count);
       mobileBadge.style.display = count > 0 ? 'inline-block' : 'none';
+    }
+    // Tab title acts like the second sidebar — when the user has SkyTwin
+    // open in a background tab and an approval lands, the count bubble
+    // catches the eye even without focus.
+    if (count > 0) {
+      document.title = `(${count}) ${DEFAULT_DOC_TITLE.replace(/^\(\d+\)\s*/, '')}`;
+    } else {
+      document.title = DEFAULT_DOC_TITLE.replace(/^\(\d+\)\s*/, '');
     }
   } catch {
     // Silently fail — badge just won't update
@@ -364,3 +378,49 @@ function scheduleLiveRefresh(routesToWatch) {
 
 window.addEventListener('sse:decision:executed', () => scheduleLiveRefresh(['/', '/decisions']));
 window.addEventListener('sse:decision:step', () => scheduleLiveRefresh(['/']));
+
+// Browser notifications: when an approval lands while the user is in a
+// different tab or app, fire an OS-level notification. Click → focus the
+// dashboard tab and route to Approvals. Permission is asked the first
+// time the user already has a pending approval (i.e. they've seen one
+// approval card so they understand what they're being asked about) —
+// never on bare page load.
+function _twinNotificationsAllowed() {
+  if (!('Notification' in window)) return false;
+  return Notification.permission === 'granted';
+}
+
+async function _maybeAskForNotificationPermission() {
+  if (!('Notification' in window)) return;
+  if (Notification.permission !== 'default') return;
+  // Don't ask before there's reason to — wait until the user has at
+  // least one pending approval visible. That way the prompt arrives
+  // right when notifications would actually be useful.
+  try {
+    const data = await fetchPendingApprovals(currentUserId);
+    const count = data.approvals?.length ?? 0;
+    if (count === 0) return;
+    if (localStorage.getItem('skytwin_notif_asked') === '1') return;
+    localStorage.setItem('skytwin_notif_asked', '1');
+    Notification.requestPermission().catch(() => { /* user dismissed */ });
+  } catch { /* noop */ }
+}
+
+window.addEventListener('sse:approval:new', (e) => {
+  _maybeAskForNotificationPermission();
+  if (!_twinNotificationsAllowed()) return;
+  if (document.visibilityState === 'visible' && document.hasFocus()) return;
+  const detail = e.detail || {};
+  try {
+    const n = new Notification('Your twin wants your OK', {
+      body: detail.reason || detail.description || 'A decision is waiting on the dashboard.',
+      tag: 'skytwin-approval',
+      icon: '/favicon.ico',
+    });
+    n.onclick = () => {
+      window.focus();
+      window.location.hash = '#/approvals';
+      n.close();
+    };
+  } catch { /* notification creation can throw on some browsers */ }
+});
