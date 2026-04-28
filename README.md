@@ -141,6 +141,11 @@ That's it. The installer detects your OS, installs anything missing (Homebrew on
 
 To stop later: `cd ~/skytwin && ./bin/skytwin-dev --stop`.
 
+**The first 60 seconds:**
+1. The dashboard opens. Type any situation into "Ask your twin" — the agent reasons out loud and explains what it would do, with confidence and alternatives. No accounts connected yet, no signals required.
+2. Click **"Or explore with a sample profile first →"** to skip the OAuth setup entirely and poke at a fully populated example twin (decisions, learnings, approvals, the whole thing).
+3. When you're ready to wire up your own, the in-app walkthrough handles the Google API setup in about 5 minutes — paste your client ID, click "Save and connect now," and you're at Google's sign-in.
+
 ### Manual setup
 
 If you'd rather drive each step yourself:

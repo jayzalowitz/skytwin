@@ -183,15 +183,17 @@ export async function renderSettings(container, userId) {
 
     <div class="card">
       <div class="card-header">
-        <span class="card-title">Privacy & data</span>
+        <span class="card-title">Your data, your machine</span>
       </div>
       <div class="card-subtitle" style="margin-bottom: 1rem;">
-        Your twin's data stays in your database. You own all of it.
+        Everything your twin learns lives on this computer. Nothing is sent to a SkyTwin cloud, because there isn't one.
       </div>
       <div style="font-size: 0.85rem; color: var(--text-muted); line-height: 1.8;">
-        <strong>What's stored:</strong> Your preferences, behavioral patterns, decision history, and feedback.<br>
-        <strong>What's not stored:</strong> Raw email content, calendar details, or passwords.<br>
-        <strong>OAuth tokens:</strong> ${googleConnected ? 'Stored securely. Disconnect above to revoke access.' : 'No tokens stored.'}<br>
+        <strong>I keep:</strong> the preferences I learn, patterns I notice, and a log of every decision I made (with the reasoning).<br>
+        <strong>I don't keep:</strong> the actual contents of your emails, your calendar event details, or any of your passwords.<br>
+        <strong>Account access:</strong> ${googleConnected
+          ? 'I have a sign-in token from Google so I can read inbox and calendar. Disconnect above and that token is destroyed.'
+          : 'No accounts linked yet — I can\'t see anything until you connect one.'}<br>
       </div>
     </div>
 
@@ -413,7 +415,7 @@ window.handleConnectGoogle = async function(userId) {
     } else {
       document.getElementById('page-content').insertAdjacentHTML(
         'afterbegin',
-        '<div class="error-banner">Google OAuth is not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET environment variables.</div>',
+        '<div class="error-banner">Google access isn\'t set up on this server yet. Head to <a href="#/setup">Connect</a> for the 5-minute walkthrough.</div>',
       );
     }
   } catch (err) {
