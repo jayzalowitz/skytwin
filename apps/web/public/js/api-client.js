@@ -164,6 +164,13 @@ export function fetchDemoInfo() {
   return fetchJSON(`${API}/demo/info`);
 }
 
+export function askTwin(userId, situation, opts = {}) {
+  return fetchJSON(`${API}/v1/twin/ask/${encodeURIComponent(userId)}`, {
+    method: 'POST',
+    body: JSON.stringify({ situation, ...opts }),
+  });
+}
+
 export function getGoogleAuthUrl(userId) {
   return fetchJSON(`${API}/oauth/google/authorize?userId=${encodeURIComponent(userId)}`);
 }

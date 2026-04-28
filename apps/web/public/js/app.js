@@ -308,3 +308,27 @@ window.addEventListener('sse:credential:needed', () => {
     route.render(container, currentUserId).catch(() => {});
   }
 });
+
+// Make the dashboard feel alive: when a decision lands or a step runs,
+// re-render so the activity log + stats update without the user touching
+// reload. We debounce rapid bursts so we don't thrash the dashboard
+// during a busy first-scan window.
+let _liveRefreshTimer = null;
+function scheduleLiveRefresh(routesToWatch) {
+  const hashRaw = window.location.hash.slice(1) || '/';
+  const hash = hashRaw.split('?')[0] || '/';
+  if (!routesToWatch.includes(hash)) return;
+  if (_liveRefreshTimer) return;
+  _liveRefreshTimer = setTimeout(() => {
+    _liveRefreshTimer = null;
+    const currentHashRaw = window.location.hash.slice(1) || '/';
+    const currentHash = currentHashRaw.split('?')[0] || '/';
+    if (!routesToWatch.includes(currentHash)) return;
+    const route = routes[currentHash] || routes['/'];
+    const container = document.getElementById('page-content');
+    route.render(container, currentUserId).catch(() => { /* next event will retry */ });
+  }, 600);
+}
+
+window.addEventListener('sse:decision:executed', () => scheduleLiveRefresh(['/', '/decisions']));
+window.addEventListener('sse:decision:step', () => scheduleLiveRefresh(['/']));

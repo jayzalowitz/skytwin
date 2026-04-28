@@ -1,4 +1,4 @@
-import { fetchHealth, fetchDecisions, fetchAccuracy, fetchConfidence, fetchLearning, fetchPendingApprovals, fetchSkillGaps, fetchTrustProgress, fetchLearned, fetchUnmetCredentials, fetchOAuthStatus, fetchCredentialsStatus, escapeHtml } from '../api-client.js';
+import { fetchHealth, fetchDecisions, fetchAccuracy, fetchConfidence, fetchLearning, fetchPendingApprovals, fetchSkillGaps, fetchTrustProgress, fetchLearned, fetchUnmetCredentials, fetchOAuthStatus, fetchCredentialsStatus, askTwin, escapeHtml } from '../api-client.js';
 import { renderTrustProgress } from '../components/progress-bar.js';
 
 export async function renderDashboard(container, userId) {
@@ -55,6 +55,7 @@ export async function renderDashboard(container, userId) {
     ${tourMode ? renderTourBanner() : ''}
     ${renderJustConnectedCelebration({ justConnectedProvider, justConnectedAccount, recentDecisionsCount: recentDecisions.length, learnedCount: learn?.totalPreferences ?? 0 })}
     ${tourMode ? '' : renderConnectGoogleHero({ googleConnected, googleSystemConfigured, userId })}
+    ${renderAskTwinWidget({ userId, tourMode })}
     ${pending > 0 ? `<div class="card" style="border-left: 3px solid var(--warning); cursor: pointer;" onclick="location.hash='#/approvals'">
       <span style="font-weight: 600;">You have ${pending} pending approval${pending > 1 ? 's' : ''}</span>
       <span style="color: var(--text-muted); font-size: 0.85rem;"> — your twin wants to do something and needs your OK.</span>
@@ -174,6 +175,27 @@ export async function renderDashboard(container, userId) {
     </div>
   `;
 
+  // First-decision celebration: a one-time "look — your twin just acted!"
+  // moment, fired the first time decisions transition from 0 to >0 for this
+  // browser. Skipped in tour mode (Alex already has plenty of decisions
+  // from the seed). Skipped if the user has dismissed via localStorage.
+  try {
+    const seenKey = `skytwin_first_decision_seen_${userId}`;
+    if (
+      !tourMode
+      && recentDecisions.length > 0
+      && !localStorage.getItem(seenKey)
+      && typeof window !== 'undefined'
+    ) {
+      localStorage.setItem(seenKey, '1');
+      // Lazy-import the toast helper from sse-client so we don't pull it
+      // into the dashboard's hot path on every render.
+      import('../sse-client.js').then(({ showToast }) => {
+        showToast('Your twin just made its first call', 'Scroll down to see what it noticed and why.', 'success');
+      }).catch(() => { /* noop */ });
+    }
+  } catch { /* localStorage unavailable */ }
+
   // While we're in the post-OAuth first-scan window, gently auto-refresh
   // so the user sees their first decisions land without hitting reload.
   // We stop as soon as decisions show up (the celebration card flips state)
@@ -236,6 +258,127 @@ function traitIcon(name) {
     delegation_averse: '*',
   };
   return icons[name] || '?';
+}
+
+function renderAskTwinWidget({ userId, tourMode }) {
+  // Different example prompts based on tour mode (Alex Thompson) vs real user.
+  // Tour mode has rich seeded preferences so the example questions land.
+  const examples = tourMode
+    ? [
+        'I just got an email from a recruiter at a company I\'ve never heard of. What would you do?',
+        'My streaming subscription is up for renewal at $15/month — used it 3 times this month.',
+        'A friend invited me to dinner Friday at 7pm. What would you do?',
+      ]
+    : [
+        'A recruiter just emailed me about a job. What would you do?',
+        'My streaming service is up for renewal — should we let it through?',
+        'A meeting invite just landed for tomorrow at 3pm. What would you do?',
+      ];
+
+  return `
+    <div class="card" style="border-left: 3px solid var(--primary);">
+      <div class="card-header">
+        <span class="card-title">Ask your twin</span>
+        <span class="badge badge-info" style="font-size: 0.7rem;">no signals required</span>
+      </div>
+      <div class="card-subtitle" style="margin-bottom: 0.75rem;">
+        Curious how I'd handle something? Describe a situation in plain words and I'll tell you what I'd do, why,
+        and how confident I am — without actually doing anything.
+      </div>
+      <div style="display: flex; gap: 0.5rem; align-items: stretch; margin-bottom: 0.5rem;">
+        <input
+          class="form-input"
+          id="ask-twin-input"
+          placeholder="e.g. What would you do if my mom emails asking me to call her tonight?"
+          style="flex: 1;"
+          onkeydown="if(event.key==='Enter') window.handleAskTwin('${escapeHtml(userId)}')"
+        >
+        <button class="btn btn-primary" onclick="window.handleAskTwin('${escapeHtml(userId)}')" id="ask-twin-btn">
+          Ask
+        </button>
+      </div>
+      <div style="display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.5rem;" id="ask-twin-examples" data-user-id="${escapeHtml(userId)}">
+        ${examples.map(ex => `
+          <button
+            class="btn btn-outline btn-sm ask-twin-example"
+            style="font-size: 0.78rem; line-height: 1.3; text-align: left;"
+            data-prompt="${escapeHtml(ex)}"
+          >${escapeHtml(ex.length > 60 ? ex.slice(0, 57) + '…' : ex)}</button>
+        `).join('')}
+      </div>
+      <div id="ask-twin-result" style="margin-top: 0.5rem;"></div>
+    </div>
+  `;
+}
+
+if (typeof window !== 'undefined') {
+  // Wire example chips once per render; delegated so re-render rebinds.
+  document.addEventListener('click', (ev) => {
+    const btn = ev.target?.closest?.('.ask-twin-example');
+    if (!btn) return;
+    const wrap = btn.closest('#ask-twin-examples');
+    const uid = wrap?.getAttribute('data-user-id');
+    const prompt = btn.getAttribute('data-prompt');
+    const input = document.getElementById('ask-twin-input');
+    if (!input || !uid || !prompt) return;
+    input.value = prompt;
+    window.handleAskTwin?.(uid);
+  });
+}
+
+if (typeof window !== 'undefined') {
+  window.handleAskTwin = async function(userId) {
+    const input = document.getElementById('ask-twin-input');
+    const btn = document.getElementById('ask-twin-btn');
+    const result = document.getElementById('ask-twin-result');
+    if (!input || !result) return;
+    const situation = input.value.trim();
+    if (!situation) { input.focus(); return; }
+
+    if (btn) { btn.disabled = true; btn.textContent = 'Thinking…'; }
+    result.innerHTML = `<div style="padding: 0.75rem; color: var(--text-muted); font-size: 0.85rem;">Thinking it through…</div>`;
+
+    try {
+      const r = await askTwin(userId, situation);
+      result.innerHTML = renderAskResult(r);
+    } catch (err) {
+      result.innerHTML = `<div class="error-banner">${escapeHtml(err.message || 'Couldn\'t reach the twin right now.')}</div>`;
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = 'Ask'; }
+    }
+  };
+}
+
+function renderAskResult(r) {
+  if (!r) return '';
+  const conf = (r.confidence || 'unknown').toString();
+  const confLabel = conf.replace(/_/g, ' ');
+  const action = r.predictedAction;
+  const autoVerb = r.wouldAutoExecute ? 'I\'d handle this on my own' : 'I\'d ask you first';
+  const autoColor = r.wouldAutoExecute ? 'var(--success)' : 'var(--warning, #e6a700)';
+
+  const alts = (r.alternativeActions || []).filter(a => a && a.actionType !== action?.actionType).slice(0, 3);
+
+  return `
+    <div style="margin-top: 0.75rem; padding: 0.85rem 1rem; background: var(--bg); border-radius: var(--radius-sm); border-left: 3px solid ${autoColor};">
+      <div style="display: flex; justify-content: space-between; align-items: center; gap: 0.75rem; margin-bottom: 0.5rem;">
+        <span style="font-weight: 600;">${action ? escapeHtml(action.description || action.actionType || 'Take an action') : 'Not sure yet — I\'d probably ask you'}</span>
+        <span style="font-size: 0.75rem; color: ${autoColor}; font-weight: 600;">${autoVerb}</span>
+      </div>
+      ${r.reasoning ? `<div style="font-size: 0.85rem; line-height: 1.6; margin-bottom: 0.5rem;">${escapeHtml(r.reasoning)}</div>` : ''}
+      <div style="font-size: 0.78rem; color: var(--text-muted);">
+        Confidence: <strong>${escapeHtml(confLabel)}</strong>${r.policyNotes ? ' · ' + escapeHtml(r.policyNotes) : ''}
+      </div>
+      ${alts.length > 0 ? `
+        <details style="margin-top: 0.6rem;">
+          <summary style="cursor: pointer; font-size: 0.78rem; color: var(--text-muted);">${alts.length} other option${alts.length > 1 ? 's' : ''} I considered</summary>
+          <div style="margin-top: 0.4rem; padding-left: 0.75rem; border-left: 2px solid var(--border); font-size: 0.8rem; line-height: 1.6;">
+            ${alts.map(a => `<div>· ${escapeHtml(a.description || a.actionType)}</div>`).join('')}
+          </div>
+        </details>
+      ` : ''}
+    </div>
+  `;
 }
 
 function renderTourBanner() {
