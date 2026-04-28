@@ -6,9 +6,11 @@ import {
   GoogleCalendarConnector,
   DbTokenStore,
   OAuthRefreshError,
+  type CursorStore,
   type GoogleOAuthConfig,
 } from '@skytwin/connectors';
 import {
+  connectorCursorRepository,
   forwardedSignalsRepository,
   oauthRepository,
   approvalRepository,
@@ -23,6 +25,21 @@ const log = createLogger('worker');
 
 /** Per-user circuit breakers to skip users with persistent failures. */
 const userCircuitBreakers = new Map<string, CircuitBreaker>();
+
+/**
+ * Persistent cursor for Gmail's History API. Survives worker restarts so
+ * the connector polls deltas (`history.list?startHistoryId=…`) instead of
+ * re-listing the inbox on every cycle.
+ */
+const gmailCursorStore: CursorStore = {
+  async get(userId, provider, kind) {
+    const row = await connectorCursorRepository.get(userId, provider, kind);
+    return row?.cursor_value ?? null;
+  },
+  async save(userId, provider, kind, value) {
+    await connectorCursorRepository.save(userId, provider, kind, value);
+  },
+};
 
 /**
  * Dedup state survives restarts via forwarded_signals: the in-memory map
@@ -279,7 +296,7 @@ async function discoverUsers(): Promise<UserConnectors[]> {
         }
         if (googleConfig) {
           const tokenStore = new DbTokenStore(oauthRepository, googleConfig);
-          connectors.push(new GmailConnector(userId, tokenStore));
+          connectors.push(new GmailConnector(userId, tokenStore, gmailCursorStore));
           connectors.push(new GoogleCalendarConnector(userId, tokenStore));
         }
       }
