@@ -91,7 +91,15 @@ export class SignalDeduper {
     if (this.persistence) {
       const handle = this.onPersistenceError;
       this.persistence.mark(userId, key).catch((err) => {
-        if (handle) handle(err, userId, key);
+        if (!handle) return;
+        // Defensive: a throwing error handler on a fire-and-forget promise
+        // would surface as an unhandled rejection, which can crash the
+        // worker. Swallow rather than rethrow.
+        try {
+          handle(err, userId, key);
+        } catch {
+          /* swallow */
+        }
       });
     }
   }

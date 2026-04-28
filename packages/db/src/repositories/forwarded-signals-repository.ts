@@ -55,10 +55,15 @@ export const forwardedSignalsRepository = {
    * hydration to repopulate the in-memory deduper.
    */
   async listSince(ttlMs: number): Promise<ForwardedSignalRow[]> {
+    // Ordered oldest-first so the deduper's insertion-order eviction (rough
+    // LRU) treats older rows as evictable when over capacity. Without this,
+    // arbitrary DB order means newer entries could be dropped first on a
+    // user with > maxPerUser rows in the ledger.
     const result = await query<ForwardedSignalRow>(
       `SELECT user_id, signal_key, forwarded_at
          FROM forwarded_signals
-        WHERE forwarded_at > now() - ($1::INTERVAL)`,
+        WHERE forwarded_at > now() - ($1::INTERVAL)
+        ORDER BY forwarded_at ASC, user_id ASC, signal_key ASC`,
       [`${Math.max(1, Math.floor(ttlMs / 1000))} seconds`],
     );
     return result.rows;
