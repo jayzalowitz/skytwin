@@ -10,6 +10,9 @@ import type { TwinService } from '@skytwin/twin-model';
 import type { ExplanationGenerator } from '@skytwin/explanations';
 import type { IronClawAdapter } from '@skytwin/ironclaw-adapter';
 import { userRepository } from '@skytwin/db';
+import { createLogger } from '@skytwin/core';
+
+const log = createLogger('api:workflow:email-triage');
 
 /**
  * Dependencies required by the email triage workflow.
@@ -75,8 +78,8 @@ export async function processEmailEvent(
     ...event,
   });
 
-  console.info(
-    `[email-triage] Interpreted email: ${decision.situationType} / ${decision.urgency} - "${decision.summary}"`,
+  log.info(
+    `Interpreted email: ${decision.situationType} / ${decision.urgency} - "${decision.summary}"`,
   );
 
   // Step 2: Get twin profile and relevant preferences
@@ -87,8 +90,8 @@ export async function processEmailEvent(
     decision.summary,
   );
 
-  console.info(
-    `[email-triage] Twin profile v${profile.version}: ${preferences.length} relevant preferences`,
+  log.info(
+    `Twin profile v${profile.version}: ${preferences.length} relevant preferences`,
   );
 
   // Step 3: Build decision context
@@ -107,8 +110,8 @@ export async function processEmailEvent(
   // assesses risk, and checks policies via PolicyEvaluator)
   const outcome = await decisionMaker.evaluate(context);
 
-  console.info(
-    `[email-triage] Decision outcome: autoExecute=${outcome.autoExecute}, ` +
+  log.info(
+    `Decision outcome: autoExecute=${outcome.autoExecute}, ` +
     `requiresApproval=${outcome.requiresApproval}, ` +
     `action=${outcome.selectedAction?.actionType ?? 'none'}`,
   );
@@ -117,15 +120,15 @@ export async function processEmailEvent(
   let executionResult: ExecutionResult | null = null;
 
   if (outcome.autoExecute && outcome.selectedAction) {
-    console.info(
-      `[email-triage] Auto-executing: ${outcome.selectedAction.actionType} - ${outcome.selectedAction.description}`,
+    log.info(
+      `Auto-executing: ${outcome.selectedAction.actionType} - ${outcome.selectedAction.description}`,
     );
 
     const plan = await ironclawAdapter.buildPlan(outcome.selectedAction);
     executionResult = await ironclawAdapter.execute(plan);
 
-    console.info(
-      `[email-triage] Execution result: status=${executionResult.status}`,
+    log.info(
+      `Execution result: status=${executionResult.status}`,
     );
   }
 
@@ -136,8 +139,8 @@ export async function processEmailEvent(
     context,
   );
 
-  console.info(
-    `[email-triage] Explanation generated: risk=${explanation.riskTier}, ` +
+  log.info(
+    `Explanation generated: risk=${explanation.riskTier}, ` +
     `confidence=${explanation.overallConfidence}`,
   );
 

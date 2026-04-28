@@ -38,6 +38,9 @@ importers:
       '@skytwin/connectors':
         specifier: workspace:*
         version: link:../../packages/connectors
+      '@skytwin/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@skytwin/db':
         specifier: workspace:*
         version: link:../../packages/db

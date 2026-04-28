@@ -28,6 +28,9 @@ import { SituationType, TrustTier, RiskTier, RiskDimension } from '@skytwin/shar
 import type { AIProviderName } from '@skytwin/shared-types';
 import { LlmClient } from '@skytwin/llm-client';
 import type { ProviderEntry } from '@skytwin/llm-client';
+import { createLogger } from '@skytwin/core';
+
+const log = createLogger('api:events');
 import { WorkflowHandlerRegistry } from '../workflows/registry.js';
 import { processCalendarConflict } from '../workflows/calendar-conflict.js';
 import { processSubscriptionRenewal } from '../workflows/subscription-renewal.js';
@@ -198,7 +201,7 @@ export function createEventsRouter(): Router {
           const code = (err as { code?: string }).code;
           if (code !== '23505') {
             const msg = err instanceof Error ? err.message : String(err);
-            console.error('[events] Failed to persist candidate actions:', msg);
+            log.error('Failed to persist candidate actions', { error: msg });
           }
         }
       }

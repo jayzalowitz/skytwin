@@ -2,6 +2,9 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Bonjour } from 'bonjour-service';
+import { createLogger } from '@skytwin/core';
+
+const log = createLogger('api:mdns');
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -27,7 +30,7 @@ const PROJECT_VERSION = (() => {
 export function startMdnsAdvertisement(port: number): void {
   try {
     bonjourInstance = new Bonjour(undefined, (err: unknown) => {
-      console.warn('[mdns] Bonjour error (non-fatal):', err);
+      log.warn('Bonjour error (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
     });
 
     bonjourInstance.publish({
@@ -41,9 +44,9 @@ export function startMdnsAdvertisement(port: number): void {
       },
     });
 
-    console.info(`[mdns] Advertising _skytwin._tcp on port ${port}`);
+    log.info(`Advertising _skytwin._tcp on port ${port}`);
   } catch (err: unknown) {
-    console.warn('[mdns] Failed to start mDNS advertisement (non-fatal):', err);
+    log.warn('Failed to start mDNS advertisement (non-fatal)', { error: err instanceof Error ? err.message : String(err), stack: err instanceof Error ? err.stack : undefined });
     bonjourInstance = null;
   }
 }
@@ -61,7 +64,7 @@ export function stopMdnsAdvertisement(): void {
         cleaned = true;
         bonjourInstance?.destroy();
         bonjourInstance = null;
-        console.info(`[mdns] mDNS advertisement stopped (${source})`);
+        log.info(`mDNS advertisement stopped (${source})`);
       };
 
       const cleanupTimeout = setTimeout(() => doCleanup('timeout'), 2000);
@@ -73,7 +76,7 @@ export function stopMdnsAdvertisement(): void {
       });
     }
   } catch (err: unknown) {
-    console.warn('[mdns] Error stopping mDNS advertisement (non-fatal):', err);
+    log.warn('Error stopping mDNS advertisement (non-fatal)', { error: err instanceof Error ? err.message : String(err), stack: err instanceof Error ? err.stack : undefined });
     bonjourInstance = null;
   }
 }

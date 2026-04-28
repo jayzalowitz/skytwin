@@ -17,6 +17,9 @@ import { ConfidenceLevel, RiskTier, RiskDimension, TrustTier } from '@skytwin/sh
 import { getExecutionRouter } from '../execution-setup.js';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
 import { sseManager } from '../sse.js';
+import { createLogger } from '@skytwin/core';
+
+const log = createLogger('api:approvals');
 
 /**
  * Create the approvals handling router.
@@ -324,7 +327,7 @@ export function createApprovalsRouter(): Router {
           // Execution failed after approval was recorded. Log the failure and persist
           // a failed plan so the approval isn't silently orphaned with no execution record.
           const errMsg = execError instanceof Error ? execError.message : String(execError);
-          console.error(`[approvals] Execution failed for approval ${requestId}:`, errMsg);
+          log.error(`Execution failed for approval ${requestId}`, { error: errMsg, stack: execError instanceof Error ? execError.stack : undefined });
 
           try {
             const failedPlan = await withTransaction(async (client) => {
@@ -346,7 +349,7 @@ export function createApprovalsRouter(): Router {
 
             executionResult = { status: 'failed', planId: failedPlan.id, error: 'Execution failed' };
           } catch (persistError) {
-            console.error('[approvals] Failed to persist execution failure record:', persistError);
+            log.error('Failed to persist execution failure record', { error: persistError instanceof Error ? persistError.message : String(persistError), stack: persistError instanceof Error ? persistError.stack : undefined });
             executionResult = { status: 'failed', error: 'Execution failed' };
           }
         } finally {

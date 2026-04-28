@@ -1,6 +1,9 @@
 import express, { type Application } from 'express';
 import { loadConfig, validate } from '@skytwin/config';
+import { createLogger } from '@skytwin/core';
 import { assertSessionSecret } from './startup-assertions.js';
+
+const log = createLogger('api');
 import { createEventsRouter } from './routes/events.js';
 import { createTwinRouter } from './routes/twin.js';
 import { createDecisionsRouter } from './routes/decisions.js';
@@ -39,7 +42,7 @@ const config = loadConfig();
     sessionSecret: process.env['SESSION_SECRET'],
   });
   if (!result.ok && result.fatal) {
-    console.error(`[api] Fatal: ${result.message}`);
+    log.error(`Fatal: ${result.message}`);
     process.exit(1);
   }
 }
@@ -53,18 +56,22 @@ if (configErrors.length > 0) {
   const messages = configErrors.map((e) => `  - ${e.field}: ${e.message}`).join('\n');
 
   if (criticalErrors.length > 0) {
-    console.error(`[api] Fatal: invalid configuration:\n${messages}`);
+    log.error(`Fatal: invalid configuration:\n${messages}`);
     process.exit(1);
   } else if (config.nodeEnv === 'production') {
-    console.error(`[api] Fatal: invalid configuration:\n${messages}`);
+    log.error(`Fatal: invalid configuration:\n${messages}`);
     process.exit(1);
   } else if (warningErrors.length > 0) {
-    console.warn(`[api] Configuration warnings (non-fatal in development):\n${messages}`);
+    log.warn(`Configuration warnings (non-fatal in development):\n${messages}`);
   }
 }
 
 // Initialize the execution router early to log adapter registration
-getExecutionRouter().catch((err) => console.error('[api] Failed to initialize execution router:', err));
+getExecutionRouter().catch((err) =>
+  log.error('Failed to initialize execution router', {
+    error: err instanceof Error ? err.message : String(err),
+  }),
+);
 
 const app: Application = express();
 
@@ -138,7 +145,7 @@ app.use(
     res: express.Response,
     _next: express.NextFunction,
   ) => {
-    console.error('[api] Unhandled error:', err.message, err.stack);
+    log.error('Unhandled error', { message: err.message, stack: err.stack });
     res.status(500).json({
       error: 'Internal server error',
       message: config.nodeEnv === 'development' ? err.message : undefined,
@@ -149,9 +156,9 @@ app.use(
 // Start server
 const port = config.apiPort;
 const server = app.listen(port, () => {
-  console.info(`[api] SkyTwin API server listening on port ${port}`);
-  console.info(`[api] Environment: ${config.nodeEnv}`);
-  console.info(`[api] Health check: http://localhost:${port}/api/health`);
+  log.info(`SkyTwin API server listening on port ${port}`);
+  log.info(`Environment: ${config.nodeEnv}`);
+  log.info(`Health check: http://localhost:${port}/api/health`);
   if (config.nodeEnv !== 'production') {
     startMdnsAdvertisement(port);
   }
@@ -162,23 +169,25 @@ let shuttingDown = false;
 function handleShutdown(signal: string): void {
   if (shuttingDown) return;
   shuttingDown = true;
-  console.info(`[api] Received ${signal}, shutting down gracefully...`);
+  log.info(`Received ${signal}, shutting down gracefully...`);
   stopMdnsAdvertisement();
   // Force exit after 25s if connections don't drain (e.g. SSE keep-alive).
   // Set below K8s default terminationGracePeriodSeconds (30s) so we clean up
   // before the orchestrator sends SIGKILL.
   const forceTimer = setTimeout(() => {
-    console.warn('[api] Shutdown timeout, forcing exit');
+    log.warn('Shutdown timeout, forcing exit');
     process.exit(1);
   }, 25_000);
   forceTimer.unref();
   server.close(async () => {
-    console.info('[api] HTTP server closed');
+    log.info('HTTP server closed');
     try {
       await closePool();
-      console.info('[api] Database pool closed');
+      log.info('Database pool closed');
     } catch (err) {
-      console.warn('[api] Error closing database pool:', err);
+      log.warn('Error closing database pool', {
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
     process.exit(0);
   });
