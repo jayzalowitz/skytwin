@@ -125,6 +125,17 @@ function renderUserBadge() {
 // pending-count prefix gets prepended/cleared.
 const DEFAULT_DOC_TITLE = document.title;
 
+// Repaint the SVG favicon based on whether anything is waiting on the
+// user. Switches from the default blue mark to a warning-yellow mark
+// when there's at least one pending approval, so the tab strip catches
+// the eye even when the title is truncated.
+function setFaviconForPending(hasPending) {
+  const link = document.getElementById('favicon');
+  if (!link) return;
+  const color = hasPending ? '%23e6a700' : '%231976d2';
+  link.href = `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><circle cx="16" cy="16" r="15" fill="${color}"/><text x="16" y="22" font-family="-apple-system,system-ui,sans-serif" font-size="18" font-weight="700" text-anchor="middle" fill="white">S</text></svg>`;
+}
+
 /**
  * Update the approval count badge in the sidebar — and the browser tab
  * title, so a user with the tab in the background sees there's something
@@ -145,13 +156,16 @@ async function updateApprovalBadge() {
       mobileBadge.textContent = String(count);
       mobileBadge.style.display = count > 0 ? 'inline-block' : 'none';
     }
-    // Tab title acts like the second sidebar — when the user has SkyTwin
-    // open in a background tab and an approval lands, the count bubble
-    // catches the eye even without focus.
+    // Tab title + favicon both act like the second sidebar — when the
+    // user has SkyTwin open in a background tab and an approval lands,
+    // the count prefix and the warning-yellow favicon both catch the
+    // eye even without focus.
     if (count > 0) {
       document.title = `(${count}) ${DEFAULT_DOC_TITLE.replace(/^\(\d+\)\s*/, '')}`;
+      setFaviconForPending(true);
     } else {
       document.title = DEFAULT_DOC_TITLE.replace(/^\(\d+\)\s*/, '');
+      setFaviconForPending(false);
     }
   } catch {
     // Silently fail — badge just won't update
