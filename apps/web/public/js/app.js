@@ -6,7 +6,7 @@ import { renderSettings } from './pages/settings.js';
 import { renderAudit } from './pages/audit.js';
 import { renderSetup } from './pages/setup.js';
 import { renderOnboarding } from './pages/onboarding.js';
-import { fetchPendingApprovals, fetchHealth, fetchUser, escapeHtml } from './api-client.js';
+import { fetchPendingApprovals, fetchHealth, fetchUser, listUsers, escapeHtml } from './api-client.js';
 import { mountThemeSwitcher, initTheme } from './theme-switcher.js';
 import { connectSSE, disconnectSSE, isConnected } from './sse-client.js';
 
@@ -45,6 +45,80 @@ function showOnboarding() {
       navigate();
     },
   );
+}
+
+/**
+ * Render the user-switcher in the header. Clicking the badge opens a dropdown
+ * listing all users; click one to switch. Surfaces the data the dashboard
+ * already has — there's no auth ceremony in dev — and unblocks the case
+ * where localStorage holds a userId that has no signals/approvals.
+ */
+function renderUserBadge() {
+  const badge = document.getElementById('user-badge');
+  if (!badge) return;
+
+  // Friendly current label.
+  fetchUser(currentUserId).then((data) => {
+    const u = data?.user ?? data;
+    badge.textContent = u?.name || u?.email || currentUserId || 'No user';
+  }).catch(() => {
+    badge.textContent = currentUserId || 'No user';
+  });
+
+  if (badge.dataset.switcherWired === 'true') return;
+  badge.dataset.switcherWired = 'true';
+  badge.style.cursor = 'pointer';
+  badge.title = 'Switch user';
+
+  badge.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    document.getElementById('user-switcher-menu')?.remove();
+
+    let users = [];
+    try {
+      users = await listUsers();
+    } catch {
+      users = [];
+    }
+
+    const menu = document.createElement('div');
+    menu.id = 'user-switcher-menu';
+    menu.style.cssText = `position: absolute; right: 1rem; top: 3.5rem; z-index: 1000; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-sm); box-shadow: 0 6px 24px rgba(0,0,0,0.25); min-width: 240px; padding: 0.4rem 0;`;
+
+    if (users.length === 0) {
+      menu.innerHTML = `<div style="padding: 0.6rem 0.9rem; color: var(--text-muted); font-size: 0.85rem;">No users found.</div>`;
+    } else {
+      menu.innerHTML = users.map((u) => {
+        const label = escapeHtml(u.name || u.email || u.id);
+        const sub = escapeHtml(u.email || '');
+        const isCurrent = u.id === currentUserId;
+        return `
+          <button data-user-id="${escapeHtml(u.id)}" style="display: block; width: 100%; text-align: left; padding: 0.5rem 0.9rem; background: ${isCurrent ? 'var(--bg-hover)' : 'transparent'}; border: 0; cursor: pointer; color: var(--text); font-size: 0.85rem;">
+            <div style="font-weight: 500;">${label}${isCurrent ? ' <span style="color: var(--text-muted); font-weight: normal;">(current)</span>' : ''}</div>
+            ${sub && sub !== label ? `<div style="color: var(--text-muted); font-size: 0.75rem;">${sub}</div>` : ''}
+          </button>
+        `;
+      }).join('');
+    }
+
+    document.body.appendChild(menu);
+
+    menu.querySelectorAll('button[data-user-id]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const id = btn.getAttribute('data-user-id');
+        if (id && id !== currentUserId) setUserId(id);
+        menu.remove();
+      });
+    });
+
+    const dismiss = (ev) => {
+      if (!menu.contains(ev.target)) {
+        menu.remove();
+        document.removeEventListener('click', dismiss);
+      }
+    };
+    setTimeout(() => document.addEventListener('click', dismiss), 0);
+  });
 }
 
 /**
@@ -103,14 +177,8 @@ function navigate() {
   const route = routes[hash] || routes['/'];
 
   document.getElementById('page-title').textContent = route.title;
-  // Show friendly name instead of UUID
-  const badge = document.getElementById('user-badge');
-  fetchUser(currentUserId).then(data => {
-    const u = data?.user ?? data;
-    badge.textContent = u?.name || u?.email || currentUserId;
-  }).catch(() => {
-    badge.textContent = currentUserId;
-  });
+  // Show friendly name instead of UUID, and make the badge a switcher.
+  renderUserBadge();
 
   // Update active nav link (sidebar + bottom nav)
   document.querySelectorAll('.nav-link, .bottom-nav-link').forEach(link => {
@@ -138,6 +206,8 @@ function navigate() {
 export function setUserId(id) {
   currentUserId = id;
   localStorage.setItem('skytwin_userId', id);
+  localStorage.setItem('skytwin_onboarded', 'true');
+  try { disconnectSSE(); } catch { /* noop */ }
   connectSSE(id);
   navigate();
 }
@@ -175,6 +245,19 @@ window.addEventListener('DOMContentLoaded', () => {
     currentUserId = mobileUserId;
     // Clean up URL
     window.history.replaceState({}, '', '/');
+    navigate();
+    return;
+  }
+
+  // Plain ?userId=<id> override — switch to that user, persist, and strip
+  // the param so reloads stay sticky. Useful when a Google OAuth callback or
+  // the user-switcher dropdown lands here.
+  if (mobileUserId) {
+    localStorage.setItem('skytwin_userId', mobileUserId);
+    localStorage.setItem('skytwin_onboarded', 'true');
+    currentUserId = mobileUserId;
+    window.history.replaceState({}, '', window.location.pathname + window.location.hash);
+    connectSSE(currentUserId);
     navigate();
     return;
   }

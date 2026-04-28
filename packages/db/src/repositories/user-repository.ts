@@ -35,6 +35,17 @@ export const userRepository = {
   },
 
   /**
+   * List all users, newest first. Intended for dev/admin tooling — there is
+   * no per-user filtering here, so callers must gate access appropriately.
+   */
+  async findAll(): Promise<UserRow[]> {
+    const result = await query<UserRow>(
+      'SELECT * FROM users ORDER BY created_at DESC',
+    );
+    return result.rows;
+  },
+
+  /**
    * Find a user by email address.
    */
   async findByEmail(email: string): Promise<UserRow | null> {
