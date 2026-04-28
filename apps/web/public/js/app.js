@@ -128,13 +128,20 @@ const DEFAULT_DOC_TITLE = document.title;
 // Repaint the SVG favicon based on whether anything is waiting on the
 // user. Switches from the default blue mark to a warning-yellow mark
 // when there's at least one pending approval, so the tab strip catches
-// the eye even when the title is truncated.
+// the eye even when the title is truncated. Guarded so we don't trigger
+// a browser repaint on every 30s poll when nothing has changed.
+let _lastFaviconPending = null;
 function setFaviconForPending(hasPending) {
+  if (_lastFaviconPending === hasPending) return;
+  _lastFaviconPending = hasPending;
   const link = document.getElementById('favicon');
   if (!link) return;
   const color = hasPending ? '%23e6a700' : '%231976d2';
   link.href = `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><circle cx="16" cy="16" r="15" fill="${color}"/><text x="16" y="22" font-family="-apple-system,system-ui,sans-serif" font-size="18" font-weight="700" text-anchor="middle" fill="white">S</text></svg>`;
 }
+
+// Same guard for document.title so we don't churn the title bar every 30s.
+let _lastTitlePendingCount = null;
 
 /**
  * Update the approval count badge in the sidebar — and the browser tab
@@ -159,14 +166,15 @@ async function updateApprovalBadge() {
     // Tab title + favicon both act like the second sidebar — when the
     // user has SkyTwin open in a background tab and an approval lands,
     // the count prefix and the warning-yellow favicon both catch the
-    // eye even without focus.
-    if (count > 0) {
-      document.title = `(${count}) ${DEFAULT_DOC_TITLE.replace(/^\(\d+\)\s*/, '')}`;
-      setFaviconForPending(true);
-    } else {
-      document.title = DEFAULT_DOC_TITLE.replace(/^\(\d+\)\s*/, '');
-      setFaviconForPending(false);
+    // eye even without focus. Guarded so we don't repaint on every 30s
+    // poll when the count hasn't moved.
+    if (count !== _lastTitlePendingCount) {
+      _lastTitlePendingCount = count;
+      document.title = count > 0
+        ? `(${count}) ${DEFAULT_DOC_TITLE.replace(/^\(\d+\)\s*/, '')}`
+        : DEFAULT_DOC_TITLE.replace(/^\(\d+\)\s*/, '');
     }
+    setFaviconForPending(count > 0);
   } catch {
     // Silently fail — badge just won't update
   }
@@ -200,21 +208,31 @@ async function updateConnectionStatus() {
   const statusEl = document.getElementById('connection-status');
   if (!statusEl) return;
 
+  // Build the indicator from a static dot + a textContent span so any
+  // future caller of flashTwinActivity() that passes user-derived text
+  // can't smuggle markup. _twinActivityText is internal-only today;
+  // keeping the boundary safe is defense in depth for tomorrow.
+  const renderState = (dotClass, text) => {
+    statusEl.innerHTML = `<span class="status-dot ${dotClass}"></span><span class="status-text"></span>`;
+    const t = statusEl.querySelector('.status-text');
+    if (t) t.textContent = text;
+  };
+
   if (_twinActivityText) {
-    statusEl.innerHTML = `<span class="status-dot connected"></span><span class="status-text">${_twinActivityText}</span>`;
+    renderState('connected', _twinActivityText);
     return;
   }
 
   if (isConnected()) {
-    statusEl.innerHTML = '<span class="status-dot connected"></span><span class="status-text">Listening</span>';
+    renderState('connected', 'Listening');
     return;
   }
 
   try {
     await fetchHealth();
-    statusEl.innerHTML = '<span class="status-dot connected"></span><span class="status-text">Connected</span>';
+    renderState('connected', 'Connected');
   } catch {
-    statusEl.innerHTML = '<span class="status-dot disconnected"></span><span class="status-text">Reconnecting…</span>';
+    renderState('disconnected', 'Reconnecting…');
   }
 }
 
@@ -336,8 +354,18 @@ window.addEventListener('DOMContentLoaded', () => {
 // Make setUserId available globally for settings page
 window.skyTwinSetUserId = setUserId;
 
-// Poll for approval badge updates every 30s (fallback if SSE not connected)
-setInterval(updateApprovalBadge, 30000);
+// Approval-badge fallback poll. SSE pushes sse:approval:new + :resolved
+// in real time, so we only need this when the live channel is down. Five
+// minutes when SSE is healthy is a cheap reconciliation backstop; ten
+// seconds when it's not is the "we still see this" rhythm.
+setInterval(() => {
+  if (!currentUserId) return;
+  if (isConnected()) {
+    if ((Date.now() - (window._skytwinLastBadgePoll || 0)) < 5 * 60 * 1000) return;
+  }
+  window._skytwinLastBadgePoll = Date.now();
+  updateApprovalBadge();
+}, 10000);
 
 // ── SSE-driven live updates ─────────────────────────────
 
@@ -417,15 +445,28 @@ window.skyTwinRequestNotifications = function() {
   return Notification.requestPermission();
 };
 
+// Sanitize SSE-derived strings before they reach OS-level notifications:
+// strip control chars (newlines etc that could be used to forge a fake
+// header/footer), cap length so a misbehaving upstream can't push a wall
+// of text into the notification center, and fall back to a generic body.
+function _safeNotificationBody(s) {
+  if (typeof s !== 'string') return null;
+  const trimmed = s.replace(/[\x00-\x1F\x7F]/g, ' ').trim();
+  if (!trimmed) return null;
+  return trimmed.length > 140 ? trimmed.slice(0, 137) + '…' : trimmed;
+}
+
 window.addEventListener('sse:approval:new', (e) => {
   if (!_twinNotificationsAllowed()) return;
   if (document.visibilityState === 'visible' && document.hasFocus()) return;
   const detail = e.detail || {};
+  const body = _safeNotificationBody(detail.reason)
+    || _safeNotificationBody(detail.description)
+    || 'A decision is waiting on the dashboard.';
   try {
     const n = new Notification('Your twin wants your OK', {
-      body: detail.reason || detail.description || 'A decision is waiting on the dashboard.',
+      body,
       tag: 'skytwin-approval',
-      icon: '/favicon.ico',
     });
     n.onclick = () => {
       window.focus();

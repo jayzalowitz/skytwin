@@ -24,6 +24,35 @@ import { PolicyEvaluator } from '@skytwin/policy-engine';
  */
 const DEMO_USER_ID = 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d';
 
+/** Operator kill switch — set DEMO_PREVIEW_DISABLED=1 to turn off the public LLM route. */
+const PREVIEW_DISABLED = (process.env['DEMO_PREVIEW_DISABLED'] ?? '') === '1';
+
+/** Per-IP limits. */
+const PREVIEW_LIMIT = 20;
+const PREVIEW_WINDOW_MS = 5 * 60 * 1000;
+
+/** Hard global cap so a misconfigured trust-proxy or many-IP attacker can't run up the LLM bill. */
+const PREVIEW_GLOBAL_LIMIT_PER_HOUR = parseInt(process.env['DEMO_PREVIEW_GLOBAL_LIMIT_PER_HOUR'] ?? '500', 10);
+const PREVIEW_GLOBAL_WINDOW_MS = 60 * 60 * 1000;
+
+const PREVIEW_MAX_INPUT_LEN = 600;
+
+/** Cache the demo user lookup so the hot path doesn't query DB every request. */
+let _cachedDemoUser: Awaited<ReturnType<typeof userRepository.findById>> | null = null;
+let _cachedDemoUserAt = 0;
+const DEMO_USER_CACHE_TTL_MS = 60 * 1000;
+
+async function getDemoUserCached() {
+  const now = Date.now();
+  if (_cachedDemoUser && (now - _cachedDemoUserAt) < DEMO_USER_CACHE_TTL_MS) {
+    return _cachedDemoUser;
+  }
+  const fresh = await userRepository.findById(DEMO_USER_ID);
+  _cachedDemoUser = fresh;
+  _cachedDemoUserAt = now;
+  return fresh;
+}
+
 /**
  * Public router for the in-app tour.
  *
@@ -41,11 +70,28 @@ export function createDemoRouter(): Router {
    *
    * Reports whether the seeded demo user is present so the onboarding flow
    * can decide whether to offer the tour link. Response is intentionally
-   * minimal — no profile contents, just availability + the user id.
+   * minimal — no profile contents, just availability + the user id. Email
+   * and name are deliberately excluded so an operator who reuses the
+   * DEMO_USER_ID slot for a real account can't accidentally leak PII.
    */
-  router.get('/info', async (_req, res, next) => {
+  router.get('/info', async (req, res, next) => {
     try {
-      const user = await userRepository.findById(DEMO_USER_ID);
+      // Tour mode requires the dashboard's protected endpoints to be
+      // reachable for the tour user — that only works when the localhost
+      // dev auth bypass is active. In any deployment with real auth, the
+      // tour link would land on a 401-riddled dashboard. Be honest:
+      // report the demo as unavailable unless the bypass would actually
+      // let the tour work.
+      const ip = req.ip ?? req.socket.remoteAddress ?? '';
+      const isLocalhost = ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
+      const devBypass = (process.env['SKYTWIN_DEV_AUTH_BYPASS']
+        ?? (process.env['NODE_ENV'] === 'development' ? 'true' : 'false')) === 'true';
+      if (!isLocalhost || !devBypass) {
+        res.json({ available: false });
+        return;
+      }
+
+      const user = await getDemoUserCached();
       if (!user) {
         res.json({ available: false });
         return;
@@ -53,8 +99,6 @@ export function createDemoRouter(): Router {
       res.json({
         available: true,
         userId: user.id,
-        name: user.name,
-        email: user.email,
       });
     } catch (error) {
       next(error);
@@ -80,11 +124,10 @@ export function createDemoRouter(): Router {
   const policyEvaluator = new PolicyEvaluator(policyRepositoryAdapter);
   const decisionMaker = new DecisionMaker(twinService, policyEvaluator, noOpRepo);
 
-  // Lightweight per-IP rate limit so the public preview can't be cheaply
-  // turned into a free LLM proxy. 20 requests / 5min per IP, drops
-  // expired buckets to bound memory.
-  const PREVIEW_LIMIT = 20;
-  const PREVIEW_WINDOW_MS = 5 * 60 * 1000;
+  // Per-IP rate buckets. NOTE: req.ip resolves through Express's trust-proxy
+  // setting; deployments fronted by a reverse proxy must call
+  // app.set('trust proxy', N) for this to work as a real per-client limit.
+  // The global cap below is the backstop for misconfigured deploys.
   const previewBuckets = new Map<string, number[]>();
   function checkPreviewRate(ip: string): { allowed: boolean; remaining: number } {
     const now = Date.now();
@@ -98,15 +141,35 @@ export function createDemoRouter(): Router {
     previewBuckets.set(ip, arr);
     if (previewBuckets.size > 1000) {
       // Coarse eviction — drop a quarter of the oldest entries when the
-      // map gets too big. We don't need precise LRU here.
+      // map gets too big. Insertion order; not precise LRU, fine for this.
+      const toDelete: string[] = [];
       const drop = Math.floor(previewBuckets.size / 4);
       let i = 0;
       for (const k of previewBuckets.keys()) {
         if (i++ >= drop) break;
-        previewBuckets.delete(k);
+        toDelete.push(k);
       }
+      for (const k of toDelete) previewBuckets.delete(k);
     }
     return { allowed: true, remaining: PREVIEW_LIMIT - arr.length };
+  }
+
+  // Global cap — protects against rotated-IP / spoofed-XFF abuse. Total
+  // previews allowed across all callers per hour. Tunable via env.
+  const globalPreviewTimestamps: number[] = [];
+  function checkGlobalRate(): { allowed: boolean; resetMs: number } {
+    const now = Date.now();
+    const cutoff = now - PREVIEW_GLOBAL_WINDOW_MS;
+    while (globalPreviewTimestamps.length > 0 && globalPreviewTimestamps[0]! <= cutoff) {
+      globalPreviewTimestamps.shift();
+    }
+    if (globalPreviewTimestamps.length >= PREVIEW_GLOBAL_LIMIT_PER_HOUR) {
+      const oldest = globalPreviewTimestamps[0] ?? now;
+      const resetMs = Math.max(0, oldest + PREVIEW_GLOBAL_WINDOW_MS - now);
+      return { allowed: false, resetMs };
+    }
+    globalPreviewTimestamps.push(now);
+    return { allowed: true, resetMs: 0 };
   }
 
   /**
@@ -115,31 +178,62 @@ export function createDemoRouter(): Router {
    * Public, unauthenticated. Runs whatWouldIDo() against the seeded demo
    * user so the very first onboarding screen can demonstrate the twin
    * reasoning out loud before the visitor invests in any setup.
+   *
+   * Three tiers of protection:
+   *  1. Operator kill switch (DEMO_PREVIEW_DISABLED=1) — drops to 503.
+   *  2. Per-IP bucket (20/5min) — gentle throttle for honest callers.
+   *  3. Global hourly cap (DEMO_PREVIEW_GLOBAL_LIMIT_PER_HOUR, default 500)
+   *     — backstop against rotated-IP/spoofed-XFF abuse so the LLM bill
+   *     can't run away if the per-IP limit is bypassed.
+   *
    * Returns 404 when the seed hasn't run.
    */
   router.post('/preview', async (req, res, next) => {
     try {
-      const ip = req.ip ?? req.socket.remoteAddress ?? 'unknown';
-      const limit = checkPreviewRate(ip);
-      if (!limit.allowed) {
-        res.status(429).json({
-          error: 'Too many preview requests. Sign in for unlimited use.',
-        });
+      if (PREVIEW_DISABLED) {
+        res.status(503).json({ error: 'Demo preview is disabled on this server.' });
         return;
       }
 
+      // Validate input BEFORE consuming the rate-limit bucket so cheap
+      // malformed requests can't burn through a legitimate caller's budget.
       const body = (req.body ?? {}) as Record<string, unknown>;
       const situation = body['situation'];
       if (typeof situation !== 'string' || !situation.trim()) {
         res.status(400).json({ error: 'Missing required field: situation' });
         return;
       }
-      if (situation.length > 600) {
-        res.status(400).json({ error: 'Situation is too long — keep it under 600 characters.' });
+      if (situation.length > PREVIEW_MAX_INPUT_LEN) {
+        res.status(400).json({
+          error: `Situation is too long — keep it under ${PREVIEW_MAX_INPUT_LEN} characters.`,
+        });
         return;
       }
 
-      const user = await userRepository.findById(DEMO_USER_ID);
+      const ip = req.ip ?? req.socket.remoteAddress ?? 'unknown';
+      const limit = checkPreviewRate(ip);
+      if (!limit.allowed) {
+        const retryAfterSec = Math.ceil(PREVIEW_WINDOW_MS / 1000);
+        res.set('Retry-After', String(retryAfterSec));
+        res.status(429).json({
+          error: 'Too many preview requests. Sign in for unlimited use.',
+          resetAt: new Date(Date.now() + PREVIEW_WINDOW_MS).toISOString(),
+        });
+        return;
+      }
+
+      const globalLimit = checkGlobalRate();
+      if (!globalLimit.allowed) {
+        const retryAfterSec = Math.ceil(globalLimit.resetMs / 1000);
+        res.set('Retry-After', String(retryAfterSec));
+        res.status(429).json({
+          error: 'Demo preview is busy right now. Sign in for unlimited use.',
+          resetAt: new Date(Date.now() + globalLimit.resetMs).toISOString(),
+        });
+        return;
+      }
+
+      const user = await getDemoUserCached();
       if (!user) {
         res.status(404).json({ error: 'Demo profile not available on this server.' });
         return;

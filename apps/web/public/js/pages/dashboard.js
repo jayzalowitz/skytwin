@@ -36,9 +36,12 @@ export async function renderDashboard(container, userId) {
   // surfaces but a stale one from last week doesn't).
   const briefing = briefingData.status === 'fulfilled' ? briefingData.value?.briefing : null;
   const briefingItems = Array.isArray(briefing?.items) ? briefing.items : [];
-  const briefingFreshEnough = briefing?.createdAt
-    ? (Date.now() - Date.parse(briefing.createdAt)) < 36 * 60 * 60 * 1000
-    : false;
+  const briefingFreshEnough = (() => {
+    if (!briefing?.createdAt) return false;
+    const t = Date.parse(briefing.createdAt);
+    if (!Number.isFinite(t)) return false;
+    return (Date.now() - t) < 36 * 60 * 60 * 1000;
+  })();
   const showBriefing = briefingItems.length > 0 && briefingFreshEnough;
 
   // Read post-OAuth query so we can celebrate the moment they connect.
@@ -48,6 +51,13 @@ export async function renderDashboard(container, userId) {
   const hashParams = queryStart >= 0 ? new URLSearchParams(hashRaw.slice(queryStart + 1)) : new URLSearchParams();
   const justConnectedProvider = hashParams.get('connected');
   const justConnectedAccount = hashParams.get('account');
+
+  // Strip the connected=…&account=… query from the hash after we've read it
+  // so the celebration card doesn't reappear on tomorrow's reload, and the
+  // (now consumed) account email stops persisting in browser history.
+  if (justConnectedProvider && typeof history?.replaceState === 'function') {
+    try { history.replaceState({}, '', window.location.pathname + '#/'); } catch { /* noop */ }
+  }
 
   // After the first signals show up, the celebration card naturally falls
   // away. While we're still in the "first scan" window (just connected, no
@@ -63,16 +73,15 @@ export async function renderDashboard(container, userId) {
 
   // "While you were away" — count anything new since the last visit so the
   // user feels like the twin has been working for them, not just sitting
-  // there. We don't show this for the very first load (no prior visit) or
-  // for visits within the last 5 minutes (would just be noise).
+  // there. The baseline is only updated when the user actually leaves
+  // the tab (visibilitychange → hidden) so SSE re-renders don't clobber
+  // it; otherwise the second render of any session would always set
+  // (now - lastVisitMs) ~= 0 and the banner would never fire again.
   const sinceLastVisit = (() => {
     try {
       const key = `skytwin_last_visit_${userId}`;
       const lastVisitMs = parseInt(localStorage.getItem(key) || '0', 10);
       const now = Date.now();
-      // Always update the timestamp so subsequent renders this session
-      // measure against the freshest baseline.
-      localStorage.setItem(key, String(now));
       if (!lastVisitMs || (now - lastVisitMs) < 5 * 60 * 1000) return null;
       const newDecisions = recentDecisions.filter((d) => {
         const t = Date.parse(d.createdAt || d.created_at || '');
@@ -86,6 +95,23 @@ export async function renderDashboard(container, userId) {
       return { newDecisions, ago };
     } catch { return null; }
   })();
+
+  // Wire the once-per-tab baseline updater. We register on every render
+  // but the listener is idempotent (window-level event with a flag).
+  if (typeof window !== 'undefined' && !window._skytwinLastVisitWired) {
+    window._skytwinLastVisitWired = true;
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState !== 'hidden') return;
+      const uid = (() => { try { return localStorage.getItem('skytwin_userId'); } catch { return null; } })();
+      if (!uid) return;
+      try { localStorage.setItem(`skytwin_last_visit_${uid}`, String(Date.now())); } catch { /* private mode */ }
+    });
+    window.addEventListener('beforeunload', () => {
+      const uid = (() => { try { return localStorage.getItem('skytwin_userId'); } catch { return null; } })();
+      if (!uid) return;
+      try { localStorage.setItem(`skytwin_last_visit_${uid}`, String(Date.now())); } catch { /* noop */ }
+    });
+  }
 
   // A new user (no decisions, no learnings, no patterns) gets an
   // intentionally-empty dashboard: hero CTAs + Ask + a "what's coming"
@@ -700,10 +726,24 @@ function renderTourBanner() {
 if (typeof window !== 'undefined') {
   window.skyTwinExitTour = function() {
     try {
-      localStorage.removeItem('skytwin_tour_mode');
-      localStorage.removeItem('skytwin_userId');
-      localStorage.removeItem('skytwin_onboarded');
-    } catch { /* noop */ }
+      const demoUid = localStorage.getItem('skytwin_userId') || '';
+      // Hard-cleanup everything the tour wrote so a future tour starts
+      // fresh (no stale "first decision" toast, no stale tier celebration,
+      // no stale notification dismissal). We can't enumerate keys
+      // perfectly without scanning, so we both remove the known per-user
+      // keys for the demo uid and sweep any other key starting with the
+      // skytwin_ prefix scoped to that uid.
+      const fixedKeys = ['skytwin_tour_mode', 'skytwin_userId', 'skytwin_onboarded', 'skytwin_notif_dismissed', 'skytwin_notif_asked'];
+      for (const k of fixedKeys) localStorage.removeItem(k);
+      if (demoUid) {
+        for (let i = localStorage.length - 1; i >= 0; i--) {
+          const key = localStorage.key(i);
+          if (key && key.startsWith('skytwin_') && key.endsWith(demoUid)) {
+            localStorage.removeItem(key);
+          }
+        }
+      }
+    } catch { /* private mode etc. */ }
     window.location.reload();
   };
 }

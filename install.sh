@@ -163,12 +163,21 @@ fi
 # /tmp/skytwin-*.log and writes pids to .skytwin-pids.
 #
 # We start it in the background so this script can poll the dashboard
-# and open it once it's up.
+# and open it once it's up. Ollama is enabled because bin/skytwin-install
+# already pulled the gemma model — disabling it here would mean the user
+# downloaded 9.6GB for nothing and the OpenClaw bridge wouldn't start.
 mkdir -p .logs
-nohup ./bin/skytwin-dev --no-ollama >.logs/skytwin-dev.log 2>&1 &
+nohup ./bin/skytwin-dev >.logs/skytwin-dev.log 2>&1 &
 DEV_PID=$!
 
-trap 'kill $DEV_PID 2>/dev/null || true' INT TERM
+# On any exit (success, INT, TERM, dashboard timeout), make sure we
+# don't leave a half-started service tree behind.
+cleanup_on_failure() {
+  if [ -n "${DEV_PID:-}" ]; then
+    ./bin/skytwin-dev --stop 2>/dev/null || kill "$DEV_PID" 2>/dev/null || true
+  fi
+}
+trap 'cleanup_on_failure' INT TERM
 
 # ── Step 4: wait for the dashboard, then open it ───────────────────────
 
@@ -188,8 +197,13 @@ if ! curl -sf -o /dev/null "$DASHBOARD_URL"; then
   err "Dashboard didn't come online within 90s."
   echo "  Check the logs at:    .logs/skytwin-dev.log"
   echo "  Stop the services:    ./bin/skytwin-dev --stop"
+  cleanup_on_failure
   exit 1
 fi
+
+# Past the danger zone — the supervisor is healthy and we don't want the
+# trap to nuke it on a benign script-level signal.
+trap - INT TERM
 
 case "$OS" in
   mac)   open "$DASHBOARD_URL" ;;

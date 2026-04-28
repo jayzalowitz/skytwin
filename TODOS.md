@@ -2,6 +2,26 @@
 
 Generated from CEO review on 2026-04-01. Updated through M2/M3/M4 completion.
 
+## Open — found in /review on 2026-04-28 (PR #126 non-tech UX branch)
+
+Ship-blocker fixes were applied in commit landing this branch. Items below
+were judged too risky or too large for this PR; they should land on
+follow-up branches with their own reviews.
+
+- [ ] **P1**: Stop the dashboard's 13-endpoint Promise.allSettled fan-out on every render. Cache slow-changing data (oauth status, creds status, skill gaps, learned, unmet creds) in a module-level Map with ~30s TTL. Or build a single `/api/v1/dashboard` aggregate endpoint. Currently bursts ~150 reqs/min during first-scan window. **Files:** apps/web/public/js/pages/dashboard.js:5
+- [ ] **P1**: Migrate inline `onclick="...handleX('${escapeHtml(value)}')"` patterns across dashboard.js / approvals.js / settings.js / decisions.js / setup.js to `addEventListener` bindings. `escapeHtml` defends against HTML context but values land in JS-string-literal context — UUIDs are safe today, the pattern isn't. **Files:** apps/web/public/js/pages/{dashboard,approvals,settings,decisions,setup}.js
+- [ ] **P1**: Add tests for `apps/api/src/routes/demo.ts`. Cover 400 (missing/oversize situation), 404 (no seed), 429 (per-IP + global limit), 503 (kill switch), 200 happy path. Export `checkPreviewRate` and `checkGlobalRate` for unit testability. **Files:** apps/api/src/routes/demo.ts, apps/api/src/__tests__/demo-routes.test.ts (new)
+- [ ] **P2**: Split `renderDashboard` (~290 lines now) into `computeDashboardModel`, `renderDashboardView`, `applyDashboardEffects`. The current function mixes data fetching, state derivation, HTML composition, and post-render side effects — hard to test, hard to refactor. **Files:** apps/web/public/js/pages/dashboard.js
+- [ ] **P2**: Extract magic numbers to a named-constants block at top of dashboard.js (BRIEFING_FRESH_MS, FIRST_SCAN_POLL_MS, etc.). Pull TIER_THRESHOLDS / TIER_NEXT from `@skytwin/shared-types` so the UI can't drift from the server's tier-promotion rules. **Files:** apps/web/public/js/pages/dashboard.js
+- [ ] **P2**: Consolidate the five module-level `if (typeof window !== 'undefined') { window.X = ... }` blocks in dashboard.js into one `initDashboardGlobals()` called by app.js bootstrap. Same for the document-level click delegator on `.ask-twin-example`. **Files:** apps/web/public/js/pages/dashboard.js
+- [ ] **P2**: Centralize localStorage keys in a `storageKeys.js` module. Currently constructed inline (`skytwin_tour_mode`, `skytwin_first_decision_seen_${userId}`, etc.) — easy to typo, impossible to audit centrally. **Files:** apps/web/public/js/
+- [ ] **P2**: Add OpenAPI/typed-interface coverage for `DemoInfoResponse` and `DemoPreviewResponse` (currently a spread + extra field). Document the public `/api/demo/*` surface. **Files:** apps/api/src/routes/demo.ts, packages/shared-types
+- [ ] **P2**: Add `app.set('trust proxy', N)` configuration for production deployments. The new global cap (DEMO_PREVIEW_GLOBAL_LIMIT_PER_HOUR) is the backstop, but the per-IP limit only works correctly with trust-proxy configured. **Files:** apps/api/src/index.ts, deploy docs
+- [ ] **P2**: OAuth callback redirect contract change (#/settings → #/) — verify any out-of-tree docs (Electron deep links, README links) and consider one-release backwards compat. **Files:** apps/api/src/routes/oauth.ts:466
+- [ ] **P3**: Move `/api/demo/*` to `/api/v1/demo/*` for consistency with `/api/v1/twin/*` and `/api/v1/briefings/*`. Or document the unversioned namespace explicitly. **Files:** apps/api/src/index.ts
+- [ ] **P3**: Move inline `<style>@keyframes pulse {...}</style>` from dashboard.js into the global stylesheet. Re-emitted on every render of the celebration card today. **Files:** apps/web/public/js/pages/dashboard.js, apps/web/public/css/styles.css
+- [ ] **P3**: Real production tour mode — short-lived demo session token, or `/api/v1/demo/dashboard` aggregate read-only endpoint. Currently tour mode auto-disables in production (auth bypass not active), which is honest but cuts off the marquee feature for non-localhost deploys. **Files:** apps/api/src/routes/demo.ts, apps/api/src/middleware/session-auth.ts
+
 ## Completed (v0.3.0.0 — M2/M3/M4)
 
 - [x] M2 Phase 1: TrustTierEngine with auto-promotion (OBSERVER→MODERATE_AUTONOMY) and rolling-window regression **Completed:** v0.3.0.0 (2026-04-01)
