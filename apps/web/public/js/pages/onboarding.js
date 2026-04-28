@@ -68,9 +68,11 @@ const STEPS = [
     render: (container, next) => {
       container.innerHTML = `
         <div class="onboarding-step">Step 1 of 5</div>
-        <div class="onboarding-title">Meet your digital twin</div>
+        <div class="onboarding-title">A twin that learns what you'd want — and does it.</div>
         <div class="onboarding-desc">
-          SkyTwin learns how you like things done, then starts handling them for you — across every part of your life.
+          Most assistants have amnesia. You tell them you prefer aisle seats three times. They keep asking.
+          Your twin builds a real model of how you make decisions, then handles routine ones without bothering you —
+          and asks the right question on the few that genuinely need you.
         </div>
         <div class="domain-showcase">
           <span class="domain-icon-preview">📧</span>
@@ -85,11 +87,9 @@ const STEPS = [
           <span class="domain-icon-preview">❤️</span>
         </div>
         <ul class="feature-list">
-          <li>Manages email, calendar, finances, shopping, and more</li>
-          <li>Learns your preferences from every decision you make</li>
-          <li>Handles routine tasks so you can focus on what matters</li>
-          <li>Always explains what it did and why</li>
-          <li>You stay in control — choose how much it does on its own</li>
+          <li><strong>It earns trust gradually.</strong> Starts by watching, then suggesting, then handling — at the pace you set.</li>
+          <li><strong>Every action is explained.</strong> What it did, why, and how to correct it if you disagree.</li>
+          <li><strong>You can stop or undo any of it.</strong> The twin works for you, not the other way around.</li>
         </ul>
         <div class="onboarding-actions">
           <button class="btn btn-primary btn-lg" id="onb-next-1">Let's get started</button>

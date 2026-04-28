@@ -205,9 +205,12 @@ export async function renderSetup(container, _userId) {
       </div>
 
       <div style="display: flex; gap: 0.5rem; align-items: center;">
-        <button class="btn btn-primary btn-sm" onclick="saveServiceCredentials('google')">
-          ${googleConfigured ? 'Update' : 'Save'}
+        <button class="btn btn-primary btn-sm" onclick="saveServiceCredentials('google', { autoConnect: ${googleConfigured ? 'false' : 'true'} })">
+          ${googleConfigured ? 'Update' : 'Save and connect now'}
         </button>
+        ${googleConfigured ? `
+          <button class="btn btn-outline btn-sm" onclick="window.handleConnectGoogleFromSetup()">Connect Google account</button>
+        ` : ''}
         <span id="save-status-google" style="font-size: 0.85rem;"></span>
       </div>
       ${renderIronClawSyncSummary('google', syncLookup)}
@@ -217,20 +220,14 @@ export async function renderSetup(container, _userId) {
 
     <div class="card">
       <div class="card-header">
-        <span class="card-title">What's next?</span>
+        <span class="card-title">What happens next</span>
       </div>
-      <div class="card-subtitle" style="line-height: 1.8;">
+      <div class="card-subtitle" style="line-height: 1.7;">
         ${googleConfigured
-          ? `Your Google credentials are configured. Now:<br>
-             <strong>1.</strong> Go to <a href="#/settings">Settings</a> and click <strong>Connect</strong> next to Google<br>
-             <strong>2.</strong> Sign in with the Google account you added as a test user<br>
-             <strong>3.</strong> Choose how much autonomy your twin should have<br>
-             <strong>4.</strong> Your twin will start learning from your email and calendar`
-          : `After pasting your Google credentials above:<br>
-             <strong>1.</strong> Click <strong>Save</strong><br>
-             <strong>2.</strong> Go to <a href="#/settings">Settings</a> and click <strong>Connect</strong> next to Google<br>
-             <strong>3.</strong> Sign in with the Google account you added as a test user<br>
-             <strong>4.</strong> Choose how much autonomy your twin should have`
+          ? `Your credentials are saved. Click <strong>Connect Google account</strong> above and you'll be sent
+             to Google to sign in — back here in 30 seconds, your twin starts learning from your email and calendar.`
+          : `Click <strong>Save and connect now</strong> and we'll send you straight to Google to sign in.
+             Back here in 30 seconds, your twin starts learning from your email and calendar.`
         }
       </div>
     </div>
@@ -474,7 +471,7 @@ function renderAdapterStatus(name, adapter, description) {
   `;
 }
 
-window.saveServiceCredentials = async function(service) {
+window.saveServiceCredentials = async function(service, opts = {}) {
   const statusEl = document.getElementById(`save-status-${service}`);
   // Collect inputs for this service
   const inputs = document.querySelectorAll(`input[data-service="${service}"]`);
@@ -496,14 +493,33 @@ window.saveServiceCredentials = async function(service) {
     return;
   }
 
-  statusEl.innerHTML = '<span style="color: var(--text-muted);">Saving...</span>';
+  statusEl.innerHTML = '<span style="color: var(--text-muted);">Saving…</span>';
 
   try {
     await fetchJSON(`/api/credentials/${service}`, {
       method: 'PUT',
       body: JSON.stringify({ credentials }),
     });
-    statusEl.innerHTML = '<span style="color: var(--success);">Saved!</span>';
+
+    // For Google, if the caller asked us to connect immediately after
+    // saving (the "Save and connect now" path) we kick off OAuth right
+    // here so the user goes paste → save → Google sign-in in one motion.
+    if (service === 'google' && opts.autoConnect) {
+      statusEl.innerHTML = '<span style="color: var(--success);">Saved! Sending you to Google…</span>';
+      try {
+        const userId = localStorage.getItem('skytwin_userId');
+        const { getGoogleAuthUrl } = await import('../api-client.js');
+        const data = await getGoogleAuthUrl(userId);
+        if (data?.url) {
+          window.location.href = data.url;
+          return;
+        }
+      } catch (err) {
+        statusEl.innerHTML = `<span style="color: var(--warning, #e6a700);">Saved, but couldn't start sign-in: ${escapeHtml(err.message || 'try the Connect button below.')}</span>`;
+      }
+    } else {
+      statusEl.innerHTML = '<span style="color: var(--success);">Saved!</span>';
+    }
 
     // Re-render to update status badges
     setTimeout(async () => {
@@ -512,6 +528,19 @@ window.saveServiceCredentials = async function(service) {
     }, 800);
   } catch (err) {
     statusEl.innerHTML = `<span style="color: var(--danger);">${escapeHtml(err.message)}</span>`;
+  }
+};
+
+window.handleConnectGoogleFromSetup = async function() {
+  const statusEl = document.getElementById('save-status-google');
+  if (statusEl) statusEl.innerHTML = '<span style="color: var(--text-muted);">Sending you to Google…</span>';
+  try {
+    const userId = localStorage.getItem('skytwin_userId');
+    const { getGoogleAuthUrl } = await import('../api-client.js');
+    const data = await getGoogleAuthUrl(userId);
+    if (data?.url) window.location.href = data.url;
+  } catch (err) {
+    if (statusEl) statusEl.innerHTML = `<span style="color: var(--danger);">${escapeHtml(err.message)}</span>`;
   }
 };
 
