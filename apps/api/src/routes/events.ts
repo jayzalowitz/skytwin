@@ -211,7 +211,22 @@ export function createEventsRouter(): Router {
       let approvalRequest = null;
 
       if (outcome.requiresApproval && outcome.selectedAction) {
-        // Create an approval request so the user can review it
+        // Create an approval request so the user can review it. We include
+        // `parameters` here so the dashboard can render *what specifically*
+        // is being proposed (e.g. which Gmail label, which calendar id, the
+        // draft body) — without it the approval card asks the user to
+        // approve a generic "Apply label to the email" with no way to know
+        // what label the twin chose. Sensitive params are filtered:
+        // `accessToken` is only injected at execute time and shouldn't be
+        // round-tripped through the approval payload, and oversized free-
+        // form fields like `rawData` echoed back from the original signal
+        // are dropped to keep the JSONB row small.
+        const {
+          accessToken: _omitToken,
+          rawData: _omitRawData,
+          ...visibleParameters
+        } = (outcome.selectedAction.parameters ?? {}) as Record<string, unknown>;
+
         approvalRequest = await approvalRepository.create({
           userId,
           decisionId: decision.id,
@@ -219,6 +234,7 @@ export function createEventsRouter(): Router {
             actionType: outcome.selectedAction.actionType,
             description: outcome.selectedAction.description,
             domain: outcome.selectedAction.domain,
+            parameters: visibleParameters,
             estimatedCostCents: outcome.selectedAction.estimatedCostCents,
             reversible: outcome.selectedAction.reversible,
             confidence: outcome.selectedAction.confidence,
