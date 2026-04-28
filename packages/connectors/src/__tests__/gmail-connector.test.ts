@@ -220,8 +220,13 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 function makeFetchRouter(routes: Record<string, FetchHandler>): typeof fetch {
-  return (async (input: RequestInfo | URL): Promise<Response> => {
-    const url = typeof input === 'string' ? input : input.toString();
+  return (async (input: string | URL | { url: string }): Promise<Response> => {
+    const url =
+      typeof input === 'string'
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : input.url;
     for (const [pattern, handler] of Object.entries(routes)) {
       if (url.includes(pattern)) {
         return handler(url);
