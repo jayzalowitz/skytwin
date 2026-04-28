@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { GoogleCalendarConnector } from '../google-calendar-connector.js';
+import type { CursorStore } from '../gmail-connector.js';
 import type { OAuthTokenStore } from '../oauth/token-store.js';
 
 function makeStubStore(token: { accessToken: string; refreshToken: string; expiresAt: Date } | null): OAuthTokenStore {
@@ -196,5 +197,154 @@ describe('GoogleCalendarConnector.detectConflicts', () => {
     const conflicts = detect(events);
     // Only a is dateTime; allday is ignored — no overlap detected
     expect(conflicts.size).toBe(0);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Persistent syncToken — survives worker restarts
+// ─────────────────────────────────────────────────────────────────────────
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+function memoryCursor(initial: Record<string, string> = {}): CursorStore & { snapshot: Record<string, string> } {
+  const store: Record<string, string> = { ...initial };
+  return {
+    snapshot: store,
+    async get(userId, provider, kind) {
+      return store[`${userId}:${provider}:${kind}`] ?? null;
+    },
+    async save(userId, provider, kind, value) {
+      store[`${userId}:${provider}:${kind}`] = value;
+    },
+  };
+}
+
+describe('GoogleCalendarConnector syncToken persistence', () => {
+  let lastUrl = '';
+  beforeEach(() => {
+    lastUrl = '';
+    vi.unstubAllGlobals();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('on first poll uses timeMin/timeMax (no syncToken) and persists nextSyncToken', async () => {
+    vi.stubGlobal('fetch', (async (input: string | URL | { url: string }): Promise<Response> => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      lastUrl = url;
+      return jsonResponse({
+        items: [makeEvent({ id: 'evt-init' })],
+        nextSyncToken: 'sync-token-1',
+      });
+    }) as typeof fetch);
+
+    const cursor = memoryCursor();
+    const tokenStore = makeStubStore({
+      accessToken: 'a',
+      refreshToken: 'r',
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    const conn = new GoogleCalendarConnector('user-1', tokenStore, cursor);
+    await conn.connect();
+    const signals = await conn.poll();
+
+    expect(signals).toHaveLength(1);
+    expect(lastUrl).toContain('timeMin=');
+    expect(lastUrl).toContain('timeMax=');
+    expect(lastUrl).not.toContain('syncToken=');
+    expect(cursor.snapshot['user-1:google_calendar:sync_token']).toBe('sync-token-1');
+  });
+
+  it('subsequent poll loads stored syncToken and sends it on the request', async () => {
+    vi.stubGlobal('fetch', (async (input: string | URL | { url: string }): Promise<Response> => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      lastUrl = url;
+      return jsonResponse({
+        items: [],
+        nextSyncToken: 'sync-token-2',
+      });
+    }) as typeof fetch);
+
+    const cursor = memoryCursor({ 'user-1:google_calendar:sync_token': 'sync-token-1' });
+    const tokenStore = makeStubStore({
+      accessToken: 'a',
+      refreshToken: 'r',
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    const conn = new GoogleCalendarConnector('user-1', tokenStore, cursor);
+    await conn.connect();
+    await conn.poll();
+
+    expect(lastUrl).toContain('syncToken=sync-token-1');
+    expect(cursor.snapshot['user-1:google_calendar:sync_token']).toBe('sync-token-2');
+  });
+
+  it('410 (sync token expired) clears the cursor and retries from scratch', async () => {
+    let callCount = 0;
+    vi.stubGlobal('fetch', (async (input: string | URL | { url: string }): Promise<Response> => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      lastUrl = url;
+      callCount++;
+      // First call (with syncToken): 410. Second call (no token): 200.
+      if (callCount === 1) {
+        return new Response('gone', { status: 410 });
+      }
+      return jsonResponse({ items: [], nextSyncToken: 'fresh-token' });
+    }) as typeof fetch);
+
+    const cursor = memoryCursor({ 'user-1:google_calendar:sync_token': 'expired' });
+    const tokenStore = makeStubStore({
+      accessToken: 'a',
+      refreshToken: 'r',
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    const conn = new GoogleCalendarConnector('user-1', tokenStore, cursor);
+    await conn.connect();
+    await conn.poll();
+
+    expect(callCount).toBe(2);
+    expect(cursor.snapshot['user-1:google_calendar:sync_token']).toBe('fresh-token');
+  });
+
+  it('back-compat: third arg as a string still sets calendarId, not the cursor', async () => {
+    vi.stubGlobal('fetch', (async (input: string | URL | { url: string }): Promise<Response> => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      lastUrl = url;
+      return jsonResponse({ items: [] });
+    }) as typeof fetch);
+
+    const tokenStore = makeStubStore({
+      accessToken: 'a',
+      refreshToken: 'r',
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    const conn = new GoogleCalendarConnector('user-1', tokenStore, 'work@example.com');
+    await conn.connect();
+    await conn.poll();
+
+    expect(lastUrl).toContain('/calendars/work%40example.com/events');
+  });
+
+  it('cursor save errors do not crash the poll', async () => {
+    vi.stubGlobal('fetch', (async () => jsonResponse({ items: [], nextSyncToken: 't' })) as typeof fetch);
+
+    const failing: CursorStore = {
+      get: async () => null,
+      save: async () => { throw new Error('DB down'); },
+    };
+    const tokenStore = makeStubStore({
+      accessToken: 'a',
+      refreshToken: 'r',
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    const conn = new GoogleCalendarConnector('user-1', tokenStore, failing);
+    await conn.connect();
+    await expect(conn.poll()).resolves.toEqual([]);
   });
 });
