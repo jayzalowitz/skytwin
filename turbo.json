@@ -1,6 +1,7 @@
 {
   "$schema": "https://turbo.build/schema.json",
   "globalDependencies": ["**/.env.*local"],
+  "globalEnv": ["NODE_ENV"],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
@@ -8,7 +9,18 @@
     },
     "dev": {
       "cache": false,
-      "persistent": true
+      "persistent": true,
+      "env": [
+        "SKYTWIN_DEV_AUTH_BYPASS",
+        "USE_MOCK_IRONCLAW",
+        "IRONCLAW_API_URL",
+        "IRONCLAW_WEBHOOK_SECRET",
+        "DATABASE_URL",
+        "OPENCLAW_API_URL",
+        "BRIDGE_PORT",
+        "OLLAMA_HOST",
+        "OLLAMA_MODEL"
+      ]
     },
     "test": {
       "dependsOn": ["build"],

@@ -1,0 +1,6 @@
+{
+  "scripts": {
+    "run": "docker compose up -d cockroachdb && pnpm dev"
+  },
+  "runScriptMode": "nonconcurrent"
+}

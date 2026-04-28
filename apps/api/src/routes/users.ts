@@ -24,6 +24,31 @@ export function createUsersRouter(): Router {
   router.use('/:userId', sessionAuth, requireOwnership);
 
   /**
+   * GET /api/users
+   *
+   * List all users. Used by the dashboard's user-switcher in dev. Gated by
+   * the same sessionAuth as the per-user routes — when SKYTWIN_DEV_AUTH_BYPASS
+   * is on (localhost dev) it returns the full set; otherwise the caller must
+   * be authenticated.
+   */
+  router.get('/', sessionAuth, async (_req, res, next) => {
+    try {
+      const users = await userRepository.findAll();
+      res.json({
+        users: users.map((u) => ({
+          id: u.id,
+          email: u.email,
+          name: u.name,
+          trustTier: u.trust_tier,
+          createdAt: u.created_at,
+        })),
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /**
    * POST /api/users
    *
    * Create a new user during onboarding. If a user with the same email

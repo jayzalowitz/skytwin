@@ -119,6 +119,10 @@ export function fetchUser(userId) {
   return fetchJSON(`${API}/users/${userId}`).catch(() => null);
 }
 
+export function listUsers() {
+  return fetchJSON(`${API}/users`).then((d) => d.users ?? []);
+}
+
 export function updateTrustTier(userId, trustTier) {
   return fetchJSON(`${API}/users/${userId}/trust-tier`, {
     method: 'PUT',
