@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { GmailConnector } from '../gmail-connector.js';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
+import { GmailConnector, type CursorStore } from '../gmail-connector.js';
 import type { OAuthTokenStore } from '../oauth/token-store.js';
 
 function makeStubStore(token: { accessToken: string; refreshToken: string; expiresAt: Date } | null): OAuthTokenStore {
@@ -203,5 +203,235 @@ describe('GmailConnector.messageToSignal', () => {
     const sig = toSignal(msg) as { data: { from: string; subject: string } };
     expect(sig.data.from).toBe('');
     expect(sig.data.subject).toBe('');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Gmail History API integration — uses stubbed fetch responses.
+// ─────────────────────────────────────────────────────────────────────────
+
+type FetchHandler = (url: string) => Promise<Response> | Response;
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+function makeFetchRouter(routes: Record<string, FetchHandler>): typeof fetch {
+  return (async (input: string | URL | { url: string }): Promise<Response> => {
+    const url =
+      typeof input === 'string'
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : input.url;
+    for (const [pattern, handler] of Object.entries(routes)) {
+      if (url.includes(pattern)) {
+        return handler(url);
+      }
+    }
+    throw new Error(`Unrouted fetch: ${url}`);
+  }) as typeof fetch;
+}
+
+function makeMemoryCursor(initial: Record<string, string> = {}): CursorStore & { snapshot: Record<string, string> } {
+  const store: Record<string, string> = { ...initial };
+  return {
+    snapshot: store,
+    async get(userId, provider, kind) {
+      return store[`${userId}:${provider}:${kind}`] ?? null;
+    },
+    async save(userId, provider, kind, value) {
+      store[`${userId}:${provider}:${kind}`] = value;
+    },
+  };
+}
+
+function makeFreshTokenStore(): OAuthTokenStore {
+  const tok = { accessToken: 'a', refreshToken: 'r', expiresAt: new Date(Date.now() + 60_000) };
+  return {
+    save: async () => undefined,
+    get: async () => tok,
+    delete: async () => undefined,
+    refreshIfExpired: async () => tok,
+  } as unknown as OAuthTokenStore;
+}
+
+describe('GmailConnector History API', () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('bootstrap (no cursor) lists recent unread, emits signals, and persists historyId', async () => {
+    const detailFor = (id: string, hist: string) =>
+      jsonResponse({
+        id,
+        threadId: `t-${id}`,
+        labelIds: ['INBOX'],
+        snippet: `s-${id}`,
+        payload: {
+          headers: [
+            { name: 'From', value: 'sender@example.com' },
+            { name: 'Subject', value: `subject ${id}` },
+          ],
+        },
+        internalDate: '1735689600000',
+        historyId: hist,
+      });
+
+    vi.stubGlobal('fetch', makeFetchRouter({
+      '/users/me/messages?q=': () => jsonResponse({ messages: [{ id: 'm1' }, { id: 'm2' }] }),
+      '/users/me/messages/m1': () => detailFor('m1', '1010'),
+      '/users/me/messages/m2': () => detailFor('m2', '1020'),
+    }));
+
+    const cursor = makeMemoryCursor();
+    const conn = new GmailConnector('user-1', makeFreshTokenStore(), cursor);
+    await conn.connect();
+    const signals = await conn.poll();
+
+    expect(signals).toHaveLength(2);
+    expect(signals[0]!.id).toBe('sig_gmail_m1');
+    expect(signals[1]!.id).toBe('sig_gmail_m2');
+    // Highest historyId observed becomes the persisted cursor.
+    expect(cursor.snapshot['user-1:gmail:history_id']).toBe('1020');
+  });
+
+  it('bootstrap with empty inbox falls back to /users/me/profile for the cursor', async () => {
+    vi.stubGlobal('fetch', makeFetchRouter({
+      '/users/me/messages?q=': () => jsonResponse({ messages: [] }),
+      '/users/me/profile': () => jsonResponse({ historyId: '99' }),
+    }));
+
+    const cursor = makeMemoryCursor();
+    const conn = new GmailConnector('user-1', makeFreshTokenStore(), cursor);
+    await conn.connect();
+    const signals = await conn.poll();
+
+    expect(signals).toHaveLength(0);
+    expect(cursor.snapshot['user-1:gmail:history_id']).toBe('99');
+  });
+
+  it('subsequent poll uses history.list with stored startHistoryId and emits only added messages', async () => {
+    const calls: string[] = [];
+    vi.stubGlobal('fetch', makeFetchRouter({
+      '/users/me/history': (url) => {
+        calls.push(url);
+        return jsonResponse({
+          history: [
+            { messagesAdded: [{ message: { id: 'new-1' } }] },
+            { messagesAdded: [{ message: { id: 'new-2' } }] },
+          ],
+          historyId: '2050',
+        });
+      },
+      '/users/me/messages/new-1': () => jsonResponse({
+        id: 'new-1',
+        threadId: 't-new-1',
+        labelIds: [],
+        snippet: '',
+        payload: { headers: [] },
+        internalDate: '1735689600000',
+        historyId: '2030',
+      }),
+      '/users/me/messages/new-2': () => jsonResponse({
+        id: 'new-2',
+        threadId: 't-new-2',
+        labelIds: [],
+        snippet: '',
+        payload: { headers: [] },
+        internalDate: '1735689600000',
+        historyId: '2040',
+      }),
+    }));
+
+    const cursor = makeMemoryCursor({ 'user-1:gmail:history_id': '1000' });
+    const conn = new GmailConnector('user-1', makeFreshTokenStore(), cursor);
+    await conn.connect();
+    const signals = await conn.poll();
+
+    expect(signals).toHaveLength(2);
+    expect(signals[0]!.id).toBe('sig_gmail_new-1');
+    expect(calls[0]).toContain('startHistoryId=1000');
+    expect(calls[0]).toContain('historyTypes=messageAdded');
+    // Cursor advances to the response's historyId (which is the highest observed).
+    expect(cursor.snapshot['user-1:gmail:history_id']).toBe('2050');
+  });
+
+  it('subsequent poll with no new messages still advances the cursor to the response historyId', async () => {
+    vi.stubGlobal('fetch', makeFetchRouter({
+      '/users/me/history': () => jsonResponse({ historyId: '5500' }),
+    }));
+
+    const cursor = makeMemoryCursor({ 'user-1:gmail:history_id': '5400' });
+    const conn = new GmailConnector('user-1', makeFreshTokenStore(), cursor);
+    await conn.connect();
+    const signals = await conn.poll();
+
+    expect(signals).toHaveLength(0);
+    expect(cursor.snapshot['user-1:gmail:history_id']).toBe('5500');
+  });
+
+  it('history.list 404 (cursor expired) re-bootstraps from a fresh listing', async () => {
+    let historyHits = 0;
+    vi.stubGlobal('fetch', makeFetchRouter({
+      '/users/me/history': () => {
+        historyHits++;
+        return new Response('history too old', { status: 404 });
+      },
+      '/users/me/messages?q=': () => jsonResponse({ messages: [{ id: 'fresh' }] }),
+      '/users/me/messages/fresh': () => jsonResponse({
+        id: 'fresh',
+        threadId: 't-fresh',
+        labelIds: [],
+        snippet: '',
+        payload: { headers: [] },
+        internalDate: '1735689600000',
+        historyId: '9999',
+      }),
+    }));
+
+    const cursor = makeMemoryCursor({ 'user-1:gmail:history_id': '1' });
+    const conn = new GmailConnector('user-1', makeFreshTokenStore(), cursor);
+    await conn.connect();
+    const signals = await conn.poll();
+
+    expect(historyHits).toBe(1);
+    expect(signals).toHaveLength(1);
+    expect(signals[0]!.id).toBe('sig_gmail_fresh');
+    expect(cursor.snapshot['user-1:gmail:history_id']).toBe('9999');
+  });
+
+  it('cursor save errors do not crash the poll', async () => {
+    vi.stubGlobal('fetch', makeFetchRouter({
+      '/users/me/messages?q=': () => jsonResponse({ messages: [] }),
+      '/users/me/profile': () => jsonResponse({ historyId: '500' }),
+    }));
+
+    const failingCursor: CursorStore = {
+      get: async () => null,
+      save: async () => {
+        throw new Error('DB down');
+      },
+    };
+
+    const conn = new GmailConnector('user-1', makeFreshTokenStore(), failingCursor);
+    await conn.connect();
+    await expect(conn.poll()).resolves.toEqual([]);
+  });
+
+  it('without a cursor store, the connector still works (back-compat)', async () => {
+    vi.stubGlobal('fetch', makeFetchRouter({
+      '/users/me/messages?q=': () => jsonResponse({ messages: [] }),
+      '/users/me/profile': () => jsonResponse({ historyId: '7' }),
+    }));
+    const conn = new GmailConnector('user-1', makeFreshTokenStore());
+    await conn.connect();
+    await expect(conn.poll()).resolves.toEqual([]);
   });
 });

@@ -87,3 +87,6 @@ export type { UpsertIronClawToolInput } from './ironclaw-tool-repository.js';
 
 export { forwardedSignalsRepository } from './forwarded-signals-repository.js';
 export type { ForwardedSignalRow } from './forwarded-signals-repository.js';
+
+export { connectorCursorRepository } from './connector-cursor-repository.js';
+export type { ConnectorCursorRow } from './connector-cursor-repository.js';
