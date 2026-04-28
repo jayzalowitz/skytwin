@@ -1,4 +1,4 @@
-import { createUser, getGoogleAuthUrl, updateTrustTier, fetchJSON, fetchTwinProfile } from '../api-client.js';
+import { createUser, updateTrustTier, fetchJSON, fetchTwinProfile } from '../api-client.js';
 
 // ── Domain definitions ──────────────────────────────────────────────
 
@@ -99,53 +99,80 @@ const STEPS = [
     },
   },
 
-  // Step 2: Email + name + Google connect
+  // Step 2: Sign in — Google is the front door, email is the fallback.
   {
     render: (container, next, back, setUserId) => {
       container.innerHTML = `
         <div class="onboarding-step">Step 2 of 5</div>
-        <div class="onboarding-title">What's your name and email?</div>
+        <div class="onboarding-title">Sign in to get started</div>
         <div class="onboarding-desc">
-          We'll use this to identify you. Nothing will be sent to this address.
+          Connect with Google so your twin can see your email and calendar from day one. We use the verified email as your identity — no separate password.
         </div>
-        <div class="form-group">
-          <label>Your name</label>
-          <input class="form-input" id="onb-name" type="text" placeholder="Jane" autofocus>
+        <div id="onb-error" style="color: var(--danger); font-size: 0.85rem; margin: 0.5rem 0 1rem; display: none;"></div>
+
+        <div style="margin: 1rem 0 1.5rem;">
+          <button class="btn btn-primary btn-lg" id="onb-google-signin" style="width: 100%; display: flex; align-items: center; justify-content: center; gap: 0.5rem;">
+            <span style="font-weight: 600;">G</span>
+            <span>Continue with Google</span>
+          </button>
         </div>
-        <div class="form-group">
-          <label>Your email address</label>
-          <input class="form-input" id="onb-email" type="email" placeholder="you@example.com">
-        </div>
-        <div id="onb-error" style="color: var(--danger); font-size: 0.85rem; margin-top: 0.5rem; display: none;"></div>
-        <div class="onboarding-desc" style="font-size: 0.85rem; margin-top: 1rem;">
-          <strong>Optional:</strong> Connect your Google account so SkyTwin can see your inbox and calendar. You can do this later in Settings.
-        </div>
-        <div style="margin-bottom: 1.5rem;">
-          <button class="btn btn-outline" id="onb-connect-google">Connect my email &amp; calendar</button>
-        </div>
-        <div class="onboarding-actions" style="display: flex; gap: 0.75rem;">
+
+        <details style="margin: 0 0 1rem; font-size: 0.85rem;">
+          <summary style="cursor: pointer; color: var(--text-muted);">Continue with an email address instead</summary>
+          <div style="margin-top: 1rem; padding: 1rem; border: 1px solid var(--border); border-radius: var(--radius-sm);">
+            <div class="onboarding-desc" style="font-size: 0.8rem; margin-bottom: 0.75rem;">
+              No Google connection — your twin won't see your inbox/calendar until you link one in Settings.
+            </div>
+            <div class="form-group">
+              <label>Your name</label>
+              <input class="form-input" id="onb-name" type="text" placeholder="Jane">
+            </div>
+            <div class="form-group">
+              <label>Your email address</label>
+              <input class="form-input" id="onb-email" type="email" placeholder="you@example.com">
+            </div>
+            <button class="btn btn-outline" id="onb-email-continue" style="width: 100%; margin-top: 0.5rem;">Continue with email</button>
+          </div>
+        </details>
+
+        <div class="onboarding-actions" style="margin-top: 1rem;">
           <button class="btn btn-outline" id="onb-back-2">Back</button>
-          <button class="btn btn-primary btn-lg" id="onb-next-2">Continue</button>
         </div>
       `;
 
       document.getElementById('onb-back-2').addEventListener('click', back);
 
-      document.getElementById('onb-connect-google').addEventListener('click', async () => {
-        const email = document.getElementById('onb-email').value.trim();
-        if (!email || !email.includes('@')) {
-          showError('Please enter your email address first.');
-          return;
-        }
+      // ── Google sign-in: front door ──────────────────────────────────
+      document.getElementById('onb-google-signin').addEventListener('click', async () => {
+        hideError();
+        const btn = document.getElementById('onb-google-signin');
+        const original = btn.innerHTML;
+        btn.innerHTML = '<span>Redirecting…</span>';
+        btn.disabled = true;
         try {
-          const data = await getGoogleAuthUrl(email);
-          if (data.url) window.open(data.url, '_blank');
-        } catch {
-          showError('Could not connect to Google right now. You can try again later in Settings.');
+          // Public newUser=true endpoint: no userId required. Callback will
+          // auto-create a user keyed on the verified email and redirect us
+          // back with ?userId=… which app.js picks up.
+          const data = await fetchJSON('/api/oauth/google/authorize?newUser=true');
+          if (data.url) {
+            window.location.href = data.url;
+            return;
+          }
+          throw new Error('No authorize URL returned');
+        } catch (err) {
+          btn.innerHTML = original;
+          btn.disabled = false;
+          // Most likely: Google client_id/secret not configured yet.
+          showError(
+            err.message?.includes('credentials')
+              ? 'Google credentials are not configured yet. Continue with an email below for now and connect Google later in Settings.'
+              : (err.message || 'Could not start Google sign-in. Try the email option below, or try again.'),
+          );
         }
       });
 
-      document.getElementById('onb-next-2').addEventListener('click', async () => {
+      // ── Email fallback ──────────────────────────────────────────────
+      document.getElementById('onb-email-continue').addEventListener('click', async () => {
         const email = document.getElementById('onb-email').value.trim();
         const name = document.getElementById('onb-name').value.trim() || email.split('@')[0];
         if (!email || !email.includes('@')) {
@@ -153,7 +180,7 @@ const STEPS = [
           return;
         }
         hideError();
-        const btn = document.getElementById('onb-next-2');
+        const btn = document.getElementById('onb-email-continue');
         btn.textContent = 'Setting up...';
         btn.disabled = true;
         try {
@@ -162,7 +189,7 @@ const STEPS = [
           next();
         } catch (err) {
           showError(err.message || 'Something went wrong. Please try again.');
-          btn.textContent = 'Continue';
+          btn.textContent = 'Continue with email';
           btn.disabled = false;
         }
       });

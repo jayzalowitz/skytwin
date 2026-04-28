@@ -264,6 +264,16 @@ export function createOAuthRouter(): Router {
       }
 
       const googleConfig = await resolveGoogleConfig();
+      // Without configured Google credentials we'd happily build an auth URL
+      // with an empty client_id and Google would reject the user with an
+      // opaque "invalid_client" — surface a clean 503 so the dashboard can
+      // tell the user to finish Setup first.
+      if (!googleConfig.clientId || !googleConfig.clientSecret) {
+        res.status(503).json({
+          error: 'Google credentials are not configured. Open Setup and add your OAuth client_id and client_secret.',
+        });
+        return;
+      }
       const scopes = [...IDENTITY_SCOPES, ...GMAIL_SCOPES, ...CALENDAR_SCOPES];
 
       const queryUserId =
