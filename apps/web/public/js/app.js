@@ -144,15 +144,41 @@ async function updateApprovalBadge() {
   }
 }
 
+// Transient "what the twin is doing right now" message. When set, it
+// overrides the steady-state "Listening" text for a few seconds so the
+// sidebar feels like the twin is alive rather than a passive connection
+// indicator.
+let _twinActivityText = null;
+let _twinActivityTimer = null;
+function flashTwinActivity(text, durationMs = 4500) {
+  _twinActivityText = text;
+  if (_twinActivityTimer) clearTimeout(_twinActivityTimer);
+  _twinActivityTimer = setTimeout(() => {
+    _twinActivityText = null;
+    _twinActivityTimer = null;
+    updateConnectionStatus();
+  }, durationMs);
+  updateConnectionStatus();
+}
+
 /**
  * Update the connection status indicator.
+ *
+ * When the twin is actively working (recent SSE event), shows what it's
+ * doing. Otherwise shows steady-state presence — "Listening" when SSE is
+ * connected, "Connected" when only HTTP works, "Offline" when neither.
  */
 async function updateConnectionStatus() {
   const statusEl = document.getElementById('connection-status');
   if (!statusEl) return;
 
+  if (_twinActivityText) {
+    statusEl.innerHTML = `<span class="status-dot connected"></span><span class="status-text">${_twinActivityText}</span>`;
+    return;
+  }
+
   if (isConnected()) {
-    statusEl.innerHTML = '<span class="status-dot connected"></span><span class="status-text">Live</span>';
+    statusEl.innerHTML = '<span class="status-dot connected"></span><span class="status-text">Listening</span>';
     return;
   }
 
@@ -160,9 +186,15 @@ async function updateConnectionStatus() {
     await fetchHealth();
     statusEl.innerHTML = '<span class="status-dot connected"></span><span class="status-text">Connected</span>';
   } catch {
-    statusEl.innerHTML = '<span class="status-dot disconnected"></span><span class="status-text">Offline</span>';
+    statusEl.innerHTML = '<span class="status-dot disconnected"></span><span class="status-text">Reconnecting…</span>';
   }
 }
+
+// Drive the activity flash off the events the API already broadcasts.
+window.addEventListener('sse:decision:step', () => flashTwinActivity('Working on it…'));
+window.addEventListener('sse:decision:executed', () => flashTwinActivity('Just handled something'));
+window.addEventListener('sse:approval:new', () => flashTwinActivity('Wants your OK'));
+window.addEventListener('sse:twin:updated', () => flashTwinActivity('Learned something new'));
 
 /**
  * Navigate to the current hash route.
