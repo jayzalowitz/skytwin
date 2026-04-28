@@ -1,0 +1,10 @@
+{
+  "name": "@skytwin/openclaw-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "BRIDGE_PORT=${BRIDGE_PORT:-3456} node server.mjs",
+    "start": "BRIDGE_PORT=${BRIDGE_PORT:-3456} node server.mjs"
+  }
+}

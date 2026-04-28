@@ -15,6 +15,7 @@ interface ManagedProcess {
   status: ProcessState;
   restartCount: number;
   failureTimestamps: number[];
+  external: boolean;
 }
 
 const MAX_RESTARTS = 5;
@@ -28,8 +29,8 @@ const RESTART_DELAYS = [1000, 2000, 4000, 8000, 16000, 30000];
  * 5 failures in 5 minutes marks as failed.
  */
 export class ServiceManager {
-  private api: ManagedProcess = { process: null, status: 'stopped', restartCount: 0, failureTimestamps: [] };
-  private worker: ManagedProcess = { process: null, status: 'stopped', restartCount: 0, failureTimestamps: [] };
+  private api: ManagedProcess = { process: null, status: 'stopped', restartCount: 0, failureTimestamps: [], external: false };
+  private worker: ManagedProcess = { process: null, status: 'stopped', restartCount: 0, failureTimestamps: [], external: false };
   private onStatusChange: ((status: ServiceStatus) => void) | null = null;
   private healthCheckTimer: ReturnType<typeof setInterval> | null = null;
   private paused = false;
@@ -122,9 +123,35 @@ export class ServiceManager {
     return RESTART_DELAYS[Math.min(restartCount, RESTART_DELAYS.length - 1)];
   }
 
+  /**
+   * Probe whether an external API/worker is already running. In `pnpm dev`
+   * and similar dev flows, the standalone services own port 3100, so forking
+   * our own would just collide and crash on EADDRINUSE.
+   */
+  private async detectExternalApi(): Promise<boolean> {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 500);
+      const res = await fetch('http://localhost:3100/api/health', { signal: controller.signal });
+      clearTimeout(timer);
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
   private async startApi(): Promise<void> {
     this.api.status = 'starting';
     this.emitStatus();
+
+    if (await this.detectExternalApi()) {
+      console.log('[api] External API detected on :3100 — using existing instance, not forking.');
+      this.api.external = true;
+      this.api.status = 'running';
+      this.emitStatus();
+      return;
+    }
+    this.api.external = false;
 
     const base = this.getResourcePath();
     const apiEntry = app.isPackaged
@@ -172,6 +199,18 @@ export class ServiceManager {
   private async startWorker(): Promise<void> {
     this.worker.status = 'starting';
     this.emitStatus();
+
+    // If api is external, assume worker is too — both are launched together by
+    // pnpm dev. Forking a second worker against the same DB causes redundant
+    // signal processing and noisy logs.
+    if (this.api.external) {
+      console.log('[worker] External API detected — assuming external worker, not forking.');
+      this.worker.external = true;
+      this.worker.status = 'running';
+      this.emitStatus();
+      return;
+    }
+    this.worker.external = false;
 
     const base = this.getResourcePath();
     const workerEntry = app.isPackaged
