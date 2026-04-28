@@ -84,3 +84,6 @@ export type { UpsertAIProviderInput } from './ai-provider-repository.js';
 
 export { ironClawToolRepository } from './ironclaw-tool-repository.js';
 export type { UpsertIronClawToolInput } from './ironclaw-tool-repository.js';
+
+export { forwardedSignalsRepository } from './forwarded-signals-repository.js';
+export type { ForwardedSignalRow } from './forwarded-signals-repository.js';
