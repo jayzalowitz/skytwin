@@ -19,7 +19,7 @@ const routes = {
   '/twin': { title: 'What I\'ve learned', render: renderTwin },
   '/settings': { title: 'Settings', render: renderSettings },
   '/audit': { title: 'Audit Trail', render: renderAudit },
-  '/setup': { title: 'Setup', render: renderSetup },
+  '/setup': { title: 'Connect', render: renderSetup },
 };
 
 /**
@@ -173,7 +173,10 @@ function navigate() {
     return;
   }
 
-  const hash = window.location.hash.slice(1) || '/';
+  // Strip query suffix (e.g. "/?connected=google") so post-OAuth lands on
+  // the dashboard route while preserving the params for that page to read.
+  const hashRaw = window.location.hash.slice(1) || '/';
+  const hash = hashRaw.split('?')[0] || '/';
   const route = routes[hash] || routes['/'];
 
   document.getElementById('page-title').textContent = route.title;

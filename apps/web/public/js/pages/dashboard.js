@@ -30,12 +30,27 @@ export async function renderDashboard(container, userId) {
   const googleConnected = googleOAuth.status === 'fulfilled' && (googleOAuth.value?.connected ?? false);
   const googleSystemConfigured = credsStatus.status === 'fulfilled' && (credsStatus.value?.google?.configured ?? false);
 
+  // Read post-OAuth query so we can celebrate the moment they connect.
+  // App.js strips the query before routing; we re-parse it from the raw hash.
+  const hashRaw = window.location.hash || '';
+  const queryStart = hashRaw.indexOf('?');
+  const hashParams = queryStart >= 0 ? new URLSearchParams(hashRaw.slice(queryStart + 1)) : new URLSearchParams();
+  const justConnectedProvider = hashParams.get('connected');
+  const justConnectedAccount = hashParams.get('account');
+
+  // After the first signals show up, the celebration card naturally falls
+  // away. While we're still in the "first scan" window (just connected, no
+  // decisions yet) we poll every 4s so the user sees the dashboard come
+  // alive without needing to refresh.
+  const inFirstScanWindow = !!justConnectedProvider && googleConnected && recentDecisions.length === 0;
+
   const overallConf = conf?.overallConfidence ?? 0;
   const confLabel = overallConf >= 75 ? 'Very confident' : overallConf >= 50 ? 'Getting there' : overallConf >= 25 ? 'Still learning' : 'Just started';
   const confClass = overallConf >= 75 ? 'high' : overallConf >= 50 ? 'moderate' : overallConf >= 25 ? 'low' : 'speculative';
 
   container.innerHTML = `
     ${!healthOk ? '<div class="error-banner">Unable to reach the API server. Your twin may not be processing events.</div>' : ''}
+    ${renderJustConnectedCelebration({ justConnectedProvider, justConnectedAccount, recentDecisionsCount: recentDecisions.length, learnedCount: learn?.totalPreferences ?? 0 })}
     ${renderConnectGoogleHero({ googleConnected, googleSystemConfigured, userId })}
     ${pending > 0 ? `<div class="card" style="border-left: 3px solid var(--warning); cursor: pointer;" onclick="location.hash='#/approvals'">
       <span style="font-weight: 600;">You have ${pending} pending approval${pending > 1 ? 's' : ''}</span>
@@ -148,6 +163,29 @@ export async function renderDashboard(container, userId) {
       }
     </div>
   `;
+
+  // While we're in the post-OAuth first-scan window, gently auto-refresh
+  // so the user sees their first decisions land without hitting reload.
+  // We stop as soon as decisions show up (the celebration card flips state)
+  // or after a few minutes, whichever comes first.
+  if (inFirstScanWindow) {
+    if (window._skytwinFirstScanTimer) clearTimeout(window._skytwinFirstScanTimer);
+    if (!window._skytwinFirstScanStartedAt) window._skytwinFirstScanStartedAt = Date.now();
+    const elapsed = Date.now() - window._skytwinFirstScanStartedAt;
+    if (elapsed < 5 * 60 * 1000) {
+      window._skytwinFirstScanTimer = setTimeout(() => {
+        // Only re-render if user is still on the dashboard.
+        const currentHash = (window.location.hash || '').split('?')[0] || '#/';
+        if (currentHash === '#/' || currentHash === '#') {
+          renderDashboard(container, userId).catch(() => { /* swallow — next tick will retry */ });
+        }
+      }, 4000);
+    }
+  } else if (window._skytwinFirstScanTimer) {
+    clearTimeout(window._skytwinFirstScanTimer);
+    window._skytwinFirstScanTimer = null;
+    window._skytwinFirstScanStartedAt = null;
+  }
 }
 
 function domainIcon(domain) {
@@ -188,6 +226,48 @@ function traitIcon(name) {
     delegation_averse: '*',
   };
   return icons[name] || '?';
+}
+
+function renderJustConnectedCelebration({ justConnectedProvider, justConnectedAccount, recentDecisionsCount, learnedCount }) {
+  if (!justConnectedProvider) return '';
+  const providerLabel = justConnectedProvider === 'google' ? 'Google' : justConnectedProvider;
+  const accountLine = justConnectedAccount
+    ? `<div style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.25rem;">Connected ${escapeHtml(justConnectedAccount)}</div>`
+    : '';
+
+  // Two states: still in first scan (live progress) vs. signals already arriving.
+  if (recentDecisionsCount === 0 && learnedCount === 0) {
+    return `
+      <div class="card" style="border-left: 3px solid var(--success); background: linear-gradient(135deg, var(--bg-card) 0%, var(--bg) 100%);">
+        <div class="card-header">
+          <span class="card-title">Your twin just woke up</span>
+        </div>
+        <div class="card-subtitle" style="margin-bottom: 0.75rem;">
+          ${escapeHtml(providerLabel)} is connected. I'm peeking at your most recent unread messages
+          and your upcoming calendar — should take less than a minute. Anything I spot will land below as it comes in.
+        </div>
+        ${accountLine}
+        <div style="margin-top: 0.75rem; display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; color: var(--text-muted);">
+          <span class="loading-dot" style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--success); animation: pulse 1.4s ease-in-out infinite;"></span>
+          Watching your inbox and calendar…
+        </div>
+        <style>@keyframes pulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(0.85); } }</style>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="card" style="border-left: 3px solid var(--success);">
+      <div class="card-header">
+        <span class="card-title">Your twin is live</span>
+      </div>
+      <div class="card-subtitle">
+        ${escapeHtml(providerLabel)} is connected and your twin has already started learning.
+        Scroll down to see what it's spotted so far.
+      </div>
+      ${accountLine}
+    </div>
+  `;
 }
 
 function renderConnectGoogleHero({ googleConnected, googleSystemConfigured, userId }) {

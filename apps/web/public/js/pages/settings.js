@@ -131,30 +131,15 @@ export async function renderSettings(container, userId) {
       </div>
     </div>
 
+    ${routines.length > 0 ? `
     <div class="card">
       <div class="card-header">
-        <span class="card-title">IronClaw channel</span>
+        <span class="card-title">Scheduled actions</span>
       </div>
       <div class="card-subtitle" style="margin-bottom: 1rem;">
-        Choose where IronClaw should route action execution.
+        Recurring things your twin runs on a schedule (e.g. weekly inbox cleanup).
       </div>
-      <div style="display: flex; gap: 0.5rem; align-items: center;">
-        <select class="form-input" id="ironclaw-channel-select" style="flex: 1;">
-          ${ironclawChannels.map(channel => `<option value="${escapeHtml(channel)}" ${channel === ironclawChannel ? 'selected' : ''}>${escapeHtml(channel)}</option>`).join('')}
-        </select>
-        <button class="btn btn-primary btn-sm" onclick="saveIronClawChannel('${escapeHtml(userId)}')">Save</button>
-      </div>
-      <div id="ironclaw-channel-status" style="font-size: 0.8rem; margin-top: 0.5rem;"></div>
-    </div>
-
-    <div class="card">
-      <div class="card-header">
-        <span class="card-title">Routines</span>
-      </div>
-      <div class="card-subtitle" style="margin-bottom: 1rem;">
-        Scheduled actions delegated to IronClaw.
-      </div>
-      ${routines.length > 0 ? routines.map(routine => `
+      ${routines.map(routine => `
         <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; padding: 0.5rem 0.75rem; background: var(--bg); border-radius: var(--radius-sm); margin-bottom: 0.5rem;">
           <div style="min-width: 0;">
             <div style="font-weight: 600; font-size: 0.9rem;">${escapeHtml(routine.planSummary || routine.id)}</div>
@@ -162,8 +147,28 @@ export async function renderSettings(container, userId) {
           </div>
           <button class="btn btn-outline btn-sm" onclick="deleteRoutineHandler('${escapeHtml(routine.id)}', '${escapeHtml(userId)}')">Delete</button>
         </div>
-      `).join('') : '<div style="font-size: 0.85rem; color: var(--text-muted); padding: 0.75rem; background: var(--bg); border-radius: var(--radius-sm);">No routines scheduled.</div>'}
+      `).join('')}
     </div>
+    ` : ''}
+
+    <details class="card collapsible-card">
+      <summary class="card-header collapsible-header">
+        <span class="card-title">Advanced — execution routing</span>
+        <span class="collapse-icon"></span>
+      </summary>
+      <div class="collapsible-body">
+        <div class="card-subtitle" style="margin-bottom: 1rem;">
+          Where the sandboxed execution server (IronClaw) routes actions. Most people leave this on the default.
+        </div>
+        <div style="display: flex; gap: 0.5rem; align-items: center;">
+          <select class="form-input" id="ironclaw-channel-select" style="flex: 1;">
+            ${ironclawChannels.map(channel => `<option value="${escapeHtml(channel)}" ${channel === ironclawChannel ? 'selected' : ''}>${escapeHtml(channel)}</option>`).join('')}
+          </select>
+          <button class="btn btn-primary btn-sm" onclick="saveIronClawChannel('${escapeHtml(userId)}')">Save</button>
+        </div>
+        <div id="ironclaw-channel-status" style="font-size: 0.8rem; margin-top: 0.5rem;"></div>
+      </div>
+    </details>
 
     <div class="card">
       <div class="card-header">
