@@ -22,6 +22,7 @@ function fakeDecisionRow(overrides: Partial<{
   domain: string;
   urgency: string;
   metadata: Record<string, unknown>;
+  signal_id: string | null;
   created_at: Date;
 }> = {}) {
   return {
@@ -33,6 +34,7 @@ function fakeDecisionRow(overrides: Partial<{
     domain: overrides.domain ?? 'email',
     urgency: overrides.urgency ?? 'normal',
     metadata: overrides.metadata ?? {},
+    signal_id: overrides.signal_id ?? null,
     created_at: overrides.created_at ?? new Date('2026-03-01'),
   };
 }
@@ -146,7 +148,7 @@ describe('decisionRepository', () => {
 
       const [sql, params] = mockQuery.mock.calls[0]!;
       expect(sql).toContain('INSERT INTO decisions');
-      expect(sql).not.toContain('$8'); // No 8th param -- no explicit id path uses 7
+      // No-id path takes 8 params (the 8th is signal_id, null when absent).
       expect(sql).toContain('RETURNING *');
       expect(params).toEqual([
         'u-001',
@@ -156,6 +158,7 @@ describe('decisionRepository', () => {
         'email',
         'normal',    // default urgency
         '{}',        // default metadata
+        null,        // signal_id — only set when rawEvent.signalId is present
       ]);
     });
 
@@ -178,7 +181,7 @@ describe('decisionRepository', () => {
 
       const [sql, params] = mockQuery.mock.calls[0]!;
       expect(sql).toContain('INSERT INTO decisions');
-      // The explicit-id path uses 8 params
+      // The explicit-id path takes 9 params (signal_id at the end).
       expect(params).toEqual([
         'custom-uuid',
         'u-001',
@@ -188,7 +191,54 @@ describe('decisionRepository', () => {
         'calendar',
         'high',
         JSON.stringify({ source: 'webhook' }),
+        null,
       ]);
+    });
+
+    it('extracts signal_id from rawEvent when present', async () => {
+      // No existing decision → pre-check returns 0 rows, then insert proceeds.
+      mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+      mockQuery.mockResolvedValueOnce({
+        rows: [fakeDecisionRow({ signal_id: 'sig_gmail_abc' })],
+        rowCount: 1,
+      });
+
+      await decisionRepository.create({
+        userId: 'u-001',
+        situationType: 'email_received',
+        rawEvent: { signalId: 'sig_gmail_abc', from: 'a@b.com' },
+        interpretedSituation: {},
+        domain: 'email',
+      });
+
+      // First call: SELECT ... WHERE user_id = $1 AND signal_id = $2
+      const [preCheckSql, preCheckParams] = mockQuery.mock.calls[0]!;
+      expect(preCheckSql).toContain('SELECT * FROM decisions');
+      expect(preCheckParams).toEqual(['u-001', 'sig_gmail_abc']);
+
+      // Second call: INSERT with signal_id as final param.
+      const insertParams = mockQuery.mock.calls[1]![1] as unknown[];
+      expect(insertParams[insertParams.length - 1]).toBe('sig_gmail_abc');
+    });
+
+    it('returns the existing decision when (user_id, signal_id) already exists', async () => {
+      const existing = fakeDecisionRow({
+        id: 'existing-uuid',
+        signal_id: 'sig_gmail_dup',
+      });
+      mockQuery.mockResolvedValueOnce({ rows: [existing], rowCount: 1 });
+
+      const result = await decisionRepository.create({
+        userId: 'u-001',
+        situationType: 'email_received',
+        rawEvent: { signalId: 'sig_gmail_dup' },
+        interpretedSituation: {},
+        domain: 'email',
+      });
+
+      expect(result).toEqual(existing);
+      // Pre-check only — no INSERT call followed it.
+      expect(mockQuery).toHaveBeenCalledTimes(1);
     });
 
     it('defaults urgency to "normal" when not specified', async () => {

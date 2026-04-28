@@ -57,14 +57,36 @@ export interface CreateOutcomeInput {
 export const decisionRepository = {
   /**
    * Create a new decision record.
+   *
+   * Pulls `signal_id` out of the rawEvent JSON when present, then pre-checks
+   * for an existing `(user_id, signal_id)` row. A duplicate ingest (worker
+   * dedupe miss, manual replay, etc.) returns the existing decision rather
+   * than racing on the partial unique index from migration 023 — the index
+   * is the defense-in-depth backstop, this lookup is the friendly path.
    */
   async create(input: CreateDecisionInput): Promise<DecisionRow> {
+    const rawEvent = input.rawEvent as Record<string, unknown> | undefined;
+    const signalId =
+      rawEvent && typeof rawEvent['signalId'] === 'string'
+        ? (rawEvent['signalId'] as string)
+        : null;
+
+    if (signalId) {
+      const existing = await query<DecisionRow>(
+        'SELECT * FROM decisions WHERE user_id = $1 AND signal_id = $2 LIMIT 1',
+        [input.userId, signalId],
+      );
+      if (existing.rows[0]) {
+        return existing.rows[0];
+      }
+    }
+
     // If an explicit ID is provided, use it (allows in-memory decisions to
     // keep their UUID through to persistence for FK consistency).
     if (input.id) {
       const result = await query<DecisionRow>(
-        `INSERT INTO decisions (id, user_id, situation_type, raw_event, interpreted_situation, domain, urgency, metadata)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        `INSERT INTO decisions (id, user_id, situation_type, raw_event, interpreted_situation, domain, urgency, metadata, signal_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          RETURNING *`,
         [
           input.id,
@@ -75,13 +97,14 @@ export const decisionRepository = {
           input.domain,
           input.urgency ?? 'normal',
           JSON.stringify(input.metadata ?? {}),
+          signalId,
         ],
       );
       return result.rows[0]!;
     }
     const result = await query<DecisionRow>(
-      `INSERT INTO decisions (user_id, situation_type, raw_event, interpreted_situation, domain, urgency, metadata)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `INSERT INTO decisions (user_id, situation_type, raw_event, interpreted_situation, domain, urgency, metadata, signal_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING *`,
       [
         input.userId,
@@ -91,6 +114,7 @@ export const decisionRepository = {
         input.domain,
         input.urgency ?? 'normal',
         JSON.stringify(input.metadata ?? {}),
+        signalId,
       ],
     );
     return result.rows[0]!;
