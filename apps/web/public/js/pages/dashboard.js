@@ -1,8 +1,8 @@
-import { fetchHealth, fetchDecisions, fetchAccuracy, fetchConfidence, fetchLearning, fetchPendingApprovals, fetchSkillGaps, fetchTrustProgress, fetchLearned, fetchUnmetCredentials, fetchOAuthStatus, fetchCredentialsStatus, askTwin, escapeHtml } from '../api-client.js';
+import { fetchHealth, fetchDecisions, fetchAccuracy, fetchConfidence, fetchLearning, fetchPendingApprovals, fetchSkillGaps, fetchTrustProgress, fetchLearned, fetchUnmetCredentials, fetchOAuthStatus, fetchCredentialsStatus, fetchBriefing, askTwin, escapeHtml } from '../api-client.js';
 import { renderTrustProgress } from '../components/progress-bar.js';
 
 export async function renderDashboard(container, userId) {
-  const [health, accuracy, confidence, learning, approvals, decisions, skillGaps, progress, learned, unmetCreds, googleOAuth, credsStatus] = await Promise.allSettled([
+  const [health, accuracy, confidence, learning, approvals, decisions, skillGaps, progress, learned, unmetCreds, googleOAuth, credsStatus, briefingData] = await Promise.allSettled([
     fetchHealth(),
     fetchAccuracy(userId),
     fetchConfidence(userId),
@@ -15,6 +15,7 @@ export async function renderDashboard(container, userId) {
     fetchUnmetCredentials(),
     fetchOAuthStatus(userId, 'google'),
     fetchCredentialsStatus(),
+    fetchBriefing(userId),
   ]);
 
   const healthOk = health.status === 'fulfilled';
@@ -29,6 +30,16 @@ export async function renderDashboard(container, userId) {
 
   const googleConnected = googleOAuth.status === 'fulfilled' && (googleOAuth.value?.connected ?? false);
   const googleSystemConfigured = credsStatus.status === 'fulfilled' && (credsStatus.value?.google?.configured ?? false);
+
+  // Briefing: only worth showing when there are items AND the briefing
+  // is recent (< 36 hours old, so a briefing from yesterday morning still
+  // surfaces but a stale one from last week doesn't).
+  const briefing = briefingData.status === 'fulfilled' ? briefingData.value?.briefing : null;
+  const briefingItems = Array.isArray(briefing?.items) ? briefing.items : [];
+  const briefingFreshEnough = briefing?.createdAt
+    ? (Date.now() - Date.parse(briefing.createdAt)) < 36 * 60 * 60 * 1000
+    : false;
+  const showBriefing = briefingItems.length > 0 && briefingFreshEnough;
 
   // Read post-OAuth query so we can celebrate the moment they connect.
   // App.js strips the query before routing; we re-parse it from the raw hash.
@@ -92,6 +103,7 @@ export async function renderDashboard(container, userId) {
     ${sinceLastVisit && !tourMode ? renderSinceLastVisit(sinceLastVisit) : ''}
     ${tourMode ? '' : renderConnectGoogleHero({ googleConnected, googleSystemConfigured, userId })}
     ${renderAskTwinWidget({ userId, tourMode })}
+    ${showBriefing ? renderBriefingCard({ items: briefingItems, createdAt: briefing.createdAt }) : ''}
     ${pending > 0 ? `<div class="card" style="border-left: 3px solid var(--warning); cursor: pointer;" onclick="location.hash='#/approvals'">
       <span style="font-weight: 600;">You have ${pending} pending approval${pending > 1 ? 's' : ''}</span>
       <span style="color: var(--text-muted); font-size: 0.85rem;"> — your twin wants to do something and needs your OK.</span>
@@ -329,6 +341,73 @@ function traitIcon(name) {
     delegation_averse: '*',
   };
   return icons[name] || '?';
+}
+
+function renderBriefingCard({ items, createdAt }) {
+  // Headline copy adapts to time-of-day so the card doesn't say
+  // "morning briefing" when a user opens the dashboard at 9pm.
+  const created = new Date(createdAt);
+  const hours = (Date.now() - created.getTime()) / (60 * 60 * 1000);
+  const sameDay = (new Date()).toDateString() === created.toDateString();
+  const ofDay = sameDay
+    ? (created.getHours() < 11 ? 'this morning' : created.getHours() < 17 ? 'earlier today' : 'this evening')
+    : (hours < 24 ? 'yesterday' : created.toLocaleDateString(undefined, { weekday: 'long' }));
+
+  const handled = items.filter((it) => it?.wouldAutoExecute).length;
+  const wantingApproval = items.length - handled;
+
+  // Headline summary built from counts so the user sees the shape of the
+  // last scan at a glance before reading the items below.
+  const summaryParts = [];
+  if (handled > 0) summaryParts.push(`<strong>${handled}</strong> handled on my own`);
+  if (wantingApproval > 0) summaryParts.push(`<strong>${wantingApproval}</strong> waiting on you`);
+  const summary = summaryParts.length > 0 ? summaryParts.join(' · ') : `${items.length} ${items.length === 1 ? 'thing' : 'things'} to share`;
+
+  // Show up to 5 items; collapse the rest into "+ N more on the Decisions page"
+  const SHOWN_ITEMS = 5;
+  const visible = items.slice(0, SHOWN_ITEMS);
+  const remaining = items.length - visible.length;
+
+  return `
+    <div class="card" style="border-left: 3px solid var(--primary);">
+      <div class="card-header">
+        <span class="card-title">Briefing from ${escapeHtml(ofDay)}</span>
+        <span style="font-size: 0.75rem; color: var(--text-muted);">${summary}</span>
+      </div>
+      <div class="card-subtitle" style="margin-bottom: 0.75rem;">
+        Here's the round-up of what your twin saw on its last scan — what it acted on, and what it's holding for you.
+      </div>
+      ${visible.map((it) => renderBriefingItem(it)).join('')}
+      ${remaining > 0 ? `
+        <div style="margin-top: 0.5rem; text-align: center;">
+          <a class="btn btn-outline btn-sm" href="#/decisions">+ ${remaining} more on the Decisions page</a>
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+function renderBriefingItem(it) {
+  if (!it) return '';
+  const auto = !!it.wouldAutoExecute;
+  const accent = auto ? 'var(--success)' : 'var(--warning, #e6a700)';
+  const verb = auto ? "I'd handle this on my own" : "I'd ask you first";
+  const conf = (it.confidence || '').toString().replace(/_/g, ' ');
+  const urgent = it.urgency === 'critical' || it.urgency === 'high';
+
+  return `
+    <div style="display: grid; grid-template-columns: auto 1fr auto; gap: 0.6rem 0.75rem; align-items: start; padding: 0.65rem 0.75rem; background: var(--bg); border-radius: var(--radius-sm); margin-bottom: 0.4rem;">
+      <div style="width: 6px; align-self: stretch; background: ${accent}; border-radius: 3px;"></div>
+      <div style="min-width: 0;">
+        <div style="font-weight: 600; font-size: 0.9rem; margin-bottom: 0.15rem;">${escapeHtml(it.actionDescription || 'Something to consider')}</div>
+        ${it.reasoning ? `<div style="font-size: 0.82rem; color: var(--text-muted); line-height: 1.5;">${escapeHtml(it.reasoning)}</div>` : ''}
+        <div style="font-size: 0.72rem; color: var(--text-muted); margin-top: 0.25rem;">
+          ${escapeHtml(it.domain || 'general')}${conf ? ` · confidence ${escapeHtml(conf)}` : ''}${urgent ? ' · urgent' : ''}
+        </div>
+      </div>
+      <div style="font-size: 0.72rem; color: ${accent}; font-weight: 600; white-space: nowrap;">${verb}</div>
+    </div>
+  `;
 }
 
 function renderSinceLastVisit({ newDecisions, ago }) {

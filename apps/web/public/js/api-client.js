@@ -178,6 +178,10 @@ export function askTwin(userId, situation, opts = {}) {
   });
 }
 
+export function fetchBriefing(userId) {
+  return fetchJSON(`${API}/v1/briefings/${encodeURIComponent(userId)}`);
+}
+
 export function getGoogleAuthUrl(userId) {
   return fetchJSON(`${API}/oauth/google/authorize?userId=${encodeURIComponent(userId)}`);
 }
