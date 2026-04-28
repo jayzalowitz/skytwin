@@ -131,13 +131,25 @@ Every path produces an explanation. Every outcome feeds back into the twin. The 
 
 ## Quick Start
 
-### Prerequisites
+### One-command install (macOS, Linux, WSL)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jayzalowitz/skytwin/main/install.sh | bash
+```
+
+That's it. The installer detects your OS, installs anything missing (Homebrew on mac, Node 20+, pnpm, Docker, Ollama), clones the repo to `~/skytwin`, runs the bootstrap, starts the services, and opens the dashboard at `http://localhost:3200` once it's up. Re-running pulls latest and restarts.
+
+To stop later: `cd ~/skytwin && ./bin/skytwin-dev --stop`.
+
+### Manual setup
+
+If you'd rather drive each step yourself:
+
+**Prerequisites**
 
 - [Node.js](https://nodejs.org/) >= 20
 - [pnpm](https://pnpm.io/) >= 9
 - [Docker](https://www.docker.com/) (for CockroachDB)
-
-### Setup
 
 ```bash
 git clone https://github.com/jayzalowitz/skytwin.git && cd skytwin
