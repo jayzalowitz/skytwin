@@ -281,7 +281,7 @@ export async function renderDashboard(container, userId) {
     ${tourMode ? '' : renderConnectGoogleHero({ googleConnected, googleSystemConfigured, userId })}
     ${renderAskTwinWidget({ userId, tourMode })}
     ${showBriefing ? renderBriefingCard({ items: briefingItems, createdAt: briefing.createdAt }) : ''}
-    ${pending > 0 ? `<div class="card" style="border-left: 3px solid var(--warning); cursor: pointer;" onclick="location.hash='#/approvals'">
+    ${pending > 0 ? `<div class="card" style="border-left: 3px solid var(--warning); cursor: pointer;" data-action="goto" data-hash="#/approvals">
       <span style="font-weight: 600;">You have ${pending} pending approval${pending > 1 ? 's' : ''}</span>
       <span style="color: var(--text-muted); font-size: 0.85rem;"> — your twin wants to do something and needs your OK.</span>
     </div>` : ''}

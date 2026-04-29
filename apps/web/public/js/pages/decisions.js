@@ -2,8 +2,16 @@ import { fetchDecisions, fetchDecisionExplanation, submitFeedback, escapeHtml } 
 
 let currentUserId = '';
 
+// Singleton click delegator. Re-binding per render would stack listeners
+// every time SSE 'decision:executed' triggers a /decisions re-render
+// (app.js:scheduleLiveRefresh) — N events → N parallel toggle handlers
+// per click. Hash-route gate keeps the singleton from misfiring on
+// other pages (the SPA reuses one #page-content container).
+let _decisionsListenerWired = false;
+
 export async function renderDecisions(container, userId) {
   currentUserId = userId;
+  ensureDecisionsListener();
 
   container.innerHTML = `
     <div class="decisions-page">
@@ -146,7 +154,7 @@ export async function renderDecisions(container, userId) {
               </thead>
               <tbody>
                 ${decisions.map(d => `
-                  <tr style="cursor: pointer;" onclick="toggleExplanation('${escapeHtml(d.id)}', this)">
+                  <tr class="decision-row" style="cursor: pointer;" data-action="toggle-explanation" data-decision-id="${escapeHtml(d.id)}">
                     <td>${formatTime(d.createdAt || d.created_at)}</td>
                     <td><span class="badge badge-info">${escapeHtml(domainLabel(d.domain))}</span></td>
                     <td>${escapeHtml(situationLabel(d.situationType || d.situation_type))}</td>
@@ -158,8 +166,7 @@ export async function renderDecisions(container, userId) {
                         : '<span class="badge badge-muted" title="Decision pending">Pending</span>'
                     }</td>
                     <td>
-                      <button class="btn btn-sm btn-outline undo-btn" data-decision-id="${escapeHtml(d.id)}"
-                              onclick="event.stopPropagation(); showUndoModal('${escapeHtml(d.id)}')">
+                      <button class="btn btn-sm btn-outline undo-btn" data-action="show-undo" data-decision-id="${escapeHtml(d.id)}">
                         Undo
                       </button>
                     </td>
@@ -195,6 +202,29 @@ export async function renderDecisions(container, userId) {
   });
 
   await loadDecisions();
+}
+
+function ensureDecisionsListener() {
+  if (_decisionsListenerWired || typeof document === 'undefined') return;
+  _decisionsListenerWired = true;
+  document.addEventListener('click', (e) => {
+    const hash = (window.location.hash || '').split('?')[0];
+    if (hash !== '#/decisions') return;
+    const target = e.target instanceof Element ? e.target : null;
+    if (!target) return;
+    const undoBtn = target.closest('[data-action="show-undo"]');
+    if (undoBtn) {
+      e.stopPropagation();
+      const id = undoBtn.getAttribute('data-decision-id');
+      if (id) showUndoModal(id);
+      return;
+    }
+    const row = target.closest('[data-action="toggle-explanation"]');
+    if (row) {
+      const id = row.getAttribute('data-decision-id');
+      if (id) toggleExplanation(id);
+    }
+  });
 }
 
 function domainLabel(domain) {
@@ -256,7 +286,7 @@ function formatTime(dateStr) {
   return `${datePart}, ${timePart}`;
 }
 
-window.toggleExplanation = async function(decisionId, row) {
+async function toggleExplanation(decisionId) {
   const explainRow = document.getElementById(`explain-${decisionId}`);
   if (!explainRow) return;
 
@@ -282,9 +312,9 @@ window.toggleExplanation = async function(decisionId, row) {
       <div style="font-size: 0.85rem; color: var(--text-muted);">Explanation not available for this decision.</div>
     `;
   }
-};
+}
 
-window.showUndoModal = function(decisionId) {
+function showUndoModal(decisionId) {
   // Remove existing modal if any
   document.getElementById('undo-modal')?.remove();
 

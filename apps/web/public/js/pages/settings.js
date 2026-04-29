@@ -63,7 +63,7 @@ export async function renderSettings(container, userId) {
           <label>User ID</label>
           <div style="display: flex; gap: 0.5rem;">
             <input class="form-input" id="userId-input" value="${escapeHtml(userId)}">
-            <button class="btn btn-outline btn-sm" onclick="window.skyTwinSetUserId(document.getElementById('userId-input').value)">Switch</button>
+            <button class="btn btn-outline btn-sm" data-action="switch-user">Switch</button>
           </div>
         </div>
       </div>
@@ -78,7 +78,7 @@ export async function renderSettings(container, userId) {
       </div>
       <div class="tier-options" id="tier-options">
         ${TIERS.map(t => `
-          <div class="tier-option ${t.value === currentTier ? 'selected' : ''}" data-tier="${t.value}" onclick="selectTier(this)">
+          <div class="tier-option ${t.value === currentTier ? 'selected' : ''}" data-tier="${t.value}" data-action="select-tier">
             <div class="tier-radio"></div>
             <div>
               <div class="tier-name">${t.name}</div>
@@ -87,7 +87,7 @@ export async function renderSettings(container, userId) {
           </div>
         `).join('')}
       </div>
-      <button class="btn btn-primary" style="margin-top: 1rem;" id="save-tier-btn" onclick="saveTier('${escapeHtml(userId)}')">Save</button>
+      <button class="btn btn-primary" style="margin-top: 1rem;" id="save-tier-btn" data-action="save-tier">Save</button>
     </div>
 
     <div class="card">
@@ -107,8 +107,8 @@ export async function renderSettings(container, userId) {
         </div>
         <div>
           ${googleConnected
-            ? `<button class="btn btn-outline btn-sm" onclick="handleDisconnectGoogle('${escapeHtml(userId)}')">Disconnect</button>`
-            : `<button class="btn btn-primary btn-sm" onclick="handleConnectGoogle('${escapeHtml(userId)}')">Connect</button>`
+            ? `<button class="btn btn-outline btn-sm" data-action="disconnect-google">Disconnect</button>`
+            : `<button class="btn btn-primary btn-sm" data-action="connect-google">Connect</button>`
           }
         </div>
       </div>
@@ -138,7 +138,7 @@ export async function renderSettings(container, userId) {
         </div>
         <div style="margin-top: 0.75rem; display: flex; gap: 0.5rem; justify-content: space-between; align-items: center;">
           <div style="font-size: 0.75rem; color: var(--text-dim);">If every provider you add is unreachable, your twin falls back to local AI + built-in rules.</div>
-          <button id="save-ai-btn" class="btn btn-primary btn-sm" onclick="saveAIProvidersHandler('${escapeHtml(userId)}')">Save</button>
+          <button id="save-ai-btn" class="btn btn-primary btn-sm" data-action="save-ai-providers">Save</button>
         </div>
       </div>
     </details>
@@ -157,7 +157,7 @@ export async function renderSettings(container, userId) {
             <div style="font-weight: 600; font-size: 0.9rem;">${escapeHtml(routine.planSummary || routine.id)}</div>
             <div style="font-size: 0.8rem; color: var(--text-muted);">${escapeHtml(routine.schedule)}${routine.nextRunAt ? ` · next ${escapeHtml(formatRelativeTime(routine.nextRunAt))}` : ''}</div>
           </div>
-          <button class="btn btn-outline btn-sm" onclick="deleteRoutineHandler('${escapeHtml(routine.id)}', '${escapeHtml(userId)}')">Delete</button>
+          <button class="btn btn-outline btn-sm" data-action="delete-routine" data-routine-id="${escapeHtml(routine.id)}">Delete</button>
         </div>
       `).join('')}
     </div>
@@ -176,7 +176,7 @@ export async function renderSettings(container, userId) {
           <select class="form-input" id="ironclaw-channel-select" style="flex: 1;">
             ${ironclawChannels.map(channel => `<option value="${escapeHtml(channel)}" ${channel === ironclawChannel ? 'selected' : ''}>${escapeHtml(channel)}</option>`).join('')}
           </select>
-          <button class="btn btn-primary btn-sm" onclick="saveIronClawChannel('${escapeHtml(userId)}')">Save</button>
+          <button class="btn btn-primary btn-sm" data-action="save-ironclaw-channel">Save</button>
         </div>
         <div id="ironclaw-channel-status" style="font-size: 0.8rem; margin-top: 0.5rem;"></div>
       </div>
@@ -208,7 +208,7 @@ export async function renderSettings(container, userId) {
           : 'Need a break? This pauses every automatic action — your twin keeps watching but won\'t do anything until you turn it back on. Your accounts stay linked.'}
       </div>
       ${currentTier !== 'observer' ? `
-        <button class="btn btn-outline btn-sm" onclick="pauseTwin('${escapeHtml(userId)}')">Pause everything</button>
+        <button class="btn btn-outline btn-sm" data-action="pause-twin">Pause everything</button>
       ` : ''}
     </div>
 
@@ -239,7 +239,7 @@ export async function renderSettings(container, userId) {
           Always ask before doing something that can't be undone
         </label>
       </div>
-      <button class="btn btn-primary btn-sm" onclick="saveSpendLimits('${escapeHtml(userId)}')">Save</button>
+      <button class="btn btn-primary btn-sm" data-action="save-spend-limits">Save</button>
     </div>
 
     <details class="card collapsible-card">
@@ -259,7 +259,7 @@ export async function renderSettings(container, userId) {
                 <span style="color: var(--text-muted); margin-left: 0.5rem;">${escapeHtml(p.trustTier)}</span>
                 ${p.maxSpendPerActionCents != null ? `<span style="color: var(--text-muted); margin-left: 0.5rem;">(max $${(p.maxSpendPerActionCents / 100).toFixed(2)}/action)</span>` : ''}
               </div>
-              <button class="btn btn-outline btn-sm" onclick="removeDomainPolicy('${escapeHtml(userId)}', '${escapeHtml(p.domain)}')">Remove</button>
+              <button class="btn btn-outline btn-sm" data-action="remove-domain-policy" data-domain="${escapeHtml(p.domain)}">Remove</button>
             </div>
           `).join('')}
         </div>
@@ -268,7 +268,7 @@ export async function renderSettings(container, userId) {
           <select class="form-input" id="new-domain-tier" style="flex: 1;">
             ${TIERS.map(t => `<option value="${t.value}">${t.name}</option>`).join('')}
           </select>
-          <button class="btn btn-primary btn-sm" onclick="addDomainPolicy('${escapeHtml(userId)}')">Add</button>
+          <button class="btn btn-primary btn-sm" data-action="add-domain-policy">Add</button>
         </div>
       </div>
     </details>
@@ -290,7 +290,7 @@ export async function renderSettings(container, userId) {
                 <span style="color: var(--text-muted); margin-left: 0.5rem;">${escapeHtml(JSON.stringify(t.conditions))}</span>
                 <span style="color: ${t.enabled ? 'var(--success)' : 'var(--text-muted)'}; margin-left: 0.5rem;">${t.enabled ? 'active' : 'disabled'}</span>
               </div>
-              <button class="btn btn-outline btn-sm" onclick="removeEscalationTrigger('${escapeHtml(userId)}', '${escapeHtml(t.id)}')">Remove</button>
+              <button class="btn btn-outline btn-sm" data-action="remove-escalation-trigger" data-trigger-id="${escapeHtml(t.id)}">Remove</button>
             </div>
           `).join('')}
         </div>
@@ -303,7 +303,7 @@ export async function renderSettings(container, userId) {
             <option value="consecutive_rejections">You said no several times</option>
           </select>
           <input class="form-input" id="new-trigger-value" placeholder="Value (e.g. 5000)" style="flex: 1;">
-          <button class="btn btn-primary btn-sm" onclick="addEscalationTrigger('${escapeHtml(userId)}')">Add</button>
+          <button class="btn btn-primary btn-sm" data-action="add-escalation-trigger">Add</button>
         </div>
       </div>
     </details>
@@ -317,7 +317,7 @@ export async function renderSettings(container, userId) {
         Click "Generate QR" then scan with your phone camera.
       </div>
       <div id="qr-container" style="text-align: center; margin-bottom: 1rem;"></div>
-      <button class="btn btn-primary btn-sm" onclick="generateQR('${escapeHtml(userId)}')">Generate QR code</button>
+      <button class="btn btn-primary btn-sm" data-action="generate-qr">Generate QR code</button>
 
       ${sessions.length > 0 ? `
         <div style="margin-top: 1.5rem;">
@@ -328,7 +328,7 @@ export async function renderSettings(container, userId) {
                 <span style="font-weight: 600; font-size: 0.85rem;">${escapeHtml(s.deviceName)}</span>
                 <span style="color: var(--text-muted); font-size: 0.75rem; margin-left: 0.5rem;">Last active: ${formatRelativeTime(s.lastActiveAt)}</span>
               </div>
-              <button class="btn btn-outline btn-sm" onclick="revokeSessionHandler('${escapeHtml(s.id)}', '${escapeHtml(userId)}')">Revoke</button>
+              <button class="btn btn-outline btn-sm" data-action="revoke-session" data-session-id="${escapeHtml(s.id)}">Revoke</button>
             </div>
           `).join('')}
         </div>
@@ -337,9 +337,114 @@ export async function renderSettings(container, userId) {
 
     <div class="card" style="margin-top: 2rem; text-align: center;">
       <div class="card-subtitle" style="margin-bottom: 0.75rem;">Signed in as <strong>${escapeHtml(userId)}</strong></div>
-      <button class="btn btn-outline" onclick="signOut()">Sign out</button>
+      <button class="btn btn-outline" data-action="sign-out">Sign out</button>
     </div>
   `;
+
+  ensureSettingsListener();
+}
+
+// Singleton click delegator. Settings re-renders after every successful
+// save/delete (saveTier, addDomainPolicy, deleteRoutineHandler, etc. all
+// re-call renderSettings on the same #page-content container). Binding
+// per-render would stack listeners — by the third save a single click
+// fires duplicate POSTs and shows duplicate toasts. Wire once on document.
+//
+// Reads userId via getCurrentUserId() instead of closing over the render
+// argument so the singleton always acts on the current user even after
+// the dev "Switch user" button changes localStorage. Hash-route gate
+// keeps the singleton from misfiring on other pages — the SPA reuses
+// one #page-content container, so data-action names that overlap with
+// other pages (e.g. "connect-google" also lives on dashboard) need an
+// authoritative scope, and the URL hash is it.
+let _settingsListenerWired = false;
+
+function ensureSettingsListener() {
+  if (_settingsListenerWired || typeof document === 'undefined') return;
+  _settingsListenerWired = true;
+  document.addEventListener('click', (e) => {
+    const hash = (window.location.hash || '').split('?')[0];
+    if (hash !== '#/settings') return;
+    const target = e.target instanceof Element ? e.target : null;
+    if (!target) return;
+    const el = target.closest('[data-action]');
+    if (!el) return;
+    const action = el.getAttribute('data-action');
+    const uid = getCurrentUserId();
+    switch (action) {
+      case 'switch-user': {
+        const input = document.getElementById('userId-input');
+        if (input?.value) window.skyTwinSetUserId(input.value);
+        return;
+      }
+      case 'select-tier':
+        window.selectTier(el);
+        return;
+      case 'save-tier':
+        window.saveTier(uid);
+        return;
+      case 'connect-google':
+        window.handleConnectGoogle(uid);
+        return;
+      case 'disconnect-google':
+        window.handleDisconnectGoogle(uid);
+        return;
+      case 'save-ai-providers':
+        window.saveAIProvidersHandler(uid);
+        return;
+      case 'delete-routine': {
+        const routineId = el.getAttribute('data-routine-id');
+        if (routineId) window.deleteRoutineHandler(routineId, uid);
+        return;
+      }
+      case 'save-ironclaw-channel':
+        window.saveIronClawChannel(uid);
+        return;
+      case 'pause-twin':
+        window.pauseTwin(uid);
+        return;
+      case 'save-spend-limits':
+        window.saveSpendLimits(uid);
+        return;
+      case 'remove-domain-policy': {
+        const domain = el.getAttribute('data-domain');
+        if (domain) window.removeDomainPolicy(uid, domain);
+        return;
+      }
+      case 'add-domain-policy':
+        window.addDomainPolicy(uid);
+        return;
+      case 'remove-escalation-trigger': {
+        const triggerId = el.getAttribute('data-trigger-id');
+        if (triggerId) window.removeEscalationTrigger(uid, triggerId);
+        return;
+      }
+      case 'add-escalation-trigger':
+        window.addEscalationTrigger(uid);
+        return;
+      case 'generate-qr':
+        window.generateQR(uid);
+        return;
+      case 'revoke-session': {
+        const sessionId = el.getAttribute('data-session-id');
+        if (sessionId) window.revokeSessionHandler(sessionId, uid);
+        return;
+      }
+      case 'sign-out':
+        window.signOut();
+        return;
+      case 'ai-test-provider': {
+        const idx = parseInt(el.getAttribute('data-idx') || '', 10);
+        if (Number.isFinite(idx)) window.aiTestProvider(idx, uid);
+        return;
+      }
+      case 'ai-remove-provider': {
+        const idx = parseInt(el.getAttribute('data-idx') || '', 10);
+        if (Number.isFinite(idx)) window.aiRemoveProvider(idx, uid);
+        return;
+      }
+    }
+  });
 }
 
 window.selectTier = function(el) {
@@ -666,8 +771,8 @@ function renderProviderChain(providers) {
               <input type="checkbox" ${p.enabled !== false ? 'checked' : ''} onchange="aiToggleEnabled(${idx}, this.checked)">
               on
             </label>
-            <button class="btn btn-outline btn-sm" style="padding: 0.15rem 0.4rem; font-size: 0.7rem;" onclick="aiTestProvider(${idx}, '${escapeHtml(getCurrentUserId())}')">Test</button>
-            <button class="btn btn-outline btn-sm" style="padding: 0.15rem 0.4rem; font-size: 0.7rem; color: var(--danger);" onclick="aiRemoveProvider(${idx}, '${escapeHtml(getCurrentUserId())}')">×</button>
+            <button class="btn btn-outline btn-sm" style="padding: 0.15rem 0.4rem; font-size: 0.7rem;" data-action="ai-test-provider" data-idx="${idx}">Test</button>
+            <button class="btn btn-outline btn-sm" style="padding: 0.15rem 0.4rem; font-size: 0.7rem; color: var(--danger);" data-action="ai-remove-provider" data-idx="${idx}">×</button>
           </div>
         </div>
         <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
