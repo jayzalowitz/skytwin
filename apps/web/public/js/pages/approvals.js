@@ -1,5 +1,6 @@
 import { fetchPendingApprovals, fetchApprovalHistory, respondToApproval, escapeHtml, fetchTrustProgress } from '../api-client.js';
 import { renderTrustProgress } from '../components/progress-bar.js';
+import { KEY_TOUR_MODE, firstApprovalIntroSeenKey } from '../storage-keys.js';
 
 const PENDING_PAGE_SIZE = 10;
 
@@ -31,8 +32,8 @@ export async function renderApprovals(container, userId) {
   let firstApprovalIntroKey = '';
   let showFirstApprovalIntro = false;
   try {
-    tourMode = localStorage.getItem('skytwin_tour_mode') === '1';
-    firstApprovalIntroKey = `skytwin_first_approval_intro_seen_${userId}`;
+    tourMode = localStorage.getItem(KEY_TOUR_MODE) === '1';
+    firstApprovalIntroKey = firstApprovalIntroSeenKey(userId);
     showFirstApprovalIntro = !tourMode
       && pending.length > 0
       && !localStorage.getItem(firstApprovalIntroKey);

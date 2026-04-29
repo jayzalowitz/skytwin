@@ -1,3 +1,5 @@
+import { KEY_SESSION_TOKEN } from './storage-keys.js';
+
 const API = '/api';
 
 /**
@@ -14,7 +16,7 @@ export function escapeHtml(str) {
  * Build the Authorization header from the stored session token (if any).
  */
 function authHeaders() {
-  const token = localStorage.getItem('skytwin_session_token');
+  const token = localStorage.getItem(KEY_SESSION_TOKEN);
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
@@ -161,11 +163,11 @@ export function fetchCredentialsStatus() {
 }
 
 export function fetchDemoInfo() {
-  return fetchJSON(`${API}/demo/info`);
+  return fetchJSON(`${API}/v1/demo/info`);
 }
 
 export function previewDemoDecision(situation) {
-  return fetchJSON(`${API}/demo/preview`, {
+  return fetchJSON(`${API}/v1/demo/preview`, {
     method: 'POST',
     body: JSON.stringify({ situation }),
   });

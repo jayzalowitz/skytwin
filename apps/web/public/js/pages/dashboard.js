@@ -1,7 +1,104 @@
 import { fetchHealth, fetchDecisions, fetchAccuracy, fetchConfidence, fetchLearning, fetchPendingApprovals, fetchSkillGaps, fetchTrustProgress, fetchLearned, fetchUnmetCredentials, fetchOAuthStatus, fetchCredentialsStatus, fetchBriefing, askTwin, escapeHtml } from '../api-client.js';
 import { renderTrustProgress } from '../components/progress-bar.js';
+import {
+  KEY_USER_ID,
+  KEY_ONBOARDED,
+  KEY_TOUR_MODE,
+  KEY_NOTIF_DISMISSED,
+  KEY_NOTIF_ASKED,
+  lastVisitKey,
+  firstDecisionSeenKey,
+  tierCelebratedKey,
+  clearKeysForSuffix,
+} from '../storage-keys.js';
+
+// ── Time / behavior constants ──────────────────────────────────────────
+// Centralized so the policy is visible at a glance and not scattered.
+
+/** A briefing older than this is considered stale and the card hides. */
+const BRIEFING_FRESH_MS = 36 * 60 * 60 * 1000;
+
+/** Don't show "while you were away" if the gap is shorter than this — it'd be noise. */
+const SINCE_LAST_VISIT_MIN_MS = 5 * 60 * 1000;
+
+/** Auto-refresh cadence during the post-OAuth first-scan window. */
+const FIRST_SCAN_POLL_MS = 4000;
+
+/** After this much time we stop the first-scan auto-refresh; first decisions
+ *  always show up on next normal render anyway. */
+const FIRST_SCAN_MAX_MS = 5 * 60 * 1000;
+
+/** Trust-tier promotion thresholds — must stay in sync with packages/policy-engine.
+ *  TODO (P2 in TODOS.md): export these from @skytwin/shared-types so server + UI share one source. */
+const TIER_THRESHOLDS = { observer: 10, suggest: 20, low_autonomy: 50, moderate_autonomy: 100 };
+const TIER_NEXT = { observer: 'Ask me first', suggest: 'Handle small stuff', low_autonomy: 'Handle most things', moderate_autonomy: 'Full autopilot' };
+
+/** TTL for slow-changing dashboard data — 30s is short enough that the
+ *  next paint after a meaningful state change still picks it up via a
+ *  bypass of `slowFetch` (e.g. SSE sse:credential:needed re-renders), and
+ *  long enough that the 13-fetch fan-out doesn't hammer the API on every
+ *  re-render during the first-scan window. */
+const SLOW_CACHE_TTL_MS = 30 * 1000;
+
+// Module-level cache for slow-changing fetches: oauth status, creds
+// status, skill gaps, learned, unmet creds. Each entry is keyed by a
+// short string and stores `{ value, expiresAt }`. Invalidated on:
+//   - SSE 'twin:updated' (clears 'learned-…')
+//   - SSE 'credential:needed' (clears 'creds-status')
+//   - explicit invalidateDashboardCache() from app.js
+const _slowCache = new Map();
+
+/**
+ * Wrap a fetch function so its result is memoized for SLOW_CACHE_TTL_MS.
+ * The cache key combines the supplied id with the function's name, so
+ * `slowFetch('oauth-google', fetchOAuthStatus, [userId, 'google'])` and
+ * `slowFetch('oauth-google', fetchOAuthStatus, [otherUid, 'google'])`
+ * are distinct entries.
+ */
+function slowFetch(key, fn, args) {
+  const now = Date.now();
+  const hit = _slowCache.get(key);
+  if (hit && hit.expiresAt > now) {
+    return Promise.resolve(hit.value);
+  }
+  // Cache the in-flight promise too so concurrent renders don't
+  // duplicate the fetch.
+  const promise = Promise.resolve(fn(...args)).then(
+    (value) => {
+      _slowCache.set(key, { value, expiresAt: Date.now() + SLOW_CACHE_TTL_MS });
+      return value;
+    },
+    (err) => {
+      // Don't cache failures — a transient error shouldn't suppress the
+      // value for 30s.
+      _slowCache.delete(key);
+      throw err;
+    },
+  );
+  _slowCache.set(key, { value: promise, expiresAt: now + SLOW_CACHE_TTL_MS });
+  return promise;
+}
+
+/**
+ * Invalidate the slow-fetch cache. `keyPrefix` lets callers drop only a
+ * subset (e.g. 'creds-status' when an SSE credential:needed event arrives).
+ * No arg = drop everything.
+ */
+export function invalidateDashboardCache(keyPrefix) {
+  if (!keyPrefix) {
+    _slowCache.clear();
+    return;
+  }
+  for (const k of _slowCache.keys()) {
+    if (k.startsWith(keyPrefix)) _slowCache.delete(k);
+  }
+}
 
 export async function renderDashboard(container, userId) {
+  // Fast-changing data — refetched on every render because SSE updates
+  // and user action move them around constantly.
+  // Slow-changing data — wrapped in slowFetch so a 4s first-scan tick or
+  // a debounced SSE re-render doesn't burn 13 round-trips per cycle.
   const [health, accuracy, confidence, learning, approvals, decisions, skillGaps, progress, learned, unmetCreds, googleOAuth, credsStatus, briefingData] = await Promise.allSettled([
     fetchHealth(),
     fetchAccuracy(userId),
@@ -9,12 +106,12 @@ export async function renderDashboard(container, userId) {
     fetchLearning(userId),
     fetchPendingApprovals(userId),
     fetchDecisions(userId, { limit: 10 }),
-    fetchSkillGaps(userId),
+    slowFetch(`skill-gaps-${userId}`, fetchSkillGaps, [userId]),
     fetchTrustProgress(userId),
-    fetchLearned(userId),
-    fetchUnmetCredentials(),
-    fetchOAuthStatus(userId, 'google'),
-    fetchCredentialsStatus(),
+    slowFetch(`learned-${userId}`, fetchLearned, [userId]),
+    slowFetch('unmet-creds', fetchUnmetCredentials, []),
+    slowFetch(`oauth-google-${userId}`, fetchOAuthStatus, [userId, 'google']),
+    slowFetch('creds-status', fetchCredentialsStatus, []),
     fetchBriefing(userId),
   ]);
 
@@ -40,7 +137,7 @@ export async function renderDashboard(container, userId) {
     if (!briefing?.createdAt) return false;
     const t = Date.parse(briefing.createdAt);
     if (!Number.isFinite(t)) return false;
-    return (Date.now() - t) < 36 * 60 * 60 * 1000;
+    return (Date.now() - t) < BRIEFING_FRESH_MS;
   })();
   const showBriefing = briefingItems.length > 0 && briefingFreshEnough;
 
@@ -69,7 +166,7 @@ export async function renderDashboard(container, userId) {
   const confLabel = overallConf >= 75 ? 'Very confident' : overallConf >= 50 ? 'Getting there' : overallConf >= 25 ? 'Still learning' : 'Just started';
   const confClass = overallConf >= 75 ? 'high' : overallConf >= 50 ? 'moderate' : overallConf >= 25 ? 'low' : 'speculative';
 
-  const tourMode = (() => { try { return localStorage.getItem('skytwin_tour_mode') === '1'; } catch { return false; } })();
+  const tourMode = (() => { try { return localStorage.getItem(KEY_TOUR_MODE) === '1'; } catch { return false; } })();
 
   // "While you were away" — count anything new since the last visit so the
   // user feels like the twin has been working for them, not just sitting
@@ -79,10 +176,10 @@ export async function renderDashboard(container, userId) {
   // (now - lastVisitMs) ~= 0 and the banner would never fire again.
   const sinceLastVisit = (() => {
     try {
-      const key = `skytwin_last_visit_${userId}`;
+      const key = lastVisitKey(userId);
       const lastVisitMs = parseInt(localStorage.getItem(key) || '0', 10);
       const now = Date.now();
-      if (!lastVisitMs || (now - lastVisitMs) < 5 * 60 * 1000) return null;
+      if (!lastVisitMs || (now - lastVisitMs) < SINCE_LAST_VISIT_MIN_MS) return null;
       const newDecisions = recentDecisions.filter((d) => {
         const t = Date.parse(d.createdAt || d.created_at || '');
         return Number.isFinite(t) && t > lastVisitMs;
@@ -102,14 +199,14 @@ export async function renderDashboard(container, userId) {
     window._skytwinLastVisitWired = true;
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState !== 'hidden') return;
-      const uid = (() => { try { return localStorage.getItem('skytwin_userId'); } catch { return null; } })();
+      const uid = (() => { try { return localStorage.getItem(KEY_USER_ID); } catch { return null; } })();
       if (!uid) return;
-      try { localStorage.setItem(`skytwin_last_visit_${uid}`, String(Date.now())); } catch { /* private mode */ }
+      try { localStorage.setItem(lastVisitKey(uid), String(Date.now())); } catch { /* private mode */ }
     });
     window.addEventListener('beforeunload', () => {
-      const uid = (() => { try { return localStorage.getItem('skytwin_userId'); } catch { return null; } })();
+      const uid = (() => { try { return localStorage.getItem(KEY_USER_ID); } catch { return null; } })();
       if (!uid) return;
-      try { localStorage.setItem(`skytwin_last_visit_${uid}`, String(Date.now())); } catch { /* noop */ }
+      try { localStorage.setItem(lastVisitKey(uid), String(Date.now())); } catch { /* noop */ }
     });
   }
 
@@ -271,7 +368,7 @@ export async function renderDashboard(container, userId) {
   // browser. Skipped in tour mode (Alex already has plenty of decisions
   // from the seed). Skipped if the user has dismissed via localStorage.
   try {
-    const seenKey = `skytwin_first_decision_seen_${userId}`;
+    const seenKey = firstDecisionSeenKey(userId);
     if (
       !tourMode
       && recentDecisions.length > 0
@@ -292,8 +389,6 @@ export async function renderDashboard(container, userId) {
   // moment lands. The progress bar already shows "Ready to level up!" but
   // a returning user might miss that — the toast catches their eye.
   try {
-    const TIER_THRESHOLDS = { observer: 10, suggest: 20, low_autonomy: 50, moderate_autonomy: 100 };
-    const TIER_NEXT = { observer: 'Ask me first', suggest: 'Handle small stuff', low_autonomy: 'Handle most things', moderate_autonomy: 'Full autopilot' };
     const tier = prog?.currentTier;
     const count = prog?.approvalCount ?? 0;
     const threshold = tier ? TIER_THRESHOLDS[tier] : null;
@@ -304,7 +399,7 @@ export async function renderDashboard(container, userId) {
       && count >= threshold
       && typeof window !== 'undefined'
     ) {
-      const tierKey = `skytwin_tier_celebrated_${userId}_${tier}`;
+      const tierKey = tierCelebratedKey(userId, tier);
       if (!localStorage.getItem(tierKey)) {
         localStorage.setItem(tierKey, '1');
         import('../sse-client.js').then(({ showToast }) => {
@@ -326,14 +421,14 @@ export async function renderDashboard(container, userId) {
     if (window._skytwinFirstScanTimer) clearTimeout(window._skytwinFirstScanTimer);
     if (!window._skytwinFirstScanStartedAt) window._skytwinFirstScanStartedAt = Date.now();
     const elapsed = Date.now() - window._skytwinFirstScanStartedAt;
-    if (elapsed < 5 * 60 * 1000) {
+    if (elapsed < FIRST_SCAN_MAX_MS) {
       window._skytwinFirstScanTimer = setTimeout(() => {
         // Only re-render if user is still on the dashboard.
         const currentHash = (window.location.hash || '').split('?')[0] || '#/';
         if (currentHash === '#/' || currentHash === '#') {
           renderDashboard(container, userId).catch(() => { /* swallow — next tick will retry */ });
         }
-      }, 4000);
+      }, FIRST_SCAN_POLL_MS);
     }
   } else if (window._skytwinFirstScanTimer) {
     clearTimeout(window._skytwinFirstScanTimer);
@@ -413,7 +508,7 @@ function renderNotificationOptIn() {
   let dismissed = false;
   try {
     state = window.skyTwinNotificationsState ? window.skyTwinNotificationsState() : 'unsupported';
-    dismissed = localStorage.getItem('skytwin_notif_dismissed') === '1';
+    dismissed = localStorage.getItem(KEY_NOTIF_DISMISSED) === '1';
   } catch { /* noop */ }
   if (state !== 'default' || dismissed) return '';
 
@@ -434,27 +529,25 @@ function renderNotificationOptIn() {
   `;
 }
 
-if (typeof window !== 'undefined') {
-  window.handleEnableNotifications = async function() {
-    try {
-      const res = await window.skyTwinRequestNotifications();
-      if (res === 'granted') {
-        const card = document.getElementById('notif-opt-in');
-        if (card) card.remove();
-        const { showToast } = await import('../sse-client.js');
-        showToast('Notifications on', 'I\'ll ping you when something needs your OK.', 'success');
-      } else if (res === 'denied') {
-        const card = document.getElementById('notif-opt-in');
-        if (card) card.remove();
-        try { localStorage.setItem('skytwin_notif_dismissed', '1'); } catch { /* noop */ }
-      }
-    } catch { /* user dismissed the OS prompt */ }
-  };
+async function handleEnableNotifications() {
+  try {
+    const res = await window.skyTwinRequestNotifications();
+    if (res === 'granted') {
+      const card = document.getElementById('notif-opt-in');
+      if (card) card.remove();
+      const { showToast } = await import('../sse-client.js');
+      showToast('Notifications on', 'I\'ll ping you when something needs your OK.', 'success');
+    } else if (res === 'denied') {
+      const card = document.getElementById('notif-opt-in');
+      if (card) card.remove();
+      try { localStorage.setItem(KEY_NOTIF_DISMISSED, '1'); } catch { /* noop */ }
+    }
+  } catch { /* user dismissed the OS prompt */ }
+}
 
-  window.dismissNotifOptIn = function() {
-    try { localStorage.setItem('skytwin_notif_dismissed', '1'); } catch { /* noop */ }
-    document.getElementById('notif-opt-in')?.remove();
-  };
+function dismissNotifOptIn() {
+  try { localStorage.setItem(KEY_NOTIF_DISMISSED, '1'); } catch { /* noop */ }
+  document.getElementById('notif-opt-in')?.remove();
 }
 
 function renderBriefingCard({ items, createdAt }) {
@@ -634,42 +727,25 @@ function renderAskTwinWidget({ userId, tourMode }) {
   `;
 }
 
-if (typeof window !== 'undefined') {
-  // Wire example chips once per render; delegated so re-render rebinds.
-  document.addEventListener('click', (ev) => {
-    const btn = ev.target?.closest?.('.ask-twin-example');
-    if (!btn) return;
-    const wrap = btn.closest('#ask-twin-examples');
-    const uid = wrap?.getAttribute('data-user-id');
-    const prompt = btn.getAttribute('data-prompt');
-    const input = document.getElementById('ask-twin-input');
-    if (!input || !uid || !prompt) return;
-    input.value = prompt;
-    window.handleAskTwin?.(uid);
-  });
-}
+async function handleAskTwin(userId) {
+  const input = document.getElementById('ask-twin-input');
+  const btn = document.getElementById('ask-twin-btn');
+  const result = document.getElementById('ask-twin-result');
+  if (!input || !result) return;
+  const situation = input.value.trim();
+  if (!situation) { input.focus(); return; }
 
-if (typeof window !== 'undefined') {
-  window.handleAskTwin = async function(userId) {
-    const input = document.getElementById('ask-twin-input');
-    const btn = document.getElementById('ask-twin-btn');
-    const result = document.getElementById('ask-twin-result');
-    if (!input || !result) return;
-    const situation = input.value.trim();
-    if (!situation) { input.focus(); return; }
+  if (btn) { btn.disabled = true; btn.textContent = 'Thinking…'; }
+  result.innerHTML = `<div style="padding: 0.75rem; color: var(--text-muted); font-size: 0.85rem;">Thinking it through…</div>`;
 
-    if (btn) { btn.disabled = true; btn.textContent = 'Thinking…'; }
-    result.innerHTML = `<div style="padding: 0.75rem; color: var(--text-muted); font-size: 0.85rem;">Thinking it through…</div>`;
-
-    try {
-      const r = await askTwin(userId, situation);
-      result.innerHTML = renderAskResult(r);
-    } catch (err) {
-      result.innerHTML = `<div class="error-banner">${escapeHtml(err.message || 'Couldn\'t reach the twin right now.')}</div>`;
-    } finally {
-      if (btn) { btn.disabled = false; btn.textContent = 'Ask'; }
-    }
-  };
+  try {
+    const r = await askTwin(userId, situation);
+    result.innerHTML = renderAskResult(r);
+  } catch (err) {
+    result.innerHTML = `<div class="error-banner">${escapeHtml(err.message || 'Couldn\'t reach the twin right now.')}</div>`;
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Ask'; }
+  }
 }
 
 function renderAskResult(r) {
@@ -723,29 +799,20 @@ function renderTourBanner() {
   `;
 }
 
-if (typeof window !== 'undefined') {
-  window.skyTwinExitTour = function() {
-    try {
-      const demoUid = localStorage.getItem('skytwin_userId') || '';
-      // Hard-cleanup everything the tour wrote so a future tour starts
-      // fresh (no stale "first decision" toast, no stale tier celebration,
-      // no stale notification dismissal). We can't enumerate keys
-      // perfectly without scanning, so we both remove the known per-user
-      // keys for the demo uid and sweep any other key starting with the
-      // skytwin_ prefix scoped to that uid.
-      const fixedKeys = ['skytwin_tour_mode', 'skytwin_userId', 'skytwin_onboarded', 'skytwin_notif_dismissed', 'skytwin_notif_asked'];
-      for (const k of fixedKeys) localStorage.removeItem(k);
-      if (demoUid) {
-        for (let i = localStorage.length - 1; i >= 0; i--) {
-          const key = localStorage.key(i);
-          if (key && key.startsWith('skytwin_') && key.endsWith(demoUid)) {
-            localStorage.removeItem(key);
-          }
-        }
-      }
-    } catch { /* private mode etc. */ }
-    window.location.reload();
-  };
+function skyTwinExitTour() {
+  // Hard-cleanup everything the tour wrote so a future tour starts
+  // fresh (no stale "first decision" toast, no stale tier celebration,
+  // no stale notification dismissal). Sweeps both the fixed-name flags
+  // and any per-user key whose suffix matches the demo uid.
+  const demoUid = (() => { try { return localStorage.getItem(KEY_USER_ID) || ''; } catch { return ''; } })();
+  clearKeysForSuffix(demoUid, [
+    KEY_TOUR_MODE,
+    KEY_USER_ID,
+    KEY_ONBOARDED,
+    KEY_NOTIF_DISMISSED,
+    KEY_NOTIF_ASKED,
+  ]);
+  window.location.reload();
 }
 
 function renderJustConnectedCelebration({ justConnectedProvider, justConnectedAccount, recentDecisionsCount, learnedCount }) {
@@ -768,10 +835,9 @@ function renderJustConnectedCelebration({ justConnectedProvider, justConnectedAc
         </div>
         ${accountLine}
         <div style="margin-top: 0.75rem; display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; color: var(--text-muted);">
-          <span class="loading-dot" style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--success); animation: pulse 1.4s ease-in-out infinite;"></span>
+          <span class="skytwin-pulse-dot"></span>
           Watching your inbox and calendar…
         </div>
-        <style>@keyframes pulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(0.85); } }</style>
       </div>
     `;
   }
@@ -829,19 +895,51 @@ function renderConnectGoogleHero({ googleConnected, googleSystemConfigured, user
   `;
 }
 
-if (typeof window !== 'undefined') {
-  window.handleConnectGoogleFromDashboard = async function(userId) {
-    try {
-      const { getGoogleAuthUrl } = await import('../api-client.js');
-      const data = await getGoogleAuthUrl(userId);
-      if (data?.url) {
-        window.location.href = data.url;
-      }
-    } catch (err) {
-      console.error('Could not start Google connect flow:', err);
-      window.location.hash = '#/settings';
+async function handleConnectGoogleFromDashboard(userId) {
+  try {
+    const { getGoogleAuthUrl } = await import('../api-client.js');
+    const data = await getGoogleAuthUrl(userId);
+    if (data?.url) {
+      window.location.href = data.url;
     }
-  };
+  } catch (err) {
+    console.error('Could not start Google connect flow:', err);
+    window.location.hash = '#/settings';
+  }
+}
+
+// ── Bootstrap (called once from app.js) ────────────────────────────────
+//
+// Pulls all dashboard handlers + the document-level click delegator
+// behind a single init function. Idempotent — safe to call more than
+// once if app.js ever bootstraps the dashboard route twice. Replaces
+// five module-top-level `if (typeof window !== 'undefined') { ... }`
+// blocks that ran at import time and made the lifecycle unclear.
+let _dashboardGlobalsWired = false;
+
+export function initDashboardGlobals() {
+  if (typeof window === 'undefined' || _dashboardGlobalsWired) return;
+  _dashboardGlobalsWired = true;
+
+  window.handleEnableNotifications = handleEnableNotifications;
+  window.dismissNotifOptIn = dismissNotifOptIn;
+  window.handleAskTwin = handleAskTwin;
+  window.skyTwinExitTour = skyTwinExitTour;
+  window.handleConnectGoogleFromDashboard = handleConnectGoogleFromDashboard;
+
+  // Delegated click on the Ask Your Twin example chips. Lives on
+  // document so the dashboard can re-render without rebinding.
+  document.addEventListener('click', (ev) => {
+    const btn = ev.target?.closest?.('.ask-twin-example');
+    if (!btn) return;
+    const wrap = btn.closest('#ask-twin-examples');
+    const uid = wrap?.getAttribute('data-user-id');
+    const prompt = btn.getAttribute('data-prompt');
+    const input = document.getElementById('ask-twin-input');
+    if (!input || !uid || !prompt) return;
+    input.value = prompt;
+    handleAskTwin(uid);
+  });
 }
 
 function renderUnmetCredentials(unmetCredsResult) {

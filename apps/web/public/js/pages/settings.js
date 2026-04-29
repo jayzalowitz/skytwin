@@ -1,4 +1,5 @@
 import { fetchUser, updateTrustTier, fetchOAuthStatus, getGoogleAuthUrl, disconnectProvider, escapeHtml, fetchSettings, updateAutonomySettings, updateIronClawChannel, upsertDomainPolicy, deleteDomainPolicy, createEscalationTrigger, deleteEscalationTrigger, createSession, fetchSessions, revokeSession, saveAIProviders, testAIProvider, fetchRoutines, deleteRoutine } from '../api-client.js';
+import { KEY_USER_ID, KEY_ONBOARDED } from '../storage-keys.js';
 
 const TIERS = [
   { value: 'observer', name: 'Just watch', desc: 'Your assistant watches but never does anything. Good for seeing what it would do.' },
@@ -697,7 +698,7 @@ function renderProviderChain(providers) {
 }
 
 function getCurrentUserId() {
-  return localStorage.getItem('skytwin_userId') || 'default-user';
+  return localStorage.getItem(KEY_USER_ID) || 'default-user';
 }
 
 // Drag and drop state
@@ -823,8 +824,8 @@ document.addEventListener('change', (e) => {
 });
 
 window.signOut = function() {
-  localStorage.removeItem('skytwin_userId');
-  localStorage.removeItem('skytwin_onboarded');
+  localStorage.removeItem(KEY_USER_ID);
+  localStorage.removeItem(KEY_ONBOARDED);
   window.location.hash = '#/';
   window.location.reload();
 };

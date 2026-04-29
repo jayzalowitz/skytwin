@@ -1,4 +1,5 @@
 import { createUser, updateTrustTier, fetchJSON, fetchTwinProfile, fetchDemoInfo, previewDemoDecision } from '../api-client.js';
+import { KEY_USER_ID, KEY_ONBOARDED, KEY_TOUR_MODE } from '../storage-keys.js';
 
 // ── Domain definitions ──────────────────────────────────────────────
 
@@ -213,9 +214,9 @@ const STEPS = [
             // the session as touring so the dashboard banner can offer a
             // graceful exit back to real onboarding.
             try {
-              localStorage.setItem('skytwin_tour_mode', '1');
-              localStorage.setItem('skytwin_userId', info.userId);
-              localStorage.setItem('skytwin_onboarded', 'true');
+              localStorage.setItem(KEY_TOUR_MODE, '1');
+              localStorage.setItem(KEY_USER_ID, info.userId);
+              localStorage.setItem(KEY_ONBOARDED, 'true');
             } catch { /* private mode etc. */ }
             const overlay = document.getElementById('onboarding-overlay');
             if (overlay) overlay.style.display = 'none';
@@ -592,8 +593,8 @@ export function renderOnboarding(container, onComplete) {
 
         // 5. Persist onboarding completion early so navigating away
         //    during the signal preview doesn't restart the wizard.
-        localStorage.setItem('skytwin_userId', userId);
-        localStorage.setItem('skytwin_onboarded', 'true');
+        localStorage.setItem(KEY_USER_ID, userId);
+        localStorage.setItem(KEY_ONBOARDED, 'true');
 
         // 6. Show signal preview before navigating to dashboard
         await showSignalPreview(container, userId);

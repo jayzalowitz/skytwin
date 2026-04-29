@@ -1,4 +1,4 @@
-import { renderDashboard } from './pages/dashboard.js';
+import { renderDashboard, initDashboardGlobals, invalidateDashboardCache } from './pages/dashboard.js';
 import { renderApprovals } from './pages/approvals.js';
 import { renderDecisions } from './pages/decisions.js';
 import { renderTwin } from './pages/twin.js';
@@ -9,8 +9,9 @@ import { renderOnboarding } from './pages/onboarding.js';
 import { fetchPendingApprovals, fetchHealth, fetchUser, listUsers, escapeHtml } from './api-client.js';
 import { mountThemeSwitcher, initTheme } from './theme-switcher.js';
 import { connectSSE, disconnectSSE, isConnected } from './sse-client.js';
+import { KEY_USER_ID, KEY_ONBOARDED, KEY_SESSION_TOKEN } from './storage-keys.js';
 
-let currentUserId = localStorage.getItem('skytwin_userId') || '';
+let currentUserId = localStorage.getItem(KEY_USER_ID) || '';
 
 const routes = {
   '/': { title: 'Home', render: renderDashboard },
@@ -26,7 +27,7 @@ const routes = {
  * Check if onboarding is needed.
  */
 function needsOnboarding() {
-  return !localStorage.getItem('skytwin_onboarded');
+  return !localStorage.getItem(KEY_ONBOARDED);
 }
 
 /**
@@ -39,8 +40,8 @@ function showOnboarding() {
     document.getElementById('onboarding-content'),
     (userId) => {
       currentUserId = userId;
-      localStorage.setItem('skytwin_userId', userId);
-      localStorage.setItem('skytwin_onboarded', 'true');
+      localStorage.setItem(KEY_USER_ID, userId);
+      localStorage.setItem(KEY_ONBOARDED, 'true');
       overlay.style.display = 'none';
       navigate();
     },
@@ -286,8 +287,8 @@ function navigate() {
 
 export function setUserId(id) {
   currentUserId = id;
-  localStorage.setItem('skytwin_userId', id);
-  localStorage.setItem('skytwin_onboarded', 'true');
+  localStorage.setItem(KEY_USER_ID, id);
+  localStorage.setItem(KEY_ONBOARDED, 'true');
   try { disconnectSSE(); } catch { /* noop */ }
   connectSSE(id);
   navigate();
@@ -315,14 +316,18 @@ document.querySelectorAll('.nav-link').forEach(link => {
 
 window.addEventListener('hashchange', navigate);
 window.addEventListener('DOMContentLoaded', () => {
+  // Wire dashboard event handlers + document-level delegators.
+  // Idempotent so re-running this in tests is safe.
+  initDashboardGlobals();
+
   // Handle mobile QR pairing entry (/mobile?token=...&userId=...)
   const urlParams = new URLSearchParams(window.location.search);
   const mobileToken = urlParams.get('token');
   const mobileUserId = urlParams.get('userId');
   if (mobileToken && mobileUserId) {
-    localStorage.setItem('skytwin_session_token', mobileToken);
-    localStorage.setItem('skytwin_userId', mobileUserId);
-    localStorage.setItem('skytwin_onboarded', 'true');
+    localStorage.setItem(KEY_SESSION_TOKEN, mobileToken);
+    localStorage.setItem(KEY_USER_ID, mobileUserId);
+    localStorage.setItem(KEY_ONBOARDED, 'true');
     currentUserId = mobileUserId;
     // Clean up URL
     window.history.replaceState({}, '', '/');
@@ -334,8 +339,8 @@ window.addEventListener('DOMContentLoaded', () => {
   // the param so reloads stay sticky. Useful when a Google OAuth callback or
   // the user-switcher dropdown lands here.
   if (mobileUserId) {
-    localStorage.setItem('skytwin_userId', mobileUserId);
-    localStorage.setItem('skytwin_onboarded', 'true');
+    localStorage.setItem(KEY_USER_ID, mobileUserId);
+    localStorage.setItem(KEY_ONBOARDED, 'true');
     currentUserId = mobileUserId;
     window.history.replaceState({}, '', window.location.pathname + window.location.hash);
     connectSSE(currentUserId);
@@ -377,8 +382,12 @@ window.addEventListener('sse:approval:resolved', () => updateApprovalBadge());
 window.addEventListener('sse:connected', () => updateConnectionStatus());
 window.addEventListener('sse:disconnected', () => updateConnectionStatus());
 
-// Re-render current page when twin is updated (e.g. after feedback)
+// Re-render current page when twin is updated (e.g. after feedback).
+// Drop the cached learned/skill-gaps too so the next render reflects
+// the new state instead of the 30s-old snapshot.
 window.addEventListener('sse:twin:updated', () => {
+  invalidateDashboardCache('learned-');
+  invalidateDashboardCache('skill-gaps-');
   const hash = window.location.hash.slice(1) || '/';
   if (hash === '/' || hash === '/twin') {
     const route = routes[hash] || routes['/'];
@@ -387,8 +396,11 @@ window.addEventListener('sse:twin:updated', () => {
   }
 });
 
-// Re-render dashboard or setup page when new credentials are needed
+// Re-render dashboard or setup page when new credentials are needed.
+// Bust the creds cache so the dashboard hero card flips state immediately.
 window.addEventListener('sse:credential:needed', () => {
+  invalidateDashboardCache('creds-status');
+  invalidateDashboardCache('unmet-creds');
   const hash = window.location.hash.slice(1) || '/';
   if (hash === '/' || hash === '/setup') {
     const route = routes[hash] || routes['/'];

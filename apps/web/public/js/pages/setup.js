@@ -1,4 +1,5 @@
 import { fetchJSON, escapeHtml } from '../api-client.js';
+import { KEY_USER_ID } from '../storage-keys.js';
 
 // Module-level sync lookup for dynamic integration card rendering
 let _syncLookup = {};
@@ -507,7 +508,7 @@ window.saveServiceCredentials = async function(service, opts = {}) {
     if (service === 'google' && opts.autoConnect) {
       statusEl.innerHTML = '<span style="color: var(--success);">Saved! Sending you to Google…</span>';
       try {
-        const userId = localStorage.getItem('skytwin_userId');
+        const userId = localStorage.getItem(KEY_USER_ID);
         const { getGoogleAuthUrl } = await import('../api-client.js');
         const data = await getGoogleAuthUrl(userId);
         if (data?.url) {
@@ -524,7 +525,7 @@ window.saveServiceCredentials = async function(service, opts = {}) {
     // Re-render to update status badges
     setTimeout(async () => {
       const { renderSetup } = await import('./setup.js');
-      await renderSetup(document.getElementById('page-content'), localStorage.getItem('skytwin_userId'));
+      await renderSetup(document.getElementById('page-content'), localStorage.getItem(KEY_USER_ID));
     }, 800);
   } catch (err) {
     statusEl.innerHTML = `<span style="color: var(--danger);">${escapeHtml(err.message)}</span>`;
@@ -535,7 +536,7 @@ window.handleConnectGoogleFromSetup = async function() {
   const statusEl = document.getElementById('save-status-google');
   if (statusEl) statusEl.innerHTML = '<span style="color: var(--text-muted);">Sending you to Google…</span>';
   try {
-    const userId = localStorage.getItem('skytwin_userId');
+    const userId = localStorage.getItem(KEY_USER_ID);
     const { getGoogleAuthUrl } = await import('../api-client.js');
     const data = await getGoogleAuthUrl(userId);
     if (data?.url) window.location.href = data.url;
@@ -553,7 +554,7 @@ window.syncServiceToIronClaw = async function(service) {
     if (statusEl) statusEl.innerHTML = '<span style="color: var(--success);">Synced!</span>';
     setTimeout(async () => {
       const { renderSetup } = await import('./setup.js');
-      await renderSetup(document.getElementById('page-content'), localStorage.getItem('skytwin_userId'));
+      await renderSetup(document.getElementById('page-content'), localStorage.getItem(KEY_USER_ID));
     }, 800);
   } catch (err) {
     if (statusEl) statusEl.innerHTML = `<span style="color: var(--danger);">${escapeHtml(err.message)}</span>`;

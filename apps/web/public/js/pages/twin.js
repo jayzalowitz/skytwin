@@ -167,8 +167,12 @@ function renderInsightItem(item, userId) {
         </div>
       </div>
       <div class="insight-actions" style="display: flex; gap: 0.35rem; flex-shrink: 0; align-self: center;">
-        <button class="btn btn-ghost btn-sm" onclick="editInsight('${userId}', '${escapedDomain}', '${escapedKey}', '${escapedValue}')">Edit</button>
-        <button class="btn btn-outline btn-sm" onclick="correctInsight('${userId}', '${escapedDomain}', '${escapedKey}', '${escapedValue}')">That's not right</button>
+        <button class="btn btn-ghost btn-sm twin-insight-btn"
+                data-action="edit" data-user-id="${escapeHtml(userId)}"
+                data-domain="${escapedDomain}" data-key="${escapedKey}" data-value="${escapedValue}">Edit</button>
+        <button class="btn btn-outline btn-sm twin-insight-btn"
+                data-action="correct" data-user-id="${escapeHtml(userId)}"
+                data-domain="${escapedDomain}" data-key="${escapedKey}" data-value="${escapedValue}">That's not right</button>
       </div>
     </div>
   `;
@@ -421,4 +425,29 @@ async function submitCorrection(modal, userId, domain, key, newValue) {
     }
     errEl.textContent = err.message;
   }
+}
+
+// Delegated click handler for the per-insight Edit / "That's not right"
+// buttons. Reading values from data-* attributes (escaped via escapeHtml,
+// which is HTML-context safe) sidesteps the JS-string-literal escape
+// problem with inline onclick="...handler('${value}')". Idempotent so
+// the listener is wired once even if the module is imported multiple
+// times.
+if (typeof document !== 'undefined' && !window._twinInsightWired) {
+  window._twinInsightWired = true;
+  document.addEventListener('click', (ev) => {
+    const btn = ev.target?.closest?.('.twin-insight-btn');
+    if (!btn) return;
+    const action = btn.getAttribute('data-action');
+    const userId = btn.getAttribute('data-user-id') || '';
+    const domain = btn.getAttribute('data-domain') || '';
+    const key = btn.getAttribute('data-key') || '';
+    const value = btn.getAttribute('data-value') || '';
+    if (!action || !userId) return;
+    if (action === 'edit' && typeof window.editInsight === 'function') {
+      window.editInsight(userId, domain, key, value);
+    } else if (action === 'correct' && typeof window.correctInsight === 'function') {
+      window.correctInsight(userId, domain, key, value);
+    }
+  });
 }
