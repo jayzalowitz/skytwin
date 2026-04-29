@@ -228,6 +228,56 @@ packages/
 | CI/CD | GitHub Actions |
 | Execution | [IronClaw](https://github.com/nearai/ironclaw/) |
 
+## Deployment
+
+### Reverse proxies and `TRUST_PROXY_HOPS`
+
+The API uses `req.ip` for every IP-keyed check: the session-auth
+localhost dev-bypass, the OAuth new-user rate limit, the
+`/api/v1/demo/preview` per-IP bucket, and any future per-client limit.
+Behind any reverse proxy, `req.ip` is the proxy's address by default —
+which collapses every per-IP limit into a single shared bucket. You
+need `TRUST_PROXY_HOPS` set to the exact number of trusted hops between
+the Node process and the real client.
+
+| Topology | `TRUST_PROXY_HOPS` |
+|----------|--------------------|
+| Direct (no proxy, or untrusted upstream) | `0` (default) |
+| Single reverse proxy (nginx, Caddy, Fly, Render, Heroku, ELB) | `1` |
+| CDN → reverse proxy (Cloudflare → nginx → Node) | `2` |
+| Multi-hop edge (Cloudflare → WAF → ALB → Node) | `3+` |
+
+**Setting this too high is a security hole.** A client-controlled
+`X-Forwarded-For` becomes `req.ip` and bypasses every per-IP limit by
+header rotation. **When in doubt, prefer fewer hops.**
+
+Verify after deploy:
+
+```bash
+curl -H 'X-Forwarded-For: 1.2.3.4' https://your-api/api/health/live
+# then in the API log, the resolved req.ip should NOT be 1.2.3.4
+# unless 1.2.3.4 is actually a trusted upstream
+```
+
+If `req.ip` ends up matching the spoofed header, your `TRUST_PROXY_HOPS`
+is too permissive and rate-limit bypass is open.
+
+### Public demo preview (`/api/v1/demo/preview`)
+
+The public LLM-backed preview endpoint has three layers of protection:
+
+| Env var | Default | Purpose |
+|---------|---------|---------|
+| `DEMO_PREVIEW_DISABLED` | unset | Set to `1` to return 503 unconditionally — operator kill switch when the endpoint gets abused. |
+| `DEMO_PREVIEW_GLOBAL_LIMIT_PER_HOUR` | `500` | Hard global cap across all callers. Survives misconfigured `TRUST_PROXY_HOPS` and rotated-IP abuse. |
+| Per-IP bucket | 20 / 5 min | Built in. Effectiveness depends on `TRUST_PROXY_HOPS` resolving the real client IP. |
+
+The per-IP bucket and the global cap are process-local. If you run
+multiple API replicas, the global cap multiplies by replica count.
+For unauthenticated public deployments at scale, replace the
+in-memory counter with Redis or a DB row with atomic increment
+(tracked in TODOS.md as a P3).
+
 ## Trust Tiers
 
 SkyTwin uses a progressive trust model. Autonomy is earned, not assumed.
