@@ -2,25 +2,28 @@
 
 Generated from CEO review on 2026-04-01. Updated through M2/M3/M4 completion.
 
-## Open — found in /review on 2026-04-28 (PR #126 non-tech UX branch)
+## Open — remaining from /review on 2026-04-28 (PR #126 non-tech UX branch)
 
-Ship-blocker fixes were applied in commit landing this branch. Items below
-were judged too risky or too large for this PR; they should land on
-follow-up branches with their own reviews.
+Most items closed in the same branch (see Completed below). Three items
+remain open as P2/P3 follow-ups.
 
-- [ ] **P1**: Stop the dashboard's 13-endpoint Promise.allSettled fan-out on every render. Cache slow-changing data (oauth status, creds status, skill gaps, learned, unmet creds) in a module-level Map with ~30s TTL. Or build a single `/api/v1/dashboard` aggregate endpoint. Currently bursts ~150 reqs/min during first-scan window. **Files:** apps/web/public/js/pages/dashboard.js:5
-- [ ] **P1**: Migrate inline `onclick="...handleX('${escapeHtml(value)}')"` patterns across dashboard.js / approvals.js / settings.js / decisions.js / setup.js to `addEventListener` bindings. `escapeHtml` defends against HTML context but values land in JS-string-literal context — UUIDs are safe today, the pattern isn't. **Files:** apps/web/public/js/pages/{dashboard,approvals,settings,decisions,setup}.js
-- [ ] **P1**: Add tests for `apps/api/src/routes/demo.ts`. Cover 400 (missing/oversize situation), 404 (no seed), 429 (per-IP + global limit), 503 (kill switch), 200 happy path. Export `checkPreviewRate` and `checkGlobalRate` for unit testability. **Files:** apps/api/src/routes/demo.ts, apps/api/src/__tests__/demo-routes.test.ts (new)
-- [ ] **P2**: Split `renderDashboard` (~290 lines now) into `computeDashboardModel`, `renderDashboardView`, `applyDashboardEffects`. The current function mixes data fetching, state derivation, HTML composition, and post-render side effects — hard to test, hard to refactor. **Files:** apps/web/public/js/pages/dashboard.js
-- [ ] **P2**: Extract magic numbers to a named-constants block at top of dashboard.js (BRIEFING_FRESH_MS, FIRST_SCAN_POLL_MS, etc.). Pull TIER_THRESHOLDS / TIER_NEXT from `@skytwin/shared-types` so the UI can't drift from the server's tier-promotion rules. **Files:** apps/web/public/js/pages/dashboard.js
-- [ ] **P2**: Consolidate the five module-level `if (typeof window !== 'undefined') { window.X = ... }` blocks in dashboard.js into one `initDashboardGlobals()` called by app.js bootstrap. Same for the document-level click delegator on `.ask-twin-example`. **Files:** apps/web/public/js/pages/dashboard.js
-- [ ] **P2**: Centralize localStorage keys in a `storageKeys.js` module. Currently constructed inline (`skytwin_tour_mode`, `skytwin_first_decision_seen_${userId}`, etc.) — easy to typo, impossible to audit centrally. **Files:** apps/web/public/js/
-- [ ] **P2**: Add OpenAPI/typed-interface coverage for `DemoInfoResponse` and `DemoPreviewResponse` (currently a spread + extra field). Document the public `/api/demo/*` surface. **Files:** apps/api/src/routes/demo.ts, packages/shared-types
-- [ ] **P2**: Add `app.set('trust proxy', N)` configuration for production deployments. The new global cap (DEMO_PREVIEW_GLOBAL_LIMIT_PER_HOUR) is the backstop, but the per-IP limit only works correctly with trust-proxy configured. **Files:** apps/api/src/index.ts, deploy docs
-- [ ] **P2**: OAuth callback redirect contract change (#/settings → #/) — verify any out-of-tree docs (Electron deep links, README links) and consider one-release backwards compat. **Files:** apps/api/src/routes/oauth.ts:466
-- [ ] **P3**: Move `/api/demo/*` to `/api/v1/demo/*` for consistency with `/api/v1/twin/*` and `/api/v1/briefings/*`. Or document the unversioned namespace explicitly. **Files:** apps/api/src/index.ts
-- [ ] **P3**: Move inline `<style>@keyframes pulse {...}</style>` from dashboard.js into the global stylesheet. Re-emitted on every render of the celebration card today. **Files:** apps/web/public/js/pages/dashboard.js, apps/web/public/css/styles.css
+- [ ] **P2**: Split `renderDashboard` (~340 lines now) into `computeDashboardModel`, `renderDashboardView`, `applyDashboardEffects`. The current function mixes data fetching, state derivation, HTML composition, and post-render side effects — hard to test, hard to refactor. **Files:** apps/web/public/js/pages/dashboard.js
+- [ ] **P2**: Migrate the remaining inline `onclick="...handleX('${escapeHtml(value)}')"` patterns across approvals.js / settings.js / decisions.js / setup.js / dashboard.js to `addEventListener` bindings. The highest-risk site (twin.js, free-text preference value flowing through JS string literals) was migrated in this PR. The remaining ~40 inline handlers interpolate UUIDs / enum values / constants where practical risk is zero today, but the pattern is unsafe by construction. **Files:** apps/web/public/js/pages/{approvals,settings,decisions,setup,dashboard}.js
+- [ ] **P3**: OAuth callback redirect contract change (#/settings → #/) — verify any out-of-tree docs (Electron deep links, README links) and consider one-release backwards compat. **Files:** apps/api/src/routes/oauth.ts:466
 - [ ] **P3**: Real production tour mode — short-lived demo session token, or `/api/v1/demo/dashboard` aggregate read-only endpoint. Currently tour mode auto-disables in production (auth bypass not active), which is honest but cuts off the marquee feature for non-localhost deploys. **Files:** apps/api/src/routes/demo.ts, apps/api/src/middleware/session-auth.ts
+
+## Completed in PR #126 (2026-04-28)
+
+- [x] **P1**: Cache slow-changing dashboard fetches in a module-level Map with 30s TTL — `slowFetch()` wraps oauth status, creds status, skill gaps, learned, unmet creds. SSE `twin:updated` busts learned/skill-gaps; `credential:needed` busts creds-status/unmet-creds. **Completed:** PR #126 (2026-04-28)
+- [x] **P1**: Migrated highest-risk inline onclick site (twin.js — free-text preference value) to data-attributes + delegated event listener. **Completed:** PR #126 (2026-04-28)
+- [x] **P1**: Added 12 tests for `apps/api/src/routes/demo.ts` covering 400 / 404 / 429 / 503 / 200 paths. Caught two real bugs in the process (PREVIEW_DISABLED was load-time, demo user cache wasn't reset between requests). **Completed:** PR #126 (2026-04-28)
+- [x] **P2**: Extracted magic numbers in dashboard.js to named constants (BRIEFING_FRESH_MS, FIRST_SCAN_POLL_MS, FIRST_SCAN_MAX_MS, SINCE_LAST_VISIT_MIN_MS, SLOW_CACHE_TTL_MS, TIER_THRESHOLDS, TIER_NEXT). **Completed:** PR #126 (2026-04-28)
+- [x] **P2**: Consolidated five module-level window-globals blocks in dashboard.js into one `initDashboardGlobals()` called from app.js bootstrap. **Completed:** PR #126 (2026-04-28)
+- [x] **P2**: Created `apps/web/public/js/storage-keys.js` registry. All `skytwin_*` localStorage keys now flow through `KEY_*` constants and per-user builder functions. `clearKeysForSuffix()` powers the tour-exit cleanup. **Completed:** PR #126 (2026-04-28)
+- [x] **P2**: Added `DemoInfoResponse` and `DemoPreviewResponse` to `@skytwin/shared-types`. demo.ts response objects now type-check against the public surface. **Completed:** PR #126 (2026-04-28)
+- [x] **P2**: Added `app.set('trust proxy', N)` configuration via `TRUST_PROXY_HOPS` env var (default 0). Required for the per-IP rate limit on /api/v1/demo/preview to work behind reverse proxies. **Completed:** PR #126 (2026-04-28)
+- [x] **P3**: Moved `/api/demo/*` to `/api/v1/demo/*` for consistency with `/api/v1/twin/*` and `/api/v1/briefings/*`. Client-side `fetchDemoInfo` and `previewDemoDecision` updated. **Completed:** PR #126 (2026-04-28)
+- [x] **P3**: Moved inline `@keyframes pulse` from dashboard.js into `apps/web/public/css/styles.css` as `.skytwin-pulse-dot` with `prefers-reduced-motion` support. **Completed:** PR #126 (2026-04-28)
 
 ## Completed (v0.3.0.0 — M2/M3/M4)
 
