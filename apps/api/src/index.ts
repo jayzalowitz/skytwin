@@ -76,6 +76,19 @@ getExecutionRouter().catch((err) =>
 
 const app: Application = express();
 
+// Trust proxy hops — required so req.ip and Express's `Forwarded` parsing
+// resolve to the real client when the API is behind a reverse proxy
+// (Fly, Render, Heroku, nginx, Caddy, Cloudflare, etc.). The per-IP rate
+// limit on /api/v1/demo/preview depends on this; without it, every
+// request appears to come from the proxy IP and the limit collapses
+// into a single global bucket. Default 0 (no proxy, take req.ip
+// straight from the socket); set TRUST_PROXY_HOPS=1 for a single
+// reverse proxy, =2 for proxy-behind-CDN, etc.
+const trustProxyHops = parseInt(process.env['TRUST_PROXY_HOPS'] ?? '0', 10);
+if (Number.isFinite(trustProxyHops) && trustProxyHops > 0) {
+  app.set('trust proxy', trustProxyHops);
+}
+
 // Middleware
 app.use(express.json());
 
@@ -137,7 +150,7 @@ app.use('/api/policies', sessionAuth, requireOwnership, createPoliciesRouter());
 app.use('/api/mempalace', sessionAuth, requireOwnership, createMempalaceRouter());
 app.use('/api/credentials', sessionAuth, requireOwnership, createCredentialsRouter());
 app.use('/api/routines', sessionAuth, requireOwnership, createRoutinesRouter());
-app.use('/api/demo', createDemoRouter()); // public — onboarding tour discovery
+app.use('/api/v1/demo', createDemoRouter()); // public — onboarding tour discovery
 
 // Error handling middleware
 app.use(

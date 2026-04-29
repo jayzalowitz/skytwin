@@ -121,3 +121,8 @@ export type {
   AAAKFlag,
   PalaceStatus,
 } from './mempalace.js';
+
+export type {
+  DemoInfoResponse,
+  DemoPreviewResponse,
+} from './demo.js';

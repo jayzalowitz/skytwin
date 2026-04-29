@@ -5,7 +5,12 @@ import {
   PatternRepositoryAdapter,
   policyRepositoryAdapter,
 } from '@skytwin/db';
-import type { WhatWouldIDoRequest, WhatWouldIDoResponse } from '@skytwin/shared-types';
+import type {
+  WhatWouldIDoRequest,
+  WhatWouldIDoResponse,
+  DemoInfoResponse,
+  DemoPreviewResponse,
+} from '@skytwin/shared-types';
 import { TrustTier } from '@skytwin/shared-types';
 import { DecisionMaker } from '@skytwin/decision-engine';
 import type { DecisionRepositoryPort } from '@skytwin/decision-engine';
@@ -24,8 +29,11 @@ import { PolicyEvaluator } from '@skytwin/policy-engine';
  */
 const DEMO_USER_ID = 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d';
 
-/** Operator kill switch — set DEMO_PREVIEW_DISABLED=1 to turn off the public LLM route. */
-const PREVIEW_DISABLED = (process.env['DEMO_PREVIEW_DISABLED'] ?? '') === '1';
+/** Operator kill switch — set DEMO_PREVIEW_DISABLED=1 to turn off the public LLM route.
+ *  Read at request time so an operator can flip the kill switch without restarting. */
+function isPreviewDisabled(): boolean {
+  return (process.env['DEMO_PREVIEW_DISABLED'] ?? '') === '1';
+}
 
 /** Per-IP limits. */
 const PREVIEW_LIMIT = 20;
@@ -51,6 +59,16 @@ async function getDemoUserCached() {
   _cachedDemoUser = fresh;
   _cachedDemoUserAt = now;
   return fresh;
+}
+
+/**
+ * Test-only: drop the cached demo user so each test starts fresh. Not
+ * exported to consumers (the route doesn't need a public invalidation
+ * hook today — the 60s TTL handles staleness in production).
+ */
+export function _resetDemoCacheForTests(): void {
+  _cachedDemoUser = null;
+  _cachedDemoUserAt = 0;
 }
 
 /**
@@ -87,19 +105,19 @@ export function createDemoRouter(): Router {
       const devBypass = (process.env['SKYTWIN_DEV_AUTH_BYPASS']
         ?? (process.env['NODE_ENV'] === 'development' ? 'true' : 'false')) === 'true';
       if (!isLocalhost || !devBypass) {
-        res.json({ available: false });
+        const unavailable: DemoInfoResponse = { available: false };
+        res.json(unavailable);
         return;
       }
 
       const user = await getDemoUserCached();
       if (!user) {
-        res.json({ available: false });
+        const unavailable: DemoInfoResponse = { available: false };
+        res.json(unavailable);
         return;
       }
-      res.json({
-        available: true,
-        userId: user.id,
-      });
+      const ok: DemoInfoResponse = { available: true, userId: user.id };
+      res.json(ok);
     } catch (error) {
       next(error);
     }
@@ -190,7 +208,7 @@ export function createDemoRouter(): Router {
    */
   router.post('/preview', async (req, res, next) => {
     try {
-      if (PREVIEW_DISABLED) {
+      if (isPreviewDisabled()) {
         res.status(503).json({ error: 'Demo preview is disabled on this server.' });
         return;
       }
@@ -261,10 +279,11 @@ export function createDemoRouter(): Router {
         trustTier,
       );
 
-      res.json({
+      const previewResponse: DemoPreviewResponse = {
         ...response,
         previewRateLimit: { remaining: limit.remaining, windowMs: PREVIEW_WINDOW_MS },
-      });
+      };
+      res.json(previewResponse);
     } catch (error) {
       next(error);
     }
