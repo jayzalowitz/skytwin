@@ -149,29 +149,31 @@ Trust is earned, not assumed. Progression is domain-specific: high trust in emai
 - Purpose: Build initial twin model from observation and explicit preferences
 - Duration: Until user explicitly promotes or provides sufficient feedback
 
+Promotion criteria below match `PROMOTION_THRESHOLDS` in `@skytwin/shared-types` (`packages/shared-types/src/policy.ts`). The engine gates on `consecutiveApprovals` (resets on any rejection) AND `minApprovalRatio` (cumulative). Both must clear.
+
 **SUGGEST**
 - System generates candidate actions and presents them to the user
 - All actions require explicit approval
 - Purpose: Let the user see the system's judgment and correct it
-- Promotion criteria: Consistent approval rate > 80% over 20+ suggestions in a domain
+- Promotion criteria: 10 consecutive approvals AND ≥80% cumulative approval ratio
 
 **LOW_AUTONOMY**
 - System can auto-execute low-risk, reversible actions in allowed domains
 - Moderate-risk and irreversible actions still require approval
 - Purpose: Handle routine, low-stakes operations autonomously
-- Promotion criteria: < 5% correction rate over 50+ auto-executed actions in a domain
+- Promotion criteria: 20 consecutive approvals AND ≥85% cumulative approval ratio
 
 **MODERATE_AUTONOMY**
 - System can auto-execute moderate-risk actions in allowed domains
 - High-risk and irreversible actions still require approval (unless explicitly allowed)
 - Purpose: Handle most operational decisions with occasional escalation
-- Promotion criteria: < 3% correction rate over 100+ auto-executed actions, including moderate-risk
+- Promotion criteria: 50 consecutive approvals AND ≥90% cumulative approval ratio
 
 **HIGH_AUTONOMY**
 - System can auto-execute most actions except critical-risk
 - Irreversible actions may auto-execute if explicitly allowed by domain policy
 - Purpose: Near-full operational delegation in trusted domains
-- Promotion criteria: Sustained < 2% correction rate over 200+ actions, no safety-relevant errors
+- Promotion criteria: **Explicit user opt-in only.** There is no automatic promotion from MODERATE_AUTONOMY to HIGH_AUTONOMY — the user has to flip the switch in Settings. The engine deliberately omits this entry from `PROMOTION_THRESHOLDS` so high-stakes autonomy is always a conscious choice.
 
 ### Trust Demotion
 
