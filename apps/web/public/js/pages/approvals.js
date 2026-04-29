@@ -9,7 +9,18 @@ const PENDING_PAGE_SIZE = 10;
 let cachedPending = [];
 let visiblePendingCount = PENDING_PAGE_SIZE;
 
+// Click delegator is wired once on document. Re-binding per render would
+// stack listeners on every navigation back to /approvals (and on every
+// SSE-triggered re-render), causing N parallel respondToApproval POSTs
+// per click. The SPA reuses one #page-content container across routes
+// so DOM containment can't scope the singleton — we gate on the hash
+// route instead, since it's authoritative for which page is rendered.
+let _approvalsListenerWired = false;
+let _approvalsUserId = '';
+
 export async function renderApprovals(container, userId) {
+  _approvalsUserId = userId;
+  ensureApprovalsListener();
   const [pendingData, historyData, progressData] = await Promise.allSettled([
     fetchPendingApprovals(userId),
     fetchApprovalHistory(userId, 20),
@@ -47,13 +58,13 @@ export async function renderApprovals(container, userId) {
   });
 
   container.innerHTML = `
-    ${prog ? renderTrustProgress(prog) : ''}
+    ${prog ? renderTrustProgress({ approvalCount: prog.approvalCount, currentTier: prog.currentTier }) : ''}
 
     ${showFirstApprovalIntro ? `
       <div class="card" id="first-approval-intro" style="border-left: 3px solid var(--primary); background: linear-gradient(135deg, var(--bg-card) 0%, var(--bg) 100%);">
         <div class="card-header">
           <span class="card-title">Here's how this works</span>
-          <button class="btn btn-outline btn-sm" onclick="window.dismissFirstApprovalIntro('${escapeHtml(firstApprovalIntroKey)}')" style="padding: 0.15rem 0.5rem; font-size: 0.7rem;">Got it</button>
+          <button class="btn btn-outline btn-sm" data-action="dismiss-intro" data-key="${escapeHtml(firstApprovalIntroKey)}" style="padding: 0.15rem 0.5rem; font-size: 0.7rem;">Got it</button>
         </div>
         <div class="card-subtitle" style="line-height: 1.65;">
           Each card below is a call I want to make on your behalf. I'll show you the email or invite that
@@ -98,6 +109,41 @@ export async function renderApprovals(container, userId) {
       </div>
     ` : ''}
   `;
+
+}
+
+function ensureApprovalsListener() {
+  if (_approvalsListenerWired || typeof document === 'undefined') return;
+  _approvalsListenerWired = true;
+  document.addEventListener('click', (e) => {
+    const hash = (window.location.hash || '').split('?')[0];
+    if (hash !== '#/approvals') return;
+    const target = e.target instanceof Element ? e.target : null;
+    if (!target) return;
+    const btn = target.closest('[data-action]');
+    if (!btn) return;
+    const action = btn.getAttribute('data-action');
+    if (action === 'dismiss-intro') {
+      const key = btn.getAttribute('data-key');
+      if (key) dismissFirstApprovalIntro(key);
+    } else if (action === 'show-more') {
+      showMoreApprovals();
+    } else if (action === 'approval') {
+      const id = btn.getAttribute('data-request-id');
+      const decision = btn.getAttribute('data-decision');
+      if (id && (decision === 'approve' || decision === 'reject')) {
+        handleApproval(id, decision, _approvalsUserId);
+      }
+    } else if (action === 'escalation-choice') {
+      const id = btn.getAttribute('data-request-id');
+      const choice = btn.getAttribute('data-choice');
+      const label = btn.getAttribute('data-label');
+      if (id && choice && label) handleEscalationChoice(id, _approvalsUserId, choice, label);
+    } else if (action === 'escalation-custom') {
+      const id = btn.getAttribute('data-request-id');
+      if (id) handleEscalationCustom(id, _approvalsUserId);
+    }
+  });
 }
 
 function renderPendingList(pending, visibleCount) {
@@ -122,23 +168,23 @@ function renderPendingList(pending, visibleCount) {
   const nextBatch = Math.min(PENDING_PAGE_SIZE, remaining);
   return cards + `
     <div style="text-align: center; margin: 1rem 0;">
-      <button class="btn btn-outline" onclick="window.showMoreApprovals()">
+      <button class="btn btn-outline" data-action="show-more">
         Show ${nextBatch} more (${remaining} remaining)
       </button>
     </div>
   `;
 }
 
-window.dismissFirstApprovalIntro = function(key) {
+function dismissFirstApprovalIntro(key) {
   try { localStorage.setItem(key, '1'); } catch { /* noop */ }
   document.getElementById('first-approval-intro')?.remove();
-};
+}
 
-window.showMoreApprovals = function() {
+function showMoreApprovals() {
   visiblePendingCount += PENDING_PAGE_SIZE;
   const list = document.getElementById('pending-list');
   if (list) list.innerHTML = renderPendingList(cachedPending, visiblePendingCount);
-};
+}
 
 function renderApprovalCard(a) {
   const action = a.candidateAction || {};
@@ -209,9 +255,9 @@ function renderStandardCard(a, action) {
       <span>${action.confidence ? `Confidence: ${action.confidence}` : ''}</span>
     </div>
     <div class="approval-actions">
-      <button class="btn btn-success btn-sm" onclick="handleApproval('${a.id}', 'approve', '${a.userId || ''}')">Yes, do it</button>
-      <button class="btn btn-outline btn-sm" onclick="handleApproval('${a.id}', 'reject', '${a.userId || ''}')">Not this time</button>
-      <input class="form-input" id="reason-${a.id}" placeholder="Tell me why so I learn (optional)" style="flex: 1; font-size: 0.8rem;">
+      <button class="btn btn-success btn-sm" data-action="approval" data-decision="approve" data-request-id="${escapeHtml(a.id)}" data-user-id="${escapeHtml(a.userId || '')}">Yes, do it</button>
+      <button class="btn btn-outline btn-sm" data-action="approval" data-decision="reject" data-request-id="${escapeHtml(a.id)}" data-user-id="${escapeHtml(a.userId || '')}">Not this time</button>
+      <input class="form-input" id="reason-${escapeHtml(a.id)}" placeholder="Tell me why so I learn (optional)" style="flex: 1; font-size: 0.8rem;">
     </div>
   `;
 }
@@ -246,16 +292,20 @@ function renderEscalationCard(a, action) {
     <div class="escalation-suggestions" style="display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.5rem 0;">
       ${suggestions.map(s => `
         <button class="btn btn-sm suggestion-btn" style="font-size: 0.8rem;"
-          onclick="handleEscalationChoice('${a.id}', '${a.userId || ''}', '${s.action}', '${escapeAttr(s.label)}')"
+          data-action="escalation-choice"
+          data-request-id="${escapeHtml(a.id)}"
+          data-user-id="${escapeHtml(a.userId || '')}"
+          data-choice="${escapeHtml(s.action)}"
+          data-label="${escapeHtml(s.label)}"
         >${s.icon} ${escapeHtml(s.label)}</button>
       `).join('')}
     </div>
     <div style="display: flex; gap: 0.5rem; margin-top: 0.5rem; align-items: center;">
       <button class="btn btn-sm" style="background: var(--bg-hover); color: var(--text-dim); border: 1px solid var(--border); font-size: 0.78rem;"
-        onclick="handleApproval('${a.id}', 'reject', '${a.userId || ''}')">Dismiss</button>
-      <input class="form-input" id="reason-${a.id}" placeholder="Or tell me what to do instead…" style="flex: 1; font-size: 0.8rem;">
+        data-action="approval" data-decision="reject" data-request-id="${escapeHtml(a.id)}" data-user-id="${escapeHtml(a.userId || '')}">Dismiss</button>
+      <input class="form-input" id="reason-${escapeHtml(a.id)}" placeholder="Or tell me what to do instead…" style="flex: 1; font-size: 0.8rem;">
       <button class="btn btn-sm" style="background: var(--bg-hover); color: var(--text-muted); border: 1px solid var(--border); font-size: 0.78rem;"
-        onclick="handleEscalationCustom('${a.id}', '${a.userId || ''}')">Send</button>
+        data-action="escalation-custom" data-request-id="${escapeHtml(a.id)}" data-user-id="${escapeHtml(a.userId || '')}">Send</button>
     </div>
     <div style="font-size: 0.75rem; color: var(--text-dim); margin-top: 0.4rem;">
       Your choice trains the twin — next time it'll know what to do.
@@ -329,10 +379,6 @@ function getEscalationSuggestions(domain, action) {
   };
 
   return map[domain] || defaultSuggestions;
-}
-
-function escapeAttr(str) {
-  return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;').replace(/</g, '&lt;');
 }
 
 /**
@@ -611,7 +657,7 @@ function showToast(message, type = 'success') {
  * Sends as a rejection with the chosen action as the reason,
  * so the twin learns the user's preference for this type of signal.
  */
-window.handleEscalationChoice = async function(requestId, userId, chosenAction, label) {
+async function handleEscalationChoice(requestId, userId, chosenAction, label) {
   const reason = `User chose: ${chosenAction} (${label})`;
   try {
     await respondToApproval(requestId, 'reject', userId, reason);
@@ -631,12 +677,12 @@ window.handleEscalationChoice = async function(requestId, userId, chosenAction, 
       el.insertAdjacentHTML('beforeend', `<div class="error-banner" style="margin-top: 0.5rem;">${escapeHtml(err.message)}</div>`);
     }
   }
-};
+}
 
 /**
  * Handle a free-text instruction on an escalation card.
  */
-window.handleEscalationCustom = async function(requestId, userId) {
+async function handleEscalationCustom(requestId, userId) {
   const input = document.getElementById(`reason-${requestId}`);
   const text = input?.value?.trim();
   if (!text) {
@@ -662,9 +708,9 @@ window.handleEscalationCustom = async function(requestId, userId) {
       el.insertAdjacentHTML('beforeend', `<div class="error-banner" style="margin-top: 0.5rem;">${escapeHtml(err.message)}</div>`);
     }
   }
-};
+}
 
-window.handleApproval = async function(requestId, action, userId) {
+async function handleApproval(requestId, action, userId) {
   const reasonInput = document.getElementById(`reason-${requestId}`);
   const reason = reasonInput?.value?.trim() || undefined;
 
@@ -705,7 +751,7 @@ window.handleApproval = async function(requestId, action, userId) {
         const existing = document.querySelector('.trust-progress');
         if (existing && fresh) {
           const tmp = document.createElement('div');
-          tmp.innerHTML = renderTrustProgress(fresh);
+          tmp.innerHTML = renderTrustProgress({ approvalCount: fresh.approvalCount, currentTier: fresh.currentTier });
           const next = tmp.firstElementChild;
           if (next) existing.replaceWith(next);
         }
@@ -717,4 +763,4 @@ window.handleApproval = async function(requestId, action, userId) {
       el.insertAdjacentHTML('beforeend', `<div class="error-banner" style="margin-top: 0.5rem;">${escapeHtml(err.message)}</div>`);
     }
   }
-};
+}

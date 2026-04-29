@@ -206,11 +206,11 @@ export async function renderSetup(container, _userId) {
       </div>
 
       <div style="display: flex; gap: 0.5rem; align-items: center;">
-        <button class="btn btn-primary btn-sm" onclick="saveServiceCredentials('google', { autoConnect: ${googleConfigured ? 'false' : 'true'} })">
+        <button class="btn btn-primary btn-sm" data-save-service="google" data-auto-connect="${googleConfigured ? 'false' : 'true'}">
           ${googleConfigured ? 'Update' : 'Save and connect now'}
         </button>
         ${googleConfigured ? `
-          <button class="btn btn-outline btn-sm" onclick="window.handleConnectGoogleFromSetup()">Connect Google account</button>
+          <button class="btn btn-outline btn-sm" data-action="connect-google">Connect Google account</button>
         ` : ''}
         <span id="save-status-google" style="font-size: 0.85rem;"></span>
       </div>
@@ -288,7 +288,7 @@ export async function renderSetup(container, _userId) {
               data-service="ironclaw" data-key="owner_id" autocomplete="off">
           </div>
           <div style="display: flex; gap: 0.5rem; align-items: center;">
-            <button class="btn btn-outline btn-sm" onclick="saveServiceCredentials('ironclaw')">Save connection</button>
+            <button class="btn btn-outline btn-sm" data-save-service="ironclaw">Save connection</button>
             <span id="save-status-ironclaw" style="font-size: 0.85rem;"></span>
           </div>
         </div>
@@ -314,7 +314,7 @@ export async function renderSetup(container, _userId) {
             ${credLookup['openclaw']?.['api_key']?.hasValue ? '<div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem;">Currently set. Leave blank to keep.</div>' : ''}
           </div>
           <div style="display: flex; gap: 0.5rem; align-items: center;">
-            <button class="btn btn-outline btn-sm" onclick="saveServiceCredentials('openclaw')">Save connection</button>
+            <button class="btn btn-outline btn-sm" data-save-service="openclaw">Save connection</button>
             <span id="save-status-openclaw" style="font-size: 0.85rem;"></span>
           </div>
         </div>
@@ -332,7 +332,9 @@ export async function renderSetup(container, _userId) {
   container.querySelectorAll('button[data-save-service]').forEach(btn => {
     btn.addEventListener('click', () => {
       const service = btn.getAttribute('data-save-service');
-      if (service) window.saveServiceCredentials(service);
+      if (!service) return;
+      const autoConnect = btn.getAttribute('data-auto-connect') === 'true';
+      window.saveServiceCredentials(service, autoConnect ? { autoConnect: true } : {});
     });
   });
   container.querySelectorAll('button[data-sync-service]').forEach(btn => {
@@ -340,6 +342,9 @@ export async function renderSetup(container, _userId) {
       const service = btn.getAttribute('data-sync-service');
       if (service) window.syncServiceToIronClaw(service);
     });
+  });
+  container.querySelectorAll('button[data-action="connect-google"]').forEach(btn => {
+    btn.addEventListener('click', () => window.handleConnectGoogleFromSetup());
   });
 }
 

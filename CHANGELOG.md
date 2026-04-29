@@ -1,5 +1,20 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.5.4.0] - 2026-04-29
+
+Last of the post-/review follow-ups from PR #126. Closes the P2 item that's been bothering me since the merge: every inline `onclick=` in the dashboard / approvals / decisions / settings / setup pages.
+
+### Changed — XSS hardening
+
+- **40 inline `onclick="…handleX('${escapeHtml(value)}')"` sites migrated** to `data-action="…"` + delegated `addEventListener` bindings across `apps/web/public/js/pages/{approvals,settings,decisions,setup,dashboard,dashboard-view}.js`. `escapeHtml` is HTML-context safe but values land in JS-string-literal context; UUIDs / enums / constants are safe today, the pattern wasn't. Each page now installs one click delegator that reads DOM attributes — no more concatenating user-controlled strings into executable HTML.
+- **`dashboard-view.js` Ask-Your-Twin** now uses a delegated `keydown` listener for Enter-to-submit instead of an inline `onkeydown` interpolating `userId` into a JS string.
+- **`approvals.js`** dropped its single-purpose `escapeAttr` helper (only used for the migrated escalation suggestion `label`); no equivalent JS-string escape is needed once values flow through `data-*` attributes.
+
+### Fixed — listener leak in the singleton delegators
+
+- **Listener leak in approvals / decisions / settings.** The first cut wired the click delegator inside `renderX(container, ...)` via `container.addEventListener`. Settings re-renders after every save/delete, decisions re-renders on every SSE `decision:executed`, approvals re-renders on cross-page navigation — so listeners stacked, and by the third trip a single click fired duplicate POSTs (and toasts and OAuth redirects). Fix: hoist each delegator to a module-level `_pageListenerWired` guard, attach once on `document`, and gate by `window.location.hash` since the SPA reuses one `#page-content` container across routes (DOM containment can't scope it). Settings handler also reads `getCurrentUserId()` inline instead of closing over the render argument so the dev "Switch user" button can't leave a stale-userId listener firing under the next user.
+- **dashboard `data-action="connect-google"` namespace collision.** Same hash-route gate added to the dashboard's document-level click + keydown delegators in `dashboard-view.js` so they don't fire on settings.js's own `connect-google` button (and vice versa).
+
 ## [0.5.3.0] - 2026-04-29
 
 ### Changed

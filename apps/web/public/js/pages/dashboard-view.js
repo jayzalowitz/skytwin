@@ -111,8 +111,8 @@ export function renderNotificationOptIn() {
         Click below and your browser will ask for permission.
       </div>
       <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
-        <button class="btn btn-primary btn-sm" onclick="window.handleEnableNotifications()">Yes, ping me</button>
-        <button class="btn btn-outline btn-sm" onclick="window.dismissNotifOptIn()">Maybe later</button>
+        <button class="btn btn-primary btn-sm" data-action="enable-notif">Yes, ping me</button>
+        <button class="btn btn-outline btn-sm" data-action="dismiss-notif">Maybe later</button>
       </div>
     </div>
   `;
@@ -208,7 +208,7 @@ export function renderBriefingItem(it) {
 
 export function renderSinceLastVisit({ newDecisions, ago }) {
   return `
-    <div class="card" style="border-left: 3px solid var(--success); cursor: pointer;" onclick="location.hash='#/decisions'">
+    <div class="card" style="border-left: 3px solid var(--success); cursor: pointer;" data-action="goto" data-hash="#/decisions">
       <span style="font-weight: 600;">While you were away —</span>
       <span style="color: var(--text-muted); font-size: 0.9rem;">
         I handled or weighed in on <strong>${newDecisions}</strong> new ${newDecisions === 1 ? 'thing' : 'things'} since you last checked in (${escapeHtml(ago)}). Click to see what.
@@ -293,9 +293,10 @@ export function renderAskTwinWidget({ userId, tourMode }) {
           placeholder="e.g. What would you do if my mom emails asking me to call her tonight, but I have a meeting at 8?"
           rows="2"
           style="flex: 1; resize: vertical; font-family: inherit; line-height: 1.4;"
-          onkeydown="if(event.key==='Enter' && !event.shiftKey) { event.preventDefault(); window.handleAskTwin('${escapeHtml(userId)}'); }"
+          data-action="ask-twin-input"
+          data-user-id="${escapeHtml(userId)}"
         ></textarea>
-        <button class="btn btn-primary" onclick="window.handleAskTwin('${escapeHtml(userId)}')" id="ask-twin-btn" style="align-self: stretch;">
+        <button class="btn btn-primary" data-action="ask-twin" data-user-id="${escapeHtml(userId)}" id="ask-twin-btn" style="align-self: stretch;">
           Ask
         </button>
       </div>
@@ -380,7 +381,7 @@ export function renderTourBanner() {
         Click around freely, then start your own when you're ready. Nothing you do here touches your real accounts.
       </div>
       <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
-        <button class="btn btn-primary btn-sm" onclick="window.skyTwinExitTour()">Start my own setup</button>
+        <button class="btn btn-primary btn-sm" data-action="exit-tour">Start my own setup</button>
         <a class="btn btn-outline btn-sm" href="#/decisions">See what Alex's twin has been doing</a>
         <a class="btn btn-outline btn-sm" href="#/twin">See what it learned about Alex</a>
       </div>
@@ -477,7 +478,7 @@ export function renderConnectGoogleHero({ googleConnected, googleSystemConfigure
         Your twin is ready, but it can't see anything yet. Connect Google so it can start learning from your inbox and calendar.
       </div>
       <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
-        <button class="btn btn-primary" onclick="window.handleConnectGoogleFromDashboard('${safeUserId}')">Connect Google</button>
+        <button class="btn btn-primary" data-action="connect-google" data-user-id="${safeUserId}">Connect Google</button>
         <a class="btn btn-outline" href="#/settings">Manage connections</a>
       </div>
     </div>
@@ -510,23 +511,67 @@ export function initDashboardGlobals() {
   if (typeof window === 'undefined' || _dashboardGlobalsWired) return;
   _dashboardGlobalsWired = true;
 
-  window.handleEnableNotifications = handleEnableNotifications;
-  window.dismissNotifOptIn = dismissNotifOptIn;
-  window.handleAskTwin = handleAskTwin;
-  window.skyTwinExitTour = skyTwinExitTour;
-  window.handleConnectGoogleFromDashboard = handleConnectGoogleFromDashboard;
-
-  // Delegated click on the Ask Your Twin example chips. Lives on
-  // document so the dashboard can re-render without rebinding.
+  // Document-level click delegator for dashboard interactions. Lives on
+  // document so re-renders don't need to rebind. Keyed off `data-action`
+  // attributes so the rendered HTML stays free of inline `onclick=` (no
+  // JS-string injection vector even if values contain quotes).
+  //
+  // Hash-route gate: the SPA reuses one #page-content container across
+  // routes, so without this check our data-action names would collide
+  // with data-action="connect-google" on settings.js and similar.
   document.addEventListener('click', (ev) => {
-    const btn = ev.target?.closest?.('.ask-twin-example');
-    if (!btn) return;
-    const wrap = btn.closest('#ask-twin-examples');
-    const uid = wrap?.getAttribute('data-user-id');
-    const prompt = btn.getAttribute('data-prompt');
-    const input = document.getElementById('ask-twin-input');
-    if (!input || !uid || !prompt) return;
-    input.value = prompt;
+    const hash = (window.location.hash || '').split('?')[0] || '#/';
+    if (hash !== '#/' && hash !== '#') return;
+    const target = ev.target instanceof Element ? ev.target : null;
+    if (!target) return;
+
+    const example = target.closest('.ask-twin-example');
+    if (example) {
+      const wrap = example.closest('#ask-twin-examples');
+      const uid = wrap?.getAttribute('data-user-id');
+      const prompt = example.getAttribute('data-prompt');
+      const input = document.getElementById('ask-twin-input');
+      if (input && uid && prompt) {
+        input.value = prompt;
+        handleAskTwin(uid);
+      }
+      return;
+    }
+
+    const el = target.closest('[data-action]');
+    if (!el) return;
+    const action = el.getAttribute('data-action');
+    if (action === 'goto') {
+      const hashTarget = el.getAttribute('data-hash');
+      if (hashTarget) window.location.hash = hashTarget;
+    } else if (action === 'enable-notif') {
+      handleEnableNotifications();
+    } else if (action === 'dismiss-notif') {
+      dismissNotifOptIn();
+    } else if (action === 'ask-twin') {
+      const uid = el.getAttribute('data-user-id');
+      if (uid) handleAskTwin(uid);
+    } else if (action === 'exit-tour') {
+      skyTwinExitTour();
+    } else if (action === 'connect-google') {
+      const uid = el.getAttribute('data-user-id');
+      if (uid) handleConnectGoogleFromDashboard(uid);
+    }
+  });
+
+  // Delegated keydown for the Ask Your Twin textarea: Enter submits,
+  // Shift+Enter inserts a newline. Same hash-route gate.
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key !== 'Enter' || ev.shiftKey) return;
+    const hash = (window.location.hash || '').split('?')[0] || '#/';
+    if (hash !== '#/' && hash !== '#') return;
+    const target = ev.target instanceof Element ? ev.target : null;
+    if (!target) return;
+    const input = target.closest('[data-action="ask-twin-input"]');
+    if (!input) return;
+    const uid = input.getAttribute('data-user-id');
+    if (!uid) return;
+    ev.preventDefault();
     handleAskTwin(uid);
   });
 }
@@ -536,7 +581,7 @@ export function renderUnmetCredentials(unmetCredsResult) {
   if (unmet.length === 0) return '';
 
   return `
-    <div class="card" style="border-left: 3px solid var(--warning, #e6a700); cursor: pointer;" onclick="location.hash='#/setup'">
+    <div class="card" style="border-left: 3px solid var(--warning, #e6a700); cursor: pointer;" data-action="goto" data-hash="#/setup">
       <div class="card-header">
         <span class="card-title">Integrations needed</span>
       </div>
