@@ -42,6 +42,23 @@ pnpm --filter @skytwin/decision-engine build
 pnpm --filter @skytwin/twin-model test
 ```
 
+### Build gotcha: shared-types dist can go stale after rebases
+
+If `pnpm build` fails on `@skytwin/policy-engine` (or any other package) with `error TS2305: Module '"@skytwin/shared-types"' has no exported member '<NAME>'`, but the source clearly exports `<NAME>` in `packages/shared-types/src/index.ts`, the turbo cache is serving a stale `dist/`. Force-rebuild the package:
+
+```bash
+rm -rf packages/shared-types/dist packages/shared-types/tsconfig.tsbuildinfo \
+  && pnpm --filter @skytwin/shared-types build
+```
+
+Then verify the export landed in the dist:
+
+```bash
+grep '<NAME>' packages/shared-types/dist/index.js
+```
+
+This shows up most often after rebasing across changes to `packages/shared-types/src/index.ts`. CI is unaffected (fresh installs). Only the local worktree sees it.
+
 ## Package Descriptions
 
 | Package | Purpose |
@@ -107,6 +124,20 @@ Every automated action must produce an `ExplanationRecord` that answers:
 - Why this action over alternatives?
 - How can the user correct this if it's wrong?
 
+### Frontend Event Handling
+
+**No inline `onclick=`, `onkeydown=`, or any other inline event-handler attribute** in rendered HTML. The web dashboard renders a lot of HTML via template literals, and `escapeHtml` is HTML-context safe but the values often land in JS-string-literal context inside `onclick="handleX('${escapeHtml(value)}')"` — XSS-unsafe by construction even when current values (UUIDs, enums) happen to be safe today. Use `data-action="…"` attributes plus a delegated event listener.
+
+**Singleton delegators must be gated by `window.location.hash`, not by DOM containment.** The SPA in `apps/web/public/js/app.js` reuses one `#page-content` container element across all routes — only the `innerHTML` swaps. That means `container.contains(target)` returns true for clicks on every page, and `container.addEventListener` inside a `renderX(container, …)` function stacks one new listener per render. Fix:
+
+1. Hoist the delegator to a module-level function with a `_pageListenerWired` guard.
+2. Attach once on `document`.
+3. First check inside the handler: `if (window.location.hash.split('?')[0] !== '#/<route>') return;`
+
+Same-page rerenders (after a save, after an SSE event) won't accumulate listeners. Cross-page navigation won't fire the wrong page's handlers. See `apps/web/public/js/pages/{approvals,settings,decisions,dashboard-view}.js` for the pattern.
+
+**Read `getCurrentUserId()` inside the handler when it depends on the current user.** Closing over a `userId` argument from the render function leaves stale-userId listeners firing under the next user (relevant after the dev "Switch user" button changes localStorage).
+
 ## Safety Invariants
 
 These are non-negotiable rules. Do not write code that violates them.
@@ -124,6 +155,17 @@ These are non-negotiable rules. Do not write code that violates them.
 6. **Feedback flows back.** User approvals, rejections, edits, and undos must update the twin model. If feedback isn't being recorded, the system is broken.
 
 7. **Risk assessment is mandatory.** Every `CandidateAction` must include a `RiskAssessment` with reasoning. Skipping risk assessment is not a valid optimization.
+
+## Review Discipline
+
+These are habits that have already prevented "PR ships a regression of the bug it claims to fix" from landing on this codebase. Don't skip them.
+
+- **Run `/review` on every non-trivial PR before merging, even when CI is green.** CI verifies code compiles and tests pass; it does not verify that the PR's stated intent landed correctly. Two of the highest-impact bugs caught on this codebase were "the loop walks the wrong direction" and "the verification curl produces no output" — both compiled, both passed tests, both would have shipped a regression of the original bug.
+- **When migrating event-handler patterns, trace re-render paths first.** Before adding any `addEventListener` inside a render function, write down what triggers a re-render of that container (route changes? SSE events? post-save mutations?). If anything other than a one-time mount triggers re-render, use a singleton wired via `_listenerWired` guard. See "Frontend Event Handling" above.
+- **Verify shared-types `dist/` has the export you're importing before declaring the build clean.** After changes to `packages/shared-types/src/index.ts`, run `grep <EXPORT> packages/shared-types/dist/index.js`. Catches the turbo-cache regression in two seconds.
+- **Write the unit test alongside any parse / validation / regex hardening.** "Falls back to safe default on garbage input" without a test is one rebase away from silently regressing. Five test cases for input validation are faster to write than to argue about whether you need them.
+- **Post-`/review` fixes get their own commits inside the PR.** Don't squash them into the original change locally before pushing — separate commits give reviewers a clear "what was the first cut, what did review catch" diff. CHANGELOG can carry a `### Fixed (post-/review)` subsection for the same reason.
+- **Documentation that describes engine behavior must cite the source-of-truth file.** The trust-tier promotion criteria, spend-limit thresholds, and policy gates all live in code (`packages/shared-types/src/policy.ts`, `packages/policy-engine/`). When docs describe these, link to the file so future drift is visible. `docs/safety-model.md` does this; new docs should follow.
 
 ## Code Style
 
