@@ -6,8 +6,8 @@
 
 <a href="https://github.com/jayzalowitz/skytwin/actions/workflows/build.yml"><img src="https://github.com/jayzalowitz/skytwin/actions/workflows/build.yml/badge.svg" alt="Build"></a>
 <a href="https://github.com/jayzalowitz/skytwin/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"></a>
-<img src="https://img.shields.io/badge/version-0.4.0.0-green.svg" alt="Version">
-<img src="https://img.shields.io/badge/tests-1069%20passing-brightgreen.svg" alt="Tests">
+<img src="https://img.shields.io/badge/version-0.5.4.0-green.svg" alt="Version">
+<img src="https://img.shields.io/badge/tests-1436%20passing-brightgreen.svg" alt="Tests">
 <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux%20%7C%20iOS%20%7C%20Android-lightgrey.svg" alt="Platform">
 
 </div>
@@ -180,7 +180,7 @@ The API starts on `localhost:3100`, the web dashboard on `localhost:3200`.
 ### Running Tests
 
 ```bash
-pnpm test   # 1,069 tests across 71 files
+pnpm test   # 1,436 tests across 96 files
 ```
 
 ## Architecture
@@ -224,7 +224,7 @@ packages/
 | Build | Turborepo |
 | Desktop | Electron + electron-builder |
 | Mobile | React Native + Expo |
-| Testing | Vitest (1,069 tests) |
+| Testing | Vitest (1,436 tests) |
 | CI/CD | GitHub Actions |
 | Execution | [IronClaw](https://github.com/nearai/ironclaw/) |
 
@@ -320,9 +320,12 @@ Trust is **domain-specific**. You might be at `moderate_autonomy` for email but 
 
 ## Project Status
 
-SkyTwin is in **active development** (v0.4.0.0). The core decision pipeline, twin model, policy engine, and memory palace are functional. Gmail and Google Calendar connectors work with real OAuth. Desktop builds ship for all three platforms. The mobile app pairs via QR code.
+SkyTwin is in **active development** (v0.5.4.0). The core decision pipeline, twin model, policy engine, and memory palace are functional. Gmail and Google Calendar connectors work with real OAuth. Desktop builds ship for all three platforms. The mobile app pairs via QR code. v0.5.0.0 brought the one-command installer and a non-technical-user UX overhaul; v0.5.1.0 through v0.5.4.0 closed the post-/review follow-ups.
 
 **What works today:**
+- One-command install (`curl | bash`) on macOS, Linux, and WSL — installs every dependency, clones the repo, starts the services, opens the dashboard
+- "Ask your twin" widget on the dashboard — type any situation, get a predicted action with reasoning and confidence, no accounts required
+- Tour mode with a fully populated sample profile so you can poke at decisions, learnings, and approvals before connecting your own accounts
 - Full decision pipeline: signal → interpret → decide → policy check → execute/escalate → explain → learn
 - LLM-powered decisions via configurable provider chain (Claude, GPT, Gemini, Ollama) with automatic fallback to built-in rules
 - Twin model with versioned profiles, confidence scoring, and preference learning
@@ -333,7 +336,7 @@ SkyTwin is in **active development** (v0.4.0.0). The core decision pipeline, twi
 - Mobile app (iOS, Android) with QR pairing and push notifications
 - SSRF-safe URL validation for all LLM provider endpoints, with DNS rebinding protection
 - Dynamic adapter discovery for third-party execution plugins
-- 1,069 tests with CI/CD on GitHub Actions
+- 1,436 tests with CI/CD on GitHub Actions
 
 **What's next:**
 - More connectors (Slack, Notion, bank feeds)
