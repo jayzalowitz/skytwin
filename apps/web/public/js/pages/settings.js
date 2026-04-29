@@ -1,5 +1,5 @@
 import { fetchUser, updateTrustTier, fetchOAuthStatus, getGoogleAuthUrl, disconnectProvider, escapeHtml, fetchSettings, updateAutonomySettings, updateIronClawChannel, upsertDomainPolicy, deleteDomainPolicy, createEscalationTrigger, deleteEscalationTrigger, createSession, fetchSessions, revokeSession, saveAIProviders, testAIProvider, fetchRoutines, deleteRoutine } from '../api-client.js';
-import { KEY_USER_ID, KEY_ONBOARDED } from '../storage-keys.js';
+import { KEY_USER_ID, KEY_ONBOARDED, KEY_SESSION_TOKEN } from '../storage-keys.js';
 
 const TIERS = [
   { value: 'observer', name: 'Just watch', desc: 'Your assistant watches but never does anything. Good for seeing what it would do.' },
@@ -824,8 +824,13 @@ document.addEventListener('change', (e) => {
 });
 
 window.signOut = function() {
+  // Clear identity AND the bearer token. Without dropping the session
+  // token, the next user-switch / new-onboarding flow would still send
+  // the prior user's bearer header from api-client.js authHeaders(),
+  // either 403'ing the new identity or silently keeping the old one.
   localStorage.removeItem(KEY_USER_ID);
   localStorage.removeItem(KEY_ONBOARDED);
+  localStorage.removeItem(KEY_SESSION_TOKEN);
   window.location.hash = '#/';
   window.location.reload();
 };

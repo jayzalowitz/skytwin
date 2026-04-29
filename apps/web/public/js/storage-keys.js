@@ -74,16 +74,31 @@ export function clearAllSkyTwinKeys() {
 }
 
 /**
- * Remove every SkyTwin key whose name ends with the given suffix
- * (typically a userId). Plus the fixed-name keys passed in `alsoRemove`.
+ * Remove every SkyTwin key whose name *contains* the given segment
+ * (typically a userId). Used by tour exit to sweep state across all
+ * per-user key shapes:
+ *   - `skytwin_last_visit_<uid>`         (suffix: uid)
+ *   - `skytwin_first_decision_seen_<uid>` (suffix: uid)
+ *   - `skytwin_first_approval_intro_seen_<uid>` (suffix: uid)
+ *   - `skytwin_tier_celebrated_<uid>_<tier>` (uid is in the middle!)
+ *
+ * Originally checked `endsWith(suffix)` which missed the tier-celebration
+ * keys. We now match on either prefix-anchored boundaries (`_<uid>` or
+ * `_<uid>_`) so tour state really does start from a clean slate.
+ *
+ * `alsoRemove` is the list of fixed-name (no per-user suffix) keys to
+ * drop as well — KEY_TOUR_MODE, KEY_USER_ID, KEY_ONBOARDED, etc.
  */
-export function clearKeysForSuffix(suffix, alsoRemove = []) {
+export function clearKeysForSuffix(segment, alsoRemove = []) {
   try {
     for (const k of alsoRemove) localStorage.removeItem(k);
-    if (!suffix) return;
+    if (!segment) return;
+    const ending = `_${segment}`;
+    const middle = `_${segment}_`;
     for (let i = localStorage.length - 1; i >= 0; i--) {
       const k = localStorage.key(i);
-      if (k && k.startsWith(STORAGE_KEY_PREFIX) && k.endsWith(suffix)) {
+      if (!k || !k.startsWith(STORAGE_KEY_PREFIX)) continue;
+      if (k.endsWith(ending) || k.includes(middle)) {
         localStorage.removeItem(k);
       }
     }

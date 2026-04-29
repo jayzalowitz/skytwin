@@ -42,11 +42,17 @@ const SLOW_CACHE_TTL_MS = 30 * 1000;
 
 // Module-level cache for slow-changing fetches: oauth status, creds
 // status, skill gaps, learned, unmet creds. Each entry is keyed by a
-// short string and stores `{ value, expiresAt }`. Invalidated on:
+// short string and stores `{ value, expiresAt, generation }`. Invalidated on:
 //   - SSE 'twin:updated' (clears 'learned-…')
 //   - SSE 'credential:needed' (clears 'creds-status')
 //   - explicit invalidateDashboardCache() from app.js
+//
+// Generation counter prevents stale-resurrection: when invalidate runs
+// during an in-flight fetch, we bump the generation. The fetch's
+// then-handler will only write back if the entry's generation still
+// matches the one captured at request time.
 const _slowCache = new Map();
+let _cacheGeneration = 0;
 
 /**
  * Wrap a fetch function so its result is memoized for SLOW_CACHE_TTL_MS.
@@ -61,30 +67,44 @@ function slowFetch(key, fn, args) {
   if (hit && hit.expiresAt > now) {
     return Promise.resolve(hit.value);
   }
+  // Capture the generation at request time. The then-handler will only
+  // write its result back if the cache hasn't been invalidated since.
+  const requestGeneration = _cacheGeneration;
   // Cache the in-flight promise too so concurrent renders don't
   // duplicate the fetch.
   const promise = Promise.resolve(fn(...args)).then(
     (value) => {
-      _slowCache.set(key, { value, expiresAt: Date.now() + SLOW_CACHE_TTL_MS });
+      // Only commit the resolved value if this entry hasn't been
+      // invalidated (or replaced by a newer fetch) while in flight.
+      const current = _slowCache.get(key);
+      if (current && current.generation === requestGeneration) {
+        _slowCache.set(key, { value, expiresAt: Date.now() + SLOW_CACHE_TTL_MS, generation: requestGeneration });
+      }
       return value;
     },
     (err) => {
       // Don't cache failures — a transient error shouldn't suppress the
-      // value for 30s.
-      _slowCache.delete(key);
+      // value for 30s. Only clear if WE are still the in-flight entry;
+      // a more recent fetch's entry shouldn't be killed by our failure.
+      const current = _slowCache.get(key);
+      if (current && current.generation === requestGeneration) {
+        _slowCache.delete(key);
+      }
       throw err;
     },
   );
-  _slowCache.set(key, { value: promise, expiresAt: now + SLOW_CACHE_TTL_MS });
+  _slowCache.set(key, { value: promise, expiresAt: now + SLOW_CACHE_TTL_MS, generation: requestGeneration });
   return promise;
 }
 
 /**
  * Invalidate the slow-fetch cache. `keyPrefix` lets callers drop only a
  * subset (e.g. 'creds-status' when an SSE credential:needed event arrives).
- * No arg = drop everything.
+ * No arg = drop everything. Bumps the generation counter so any in-flight
+ * fetch that resolves after this call can't write its old value back.
  */
 export function invalidateDashboardCache(keyPrefix) {
+  _cacheGeneration++;
   if (!keyPrefix) {
     _slowCache.clear();
     return;

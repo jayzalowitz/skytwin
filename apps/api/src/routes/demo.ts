@@ -39,8 +39,20 @@ function isPreviewDisabled(): boolean {
 const PREVIEW_LIMIT = 20;
 const PREVIEW_WINDOW_MS = 5 * 60 * 1000;
 
-/** Hard global cap so a misconfigured trust-proxy or many-IP attacker can't run up the LLM bill. */
-const PREVIEW_GLOBAL_LIMIT_PER_HOUR = parseInt(process.env['DEMO_PREVIEW_GLOBAL_LIMIT_PER_HOUR'] ?? '500', 10);
+/** Hard global cap so a misconfigured trust-proxy or many-IP attacker can't run up the LLM bill.
+ *  Validated at module load: a malformed env value falls back to the default rather than
+ *  silently disabling the cap (NaN compares always-false). Negative or zero is also rejected. */
+const PREVIEW_GLOBAL_LIMIT_PER_HOUR = (() => {
+  const raw = process.env['DEMO_PREVIEW_GLOBAL_LIMIT_PER_HOUR'];
+  if (raw == null || raw === '') return 500;
+  const parsed = parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    // eslint-disable-next-line no-console
+    console.warn(`[demo] DEMO_PREVIEW_GLOBAL_LIMIT_PER_HOUR=${raw} is invalid; falling back to 500.`);
+    return 500;
+  }
+  return parsed;
+})();
 const PREVIEW_GLOBAL_WINDOW_MS = 60 * 60 * 1000;
 
 const PREVIEW_MAX_INPUT_LEN = 600;
@@ -228,6 +240,17 @@ export function createDemoRouter(): Router {
         return;
       }
 
+      // Resolve the demo user BEFORE consuming any rate-limit budget.
+      // If the seed isn't on this server, every preview returns 404 —
+      // burning per-IP and global capacity on those failures would lock
+      // legitimate callers out of an already-broken endpoint for no
+      // reason. Cheap because the demo user is memoized.
+      const user = await getDemoUserCached();
+      if (!user) {
+        res.status(404).json({ error: 'Demo profile not available on this server.' });
+        return;
+      }
+
       const ip = req.ip ?? req.socket.remoteAddress ?? 'unknown';
       const limit = checkPreviewRate(ip);
       if (!limit.allowed) {
@@ -248,12 +271,6 @@ export function createDemoRouter(): Router {
           error: 'Demo preview is busy right now. Sign in for unlimited use.',
           resetAt: new Date(Date.now() + globalLimit.resetMs).toISOString(),
         });
-        return;
-      }
-
-      const user = await getDemoUserCached();
-      if (!user) {
-        res.status(404).json({ error: 'Demo profile not available on this server.' });
         return;
       }
 
