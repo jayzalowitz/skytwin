@@ -153,18 +153,17 @@ export function createTwinRouter(): Router {
       const user = await userRepository.findById(userId);
       const currentTier = user?.trust_tier ?? 'observer';
 
-      // Pull recent feedback ordered most-recent-first. We compute
-      // consecutiveApprovals by walking back from the freshest event
-      // until we hit a non-approval — that's what the policy engine
-      // does when deciding whether to promote.
+      // Pull recent feedback. `findByUser` orders by created_at DESC, so
+      // index 0 is the freshest event. We compute consecutiveApprovals
+      // by walking forward from the freshest event until we hit a
+      // non-approval — that's what the policy engine does when deciding
+      // whether to promote.
       const feedback = await feedbackRepository.findByUser(userId, { limit: 1000 });
       const approvalCount = feedback.filter((f) => f.type === 'approve').length;
       const rejectionCount = feedback.filter((f) => f.type === 'reject').length;
 
-      // findByUser returns oldest-first; iterate from the end for
-      // "most recent first" without sorting in place.
       let consecutiveApprovals = 0;
-      for (let i = feedback.length - 1; i >= 0; i--) {
+      for (let i = 0; i < feedback.length; i++) {
         const f = feedback[i];
         if (f && f.type === 'approve') {
           consecutiveApprovals++;
