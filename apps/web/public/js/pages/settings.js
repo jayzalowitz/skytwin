@@ -1,4 +1,5 @@
 import { fetchUser, updateTrustTier, fetchOAuthStatus, getGoogleAuthUrl, disconnectProvider, escapeHtml, fetchSettings, updateAutonomySettings, updateIronClawChannel, upsertDomainPolicy, deleteDomainPolicy, createEscalationTrigger, deleteEscalationTrigger, createSession, fetchSessions, revokeSession, saveAIProviders, testAIProvider, fetchRoutines, deleteRoutine } from '../api-client.js';
+import { KEY_USER_ID, KEY_ONBOARDED, KEY_SESSION_TOKEN } from '../storage-keys.js';
 
 const TIERS = [
   { value: 'observer', name: 'Just watch', desc: 'Your assistant watches but never does anything. Good for seeing what it would do.' },
@@ -48,18 +49,25 @@ export async function renderSettings(container, userId) {
       <span style="color: var(--success); font-weight: 600;">Connected!</span> Your ${escapeHtml(justConnected)} account is now linked. Your twin will start learning from your data.
     </div>` : ''}
 
-    <div class="card">
-      <div class="card-header">
-        <span class="card-title">Your identity</span>
-      </div>
-      <div class="form-group">
-        <label>User ID</label>
-        <div style="display: flex; gap: 0.5rem;">
-          <input class="form-input" id="userId-input" value="${escapeHtml(userId)}">
-          <button class="btn btn-outline btn-sm" onclick="window.skyTwinSetUserId(document.getElementById('userId-input').value)">Switch</button>
+    <details class="card collapsible-card">
+      <summary class="card-header collapsible-header">
+        <span class="card-title">Advanced — switch user (developer)</span>
+        <span class="collapse-icon"></span>
+      </summary>
+      <div class="collapsible-body">
+        <div class="card-subtitle" style="margin-bottom: 0.75rem;">
+          Paste another user's ID to switch into their twin. Mostly useful while you're setting up multiple
+          accounts on the same machine — most people never need this.
+        </div>
+        <div class="form-group">
+          <label>User ID</label>
+          <div style="display: flex; gap: 0.5rem;">
+            <input class="form-input" id="userId-input" value="${escapeHtml(userId)}">
+            <button class="btn btn-outline btn-sm" onclick="window.skyTwinSetUserId(document.getElementById('userId-input').value)">Switch</button>
+          </div>
         </div>
       </div>
-    </div>
+    </details>
 
     <div class="card">
       <div class="card-header">
@@ -106,55 +114,44 @@ export async function renderSettings(container, userId) {
       </div>
     </div>
 
-    <div class="card">
-      <div class="card-header">
-        <span class="card-title">AI brain</span>
+    <details class="card collapsible-card">
+      <summary class="card-header collapsible-header">
+        <span class="card-title">${aiProviders.length > 0 ? 'AI brain — connected providers' : 'Add a smarter AI brain (optional)'}</span>
+        <span class="collapse-icon"></span>
+      </summary>
+      <div class="collapsible-body">
+        <div class="card-subtitle" style="margin-bottom: 1rem;">
+          Out of the box your twin uses the local AI on your machine plus built-in rules — that's enough for most decisions.
+          Add a paid provider here if you want sharper reasoning on the tricky calls. Multiple are tried in order with automatic fallback.
+        </div>
+        <div id="ai-provider-chain">
+          ${renderProviderChain(aiProviders)}
+        </div>
+        <div style="margin-top: 0.75rem; display: flex; gap: 0.5rem; align-items: center;">
+          <select class="form-input" id="add-provider-select" style="flex: 1;">
+            <option value="">+ Add a provider…</option>
+            <option value="anthropic">Anthropic (Claude)</option>
+            <option value="openai">OpenAI (GPT)</option>
+            <option value="google">Google (Gemini)</option>
+            <option value="ollama">Local AI on this machine (Ollama)</option>
+          </select>
+        </div>
+        <div style="margin-top: 0.75rem; display: flex; gap: 0.5rem; justify-content: space-between; align-items: center;">
+          <div style="font-size: 0.75rem; color: var(--text-dim);">If every provider you add is unreachable, your twin falls back to local AI + built-in rules.</div>
+          <button id="save-ai-btn" class="btn btn-primary btn-sm" onclick="saveAIProvidersHandler('${escapeHtml(userId)}')">Save</button>
+        </div>
       </div>
-      <div class="card-subtitle" style="margin-bottom: 1rem;">
-        Choose which AI powers your twin's thinking. Add multiple providers — your twin tries them in order and falls back automatically.
-      </div>
-      <div id="ai-provider-chain">
-        ${renderProviderChain(aiProviders)}
-      </div>
-      <div style="margin-top: 0.75rem; display: flex; gap: 0.5rem; align-items: center;">
-        <select class="form-input" id="add-provider-select" style="flex: 1;">
-          <option value="">+ Add provider...</option>
-          <option value="anthropic">Anthropic (Claude)</option>
-          <option value="openai">OpenAI (GPT)</option>
-          <option value="google">Google (Gemini)</option>
-          <option value="ollama">Ollama (local)</option>
-        </select>
-      </div>
-      <div style="margin-top: 0.75rem; display: flex; gap: 0.5rem; justify-content: space-between; align-items: center;">
-        <div style="font-size: 0.75rem; color: var(--text-dim);">If all providers fail, your twin falls back to built-in rules automatically.</div>
-        <button id="save-ai-btn" class="btn btn-primary btn-sm" onclick="saveAIProvidersHandler('${escapeHtml(userId)}')">Save</button>
-      </div>
-    </div>
+    </details>
 
+    ${routines.length > 0 ? `
     <div class="card">
       <div class="card-header">
-        <span class="card-title">IronClaw channel</span>
+        <span class="card-title">Scheduled actions</span>
       </div>
       <div class="card-subtitle" style="margin-bottom: 1rem;">
-        Choose where IronClaw should route action execution.
+        Recurring things your twin runs on a schedule (e.g. weekly inbox cleanup).
       </div>
-      <div style="display: flex; gap: 0.5rem; align-items: center;">
-        <select class="form-input" id="ironclaw-channel-select" style="flex: 1;">
-          ${ironclawChannels.map(channel => `<option value="${escapeHtml(channel)}" ${channel === ironclawChannel ? 'selected' : ''}>${escapeHtml(channel)}</option>`).join('')}
-        </select>
-        <button class="btn btn-primary btn-sm" onclick="saveIronClawChannel('${escapeHtml(userId)}')">Save</button>
-      </div>
-      <div id="ironclaw-channel-status" style="font-size: 0.8rem; margin-top: 0.5rem;"></div>
-    </div>
-
-    <div class="card">
-      <div class="card-header">
-        <span class="card-title">Routines</span>
-      </div>
-      <div class="card-subtitle" style="margin-bottom: 1rem;">
-        Scheduled actions delegated to IronClaw.
-      </div>
-      ${routines.length > 0 ? routines.map(routine => `
+      ${routines.map(routine => `
         <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; padding: 0.5rem 0.75rem; background: var(--bg); border-radius: var(--radius-sm); margin-bottom: 0.5rem;">
           <div style="min-width: 0;">
             <div style="font-weight: 600; font-size: 0.9rem;">${escapeHtml(routine.planSummary || routine.id)}</div>
@@ -162,34 +159,57 @@ export async function renderSettings(container, userId) {
           </div>
           <button class="btn btn-outline btn-sm" onclick="deleteRoutineHandler('${escapeHtml(routine.id)}', '${escapeHtml(userId)}')">Delete</button>
         </div>
-      `).join('') : '<div style="font-size: 0.85rem; color: var(--text-muted); padding: 0.75rem; background: var(--bg); border-radius: var(--radius-sm);">No routines scheduled.</div>'}
+      `).join('')}
     </div>
+    ` : ''}
+
+    <details class="card collapsible-card">
+      <summary class="card-header collapsible-header">
+        <span class="card-title">Advanced — execution routing</span>
+        <span class="collapse-icon"></span>
+      </summary>
+      <div class="collapsible-body">
+        <div class="card-subtitle" style="margin-bottom: 1rem;">
+          Which channel actions are dispatched through. Most people leave this on the default — this is for setups that route actions to a separate inbox or chat tool.
+        </div>
+        <div style="display: flex; gap: 0.5rem; align-items: center;">
+          <select class="form-input" id="ironclaw-channel-select" style="flex: 1;">
+            ${ironclawChannels.map(channel => `<option value="${escapeHtml(channel)}" ${channel === ironclawChannel ? 'selected' : ''}>${escapeHtml(channel)}</option>`).join('')}
+          </select>
+          <button class="btn btn-primary btn-sm" onclick="saveIronClawChannel('${escapeHtml(userId)}')">Save</button>
+        </div>
+        <div id="ironclaw-channel-status" style="font-size: 0.8rem; margin-top: 0.5rem;"></div>
+      </div>
+    </details>
 
     <div class="card">
       <div class="card-header">
-        <span class="card-title">Privacy & data</span>
+        <span class="card-title">Your data, your machine</span>
       </div>
       <div class="card-subtitle" style="margin-bottom: 1rem;">
-        Your twin's data stays in your database. You own all of it.
+        Everything your twin learns lives on this computer. Nothing is sent to a SkyTwin cloud, because there isn't one.
       </div>
       <div style="font-size: 0.85rem; color: var(--text-muted); line-height: 1.8;">
-        <strong>What's stored:</strong> Your preferences, behavioral patterns, decision history, and feedback.<br>
-        <strong>What's not stored:</strong> Raw email content, calendar details, or passwords.<br>
-        <strong>OAuth tokens:</strong> ${googleConnected ? 'Stored securely. Disconnect above to revoke access.' : 'No tokens stored.'}<br>
+        <strong>I keep:</strong> the preferences I learn, patterns I notice, and a log of every decision I made (with the reasoning).<br>
+        <strong>I don't keep:</strong> the actual contents of your emails, your calendar event details, or any of your passwords.<br>
+        <strong>Account access:</strong> ${googleConnected
+          ? 'I have a sign-in token from Google so I can read inbox and calendar. Disconnect above and that token is destroyed.'
+          : 'No accounts linked yet — I can\'t see anything until you connect one.'}<br>
       </div>
     </div>
 
-    <div class="card" style="border-left: 3px solid var(--danger);">
+    <div class="card" style="border-left: 3px solid var(--warning, #e6a700);">
       <div class="card-header">
-        <span class="card-title">Pause your twin</span>
+        <span class="card-title">${currentTier === 'observer' ? 'Your twin is on standby' : 'Put your twin on standby'}</span>
       </div>
       <div class="card-subtitle" style="margin-bottom: 0.75rem;">
-        Temporarily stop all auto-execution without disconnecting accounts.
-        Your twin will continue watching but won't take any action.
+        ${currentTier === 'observer'
+          ? 'Right now your twin is watching everything but not doing anything on its own. Bump the autonomy level above when you\'re ready to let it act.'
+          : 'Need a break? This pauses every automatic action — your twin keeps watching but won\'t do anything until you turn it back on. Your accounts stay linked.'}
       </div>
-      <button class="btn btn-outline btn-sm" onclick="pauseTwin('${escapeHtml(userId)}')">
-        ${currentTier === 'observer' ? 'Twin is paused (watch only)' : 'Pause twin'}
-      </button>
+      ${currentTier !== 'observer' ? `
+        <button class="btn btn-outline btn-sm" onclick="pauseTwin('${escapeHtml(userId)}')">Pause everything</button>
+      ` : ''}
     </div>
 
     <div class="card">
@@ -396,7 +416,7 @@ window.handleConnectGoogle = async function(userId) {
     } else {
       document.getElementById('page-content').insertAdjacentHTML(
         'afterbegin',
-        '<div class="error-banner">Google OAuth is not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET environment variables.</div>',
+        '<div class="error-banner">Google access isn\'t set up on this server yet. Head to <a href="#/setup">Connect</a> for the 5-minute walkthrough.</div>',
       );
     }
   } catch (err) {
@@ -624,7 +644,7 @@ function renderProviderChain(providers) {
   _aiChain = providers.map((p, i) => ({ ...p, priority: i }));
 
   if (_aiChain.length === 0) {
-    return '<div style="font-size: 0.85rem; color: var(--text-muted); padding: 0.75rem; background: var(--bg); border-radius: var(--radius-sm);">No AI providers configured. Your twin uses built-in rules only.</div>';
+    return '<div style="font-size: 0.85rem; color: var(--text-muted); padding: 0.75rem; background: var(--bg); border-radius: var(--radius-sm);">No paid providers added. Your twin runs on the local AI on this machine plus built-in rules — that\'s the default.</div>';
   }
 
   return _aiChain.map((p, idx) => `
@@ -678,7 +698,7 @@ function renderProviderChain(providers) {
 }
 
 function getCurrentUserId() {
-  return localStorage.getItem('skytwin_userId') || 'default-user';
+  return localStorage.getItem(KEY_USER_ID) || 'default-user';
 }
 
 // Drag and drop state
@@ -804,8 +824,13 @@ document.addEventListener('change', (e) => {
 });
 
 window.signOut = function() {
-  localStorage.removeItem('skytwin_userId');
-  localStorage.removeItem('skytwin_onboarded');
+  // Clear identity AND the bearer token. Without dropping the session
+  // token, the next user-switch / new-onboarding flow would still send
+  // the prior user's bearer header from api-client.js authHeaders(),
+  // either 403'ing the new identity or silently keeping the old one.
+  localStorage.removeItem(KEY_USER_ID);
+  localStorage.removeItem(KEY_ONBOARDED);
+  localStorage.removeItem(KEY_SESSION_TOKEN);
   window.location.hash = '#/';
   window.location.reload();
 };

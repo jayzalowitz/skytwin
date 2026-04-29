@@ -453,19 +453,17 @@ export function createOAuthRouter(): Router {
         return;
       }
 
-      // Redirect back to the web dashboard. The dashboard parses both the
-      // top-level query string (for the user-switcher's `?userId=` handler)
-      // and the hash route's query (`#/settings?connected=…`), so include
-      // userId at the top level so the active user syncs on auto-create,
-      // and include `connected/account` in the hash for the Settings page's
-      // banner.
+      // Redirect to the dashboard so the user lands on the "your twin is now
+      // alive" celebration instead of a settings form. The dashboard parses
+      // the top-level `?userId=` (user-switcher) and the hash query
+      // `?connected=google&account=…` (for the celebration card).
       const webBase = process.env['WEB_BASE_URL'] ?? `http://localhost:${process.env['WEB_PORT'] ?? '3200'}`;
       const topLevel = new URLSearchParams({ userId }).toString();
       const hashQuery = new URLSearchParams({
         connected: 'google',
         account: accountEmail,
       }).toString();
-      res.redirect(`${webBase}/?${topLevel}#/settings?${hashQuery}`);
+      res.redirect(`${webBase}/?${topLevel}#/?${hashQuery}`);
     } catch (error) {
       next(error);
     }

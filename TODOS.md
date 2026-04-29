@@ -2,6 +2,32 @@
 
 Generated from CEO review on 2026-04-01. Updated through M2/M3/M4 completion.
 
+## Open — remaining from /review on 2026-04-28 (PR #126 non-tech UX branch)
+
+Most items closed in the same branch (see Completed below). Three items
+remain open as P2/P3 follow-ups.
+
+- [ ] **P2**: Split `renderDashboard` (~340 lines now) into `computeDashboardModel`, `renderDashboardView`, `applyDashboardEffects`. The current function mixes data fetching, state derivation, HTML composition, and post-render side effects — hard to test, hard to refactor. **Files:** apps/web/public/js/pages/dashboard.js
+- [ ] **P2**: Migrate the remaining inline `onclick="...handleX('${escapeHtml(value)}')"` patterns across approvals.js / settings.js / decisions.js / setup.js / dashboard.js to `addEventListener` bindings. The highest-risk site (twin.js, free-text preference value flowing through JS string literals) was migrated in this PR. The remaining ~40 inline handlers interpolate UUIDs / enum values / constants where practical risk is zero today, but the pattern is unsafe by construction. **Files:** apps/web/public/js/pages/{approvals,settings,decisions,setup,dashboard}.js
+- [ ] **P3**: OAuth callback redirect contract change (#/settings → #/) — verify any out-of-tree docs (Electron deep links, README links) and consider one-release backwards compat. **Files:** apps/api/src/routes/oauth.ts:466
+- [ ] **P3**: Real production tour mode — short-lived demo session token, or `/api/v1/demo/dashboard` aggregate read-only endpoint. Currently tour mode auto-disables in production (auth bypass not active), which is honest but cuts off the marquee feature for non-localhost deploys. **Files:** apps/api/src/routes/demo.ts, apps/api/src/middleware/session-auth.ts
+- [ ] **P1**: Fix TIER_THRESHOLDS drift between client and policy-engine. Both `apps/api/src/routes/twin.ts:150-155` (`/api/twin/:userId/progress`) and `apps/web/public/js/pages/dashboard.js:33-34` declare `moderate_autonomy: 100` as the next-tier threshold, but `packages/policy-engine/src/trust-tier-engine.ts:13-30` has NO entry for moderate→high (explicit opt-in only). At 100 approvals the dashboard fires a "You've unlocked Full autopilot" toast that the engine will never honor. Also: the client uses total `approvalCount` while the engine requires `consecutiveApprovals` plus an approval-ratio check, so the toast can fire when the engine would block or regress. Fix: drop `moderate_autonomy` from both client and server, and either share the threshold object via `@skytwin/shared-types` or have `/progress` return what the engine actually uses. **Files:** apps/api/src/routes/twin.ts:150-155, apps/web/public/js/pages/dashboard.js:33-34, packages/policy-engine/src/trust-tier-engine.ts
+- [ ] **P2**: Document `TRUST_PROXY_HOPS` deployment guidance. The new `app.set('trust proxy', N)` in `apps/api/src/index.ts:88` is global — it affects every IP-keyed check (session-auth, OAuth new-user rate limit, demo preview rate limit). Setting it too high lets a client-controlled `X-Forwarded-For` become `req.ip` and bypass all of them. README/deploy docs should call out: only set `TRUST_PROXY_HOPS` to the exact hop count between the API and the actual client (1 for a single Fly/Render/nginx hop, 2 for nginx-behind-Cloudflare, etc.); when in doubt, prefer trusted-proxy subnet logic. **Files:** README.md, apps/api/src/index.ts:88
+- [ ] **P3**: Multi-instance demo rate limiting. `globalPreviewTimestamps` is process-local — N API replicas multiply the global hourly cap, and a restart clears it. Acceptable for self-hosted single-process deploys, fine for the dev-bypass-only tour, but if `/api/v1/demo/preview` is ever exposed to an unauthenticated public deployment with multiple instances, move the counter to Redis or a DB row with an atomic increment. **Files:** apps/api/src/routes/demo.ts
+
+## Completed in PR #126 (2026-04-28)
+
+- [x] **P1**: Cache slow-changing dashboard fetches in a module-level Map with 30s TTL — `slowFetch()` wraps oauth status, creds status, skill gaps, learned, unmet creds. SSE `twin:updated` busts learned/skill-gaps; `credential:needed` busts creds-status/unmet-creds. **Completed:** PR #126 (2026-04-28)
+- [x] **P1**: Migrated highest-risk inline onclick site (twin.js — free-text preference value) to data-attributes + delegated event listener. **Completed:** PR #126 (2026-04-28)
+- [x] **P1**: Added 12 tests for `apps/api/src/routes/demo.ts` covering 400 / 404 / 429 / 503 / 200 paths. Caught two real bugs in the process (PREVIEW_DISABLED was load-time, demo user cache wasn't reset between requests). **Completed:** PR #126 (2026-04-28)
+- [x] **P2**: Extracted magic numbers in dashboard.js to named constants (BRIEFING_FRESH_MS, FIRST_SCAN_POLL_MS, FIRST_SCAN_MAX_MS, SINCE_LAST_VISIT_MIN_MS, SLOW_CACHE_TTL_MS, TIER_THRESHOLDS, TIER_NEXT). **Completed:** PR #126 (2026-04-28)
+- [x] **P2**: Consolidated five module-level window-globals blocks in dashboard.js into one `initDashboardGlobals()` called from app.js bootstrap. **Completed:** PR #126 (2026-04-28)
+- [x] **P2**: Created `apps/web/public/js/storage-keys.js` registry. All `skytwin_*` localStorage keys now flow through `KEY_*` constants and per-user builder functions. `clearKeysForSuffix()` powers the tour-exit cleanup. **Completed:** PR #126 (2026-04-28)
+- [x] **P2**: Added `DemoInfoResponse` and `DemoPreviewResponse` to `@skytwin/shared-types`. demo.ts response objects now type-check against the public surface. **Completed:** PR #126 (2026-04-28)
+- [x] **P2**: Added `app.set('trust proxy', N)` configuration via `TRUST_PROXY_HOPS` env var (default 0). Required for the per-IP rate limit on /api/v1/demo/preview to work behind reverse proxies. **Completed:** PR #126 (2026-04-28)
+- [x] **P3**: Moved `/api/demo/*` to `/api/v1/demo/*` for consistency with `/api/v1/twin/*` and `/api/v1/briefings/*`. Client-side `fetchDemoInfo` and `previewDemoDecision` updated. **Completed:** PR #126 (2026-04-28)
+- [x] **P3**: Moved inline `@keyframes pulse` from dashboard.js into `apps/web/public/css/styles.css` as `.skytwin-pulse-dot` with `prefers-reduced-motion` support. **Completed:** PR #126 (2026-04-28)
+
 ## Completed (v0.3.0.0 — M2/M3/M4)
 
 - [x] M2 Phase 1: TrustTierEngine with auto-promotion (OBSERVER→MODERATE_AUTONOMY) and rolling-window regression **Completed:** v0.3.0.0 (2026-04-01)

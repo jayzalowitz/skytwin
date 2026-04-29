@@ -7,9 +7,9 @@ const TYPE_ICONS = {
 };
 
 const TYPE_LABELS = {
-  tier_change: 'Trust Tier Change',
-  spend_event: 'Spend Event',
-  preference_change: 'Preference Learned',
+  tier_change: 'Trust earned',
+  spend_event: 'Money moved',
+  preference_change: 'Learned about you',
 };
 
 function formatTimestamp(ts) {
@@ -19,20 +19,27 @@ function formatTimestamp(ts) {
 export async function renderAudit(container, userId) {
   container.innerHTML = `
     <div class="audit-page">
-      <h2>Audit Timeline</h2>
-      <p class="subtitle">Track trust tier changes, spending, and preference evolution.</p>
+      <div class="card" style="border-left: 3px solid var(--primary);">
+        <div class="card-header">
+          <span class="card-title">The full paper trail</span>
+        </div>
+        <div class="card-subtitle">
+          Every time your twin earns trust, spends money, or learns something about you, it gets logged here.
+          Filter by type or date if you're looking for something specific.
+        </div>
+      </div>
 
-      <div class="audit-filters">
-        <label><input type="checkbox" data-type="tier_change" checked> Trust Tier</label>
-        <label><input type="checkbox" data-type="spend_event" checked> Spend</label>
-        <label><input type="checkbox" data-type="preference_change" checked> Preferences</label>
+      <div class="audit-filters" style="margin: 0.5rem 0 1rem;">
+        <label><input type="checkbox" data-type="tier_change" checked> Trust changes</label>
+        <label><input type="checkbox" data-type="spend_event" checked> Spending</label>
+        <label><input type="checkbox" data-type="preference_change" checked> Things learned</label>
         <input type="date" id="audit-from" placeholder="From">
         <input type="date" id="audit-to" placeholder="To">
         <button id="audit-refresh" class="btn btn-sm">Refresh</button>
       </div>
 
       <div id="audit-timeline" class="audit-timeline">
-        <div class="loading">Loading audit trail...</div>
+        <div class="loading">Loading…</div>
       </div>
     </div>
   `;
@@ -62,8 +69,8 @@ export async function renderAudit(container, userId) {
 
       if (allEntries.length === 0) {
         timeline.innerHTML = `<div class="empty-state">
-          <div class="empty-state-title">No audit events yet</div>
-          <div class="empty-state-desc">Once your twin starts making decisions, every action will be logged here — trust tier changes, spending, and what it learns about you. This is your full paper trail.</div>
+          <div class="empty-state-title">Nothing logged yet</div>
+          <div class="empty-state-desc">As your twin earns trust, makes spending decisions, or learns something new about you, those moments land here with timestamps you can rely on. Nothing happens in the dark.</div>
         </div>`;
         return;
       }

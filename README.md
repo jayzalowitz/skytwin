@@ -131,13 +131,30 @@ Every path produces an explanation. Every outcome feeds back into the twin. The 
 
 ## Quick Start
 
-### Prerequisites
+### One-command install (macOS, Linux, WSL)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jayzalowitz/skytwin/main/install.sh | bash
+```
+
+That's it. The installer detects your OS, installs anything missing (Homebrew on mac, Node 20+, pnpm, Docker, Ollama), clones the repo to `~/skytwin`, runs the bootstrap, starts the services, and opens the dashboard at `http://localhost:3200` once it's up. Re-running pulls latest and restarts.
+
+To stop later: `cd ~/skytwin && ./bin/skytwin-dev --stop`.
+
+**The first 60 seconds:**
+1. The dashboard opens. Type any situation into "Ask your twin" — the agent reasons out loud and explains what it would do, with confidence and alternatives. No accounts connected yet, no signals required.
+2. Click **"Or explore with a sample profile first →"** to skip the OAuth setup entirely and poke at a fully populated example twin (decisions, learnings, approvals, the whole thing).
+3. When you're ready to wire up your own, the in-app walkthrough handles the Google API setup in about 5 minutes — paste your client ID, click "Save and connect now," and you're at Google's sign-in.
+
+### Manual setup
+
+If you'd rather drive each step yourself:
+
+**Prerequisites**
 
 - [Node.js](https://nodejs.org/) >= 20
 - [pnpm](https://pnpm.io/) >= 9
 - [Docker](https://www.docker.com/) (for CockroachDB)
-
-### Setup
 
 ```bash
 git clone https://github.com/jayzalowitz/skytwin.git && cd skytwin

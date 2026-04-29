@@ -1,5 +1,6 @@
 import { fetchPendingApprovals, fetchApprovalHistory, respondToApproval, escapeHtml, fetchTrustProgress } from '../api-client.js';
 import { renderTrustProgress } from '../components/progress-bar.js';
+import { KEY_TOUR_MODE, firstApprovalIntroSeenKey } from '../storage-keys.js';
 
 const PENDING_PAGE_SIZE = 10;
 
@@ -22,6 +23,22 @@ export async function renderApprovals(container, userId) {
   cachedPending = pending;
   visiblePendingCount = PENDING_PAGE_SIZE;
 
+  // First-approval tutorial: a single dismissible card that explains
+  // how this page works the first time the user has anything to approve.
+  // Dismissed via localStorage so it never repeats. Skipped in tour mode
+  // because Alex already has plenty of pending approvals — context is
+  // implicit there.
+  let tourMode = false;
+  let firstApprovalIntroKey = '';
+  let showFirstApprovalIntro = false;
+  try {
+    tourMode = localStorage.getItem(KEY_TOUR_MODE) === '1';
+    firstApprovalIntroKey = firstApprovalIntroSeenKey(userId);
+    showFirstApprovalIntro = !tourMode
+      && pending.length > 0
+      && !localStorage.getItem(firstApprovalIntroKey);
+  } catch { /* private mode */ }
+
   // Filter out expired escalations from history — they're noise (twin didn't know what
   // to do and the user never responded, so there's nothing useful to show)
   const history = rawHistory.filter(a => {
@@ -32,12 +49,31 @@ export async function renderApprovals(container, userId) {
   container.innerHTML = `
     ${prog ? renderTrustProgress({ approvalCount: prog.approvalCount, currentTier: prog.currentTier }) : ''}
 
-    <div class="card">
-      <div class="card-header">
-        <span class="card-title">Pending approvals</span>
-        <span class="badge ${pending.length > 0 ? 'badge-warning' : 'badge-success'}">${pending.length} pending</span>
+    ${showFirstApprovalIntro ? `
+      <div class="card" id="first-approval-intro" style="border-left: 3px solid var(--primary); background: linear-gradient(135deg, var(--bg-card) 0%, var(--bg) 100%);">
+        <div class="card-header">
+          <span class="card-title">Here's how this works</span>
+          <button class="btn btn-outline btn-sm" onclick="window.dismissFirstApprovalIntro('${escapeHtml(firstApprovalIntroKey)}')" style="padding: 0.15rem 0.5rem; font-size: 0.7rem;">Got it</button>
+        </div>
+        <div class="card-subtitle" style="line-height: 1.65;">
+          Each card below is a call I want to make on your behalf. I'll show you the email or invite that
+          triggered it, what I'd do, and why. <strong>Yes, do it</strong> approves and I'll handle it; <strong>Not this time</strong>
+          tells me to skip — and if you add a reason, I learn so the next one of these comes out right.
+          Every yes nudges your trust level up, so eventually I'll just handle this kind of thing on my own.
+        </div>
       </div>
-      <div class="card-subtitle">Your twin wants to take these actions and needs your OK.</div>
+    ` : ''}
+
+    <div class="card" style="border-left: 3px solid var(--primary);">
+      <div class="card-header">
+        <span class="card-title">${pending.length > 0 ? 'I want to handle these — OK?' : 'Needs your OK'}</span>
+        <span class="badge ${pending.length > 0 ? 'badge-warning' : 'badge-success'}">${pending.length} waiting</span>
+      </div>
+      <div class="card-subtitle">
+        ${pending.length > 0
+          ? 'Your call. I\'ll explain the why on each one — say yes if it sounds right, or tell me why not so I learn for next time.'
+          : 'Nothing\'s waiting on you right now.'}
+      </div>
     </div>
 
     <div id="pending-list">
@@ -68,8 +104,11 @@ function renderPendingList(pending, visibleCount) {
   if (pending.length === 0) {
     return `
       <div class="empty-state">
-        <div class="empty-state-title">All clear</div>
-        <div class="empty-state-desc">Your twin doesn't need any approvals right now. It's either handling things automatically or waiting for new events.</div>
+        <div class="empty-state-title">You're all caught up</div>
+        <div class="empty-state-desc">
+          Either I'm handling things on my own (within the rules you set), or nothing new has come in yet.
+          As I get more confident in an area, this list gets shorter — that's the goal.
+        </div>
       </div>
     `;
   }
@@ -89,6 +128,11 @@ function renderPendingList(pending, visibleCount) {
     </div>
   `;
 }
+
+window.dismissFirstApprovalIntro = function(key) {
+  try { localStorage.setItem(key, '1'); } catch { /* noop */ }
+  document.getElementById('first-approval-intro')?.remove();
+};
 
 window.showMoreApprovals = function() {
   visiblePendingCount += PENDING_PAGE_SIZE;
@@ -165,9 +209,9 @@ function renderStandardCard(a, action) {
       <span>${action.confidence ? `Confidence: ${action.confidence}` : ''}</span>
     </div>
     <div class="approval-actions">
-      <button class="btn btn-success btn-sm" onclick="handleApproval('${a.id}', 'approve', '${a.userId || ''}')">Yes, go ahead</button>
-      <button class="btn btn-danger btn-sm" onclick="handleApproval('${a.id}', 'reject', '${a.userId || ''}')">No, don't do this</button>
-      <input class="form-input" id="reason-${a.id}" placeholder="Want to tell me why? (optional)" style="flex: 1; font-size: 0.8rem;">
+      <button class="btn btn-success btn-sm" onclick="handleApproval('${a.id}', 'approve', '${a.userId || ''}')">Yes, do it</button>
+      <button class="btn btn-outline btn-sm" onclick="handleApproval('${a.id}', 'reject', '${a.userId || ''}')">Not this time</button>
+      <input class="form-input" id="reason-${a.id}" placeholder="Tell me why so I learn (optional)" style="flex: 1; font-size: 0.8rem;">
     </div>
   `;
 }
@@ -516,12 +560,20 @@ function explainReason(action, reason) {
     archive_email: 'I noticed you usually archive emails like this. Want me to handle it?',
     label_email: 'Based on the content, I think this should be categorized.',
     send_reply: 'This looks like it needs a response. I drafted a quick acknowledgment.',
+    delete_email: 'You\'ve trashed messages like this before — looks like spam to me.',
     accept_invite: 'This meeting fits your schedule. Should I accept?',
-    decline_invite: 'This conflicts with your existing plans or you\'ve declined similar ones before.',
-    renew_subscription: 'This subscription is coming up for renewal. Should I go ahead?',
+    decline_invite: 'This conflicts with your existing plans, or you\'ve declined similar ones before.',
+    propose_alternative: 'This invite clashes with something. I can suggest a time that actually works.',
+    renew_subscription: 'This subscription is coming up for renewal. Should I let it go through?',
+    cancel_subscription: 'You haven\'t used this lately — worth letting it lapse?',
+    snooze_reminder: 'Looks like something to come back to later, not right now.',
+    place_order: 'Matches your usual reorder pattern. Want me to place it?',
+    add_to_list: 'Looks like something to add to your list rather than buy now.',
+    book_travel: 'Found a match for your usual preferences. Worth your call before booking.',
+    save_option: 'Worth setting aside for you to look at when you have time.',
   };
 
-  return explanations[action?.actionType] || 'This requires your approval before I can proceed.';
+  return explanations[action?.actionType] || 'I think this is the right call here, but I want your OK before I act.';
 }
 
 function urgencyBadge(urgency) {
@@ -628,8 +680,37 @@ window.handleApproval = async function(requestId, action, userId) {
       el.querySelector('.approval-actions').innerHTML = `<span class="badge ${badge}">${label}</span>`;
     }
 
-    const toastMsg = action === 'approve' ? 'Got it — I\'ll handle this for you.' : 'Noted — I won\'t do that.';
+    // Reflect the user's reason back in the toast — they feel heard,
+    // and it surfaces what the twin will actually remember vs. just
+    // saying a generic "noted." If no reason was given, fall back to
+    // a friendly default keyed off approve vs. reject.
+    let toastMsg;
+    if (action === 'approve') {
+      toastMsg = reason
+        ? `Got it — I'll handle this for you. Noting: "${reason.length > 80 ? reason.slice(0, 77) + '…' : reason}"`
+        : 'Got it — I\'ll handle this for you.';
+    } else {
+      toastMsg = reason
+        ? `Got it — I'll remember: "${reason.length > 80 ? reason.slice(0, 77) + '…' : reason}" for next time.`
+        : 'Noted — I won\'t do that.';
+    }
     showToast(toastMsg);
+
+    // Visibly tick up the trust progress bar right after an approval, so
+    // the user feels the trust building rather than having to look up.
+    // Re-fetch the trust progress and swap the existing bar in-place.
+    if (action === 'approve') {
+      try {
+        const fresh = await fetchTrustProgress(userId);
+        const existing = document.querySelector('.trust-progress');
+        if (existing && fresh) {
+          const tmp = document.createElement('div');
+          tmp.innerHTML = renderTrustProgress({ approvalCount: fresh.approvalCount, currentTier: fresh.currentTier });
+          const next = tmp.firstElementChild;
+          if (next) existing.replaceWith(next);
+        }
+      } catch { /* non-critical */ }
+    }
   } catch (err) {
     const el = document.getElementById(`approval-${requestId}`);
     if (el) {

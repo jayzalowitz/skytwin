@@ -1,4 +1,5 @@
-import { createUser, updateTrustTier, fetchJSON, fetchTwinProfile } from '../api-client.js';
+import { createUser, updateTrustTier, fetchJSON, fetchTwinProfile, fetchDemoInfo, previewDemoDecision } from '../api-client.js';
+import { KEY_USER_ID, KEY_ONBOARDED, KEY_TOUR_MODE } from '../storage-keys.js';
 
 // ── Domain definitions ──────────────────────────────────────────────
 
@@ -63,39 +64,93 @@ const DOMAIN_QUESTIONS = {
 // ── Steps ───────────────────────────────────────────────────────────
 
 const STEPS = [
-  // Step 1: Welcome
+  // Step 1: Welcome — show, don't tell
   {
     render: (container, next) => {
       container.innerHTML = `
         <div class="onboarding-step">Step 1 of 5</div>
-        <div class="onboarding-title">Meet your digital twin</div>
+        <div class="onboarding-title">A twin that learns what you'd want — and does it.</div>
         <div class="onboarding-desc">
-          SkyTwin learns how you like things done, then starts handling them for you — across every part of your life.
+          Most assistants have amnesia. You tell them you prefer aisle seats three times. They keep asking.
+          Your twin builds a real model of how you make decisions, then handles routine ones on its own.
         </div>
-        <div class="domain-showcase">
-          <span class="domain-icon-preview">📧</span>
-          <span class="domain-icon-preview">📅</span>
-          <span class="domain-icon-preview">💰</span>
-          <span class="domain-icon-preview">🛒</span>
-          <span class="domain-icon-preview">✈️</span>
-          <span class="domain-icon-preview">✅</span>
-          <span class="domain-icon-preview">🏠</span>
-          <span class="domain-icon-preview">💬</span>
-          <span class="domain-icon-preview">📄</span>
-          <span class="domain-icon-preview">❤️</span>
+
+        <div id="onb-preview-card" class="card" style="margin: 1rem 0; padding: 0.85rem 1rem; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg);">
+          <div style="font-weight: 600; font-size: 0.9rem; margin-bottom: 0.4rem;">Try one — see how it thinks</div>
+          <div style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 0.75rem;">
+            Tap a situation and watch a real prediction come back. (We're using a sample profile to answer — no signup needed yet.)
+          </div>
+          <div style="display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.5rem;" id="onb-preview-chips">
+            <button class="btn btn-outline btn-sm onb-preview-chip" data-prompt="A recruiter at a company I've never heard of just emailed me about a senior role." style="font-size: 0.78rem; text-align: left;">Recruiter email →</button>
+            <button class="btn btn-outline btn-sm onb-preview-chip" data-prompt="My streaming subscription is up for renewal at $15.99/month — I used it 3 times this month." style="font-size: 0.78rem; text-align: left;">Subscription renewal →</button>
+            <button class="btn btn-outline btn-sm onb-preview-chip" data-prompt="A friend just sent a calendar invite for dinner Friday at 7pm. What would you do?" style="font-size: 0.78rem; text-align: left;">Dinner invite →</button>
+          </div>
+          <div id="onb-preview-result" style="font-size: 0.85rem;"></div>
         </div>
-        <ul class="feature-list">
-          <li>Manages email, calendar, finances, shopping, and more</li>
-          <li>Learns your preferences from every decision you make</li>
-          <li>Handles routine tasks so you can focus on what matters</li>
-          <li>Always explains what it did and why</li>
-          <li>You stay in control — choose how much it does on its own</li>
+
+        <ul class="feature-list" style="font-size: 0.85rem;">
+          <li><strong>Earns trust gradually.</strong> Starts by watching, then suggesting, then handling — at the pace you set.</li>
+          <li><strong>Every action is explained.</strong> What it did, why, and how to correct it.</li>
+          <li><strong>You can stop or undo any of it.</strong> The twin works for you.</li>
         </ul>
         <div class="onboarding-actions">
           <button class="btn btn-primary btn-lg" id="onb-next-1">Let's get started</button>
         </div>
       `;
       document.getElementById('onb-next-1').addEventListener('click', next);
+
+      // Wire the preview chips. They call the public /api/demo/preview
+      // endpoint, which runs whatWouldIDo() against the seeded user.
+      // Fail closed: if the demo isn't available (seed not run, server
+      // down) we hide the whole panel rather than show a broken widget.
+      const previewCard = document.getElementById('onb-preview-card');
+      const resultEl = document.getElementById('onb-preview-result');
+      const chips = container.querySelectorAll('.onb-preview-chip');
+
+      fetchDemoInfo().then((info) => {
+        if (!info?.available) {
+          if (previewCard) previewCard.style.display = 'none';
+        }
+      }).catch(() => {
+        if (previewCard) previewCard.style.display = 'none';
+      });
+
+      chips.forEach((chip) => {
+        chip.addEventListener('click', async () => {
+          const prompt = chip.getAttribute('data-prompt');
+          if (!prompt || !resultEl) return;
+          chips.forEach((c) => { c.disabled = true; });
+          resultEl.innerHTML = `<div style="padding: 0.5rem 0.75rem; color: var(--text-muted);">Thinking it through…</div>`;
+          try {
+            const r = await previewDemoDecision(prompt);
+            const action = r?.predictedAction;
+            const conf = (r?.confidence || 'unknown').toString().replace(/_/g, ' ');
+            const autoVerb = r?.wouldAutoExecute ? "I'd handle this on my own" : "I'd ask you first";
+            const autoColor = r?.wouldAutoExecute ? 'var(--success)' : 'var(--warning, #e6a700)';
+            resultEl.innerHTML = `
+              <div style="padding: 0.75rem; border-left: 3px solid ${autoColor}; background: var(--bg-card); border-radius: var(--radius-sm);">
+                <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.25rem;">"${escapeForDisplay(prompt)}"</div>
+                <div style="display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem;">
+                  <strong>${escapeForDisplay(action?.description || action?.actionType || "I'm not sure — I'd ask")}</strong>
+                  <span style="font-size: 0.75rem; color: ${autoColor}; font-weight: 600;">${autoVerb}</span>
+                </div>
+                ${r?.reasoning ? `<div style="font-size: 0.82rem; line-height: 1.55;">${escapeForDisplay(r.reasoning)}</div>` : ''}
+                <div style="font-size: 0.72rem; color: var(--text-muted); margin-top: 0.4rem;">Confidence: ${escapeForDisplay(conf)}</div>
+              </div>
+            `;
+          } catch (err) {
+            resultEl.innerHTML = `<div style="font-size: 0.82rem; color: var(--text-muted); padding: 0.5rem 0;">Couldn't reach the preview right now — let's keep going and you'll see this in real life on the next page.</div>`;
+          } finally {
+            chips.forEach((c) => { c.disabled = false; });
+          }
+        });
+      });
+
+      function escapeForDisplay(s) {
+        const div = document.createElement('div');
+        div.textContent = String(s ?? '');
+        return div.innerHTML;
+      }
     },
   },
 
@@ -135,12 +190,40 @@ const STEPS = [
           </div>
         </details>
 
-        <div class="onboarding-actions" style="margin-top: 1rem;">
+        <div class="onboarding-actions" style="margin-top: 1rem; display: flex; justify-content: space-between; align-items: center; gap: 0.5rem;">
           <button class="btn btn-outline" id="onb-back-2">Back</button>
+          <a href="#" id="onb-tour-link" style="font-size: 0.85rem; color: var(--text-muted); display: none;">Or explore with a sample profile first →</a>
         </div>
       `;
 
       document.getElementById('onb-back-2').addEventListener('click', back);
+
+      // Surface the tour link only when the seeded demo user actually exists
+      // (it's created by `pnpm db:seed`, which the installer runs by default).
+      // We want to fail closed: if the API or seed isn't there, the tour
+      // option just doesn't appear.
+      fetchDemoInfo().then((info) => {
+        if (info?.available && info?.userId) {
+          const link = document.getElementById('onb-tour-link');
+          if (!link) return;
+          link.style.display = 'inline';
+          link.addEventListener('click', (ev) => {
+            ev.preventDefault();
+            // Skip the rest of the wizard — the demo user already has
+            // domains, preferences, and a trust tier from the seed. Mark
+            // the session as touring so the dashboard banner can offer a
+            // graceful exit back to real onboarding.
+            try {
+              localStorage.setItem(KEY_TOUR_MODE, '1');
+              localStorage.setItem(KEY_USER_ID, info.userId);
+              localStorage.setItem(KEY_ONBOARDED, 'true');
+            } catch { /* private mode etc. */ }
+            const overlay = document.getElementById('onboarding-overlay');
+            if (overlay) overlay.style.display = 'none';
+            window.skyTwinSetUserId(info.userId);
+          });
+        }
+      }).catch(() => { /* tour link stays hidden */ });
 
       // ── Google sign-in: front door ──────────────────────────────────
       document.getElementById('onb-google-signin').addEventListener('click', async () => {
@@ -165,7 +248,7 @@ const STEPS = [
           // Most likely: Google client_id/secret not configured yet.
           showError(
             err.message?.includes('credentials')
-              ? 'Google credentials are not configured yet. Continue with an email below for now and connect Google later in Settings.'
+              ? 'I need a Google API key before Sign in works — it\'s a 5-minute one-time setup. Continue with email below to get into the app, then I\'ll walk you through linking Google on the home page.'
               : (err.message || 'Could not start Google sign-in. Try the email option below, or try again.'),
           );
         }
@@ -510,8 +593,8 @@ export function renderOnboarding(container, onComplete) {
 
         // 5. Persist onboarding completion early so navigating away
         //    during the signal preview doesn't restart the wizard.
-        localStorage.setItem('skytwin_userId', userId);
-        localStorage.setItem('skytwin_onboarded', 'true');
+        localStorage.setItem(KEY_USER_ID, userId);
+        localStorage.setItem(KEY_ONBOARDED, 'true');
 
         // 6. Show signal preview before navigating to dashboard
         await showSignalPreview(container, userId);

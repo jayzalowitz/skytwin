@@ -1,4 +1,5 @@
 import { fetchJSON, escapeHtml } from '../api-client.js';
+import { KEY_USER_ID } from '../storage-keys.js';
 
 // Module-level sync lookup for dynamic integration card rendering
 let _syncLookup = {};
@@ -46,33 +47,30 @@ export async function renderSetup(container, _userId) {
   const openclaw = status?.adapters?.openclaw ?? { registered: false, healthy: false, url: '' };
   const direct = status?.adapters?.direct ?? { registered: true, healthy: true, url: 'local' };
 
+  // Friendly summary of what's working under the hood. We don't name the
+  // adapters; the user just needs to know "yes, your twin can do things".
+  const anyEngineHealthy = (ironclaw.registered && ironclaw.healthy)
+    || (direct.registered && direct.healthy)
+    || (openclaw.registered && openclaw.healthy);
+
   container.innerHTML = `
-    <div class="card" style="border-left: 3px solid var(--primary);">
+    <div class="card" style="border-left: 3px solid var(--primary); background: linear-gradient(135deg, var(--bg-card) 0%, var(--bg) 100%);">
       <div class="card-header">
-        <span class="card-title">Setup</span>
+        <span class="card-title">Let's connect your twin to your life</span>
       </div>
       <div class="card-subtitle">
-        SkyTwin connects to a few services to work. Most of them auto-detect — the main thing
-        you need to set up yourself is a Google account connection.
+        Two things to do here: link your Google account so your twin can see your email and calendar,
+        then (optionally) plug in any other accounts you want help with. Everything else runs itself.
       </div>
-    </div>
-
-    <!-- ── Execution engines: auto-detected status ── -->
-
-    <div class="card">
-      <div class="card-header">
-        <span class="card-title">Execution engines</span>
-      </div>
-      <div class="card-subtitle" style="margin-bottom: 1rem;">
-        These run actions on your behalf. They auto-detect when running locally — no setup needed.
-      </div>
-
-      ${renderAdapterStatus('IronClaw', ironclaw, 'The primary execution server. Highest trust — actions are sandboxed, audited, and reversible.')}
-      ${renderAdapterStatus('Direct (built-in)', direct, 'Built-in handlers for email, calendar, finance, and more. Always available.')}
-      ${renderAdapterStatus('OpenClaw', openclaw, 'Optional community execution engine using local AI. Broader skills but weaker guarantees.')}
-
-      <div style="margin-top: 0.75rem; font-size: 0.8rem; color: var(--text-muted);">
-        SkyTwin automatically picks the most trusted available engine for each action and falls back through the chain if one is down.
+      <div style="margin-top: 0.75rem; display: flex; gap: 1rem; flex-wrap: wrap; font-size: 0.85rem;">
+        <span style="display: inline-flex; align-items: center; gap: 0.4rem;">
+          <span style="width: 8px; height: 8px; border-radius: 50%; background: ${googleConfigured ? 'var(--success)' : 'var(--warning, #e6a700)'};"></span>
+          Google account ${googleConfigured ? 'configured' : 'needs setup'}
+        </span>
+        <span style="display: inline-flex; align-items: center; gap: 0.4rem;">
+          <span style="width: 8px; height: 8px; border-radius: 50%; background: ${anyEngineHealthy ? 'var(--success)' : 'var(--warning, #e6a700)'};"></span>
+          Twin ${anyEngineHealthy ? 'is ready to act on your behalf' : 'is still warming up'}
+        </span>
       </div>
     </div>
 
@@ -208,9 +206,12 @@ export async function renderSetup(container, _userId) {
       </div>
 
       <div style="display: flex; gap: 0.5rem; align-items: center;">
-        <button class="btn btn-primary btn-sm" onclick="saveServiceCredentials('google')">
-          ${googleConfigured ? 'Update' : 'Save'}
+        <button class="btn btn-primary btn-sm" onclick="saveServiceCredentials('google', { autoConnect: ${googleConfigured ? 'false' : 'true'} })">
+          ${googleConfigured ? 'Update' : 'Save and connect now'}
         </button>
+        ${googleConfigured ? `
+          <button class="btn btn-outline btn-sm" onclick="window.handleConnectGoogleFromSetup()">Connect Google account</button>
+        ` : ''}
         <span id="save-status-google" style="font-size: 0.85rem;"></span>
       </div>
       ${renderIronClawSyncSummary('google', syncLookup)}
@@ -220,20 +221,14 @@ export async function renderSetup(container, _userId) {
 
     <div class="card">
       <div class="card-header">
-        <span class="card-title">What's next?</span>
+        <span class="card-title">What happens next</span>
       </div>
-      <div class="card-subtitle" style="line-height: 1.8;">
+      <div class="card-subtitle" style="line-height: 1.7;">
         ${googleConfigured
-          ? `Your Google credentials are configured. Now:<br>
-             <strong>1.</strong> Go to <a href="#/settings">Settings</a> and click <strong>Connect</strong> next to Google<br>
-             <strong>2.</strong> Sign in with the Google account you added as a test user<br>
-             <strong>3.</strong> Choose how much autonomy your twin should have<br>
-             <strong>4.</strong> Your twin will start learning from your email and calendar`
-          : `After pasting your Google credentials above:<br>
-             <strong>1.</strong> Click <strong>Save</strong><br>
-             <strong>2.</strong> Go to <a href="#/settings">Settings</a> and click <strong>Connect</strong> next to Google<br>
-             <strong>3.</strong> Sign in with the Google account you added as a test user<br>
-             <strong>4.</strong> Choose how much autonomy your twin should have`
+          ? `Your credentials are saved. Click <strong>Connect Google account</strong> above and you'll be sent
+             to Google to sign in — back here in 30 seconds, your twin starts learning from your email and calendar.`
+          : `Click <strong>Save and connect now</strong> and we'll send you straight to Google to sign in.
+             Back here in 30 seconds, your twin starts learning from your email and calendar.`
         }
       </div>
     </div>
@@ -245,17 +240,31 @@ export async function renderSetup(container, _userId) {
 
     <details class="card collapsible-card">
       <summary class="card-header collapsible-header">
-        <span class="card-title">Advanced: execution engine overrides</span>
+        <span class="card-title">Advanced — how SkyTwin actually runs your actions</span>
         <span class="collapse-icon"></span>
       </summary>
       <div class="collapsible-body">
         <div class="card-subtitle" style="margin-bottom: 1rem;">
-          The execution engines auto-detect when running locally. Saved values become the active
-          API connection after the server refreshes its execution router.
+          When your twin decides to do something, it routes that action through one of the engines
+          below. They auto-detect when running on your machine — you only need this section if
+          you're swapping in a hosted server or debugging a connection.
+        </div>
+
+        <div style="margin-bottom: 1.25rem;">
+          <div style="font-weight: 600; font-size: 0.9rem; margin-bottom: 0.5rem;">Live status</div>
+          ${renderAdapterStatus('Sandboxed execution server (IronClaw)', ironclaw, 'Highest trust — actions are sandboxed, audited, and reversible. Auto-detects on localhost:4000.')}
+          ${renderAdapterStatus('Built-in handlers', direct, 'Native handlers for email, calendar, finance, and more. Always available.')}
+          ${renderAdapterStatus('Local-AI execution (OpenClaw)', openclaw, 'Community engine that uses a local LLM for broader skills. Optional.')}
+          <div style="margin-top: 0.5rem; font-size: 0.8rem; color: var(--text-muted);">
+            Your twin automatically picks the most trusted engine that's available and falls back if one is down.
+          </div>
         </div>
 
         <div style="margin-bottom: 1.5rem;">
-          <div style="font-weight: 600; font-size: 0.9rem; margin-bottom: 0.75rem;">IronClaw</div>
+          <div style="font-weight: 600; font-size: 0.9rem; margin-bottom: 0.25rem;">Sandboxed execution server (IronClaw)</div>
+          <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.75rem;">
+            Only set these if you're pointing your twin at a remote IronClaw — the local one is auto-discovered.
+          </div>
           <div class="form-group" style="margin-bottom: 0.5rem;">
             <label>API URL</label>
             <input class="form-input" type="text" id="cred-ironclaw-api_url"
@@ -285,7 +294,10 @@ export async function renderSetup(container, _userId) {
         </div>
 
         <div>
-          <div style="font-weight: 600; font-size: 0.9rem; margin-bottom: 0.75rem;">OpenClaw</div>
+          <div style="font-weight: 600; font-size: 0.9rem; margin-bottom: 0.25rem;">Local-AI execution (OpenClaw)</div>
+          <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.75rem;">
+            Optional. Only fill this in if you're running OpenClaw on a different machine.
+          </div>
           <div class="form-group" style="margin-bottom: 0.5rem;">
             <label>API URL</label>
             <input class="form-input" type="text" id="cred-openclaw-api_url"
@@ -460,7 +472,7 @@ function renderAdapterStatus(name, adapter, description) {
   `;
 }
 
-window.saveServiceCredentials = async function(service) {
+window.saveServiceCredentials = async function(service, opts = {}) {
   const statusEl = document.getElementById(`save-status-${service}`);
   // Collect inputs for this service
   const inputs = document.querySelectorAll(`input[data-service="${service}"]`);
@@ -482,22 +494,54 @@ window.saveServiceCredentials = async function(service) {
     return;
   }
 
-  statusEl.innerHTML = '<span style="color: var(--text-muted);">Saving...</span>';
+  statusEl.innerHTML = '<span style="color: var(--text-muted);">Saving…</span>';
 
   try {
     await fetchJSON(`/api/credentials/${service}`, {
       method: 'PUT',
       body: JSON.stringify({ credentials }),
     });
-    statusEl.innerHTML = '<span style="color: var(--success);">Saved!</span>';
+
+    // For Google, if the caller asked us to connect immediately after
+    // saving (the "Save and connect now" path) we kick off OAuth right
+    // here so the user goes paste → save → Google sign-in in one motion.
+    if (service === 'google' && opts.autoConnect) {
+      statusEl.innerHTML = '<span style="color: var(--success);">Saved! Sending you to Google…</span>';
+      try {
+        const userId = localStorage.getItem(KEY_USER_ID);
+        const { getGoogleAuthUrl } = await import('../api-client.js');
+        const data = await getGoogleAuthUrl(userId);
+        if (data?.url) {
+          window.location.href = data.url;
+          return;
+        }
+      } catch (err) {
+        statusEl.innerHTML = `<span style="color: var(--warning, #e6a700);">Saved, but couldn't start sign-in: ${escapeHtml(err.message || 'try the Connect button below.')}</span>`;
+      }
+    } else {
+      statusEl.innerHTML = '<span style="color: var(--success);">Saved!</span>';
+    }
 
     // Re-render to update status badges
     setTimeout(async () => {
       const { renderSetup } = await import('./setup.js');
-      await renderSetup(document.getElementById('page-content'), localStorage.getItem('skytwin_userId'));
+      await renderSetup(document.getElementById('page-content'), localStorage.getItem(KEY_USER_ID));
     }, 800);
   } catch (err) {
     statusEl.innerHTML = `<span style="color: var(--danger);">${escapeHtml(err.message)}</span>`;
+  }
+};
+
+window.handleConnectGoogleFromSetup = async function() {
+  const statusEl = document.getElementById('save-status-google');
+  if (statusEl) statusEl.innerHTML = '<span style="color: var(--text-muted);">Sending you to Google…</span>';
+  try {
+    const userId = localStorage.getItem(KEY_USER_ID);
+    const { getGoogleAuthUrl } = await import('../api-client.js');
+    const data = await getGoogleAuthUrl(userId);
+    if (data?.url) window.location.href = data.url;
+  } catch (err) {
+    if (statusEl) statusEl.innerHTML = `<span style="color: var(--danger);">${escapeHtml(err.message)}</span>`;
   }
 };
 
@@ -510,7 +554,7 @@ window.syncServiceToIronClaw = async function(service) {
     if (statusEl) statusEl.innerHTML = '<span style="color: var(--success);">Synced!</span>';
     setTimeout(async () => {
       const { renderSetup } = await import('./setup.js');
-      await renderSetup(document.getElementById('page-content'), localStorage.getItem('skytwin_userId'));
+      await renderSetup(document.getElementById('page-content'), localStorage.getItem(KEY_USER_ID));
     }, 800);
   } catch (err) {
     if (statusEl) statusEl.innerHTML = `<span style="color: var(--danger);">${escapeHtml(err.message)}</span>`;

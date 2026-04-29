@@ -7,6 +7,8 @@
  * Persists to localStorage. Injects a dropdown into .page-header.
  */
 
+import { KEY_THEME_VARIANT as STORAGE_KEY_VARIANT, KEY_THEME_MODE as STORAGE_KEY_MODE } from './storage-keys.js';
+
 const VARIANTS = [
   {
     id: 'mission-control',
@@ -27,9 +29,6 @@ const VARIANTS = [
     swatch: 'swatch-wg-dark',
   },
 ];
-
-const STORAGE_KEY_VARIANT = 'skytwin_theme_variant';
-const STORAGE_KEY_MODE = 'skytwin_theme_mode';
 
 function getCurrentVariant() {
   return localStorage.getItem(STORAGE_KEY_VARIANT) || 'quiet-confidence';

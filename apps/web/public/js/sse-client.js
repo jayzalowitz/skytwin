@@ -5,6 +5,8 @@
  * on window so any page can listen.
  */
 
+import { KEY_SESSION_TOKEN } from './storage-keys.js';
+
 let eventSource = null;
 let reconnectTimer = null;
 let reconnectDelay = 1000;
@@ -18,7 +20,7 @@ export function connectSSE(userId) {
   disconnectSSE();
 
   try {
-    const token = localStorage.getItem('skytwin_session_token');
+    const token = localStorage.getItem(KEY_SESSION_TOKEN);
     const url = new URL(`/api/events/stream/${encodeURIComponent(userId)}`, window.location.origin);
     if (token) {
       url.searchParams.set('token', token);
