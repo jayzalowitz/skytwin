@@ -76,16 +76,60 @@ getExecutionRouter().catch((err) =>
 
 const app: Application = express();
 
-// Trust proxy hops — required so req.ip and Express's `Forwarded` parsing
-// resolve to the real client when the API is behind a reverse proxy
-// (Fly, Render, Heroku, nginx, Caddy, Cloudflare, etc.). The per-IP rate
-// limit on /api/v1/demo/preview depends on this; without it, every
-// request appears to come from the proxy IP and the limit collapses
-// into a single global bucket. Default 0 (no proxy, take req.ip
-// straight from the socket); set TRUST_PROXY_HOPS=1 for a single
-// reverse proxy, =2 for proxy-behind-CDN, etc.
-const trustProxyHops = parseInt(process.env['TRUST_PROXY_HOPS'] ?? '0', 10);
-if (Number.isFinite(trustProxyHops) && trustProxyHops > 0) {
+// Trust-proxy hop count — controls whether Express trusts upstream
+// `X-Forwarded-For` headers and how many hops back to walk before
+// settling on `req.ip`. This is GLOBAL — every IP-keyed check in the
+// API depends on it: session-auth localhost detection, OAuth new-user
+// per-IP rate limit, /api/v1/demo/preview per-IP bucket.
+//
+// Setting this too high is a security hole: a client-controlled
+// `X-Forwarded-For` becomes `req.ip`, and any IP-keyed limit collapses
+// or can be bypassed with header rotation. Setting it too low (e.g.
+// keeping the default 0 behind nginx) flattens every caller's IP to
+// the proxy's, and per-IP limits become a single shared bucket.
+//
+// Pick the EXACT hop count between this Node process and the actual
+// client. When in doubt, prefer fewer hops:
+//
+//   0  — direct: nothing in front of Node, or you don't trust any
+//        upstream `X-Forwarded-For`. Default.
+//   1  — single reverse proxy on the same host (nginx, Caddy, Fly,
+//        Render, Heroku app router, AWS ELB target).
+//   2  — CDN in front of a reverse proxy (Cloudflare → nginx → Node;
+//        most "Fly behind Cloudflare" setups).
+//   3+ — multi-hop edge (rare; e.g. Cloudflare → AWS WAF → ALB → Node).
+//
+// Verification after deploying: `curl -H 'X-Forwarded-For: 1.2.3.4'
+// https://your-api/api/health/live` then check the API log for the
+// resolved `req.ip` — it should NOT be `1.2.3.4` unless `1.2.3.4` is
+// actually a trusted upstream. If it is, the setting is too permissive.
+//
+// See README.md "Deployment" → "Reverse proxies and TRUST_PROXY_HOPS"
+// for a longer treatment.
+//
+// Validates the env value strictly. parseInt('abc') is NaN; parseInt('1abc')
+// silently returns 1 (the "consumed prefix" — would be the worst kind of
+// failure here, a typo quietly becoming a 1-hop trust setting). We require
+// the entire value to be a non-negative integer and warn + fall back to 0
+// on anything else, so a typo can't quietly become a security hole.
+const trustProxyHops = (() => {
+  const raw = process.env['TRUST_PROXY_HOPS'];
+  if (raw == null || raw === '') return 0;
+  const trimmed = raw.trim();
+  if (!/^\d+$/.test(trimmed)) {
+    // eslint-disable-next-line no-console
+    console.warn(`[api] TRUST_PROXY_HOPS=${raw} is invalid (must be a non-negative integer); falling back to 0 (no proxy trust). All per-IP rate limits will key on the upstream socket IP.`);
+    return 0;
+  }
+  const parsed = parseInt(trimmed, 10);
+  if (!Number.isFinite(parsed)) {
+    // eslint-disable-next-line no-console
+    console.warn(`[api] TRUST_PROXY_HOPS=${raw} is not finite; falling back to 0 (no proxy trust).`);
+    return 0;
+  }
+  return parsed;
+})();
+if (trustProxyHops > 0) {
   app.set('trust proxy', trustProxyHops);
 }
 
@@ -94,9 +138,11 @@ app.use(express.json());
 
 // Health checks (before auth — must be reachable without a session)
 
-// Liveness: process is alive and can handle HTTP requests
-app.get('/api/health/live', (_req, res) => {
-  res.json({ status: 'ok', service: 'skytwin-api' });
+// Liveness: process is alive and can handle HTTP requests.
+// Echoes `clientIp` so the README's `TRUST_PROXY_HOPS` verification
+// curl can confirm req.ip resolution without scraping logs.
+app.get('/api/health/live', (req, res) => {
+  res.json({ status: 'ok', service: 'skytwin-api', clientIp: req.ip });
 });
 
 // Readiness: process is ready to serve traffic (dependencies available)
