@@ -107,18 +107,24 @@ const app: Application = express();
 // See README.md "Deployment" → "Reverse proxies and TRUST_PROXY_HOPS"
 // for a longer treatment.
 //
-// Validates the env value: parseInt('abc') is NaN, every comparison
-// against NaN is false, and the setting silently disabled. Falls back
-// to 0 with a console.warn on invalid input (negative, NaN, or
-// non-finite) so a typo doesn't quietly become a security hole either
-// way.
+// Validates the env value strictly. parseInt('abc') is NaN; parseInt('1abc')
+// silently returns 1 (the "consumed prefix" — would be the worst kind of
+// failure here, a typo quietly becoming a 1-hop trust setting). We require
+// the entire value to be a non-negative integer and warn + fall back to 0
+// on anything else, so a typo can't quietly become a security hole.
 const trustProxyHops = (() => {
   const raw = process.env['TRUST_PROXY_HOPS'];
   if (raw == null || raw === '') return 0;
-  const parsed = parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed < 0) {
+  const trimmed = raw.trim();
+  if (!/^\d+$/.test(trimmed)) {
     // eslint-disable-next-line no-console
-    console.warn(`[api] TRUST_PROXY_HOPS=${raw} is invalid; falling back to 0 (no proxy trust). All per-IP rate limits will key on the upstream socket IP.`);
+    console.warn(`[api] TRUST_PROXY_HOPS=${raw} is invalid (must be a non-negative integer); falling back to 0 (no proxy trust). All per-IP rate limits will key on the upstream socket IP.`);
+    return 0;
+  }
+  const parsed = parseInt(trimmed, 10);
+  if (!Number.isFinite(parsed)) {
+    // eslint-disable-next-line no-console
+    console.warn(`[api] TRUST_PROXY_HOPS=${raw} is not finite; falling back to 0 (no proxy trust).`);
     return 0;
   }
   return parsed;
@@ -132,9 +138,11 @@ app.use(express.json());
 
 // Health checks (before auth — must be reachable without a session)
 
-// Liveness: process is alive and can handle HTTP requests
-app.get('/api/health/live', (_req, res) => {
-  res.json({ status: 'ok', service: 'skytwin-api' });
+// Liveness: process is alive and can handle HTTP requests.
+// Echoes `clientIp` so the README's `TRUST_PROXY_HOPS` verification
+// curl can confirm req.ip resolution without scraping logs.
+app.get('/api/health/live', (req, res) => {
+  res.json({ status: 'ok', service: 'skytwin-api', clientIp: req.ip });
 });
 
 // Readiness: process is ready to serve traffic (dependencies available)

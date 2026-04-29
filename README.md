@@ -240,12 +240,26 @@ which collapses every per-IP limit into a single shared bucket. You
 need `TRUST_PROXY_HOPS` set to the exact number of trusted hops between
 the Node process and the real client.
 
+The number you want is "trusted proxies between this Node process and the
+actual client" — count every box that legitimately appends to
+`X-Forwarded-For` on its way in, including any platform-injected router
+your provider sits behind.
+
 | Topology | `TRUST_PROXY_HOPS` |
 |----------|--------------------|
 | Direct (no proxy, or untrusted upstream) | `0` (default) |
-| Single reverse proxy (nginx, Caddy, Fly, Render, Heroku, ELB) | `1` |
-| CDN → reverse proxy (Cloudflare → nginx → Node) | `2` |
-| Multi-hop edge (Cloudflare → WAF → ALB → Node) | `3+` |
+| Single reverse proxy (your own nginx, Caddy, ELB target) | `1` |
+| Single platform hop (Fly's edge, Render's router, Heroku's app router, an AWS ALB on its own) | `1` |
+| CDN → your reverse proxy (Cloudflare → nginx → Node, no platform router) | `2` |
+| CDN → platform router → Node (Cloudflare → Fly/Render/Heroku → Node) | `2` |
+| CDN → platform router → your reverse proxy → Node (Cloudflare → Fly → nginx → Node) | `3` |
+| Multi-hop edge (Cloudflare → AWS WAF → ALB → Node) | `3+` |
+
+If you can't draw the topology from memory, prefer Express's array/CIDR
+form for `trust proxy` (set per-network, not per-hop) — see the
+[Express docs](https://expressjs.com/en/guide/behind-proxies.html). Hop
+counts are simple but brittle when a platform inserts a hop you didn't
+know about.
 
 **Setting this too high is a security hole.** A client-controlled
 `X-Forwarded-For` becomes `req.ip` and bypasses every per-IP limit by
@@ -255,12 +269,12 @@ Verify after deploy:
 
 ```bash
 curl -H 'X-Forwarded-For: 1.2.3.4' https://your-api/api/health/live
-# then in the API log, the resolved req.ip should NOT be 1.2.3.4
+# response includes {"clientIp": "..."} — should NOT be "1.2.3.4"
 # unless 1.2.3.4 is actually a trusted upstream
 ```
 
-If `req.ip` ends up matching the spoofed header, your `TRUST_PROXY_HOPS`
-is too permissive and rate-limit bypass is open.
+If `clientIp` in the response matches the spoofed header, your
+`TRUST_PROXY_HOPS` is too permissive and rate-limit bypass is open.
 
 ### Public demo preview (`/api/v1/demo/preview`)
 
