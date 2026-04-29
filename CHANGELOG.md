@@ -1,5 +1,11 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.5.3.0] - 2026-04-29
+
+### Changed
+
+- **Dashboard split into entry point + view layer.** `apps/web/public/js/pages/dashboard.js` was 1023 lines mixing data fetching, model derivation, HTML composition, and post-render side effects. Split presentation into `dashboard-view.js` (583 lines: pure render helpers, label maps, the global handlers their inline `onclick` attributes reference, and `initDashboardGlobals`). Entry point shrinks to 483 lines focused on lifecycle. Zero runtime behavior change. `initDashboardGlobals` is re-exported from `dashboard.js` so `app.js`'s existing import keeps working.
+
 ## [0.5.2.0] - 2026-04-29
 
 ### Added
@@ -17,7 +23,6 @@ All notable changes to SkyTwin will be documented in this file.
 - **Parse hardened against `1abc`-style typos.** `parseInt('1abc', 10)` returns `1` and silently sets a 1-hop trust setting — the exact "typo quietly becomes a security hole" failure mode. Validation now requires the trimmed env value to fully match `/^\d+$/`; anything with trailing garbage warns and falls back to 0.
 - **Topology table corrected for platform routers.** The CDN → reverse-proxy row claimed `2` for *every* "Cloudflare in front" deployment, but on Fly / Render / Heroku there's also a platform router (Fly's edge, Render's router, Heroku's app router) that already counts as a hop — making "Cloudflare → Fly → nginx → Node" actually `3`, not `2`. Table broken out by topology, with a note pointing to Express's array/CIDR form for setups too complex to count by hand.
 
-<<<<<<< HEAD
 ## [0.5.1.0] - 2026-04-29
 
 Fixes a tier-promotion lie. The dashboard had been firing a "You've unlocked Full autopilot" toast at 100 cumulative approvals, but `packages/policy-engine/src/trust-tier-engine.ts` has no automatic moderate→high promotion (it requires explicit user opt-in). Three places carried mismatched copies of the threshold map; now there's one.
