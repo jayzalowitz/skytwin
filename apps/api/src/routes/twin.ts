@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { randomUUID } from 'node:crypto';
 import { TwinService } from '@skytwin/twin-model';
 import { TwinRepositoryAdapter, PatternRepositoryAdapter, feedbackRepository, userRepository } from '@skytwin/db';
-import { ConfidenceLevel } from '@skytwin/shared-types';
+import { ConfidenceLevel, PROMOTION_THRESHOLDS } from '@skytwin/shared-types';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
 
 /**
@@ -135,7 +135,17 @@ export function createTwinRouter(): Router {
   /**
    * GET /api/twin/:userId/progress
    *
-   * Trust tier progress: current tier, approval count, and threshold for next tier.
+   * Trust tier progress: returns the metrics the policy engine actually
+   * uses for promotion decisions. The dashboard's trust-progress bar
+   * keys off `consecutiveApprovals` (resets on rejection) rather than
+   * cumulative `approvalCount`, because that's what the engine
+   * (`packages/policy-engine/src/trust-tier-engine.ts`) gates promotion
+   * on. Cumulative count is kept for display-only purposes.
+   *
+   * `nextTierThreshold` is null when the user is at MODERATE_AUTONOMY or
+   * HIGH_AUTONOMY — promotion to HIGH_AUTONOMY is explicit opt-in only,
+   * so the UI should render "Maximum trust" instead of a false "100
+   * approvals to unlock" target.
    */
   router.get('/:userId/progress', async (req, res, next) => {
     try {
@@ -143,19 +153,54 @@ export function createTwinRouter(): Router {
       const user = await userRepository.findById(userId);
       const currentTier = user?.trust_tier ?? 'observer';
 
-      // Count approvals (feedback events with type 'approve')
+      // Pull recent feedback ordered most-recent-first. We compute
+      // consecutiveApprovals by walking back from the freshest event
+      // until we hit a non-approval — that's what the policy engine
+      // does when deciding whether to promote.
       const feedback = await feedbackRepository.findByUser(userId, { limit: 1000 });
       const approvalCount = feedback.filter((f) => f.type === 'approve').length;
+      const rejectionCount = feedback.filter((f) => f.type === 'reject').length;
 
-      const thresholds: Record<string, number> = {
-        observer: 10,
-        suggest: 20,
-        low_autonomy: 50,
-        moderate_autonomy: 100,
-      };
-      const threshold = thresholds[currentTier] ?? null;
+      // findByUser returns oldest-first; iterate from the end for
+      // "most recent first" without sorting in place.
+      let consecutiveApprovals = 0;
+      for (let i = feedback.length - 1; i >= 0; i--) {
+        const f = feedback[i];
+        if (f && f.type === 'approve') {
+          consecutiveApprovals++;
+        } else {
+          break;
+        }
+      }
 
-      res.json({ currentTier, approvalCount, threshold });
+      const totalDecided = approvalCount + rejectionCount;
+      const approvalRatio = totalDecided > 0 ? approvalCount / totalDecided : 0;
+
+      // Single source of truth: PROMOTION_THRESHOLDS from shared-types.
+      // No entry for moderate_autonomy or high_autonomy → null target.
+      const tierConfig = PROMOTION_THRESHOLDS[currentTier];
+      const nextTierThreshold = tierConfig?.consecutiveApprovals ?? null;
+      const minApprovalRatio = tierConfig?.minApprovalRatio ?? null;
+      const nextTier = tierConfig?.nextTier ?? null;
+
+      res.json({
+        currentTier,
+        // Display-only — the cumulative count for "you've approved N
+        // things" copy. Not the metric promotion is gated on.
+        approvalCount,
+        // The actual promotion metric. Resets on rejection.
+        consecutiveApprovals,
+        // The other promotion metric. Both must be met for the engine
+        // to promote.
+        approvalRatio,
+        minApprovalRatio,
+        nextTier,
+        // null when the current tier has no automatic promotion
+        // (MODERATE_AUTONOMY → HIGH_AUTONOMY requires explicit opt-in).
+        nextTierThreshold,
+        // Backwards-compat alias for older clients that read `threshold`.
+        threshold: nextTierThreshold,
+      });
     } catch (error) {
       next(error);
     }

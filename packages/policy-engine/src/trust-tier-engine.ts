@@ -1,33 +1,5 @@
-import { TrustTier } from '@skytwin/shared-types';
+import { TrustTier, PROMOTION_THRESHOLDS } from '@skytwin/shared-types';
 import type { ApprovalStats, TierEvaluation } from '@skytwin/shared-types';
-
-/**
- * Thresholds for tier promotion. Each tier requires a minimum number of
- * consecutive approvals and a minimum approval ratio to be eligible for
- * promotion to the next tier.
- */
-const PROMOTION_THRESHOLDS: Record<
-  string,
-  { consecutiveApprovals: number; minApprovalRatio: number; nextTier: TrustTier }
-> = {
-  [TrustTier.OBSERVER]: {
-    consecutiveApprovals: 10,
-    minApprovalRatio: 0.8,
-    nextTier: TrustTier.SUGGEST,
-  },
-  [TrustTier.SUGGEST]: {
-    consecutiveApprovals: 20,
-    minApprovalRatio: 0.85,
-    nextTier: TrustTier.LOW_AUTONOMY,
-  },
-  [TrustTier.LOW_AUTONOMY]: {
-    consecutiveApprovals: 50,
-    minApprovalRatio: 0.9,
-    nextTier: TrustTier.MODERATE_AUTONOMY,
-  },
-  // MODERATE_AUTONOMY → HIGH_AUTONOMY requires explicit opt-in.
-  // There is no automatic promotion to HIGH_AUTONOMY.
-};
 
 /**
  * Regression triggers. If any condition is met, the user drops one tier.

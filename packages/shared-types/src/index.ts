@@ -49,6 +49,12 @@ export type {
   TierChangeEvidence,
   ApprovalStats,
   TierEvaluation,
+  PromotionThreshold,
+} from './policy.js';
+
+export {
+  PROMOTION_THRESHOLDS,
+  TIER_DISPLAY_LABELS,
 } from './policy.js';
 
 export type {
