@@ -47,7 +47,7 @@ export async function renderApprovals(container, userId) {
   });
 
   container.innerHTML = `
-    ${prog ? renderTrustProgress({ approvalCount: prog.approvalCount, currentTier: prog.currentTier }) : ''}
+    ${prog ? renderTrustProgress(prog) : ''}
 
     ${showFirstApprovalIntro ? `
       <div class="card" id="first-approval-intro" style="border-left: 3px solid var(--primary); background: linear-gradient(135deg, var(--bg-card) 0%, var(--bg) 100%);">
@@ -705,7 +705,7 @@ window.handleApproval = async function(requestId, action, userId) {
         const existing = document.querySelector('.trust-progress');
         if (existing && fresh) {
           const tmp = document.createElement('div');
-          tmp.innerHTML = renderTrustProgress({ approvalCount: fresh.approvalCount, currentTier: fresh.currentTier });
+          tmp.innerHTML = renderTrustProgress(fresh);
           const next = tmp.firstElementChild;
           if (next) existing.replaceWith(next);
         }

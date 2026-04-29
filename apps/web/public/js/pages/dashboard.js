@@ -28,10 +28,20 @@ const FIRST_SCAN_POLL_MS = 4000;
  *  always show up on next normal render anyway. */
 const FIRST_SCAN_MAX_MS = 5 * 60 * 1000;
 
-/** Trust-tier promotion thresholds — must stay in sync with packages/policy-engine.
- *  TODO (P2 in TODOS.md): export these from @skytwin/shared-types so server + UI share one source. */
-const TIER_THRESHOLDS = { observer: 10, suggest: 20, low_autonomy: 50, moderate_autonomy: 100 };
-const TIER_NEXT = { observer: 'Ask me first', suggest: 'Handle small stuff', low_autonomy: 'Handle most things', moderate_autonomy: 'Full autopilot' };
+/** Display labels for "Bump to ..." copy. The thresholds themselves come
+ *  from the server (`/api/twin/:userId/progress`) which now reads them
+ *  from `@skytwin/shared-types` PROMOTION_THRESHOLDS — the single source
+ *  of truth shared with the policy engine.
+ *
+ *  We deliberately do NOT define a moderate_autonomy entry: promotion to
+ *  HIGH_AUTONOMY is explicit user opt-in (not threshold-driven), so the
+ *  celebration toast must never fire from moderate. The progress-bar
+ *  component already handles "Maximum trust" rendering for that case. */
+const TIER_LABEL = {
+  observer: 'Ask me first',
+  suggest: 'Handle small stuff',
+  low_autonomy: 'Handle most things',
+};
 
 /** TTL for slow-changing dashboard data — 30s is short enough that the
  *  next paint after a meaningful state change still picks it up via a
@@ -255,7 +265,7 @@ export async function renderDashboard(container, userId) {
 
     ${renderUnmetCredentials(unmetCreds)}
 
-    ${prog ? renderTrustProgress({ approvalCount: prog.approvalCount, currentTier: prog.currentTier }) : ''}
+    ${prog ? renderTrustProgress(prog) : ''}
 
     ${learnedData && learnedData.summaries && learnedData.summaries.length >= 2 ? `
       <div class="card">
@@ -404,28 +414,40 @@ export async function renderDashboard(container, userId) {
     }
   } catch { /* localStorage unavailable */ }
 
-  // Trust-tier threshold celebration: when the approval count just crossed
-  // the threshold to unlock the next tier, fire a one-time toast so the
-  // moment lands. The progress bar already shows "Ready to level up!" but
-  // a returning user might miss that — the toast catches their eye.
+  // Trust-tier threshold celebration: fire a one-time toast only when
+  // the policy engine would actually promote — i.e., consecutive
+  // approvals AND approval ratio both meet the server-side gates. The
+  // server returns these directly so we don't reimplement promotion
+  // logic on the client (the source of the prior moderate_autonomy:100
+  // drift bug). nextTierThreshold is null at the practical max
+  // (MODERATE_AUTONOMY needs explicit opt-in for HIGH_AUTONOMY), so
+  // moderate users will never see this toast — only the "Maximum
+  // trust" panel from the progress bar.
   try {
     const tier = prog?.currentTier;
-    const count = prog?.approvalCount ?? 0;
-    const threshold = tier ? TIER_THRESHOLDS[tier] : null;
+    const consecutive = prog?.consecutiveApprovals ?? prog?.approvalCount ?? 0;
+    const threshold = prog?.nextTierThreshold ?? null;
+    const ratio = prog?.approvalRatio ?? 0;
+    const ratioGate = prog?.minApprovalRatio ?? 0;
+    const nextTierName = prog?.nextTier;
+    const eligible = tier
+      && threshold
+      && consecutive >= threshold
+      && ratio >= ratioGate
+      && nextTierName;
     if (
       !tourMode
-      && tier
-      && threshold
-      && count >= threshold
+      && eligible
       && typeof window !== 'undefined'
     ) {
       const tierKey = tierCelebratedKey(userId, tier);
       if (!localStorage.getItem(tierKey)) {
         localStorage.setItem(tierKey, '1');
+        const label = TIER_LABEL[tier] ?? 'the next level';
         import('../sse-client.js').then(({ showToast }) => {
           showToast(
             'You\'ve unlocked the next trust level',
-            `Bump to "${TIER_NEXT[tier]}" in Settings whenever you're ready — I'll start handling more on my own.`,
+            `Bump to "${label}" in Settings whenever you're ready — I'll start handling more on my own.`,
             'success',
           );
         }).catch(() => { /* noop */ });

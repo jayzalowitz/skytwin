@@ -55,6 +55,60 @@ export interface TierEvaluation {
 }
 
 /**
+ * Promotion thresholds — single source of truth shared between the
+ * policy engine, the /api/twin/:userId/progress endpoint, and the web
+ * dashboard's trust-progress UI.
+ *
+ * Why single-source-of-truth: this object previously lived in three
+ * places (`packages/policy-engine/src/trust-tier-engine.ts`, the API
+ * progress route, and `apps/web/public/js/pages/dashboard.js`). The
+ * three drifted — the API + dashboard fabricated a
+ * `moderate_autonomy: 100` entry, but the engine intentionally has no
+ * automatic moderate→high promotion ("requires explicit opt-in"). The
+ * dashboard fired a "You've unlocked Full autopilot" toast at 100
+ * approvals that the engine would never honor.
+ *
+ * MODERATE_AUTONOMY is intentionally absent — promotion to HIGH_AUTONOMY
+ * requires explicit user opt-in.
+ */
+export interface PromotionThreshold {
+  consecutiveApprovals: number;
+  minApprovalRatio: number;
+  nextTier: TrustTier;
+}
+
+export const PROMOTION_THRESHOLDS: Record<string, PromotionThreshold> = {
+  [TrustTier.OBSERVER]: {
+    consecutiveApprovals: 10,
+    minApprovalRatio: 0.8,
+    nextTier: TrustTier.SUGGEST,
+  },
+  [TrustTier.SUGGEST]: {
+    consecutiveApprovals: 20,
+    minApprovalRatio: 0.85,
+    nextTier: TrustTier.LOW_AUTONOMY,
+  },
+  [TrustTier.LOW_AUTONOMY]: {
+    consecutiveApprovals: 50,
+    minApprovalRatio: 0.9,
+    nextTier: TrustTier.MODERATE_AUTONOMY,
+  },
+};
+
+/**
+ * Display labels for the next-tier promotion. Mirrors the shape of
+ * PROMOTION_THRESHOLDS so the UI can render "Bump to <label>" without
+ * its own enum-to-string mapping.
+ */
+export const TIER_DISPLAY_LABELS: Record<string, string> = {
+  [TrustTier.OBSERVER]: 'Watch & Suggest',
+  [TrustTier.SUGGEST]: 'Ask me first',
+  [TrustTier.LOW_AUTONOMY]: 'Handle small stuff',
+  [TrustTier.MODERATE_AUTONOMY]: 'Handle most things',
+  [TrustTier.HIGH_AUTONOMY]: 'Full autopilot',
+};
+
+/**
  * A policy that governs whether an action is allowed.
  */
 export interface ActionPolicy {
