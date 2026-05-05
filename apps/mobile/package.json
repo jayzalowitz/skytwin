@@ -18,7 +18,7 @@
     "expo": "~55.0.17",
     "expo-asset": "~55.0.16",
     "expo-barcode-scanner": "~13.0.0",
-    "expo-camera": "~55.0.16",
+    "expo-camera": "~55.0.17",
     "expo-notifications": "~55.0.20",
     "expo-secure-store": "~55.0.13",
     "expo-status-bar": "~55.0.5",
