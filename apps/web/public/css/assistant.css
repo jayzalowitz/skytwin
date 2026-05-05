@@ -343,6 +343,25 @@
   cursor: not-allowed;
 }
 
+/* Keyboard hint under the composer — surfaces the Enter / Shift+Enter
+ * convention. Mirrors the pattern used by the dashboard "Ask your twin"
+ * widget so the two surfaces feel like one product. */
+.assistant-composer-hint {
+  font-size: 0.72rem;
+  color: var(--text-muted, rgba(255, 255, 255, 0.55));
+  padding: 0.35rem 0.25rem 0.25rem;
+  text-align: right;
+}
+.assistant-composer-hint kbd {
+  font-family: inherit;
+  font-size: 0.7rem;
+  padding: 0.05rem 0.35rem;
+  background: var(--bg, rgba(0, 0, 0, 0.25));
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+  border-radius: 3px;
+  color: var(--text);
+}
+
 /* Stop button — same shape as Send so the swap doesn't shift layout,
  * but a calm "interrupt" appearance rather than the action-accent.
  * Solid square stop glyph next to the label so the affordance reads
