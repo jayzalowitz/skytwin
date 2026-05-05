@@ -256,6 +256,64 @@ describe('inferLabels (issue #122)', () => {
     expect(labelCandidate!.parameters['labels']).toEqual(['urgent']);
   });
 
+  it('falls through to List-Id when sender hints are all sub-threshold (post-/review fix)', async () => {
+    // Pre-fix bug: a single count=1 sender row would short-circuit the
+    // List-Id fallback even though the listId had rich data. For mailing
+    // lists where per-message From: rotates, this masked the strongest
+    // signal we had.
+    const port: LabelInferencePort = {
+      topLabelsForSender: vi.fn().mockResolvedValue([
+        { label: 'rangers', count: 1 }, // sub-threshold
+      ]),
+      topLabelsForListId: vi.fn().mockResolvedValue([
+        { label: 'rangers', count: 30 }, // strong
+      ]),
+    };
+
+    const { dm, context } = createContext(
+      createEmailDecision({
+        rawData: {
+          from: 'jay+forward@blackrockrangers.org',
+          listId: 'rangers.lists.example.org',
+          subject: 'random',
+          emailId: 'm',
+        },
+      }),
+      port,
+    );
+    const outcome = await dm.evaluate(context);
+    const labelCandidate = findLabelCandidate(outcome as never);
+
+    expect(port.topLabelsForListId).toHaveBeenCalled();
+    expect(labelCandidate!.parameters['labels']).toEqual(['rangers']);
+    expect(labelCandidate!.confidence).toBe(ConfidenceLevel.HIGH);
+  });
+
+  it('keeps sender hints when List-Id also has only sub-threshold evidence', async () => {
+    // Both sources weak — return sender hints so the keyword fallback in
+    // inferLabels() takes over (sender hints filtered out by min-count there).
+    const port: LabelInferencePort = {
+      topLabelsForSender: vi.fn().mockResolvedValue([{ label: 'maybe', count: 1 }]),
+      topLabelsForListId: vi.fn().mockResolvedValue([{ label: 'other', count: 1 }]),
+    };
+
+    const { dm, context } = createContext(
+      createEmailDecision({
+        rawData: {
+          from: 'a@b.com',
+          listId: 'list.example.org',
+          subject: 'invoice',
+          emailId: 'm',
+        },
+      }),
+      port,
+    );
+    const outcome = await dm.evaluate(context);
+    const labelCandidate = findLabelCandidate(outcome as never);
+    // Both sub-threshold → keyword fallback in inferLabels picks 'finance'.
+    expect(labelCandidate!.parameters['labels']).toEqual(['finance']);
+  });
+
   it('runs without a port configured (early bring-up / unit tests)', async () => {
     const { dm, context } = createContext(
       createEmailDecision({

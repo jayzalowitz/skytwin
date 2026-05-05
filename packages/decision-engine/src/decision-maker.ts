@@ -1464,9 +1464,24 @@ export class DecisionMaker {
       const senderHints = sender
         ? await this.labelInferencePort.topLabelsForSender(userId, sender, 5)
         : [];
-      if (senderHints.length > 0) return senderHints;
-      if (!listId) return [];
-      return await this.labelInferencePort.topLabelsForListId(userId, listId, 5);
+      // Post-/review fix: previously we returned senderHints whenever the
+      // array was non-empty, which suppressed the List-Id fallback even when
+      // every sender hint was sub-threshold (count < MIN_COUNT). For
+      // mailing-list traffic where the per-message From: rotates, a single
+      // count=1 sender row would prevent the much richer List-Id model from
+      // ever being consulted. Now we check whether sender hints would
+      // actually produce a usable suggestion before short-circuiting.
+      if (senderHints.some((h) => h.count >= DecisionMaker.LABEL_HINT_MIN_COUNT)) {
+        return senderHints;
+      }
+      if (!listId) return senderHints;
+      const listHints = await this.labelInferencePort.topLabelsForListId(userId, listId, 5);
+      // Prefer List-Id hints if any of them clear the threshold; otherwise
+      // surface the (sub-threshold) sender hints so `inferLabels` and
+      // `labelConfidence` see the strongest available evidence.
+      return listHints.some((h) => h.count >= DecisionMaker.LABEL_HINT_MIN_COUNT)
+        ? listHints
+        : senderHints;
     } catch (err) {
       // Don't fail the whole decision because the label model is offline.
       // The keyword fallback in inferLabels() still produces a valid (if
