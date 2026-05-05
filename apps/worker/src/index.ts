@@ -21,6 +21,7 @@ import {
 } from '@skytwin/db';
 import { withRetry, RetryableHttpError, CircuitBreaker, createLogger } from '@skytwin/core';
 import { SignalDeduper, DEFAULT_TTL_MS } from './signal-dedupe.js';
+import { createPruneThrottle } from './label-signal-pruner.js';
 
 const config = loadConfig();
 const log = createLogger('worker');
@@ -54,6 +55,33 @@ const gmailLabelObserver: LabelObserver = {
     await emailLabelRepository.recordObservations(userId, observations);
   },
 };
+
+/**
+ * Throttled per-user prune for `email_label_signals`. Issue #122 follow-up —
+ * the table grows unbounded otherwise. Runs at most once per 24h per user
+ * from the polling loop. Defaults: drop rows past 180-day TTL with count<3,
+ * then enforce a 5000-row hard cap per user (defense vs. adversarial sender
+ * cardinality). Errors are logged but never propagate — staying tidy is
+ * best-effort, signal ingestion is not.
+ */
+const pruneLabelSignalsForUser = createPruneThrottle(
+  async (userId) => {
+    const result = await emailLabelRepository.pruneStaleSignals(userId);
+    const total = result.deletedStale + result.deletedOverCap;
+    if (total > 0) {
+      log.info(`Pruned ${total} email_label_signals rows for user ${userId}`, {
+        deletedStale: result.deletedStale,
+        deletedOverCap: result.deletedOverCap,
+      });
+    }
+    return total;
+  },
+  (userId, err) => {
+    log.warn(`email_label_signals prune failed for user ${userId}`, {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  },
+);
 
 /**
  * Dedup state survives restarts via forwarded_signals: the in-memory map
@@ -203,6 +231,11 @@ async function pollUser(userConnectors: UserConnectors): Promise<void> {
   } else {
     breaker.recordSuccess();
   }
+
+  // Opportunistic email_label_signals prune. Throttled internally to once
+  // per 24h per user. Runs after the poll so it doesn't delay signal
+  // forwarding; errors can't propagate (the throttle swallows them).
+  await pruneLabelSignalsForUser(userConnectors.userId);
 }
 
 async function resolveGoogleConfig(): Promise<GoogleOAuthConfig | null> {

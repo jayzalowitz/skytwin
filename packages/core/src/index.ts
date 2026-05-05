@@ -21,6 +21,8 @@ export {
   type CircuitState,
 } from './circuit-breaker.js';
 
+export { normalizeSenderAddress } from './email-normalize.js';
+
 /**
  * Generate a new UUID.
  */

@@ -1,6 +1,6 @@
 import type { SignalConnector, RawSignal, SignalHandler } from './connector-interface.js';
 import type { OAuthTokenStore } from './oauth/token-store.js';
-import { withRetry, RetryableHttpError, parseRetryAfter } from '@skytwin/core';
+import { withRetry, RetryableHttpError, parseRetryAfter, normalizeSenderAddress } from '@skytwin/core';
 
 const GMAIL_API = 'https://gmail.googleapis.com/gmail/v1';
 
@@ -419,25 +419,13 @@ export class GmailConnector implements SignalConnector {
   }
 }
 
-/**
- * Strip an RFC 5322 `Display Name <addr@host>` to `addr@host`, lowercased.
- *
- * Both this and `decision-maker.ts:normalizeSender` apply the exact same
- * transformation — they MUST stay in sync, otherwise the per-sender label
- * lookup misses (`recordObservations` writes "alice@x.com" but the
- * decision side queries "Alice <alice@x.com>"). Issue #122.
- *
- * Returns `''` for inputs that don't contain an `@`, so the caller can
- * skip recording rather than poison the model with garbage keys.
- */
-export function normalizeSenderAddress(raw: string): string {
-  if (!raw) return '';
-  const trimmed = raw.trim();
-  const angle = trimmed.match(/<([^>]+)>/);
-  const candidate = angle && angle[1] ? angle[1] : trimmed;
-  const addr = candidate.trim().toLowerCase();
-  return addr.includes('@') ? addr : '';
-}
+// `normalizeSenderAddress` previously lived here as a local function and was
+// duplicated in `decision-maker.ts:normalizeSender`. Both copies had to stay
+// in sync (write side here, read side there), and any divergence silently
+// broke every per-sender label lookup. Issue #122 follow-up moved the single
+// implementation to `@skytwin/core` — re-exported here so existing imports
+// from `@skytwin/connectors` keep working.
+export { normalizeSenderAddress } from '@skytwin/core';
 
 /**
  * Parse the RFC 2919 `List-Id` header down to its bare identifier.
