@@ -1,5 +1,23 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.11.0] - 2026-05-05
+
+Adds a Stop button to the assistant chat so users can interrupt a long generation. Pre-fix the only escape was navigating away — which left the request hanging server-side and lost any partial content the user could already see.
+
+### Added — `Stop` button replaces `Send` while streaming
+
+- `sendAssistantMessageStream(...)` in `apps/web/public/js/api-client.js` now accepts an optional `{ signal }` so the caller can pass an `AbortSignal`. AbortError is surfaced verbatim (not wrapped in the friendly "Unable to reach the server" fallback) so callers can branch on `err.name`. The SSE read loop also rethrows AbortError instead of the generic transport-error path.
+- `apps/web/public/js/pages/assistant.js` creates a fresh `AbortController` per send, stores it on `_state.streamController`, and renders a Stop button with a square-stop glyph in place of Send while `_state.sending` is true. Click → `controller.abort()` → fetch unwinds → handleSend's catch sees `AbortError` and **keeps whatever streamed so far as a real assistant bubble** (not an error caveat). The user gets to keep what they got.
+- The `_state.streamController` is cleared in the finally block, gated on identity check (`=== controller`) to defend against a hypothetical race even though `handleSend` already bails early when `_state.sending` is true.
+
+### CSS
+
+`.assistant-composer-stop` keeps the same dimensions as `.assistant-composer-send` so the button swap doesn't shift the composer layout. Calm bg-card background instead of the action-accent — the affordance is "interrupt", not "go." A solid square ::before glyph reads before the word "Stop" does.
+
+### Tests
+
+Backend test suite still green across 40 packages. Stop-button behavior is browser-only.
+
 ## [0.6.10.0] - 2026-05-05
 
 Adds suggested-prompt chips to the assistant empty state. The chat is now SkyTwin's headline surface for non-technical users, but landing on it with no conversation history shows only a generic "Ask anything" hint — paralyzingly open for a user who doesn't yet have a model of what their twin can do.

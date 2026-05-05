@@ -343,6 +343,34 @@
   cursor: not-allowed;
 }
 
+/* Stop button — same shape as Send so the swap doesn't shift layout,
+ * but a calm "interrupt" appearance rather than the action-accent.
+ * Solid square stop glyph next to the label so the affordance reads
+ * before the user parses the word. */
+.assistant-composer-stop {
+  background: var(--bg-card, rgba(255, 255, 255, 0.06));
+  color: var(--text);
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.18));
+  position: relative;
+  padding-left: 1.9rem;
+}
+.assistant-composer-stop::before {
+  content: '';
+  position: absolute;
+  left: 0.85rem;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 0.7rem;
+  height: 0.7rem;
+  background: currentColor;
+  border-radius: 2px;
+}
+.assistant-composer-stop:hover {
+  filter: none;
+  background: var(--bg-hover, rgba(255, 255, 255, 0.12));
+  border-color: var(--text-muted, rgba(255, 255, 255, 0.3));
+}
+
 /* ── Action footer (issue #148 v1) ──────────────────────────── */
 
 .assistant-action-footer {
