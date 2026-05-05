@@ -103,6 +103,66 @@ body {
 .status-dot.connected { background: var(--success); }
 .status-dot.disconnected { background: var(--danger); }
 
+/* Connection banner — UX review #12 (P1).
+ *
+ * Promoted out of the bottom-left footer where most users wouldn't
+ * notice it. Sits at the top of <main>, below the page header, only
+ * when the API is unreachable. Calm yellow rather than alarming red:
+ * the system will recover on its own, the banner just acknowledges
+ * the wait. Click "Retry now" to skip the next backoff window.
+ */
+.connection-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.55rem 1rem;
+  margin: 0 1.5rem 0.85rem;
+  background: rgba(230, 167, 0, 0.08);
+  border: 1px solid rgba(230, 167, 0, 0.35);
+  border-radius: 8px;
+  font-size: 0.85rem;
+  color: var(--text);
+}
+.connection-banner[hidden] { display: none; }
+
+.connection-banner-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--warning, #e6a700);
+  /* Gentle pulse so the user can tell something is happening, not just
+   * a static error. Respects prefers-reduced-motion globally. */
+  animation: connection-banner-pulse 1.6s ease-in-out infinite;
+}
+@keyframes connection-banner-pulse {
+  0%, 100% { opacity: 0.55; }
+  50%      { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .connection-banner-dot { animation: none; opacity: 0.85; }
+}
+
+.connection-banner-text { flex: 1; }
+
+.connection-banner-retry {
+  background: transparent;
+  color: var(--warning, #e6a700);
+  border: 1px solid rgba(230, 167, 0, 0.5);
+  border-radius: 6px;
+  padding: 0.25rem 0.7rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 120ms ease-out;
+}
+.connection-banner-retry:hover {
+  background: rgba(230, 167, 0, 0.12);
+}
+.connection-banner-retry:focus-visible {
+  outline: 2px solid var(--warning, #e6a700);
+  outline-offset: 2px;
+}
+
 .mobile-menu-btn {
   display: none;
   flex-direction: column;
@@ -756,7 +816,21 @@ textarea.form-input { resize: vertical; min-height: 60px; }
 .bottom-nav-link.active { color: var(--accent); }
 .bottom-nav-link:hover { color: var(--text); }
 
-.bottom-nav-icon { font-size: 1.25rem; line-height: 1; }
+.bottom-nav-icon {
+  font-size: 1.25rem;
+  line-height: 1;
+  /* SVG icons (UX review #3) — explicit sizing so they don't stretch */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+}
+.bottom-nav-icon svg {
+  width: 22px;
+  height: 22px;
+  display: block;
+}
 
 .bottom-nav-badge {
   position: absolute;
@@ -785,7 +859,12 @@ textarea.form-input { resize: vertical; min-height: 60px; }
   .content {
     margin-left: 0;
     padding: 1rem;
-    padding-bottom: calc(4rem + env(safe-area-inset-bottom, 0));
+    /* UX review #3 (P0): bottom-nav was overlapping page content
+     * because the previous 4rem padding wasn't tall enough. The nav is
+     * roughly 56-60px (icon 22px + label + paddings); 5.5rem keeps a
+     * comfortable gap so the last interactive element on every page
+     * (e.g. composer hint, Save button) isn't hidden under the nav. */
+    padding-bottom: calc(5.5rem + env(safe-area-inset-bottom, 0));
   }
 
   .page-header { flex-direction: column; align-items: flex-start; gap: 0.5rem; }

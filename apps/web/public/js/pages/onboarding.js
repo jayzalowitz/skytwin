@@ -101,45 +101,130 @@ const STEPS = [
 
       // Wire the preview chips. They call the public /api/demo/preview
       // endpoint, which runs whatWouldIDo() against the seeded user.
-      // Fail closed: if the demo isn't available (seed not run, server
-      // down) we hide the whole panel rather than show a broken widget.
+      //
+      // UX review #6 (P1) — pre-fix this whole panel was hidden via
+      // `display: none` whenever fetchDemoInfo() failed (API down or
+      // seed not run), turning onboarding step 1 into a wall of text
+      // with no interactive affordance. Now: keep the panel visible
+      // and fall back to STATIC pre-canned responses so the user
+      // always sees how the twin would think, even with no API.
       const previewCard = document.getElementById('onb-preview-card');
       const resultEl = document.getElementById('onb-preview-result');
       const chips = container.querySelectorAll('.onb-preview-chip');
 
+      // Static fallback responses keyed by the chip's data-prompt. Used
+      // when the live preview API is unreachable so the user still
+      // gets a real-looking sample of how the twin reasons. Worded the
+      // same way the live engine does — "I'd handle / I'd ask you" with
+      // a short reasoning sentence.
+      const STATIC_PREVIEWS = {
+        'recruiter': {
+          description: "Skip and label as 'recruiting'",
+          autoExecute: false,
+          reasoning: "You usually keep recruiter mail for context but rarely reply same day. I'd file it under 'recruiting' and add it to your weekly digest instead of pinging you tonight.",
+          confidence: 'moderate',
+        },
+        'subscription': {
+          description: "Cancel — usage is below your normal threshold",
+          autoExecute: false,
+          reasoning: "$15.99/mo for 3 sessions this month is ~$5/session. You've cancelled subscriptions with similar usage before. I'd ask you first since it's recurring spend.",
+          confidence: 'moderate',
+        },
+        'dinner': {
+          description: "Accept the dinner invite",
+          autoExecute: false,
+          reasoning: "Friday 7pm is open on your calendar and you've accepted similar invites from this person before. I'd RSVP yes and add the address from the invite.",
+          confidence: 'high',
+        },
+      };
+      function staticKeyForPrompt(p) {
+        if (/recruiter/i.test(p)) return 'recruiter';
+        if (/subscription|renewal/i.test(p)) return 'subscription';
+        if (/dinner|invite/i.test(p)) return 'dinner';
+        return null;
+      }
+
+      // Track whether the live preview API is reachable. Defaults to
+      // true (optimistic); set to false on the first failed
+      // fetchDemoInfo() OR previewDemoDecision() call. Subsequent
+      // chip clicks then short-circuit to STATIC_PREVIEWS without
+      // pinging the network.
+      let liveAvailable = true;
+      let staticNoticeShown = false;
+      function showStaticNotice() {
+        if (staticNoticeShown || !previewCard) return;
+        staticNoticeShown = true;
+        const notice = document.createElement('div');
+        notice.style.cssText = 'font-size: 0.72rem; color: var(--text-muted); margin-top: 0.4rem; font-style: italic;';
+        notice.textContent = "Live preview offline — showing a sample answer. The real one runs after sign-in.";
+        previewCard.appendChild(notice);
+      }
+
       fetchDemoInfo().then((info) => {
-        if (!info?.available) {
-          if (previewCard) previewCard.style.display = 'none';
-        }
+        if (!info?.available) liveAvailable = false;
       }).catch(() => {
-        if (previewCard) previewCard.style.display = 'none';
+        liveAvailable = false;
       });
+
+      function renderPreviewResult(prompt, predicted) {
+        const action = predicted?.predictedAction;
+        const conf = (predicted?.confidence || 'unknown').toString().replace(/_/g, ' ');
+        const autoExecute = predicted?.wouldAutoExecute;
+        const autoVerb = autoExecute ? "I'd handle this on my own" : "I'd ask you first";
+        const autoColor = autoExecute ? 'var(--success)' : 'var(--warning, #e6a700)';
+        return `
+          <div style="padding: 0.75rem; border-left: 3px solid ${autoColor}; background: var(--bg-card); border-radius: var(--radius-sm);">
+            <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.25rem;">"${escapeForDisplay(prompt)}"</div>
+            <div style="display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem;">
+              <strong>${escapeForDisplay(action?.description || action?.actionType || "I'm not sure — I'd ask")}</strong>
+              <span style="font-size: 0.75rem; color: ${autoColor}; font-weight: 600;">${autoVerb}</span>
+            </div>
+            ${predicted?.reasoning ? `<div style="font-size: 0.82rem; line-height: 1.55;">${escapeForDisplay(predicted.reasoning)}</div>` : ''}
+            <div style="font-size: 0.72rem; color: var(--text-muted); margin-top: 0.4rem;">Confidence: ${escapeForDisplay(conf)}</div>
+          </div>
+        `;
+      }
+
+      function renderStaticPreview(prompt) {
+        const key = staticKeyForPrompt(prompt);
+        const sample = key ? STATIC_PREVIEWS[key] : null;
+        if (!sample) {
+          return `<div style="font-size: 0.82rem; color: var(--text-muted); padding: 0.5rem 0;">Sample preview unavailable — sign in to try the real one.</div>`;
+        }
+        return renderPreviewResult(prompt, {
+          predictedAction: { description: sample.description },
+          wouldAutoExecute: sample.autoExecute,
+          reasoning: sample.reasoning,
+          confidence: sample.confidence,
+        });
+      }
 
       chips.forEach((chip) => {
         chip.addEventListener('click', async () => {
           const prompt = chip.getAttribute('data-prompt');
           if (!prompt || !resultEl) return;
           chips.forEach((c) => { c.disabled = true; });
+
+          // Skip the network roundtrip when we already know the live
+          // preview is unavailable — show the static sample immediately.
+          if (!liveAvailable) {
+            resultEl.innerHTML = renderStaticPreview(prompt);
+            showStaticNotice();
+            chips.forEach((c) => { c.disabled = false; });
+            return;
+          }
+
           resultEl.innerHTML = `<div style="padding: 0.5rem 0.75rem; color: var(--text-muted);">Thinking it through…</div>`;
           try {
             const r = await previewDemoDecision(prompt);
-            const action = r?.predictedAction;
-            const conf = (r?.confidence || 'unknown').toString().replace(/_/g, ' ');
-            const autoVerb = r?.wouldAutoExecute ? "I'd handle this on my own" : "I'd ask you first";
-            const autoColor = r?.wouldAutoExecute ? 'var(--success)' : 'var(--warning, #e6a700)';
-            resultEl.innerHTML = `
-              <div style="padding: 0.75rem; border-left: 3px solid ${autoColor}; background: var(--bg-card); border-radius: var(--radius-sm);">
-                <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.25rem;">"${escapeForDisplay(prompt)}"</div>
-                <div style="display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem;">
-                  <strong>${escapeForDisplay(action?.description || action?.actionType || "I'm not sure — I'd ask")}</strong>
-                  <span style="font-size: 0.75rem; color: ${autoColor}; font-weight: 600;">${autoVerb}</span>
-                </div>
-                ${r?.reasoning ? `<div style="font-size: 0.82rem; line-height: 1.55;">${escapeForDisplay(r.reasoning)}</div>` : ''}
-                <div style="font-size: 0.72rem; color: var(--text-muted); margin-top: 0.4rem;">Confidence: ${escapeForDisplay(conf)}</div>
-              </div>
-            `;
-          } catch (err) {
-            resultEl.innerHTML = `<div style="font-size: 0.82rem; color: var(--text-muted); padding: 0.5rem 0;">Couldn't reach the preview right now — let's keep going and you'll see this in real life on the next page.</div>`;
+            resultEl.innerHTML = renderPreviewResult(prompt, r);
+          } catch {
+            // Live API failed mid-flight. Drop to static sample for
+            // this and all future clicks (avoid re-pinging a known-down
+            // endpoint on every chip).
+            liveAvailable = false;
+            resultEl.innerHTML = renderStaticPreview(prompt);
+            showStaticNotice();
           } finally {
             chips.forEach((c) => { c.disabled = false; });
           }

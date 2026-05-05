@@ -1,4 +1,4 @@
-import { fetchAudit, escapeHtml } from '../api-client.js';
+import { fetchAudit, escapeHtml, renderApiError, wireApiRetry } from '../api-client.js';
 
 const TYPE_ICONS = {
   tier_change: '\u{1F6E1}',  // shield
@@ -89,7 +89,12 @@ export async function renderAudit(container, userId) {
         </div>
       `).join('');
     } catch (err) {
-      timeline.innerHTML = `<div class="error-banner">${escapeHtml(err.message)}</div>`;
+      // UX review #4 (P0): centralized friendly-error helper.
+      timeline.innerHTML = renderApiError(err, {
+        context: "Couldn't load the audit trail.",
+        retry: load,
+      });
+      wireApiRetry(timeline, load);
     }
   }
 

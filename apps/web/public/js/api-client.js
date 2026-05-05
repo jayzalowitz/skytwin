@@ -21,8 +21,113 @@ function authHeaders() {
 }
 
 /**
+ * Rich error class returned from `fetchJSON` failures. UX review #4 (P0):
+ * pages used to render the raw `error` body verbatim, which leaked
+ * developer-jargon strings like "API proxy error" or "Failed to load
+ * resource: 502 Bad Gateway" directly to users.
+ *
+ * `kind` lets pages branch on the failure mode without parsing strings:
+ *   - `offline`    — network unreachable OR our proxy can't reach upstream
+ *                    (HTTP 502 from /api/* in dev). Show "we'll retry"
+ *                    rather than a scary error card.
+ *   - `auth`       — HTTP 401/403. Surface "your session expired" prompts.
+ *   - `not-found`  — HTTP 404.
+ *   - `bad-request`— HTTP 400/409 with a server-supplied message that's
+ *                    safe to show (validation / conflicts).
+ *   - `server`     — HTTP 5xx that isn't a proxy-down case.
+ *   - `unknown`    — anything else.
+ *
+ * `friendlyMessage` is a non-technical sentence the page can render
+ * unmodified. `serverMessage` is the raw server-supplied string for
+ * developers / log analysis (do NOT render to users by default).
+ */
+export class ApiError extends Error {
+  constructor({ kind, friendlyMessage, serverMessage, status }) {
+    super(friendlyMessage);
+    this.name = 'ApiError';
+    this.kind = kind;
+    this.friendlyMessage = friendlyMessage;
+    this.serverMessage = serverMessage ?? '';
+    this.status = status ?? 0;
+  }
+}
+
+/**
+ * Translate a non-OK fetch Response into an `ApiError`. Pure: pages can
+ * import + test without touching network. Issue UX#4.
+ */
+async function classifyHttpError(res) {
+  let body = null;
+  try {
+    body = await res.json();
+  } catch { /* body wasn't JSON */ }
+  const serverMessage = body?.error || body?.message || `HTTP ${res.status}`;
+
+  // Web dev server proxies /api/* to the API server. When the API is
+  // down it returns 502 with body { error: 'API proxy error', details }.
+  // Treat this as offline rather than as a generic 5xx.
+  if (res.status === 502 && /API proxy error/i.test(serverMessage)) {
+    return new ApiError({
+      kind: 'offline',
+      friendlyMessage: "Can't reach SkyTwin right now. We'll keep trying.",
+      serverMessage,
+      status: res.status,
+    });
+  }
+
+  if (res.status === 401 || res.status === 403) {
+    return new ApiError({
+      kind: 'auth',
+      friendlyMessage: 'Your session expired. Sign in again to continue.',
+      serverMessage,
+      status: res.status,
+    });
+  }
+
+  if (res.status === 404) {
+    return new ApiError({
+      kind: 'not-found',
+      friendlyMessage: "We couldn't find that.",
+      serverMessage,
+      status: res.status,
+    });
+  }
+
+  if (res.status === 409 || res.status === 400) {
+    // 4xx validation/conflict messages from our own API are written to
+    // be user-readable (e.g. "No AI provider configured"). Pass through.
+    return new ApiError({
+      kind: 'bad-request',
+      friendlyMessage: serverMessage,
+      serverMessage,
+      status: res.status,
+    });
+  }
+
+  if (res.status >= 500) {
+    return new ApiError({
+      kind: 'server',
+      friendlyMessage: "Something went wrong on our end. Please try again.",
+      serverMessage,
+      status: res.status,
+    });
+  }
+
+  return new ApiError({
+    kind: 'unknown',
+    friendlyMessage: 'Something went wrong. Please try again.',
+    serverMessage,
+    status: res.status,
+  });
+}
+
+/**
  * Fetch JSON from the API with user-friendly error handling.
  * Automatically attaches the session token if one is stored.
+ *
+ * Throws `ApiError` (subclass of Error) on failure — pages should
+ * branch on `err.kind` rather than parsing `err.message`. Use
+ * `renderApiError(err, retry)` for a consistent visual treatment.
  */
 export async function fetchJSON(url, options = {}) {
   let res;
@@ -31,16 +136,91 @@ export async function fetchJSON(url, options = {}) {
       headers: { 'Content-Type': 'application/json', ...authHeaders(), ...options.headers },
       ...options,
     });
-  } catch {
-    throw new Error('Unable to reach the server. Please check your connection.');
+  } catch (cause) {
+    // Network unreachable (no DNS, no route, browser offline, etc.)
+    throw new ApiError({
+      kind: 'offline',
+      friendlyMessage: "You appear to be offline. Check your connection — we'll retry automatically.",
+      serverMessage: cause instanceof Error ? cause.message : String(cause),
+      status: 0,
+    });
   }
 
   if (!res.ok) {
-    const err = await res.json().catch(() => null);
-    const message = err?.error || err?.message || `Something went wrong (HTTP ${res.status})`;
-    throw new Error(message);
+    throw await classifyHttpError(res);
   }
   return res.json();
+}
+
+/**
+ * Render a consistent error card for a failed API call. UX review #4 + #5.
+ *
+ * Use this in every page's catch block instead of writing custom error
+ * UI. Branches on `err.kind` so the same helper covers offline, auth,
+ * server errors, and validation messages. The `retry` callback is shown
+ * as a "Try again" button when provided — pages without a retry path
+ * (e.g. one-shot operations) can omit it.
+ *
+ * The user NEVER sees `serverMessage` from this helper — only
+ * `friendlyMessage`. Devs can inspect the error in the console (logged
+ * by the api-client at warn level when offline).
+ */
+export function renderApiError(err, options = {}) {
+  const { retry, context } = options;
+  const isApi = err && typeof err === 'object' && 'kind' in err;
+  const kind = isApi ? err.kind : 'unknown';
+  const friendly = isApi ? err.friendlyMessage : 'Something went wrong. Please try again.';
+
+  // Match severity to the failure mode. Offline is calm (it'll come back);
+  // auth is informational (sign in); server is a warning (rare); unknown
+  // is a danger (unexpected).
+  const accentVar = kind === 'offline'
+    ? 'var(--text-muted, var(--text))'
+    : kind === 'auth'
+    ? 'var(--accent, #6366f1)'
+    : 'var(--danger, #ef4444)';
+  const heading = kind === 'offline'
+    ? "Can't reach SkyTwin right now"
+    : kind === 'auth'
+    ? 'Sign in again'
+    : kind === 'not-found'
+    ? "We couldn't find that"
+    : 'Something went wrong';
+  const contextLine = context ? `<div class="api-error-context">${escapeHtml(context)}</div>` : '';
+  const retryBtn = retry ? `<button class="btn btn-outline btn-sm" data-action="api-retry" type="button">Try again</button>` : '';
+
+  return `
+    <div class="card api-error-card" data-error-kind="${escapeHtml(kind)}" style="border-left: 3px solid ${accentVar};">
+      <div class="card-header"><span class="card-title">${escapeHtml(heading)}</span></div>
+      <div class="card-subtitle">${escapeHtml(friendly)}</div>
+      ${contextLine}
+      ${retryBtn}
+    </div>
+  `;
+}
+
+/**
+ * Wire up the "Try again" button rendered by `renderApiError(..., { retry })`.
+ *
+ * The page should call `wireApiRetry(container, retry)` after rendering.
+ * Singleton-safe: only the most recent `retry` callback fires per
+ * container. Pages re-binding on every render get fresh closures, which
+ * is what we want for re-fetches that depend on current state.
+ */
+export function wireApiRetry(container, retry) {
+  if (!container || typeof retry !== 'function') return;
+  const btn = container.querySelector('[data-action="api-retry"]');
+  if (!btn || btn.dataset.wired === 'true') return;
+  btn.dataset.wired = 'true';
+  btn.addEventListener('click', (e) => {
+    e.preventDefault();
+    btn.disabled = true;
+    btn.textContent = 'Retrying…';
+    Promise.resolve(retry()).finally(() => {
+      btn.disabled = false;
+      btn.textContent = 'Try again';
+    });
+  });
 }
 
 // ── Decisions ───────────────────────────────────────────

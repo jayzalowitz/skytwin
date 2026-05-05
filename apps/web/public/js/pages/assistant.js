@@ -4,6 +4,8 @@ import {
   deleteAssistantThread,
   sendAssistantMessageStream,
   escapeHtml,
+  renderApiError,
+  wireApiRetry,
 } from '../api-client.js';
 
 // State for the currently-rendered thread. Module-scope because the click
@@ -40,7 +42,11 @@ export async function renderAssistant(container, userId) {
     const data = await fetchAssistantThreads(userId);
     threads = Array.isArray(data?.threads) ? data.threads : [];
   } catch (err) {
-    container.innerHTML = renderError(err);
+    container.innerHTML = renderApiError(err, {
+      context: "Couldn't load the assistant.",
+      retry: () => renderAssistant(container, userId),
+    });
+    wireApiRetry(container, () => renderAssistant(container, userId));
     return;
   }
   _state.threads = threads;
@@ -241,13 +247,12 @@ function renderActionFooter(intentRoute) {
 }
 
 function renderError(err) {
-  const msg = err instanceof Error ? err.message : String(err);
-  return `
-    <div class="card" style="border-left: 3px solid var(--danger, #ef4444);">
-      <div class="card-header"><span class="card-title">Couldn't load the assistant</span></div>
-      <div class="card-subtitle">${escapeHtml(msg)}</div>
-    </div>
-  `;
+  // UX review #4 (P0): centralized friendly-error helper. Pre-fix this
+  // rendered `err.message` verbatim, which surfaced strings like
+  // "API proxy error" to users when the API was down.
+  return renderApiError(err, {
+    context: "Couldn't load the assistant.",
+  });
 }
 
 function formatThreadStamp(iso) {

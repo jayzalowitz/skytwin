@@ -1,4 +1,4 @@
-import { fetchDecisions, fetchDecisionExplanation, submitFeedback, escapeHtml } from '../api-client.js';
+import { fetchDecisions, fetchDecisionExplanation, submitFeedback, escapeHtml, renderApiError, wireApiRetry } from '../api-client.js';
 
 let currentUserId = '';
 
@@ -183,7 +183,15 @@ export async function renderDecisions(container, userId) {
         </div>
       `;
     } catch (err) {
-      listEl.innerHTML = `<div class="error-banner">${escapeHtml(err.message)}</div>`;
+      // UX review #4 (P0): use the centralized friendly-error helper
+      // instead of `escapeHtml(err.message)` which would leak strings
+      // like "API proxy error" or "Failed to load resource: 502 Bad
+      // Gateway" verbatim.
+      listEl.innerHTML = renderApiError(err, {
+        context: "Couldn't load your decisions.",
+        retry: loadDecisions,
+      });
+      wireApiRetry(listEl, loadDecisions);
     }
   }
 
