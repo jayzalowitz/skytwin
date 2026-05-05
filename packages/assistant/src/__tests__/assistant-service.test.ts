@@ -64,11 +64,18 @@ describe('AssistantService.reply', () => {
     }));
 
     await service.reply(history);
-    const [prompt] = (llm.generate as ReturnType<typeof vi.fn>).mock.calls[0]!;
-    expect(prompt).not.toContain('turn-0\n');
-    expect(prompt).not.toContain('turn-9\n');
-    expect(prompt).toContain('turn-29');
-    expect(prompt).toContain(`turn-${30 - MAX_HISTORY_TURNS}`);
+    // Issue #149: the assistant now passes a ChatMessage[] (the trimmed
+    // history) directly, not a flattened string with `User:` / `Assistant:`
+    // labels. Assert against the messages array's content fields instead.
+    const [messages] = (llm.generate as ReturnType<typeof vi.fn>).mock.calls[0]! as [
+      Array<{ content: string }>,
+    ];
+    expect(messages).toHaveLength(MAX_HISTORY_TURNS);
+    const allContent = messages.map((m) => m.content);
+    expect(allContent).not.toContain('turn-0');
+    expect(allContent).not.toContain('turn-9');
+    expect(allContent).toContain('turn-29');
+    expect(allContent).toContain(`turn-${30 - MAX_HISTORY_TURNS}`);
   });
 
   it('propagates provider failures to the caller', async () => {

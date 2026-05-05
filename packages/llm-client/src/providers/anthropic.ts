@@ -1,12 +1,43 @@
-import type { GenerateOptions } from '../types.js';
+import type { ChatMessage, GenerateOptions } from '../types.js';
+import { splitSystemAndConversation, toMessages } from '../messages.js';
 import { validateBaseUrl } from '../url-validation.js';
 
 const DEFAULT_URL = 'https://api.anthropic.com';
 
+/**
+ * Build the Anthropic `/v1/messages` request body from either a string
+ * (back-compat: single user turn) or a `ChatMessage[]` (multi-turn).
+ *
+ * Anthropic takes `system` as a top-level field separate from the
+ * `messages` array, so we split system messages out of the conversation
+ * — see `splitSystemAndConversation`. Adjacent same-role messages are
+ * NOT merged here (Anthropic accepts them) but the API rejects empty
+ * conversations, so we always have at least one message after the split.
+ */
+function buildAnthropicBody(
+  model: string,
+  prompt: string | ChatMessage[],
+  options: GenerateOptions,
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> {
+  const { system, conversation } = splitSystemAndConversation(
+    toMessages(prompt),
+    options.systemPrompt,
+  );
+  return {
+    model,
+    max_tokens: options.maxTokens ?? 1024,
+    ...(system ? { system } : {}),
+    messages: conversation,
+    temperature: options.temperature ?? 0.3,
+    ...extra,
+  };
+}
+
 export async function generate(
   apiKey: string,
   model: string,
-  prompt: string,
+  prompt: string | ChatMessage[],
   options: GenerateOptions & { baseUrl?: string } = {},
 ): Promise<string> {
   const baseUrl = options.baseUrl || DEFAULT_URL;
@@ -22,13 +53,7 @@ export async function generate(
         'x-api-key': apiKey,
         'anthropic-version': '2023-06-01',
       },
-      body: JSON.stringify({
-        model,
-        max_tokens: options.maxTokens ?? 1024,
-        ...(options.systemPrompt ? { system: options.systemPrompt } : {}),
-        messages: [{ role: 'user', content: prompt }],
-        temperature: options.temperature ?? 0.3,
-      }),
+      body: JSON.stringify(buildAnthropicBody(model, prompt, options)),
       signal: controller.signal,
     });
 
@@ -62,7 +87,7 @@ export async function generate(
 export async function* streamGenerate(
   apiKey: string,
   model: string,
-  prompt: string,
+  prompt: string | ChatMessage[],
   options: GenerateOptions & { baseUrl?: string } = {},
 ): AsyncIterable<string> {
   const baseUrl = options.baseUrl || DEFAULT_URL;
@@ -82,14 +107,7 @@ export async function* streamGenerate(
         'x-api-key': apiKey,
         'anthropic-version': '2023-06-01',
       },
-      body: JSON.stringify({
-        model,
-        max_tokens: options.maxTokens ?? 1024,
-        ...(options.systemPrompt ? { system: options.systemPrompt } : {}),
-        messages: [{ role: 'user', content: prompt }],
-        temperature: options.temperature ?? 0.3,
-        stream: true,
-      }),
+      body: JSON.stringify(buildAnthropicBody(model, prompt, options, { stream: true })),
       signal: controller.signal,
     });
 

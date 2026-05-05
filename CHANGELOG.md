@@ -1,5 +1,50 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.3.0] - 2026-05-05
+
+Closes issue #149 — `LlmClient.generate` and `generateStream` now accept `string | ChatMessage[]`. Each provider translates the array to its native chat-completion format. The `User:` / `Assistant:` prompt-flattening workaround in `@skytwin/assistant` is gone — `reply()` and `replyStream()` pass the conversation history directly. Pure refactor: no new user-visible feature, but unblocks #148 (action-intent routing) and removes the comment-laden workaround that's been load-bearing since assistant phase 1.
+
+Backward-compatible: existing string callers (decision-engine's LLM strategies, every provider integration test, anything outside this monorepo that imports `@skytwin/llm-client`) work unchanged.
+
+### Added — `ChatMessage` type + helpers in `@skytwin/llm-client`
+
+- `ChatMessage = { role: 'system' | 'user' | 'assistant', content: string }` re-exported from package root.
+- `toMessages(input: string | ChatMessage[]): ChatMessage[]` — wraps a string as one user-role message; passes arrays through unchanged. Pure function used by every provider.
+- `splitSystemAndConversation(messages, fallbackSystem?)` — peels system messages out of the array and joins them with `\n\n`. Lets providers like Anthropic and Gemini that take `system` as a top-level field separate from the conversation array do that translation in two lines instead of N. Inline system messages WIN over `options.systemPrompt` so the assistant package's context block (injected as a system turn) is never silently overridden by the route's default prompt.
+
+### Changed — `LlmClient.generate` + `generateStream` signatures
+
+- `prompt: string` → `prompt: string | ChatMessage[]`. String input behaves exactly as before (provider chain still emits `chunk` and `done` events for the streaming path identically; `generate` returns the same `LlmResponse` shape).
+
+### Changed — providers translate to their native chat-completion shapes
+
+| Provider | Before | After |
+|---|---|---|
+| **Anthropic** | `messages: [{role: 'user', content: <prompt>}]` + `system` top-level | Pass-through `messages` array; system-role messages hoisted to the `system` field via `splitSystemAndConversation` |
+| **OpenAI** | Hardcoded system + user pair | Pass-through `messages` array; falls back to `options.systemPrompt` only when no inline system message exists |
+| **Google/Gemini** | Fake `user: <prompt>` + `model: "Understood."` pair to emulate system | Native `system_instruction` field; assistant role correctly translated to `'model'` (Gemini's vocabulary). Saves tokens AND removes a drift hazard |
+| **Ollama** | `/api/generate` with `systemPrompt + "\n\n" + prompt` flattened | Switched to `/api/chat` with native `messages: [{role, content}]` array. Both endpoints exist on every modern Ollama server; the chat one matches what every other provider in the chain uses. Response parsing also moved from `{response}` to `{message: {content}}` |
+
+### Changed — `AssistantService` drops the role-flattening workaround
+
+- `reply()` and `replyStream()` now pass the trimmed `ChatTurn[]` directly to `LlmClient.generate` / `generateStream`. `ChatTurn` and `ChatMessage` are structurally identical, so the change is just dropping the call to `formatHistoryAsPrompt`.
+- New private `composeSystemPrompt(enrichment?)` helper shared between `reply()` and `replyStream()` so the two paths cannot drift on the prepend-context-block step.
+- `formatHistoryAsPrompt` stays exported for back-compat (no known external callers, but the function was public; plan to remove on the next major bump if no consumers surface).
+
+### Tests (28 new)
+
+- `packages/llm-client/src/__tests__/messages.test.ts` (7): `toMessages` string-wrapping + array-passthrough; `splitSystemAndConversation` joining, fallback semantics, inline-wins-over-fallback, all-system input.
+- `packages/llm-client/src/__tests__/provider-multiturn.test.ts` (15): per-provider request-body shape assertions for both string and `ChatMessage[]` inputs. Anthropic system-hoisting + inline-wins. OpenAI no-duplicate-system. Gemini role translation + native `system_instruction` (no fake user/model pair) + omit-when-empty. Ollama `/api/chat` endpoint switch + response shape change + empty-response defensive return.
+- `packages/assistant/src/__tests__/assistant-service.test.ts` (1 updated): the history-cap test now asserts against the messages array's content fields instead of the flattened prompt string. Same intent, post-#149 wire format.
+
+### Out of scope for this PR (last remaining phase 2 work)
+
+- #148 action-intent routing through `@skytwin/decision-engine` — unblocked by this PR. The intent classifier can now look at structured turns instead of regexing a flattened prompt.
+
+### Migration notes
+
+No caller-facing changes for back-compat string passers. New callers can drop history-flattening logic; pass `ChatMessage[]` instead. Decision-engine LLM strategies (LlmCandidateGenerator, LlmSituationStrategy) were not migrated in this PR — their `PromptBuilder`-built prompts work as-is, and changing them would conflate this refactor with their own re-shaping.
+
 ## [0.6.2.0] - 2026-05-05
 
 Closes issue #146 — assistant phase 2a. The chat UI now streams replies token-by-token instead of blocking on the full LLM response. Anthropic ships native SSE; the other providers fall back to single-chunk emission so the API contract is uniform regardless of which provider is in front. Backward-compatible: legacy JSON callers still work unchanged.
