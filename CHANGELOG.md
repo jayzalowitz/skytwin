@@ -1,5 +1,28 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.10.0] - 2026-05-05
+
+Adds suggested-prompt chips to the assistant empty state. The chat is now SkyTwin's headline surface for non-technical users, but landing on it with no conversation history shows only a generic "Ask anything" hint — paralyzingly open for a user who doesn't yet have a model of what their twin can do.
+
+### Added — four clickable suggestion chips on `/assistant` empty state
+
+- "What did you handle today?"
+- "What's waiting for my OK?"
+- "What have you learned about me so far?"
+- "Archive promotional emails from last week"
+
+Click → fills the composer and focuses the input with cursor at end. **Does not auto-send** — the chip is a starting point, not a commitment, so the user can edit before hitting Enter. Same `data-action` delegation pattern the page already uses for `select-thread` / `delete-thread`.
+
+The chips cover three "show me what's going on" prompts (read-only; safe first contact) plus one action-routing example so the user discovers chat can also queue actions for approval. The action-routing intent flows through the `intentRoute` pipeline that landed in v0.6.4.0 (#148 v1), so a click → edit → send already lands on the approvals page.
+
+### CSS
+
+`.assistant-suggestions` flex-wraps the pill-shaped chips below the empty-state copy. Restored `opacity: 1` on the container because the parent `.assistant-empty` dims its prose to 0.75 — without the override the chips would read as disabled. Hover lifts the chip 1px and tints the border to the accent color; respects `prefers-reduced-motion`.
+
+### Tests
+
+Backend test suite still green across 40 packages. Empty-state UI is browser-only.
+
 ## [0.6.9.0] - 2026-05-05
 
 Toast cleanup + back-online affordance. Closes the "migrate legacy `.toast` callers" item that was deferred in v0.6.8.0 so the duplicate CSS can come out, and adds a back-online toast so the user gets explicit confirmation when the API recovers (instead of having to notice the banner disappear).

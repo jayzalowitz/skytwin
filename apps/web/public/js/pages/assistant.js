@@ -162,12 +162,34 @@ function renderThreadList(threads, activeId) {
 
 function renderMessages(messages, sending) {
   if (messages.length === 0 && !sending) {
+    // Suggested prompts: a non-technical user lands here with no model
+    // of what their twin can do. The empty hint copy ("Ask anything")
+    // is paralyzingly open. Four concrete prompts give them an obvious
+    // starting move — click one to fill the composer (not auto-send,
+    // so they can edit before committing).
+    const suggestions = [
+      "What did you handle today?",
+      "What's waiting for my OK?",
+      "What have you learned about me so far?",
+      "Archive promotional emails from last week",
+    ];
     return `
       <div class="assistant-empty">
         <div class="assistant-empty-title">Start a conversation</div>
         <div class="assistant-empty-desc">
-          Ask anything. I can also queue actions for your approval — try
-          "archive that email" or "schedule a meeting with X".
+          Ask anything. I can also queue actions for your approval — try one
+          of these or write your own.
+        </div>
+        <div class="assistant-suggestions" role="list">
+          ${suggestions.map((s) => `
+            <button
+              type="button"
+              class="assistant-suggestion-chip"
+              data-action="suggest"
+              data-prompt="${escapeHtml(s)}"
+              role="listitem"
+            >${escapeHtml(s)}</button>
+          `).join('')}
         </div>
       </div>
     `;
@@ -312,6 +334,9 @@ function ensureAssistantListener() {
       // belt-and-suspenders for any future restructure).
       e.stopPropagation();
       if (id) handleDeleteThread(id);
+    } else if (action === 'suggest') {
+      const prompt = btn.getAttribute('data-prompt');
+      if (prompt) handleSuggestion(prompt);
     }
   });
 
@@ -347,6 +372,22 @@ function handleNewThread() {
   _state.messages = [];
   const container = document.getElementById('page-content');
   if (container) paint(container);
+}
+
+/**
+ * Click on a suggested prompt chip: drop the prompt into the composer and
+ * focus it. We intentionally do NOT auto-send — the chip is a starting
+ * point, not a commitment. The user can edit, add context, or hit send.
+ */
+function handleSuggestion(prompt) {
+  const container = document.getElementById('page-content');
+  const input = container?.querySelector('[data-region="composer-input"]');
+  if (!input) return;
+  input.value = prompt;
+  input.focus();
+  // Move cursor to end so a quick tweak ("…and tell me why") flows naturally.
+  const end = prompt.length;
+  try { input.setSelectionRange(end, end); } catch { /* old browsers */ }
 }
 
 async function handleSelectThread(threadId) {
