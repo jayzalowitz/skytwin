@@ -1,5 +1,34 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.8.0] - 2026-05-05
+
+Closes UX review #10 — adds reusable toast notifications + Settings auto-save. The toast component is the reusable infrastructure piece several deferred findings were waiting on.
+
+### Added — `apps/web/public/js/toast.js` (new module)
+
+`showToast(message, { kind, durationMs })` — bottom-right toast stack with four kinds (success / info / warning / danger), each color-coded via theme variables. Auto-dismiss after 3.5s (success/info) or 6s (warning/danger), but pauses on hover so the user can read longer. Click anywhere on the toast to dismiss early. `aria-live="polite"` on the stack so screen readers announce messages without stealing focus. Respects `prefers-reduced-motion` (slide-in animation no-ops). `durationMs: 0` makes a toast sticky.
+
+Convenience wrappers: `showSavedToast()` and `showErrorToast(message)`.
+
+CSS classes are namespaced `.skytoast-*` to avoid colliding with the legacy `.toast` rules used by approvals.js / decisions.js / twin.js for inline "Saved" indicators. Eventually those callers can migrate to `showToast()` and the legacy CSS can come out.
+
+### Changed — Settings auto-saves the autonomy tier and spending guardrails
+
+- **Tier auto-save** — selecting a different "How much should your twin do?" option auto-saves 800ms after the click (long enough that mis-clicks don't ping the server, short enough to feel responsive). Save button still works for users who prefer the explicit affordance.
+- **Spending guardrails auto-save** — typing in the per-action / per-day caps OR toggling "Always ask before doing something that can't be undone" auto-saves 1.2s after the last edit (slightly slower debounce because the user is typing into a number field). Skips if either field is mid-edit (NaN).
+- Both end with a "Saved ✓" toast. Failures show the centralized friendly error message.
+
+### Tests
+
+No new unit tests — toast + auto-save are browser-only. Backend test suite still green across 40 packages. Visual verification screenshots in `.context/ux-review/30-toasts-working.png` and `31-toasts-styled.png`.
+
+### What's left from FINDINGS.md
+
+- **Hosted OAuth deployment** (#1, infra)
+- **More Advanced section consolidation** (#8 follow-up)
+- **Onboarding step count audit** (#14, needs product input)
+- **Migrate legacy `.toast` callers** to the new `showToast()` API so the duplicate CSS comes out (cleanup, low priority)
+
 ## [0.6.7.0] - 2026-05-05
 
 Last batch from the browser-agent review. Closes the remaining tractable items: hosted-OAuth code support (the unblocker for "everyone can use it") and Settings cleanup. The actual hosted Google OAuth app verification is still infra work outside this repo.
