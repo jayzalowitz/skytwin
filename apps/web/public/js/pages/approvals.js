@@ -1,4 +1,4 @@
-import { fetchPendingApprovals, fetchApprovalHistory, respondToApproval, escapeHtml, fetchTrustProgress } from '../api-client.js';
+import { fetchPendingApprovals, fetchApprovalHistory, respondToApproval, escapeHtml, fetchTrustProgress, renderApiError, wireApiRetry } from '../api-client.js';
 import { renderTrustProgress } from '../components/progress-bar.js';
 import { KEY_TOUR_MODE, firstApprovalIntroSeenKey } from '../storage-keys.js';
 
@@ -27,7 +27,20 @@ export async function renderApprovals(container, userId) {
     fetchTrustProgress(userId),
   ]);
 
-  const pending = pendingData.status === 'fulfilled' ? (pendingData.value.approvals ?? []) : [];
+  // UX review #5 (P0): if the pending fetch FAILED, show the error card
+  // instead of an empty state. Pre-fix, an offline API silently rendered
+  // "0 waiting / You're all caught up" — indistinguishable from genuinely
+  // having nothing to do, so a user could miss real approvals.
+  if (pendingData.status === 'rejected') {
+    container.innerHTML = renderApiError(pendingData.reason, {
+      context: "Couldn't load your approvals.",
+      retry: () => renderApprovals(container, userId),
+    });
+    wireApiRetry(container, () => renderApprovals(container, userId));
+    return;
+  }
+
+  const pending = pendingData.value.approvals ?? [];
   const rawHistory = historyData.status === 'fulfilled' ? (historyData.value.approvals ?? []) : [];
   const prog = progressData.status === 'fulfilled' ? progressData.value : null;
 

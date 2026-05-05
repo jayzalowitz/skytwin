@@ -19,7 +19,8 @@ const routes = {
   '/assistant': { title: 'Chat', render: renderAssistant },
   '/approvals': { title: 'Needs your OK', render: renderApprovals },
   '/decisions': { title: 'What happened', render: renderDecisions },
-  '/twin': { title: 'What I\'ve learned', render: renderTwin },
+  // UX review #13 — sidebar + page header speak the same voice now.
+  '/twin': { title: "What I've learned", render: renderTwin },
   '/settings': { title: 'Settings', render: renderSettings },
   '/audit': { title: 'Audit Trail', render: renderAudit },
   '/setup': { title: 'Connect', render: renderSetup },
@@ -56,16 +57,36 @@ function showOnboarding() {
  * already has — there's no auth ceremony in dev — and unblocks the case
  * where localStorage holds a userId that has no signals/approvals.
  */
+/**
+ * Render the user badge in the header.
+ *
+ * UX review #2 (P0): pre-fix, when the API was down (or the user
+ * record couldn't be loaded), the badge fell back to the raw UUID
+ * `11111111-2222-…`. A non-technical user reads that and reasonably
+ * wonders "what is that hex code, did something break?" Now: when no
+ * name/email is available we render a friendly "You" label with the
+ * first 4 chars of the userId in a tooltip for devs who need it.
+ */
+function userBadgeFallback(uid) {
+  // 'You' is friendlier than a UUID. The tooltip keeps the first 4
+  // chars visible-on-hover so the dev "switch user" workflow still has
+  // a hint of which account is active.
+  return uid ? `You (${uid.slice(0, 4)}…)` : 'You';
+}
 function renderUserBadge() {
   const badge = document.getElementById('user-badge');
   if (!badge) return;
 
-  // Friendly current label.
+  // Optimistic friendly fallback while the API call resolves — shows
+  // "You" instead of a flash of the raw UUID under slow networks.
+  badge.textContent = userBadgeFallback(currentUserId);
+
+  // Friendly current label from the user record when available.
   fetchUser(currentUserId).then((data) => {
     const u = data?.user ?? data;
-    badge.textContent = u?.name || u?.email || currentUserId || 'No user';
+    badge.textContent = u?.name || u?.email || userBadgeFallback(currentUserId);
   }).catch(() => {
-    badge.textContent = currentUserId || 'No user';
+    badge.textContent = userBadgeFallback(currentUserId);
   });
 
   if (badge.dataset.switcherWired === 'true') return;
@@ -209,16 +230,31 @@ function flashTwinActivity(text, durationMs = 4500) {
  */
 async function updateConnectionStatus() {
   const statusEl = document.getElementById('connection-status');
-  if (!statusEl) return;
+  // UX review #12 (P1): a header banner mirrors the footer indicator
+  // for the disconnected case. Most users never look at the bottom-left
+  // corner; the banner sits below the page header so it's impossible
+  // to miss when the API is offline.
+  const banner = document.getElementById('connection-banner');
+  const bannerText = banner?.querySelector('.connection-banner-text');
 
-  // Build the indicator from a static dot + a textContent span so any
-  // future caller of flashTwinActivity() that passes user-derived text
-  // can't smuggle markup. _twinActivityText is internal-only today;
-  // keeping the boundary safe is defense in depth for tomorrow.
+  // Build the footer indicator from a static dot + a textContent span
+  // so any future caller of flashTwinActivity() that passes
+  // user-derived text can't smuggle markup. _twinActivityText is
+  // internal-only today; keeping the boundary safe is defense in depth
+  // for tomorrow.
   const renderState = (dotClass, text) => {
-    statusEl.innerHTML = `<span class="status-dot ${dotClass}"></span><span class="status-text"></span>`;
-    const t = statusEl.querySelector('.status-text');
-    if (t) t.textContent = text;
+    if (statusEl) {
+      statusEl.innerHTML = `<span class="status-dot ${dotClass}"></span><span class="status-text"></span>`;
+      const t = statusEl.querySelector('.status-text');
+      if (t) t.textContent = text;
+    }
+    // Banner only shows when disconnected. Hidden otherwise so it
+    // doesn't take vertical space on the happy path (most of the time).
+    if (banner) {
+      const isOffline = dotClass === 'disconnected';
+      banner.hidden = !isOffline;
+      if (isOffline && bannerText) bannerText.textContent = text;
+    }
   };
 
   if (_twinActivityText) {
@@ -238,6 +274,18 @@ async function updateConnectionStatus() {
     renderState('disconnected', 'Reconnecting…');
   }
 }
+
+// "Retry now" button on the connection banner (UX review #12). Wired
+// once; subsequent updateConnectionStatus() calls reuse the same DOM.
+// Triggers an immediate health check + re-renders the status. Skips
+// the next backoff window the SSE client would otherwise wait through.
+document.addEventListener('click', (e) => {
+  const target = e.target instanceof Element ? e.target : null;
+  if (!target) return;
+  if (target.getAttribute('data-action') !== 'connection-retry') return;
+  e.preventDefault();
+  updateConnectionStatus();
+});
 
 // Drive the activity flash off the events the API already broadcasts.
 window.addEventListener('sse:decision:step', () => flashTwinActivity('Working on it…'));

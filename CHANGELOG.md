@@ -1,5 +1,43 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.5.0] - 2026-05-05
+
+UX hardening pass driven by a browser-agent visual review of every SPA route — focused on what would confuse a non-technical user. 7 of the 20 findings closed in this PR (the load-bearing ones); polish items deferred to a follow-up. See `.context/ux-review/FINDINGS.md` for the full list with severity grades.
+
+### Fixed — what a first-time user sees when something goes wrong
+
+- **Centralized friendly errors in `api-client.js` (P0 #4).** New `ApiError` class with `kind` discriminant (`offline | auth | not-found | bad-request | server | unknown`) and a `friendlyMessage` field. The web dev proxy returns `{error: 'API proxy error'}` when the upstream API is down — pre-fix, that string leaked verbatim to users on Chat / Decisions / Audit pages. Now translated to "Can't reach SkyTwin right now. We'll keep trying." `renderApiError(err, { context, retry })` and `wireApiRetry(container, retry)` give every page the same calm error card with a "Try again" button.
+- **Approvals + Decisions + Audit + Chat use the centralized helper (P0 #5).** Pre-fix, Approvals showed "0 waiting / You're all caught up" when the API was down — indistinguishable from genuinely having nothing to do, so a user could miss real approvals. Now: a loaded-empty list looks different from an offline list, and Try again is one click away.
+- **UUID badge → friendly fallback (P0 #2).** Header user badge and Settings footer used to show the raw UUID `11111111-2222-…` when the user record couldn't be loaded. Now shows `You (1111…)` with the first 4 chars of the userId in a tooltip for devs.
+
+### Fixed — connection status
+
+- **Promoted "Reconnecting…" from the bottom-left footer to a header banner (P1 #12).** Calm yellow banner with an animated dot + "Retry now" button, rendered below the page header on every page when the API is unreachable. Hidden when connected so it doesn't take vertical space on the happy path. The footer indicator stays as a secondary signal.
+- Banner respects `prefers-reduced-motion`.
+
+### Fixed — onboarding step 1 has working examples even when the API is down
+
+- **Demo preview card static fallback (P1 #6).** Pre-fix, the "Try one — see how it thinks" card was rendered with `display: none` and only revealed by JS after a successful `/api/v1/demo/info`. With the API down, the card never appeared — the WHOLE POINT of step 1 (let me show you how it thinks before you sign up) had no interactive affordance. Now the card always renders; if the live preview is unavailable, clicks return pre-canned sample answers (recruiter / subscription / dinner) with the same visual treatment as the live engine, plus a small "Live preview offline — showing a sample answer" caveat.
+
+### Fixed — mobile
+
+- **Mobile bottom-nav with real icons (P0 #3).** Pre-fix had single-letter icons (H/!/D/T/S) that were mysterious to first-time users. Replaced with inline-SVG icons (home/chat-bubble/checkmark-circle/hamburger/gear).
+- **Chat link added to mobile bottom-nav.** v0.6.0.0 shipped the Chat feature in the desktop sidebar but missed the mobile nav entirely — feature was unreachable on phones.
+- **Bottom-nav no longer overlaps page content.** Increased `.content` `padding-bottom` from `4rem` to `5.5rem + safe-area-inset` so the last interactive element on every page (composer hint, Save button, etc.) isn't hidden under the nav.
+
+### Fixed — voice
+
+- **Sidebar "My learnings" → "What I've learned" (P1 #13).** Sidebar label now matches the page header. Route title in `app.js` updated.
+
+### Tests
+
+No new unit tests in this PR — every change is in browser-only code (`apps/web/public/js/*`, CSS, HTML). Verified with the same browser-agent visual review (`.context/ux-review/14-` through `19-` screenshots show the after state). Full backend test suite still green across 40 packages.
+
+### What's still open from the UX review
+
+- **Hosted OAuth (P0 #1)** — single biggest unblocker for "everyone can use it" goal. Requires a verified Google OAuth app + production hosting; can't ship from a worktree alone.
+- **Settings consolidation, theme switcher relocation, "needed for Chat" hint, auto-save, date input theming, onboarding sidebar dimmer (P1 #7-#11, #15)** — queued for a follow-up "Settings + Connect polish" PR.
+
 ## [0.6.4.0] - 2026-05-05
 
 Closes issue #148 v1 — assistant phase 2c. The chat surface now routes detected action intents through the existing decision pipeline instead of just talking about them. Saying "archive that email" or "schedule a meeting with X" in chat creates an `ApprovalRequest` and queues it on the existing `#/approvals` page. Conversational messages still go through the LLM chat path unchanged.

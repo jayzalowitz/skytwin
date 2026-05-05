@@ -336,7 +336,9 @@ export async function renderSettings(container, userId) {
     </div>
 
     <div class="card" style="margin-top: 2rem; text-align: center;">
-      <div class="card-subtitle" style="margin-bottom: 0.75rem;">Signed in as <strong>${escapeHtml(userId)}</strong></div>
+      <div class="card-subtitle" style="margin-bottom: 0.75rem;">
+        Signed in as <strong>${escapeHtml(user?.name || user?.email || `You (${userId.slice(0, 4)}…)`)}</strong>
+      </div>
       <button class="btn btn-outline" data-action="sign-out">Sign out</button>
     </div>
   `;
