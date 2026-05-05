@@ -128,8 +128,8 @@ importers:
         specifier: ~13.0.0
         version: 13.0.1(expo@55.0.17(@babel/core@7.29.0)(@expo/dom-webview@55.0.5)(react-native@0.85.2(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.5))(react@19.2.5)(typescript@5.9.3))
       expo-camera:
-        specifier: ~55.0.15
-        version: 55.0.15(@types/emscripten@1.41.5)(expo@55.0.17(@babel/core@7.29.0)(@expo/dom-webview@55.0.5)(react-native@0.85.2(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.5))(react@19.2.5)(typescript@5.9.3))(react-native@0.85.2(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.5))(react@19.2.5)
+        specifier: ~55.0.16
+        version: 55.0.16(@types/emscripten@1.41.5)(expo@55.0.17(@babel/core@7.29.0)(@expo/dom-webview@55.0.5)(react-native@0.85.2(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.5))(react@19.2.5)(typescript@5.9.3))(react-native@0.85.2(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.5))(react@19.2.5)
       expo-notifications:
         specifier: ~55.0.20
         version: 55.0.20(expo@55.0.17(@babel/core@7.29.0)(@expo/dom-webview@55.0.5)(react-native@0.85.2(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.5))(react@19.2.5)(typescript@5.9.3))(react-native@0.85.2(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.5))(react@19.2.5)(typescript@5.9.3)
@@ -2686,8 +2686,8 @@ packages:
     peerDependencies:
       expo: '*'
 
-  expo-camera@55.0.15:
-    resolution: {integrity: sha512-WRVsZf+2p7EsxudwyiUMYijJS8M98t/BVP6yG7N+08JSUotkGjmZcemom1gM36uy27P8QsSVP0hD+FravmQiBA==}
+  expo-camera@55.0.16:
+    resolution: {integrity: sha512-9c6FGrLVwMLyQ08wqwkH7DXAC8Oj1VD0LXM4hFu62Nuq2f2zIAZwsXxG7J5ex+HHHAGyligGGi6VJWuiib9qNg==}
     peerDependencies:
       expo: '*'
       react: '*'
@@ -7558,7 +7558,7 @@ snapshots:
       expo: 55.0.17(@babel/core@7.29.0)(@expo/dom-webview@55.0.5)(react-native@0.85.2(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.5))(react@19.2.5)(typescript@5.9.3)
       expo-image-loader: 4.7.0(expo@55.0.17(@babel/core@7.29.0)(@expo/dom-webview@55.0.5)(react-native@0.85.2(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.5))(react@19.2.5)(typescript@5.9.3))
 
-  expo-camera@55.0.15(@types/emscripten@1.41.5)(expo@55.0.17(@babel/core@7.29.0)(@expo/dom-webview@55.0.5)(react-native@0.85.2(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.5))(react@19.2.5)(typescript@5.9.3))(react-native@0.85.2(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.5))(react@19.2.5):
+  expo-camera@55.0.16(@types/emscripten@1.41.5)(expo@55.0.17(@babel/core@7.29.0)(@expo/dom-webview@55.0.5)(react-native@0.85.2(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.5))(react@19.2.5)(typescript@5.9.3))(react-native@0.85.2(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.5))(react@19.2.5):
     dependencies:
       barcode-detector: 3.1.2(@types/emscripten@1.41.5)
       expo: 55.0.17(@babel/core@7.29.0)(@expo/dom-webview@55.0.5)(react-native@0.85.2(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.5))(react@19.2.5)(typescript@5.9.3)
