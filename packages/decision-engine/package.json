@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@skytwin/shared-types": "workspace:*",
+    "@skytwin/core": "workspace:*",
     "@skytwin/twin-model": "workspace:*",
     "@skytwin/policy-engine": "workspace:*",
     "@skytwin/llm-client": "workspace:*"

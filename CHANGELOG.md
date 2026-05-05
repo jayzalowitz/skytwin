@@ -1,5 +1,24 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.5.6.0] - 2026-05-05
+
+Two follow-ups from the v0.5.5.0 (#136) /review that were intentionally deferred to keep the original PR focused on closing #122. Both shrink production risk for the Gmail-label model.
+
+### Changed — single source of truth for sender normalization
+
+- **`normalizeSenderAddress` moved to `@skytwin/core`** (`packages/core/src/email-normalize.ts`). Previously implemented twice: once in `packages/connectors/src/gmail-connector.ts` (write side, used by `recordObservations`) and once in `packages/decision-engine/src/decision-maker.ts` as a private `normalizeSender` (read side, used by `topLabelsForSender` lookup). A comment said "they MUST stay in sync" — they now do by construction. The connector re-exports the symbol for back-compat with downstream imports of `@skytwin/connectors`.
+- 8 unit tests in `packages/core/src/__tests__/email-normalize.test.ts` covering display-name stripping, lowercasing, `@`-poisoning guard, malformed angle brackets, non-string inputs, and idempotency.
+
+### Added — bounded growth for `email_label_signals`
+
+- **`emailLabelRepository.pruneStaleSignals(userId, options?)`** drops rows past a TTL (default: 180 days, count<3) then enforces a per-user hard row cap (default: 5000). Returns `{ deletedStale, deletedOverCap }` so the caller can log how aggressively each gate fires. Idempotent — second call drops ~0 rows.
+- **Worker integration** (`apps/worker/src/label-signal-pruner.ts` + `apps/worker/src/index.ts`) — new `createPruneThrottle` helper gates the prune at "once per 24h per user," called opportunistically from the existing `pollUser` loop. No separate scheduler. Stamps the throttle timestamp synchronously before awaiting so concurrent polls cannot double-fire. Errors swallowed via the throttle's `onError` hook — staying tidy is best-effort, not load-bearing on signal ingestion.
+- 7 unit tests in `apps/worker/src/__tests__/label-signal-pruner.test.ts`: first-call runs, throttled within interval, runs again after interval, per-user isolation, error swallowing, sync timestamp stamping (concurrency guard), 24h default.
+
+### Why these are real risks, not over-engineering
+
+The cardinality cap is the load-bearing one. Without it, an attacker who can email the user (or any newsletter service that rotates per-message `From:` addresses) writes one row per unique sender forever. The table grows without bound, every email decision pays the cost in `topLabelsForSender` lookups, and the lookup itself starts returning weaker results because the `LIMIT 5` fills with one-off noise rows. The 5000-row cap with the lowest-count + oldest eviction order is what the read path's `ORDER BY count DESC, last_seen_at DESC` already prefers — we just enforce the same preference at write throttle time. Drift between the read and write models was the original concern that motivated the normalize-sender extraction; same theme.
+
 ## [0.5.5.0] - 2026-05-05
 
 Closes issue #122 — the Twin no longer suggests labels via a hardcoded subject-keyword classifier. It now learns from each user's actual Gmail history.

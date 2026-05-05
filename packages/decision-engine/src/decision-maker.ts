@@ -19,6 +19,7 @@ import {
 } from '@skytwin/shared-types';
 import type { TwinService } from '@skytwin/twin-model';
 import type { PolicyEvaluator } from '@skytwin/policy-engine';
+import { normalizeSenderAddress } from '@skytwin/core';
 import { RiskAssessor } from './risk-assessor.js';
 import type { CandidateGenerator } from './strategies/candidate-strategy.js';
 
@@ -1495,18 +1496,14 @@ export class DecisionMaker {
   }
 
   /**
-   * Strip the `Display Name <addr@host>` form down to `addr@host`, lowercased.
-   * Matches the normalization the connector applies before recording
-   * observations — both sides must agree or the lookup misses.
+   * Read-side sender normalization. Delegated to the canonical
+   * implementation in `@skytwin/core` so write side (Gmail connector) and
+   * read side (here) cannot drift. Issue #122 follow-up — previously
+   * duplicated, with a comment that "they MUST stay in sync." Now they do
+   * by construction.
    */
   private normalizeSender(raw: unknown): string {
-    if (typeof raw !== 'string') return '';
-    const trimmed = raw.trim();
-    const angle = trimmed.match(/<([^>]+)>/);
-    const candidate = angle && angle[1] ? angle[1] : trimmed;
-    const addr = candidate.trim().toLowerCase();
-    // Reject obviously-invalid values rather than poisoning the model.
-    return addr.includes('@') ? addr : '';
+    return normalizeSenderAddress(raw);
   }
 
   private confidenceRank(level: ConfidenceLevel): number {

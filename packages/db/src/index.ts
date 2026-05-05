@@ -92,7 +92,12 @@ export { trustTierAuditRepository, spendRepository, domainAutonomyRepository, es
 export type { ForwardedSignalRow } from './repositories/index.js';
 export type { ConnectorCursorRow } from './repositories/index.js';
 export type { SessionRow } from './repositories/index.js';
-export type { EmailLabelObservation, SenderLabelStat } from './repositories/index.js';
+export type {
+  EmailLabelObservation,
+  SenderLabelStat,
+  PruneOptions,
+  PruneResult,
+} from './repositories/index.js';
 export type { UpsertServiceCredentialInput } from './repositories/index.js';
 export type { RegisterCredentialRequirementInput } from './repositories/index.js';
 export type { UpsertIronClawToolInput } from './repositories/index.js';
