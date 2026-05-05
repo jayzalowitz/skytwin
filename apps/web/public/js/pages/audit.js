@@ -33,8 +33,8 @@ export async function renderAudit(container, userId) {
         <label><input type="checkbox" data-type="tier_change" checked> Trust changes</label>
         <label><input type="checkbox" data-type="spend_event" checked> Spending</label>
         <label><input type="checkbox" data-type="preference_change" checked> Things learned</label>
-        <input type="date" id="audit-from" placeholder="From">
-        <input type="date" id="audit-to" placeholder="To">
+        <input type="date" id="audit-from" class="themed-date" placeholder="From" aria-label="From date">
+        <input type="date" id="audit-to" class="themed-date" placeholder="To" aria-label="To date">
         <button id="audit-refresh" class="btn btn-sm">Refresh</button>
       </div>
 

@@ -138,6 +138,7 @@ export async function fetchJSON(url, options = {}) {
     });
   } catch (cause) {
     // Network unreachable (no DNS, no route, browser offline, etc.)
+    markApiOffline();
     throw new ApiError({
       kind: 'offline',
       friendlyMessage: "You appear to be offline. Check your connection — we'll retry automatically.",
@@ -147,8 +148,11 @@ export async function fetchJSON(url, options = {}) {
   }
 
   if (!res.ok) {
-    throw await classifyHttpError(res);
+    const apiErr = await classifyHttpError(res);
+    if (apiErr.kind === 'offline') markApiOffline();
+    throw apiErr;
   }
+  markApiSucceeded();
   return res.json();
 }
 
@@ -198,6 +202,23 @@ export function renderApiError(err, options = {}) {
     </div>
   `;
 }
+
+/**
+ * Tracks whether the most recent fetch came back as `kind: 'offline'`.
+ * UX review #20 — when the API is down, polling loops were firing at
+ * normal cadence (10s for approval badge, plus health checks, plus SSE
+ * reconnects), producing 110+ console errors per minute. Caller polls
+ * can read `isApiKnownOffline()` and back off without holding their
+ * own state.
+ *
+ * Set true on any offline ApiError, set false on any successful
+ * fetchJSON. Initial value is false (optimistic — first request
+ * decides).
+ */
+let _apiKnownOffline = false;
+export function isApiKnownOffline() { return _apiKnownOffline; }
+function markApiSucceeded() { _apiKnownOffline = false; }
+function markApiOffline() { _apiKnownOffline = true; }
 
 /**
  * Wire up the "Try again" button rendered by `renderApiError(..., { retry })`.

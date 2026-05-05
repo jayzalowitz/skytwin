@@ -243,6 +243,17 @@ function renderActionFooter(intentRoute) {
       </div>
     `;
   }
+  if (intentRoute?.kind === 'needs-setup') {
+    // UX review #9: deep-link to Settings AI brain section. Hash route
+    // keeps it inside the SPA. Friendlier than telling the user
+    // "configure a provider" with no path forward.
+    const target = intentRoute.target || '#/settings';
+    return `
+      <div class="assistant-action-footer assistant-action-footer-approval">
+        <a class="assistant-action-link" href="${escapeHtml(target)}">Open Settings → AI brain →</a>
+      </div>
+    `;
+  }
   return '';
 }
 
@@ -521,14 +532,23 @@ async function handleSend() {
     _state.messages = _state.messages.filter(
       (m) => m.id !== 'optimistic' && m.id !== streamingAssistantId,
     );
-    _state.messages = _state.messages.concat([
-      {
-        id: `error-${Date.now()}`,
-        role: 'assistant',
-        content: `Couldn't reach the assistant — ${err instanceof Error ? err.message : String(err)}`,
-        createdAt: new Date().toISOString(),
-      },
-    ]);
+    // UX review #9: when the failure is "no AI provider configured" (HTTP
+    // 409 from /api/assistant/messages), the error bubble carries an
+    // intentRoute hint that the web client renders as a deep-link to
+    // Settings — much friendlier than just showing "No AI provider
+    // configured" with no path forward.
+    const friendly = err instanceof Error ? err.message : String(err);
+    const isNoProvider = err?.kind === 'bad-request' && /provider/i.test(friendly);
+    const errorBubble = {
+      id: `error-${Date.now()}`,
+      role: 'assistant',
+      content: isNoProvider
+        ? `I need an AI provider configured before I can chat. Open Settings → AI brain to add one.`
+        : `Couldn't reach the assistant — ${friendly}`,
+      createdAt: new Date().toISOString(),
+      ...(isNoProvider ? { metadata: { intentRoute: { kind: 'needs-setup', target: '#/settings' } } } : {}),
+    };
+    _state.messages = _state.messages.concat([errorBubble]);
     if (input) input.value = content;
   } finally {
     _state.sending = false;

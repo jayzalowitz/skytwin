@@ -163,6 +163,45 @@ body {
   outline-offset: 2px;
 }
 
+/* Themed date input — UX review #11 (P1).
+ *
+ * Pre-fix the audit-trail filters used raw <input type="date"> with
+ * the OS-default styling (gray box, mm/dd/yyyy placeholder), which
+ * clashed hard with the dark glass aesthetic everywhere else.
+ *
+ * The browser's date picker chrome (the calendar dropdown itself) can
+ * only be styled minimally — different browsers expose different
+ * pseudo-elements. Best we can do is style the input's frame to match
+ * other form-inputs and invert the picker icon for dark themes via
+ * `color-scheme`. Apply `.themed-date` to any <input type="date">.
+ */
+.themed-date {
+  background: var(--bg-card);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.45rem 0.75rem;
+  font-family: inherit;
+  font-size: 0.85rem;
+  /* color-scheme is what makes the native picker icon use light glyphs
+   * on dark backgrounds. Without this the icon is dark-on-dark and
+   * almost invisible. */
+  color-scheme: dark light;
+}
+.themed-date:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+}
+/* Webkit-specific picker icon styling — invert when in a dark theme. */
+[data-mode="dark"] .themed-date::-webkit-calendar-picker-indicator {
+  filter: invert(1) opacity(0.6);
+  cursor: pointer;
+}
+[data-mode="dark"] .themed-date::-webkit-calendar-picker-indicator:hover {
+  opacity: 1;
+}
+
 .mobile-menu-btn {
   display: none;
   flex-direction: column;
@@ -441,7 +480,14 @@ textarea.form-input { resize: vertical; min-height: 60px; }
   left: 0;
   width: 100%;
   height: 100%;
-  background: rgba(0,0,0,.85);
+  /* UX review #15 — pre-fix the sidebar/page bled through at .85 alpha
+   * (the sidebar has its own glass effect so it's still visible at
+   * .85). Bumped to .92 + a small blur so the user's eye stays on the
+   * modal. The blur is a no-op in browsers without backdrop-filter
+   * support — overlay still darkens via the rgba background. */
+  background: rgba(0,0,0,.92);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
   z-index: 1000;
   display: flex;
   align-items: center;
