@@ -1,5 +1,32 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.5.5.0] - 2026-05-05
+
+Closes issue #122 — the Twin no longer suggests labels via a hardcoded subject-keyword classifier. It now learns from each user's actual Gmail history.
+
+### Added — per-user Gmail label model
+
+- **`email_label_signals` table** (`packages/db/src/migrations/025-email-label-signals.sql`) accumulates `(user_id, sender, label)` rows with a `count` and `last_seen_at`. Compound primary key on the tuple gives idempotent UPSERT; the `(user_id, list_id)` partial index supports the secondary List-Id lookup for mailing-list traffic where per-message `From` varies.
+- **`emailLabelRepository`** (`packages/db/src/repositories/email-label-repository.ts`) — `recordObservations(userId, [{sender, label, listId}])` for the connector's write path; `topLabelsForSender(userId, sender)` and `topLabelsForListId(userId, listId)` for the decision-engine's read path.
+- **`LabelObserver` port on the Gmail connector** — every fetched message now contributes one observation per labelId. Sender is normalized to the bare lowercase address before write so the decision-side lookup matches. The `recordLabelObservations` call is best-effort: a label-store outage logs a warning but does not stop signal ingestion.
+- **`List-Id` header is now extracted** from each message and plumbed through to `RawSignal.data.listId`. Used as a secondary signal in `inferLabels` when the per-sender lookup is empty (mailing lists like `<rangers.lists.example.org>` whose `From` rotates per send).
+
+### Changed — `inferLabels` consults the per-user model first
+
+- **`packages/decision-engine/src/decision-maker.ts:inferLabels`** now takes a `senderLabelHints` array. When the sender has ≥2 prior observations of a non-system, non-`CATEGORY_` label, the decision engine suggests that label (top-2). With ≥5 observations the candidate's confidence rises to HIGH; with ≥2 it's MODERATE; pure keyword fallback drops to LOW so policy gates ask for approval. Gmail system labels (INBOX, IMPORTANT, SENT, …) and `CATEGORY_*` are recorded but filtered from suggestions — the user can't meaningfully reuse them as a categorization.
+- **New `LabelInferencePort`** on `DecisionMaker` (optional ctor arg). `evaluate()` pre-fetches sender / List-Id hints before candidate generation. Falls back to keywords transparently when the port is missing, the decision isn't from email, or the lookup throws.
+- **Sender normalization** lives on both sides (`gmail-connector.ts:normalizeSenderAddress` and `decision-maker.ts:normalizeSender`) and applies the exact same transformation. They MUST stay in sync — both strip `Display Name <addr@host>` to lowercase `addr@host` before the lookup.
+
+### Wiring
+
+- `apps/api/src/routes/events.ts` — both DecisionMaker instantiations (rule-based fallback + LLM-strategy variant) now receive a `LabelInferencePort` adapter wrapping `emailLabelRepository`.
+- `apps/worker/src/index.ts` — every `GmailConnector` is constructed with a `LabelObserver` adapter wrapping `emailLabelRepository.recordObservations`.
+
+### Tests
+
+- `packages/decision-engine/src/__tests__/label-inference.test.ts` (8): learned-label happy path, keyword fallback when sender is unknown, system-label filtering, sub-threshold evidence is ignored, List-Id secondary signal, sender-name normalization round-trip, port-throw degrades to keywords, no-port path still works.
+- `packages/connectors/src/__tests__/gmail-label-observer.test.ts` (15): `normalizeSenderAddress` and `parseListId` pure-function contracts, observer invocation with normalized sender + listId, skips on unparseable sender, skips on no-labels message, observer errors do not stop signal emission, listId plumbed onto signal.
+
 ## [0.5.4.0] - 2026-04-29
 
 Last of the post-/review follow-ups from PR #126. Closes the P2 item that's been bothering me since the merge: every inline `onclick=` in the dashboard / approvals / decisions / settings / setup pages.

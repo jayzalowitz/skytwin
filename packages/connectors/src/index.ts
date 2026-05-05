@@ -16,8 +16,8 @@ export { MockEmailConnector } from './mock-email-connector.js';
 export { MockCalendarConnector } from './mock-calendar-connector.js';
 
 // Real connector implementations
-export { GmailConnector } from './gmail-connector.js';
-export type { CursorStore } from './gmail-connector.js';
+export { GmailConnector, normalizeSenderAddress, parseListId } from './gmail-connector.js';
+export type { CursorStore, LabelObserver } from './gmail-connector.js';
 export { GoogleCalendarConnector } from './google-calendar-connector.js';
 
 // OAuth

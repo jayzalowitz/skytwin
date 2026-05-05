@@ -42,6 +42,33 @@ export interface DecisionRepositoryPort {
 }
 
 /**
+ * One observed (label, frequency) for a given sender or List-Id, fed to
+ * `inferLabels()` so the decision engine suggests labels based on the user's
+ * actual Gmail history rather than hardcoded subject keywords. Issue #122.
+ */
+export interface SenderLabelHint {
+  label: string;
+  count: number;
+}
+
+/**
+ * Port interface for sender-based Gmail label prediction.
+ *
+ * The decision-maker pre-fetches hints during `evaluate()` and passes them
+ * into the email-triage candidate generator so `inferLabels()` can prefer
+ * labels the user has historically applied to mail from this sender (or
+ * mailing list) before falling back to subject-keyword heuristics.
+ *
+ * The adapter is satisfied at composition time — production wires it to
+ * `emailLabelRepository.topLabelsForSender` / `topLabelsForListId` from
+ * `@skytwin/db`. Tests can stub it directly.
+ */
+export interface LabelInferencePort {
+  topLabelsForSender(userId: string, sender: string, limit?: number): Promise<SenderLabelHint[]>;
+  topLabelsForListId(userId: string, listId: string, limit?: number): Promise<SenderLabelHint[]>;
+}
+
+/**
  * The DecisionMaker is the central orchestrator. Given a decision context,
  * it consults the twin for preferences, generates candidate actions,
  * assesses risk, checks policies, and selects the best action.
@@ -50,14 +77,18 @@ export class DecisionMaker {
   private readonly riskAssessor: RiskAssessor;
   private readonly candidateGenerator: CandidateGenerator | null;
 
+  private readonly labelInferencePort: LabelInferencePort | null;
+
   constructor(
     private readonly twinService: TwinService,
     private readonly policyEvaluator: PolicyEvaluator,
     private readonly decisionRepository: DecisionRepositoryPort,
     candidateGenerator?: CandidateGenerator,
+    labelInferencePort?: LabelInferencePort,
   ) {
     this.riskAssessor = new RiskAssessor();
     this.candidateGenerator = candidateGenerator ?? null;
+    this.labelInferencePort = labelInferencePort ?? null;
   }
 
   /**
@@ -89,10 +120,20 @@ export class DecisionMaker {
     // Step 2: Get profile for candidate generation
     const profile = await this.twinService.getOrCreateProfile(context.userId);
 
+    // Step 2b: Pre-fetch sender label hints for email decisions. Issue #122 —
+    // we'd rather suggest a label the user has actually applied to mail from
+    // this sender before than the hardcoded keyword fallback. Top-of-stack so
+    // it's available to both built-in candidate generation and to LLM
+    // strategies via the enriched context.
+    const senderLabelHints = await this.fetchSenderLabelHints(
+      context.userId,
+      context.decision,
+    );
+
     // Step 3: Generate candidate actions (LLM strategy or built-in rules)
     const candidates = this.candidateGenerator
       ? await this.candidateGenerator.generate(context.decision, profile, enrichedContext)
-      : this.generateCandidates(context.decision, profile);
+      : this.generateCandidates(context.decision, profile, { senderLabelHints });
 
     if (candidates.length === 0) {
       const outcome: DecisionOutcome = {
@@ -307,14 +348,20 @@ export class DecisionMaker {
   /**
    * Generate candidate actions for a decision based on the situation type
    * and the user's twin profile.
+   *
+   * `extras.senderLabelHints` flows from the pre-fetch in `evaluate()` and
+   * is currently consumed only by `generateEmailTriageCandidates` — other
+   * domains ignore it, so the parameter is optional and unmarshalled at the
+   * one site that needs it.
    */
   generateCandidates(
     decision: DecisionObject,
     profile: TwinProfile,
+    extras?: { senderLabelHints?: SenderLabelHint[] },
   ): CandidateAction[] {
     switch (decision.situationType) {
       case SituationType.EMAIL_TRIAGE:
-        return this.generateEmailTriageCandidates(decision, profile);
+        return this.generateEmailTriageCandidates(decision, profile, extras?.senderLabelHints);
       case SituationType.CALENDAR_INVITE:
         return this.generateCalendarInviteCandidates(decision, profile);
       case SituationType.CALENDAR_CONFLICT:
@@ -397,6 +444,7 @@ export class DecisionMaker {
   private generateEmailTriageCandidates(
     decision: DecisionObject,
     profile: TwinProfile,
+    senderLabelHints?: SenderLabelHint[],
   ): CandidateAction[] {
     const candidates: CandidateAction[] = [];
     // IDs generated inline via crypto.randomUUID()
@@ -424,12 +472,12 @@ export class DecisionMaker {
       domain: 'email',
       parameters: {
         emailId: decision.rawData['emailId'],
-        labels: this.inferLabels(decision),
+        labels: this.inferLabels(decision, senderLabelHints),
       },
       estimatedCostCents: 0,
       reversible: true,
-      confidence: ConfidenceLevel.MODERATE,
-      reasoning: 'Organizing email with labels based on content analysis.',
+      confidence: this.labelConfidence(senderLabelHints),
+      reasoning: this.labelReasoning(senderLabelHints),
     });
 
     // Reply with acknowledgment
@@ -1308,7 +1356,47 @@ export class DecisionMaker {
     return ConfidenceLevel.SPECULATIVE;
   }
 
-  private inferLabels(decision: DecisionObject): string[] {
+  /**
+   * Gmail's reserved system labels. Suggesting these as "labels to apply"
+   * is meaningless — they're set by Gmail itself and the user can't
+   * meaningfully reuse them as a categorization. We still record them in
+   * `email_label_signals` (because absence of INBOX is the "archived"
+   * signal we want to mine later), but we filter them out before suggesting.
+   */
+  private static readonly GMAIL_SYSTEM_LABELS = new Set([
+    'INBOX', 'UNREAD', 'STARRED', 'IMPORTANT', 'SENT', 'DRAFT',
+    'SPAM', 'TRASH', 'CHAT',
+  ]);
+
+  /**
+   * Minimum sightings before we trust a sender→label hint enough to suggest
+   * it. One observation could be a misclick; two is a pattern. Tunable.
+   */
+  private static readonly LABEL_HINT_MIN_COUNT = 2;
+
+  private inferLabels(
+    decision: DecisionObject,
+    senderLabelHints?: SenderLabelHint[],
+  ): string[] {
+    // Layer 1 (issue #122): consult the per-user sender→label model first.
+    // If the user has consistently labelled mail from this sender, prefer
+    // the most-frequent label they've applied. Filters Gmail system labels
+    // and category labels (CATEGORY_PROMOTIONS etc.) — those are Gmail's
+    // own classification, not the user's.
+    const fromHints = (senderLabelHints ?? [])
+      .filter((h) => h.count >= DecisionMaker.LABEL_HINT_MIN_COUNT)
+      .filter((h) => !DecisionMaker.GMAIL_SYSTEM_LABELS.has(h.label))
+      .filter((h) => !h.label.startsWith('CATEGORY_'));
+
+    if (fromHints.length > 0) {
+      // Up to 2 labels — top-1 is the strong suggestion, top-2 covers the
+      // "I sometimes also tag this as X" case without spraying labels.
+      return fromHints.slice(0, 2).map((h) => h.label);
+    }
+
+    // Layer 4 fallback: subject-keyword classifier. Demoted from primary
+    // (was the only model pre-#122) to last-resort when we have no per-user
+    // history for this sender.
     const labels: string[] = [];
     const subject = String(decision.rawData['subject'] ?? '').toLowerCase();
 
@@ -1321,6 +1409,89 @@ export class DecisionMaker {
     if (labels.length === 0) labels.push('inbox');
 
     return labels;
+  }
+
+  /**
+   * Confidence for the `label_email` candidate. With a strong sender hint
+   * (≥5 prior observations of the top label) we report HIGH; with a weaker
+   * hint MODERATE; pure keyword fallback stays LOW so policy gates ask for
+   * approval rather than auto-applying a guess.
+   */
+  private labelConfidence(senderLabelHints?: SenderLabelHint[]): ConfidenceLevel {
+    const top = (senderLabelHints ?? [])
+      .filter((h) => !DecisionMaker.GMAIL_SYSTEM_LABELS.has(h.label))
+      .filter((h) => !h.label.startsWith('CATEGORY_'))
+      .sort((a, b) => b.count - a.count)[0];
+    if (!top) return ConfidenceLevel.LOW;
+    if (top.count >= 5) return ConfidenceLevel.HIGH;
+    if (top.count >= DecisionMaker.LABEL_HINT_MIN_COUNT) return ConfidenceLevel.MODERATE;
+    return ConfidenceLevel.LOW;
+  }
+
+  private labelReasoning(senderLabelHints?: SenderLabelHint[]): string {
+    const top = (senderLabelHints ?? [])
+      .filter((h) => !DecisionMaker.GMAIL_SYSTEM_LABELS.has(h.label))
+      .filter((h) => !h.label.startsWith('CATEGORY_'))
+      .sort((a, b) => b.count - a.count)[0];
+    if (top && top.count >= DecisionMaker.LABEL_HINT_MIN_COUNT) {
+      return `Mail from this sender has been labelled "${top.label}" ${top.count} time(s) before.`;
+    }
+    return 'Organizing email with labels based on subject keywords (no sender history).';
+  }
+
+  /**
+   * Pre-fetch sender / List-Id label hints from the LabelInferencePort.
+   *
+   * Returns an empty array when:
+   *   - no port is configured (e.g. unit tests, early bring-up),
+   *   - the decision isn't from an email signal (no `from` field), or
+   *   - the port throws (we log and degrade — the keyword fallback in
+   *     `inferLabels()` handles missing hints transparently).
+   *
+   * Sender lookup is preferred. List-Id is consulted as a secondary signal
+   * (covers mailing-list traffic where the per-message `From` varies).
+   */
+  private async fetchSenderLabelHints(
+    userId: string,
+    decision: DecisionObject,
+  ): Promise<SenderLabelHint[]> {
+    if (!this.labelInferencePort) return [];
+    const sender = this.normalizeSender(decision.rawData['from']);
+    const listId = String(decision.rawData['listId'] ?? '').trim();
+    if (!sender && !listId) return [];
+
+    try {
+      const senderHints = sender
+        ? await this.labelInferencePort.topLabelsForSender(userId, sender, 5)
+        : [];
+      if (senderHints.length > 0) return senderHints;
+      if (!listId) return [];
+      return await this.labelInferencePort.topLabelsForListId(userId, listId, 5);
+    } catch (err) {
+      // Don't fail the whole decision because the label model is offline.
+      // The keyword fallback in inferLabels() still produces a valid (if
+      // weaker) suggestion. Logged for ops visibility.
+      console.warn(
+        '[decision-maker] LabelInferencePort lookup failed, falling back to keywords:',
+        err instanceof Error ? err.message : String(err),
+      );
+      return [];
+    }
+  }
+
+  /**
+   * Strip the `Display Name <addr@host>` form down to `addr@host`, lowercased.
+   * Matches the normalization the connector applies before recording
+   * observations — both sides must agree or the lookup misses.
+   */
+  private normalizeSender(raw: unknown): string {
+    if (typeof raw !== 'string') return '';
+    const trimmed = raw.trim();
+    const angle = trimmed.match(/<([^>]+)>/);
+    const candidate = angle && angle[1] ? angle[1] : trimmed;
+    const addr = candidate.trim().toLowerCase();
+    // Reject obviously-invalid values rather than poisoning the model.
+    return addr.includes('@') ? addr : '';
   }
 
   private confidenceRank(level: ConfidenceLevel): number {

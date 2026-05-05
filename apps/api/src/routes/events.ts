@@ -17,6 +17,7 @@ import {
   executionRepository,
   userRepository,
   aiProviderRepository,
+  emailLabelRepository,
   TwinRepositoryAdapter,
   PatternRepositoryAdapter,
   decisionRepositoryAdapter,
@@ -89,9 +90,26 @@ export function createEventsRouter(): Router {
   const twinService = new TwinService(new TwinRepositoryAdapter(), new PatternRepositoryAdapter());
   const policyEvaluator = new PolicyEvaluator(policyRepositoryAdapter);
   const explanationGenerator = new ExplanationGenerator(explanationRepositoryAdapter);
+  // Issue #122: per-user (sender, label) hints for the email-triage candidate
+  // generator. Wraps emailLabelRepository in the LabelInferencePort shape so
+  // the decision-engine doesn't depend on @skytwin/db directly.
+  const labelInferencePort = {
+    async topLabelsForSender(userId: string, sender: string, limit?: number) {
+      return emailLabelRepository.topLabelsForSender(userId, sender, limit);
+    },
+    async topLabelsForListId(userId: string, listId: string, limit?: number) {
+      return emailLabelRepository.topLabelsForListId(userId, listId, limit);
+    },
+  };
   // Rule-based fallbacks (always available)
   const ruleBasedInterpreter = new SituationInterpreter();
-  const ruleBasedDecisionMaker = new DecisionMaker(twinService, policyEvaluator, decisionRepositoryAdapter);
+  const ruleBasedDecisionMaker = new DecisionMaker(
+    twinService,
+    policyEvaluator,
+    decisionRepositoryAdapter,
+    undefined,
+    labelInferencePort,
+  );
   // Set up workflow registry
   const workflowRegistry = new WorkflowHandlerRegistry();
   workflowRegistry.register(SituationType.CALENDAR_CONFLICT, processCalendarConflict);
@@ -137,7 +155,13 @@ export function createEventsRouter(): Router {
         const situationStrategy = new FallbackSituationStrategy(llmSituation, ruleBasedInterpreter);
         const candidateStrategy = new FallbackCandidateGenerator(llmCandidates, ruleBasedCandidates);
         interpreter = new SituationInterpreter(situationStrategy);
-        decisionMaker = new DecisionMaker(twinService, policyEvaluator, decisionRepositoryAdapter, candidateStrategy);
+        decisionMaker = new DecisionMaker(
+          twinService,
+          policyEvaluator,
+          decisionRepositoryAdapter,
+          candidateStrategy,
+          labelInferencePort,
+        );
       } else {
         interpreter = ruleBasedInterpreter;
         decisionMaker = ruleBasedDecisionMaker;
