@@ -1,5 +1,78 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.4.0] - 2026-05-05
+
+Closes issue #148 v1 — assistant phase 2c. The chat surface now routes detected action intents through the existing decision pipeline instead of just talking about them. Saying "archive that email" or "schedule a meeting with X" in chat creates an `ApprovalRequest` and queues it on the existing `#/approvals` page. Conversational messages still go through the LLM chat path unchanged.
+
+This is the **last phase-2 item** for the assistant epic. Phase 2 is now complete: streaming (#146), context (#147), multi-turn API (#149), action routing (#148).
+
+### Conservative v1 design choice — read this before extending
+
+**Chat-driven actions ALWAYS land in approvals, never auto-execute.** Even when `DecisionMaker.evaluate()` returns `autoExecute=true` (the user has high trust tier, the action is reversible, etc.), the chat router collapses that to `requiresApproval=true` for v1. Reasoning:
+
+- Chat is a free-text channel. An unintended intent match (regex firing on a message ABOUT scheduling instead of asking to schedule) cannot trigger a real send / spend / modify. The events route has structured signals as ground truth; chat doesn't.
+- The user already has the `#/approvals` UI for review and consent. Routing through it preserves the audit trail and feedback loop unchanged.
+- Phase 2 of #148 lifts this restriction once we have an LLM-classifier confidence score AND an explicit per-user opt-in.
+
+**Safety Invariants — all upheld:**
+- **#1** (no auto-exec without policy check): every chat-driven action goes through `DecisionMaker.evaluate()` → `PolicyEvaluator.evaluate()`. No bypass.
+- **#2** (always log explanations): `ExplanationGenerator.generate()` runs and persists for every chat-driven decision. Failure to persist logs but doesn't abort (audit-trail loss is recoverable; aborting the user's request is not).
+- **#3** (respect trust tiers): trust tier comes from the user record, never from the chat input.
+- **#4** (spend limits are hard): inherited from `DecisionMaker` — no special-casing for chat.
+- **#5** (reversible is honest): inherited from candidate generation.
+- **#7** (every action has a RiskAssessment): inherited from `DecisionMaker.evaluate()`.
+
+### Added — rule-based intent classifier in `@skytwin/assistant`
+
+`detectIntent(message): ActionIntent | null`. Pure regex/keyword matching for a small vocabulary:
+
+| Intent | Pattern | Maps to |
+|---|---|---|
+| `archive_email` | "archive that/this/the/it" | `email_triage` |
+| `label_email` | "label/tag that as X" (captures label) | `email_triage` |
+| `send_reply` | "reply to / respond to / send a reply" | `email_triage` |
+| `create_event` | "schedule/book/set up a meeting/call" | `calendar_invite` |
+| `decline_event` | "decline/skip/cancel that meeting" | `calendar_update` |
+| `create_task` | "remind me to / add a task to" | `task_management` |
+
+- Returns `null` for messages shorter than 8 chars (avoids surprise approvals from "ok" / "thanks").
+- Returns `null` for non-string input (defensive).
+- Returns `null` for meta-discussion patterns ("how do you decide when to schedule things?") — false-positive guard.
+- Tested with both positive matches AND false-positive guards. The latter is the load-bearing test surface.
+
+### Added — `ActionRouter` port + `AssistantService.routeIntent`
+
+- New `ActionRouter` interface in `@skytwin/assistant`; the route adapter satisfies it. Keeps the assistant package free of `@skytwin/decision-engine` and `@skytwin/db` deps.
+- `AssistantService.routeIntent(userId, message)` runs the classifier and (if a match) calls the router. Returns `null` to fall through to the LLM chat path. Router throws are caught and downgraded to `null` — graceful degradation when the decision engine is offline.
+- Three terminal outcomes (`requires-approval` / `blocked` / `no-action`); `no-action` falls back to LLM chat.
+
+### Wiring — `apps/api/src/routes/assistant.ts`
+
+- `buildActionRouter()` factory constructs the same TwinService + PolicyEvaluator + DecisionMaker stack `events.ts` uses. Reuses the issue #122 `LabelInferencePort` so chat-driven `label_email` candidates get the same learned-from-history confidence boost.
+- Synthetic `DecisionObject` with a `chat_intent_<id>` ID; rawData includes `triggerMessage` so the approval card can show what the user said.
+- Persists `ApprovalRequest` via `approvalRepository.create` — same shape as the events path. `accessToken` and `rawData` filtered from `parameters` (don't round-trip secrets through the approval payload).
+- Emits `approval:new` SSE event on `sseManager` so the existing approvals badge updates immediately when a chat creates an approval.
+- `POST /api/assistant/messages` branches on intent BEFORE the LLM call. If routed, persists a structured assistant message with `metadata.intentRoute` carrying the outcome kind. Both sync JSON and SSE response shapes work — SSE flushes `thread` + `user` + `done` in one shot (no chunk events because no streaming text was generated).
+
+### Web — action footer
+
+- `pages/assistant.js:renderMessages` checks `m.metadata.intentRoute` and renders a footer under the bubble: "Open approval →" link (hash route to `#/approvals`) for `requires-approval`; muted "Action blocked by your safety policy" notice for `blocked`.
+- `assistant.css` — small accent-colored footer + link styles that respect the existing theme variables.
+- Empty-state copy updated: "I can also queue actions for your approval — try 'archive that email' or 'schedule a meeting with X'."
+
+### Tests (16 new)
+
+- `packages/assistant/src/__tests__/intent-classifier.test.ts` (12): every intent verb + variant; label-name capture; trim + non-string defensives; **false-positive guards** (meta-discussion, action verbs as nouns); rawData source-marking; trigger-message preservation.
+- `packages/assistant/src/__tests__/assistant-service.test.ts` (+4): routeIntent returns null without router; returns null when no intent matches; routes detected intents through the port; downgrades router throws to null.
+
+### Out of scope (phase 2 of #148, future)
+
+- **Auto-execution from chat** — when a chat-driven intent has high enough engine confidence + user trust, skip the approval step. Needs an LLM-classifier confidence score AND a per-user opt-in setting first.
+- **Inline approve/reject buttons in chat** — instead of a "Open approval" link, render the approve/reject UI directly in the assistant bubble. Bigger UX surface; deferred.
+- **Thumbs up/down feedback wired to twin model** (Safety Invariant #6 follow-up specific to the assistant) — events-path feedback already wires through; chat-path feedback is separate.
+- **LLM-based intent classification** for ambiguous or paraphrased intents the regex doesn't match. Adds cost + latency to every chat turn; deferred until the rule-based vocabulary proves insufficient.
+- **Multi-step plans** ("first do X, then Y if Z") — out of scope per the original issue body.
+
 ## [0.6.3.0] - 2026-05-05
 
 Closes issue #149 — `LlmClient.generate` and `generateStream` now accept `string | ChatMessage[]`. Each provider translates the array to its native chat-completion format. The `User:` / `Assistant:` prompt-flattening workaround in `@skytwin/assistant` is gone — `reply()` and `replyStream()` pass the conversation history directly. Pure refactor: no new user-visible feature, but unblocks #148 (action-intent routing) and removes the comment-laden workaround that's been load-bearing since assistant phase 1.
