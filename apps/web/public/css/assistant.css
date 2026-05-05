@@ -182,6 +182,44 @@
   line-height: 1.55;
 }
 
+/* Suggested prompt chips. Restore opacity to full so the chips
+ * read as actionable — the parent .assistant-empty dims its prose
+ * text to 0.75 which would make the chips look disabled. */
+.assistant-suggestions {
+  margin-top: 1.1rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  justify-content: center;
+  opacity: 1;
+}
+.assistant-suggestion-chip {
+  background: var(--bg-card, rgba(255, 255, 255, 0.04));
+  color: var(--text);
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+  border-radius: 999px;
+  padding: 0.4rem 0.85rem;
+  font-size: 0.82rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 120ms ease-out, border-color 120ms ease-out, transform 120ms ease-out;
+  text-align: left;
+  line-height: 1.3;
+}
+.assistant-suggestion-chip:hover {
+  background: var(--bg-hover, rgba(255, 255, 255, 0.08));
+  border-color: var(--accent, #6366f1);
+  transform: translateY(-1px);
+}
+.assistant-suggestion-chip:focus-visible {
+  outline: 2px solid var(--accent, #6366f1);
+  outline-offset: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .assistant-suggestion-chip { transition: none; }
+  .assistant-suggestion-chip:hover { transform: none; }
+}
+
 .assistant-bubble {
   max-width: 78%;
   padding: 0.75rem 1rem;
