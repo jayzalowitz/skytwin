@@ -1,5 +1,6 @@
 import { fetchUser, updateTrustTier, fetchOAuthStatus, getGoogleAuthUrl, disconnectProvider, escapeHtml, fetchSettings, updateAutonomySettings, updateIronClawChannel, upsertDomainPolicy, deleteDomainPolicy, createEscalationTrigger, deleteEscalationTrigger, createSession, fetchSessions, revokeSession, saveAIProviders, testAIProvider, fetchRoutines, deleteRoutine } from '../api-client.js';
 import { mountThemeSwitcher } from '../theme-switcher.js';
+import { showSavedToast, showErrorToast } from '../toast.js';
 import { KEY_USER_ID, KEY_ONBOARDED, KEY_SESSION_TOKEN } from '../storage-keys.js';
 
 const TIERS = [
@@ -389,6 +390,23 @@ let _settingsListenerWired = false;
 function ensureSettingsListener() {
   if (_settingsListenerWired || typeof document === 'undefined') return;
   _settingsListenerWired = true;
+
+  // UX review #10: auto-save spending guardrails 1.2s after the last
+  // edit. The Save button still works for users who prefer the
+  // explicit affordance. Singleton listener wired once on document;
+  // gates by the active hash route + element id so other pages don't
+  // pick this up.
+  document.addEventListener('input', (e) => {
+    const hash = (window.location.hash || '').split('?')[0];
+    if (hash !== '#/settings') return;
+    const target = e.target instanceof HTMLElement ? e.target : null;
+    if (!target) return;
+    const id = target.id;
+    if (id === 'max-per-action' || id === 'max-daily' || id === 'irreversible-approval') {
+      scheduleSpendAutosave(getCurrentUserId());
+    }
+  });
+
   document.addEventListener('click', (e) => {
     const hash = (window.location.hash || '').split('?')[0];
     if (hash !== '#/settings') return;
@@ -406,6 +424,10 @@ function ensureSettingsListener() {
       }
       case 'select-tier':
         window.selectTier(el);
+        // UX review #10: auto-save 800ms after selection so the user
+        // doesn't have to remember to click Save. The Save button
+        // remains for users who prefer the explicit affordance.
+        scheduleTierAutosave(uid);
         return;
       case 'save-tier':
         window.saveTier(uid);
@@ -491,14 +513,38 @@ window.saveTier = async function(userId) {
     await updateTrustTier(userId, tier);
     btn.textContent = 'Saved!';
     setTimeout(() => { btn.textContent = 'Save'; btn.disabled = false; }, 1500);
+    showSavedToast('Autonomy level saved');
   } catch (err) {
     btn.textContent = 'Save';
     btn.disabled = false;
-    // Remove any previous error banner before showing a new one
-    btn.parentElement?.querySelector('.error-banner')?.remove();
-    btn.insertAdjacentHTML('afterend', `<div class="error-banner" style="margin-top: 0.5rem;">${escapeHtml(err.message)}</div>`);
+    showErrorToast(`Couldn't save: ${err?.friendlyMessage || err?.message || 'unknown error'}`);
   }
 };
+
+/**
+ * Debounced auto-save for the autonomy tier. UX review #10. Fires
+ * 800ms after the last tier-option click — long enough that
+ * mis-clicks don't ping the server, short enough to feel
+ * responsive. Falls through to the same updateTrustTier path the
+ * Save button uses so server-side semantics are identical.
+ */
+let _tierAutosaveTimer = null;
+function scheduleTierAutosave(userId) {
+  if (_tierAutosaveTimer) clearTimeout(_tierAutosaveTimer);
+  _tierAutosaveTimer = setTimeout(async () => {
+    _tierAutosaveTimer = null;
+    const selected = document.querySelector('.tier-option.selected');
+    if (!selected) return;
+    const tier = selected.getAttribute('data-tier');
+    if (!tier) return;
+    try {
+      await updateTrustTier(userId, tier);
+      showSavedToast('Autonomy level saved');
+    } catch (err) {
+      showErrorToast(`Couldn't save: ${err?.friendlyMessage || err?.message || 'unknown error'}`);
+    }
+  }, 800);
+}
 
 window.handleConnectGoogle = async function(userId) {
   try {
@@ -595,15 +641,46 @@ window.saveSpendLimits = async function(userId) {
       maxDailySpendCents: dollarsToCents('max-daily'),
       requireApprovalForIrreversible: document.getElementById('irreversible-approval').checked,
     });
+    showSavedToast('Spending limits saved');
     const { renderSettings } = await import('./settings.js');
     await renderSettings(document.getElementById('page-content'), userId);
   } catch (err) {
-    document.getElementById('page-content').insertAdjacentHTML(
-      'afterbegin',
-      `<div class="error-banner">${escapeHtml(err.message)}</div>`,
-    );
+    showErrorToast(`Couldn't save spending limits: ${err?.friendlyMessage || err?.message || 'unknown error'}`);
   }
 };
+
+/**
+ * Auto-save the spending guardrails 1.2s after the last edit. UX
+ * review #10. Slightly slower debounce than the tier (800ms) because
+ * the user is typing into a number input and we want to wait for them
+ * to finish, not save on every keystroke.
+ *
+ * Wired in `ensureSettingsListener` via input/change delegation; the
+ * Save button still works for users who click it before the timer.
+ */
+let _spendAutosaveTimer = null;
+function scheduleSpendAutosave(userId) {
+  if (_spendAutosaveTimer) clearTimeout(_spendAutosaveTimer);
+  _spendAutosaveTimer = setTimeout(async () => {
+    _spendAutosaveTimer = null;
+    try {
+      const dollarsToCents = (id) => Math.round(parseFloat(document.getElementById(id).value) * 100);
+      const perAction = dollarsToCents('max-per-action');
+      const perDay = dollarsToCents('max-daily');
+      // Skip auto-save if either field is invalid — the user is mid-edit
+      // (e.g. just typed a `.`). The Save button still works.
+      if (Number.isNaN(perAction) || Number.isNaN(perDay)) return;
+      await updateAutonomySettings(userId, {
+        maxSpendPerActionCents: perAction,
+        maxDailySpendCents: perDay,
+        requireApprovalForIrreversible: document.getElementById('irreversible-approval').checked,
+      });
+      showSavedToast('Spending limits saved');
+    } catch (err) {
+      showErrorToast(`Couldn't save spending limits: ${err?.friendlyMessage || err?.message || 'unknown error'}`);
+    }
+  }, 1200);
+}
 
 window.saveIronClawChannel = async function(userId) {
   const select = document.getElementById('ironclaw-channel-select');
