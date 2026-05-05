@@ -5,6 +5,7 @@ import { renderTwin } from './pages/twin.js';
 import { renderSettings } from './pages/settings.js';
 import { renderAudit } from './pages/audit.js';
 import { renderSetup } from './pages/setup.js';
+import { renderAssistant } from './pages/assistant.js';
 import { renderOnboarding } from './pages/onboarding.js';
 import { fetchPendingApprovals, fetchHealth, fetchUser, listUsers, escapeHtml } from './api-client.js';
 import { mountThemeSwitcher, initTheme } from './theme-switcher.js';
@@ -15,6 +16,7 @@ let currentUserId = localStorage.getItem(KEY_USER_ID) || '';
 
 const routes = {
   '/': { title: 'Home', render: renderDashboard },
+  '/assistant': { title: 'Chat', render: renderAssistant },
   '/approvals': { title: 'Needs your OK', render: renderApprovals },
   '/decisions': { title: 'What happened', render: renderDecisions },
   '/twin': { title: 'What I\'ve learned', render: renderTwin },
