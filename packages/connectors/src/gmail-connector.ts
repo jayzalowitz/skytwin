@@ -27,6 +27,27 @@ export interface CursorStore {
   save(userId: string, provider: string, kind: string, value: string): Promise<void>;
 }
 
+/**
+ * Sink for `(sender, label)` evidence drawn from each fetched message.
+ *
+ * Issue #122: every Gmail message we observe contributes one row per
+ * `(user_id, sender, label)` to the per-user label model that
+ * `inferLabels()` consults. Wired to
+ * `@skytwin/db.emailLabelRepository.recordObservations` in production; tests
+ * pass an in-memory stub or omit it entirely. The connector stays free of
+ * any DB dependency.
+ *
+ * `sender` arrives normalized (display name stripped, lowercased, must
+ * contain `@`) — both sides of the lookup must agree on the normalization
+ * or the decision-engine's per-sender query misses.
+ */
+export interface LabelObserver {
+  recordObservations(
+    userId: string,
+    observations: Array<{ sender: string; label: string; listId?: string | null }>,
+  ): Promise<void>;
+}
+
 const HISTORY_ID_KIND = 'history_id';
 
 /**
@@ -50,13 +71,20 @@ export class GmailConnector implements SignalConnector {
   private readonly userId: string;
   private readonly tokenStore: OAuthTokenStore;
   private readonly cursorStore: CursorStore | null;
+  private readonly labelObserver: LabelObserver | null;
   /** In-memory mirror of the persisted cursor for the current session. */
   private historyId: string | null = null;
 
-  constructor(userId: string, tokenStore: OAuthTokenStore, cursorStore: CursorStore | null = null) {
+  constructor(
+    userId: string,
+    tokenStore: OAuthTokenStore,
+    cursorStore: CursorStore | null = null,
+    labelObserver: LabelObserver | null = null,
+  ) {
     this.userId = userId;
     this.tokenStore = tokenStore;
     this.cursorStore = cursorStore;
+    this.labelObserver = labelObserver;
   }
 
   async connect(): Promise<void> {
@@ -211,6 +239,13 @@ export class GmailConnector implements SignalConnector {
 
       const signal = this.messageToSignal(detail);
       signals.push(signal);
+
+      // Issue #122: record (sender, label) evidence for the per-user label
+      // model. Awaited so the writes are ordered relative to the signal
+      // emission, but the call is exception-safe — observer failure must
+      // not silence handlers.
+      await this.recordLabelObservations(detail);
+
       for (const handler of this.handlers) {
         handler(signal);
       }
@@ -274,7 +309,7 @@ export class GmailConnector implements SignalConnector {
     messageId: string,
     accessToken: string,
   ): Promise<GmailMessage | null> {
-    const url = `${GMAIL_API}/users/me/messages/${messageId}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`;
+    const url = `${GMAIL_API}/users/me/messages/${messageId}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date&metadataHeaders=List-Id`;
     try {
       const response = await this.gmailGet(url, accessToken, 'detail');
       return response.json() as Promise<GmailMessage>;
@@ -297,6 +332,7 @@ export class GmailConnector implements SignalConnector {
 
     const from = getHeader('From');
     const subject = getHeader('Subject');
+    const listId = parseListId(getHeader('List-Id'));
     const type = this.inferEmailType(from, subject, message.labelIds);
 
     return {
@@ -310,11 +346,51 @@ export class GmailConnector implements SignalConnector {
         subject,
         snippet: message.snippet,
         labels: message.labelIds,
+        listId,
         receivedAt: new Date(parseInt(message.internalDate, 10)).toISOString(),
         requiresResponse: type === 'work_email' || type === 'meeting_invite',
       },
       timestamp: new Date(parseInt(message.internalDate, 10)),
     };
+  }
+
+  /**
+   * Push every observed `(sender, label)` tuple from this message into the
+   * label model. Issue #122 — this is the layer-2 mining step. We swallow
+   * errors (the observer is best-effort: a label-store outage must not stop
+   * signal ingestion). Returns silently when no observer is wired.
+   *
+   * Sender is normalized here to match the lookup-side normalization in
+   * `decision-maker.ts:normalizeSender`. Both sides must agree.
+   */
+  private async recordLabelObservations(message: GmailMessage): Promise<void> {
+    if (!this.labelObserver) return;
+    if (!message.labelIds || message.labelIds.length === 0) return;
+
+    const fromHeader = message.payload.headers.find(
+      (h) => h.name.toLowerCase() === 'from',
+    )?.value ?? '';
+    const sender = normalizeSenderAddress(fromHeader);
+    if (!sender) return;
+
+    const listId = parseListId(
+      message.payload.headers.find((h) => h.name.toLowerCase() === 'list-id')?.value ?? '',
+    );
+
+    const observations = message.labelIds.map((label) => ({
+      sender,
+      label,
+      listId: listId || null,
+    }));
+
+    try {
+      await this.labelObserver.recordObservations(this.userId, observations);
+    } catch (err) {
+      console.warn(
+        `[gmail] Failed to record label observations for ${this.userId}:`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
   }
 
   private inferEmailType(from: string, subject: string, labels: string[]): string {
@@ -341,4 +417,39 @@ export class GmailConnector implements SignalConnector {
     }
     return 'work_email';
   }
+}
+
+/**
+ * Strip an RFC 5322 `Display Name <addr@host>` to `addr@host`, lowercased.
+ *
+ * Both this and `decision-maker.ts:normalizeSender` apply the exact same
+ * transformation — they MUST stay in sync, otherwise the per-sender label
+ * lookup misses (`recordObservations` writes "alice@x.com" but the
+ * decision side queries "Alice <alice@x.com>"). Issue #122.
+ *
+ * Returns `''` for inputs that don't contain an `@`, so the caller can
+ * skip recording rather than poison the model with garbage keys.
+ */
+export function normalizeSenderAddress(raw: string): string {
+  if (!raw) return '';
+  const trimmed = raw.trim();
+  const angle = trimmed.match(/<([^>]+)>/);
+  const candidate = angle && angle[1] ? angle[1] : trimmed;
+  const addr = candidate.trim().toLowerCase();
+  return addr.includes('@') ? addr : '';
+}
+
+/**
+ * Parse the RFC 2919 `List-Id` header down to its bare identifier.
+ *
+ * `List-Id: "Black Rock Rangers" <rangers.lists.example.org>` →
+ * `rangers.lists.example.org`. When the header is missing or malformed
+ * we return `''` so callers can skip storing a list_id.
+ */
+export function parseListId(raw: string): string {
+  if (!raw) return '';
+  const angle = raw.match(/<([^>]+)>/);
+  if (angle && angle[1]) return angle[1].trim().toLowerCase();
+  // Some senders ship the bare identifier with no angle brackets.
+  return raw.trim().toLowerCase();
 }

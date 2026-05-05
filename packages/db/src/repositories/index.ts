@@ -90,3 +90,9 @@ export type { ForwardedSignalRow } from './forwarded-signals-repository.js';
 
 export { connectorCursorRepository } from './connector-cursor-repository.js';
 export type { ConnectorCursorRow } from './connector-cursor-repository.js';
+
+export { emailLabelRepository } from './email-label-repository.js';
+export type {
+  EmailLabelObservation,
+  SenderLabelStat,
+} from './email-label-repository.js';

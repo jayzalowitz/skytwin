@@ -7,10 +7,12 @@ import {
   DbTokenStore,
   OAuthRefreshError,
   type CursorStore,
+  type LabelObserver,
   type GoogleOAuthConfig,
 } from '@skytwin/connectors';
 import {
   connectorCursorRepository,
+  emailLabelRepository,
   forwardedSignalsRepository,
   oauthRepository,
   approvalRepository,
@@ -38,6 +40,18 @@ const gmailCursorStore: CursorStore = {
   },
   async save(userId, provider, kind, value) {
     await connectorCursorRepository.save(userId, provider, kind, value);
+  },
+};
+
+/**
+ * Sink for the per-user (sender, label) evidence the Gmail connector mines
+ * from each fetched message. Issue #122 — wires the connector to
+ * `email_label_signals`, which the decision-engine reads via
+ * `LabelInferencePort` when proposing `label_email` candidates.
+ */
+const gmailLabelObserver: LabelObserver = {
+  async recordObservations(userId, observations) {
+    await emailLabelRepository.recordObservations(userId, observations);
   },
 };
 
@@ -296,7 +310,7 @@ async function discoverUsers(): Promise<UserConnectors[]> {
         }
         if (googleConfig) {
           const tokenStore = new DbTokenStore(oauthRepository, googleConfig);
-          connectors.push(new GmailConnector(userId, tokenStore, gmailCursorStore));
+          connectors.push(new GmailConnector(userId, tokenStore, gmailCursorStore, gmailLabelObserver));
           connectors.push(new GoogleCalendarConnector(userId, tokenStore, gmailCursorStore));
         }
       }
