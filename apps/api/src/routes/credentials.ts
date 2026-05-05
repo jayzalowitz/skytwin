@@ -160,8 +160,17 @@ export function createCredentialsRouter(): Router {
 
       await Promise.allSettled(healthChecks);
 
-      // Check Google OAuth config (env vars or DB)
-      let googleConfigured = !!(config.googleClientId && config.googleClientSecret);
+      // Check Google OAuth config (env vars or DB).
+      //
+      // UX review #1 (P0) groundwork: distinguish "operator-supplied
+      // hosted credentials" (env vars) from "user BYO via Setup page"
+      // (DB creds). The web Setup page can then skip the GCP walkthrough
+      // entirely when `hosted` is true — the user just clicks Connect
+      // and Google handles the rest. Operators who want to ship a
+      // hosted SaaS just set GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET in
+      // their deploy env, no code change needed.
+      const hostedConfigured = !!(config.googleClientId && config.googleClientSecret);
+      let googleConfigured = hostedConfigured;
       if (!googleConfigured) {
         try {
           const dbCreds = await serviceCredentialRepository.getAsMap('google');
@@ -178,7 +187,9 @@ export function createCredentialsRouter(): Router {
           direct: healthResults['direct'] ?? { registered: true, healthy: true, url: 'local' },
           openclaw: healthResults['openclaw'] ?? { registered: false, healthy: false, url: config.openclawApiUrl },
         },
-        google: { configured: googleConfigured },
+        // `hosted` = env vars set by the operator (no user setup needed).
+        // `configured` = either hosted OR user-supplied via Setup page.
+        google: { configured: googleConfigured, hosted: hostedConfigured },
         unmetIntegrations,
       });
     } catch (error) {

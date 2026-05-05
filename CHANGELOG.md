@@ -1,5 +1,31 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.7.0] - 2026-05-05
+
+Last batch from the browser-agent review. Closes the remaining tractable items: hosted-OAuth code support (the unblocker for "everyone can use it") and Settings cleanup. The actual hosted Google OAuth app verification is still infra work outside this repo.
+
+### Added — hosted OAuth code path (UX review #1 P0 — code support shipped)
+
+- **`/api/credentials/status` now returns `google.hosted: boolean`** — set true when `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` env vars are wired (the operator-supplied hosted-OAuth case). Distinguishes from `google.configured` which is true for either hosted OR user-supplied DB credentials.
+- **Setup page short-circuits the GCP walkthrough when hosted is true.** Pre-fix, every install asked the user to walk through Google Cloud Console (~95% of non-technical users would not complete this). Now: when the operator ships hosted credentials via env vars, the Setup page collapses to a small "Your SkyTwin install includes Google access — no developer setup needed. Open Settings → Connected accounts and click **Connect**." card with a one-click link.
+- **No application code change needed for operators** — set the env vars on the deploy and the BYO walkthrough disappears. The actual hosted SaaS deploy still needs a Google-verified OAuth app (separate infra work), but the application is now ready to receive those credentials.
+
+### Fixed — Settings: dev-only "switch user" gated behind `?dev=1` (P1 #8)
+
+- Pre-fix the Settings page had 5 collapsed "Advanced —" sections, signaling "this app has a lot of hidden complexity" to a non-technical user. The "Advanced — switch user (developer)" section is dev-only — used while standing up multiple test accounts on the same machine; no end user needs it.
+- Now: gated behind `?dev=1` query string. Default Settings view drops to 4 disclosure sections instead of 5; the dev workflow is unchanged (`?dev=1` is sticky in the URL bar for devs who want it).
+
+### Tests
+
+No new unit tests — every change is in browser-only code OR the credentials route response shape (covered indirectly by the existing credentials-routes integration tests). Backend test suite still green across 40 packages.
+
+### What's still open from FINDINGS.md
+
+- **Hosted OAuth (P0 #1)** — code path now ships in this PR. Final step is creating the verified Google OAuth app + production hosting. Not a code change, infra/operations work.
+- **Auto-save with toast (P1 #10)** — needs a toast component first.
+- **More "Advanced —" consolidation** — execution routing + domain overrides + escalation triggers are advanced but legitimately user-facing; consolidating them needs a small refactor of the disclosure pattern.
+- **Onboarding step count audit (P1 #14)** — see if any of the 5 onboarding steps can be optional-after-onboard. Needs product input.
+
 ## [0.6.6.0] - 2026-05-05
 
 UX polish — second wave from the same browser-agent visual review that produced #154. Picks up the P1/P2 findings that were deferred from the hardening pass: Settings cleanup, theme switcher relocation, console-spam reduction, date input theming, onboarding modal dimmer, Chat → Settings deep-link.

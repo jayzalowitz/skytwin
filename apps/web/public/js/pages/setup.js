@@ -42,6 +42,12 @@ export async function renderSetup(container, _userId) {
 
   const googleCreds = credLookup['google'] || {};
   const googleConfigured = status?.google?.configured ?? false;
+  // UX review #1 (P0) groundwork: when the operator has shipped hosted
+  // OAuth credentials via env vars (GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET),
+  // the user doesn't need to do the GCP walkthrough at all — they just
+  // click "Connect with Google" in Settings. The Setup page collapses
+  // to a small "already set up" card in that case.
+  const googleHosted = status?.google?.hosted ?? false;
 
   const ironclaw = status?.adapters?.ironclaw ?? { registered: false, healthy: false, url: '' };
   const openclaw = status?.adapters?.openclaw ?? { registered: false, healthy: false, url: '' };
@@ -74,8 +80,23 @@ export async function renderSetup(container, _userId) {
       </div>
     </div>
 
-    <!-- ── Google OAuth: the one manual step ── -->
-
+    <!-- ── Google OAuth — hosted vs BYO ──────────────────────────
+         When the operator has shipped hosted credentials via env vars,
+         the user just needs to click "Sign in with Google" in Settings —
+         no GCP walkthrough required. UX review #1 (P0). -->
+    ${googleHosted ? `
+    <div class="card" id="google-setup-card" style="border-left: 3px solid var(--success);">
+      <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
+        <span class="card-title">Google account</span>
+        <span style="color: var(--success); font-weight: 600; font-size: 0.85rem;">Ready</span>
+      </div>
+      <div class="card-subtitle" style="margin-bottom: 1rem;">
+        Your SkyTwin install includes Google access — no developer setup needed.
+        Open Settings → Connected accounts and click <strong>Connect</strong> to link your Google account in one click.
+      </div>
+      <a class="btn btn-primary" href="#/settings">Open Settings →</a>
+    </div>
+    ` : `
     <div class="card" id="google-setup-card" style="border-left: 3px solid ${googleConfigured ? 'var(--success)' : 'var(--warning, #e6a700)'};">
       <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
         <span class="card-title">Google account credentials</span>
@@ -216,6 +237,7 @@ export async function renderSetup(container, _userId) {
       </div>
       ${renderIronClawSyncSummary('google', syncLookup)}
     </div>
+    `}
 
     <!-- ── What's next ── -->
 
