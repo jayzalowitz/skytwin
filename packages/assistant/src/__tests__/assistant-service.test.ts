@@ -140,6 +140,135 @@ describe('AssistantService.reply', () => {
   });
 });
 
+// ── Issue #146 (phase 2a) — replyStream ────────────────────────────
+
+/**
+ * Stub LlmClient.generateStream by directly providing an async iterable.
+ * We cast to LlmClient because the service only depends on the
+ * generateStream method's shape.
+ */
+function stubStreamingLlm(events: AsyncIterable<unknown>): LlmClient {
+  return {
+    generateStream: vi.fn().mockReturnValue(events),
+    generate: vi.fn(),
+    hasProviders: true,
+  } as unknown as LlmClient;
+}
+
+async function* streamEvents(items: unknown[]): AsyncIterable<unknown> {
+  for (const item of items) yield item;
+}
+
+async function* streamThenThrow(items: unknown[], err: Error): AsyncIterable<unknown> {
+  for (const item of items) yield item;
+  throw err;
+}
+
+async function collectStream<T>(iter: AsyncIterable<T>): Promise<T[]> {
+  const out: T[] = [];
+  for await (const v of iter) out.push(v);
+  return out;
+}
+
+describe('AssistantService.replyStream', () => {
+  it('yields chunk events then a done event with metadata', async () => {
+    const llm = stubStreamingLlm(streamEvents([
+      { type: 'chunk', content: 'Hello' },
+      { type: 'chunk', content: ', world' },
+      {
+        type: 'done',
+        content: 'Hello, world',
+        provider: 'anthropic',
+        model: 'claude-test',
+        latencyMs: 123,
+      },
+    ]));
+    const service = new AssistantService(llm);
+    const events = await collectStream(service.replyStream([{ role: 'user', content: 'hi' }]));
+
+    expect(events).toEqual([
+      { type: 'chunk', content: 'Hello' },
+      { type: 'chunk', content: ', world' },
+      {
+        type: 'done',
+        fullContent: 'Hello, world',
+        metadata: { provider: 'anthropic', model: 'claude-test', latencyMs: 123 },
+      },
+    ]);
+  });
+
+  it('emits an error event with partial content when the stream throws mid-flight', async () => {
+    const llm = stubStreamingLlm(streamThenThrow(
+      [
+        { type: 'chunk', content: 'Partial ' },
+        { type: 'chunk', content: 'reply' },
+      ],
+      new Error('mid-stream provider failure'),
+    ));
+    const service = new AssistantService(llm);
+    const events = await collectStream(service.replyStream([{ role: 'user', content: 'hi' }]));
+
+    expect(events).toEqual([
+      { type: 'chunk', content: 'Partial ' },
+      { type: 'chunk', content: 'reply' },
+      {
+        type: 'error',
+        partialContent: 'Partial reply',
+        message: 'mid-stream provider failure',
+      },
+    ]);
+  });
+
+  it('lets pre-first-chunk failures escape (caller turns into HTTP 502)', async () => {
+    // generateStream throws BEFORE yielding anything (e.g. AllProvidersFailedError).
+    const llm = stubStreamingLlm((async function* () {
+      throw new Error('all providers failed');
+    })());
+    const service = new AssistantService(llm);
+
+    let thrown: unknown = null;
+    try {
+      await collectStream(service.replyStream([{ role: 'user', content: 'hi' }]));
+    } catch (err) {
+      thrown = err;
+    }
+    expect((thrown as Error).message).toMatch(/all providers failed/);
+  });
+
+  it('prepends ContextBuilder output to the system prompt for the streaming call', async () => {
+    const llm = stubStreamingLlm(streamEvents([
+      { type: 'done', content: 'ok', provider: 'anthropic', model: 'm', latencyMs: 1 },
+    ]));
+    const builder = {
+      build: vi.fn().mockResolvedValue('## What I know about you\nTrust tier: high_autonomy'),
+    };
+    const service = new AssistantService(llm, undefined, builder as unknown as ConstructorParameters<typeof AssistantService>[2]);
+
+    await collectStream(service.replyStream(
+      [{ role: 'user', content: 'hi' }],
+      { userId: 'user-1', query: 'hi' },
+    ));
+
+    expect(builder.build).toHaveBeenCalledWith('user-1', 'hi');
+    const [, options] = (llm.generateStream as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    expect(options.systemPrompt.startsWith('## What I know about you')).toBe(true);
+    expect(options.systemPrompt).toContain('SkyTwin');
+  });
+
+  it('falls back to the bare system prompt when enrichment is omitted', async () => {
+    const llm = stubStreamingLlm(streamEvents([
+      { type: 'done', content: 'ok', provider: 'anthropic', model: 'm', latencyMs: 1 },
+    ]));
+    const builder = { build: vi.fn() };
+    const service = new AssistantService(llm, undefined, builder as unknown as ConstructorParameters<typeof AssistantService>[2]);
+
+    await collectStream(service.replyStream([{ role: 'user', content: 'hi' }]));
+    expect(builder.build).not.toHaveBeenCalled();
+    const [, options] = (llm.generateStream as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    expect(options.systemPrompt).toMatch(/^You are SkyTwin/);
+  });
+});
+
 describe('formatHistoryAsPrompt', () => {
   it('labels user and assistant turns and ends with an Assistant: prompt', () => {
     const out = formatHistoryAsPrompt([

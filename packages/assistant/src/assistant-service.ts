@@ -1,4 +1,4 @@
-import type { LlmClient } from '@skytwin/llm-client';
+import type { LlmClient, LlmStreamEvent } from '@skytwin/llm-client';
 import type { ContextBuilder } from './context-builder.js';
 
 /**
@@ -176,4 +176,110 @@ export class AssistantService {
       },
     };
   }
+
+  /**
+   * Streaming variant of `reply()`. Issue #146 (phase 2a).
+   *
+   * Yields `{ type: 'chunk' }` events with partial text as it arrives,
+   * then exactly one terminal event:
+   *
+   *   - `{ type: 'done' }` with the assembled `fullContent` + metadata
+   *     when generation completes successfully.
+   *   - `{ type: 'error' }` with the assembled-so-far partial content +
+   *     the error reason when generation fails mid-stream (after at least
+   *     one chunk has been yielded). The route surfaces this as an SSE
+   *     `error` event so the UI can show the partial reply with a caveat.
+   *
+   * Pre-first-chunk failures throw `AllProvidersFailedError` from the
+   * underlying `LlmClient.generateStream`; the caller catches and turns
+   * those into HTTP 502 — same as the sync path.
+   *
+   * Same enrichment semantics as `reply()`: when `enrichment` is supplied
+   * AND a `ContextBuilder` is wired, the rendered context block is
+   * prepended to the system prompt for this request.
+   */
+  async *replyStream(
+    history: ChatTurn[],
+    enrichment?: EnrichmentRequest,
+  ): AsyncIterable<AssistantStreamEvent> {
+    const trimmed = history.slice(-MAX_HISTORY_TURNS);
+    const prompt = formatHistoryAsPrompt(trimmed);
+
+    let systemPrompt = this.systemPrompt;
+    if (enrichment && this.contextBuilder) {
+      const context = await this.contextBuilder.build(enrichment.userId, enrichment.query);
+      if (context) {
+        systemPrompt = `${context}\n\n${this.systemPrompt}`;
+      }
+    }
+
+    const collected: string[] = [];
+    try {
+      for await (const event of this.llm.generateStream(prompt, {
+        systemPrompt,
+        temperature: 0.7,
+        maxTokens: 800,
+      })) {
+        if (event.type === 'chunk') {
+          collected.push(event.content);
+          yield { type: 'chunk', content: event.content };
+        } else if (event.type === 'done') {
+          // Use the chain's authoritative `content` (it joined the chunks
+          // itself) over our `collected` — same value but avoids any
+          // possibility of drift if a future chunk filter trims something.
+          yield {
+            type: 'done',
+            fullContent: event.content,
+            metadata: {
+              provider: event.provider,
+              model: event.model,
+              latencyMs: event.latencyMs,
+            },
+          };
+          return;
+        }
+      }
+    } catch (err) {
+      // Pre-first-chunk failures (e.g. AllProvidersFailedError when no
+      // provider can be reached at all) re-throw — the caller turns those
+      // into HTTP 502, same as the sync `reply()` path.
+      //
+      // Mid-stream failures after at least one chunk landed yield a
+      // terminal error event so the route can flush a partial-reply
+      // notification to the client.
+      if (collected.length === 0) {
+        throw err;
+      }
+      yield {
+        type: 'error',
+        partialContent: collected.join(''),
+        message: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
 }
+
+/**
+ * Events yielded by `AssistantService.replyStream`. Distinct from
+ * `LlmStreamEvent` so the assistant can shape its own protocol (different
+ * field names — `fullContent` and `partialContent` — make the
+ * SSE-on-the-wire side easier to consume on the web client).
+ *
+ * Re-exporting `LlmStreamEvent` would couple downstream callers to the
+ * provider-level chunk shape, which is more constrained than what the
+ * assistant promises (e.g. error events with partial content are an
+ * assistant-level concept, not a provider concept).
+ */
+export type AssistantStreamEvent =
+  | { type: 'chunk'; content: string }
+  | {
+      type: 'done';
+      fullContent: string;
+      metadata: { provider: string; model: string; latencyMs: number };
+    }
+  | { type: 'error'; partialContent: string; message: string };
+
+// Re-export for convenience so a route that imports AssistantService
+// doesn't also need to import from @skytwin/llm-client just for the
+// underlying event shape (when it cares about that level of detail).
+export type { LlmStreamEvent };

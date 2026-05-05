@@ -1,5 +1,62 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.2.0] - 2026-05-05
+
+Closes issue #146 — assistant phase 2a. The chat UI now streams replies token-by-token instead of blocking on the full LLM response. Anthropic ships native SSE; the other providers fall back to single-chunk emission so the API contract is uniform regardless of which provider is in front. Backward-compatible: legacy JSON callers still work unchanged.
+
+### Added — streaming through the LLM client
+
+- **`LlmClient.generateStream(prompt, options)`** returns an `AsyncIterable<LlmStreamEvent>`. Yields `{ type: 'chunk', content }` per token, then exactly one `{ type: 'done', content, provider, model, latencyMs }` at the end.
+- **Provider-chain semantics for streaming:**
+  - **Pre-first-chunk failures fall through** to the next provider, just like sync `generate()`. If every provider fails before yielding any text, throws `AllProvidersFailedError` with the same `attempted` array as the sync path.
+  - **Mid-stream failures do NOT fall through.** Once a provider has committed by yielding even one chunk, the caller (and the user's eyes) have already received text — silently re-trying a different provider would produce duplicate output. The error re-throws so the route can surface a partial-reply notification.
+- **Native Anthropic streaming** in `packages/llm-client/src/providers/anthropic.ts:streamGenerate`. Real SSE consumption of the `/v1/messages` endpoint with `stream: true`. Buffers events across `reader.read()` boundaries (a chunk can split mid-event). Tolerates the full Anthropic event taxonomy by ignoring everything except `content_block_delta` events with `delta.type === 'text_delta'` — `message_start`, `ping`, `content_block_start`, `message_stop` are all benign.
+- **Universal fallback for non-streaming providers** (`makeFallbackStream` in `llm-client.ts`) — wraps the existing sync `generate` as a single-chunk async iterable so OpenAI / Google / Ollama get the same caller contract without a real streaming implementation. Adding native streaming for those providers is just dropping a new `streamGenerate` into their provider module — no changes elsewhere.
+
+### Added — `AssistantService.replyStream`
+
+- Streaming variant of `reply()` returning `AsyncIterable<AssistantStreamEvent>`. Yields `chunk` events as text arrives, then exactly one terminal event:
+  - `done` (success) — assembled `fullContent` + `metadata`
+  - `error` (mid-stream failure with at least one chunk landed) — `partialContent` + `message`
+  - Pre-first-chunk failures escape via throw (caller turns into HTTP 502 — same as sync path)
+- Same `EnrichmentRequest` semantics as `reply()` — when supplied AND a `ContextBuilder` is wired, the rendered twin/memory context block is prepended to the system prompt for this request.
+
+### Added — SSE response on `POST /api/assistant/messages`
+
+- The route now branches on the `Accept` header. `text/event-stream` triggers the streaming path; everything else falls through to the existing sync JSON response.
+- **Wire format** (each event is `event:` + `data:` + blank line):
+  ```
+  event: thread\ndata: {"id":"…","isNew":true}
+  event: user\ndata: {…userMessage row…}
+  event: chunk\ndata: {"content":"Hello"}
+  event: chunk\ndata: {"content":" world"}
+  event: done\ndata: {…assistantMessage row…}
+  ```
+- The user message persists FIRST (before the LLM call) so it survives a provider outage — same hygiene as the sync path.
+- The assistant message persists AFTER the stream closes, using the accumulated full content. If the persist fails, the stream's `done` event still fires (the user got a useful reply on screen) with `persistFailed: true` so the client can warn — the audit-trail loss is recoverable, the user-facing regression isn't.
+- `X-Accel-Buffering: no` header keeps nginx from buffering the stream end-to-end. Harmless when no nginx is in front.
+- Mid-flight client disconnect detection: `res.writableEnded` / `res.destroyed` checked between events so the loop exits cleanly when the user navigates away — saves the provider's tokens.
+
+### Changed — web client streams progressively
+
+- New `sendAssistantMessageStream(userId, content, threadId, callbacks)` in `apps/web/public/js/api-client.js`. Uses `fetch` + manual SSE parsing (not `EventSource` — that only supports GET; the assistant endpoint is POST). Callbacks: `onThread`, `onUserMessage`, `onChunk`, `onDone`, `onError`.
+- `apps/web/public/js/pages/assistant.js:handleSend` now streams. The user bubble lands optimistically, then thread + user events replace the optimistic IDs, then chunk events update a single bubble's text **in place** (direct DOM update via `data-streaming-id`) without re-painting the page on every token — preserves textarea focus + scroll position during the stream.
+- Typing dots now fire only while sending AND before the first chunk lands. Once the streaming bubble appears, it shows the live text — no need for both indicators.
+- Mid-stream errors render the partial content in one bubble + an error caveat in another, so the user sees both what landed and what went wrong.
+
+### Tests (24 new)
+
+- `packages/llm-client/src/__tests__/anthropic-sse.test.ts` (7): clean stream, events split across `read()` chunks, benign-event filtering (`message_start` / `ping` / `content_block_start` / `message_stop`), comment-line tolerance, malformed JSON line survival, empty stream, trailing partial-event flush.
+- `packages/llm-client/src/__tests__/llm-client.test.ts` (+6): native streaming yields chunks + done, pre-first-chunk failure falls through to next provider, mid-stream failure does NOT fall through (no second-provider call), `AllProvidersFailedError` when no provider yields any chunk, universal fallback path for non-streaming providers, empty-chunk skipping.
+- `packages/assistant/src/__tests__/assistant-service.test.ts` (+5): chunk-then-done events, mid-stream error event with partial content, pre-first-chunk failures escape, ContextBuilder prepended to streaming system prompt, no-enrichment skips builder.
+
+### Out of scope for this PR (still deferred)
+
+- Action-intent routing through `@skytwin/decision-engine` (#148).
+- Native multi-turn `LlmClient` API (#149).
+- Native streaming for OpenAI / Google / Ollama (drop a `streamGenerate` into the provider module + add it to `PROVIDER_STREAM_FNS` — no other changes needed).
+- Provider-side cancellation when the user closes the page mid-stream (the route detects disconnect and stops emitting; the underlying provider request is closed by the AbortController on response timeout, but a long-running generation could still continue server-side until that timeout).
+
 ## [0.6.1.0] - 2026-05-05
 
 Closes issue #147 — assistant phase 2b. The conversational assistant now reads the user's twin profile (preferences + inferences) and recent episodic memories before composing a reply, so it can answer "what did I tell you about X last month?" and "what's my preference for Y?" — the two killer use cases that distinguish a personal twin from generic ChatGPT.

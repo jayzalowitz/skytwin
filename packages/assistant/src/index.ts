@@ -16,7 +16,13 @@ export {
   DEFAULT_ASSISTANT_SYSTEM_PROMPT,
   MAX_HISTORY_TURNS,
 } from './assistant-service.js';
-export type { ChatTurn, AssistantReply, EnrichmentRequest } from './assistant-service.js';
+export type {
+  ChatTurn,
+  AssistantReply,
+  EnrichmentRequest,
+  AssistantStreamEvent,
+  LlmStreamEvent,
+} from './assistant-service.js';
 
 export { ContextBuilder, MAX_CONTEXT_BYTES } from './context-builder.js';
 export type {

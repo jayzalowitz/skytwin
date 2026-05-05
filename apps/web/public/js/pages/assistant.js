@@ -2,7 +2,7 @@ import {
   fetchAssistantThreads,
   fetchAssistantThread,
   deleteAssistantThread,
-  sendAssistantMessage,
+  sendAssistantMessageStream,
   escapeHtml,
 } from '../api-client.js';
 
@@ -166,17 +166,27 @@ function renderMessages(messages, sending) {
       </div>
     `;
   }
+  // Last assistant message gets `data-streaming-id` when its id starts with
+  // `streaming-` so the chunk handler can target it for in-place text
+  // updates without re-painting the whole page on every token. Issue #146.
   const bubbles = messages
     .map((m) => {
       const role = m.role === 'user' ? 'user' : 'assistant';
+      const streamingAttr = typeof m.id === 'string' && m.id.startsWith('streaming-')
+        ? ` data-streaming-id="${escapeHtml(m.id)}"`
+        : '';
       return `
         <div class="assistant-bubble assistant-bubble-${role}">
-          <div class="assistant-bubble-content">${escapeHtml(m.content)}</div>
+          <div class="assistant-bubble-content"${streamingAttr}>${escapeHtml(m.content)}</div>
         </div>
       `;
     })
     .join('');
-  const typing = sending
+  // Typing dots fire only while we're sending AND before the first chunk
+  // has landed (i.e. no streaming bubble exists yet). Once chunks arrive
+  // the streaming bubble itself shows the live text — no need for both.
+  const hasStreamingBubble = messages.some((m) => typeof m.id === 'string' && m.id.startsWith('streaming-'));
+  const typing = sending && !hasStreamingBubble
     ? `
       <div class="assistant-bubble assistant-bubble-assistant assistant-bubble-typing">
         <div class="assistant-bubble-content">
@@ -357,41 +367,118 @@ async function handleSend() {
   if (input) input.value = '';
   if (container) paint(container);
 
-  try {
-    const result = await sendAssistantMessage(_state.userId, content, _state.activeThreadId);
-    // Replace optimistic message with the persisted ones from the server,
-    // then append the assistant reply.
-    _state.messages = _state.messages
-      .filter((m) => m.id !== 'optimistic')
-      .concat([result.userMessage, result.assistantMessage]);
+  // Issue #146 (phase 2a): SSE streaming. The user bubble lands optimistically
+  // (above), then we open a stream — the API sends `thread` + `user` events
+  // first (replacing the optimistic IDs), then `chunk` events as tokens
+  // arrive (we append to a streaming assistant bubble), then a final `done`
+  // or `error` event. We re-render only on the events that change the
+  // structure (thread/user/done/error); per-chunk updates target a single
+  // bubble in the DOM directly so we don't re-paint the entire page on
+  // every token (would clobber input focus and scroll position).
+  let streamingAssistantId = `streaming-${Date.now()}`;
+  let streamingContent = '';
+  let receivedFirstChunk = false;
 
-    // If this was a new thread, capture its id and refresh the threads list
-    // so it appears in the left rail immediately.
-    if (result.thread?.isNew && result.thread?.id) {
-      _state.activeThreadId = result.thread.id;
-      try {
-        const data = await fetchAssistantThreads(_state.userId);
-        _state.threads = Array.isArray(data?.threads) ? data.threads : _state.threads;
-      } catch {
-        /* keep stale threads list — will refresh on next render */
-      }
-    } else {
-      // Bump the active thread to the top of the threads list locally
-      // (server bumped updated_at; reflect that in the UI without a fetch).
-      const idx = _state.threads.findIndex((t) => t.id === _state.activeThreadId);
-      if (idx > 0) {
-        const [t] = _state.threads.splice(idx, 1);
-        if (t) _state.threads.unshift({ ...t, updatedAt: new Date().toISOString() });
-      }
+  try {
+    await sendAssistantMessageStream(_state.userId, content, _state.activeThreadId, {
+      onThread: (thread) => {
+        if (thread?.isNew && thread?.id) {
+          _state.activeThreadId = thread.id;
+        }
+      },
+      onUserMessage: (userMessage) => {
+        _state.messages = _state.messages
+          .filter((m) => m.id !== 'optimistic')
+          .concat([userMessage]);
+        if (container) paint(container);
+      },
+      onChunk: (chunk) => {
+        streamingContent += chunk;
+        if (!receivedFirstChunk) {
+          // First chunk: insert the streaming bubble + drop the typing dots.
+          receivedFirstChunk = true;
+          _state.messages = _state.messages.concat([
+            {
+              id: streamingAssistantId,
+              role: 'assistant',
+              content: streamingContent,
+              createdAt: new Date().toISOString(),
+            },
+          ]);
+          if (container) paint(container);
+        } else {
+          // Subsequent chunks: update the bubble's text in place. Direct
+          // DOM update avoids a full repaint per token (which would also
+          // reset the textarea focus + scroll position).
+          const bubble = container?.querySelector(`[data-streaming-id="${streamingAssistantId}"]`);
+          if (bubble) {
+            bubble.textContent = streamingContent;
+            scrollMessagesToBottom(container);
+          } else {
+            // Bubble missing (page navigated away mid-stream and came
+            // back?) — fall back to a full re-paint so state stays
+            // consistent.
+            const idx = _state.messages.findIndex((m) => m.id === streamingAssistantId);
+            if (idx >= 0) _state.messages[idx].content = streamingContent;
+            if (container) paint(container);
+          }
+        }
+      },
+      onDone: (assistantMessage) => {
+        // Replace the streaming bubble with the persisted one.
+        _state.messages = _state.messages
+          .filter((m) => m.id !== streamingAssistantId)
+          .concat([assistantMessage]);
+        if (container) paint(container);
+      },
+      onError: ({ message, partialContent }) => {
+        // Mid-stream error — keep the partial content if any, append an
+        // error caveat in a separate bubble so the user sees both what
+        // landed and what went wrong.
+        _state.messages = _state.messages.filter((m) => m.id !== streamingAssistantId);
+        if (partialContent) {
+          _state.messages = _state.messages.concat([
+            {
+              id: `partial-${Date.now()}`,
+              role: 'assistant',
+              content: partialContent,
+              createdAt: new Date().toISOString(),
+            },
+          ]);
+        }
+        _state.messages = _state.messages.concat([
+          {
+            id: `error-${Date.now()}`,
+            role: 'assistant',
+            content: `Couldn't finish the reply — ${message}`,
+            createdAt: new Date().toISOString(),
+          },
+        ]);
+        if (input && !partialContent) input.value = content;
+        if (container) paint(container);
+      },
+    });
+
+    // After a successful stream, refresh the threads list so a new thread
+    // shows up in the left rail or an existing one bumps to the top. We
+    // do this here rather than per-event to keep the streaming hot path
+    // free of network round-trips.
+    try {
+      const data = await fetchAssistantThreads(_state.userId);
+      _state.threads = Array.isArray(data?.threads) ? data.threads : _state.threads;
+    } catch {
+      /* keep stale threads list — will refresh on next render */
     }
   } catch (err) {
-    // Restore the input so the user can retry, drop the optimistic bubble,
-    // and surface the error in an assistant-shaped bubble. Phase 2 should
-    // make this a proper toast.
-    _state.messages = _state.messages.filter((m) => m.id !== 'optimistic');
+    // Transport-level failure (network down, 4xx/5xx pre-stream). Drop
+    // the optimistic bubble, restore input, surface error in an
+    // assistant-shaped bubble.
+    _state.messages = _state.messages.filter(
+      (m) => m.id !== 'optimistic' && m.id !== streamingAssistantId,
+    );
     _state.messages = _state.messages.concat([
       {
-        id: 'error',
+        id: `error-${Date.now()}`,
         role: 'assistant',
         content: `Couldn't reach the assistant — ${err instanceof Error ? err.message : String(err)}`,
         createdAt: new Date().toISOString(),
