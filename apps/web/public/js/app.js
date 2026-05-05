@@ -7,8 +7,8 @@ import { renderAudit } from './pages/audit.js';
 import { renderSetup } from './pages/setup.js';
 import { renderAssistant } from './pages/assistant.js';
 import { renderOnboarding } from './pages/onboarding.js';
-import { fetchPendingApprovals, fetchHealth, fetchUser, listUsers, escapeHtml } from './api-client.js';
-import { mountThemeSwitcher, initTheme } from './theme-switcher.js';
+import { fetchPendingApprovals, fetchHealth, fetchUser, listUsers, escapeHtml, isApiKnownOffline } from './api-client.js';
+import { initTheme } from './theme-switcher.js';
 import { connectSSE, disconnectSSE, isConnected } from './sse-client.js';
 import { KEY_USER_ID, KEY_ONBOARDED, KEY_SESSION_TOKEN } from './storage-keys.js';
 
@@ -331,8 +331,9 @@ function navigate() {
   updateApprovalBadge();
   updateConnectionStatus();
 
-  // Mount theme switcher in the page header
-  mountThemeSwitcher();
+  // Theme switcher used to live in the page header (UX review #7) where
+  // it looked like a breadcrumb. Now mounted by the Settings page in a
+  // labeled card. No-op call here.
 }
 
 export function setUserId(id) {
@@ -415,7 +416,14 @@ window.skyTwinSetUserId = setUserId;
 // seconds when it's not is the "we still see this" rhythm.
 setInterval(() => {
   if (!currentUserId) return;
-  if (isConnected()) {
+  // UX review #20 — when the API is known down, back off the badge
+  // poll from 10s → 60s. Pre-fix this loop produced 6 console errors
+  // per minute against a dead server, on top of the SSE reconnect
+  // attempts. The connection banner already tells the user the API
+  // is offline; aggressive polling adds noise without information.
+  if (isApiKnownOffline()) {
+    if ((Date.now() - (window._skytwinLastBadgePoll || 0)) < 60 * 1000) return;
+  } else if (isConnected()) {
     if ((Date.now() - (window._skytwinLastBadgePoll || 0)) < 5 * 60 * 1000) return;
   }
   window._skytwinLastBadgePoll = Date.now();

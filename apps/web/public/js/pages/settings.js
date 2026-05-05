@@ -1,4 +1,5 @@
 import { fetchUser, updateTrustTier, fetchOAuthStatus, getGoogleAuthUrl, disconnectProvider, escapeHtml, fetchSettings, updateAutonomySettings, updateIronClawChannel, upsertDomainPolicy, deleteDomainPolicy, createEscalationTrigger, deleteEscalationTrigger, createSession, fetchSessions, revokeSession, saveAIProviders, testAIProvider, fetchRoutines, deleteRoutine } from '../api-client.js';
+import { mountThemeSwitcher } from '../theme-switcher.js';
 import { KEY_USER_ID, KEY_ONBOARDED, KEY_SESSION_TOKEN } from '../storage-keys.js';
 
 const TIERS = [
@@ -90,6 +91,21 @@ export async function renderSettings(container, userId) {
       <button class="btn btn-primary" style="margin-top: 1rem;" id="save-tier-btn" data-action="save-tier">Save</button>
     </div>
 
+    <!-- Theme card (UX review #7). Theme switcher used to live in the
+         page header where it looked like a label. Now lives here in
+         Settings with an explicit title so users know what it does.
+         The dropdown itself is mounted by theme-switcher.js into the
+         #theme-switcher-target element after render. -->
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Visual theme</span>
+      </div>
+      <div class="card-subtitle" style="margin-bottom: 1rem;">
+        Pick how the dashboard looks. Changes apply immediately.
+      </div>
+      <div id="theme-switcher-target"></div>
+    </div>
+
     <div class="card">
       <div class="card-header">
         <span class="card-title">Connected accounts</span>
@@ -114,15 +130,16 @@ export async function renderSettings(container, userId) {
       </div>
     </div>
 
-    <details class="card collapsible-card">
+    <details class="card collapsible-card" id="ai-brain-card">
       <summary class="card-header collapsible-header">
-        <span class="card-title">${aiProviders.length > 0 ? 'AI brain — connected providers' : 'Add a smarter AI brain (optional)'}</span>
+        <span class="card-title">${aiProviders.length > 0 ? 'AI brain — connected providers' : 'AI brain — needed for Chat (optional otherwise)'}</span>
         <span class="collapse-icon"></span>
       </summary>
       <div class="collapsible-body">
         <div class="card-subtitle" style="margin-bottom: 1rem;">
-          Out of the box your twin uses the local AI on your machine plus built-in rules — that's enough for most decisions.
-          Add a paid provider here if you want sharper reasoning on the tricky calls. Multiple are tried in order with automatic fallback.
+          ${aiProviders.length > 0
+            ? `Out of the box your twin uses the local AI on your machine plus built-in rules — that's enough for most decisions. Add a paid provider here if you want sharper reasoning on the tricky calls. Multiple are tried in order with automatic fallback.`
+            : `<strong>The Chat surface needs at least one AI provider configured here</strong> to generate replies. Other features (decisions, approvals) work without one — they fall back to local AI + built-in rules. Multiple providers are tried in priority order with automatic fallback.`}
         </div>
         <div id="ai-provider-chain">
           ${renderProviderChain(aiProviders)}
@@ -344,6 +361,12 @@ export async function renderSettings(container, userId) {
   `;
 
   ensureSettingsListener();
+
+  // UX review #7: mount the theme switcher inside the dedicated card.
+  // Re-mounted on every render so the dropdown reflects the latest
+  // selection (no stale state across save-induced re-renders).
+  const themeTarget = document.getElementById('theme-switcher-target');
+  if (themeTarget) mountThemeSwitcher(themeTarget);
 }
 
 // Singleton click delegator. Settings re-renders after every successful

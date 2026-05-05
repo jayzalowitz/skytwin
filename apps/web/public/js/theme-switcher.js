@@ -152,27 +152,29 @@ function createDropdown() {
 }
 
 /**
- * Mount the theme switcher into the page header.
- * Called once on app init and re-called if the header re-renders.
+ * Mount the theme switcher into a target element (default: Settings card).
+ *
+ * UX review #7 (P1): pre-fix this auto-mounted into the page header on
+ * every page, where it sat next to the page title and looked like a
+ * breadcrumb / label / tag rather than a clickable control. A
+ * non-technical user was unlikely to discover it.
+ *
+ * Now: pass the container you want it in (Settings has a dedicated card
+ * for it). Call with no argument to no-op — the header location is
+ * deprecated.
+ *
+ * Re-mountable: removes any existing mount before placing the new one,
+ * so calling from a settings re-render doesn't leave a stale dropdown
+ * in the old DOM.
  */
-export function mountThemeSwitcher() {
-  const header = document.querySelector('.page-header');
-  if (!header) return;
-
-  // Check if already mounted
+export function mountThemeSwitcher(target) {
+  if (!target) return; // header auto-mount removed; explicit target required
+  // Remove any prior mount so the dropdown lives at exactly one location.
   const existing = document.getElementById('theme-switcher-root');
-  if (existing) return;
+  if (existing) existing.remove();
 
   const dropdown = createDropdown();
-  if (dropdown) {
-    // Insert before user-badge or at end of header
-    const badge = header.querySelector('.user-badge');
-    if (badge) {
-      header.insertBefore(dropdown, badge);
-    } else {
-      header.appendChild(dropdown);
-    }
-  }
+  if (dropdown) target.appendChild(dropdown);
 }
 
 /**

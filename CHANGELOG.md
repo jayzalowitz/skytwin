@@ -1,5 +1,43 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.6.0] - 2026-05-05
+
+UX polish — second wave from the same browser-agent visual review that produced #154. Picks up the P1/P2 findings that were deferred from the hardening pass: Settings cleanup, theme switcher relocation, console-spam reduction, date input theming, onboarding modal dimmer, Chat → Settings deep-link.
+
+### Fixed — Settings page is more honest about what's required and where things live
+
+- **Theme switcher relocated to Settings (P1 #7).** Pre-fix the theme picker pill (`🌑 Quiet Confidence ▼`) sat on every page header next to the page title, where it looked like a breadcrumb / tag rather than a clickable control. Now lives in a dedicated **"Visual theme"** card in Settings with the description "Pick how the dashboard looks. Changes apply immediately." The header is back to just the page title + user badge.
+- **"AI brain — needed for Chat (optional otherwise)" (P1 #9).** Pre-fix this section was titled "Add a smarter AI brain (optional)" — but if you visit `#/assistant` the API returns 409 "No AI provider configured." The "(optional)" was lying. Now the title surfaces the dependency, and when no providers are configured the body explicitly says "**The Chat surface needs at least one AI provider configured here** to generate replies."
+
+### Fixed — Chat deep-links to Settings when no provider is configured (P1 #9)
+
+- The Chat page used to render the raw "No AI provider configured" message in a bubble with no path forward. Now: when the assistant route returns a `bad-request` ApiError mentioning "provider", the chat shows "I need an AI provider configured before I can chat. Open Settings → AI brain to add one." with a deep-link footer ("Open Settings → AI brain →") that hash-routes to `#/settings`.
+
+### Fixed — onboarding modal dimmer (P2 #15)
+
+- Pre-fix the sidebar bled through the onboarding modal at ~25% visible (modal overlay was `rgba(0,0,0,.85)` but the sidebar has its own glass effect that survived). Drew the eye and read as "stuff I could click but can't." Bumped overlay to `rgba(0,0,0,.92)` + a `backdrop-filter: blur(4px)` so anything behind the modal is properly muted.
+
+### Fixed — console-error spam when API is offline (P2 #20)
+
+- Pre-fix, with the API down, the web client produced 110+ console errors per minute (every 10s badge poll, every SSE reconnect, every health check). New `isApiKnownOffline()` exported from `api-client.js`: any failed fetch with `kind: 'offline'` flips the flag; any successful fetch flips it back.
+- The badge-poll loop in `app.js` now backs off from 10s → 60s when the flag is set. The connection banner already tells the user the API is offline; aggressive polling adds noise without information.
+
+### Fixed — date input theming on Audit page (P1 #11)
+
+- Pre-fix the audit-trail filters used raw `<input type="date">` with the OS-default styling (gray box, mm/dd/yyyy placeholder), which clashed with the dark glass aesthetic everywhere else.
+- New `.themed-date` class matches the rest of the form-input styling, with `color-scheme: dark light` so the native picker icon uses light glyphs on dark themes (vs. invisible dark-on-dark). Webkit-specific `::-webkit-calendar-picker-indicator` filter gets the icon to read at high enough contrast.
+
+### Tests
+
+No new unit tests — every change is in browser-only code. Verified via the same browser-agent visual review (`.context/ux-review/20-23-` screenshots show the after state). Full backend test suite still green across 40 packages.
+
+### What's still open from the UX review
+
+- **Hosted OAuth (P0 #1)** — needs verified Google OAuth app + production hosting. Tracked separately.
+- **Settings consolidate "Advanced" sections (P1 #8)** — the page now has 5 collapsed Advanced sections; consolidating them needs a small refactor of the Advanced-anything pattern.
+- **Auto-save with toast (P1 #10)** — needs a toast notification component. Skipped for scope.
+- **Bare connection-status footer text** vs. the new banner — they're now redundant; one of them can come out.
+
 ## [0.6.5.0] - 2026-05-05
 
 UX hardening pass driven by a browser-agent visual review of every SPA route — focused on what would confuse a non-technical user. 7 of the 20 findings closed in this PR (the load-bearing ones); polish items deferred to a follow-up. See `.context/ux-review/FINDINGS.md` for the full list with severity grades.
