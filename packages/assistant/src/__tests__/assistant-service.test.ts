@@ -79,6 +79,65 @@ describe('AssistantService.reply', () => {
     const service = new AssistantService(llm);
     await expect(service.reply([{ role: 'user', content: 'x' }])).rejects.toThrow('boom');
   });
+
+  // ── Issue #147 (phase 2b) — twin/memory enrichment ──────────────────
+
+  it('prepends ContextBuilder output to the system prompt when enrichment is supplied', async () => {
+    const llm = stubLlm();
+    const builder = {
+      build: vi.fn().mockResolvedValue('## What I know about you\nTrust tier: high_autonomy'),
+    };
+    // Cast — the service only depends on the .build() method shape.
+    const service = new AssistantService(llm, undefined, builder as unknown as ConstructorParameters<typeof AssistantService>[2]);
+
+    await service.reply(
+      [{ role: 'user', content: 'hi' }],
+      { userId: 'user-1', query: 'hi' },
+    );
+
+    expect(builder.build).toHaveBeenCalledWith('user-1', 'hi');
+    const [, options] = (llm.generate as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    // Context block lands BEFORE the default system prompt so the
+    // assistant reads the user-specific facts first.
+    expect(options.systemPrompt.startsWith('## What I know about you\nTrust tier: high_autonomy')).toBe(true);
+    expect(options.systemPrompt).toContain('SkyTwin'); // the default prompt is still appended
+  });
+
+  it('falls back to the bare system prompt when ContextBuilder returns empty', async () => {
+    const llm = stubLlm();
+    const builder = { build: vi.fn().mockResolvedValue('') };
+    const service = new AssistantService(llm, undefined, builder as unknown as ConstructorParameters<typeof AssistantService>[2]);
+
+    await service.reply(
+      [{ role: 'user', content: 'q' }],
+      { userId: 'user-1', query: 'q' },
+    );
+    const [, options] = (llm.generate as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    // No enrichment prefix — system prompt is unchanged.
+    expect(options.systemPrompt).toMatch(/^You are SkyTwin/);
+  });
+
+  it('skips ContextBuilder when no enrichment is supplied (back-compat)', async () => {
+    const llm = stubLlm();
+    const builder = { build: vi.fn() };
+    const service = new AssistantService(llm, undefined, builder as unknown as ConstructorParameters<typeof AssistantService>[2]);
+
+    await service.reply([{ role: 'user', content: 'q' }]);
+    expect(builder.build).not.toHaveBeenCalled();
+  });
+
+  it('skips ContextBuilder when no builder was injected (early bring-up)', async () => {
+    const llm = stubLlm();
+    const service = new AssistantService(llm); // no builder
+
+    // Passing enrichment is fine — without a builder it's a no-op.
+    await service.reply(
+      [{ role: 'user', content: 'q' }],
+      { userId: 'user-1', query: 'q' },
+    );
+    const [, options] = (llm.generate as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    expect(options.systemPrompt).toMatch(/^You are SkyTwin/);
+  });
 });
 
 describe('formatHistoryAsPrompt', () => {

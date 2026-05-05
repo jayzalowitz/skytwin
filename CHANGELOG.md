@@ -1,5 +1,44 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.1.0] - 2026-05-05
+
+Closes issue #147 — assistant phase 2b. The conversational assistant now reads the user's twin profile (preferences + inferences) and recent episodic memories before composing a reply, so it can answer "what did I tell you about X last month?" and "what's my preference for Y?" — the two killer use cases that distinguish a personal twin from generic ChatGPT.
+
+### Added — `ContextBuilder` in `@skytwin/assistant`
+
+- New `ContextBuilder` composes a compact context block (`## What I know about you` + `## Relevant past episodes`) and prepends it to the system prompt for each request.
+- Two ports keep the assistant package free of `@skytwin/db` and `@skytwin/mempalace` deps: `TwinContextProvider.fetch(userId)` for profile data and `MemoryContextProvider.search(userId, query, limit)` for episodic memories. Adapters wire to real backings at composition time in `apps/api/src/routes/assistant.ts`; tests stub them directly.
+- **Hard cap at `MAX_CONTEXT_BYTES = 2000`** with UTF-8-clean ellipsis truncation. A noisy profile or long memory hit list cannot dominate the model's token budget.
+- **Confidence floor**: only `confirmed`, `high`, and `moderate` preferences/inferences surface. Speculative + low-confidence entries stay in the model but don't broadcast to the LLM (would make the assistant look unsure of itself and frequently wrong).
+- **Confidence-ranked truncation**: when a user has more than `MAX_PREFERENCES = 12` qualifying preferences, the highest-confidence ones win the slots. Same for `MAX_INFERENCES = 6` and `MAX_MEMORIES = 5`.
+- **Boolean values render as `yes`/`no`** instead of `true`/`false` — more readable for the model and the user reading the rendered prompt in debug logs.
+- **Partial-context fallback**: if either provider throws, the other still renders. `console.warn` records which side failed; the request continues with whatever context was retrievable. Better than no context.
+- **No-op semantics**: empty result from both providers returns `''`, which AssistantService treats as "use the default system prompt unchanged" — same behavior as phase 1, no surprises.
+
+### Changed — `AssistantService.reply()` now takes optional enrichment
+
+- New optional 2nd parameter `enrichment?: { userId, query }`. When supplied AND a `ContextBuilder` was injected at construction, the rendered context block is prepended to the system prompt for that request.
+- Backward-compatible: omitting either the enrichment arg or the ctor builder falls back to the bare default system prompt — phase 1 callers are untouched.
+- Service signature change is the 3rd ctor arg; defaults to `null` so existing 2-arg callers compile unchanged.
+
+### Wiring
+
+- `apps/api/src/routes/assistant.ts` constructs a `ContextBuilder` once per process and passes it into the per-request `AssistantService`. `enrichment.query` is the just-sent user message — the assistant is about to answer it, so the most-relevant memories are the ones that match it.
+- `TwinContextProvider` adapter pulls `TwinService.getOrCreateProfile` (preferences + inferences) and `userRepository.findById` (trust tier) in parallel.
+- `MemoryContextProvider` adapter splits the query into ≥3-char tokens and calls `mempalaceRepository.searchEpisodes` — same backing call that `MemoryStack.search` uses for L3 deep-search. Stop-words and short tokens drop so a query like "the plan for X" doesn't ILIKE-match every episode containing "the".
+- Episode `outcome` JSON blobs collapse to a one-line label (`kind` / `status` / `result` field if present, else short stringification) so the rendered context stays compact.
+
+### Tests (15 new)
+
+- `packages/assistant/src/__tests__/context-builder.test.ts` (12): preference rendering with confidence, low-confidence noise floor, confidence-ranked truncation, inference rendering with reasoning, memory rendering with date + outcome, both-empty short-circuit, trust-tier-only suppression, JSON value rendering, byte-cap with UTF-8-clean ellipsis, twin-side throws (memory still renders), memory-side throws (twin still renders), no-memory-provider passthrough.
+- `packages/assistant/src/__tests__/assistant-service.test.ts` (+4): context prepended before default system prompt when enrichment supplied, empty context falls back to bare system prompt, no-enrichment skips the builder entirely, no-builder skips even when enrichment is supplied (early-bring-up safety).
+
+### Out of scope for this PR (still deferred)
+
+- SSE streaming (#146).
+- Action-intent routing through `@skytwin/decision-engine` (#148).
+- Native multi-turn `LlmClient` API (#149).
+
 ## [0.6.0.0] - 2026-05-05
 
 Phase 1 of issue #135 — adds a ChatGPT-style conversational assistant at `#/assistant` with the dark glass aesthetic, persisted threads, and four new API endpoints. Out of scope for this phase (deferred to phase 2+): SSE streaming, twin/memory context enrichment, action-intent routing through the decision engine, and tool use.

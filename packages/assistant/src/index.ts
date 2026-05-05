@@ -16,4 +16,14 @@ export {
   DEFAULT_ASSISTANT_SYSTEM_PROMPT,
   MAX_HISTORY_TURNS,
 } from './assistant-service.js';
-export type { ChatTurn, AssistantReply } from './assistant-service.js';
+export type { ChatTurn, AssistantReply, EnrichmentRequest } from './assistant-service.js';
+
+export { ContextBuilder, MAX_CONTEXT_BYTES } from './context-builder.js';
+export type {
+  TwinContextProvider,
+  TwinContextSnapshot,
+  TwinPreference,
+  TwinInference,
+  MemoryContextProvider,
+  MemoryHit,
+} from './context-builder.js';

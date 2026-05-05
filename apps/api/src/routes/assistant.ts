@@ -1,11 +1,22 @@
 import { Router } from 'express';
-import { AssistantService, type ChatTurn } from '@skytwin/assistant';
+import {
+  AssistantService,
+  ContextBuilder,
+  type ChatTurn,
+  type TwinContextProvider,
+  type MemoryContextProvider,
+} from '@skytwin/assistant';
 import { LlmClient, AllProvidersFailedError } from '@skytwin/llm-client';
 import type { ProviderEntry } from '@skytwin/llm-client';
 import type { AIProviderName } from '@skytwin/shared-types';
+import { TwinService } from '@skytwin/twin-model';
 import {
   aiProviderRepository,
   assistantRepository,
+  mempalaceRepository,
+  userRepository,
+  TwinRepositoryAdapter,
+  PatternRepositoryAdapter,
 } from '@skytwin/db';
 import { createLogger } from '@skytwin/core';
 
@@ -58,8 +69,107 @@ const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
  * requireOwnership in apps/api/src/index.ts). Cross-user access is
  * forbidden by the middleware, not the route.
  */
+/**
+ * Build the per-process `ContextBuilder` that the assistant uses to
+ * enrich its system prompt with twin profile + relevant episodic memories.
+ *
+ * Issue #147 (phase 2b). The adapters here translate `@skytwin/db` and
+ * `@skytwin/twin-model` shapes into the renderer-friendly shape the
+ * `@skytwin/assistant` package's port expects, so the assistant package
+ * itself stays free of DB / mempalace dependencies (and unit-tests
+ * cleanly with stubs).
+ *
+ * The TwinService is constructed once at module load — same pattern as
+ * `events.ts` — because its underlying repositories are stateless and
+ * the service itself caches nothing per-request.
+ */
+function buildContextBuilder(): ContextBuilder {
+  const twinService = new TwinService(
+    new TwinRepositoryAdapter(),
+    new PatternRepositoryAdapter(),
+  );
+
+  const twinProvider: TwinContextProvider = {
+    async fetch(userId) {
+      // Pull profile + user record in parallel — they're independent.
+      // Profile gives us preferences/inferences; user record gives us the
+      // trust tier (which lives on `users.trust_tier`, not on the profile).
+      const [profile, user] = await Promise.all([
+        twinService.getOrCreateProfile(userId),
+        userRepository.findById(userId),
+      ]);
+      return {
+        trustTier: (user?.trust_tier as string) ?? 'observer',
+        preferences: profile.preferences.map((p) => ({
+          domain: p.domain,
+          key: p.key,
+          value: p.value,
+          confidence: p.confidence,
+        })),
+        inferences: profile.inferences.map((i) => ({
+          domain: i.domain,
+          key: i.key,
+          value: i.value,
+          confidence: i.confidence,
+          reasoning: i.reasoning,
+        })),
+      };
+    },
+  };
+
+  /**
+   * Memory provider — splits the query into search terms and asks
+   * `mempalaceRepository.searchEpisodes` (the same backing call that
+   * `@skytwin/mempalace.MemoryStack.search` uses for its L3 deep-search
+   * layer). Stop-words and very short tokens are dropped so a query like
+   * "the plan for X" doesn't ILIKE-match every episode containing "the".
+   */
+  const memoryProvider: MemoryContextProvider = {
+    async search(userId, query, limit = 5) {
+      const terms = query
+        .toLowerCase()
+        .split(/[^a-z0-9]+/i)
+        .filter((t) => t.length >= 3);
+      if (terms.length === 0) return [];
+      const rows = await mempalaceRepository.searchEpisodes(userId, terms, limit);
+      return rows.map((r) => ({
+        summary: r.situation_summary,
+        domain: r.domain,
+        actionTaken: r.action_taken ?? undefined,
+        // outcome is JSON; surface a compact 'kind' if present, else
+        // stringify a tiny preview. The renderer only needs a short
+        // human-readable hint, not a full structured payload.
+        outcome: r.outcome ? renderOutcomeHint(r.outcome) : undefined,
+        occurredAt: r.created_at instanceof Date ? r.created_at.toISOString() : undefined,
+      }));
+    },
+  };
+
+  return new ContextBuilder(twinProvider, memoryProvider);
+}
+
+/**
+ * Compress an episode `outcome` JSON blob to a one-line label for the
+ * context block. Prefer a `kind` or `status` field if present (those are
+ * the conventional discriminators in this codebase); else fall back to a
+ * short stringification capped well below the per-line byte budget.
+ */
+function renderOutcomeHint(outcome: Record<string, unknown>): string {
+  const kind = outcome['kind'] ?? outcome['status'] ?? outcome['result'];
+  if (typeof kind === 'string' && kind.length > 0) return kind;
+  try {
+    const json = JSON.stringify(outcome);
+    return json.length > 60 ? `${json.slice(0, 57)}…` : json;
+  } catch {
+    return 'outcome unavailable';
+  }
+}
+
 export function createAssistantRouter(): Router {
   const router = Router();
+  // Built once per process — adapters are stateless, the underlying
+  // TwinService caches nothing per-request.
+  const contextBuilder = buildContextBuilder();
 
   /**
    * POST /api/assistant/messages
@@ -135,10 +245,15 @@ export function createAssistantRouter(): Router {
         content: m.content,
       }));
 
-      const service = new AssistantService(llm);
+      // Issue #147: pass the ContextBuilder so the assistant gets a
+      // system prompt enriched with twin profile + relevant episodic
+      // memories. The `enrichment.query` is the just-sent user message —
+      // that's what the assistant is about to answer, so the most-relevant
+      // memories are the ones that match it.
+      const service = new AssistantService(llm, undefined, contextBuilder);
       let reply;
       try {
-        reply = await service.reply(history);
+        reply = await service.reply(history, { userId, query: content });
       } catch (err) {
         if (err instanceof AllProvidersFailedError) {
           log.warn('All LLM providers failed for assistant request', {
