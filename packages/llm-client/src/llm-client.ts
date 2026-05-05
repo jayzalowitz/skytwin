@@ -7,6 +7,7 @@ import type {
   ProviderGenerateFn,
   ProviderStreamFn,
   LlmStreamEvent,
+  ChatMessage,
 } from './types.js';
 import {
   generate as anthropicGenerate,
@@ -116,8 +117,13 @@ export class LlmClient {
    * Generate a response by walking the provider chain.
    * Skips providers with open circuit breakers.
    * Throws AllProvidersFailedError if none succeed.
+   *
+   * Issue #149: `prompt` accepts either a single string (treated as one
+   * user-role message — preserves the pre-#149 caller contract) OR a
+   * `ChatMessage[]` for multi-turn conversations. Each provider in the
+   * chain translates the array to its native chat-completion shape.
    */
-  async generate(prompt: string, options: GenerateOptions = {}): Promise<LlmResponse> {
+  async generate(prompt: string | ChatMessage[], options: GenerateOptions = {}): Promise<LlmResponse> {
     const attempted: string[] = [];
 
     for (const entry of this.chain) {
@@ -178,7 +184,7 @@ export class LlmClient {
    * Throws `AllProvidersFailedError` if no provider produces any chunk.
    */
   async *generateStream(
-    prompt: string,
+    prompt: string | ChatMessage[],
     options: GenerateOptions = {},
   ): AsyncIterable<LlmStreamEvent> {
     const attempted: string[] = [];

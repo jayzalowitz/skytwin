@@ -1,4 +1,5 @@
-import type { GenerateOptions } from '../types.js';
+import type { ChatMessage, GenerateOptions } from '../types.js';
+import { toMessages } from '../messages.js';
 import { validateBaseUrl } from '../url-validation.js';
 
 const DEFAULT_URL = 'https://api.openai.com';
@@ -6,7 +7,7 @@ const DEFAULT_URL = 'https://api.openai.com';
 export async function generate(
   apiKey: string,
   model: string,
-  prompt: string,
+  prompt: string | ChatMessage[],
   options: GenerateOptions & { baseUrl?: string } = {},
 ): Promise<string> {
   const baseUrl = options.baseUrl || DEFAULT_URL;
@@ -15,11 +16,20 @@ export async function generate(
   const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 30_000);
 
   try {
-    const messages: { role: string; content: string }[] = [];
-    if (options.systemPrompt) {
+    // OpenAI's chat-completion API is already message-array native, so
+    // multi-turn translation is essentially a no-op. Issue #149.
+    //
+    // The systemPrompt option still works for back-compat: it's prepended
+    // as a system message UNLESS the input array already contains a
+    // system message (then the inline one wins — matches what the
+    // assistant package does when it injects context).
+    const inputMessages = toMessages(prompt);
+    const hasInlineSystem = inputMessages.some((m) => m.role === 'system');
+    const messages: ChatMessage[] = [];
+    if (options.systemPrompt && !hasInlineSystem) {
       messages.push({ role: 'system', content: options.systemPrompt });
     }
-    messages.push({ role: 'user', content: prompt });
+    messages.push(...inputMessages);
 
     const res = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: 'POST',

@@ -61,16 +61,15 @@ export const DEFAULT_ASSISTANT_SYSTEM_PROMPT = [
 export const MAX_HISTORY_TURNS = 20;
 
 /**
- * Format a chat history into the single-prompt shape that `LlmClient`
- * accepts today. We label each turn with its role (`User:` / `Assistant:`)
- * so the model can follow the conversation; this is a workaround for the
- * fact that `LlmClient.generate` takes a single string rather than a
- * messages array.
+ * Legacy: format a chat history into a single-string prompt with
+ * `User:` / `Assistant:` role labels. Issue #149 closed the multi-turn
+ * `LlmClient` API gap, so the assistant no longer uses this helper —
+ * `reply()` and `replyStream()` now pass the `ChatTurn[]` directly to
+ * `LlmClient.generate` / `generateStream` as a `ChatMessage[]`.
  *
- * Phase 2 will refactor `LlmClient` to accept multi-turn message arrays
- * natively — at which point this function becomes obsolete and we can
- * remove the role-prefix workaround. Marked here so the call site is
- * easy to find when that refactor lands.
+ * Kept exported for back-compat: external callers (none known in-tree)
+ * and tests that exercised the flattening behavior. Plan to remove on
+ * the next major bump if no consumers surface.
  */
 export function formatHistoryAsPrompt(history: ChatTurn[]): string {
   return history
@@ -108,13 +107,14 @@ export interface EnrichmentRequest {
  * layer's responsibility — this service does not touch the DB.
  *
  * Issue #135 phase 1: text-only chat completion.
- * Issue #147 phase 2b: optional twin/memory enrichment in the system
- * prompt (this commit).
+ * Issue #147 phase 2b: optional twin/memory enrichment in the system prompt.
+ * Issue #146 phase 2a: SSE streaming via `replyStream`.
+ * Issue #149 phase 3: multi-turn `LlmClient` API — `reply()` and
+ *   `replyStream()` now pass `ChatTurn[]` directly as `ChatMessage[]`,
+ *   dropping the `User:` / `Assistant:` flattening workaround.
  *
  * Still deferred:
- *   - SSE streaming (this method becomes an `AsyncIterable<string>`) — #146
  *   - action-intent routing through @skytwin/decision-engine — #148
- *   - native multi-turn LlmClient API — #149
  */
 export class AssistantService {
   constructor(
@@ -128,6 +128,20 @@ export class AssistantService {
      */
     private readonly contextBuilder: ContextBuilder | null = null,
   ) {}
+
+  /**
+   * Build the system prompt for one request: the default (or
+   * constructor-supplied) system prompt, optionally prepended with the
+   * `ContextBuilder` output when `enrichment` is supplied. Shared between
+   * `reply()` and `replyStream()` so they cannot drift on the
+   * compose-the-prompt step.
+   */
+  private async composeSystemPrompt(enrichment?: EnrichmentRequest): Promise<string> {
+    if (!enrichment || !this.contextBuilder) return this.systemPrompt;
+    const context = await this.contextBuilder.build(enrichment.userId, enrichment.query);
+    if (!context) return this.systemPrompt;
+    return `${context}\n\n${this.systemPrompt}`;
+  }
 
   /**
    * Reply to the latest user message in `history`.
@@ -149,17 +163,12 @@ export class AssistantService {
    */
   async reply(history: ChatTurn[], enrichment?: EnrichmentRequest): Promise<AssistantReply> {
     const trimmed = history.slice(-MAX_HISTORY_TURNS);
-    const prompt = formatHistoryAsPrompt(trimmed);
+    const systemPrompt = await this.composeSystemPrompt(enrichment);
 
-    let systemPrompt = this.systemPrompt;
-    if (enrichment && this.contextBuilder) {
-      const context = await this.contextBuilder.build(enrichment.userId, enrichment.query);
-      if (context) {
-        systemPrompt = `${context}\n\n${this.systemPrompt}`;
-      }
-    }
-
-    const response = await this.llm.generate(prompt, {
+    // Issue #149: pass the trimmed history directly as a ChatMessage[]
+    // — providers handle multi-turn natively now. The role-flattening
+    // workaround in `formatHistoryAsPrompt` is no longer in this path.
+    const response = await this.llm.generate(trimmed, {
       systemPrompt,
       // Conservative defaults — phase 1 is text-only, no need for long
       // outputs. Tunable per-request once the route exposes options.
@@ -203,19 +212,12 @@ export class AssistantService {
     enrichment?: EnrichmentRequest,
   ): AsyncIterable<AssistantStreamEvent> {
     const trimmed = history.slice(-MAX_HISTORY_TURNS);
-    const prompt = formatHistoryAsPrompt(trimmed);
-
-    let systemPrompt = this.systemPrompt;
-    if (enrichment && this.contextBuilder) {
-      const context = await this.contextBuilder.build(enrichment.userId, enrichment.query);
-      if (context) {
-        systemPrompt = `${context}\n\n${this.systemPrompt}`;
-      }
-    }
+    const systemPrompt = await this.composeSystemPrompt(enrichment);
 
     const collected: string[] = [];
     try {
-      for await (const event of this.llm.generateStream(prompt, {
+      // Issue #149: pass the trimmed history directly as a ChatMessage[].
+      for await (const event of this.llm.generateStream(trimmed, {
         systemPrompt,
         temperature: 0.7,
         maxTokens: 800,

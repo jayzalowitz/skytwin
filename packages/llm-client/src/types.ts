@@ -31,12 +31,34 @@ export interface LlmResponse {
 }
 
 /**
+ * One turn in a multi-turn conversation. Issue #149 — phase 3.
+ *
+ * Mirrors the OpenAI / Anthropic / generic chat-completion message shape.
+ * `system` is supported as a turn role for parity with the array form,
+ * even though most callers prefer to pass system content via
+ * `GenerateOptions.systemPrompt` (which providers translate to their
+ * native top-level `system` field). When both are present, the array
+ * system messages take precedence — the assistant injects context as a
+ * system turn at the head of the array.
+ */
+export interface ChatMessage {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+}
+
+/**
  * Provider-level generate function signature.
+ *
+ * `prompt` accepts either a single string (treated as one user message —
+ * preserves the pre-#149 caller contract) OR a `ChatMessage[]` for
+ * multi-turn conversations. Each provider translates the array to its
+ * native chat-completion shape (OpenAI's `messages`, Anthropic's
+ * `messages`, Gemini's `contents`, Ollama's `/api/chat` `messages`).
  */
 export type ProviderGenerateFn = (
   apiKey: string,
   model: string,
-  prompt: string,
+  prompt: string | ChatMessage[],
   options: GenerateOptions & { baseUrl?: string },
 ) => Promise<string>;
 
@@ -66,6 +88,6 @@ export type LlmStreamEvent =
 export type ProviderStreamFn = (
   apiKey: string,
   model: string,
-  prompt: string,
+  prompt: string | ChatMessage[],
   options: GenerateOptions & { baseUrl?: string },
 ) => AsyncIterable<string>;
