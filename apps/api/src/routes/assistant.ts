@@ -165,6 +165,176 @@ function renderOutcomeHint(outcome: Record<string, unknown>): string {
   }
 }
 
+/**
+ * Stream an assistant reply over SSE. Issue #146 (phase 2a).
+ *
+ * Wire format (each event is `event:` + `data:` + blank line):
+ *
+ *   event: thread
+ *   data: {"id":"…","isNew":true}
+ *
+ *   event: user
+ *   data: {…userMessage row…}
+ *
+ *   event: chunk
+ *   data: {"content":"Hello"}
+ *
+ *   event: chunk
+ *   data: {"content":" world"}
+ *
+ *   event: done
+ *   data: {…assistantMessage row…}
+ *
+ * On mid-stream failure the stream ends with an `error` event carrying
+ * the partial content so the UI can render what landed plus a caveat.
+ *
+ * Pre-first-chunk failures (every provider 5xx, no chunk yielded) end
+ * with a single `error` event with `partialContent: ''` — same wire
+ * shape so the client doesn't need a separate code path.
+ *
+ * The assistant message is persisted AFTER the stream closes, using the
+ * accumulated full content. If the persist fails the stream's `done`
+ * event still fires (the user got a useful reply on screen) but a `warn`
+ * is logged — the audit-trail loss is recoverable, the user-facing
+ * regression isn't.
+ */
+async function streamAssistantReply(args: {
+  service: AssistantService;
+  history: ChatTurn[];
+  enrichment: { userId: string; query: string };
+  threadId: string;
+  isNewThread: boolean;
+  userMessage: unknown;
+  res: import('express').Response;
+  log: ReturnType<typeof createLogger>;
+}): Promise<void> {
+  const { service, history, enrichment, threadId, isNewThread, userMessage, res, log: logger } = args;
+
+  // Standard SSE response headers. `X-Accel-Buffering: no` keeps nginx
+  // from buffering the stream end-to-end (would defeat the point of
+  // streaming under that proxy). Harmless when no nginx is in front.
+  res.status(200);
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders?.();
+
+  const send = (event: string, data: unknown) => {
+    // Defensive — once the client drops the connection (`req.on('close')`)
+    // any further write throws ERR_STREAM_WRITE_AFTER_END and crashes the
+    // request. Check `res.writableEnded` and `res.destroyed` before each
+    // send so the for-await loop can keep iterating but stop emitting.
+    if (res.writableEnded || res.destroyed) return;
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  };
+
+  // Pre-stream events: thread + the persisted user message. The client
+  // needs both before tokens start landing — the user message ID lets it
+  // replace its optimistic bubble with the durable row, and the thread
+  // ID lets a brand-new thread show up in the left rail immediately.
+  send('thread', { id: threadId, isNew: isNewThread });
+  send('user', userMessage);
+
+  let collectedFullContent = '';
+  let metadata: { provider: string; model: string; latencyMs: number } | null = null;
+
+  try {
+    for await (const event of service.replyStream(history, enrichment)) {
+      // Stop iterating if the client went away mid-stream — saves the
+      // provider's tokens and lets the underlying generator clean up.
+      if (res.writableEnded || res.destroyed) {
+        logger.info('Assistant stream client disconnected mid-flight', {
+          threadId,
+          userId: enrichment.userId,
+        });
+        // Throwing here propagates up to abort the underlying generateStream
+        // (the provider's AbortController is wired to the generator's
+        // `finally` blocks).
+        return;
+      }
+
+      if (event.type === 'chunk') {
+        collectedFullContent += event.content;
+        send('chunk', { content: event.content });
+      } else if (event.type === 'done') {
+        collectedFullContent = event.fullContent;
+        metadata = event.metadata;
+        // Persist the assistant message NOW (after we know the full
+        // content) so a partial-stream failure earlier doesn't leave a
+        // half-message in the DB.
+        try {
+          const assistantMessage = await assistantRepository.appendMessage(
+            threadId,
+            'assistant',
+            collectedFullContent,
+            metadata,
+          );
+          send('done', assistantMessage);
+        } catch (persistErr) {
+          // Stream completed and the user saw the reply, but we couldn't
+          // persist. Log a warning and emit done with a synthetic shape
+          // so the client still terminates cleanly. The next thread
+          // fetch won't include this message — that's the recoverable
+          // failure mode (vs. corrupting the user's UI).
+          logger.warn('Assistant message persist failed after stream complete', {
+            threadId,
+            userId: enrichment.userId,
+            error: persistErr instanceof Error ? persistErr.message : String(persistErr),
+          });
+          send('done', {
+            id: null,
+            threadId,
+            role: 'assistant',
+            content: collectedFullContent,
+            createdAt: new Date().toISOString(),
+            metadata,
+            persistFailed: true,
+          });
+        }
+        res.end();
+        return;
+      } else if (event.type === 'error') {
+        // Mid-stream failure with partial content already on screen.
+        send('error', {
+          message: event.message,
+          partialContent: event.partialContent,
+        });
+        res.end();
+        return;
+      }
+    }
+  } catch (err) {
+    // Pre-first-chunk failure (AllProvidersFailedError) or any unexpected
+    // throw bubbles up here. Surface as a single `error` event so the
+    // client has one terminal-event shape to handle.
+    if (err instanceof AllProvidersFailedError) {
+      logger.warn('All LLM providers failed for assistant stream', {
+        userId: enrichment.userId,
+        threadId,
+        attempted: err.attempted,
+      });
+      send('error', {
+        message:
+          'Every configured provider returned an error. Try again in a moment, or check Settings → AI providers.',
+        partialContent: '',
+        attempted: err.attempted,
+      });
+    } else {
+      logger.error('Unexpected error during assistant stream', {
+        userId: enrichment.userId,
+        threadId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      send('error', {
+        message: err instanceof Error ? err.message : 'Unknown error',
+        partialContent: collectedFullContent,
+      });
+    }
+    res.end();
+  }
+}
+
 export function createAssistantRouter(): Router {
   const router = Router();
   // Built once per process — adapters are stateless, the underlying
@@ -251,6 +421,28 @@ export function createAssistantRouter(): Router {
       // that's what the assistant is about to answer, so the most-relevant
       // memories are the ones that match it.
       const service = new AssistantService(llm, undefined, contextBuilder);
+
+      // Issue #146 (phase 2a): branch on the Accept header. SSE clients
+      // get a token-by-token stream; legacy JSON clients get the existing
+      // single-shot response. Both paths persist the assistant message in
+      // the same shape so a thread looks identical regardless of how it
+      // was generated.
+      const wantsStream = (req.headers['accept'] ?? '').toString().includes('text/event-stream');
+
+      if (wantsStream) {
+        await streamAssistantReply({
+          service,
+          history,
+          enrichment: { userId, query: content },
+          threadId,
+          isNewThread,
+          userMessage,
+          res,
+          log,
+        });
+        return;
+      }
+
       let reply;
       try {
         reply = await service.reply(history, { userId, query: content });

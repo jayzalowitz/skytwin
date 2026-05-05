@@ -341,3 +341,121 @@ export function sendAssistantMessage(userId, content, threadId = null) {
     body: JSON.stringify({ userId, content, threadId }),
   });
 }
+
+/**
+ * Streaming variant of `sendAssistantMessage`. Issue #146 (phase 2a).
+ *
+ * Posts to the same endpoint with `Accept: text/event-stream` and parses
+ * the SSE response into per-event callbacks. Uses `fetch` + a manual SSE
+ * parser instead of `EventSource` because EventSource only supports GET
+ * requests — and the assistant endpoint is POST (with the message body).
+ *
+ * Callbacks (all optional):
+ *   - onThread({ id, isNew })             — thread metadata, fires first
+ *   - onUserMessage(message)              — persisted user-message row
+ *   - onChunk(text)                       — partial reply text, fires N times
+ *   - onDone(assistantMessage)            — persisted assistant-message row
+ *   - onError({ message, partialContent }) — terminal error event
+ *
+ * Returns a Promise that resolves when the stream closes (after `done`
+ * or `error`). The promise rejects only on transport-level failures
+ * (network down, 5xx before SSE handshake) — server-emitted error events
+ * resolve normally and surface via `onError`.
+ */
+export async function sendAssistantMessageStream(userId, content, threadId, callbacks = {}) {
+  const { onThread, onUserMessage, onChunk, onDone, onError } = callbacks;
+
+  let res;
+  try {
+    res = await fetch(`${API}/assistant/messages`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'text/event-stream',
+        ...authHeaders(),
+      },
+      body: JSON.stringify({ userId, content, threadId }),
+    });
+  } catch {
+    throw new Error('Unable to reach the server. Please check your connection.');
+  }
+
+  if (!res.ok) {
+    // Server rejected before opening the stream (e.g. 400 validation,
+    // 409 no provider, 502 all providers down on pre-stream check).
+    // Echo the error shape callers already handle from fetchJSON.
+    const err = await res.json().catch(() => null);
+    const message = err?.error || err?.message || `Request failed (HTTP ${res.status})`;
+    throw new Error(message);
+  }
+
+  if (!res.body) {
+    throw new Error('Server returned no stream body');
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buffer = '';
+
+  const dispatch = (event, data) => {
+    if (event === 'thread') onThread?.(data);
+    else if (event === 'user') onUserMessage?.(data);
+    else if (event === 'chunk') onChunk?.(data?.content ?? '');
+    else if (event === 'done') onDone?.(data);
+    else if (event === 'error') onError?.(data);
+  };
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      // SSE event boundary is a blank line. Process complete events
+      // and keep the trailing fragment for the next read.
+      let boundary = buffer.indexOf('\n\n');
+      while (boundary !== -1) {
+        const rawEvent = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        const parsed = parseSseEvent(rawEvent);
+        if (parsed) dispatch(parsed.event, parsed.data);
+        boundary = buffer.indexOf('\n\n');
+      }
+    }
+    // Flush any final fragment (defensive; well-behaved servers always
+    // end with `\n\n` after the terminal event).
+    const tail = buffer.trim();
+    if (tail.length > 0) {
+      const parsed = parseSseEvent(tail);
+      if (parsed) dispatch(parsed.event, parsed.data);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+/**
+ * Parse one SSE event block (the slice between two blank lines) into
+ * `{ event, data }`. Returns null for blocks that don't look like SSE
+ * events (heartbeats, comments, malformed data). Tolerant by design —
+ * one bad event must not kill the stream.
+ */
+function parseSseEvent(raw) {
+  let event = 'message';
+  let dataLines = [];
+  for (const line of raw.split('\n')) {
+    if (line.startsWith(':')) continue; // comment / heartbeat
+    if (line.startsWith('event:')) {
+      event = line.slice(6).trim();
+    } else if (line.startsWith('data:')) {
+      dataLines.push(line.slice(5).trim());
+    }
+  }
+  if (dataLines.length === 0) return null;
+  const payload = dataLines.join('\n');
+  try {
+    return { event, data: JSON.parse(payload) };
+  } catch {
+    return { event, data: payload };
+  }
+}
