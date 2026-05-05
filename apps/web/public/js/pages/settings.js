@@ -50,6 +50,7 @@ export async function renderSettings(container, userId) {
       <span style="color: var(--success); font-weight: 600;">Connected!</span> Your ${escapeHtml(justConnected)} account is now linked. Your twin will start learning from your data.
     </div>` : ''}
 
+    ${(new URLSearchParams(window.location.search).get('dev') === '1') ? `
     <details class="card collapsible-card">
       <summary class="card-header collapsible-header">
         <span class="card-title">Advanced — switch user (developer)</span>
@@ -69,6 +70,7 @@ export async function renderSettings(container, userId) {
         </div>
       </div>
     </details>
+    ` : ''}<!-- UX review #8: dev-only "switch user" section gated behind ?dev=1 -->\n
 
     <div class="card">
       <div class="card-header">
