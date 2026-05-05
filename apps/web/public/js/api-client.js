@@ -318,3 +318,26 @@ export function deleteRoutine(routineId, userId) {
     method: 'DELETE',
   });
 }
+
+// ── Assistant (issue #135 phase 1) ────────────────────
+
+export function fetchAssistantThreads(userId) {
+  return fetchJSON(`${API}/assistant/threads?userId=${encodeURIComponent(userId)}`);
+}
+
+export function fetchAssistantThread(threadId, userId) {
+  return fetchJSON(`${API}/assistant/threads/${encodeURIComponent(threadId)}?userId=${encodeURIComponent(userId)}`);
+}
+
+export function deleteAssistantThread(threadId, userId) {
+  return fetchJSON(`${API}/assistant/threads/${encodeURIComponent(threadId)}?userId=${encodeURIComponent(userId)}`, {
+    method: 'DELETE',
+  });
+}
+
+export function sendAssistantMessage(userId, content, threadId = null) {
+  return fetchJSON(`${API}/assistant/messages`, {
+    method: 'POST',
+    body: JSON.stringify({ userId, content, threadId }),
+  });
+}

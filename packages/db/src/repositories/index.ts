@@ -98,3 +98,9 @@ export type {
   PruneOptions,
   PruneResult,
 } from './email-label-repository.js';
+
+export { assistantRepository, deriveThreadTitle } from './assistant-repository.js';
+export type {
+  AssistantThread,
+  AssistantMessage,
+} from './assistant-repository.js';

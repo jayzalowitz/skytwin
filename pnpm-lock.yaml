@@ -32,6 +32,9 @@ importers:
 
   apps/api:
     dependencies:
+      '@skytwin/assistant':
+        specifier: workspace:*
+        version: link:../../packages/assistant
       '@skytwin/config':
         specifier: workspace:*
         version: link:../../packages/config
@@ -204,6 +207,19 @@ importers:
       tsx:
         specifier: ^4.7.0
         version: 4.21.0
+      typescript:
+        specifier: ^5.4.0
+        version: 5.9.3
+      vitest:
+        specifier: ^1.3.0
+        version: 1.6.1(@types/node@25.6.0)(lightningcss@1.32.0)(terser@5.46.2)
+
+  packages/assistant:
+    dependencies:
+      '@skytwin/llm-client':
+        specifier: workspace:*
+        version: link:../llm-client
+    devDependencies:
       typescript:
         specifier: ^5.4.0
         version: 5.9.3

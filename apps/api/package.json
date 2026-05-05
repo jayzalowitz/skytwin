@@ -11,6 +11,7 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
+    "@skytwin/assistant": "workspace:*",
     "@skytwin/config": "workspace:*",
     "@skytwin/connectors": "workspace:*",
     "@skytwin/core": "workspace:*",
