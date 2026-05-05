@@ -1,4 +1,5 @@
 import { fetchTwinProfile, fetchLearning, updatePreference, deleteInsight, escapeHtml } from '../api-client.js';
+import { showToast } from '../toast.js';
 
 export async function renderTwin(container, userId) {
   let profile = null;
@@ -399,13 +400,7 @@ async function submitCorrection(modal, userId, domain, key, newValue) {
     await deleteInsight(userId, domain, key, newValue);
     modal.remove();
 
-    // Show success toast
-    const toast = document.createElement('div');
-    toast.className = 'toast toast-success';
-    toast.textContent = newValue ? "Got it, I'll remember that." : 'Removed. Thanks for the correction.';
-    document.body.appendChild(toast);
-    requestAnimationFrame(() => toast.classList.add('visible'));
-    setTimeout(() => toast.remove(), 3500);
+    showToast(newValue ? "Got it, I'll remember that." : 'Removed. Thanks for the correction.', { kind: 'success' });
 
     // Re-render the twin page
     const { renderTwin } = await import('./twin.js');

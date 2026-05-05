@@ -1,5 +1,29 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.9.0] - 2026-05-05
+
+Toast cleanup + back-online affordance. Closes the "migrate legacy `.toast` callers" item that was deferred in v0.6.8.0 so the duplicate CSS can come out, and adds a back-online toast so the user gets explicit confirmation when the API recovers (instead of having to notice the banner disappear).
+
+### Changed — three pages migrated from raw `.toast` DOM to `showToast()`
+
+- `apps/web/public/js/pages/decisions.js` — the "Walked back" success toast (with quoted reason) and the "Couldn't walk that back" error toast now use `showToast(msg, { kind })`. Both use a 4s duration to give the user time to read the quoted reason.
+- `apps/web/public/js/pages/twin.js` — the "Got it, I'll remember that" / "Removed" correction toast.
+- `apps/web/public/js/pages/approvals.js` — removed the local 12-line `showToast(message, type)` helper (manual `requestAnimationFrame` + `.visible` toggle + nested `setTimeout`); the three call sites — escalation choice, escalation custom-text, and approve/reject — now use the shared `showToast(msg, { kind: 'success' })`.
+
+Net: −33 lines of per-file DOM toast plumbing; toast behavior now consistent across pages (same animation, same dismiss-on-click, same hover-to-pause, same screen-reader announcement).
+
+### Added — back-online toast on connection recovery
+
+`updateConnectionStatus()` in `apps/web/public/js/app.js` now edge-triggers a `showToast('Back online — SkyTwin is listening again.', { kind: 'success' })` when transitioning from offline → online (either SSE reconnect or a successful health check after a failure). Skips the very first call after page load (no prior offline state to "recover" from) by initializing `_wasOffline = null` rather than `false`. Without this, the user has to notice the disconnect banner disappear — easy to miss when the banner is the only signal. The toast complements the banner by surfacing the recovery actively.
+
+### Removed — legacy `.toast` CSS block
+
+Deleted the `.toast`, `.toast.visible`, `.toast-success`, `.toast-error` rules at the previous line 745 of `apps/web/public/css/styles.css`. With all callers migrated, those classes are dead code. Updated the explanatory comment on the `.skytoast-*` block to note the migration completed in this version. Note: `apps/web/public/js/sse-client.js` has its own internal `showToast(title, message, type)` for SSE notifications using inline styles (not the `.toast` class), so it's unaffected.
+
+### Tests
+
+Backend test suite still green across 40 packages (212 passed in @skytwin/api alone, plus 104 in ironclaw-adapter). Toast component is browser-only; no new unit tests.
+
 ## [0.6.8.0] - 2026-05-05
 
 Closes UX review #10 — adds reusable toast notifications + Settings auto-save. The toast component is the reusable infrastructure piece several deferred findings were waiting on.

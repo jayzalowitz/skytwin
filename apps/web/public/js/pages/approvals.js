@@ -1,6 +1,7 @@
 import { fetchPendingApprovals, fetchApprovalHistory, respondToApproval, escapeHtml, fetchTrustProgress, renderApiError, wireApiRetry } from '../api-client.js';
 import { renderTrustProgress } from '../components/progress-bar.js';
 import { KEY_TOUR_MODE, firstApprovalIntroSeenKey } from '../storage-keys.js';
+import { showToast } from '../toast.js';
 
 const PENDING_PAGE_SIZE = 10;
 
@@ -653,18 +654,6 @@ function formatTime(dateStr) {
   return d.toLocaleDateString();
 }
 
-function showToast(message, type = 'success') {
-  const toast = document.createElement('div');
-  toast.className = `toast toast-${type}`;
-  toast.textContent = message;
-  document.body.appendChild(toast);
-  requestAnimationFrame(() => toast.classList.add('visible'));
-  setTimeout(() => {
-    toast.classList.remove('visible');
-    setTimeout(() => toast.remove(), 300);
-  }, 2500);
-}
-
 /**
  * Handle a suggested action choice on an escalation card.
  * Sends as a rejection with the chosen action as the reason,
@@ -683,7 +672,7 @@ async function handleEscalationChoice(requestId, userId, chosenAction, label) {
       const actions = el.querySelector('.escalation-prompt');
       if (actions) actions.innerHTML = `<span class="badge badge-success">Got it — ${escapeHtml(label)}</span>`;
     }
-    showToast(`Got it — I'll remember to "${label}" for things like this.`);
+    showToast(`Got it — I'll remember to "${label}" for things like this.`, { kind: 'success' });
   } catch (err) {
     const el = document.getElementById(`approval-${requestId}`);
     if (el) {
@@ -714,7 +703,7 @@ async function handleEscalationCustom(requestId, userId) {
       const prompt = el.querySelector('.escalation-prompt');
       if (prompt) prompt.innerHTML = `<span class="badge badge-success">Got it — noted your preference</span>`;
     }
-    showToast('Thanks — I\'ll learn from that.');
+    showToast('Thanks — I\'ll learn from that.', { kind: 'success' });
   } catch (err) {
     const el = document.getElementById(`approval-${requestId}`);
     if (el) {
@@ -753,7 +742,7 @@ async function handleApproval(requestId, action, userId) {
         ? `Got it — I'll remember: "${reason.length > 80 ? reason.slice(0, 77) + '…' : reason}" for next time.`
         : 'Noted — I won\'t do that.';
     }
-    showToast(toastMsg);
+    showToast(toastMsg, { kind: 'success' });
 
     // Visibly tick up the trust progress bar right after an approval, so
     // the user feels the trust building rather than having to look up.

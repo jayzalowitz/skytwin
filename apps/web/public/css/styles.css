@@ -196,11 +196,8 @@ body {
   }
 }
 
-/* Toasts use the .skytoast- prefix to avoid colliding with the
- * legacy .toast styles further down (used by approvals/decisions/twin
- * for one-off "Saved" / "Failed" indicators with the .visible toggle).
- * The two systems can coexist — eventually the legacy callers should
- * migrate to showToast() and the old CSS can come out. */
+/* Toasts use the .skytoast- prefix. The previous .toast/.toast-success
+ * one-off indicators were migrated to showToast() in v0.6.9.0. */
 
 .skytoast {
   pointer-events: auto;
@@ -742,27 +739,6 @@ textarea.form-input { resize: vertical; min-height: 60px; }
   margin-bottom: 0.25rem;
   color: var(--text-muted);
 }
-
-/* ── Toast notifications ─────────────────────────────── */
-
-.toast {
-  position: fixed;
-  bottom: 1.5rem;
-  right: 1.5rem;
-  padding: 0.75rem 1.25rem;
-  border-radius: var(--radius);
-  font-size: 0.85rem;
-  font-weight: 500;
-  z-index: 2000;
-  opacity: 0;
-  transform: translateY(10px);
-  transition: opacity 0.3s, transform 0.3s;
-  pointer-events: none;
-}
-
-.toast.visible { opacity: 1; transform: translateY(0); }
-.toast-success { background: var(--success); color: #000; }
-.toast-error { background: var(--danger); color: white; }
 
 /* ── Collapsible cards ───────────────────────────────── */
 
