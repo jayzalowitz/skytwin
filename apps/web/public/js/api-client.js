@@ -563,8 +563,14 @@ export function sendAssistantMessage(userId, content, threadId = null) {
  * (network down, 5xx before SSE handshake) — server-emitted error events
  * resolve normally and surface via `onError`.
  */
-export async function sendAssistantMessageStream(userId, content, threadId, callbacks = {}) {
+export async function sendAssistantMessageStream(userId, content, threadId, callbacks = {}, options = {}) {
   const { onThread, onUserMessage, onChunk, onDone, onError } = callbacks;
+  // Optional AbortSignal lets the caller cancel mid-stream — used by the
+  // assistant chat's Stop button. fetch() rejects with AbortError when
+  // aborted; the read loop exits cleanly because reader.read() also
+  // rejects. We rethrow AbortError so the caller's catch can distinguish
+  // "user-initiated stop" from real network failures.
+  const { signal } = options;
 
   let res;
   try {
@@ -576,8 +582,13 @@ export async function sendAssistantMessageStream(userId, content, threadId, call
         ...authHeaders(),
       },
       body: JSON.stringify({ userId, content, threadId }),
+      signal,
     });
-  } catch {
+  } catch (err) {
+    // AbortError is "the user clicked Stop" — surface it verbatim so the
+    // caller can branch on err.name; everything else is a real transport
+    // failure that gets the friendly fallback.
+    if (err?.name === 'AbortError') throw err;
     throw new Error('Unable to reach the server. Please check your connection.');
   }
 
@@ -630,6 +641,11 @@ export async function sendAssistantMessageStream(userId, content, threadId, call
       const parsed = parseSseEvent(tail);
       if (parsed) dispatch(parsed.event, parsed.data);
     }
+  } catch (err) {
+    // Aborted by caller (Stop button) — surface to caller via the same
+    // path as the initial fetch abort so the catch can branch on .name.
+    if (err?.name === 'AbortError') throw err;
+    throw err;
   } finally {
     reader.releaseLock();
   }

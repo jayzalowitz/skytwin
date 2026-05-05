@@ -28,6 +28,10 @@ let _state = {
   // requests against the same thread (which would interleave message order
   // unpredictably).
   sending: false,
+  // AbortController for the in-flight stream — set in handleSend, cleared
+  // in the finally block. handleStop calls .abort() to interrupt a long
+  // generation. The Send button swaps to a Stop button while non-null.
+  streamController: null,
 };
 
 let _assistantListenerWired = false;
@@ -100,14 +104,18 @@ function paint(container) {
             ${_state.sending ? 'disabled' : ''}
             aria-label="Message"
           ></textarea>
-          <button
-            class="assistant-composer-send"
-            type="submit"
-            ${_state.sending ? 'disabled' : ''}
-            aria-label="Send"
-          >
-            ${_state.sending ? 'Sending…' : 'Send'}
-          </button>
+          ${_state.sending
+            ? `<button
+                class="assistant-composer-send assistant-composer-stop"
+                type="button"
+                data-action="stop-stream"
+                aria-label="Stop generating"
+              >Stop</button>`
+            : `<button
+                class="assistant-composer-send"
+                type="submit"
+                aria-label="Send"
+              >Send</button>`}
         </form>
       </section>
     </div>
@@ -337,6 +345,8 @@ function ensureAssistantListener() {
     } else if (action === 'suggest') {
       const prompt = btn.getAttribute('data-prompt');
       if (prompt) handleSuggestion(prompt);
+    } else if (action === 'stop-stream') {
+      handleStop();
     }
   });
 
@@ -476,6 +486,12 @@ async function handleSend() {
   let streamingContent = '';
   let receivedFirstChunk = false;
 
+  // Per-send AbortController. The Stop button calls .abort() on this so
+  // the user can interrupt a long generation. Cleared in `finally` so a
+  // race between abort + done doesn't leave a dangling controller.
+  const controller = new AbortController();
+  _state.streamController = controller;
+
   try {
     await sendAssistantMessageStream(_state.userId, content, _state.activeThreadId, {
       onThread: (thread) => {
@@ -554,7 +570,7 @@ async function handleSend() {
         if (input && !partialContent) input.value = content;
         if (container) paint(container);
       },
-    });
+    }, { signal: controller.signal });
 
     // After a successful stream, refresh the threads list so a new thread
     // shows up in the left rail or an existing one bumps to the top. We
@@ -567,6 +583,23 @@ async function handleSend() {
       /* keep stale threads list — will refresh on next render */
     }
   } catch (err) {
+    // User-initiated stop: keep whatever streamed so far as a real
+    // assistant bubble (no error caveat), drop the optimistic placeholder
+    // tag so it stops looking transient. The server may still have
+    // persisted partial text — a thread re-fetch on next view will
+    // reconcile if so. No error toast / no error bubble — this was
+    // intentional, not a failure.
+    if (err?.name === 'AbortError') {
+      const idx = _state.messages.findIndex((m) => m.id === streamingAssistantId);
+      if (idx >= 0) {
+        _state.messages[idx] = {
+          ..._state.messages[idx],
+          id: `stopped-${Date.now()}`,
+          content: streamingContent || '(stopped)',
+        };
+      }
+      return;
+    }
     // Transport-level failure (network down, 4xx/5xx pre-stream). Drop
     // the optimistic bubble, restore input, surface error in an
     // assistant-shaped bubble.
@@ -593,6 +626,25 @@ async function handleSend() {
     if (input) input.value = content;
   } finally {
     _state.sending = false;
+    // Clear only if it's still ours — defensive in case a race somehow
+    // started a second send before we got here (shouldn't be possible
+    // because handleSend bails when _state.sending is true, but cheap).
+    if (_state.streamController === controller) {
+      _state.streamController = null;
+    }
     if (container) paint(container);
   }
+}
+
+/**
+ * Stop button handler. Aborts the in-flight stream — fetch read loop
+ * exits, the AbortError lands in handleSend's catch, and any partial
+ * streamed content is preserved as a real assistant bubble (vs. an
+ * error bubble) so the user keeps what they got. No-op when nothing
+ * is in flight.
+ */
+function handleStop() {
+  const c = _state.streamController;
+  if (!c) return;
+  c.abort();
 }
