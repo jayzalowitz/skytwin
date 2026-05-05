@@ -1,4 +1,5 @@
 import type { LlmClient } from '@skytwin/llm-client';
+import type { ContextBuilder } from './context-builder.js';
 
 /**
  * One turn in the conversation, in the order it was said. Mirrors the
@@ -83,19 +84,49 @@ export function formatHistoryAsPrompt(history: ChatTurn[]): string {
 }
 
 /**
+ * Optional per-request enrichment context. When supplied, `AssistantService`
+ * asks the `ContextBuilder` for a renderable block of twin profile +
+ * relevant memories and prepends it to the system prompt. Issue #147
+ * (phase 2b).
+ *
+ * Backward-compatible: omitting this on a `reply()` call falls back to
+ * the bare default system prompt — same behavior as phase 1.
+ */
+export interface EnrichmentRequest {
+  userId: string;
+  /**
+   * Free-text query used to retrieve relevant episodic memories. Typically
+   * the latest user message — that's what the assistant is about to
+   * answer, so the most-relevant memories are the ones that match it.
+   */
+  query: string;
+}
+
+/**
  * Stateless service that turns a chat history into the next assistant
  * reply. Persistence (which thread? which message ids?) is the route
  * layer's responsibility — this service does not touch the DB.
  *
- * Issue #135 phase 1: text-only chat completion. Phase 2 wires:
- *   - SSE streaming (this method becomes an `AsyncIterable<string>`)
- *   - twin-profile + memory-palace context enrichment
- *   - action-intent routing through @skytwin/decision-engine
+ * Issue #135 phase 1: text-only chat completion.
+ * Issue #147 phase 2b: optional twin/memory enrichment in the system
+ * prompt (this commit).
+ *
+ * Still deferred:
+ *   - SSE streaming (this method becomes an `AsyncIterable<string>`) — #146
+ *   - action-intent routing through @skytwin/decision-engine — #148
+ *   - native multi-turn LlmClient API — #149
  */
 export class AssistantService {
   constructor(
     private readonly llm: LlmClient,
     private readonly systemPrompt: string = DEFAULT_ASSISTANT_SYSTEM_PROMPT,
+    /**
+     * Optional context builder. When provided AND a `reply()` call passes
+     * `enrichment`, the rendered twin/memory context is prepended to the
+     * system prompt for that request. Omit at construction time for
+     * tests, early bring-up, or routes that don't have a userId.
+     */
+    private readonly contextBuilder: ContextBuilder | null = null,
   ) {}
 
   /**
@@ -105,17 +136,31 @@ export class AssistantService {
    * entry. Returns the assistant's reply text plus generation metadata
    * for the route to persist.
    *
+   * `enrichment` is optional: when supplied AND a `ContextBuilder` was
+   * passed at construction, the builder runs and the rendered context
+   * gets prepended to the system prompt. When either is missing the
+   * service uses the bare default system prompt — same behavior as
+   * phase 1, no surprises for routes that haven't opted in.
+   *
    * Throws `AllProvidersFailedError` from `@skytwin/llm-client` when
    * every configured provider fails (or has an open circuit). The route
    * should catch that and respond 502 — phase 1 doesn't try to recover
    * gracefully because there's no fallback content worth showing.
    */
-  async reply(history: ChatTurn[]): Promise<AssistantReply> {
+  async reply(history: ChatTurn[], enrichment?: EnrichmentRequest): Promise<AssistantReply> {
     const trimmed = history.slice(-MAX_HISTORY_TURNS);
     const prompt = formatHistoryAsPrompt(trimmed);
 
+    let systemPrompt = this.systemPrompt;
+    if (enrichment && this.contextBuilder) {
+      const context = await this.contextBuilder.build(enrichment.userId, enrichment.query);
+      if (context) {
+        systemPrompt = `${context}\n\n${this.systemPrompt}`;
+      }
+    }
+
     const response = await this.llm.generate(prompt, {
-      systemPrompt: this.systemPrompt,
+      systemPrompt,
       // Conservative defaults — phase 1 is text-only, no need for long
       // outputs. Tunable per-request once the route exposes options.
       temperature: 0.7,

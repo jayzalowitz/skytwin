@@ -1,0 +1,290 @@
+/**
+ * Context enrichment for the assistant — issue #147 (phase 2b).
+ *
+ * Phase 1 (#139) shipped a generic system prompt. The assistant had no idea
+ * who the user was, what their preferences were, or what the twin had
+ * learned about them — so "what did I tell you about X last month?" and
+ * "what's my preference for Y?" — the two killer use cases that distinguish
+ * a personal twin from generic ChatGPT — fell through.
+ *
+ * This module composes a small context section that gets prepended to the
+ * system prompt. It pulls from two sources via ports (so this package stays
+ * free of `@skytwin/db` and `@skytwin/mempalace` deps and unit-tests
+ * cleanly with stubs):
+ *
+ *   - `TwinContextProvider` — the user's profile (preferences + inferences)
+ *   - `MemoryContextProvider` — episodic memories relevant to the question
+ *
+ * The rendered context is hard-capped at `MAX_CONTEXT_BYTES`. A noisy
+ * profile or a long memory hit list cannot dominate the model's token
+ * budget — the rest of the prompt (system instructions + conversation
+ * history) needs room.
+ */
+
+/**
+ * Public shape returned by the twin context port. Snake-cased fields are
+ * stringified `value: unknown`s — the renderer doesn't care about types,
+ * just about producing a compact line.
+ */
+export interface TwinPreference {
+  domain: string;
+  key: string;
+  value: unknown;
+  /** ConfidenceLevel string — 'speculative' | 'low' | 'moderate' | 'high' | 'confirmed'. */
+  confidence: string;
+}
+
+export interface TwinInference {
+  domain: string;
+  key: string;
+  value: unknown;
+  confidence: string;
+  reasoning: string;
+}
+
+export interface TwinContextSnapshot {
+  trustTier: string;
+  /** Preferences the user has expressed (or the twin has inferred + the user hasn't corrected). */
+  preferences: TwinPreference[];
+  /** Inferences the twin has drawn but hasn't yet promoted to preferences. */
+  inferences: TwinInference[];
+}
+
+export interface TwinContextProvider {
+  /** Return the user's twin profile in a renderer-friendly shape. */
+  fetch(userId: string): Promise<TwinContextSnapshot>;
+}
+
+/**
+ * Public shape returned by the memory context port. `summary` is the
+ * one-line `situationSummary` from `EpisodicMemory`; `actionTaken` and
+ * `outcome` are present when the episode was a real decision (vs. an
+ * observation).
+ */
+export interface MemoryHit {
+  summary: string;
+  domain: string;
+  actionTaken?: string;
+  outcome?: string;
+  /** ISO timestamp of when this episode happened. */
+  occurredAt?: string;
+}
+
+export interface MemoryContextProvider {
+  /** Return episodes relevant to a search query. Empty array when nothing relevant. */
+  search(userId: string, query: string, limit?: number): Promise<MemoryHit[]>;
+}
+
+/**
+ * Hard cap on the rendered context block. Sized so the rest of the prompt
+ * (system instructions ~500 chars, conversation history up to ~10K chars)
+ * still fits comfortably under common provider context limits.
+ *
+ * We measure in bytes, not characters, to keep the cap honest under
+ * non-ASCII content (emoji, accented characters, CJK). A user with a
+ * preference like "value: 寿司" should not silently overflow.
+ */
+export const MAX_CONTEXT_BYTES = 2_000;
+
+/**
+ * Confidence levels we consider strong enough to mention in context.
+ *
+ * Speculative inferences are noise — surfacing them as "I think you prefer X"
+ * makes the assistant look unsure of itself and frequently wrong. We keep
+ * them in the model (`@skytwin/twin-model`) but don't broadcast them.
+ */
+const SHOW_CONFIDENCES = new Set(['confirmed', 'high', 'moderate']);
+
+/**
+ * Maximum number of preferences and inferences to surface. The twin can
+ * accumulate hundreds of preferences over time and dumping all of them
+ * would (a) blow the byte cap and (b) make the model lose the signal.
+ *
+ * We keep the highest-confidence ones, ranked: confirmed > high > moderate.
+ */
+const MAX_PREFERENCES = 12;
+const MAX_INFERENCES = 6;
+const MAX_MEMORIES = 5;
+
+const CONFIDENCE_RANK: Record<string, number> = {
+  confirmed: 4,
+  high: 3,
+  moderate: 2,
+  low: 1,
+  speculative: 0,
+};
+
+/**
+ * Stringify an unknown preference/inference value for the prompt. Booleans
+ * become 'yes' / 'no' (more readable than 'true' / 'false'), strings pass
+ * through, anything else gets JSON.stringified with a length cap so a
+ * pathological deeply-nested object can't bloat one line past the byte cap.
+ */
+function renderValue(value: unknown): string {
+  if (typeof value === 'boolean') return value ? 'yes' : 'no';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number') return String(value);
+  if (value === null || value === undefined) return '—';
+  try {
+    const json = JSON.stringify(value);
+    return json.length > 80 ? `${json.slice(0, 77)}…` : json;
+  } catch {
+    return '—';
+  }
+}
+
+/**
+ * Truncate a string to fit a byte budget. Cuts at codepoint boundaries
+ * (TextEncoder ensures we don't slice mid-multi-byte-char). Adds an
+ * ellipsis when truncation happens.
+ */
+function truncateToBytes(input: string, maxBytes: number): string {
+  const enc = new TextEncoder();
+  const bytes = enc.encode(input);
+  if (bytes.length <= maxBytes) return input;
+  // Reserve room for the ellipsis. '…' is U+2026, 3 UTF-8 bytes.
+  const ELLIPSIS_BYTES = 3;
+  const dec = new TextDecoder('utf-8', { fatal: false });
+  let cut = maxBytes - ELLIPSIS_BYTES;
+  // Walk back until we land on a valid UTF-8 boundary (no replacement
+  // char at the end). Max 4 iterations because UTF-8 codepoints span
+  // at most 4 bytes.
+  for (let i = 0; i < 4; i++) {
+    const decoded = dec.decode(bytes.slice(0, cut));
+    if (!decoded.endsWith('�')) {
+      return `${decoded}…`;
+    }
+    cut -= 1;
+  }
+  return `${dec.decode(bytes.slice(0, Math.max(0, cut)))}…`;
+}
+
+/**
+ * Compose a context block from twin profile + relevant memories.
+ *
+ * Output shape (one example):
+ *
+ *   ## What I know about you
+ *   Trust tier: moderate_autonomy
+ *   Preferences:
+ *   - email/auto_archive = yes (high)
+ *   - calendar/default_meeting_length = 30 (confirmed)
+ *   Inferences:
+ *   - finance/monthly_subscription_threshold = 50 — based on 12 prior approvals
+ *   ## Relevant past episodes
+ *   - [2026-04-12] email · Archived a Stripe receipt without asking
+ *   - [2026-03-30] calendar · Declined a recurring meeting after 3 conflicts
+ *
+ * Returns an empty string when both providers come up empty (no profile,
+ * no memories) — the AssistantService treats that as "use the default
+ * system prompt unchanged."
+ */
+export class ContextBuilder {
+  constructor(
+    private readonly twin: TwinContextProvider,
+    private readonly memory: MemoryContextProvider | null = null,
+  ) {}
+
+  async build(userId: string, query: string): Promise<string> {
+    // Fetch in parallel — twin profile and memory search are independent.
+    // If either provider throws, log via console.warn (the AssistantService
+    // catches rejections and falls back to no-context, but that's coarse;
+    // partial context is better than no context).
+    const [twinSnapshot, memories] = await Promise.all([
+      this.fetchTwinSafe(userId),
+      this.fetchMemoriesSafe(userId, query),
+    ]);
+
+    const sections: string[] = [];
+
+    if (twinSnapshot) {
+      const block = renderTwinBlock(twinSnapshot);
+      if (block) sections.push(block);
+    }
+    if (memories.length > 0) {
+      sections.push(renderMemoriesBlock(memories));
+    }
+
+    if (sections.length === 0) return '';
+
+    const composed = sections.join('\n\n');
+    return truncateToBytes(composed, MAX_CONTEXT_BYTES);
+  }
+
+  private async fetchTwinSafe(userId: string): Promise<TwinContextSnapshot | null> {
+    try {
+      return await this.twin.fetch(userId);
+    } catch (err) {
+      console.warn(
+        '[assistant.ContextBuilder] twin fetch failed, falling back to no twin context:',
+        err instanceof Error ? err.message : String(err),
+      );
+      return null;
+    }
+  }
+
+  private async fetchMemoriesSafe(userId: string, query: string): Promise<MemoryHit[]> {
+    if (!this.memory) return [];
+    try {
+      return await this.memory.search(userId, query, MAX_MEMORIES);
+    } catch (err) {
+      console.warn(
+        '[assistant.ContextBuilder] memory search failed, falling back to no memory context:',
+        err instanceof Error ? err.message : String(err),
+      );
+      return [];
+    }
+  }
+}
+
+function renderTwinBlock(snap: TwinContextSnapshot): string {
+  const lines: string[] = ['## What I know about you'];
+  if (snap.trustTier) {
+    lines.push(`Trust tier: ${snap.trustTier}`);
+  }
+
+  const prefs = filterAndRankConfidences(snap.preferences).slice(0, MAX_PREFERENCES);
+  if (prefs.length > 0) {
+    lines.push('Preferences:');
+    for (const p of prefs) {
+      lines.push(`- ${p.domain}/${p.key} = ${renderValue(p.value)} (${p.confidence})`);
+    }
+  }
+
+  const infs = filterAndRankConfidences(snap.inferences).slice(0, MAX_INFERENCES);
+  if (infs.length > 0) {
+    lines.push('Inferences (not yet user-confirmed):');
+    for (const i of infs) {
+      const reason = i.reasoning ? ` — ${i.reasoning}` : '';
+      lines.push(`- ${i.domain}/${i.key} = ${renderValue(i.value)} (${i.confidence})${reason}`);
+    }
+  }
+
+  // If the trust tier was the only line, drop the section entirely — a
+  // bare "Trust tier: observer" with no preferences or inferences is
+  // noise to the model.
+  if (lines.length <= 2) return '';
+  return lines.join('\n');
+}
+
+function renderMemoriesBlock(memories: MemoryHit[]): string {
+  const lines: string[] = ['## Relevant past episodes'];
+  for (const m of memories) {
+    const date = m.occurredAt ? `[${m.occurredAt.slice(0, 10)}] ` : '';
+    const action = m.actionTaken ? ` · ${m.actionTaken}` : '';
+    const outcome = m.outcome ? ` (${m.outcome})` : '';
+    lines.push(`- ${date}${m.domain} · ${m.summary}${action}${outcome}`);
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Filter to only display-worthy confidences, then rank highest-first so
+ * the slice() to MAX_* keeps the most-load-bearing entries.
+ */
+function filterAndRankConfidences<T extends { confidence: string }>(items: T[]): T[] {
+  return items
+    .filter((it) => SHOW_CONFIDENCES.has(it.confidence))
+    .slice() // copy before sort to avoid mutating caller's array
+    .sort((a, b) => (CONFIDENCE_RANK[b.confidence] ?? 0) - (CONFIDENCE_RANK[a.confidence] ?? 0));
+}
