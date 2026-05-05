@@ -10,6 +10,7 @@ import { renderOnboarding } from './pages/onboarding.js';
 import { fetchPendingApprovals, fetchHealth, fetchUser, listUsers, escapeHtml, isApiKnownOffline } from './api-client.js';
 import { initTheme } from './theme-switcher.js';
 import { connectSSE, disconnectSSE, isConnected } from './sse-client.js';
+import { showToast } from './toast.js';
 import { KEY_USER_ID, KEY_ONBOARDED, KEY_SESSION_TOKEN } from './storage-keys.js';
 
 let currentUserId = localStorage.getItem(KEY_USER_ID) || '';
@@ -210,6 +211,10 @@ async function updateApprovalBadge() {
 // indicator.
 let _twinActivityText = null;
 let _twinActivityTimer = null;
+// Edge-trigger state for the back-online toast. Starts null (not "false")
+// so the very first updateConnectionStatus() call after page load can't
+// claim a transition from offline → online.
+let _wasOffline = null;
 function flashTwinActivity(text, durationMs = 4500) {
   _twinActivityText = text;
   if (_twinActivityTimer) clearTimeout(_twinActivityTimer);
@@ -255,6 +260,15 @@ async function updateConnectionStatus() {
       banner.hidden = !isOffline;
       if (isOffline && bannerText) bannerText.textContent = text;
     }
+    // Edge-trigger a toast when we transition from offline → online so
+    // the user gets explicit confirmation that their next action will
+    // work. Skip the very first connect (no prior state to recover
+    // from). _wasOffline is module-scoped above.
+    const isOfflineNow = dotClass === 'disconnected';
+    if (_wasOffline && !isOfflineNow) {
+      showToast('Back online — SkyTwin is listening again.', { kind: 'success' });
+    }
+    _wasOffline = isOfflineNow;
   };
 
   if (_twinActivityText) {

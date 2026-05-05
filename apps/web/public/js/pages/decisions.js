@@ -1,4 +1,5 @@
 import { fetchDecisions, fetchDecisionExplanation, submitFeedback, escapeHtml, renderApiError, wireApiRetry } from '../api-client.js';
+import { showToast } from '../toast.js';
 
 let currentUserId = '';
 
@@ -387,12 +388,8 @@ function showUndoModal(decisionId) {
 
       // Show a success toast that quotes the user's reason back so they
       // see exactly what the twin will remember from this correction.
-      const toast = document.createElement('div');
-      toast.className = 'toast toast-success';
       const reasonSnippet = whatWentWrong.length > 70 ? whatWentWrong.slice(0, 67) + '…' : whatWentWrong;
-      toast.textContent = `Walked back. I'll remember: "${reasonSnippet}"`;
-      document.body.appendChild(toast);
-      setTimeout(() => toast.remove(), 4000);
+      showToast(`Walked back. I'll remember: "${reasonSnippet}"`, { kind: 'success', durationMs: 4000 });
 
       // Update the undo button
       const btn = document.querySelector(`[data-decision-id="${decisionId}"]`);
@@ -401,11 +398,7 @@ function showUndoModal(decisionId) {
         btn.disabled = true;
       }
     } catch (err) {
-      const toast = document.createElement('div');
-      toast.className = 'toast toast-error';
-      toast.textContent = `Couldn't walk that back: ${err.message}`;
-      document.body.appendChild(toast);
-      setTimeout(() => toast.remove(), 4000);
+      showToast(`Couldn't walk that back: ${err.message}`, { kind: 'danger', durationMs: 4000 });
     }
   });
 };
