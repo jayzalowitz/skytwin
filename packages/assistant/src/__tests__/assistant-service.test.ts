@@ -304,3 +304,67 @@ describe('formatHistoryAsPrompt', () => {
     expect(formatHistoryAsPrompt([])).toBe('Assistant:');
   });
 });
+
+// ── Issue #148 v1 — routeIntent ────────────────────────────────────
+
+describe('AssistantService.routeIntent', () => {
+  it('returns null when no ActionRouter is wired (early bring-up)', async () => {
+    const service = new AssistantService(stubLlm());
+    const result = await service.routeIntent('user-1', 'archive that email');
+    expect(result).toBeNull();
+  });
+
+  it('returns null for messages that do not match any intent rule', async () => {
+    const router = { route: vi.fn() };
+    const service = new AssistantService(stubLlm(), undefined, null, router);
+    const result = await service.routeIntent('user-1', 'how was your day?');
+    expect(result).toBeNull();
+    expect(router.route).not.toHaveBeenCalled();
+  });
+
+  it('routes a detected intent through the router and returns the outcome', async () => {
+    const router = {
+      route: vi.fn().mockResolvedValue({
+        kind: 'requires-approval',
+        approvalRequestId: 'approval-123',
+        summary: 'Archive an email',
+        reasoning: 'You asked.',
+      }),
+    };
+    const service = new AssistantService(stubLlm(), undefined, null, router);
+    const result = await service.routeIntent('user-1', 'archive that email');
+
+    expect(result).not.toBeNull();
+    expect(result?.intent.situationType).toBe('email_triage');
+    expect(result?.outcome.kind).toBe('requires-approval');
+    expect(router.route).toHaveBeenCalledTimes(1);
+    expect(router.route).toHaveBeenCalledWith('user-1', expect.objectContaining({
+      situationType: 'email_triage',
+      domain: 'email',
+    }));
+  });
+
+  it('downgrades router throws to null (graceful degradation to chat reply)', async () => {
+    const router = {
+      route: vi.fn().mockRejectedValue(new Error('decision engine offline')),
+    };
+    const service = new AssistantService(stubLlm(), undefined, null, router);
+    const result = await service.routeIntent('user-1', 'archive that email');
+    // Router threw; routeIntent returns null so the route falls through
+    // to the regular LLM chat reply instead of crashing the turn.
+    expect(result).toBeNull();
+    expect(router.route).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes blocked outcomes through unchanged', async () => {
+    const router = {
+      route: vi.fn().mockResolvedValue({
+        kind: 'blocked',
+        reason: 'Trust tier too low.',
+      }),
+    };
+    const service = new AssistantService(stubLlm(), undefined, null, router);
+    const result = await service.routeIntent('user-1', 'send a reply');
+    expect(result?.outcome.kind).toBe('blocked');
+  });
+});

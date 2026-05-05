@@ -1,5 +1,7 @@
 import type { LlmClient, LlmStreamEvent } from '@skytwin/llm-client';
 import type { ContextBuilder } from './context-builder.js';
+import type { ActionRouter, ActionRouteOutcome } from './action-router.js';
+import { detectIntent, type ActionIntent } from './intent-classifier.js';
 
 /**
  * One turn in the conversation, in the order it was said. Mirrors the
@@ -112,9 +114,10 @@ export interface EnrichmentRequest {
  * Issue #149 phase 3: multi-turn `LlmClient` API — `reply()` and
  *   `replyStream()` now pass `ChatTurn[]` directly as `ChatMessage[]`,
  *   dropping the `User:` / `Assistant:` flattening workaround.
- *
- * Still deferred:
- *   - action-intent routing through @skytwin/decision-engine — #148
+ * Issue #148 v1: `routeIntent` detects action intents and routes them
+ *   through the decision engine (via `ActionRouter` port). Auto-execution
+ *   from chat is deferred to v2 — chat-driven actions land in approvals
+ *   regardless of trust tier for the first cut.
  */
 export class AssistantService {
   constructor(
@@ -127,7 +130,57 @@ export class AssistantService {
      * tests, early bring-up, or routes that don't have a userId.
      */
     private readonly contextBuilder: ContextBuilder | null = null,
+    /**
+     * Optional router for chat-driven action intents. When provided, the
+     * route layer can call `routeIntent` to classify a user message and
+     * (if it's an action) route through the decision engine instead of
+     * generating a chat reply. Issue #148 v1.
+     */
+    private readonly actionRouter: ActionRouter | null = null,
   ) {}
+
+  /**
+   * Detect whether the user's message is an action intent and (if so)
+   * route it through the decision engine. Issue #148 v1.
+   *
+   * Returns `null` when:
+   *   - No `ActionRouter` was wired at construction (early bring-up
+   *     paths, unit tests that don't care about actions).
+   *   - The message doesn't match any intent rule (most chat).
+   *   - The router throws — caught here and downgraded to no-action so
+   *     a decision-engine outage doesn't kill the chat turn entirely.
+   *
+   * Returns an `ActionRouteOutcome` describing the chat-surfaceable
+   * result (requires-approval, blocked, or no-action) when an intent
+   * was detected and routed.
+   *
+   * The route layer calls this BEFORE generating the LLM chat reply.
+   * If the outcome is non-null, the LLM call is skipped — the assistant
+   * message becomes a structured outcome card instead. If the outcome
+   * is null, the LLM chat reply path runs as normal.
+   */
+  async routeIntent(
+    userId: string,
+    message: string,
+  ): Promise<{ intent: ActionIntent; outcome: ActionRouteOutcome } | null> {
+    if (!this.actionRouter) return null;
+    const intent = detectIntent(message);
+    if (!intent) return null;
+    try {
+      const outcome = await this.actionRouter.route(userId, intent);
+      return { intent, outcome };
+    } catch (err) {
+      // Decision-engine outage should not blow up the chat turn. Log
+      // and fall back to the LLM reply path. The user gets text
+      // instead of an action — a graceful degradation, not a crash.
+      // eslint-disable-next-line no-console
+      console.warn(
+        '[assistant.routeIntent] action router threw, falling back to chat reply:',
+        err instanceof Error ? err.message : String(err),
+      );
+      return null;
+    }
+  }
 
   /**
    * Build the system prompt for one request: the default (or

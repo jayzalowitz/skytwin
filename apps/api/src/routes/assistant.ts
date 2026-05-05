@@ -5,21 +5,34 @@ import {
   type ChatTurn,
   type TwinContextProvider,
   type MemoryContextProvider,
+  type ActionRouter,
+  type ActionRouteOutcome,
+  type ActionIntent,
 } from '@skytwin/assistant';
 import { LlmClient, AllProvidersFailedError } from '@skytwin/llm-client';
 import type { ProviderEntry } from '@skytwin/llm-client';
-import type { AIProviderName } from '@skytwin/shared-types';
+import type { AIProviderName, DecisionContext, DecisionObject } from '@skytwin/shared-types';
+import { SituationType, TrustTier } from '@skytwin/shared-types';
 import { TwinService } from '@skytwin/twin-model';
+import { DecisionMaker } from '@skytwin/decision-engine';
+import { PolicyEvaluator } from '@skytwin/policy-engine';
+import { ExplanationGenerator } from '@skytwin/explanations';
 import {
   aiProviderRepository,
+  approvalRepository,
   assistantRepository,
+  emailLabelRepository,
   mempalaceRepository,
   userRepository,
   TwinRepositoryAdapter,
   PatternRepositoryAdapter,
+  decisionRepositoryAdapter,
+  explanationRepositoryAdapter,
+  policyRepositoryAdapter,
 } from '@skytwin/db';
 import { createLogger } from '@skytwin/core';
 
+import { sseManager } from '../sse.js';
 import { validateAssistantMessage } from '../validators/assistant-message.js';
 
 const log = createLogger('api:assistant');
@@ -163,6 +176,209 @@ function renderOutcomeHint(outcome: Record<string, unknown>): string {
   } catch {
     return 'outcome unavailable';
   }
+}
+
+/**
+ * Build the per-process `ActionRouter` that the assistant uses to route
+ * chat-detected action intents through the existing decision pipeline.
+ * Issue #148 v1.
+ *
+ * Conservative v1 design choice: chat-driven actions ALWAYS land in the
+ * approval queue, even when `DecisionMaker.evaluate()` returns
+ * `autoExecute=true`. The chat surface skips direct execution. Reasoning:
+ *
+ *   - Chat is a free-text channel — an unintended intent match
+ *     ("schedule a meeting" appearing in a discussion ABOUT scheduling)
+ *     should not auto-execute. The /api/events path has a structured
+ *     signal as ground truth; chat doesn't.
+ *   - The user already has the existing approvals UI to review and
+ *     consent. Routing through it preserves the audit trail and feedback
+ *     loop unchanged.
+ *   - Phase 2 of #148 lifts this restriction once we have an
+ *     LLM-classifier confidence score AND an explicit "always approve
+ *     chat actions" trust-tier-style escape hatch.
+ *
+ * The adapter wires the same TwinService + PolicyEvaluator + DecisionMaker
+ * stack that `events.ts` constructs. We can't share the events.ts
+ * instance directly because that's tied to the events router scope —
+ * one copy is cheaper to reason about than a refactor that hoists the
+ * stack to a module-level singleton both routers consume.
+ */
+function buildActionRouter(): ActionRouter {
+  const twinService = new TwinService(
+    new TwinRepositoryAdapter(),
+    new PatternRepositoryAdapter(),
+  );
+  const policyEvaluator = new PolicyEvaluator(policyRepositoryAdapter);
+  const explanationGenerator = new ExplanationGenerator(explanationRepositoryAdapter);
+
+  // Issue #122: same per-user (sender, label) hint port as the events
+  // route. Reused so chat-driven label_email candidates get the same
+  // learned-from-history confidence boost. Inline literal — typed
+  // structurally; @skytwin/decision-engine doesn't export LabelInferencePort.
+  const labelInferencePort = {
+    async topLabelsForSender(userId: string, sender: string, limit?: number) {
+      return emailLabelRepository.topLabelsForSender(userId, sender, limit);
+    },
+    async topLabelsForListId(userId: string, listId: string, limit?: number) {
+      return emailLabelRepository.topLabelsForListId(userId, listId, limit);
+    },
+  };
+
+  const decisionMaker = new DecisionMaker(
+    twinService,
+    policyEvaluator,
+    decisionRepositoryAdapter,
+    undefined,
+    labelInferencePort,
+  );
+
+  return {
+    async route(userId, intent) {
+      // Build a synthetic DecisionObject from the chat intent. Mirrors
+      // the shape `SituationInterpreter` produces for real signals so
+      // downstream code (DecisionMaker + ExplanationGenerator) can't
+      // tell the difference.
+      const decision: DecisionObject = {
+        id: `chat_intent_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        situationType: intent.situationType as SituationType,
+        domain: intent.domain,
+        urgency: 'medium',
+        summary: intent.summary,
+        rawData: { ...intent.rawData, triggerMessage: intent.triggerMessage },
+        interpretedAt: new Date(),
+      };
+
+      // Persist the decision so downstream foreign keys (outcomes,
+      // candidates, approvals) resolve.
+      await decisionRepositoryAdapter.saveDecision(decision);
+
+      // Build the same context shape events.ts builds. Patterns / traits
+      // / temporalProfile are fetched in parallel — same as the events
+      // route, no chat-specific shortcut.
+      const [user, preferences, patterns, traits, temporalProfile] = await Promise.all([
+        userRepository.findById(userId),
+        twinService.getRelevantPreferences(userId, decision.domain, decision.summary),
+        twinService.getPatterns(userId),
+        twinService.getTraits(userId),
+        twinService.getTemporalProfile(userId),
+      ]);
+
+      const context: DecisionContext = {
+        userId,
+        decision,
+        trustTier: (user?.trust_tier as TrustTier) ?? TrustTier.OBSERVER,
+        relevantPreferences: preferences,
+        timestamp: new Date(),
+        patterns,
+        traits,
+        temporalProfile,
+      };
+
+      // Run the full decision pipeline. This is the load-bearing call —
+      // every Safety Invariant gate (policy, trust tier, spend limits)
+      // fires inside `evaluate()`. We do NOT bypass it.
+      const outcome = await decisionMaker.evaluate(context);
+
+      // Generate + persist the explanation for audit trail. Safety
+      // Invariant #2: every action (or deliberate non-action) produces
+      // an ExplanationRecord.
+      try {
+        await explanationGenerator.generate(decision, outcome, context);
+      } catch (err) {
+        // Explanation persistence failure shouldn't block the chat
+        // turn — log and continue. The audit-trail loss is the lesser
+        // evil vs. dropping the user's request entirely.
+        log.warn('Failed to persist explanation for chat-driven decision', {
+          userId,
+          decisionId: decision.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+
+      // No selected action OR every candidate was denied → blocked.
+      if (!outcome.selectedAction) {
+        return {
+          kind: 'blocked',
+          reason: outcome.reasoning || 'No suitable action could be taken right now.',
+        } satisfies ActionRouteOutcome;
+      }
+
+      // Auto-execute path is intentionally collapsed into requires-approval
+      // for v1 (see comment at the top of this factory). The selected
+      // action lands in the approval queue regardless of what
+      // `outcome.autoExecute` says.
+      const {
+        accessToken: _omitToken,
+        rawData: _omitRawData,
+        ...visibleParameters
+      } = (outcome.selectedAction.parameters ?? {}) as Record<string, unknown>;
+
+      const approvalRequest = await approvalRepository.create({
+        userId,
+        decisionId: decision.id,
+        candidateAction: {
+          actionType: outcome.selectedAction.actionType,
+          description: outcome.selectedAction.description,
+          domain: outcome.selectedAction.domain,
+          parameters: visibleParameters,
+          estimatedCostCents: outcome.selectedAction.estimatedCostCents,
+          reversible: outcome.selectedAction.reversible,
+          confidence: outcome.selectedAction.confidence,
+          reasoning: outcome.selectedAction.reasoning,
+        },
+        reason: outcome.reasoning,
+        urgency: decision.urgency,
+      });
+
+      // Mirror the events.ts SSE emission so the existing approvals
+      // page badge updates immediately when a chat creates an approval.
+      sseManager.emit(userId, 'approval:new', {
+        id: approvalRequest.id,
+        decisionId: decision.id,
+        reason: outcome.reasoning,
+        urgency: decision.urgency,
+      });
+
+      return {
+        kind: 'requires-approval',
+        approvalRequestId: approvalRequest.id,
+        summary: outcome.selectedAction.description,
+        reasoning: outcome.reasoning,
+      } satisfies ActionRouteOutcome;
+    },
+  };
+}
+
+/**
+ * Compose the chat-bubble text shown when an action intent was routed
+ * through the decision pipeline. Issue #148 v1.
+ *
+ * The text + the metadata together let the web client render either an
+ * "open approval" link (for requires-approval) or a plain notice (for
+ * blocked). The metadata is what `pages/assistant.js` checks before
+ * choosing which footer to attach.
+ */
+function renderActionBubbleContent(intent: ActionIntent, outcome: ActionRouteOutcome): string {
+  if (outcome.kind === 'requires-approval') {
+    return [
+      `${outcome.summary}.`,
+      '',
+      `Reason: ${outcome.reasoning}`,
+      '',
+      'I\'ve queued this for your approval — open the Approvals page to confirm.',
+    ].join('\n');
+  }
+  if (outcome.kind === 'blocked') {
+    return [
+      `I can't do that for you right now.`,
+      '',
+      `Reason: ${outcome.reason}`,
+    ].join('\n');
+  }
+  // no-action falls through to LLM chat — the route shouldn't render a
+  // bubble for this case, but we cover it defensively.
+  return `Got it — I heard that as: "${intent.triggerMessage}"`;
 }
 
 /**
@@ -340,6 +556,9 @@ export function createAssistantRouter(): Router {
   // Built once per process — adapters are stateless, the underlying
   // TwinService caches nothing per-request.
   const contextBuilder = buildContextBuilder();
+  // Issue #148 v1: action router that handles chat-detected intents
+  // through the existing decision pipeline.
+  const actionRouter = buildActionRouter();
 
   /**
    * POST /api/assistant/messages
@@ -420,7 +639,65 @@ export function createAssistantRouter(): Router {
       // memories. The `enrichment.query` is the just-sent user message —
       // that's what the assistant is about to answer, so the most-relevant
       // memories are the ones that match it.
-      const service = new AssistantService(llm, undefined, contextBuilder);
+      // Issue #148 v1: pass the ActionRouter so chat-detected action
+      // intents route through the decision pipeline before falling
+      // through to the LLM chat reply.
+      const service = new AssistantService(llm, undefined, contextBuilder, actionRouter);
+
+      // Issue #148 v1: try intent classification + routing FIRST. If the
+      // user's message is an action intent, the decision pipeline
+      // produces a structured outcome (requires-approval / blocked) and
+      // we persist that as the assistant message — no LLM call. Falls
+      // through to the LLM chat path when the message is conversational
+      // (most messages) OR when the router throws (graceful degradation).
+      const intentRoute = await service.routeIntent(userId, content);
+      if (intentRoute && intentRoute.outcome.kind !== 'no-action') {
+        const bubbleContent = renderActionBubbleContent(intentRoute.intent, intentRoute.outcome);
+        // Metadata records what kind of outcome this was so the web
+        // client can attach the right footer (approval link vs.
+        // blocked notice). Provider/model/latency are absent because
+        // no LLM was consulted — the field stays optional.
+        const actionMetadata: Record<string, unknown> = {
+          intentRoute: {
+            kind: intentRoute.outcome.kind,
+            domain: intentRoute.intent.domain,
+            ...(intentRoute.outcome.kind === 'requires-approval'
+              ? { approvalRequestId: intentRoute.outcome.approvalRequestId }
+              : {}),
+          },
+        };
+        const assistantMessage = await assistantRepository.appendMessage(
+          threadId,
+          'assistant',
+          bubbleContent,
+          actionMetadata,
+        );
+
+        // Both sync + SSE paths land here; for SSE we still send the
+        // wire shape clients expect (thread + user + done with the
+        // action message in one shot — no chunk events because there
+        // was no streaming text).
+        const wantsStreamSse = (req.headers['accept'] ?? '').toString().includes('text/event-stream');
+        if (wantsStreamSse) {
+          res.status(200);
+          res.setHeader('Content-Type', 'text/event-stream');
+          res.setHeader('Cache-Control', 'no-cache');
+          res.setHeader('Connection', 'keep-alive');
+          res.setHeader('X-Accel-Buffering', 'no');
+          res.flushHeaders?.();
+          res.write(`event: thread\ndata: ${JSON.stringify({ id: threadId, isNew: isNewThread })}\n\n`);
+          res.write(`event: user\ndata: ${JSON.stringify(userMessage)}\n\n`);
+          res.write(`event: done\ndata: ${JSON.stringify(assistantMessage)}\n\n`);
+          res.end();
+        } else {
+          res.json({
+            thread: { id: threadId, isNew: isNewThread },
+            userMessage,
+            assistantMessage,
+          });
+        }
+        return;
+      }
 
       // Issue #146 (phase 2a): branch on the Accept header. SSE clients
       // get a token-by-token stream; legacy JSON clients get the existing

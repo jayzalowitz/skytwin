@@ -160,8 +160,8 @@ function renderMessages(messages, sending) {
       <div class="assistant-empty">
         <div class="assistant-empty-title">Start a conversation</div>
         <div class="assistant-empty-desc">
-          Ask anything. Phase 1 is text-only — for now I can talk but not
-          take actions on your accounts. Use the rest of the dashboard for that.
+          Ask anything. I can also queue actions for your approval — try
+          "archive that email" or "schedule a meeting with X".
         </div>
       </div>
     `;
@@ -175,9 +175,16 @@ function renderMessages(messages, sending) {
       const streamingAttr = typeof m.id === 'string' && m.id.startsWith('streaming-')
         ? ` data-streaming-id="${escapeHtml(m.id)}"`
         : '';
+      // Issue #148 v1: when the assistant message is the result of a
+      // chat-driven action intent, the metadata carries an `intentRoute`
+      // record. Render a small footer card under the bubble — link to
+      // approvals for `requires-approval`, plain notice for `blocked`.
+      const intentRoute = m?.metadata?.intentRoute;
+      const footer = intentRoute ? renderActionFooter(intentRoute) : '';
       return `
         <div class="assistant-bubble assistant-bubble-${role}">
           <div class="assistant-bubble-content"${streamingAttr}>${escapeHtml(m.content)}</div>
+          ${footer}
         </div>
       `;
     })
@@ -198,6 +205,39 @@ function renderMessages(messages, sending) {
     `
     : '';
   return bubbles + typing;
+}
+
+/**
+ * Render the action-card footer attached under an assistant bubble when
+ * the message is the result of a chat-driven action intent. Issue #148 v1.
+ *
+ * Two variants:
+ *   - requires-approval → "Open approval" link to the approvals page
+ *   - blocked → muted notice that the action couldn't run
+ *
+ * Phase 2 of #148 will add inline approve/reject buttons here. For v1
+ * we lean on the existing approvals page so the chat surface doesn't
+ * grow its own action-execution UI ahead of the safety review.
+ */
+function renderActionFooter(intentRoute) {
+  if (intentRoute?.kind === 'requires-approval') {
+    // Hash route — same SPA, no full reload. The approvals page picks
+    // up the new request from the existing fetch on render + the
+    // `approval:new` SSE the action router emits.
+    return `
+      <div class="assistant-action-footer assistant-action-footer-approval">
+        <a class="assistant-action-link" href="#/approvals">Open approval →</a>
+      </div>
+    `;
+  }
+  if (intentRoute?.kind === 'blocked') {
+    return `
+      <div class="assistant-action-footer assistant-action-footer-blocked">
+        <span>Action blocked by your safety policy.</span>
+      </div>
+    `;
+  }
+  return '';
 }
 
 function renderError(err) {

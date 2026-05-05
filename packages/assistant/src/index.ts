@@ -33,3 +33,7 @@ export type {
   MemoryContextProvider,
   MemoryHit,
 } from './context-builder.js';
+
+export { detectIntent } from './intent-classifier.js';
+export type { ActionIntent } from './intent-classifier.js';
+export type { ActionRouter, ActionRouteOutcome } from './action-router.js';
