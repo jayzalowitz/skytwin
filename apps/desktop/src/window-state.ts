@@ -9,6 +9,18 @@ interface WindowBounds {
   isMaximized: boolean;
 }
 
+// electron-store v11 inherits .get/.set from the ESM-only Conf class.
+// Under `module: commonjs` in this app's tsconfig TS can't resolve the
+// type extension chain, so the methods come back as missing even though
+// they exist at runtime. Narrow to a small structural surface that
+// matches what we actually use — easier to audit than a blanket cast,
+// and the constructor + runtime call sites stay unchanged.
+type WindowBoundsStore = {
+  get(key: 'windowBounds'): WindowBounds;
+  set(key: 'windowBounds', value: WindowBounds): void;
+  set(key: 'windowBounds.isMaximized', value: boolean): void;
+};
+
 const store = new Store<{ windowBounds: WindowBounds }>({
   name: 'skytwin-window-state',
   defaults: {
@@ -20,7 +32,7 @@ const store = new Store<{ windowBounds: WindowBounds }>({
       isMaximized: false,
     },
   },
-});
+}) as unknown as WindowBoundsStore;
 
 /**
  * Returns saved window bounds for creating the BrowserWindow.
