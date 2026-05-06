@@ -7,6 +7,7 @@ import {
   renderApiError,
   wireApiRetry,
 } from '../api-client.js';
+import { assistantDraftKey } from '../storage-keys.js';
 
 // State for the currently-rendered thread. Module-scope because the click
 // delegator (singleton, document-level) needs to read the active thread to
@@ -117,17 +118,51 @@ function paint(container) {
                 aria-label="Send"
               >Send</button>`}
         </form>
+        <div class="assistant-composer-hint">
+          Press <kbd>Enter</kbd> to send · <kbd>Shift+Enter</kbd> for a new line
+        </div>
       </section>
     </div>
   `;
 
   scrollMessagesToBottom(container);
   // Auto-focus the composer when entering the page or after a send finishes,
-  // not while sending (textarea is disabled then anyway).
+  // not while sending (textarea is disabled then anyway). Also restore any
+  // saved draft for the active thread so navigating away and coming back
+  // doesn't lose what the user typed.
   if (!_state.sending) {
     const input = container.querySelector('[data-region="composer-input"]');
-    input?.focus();
+    if (input) {
+      const draft = readDraft(_state.activeThreadId);
+      if (draft) {
+        input.value = draft;
+        // Cursor at end so a quick edit ("…and tell me why") flows.
+        try { input.setSelectionRange(draft.length, draft.length); } catch { /* old browsers */ }
+      }
+      input.focus();
+    }
   }
+}
+
+// ── Draft persistence ──────────────────────────────────────────────────
+// Per-thread composer state survives page navigation within the tab so a
+// user who pops to /approvals to look something up doesn't lose their
+// half-typed prompt. sessionStorage means it doesn't leak across browser
+// sessions — drafts are inherently transient.
+
+function readDraft(threadId) {
+  try {
+    return sessionStorage.getItem(assistantDraftKey(threadId)) || '';
+  } catch { return ''; }
+}
+function writeDraft(threadId, value) {
+  try {
+    if (value) sessionStorage.setItem(assistantDraftKey(threadId), value);
+    else sessionStorage.removeItem(assistantDraftKey(threadId));
+  } catch { /* private mode etc. */ }
+}
+function clearDraft(threadId) {
+  try { sessionStorage.removeItem(assistantDraftKey(threadId)); } catch { /* noop */ }
 }
 
 function renderThreadList(threads, activeId) {
@@ -369,6 +404,16 @@ function ensureAssistantListener() {
       handleSend();
     }
   });
+  // Persist composer text per active thread on every keystroke. Cheap
+  // (sessionStorage write of <few KB on a synthetic input event), and
+  // reading happens only on paint() so the read path is unaffected.
+  document.addEventListener('input', (e) => {
+    if (!isOnAssistantRoute()) return;
+    const target = e.target instanceof Element ? e.target : null;
+    if (!target) return;
+    if (target.getAttribute('data-region') !== 'composer-input') return;
+    writeDraft(_state.activeThreadId, /** @type {HTMLTextAreaElement} */ (target).value);
+  });
 }
 
 function isOnAssistantRoute() {
@@ -472,6 +517,12 @@ async function handleSend() {
   };
   _state.messages = _state.messages.concat([optimisticUser]);
   if (input) input.value = '';
+  // Clear the draft for the bucket the message was composed in. We use
+  // _state.activeThreadId at this point — for a brand-new thread it's
+  // still null, so we clear the 'new' bucket. The thread-ID will land
+  // in onThread and any subsequent draft writes will go to the new
+  // bucket, which is correct behavior.
+  clearDraft(_state.activeThreadId);
   if (container) paint(container);
 
   // Issue #146 (phase 2a): SSE streaming. The user bubble lands optimistically

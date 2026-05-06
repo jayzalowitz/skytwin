@@ -1,5 +1,28 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.12.0] - 2026-05-05
+
+Two assistant composer polish items the dashboard "Ask your twin" widget already had — bring the chat surface up to parity.
+
+### Added — `Enter` / `Shift+Enter` keyboard hint under the chat composer
+
+The dashboard "Ask your twin" widget surfaces this convention with a small `<kbd>` hint underneath. The chat composer was missing it, so a non-technical user would either guess (and accidentally newline when they meant to send) or never know newlines were available. New `.assistant-composer-hint` block mirrors the dashboard pattern.
+
+### Added — composer draft persists across navigation per thread
+
+A user who pops to `/approvals` to look something up before finishing a prompt now keeps their half-typed text. Storage is `sessionStorage` (not localStorage) — drafts are inherently transient and shouldn't leak across browser sessions. Keying:
+
+- One bucket per thread via `assistantDraftKey(threadId)` in `apps/web/public/js/storage-keys.js`
+- Brand-new threads write to the `'new'` bucket; on first send the thread ID lands and subsequent edits flow into the new bucket
+- Draft is restored in `paint()` after `innerHTML` is set, with cursor at end so a quick edit ("…and tell me why") flows
+- Draft is cleared on send (after the optimistic user bubble lands)
+
+The save is wired through a delegated `input` listener on `document` (same pattern as the click and keydown delegators on this page); each keystroke is one `sessionStorage.setItem` of <few KB, well within the budget.
+
+### Tests
+
+Backend test suite still green across 40 packages. Composer behavior is browser-only.
+
 ## [0.6.11.0] - 2026-05-05
 
 Adds a Stop button to the assistant chat so users can interrupt a long generation. Pre-fix the only escape was navigating away — which left the request hanging server-side and lost any partial content the user could already see.

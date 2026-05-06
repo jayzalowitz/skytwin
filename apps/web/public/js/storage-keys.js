@@ -58,6 +58,13 @@ export function tierCelebratedKey(userId, tier) {
   return `skytwin_tier_celebrated_${userId}_${tier}`;
 }
 
+/** Composer draft per assistant thread. Stored in sessionStorage so it
+ * survives navigation within the tab but doesn't leak across sessions.
+ * 'new' is the bucket for un-created threads (brand-new conversations). */
+export function assistantDraftKey(threadId) {
+  return `skytwin_assistant_draft_${threadId || 'new'}`;
+}
+
 // ── Sweep helpers ──────────────────────────────────────────────────────
 
 /**
