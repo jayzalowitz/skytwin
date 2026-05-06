@@ -32,16 +32,22 @@ function expectProtectedStatus(status: number, expectedWhenAuthorized: number[])
   expect(allowedStatuses).toContain(status);
 }
 
-async function isServerUp(): Promise<boolean> {
+async function isServerUp(url: string): Promise<boolean> {
   try {
-    const res = await fetch(`${API_BASE}/api/health/live`, { signal: AbortSignal.timeout(2000) });
+    const res = await fetch(url, { signal: AbortSignal.timeout(2000) });
     return res.ok;
   } catch {
     return false;
   }
 }
 
-const serverAvailable = await isServerUp();
+const serverAvailable = await isServerUp(`${API_BASE}/api/health/live`);
+// Web dashboard runs on a separate port. The "web proxy (mobile browser
+// fallback path)" describe block fetches localhost:3200 and would fail
+// (instead of skip) if only the API server is up — common when a
+// sibling Conductor worktree is running its own API but not the web
+// dashboard. Gate that block on this independent check.
+const webAvailable = await isServerUp('http://localhost:3200/');
 
 // ────────────────────────────────────────────────
 // Flow 1: mDNS discovery → health check → connection confirmed
@@ -417,7 +423,7 @@ describe.runIf(serverAvailable)('mobile API client URL contract', () => {
 // Cross-platform: web dashboard over API proxy
 // ────────────────────────────────────────────────
 
-describe.runIf(serverAvailable)('web proxy (mobile browser fallback path)', () => {
+describe.runIf(webAvailable)('web proxy (mobile browser fallback path)', () => {
   it('web dashboard proxies API requests correctly', async () => {
     const directRes = await fetch(`${API_BASE}/api/health`);
     const proxiedRes = await fetch('http://localhost:3200/api/health');
