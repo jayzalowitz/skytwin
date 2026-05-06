@@ -1,5 +1,25 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.17.0] - 2026-05-06
+
+Two bugs in the Audit page caught during a sweep of less-touched surfaces.
+
+### Fixed — broken Retry button on the Audit page
+
+`renderAudit()` passed `retry: load` to `renderApiError({ context, retry })`. `load` was never defined — the function is called `loadAudit`. So when the API was down and the page rendered the friendly-error card, clicking Retry threw `ReferenceError: load is not defined` silently in the console and nothing reloaded. Renamed the call site to `retry: loadAudit`.
+
+### Fixed — listener-stacking on every navigation back to /audit
+
+The previous implementation wired `addEventListener('click', loadAudit)` on the Refresh button and `addEventListener('change', loadAudit)` on the filter inputs *inside* `renderAudit()`. Each navigation to /audit re-runs `renderAudit()`, which means after N visits each filter change fires `loadAudit()` N times in parallel — the same singleton-delegator pattern violation `CLAUDE.md` flags for approvals/settings/decisions/dashboard-view.
+
+Fix: hoisted the listeners to a module-level `ensureAuditListener()` with a `_auditListenerWired` guard, attached on `document`, gated by `window.location.hash` (not DOM containment, since the SPA reuses one `#page-content` element across routes). Filter inputs and the Refresh button moved to `data-action` / `data-region` attributes so the delegator can identify them.
+
+`loadAudit()` reads `_auditUserId` from module scope (set in `renderAudit()`) — same pattern as approvals.js's `_approvalsUserId`. Defends against the dev "Switch user" scenario where a closure over a render-time userId would fire under the wrong account.
+
+### Tests
+
+Backend test suite still green across 40 packages. Audit page is browser-only.
+
 ## [0.6.16.0] - 2026-05-06
 
 Make the chat thread delete recoverable. Pre-fix, clicking the X next to a thread title fired the DELETE immediately with no confirm and no undo — risky for non-technical users on small screens where the X sits 8px from the thread title.
