@@ -548,10 +548,12 @@ describe('electron-builder config', () => {
   });
 
   it('linux desktop entry has correct Categories (semicolon-terminated)', () => {
+    // electron-builder v26 moved .desktop file fields under desktop.entry
+    // (was directly under linux.desktop in v24 — see v0.6.21.0).
     const linux = buildConfig.linux as Record<string, unknown>;
-    const desktop = linux.desktop as Record<string, string>;
-    expect(desktop.Categories).toMatch(/;$/);
-    expect(desktop.Categories).toContain('Utility');
+    const desktop = linux.desktop as { entry: Record<string, string> };
+    expect(desktop.entry.Categories).toMatch(/;$/);
+    expect(desktop.entry.Categories).toContain('Utility');
   });
 
   it('extraResources bundles api, worker, web, and packages', () => {

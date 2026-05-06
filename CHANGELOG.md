@@ -1,5 +1,43 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.21.0] - 2026-05-06
+
+Bump `electron-builder` from 24.x to 26.8.1. Supersedes Dependabot PR #65, which was held back because the version bump alone broke `electron-builder --linux/win/mac` with a config schema validation error.
+
+### Why the dependabot bump alone failed
+
+electron-builder v26 tightened the `linux.desktop` schema. Pre-v26, you could put any `.desktop` file key (`Name`, `Comment`, `Categories`, ...) directly under `linux.desktop`. v26 expects `linux.desktop` to be `{ desktopActions?, entry? }` — your `.desktop` file fields go under `desktop.entry`.
+
+The CI failure surfaced as:
+
+```
+configuration.linux.desktop has an unknown property 'Name'.
+configuration.linux.desktop has an unknown property 'Comment'.
+configuration.linux.desktop has an unknown property 'Categories'.
+```
+
+### Fix
+
+Move the three `.desktop` keys into `linux.desktop.entry` in `apps/desktop/package.json`:
+
+```json
+"linux": {
+  "desktop": {
+    "entry": {
+      "Name": "SkyTwin",
+      "Comment": "Your personal AI assistant",
+      "Categories": "Utility;Office;"
+    }
+  }
+}
+```
+
+Verified locally with `npx electron-builder --linux --dir` — schema validation passes, `dist-electron/linux-arm64-unpacked/` is produced cleanly.
+
+### Tests
+
+Backend test suite still green across 40 packages. CI's macOS/Windows/Linux desktop jobs will exercise the actual installer build.
+
 ## [0.6.20.0] - 2026-05-06
 
 Fix three integration-live tests that fail locally when an API server is up but the web dashboard isn't — common when a sibling Conductor worktree is running its own API on `:3100` but no web server on `:3200`.
