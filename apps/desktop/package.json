@@ -46,9 +46,11 @@
       "category": "Utility",
       "icon": "assets/icons",
       "desktop": {
-        "Name": "SkyTwin",
-        "Comment": "Your personal AI assistant",
-        "Categories": "Utility;Office;"
+        "entry": {
+          "Name": "SkyTwin",
+          "Comment": "Your personal AI assistant",
+          "Categories": "Utility;Office;"
+        }
       }
     },
     "files": [
@@ -81,7 +83,7 @@
   },
   "devDependencies": {
     "electron": "^41.5.0",
-    "electron-builder": "^24.0.0",
+    "electron-builder": "^26.8.1",
     "typescript": "^5.4.0",
     "vitest": "^1.3.0"
   }
