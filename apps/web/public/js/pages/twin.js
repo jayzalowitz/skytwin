@@ -98,7 +98,7 @@ export async function renderTwin(container, userId) {
       <div class="card-subtitle" style="margin-bottom: 1rem;">
         Skip the wait — if you already know how you like something handled, just tell me directly.
       </div>
-      <form id="add-pref-form" onsubmit="return handleAddPreference(event, '${userId}')">
+      <form id="add-pref-form" data-action="add-preference" data-user-id="${escapeHtml(userId)}">
         <div class="form-group">
           <label>In plain words, what should I know?</label>
           <input class="form-input" name="value" placeholder="e.g. Always archive newsletters from Substack — I never read them" required>
@@ -444,5 +444,22 @@ if (typeof document !== 'undefined' && !window._twinInsightWired) {
     } else if (action === 'correct' && typeof window.correctInsight === 'function') {
       window.correctInsight(userId, domain, key, value);
     }
+  });
+
+  // Delegated submit for the "Tell me something about yourself" form.
+  // Replaces an inline `onsubmit="return handleAddPreference(...)"` that
+  // CLAUDE.md flags as XSS-unsafe-by-construction (the JS-string-literal
+  // escape of an interpolated userId). userId now lands on the form via
+  // data-user-id (escapeHtml-safe, HTML attribute context).
+  document.addEventListener('submit', (ev) => {
+    const form = ev.target instanceof HTMLFormElement ? ev.target : null;
+    if (!form) return;
+    if (form.getAttribute('data-action') !== 'add-preference') return;
+    ev.preventDefault();
+    const userId = form.getAttribute('data-user-id') || '';
+    if (!userId || typeof window.handleAddPreference !== 'function') return;
+    // handleAddPreference reads the form via event.target — so the call
+    // shape from the old inline handler is preserved verbatim.
+    window.handleAddPreference(ev, userId);
   });
 }

@@ -1,5 +1,27 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.18.0] - 2026-05-06
+
+Convert the last inline event handler on the Twin/learnings page to data-action delegation. Closes a CLAUDE.md violation that's been hiding in `twin.js`.
+
+### Fixed — `twin.js` "Tell me something about yourself" form had inline onsubmit
+
+The "Save this preference" form rendered:
+
+```html
+<form id="add-pref-form" onsubmit="return handleAddPreference(event, '${userId}')">
+```
+
+CLAUDE.md flags this pattern as **XSS-unsafe-by-construction** even when the current values (UUIDs, enums) happen to be safe today: `escapeHtml` is HTML-context safe, but the value lands inside a JS-string-literal context inside the inline handler attribute. A future caller passing user-derived input would be smuggling code, not data.
+
+Fix: swap to `data-action="add-preference"` + `data-user-id="${escapeHtml(userId)}"` (HTML attribute context, safe), then add a delegated `submit` listener to the existing `_twinInsightWired` singleton block. The listener checks `data-action`, reads `userId` from `data-user-id`, and calls the existing `window.handleAddPreference(event, userId)` — call shape preserved verbatim so the function body doesn't need to change.
+
+The settings.js AI provider card still has 9 inline handlers (`ondragstart`, `ondragover`, `ondragleave`, `ondrop`, plus 5 `onchange`). That's a more substantial refactor and warrants its own PR.
+
+### Tests
+
+Backend test suite still green across 40 packages. Form behavior is browser-only.
+
 ## [0.6.17.0] - 2026-05-06
 
 Two bugs in the Audit page caught during a sweep of less-touched surfaces.
