@@ -1,5 +1,25 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.15.0] - 2026-05-06
+
+Stop yanking the user back to the bottom of the chat while they're scrolled up reading history.
+
+### Fixed — chunk-by-chunk streaming forced `scrollTop = scrollHeight` on every token
+
+Prior behavior: open a long thread, scroll up to re-read an earlier assistant reply, send a new prompt → every chunk that lands snaps the scroll back to the bottom mid-token. Reading history during a streaming response was effectively impossible.
+
+New behavior: `maybeAutoScroll(container)` only follows the stream when the messages region was already within `NEAR_BOTTOM_THRESHOLD_PX` (80px) of the bottom. If the user has scrolled up, the chunks accumulate quietly off-screen and they keep reading what they were reading.
+
+### Added — "↓ Jump to latest" floating pill
+
+Sits absolutely-positioned over the chat pane, above the composer. Hidden via the `hidden` attribute when the user is at the bottom; revealed when they scroll away. Click → smooth jump to the live tail. Drives off the same `isNearBottom()` predicate that gates auto-scroll, so the two behaviors always agree.
+
+The scroll listener is delegated on `document` with capture phase (scroll events don't bubble by default, so capture is required to see them from the inner pane). The jump button uses the existing `data-action="jump-latest"` delegation pattern.
+
+### Tests
+
+Backend test suite still green across 40 packages. Scroll behavior is browser-only.
+
 ## [0.6.14.0] - 2026-05-06
 
 Mobile fix for the assistant chat: composer no longer disappears behind the soft keyboard.

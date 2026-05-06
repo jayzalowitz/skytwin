@@ -96,6 +96,14 @@ function paint(container) {
         <div class="assistant-messages" data-region="messages">
           ${renderMessages(_state.messages, _state.sending)}
         </div>
+        <button
+          class="assistant-jump-latest"
+          type="button"
+          data-action="jump-latest"
+          data-region="jump-button"
+          aria-label="Jump to latest message"
+          hidden
+        >↓ Jump to latest</button>
         <form class="assistant-composer" data-action="composer-form">
           <textarea
             class="assistant-composer-input"
@@ -348,6 +356,38 @@ function scrollMessagesToBottom(container) {
   if (region) region.scrollTop = region.scrollHeight;
 }
 
+// Threshold (px) within which we consider the user "at the bottom".
+// Generous enough to cover scroll inertia and sub-pixel rounding;
+// tight enough that scrolling up to read history reads as "not bottom".
+const NEAR_BOTTOM_THRESHOLD_PX = 80;
+
+function isNearBottom(container) {
+  const region = container?.querySelector('[data-region="messages"]');
+  if (!region) return true;
+  const distance = region.scrollHeight - region.scrollTop - region.clientHeight;
+  return distance <= NEAR_BOTTOM_THRESHOLD_PX;
+}
+
+/**
+ * Scroll-to-bottom only if the user was already near the bottom. Used
+ * by the chunk-by-chunk streaming path so we don't yank the user back
+ * down when they've scrolled up to re-read an earlier message
+ * mid-stream. Also drives the visibility of the "↓ jump to latest"
+ * button — `_state.scrolledUp` flips when the user pulls away.
+ */
+function maybeAutoScroll(container) {
+  if (isNearBottom(container)) {
+    scrollMessagesToBottom(container);
+  }
+}
+
+function refreshJumpButton(container) {
+  const btn = container?.querySelector('[data-region="jump-button"]');
+  if (!btn) return;
+  const show = !isNearBottom(container);
+  btn.hidden = !show;
+}
+
 // ── Event delegation ─────────────────────────────────────────────────
 
 function ensureAssistantListener() {
@@ -382,8 +422,27 @@ function ensureAssistantListener() {
       if (prompt) handleSuggestion(prompt);
     } else if (action === 'stop-stream') {
       handleStop();
+    } else if (action === 'jump-latest') {
+      const c = document.getElementById('page-content');
+      if (c) {
+        scrollMessagesToBottom(c);
+        refreshJumpButton(c);
+      }
     }
   });
+
+  // Drive the jump-button visibility from scroll on the messages region.
+  // Delegated on document with capture so we catch the bubbling
+  // `scroll` event from the inner pane (scroll doesn't bubble by default,
+  // so capture phase is required).
+  document.addEventListener('scroll', (e) => {
+    if (!isOnAssistantRoute()) return;
+    const target = e.target instanceof Element ? e.target : null;
+    if (!target) return;
+    if (target.getAttribute?.('data-region') !== 'messages') return;
+    const c = document.getElementById('page-content');
+    if (c) refreshJumpButton(c);
+  }, true);
 
   // Form submit (composer) and Enter-to-send (Shift+Enter for newline).
   document.addEventListener('submit', (e) => {
@@ -577,7 +636,11 @@ async function handleSend() {
           const bubble = container?.querySelector(`[data-streaming-id="${streamingAssistantId}"]`);
           if (bubble) {
             bubble.textContent = streamingContent;
-            scrollMessagesToBottom(container);
+            // Only follow the stream if the user was already near the
+            // bottom — if they scrolled up to re-read history, leave
+            // them alone and let the jump button appear.
+            maybeAutoScroll(container);
+            refreshJumpButton(container);
           } else {
             // Bubble missing (page navigated away mid-stream and came
             // back?) — fall back to a full re-paint so state stays
