@@ -1,5 +1,42 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.19.0] - 2026-05-06
+
+Convert the AI provider card's nine remaining inline event handlers to data-action delegation. Pairs with v0.6.18.0 — together they close the last CLAUDE.md "no inline handlers" violations in the web SPA.
+
+### Fixed — `.ai-provider-card` had four inline drag handlers + five inline onchange
+
+```html
+<div class="ai-provider-card" draggable="true" data-idx="${idx}"
+     ondragstart="aiDragStart(event, ${idx})"
+     ondragover="aiDragOver(event, ${idx})"
+     ondragleave="aiDragLeave(event)"
+     ondrop="aiDrop(event, ${idx})"
+     ...>
+  <input type="checkbox" onchange="aiToggleEnabled(${idx}, this.checked)">
+  <input ... onchange="aiUpdateField(${idx}, 'model', this.value)">
+  <select ... onchange="aiUpdateField(${idx}, 'model', this.value)">
+  <input ... onchange="aiUpdateField(${idx}, 'baseUrl', this.value)">
+  <input ... onchange="aiUpdateField(${idx}, 'apiKey', this.value)">
+```
+
+Same XSS-unsafe-by-construction concern as v0.6.18.0: `idx` is a safe integer today, but the JS-string-literal-context interpolation pattern is the wrong shape.
+
+### Fix
+
+Removed all nine inline handlers. Card markup now uses `data-region="ai-provider-card"` (so the delegated listeners can find the card via `closest()`) and inputs carry `data-action="ai-toggle-enabled"` / `data-action="ai-update-field"` + `data-field="model"|"baseUrl"|"apiKey"`.
+
+Two new delegated listeners hoisted into the existing `ensureSettingsListener()` singleton:
+
+1. `change` — resolves card via closest, dispatches `ai-toggle-enabled` / `ai-update-field` to existing `window.aiToggleEnabled` / `window.aiUpdateField`
+2. `dragstart` / `dragover` / `dragleave` / `drop` — resolves card via closest, dispatches to existing `window.aiDragStart` / `aiDragOver` / `aiDragLeave` / `aiDrop`
+
+The original drag handlers used `e.currentTarget` to set inline styles (opacity, borderColor). Under delegation `currentTarget` is `document`, so the listener shadows that property on the event with the resolved card before delegating. The `window.*` function bodies are unchanged — call shape preserved verbatim.
+
+### Tests
+
+Backend test suite still green across 40 packages. Drag + change behavior is browser-only.
+
 ## [0.6.18.0] - 2026-05-06
 
 Convert the last inline event handler on the Twin/learnings page to data-action delegation. Closes a CLAUDE.md violation that's been hiding in `twin.js`.
@@ -16,7 +53,7 @@ CLAUDE.md flags this pattern as **XSS-unsafe-by-construction** even when the cur
 
 Fix: swap to `data-action="add-preference"` + `data-user-id="${escapeHtml(userId)}"` (HTML attribute context, safe), then add a delegated `submit` listener to the existing `_twinInsightWired` singleton block. The listener checks `data-action`, reads `userId` from `data-user-id`, and calls the existing `window.handleAddPreference(event, userId)` — call shape preserved verbatim so the function body doesn't need to change.
 
-The settings.js AI provider card still has 9 inline handlers (`ondragstart`, `ondragover`, `ondragleave`, `ondrop`, plus 5 `onchange`). That's a more substantial refactor and warrants its own PR.
+The settings.js AI provider card still has 9 inline handlers (`ondragstart`, `ondragover`, `ondragleave`, `ondrop`, plus 5 `onchange`). That's the v0.6.19.0 follow-up.
 
 ### Tests
 

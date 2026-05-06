@@ -407,6 +407,83 @@ function ensureSettingsListener() {
     }
   });
 
+  // Delegated change handler for AI provider card inputs. Replaces
+  // five inline `onchange="..."` attributes that CLAUDE.md flags as
+  // XSS-unsafe-by-construction (`idx` is safe today as an integer
+  // but the JS-string-literal-context interpolation pattern isn't).
+  document.addEventListener('change', (e) => {
+    const hash = (window.location.hash || '').split('?')[0];
+    if (hash !== '#/settings') return;
+    const target = e.target;
+    if (!(target instanceof HTMLInputElement) && !(target instanceof HTMLSelectElement)) return;
+    const action = target.getAttribute('data-action');
+    if (!action) return;
+    const card = target.closest('[data-region="ai-provider-card"]');
+    if (!card) return;
+    const idx = parseInt(card.getAttribute('data-idx') || '', 10);
+    if (!Number.isFinite(idx)) return;
+    if (action === 'ai-toggle-enabled' && target instanceof HTMLInputElement) {
+      window.aiToggleEnabled?.(idx, target.checked);
+    } else if (action === 'ai-update-field') {
+      const field = target.getAttribute('data-field') || '';
+      if (field) window.aiUpdateField?.(idx, field, target.value);
+    }
+  });
+
+  // Drag-and-drop reordering of the AI provider chain. Pre-fix this
+  // was four inline handlers on the .ai-provider-card div
+  // (ondragstart/ondragover/ondragleave/ondrop). Drag events fire on
+  // the dragged element directly (not via bubbling for `dragover`/
+  // `drop` on the receiving element), so we listen on document and
+  // resolve the target via closest('[data-region="ai-provider-card"]').
+  // Behavior preserved verbatim from the previous window.aiDrag*
+  // implementations.
+  document.addEventListener('dragstart', (e) => {
+    const hash = (window.location.hash || '').split('?')[0];
+    if (hash !== '#/settings') return;
+    const target = e.target instanceof Element ? e.target : null;
+    const card = target?.closest('[data-region="ai-provider-card"]');
+    if (!card) return;
+    const idx = parseInt(card.getAttribute('data-idx') || '', 10);
+    if (!Number.isFinite(idx)) return;
+    window.aiDragStart?.(e, idx);
+  });
+  document.addEventListener('dragover', (e) => {
+    const hash = (window.location.hash || '').split('?')[0];
+    if (hash !== '#/settings') return;
+    const target = e.target instanceof Element ? e.target : null;
+    const card = target?.closest('[data-region="ai-provider-card"]');
+    if (!card) return;
+    const idx = parseInt(card.getAttribute('data-idx') || '', 10);
+    if (!Number.isFinite(idx)) return;
+    // The original handler used `e.currentTarget` to set borderColor.
+    // Under delegation `currentTarget` is the document, so we shadow
+    // the property on the event with the resolved card. The window.*
+    // handlers don't otherwise touch currentTarget.
+    Object.defineProperty(e, 'currentTarget', { value: card, configurable: true });
+    window.aiDragOver?.(e, idx);
+  });
+  document.addEventListener('dragleave', (e) => {
+    const hash = (window.location.hash || '').split('?')[0];
+    if (hash !== '#/settings') return;
+    const target = e.target instanceof Element ? e.target : null;
+    const card = target?.closest('[data-region="ai-provider-card"]');
+    if (!card) return;
+    Object.defineProperty(e, 'currentTarget', { value: card, configurable: true });
+    window.aiDragLeave?.(e);
+  });
+  document.addEventListener('drop', (e) => {
+    const hash = (window.location.hash || '').split('?')[0];
+    if (hash !== '#/settings') return;
+    const target = e.target instanceof Element ? e.target : null;
+    const card = target?.closest('[data-region="ai-provider-card"]');
+    if (!card) return;
+    const idx = parseInt(card.getAttribute('data-idx') || '', 10);
+    if (!Number.isFinite(idx)) return;
+    Object.defineProperty(e, 'currentTarget', { value: card, configurable: true });
+    window.aiDrop?.(e, idx);
+  });
+
   document.addEventListener('click', (e) => {
     const hash = (window.location.hash || '').split('?')[0];
     if (hash !== '#/settings') return;
@@ -858,10 +935,7 @@ function renderProviderChain(providers) {
 
   return _aiChain.map((p, idx) => `
     <div class="ai-provider-card" draggable="true" data-idx="${idx}"
-         ondragstart="aiDragStart(event, ${idx})"
-         ondragover="aiDragOver(event, ${idx})"
-         ondragleave="aiDragLeave(event)"
-         ondrop="aiDrop(event, ${idx})"
+         data-region="ai-provider-card"
          style="display: flex; gap: 0.5rem; align-items: flex-start; padding: 0.75rem; background: var(--bg); border-radius: var(--radius-sm); margin-bottom: 0.5rem; border: 2px solid transparent; cursor: grab; transition: border-color 0.15s, opacity 0.15s;">
       <div style="display: flex; flex-direction: column; align-items: center; gap: 0.25rem; padding-top: 0.25rem; color: var(--text-dim); font-size: 0.75rem; user-select: none;">
         <span style="font-size: 1rem; line-height: 1;">&#x2800;&#x2801;&#x2802;&#x2803;</span>
@@ -872,7 +946,7 @@ function renderProviderChain(providers) {
           <span style="font-weight: 600; font-size: 0.9rem;">${escapeHtml(PROVIDER_LABELS[p.provider] || p.provider)}</span>
           <div style="display: flex; gap: 0.25rem; align-items: center;">
             <label style="font-size: 0.75rem; display: flex; align-items: center; gap: 0.25rem; cursor: pointer;">
-              <input type="checkbox" ${p.enabled !== false ? 'checked' : ''} onchange="aiToggleEnabled(${idx}, this.checked)">
+              <input type="checkbox" ${p.enabled !== false ? 'checked' : ''} data-action="ai-toggle-enabled">
               on
             </label>
             <button class="btn btn-outline btn-sm" style="padding: 0.15rem 0.4rem; font-size: 0.7rem;" data-action="ai-test-provider" data-idx="${idx}">Test</button>
@@ -883,8 +957,8 @@ function renderProviderChain(providers) {
           <div style="flex: 1; min-width: 120px;">
             <label style="font-size: 0.7rem; color: var(--text-dim);">Model</label>
             ${p.provider === 'ollama'
-              ? `<input class="form-input" style="font-size: 0.8rem; padding: 0.3rem 0.5rem;" value="${escapeHtml(p.model || '')}" onchange="aiUpdateField(${idx}, 'model', this.value)">`
-              : `<select class="form-input" style="font-size: 0.8rem; padding: 0.3rem 0.5rem;" onchange="aiUpdateField(${idx}, 'model', this.value)">
+              ? `<input class="form-input" style="font-size: 0.8rem; padding: 0.3rem 0.5rem;" value="${escapeHtml(p.model || '')}" data-action="ai-update-field" data-field="model">`
+              : `<select class="form-input" style="font-size: 0.8rem; padding: 0.3rem 0.5rem;" data-action="ai-update-field" data-field="model">
                   ${(PROVIDER_MODELS[p.provider] || []).map(m => `<option value="${m.id}" ${m.id === p.model ? 'selected' : ''}>${m.label}</option>`).join('')}
                 </select>`
             }
@@ -892,11 +966,11 @@ function renderProviderChain(providers) {
           ${p.provider === 'ollama'
             ? `<div style="flex: 1; min-width: 150px;">
                 <label style="font-size: 0.7rem; color: var(--text-dim);">URL</label>
-                <input class="form-input" style="font-size: 0.8rem; padding: 0.3rem 0.5rem;" value="${escapeHtml(p.baseUrl || 'http://localhost:11434')}" placeholder="http://localhost:11434" onchange="aiUpdateField(${idx}, 'baseUrl', this.value)">
+                <input class="form-input" style="font-size: 0.8rem; padding: 0.3rem 0.5rem;" value="${escapeHtml(p.baseUrl || 'http://localhost:11434')}" placeholder="http://localhost:11434" data-action="ai-update-field" data-field="baseUrl">
               </div>`
             : `<div style="flex: 1; min-width: 150px;">
                 <label style="font-size: 0.7rem; color: var(--text-dim);">API Key</label>
-                <input class="form-input" type="password" style="font-size: 0.8rem; padding: 0.3rem 0.5rem;" value="${escapeHtml(p.apiKey || '')}" placeholder="${p.apiKeyPreview || 'Paste your API key'}" onchange="aiUpdateField(${idx}, 'apiKey', this.value)">
+                <input class="form-input" type="password" style="font-size: 0.8rem; padding: 0.3rem 0.5rem;" value="${escapeHtml(p.apiKey || '')}" placeholder="${p.apiKeyPreview || 'Paste your API key'}" data-action="ai-update-field" data-field="apiKey">
               </div>`
           }
         </div>
