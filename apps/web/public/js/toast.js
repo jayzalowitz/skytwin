@@ -76,6 +76,12 @@ export function showToast(message, options = {}) {
   const kind = KINDS.has(options.kind) ? options.kind : 'info';
   const defaultDuration = (kind === 'warning' || kind === 'danger') ? 6000 : 3500;
   const durationMs = typeof options.durationMs === 'number' ? options.durationMs : defaultDuration;
+  // Optional action button (e.g. "Undo") rendered between the message
+  // and the close X. `onClick` fires before the toast dismisses so the
+  // caller can branch on whether the action ran or the toast timed out.
+  const action = options.action && typeof options.action.label === 'string' && typeof options.action.onClick === 'function'
+    ? options.action
+    : null;
 
   const stack = getStack();
   const toast = document.createElement('div');
@@ -83,6 +89,7 @@ export function showToast(message, options = {}) {
   toast.setAttribute('role', kind === 'danger' || kind === 'warning' ? 'alert' : 'status');
   toast.innerHTML = `
     <div class="skytoast-content">${escapeForToast(message)}</div>
+    ${action ? `<button class="skytoast-action" type="button">${escapeForToast(action.label)}</button>` : ''}
     <button class="skytoast-close" type="button" aria-label="Dismiss">×</button>
   `;
   stack.appendChild(toast);
@@ -102,11 +109,19 @@ export function showToast(message, options = {}) {
   };
 
   toast.querySelector('.skytoast-close')?.addEventListener('click', dismiss);
+  if (action) {
+    toast.querySelector('.skytoast-action')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      try { action.onClick(); } catch { /* swallow — toast still dismisses */ }
+      dismiss();
+    });
+  }
   toast.addEventListener('click', (e) => {
-    // Click anywhere on the toast (not just the X) dismisses. Skips
-    // when the click was on a nested interactive element if we ever
-    // add action buttons to toasts in the future.
-    if (e.target instanceof HTMLButtonElement && e.target.classList.contains('skytoast-close')) return;
+    // Click anywhere on the toast (not the action, not the X) dismisses.
+    if (e.target instanceof HTMLButtonElement
+      && (e.target.classList.contains('skytoast-close') || e.target.classList.contains('skytoast-action'))) {
+      return;
+    }
     dismiss();
   });
 

@@ -8,6 +8,7 @@ import {
   wireApiRetry,
 } from '../api-client.js';
 import { assistantDraftKey } from '../storage-keys.js';
+import { showToast } from '../toast.js';
 
 // State for the currently-rendered thread. Module-scope because the click
 // delegator (singleton, document-level) needs to read the active thread to
@@ -521,40 +522,83 @@ async function handleSelectThread(threadId) {
   paint(container);
 }
 
+// Pending soft-deletes: thread-id → setTimeout handle. Delete is
+// optimistic in the UI but the API call is deferred behind a 6s undo
+// window so a misclicked X is recoverable. If the user clicks Undo, we
+// cancel the timer and restore the thread without ever hitting the
+// server. If 6s elapses, we fire the real DELETE.
+const _pendingDeletes = new Map();
+const UNDO_WINDOW_MS = 6000;
+
 async function handleDeleteThread(threadId) {
-  // No native confirm() — keeps the look consistent and avoids the system
-  // dialog interruption. Future phase can build a custom confirm modal.
-  // Optimistically drop from the list, restore on failure.
-  const previous = _state.threads.slice();
+  // Already pending? No-op — the X for a soft-deleted thread isn't
+  // visible (we removed it from _state.threads), but defensive.
+  if (_pendingDeletes.has(threadId)) return;
+
+  const previousThreads = _state.threads.slice();
+  const wasActive = _state.activeThreadId === threadId;
+  const previousMessages = wasActive ? _state.messages.slice() : null;
+
+  // Optimistic UI removal.
   _state.threads = _state.threads.filter((t) => t.id !== threadId);
-  let switched = false;
-  if (_state.activeThreadId === threadId) {
+  if (wasActive) {
     _state.activeThreadId = _state.threads[0]?.id ?? null;
     _state.messages = [];
-    switched = true;
   }
   const container = document.getElementById('page-content');
   if (container) paint(container);
 
-  try {
-    await deleteAssistantThread(threadId, _state.userId);
-    // If the active thread switched to a different one, fetch its messages.
-    if (switched && _state.activeThreadId && container) {
-      try {
-        const data = await fetchAssistantThread(_state.activeThreadId, _state.userId);
+  // If the active thread switched, fetch the new one's messages so the
+  // chat pane isn't blank during the undo window.
+  if (wasActive && _state.activeThreadId && container) {
+    fetchAssistantThread(_state.activeThreadId, _state.userId)
+      .then((data) => {
         _state.messages = Array.isArray(data?.messages) ? data.messages : [];
         paint(container);
-      } catch {
-        /* swallow — leave state as is */
-      }
-    }
-  } catch (err) {
-    // Rollback on failure so the UI doesn't lie about the server state.
-    _state.threads = previous;
-    if (container) paint(container);
-    // eslint-disable-next-line no-console
-    console.warn('Failed to delete thread:', err);
+      })
+      .catch(() => { /* leave blank */ });
   }
+
+  const commit = () => {
+    _pendingDeletes.delete(threadId);
+    deleteAssistantThread(threadId, _state.userId).catch((err) => {
+      // Server rejected the delete — restore the thread + warn. Rare
+      // (we already passed validation locally), but the UI shouldn't
+      // lie about server state.
+      _state.threads = previousThreads;
+      if (wasActive && previousMessages) {
+        _state.activeThreadId = threadId;
+        _state.messages = previousMessages;
+      }
+      if (container) paint(container);
+      showToast(`Couldn't delete that conversation: ${err?.message || 'unknown error'}`, { kind: 'danger' });
+    });
+  };
+
+  const timer = setTimeout(commit, UNDO_WINDOW_MS);
+  _pendingDeletes.set(threadId, timer);
+
+  showToast('Conversation deleted', {
+    kind: 'info',
+    durationMs: UNDO_WINDOW_MS,
+    action: {
+      label: 'Undo',
+      onClick: () => {
+        const t = _pendingDeletes.get(threadId);
+        if (!t) return;
+        clearTimeout(t);
+        _pendingDeletes.delete(threadId);
+        // Restore. If the previously-active thread came back, also
+        // re-select it so the chat pane shows what they were reading.
+        _state.threads = previousThreads;
+        if (wasActive) {
+          _state.activeThreadId = threadId;
+          _state.messages = previousMessages || [];
+        }
+        if (container) paint(container);
+      },
+    },
+  });
 }
 
 async function handleSend() {
