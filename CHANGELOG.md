@@ -1,5 +1,30 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.16.0] - 2026-05-06
+
+Make the chat thread delete recoverable. Pre-fix, clicking the X next to a thread title fired the DELETE immediately with no confirm and no undo — risky for non-technical users on small screens where the X sits 8px from the thread title.
+
+### Added — toast `action: { label, onClick }` option
+
+`showToast(msg, { ..., action: { label: 'Undo', onClick: fn } })` renders a pill-shaped action button between the message and the close X. Clicking the action runs `onClick` then dismisses; clicking elsewhere on the toast still dismisses without firing the action. The signature matches the comment hint we left in `toast.js` v0.6.8.0 ("if we ever add action buttons to toasts in the future").
+
+CSS is namespaced `.skytoast-action` — outline-style accent pill so it reads distinct from the close X.
+
+### Changed — `handleDeleteThread` is now soft-delete with undo
+
+Click X → optimistic UI removal + 6s undo toast. If the user clicks Undo, the timer is canceled and the thread restores without ever hitting the server. If 6s elapses, the real `deleteAssistantThread` API call fires.
+
+State preserved during the undo window:
+- `previousThreads` slice for full rollback
+- `previousMessages` slice when the active thread itself was the one being deleted (restoring the active thread restores the full chat history mid-undo, no fetch needed)
+- Pending timers tracked in `_pendingDeletes: Map<threadId, timeoutHandle>` so a misclicked X followed by another misclick on the same thread is a no-op (the second click sees a pending entry and bails)
+
+If the active thread was the one deleted, the next-most-recent thread becomes active during the undo window and its messages are fetched async — so the chat pane shows something instead of going blank for 6 seconds.
+
+### Tests
+
+Backend test suite still green across 40 packages. Undo behavior is browser-only.
+
 ## [0.6.15.0] - 2026-05-06
 
 Stop yanking the user back to the bottom of the chat while they're scrolled up reading history.
