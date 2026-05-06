@@ -1,5 +1,27 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.20.0] - 2026-05-06
+
+Fix three integration-live tests that fail locally when an API server is up but the web dashboard isn't — common when a sibling Conductor worktree is running its own API on `:3100` but no web server on `:3200`.
+
+### Fixed — `apps/desktop/src/__tests__/integration-live.test.ts`
+
+Pre-fix, every describe block was gated on a single `serverAvailable` predicate that only checked `http://localhost:3100/api/health/live`. Two blocks ("web dashboard proxy (desktop embeds this)" and "desktop service manager targets") fetched `http://localhost:3200` — so when the API was up but the web app wasn't, those blocks ran and failed instead of skipping.
+
+Added a separate `webAvailable = isServerUp('http://localhost:3200/')` predicate. The "web dashboard proxy" block and a new "desktop service manager targets — web dashboard" block (split out of the existing service-manager block, which had one API test + one web test mixed together) gate on `webAvailable`. The pure-API "desktop service manager targets — API" block keeps `serverAvailable`.
+
+### Fixed — `apps/mobile/src/__tests__/integration-live.test.ts`
+
+Same shape of bug. The "web proxy (mobile browser fallback path)" describe block fetched `http://localhost:3200` but was gated on `serverAvailable` (API only). Added the same independent `webAvailable` check and gated that block on it. The `isServerUp` helper now takes a URL argument so both predicates share the implementation.
+
+### Why CI was unaffected
+
+CI doesn't start either server, so `serverAvailable` was false there and all describe blocks correctly skipped. The bug only surfaced on local dev machines where an API happened to be running. No CI behavior change from this PR.
+
+### Tests
+
+`pnpm --filter @skytwin/desktop test` and `pnpm --filter @skytwin/mobile test` both clean locally now (4 + 2 skipped, 124 + 116 passed). Backend test suite still green across 40 packages.
+
 ## [0.6.19.0] - 2026-05-06
 
 Convert the AI provider card's nine remaining inline event handlers to data-action delegation. Pairs with v0.6.18.0 — together they close the last CLAUDE.md "no inline handlers" violations in the web SPA.

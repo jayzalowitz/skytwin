@@ -22,6 +22,12 @@ async function isServerUp(url: string): Promise<boolean> {
 }
 
 const serverAvailable = await isServerUp(`${API_BASE}/api/health/live`);
+// Web dashboard runs on a separate port from the API. Some describe
+// blocks below fetch WEB_BASE and would fail (instead of skip) if only
+// the API server is up — common when a sibling Conductor worktree is
+// running its own API but the dashboard isn't bound. Gate web-only
+// describe blocks on this independent check.
+const webAvailable = await isServerUp(`${WEB_BASE}/`);
 
 describe.runIf(serverAvailable)('API server health (desktop process supervision target)', () => {
 
@@ -54,7 +60,7 @@ describe.runIf(serverAvailable)('API server health (desktop process supervision 
   });
 });
 
-describe.runIf(serverAvailable)('web dashboard proxy (desktop embeds this)', () => {
+describe.runIf(webAvailable)('web dashboard proxy (desktop embeds this)', () => {
   it('GET / returns 200 with HTML', async () => {
     const res = await fetch(WEB_BASE);
     expect(res.ok).toBe(true);
@@ -242,7 +248,7 @@ describe.runIf(serverAvailable)('API CORS and content type', () => {
   });
 });
 
-describe.runIf(serverAvailable)('desktop service manager targets', () => {
+describe.runIf(serverAvailable)('desktop service manager targets — API', () => {
   it('API health check matches service-manager polling URL', async () => {
     // ServiceManager polls http://localhost:3100/api/health every 5s
     const res = await fetch('http://localhost:3100/api/health');
@@ -250,7 +256,9 @@ describe.runIf(serverAvailable)('desktop service manager targets', () => {
     const body = await res.json() as Record<string, string>;
     expect(body.status).toBe('ok');
   });
+});
 
+describe.runIf(webAvailable)('desktop service manager targets — web dashboard', () => {
   it('web dashboard matches main.ts loadURL target', async () => {
     // main.ts loads http://localhost:3200
     const res = await fetch('http://localhost:3200');
