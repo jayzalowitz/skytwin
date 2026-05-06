@@ -1,5 +1,23 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.13.0] - 2026-05-06
+
+Bump `electron-store` from 8.x to 11.x. Supersedes Dependabot PR #71, which was held back because the bump alone broke `tsc` on `apps/desktop/src/window-state.ts`.
+
+### Why it broke
+
+electron-store v9 became ESM-only and started extending the (also ESM-only) `Conf` class for its `.get` / `.set` API. The desktop app's `tsconfig.json` uses `module: commonjs`, so under that resolution mode TypeScript can't follow the inheritance chain across the ESM boundary — it sees `ElectronStore<T>` as a class with no methods, even though `.get` / `.set` exist on the parent at runtime.
+
+At runtime this is fine: Electron 41 ships Node 22.14, which supports `require()` of ESM modules natively (stable since Node 22.12).
+
+### Fix
+
+Narrow the constructor result to a small structural surface that matches the three call sites we actually use (`get('windowBounds')`, `set('windowBounds', …)`, `set('windowBounds.isMaximized', …)`) via `as unknown as WindowBoundsStore`. Easier to audit than a blanket `any`, and the constructor signature + runtime call sites stay unchanged so a future ESM migration of `apps/desktop/tsconfig.json` can drop the cast cleanly.
+
+### Tests
+
+Backend test suite still green across 40 packages. `pnpm tsc --noEmit` clean in `apps/desktop`. Pre-existing 3 failures in `integration-live.test.ts` (require localhost:3200 to be running) are unaffected.
+
 ## [0.6.12.0] - 2026-05-05
 
 Two assistant composer polish items the dashboard "Ask your twin" widget already had — bring the chat surface up to parity.
