@@ -18,8 +18,14 @@
   display: grid;
   grid-template-columns: 280px 1fr;
   gap: 1rem;
-  /* Fill the page-content area so the composer sits at the bottom. */
+  /* Fill the page-content area so the composer sits at the bottom.
+   * `dvh` (dynamic viewport height) shrinks with the mobile soft
+   * keyboard so the composer stays visible while typing — `vh` would
+   * leave the composer pushed off-screen behind the keyboard.
+   * The `vh` line stays as a fallback for older browsers (pre-2022).
+   */
   height: calc(100vh - 12rem);
+  height: calc(100dvh - 12rem);
   min-height: 480px;
 }
 
@@ -27,6 +33,7 @@
   .assistant-shell {
     grid-template-columns: 1fr;
     height: calc(100vh - 14rem);
+    height: calc(100dvh - 14rem);
   }
   .assistant-threads {
     max-height: 220px;

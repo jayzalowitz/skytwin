@@ -1,5 +1,19 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.14.0] - 2026-05-06
+
+Mobile fix for the assistant chat: composer no longer disappears behind the soft keyboard.
+
+### Fixed — `vh` → `dvh` on `.assistant-shell` height
+
+The chat shell sized itself with `height: calc(100vh - 12rem)`. On mobile, `vh` is fixed to the *visual* viewport height as the page first paints — it doesn't shrink when the keyboard appears. Result: tap the composer, keyboard slides up, the composer slides up with it but the parent shell still thinks it has full-viewport height, so the composer ends up rendered behind the keyboard. The user can't see what they're typing.
+
+`dvh` (dynamic viewport height, stable in all evergreen browsers since 2022) shrinks with the keyboard so the composer stays visible. Both the desktop default and the `<= 768px` breakpoint update; the `vh` line stays above the `dvh` line as a fallback for older browsers (last-rule-wins, so `dvh` wins where supported).
+
+### Tests
+
+CSS-only change. Backend test suite still green across 40 packages.
+
 ## [0.6.13.0] - 2026-05-06
 
 Bump `electron-store` from 8.x to 11.x. Supersedes Dependabot PR #71, which was held back because the bump alone broke `tsc` on `apps/desktop/src/window-state.ts`.
