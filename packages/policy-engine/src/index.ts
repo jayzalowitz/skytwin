@@ -19,6 +19,8 @@ export {
   resolveEffectiveCaps,
   type SpendRepositoryPort,
   type SpendCheckResult,
+  type MonthlySpendCheckResult,
+  type MonthlySpendSummary,
   type ReconciliationResult,
 } from './spend-tracker.js';
 export {

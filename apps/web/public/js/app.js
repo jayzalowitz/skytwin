@@ -9,6 +9,7 @@ import { renderAssistant } from './pages/assistant.js';
 import { renderOnboarding } from './pages/onboarding.js';
 import { renderCapabilities } from './pages/capabilities.js';
 import { renderCapabilityDetail } from './pages/capability-detail.js';
+import { renderCapabilitiesAudit } from './pages/capabilities-audit.js';
 import { renderAboutMe } from './pages/about-me.js';
 import { renderTwinBriefing } from './pages/twin-briefing.js';
 import { renderTwinServerTokens } from './pages/twin-server-tokens.js';
@@ -32,6 +33,7 @@ const routes = {
   '/audit': { title: 'Audit Trail', render: renderAudit },
   '/setup': { title: 'Connect', render: renderSetup },
   '/capabilities': { title: 'Capabilities', render: renderCapabilities },
+  '/capabilities/audit': { title: 'Capability Audit Trail', render: renderCapabilitiesAudit },
   '/about-me': { title: 'About me', render: renderAboutMe },
   '/briefing': { title: 'Twin Briefing', render: renderTwinBriefing },
   '/twin-server-tokens': { title: 'MCP Agent Tokens', render: renderTwinServerTokens },

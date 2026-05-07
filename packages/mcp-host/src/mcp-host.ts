@@ -50,9 +50,42 @@ const ROLLBACK_HEURISTICS: Array<(name: string) => string> = [
  * MCP SDK's `call_tool` RPC. Each server is protected by a CircuitBreaker
  * (3 failures in 60 s → mark failed, no auto-restart).
  */
+/**
+ * Hook fired after each tool call (success or failure). Used by the
+ * observability layer (#183) to record per-server telemetry; pass the
+ * recorder bound to a shared MetricsCollector. Failures inside the hook
+ * are swallowed so observability never blocks execution.
+ */
+export interface McpHostToolCallEvent {
+  serverId: string;
+  toolName: string;
+  latencyMs: number;
+  success: boolean;
+  spendCents: number;
+  ts: Date;
+}
+
+export interface McpHostOptions {
+  onToolCall?: (event: McpHostToolCallEvent) => void;
+}
+
 export class McpHost implements IronClawAdapter {
   private readonly servers = new Map<string, ServerEntry>();
   private readonly executions = new Map<string, McpExecutionLog>();
+  private readonly onToolCall: ((event: McpHostToolCallEvent) => void) | undefined;
+
+  constructor(options: McpHostOptions = {}) {
+    this.onToolCall = options.onToolCall;
+  }
+
+  private emitToolCall(event: McpHostToolCallEvent): void {
+    if (!this.onToolCall) return;
+    try {
+      this.onToolCall(event);
+    } catch {
+      // observability hook must never block execution
+    }
+  }
 
   private evictOldExecutions(): void {
     if (this.executions.size <= MAX_TRACKED_EXECUTIONS) return;
@@ -289,6 +322,15 @@ export class McpHost implements IronClawAdapter {
       log.completedAt = completedAt;
       log.output = extractOutput(callResult);
 
+      this.emitToolCall({
+        serverId,
+        toolName,
+        latencyMs: completedAt.getTime() - startedAt.getTime(),
+        success: true,
+        spendCents: 0,
+        ts: completedAt,
+      });
+
       return {
         planId: plan.id,
         status: 'completed',
@@ -307,6 +349,15 @@ export class McpHost implements IronClawAdapter {
         entry.handle.status = 'failed';
         entry.handle.lastError = error;
       }
+
+      this.emitToolCall({
+        serverId,
+        toolName,
+        latencyMs: completedAt.getTime() - startedAt.getTime(),
+        success: false,
+        spendCents: 0,
+        ts: completedAt,
+      });
 
       return { planId: plan.id, status: 'failed', startedAt, completedAt, error };
     }

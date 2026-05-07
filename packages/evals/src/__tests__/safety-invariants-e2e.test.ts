@@ -446,6 +446,7 @@ describe('Safety Invariant 4: Spend limits are hard limits', () => {
   it('daily spend limit blocks when cumulative exceeds limit (SpendTracker)', async () => {
     const spendTracker = new SpendTracker({
       getDailyTotal: async () => 45000,
+      getMonthlyTotal: async () => 0,
       reconcile: async () => null,
     });
 
@@ -459,6 +460,7 @@ describe('Safety Invariant 4: Spend limits are hard limits', () => {
   it('daily spend limit allows when within bounds', async () => {
     const spendTracker = new SpendTracker({
       getDailyTotal: async () => 30000,
+      getMonthlyTotal: async () => 0,
       reconcile: async () => null,
     });
 

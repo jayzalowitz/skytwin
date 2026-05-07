@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@skytwin/capability-engine": "workspace:*",
+    "@skytwin/observability": "workspace:*",
     "@skytwin/config": "workspace:*",
     "@skytwin/connectors": "workspace:*",
     "@skytwin/core": "workspace:*",

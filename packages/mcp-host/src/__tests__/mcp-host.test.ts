@@ -264,6 +264,63 @@ describe('McpHost', () => {
     expect(result.status).toBe('failed');
   });
 
+  // ── onToolCall observability hook (#183) ─────────────────────────────────
+
+  it('onToolCall fires after a successful tool call with success:true', async () => {
+    const events: Array<{ serverId: string; toolName: string; success: boolean }> = [];
+    const observedHost = new McpHost({
+      onToolCall: (e) => {
+        events.push({ serverId: e.serverId, toolName: e.toolName, success: e.success });
+      },
+    });
+    const observedClient = makeFakeClient();
+    injectFakeServer(observedHost, serverConfig, observedClient);
+
+    const plan = await observedHost.buildPlan(makeAction());
+    await observedHost.execute(plan);
+
+    expect(events).toHaveLength(1);
+    expect(events[0]?.serverId).toBe('test-server');
+    expect(events[0]?.toolName).toBe('send_email');
+    expect(events[0]?.success).toBe(true);
+  });
+
+  it('onToolCall fires with success:false when the tool throws', async () => {
+    const events: Array<{ success: boolean }> = [];
+    const observedHost = new McpHost({
+      onToolCall: (e) => {
+        events.push({ success: e.success });
+      },
+    });
+    const failClient = makeFakeClient({ callToolResult: new Error('tool exploded') });
+    const cfg: McpServerConfig = { id: 'fail-server', transport: 'stdio', command: 'node' };
+    injectFakeServer(observedHost, cfg, failClient);
+
+    const action = makeAction({
+      parameters: { mcpServerId: 'fail-server', mcpToolName: 'send_email' },
+    });
+    const plan = await observedHost.buildPlan(action);
+    await observedHost.execute(plan);
+
+    expect(events).toHaveLength(1);
+    expect(events[0]?.success).toBe(false);
+  });
+
+  it('onToolCall errors do not block execution', async () => {
+    const observedHost = new McpHost({
+      onToolCall: () => {
+        throw new Error('observability blew up');
+      },
+    });
+    const observedClient = makeFakeClient();
+    injectFakeServer(observedHost, serverConfig, observedClient);
+
+    const plan = await observedHost.buildPlan(makeAction());
+    const result = await observedHost.execute(plan);
+
+    expect(result.status).toBe('completed');
+  });
+
   // ── getStatus ────────────────────────────────────────────────────────────
 
   it('getStatus reflects completed after a successful execute', async () => {

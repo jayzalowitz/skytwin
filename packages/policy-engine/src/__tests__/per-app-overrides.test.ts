@@ -6,6 +6,7 @@ import type { AutonomySettings } from '@skytwin/shared-types';
 function repo(dailyTotal = 0): SpendRepositoryPort {
   return {
     getDailyTotal: vi.fn().mockResolvedValue(dailyTotal),
+    getMonthlyTotal: vi.fn().mockResolvedValue(0),
     reconcile: vi.fn().mockResolvedValue(null),
   };
 }

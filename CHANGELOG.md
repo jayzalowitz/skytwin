@@ -1,5 +1,63 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [unreleased] — Observability + audit + cost ceilings (#183)
+
+Implements three of the five acceptance criteria from issue #183.
+Zero-trust container isolation (AC#4) and credential-vault Argon2id
+encryption (AC#5) are deferred to a follow-up PR.
+
+### Added — `@skytwin/observability`
+
+New package: in-memory ring buffer (`MetricsCollector`) collects per-server
+tool call outcomes (latency_ms, success, spend_cents). `MetricsRollupService`
+drains the buffer and writes 1-minute rollup rows to `mcp_server_metrics`.
+Threshold constants (`SUCCESS_RATE_WARN_THRESHOLD`, `LATENCY_P95_WARN_MS`,
+`BUFFER_NEAR_FULL_FRACTION`) are exported so the UI adapts without a rebuild.
+6 unit tests for MetricsCollector, 6 for MetricsRollupService.
+
+### Added — `packages/db/src/repositories/mcp-server-metrics-repository.ts`
+
+New repository: `writeBucket` (upsert with ON CONFLICT accumulation),
+`getRecent`, `getSparkline`. Wired into the db package exports.
+
+### Added — `apps/worker/src/jobs/metrics-rollup.ts`
+
+Worker job `runMetricsRollupJob()` drains the shared `MetricsCollector`
+every 60 seconds and writes to DB. Exports `sharedMetricsCollector`
+singleton for mcp-host integration.
+
+### Added — `apps/web/public/js/pages/capabilities-audit.js`
+
+Capability audit trail page at `#/capabilities/audit`. Paginated list of
+`capability_provenance_nodes` with filters: event type, date range, and
+free-text keyword search. Singleton delegator pattern (hash-gated, no
+stacked listeners). Wired into `app.js` routes table.
+
+### Added — `GET /api/capabilities/audit`
+
+Paginated provenance node endpoint with additive SQL filters (nodeType,
+serverId, dateFrom, dateTo, q). PII fields (email, name, token, password,
+credential) are redacted before serialisation.
+
+### Added — `GET /api/capabilities/:id/metrics`
+
+Returns sparkline data (latency p50/p95, success rate) and recent bucket
+rows for the capability detail page.
+
+### Enhanced — `packages/policy-engine/src/spend-tracker.ts`
+
+Added `checkMonthlyLimit()` and `getMonthlySpendForApp()` to `SpendTracker`.
+`resolveEffectiveCaps()` now returns `maxMonthlySpendCents` from the
+per-app override (clamp-down semantics preserved). `SpendRepositoryPort`
+gains `getMonthlyTotal()`. 8 new unit tests.
+
+### Enhanced — `apps/web/public/js/pages/capability-detail.js`
+
+Added "Performance" section with SVG sparklines (latency p50/p95, success
+rate, no external charting library). Added "Monthly spend" meter: "$X.XX
+of $Y.YY used this month" progress bar; shows "No monthly cap configured"
+with settings link when none is set.
+
 ## [unreleased] — Twin-as-MCP-server (#182)
 
 SkyTwin now exposes itself as an MCP server so external agents (Claude
