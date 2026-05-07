@@ -1,0 +1,16 @@
+{
+  "inputs": {
+    "current_tier": "observer",
+    "target_tier": "suggest",
+    "risk_profile": "Standard",
+    "feedback_history": "2 approvals, 0 rejections in 3 days (new user)",
+    "decision_summary": "2 decisions total"
+  },
+  "expected": {
+    "recommend_promote": false,
+    "confidence": 0.3,
+    "reasoning": "Insufficient history for a confident judgment.",
+    "blocking_concerns": ["Fewer than 10 decisions observed"]
+  },
+  "notes": "New user with too little data; confidence must be low."
+}

@@ -1,0 +1,13 @@
+{
+  "inputs": {
+    "detected_services": "[\"GitHub\", \"Slack\", \"Linear\"]",
+    "registry": "[{\"id\":\"r1\",\"name\":\"GitHub MCP\",\"description\":\"PR reviews, issues, branches\"},{\"id\":\"r2\",\"name\":\"Slack MCP\",\"description\":\"Send messages, read channels\"},{\"id\":\"r3\",\"name\":\"Linear MCP\",\"description\":\"Issue tracking\"}]",
+    "risk_profile": "Developer, autonomous, spend up to $10"
+  },
+  "expected": [
+    { "registryId": "r1", "riskLevel": "low" },
+    { "registryId": "r2", "riskLevel": "low" },
+    { "registryId": "r3", "riskLevel": "low" }
+  ],
+  "notes": "All three detected services have matching registry entries; all should be recommended."
+}

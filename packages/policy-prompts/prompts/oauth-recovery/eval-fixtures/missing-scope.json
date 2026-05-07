@@ -1,0 +1,11 @@
+{
+  "inputs": {
+    "failure_trace": "HTTP 403. Error: {\"error\":\"insufficient_scope\",\"scope\":\"calendar:write\"}",
+    "server_auth_metadata": "{\"scopes_supported\":[\"calendar:read\",\"calendar:write\",\"email:read\"],\"authorization_endpoint\":\"/oauth/authorize\"}"
+  },
+  "expected": {
+    "action": "check_scopes",
+    "args": { "scopes_needed": ["calendar:write"] }
+  },
+  "notes": "Missing scope; should recommend re-authorizing with the required scope."
+}

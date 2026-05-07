@@ -1,0 +1,12 @@
+{
+  "inputs": {
+    "signals": "[{\"source\":\"email\",\"ref\":\"m1\",\"text\":\"Slack message from the team\"},{\"source\":\"calendar\",\"ref\":\"c1\",\"text\":\"Zoom standup\"},{\"source\":\"email\",\"ref\":\"m2\",\"text\":\"GitHub PR review needed\"},{\"source\":\"file\",\"ref\":\"f1\",\"text\":\"github-actions-run.log\"},{\"source\":\"calendar\",\"ref\":\"c2\",\"text\":\"Weekly Slack standup sync\"},{\"source\":\"email\",\"ref\":\"m3\",\"text\":\"Zoom link for the interview\"}]",
+    "risk_profile": "Developer, autonomous"
+  },
+  "expected": [
+    { "name": "Slack", "evidence": [] },
+    { "name": "Zoom", "evidence": [] },
+    { "name": "GitHub", "evidence": [] }
+  ],
+  "notes": "Multiple services detected; order may vary; evidence arrays must have >= 2 items each."
+}

@@ -1,0 +1,12 @@
+{
+  "inputs": {
+    "detected_services": "[\"Stripe\", \"QuickBooks\"]",
+    "registry": "[{\"id\":\"r-stripe\",\"name\":\"Stripe MCP\",\"description\":\"Payment processing, refunds\"},{\"id\":\"r-qb\",\"name\":\"QuickBooks MCP\",\"description\":\"Accounting, invoices\"}]",
+    "risk_profile": "Finance professional, require approval for all transactions"
+  },
+  "expected": [
+    { "registryId": "r-stripe", "riskLevel": "high" },
+    { "registryId": "r-qb", "riskLevel": "high" }
+  ],
+  "notes": "Financial capabilities should be marked high risk."
+}

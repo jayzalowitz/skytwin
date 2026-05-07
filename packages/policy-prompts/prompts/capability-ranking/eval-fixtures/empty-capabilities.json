@@ -1,0 +1,10 @@
+{
+  "inputs": {
+    "capabilities": "[]",
+    "user_profile_summary": "Standard user",
+    "risk_profile": "Cautious",
+    "language": "en"
+  },
+  "expected": [],
+  "notes": "Empty capabilities list should return empty array."
+}

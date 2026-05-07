@@ -1,0 +1,9 @@
+{
+  "inputs": {
+    "detected_services": "[\"MyCustomInternalTool\"]",
+    "registry": "[{\"id\":\"r1\",\"name\":\"GitHub MCP\",\"description\":\"PR reviews\"},{\"id\":\"r2\",\"name\":\"Slack MCP\",\"description\":\"Messaging\"}]",
+    "risk_profile": "Cautious"
+  },
+  "expected": [],
+  "notes": "No registry entries match detected services; output should be empty or near-empty array."
+}

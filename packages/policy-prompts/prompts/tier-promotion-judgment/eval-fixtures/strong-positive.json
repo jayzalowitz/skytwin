@@ -1,0 +1,16 @@
+{
+  "inputs": {
+    "current_tier": "suggest",
+    "target_tier": "low_autonomy",
+    "risk_profile": "Developer, comfortable with automation",
+    "feedback_history": "30 approvals, 1 rejection (minor tone fix), 0 reversals in 30 days",
+    "decision_summary": "98 decisions total, 96% approval rate"
+  },
+  "expected": {
+    "recommend_promote": true,
+    "confidence": 0.9,
+    "reasoning": "Strong approval rate with minimal reversals.",
+    "blocking_concerns": []
+  },
+  "notes": "Clear promotion signal: high approval rate, very few rejections."
+}

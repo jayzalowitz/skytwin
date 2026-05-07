@@ -1,0 +1,9 @@
+{
+  "inputs": {
+    "text": "CircuitBreaker state: OPEN. Retry after reset timeout.",
+    "language": "es",
+    "risk_profile": "Standard"
+  },
+  "expected": "El servicio no está disponible temporalmente. Por favor, inténtalo de nuevo en unos minutos.",
+  "notes": "Should output in Spanish (language=es)."
+}

@@ -1,0 +1,12 @@
+{
+  "inputs": {
+    "memory_summary": "Entities: GitHub repos (120 refs), Slack channels (80 refs), Linear issues (45 refs), running logs (12 refs), bank statements (5 refs). Triples: user-works-on software-projects, user-communicates-via Slack, user-tracks-fitness running.",
+    "capability_categories": "[\"Version Control\",\"Communication\",\"Project Management\",\"Health Tracking\",\"Finance\"]"
+  },
+  "expected": [
+    { "domainName": "Software Development", "importance": "core" },
+    { "domainName": "Team Communication", "importance": "core" },
+    { "domainName": "Health & Fitness", "importance": "emerging" }
+  ],
+  "notes": "GitHub/Slack dominant; should be core. Running is emerging."
+}

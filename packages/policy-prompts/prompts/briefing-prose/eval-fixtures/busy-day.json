@@ -1,0 +1,14 @@
+{
+  "inputs": {
+    "events": "[{\"time\":\"9:00\",\"title\":\"Board meeting\",\"duration\":60},{\"time\":\"11:00\",\"title\":\"1:1 with manager\",\"duration\":30},{\"time\":\"14:00\",\"title\":\"Product review\",\"duration\":90}]",
+    "pending_tasks": "[{\"id\":\"t1\",\"title\":\"Review Q2 roadmap\",\"due\":\"today\",\"priority\":\"high\"},{\"id\":\"t2\",\"title\":\"Reply to investor email\",\"due\":\"today\",\"priority\":\"high\"}]",
+    "risk_profile": "Executive",
+    "language": "en",
+    "date": "2026-05-07"
+  },
+  "expected": {
+    "briefing": "## Meetings",
+    "highlight_count": 2
+  },
+  "notes": "Busy day; briefing should open with summary and use proper headers."
+}

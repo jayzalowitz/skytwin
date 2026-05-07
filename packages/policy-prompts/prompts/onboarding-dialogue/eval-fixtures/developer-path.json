@@ -1,0 +1,12 @@
+{
+  "inputs": {
+    "previous_turns": "[{\"role\":\"assistant\",\"text\":\"What do you primarily use your computer for?\"},{\"role\":\"user\",\"text\":\"Software development, mostly Python and TypeScript\"},{\"role\":\"assistant\",\"text\":\"Which tools do you use for code review and project management?\"},{\"role\":\"user\",\"text\":\"GitHub for code review, Linear for issues, Slack for team comms\"}]",
+    "goal": "gather_tools",
+    "language": "en",
+    "risk_profile": "Developer"
+  },
+  "expected": {
+    "type": "question"
+  },
+  "notes": "Two exchanges done; should ask a follow-up or proceed to recommendation after 3."
+}

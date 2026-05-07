@@ -1,0 +1,10 @@
+{
+  "inputs": {
+    "memory_facts": "[{\"id\":1,\"fact\":\"User has sent 3 emails\"}]"
+  },
+  "expected": {
+    "portrait": "I",
+    "citations": [{ "id": 1 }]
+  },
+  "notes": "Very sparse; portrait must still cite the one available fact."
+}

@@ -1,0 +1,14 @@
+{
+  "inputs": {
+    "user_message": "Book me a flight to London",
+    "installed_capabilities": "[{\"id\":\"gmail\",\"name\":\"Gmail\"},{\"id\":\"calendar\",\"name\":\"Google Calendar\"}]",
+    "risk_profile": "Standard"
+  },
+  "expected": {
+    "action": "book_flight",
+    "candidate_capabilities": [],
+    "confidence": 0.2,
+    "requires_clarification": false
+  },
+  "notes": "No installed capability can book flights; should return empty candidates."
+}

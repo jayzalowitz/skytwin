@@ -1,0 +1,10 @@
+{
+  "inputs": {
+    "memory_facts": "[{\"id\":1,\"fact\":\"User commits code daily to TypeScript projects\"},{\"id\":2,\"fact\":\"User attends 4-6 meetings per week via Zoom\"},{\"id\":3,\"fact\":\"User runs 5k three times per week based on Strava logs\"},{\"id\":4,\"fact\":\"User reads technical books; last read: Designing Data-Intensive Applications\"}]"
+  },
+  "expected": {
+    "portrait": "I work primarily as a software engineer...",
+    "citations": []
+  },
+  "notes": "Should produce a coherent first-person portrait with citation refs."
+}

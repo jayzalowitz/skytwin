@@ -1,0 +1,16 @@
+{
+  "inputs": {
+    "signals": "[{\"source\":\"email\",\"ref\":\"msg-1\",\"text\":\"Check the Notion page I linked\"},{\"source\":\"calendar\",\"ref\":\"cal-2\",\"text\":\"Notion sync meeting\"},{\"source\":\"file\",\"ref\":\"file-3\",\"text\":\"notion-export-2024.zip\"}]",
+    "risk_profile": "Standard"
+  },
+  "expected": [
+    {
+      "name": "Notion",
+      "evidence": [
+        { "source": "email", "ref": "msg-1", "excerpt": "Check the Notion page I linked" },
+        { "source": "calendar", "ref": "cal-2", "excerpt": "Notion sync meeting" }
+      ]
+    }
+  ],
+  "notes": "Notion appears in 3 signals; output should include it with at least 2 evidence entries."
+}

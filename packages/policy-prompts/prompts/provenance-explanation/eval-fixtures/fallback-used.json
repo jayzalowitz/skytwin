@@ -1,0 +1,12 @@
+{
+  "inputs": {
+    "provenance_chain": "[{\"step\":1,\"component\":\"llm-client\",\"output\":\"Provider anthropic failed: circuit open\"},{\"step\":2,\"component\":\"llm-client\",\"output\":\"Provider openai succeeded\"},{\"step\":3,\"component\":\"decision-engine\",\"output\":\"Selected action: draft_response\"}]",
+    "action_summary": "Drafted a response using OpenAI fallback",
+    "risk_profile": "Standard"
+  },
+  "expected": {
+    "narrative": "The twin",
+    "key_decision_points": ["Anthropic provider was unavailable", "OpenAI was used as fallback"]
+  },
+  "notes": "LLM fallback occurred; narrative must mention provider chain."
+}

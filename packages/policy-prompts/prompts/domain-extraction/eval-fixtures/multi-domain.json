@@ -1,0 +1,13 @@
+{
+  "inputs": {
+    "memory_summary": "Entities: Figma files (60 refs), Slack (55 refs), QuickBooks (40 refs), Notion (38 refs), Strava (22 refs), Amazon orders (18 refs), medical appointments (15 refs). User is founder of a design studio.",
+    "capability_categories": "[\"Design\",\"Communication\",\"Finance\",\"Documentation\",\"Health\",\"Shopping\",\"Calendar\"]"
+  },
+  "expected": [
+    { "domainName": "Design & Creative Work", "importance": "core" },
+    { "domainName": "Team Communication", "importance": "core" },
+    { "domainName": "Business Finance", "importance": "core" },
+    { "domainName": "Health & Wellness", "importance": "secondary" }
+  ],
+  "notes": "Rich multi-domain user; should identify 4+ domains."
+}

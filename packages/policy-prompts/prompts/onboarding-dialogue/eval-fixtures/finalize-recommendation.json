@@ -1,0 +1,14 @@
+{
+  "inputs": {
+    "previous_turns": "[{\"role\":\"assistant\",\"text\":\"What do you primarily use your computer for?\"},{\"role\":\"user\",\"text\":\"I'm a developer\"},{\"role\":\"assistant\",\"text\":\"Which tools do you use?\"},{\"role\":\"user\",\"text\":\"GitHub, Slack, Linear\"},{\"role\":\"assistant\",\"text\":\"How autonomous should the twin be?\"},{\"role\":\"user\",\"text\":\"Pretty autonomous, I trust it\"}]",
+    "goal": "finalize",
+    "language": "en",
+    "risk_profile": "Developer, autonomous"
+  },
+  "expected": {
+    "type": "recommendation",
+    "recipeSlug": "developer-starter",
+    "recommendedRegistryIds": ["github-mcp", "slack-mcp", "linear-mcp"]
+  },
+  "notes": "After 3+ exchanges with finalize goal, output must be a recommendation type."
+}

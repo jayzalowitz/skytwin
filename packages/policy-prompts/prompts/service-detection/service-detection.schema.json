@@ -1,0 +1,26 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": ["name", "evidence"],
+    "additionalProperties": false,
+    "properties": {
+      "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+      "evidence": {
+        "type": "array",
+        "minItems": 2,
+        "items": {
+          "type": "object",
+          "required": ["source", "ref", "excerpt"],
+          "additionalProperties": false,
+          "properties": {
+            "source": { "type": "string", "enum": ["email", "calendar", "file", "browser", "signal"] },
+            "ref": { "type": "string" },
+            "excerpt": { "type": "string", "maxLength": 80 }
+          }
+        }
+      }
+    }
+  }
+}

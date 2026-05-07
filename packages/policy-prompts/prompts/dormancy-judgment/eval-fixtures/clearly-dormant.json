@@ -1,0 +1,14 @@
+{
+  "inputs": {
+    "server_name": "Notion MCP",
+    "server_id": "notion-mcp",
+    "activity_history": "Last invoked 62 days ago. Total invocations last 90 days: 1",
+    "user_activity": "User has composed 45 documents in other tools in last 30 days",
+    "risk_profile": "Standard"
+  },
+  "expected": {
+    "should_offer_uninstall": true,
+    "usage_frequency": "rare"
+  },
+  "notes": "Unused for 62 days with high relevant activity; should offer uninstall."
+}

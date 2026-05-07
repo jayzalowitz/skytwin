@@ -1,0 +1,13 @@
+{
+  "inputs": {
+    "risk_profile_text": "I'm a developer. Skip the explainers. Spend up to $50 without asking. Send emails on my behalf when you're confident in tone — I'll fix anything weird later. Touch nothing financial without me approving each move."
+  },
+  "expected": {
+    "maxSpendPerActionCents": 5000,
+    "requireApprovalForIrreversible": false,
+    "requireApprovalForExternalSend": false,
+    "autonomyLevel": "high_autonomy",
+    "blockedDomains": ["finance"]
+  },
+  "notes": "Classic developer autonomous profile from the architecture doc."
+}

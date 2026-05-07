@@ -1,0 +1,14 @@
+{
+  "inputs": {
+    "user_message": "Send a follow-up email to Sarah about the project proposal",
+    "installed_capabilities": "[{\"id\":\"gmail\",\"name\":\"Gmail\"},{\"id\":\"slack\",\"name\":\"Slack\"}]",
+    "risk_profile": "Standard"
+  },
+  "expected": {
+    "action": "send_email",
+    "candidate_capabilities": [{ "id": "gmail", "fit_score": 0.95 }],
+    "confidence": 0.9,
+    "requires_clarification": false
+  },
+  "notes": "Unambiguous email intent; Gmail should be selected with high confidence."
+}

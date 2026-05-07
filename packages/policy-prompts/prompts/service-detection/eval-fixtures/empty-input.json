@@ -1,0 +1,8 @@
+{
+  "inputs": {
+    "signals": "[]",
+    "risk_profile": "Standard"
+  },
+  "expected": [],
+  "notes": "Empty signal list should produce empty array, not an error."
+}

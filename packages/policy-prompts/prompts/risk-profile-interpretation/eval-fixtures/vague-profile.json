@@ -1,0 +1,7 @@
+{
+  "inputs": {
+    "risk_profile_text": "I'm okay with things."
+  },
+  "expected": {},
+  "notes": "Vague profile; output should be empty or minimal — do not guess at fields."
+}
