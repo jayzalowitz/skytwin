@@ -839,3 +839,30 @@ export function markBriefingRead(briefingId, userId) {
     method: 'POST',
   });
 }
+
+// ── Onboarding (issue #181) ───────────────────────────────────────────────────
+
+export function fetchOnboardingState(userId) {
+  return fetchJSON(`${API}/onboarding/state?userId=${encodeURIComponent(userId)}`);
+}
+
+export function postOnboardingDialogue(userId, history, context) {
+  return fetchJSON(`${API}/onboarding/dialogue?userId=${encodeURIComponent(userId)}`, {
+    method: 'POST',
+    body: JSON.stringify({ history, context }),
+  });
+}
+
+export function postDeterministicPick(userId, answers) {
+  return fetchJSON(`${API}/onboarding/deterministic-pick?userId=${encodeURIComponent(userId)}`, {
+    method: 'POST',
+    body: JSON.stringify({ answers }),
+  });
+}
+
+export function postOnboardingComplete(userId, choice, recipeSlug) {
+  return fetchJSON(`${API}/onboarding/complete?userId=${encodeURIComponent(userId)}`, {
+    method: 'POST',
+    body: JSON.stringify({ choice, recipeSlug }),
+  });
+}

@@ -1,695 +1,1045 @@
-import { createUser, updateTrustTier, fetchJSON, fetchTwinProfile, fetchDemoInfo, previewDemoDecision } from '../api-client.js';
+/**
+ * First-run wizard — issue #181.
+ *
+ * State machine:
+ *   welcome → email_choice / computer_choice / about_me_choice
+ *   about_me_choice → recipe_preview (via LLM or deterministic 3-question form)
+ *   email_choice    → recipe_preview
+ *   computer_choice → (idle-miner poll) → recipe_preview
+ *   recipe_preview  → installing
+ *   installing      → complete
+ *
+ * Singleton delegator: all click handling lives in handleOnboardingClick(),
+ * wired ONCE with a _wizardListenerWired guard and gated on
+ * window.location.hash === '' || '#/' (the overlay is always shown at root).
+ *
+ * No inline event handlers anywhere in this file — only data-action attributes.
+ */
+
+import {
+  createUser,
+  fetchJSON,
+  fetchDemoInfo,
+  previewDemoDecision,
+  fetchOnboardingState,
+  postOnboardingDialogue,
+  postDeterministicPick,
+  postOnboardingComplete,
+  installCapabilityRecipe,
+  fetchCapabilityDependencyGraph,
+  escapeHtml,
+} from '../api-client.js';
 import { KEY_USER_ID, KEY_ONBOARDED, KEY_TOUR_MODE } from '../storage-keys.js';
 
-// ── Domain definitions ──────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Module-level state (singleton — one wizard per browser tab)
+// ─────────────────────────────────────────────────────────────────────────────
 
-const DOMAINS = [
-  { id: 'email', icon: '📧', name: 'Email Management', desc: 'Organize inbox, filter spam, draft replies', preSelected: true },
-  { id: 'calendar', icon: '📅', name: 'Calendar', desc: 'Handle scheduling conflicts, manage invites', preSelected: true },
-  { id: 'finance', icon: '💰', name: 'Finance', desc: 'Track expenses, pay bills, flag suspicious charges', preSelected: false },
-  { id: 'shopping', icon: '🛒', name: 'Shopping', desc: 'Reorder staples, track prices, manage subscriptions', preSelected: false },
-  { id: 'travel', icon: '✈️', name: 'Travel', desc: 'Find deals, set alerts, manage bookings', preSelected: false },
-  { id: 'tasks', icon: '✅', name: 'Tasks', desc: 'Create to-dos, set reminders, track projects', preSelected: false },
-  { id: 'smart_home', icon: '🏠', name: 'Smart Home', desc: 'Adjust thermostat, manage lights, run routines', preSelected: false },
-  { id: 'social', icon: '💬', name: 'Social Media', desc: 'Draft posts, respond to mentions, manage notifications', preSelected: false },
-  { id: 'documents', icon: '📄', name: 'Documents', desc: 'Organize files, share docs, generate summaries', preSelected: false },
-  { id: 'health', icon: '❤️', name: 'Health', desc: 'Track medications, book appointments, log health data', preSelected: false },
-];
+let _wizardListenerWired = false;
+let _onCompleteCallback = null;   // set by renderOnboarding
+let _wizardState = null;          // { screen, userId, hasLlmProvider, history, recipeSlug, recommendedRegistryIds }
 
-// ── Preference questions per domain ─────────────────────────────────
+function isOnWizard() {
+  // The wizard overlay is shown at the root hash (empty or '#/').
+  const h = (window.location.hash || '').split('?')[0];
+  return h === '' || h === '#/' || h === '#';
+}
 
-const DOMAIN_QUESTIONS = {
-  email: [
-    { key: 'auto_archive_promo', label: 'Auto-archive promotional emails?' },
-    { key: 'draft_work_replies', label: 'Draft replies to work emails?' },
-  ],
-  calendar: [
-    { key: 'protect_morning_focus', label: 'Protect morning focus time?' },
-    { key: 'auto_accept_recurring', label: 'Auto-accept recurring meetings?' },
-  ],
-  finance: [
-    { key: 'alert_large_charges', label: 'Alert me on charges over $50?' },
-    { key: 'auto_categorize_transactions', label: 'Auto-categorize transactions?' },
-  ],
-  shopping: [
-    { key: 'track_price_drops', label: 'Track price drops?' },
-    { key: 'auto_reorder_low_stock', label: 'Auto-reorder when items run low?' },
-  ],
-  travel: [
-    { key: 'find_travel_deals', label: 'Find and alert on travel deals?' },
-    { key: 'manage_bookings', label: 'Auto-manage booking confirmations?' },
-  ],
-  tasks: [
-    { key: 'create_tasks_from_emails', label: 'Create tasks from emails?' },
-    { key: 'daily_reminders', label: 'Set daily reminders?' },
-  ],
-  smart_home: [
-    { key: 'auto_thermostat_bedtime', label: 'Auto-adjust thermostat at bedtime?' },
-    { key: 'lights_off_when_away', label: 'Turn off lights when away?' },
-  ],
-  social: [
-    { key: 'auto_mute_spam', label: 'Auto-mute spam conversations?' },
-    { key: 'draft_mention_responses', label: 'Draft responses to mentions?' },
-  ],
-  documents: [
-    { key: 'auto_organize_downloads', label: 'Auto-organize downloaded files?' },
-    { key: 'summarize_long_docs', label: 'Summarize long documents?' },
-  ],
-  health: [
-    { key: 'medication_reminders', label: 'Medication reminders?' },
-    { key: 'track_daily_metrics', label: 'Track daily health metrics?' },
-  ],
-};
+function getCurrentUserId() {
+  return localStorage.getItem(KEY_USER_ID) || '';
+}
 
-// ── Steps ───────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Singleton listener — attached once
+// ─────────────────────────────────────────────────────────────────────────────
 
-const STEPS = [
-  // Step 1: Welcome — show, don't tell
-  {
-    render: (container, next) => {
-      container.innerHTML = `
-        <div class="onboarding-step">Step 1 of 5</div>
-        <div class="onboarding-title">A twin that learns what you'd want — and does it.</div>
-        <div class="onboarding-desc">
-          Most assistants have amnesia. You tell them you prefer aisle seats three times. They keep asking.
-          Your twin builds a real model of how you make decisions, then handles routine ones on its own.
-        </div>
+function ensureWizardListener() {
+  if (_wizardListenerWired || typeof document === 'undefined') return;
+  _wizardListenerWired = true;
+  document.addEventListener('click', handleOnboardingClick);
+}
 
-        <div id="onb-preview-card" class="card" style="margin: 1rem 0; padding: 0.85rem 1rem; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg);">
-          <div style="font-weight: 600; font-size: 0.9rem; margin-bottom: 0.4rem;">Try one — see how it thinks</div>
-          <div style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 0.75rem;">
-            Tap a situation and watch a real prediction come back. (We're using a sample profile to answer — no signup needed yet.)
-          </div>
-          <div style="display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.5rem;" id="onb-preview-chips">
-            <button class="btn btn-outline btn-sm onb-preview-chip" data-prompt="A recruiter at a company I've never heard of just emailed me about a senior role." style="font-size: 0.78rem; text-align: left;">Recruiter email →</button>
-            <button class="btn btn-outline btn-sm onb-preview-chip" data-prompt="My streaming subscription is up for renewal at $15.99/month — I used it 3 times this month." style="font-size: 0.78rem; text-align: left;">Subscription renewal →</button>
-            <button class="btn btn-outline btn-sm onb-preview-chip" data-prompt="A friend just sent a calendar invite for dinner Friday at 7pm. What would you do?" style="font-size: 0.78rem; text-align: left;">Dinner invite →</button>
-          </div>
-          <div id="onb-preview-result" style="font-size: 0.85rem;"></div>
-        </div>
+async function handleOnboardingClick(e) {
+  // Guard: only fire when the wizard overlay is visible
+  const overlay = document.getElementById('onboarding-overlay');
+  if (!overlay || overlay.style.display === 'none') return;
 
-        <ul class="feature-list" style="font-size: 0.85rem;">
-          <li><strong>Earns trust gradually.</strong> Starts by watching, then suggesting, then handling — at the pace you set.</li>
-          <li><strong>Every action is explained.</strong> What it did, why, and how to correct it.</li>
-          <li><strong>You can stop or undo any of it.</strong> The twin works for you.</li>
-        </ul>
-        <div class="onboarding-actions">
-          <button class="btn btn-primary btn-lg" id="onb-next-1">Let's get started</button>
-        </div>
-      `;
-      document.getElementById('onb-next-1').addEventListener('click', next);
+  const target = e.target instanceof HTMLElement ? e.target.closest('[data-action]') : null;
+  if (!target) return;
 
-      // Wire the preview chips. They call the public /api/demo/preview
-      // endpoint, which runs whatWouldIDo() against the seeded user.
-      //
-      // UX review #6 (P1) — pre-fix this whole panel was hidden via
-      // `display: none` whenever fetchDemoInfo() failed (API down or
-      // seed not run), turning onboarding step 1 into a wall of text
-      // with no interactive affordance. Now: keep the panel visible
-      // and fall back to STATIC pre-canned responses so the user
-      // always sees how the twin would think, even with no API.
-      const previewCard = document.getElementById('onb-preview-card');
-      const resultEl = document.getElementById('onb-preview-result');
-      const chips = container.querySelectorAll('.onb-preview-chip');
+  const action = target.dataset.action;
+  const userId = getCurrentUserId();
 
-      // Static fallback responses keyed by the chip's data-prompt. Used
-      // when the live preview API is unreachable so the user still
-      // gets a real-looking sample of how the twin reasons. Worded the
-      // same way the live engine does — "I'd handle / I'd ask you" with
-      // a short reasoning sentence.
-      const STATIC_PREVIEWS = {
-        'recruiter': {
-          description: "Skip and label as 'recruiting'",
-          autoExecute: false,
-          reasoning: "You usually keep recruiter mail for context but rarely reply same day. I'd file it under 'recruiting' and add it to your weekly digest instead of pinging you tonight.",
-          confidence: 'moderate',
-        },
-        'subscription': {
-          description: "Cancel — usage is below your normal threshold",
-          autoExecute: false,
-          reasoning: "$15.99/mo for 3 sessions this month is ~$5/session. You've cancelled subscriptions with similar usage before. I'd ask you first since it's recurring spend.",
-          confidence: 'moderate',
-        },
-        'dinner': {
-          description: "Accept the dinner invite",
-          autoExecute: false,
-          reasoning: "Friday 7pm is open on your calendar and you've accepted similar invites from this person before. I'd RSVP yes and add the address from the invite.",
-          confidence: 'high',
-        },
-      };
-      function staticKeyForPrompt(p) {
-        if (/recruiter/i.test(p)) return 'recruiter';
-        if (/subscription|renewal/i.test(p)) return 'subscription';
-        if (/dinner|invite/i.test(p)) return 'dinner';
-        return null;
+  switch (action) {
+    // ── Welcome screen ──────────────────────────────────────────────────────
+    case 'onb-choose-email':
+      transitionTo('email_choice');
+      break;
+    case 'onb-choose-computer':
+      transitionTo('computer_choice');
+      break;
+    case 'onb-choose-about-me':
+      transitionTo('about_me_choice');
+      break;
+
+    // ── Shared "back to welcome" ────────────────────────────────────────────
+    case 'onb-back-welcome':
+      transitionTo('welcome');
+      break;
+
+    // ── Email choice ────────────────────────────────────────────────────────
+    case 'onb-email-google': {
+      const btn = target;
+      btn.disabled = true;
+      btn.textContent = 'Redirecting…';
+      try {
+        const data = await fetchJSON('/api/oauth/google/authorize?newUser=true');
+        if (data.url) { window.location.href = data.url; return; }
+        throw new Error('No authorize URL returned');
+      } catch (err) {
+        showWizardError(
+          err.message?.includes('credentials')
+            ? 'Google API key not configured — use email below or set it up in Settings.'
+            : (err.message || 'Could not start Google sign-in.'),
+        );
+        btn.disabled = false;
+        btn.textContent = 'Continue with Google';
       }
-
-      // Track whether the live preview API is reachable. Defaults to
-      // true (optimistic); set to false on the first failed
-      // fetchDemoInfo() OR previewDemoDecision() call. Subsequent
-      // chip clicks then short-circuit to STATIC_PREVIEWS without
-      // pinging the network.
-      let liveAvailable = true;
-      let staticNoticeShown = false;
-      function showStaticNotice() {
-        if (staticNoticeShown || !previewCard) return;
-        staticNoticeShown = true;
-        const notice = document.createElement('div');
-        notice.style.cssText = 'font-size: 0.72rem; color: var(--text-muted); margin-top: 0.4rem; font-style: italic;';
-        notice.textContent = "Live preview offline — showing a sample answer. The real one runs after sign-in.";
-        previewCard.appendChild(notice);
-      }
-
-      fetchDemoInfo().then((info) => {
-        if (!info?.available) liveAvailable = false;
-      }).catch(() => {
-        liveAvailable = false;
-      });
-
-      function renderPreviewResult(prompt, predicted) {
-        const action = predicted?.predictedAction;
-        const conf = (predicted?.confidence || 'unknown').toString().replace(/_/g, ' ');
-        const autoExecute = predicted?.wouldAutoExecute;
-        const autoVerb = autoExecute ? "I'd handle this on my own" : "I'd ask you first";
-        const autoColor = autoExecute ? 'var(--success)' : 'var(--warning, #e6a700)';
-        return `
-          <div style="padding: 0.75rem; border-left: 3px solid ${autoColor}; background: var(--bg-card); border-radius: var(--radius-sm);">
-            <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.25rem;">"${escapeForDisplay(prompt)}"</div>
-            <div style="display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem;">
-              <strong>${escapeForDisplay(action?.description || action?.actionType || "I'm not sure — I'd ask")}</strong>
-              <span style="font-size: 0.75rem; color: ${autoColor}; font-weight: 600;">${autoVerb}</span>
-            </div>
-            ${predicted?.reasoning ? `<div style="font-size: 0.82rem; line-height: 1.55;">${escapeForDisplay(predicted.reasoning)}</div>` : ''}
-            <div style="font-size: 0.72rem; color: var(--text-muted); margin-top: 0.4rem;">Confidence: ${escapeForDisplay(conf)}</div>
-          </div>
-        `;
-      }
-
-      function renderStaticPreview(prompt) {
-        const key = staticKeyForPrompt(prompt);
-        const sample = key ? STATIC_PREVIEWS[key] : null;
-        if (!sample) {
-          return `<div style="font-size: 0.82rem; color: var(--text-muted); padding: 0.5rem 0;">Sample preview unavailable — sign in to try the real one.</div>`;
-        }
-        return renderPreviewResult(prompt, {
-          predictedAction: { description: sample.description },
-          wouldAutoExecute: sample.autoExecute,
-          reasoning: sample.reasoning,
-          confidence: sample.confidence,
-        });
-      }
-
-      chips.forEach((chip) => {
-        chip.addEventListener('click', async () => {
-          const prompt = chip.getAttribute('data-prompt');
-          if (!prompt || !resultEl) return;
-          chips.forEach((c) => { c.disabled = true; });
-
-          // Skip the network roundtrip when we already know the live
-          // preview is unavailable — show the static sample immediately.
-          if (!liveAvailable) {
-            resultEl.innerHTML = renderStaticPreview(prompt);
-            showStaticNotice();
-            chips.forEach((c) => { c.disabled = false; });
-            return;
-          }
-
-          resultEl.innerHTML = `<div style="padding: 0.5rem 0.75rem; color: var(--text-muted);">Thinking it through…</div>`;
-          try {
-            const r = await previewDemoDecision(prompt);
-            resultEl.innerHTML = renderPreviewResult(prompt, r);
-          } catch {
-            // Live API failed mid-flight. Drop to static sample for
-            // this and all future clicks (avoid re-pinging a known-down
-            // endpoint on every chip).
-            liveAvailable = false;
-            resultEl.innerHTML = renderStaticPreview(prompt);
-            showStaticNotice();
-          } finally {
-            chips.forEach((c) => { c.disabled = false; });
-          }
-        });
-      });
-
-      function escapeForDisplay(s) {
-        const div = document.createElement('div');
-        div.textContent = String(s ?? '');
-        return div.innerHTML;
-      }
-    },
-  },
-
-  // Step 2: Sign in — Google is the front door, email is the fallback.
-  {
-    render: (container, next, back, setUserId) => {
-      container.innerHTML = `
-        <div class="onboarding-step">Step 2 of 5</div>
-        <div class="onboarding-title">Sign in to get started</div>
-        <div class="onboarding-desc">
-          Connect with Google so your twin can see your email and calendar from day one. We use the verified email as your identity — no separate password.
-        </div>
-        <div id="onb-error" style="color: var(--danger); font-size: 0.85rem; margin: 0.5rem 0 1rem; display: none;"></div>
-
-        <div style="margin: 1rem 0 1.5rem;">
-          <button class="btn btn-primary btn-lg" id="onb-google-signin" style="width: 100%; display: flex; align-items: center; justify-content: center; gap: 0.5rem;">
-            <span style="font-weight: 600;">G</span>
-            <span>Continue with Google</span>
-          </button>
-        </div>
-
-        <details style="margin: 0 0 1rem; font-size: 0.85rem;">
-          <summary style="cursor: pointer; color: var(--text-muted);">Continue with an email address instead</summary>
-          <div style="margin-top: 1rem; padding: 1rem; border: 1px solid var(--border); border-radius: var(--radius-sm);">
-            <div class="onboarding-desc" style="font-size: 0.8rem; margin-bottom: 0.75rem;">
-              No Google connection — your twin won't see your inbox/calendar until you link one in Settings.
-            </div>
-            <div class="form-group">
-              <label>Your name</label>
-              <input class="form-input" id="onb-name" type="text" placeholder="Jane">
-            </div>
-            <div class="form-group">
-              <label>Your email address</label>
-              <input class="form-input" id="onb-email" type="email" placeholder="you@example.com">
-            </div>
-            <button class="btn btn-outline" id="onb-email-continue" style="width: 100%; margin-top: 0.5rem;">Continue with email</button>
-          </div>
-        </details>
-
-        <div class="onboarding-actions" style="margin-top: 1rem; display: flex; justify-content: space-between; align-items: center; gap: 0.5rem;">
-          <button class="btn btn-outline" id="onb-back-2">Back</button>
-          <a href="#" id="onb-tour-link" style="font-size: 0.85rem; color: var(--text-muted); display: none;">Or explore with a sample profile first →</a>
-        </div>
-      `;
-
-      document.getElementById('onb-back-2').addEventListener('click', back);
-
-      // Surface the tour link only when the seeded demo user actually exists
-      // (it's created by `pnpm db:seed`, which the installer runs by default).
-      // We want to fail closed: if the API or seed isn't there, the tour
-      // option just doesn't appear.
-      fetchDemoInfo().then((info) => {
-        if (info?.available && info?.userId) {
-          const link = document.getElementById('onb-tour-link');
-          if (!link) return;
-          link.style.display = 'inline';
-          link.addEventListener('click', (ev) => {
-            ev.preventDefault();
-            // Skip the rest of the wizard — the demo user already has
-            // domains, preferences, and a trust tier from the seed. Mark
-            // the session as touring so the dashboard banner can offer a
-            // graceful exit back to real onboarding.
-            try {
-              localStorage.setItem(KEY_TOUR_MODE, '1');
-              localStorage.setItem(KEY_USER_ID, info.userId);
-              localStorage.setItem(KEY_ONBOARDED, 'true');
-            } catch { /* private mode etc. */ }
-            const overlay = document.getElementById('onboarding-overlay');
-            if (overlay) overlay.style.display = 'none';
-            window.skyTwinSetUserId(info.userId);
-          });
-        }
-      }).catch(() => { /* tour link stays hidden */ });
-
-      // ── Google sign-in: front door ──────────────────────────────────
-      document.getElementById('onb-google-signin').addEventListener('click', async () => {
-        hideError();
-        const btn = document.getElementById('onb-google-signin');
-        const original = btn.innerHTML;
-        btn.innerHTML = '<span>Redirecting…</span>';
-        btn.disabled = true;
-        try {
-          // Public newUser=true endpoint: no userId required. Callback will
-          // auto-create a user keyed on the verified email and redirect us
-          // back with ?userId=… which app.js picks up.
-          const data = await fetchJSON('/api/oauth/google/authorize?newUser=true');
-          if (data.url) {
-            window.location.href = data.url;
-            return;
-          }
-          throw new Error('No authorize URL returned');
-        } catch (err) {
-          btn.innerHTML = original;
-          btn.disabled = false;
-          // Most likely: Google client_id/secret not configured yet.
-          showError(
-            err.message?.includes('credentials')
-              ? 'I need a Google API key before Sign in works — it\'s a 5-minute one-time setup. Continue with email below to get into the app, then I\'ll walk you through linking Google on the home page.'
-              : (err.message || 'Could not start Google sign-in. Try the email option below, or try again.'),
-          );
-        }
-      });
-
-      // ── Email fallback ──────────────────────────────────────────────
-      document.getElementById('onb-email-continue').addEventListener('click', async () => {
-        const email = document.getElementById('onb-email').value.trim();
-        const name = document.getElementById('onb-name').value.trim() || email.split('@')[0];
-        if (!email || !email.includes('@')) {
-          showError('Please enter a valid email address.');
-          return;
-        }
-        hideError();
-        const btn = document.getElementById('onb-email-continue');
-        btn.textContent = 'Setting up...';
-        btn.disabled = true;
-        try {
-          const result = await createUser(email, name, 'suggest');
-          setUserId(result.user.id || email);
-          next();
-        } catch (err) {
-          showError(err.message || 'Something went wrong. Please try again.');
-          btn.textContent = 'Continue with email';
-          btn.disabled = false;
-        }
-      });
-
-      function showError(msg) {
-        const el = document.getElementById('onb-error');
-        el.textContent = msg;
-        el.style.display = 'block';
-      }
-      function hideError() {
-        document.getElementById('onb-error').style.display = 'none';
-      }
-    },
-  },
-
-  // Step 3: Domain selection
-  {
-    render: (container, next, back, _setUserId, _complete, state) => {
-      container.innerHTML = `
-        <div class="onboarding-step">Step 3 of 5</div>
-        <div class="onboarding-title">What should I help with?</div>
-        <div class="onboarding-desc">
-          Pick the areas where you'd like your assistant to lend a hand. You can always add or remove these later.
-        </div>
-        <div class="domain-grid" id="domain-grid">
-          ${DOMAINS.map(d => `
-            <div class="domain-card ${state.selectedDomains.includes(d.id) ? 'selected' : ''}" data-domain="${d.id}">
-              <div class="domain-card-icon">${d.icon}</div>
-              <div class="domain-card-name">${d.name}</div>
-              <div class="domain-card-desc">${d.desc}</div>
-            </div>
-          `).join('')}
-        </div>
-        <div class="onboarding-actions" style="margin-top: 1.5rem; display: flex; gap: 0.75rem;">
-          <button class="btn btn-outline" id="onb-back-3">Back</button>
-          <button class="btn btn-primary btn-lg" id="onb-next-3">Continue</button>
-        </div>
-      `;
-
-      document.getElementById('onb-back-3').addEventListener('click', back);
-
-      document.querySelectorAll('.domain-card').forEach(el => {
-        el.addEventListener('click', () => {
-          const domainId = el.getAttribute('data-domain');
-          el.classList.toggle('selected');
-          if (el.classList.contains('selected')) {
-            if (!state.selectedDomains.includes(domainId)) {
-              state.selectedDomains.push(domainId);
-            }
-          } else {
-            state.selectedDomains = state.selectedDomains.filter(d => d !== domainId);
-          }
-        });
-      });
-
-      document.getElementById('onb-next-3').addEventListener('click', () => {
-        if (state.selectedDomains.length === 0) {
-          state.selectedDomains.push('email', 'calendar');
-        }
-        next();
-      });
-    },
-  },
-
-  // Step 4: Quick preferences
-  {
-    render: (container, next, back, _setUserId, _complete, state) => {
-      const questions = [];
-      for (const domainId of state.selectedDomains) {
-        const domainDef = DOMAINS.find(d => d.id === domainId);
-        const domainQs = DOMAIN_QUESTIONS[domainId] || [];
-        if (domainQs.length > 0) {
-          questions.push({ domain: domainDef, questions: domainQs });
-        }
-      }
-
-      container.innerHTML = `
-        <div class="onboarding-step">Step 4 of 5</div>
-        <div class="onboarding-title">Set some starting preferences</div>
-        <div class="onboarding-desc">
-          Quick yes-or-no questions to get your assistant started. You can fine-tune everything later.
-        </div>
-        <div class="pref-sections" id="pref-sections">
-          ${questions.map(q => `
-            <div class="pref-section">
-              <div class="pref-section-header">${q.domain.icon} ${q.domain.name}</div>
-              ${q.questions.map(pq => `
-                <label class="pref-question" data-domain="${q.domain.id}" data-key="${pq.key}">
-                  <span class="pref-label">${pq.label}</span>
-                  <input type="checkbox" class="pref-toggle" ${state.preferences[q.domain.id + ':' + pq.key] ? 'checked' : ''}>
-                  <span class="pref-switch"></span>
-                </label>
-              `).join('')}
-            </div>
-          `).join('')}
-        </div>
-        ${questions.length === 0 ? '<div class="onboarding-desc" style="text-align: center; opacity: 0.7;">No questions for the selected domains. Click Continue to proceed.</div>' : ''}
-        <div class="onboarding-actions" style="margin-top: 1.5rem; display: flex; gap: 0.75rem;">
-          <button class="btn btn-outline" id="onb-back-4">Back</button>
-          <button class="btn btn-primary btn-lg" id="onb-next-4">Continue</button>
-        </div>
-      `;
-
-      document.getElementById('onb-back-4').addEventListener('click', back);
-
-      // Sync checkbox state on toggle
-      document.querySelectorAll('.pref-question').forEach(el => {
-        const checkbox = el.querySelector('.pref-toggle');
-        const domain = el.getAttribute('data-domain');
-        const key = el.getAttribute('data-key');
-        checkbox.addEventListener('change', () => {
-          state.preferences[domain + ':' + key] = checkbox.checked;
-        });
-      });
-
-      document.getElementById('onb-next-4').addEventListener('click', () => {
-        // Capture final checkbox states
-        document.querySelectorAll('.pref-question').forEach(el => {
-          const checkbox = el.querySelector('.pref-toggle');
-          const domain = el.getAttribute('data-domain');
-          const key = el.getAttribute('data-key');
-          state.preferences[domain + ':' + key] = checkbox.checked;
-        });
-        next();
-      });
-    },
-  },
-
-  // Step 5: Trust tier selection
-  {
-    render: (container, _next, back, _setUserId, complete) => {
-      let selectedTier = 'suggest';
-
-      const TIERS = [
-        { value: 'observer', name: 'Just watching', desc: 'Your assistant watches but never does anything. Good for seeing what it would do.' },
-        { value: 'suggest', name: 'Ask me first', desc: 'Your assistant suggests actions and waits for your OK. The safest way to start.' },
-        { value: 'low_autonomy', name: 'Handle small stuff', desc: 'Automatically handles small, routine tasks (like archiving junk mail). Asks about everything else.' },
-        { value: 'moderate_autonomy', name: 'Handle most things', desc: 'Handles most things on its own. Only asks about big or unusual decisions.' },
-        { value: 'high_autonomy', name: 'Full autopilot', desc: 'Handles everything within your rules. Only stops for important decisions or spending limits.' },
-      ];
-
-      container.innerHTML = `
-        <div class="onboarding-step">Step 5 of 5</div>
-        <div class="onboarding-title">How much should I do on my own?</div>
-        <div class="onboarding-desc">
-          Choose how independent your assistant should be. You can change this anytime.
-        </div>
-        <div class="tier-options" id="tier-options">
-          ${TIERS.map(t => `
-            <div class="tier-option ${t.value === selectedTier ? 'selected' : ''}" data-tier="${t.value}">
-              <div class="tier-radio"></div>
-              <div>
-                <div class="tier-name">${t.name}${t.value === 'suggest' ? ' <span style="color: var(--accent); font-size: 0.75rem;">(recommended)</span>' : ''}</div>
-                <div class="tier-desc">${t.desc}</div>
-              </div>
-            </div>
-          `).join('')}
-        </div>
-        <div class="onboarding-actions" style="margin-top: 1.5rem; display: flex; gap: 0.75rem;">
-          <button class="btn btn-outline" id="onb-back-5">Back</button>
-          <button class="btn btn-primary btn-lg" id="onb-complete">Get Started</button>
-        </div>
-      `;
-
-      document.getElementById('onb-back-5').addEventListener('click', back);
-
-      document.querySelectorAll('.tier-option').forEach(el => {
-        el.addEventListener('click', () => {
-          document.querySelectorAll('.tier-option').forEach(o => o.classList.remove('selected'));
-          el.classList.add('selected');
-          selectedTier = el.getAttribute('data-tier');
-        });
-      });
-
-      document.getElementById('onb-complete').addEventListener('click', async () => {
-        const btn = document.getElementById('onb-complete');
-        btn.textContent = 'Getting ready...';
-        btn.disabled = true;
-        try {
-          await complete(selectedTier);
-        } catch {
-          btn.textContent = 'Get Started';
-          btn.disabled = false;
-        }
-      });
-    },
-  },
-];
-
-/**
- * Show a "connecting to your accounts" screen after onboarding completes.
- * Polls for signals/decisions and shows the first few as they arrive.
- */
-async function showSignalPreview(container, userId) {
-  container.innerHTML = `
-    <div class="onboarding-step">Almost ready</div>
-    <div class="onboarding-title">Connecting to your accounts...</div>
-    <div class="onboarding-desc">
-      I'm checking your email and calendar for things I can help with.
-    </div>
-    <div id="signal-preview-list" style="min-height: 100px;">
-      <div class="loading" style="text-align: center; padding: 1.5rem; color: var(--text-muted);">
-        Looking for signals...
-      </div>
-    </div>
-    <div class="onboarding-actions" style="margin-top: 1.5rem;">
-      <button class="btn btn-primary btn-lg" id="onb-continue-to-dashboard" style="display: none;">Continue to dashboard</button>
-    </div>
-  `;
-
-  const listEl = document.getElementById('signal-preview-list');
-  const btnEl = document.getElementById('onb-continue-to-dashboard');
-  let found = false;
-
-  // Poll for decisions up to 6 times (30 seconds total)
-  for (let attempt = 0; attempt < 6; attempt++) {
-    await new Promise((r) => setTimeout(r, 5000));
-    try {
-      const data = await fetchJSON(`/api/decisions/${encodeURIComponent(userId)}?limit=5`);
-      const decisions = data.decisions ?? [];
-      if (decisions.length > 0) {
-        found = true;
-        listEl.innerHTML = decisions.slice(0, 3).map((d) => `
-          <div class="insight-card" style="margin-bottom: 0.5rem;">
-            <div class="insight-icon" style="background: var(--accent-soft, #e3f2fd); color: var(--accent, #1976d2);">
-              ${d.domain === 'email' ? 'E' : d.domain === 'calendar' ? 'C' : '?'}
-            </div>
-            <div class="insight-content">
-              <div class="insight-title">${d.domain ? d.domain.charAt(0).toUpperCase() + d.domain.slice(1) : 'Signal'}</div>
-              <div class="insight-desc">${d.situation_type || d.situationType || 'Processing...'}</div>
-            </div>
-          </div>
-        `).join('');
+      break;
+    }
+    case 'onb-email-submit': {
+      const emailInput = document.getElementById('onb-email-input');
+      const nameInput = document.getElementById('onb-name-input');
+      if (!emailInput) break;
+      const email = emailInput.value.trim();
+      const name = (nameInput ? nameInput.value.trim() : '') || email.split('@')[0];
+      if (!email || !email.includes('@')) {
+        showWizardError('Please enter a valid email address.');
         break;
       }
+      hideWizardError();
+      const btn = target;
+      btn.disabled = true;
+      btn.textContent = 'Setting up…';
+      try {
+        const result = await createUser(email, name, 'suggest');
+        const newUserId = result.user.id || email;
+        localStorage.setItem(KEY_USER_ID, newUserId);
+        if (_wizardState) _wizardState.userId = newUserId;
+        // Email path goes straight to recipe preview via about-me LLM/deterministic
+        transitionTo('about_me_choice');
+      } catch (err) {
+        showWizardError(err.message || 'Something went wrong. Please try again.');
+        btn.disabled = false;
+        btn.textContent = 'Continue';
+      }
+      break;
+    }
+
+    // ── Computer / idle-miner choice ────────────────────────────────────────
+    case 'onb-enable-idle-miner': {
+      const btn = target;
+      btn.disabled = true;
+      btn.textContent = 'Enabling…';
+      try {
+        await postOnboardingComplete(userId || getCurrentUserId(), 'computer');
+        transitionTo('idle_miner_poll');
+      } catch (err) {
+        showWizardError(err.message || 'Could not enable idle miner.');
+        btn.disabled = false;
+        btn.textContent = 'Enable and continue';
+      }
+      break;
+    }
+    case 'onb-skip-idle-miner':
+      transitionTo('welcome');
+      break;
+
+    // ── About-me conversational ─────────────────────────────────────────────
+    case 'onb-send-chat': {
+      const input = document.getElementById('onb-chat-input');
+      if (!input) break;
+      const text = input.value.trim();
+      if (!text) break;
+      input.value = '';
+      await handleChatSend(text);
+      break;
+    }
+    case 'onb-deterministic-answer': {
+      const answer = target.dataset.answer;
+      const questionKey = target.dataset.questionKey;
+      if (answer && questionKey) {
+        await handleDeterministicAnswer(questionKey, answer);
+      }
+      break;
+    }
+
+    // ── Recipe preview ──────────────────────────────────────────────────────
+    case 'onb-install-recipe': {
+      const slug = target.dataset.slug;
+      if (slug) {
+        await handleInstallRecipe(slug, target);
+      }
+      break;
+    }
+    case 'onb-skip-recipe':
+      await finishWizard(userId || getCurrentUserId(), 'about-me', undefined);
+      break;
+
+    // ── Complete ────────────────────────────────────────────────────────────
+    case 'onb-go-dashboard':
+      hideWizard();
+      break;
+
+    // ── Tour mode ───────────────────────────────────────────────────────────
+    case 'onb-start-tour': {
+      try {
+        const info = await fetchDemoInfo();
+        if (info?.available && info?.userId) {
+          localStorage.setItem(KEY_TOUR_MODE, '1');
+          localStorage.setItem(KEY_USER_ID, info.userId);
+          localStorage.setItem(KEY_ONBOARDED, 'true');
+          hideWizard();
+          if (typeof window.skyTwinSetUserId === 'function') {
+            window.skyTwinSetUserId(info.userId);
+          }
+        }
+      } catch {
+        showWizardError('Tour profile not available.');
+      }
+      break;
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Screen renderers
+// ─────────────────────────────────────────────────────────────────────────────
+
+function renderContent(html) {
+  const el = document.getElementById('onboarding-content');
+  if (el) el.innerHTML = html;
+}
+
+function showWizardError(msg) {
+  const el = document.getElementById('onb-wizard-error');
+  if (el) {
+    el.textContent = msg;
+    el.style.display = 'block';
+  }
+}
+
+function hideWizardError() {
+  const el = document.getElementById('onb-wizard-error');
+  if (el) el.style.display = 'none';
+}
+
+// ── Welcome ──────────────────────────────────────────────────────────────────
+
+function renderWelcome() {
+  renderContent(`
+    <div id="onb-wizard-error" style="color:var(--danger);font-size:0.85rem;margin-bottom:0.75rem;display:none;"></div>
+
+    <div class="onboarding-title" style="font-size:1.4rem;font-weight:700;margin-bottom:0.5rem;">
+      Meet your digital twin
+    </div>
+    <div class="onboarding-desc" style="margin-bottom:1.25rem;">
+      SkyTwin learns how you make decisions and handles routine ones on your behalf.
+      How would you like to start?
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:0.6rem;margin-bottom:1.25rem;">
+      <button class="btn btn-primary btn-lg" style="text-align:left;display:flex;align-items:center;gap:0.75rem;"
+              data-action="onb-choose-email">
+        <span style="font-size:1.2rem;">✉</span>
+        <div>
+          <div style="font-weight:600;">Connect your email</div>
+          <div style="font-size:0.78rem;opacity:0.8;">Link Gmail so your twin can see your inbox from day one.</div>
+        </div>
+      </button>
+      <button class="btn btn-outline btn-lg" style="text-align:left;display:flex;align-items:center;gap:0.75rem;"
+              data-action="onb-choose-computer">
+        <span style="font-size:1.2rem;">💻</span>
+        <div>
+          <div style="font-weight:600;">Let SkyTwin learn from your computer</div>
+          <div style="font-size:0.78rem;opacity:0.8;">Run a background observer to discover which apps you use.</div>
+        </div>
+      </button>
+      <button class="btn btn-outline btn-lg" style="text-align:left;display:flex;align-items:center;gap:0.75rem;"
+              data-action="onb-choose-about-me">
+        <span style="font-size:1.2rem;">💬</span>
+        <div>
+          <div style="font-weight:600;">Tell SkyTwin about yourself</div>
+          <div style="font-size:0.78rem;opacity:0.8;">Answer a few quick questions so your twin knows where to start.</div>
+        </div>
+      </button>
+    </div>
+
+    <div id="onb-tour-row" style="text-align:center;display:none;">
+      <button class="btn-link" data-action="onb-start-tour"
+              style="font-size:0.82rem;color:var(--text-muted);background:none;border:none;cursor:pointer;padding:0;">
+        Explore with a sample profile instead →
+      </button>
+    </div>
+  `);
+
+  // Show the tour link only when the demo seed is available
+  fetchDemoInfo().then((info) => {
+    if (info?.available) {
+      const row = document.getElementById('onb-tour-row');
+      if (row) row.style.display = 'block';
+    }
+  }).catch(() => { /* tour link stays hidden */ });
+}
+
+// ── Email choice ──────────────────────────────────────────────────────────────
+
+function renderEmailChoice() {
+  renderContent(`
+    <div id="onb-wizard-error" style="color:var(--danger);font-size:0.85rem;margin-bottom:0.75rem;display:none;"></div>
+    <div class="onboarding-title" style="font-size:1.2rem;font-weight:700;margin-bottom:0.5rem;">Sign in to get started</div>
+    <div class="onboarding-desc" style="margin-bottom:1rem;">
+      Connect with Google so your twin can see your email and calendar from day one.
+    </div>
+
+    <button class="btn btn-primary btn-lg" style="width:100%;display:flex;align-items:center;justify-content:center;gap:0.5rem;margin-bottom:1rem;"
+            data-action="onb-email-google">
+      <span style="font-weight:700;">G</span>
+      <span>Continue with Google</span>
+    </button>
+
+    <details style="margin-bottom:1rem;">
+      <summary style="cursor:pointer;color:var(--text-muted);font-size:0.85rem;">Use an email address instead</summary>
+      <div style="margin-top:0.75rem;padding:0.75rem;border:1px solid var(--border);border-radius:var(--radius-sm);">
+        <div class="form-group">
+          <label style="font-size:0.85rem;">Your name</label>
+          <input class="form-input" id="onb-name-input" type="text" placeholder="Jane">
+        </div>
+        <div class="form-group">
+          <label style="font-size:0.85rem;">Your email</label>
+          <input class="form-input" id="onb-email-input" type="email" placeholder="you@example.com">
+        </div>
+        <button class="btn btn-outline" style="width:100%;margin-top:0.5rem;" data-action="onb-email-submit">
+          Continue with email
+        </button>
+      </div>
+    </details>
+
+    <button class="btn-link" data-action="onb-back-welcome"
+            style="font-size:0.82rem;color:var(--text-muted);background:none;border:none;cursor:pointer;padding:0;">
+      ← Back
+    </button>
+  `);
+}
+
+// ── Computer / idle-miner choice ──────────────────────────────────────────────
+
+function renderComputerChoice() {
+  renderContent(`
+    <div id="onb-wizard-error" style="color:var(--danger);font-size:0.85rem;margin-bottom:0.75rem;display:none;"></div>
+    <div class="onboarding-title" style="font-size:1.2rem;font-weight:700;margin-bottom:0.5rem;">
+      Let SkyTwin observe your workflow
+    </div>
+    <div class="onboarding-desc" style="margin-bottom:1rem;">
+      The background observer watches which apps and files you use — privately, on your machine.
+      It never uploads your data; it only notifies SkyTwin of the app names it sees.
+    </div>
+
+    <div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:0.75rem;margin-bottom:1rem;font-size:0.85rem;">
+      <div style="font-weight:600;margin-bottom:0.4rem;">What it can observe (you control this list)</div>
+      <ul style="margin:0;padding-left:1.2rem;line-height:1.7;">
+        <li>Active application names</li>
+        <li>Window titles (optional)</li>
+        <li>Browser domain names (optional, no URLs or content)</li>
+      </ul>
+      <div style="margin-top:0.6rem;font-size:0.78rem;color:var(--text-muted);">
+        You can adjust or turn this off at any time in Settings.
+      </div>
+    </div>
+
+    <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+      <button class="btn btn-primary" data-action="onb-enable-idle-miner">
+        Enable and continue
+      </button>
+      <button class="btn btn-outline" data-action="onb-skip-idle-miner" style="color:var(--text-muted);">
+        Not now
+      </button>
+    </div>
+
+    <div style="margin-top:0.75rem;">
+      <button class="btn-link" data-action="onb-back-welcome"
+              style="font-size:0.82rem;color:var(--text-muted);background:none;border:none;cursor:pointer;padding:0;">
+        ← Back
+      </button>
+    </div>
+  `);
+}
+
+// ── Idle-miner KPI poll (stretch goal D) ─────────────────────────────────────
+
+async function renderIdleMinerPoll() {
+  renderContent(`
+    <div id="onb-wizard-error" style="color:var(--danger);font-size:0.85rem;margin-bottom:0.75rem;display:none;"></div>
+    <div class="onboarding-title" style="font-size:1.2rem;font-weight:700;margin-bottom:0.5rem;">
+      Learning your workflow…
+    </div>
+    <div class="onboarding-desc" style="margin-bottom:1rem;">
+      SkyTwin is watching which apps you use. This usually takes under 60 seconds.
+    </div>
+    <div id="onb-poll-status" style="text-align:center;padding:1.5rem 0;color:var(--text-muted);">
+      <div class="loading" style="margin-bottom:0.5rem;"></div>
+      Looking for your first app signal…
+    </div>
+    <div id="onb-poll-result" style="display:none;"></div>
+    <div id="onb-poll-actions" style="margin-top:1rem;display:none;">
+      <button class="btn btn-primary" data-action="onb-install-recipe" data-slug="">Install suggested recipe</button>
+      <button class="btn btn-outline" data-action="onb-skip-recipe" style="margin-left:0.5rem;">Skip for now</button>
+    </div>
+    <div id="onb-poll-timeout" style="display:none;margin-top:1rem;">
+      <div style="font-size:0.85rem;color:var(--text-muted);margin-bottom:0.5rem;">
+        Still learning — I'll keep watching in the background. Let's continue to the dashboard.
+      </div>
+      <button class="btn btn-primary" data-action="onb-go-dashboard">Continue to dashboard</button>
+    </div>
+  `);
+
+  const userId = getCurrentUserId();
+  if (!userId) {
+    transitionTo('complete');
+    return;
+  }
+
+  // Poll for suggestions every 5s, up to 60s
+  const MAX_POLLS = 12;
+  const INTERVAL_MS = 5000;
+
+  for (let i = 0; i < MAX_POLLS; i++) {
+    await new Promise((r) => setTimeout(r, INTERVAL_MS));
+
+    try {
+      const data = await fetchJSON(`/api/capabilities/suggestions?userId=${encodeURIComponent(userId)}`);
+      const suggestions = data.suggestions ?? [];
+      if (suggestions.length > 0) {
+        const first = suggestions[0];
+        const statusEl = document.getElementById('onb-poll-status');
+        const resultEl = document.getElementById('onb-poll-result');
+        const actionsEl = document.getElementById('onb-poll-actions');
+        if (statusEl) statusEl.style.display = 'none';
+        if (resultEl) {
+          resultEl.innerHTML = `
+            <div style="padding:0.75rem;border-left:3px solid var(--accent);background:var(--bg-card);border-radius:var(--radius-sm);">
+              <div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:0.25rem;">I noticed you use</div>
+              <div style="font-weight:600;font-size:1rem;">${escapeHtml(first.display_name || first.registry_id || 'an app')}</div>
+              <div style="font-size:0.82rem;margin-top:0.25rem;">${escapeHtml(first.reason_summary || '')}</div>
+            </div>
+          `;
+          resultEl.style.display = 'block';
+        }
+        // Set the recipe slug on the install button
+        if (actionsEl) {
+          const installBtn = actionsEl.querySelector('[data-action="onb-install-recipe"]');
+          if (installBtn) {
+            installBtn.dataset.slug = 'productivity-pack'; // best default for idle-miner path
+          }
+          actionsEl.style.display = 'flex';
+          actionsEl.style.gap = '0.5rem';
+          actionsEl.style.flexWrap = 'wrap';
+        }
+        if (_wizardState) {
+          _wizardState.recipeSlug = 'productivity-pack';
+          _wizardState.recommendedRegistryIds = [];
+        }
+        return;
+      }
     } catch {
-      // API not ready yet, keep polling
+      // keep polling
     }
   }
 
-  if (!found) {
-    listEl.innerHTML = `
-      <div style="text-align: center; padding: 1rem; color: var(--text-muted);">
-        No signals yet — I'll check again shortly. You can start exploring the dashboard now.
-      </div>
-    `;
+  // Timeout
+  const statusEl = document.getElementById('onb-poll-status');
+  const timeoutEl = document.getElementById('onb-poll-timeout');
+  if (statusEl) statusEl.style.display = 'none';
+  if (timeoutEl) timeoutEl.style.display = 'block';
+}
+
+// ── About-me (conversational or deterministic) ────────────────────────────────
+
+function renderAboutMeConversational() {
+  if (!_wizardState) return;
+  _wizardState.history = [];
+
+  renderContent(`
+    <div id="onb-wizard-error" style="color:var(--danger);font-size:0.85rem;margin-bottom:0.75rem;display:none;"></div>
+    <div class="onboarding-title" style="font-size:1.2rem;font-weight:700;margin-bottom:0.5rem;">
+      Tell me about yourself
+    </div>
+    <div class="onboarding-desc" style="margin-bottom:0.75rem;font-size:0.85rem;">
+      I'll ask a few questions to figure out which capabilities will help you most.
+    </div>
+    <div id="onb-chat-history" style="min-height:120px;max-height:260px;overflow-y:auto;display:flex;flex-direction:column;gap:0.5rem;margin-bottom:0.75rem;padding:0.5rem;background:var(--bg);border-radius:var(--radius-sm);border:1px solid var(--border);">
+    </div>
+    <div style="display:flex;gap:0.4rem;">
+      <input class="form-input" id="onb-chat-input" type="text" placeholder="Type your answer…" style="flex:1;">
+      <button class="btn btn-primary" data-action="onb-send-chat">Send</button>
+    </div>
+    <div style="margin-top:0.75rem;">
+      <button class="btn-link" data-action="onb-back-welcome"
+              style="font-size:0.82rem;color:var(--text-muted);background:none;border:none;cursor:pointer;padding:0;">
+        ← Back
+      </button>
+    </div>
+  `);
+
+  // Kick off the first question
+  kickConversation();
+}
+
+async function kickConversation() {
+  const userId = getCurrentUserId();
+  if (!userId || !_wizardState) return;
+
+  addChatBubble('assistant', '…');
+  try {
+    const resp = await postOnboardingDialogue(userId, [], {});
+    removeTypingBubble();
+    if (resp.kind === 'question') {
+      addChatBubble('assistant', resp.question);
+      _wizardState.history.push({ role: 'assistant', content: resp.question });
+    } else if (resp.kind === 'final') {
+      handleFinalRecommendation(resp);
+    }
+  } catch {
+    removeTypingBubble();
+    addChatBubble('assistant', 'What do you do for work?');
+    if (_wizardState) {
+      _wizardState.history.push({ role: 'assistant', content: 'What do you do for work?' });
+    }
+  }
+}
+
+async function handleChatSend(text) {
+  if (!_wizardState) return;
+  const userId = getCurrentUserId();
+  if (!userId) return;
+
+  addChatBubble('user', text);
+  _wizardState.history.push({ role: 'user', content: text });
+
+  addChatBubble('assistant', '…');
+
+  try {
+    const resp = await postOnboardingDialogue(userId, _wizardState.history, {});
+    removeTypingBubble();
+
+    if (resp.kind === 'question') {
+      addChatBubble('assistant', resp.question);
+      _wizardState.history.push({ role: 'assistant', content: resp.question });
+    } else if (resp.kind === 'final') {
+      handleFinalRecommendation(resp);
+    }
+  } catch {
+    removeTypingBubble();
+    addChatBubble('assistant', 'Got it — let me figure out a good setup for you.');
+    setTimeout(() => handleFinalFromHistory(), 500);
+  }
+}
+
+function handleFinalFromHistory() {
+  if (!_wizardState) return;
+  const slug = 'productivity-pack';
+  _wizardState.recipeSlug = slug;
+  _wizardState.recommendedRegistryIds = [];
+  transitionTo('recipe_preview');
+}
+
+function handleFinalRecommendation(resp) {
+  if (!_wizardState) return;
+  _wizardState.recipeSlug = resp.recipeSlug;
+  _wizardState.recommendedRegistryIds = resp.recommendedRegistryIds ?? [];
+  _wizardState.rationale = resp.rationale ?? '';
+  transitionTo('recipe_preview');
+}
+
+function addChatBubble(role, text) {
+  const container = document.getElementById('onb-chat-history');
+  if (!container) return;
+  const isTyping = text === '…';
+  const bubble = document.createElement('div');
+  bubble.style.cssText = `
+    max-width:80%;
+    padding:0.5rem 0.75rem;
+    border-radius:0.75rem;
+    font-size:0.85rem;
+    line-height:1.5;
+    align-self:${role === 'user' ? 'flex-end' : 'flex-start'};
+    background:${role === 'user' ? 'var(--accent)' : 'var(--bg-card)'};
+    color:${role === 'user' ? '#fff' : 'var(--text)'};
+    border:${role === 'assistant' ? '1px solid var(--border)' : 'none'};
+  `;
+  if (isTyping) {
+    bubble.id = 'onb-typing-bubble';
+    bubble.textContent = '…';
+  } else {
+    bubble.textContent = text;
+  }
+  container.appendChild(bubble);
+  container.scrollTop = container.scrollHeight;
+}
+
+function removeTypingBubble() {
+  document.getElementById('onb-typing-bubble')?.remove();
+}
+
+// ── Deterministic 3-question form ─────────────────────────────────────────────
+
+const DET_QUESTIONS = [
+  {
+    key: 'work',
+    text: 'What do you do for work?',
+    options: [
+      { value: 'software_engineer', label: 'Software engineer' },
+      { value: 'designer', label: 'Designer' },
+      { value: 'journalist', label: 'Journalist / writer' },
+      { value: 'parent', label: 'Parent / caregiver' },
+      { value: 'student', label: 'Student' },
+      { value: 'other', label: 'Something else' },
+    ],
+  },
+  {
+    key: 'notes_app',
+    text: 'Which notes or docs app do you use most?',
+    options: [
+      { value: 'notion', label: 'Notion' },
+      { value: 'obsidian', label: 'Obsidian' },
+      { value: 'apple_notes', label: 'Apple Notes' },
+      { value: 'paper', label: 'Paper / pen' },
+      { value: 'none', label: 'None / not sure' },
+    ],
+  },
+  {
+    key: 'primary_tool',
+    text: 'Which tool do you spend the most time in?',
+    options: [
+      { value: 'github', label: 'GitHub' },
+      { value: 'linear', label: 'Linear' },
+      { value: 'slack', label: 'Slack' },
+      { value: 'notion', label: 'Notion' },
+      { value: 'gmail', label: 'Gmail' },
+      { value: 'calendar', label: 'Calendar' },
+      { value: 'none', label: 'None of the above' },
+    ],
+  },
+];
+
+let _detAnswers = {};
+let _detStep = 0;
+
+function renderDeterministicStep() {
+  if (!_wizardState) return;
+  const q = DET_QUESTIONS[_detStep];
+  if (!q) {
+    // All answered — fetch pick
+    submitDeterministicPick();
+    return;
   }
 
-  // Show the continue button and wait for click
-  btnEl.style.display = 'inline-block';
-  return new Promise((resolve) => {
-    btnEl.addEventListener('click', resolve);
+  const progress = `${_detStep + 1} of ${DET_QUESTIONS.length}`;
+  renderContent(`
+    <div id="onb-wizard-error" style="color:var(--danger);font-size:0.85rem;margin-bottom:0.75rem;display:none;"></div>
+    <div class="onboarding-step" style="font-size:0.78rem;color:var(--text-muted);margin-bottom:0.5rem;">Question ${progress}</div>
+    <div class="onboarding-title" style="font-size:1.2rem;font-weight:700;margin-bottom:0.75rem;">${escapeHtml(q.text)}</div>
+    <div style="display:flex;flex-direction:column;gap:0.4rem;">
+      ${q.options.map((opt) => `
+        <button class="btn btn-outline" style="text-align:left;"
+                data-action="onb-deterministic-answer"
+                data-question-key="${escapeHtml(q.key)}"
+                data-answer="${escapeHtml(opt.value)}">
+          ${escapeHtml(opt.label)}
+        </button>
+      `).join('')}
+    </div>
+    <div style="margin-top:0.75rem;">
+      <button class="btn-link" data-action="onb-back-welcome"
+              style="font-size:0.82rem;color:var(--text-muted);background:none;border:none;cursor:pointer;padding:0;">
+        ← Back
+      </button>
+    </div>
+  `);
+}
+
+async function handleDeterministicAnswer(questionKey, answer) {
+  _detAnswers[questionKey] = answer;
+  _detStep++;
+
+  if (_detStep >= DET_QUESTIONS.length) {
+    // Show a brief "working" message
+    renderContent(`
+      <div style="text-align:center;padding:2rem 0;color:var(--text-muted);">
+        <div class="loading" style="margin-bottom:0.75rem;"></div>
+        Finding the right setup…
+      </div>
+    `);
+    await submitDeterministicPick();
+  } else {
+    renderDeterministicStep();
+  }
+}
+
+async function submitDeterministicPick() {
+  if (!_wizardState) return;
+  const userId = getCurrentUserId();
+  if (!userId) {
+    transitionTo('welcome');
+    return;
+  }
+  try {
+    const result = await postDeterministicPick(userId, _detAnswers);
+    _wizardState.recipeSlug = result.recipeSlug;
+    _wizardState.recommendedRegistryIds = result.recommendedRegistryIds ?? [];
+    transitionTo('recipe_preview');
+  } catch {
+    _wizardState.recipeSlug = 'productivity-pack';
+    _wizardState.recommendedRegistryIds = [];
+    transitionTo('recipe_preview');
+  }
+}
+
+// ── Recipe preview (with D3 dependency graph) ─────────────────────────────────
+
+const RECIPE_META = {
+  'developer-pack': {
+    displayName: 'Developer pack',
+    description: 'GitHub, Linear, Notion, Slack, filesystem, Git, and SQLite.',
+    category: 'developer',
+  },
+  'productivity-pack': {
+    displayName: 'Productivity pack',
+    description: 'Gmail, Google Calendar, Notion, and Slack.',
+    category: 'productivity',
+  },
+  'travel-pack': {
+    displayName: 'Travel pack',
+    description: 'Booking, Expedia, and flight search — coming soon.',
+    category: 'lifestyle',
+  },
+  'research-pack': {
+    displayName: 'Research pack',
+    description: 'Brave Search, Exa semantic search, and Fetch.',
+    category: 'developer',
+  },
+};
+
+async function renderRecipePreview() {
+  if (!_wizardState) return;
+  const slug = _wizardState.recipeSlug || 'productivity-pack';
+  const meta = RECIPE_META[slug] || { displayName: slug, description: '', category: '' };
+
+  renderContent(`
+    <div id="onb-wizard-error" style="color:var(--danger);font-size:0.85rem;margin-bottom:0.75rem;display:none;"></div>
+    <div class="onboarding-title" style="font-size:1.2rem;font-weight:700;margin-bottom:0.25rem;">
+      Here's what I'd suggest
+    </div>
+    <div class="onboarding-desc" style="margin-bottom:0.75rem;font-size:0.85rem;">
+      ${escapeHtml(_wizardState.rationale || `The ${escapeHtml(meta.displayName)} covers the tools most people in your situation use.`)}
+    </div>
+
+    <div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:0.75rem;margin-bottom:0.75rem;">
+      <div style="font-weight:600;font-size:1rem;margin-bottom:0.2rem;">${escapeHtml(meta.displayName)}</div>
+      <div style="font-size:0.82rem;color:var(--text-muted);margin-bottom:0.6rem;">${escapeHtml(meta.description)}</div>
+      <div style="font-size:0.75rem;color:var(--text-dim);">
+        ${(_wizardState.recommendedRegistryIds ?? []).length} capabilities included
+      </div>
+    </div>
+
+    <div id="onb-dep-graph" style="margin-bottom:0.75rem;">
+      <div style="font-size:0.8rem;color:var(--text-muted);text-align:center;padding:0.5rem 0;">
+        Loading capability graph…
+      </div>
+    </div>
+
+    <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+      <button class="btn btn-primary" data-action="onb-install-recipe" data-slug="${escapeHtml(slug)}">
+        Install this bundle
+      </button>
+      <button class="btn btn-outline" data-action="onb-skip-recipe" style="color:var(--text-muted);">
+        Skip for now
+      </button>
+    </div>
+  `);
+
+  // Load the D3 dependency graph async — non-blocking
+  loadDependencyGraph(getCurrentUserId());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// D3 dependency graph (deliverable E)
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function loadDependencyGraph(userId) {
+  const container = document.getElementById('onb-dep-graph');
+  if (!container) return;
+
+  // Load D3 from CDN if not already present
+  if (!window.d3) {
+    try {
+      await loadScript('https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js');
+    } catch {
+      container.innerHTML = `<div style="font-size:0.78rem;color:var(--text-muted);text-align:center;">Dependency graph unavailable offline.</div>`;
+      return;
+    }
+  }
+
+  let graphData;
+  try {
+    graphData = await fetchCapabilityDependencyGraph(userId);
+  } catch {
+    container.innerHTML = `<div style="font-size:0.78rem;color:var(--text-muted);text-align:center;">Could not load graph.</div>`;
+    return;
+  }
+
+  const nodes = graphData.nodes ?? [];
+  const edges = graphData.edges ?? [];
+  if (nodes.length === 0) {
+    container.innerHTML = `<div style="font-size:0.78rem;color:var(--text-muted);text-align:center;">No capability data yet.</div>`;
+    return;
+  }
+
+  renderD3Graph(container, nodes, edges);
+}
+
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const existing = document.querySelector(`script[src="${src}"]`);
+    if (existing) { resolve(); return; }
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = resolve;
+    s.onerror = reject;
+    document.head.appendChild(s);
   });
 }
 
-/**
- * Render the onboarding flow.
- */
-export function renderOnboarding(container, onComplete) {
-  let step = 0;
-  let userId = '';
+function renderD3Graph(container, nodes, edges) {
+  const d3 = window.d3;
+  if (!d3) return;
 
-  // Shared state for domain and preference selections
-  const state = {
-    selectedDomains: DOMAINS.filter(d => d.preSelected).map(d => d.id),
-    preferences: {},
+  const W = Math.min(container.clientWidth || 320, 400);
+  const H = 200;
+
+  container.innerHTML = '';
+
+  const svg = d3.select(container)
+    .append('svg')
+    .attr('width', W)
+    .attr('height', H)
+    .style('background', 'var(--bg)')
+    .style('border-radius', 'var(--radius-sm)');
+
+  const sim = d3.forceSimulation(nodes)
+    .force('link', d3.forceLink(edges).id((d) => d.id).distance(50))
+    .force('charge', d3.forceManyBody().strength(-80))
+    .force('center', d3.forceCenter(W / 2, H / 2))
+    .force('collision', d3.forceCollide(18));
+
+  const link = svg.append('g')
+    .selectAll('line')
+    .data(edges)
+    .join('line')
+    .attr('stroke', 'var(--border)')
+    .attr('stroke-width', 1.5);
+
+  const node = svg.append('g')
+    .selectAll('circle')
+    .data(nodes)
+    .join('circle')
+    .attr('r', (d) => d.id.startsWith('server:') ? 10 : 6)
+    .attr('fill', (d) => d.installed ? 'var(--accent)' : 'var(--border)')
+    .attr('stroke', 'var(--bg-card)')
+    .attr('stroke-width', 1.5);
+
+  const label = svg.append('g')
+    .selectAll('text')
+    .data(nodes)
+    .join('text')
+    .text((d) => d.label)
+    .attr('font-size', 9)
+    .attr('fill', 'var(--text-muted)')
+    .attr('text-anchor', 'middle')
+    .attr('dy', (d) => d.id.startsWith('server:') ? 22 : 18);
+
+  sim.on('tick', () => {
+    link
+      .attr('x1', (d) => d.source.x)
+      .attr('y1', (d) => d.source.y)
+      .attr('x2', (d) => d.target.x)
+      .attr('y2', (d) => d.target.y);
+    node
+      .attr('cx', (d) => d.x)
+      .attr('cy', (d) => d.y);
+    label
+      .attr('x', (d) => d.x)
+      .attr('y', (d) => d.y);
+  });
+}
+
+// ── Installing ────────────────────────────────────────────────────────────────
+
+async function handleInstallRecipe(slug, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = 'Installing…'; }
+  transitionTo('installing');
+
+  const userId = getCurrentUserId();
+
+  try {
+    const { jobs } = await installCapabilityRecipe(userId, slug);
+    const count = jobs?.length ?? 0;
+    await postOnboardingComplete(userId, 'about-me', slug);
+    renderInstallComplete(slug, count);
+  } catch (err) {
+    renderContent(`
+      <div id="onb-wizard-error" style="color:var(--danger);font-size:0.85rem;margin-bottom:0.75rem;display:block;">
+        Install failed: ${escapeHtml(err?.message || 'unknown error')}
+      </div>
+      <button class="btn btn-primary" data-action="onb-go-dashboard">Continue to dashboard anyway</button>
+    `);
+  }
+}
+
+function renderInstalling() {
+  renderContent(`
+    <div style="text-align:center;padding:2rem 0;color:var(--text-muted);">
+      <div class="loading" style="margin-bottom:0.75rem;"></div>
+      Setting up your capabilities…
+    </div>
+  `);
+}
+
+function renderInstallComplete(slug, count) {
+  const meta = RECIPE_META[slug] || { displayName: slug };
+  renderContent(`
+    <div id="onb-wizard-error" style="display:none;"></div>
+    <div style="text-align:center;padding:1rem 0 0.5rem;">
+      <div style="font-size:2.5rem;margin-bottom:0.5rem;">&#10003;</div>
+      <div class="onboarding-title" style="font-size:1.2rem;font-weight:700;margin-bottom:0.4rem;">
+        ${escapeHtml(meta.displayName)} queued
+      </div>
+      <div class="onboarding-desc" style="font-size:0.85rem;margin-bottom:1.25rem;">
+        ${count} capability${count !== 1 ? 's' : ''} ${count > 0 ? 'will be installed — some need OAuth authorisation which will happen when you first use them.' : 'queued.'}
+      </div>
+      <button class="btn btn-primary btn-lg" data-action="onb-go-dashboard">Go to dashboard</button>
+    </div>
+  `);
+}
+
+// ── Complete ──────────────────────────────────────────────────────────────────
+
+async function finishWizard(userId, choice, recipeSlug) {
+  try {
+    await postOnboardingComplete(userId, choice, recipeSlug);
+  } catch {
+    // non-fatal — wizard still completes
+  }
+  localStorage.setItem(KEY_ONBOARDED, 'true');
+  if (userId) localStorage.setItem(KEY_USER_ID, userId);
+  hideWizard();
+  if (typeof _onCompleteCallback === 'function') {
+    _onCompleteCallback(userId);
+  }
+}
+
+function hideWizard() {
+  const overlay = document.getElementById('onboarding-overlay');
+  if (overlay) overlay.style.display = 'none';
+  localStorage.setItem(KEY_ONBOARDED, 'true');
+  if (typeof _onCompleteCallback === 'function') {
+    _onCompleteCallback(getCurrentUserId());
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// State machine transitions
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function transitionTo(screen) {
+  if (!_wizardState) return;
+  _wizardState.screen = screen;
+
+  switch (screen) {
+    case 'welcome':
+      renderWelcome();
+      break;
+    case 'email_choice':
+      renderEmailChoice();
+      break;
+    case 'computer_choice':
+      renderComputerChoice();
+      break;
+    case 'idle_miner_poll':
+      await renderIdleMinerPoll();
+      break;
+    case 'about_me_choice':
+      if (_wizardState.hasLlmProvider) {
+        renderAboutMeConversational();
+      } else {
+        _detAnswers = {};
+        _detStep = 0;
+        renderDeterministicStep();
+      }
+      break;
+    case 'recipe_preview':
+      await renderRecipePreview();
+      break;
+    case 'installing':
+      renderInstalling();
+      break;
+    case 'complete':
+      await finishWizard(getCurrentUserId(), 'about-me', _wizardState.recipeSlug);
+      break;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Public entry point — called from app.js
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Render the first-run wizard.
+ *
+ * @param {HTMLElement} container  - The #onboarding-content element
+ * @param {Function}    onComplete - Called with (userId) when the wizard finishes
+ */
+export async function renderOnboarding(container, onComplete) {
+  ensureWizardListener();
+  _onCompleteCallback = onComplete;
+
+  // Initialise wizard state
+  _wizardState = {
+    screen: 'welcome',
+    userId: getCurrentUserId(),
+    hasLlmProvider: false,
+    history: [],
+    recipeSlug: null,
+    recommendedRegistryIds: [],
+    rationale: '',
   };
 
-  function renderStep() {
-    const stepDef = STEPS[step];
-    stepDef.render(
-      container,
-      () => { step++; renderStep(); },                          // next
-      () => { if (step > 0) { step--; renderStep(); } },       // back
-      (id) => { userId = id; },                                  // setUserId
-      async (trustTier) => {                                     // complete
-        try {
-          // 1. Update trust tier
-          await updateTrustTier(userId, trustTier);
-        } catch {
-          // User might not exist in DB yet — that's OK
-        }
-
-        try {
-          // 2. Save enabled domains
-          await fetchJSON(`/api/users/${encodeURIComponent(userId)}/domains`, {
-            method: 'PUT',
-            body: JSON.stringify({ domains: state.selectedDomains }),
-          });
-        } catch {
-          // Non-fatal — domains can be configured later in settings
-        }
-
-        try {
-          // 3. Seed preferences from the quick-pref answers
-          const prefPayload = [];
-          for (const [compositeKey, value] of Object.entries(state.preferences)) {
-            const [domain, ...keyParts] = compositeKey.split(':');
-            const key = keyParts.join(':');
-            prefPayload.push({ domain, key, value });
-          }
-          if (prefPayload.length > 0) {
-            await fetchJSON(`/api/users/${encodeURIComponent(userId)}/seed-preferences`, {
-              method: 'POST',
-              body: JSON.stringify({ preferences: prefPayload }),
-            });
-          }
-        } catch {
-          // Non-fatal — preferences can be set later
-        }
-
-        try {
-          // 4. Ensure the twin profile is created
-          await fetchTwinProfile(userId);
-        } catch {
-          // Non-fatal
-        }
-
-        // 5. Persist onboarding completion early so navigating away
-        //    during the signal preview doesn't restart the wizard.
-        localStorage.setItem(KEY_USER_ID, userId);
-        localStorage.setItem(KEY_ONBOARDED, 'true');
-
-        // 6. Show signal preview before navigating to dashboard
-        await showSignalPreview(container, userId);
-
-        // 7. Navigate to the dashboard
-        onComplete(userId);
-      },
-      state,
-    );
+  // Fetch onboarding state from the API to determine LLM availability
+  const userId = getCurrentUserId();
+  if (userId) {
+    try {
+      const state = await fetchOnboardingState(userId);
+      _wizardState.hasLlmProvider = state.hasLlmProvider ?? false;
+      // If they've already completed onboarding, close the wizard
+      if (!state.isFirstRun) {
+        hideWizard();
+        return;
+      }
+    } catch {
+      // Non-fatal — proceed with defaults (deterministic path)
+      _wizardState.hasLlmProvider = false;
+    }
   }
 
-  renderStep();
+  transitionTo('welcome');
 }
