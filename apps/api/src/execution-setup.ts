@@ -23,9 +23,11 @@ import {
   IRONCLAW_TRUST_PROFILE,
   OPENCLAW_TRUST_PROFILE,
   DIRECT_TRUST_PROFILE,
+  MCP_HOST_TRUST_PROFILE,
   OPENCLAW_SKILLS,
   discoverAdapters,
 } from '@skytwin/execution-router';
+import { McpHost } from '@skytwin/mcp-host';
 import type { OpenClawCredentialRequirement } from '@skytwin/execution-router';
 import { credentialRequirementRepository, ironClawToolRepository, serviceCredentialRepository } from '@skytwin/db';
 import { createLogger } from '@skytwin/core';
@@ -131,6 +133,13 @@ export async function createExecutionRouter(): Promise<ExecutionRouter> {
   } else {
     log.info('OpenClaw not configured (no URL) — skipping');
   }
+
+  // MCP host — Capability Acquisition Loop (#173). Always registered; servers
+  // are added via the user-facing install flow (#176). On first boot the host
+  // has zero servers and reports healthy with empty skill set.
+  const mcpHost = new McpHost();
+  registry.register('mcp-host', mcpHost, MCP_HOST_TRUST_PROFILE);
+  log.info('Registered MCP host adapter (Capability Acquisition Loop)');
 
   // Discover plugin adapters from filesystem (if configured)
   if (config.adapterPluginDir) {
