@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@skytwin/assistant": "workspace:*",
+    "@skytwin/credential-vault": "workspace:*",
     "@skytwin/config": "workspace:*",
     "@skytwin/connectors": "workspace:*",
     "@skytwin/core": "workspace:*",

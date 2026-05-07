@@ -552,10 +552,14 @@ export function createOAuthRouter(): Router {
       // Google docs: revoking the refresh_token invalidates the entire
       // grant; revoking only the access_token still leaves the long-lived
       // grant active. Prefer refresh, fall back to access if missing.
-      try {
-        await revokeToken(token.refresh_token || token.access_token);
-      } catch {
-        // Already revoked / expired — proceed with local cleanup.
+      // Either may be null after credential-vault migration (#183 follow-up).
+      const tokenToRevoke = token.refresh_token ?? token.access_token;
+      if (tokenToRevoke) {
+        try {
+          await revokeToken(tokenToRevoke);
+        } catch {
+          // Already revoked / expired — proceed with local cleanup.
+        }
       }
       const removed = await oauthRepository.deleteAccount(userId, provider, decodedEmail);
       res.json({ status: removed ? 'disconnected' : 'not_found', provider, accountEmail: decodedEmail });
@@ -592,8 +596,10 @@ export function createOAuthRouter(): Router {
       // alone leaves the grant active per Google's revocation semantics.
       const accounts = await oauthRepository.listAccountsForUser(userId, provider);
       for (const acct of accounts) {
+        const tokenToRevoke = acct.refresh_token ?? acct.access_token;
+        if (!tokenToRevoke) continue;
         try {
-          await revokeToken(acct.refresh_token || acct.access_token);
+          await revokeToken(tokenToRevoke);
         } catch {
           // Revocation can fail if a token is already expired — continue.
         }

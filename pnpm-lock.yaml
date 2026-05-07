@@ -44,6 +44,9 @@ importers:
       '@skytwin/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@skytwin/credential-vault':
+        specifier: workspace:*
+        version: link:../../packages/credential-vault
       '@skytwin/db':
         specifier: workspace:*
         version: link:../../packages/db
@@ -351,6 +354,9 @@ importers:
       '@skytwin/core':
         specifier: workspace:*
         version: link:../core
+      '@skytwin/credential-vault':
+        specifier: workspace:*
+        version: link:../credential-vault
       '@skytwin/shared-types':
         specifier: workspace:*
         version: link:../shared-types
@@ -367,6 +373,15 @@ importers:
       '@skytwin/shared-types':
         specifier: workspace:*
         version: link:../shared-types
+    devDependencies:
+      typescript:
+        specifier: ^5.4.0
+        version: 5.9.3
+      vitest:
+        specifier: ^1.3.0
+        version: 1.6.1(@types/node@25.6.0)(lightningcss@1.32.0)(terser@5.46.2)
+
+  packages/credential-vault:
     devDependencies:
       typescript:
         specifier: ^5.4.0
