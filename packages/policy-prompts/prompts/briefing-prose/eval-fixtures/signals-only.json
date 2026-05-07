@@ -1,0 +1,13 @@
+{
+  "inputs": {
+    "events": "[]",
+    "pending_tasks": "[{\"id\":\"t1\",\"title\":\"Follow up on PR #234\",\"due\":\"today\",\"priority\":\"medium\"}]",
+    "risk_profile": "Developer",
+    "language": "en",
+    "date": "2026-05-07"
+  },
+  "expected": {
+    "briefing": "## Tasks"
+  },
+  "notes": "No events, one task; briefing should focus on tasks section."
+}

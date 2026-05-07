@@ -1,0 +1,12 @@
+{
+  "inputs": {
+    "risk_profile_text": "Please ask me before doing anything. I don't want the AI to send emails or spend any money without my explicit approval. I'm not very technical and I'm worried about mistakes."
+  },
+  "expected": {
+    "requireApprovalForIrreversible": true,
+    "requireApprovalForExternalSend": true,
+    "autonomyLevel": "suggest",
+    "maxSpendPerActionCents": 0
+  },
+  "notes": "Highly cautious user; all approvals required, zero autonomous spend."
+}

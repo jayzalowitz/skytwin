@@ -1,0 +1,14 @@
+{
+  "inputs": {
+    "capabilities": "[{\"id\":\"cal\",\"name\":\"Calendar sync\"},{\"id\":\"email\",\"name\":\"Email drafting\"},{\"id\":\"contacts\",\"name\":\"Contact management\"}]",
+    "user_profile_summary": "Executive assistant, heavy calendar and email user",
+    "risk_profile": "Cautious, approval required",
+    "language": "en"
+  },
+  "expected": [
+    { "id": "cal", "score": 0.9 },
+    { "id": "email", "score": 0.88 },
+    { "id": "contacts", "score": 0.7 }
+  ],
+  "notes": "All three are relevant; array should be sorted descending by score."
+}

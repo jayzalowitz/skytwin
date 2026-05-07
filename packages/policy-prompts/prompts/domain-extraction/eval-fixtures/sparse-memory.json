@@ -1,0 +1,10 @@
+{
+  "inputs": {
+    "memory_summary": "Entities: 3 email threads (mixed topics), 2 calendar events.",
+    "capability_categories": "[\"Communication\",\"Calendar\",\"Finance\"]"
+  },
+  "expected": [
+    { "domainName": "Communication", "importance": "secondary" }
+  ],
+  "notes": "Very sparse memory; should return minimal domains with low importance."
+}

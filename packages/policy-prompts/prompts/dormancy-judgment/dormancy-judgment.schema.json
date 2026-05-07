@@ -1,0 +1,15 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["should_offer_uninstall", "reasoning", "last_active_days_ago", "usage_frequency"],
+  "additionalProperties": false,
+  "properties": {
+    "should_offer_uninstall": { "type": "boolean" },
+    "reasoning": { "type": "string", "maxLength": 200 },
+    "last_active_days_ago": { "oneOf": [{ "type": "number" }, { "type": "null" }] },
+    "usage_frequency": {
+      "type": "string",
+      "enum": ["daily", "weekly", "monthly", "rare", "never"]
+    }
+  }
+}

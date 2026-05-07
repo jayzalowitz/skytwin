@@ -1,0 +1,14 @@
+{
+  "inputs": {
+    "capabilities": "[{\"id\":\"gh-prs\",\"name\":\"GitHub PR review\"},{\"id\":\"slack-notify\",\"name\":\"Slack notifications\"},{\"id\":\"recipe-search\",\"name\":\"Recipe search\"}]",
+    "user_profile_summary": "Software engineer, heavy GitHub and Slack user, no cooking signals",
+    "risk_profile": "Developer, autonomous",
+    "language": "en"
+  },
+  "expected": [
+    { "id": "gh-prs", "score": 0.9 },
+    { "id": "slack-notify", "score": 0.85 },
+    { "id": "recipe-search", "score": 0.1 }
+  ],
+  "notes": "Developer profile should rank coding/comms tools high and irrelevant tools low."
+}

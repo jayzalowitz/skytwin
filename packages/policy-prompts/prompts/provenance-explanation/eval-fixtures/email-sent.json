@@ -1,0 +1,12 @@
+{
+  "inputs": {
+    "provenance_chain": "[{\"step\":1,\"component\":\"signal-reader\",\"output\":\"Detected calendar event: Q2 review meeting at 3pm\"},{\"step\":2,\"component\":\"decision-engine\",\"output\":\"Selected action: send_reminder_email\"},{\"step\":3,\"component\":\"policy-engine\",\"output\":\"Approved: reversible, under spend limit\"},{\"step\":4,\"component\":\"ironclaw-adapter\",\"output\":\"Executed via Gmail MCP\"}]",
+    "action_summary": "Sent a reminder email about the Q2 review meeting",
+    "risk_profile": "Standard"
+  },
+  "expected": {
+    "narrative": "The twin detected",
+    "key_decision_points": []
+  },
+  "notes": "Should produce a readable narrative tracing all 4 steps."
+}

@@ -1,0 +1,14 @@
+{
+  "inputs": {
+    "events": "[]",
+    "pending_tasks": "[]",
+    "risk_profile": "Standard",
+    "language": "en",
+    "date": "2026-05-07"
+  },
+  "expected": {
+    "briefing": "Nothing scheduled",
+    "highlight_count": 0
+  },
+  "notes": "Empty day; briefing should acknowledge the clear schedule."
+}

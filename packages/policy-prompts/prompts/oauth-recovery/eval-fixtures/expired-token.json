@@ -1,0 +1,11 @@
+{
+  "inputs": {
+    "failure_trace": "HTTP 401 from api.example.com/data. Token age: 3702s. Refresh endpoint: /oauth/refresh.",
+    "server_auth_metadata": "{\"token_endpoint\":\"/oauth/refresh\",\"token_expiry_seconds\":3600,\"supports_refresh\":true}"
+  },
+  "expected": {
+    "action": "refresh_token",
+    "confidence": 0.95
+  },
+  "notes": "Token just expired; refresh should be recommended with high confidence."
+}

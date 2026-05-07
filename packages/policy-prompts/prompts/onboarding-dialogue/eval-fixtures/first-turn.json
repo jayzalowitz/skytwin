@@ -1,0 +1,13 @@
+{
+  "inputs": {
+    "previous_turns": "[]",
+    "goal": "initial",
+    "language": "en",
+    "risk_profile": "Unknown"
+  },
+  "expected": {
+    "type": "question",
+    "text": "What do you primarily use your computer for?"
+  },
+  "notes": "First turn with no history should produce an opening question."
+}

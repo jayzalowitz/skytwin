@@ -1,0 +1,16 @@
+{
+  "inputs": {
+    "current_tier": "low_autonomy",
+    "target_tier": "moderate_autonomy",
+    "risk_profile": "Cautious",
+    "feedback_history": "5 approvals, 8 rejections, 4 reversals in 30 days",
+    "decision_summary": "20 decisions total, 62% approval rate, 2 high-severity rejections"
+  },
+  "expected": {
+    "recommend_promote": false,
+    "confidence": 0.9,
+    "reasoning": "High reversal rate and unresolved high-severity rejections block promotion.",
+    "blocking_concerns": ["4 reversals in last 30 days", "2 high-severity rejections"]
+  },
+  "notes": "Should not promote; blocking concerns must be listed."
+}

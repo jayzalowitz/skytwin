@@ -1,0 +1,9 @@
+{
+  "inputs": {
+    "text": "The policy engine has blocked execution of this CandidateAction due to trust tier insufficient for irreversible operation.",
+    "language": "en",
+    "risk_profile": "Non-technical user"
+  },
+  "expected": "This action was paused because it can't be undone, and your account isn't set up for automatic irreversible actions yet.",
+  "notes": "Technical jargon should be rewritten in plain English."
+}

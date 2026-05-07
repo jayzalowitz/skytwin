@@ -1,0 +1,14 @@
+{
+  "inputs": {
+    "server_name": "GitHub MCP",
+    "server_id": "github-mcp",
+    "activity_history": "Invoked 47 times in last 30 days. Last invoked 1 day ago.",
+    "user_activity": "Active developer with 120 commits last month",
+    "risk_profile": "Developer"
+  },
+  "expected": {
+    "should_offer_uninstall": false,
+    "usage_frequency": "daily"
+  },
+  "notes": "Actively used server; must not offer to uninstall."
+}

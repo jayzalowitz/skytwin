@@ -1,0 +1,11 @@
+{
+  "inputs": {
+    "failure_trace": "HTTP 401. Error body: {\"error\":\"token_revoked\",\"error_description\":\"The token has been revoked by the user\"}",
+    "server_auth_metadata": "{\"token_endpoint\":\"/oauth/refresh\",\"authorization_endpoint\":\"/oauth/authorize\",\"revocation_endpoint\":\"/oauth/revoke\"}"
+  },
+  "expected": {
+    "action": "escalate_to_user",
+    "confidence": 0.98
+  },
+  "notes": "Revoked tokens cannot be refreshed; must escalate to user to re-authorize."
+}

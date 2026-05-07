@@ -1,0 +1,9 @@
+{
+  "inputs": {
+    "memory_facts": "[{\"id\":1,\"fact\":\"User manages a distributed team of 15 engineers\"},{\"id\":2,\"fact\":\"User holds 8 meetings per day on average\"},{\"id\":3,\"fact\":\"User writes strategy documents weekly\"},{\"id\":4,\"fact\":\"User exercises at 6am daily\"},{\"id\":5,\"fact\":\"User reads 2 books per month\"},{\"id\":6,\"fact\":\"User travels internationally 6x per year\"},{\"id\":7,\"fact\":\"User maintains a personal finance spreadsheet monthly\"},{\"id\":8,\"fact\":\"User cooks dinner 5 nights per week\"},{\"id\":9,\"fact\":\"User mentors 3 junior engineers\"},{\"id\":10,\"fact\":\"User contributes to open-source on weekends\"}]"
+  },
+  "expected": {
+    "portrait": "I"
+  },
+  "notes": "Rich facts; portrait field must be ≤500 words."
+}

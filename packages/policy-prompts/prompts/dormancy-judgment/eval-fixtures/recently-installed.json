@@ -1,0 +1,13 @@
+{
+  "inputs": {
+    "server_name": "Linear MCP",
+    "server_id": "linear-mcp",
+    "activity_history": "Installed 10 days ago. 0 invocations so far.",
+    "user_activity": "User has created 5 issues manually in Linear web app",
+    "risk_profile": "Standard"
+  },
+  "expected": {
+    "should_offer_uninstall": false
+  },
+  "notes": "Recently installed (10 days); should NOT offer uninstall regardless of 0 usage."
+}

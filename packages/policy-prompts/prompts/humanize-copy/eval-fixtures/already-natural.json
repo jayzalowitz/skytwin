@@ -1,0 +1,9 @@
+{
+  "inputs": {
+    "text": "Your email was sent successfully.",
+    "language": "en",
+    "risk_profile": "Standard"
+  },
+  "expected": "Your email was sent successfully.",
+  "notes": "Already natural; should be returned largely unchanged."
+}

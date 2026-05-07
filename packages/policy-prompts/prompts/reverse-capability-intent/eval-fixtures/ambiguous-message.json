@@ -1,0 +1,12 @@
+{
+  "inputs": {
+    "user_message": "Can you reach out to Alex?",
+    "installed_capabilities": "[{\"id\":\"gmail\",\"name\":\"Gmail\"},{\"id\":\"slack\",\"name\":\"Slack\"},{\"id\":\"calendar\",\"name\":\"Google Calendar\"}]",
+    "risk_profile": "Standard"
+  },
+  "expected": {
+    "requires_clarification": true,
+    "confidence": 0.4
+  },
+  "notes": "Ambiguous channel; model should ask for clarification (email or Slack?)."
+}

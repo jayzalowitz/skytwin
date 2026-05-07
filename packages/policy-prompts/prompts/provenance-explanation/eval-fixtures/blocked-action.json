@@ -1,0 +1,12 @@
+{
+  "inputs": {
+    "provenance_chain": "[{\"step\":1,\"component\":\"decision-engine\",\"output\":\"Proposed action: delete_file at ~/Documents/contract.pdf\"},{\"step\":2,\"component\":\"policy-engine\",\"output\":\"BLOCKED: irreversible action requires user approval at current trust tier\"}]",
+    "action_summary": "Attempted to delete ~/Documents/contract.pdf — blocked by policy",
+    "risk_profile": "Cautious"
+  },
+  "expected": {
+    "narrative": "The twin proposed",
+    "key_decision_points": ["Policy engine blocked the deletion"]
+  },
+  "notes": "Blocked action; narrative must clearly explain why it was stopped."
+}
