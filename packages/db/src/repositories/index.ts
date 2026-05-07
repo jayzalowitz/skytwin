@@ -113,3 +113,10 @@ export type {
 
 export { mcpServerRepository } from './mcp-server-repository.js';
 export type { McpServerRow } from './mcp-server-repository.js';
+
+export { riskProfileRepository } from './risk-profile-repository.js';
+export type {
+  RiskProfileRow,
+  UpsertRiskProfileInput,
+  UpdateInterpretedCapsInput,
+} from './risk-profile-repository.js';

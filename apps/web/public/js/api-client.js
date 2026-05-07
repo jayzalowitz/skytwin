@@ -741,3 +741,49 @@ export function regretCapability(id, userId, withinHours = 24) {
     body: JSON.stringify({ withinHours }),
   });
 }
+
+// ── Pause / Resume all capabilities (#190) ───────────────────────────────────
+
+export function pauseAllCapabilities(userId) {
+  return fetchJSON(`${API}/capabilities/pause-all?userId=${encodeURIComponent(userId)}`, {
+    method: 'POST',
+  });
+}
+
+export function resumeAllCapabilities(userId) {
+  return fetchJSON(`${API}/capabilities/resume-all?userId=${encodeURIComponent(userId)}`, {
+    method: 'POST',
+  });
+}
+
+// ── Risk profile (#190) ───────────────────────────────────────────────────────
+
+export function fetchRiskProfile(userId) {
+  return fetchJSON(`${API}/risk-profile?userId=${encodeURIComponent(userId)}`);
+}
+
+export function saveRiskProfile(userId, profileText) {
+  return fetchJSON(`${API}/risk-profile?userId=${encodeURIComponent(userId)}`, {
+    method: 'PUT',
+    body: JSON.stringify({ profileText }),
+  });
+}
+
+export function reinterpretRiskProfile(userId) {
+  return fetchJSON(`${API}/risk-profile/reinterpret?userId=${encodeURIComponent(userId)}`, {
+    method: 'POST',
+  });
+}
+
+// ── About Me / self-portrait (#190) ──────────────────────────────────────────
+
+export function fetchAboutMe(userId) {
+  return fetchJSON(`${API}/about-me?userId=${encodeURIComponent(userId)}`);
+}
+
+export function submitSelfPortraitCorrection(userId, paragraphIndex, sentenceIndex, correction) {
+  return fetchJSON(`${API}/about-me/correct?userId=${encodeURIComponent(userId)}`, {
+    method: 'POST',
+    body: JSON.stringify({ paragraphIndex, sentenceIndex, correction }),
+  });
+}

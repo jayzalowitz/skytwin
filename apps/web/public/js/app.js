@@ -9,6 +9,8 @@ import { renderAssistant } from './pages/assistant.js';
 import { renderOnboarding } from './pages/onboarding.js';
 import { renderCapabilities } from './pages/capabilities.js';
 import { renderCapabilityDetail } from './pages/capability-detail.js';
+import { renderAboutMe } from './pages/about-me.js';
+import { renderGlobalPauseButton } from './components/global-pause-button.js';
 import { fetchPendingApprovals, fetchHealth, fetchUser, listUsers, escapeHtml, isApiKnownOffline } from './api-client.js';
 import { initTheme } from './theme-switcher.js';
 import { connectSSE, disconnectSSE, isConnected } from './sse-client.js';
@@ -28,6 +30,7 @@ const routes = {
   '/audit': { title: 'Audit Trail', render: renderAudit },
   '/setup': { title: 'Connect', render: renderSetup },
   '/capabilities': { title: 'Capabilities', render: renderCapabilities },
+  '/about-me': { title: 'About me', render: renderAboutMe },
 };
 
 /**
@@ -400,6 +403,17 @@ window.addEventListener('DOMContentLoaded', () => {
   // Wire dashboard event handlers + document-level delegators.
   // Idempotent so re-running this in tests is safe.
   initDashboardGlobals();
+
+  // Mount the always-visible Pause-everything safety button (#190).
+  // Floats top-right across all routes so the panic affordance is always
+  // accessible. Component handles its own state + SSE subscription.
+  if (!document.getElementById('global-pause-button-mount')) {
+    const mount = document.createElement('div');
+    mount.id = 'global-pause-button-mount';
+    mount.className = 'global-pause-mount';
+    document.body.appendChild(mount);
+    renderGlobalPauseButton(mount);
+  }
 
   // Handle mobile QR pairing entry (/mobile?token=...&userId=...)
   const urlParams = new URLSearchParams(window.location.search);

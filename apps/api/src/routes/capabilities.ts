@@ -799,5 +799,66 @@ export function createCapabilitiesRouter(): Router {
     }
   });
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // POST /pause-all
+  // Pauses all active/installed/authorized capability servers for the
+  // requesting user. Writes a provenance node per server (#190 hard rail).
+  // Returns { pausedCount: number }.
+  // ─────────────────────────────────────────────────────────────────────────
+  router.post('/pause-all', async (req, res, next) => {
+    try {
+      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
+        ?? (req.query['userId'] as string | undefined);
+      if (!userId) {
+        res.status(400).json({ error: 'userId is required' });
+        return;
+      }
+
+      const pausedServers = await mcpServerRepository.markAllPausedForUser(userId);
+
+      // Hard rail: write a provenance feedback node for every server paused.
+      await Promise.allSettled(
+        pausedServers.map((server) =>
+          writeProvenanceNode({
+            userId,
+            nodeType: 'feedback',
+            refTable: 'mcp_servers',
+            refId: server.id,
+            serverId: server.id,
+            payload: { reason: 'global_pause' },
+          }),
+        ),
+      );
+
+      log.info('Paused all capability servers', { userId, count: pausedServers.length });
+      res.json({ pausedCount: pausedServers.length });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // POST /resume-all
+  // Resumes all paused capability servers for the requesting user.
+  // Returns { resumedCount: number }.
+  // ─────────────────────────────────────────────────────────────────────────
+  router.post('/resume-all', async (req, res, next) => {
+    try {
+      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
+        ?? (req.query['userId'] as string | undefined);
+      if (!userId) {
+        res.status(400).json({ error: 'userId is required' });
+        return;
+      }
+
+      const resumedServers = await mcpServerRepository.markAllResumedForUser(userId);
+
+      log.info('Resumed all capability servers', { userId, count: resumedServers.length });
+      res.json({ resumedCount: resumedServers.length });
+    } catch (err) {
+      next(err);
+    }
+  });
+
   return router;
 }

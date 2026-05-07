@@ -28,6 +28,8 @@ import { createCredentialsRouter } from './routes/credentials.js';
 import { createRoutinesRouter } from './routes/routines.js';
 import { createDemoRouter } from './routes/demo.js';
 import { createCapabilitiesRouter } from './routes/capabilities.js';
+import { createRiskProfileRouter } from './routes/risk-profile.js';
+import { createAboutMeRouter } from './routes/about-me.js';
 import { getExecutionRouter } from './execution-setup.js';
 import { startMdnsAdvertisement, stopMdnsAdvertisement } from './mdns.js';
 import { closePool } from '@skytwin/db';
@@ -201,6 +203,8 @@ app.use('/api/credentials', sessionAuth, requireOwnership, createCredentialsRout
 app.use('/api/routines', sessionAuth, requireOwnership, createRoutinesRouter());
 app.use('/api/v1/demo', createDemoRouter()); // public — onboarding tour discovery
 app.use('/api/capabilities', sessionAuth, requireOwnership, createCapabilitiesRouter());
+app.use('/api/risk-profile', sessionAuth, requireOwnership, createRiskProfileRouter());
+app.use('/api/about-me', sessionAuth, requireOwnership, createAboutMeRouter());
 
 // Error handling middleware
 app.use(

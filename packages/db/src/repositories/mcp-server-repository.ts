@@ -136,4 +136,36 @@ export const mcpServerRepository = {
     );
     return result.rows;
   },
+
+  /**
+   * Pause all active capability servers for a user (#190 Pause-everything button).
+   * Returns the list of servers that were transitioned to 'paused'.
+   */
+  async markAllPausedForUser(userId: string): Promise<McpServerRow[]> {
+    const result = await query<McpServerRow>(
+      `UPDATE mcp_servers
+       SET status = 'paused', updated_at = now()
+       WHERE user_id = $1
+         AND status IN ('active', 'installed', 'authorized')
+       RETURNING *`,
+      [userId],
+    );
+    return result.rows;
+  },
+
+  /**
+   * Resume all paused capability servers for a user (#190 Pause-everything button).
+   * Returns the list of servers that were transitioned back to 'active'.
+   */
+  async markAllResumedForUser(userId: string): Promise<McpServerRow[]> {
+    const result = await query<McpServerRow>(
+      `UPDATE mcp_servers
+       SET status = 'active', updated_at = now()
+       WHERE user_id = $1
+         AND status = 'paused'
+       RETURNING *`,
+      [userId],
+    );
+    return result.rows;
+  },
 };
