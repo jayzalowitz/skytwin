@@ -188,6 +188,9 @@ importers:
 
   apps/worker:
     dependencies:
+      '@skytwin/capability-engine':
+        specifier: workspace:*
+        version: link:../../packages/capability-engine
       '@skytwin/config':
         specifier: workspace:*
         version: link:../../packages/config
@@ -203,6 +206,9 @@ importers:
       '@skytwin/ironclaw-adapter':
         specifier: workspace:*
         version: link:../../packages/ironclaw-adapter
+      '@skytwin/registry-client':
+        specifier: workspace:*
+        version: link:../../packages/registry-client
       '@skytwin/shared-types':
         specifier: workspace:*
         version: link:../../packages/shared-types
@@ -229,6 +235,28 @@ importers:
       vitest:
         specifier: ^1.3.0
         version: 1.6.1(@types/node@25.6.0)(lightningcss@1.32.0)(terser@5.46.2)
+
+  packages/capability-engine:
+    dependencies:
+      '@skytwin/core':
+        specifier: workspace:*
+        version: link:../core
+      '@skytwin/registry-client':
+        specifier: workspace:*
+        version: link:../registry-client
+      '@skytwin/shared-types':
+        specifier: workspace:*
+        version: link:../shared-types
+    devDependencies:
+      '@types/node':
+        specifier: ^20.0.0
+        version: 20.19.37
+      typescript:
+        specifier: ^5.4.0
+        version: 5.9.3
+      vitest:
+        specifier: ^1.3.0
+        version: 1.6.1(@types/node@20.19.37)(lightningcss@1.32.0)(terser@5.46.2)
 
   packages/config:
     devDependencies:
@@ -7005,7 +7033,7 @@ snapshots:
 
   '@types/pg@8.20.0':
     dependencies:
-      '@types/node': 20.19.37
+      '@types/node': 25.6.0
       pg-protocol: 1.13.0
       pg-types: 2.2.0
 

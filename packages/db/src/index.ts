@@ -88,7 +88,8 @@ export type {
 
 export { signalRepository, proposalRepository, skillGapRepository, proactiveScanRepository } from './repositories/index.js';
 
-export { trustTierAuditRepository, spendRepository, domainAutonomyRepository, escalationTriggerRepository, preferenceHistoryRepository, sessionRepository, mempalaceRepository, serviceCredentialRepository, credentialRequirementRepository, aiProviderRepository, ironClawToolRepository, forwardedSignalsRepository, connectorCursorRepository, emailLabelRepository, assistantRepository, deriveThreadTitle } from './repositories/index.js';
+export { trustTierAuditRepository, spendRepository, domainAutonomyRepository, escalationTriggerRepository, preferenceHistoryRepository, sessionRepository, mempalaceRepository, serviceCredentialRepository, credentialRequirementRepository, aiProviderRepository, ironClawToolRepository, forwardedSignalsRepository, connectorCursorRepository, emailLabelRepository, assistantRepository, deriveThreadTitle, appSuggestionRepository } from './repositories/index.js';
+export type { AppSuggestionRow, UpsertPendingSuggestionInput } from './repositories/index.js';
 export type { AssistantThread, AssistantMessage } from './repositories/index.js';
 export type { ForwardedSignalRow } from './repositories/index.js';
 export type { ConnectorCursorRow } from './repositories/index.js';

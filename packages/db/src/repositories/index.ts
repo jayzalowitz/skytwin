@@ -104,3 +104,9 @@ export type {
   AssistantThread,
   AssistantMessage,
 } from './assistant-repository.js';
+
+export { appSuggestionRepository } from './app-suggestion-repository.js';
+export type {
+  AppSuggestionRow,
+  UpsertPendingSuggestionInput,
+} from './app-suggestion-repository.js';
