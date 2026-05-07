@@ -110,3 +110,6 @@ export type {
   AppSuggestionRow,
   UpsertPendingSuggestionInput,
 } from './app-suggestion-repository.js';
+
+export { mcpServerRepository } from './mcp-server-repository.js';
+export type { McpServerRow } from './mcp-server-repository.js';

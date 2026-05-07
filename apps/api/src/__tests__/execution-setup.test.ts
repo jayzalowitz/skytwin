@@ -76,8 +76,13 @@ vi.mock('@skytwin/execution-router', () => ({
   IRONCLAW_TRUST_PROFILE: {},
   OPENCLAW_TRUST_PROFILE: {},
   DIRECT_TRUST_PROFILE: {},
+  MCP_HOST_TRUST_PROFILE: {},
   OPENCLAW_SKILLS: new Set<string>(),
   discoverAdapters: vi.fn(),
+}));
+
+vi.mock('@skytwin/mcp-host', () => ({
+  McpHost: vi.fn().mockImplementation(() => ({})),
 }));
 
 vi.mock('../sse.js', () => ({

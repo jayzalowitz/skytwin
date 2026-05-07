@@ -27,6 +27,7 @@ import { createAssistantRouter } from './routes/assistant.js';
 import { createCredentialsRouter } from './routes/credentials.js';
 import { createRoutinesRouter } from './routes/routines.js';
 import { createDemoRouter } from './routes/demo.js';
+import { createCapabilitiesRouter } from './routes/capabilities.js';
 import { getExecutionRouter } from './execution-setup.js';
 import { startMdnsAdvertisement, stopMdnsAdvertisement } from './mdns.js';
 import { closePool } from '@skytwin/db';
@@ -199,6 +200,7 @@ app.use('/api/assistant', sessionAuth, requireOwnership, createAssistantRouter()
 app.use('/api/credentials', sessionAuth, requireOwnership, createCredentialsRouter());
 app.use('/api/routines', sessionAuth, requireOwnership, createRoutinesRouter());
 app.use('/api/v1/demo', createDemoRouter()); // public — onboarding tour discovery
+app.use('/api/capabilities', sessionAuth, requireOwnership, createCapabilitiesRouter());
 
 // Error handling middleware
 app.use(
