@@ -1,0 +1,139 @@
+import { query } from '../connection.js';
+
+export interface McpServerRow {
+  id: string;
+  user_id: string;
+  registry_id: string | null;
+  display_name: string;
+  transport: 'stdio' | 'http' | 'sse';
+  command: string | null;
+  args: unknown;
+  env: unknown;
+  url: string | null;
+  oauth_provider: string | null;
+  oauth_token_id: string | null;
+  trust_tier: 'observer' | 'suggest' | 'low_autonomy' | 'moderate_autonomy' | 'high_autonomy';
+  per_app_spend_per_action_cents: number | null;
+  per_app_daily_spend_cents: number | null;
+  per_app_monthly_spend_cents: number | null;
+  per_app_monthly_rollover: boolean;
+  per_app_irreversible_requires_approval: boolean | null;
+  zero_trust_mode: boolean;
+  status: 'discovered' | 'installing' | 'installed' | 'authorized' | 'active' | 'paused' | 'dormant' | 'failed' | 'uninstalled';
+  last_health_check_at: Date | null;
+  health_status: string | null;
+  last_active_at: Date | null;
+  installed_at: Date | null;
+  uninstalled_at: Date | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export const mcpServerRepository = {
+  async getById(id: string): Promise<McpServerRow | null> {
+    const result = await query<McpServerRow>(
+      'SELECT * FROM mcp_servers WHERE id = $1',
+      [id],
+    );
+    return result.rows[0] ?? null;
+  },
+
+  async getByUserAndRegistry(userId: string, registryId: string): Promise<McpServerRow | null> {
+    const result = await query<McpServerRow>(
+      'SELECT * FROM mcp_servers WHERE user_id = $1 AND registry_id = $2',
+      [userId, registryId],
+    );
+    return result.rows[0] ?? null;
+  },
+
+  async listForUser(userId: string): Promise<McpServerRow[]> {
+    const result = await query<McpServerRow>(
+      `SELECT * FROM mcp_servers WHERE user_id = $1 ORDER BY created_at DESC`,
+      [userId],
+    );
+    return result.rows;
+  },
+
+  async listActive(): Promise<McpServerRow[]> {
+    const result = await query<McpServerRow>(
+      `SELECT * FROM mcp_servers WHERE status = 'active' ORDER BY last_active_at DESC`,
+    );
+    return result.rows;
+  },
+
+  async markDormant(id: string): Promise<McpServerRow | null> {
+    const result = await query<McpServerRow>(
+      `UPDATE mcp_servers
+       SET status = 'dormant', updated_at = now()
+       WHERE id = $1
+       RETURNING *`,
+      [id],
+    );
+    return result.rows[0] ?? null;
+  },
+
+  async markPaused(id: string): Promise<McpServerRow | null> {
+    const result = await query<McpServerRow>(
+      `UPDATE mcp_servers
+       SET status = 'paused', updated_at = now()
+       WHERE id = $1
+       RETURNING *`,
+      [id],
+    );
+    return result.rows[0] ?? null;
+  },
+
+  async markActive(id: string): Promise<McpServerRow | null> {
+    const result = await query<McpServerRow>(
+      `UPDATE mcp_servers
+       SET status = 'active', updated_at = now()
+       WHERE id = $1
+       RETURNING *`,
+      [id],
+    );
+    return result.rows[0] ?? null;
+  },
+
+  async softDelete(
+    id: string,
+    opts: { revokedOauth: boolean; droppedSignals: boolean },
+  ): Promise<McpServerRow | null> {
+    const result = await query<McpServerRow>(
+      `UPDATE mcp_servers
+       SET status = 'uninstalled',
+           uninstalled_at = now(),
+           updated_at = now()
+       WHERE id = $1
+       RETURNING *`,
+      [id],
+    );
+    // opts are recorded in the audit row written by the caller; they do not
+    // affect the row itself beyond the status transition.
+    void opts;
+    return result.rows[0] ?? null;
+  },
+
+  async updateLastActive(id: string): Promise<void> {
+    await query(
+      `UPDATE mcp_servers
+       SET last_active_at = now(), updated_at = now()
+       WHERE id = $1`,
+      [id],
+    );
+  },
+
+  /**
+   * Returns servers that have status='active' and last_active_at before
+   * the given threshold date. Used by the dormancy-check worker job.
+   */
+  async getInactiveSince(thresholdDate: Date): Promise<McpServerRow[]> {
+    const result = await query<McpServerRow>(
+      `SELECT * FROM mcp_servers
+       WHERE status = 'active'
+         AND last_active_at < $1
+       ORDER BY last_active_at ASC`,
+      [thresholdDate],
+    );
+    return result.rows;
+  },
+};
