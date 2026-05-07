@@ -1,5 +1,56 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [unreleased] — Twin-as-MCP-server (#182)
+
+SkyTwin now exposes itself as an MCP server so external agents (Claude
+Desktop, Cursor, future hosts) can read the user's memory, query
+preferences, propose actions for review, and subscribe to recent
+signals — under explicit, scope-limited tokens.
+
+### Added — `@skytwin/twin-mcp-server` app
+
+New app under `apps/twin-mcp-server/` running an HTTP MCP endpoint via
+`StreamableHTTPServerTransport` (stateless mode: each request gets a
+fresh `McpServer` with tools filtered to the authenticated token's
+scope). Tools: `whoami`, `query_memory`, `get_preferences`,
+`propose_action`, `subscribe_signals`. 34 unit tests.
+
+### Added — External-agent token model
+
+Migration `031-external-agent-tokens.sql` adds `external_agent_tokens`
+(per-user issuance, scope, agent_name, hashed token, revoke timestamp).
+Tokens are SHA-256 hashed at rest; the plaintext is returned exactly
+once at issuance. New repository
+`packages/db/src/repositories/external-agent-token-repository.ts` and
+HTTP routes under `apps/api/src/routes/external-agents.ts` for issue /
+list / revoke. 9 API integration tests.
+
+### Hard rails (non-negotiable)
+
+1. Tokens hashed at rest; plaintext returned once.
+2. `propose_action` never auto-executes — every result is recorded with
+   `autoExecuted: false` and `requiresApproval: true`.
+3. Every tool call writes a `capability_provenance_nodes` row of type
+   `external_agent` for full audit trail.
+4. Scope strictly enforced via `scopeAllows` gating tool registration
+   on the per-request `McpServer` instance.
+5. Revocation is immediate (`WHERE revoked_at IS NULL`).
+6. PII fields (`email`, `phone`, `password`, `token`, `secret`,
+   `apiKey`, `authorization`, etc.) are recursively redacted from
+   provenance payloads.
+
+### Added — Web UX
+
+`apps/web/public/js/pages/twin-server-tokens.js` (singleton-delegator
+pattern, hash-route gated) — list active tokens, issue a new token
+(shown once), revoke. Wired into the dashboard nav.
+
+### Added — Protocol docs
+
+`docs/twin-mcp-protocol.md` — handoff document for external-agent
+integrators describing endpoint, auth, scope semantics, tool surface,
+and example calls.
+
 ## [unreleased] — Capability Acquisition Loop foundation (#173)
 
 First child of Epic #195 (Capability Acquisition Loop). Establishes the

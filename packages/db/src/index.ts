@@ -101,6 +101,12 @@ export type {
 export type { AssistantThread, AssistantMessage } from './repositories/index.js';
 export { onboardingRepository } from './repositories/index.js';
 export type { OnboardingStateRow } from './repositories/index.js';
+
+export { externalAgentTokenRepository } from './repositories/index.js';
+export type {
+  ExternalAgentTokenRow,
+  CreateExternalAgentTokenInput,
+} from './repositories/index.js';
 export type { ForwardedSignalRow } from './repositories/index.js';
 export type { ConnectorCursorRow } from './repositories/index.js';
 export type { SessionRow } from './repositories/index.js';

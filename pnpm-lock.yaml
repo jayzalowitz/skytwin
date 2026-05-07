@@ -68,6 +68,9 @@ importers:
       '@skytwin/policy-engine':
         specifier: workspace:*
         version: link:../../packages/policy-engine
+      '@skytwin/policy-prompts':
+        specifier: workspace:*
+        version: link:../../packages/policy-prompts
       '@skytwin/registry-client':
         specifier: workspace:*
         version: link:../../packages/registry-client
@@ -176,6 +179,58 @@ importers:
 
   apps/openclaw-bridge: {}
 
+  apps/twin-mcp-server:
+    dependencies:
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.29.0
+        version: 1.29.0(zod@3.25.76)
+      '@skytwin/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@skytwin/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@skytwin/llm-client':
+        specifier: workspace:*
+        version: link:../../packages/llm-client
+      '@skytwin/memory-mempalace':
+        specifier: workspace:*
+        version: link:../../packages/memory-mempalace
+      '@skytwin/memory-port':
+        specifier: workspace:*
+        version: link:../../packages/memory-port
+      '@skytwin/policy-engine':
+        specifier: workspace:*
+        version: link:../../packages/policy-engine
+      '@skytwin/shared-types':
+        specifier: workspace:*
+        version: link:../../packages/shared-types
+      '@skytwin/twin-model':
+        specifier: workspace:*
+        version: link:../../packages/twin-model
+      express:
+        specifier: ^4.18.0
+        version: 4.22.1
+      zod:
+        specifier: ^3.25.0
+        version: 3.25.76
+    devDependencies:
+      '@types/express':
+        specifier: ^4.17.0
+        version: 4.17.25
+      '@types/node':
+        specifier: ^20.0.0
+        version: 20.19.37
+      tsx:
+        specifier: ^4.0.0
+        version: 4.21.0
+      typescript:
+        specifier: ^5.4.0
+        version: 5.9.3
+      vitest:
+        specifier: ^1.3.0
+        version: 1.6.1(@types/node@20.19.37)(lightningcss@1.32.0)(terser@5.46.2)
+
   apps/web:
     dependencies:
       express:
@@ -209,9 +264,15 @@ importers:
       '@skytwin/ironclaw-adapter':
         specifier: workspace:*
         version: link:../../packages/ironclaw-adapter
+      '@skytwin/llm-client':
+        specifier: workspace:*
+        version: link:../../packages/llm-client
       '@skytwin/policy-engine':
         specifier: workspace:*
         version: link:../../packages/policy-engine
+      '@skytwin/policy-prompts':
+        specifier: workspace:*
+        version: link:../../packages/policy-prompts
       '@skytwin/registry-client':
         specifier: workspace:*
         version: link:../../packages/registry-client
@@ -247,6 +308,12 @@ importers:
       '@skytwin/core':
         specifier: workspace:*
         version: link:../core
+      '@skytwin/llm-client':
+        specifier: workspace:*
+        version: link:../llm-client
+      '@skytwin/policy-prompts':
+        specifier: workspace:*
+        version: link:../policy-prompts
       '@skytwin/registry-client':
         specifier: workspace:*
         version: link:../registry-client
@@ -562,6 +629,12 @@ importers:
 
   packages/policy-engine:
     dependencies:
+      '@skytwin/llm-client':
+        specifier: workspace:*
+        version: link:../llm-client
+      '@skytwin/policy-prompts':
+        specifier: workspace:*
+        version: link:../policy-prompts
       '@skytwin/shared-types':
         specifier: workspace:*
         version: link:../shared-types
@@ -596,6 +669,13 @@ importers:
         version: 1.6.1(@types/node@20.19.37)(lightningcss@1.32.0)(terser@5.46.2)
 
   packages/registry-client:
+    dependencies:
+      '@skytwin/llm-client':
+        specifier: workspace:*
+        version: link:../llm-client
+      '@skytwin/policy-prompts':
+        specifier: workspace:*
+        version: link:../policy-prompts
     devDependencies:
       '@types/node':
         specifier: ^20.0.0

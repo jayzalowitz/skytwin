@@ -35,7 +35,9 @@
       "@skytwin/mempalace": ["./packages/mempalace/src"],
       "@skytwin/idle-miner": ["./packages/idle-miner/src"],
       "@skytwin/capability-engine": ["./packages/capability-engine/src"],
-      "@skytwin/registry-client": ["./packages/registry-client/src"]
+      "@skytwin/registry-client": ["./packages/registry-client/src"],
+      "@skytwin/memory-port": ["./packages/memory-port/src"],
+      "@skytwin/memory-mempalace": ["./packages/memory-mempalace/src"]
     }
   },
   "exclude": ["node_modules", "dist", "coverage"]
