@@ -94,4 +94,26 @@ describe('MetricsRollupService', () => {
     expect(written).toBe(1);
     expect(callCount).toBe(2); // both were attempted
   });
+
+  it('missed-tick recovery: records spanning multiple minutes write per-minute buckets', async () => {
+    // Regression: previously a missed rollup tick left old records stranded
+    // in the buffer because drainAll filtered by `since = now - 60s`.
+    const now = Date.now();
+    const oldMinute = new Date(now - 180_000); // 3 minutes ago
+    const recentMinute = new Date(now - 30_000); // 30 seconds ago
+
+    collector.record({ serverId: 'srv-1', skillName: 'a', latencyMs: 100, success: true, spendCents: 0, ts: oldMinute });
+    collector.record({ serverId: 'srv-1', skillName: 'b', latencyMs: 200, success: true, spendCents: 0, ts: oldMinute });
+    collector.record({ serverId: 'srv-1', skillName: 'c', latencyMs: 50,  success: true, spendCents: 0, ts: recentMinute });
+
+    const written = await service.rollup();
+
+    // 1 server but 2 distinct minutes → 2 bucket rows
+    expect(written).toBe(2);
+    const calls = (repo.writeBucket as ReturnType<typeof vi.fn>).mock.calls as Array<[WriteBucketInput]>;
+    const bucketStartTimes = calls.map((c) => c[0].bucketStartedAt.getTime());
+    expect(new Set(bucketStartTimes).size).toBe(2);
+    // Buffer is fully drained
+    expect(collector.size()).toBe(0);
+  });
 });

@@ -22,14 +22,19 @@ export class MetricsRollupService {
   ) {}
 
   /**
-   * Flush all buffered tool call records into 1-minute DB buckets.
+   * Flush all buffered tool call records into 1-minute DB buckets, grouped
+   * by (serverId, minute) so records that span multiple minutes — including
+   * older records left over from a missed rollup tick — bucket correctly.
    * Typically called by the worker job every 60s.
    *
-   * Returns the number of distinct server buckets written.
+   * The repository upserts on (server_id, bucket_started_at, bucket_duration)
+   * with ON CONFLICT accumulation, so late-arriving records for an already-
+   * written bucket safely add to the existing row.
+   *
+   * Returns the number of distinct (serverId, minute) buckets written.
    */
   async rollup(): Promise<number> {
-    const since = new Date(Date.now() - 60 * 1000);
-    const byServer = this.collector.drainAll(since);
+    const byServer = this.collector.drainAll();
 
     if (byServer.size === 0) {
       return 0;
@@ -37,29 +42,44 @@ export class MetricsRollupService {
 
     let written = 0;
     for (const [serverId, records] of byServer) {
-      try {
-        const bucket = aggregateRecords(records);
-        const bucketStartedAt = roundToMinute(records[0]?.ts ?? new Date());
+      // Group this server's records by the minute they fall into so that a
+      // single rollup() call can write multiple buckets for the same server
+      // (e.g. on missed-tick recovery the buffer holds 2+ minutes of data).
+      const byMinute = new Map<number, ToolCallRecord[]>();
+      for (const record of records) {
+        const minuteKey = roundToMinute(record.ts).getTime();
+        let bucket = byMinute.get(minuteKey);
+        if (!bucket) {
+          bucket = [];
+          byMinute.set(minuteKey, bucket);
+        }
+        bucket.push(record);
+      }
 
-        await this.repository.writeBucket({
-          serverId,
-          bucketStartedAt,
-          bucketDuration: BUCKET_DURATION,
-          invocationsTotal: bucket.total,
-          invocationsFailed: bucket.failed,
-          latencyP50Ms: bucket.p50,
-          latencyP95Ms: bucket.p95,
-          latencyP99Ms: bucket.p99,
-          bytesIn: 0,
-          bytesOut: 0,
-          spendCents: bucket.spendCents,
-        });
-        written++;
-      } catch (err) {
-        log.warn('Failed to write metrics bucket', {
-          serverId,
-          error: err instanceof Error ? err.message : String(err),
-        });
+      for (const [minuteKey, minuteRecords] of byMinute) {
+        try {
+          const bucket = aggregateRecords(minuteRecords);
+          await this.repository.writeBucket({
+            serverId,
+            bucketStartedAt: new Date(minuteKey),
+            bucketDuration: BUCKET_DURATION,
+            invocationsTotal: bucket.total,
+            invocationsFailed: bucket.failed,
+            latencyP50Ms: bucket.p50,
+            latencyP95Ms: bucket.p95,
+            latencyP99Ms: bucket.p99,
+            bytesIn: 0,
+            bytesOut: 0,
+            spendCents: bucket.spendCents,
+          });
+          written++;
+        } catch (err) {
+          log.warn('Failed to write metrics bucket', {
+            serverId,
+            bucketStartedAt: new Date(minuteKey).toISOString(),
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
       }
     }
 
