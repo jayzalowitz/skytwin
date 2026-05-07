@@ -1,5 +1,26 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [unreleased] — Lazy credential-vault migration: observability hook (#183 follow-up)
+
+The fire-and-forget `_lazyMigrate` path in `DbTokenStore.getToken` previously
+swallowed migration errors silently — a flaky DB could leave a user un-migrated
+indefinitely with no visible signal.
+
+### Changed — `packages/connectors/src/oauth/db-token-store.ts`
+
+The `.catch()` arm of the lazy-migration `Promise` now:
+
+- Increments `lazyMigrationFailureCounter.count` (exported counter that
+  downstream observability tooling can poll).
+- Logs a `warn` line with `userId`, `provider`, `rowId`, and the error message.
+  Plaintext tokens / passphrases / keys are NEVER logged.
+
+The caller still receives the plaintext value (backward compat), so a single
+failure does not block the user; but persistent failures are now visible.
+
+1 new regression test asserts the counter increments and the
+`lazyMigrationFailureCounter` export works.
+
 ## [unreleased] — memory-gbrain + memory-hybrid scaffolding (#197 partial scaffold for v1.0.5)
 
 SKELETON only. No live gbrain integration is included in this entry.
