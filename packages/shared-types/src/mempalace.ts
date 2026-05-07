@@ -148,7 +148,7 @@ export interface KnowledgeEntity {
   id: string;
   userId: string;
   name: string;
-  entityType: 'person' | 'place' | 'project' | 'concept' | 'organization' | 'event';
+  entityType: 'person' | 'place' | 'project' | 'concept' | 'organization' | 'event' | 'service';
   /** Structured properties of the entity */
   properties: Record<string, unknown>;
   /** Alternate names or spellings */

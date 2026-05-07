@@ -33,7 +33,9 @@
       "@skytwin/connectors": ["./packages/connectors/src"],
       "@skytwin/evals": ["./packages/evals/src"],
       "@skytwin/mempalace": ["./packages/mempalace/src"],
-      "@skytwin/idle-miner": ["./packages/idle-miner/src"]
+      "@skytwin/idle-miner": ["./packages/idle-miner/src"],
+      "@skytwin/capability-engine": ["./packages/capability-engine/src"],
+      "@skytwin/registry-client": ["./packages/registry-client/src"]
     }
   },
   "exclude": ["node_modules", "dist", "coverage"]
