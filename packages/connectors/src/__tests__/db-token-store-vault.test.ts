@@ -190,6 +190,39 @@ describe('DbTokenStore — lazy vault migration', () => {
       'credentials unavailable',
     );
   });
+
+  it('lazyMigrationFailureCounter increments when updateEncrypted throws (observability hook)', async () => {
+    const { lazyMigrationFailureCounter } = await import('../oauth/db-token-store.js');
+    const startingCount = lazyMigrationFailureCounter.count;
+
+    const cache = createMockKeyCache(key);
+    store.setKeyCache(cache);
+
+    repo.getToken.mockResolvedValueOnce({
+      id: 'row-id-fail',
+      access_token: 'ya29.plaintext',
+      refresh_token: '1//plaintext-refresh',
+      expires_at: EXPIRES_AT,
+      scopes: [],
+      encrypted_access_token: null,
+      encrypted_refresh_token: null,
+      encryption_iv: null,
+      encryption_tag: null,
+      encryption_key_version: 1,
+    });
+
+    repo.updateEncrypted.mockRejectedValueOnce(new Error('DB connection lost'));
+
+    // The caller still gets the plaintext (Case 2 returns before the fire-and-forget resolves)
+    const result = await store.getToken('user-1', 'google');
+    expect(result).not.toBeNull();
+    expect(result!.accessToken).toBe('ya29.plaintext');
+
+    // Wait for the fire-and-forget catch to fire
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(lazyMigrationFailureCounter.count).toBe(startingCount + 1);
+  });
 });
 
 describe('DbTokenStore — key derivation integration', () => {

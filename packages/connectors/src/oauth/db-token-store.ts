@@ -3,6 +3,16 @@ import type { OAuthTokenStore } from './token-store.js';
 import type { GoogleOAuthConfig } from './google-oauth.js';
 import { refreshAccessToken } from './google-oauth.js';
 import { encrypt, decrypt, IV_LENGTH, TAG_LENGTH } from '@skytwin/credential-vault';
+import { createLogger } from '@skytwin/core';
+
+const log = createLogger('connectors:db-token-store');
+
+/**
+ * Counter for lazy-migration failures, exposed for observability tests.
+ * Each failed migration attempt increments this; downstream observability
+ * tooling can read the value periodically. NEVER reset in production.
+ */
+export const lazyMigrationFailureCounter = { count: 0 };
 
 /**
  * Packed ciphertext format: [IV (12 bytes)] + [tag (16 bytes)] + [ciphertext]
@@ -152,15 +162,24 @@ export class DbTokenStore implements OAuthTokenStore {
     // Case 2: plaintext present AND vault is unlocked → lazy migrate
     if (row.access_token && row.refresh_token && key !== null) {
       if (row.id && this.repo.updateEncrypted) {
-        // Fire-and-forget migration — do not block the caller
+        // Fire-and-forget migration — do not block the caller. Failures are
+        // surfaced via createLogger.warn AND a counter so downstream
+        // observability can detect a stuck migration loop.
+        const rowId = row.id;
         this._lazyMigrate(
-          row.id,
+          rowId,
           row.access_token,
           row.refresh_token,
           row.encryption_key_version ?? 1,
           key,
-        ).catch(() => {
-          // Migration failure is non-fatal — plaintext still works
+        ).catch((err: unknown) => {
+          lazyMigrationFailureCounter.count += 1;
+          log.warn('Lazy credential-vault migration failed', {
+            userId,
+            provider,
+            rowId,
+            error: err instanceof Error ? err.message : String(err),
+          });
         });
       }
       return {
