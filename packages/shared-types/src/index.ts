@@ -132,3 +132,8 @@ export type {
   DemoInfoResponse,
   DemoPreviewResponse,
 } from './demo.js';
+
+export type {
+  FsScanRoot,
+  RawSignal,
+} from './capability-acquisition.js';
