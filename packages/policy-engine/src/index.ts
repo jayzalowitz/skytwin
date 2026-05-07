@@ -16,6 +16,7 @@ export { TrustTierEngine } from './trust-tier-engine.js';
 export { ApprovalRouter, type ApprovalRepositoryPort } from './approval-router.js';
 export {
   SpendTracker,
+  resolveEffectiveCaps,
   type SpendRepositoryPort,
   type SpendCheckResult,
   type ReconciliationResult,
