@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { mcpServerRepository, appSuggestionRepository, provenanceRepository, mcpServerMetricsRepository, query } from '@skytwin/db';
 import type { McpServerRow } from '@skytwin/db';
+import type { Request } from 'express';
 import { createLogger } from '@skytwin/core';
 import { RegistryClient } from '@skytwin/registry-client';
 import { TrustTierEngine } from '@skytwin/policy-engine';
@@ -20,6 +21,107 @@ void _SSE_CAP_PROMO;
 const log = createLogger('api:capabilities');
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PII redaction helper — shared by audit (#183), provenance-graph (#184), and
+// evidence-preview (#184) paths. Stored lowercase; keys are lowercased before
+// lookup. Match is exact (not regex) so legitimate fields like serverName,
+// skillName, recipeName remain visible in the audit trail.
+// ─────────────────────────────────────────────────────────────────────────────
+const PII_FIELDS = new Set([
+  'email', 'phone', 'password', 'token', 'secret', 'ssn', 'credit_card',
+  'card_number', 'cvv', 'api_key', 'apikey', 'authorization', 'credential',
+  'access_token', 'refresh_token',
+]);
+
+export function redactPayload(obj: Record<string, unknown> | null | undefined): Record<string, unknown> | null {
+  if (!obj || typeof obj !== 'object') return obj ?? null;
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (PII_FIELDS.has(key.toLowerCase())) {
+      result[key] = '[REDACTED]';
+    } else if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+      result[key] = redactPayload(value as Record<string, unknown>);
+    } else {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Evidence preview builder for AppSuggestion multi-modal display.
+// Takes a raw signal row and returns a redacted preview safe to send to clients.
+// PII is stripped before the response is sent — the client never sees raw PII.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface EvidencePreview {
+  kind: 'email' | 'calendar' | 'file_image' | 'file_other' | 'code_file' | 'unknown';
+  subject?: string;
+  snippet?: string;
+  eventTitle?: string;
+  startTime?: string;
+  fileName?: string;
+  fileExt?: string;
+  fileSizeBytes?: number;
+  thumbnailDataUrl?: string;
+  language?: string;
+  firstImports?: string[];
+}
+
+export function buildEvidencePreview(signal: Record<string, unknown>): EvidencePreview {
+  const kind = typeof signal['kind'] === 'string' ? signal['kind'] : 'unknown';
+
+  if (kind === 'email') {
+    const rawSubject = typeof signal['subject'] === 'string' ? signal['subject'] : '';
+    const rawBody = typeof signal['body'] === 'string' ? signal['body'] : '';
+    // Redact PII from subject before sending
+    const subject = rawSubject.replace(
+      /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/g,
+      '[email]',
+    );
+    // Server-side redact: max 80 chars, strip PII patterns
+    const snippet = rawBody
+      .replace(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/g, '[email]')
+      .replace(/\b\d{3}[-.\s]?\d{3}[-.\s]?\d{4}\b/g, '[phone]')
+      .slice(0, 80);
+    return { kind: 'email', subject, snippet };
+  }
+
+  if (kind === 'calendar') {
+    const eventTitle = typeof signal['title'] === 'string' ? signal['title'] : '';
+    const startTime = typeof signal['start_time'] === 'string' ? signal['start_time']
+      : signal['start_time'] instanceof Date ? (signal['start_time'] as Date).toISOString()
+      : undefined;
+    return { kind: 'calendar', eventTitle, startTime };
+  }
+
+  if (kind === 'file') {
+    const fileName = typeof signal['file_name'] === 'string' ? signal['file_name'] : '';
+    const mimeType = typeof signal['mime_type'] === 'string' ? signal['mime_type'] : '';
+    const fileSizeBytes = typeof signal['size_bytes'] === 'number' ? signal['size_bytes'] : 0;
+    const fileExt = fileName.includes('.') ? fileName.slice(fileName.lastIndexOf('.')) : '';
+
+    // Only include image thumbnails for image MIME types at or under 512KB
+    if (mimeType.startsWith('image/') && fileSizeBytes <= 512 * 1024) {
+      const dataUrl = typeof signal['data_url'] === 'string' ? signal['data_url'] : undefined;
+      return { kind: 'file_image', fileName, fileExt, fileSizeBytes, thumbnailDataUrl: dataUrl };
+    }
+    return { kind: 'file_other', fileName, fileExt, fileSizeBytes };
+  }
+
+  if (kind === 'code_file') {
+    const language = typeof signal['language'] === 'string' ? signal['language'] : '';
+    const rawImports = Array.isArray(signal['imports']) ? signal['imports'] : [];
+    const firstImports = rawImports
+      .filter((imp): imp is string => typeof imp === 'string')
+      .slice(0, 10);
+    // NO raw code content — only structured fingerprint
+    return { kind: 'code_file', language, firstImports };
+  }
+
+  return { kind: 'unknown' };
+}
 
 // Singleton registry client for the lifetime of the process.
 // RegistryClient reads curated.json on construction; constructing once
@@ -523,8 +625,10 @@ export function createCapabilitiesRouter(): Router {
   // ─────────────────────────────────────────────────────────────────────────
   // GET /suggestions
   // Returns pending app_suggestions for the requesting user (standalone).
+  // Each suggestion includes an `evidence` field with multi-modal previews.
+  // PII is stripped server-side before the response is sent (#184).
   // ─────────────────────────────────────────────────────────────────────────
-  router.get('/suggestions', async (req, res, next) => {
+  router.get('/suggestions', async (req: Request, res, next) => {
     try {
       const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
         ?? (req.query['userId'] as string | undefined);
@@ -534,7 +638,19 @@ export function createCapabilitiesRouter(): Router {
       }
 
       const suggestions = await appSuggestionRepository.getPendingForUser(userId);
-      res.json({ suggestions });
+
+      // Attach multi-modal evidence previews to each suggestion.
+      // evidence_sources is a JSONB array of raw signal rows stored on the suggestion.
+      // We build a redacted preview for each signal and attach before sending.
+      const suggestionsWithEvidence = suggestions.map((s) => {
+        const rawSources: unknown[] = Array.isArray(s.evidence_sources) ? s.evidence_sources : [];
+        const evidence: EvidencePreview[] = rawSources
+          .filter((src): src is Record<string, unknown> => src !== null && typeof src === 'object' && !Array.isArray(src))
+          .map((src) => buildEvidencePreview(src));
+        return { ...s, evidence };
+      });
+
+      res.json({ suggestions: suggestionsWithEvidence });
     } catch (err) {
       next(err);
     }
@@ -1332,7 +1448,7 @@ export function createCapabilitiesRouter(): Router {
 
       let nodes = dataResult.rows.map((row) => ({
         ...row,
-        payload: redactPII(row.payload as Record<string, unknown> | null),
+        payload: redactPayload(row.payload as Record<string, unknown> | null),
       }));
 
       // Free-text filter on redacted payload string (post-redaction for safety)
@@ -1394,37 +1510,143 @@ export function createCapabilitiesRouter(): Router {
     }
   });
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // GET /provenance-graph
+  //
+  // Returns nodes + edges from capability_provenance_nodes and
+  // capability_provenance_edges for the requesting user (#184).
+  //
+  // Query params:
+  //   userId       — required (or from session)
+  //   nodeType     — filter to one node_type
+  //   since        — ISO timestamp; only nodes after this time
+  //   serverId     — scope to one mcp_server
+  //   limit        — max nodes (default 200, max 500)
+  //
+  // PII in node payload is redacted before the response is sent.
+  // Edges: only edges where both endpoints are in the returned node set.
+  // ─────────────────────────────────────────────────────────────────────────
+  router.get('/provenance-graph', async (req: Request, res, next) => {
+    try {
+      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
+        ?? (req.query['userId'] as string | undefined);
+      if (!userId) {
+        res.status(400).json({ error: 'userId is required' });
+        return;
+      }
+
+      const nodeType = typeof req.query['nodeType'] === 'string' ? req.query['nodeType'] : null;
+      const since = typeof req.query['since'] === 'string' ? req.query['since'] : null;
+      const serverId = typeof req.query['serverId'] === 'string' ? req.query['serverId'] : null;
+      const limitRaw = typeof req.query['limit'] === 'string' ? parseInt(req.query['limit'], 10) : 200;
+      const limit = Number.isFinite(limitRaw) && limitRaw > 0
+        ? Math.min(limitRaw, 500)
+        : 200;
+
+      // Validate serverId if provided
+      if (serverId && !UUID_REGEX.test(serverId)) {
+        res.status(400).json({ error: 'serverId must be a valid UUID' });
+        return;
+      }
+
+      // Validate since if provided
+      if (since) {
+        const d = new Date(since);
+        if (isNaN(d.getTime())) {
+          res.status(400).json({ error: 'since must be a valid ISO timestamp' });
+          return;
+        }
+      }
+
+      // Build node query with optional filters
+      const params: unknown[] = [userId, limit];
+      let whereClause = 'WHERE user_id = $1';
+      if (nodeType) {
+        params.push(nodeType);
+        whereClause += ` AND node_type = $${params.length}`;
+      }
+      if (since) {
+        params.push(new Date(since));
+        whereClause += ` AND occurred_at > $${params.length}`;
+      }
+      if (serverId) {
+        params.push(serverId);
+        whereClause += ` AND server_id = $${params.length}`;
+      }
+
+      const nodeResult = await query<{
+        id: string;
+        node_type: string;
+        ref_table: string;
+        ref_id: string;
+        server_id: string | null;
+        occurred_at: Date;
+        payload: unknown;
+      }>(
+        `SELECT id, node_type, ref_table, ref_id, server_id, occurred_at, payload
+         FROM capability_provenance_nodes
+         ${whereClause}
+         ORDER BY occurred_at DESC
+         LIMIT $2`,
+        params,
+      );
+
+      const nodeIds = new Set(nodeResult.rows.map((n) => n.id));
+
+      // Build nodes with redacted payloads
+      const nodes = nodeResult.rows.map((n) => {
+        const rawPayload = n.payload !== null && typeof n.payload === 'object' && !Array.isArray(n.payload)
+          ? redactPayload(n.payload as Record<string, unknown>)
+          : (n.payload as object | null) ?? {};
+
+        // Build a human-readable label from the payload or node_type
+        const payloadObj = (rawPayload as Record<string, unknown>) ?? {};
+        const label: string = typeof payloadObj['displayName'] === 'string'
+          ? payloadObj['displayName']
+          : typeof payloadObj['registryId'] === 'string'
+          ? payloadObj['registryId']
+          : typeof payloadObj['toolName'] === 'string'
+          ? payloadObj['toolName']
+          : n.node_type;
+
+        return {
+          id: n.id,
+          type: n.node_type,
+          label,
+          occurredAt: n.occurred_at,
+          payload: rawPayload,
+        };
+      });
+
+      // Fetch edges where both endpoints are in the node set
+      let edges: Array<{ id: string; from: string; to: string; relation: string }> = [];
+      if (nodeIds.size > 0) {
+        const nodeIdsArray = Array.from(nodeIds);
+        const edgeResult = await query<{
+          from_node_id: string;
+          to_node_id: string;
+          edge_type: string;
+        }>(
+          `SELECT from_node_id, to_node_id, edge_type
+           FROM capability_provenance_edges
+           WHERE from_node_id = ANY($1::uuid[]) AND to_node_id = ANY($1::uuid[])`,
+          [nodeIdsArray],
+        );
+        edges = edgeResult.rows.map((e) => ({
+          id: `${e.from_node_id}:${e.to_node_id}:${e.edge_type}`,
+          from: e.from_node_id,
+          to: e.to_node_id,
+          relation: e.edge_type,
+        }));
+      }
+
+      res.json({ nodes, edges });
+    } catch (err) {
+      next(err);
+    }
+  });
+
   return router;
 }
 
-/**
- * Redact PII from a provenance node payload before serialising to the audit
- * endpoint. Stored lowercase; keys are lowercased before lookup.
- * Non-object payloads are returned as-is (null, primitives).
- *
- * Note: matched on exact field names (not patterns) so that legitimate
- * non-PII fields like `serverName`, `skillName`, `recipeName` stay visible
- * in the audit trail.
- */
-const PII_FIELDS = new Set([
-  'email', 'phone', 'password', 'token', 'secret', 'ssn', 'credit_card',
-  'card_number', 'cvv', 'api_key', 'apikey', 'authorization', 'credential',
-  'access_token', 'refresh_token',
-]);
-
-function redactPII(payload: Record<string, unknown> | null | undefined): Record<string, unknown> | null {
-  if (!payload || typeof payload !== 'object') return payload ?? null;
-
-  const redacted: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(payload)) {
-    if (PII_FIELDS.has(key.toLowerCase())) {
-      redacted[key] = '[REDACTED]';
-    } else if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
-      redacted[key] = redactPII(value as Record<string, unknown>);
-    } else {
-      redacted[key] = value;
-    }
-  }
-  return redacted;
-}
 

@@ -1,5 +1,61 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [unreleased] — Provenance graph + multi-modal evidence + DXT transfer doc (#184)
+
+Implements 3 of 4 product acceptance criteria from #184. The capability
+changelog flow (AC#2) is deferred to a follow-up PR — it requires
+upstream MCP server coordination (`changelog://` resource fetching +
+weekly worker sweep). DXT export/import operations themselves remain
+in #180; this PR ships the user-facing transfer documentation only.
+
+### Added — Provenance graph visualization
+
+`apps/web/public/js/pages/provenance-graph.js` — vanilla SVG/JS
+force-directed graph (no D3 or external charting lib). Hash route
+`#/provenance`. Filter by node type and time window. Click a node →
+side flyout with full payload. Singleton-delegator pattern (hash-route
+gated, no inline event handlers).
+
+### Added — `GET /api/capabilities/provenance-graph`
+
+Returns `{ nodes, edges }` from `capability_provenance_nodes` +
+`capability_provenance_edges` for the requesting user. Filter
+parameters: nodeType, since (ISO timestamp), serverId, limit (default
+200, max 500). Edges only included when both endpoints are in the
+returned node set. PII redaction applied before serialisation.
+
+### Added — Multi-modal evidence in AppSuggestion responses
+
+`GET /api/capabilities/suggestions` now attaches an `evidence` array
+to each suggestion. Per-signal previews built server-side via
+`buildEvidencePreview(signal)`:
+
+- **Email**: subject + max-80-char snippet, with email addresses and
+  phone numbers stripped to `[email]` / `[phone]` placeholders.
+- **Calendar**: event title + start time.
+- **File (image, ≤512KB)**: thumbnail data URL.
+- **File (other)**: name, extension, size in KB.
+- **Code file**: language + first 10 imports — NEVER raw content.
+
+The capabilities page renders the previews inline under each
+suggestion card.
+
+### Added — `docs/dxt-transfer.md`
+
+User flow describing how to export a DXT artifact on machine A and
+drop it on machine B. Privacy considerations, what the artifact does
+and does not contain (no OAuth tokens — user must reconnect on the
+new machine), and limitations vs live federation (deferred to v1.1).
+
+### Consolidated PII redaction
+
+`redactPayload()` is now the single canonical PII redaction function
+in `capabilities.ts`, exported and shared across `/audit` (#183),
+`/provenance-graph` (#184), and the evidence-preview path. Match is
+exact (not regex) so legitimate fields like `serverName`, `skillName`,
+`recipeName` stay visible. The duplicate `redactPII` from #183 has
+been removed.
+
 ## [unreleased] — Observability + audit + cost ceilings (#183)
 
 Implements three of the five acceptance criteria from issue #183.

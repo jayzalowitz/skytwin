@@ -239,6 +239,61 @@ function renderSuggestionsSection(suggestions) {
   `;
 }
 
+function renderEvidencePreview(item) {
+  if (!item || typeof item !== 'object') return '';
+  const kind = item.kind;
+
+  if (kind === 'email') {
+    const subject = item.subject ? escapeHtml(String(item.subject)) : '(no subject)';
+    const snippet = item.snippet ? escapeHtml(String(item.snippet)) : '';
+    return `
+      <div style="font-size: 0.8rem; padding: 0.4rem 0.5rem; background: var(--surface-2); border-radius: 4px; margin-top: 0.25rem;">
+        <div style="font-weight: 500;">📧 ${subject}</div>
+        ${snippet ? `<div style="color: var(--text-muted); margin-top: 0.15rem;">${snippet}…</div>` : ''}
+      </div>
+    `;
+  }
+  if (kind === 'calendar') {
+    const title = item.eventTitle ? escapeHtml(String(item.eventTitle)) : '(untitled)';
+    const when = item.startTime ? escapeHtml(String(item.startTime)) : '';
+    return `
+      <div style="font-size: 0.8rem; padding: 0.4rem 0.5rem; background: var(--surface-2); border-radius: 4px; margin-top: 0.25rem;">
+        <div style="font-weight: 500;">📅 ${title}</div>
+        ${when ? `<div style="color: var(--text-muted); margin-top: 0.15rem;">${when}</div>` : ''}
+      </div>
+    `;
+  }
+  if (kind === 'file_image' && item.thumbnailDataUrl) {
+    const name = item.fileName ? escapeHtml(String(item.fileName)) : 'image';
+    return `
+      <div style="font-size: 0.8rem; padding: 0.4rem 0.5rem; background: var(--surface-2); border-radius: 4px; margin-top: 0.25rem; display: flex; gap: 0.5rem; align-items: center;">
+        <img src="${escapeHtml(String(item.thumbnailDataUrl))}" alt="${name}" style="max-width: 48px; max-height: 48px; border-radius: 3px;">
+        <span>${name}</span>
+      </div>
+    `;
+  }
+  if (kind === 'file_other' || kind === 'file_image') {
+    const name = item.fileName ? escapeHtml(String(item.fileName)) : 'file';
+    const size = typeof item.fileSizeBytes === 'number' ? `${Math.round(item.fileSizeBytes / 1024)} KB` : '';
+    return `
+      <div style="font-size: 0.8rem; padding: 0.4rem 0.5rem; background: var(--surface-2); border-radius: 4px; margin-top: 0.25rem;">
+        📄 ${name} ${size ? `<span style="color: var(--text-muted);">(${size})</span>` : ''}
+      </div>
+    `;
+  }
+  if (kind === 'code_file') {
+    const lang = item.language ? escapeHtml(String(item.language)) : '';
+    const imports = Array.isArray(item.firstImports) ? item.firstImports.slice(0, 3).map((i) => escapeHtml(String(i))).join(', ') : '';
+    return `
+      <div style="font-size: 0.8rem; padding: 0.4rem 0.5rem; background: var(--surface-2); border-radius: 4px; margin-top: 0.25rem;">
+        <div style="font-weight: 500;">⌨ ${lang}</div>
+        ${imports ? `<div style="color: var(--text-muted); margin-top: 0.15rem; font-family: monospace;">imports: ${imports}</div>` : ''}
+      </div>
+    `;
+  }
+  return '';
+}
+
 function renderSuggestionCard(s) {
   const evidenceText = s.reason_summary
     ? escapeHtml(s.reason_summary)
@@ -250,15 +305,19 @@ function renderSuggestionCard(s) {
     ? s.confidence_score
     : '';
 
+  const evidenceItems = Array.isArray(s.evidence) ? s.evidence.slice(0, 3) : [];
+  const evidenceHtml = evidenceItems.map(renderEvidencePreview).join('');
+
   return `
     <div class="card" id="suggestion-${escapeHtml(s.id)}" style="margin-bottom: 0.75rem; border-left: 3px solid var(--accent);">
       <div class="card-header">
         <span class="card-title">${escapeHtml(s.display_name)}</span>
         ${confidence ? `<span class="badge badge-info">${escapeHtml(confidence)} confidence</span>` : ''}
       </div>
-      <div style="font-size: 0.85rem; color: var(--text-muted); margin: 0.25rem 0 0.75rem;">
+      <div style="font-size: 0.85rem; color: var(--text-muted); margin: 0.25rem 0 0.5rem;">
         ${evidenceText}
       </div>
+      ${evidenceHtml ? `<div style="margin-bottom: 0.75rem;">${evidenceHtml}</div>` : ''}
       <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
         <button class="btn btn-primary btn-sm"
           data-action="install-suggestion"

@@ -13,6 +13,7 @@ import { renderCapabilitiesAudit } from './pages/capabilities-audit.js';
 import { renderAboutMe } from './pages/about-me.js';
 import { renderTwinBriefing } from './pages/twin-briefing.js';
 import { renderTwinServerTokens } from './pages/twin-server-tokens.js';
+import { renderProvenanceGraph } from './pages/provenance-graph.js';
 import { renderGlobalPauseButton } from './components/global-pause-button.js';
 import { fetchPendingApprovals, fetchHealth, fetchUser, listUsers, escapeHtml, isApiKnownOffline } from './api-client.js';
 import { initTheme } from './theme-switcher.js';
@@ -37,6 +38,7 @@ const routes = {
   '/about-me': { title: 'About me', render: renderAboutMe },
   '/briefing': { title: 'Twin Briefing', render: renderTwinBriefing },
   '/twin-server-tokens': { title: 'MCP Agent Tokens', render: renderTwinServerTokens },
+  '/provenance': { title: 'Provenance Graph', render: renderProvenanceGraph },
 };
 
 /**
