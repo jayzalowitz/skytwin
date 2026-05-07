@@ -120,3 +120,16 @@ export type {
   UpsertRiskProfileInput,
   UpdateInterpretedCapsInput,
 } from './risk-profile-repository.js';
+
+export { provenanceRepository } from './provenance-repository.js';
+export type {
+  ProvenanceNodeRow,
+  ProvenanceEdgeRow,
+  WriteNodeInput,
+} from './provenance-repository.js';
+
+export { briefingRepository } from './briefing-repository.js';
+export type {
+  TwinBriefingRow,
+  CreateTwinBriefingInput,
+} from './briefing-repository.js';

@@ -1,4 +1,4 @@
-import { fetchHealth, fetchDecisions, fetchAccuracy, fetchConfidence, fetchLearning, fetchPendingApprovals, fetchSkillGaps, fetchTrustProgress, fetchLearned, fetchUnmetCredentials, fetchOAuthStatus, fetchCredentialsStatus, fetchBriefing, escapeHtml } from '../api-client.js';
+import { fetchHealth, fetchDecisions, fetchAccuracy, fetchConfidence, fetchLearning, fetchPendingApprovals, fetchSkillGaps, fetchTrustProgress, fetchLearned, fetchUnmetCredentials, fetchOAuthStatus, fetchCredentialsStatus, fetchBriefing, fetchLatestTwinBriefing, escapeHtml } from '../api-client.js';
 import { renderTrustProgress } from '../components/progress-bar.js';
 import {
   KEY_USER_ID,
@@ -148,12 +148,79 @@ export function invalidateDashboardCache(keyPrefix) {
   }
 }
 
+/**
+ * Twin Briefing widget for the dashboard (issue #177).
+ * Shows the headline (first paragraph) of the latest daily twin briefing,
+ * with a link to the full #/briefing page.
+ *
+ * Only renders when a briefing exists and has prose content.
+ * Lightweight addition — does not refactor existing dashboard sections.
+ *
+ * @param {object|null} briefing - TwinBriefingRow from /api/twin-briefings/latest
+ */
+function renderTwinBriefingWidget(briefing) {
+  if (!briefing || !briefing.prose_markdown) return '';
+
+  // Extract the first non-empty, non-heading paragraph as the headline.
+  const lines = briefing.prose_markdown.split('\n');
+  let headline = '';
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed && !trimmed.startsWith('#') && !trimmed.startsWith('---')) {
+      headline = trimmed;
+      break;
+    }
+  }
+  if (!headline) return '';
+
+  // Truncate to avoid a wall-of-text on the dashboard
+  const headlineDisplay = headline.length > 180
+    ? headline.slice(0, 177) + '…'
+    : headline;
+
+  const generated = briefing.generated_at ? new Date(briefing.generated_at) : null;
+  const ageStr = generated ? formatDashboardTime(generated) : '';
+  const isUnread = !briefing.read_at;
+
+  return `
+    <div class="card" style="border-left: 3px solid var(--accent);">
+      <div class="card-header">
+        <span class="card-title">
+          Twin Briefing
+          ${isUnread ? '<span class="badge badge-info" style="margin-left: 0.35rem; font-size: 0.7rem;">New</span>' : ''}
+        </span>
+        ${ageStr ? `<span style="font-size: 0.75rem; color: var(--text-muted);">${escapeHtml(ageStr)}</span>` : ''}
+      </div>
+      <div class="card-subtitle" style="margin-bottom: 0.5rem; line-height: 1.6;">
+        ${escapeHtml(headlineDisplay)}
+      </div>
+      <a href="#/briefing" class="btn btn-outline btn-sm" style="font-size: 0.8rem;">
+        Read full briefing →
+      </a>
+    </div>
+  `;
+}
+
+function formatDashboardTime(d) {
+  if (!d) return '';
+  const now = new Date();
+  const diffMs = now.getTime() - d.getTime();
+  const diffMin = Math.floor(diffMs / 60000);
+  if (diffMin < 1) return 'just now';
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}h ago`;
+  const diffDay = Math.floor(diffHr / 24);
+  if (diffDay < 7) return `${diffDay}d ago`;
+  return d.toLocaleDateString();
+}
+
 export async function renderDashboard(container, userId) {
   // Fast-changing data — refetched on every render because SSE updates
   // and user action move them around constantly.
   // Slow-changing data — wrapped in slowFetch so a 4s first-scan tick or
   // a debounced SSE re-render doesn't burn 13 round-trips per cycle.
-  const [health, accuracy, confidence, learning, approvals, decisions, skillGaps, progress, learned, unmetCreds, googleOAuth, credsStatus, briefingData] = await Promise.allSettled([
+  const [health, accuracy, confidence, learning, approvals, decisions, skillGaps, progress, learned, unmetCreds, googleOAuth, credsStatus, briefingData, twinBriefingData] = await Promise.allSettled([
     fetchHealth(),
     fetchAccuracy(userId),
     fetchConfidence(userId),
@@ -167,6 +234,7 @@ export async function renderDashboard(container, userId) {
     slowFetch(`oauth-google-${userId}`, fetchOAuthStatus, [userId, 'google']),
     slowFetch('creds-status', fetchCredentialsStatus, []),
     fetchBriefing(userId),
+    fetchLatestTwinBriefing(userId, 'daily').catch(() => null),
   ]);
 
   const healthOk = health.status === 'fulfilled';
@@ -194,6 +262,9 @@ export async function renderDashboard(container, userId) {
     return (Date.now() - t) < BRIEFING_FRESH_MS;
   })();
   const showBriefing = briefingItems.length > 0 && briefingFreshEnough;
+
+  // Twin Briefing widget (issue #177): the latest daily briefing prose.
+  const _twinBriefing = twinBriefingData?.status === 'fulfilled' ? twinBriefingData.value?.briefing : null;
 
   // Read post-OAuth query so we can celebrate the moment they connect.
   // App.js strips the query before routing; we re-parse it from the raw hash.
@@ -281,6 +352,7 @@ export async function renderDashboard(container, userId) {
     ${tourMode ? '' : renderConnectGoogleHero({ googleConnected, googleSystemConfigured, userId })}
     ${renderAskTwinWidget({ userId, tourMode })}
     ${showBriefing ? renderBriefingCard({ items: briefingItems, createdAt: briefing.createdAt }) : ''}
+    ${renderTwinBriefingWidget(_twinBriefing)}
     ${pending > 0 ? `<div class="card" style="border-left: 3px solid var(--warning); cursor: pointer;" data-action="goto" data-hash="#/approvals">
       <span style="font-weight: 600;">You have ${pending} pending approval${pending > 1 ? 's' : ''}</span>
       <span style="color: var(--text-muted); font-size: 0.85rem;"> — your twin wants to do something and needs your OK.</span>

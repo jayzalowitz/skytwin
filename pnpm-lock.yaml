@@ -209,6 +209,9 @@ importers:
       '@skytwin/ironclaw-adapter':
         specifier: workspace:*
         version: link:../../packages/ironclaw-adapter
+      '@skytwin/policy-engine':
+        specifier: workspace:*
+        version: link:../../packages/policy-engine
       '@skytwin/registry-client':
         specifier: workspace:*
         version: link:../../packages/registry-client

@@ -787,3 +787,55 @@ export function submitSelfPortraitCorrection(userId, paragraphIndex, sentenceInd
     body: JSON.stringify({ paragraphIndex, sentenceIndex, correction }),
   });
 }
+
+// ── Tier promotion ceremony (issue #177) ──────────────────────────────────
+
+export function promoteTier(serverId, toTier, userId) {
+  return fetchJSON(`${API}/capabilities/${encodeURIComponent(serverId)}/promote-tier?userId=${encodeURIComponent(userId)}`, {
+    method: 'POST',
+    body: JSON.stringify({ toTier }),
+  });
+}
+
+export function declinePromotion(serverId, userId, disableForDays = 14) {
+  return fetchJSON(`${API}/capabilities/${encodeURIComponent(serverId)}/decline-promotion?userId=${encodeURIComponent(userId)}`, {
+    method: 'POST',
+    body: JSON.stringify({ disableForDays }),
+  });
+}
+
+// ── Provenance lineage (issue #177) ───────────────────────────────────────
+
+export function fetchCapabilityProvenance(serverId, userId) {
+  return fetchJSON(`${API}/capabilities/${encodeURIComponent(serverId)}/provenance?userId=${encodeURIComponent(userId)}`);
+}
+
+// ── Capability install from reverse flow (issue #177) ─────────────────────
+
+export function installCapability(registryId, userId) {
+  return fetchJSON(`${API}/capabilities/install?userId=${encodeURIComponent(userId)}`, {
+    method: 'POST',
+    body: JSON.stringify({ registryId }),
+  });
+}
+
+// ── Twin Briefings (issue #177) ───────────────────────────────────────────
+
+export function fetchLatestTwinBriefing(userId, cadence) {
+  const q = new URLSearchParams({ userId });
+  if (cadence) q.set('cadence', cadence);
+  return fetchJSON(`${API}/twin-briefings/latest?${q}`);
+}
+
+export function listTwinBriefings(userId, opts = {}) {
+  const q = new URLSearchParams({ userId });
+  if (opts.cadence) q.set('cadence', opts.cadence);
+  if (opts.limit) q.set('limit', String(opts.limit));
+  return fetchJSON(`${API}/twin-briefings?${q}`);
+}
+
+export function markBriefingRead(briefingId, userId) {
+  return fetchJSON(`${API}/twin-briefings/${encodeURIComponent(briefingId)}/read?userId=${encodeURIComponent(userId)}`, {
+    method: 'POST',
+  });
+}

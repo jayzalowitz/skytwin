@@ -25,6 +25,7 @@ export interface McpServerRow {
   last_active_at: Date | null;
   installed_at: Date | null;
   uninstalled_at: Date | null;
+  auto_promote_paused_until: Date | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -120,6 +121,38 @@ export const mcpServerRepository = {
        WHERE id = $1`,
       [id],
     );
+  },
+
+  /**
+   * Update the trust_tier for a server.
+   */
+  async updateTrustTier(
+    id: string,
+    trustTier: McpServerRow['trust_tier'],
+  ): Promise<McpServerRow | null> {
+    const result = await query<McpServerRow>(
+      `UPDATE mcp_servers
+       SET trust_tier = $1, updated_at = now()
+       WHERE id = $2
+       RETURNING *`,
+      [trustTier, id],
+    );
+    return result.rows[0] ?? null;
+  },
+
+  /**
+   * Set auto_promote_paused_until so the promotion ceremony is suppressed
+   * for N days (issue #177 decline-promotion endpoint).
+   */
+  async pauseAutoPromotion(id: string, untilDate: Date): Promise<McpServerRow | null> {
+    const result = await query<McpServerRow>(
+      `UPDATE mcp_servers
+       SET auto_promote_paused_until = $1, updated_at = now()
+       WHERE id = $2
+       RETURNING *`,
+      [untilDate, id],
+    );
+    return result.rows[0] ?? null;
   },
 
   /**
