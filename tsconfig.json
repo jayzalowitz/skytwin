@@ -32,7 +32,8 @@
       "@skytwin/explanations": ["./packages/explanations/src"],
       "@skytwin/connectors": ["./packages/connectors/src"],
       "@skytwin/evals": ["./packages/evals/src"],
-      "@skytwin/mempalace": ["./packages/mempalace/src"]
+      "@skytwin/mempalace": ["./packages/mempalace/src"],
+      "@skytwin/idle-miner": ["./packages/idle-miner/src"]
     }
   },
   "exclude": ["node_modules", "dist", "coverage"]
