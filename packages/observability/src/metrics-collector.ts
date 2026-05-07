@@ -80,31 +80,28 @@ export class MetricsCollector {
   }
 
   /**
-   * Drain ALL entries since `since`, grouped by serverId.
-   * Removes drained entries from the buffer.
+   * Drain ALL entries, grouped by serverId.
+   * Removes ALL drained entries from the buffer.
+   *
+   * Records older than the rollup tick interval still need to be drained —
+   * leaving them in the buffer means they never reach the DB on a missed tick
+   * (e.g. transient DB outage). The repository's writeBucket performs
+   * `ON CONFLICT ... ACCUMULATE`, so late-arriving records for an already-
+   * written bucket safely add to the existing row.
    */
-  drainAll(since: Date): Map<string, ToolCallRecord[]> {
+  drainAll(): Map<string, ToolCallRecord[]> {
     const byServer = new Map<string, ToolCallRecord[]>();
-    const retained: ToolCallRecord[] = [];
 
     for (const entry of this.buffer) {
-      if (entry.ts >= since) {
-        let bucket = byServer.get(entry.serverId);
-        if (!bucket) {
-          bucket = [];
-          byServer.set(entry.serverId, bucket);
-        }
-        bucket.push(entry);
-      } else {
-        retained.push(entry);
+      let bucket = byServer.get(entry.serverId);
+      if (!bucket) {
+        bucket = [];
+        byServer.set(entry.serverId, bucket);
       }
+      bucket.push(entry);
     }
 
     this.buffer.length = 0;
-    for (const e of retained) {
-      this.buffer.push(e);
-    }
-
     return byServer;
   }
 

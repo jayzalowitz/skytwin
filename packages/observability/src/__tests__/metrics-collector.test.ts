@@ -65,8 +65,7 @@ describe('MetricsCollector', () => {
     collector.record(makeRecord('alpha', { ts: now }));
     collector.record(makeRecord('beta', { ts: now }));
 
-    const since = new Date(now.getTime() - 1000);
-    const byServer = collector.drainAll(since);
+    const byServer = collector.drainAll();
 
     expect(byServer.size).toBe(2);
     expect(byServer.get('alpha')).toHaveLength(2);
@@ -74,18 +73,19 @@ describe('MetricsCollector', () => {
     expect(collector.size()).toBe(0);
   });
 
-  it('drainAll retains entries older than since', () => {
+  it('drainAll drains records of every age — older records are NOT retained', () => {
+    // Regression: records older than (now - 60s) used to be left in the buffer
+    // indefinitely. Now drainAll takes everything; the rollup service buckets
+    // them by their actual minute via writeBucket's ON CONFLICT accumulation.
     const old = new Date(Date.now() - 120_000);
     const recent = new Date();
     collector.record(makeRecord('server-1', { ts: old }));
     collector.record(makeRecord('server-1', { ts: recent }));
 
-    const since = new Date(Date.now() - 60_000);
-    const byServer = collector.drainAll(since);
+    const byServer = collector.drainAll();
 
-    expect(byServer.get('server-1')).toHaveLength(1);
-    // old entry stays in buffer
-    expect(collector.size()).toBe(1);
+    expect(byServer.get('server-1')).toHaveLength(2);
+    expect(collector.size()).toBe(0);
   });
 
   it('exports threshold constants with expected ranges', () => {
