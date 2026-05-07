@@ -27,7 +27,7 @@ export class DbCredentialProvider implements CredentialProvider {
       return { success: false, error: `No OAuth token found for ${provider}. Connect the account first.` };
     }
 
-    if (token.expires_at.getTime() > Date.now() + 60_000) {
+    if (token.access_token && token.expires_at.getTime() > Date.now() + 60_000) {
       return { success: true, accessToken: token.access_token };
     }
 
@@ -96,6 +96,9 @@ export class DbCredentialProvider implements CredentialProvider {
       scopes,
     );
 
+    if (!saved.access_token) {
+      return { success: false, error: 'Token refresh saved without access_token (vault locked?).' };
+    }
     return { success: true, accessToken: saved.access_token };
   }
 

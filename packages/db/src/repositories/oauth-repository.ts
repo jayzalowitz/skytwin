@@ -1,5 +1,5 @@
 import { query } from '../connection.js';
-import type { OAuthTokenRow } from '../types.js';
+import type { OAuthTokenRow, OAuthTokenRowWithEncrypted } from '../types.js';
 
 /**
  * Repository for OAuth token CRUD.
@@ -196,5 +196,63 @@ export const oauthRepository = {
 
   async getUsersWithActiveTokens(): Promise<OAuthTokenRow[]> {
     return this.listAllConnections();
+  },
+
+  // ── Encrypted-column methods (credential vault) ────────────────────────
+
+  /**
+   * Return the full row including encrypted_* columns for a given row id.
+   * Used by the lazy-migration path in DbTokenStore.
+   */
+  async findByIdWithEncrypted(id: string): Promise<OAuthTokenRowWithEncrypted | null> {
+    const result = await query<OAuthTokenRowWithEncrypted>(
+      `SELECT id, user_id, provider, account_email, account_provider_id,
+              access_token, refresh_token, expires_at, scopes, created_at, updated_at,
+              encrypted_access_token, encrypted_refresh_token,
+              encryption_iv, encryption_tag, encryption_key_version
+       FROM oauth_tokens
+       WHERE id = $1`,
+      [id],
+    );
+    return result.rows[0] ?? null;
+  },
+
+  /**
+   * Write encrypted columns for a token row.
+   * Clears the plaintext columns (sets them to NULL) as part of the lazy migration.
+   *
+   * IMPORTANT: After this call the plaintext columns are NULL. Do not call
+   * this unless the decrypted value has been successfully verified first.
+   */
+  async updateEncrypted(
+    id: string,
+    input: {
+      encryptedAccessToken: Buffer;
+      encryptedRefreshToken: Buffer;
+      iv: Buffer;
+      tag: Buffer;
+      keyVersion: number;
+    },
+  ): Promise<void> {
+    await query(
+      `UPDATE oauth_tokens
+       SET encrypted_access_token  = $1,
+           encrypted_refresh_token = $2,
+           encryption_iv           = $3,
+           encryption_tag          = $4,
+           encryption_key_version  = $5,
+           access_token            = NULL,
+           refresh_token           = NULL,
+           updated_at              = now()
+       WHERE id = $6`,
+      [
+        input.encryptedAccessToken,
+        input.encryptedRefreshToken,
+        input.iv,
+        input.tag,
+        input.keyVersion,
+        id,
+      ],
+    );
   },
 };

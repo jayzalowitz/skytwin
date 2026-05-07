@@ -1,5 +1,59 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [unreleased] — Credential vault envelope encryption (#183 follow-up)
+
+Implements AC#5 from issue #183: envelope encryption of OAuth tokens in the
+database. Plaintext `access_token` / `refresh_token` columns are preserved for
+backward compatibility; encrypted columns are added alongside them.
+
+### Added — `packages/db/src/migrations/032-encrypted-oauth-tokens.sql`
+
+Adds encrypted columns to `oauth_tokens`:
+`encrypted_access_token BYTEA NULL`, `encrypted_refresh_token BYTEA NULL`,
+`encryption_iv BYTEA NULL`, `encryption_tag BYTEA NULL`,
+`encryption_key_version INT NOT NULL DEFAULT 1`. Drops `NOT NULL` on the
+plaintext columns so lazy migration can clear them to actual `NULL`.
+Also creates `user_credential_vault_meta` table for per-user passphrase salt
+and verification hash.
+
+### Added — `@skytwin/credential-vault`
+
+New package at `packages/credential-vault/`.
+- `key-derivation.ts` — scrypt-based passphrase KDF (N=32768, r=8, p=1,
+  keylen=32). Exports `deriveKey`, `generateSalt`, `hashDerivedKey`,
+  `verifyPassphrase`, `MIN_PASSPHRASE_LENGTH`.
+- `envelope.ts` — AES-256-GCM encrypt/decrypt with a fresh 96-bit IV per call.
+- `key-cache.ts` — in-process TTL key cache; evicts after 1 hour by default.
+  Keys are NEVER persisted.
+
+**Crypto choice note:** The issue spec called for Argon2id. Node.js has no
+built-in Argon2id; the `argon2` npm package requires native compilation and is
+a deployment hazard in this monorepo. We substitute `crypto.scrypt`, which is
+memory-hard (comparable security posture to Argon2id), ships with Node 20+,
+and has extensive production use. Parameters: N=2^15, r=8, p=1, keylen=32.
+
+### Added — `apps/api/src/routes/credential-vault.ts`
+
+Four routes under `sessionAuth + requireOwnership`:
+- `POST /api/credential-vault/init` — generates salt, derives key, stores hash.
+  Returns 422 for passphrase < 12 chars, 400 if already initialised.
+- `POST /api/credential-vault/unlock` — verifies passphrase, populates KeyCache.
+  Rate-limited to 5 attempts per minute per user; returns 429 on breach.
+- `POST /api/credential-vault/lock` — evicts key from KeyCache (idempotent).
+- `GET /api/credential-vault/status` — returns `{ initialized, unlocked }`.
+
+### Enhanced — lazy migration on OAuth token reads
+
+`packages/connectors/src/oauth/db-token-store.ts`:
+1. Encrypted columns present + vault unlocked → decrypt and return.
+2. Plaintext present + vault unlocked → fire-and-forget encrypt (lazy migrate);
+   plaintext columns cleared to NULL.
+3. Plaintext present + vault locked → return plaintext (backward compat).
+4. Encrypted + vault locked → throw "credentials unavailable".
+
+Type widening: `OAuthTokenRow.{access_token,refresh_token}` are now
+`string | null`. Updated all call sites (credential-provider, oauth routes).
+
 ## [unreleased] — Provenance graph + multi-modal evidence + DXT transfer doc (#184)
 
 Implements 3 of 4 product acceptance criteria from #184. The capability

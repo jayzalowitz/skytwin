@@ -33,6 +33,7 @@ import { createAboutMeRouter } from './routes/about-me.js';
 import { createTwinBriefingsRouter } from './routes/twin-briefings.js';
 import { createOnboardingRouter } from './routes/onboarding.js';
 import { createExternalAgentsRouter } from './routes/external-agents.js';
+import { createCredentialVaultRouter } from './routes/credential-vault.js';
 import { getExecutionRouter } from './execution-setup.js';
 import { startMdnsAdvertisement, stopMdnsAdvertisement } from './mdns.js';
 import { closePool } from '@skytwin/db';
@@ -211,6 +212,7 @@ app.use('/api/about-me', sessionAuth, requireOwnership, createAboutMeRouter());
 app.use('/api/twin-briefings', sessionAuth, requireOwnership, createTwinBriefingsRouter());
 app.use('/api/onboarding', sessionAuth, requireOwnership, createOnboardingRouter());
 app.use('/api/external-agents', sessionAuth, requireOwnership, createExternalAgentsRouter());
+app.use('/api/credential-vault', sessionAuth, requireOwnership, createCredentialVaultRouter());
 
 // Error handling middleware
 app.use(

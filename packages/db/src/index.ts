@@ -10,6 +10,8 @@ export type { DatabaseConfig } from './connection.js';
 
 // Row types
 export type {
+  OAuthTokenRowWithEncrypted,
+  CredentialVaultMetaRow,
   UserRow,
   ConnectedAccountRow,
   TwinProfileRow,
@@ -109,6 +111,9 @@ export type {
 } from './repositories/index.js';
 
 export { mcpServerMetricsRepository } from './repositories/index.js';
+
+export { credentialVaultMetaRepository } from './repositories/index.js';
+export type { CredentialVaultMetaRow as CredentialVaultMetaRepositoryRow } from './repositories/index.js';
 export type {
   WriteBucketInput,
   MetricsBucketRow,

@@ -227,12 +227,46 @@ export interface OAuthTokenRow {
   account_email: string;
   /** Provider's stable account id (Google `sub`); null for legacy rows. */
   account_provider_id: string | null;
-  access_token: string;
-  refresh_token: string;
+  /**
+   * Plaintext access token. Null after credential-vault lazy migration
+   * (migration 032) — encrypted_access_token holds the value.
+   */
+  access_token: string | null;
+  /**
+   * Plaintext refresh token. Null after credential-vault lazy migration
+   * (migration 032) — encrypted_refresh_token holds the value.
+   */
+  refresh_token: string | null;
   expires_at: Date;
   scopes: string[];
   created_at: Date;
   updated_at: Date;
+}
+
+/**
+ * Extended row that includes the encrypted credential columns added in
+ * migration 032. These columns are BYTEA (nullable) — null means the token
+ * has not yet been migrated to the vault.
+ */
+export interface OAuthTokenRowWithEncrypted extends OAuthTokenRow {
+  encrypted_access_token: Buffer | null;
+  encrypted_refresh_token: Buffer | null;
+  encryption_iv: Buffer | null;
+  encryption_tag: Buffer | null;
+  encryption_key_version: number;
+}
+
+// ============================================================================
+// Credential Vault Metadata
+// ============================================================================
+
+export interface CredentialVaultMetaRow {
+  user_id: string;
+  passphrase_salt: Buffer;
+  passphrase_hash: Buffer;
+  current_key_version: number;
+  created_at: Date;
+  rotated_at: Date | null;
 }
 
 // ============================================================================

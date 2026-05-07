@@ -143,6 +143,9 @@ export type {
   CreateExternalAgentTokenInput,
 } from './external-agent-token-repository.js';
 
+export { credentialVaultMetaRepository } from './credential-vault-meta-repository.js';
+export type { CredentialVaultMetaRow } from './credential-vault-meta-repository.js';
+
 export { mcpServerMetricsRepository } from './mcp-server-metrics-repository.js';
 export type {
   WriteBucketInput,

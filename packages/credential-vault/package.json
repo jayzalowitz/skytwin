@@ -1,5 +1,5 @@
 {
-  "name": "@skytwin/connectors",
+  "name": "@skytwin/credential-vault",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -17,11 +17,7 @@
     "test": "vitest run",
     "lint": "tsc --noEmit"
   },
-  "dependencies": {
-    "@skytwin/core": "workspace:*",
-    "@skytwin/credential-vault": "workspace:*",
-    "@skytwin/shared-types": "workspace:*"
-  },
+  "dependencies": {},
   "devDependencies": {
     "typescript": "^5.4.0",
     "vitest": "^1.3.0"
