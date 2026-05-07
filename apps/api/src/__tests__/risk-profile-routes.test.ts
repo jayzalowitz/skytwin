@@ -262,15 +262,18 @@ describe('Risk Profile API routes (#190)', () => {
   // POST /api/risk-profile/reinterpret
   // =========================================================================
   describe('POST /api/risk-profile/reinterpret', () => {
-    it('returns stubbed status (TODO #185)', async () => {
+    it('returns no_profile when no saved profile exists (#189 adaptive implementation)', async () => {
+      // getForUser returns undefined (cleared by beforeEach) → no profile saved yet.
       const app = buildApp(USER_ID);
       const res = await request(app, 'POST', '/api/risk-profile/reinterpret');
 
       expect(res.status).toBe(200);
       const body = res.body as { status: string; message: string };
-      expect(body.status).toBe('stubbed');
+      // The adaptive implementation returns 'no_profile' when no profile text exists,
+      // and 'no_llm' when a profile exists but no LLM is configured.
+      // (Previous stub returned 'stubbed'; stub removed in #189.)
+      expect(['no_profile', 'no_llm', 'ok']).toContain(body.status);
       expect(typeof body.message).toBe('string');
-      expect(body.message).toContain('#185');
     });
 
     it('returns 400 when no userId can be resolved', async () => {

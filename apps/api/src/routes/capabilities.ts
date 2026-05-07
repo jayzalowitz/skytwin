@@ -6,6 +6,8 @@ import { RegistryClient } from '@skytwin/registry-client';
 import { TrustTierEngine } from '@skytwin/policy-engine';
 import type { TrustTier } from '@skytwin/shared-types';
 import { PROMOTION_THRESHOLDS } from '@skytwin/shared-types';
+import { runPrompt } from '@skytwin/policy-prompts';
+import { getLlmClientFromConfig } from '../lib/llm-client-factory.js';
 // SSE event constants — imported for re-export and for use in callers that
 // wire the promotion ceremony (e.g. promotion-eligibility-check.ts).
 // sseManager and SSE_CAPABILITY_PROMOTION_OFFERED are imported here so they
@@ -657,7 +659,9 @@ export function createCapabilitiesRouter(): Router {
 
   // ─────────────────────────────────────────────────────────────────────────
   // GET /recipes
-  // Returns the 6 hardcoded recipe definitions.
+  // Returns recipe definitions — adaptive path uses recipe-recommendation
+  // prompt; falls back to 6 hardcoded CAPABILITY_RECIPES when no LLM is
+  // configured or the prompt fails.
   // ─────────────────────────────────────────────────────────────────────────
   router.get('/recipes', async (req, res, next) => {
     try {
@@ -668,7 +672,100 @@ export function createCapabilitiesRouter(): Router {
         return;
       }
 
+      // Adaptive path: ask the LLM for personalised recipe recommendations.
+      const llmClient = getLlmClientFromConfig();
+      if (llmClient) {
+        try {
+          // Build a lightweight registry summary so the prompt has context.
+          const allEntries = await registryClient.getAll();
+          const registrySummary = allEntries.slice(0, 50).map((e) => ({
+            id: e.id,
+            displayName: e.displayName,
+            category: e.category,
+          }));
+
+          const result = await runPrompt<CapabilityRecipe[]>({
+            promptName: 'recipe-recommendation',
+            inputs: { registrySummary },
+            user: { userId },
+            llmClient,
+          });
+
+          if (!result.fellBackToDeterministic && Array.isArray(result.output) && result.output.length > 0) {
+            return res.json({ recipes: result.output });
+          }
+        } catch (err) {
+          log.warn('recipe-recommendation prompt failed, using hardcoded fallback', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+
+      // Deterministic fallback: 6 hardcoded recipes.
       res.json({ recipes: CAPABILITY_RECIPES });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // POST /reverse-capability-intent
+  // Classifies a natural-language user message to determine which installed
+  // capability it is targeting (G: reverse-capability-intent).
+  //
+  // Body: { userMessage: string; installedRegistryIds: string[] }
+  // Returns: { action: string; candidate_capabilities: string[]; confidence: number }
+  //
+  // Adaptive path: uses the reverse-capability-intent prompt.
+  // Deterministic fallback: returns unknown action with empty candidates.
+  // ─────────────────────────────────────────────────────────────────────────
+  router.post('/reverse-capability-intent', async (req, res, next) => {
+    try {
+      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
+        ?? (req.query['userId'] as string | undefined);
+      if (!userId) {
+        res.status(400).json({ error: 'userId is required' });
+        return;
+      }
+
+      const body = req.body as { userMessage?: unknown; installedRegistryIds?: unknown } | undefined;
+
+      if (typeof body?.userMessage !== 'string' || !body.userMessage.trim()) {
+        res.status(400).json({ error: 'userMessage must be a non-empty string' });
+        return;
+      }
+
+      const installedRegistryIds = Array.isArray(body?.installedRegistryIds)
+        ? (body.installedRegistryIds as unknown[]).filter((x): x is string => typeof x === 'string')
+        : [];
+
+      const llmClient = getLlmClientFromConfig();
+      if (llmClient) {
+        try {
+          const result = await runPrompt<{
+            action: string;
+            candidate_capabilities: string[];
+            confidence: number;
+          }>({
+            promptName: 'reverse-capability-intent',
+            inputs: { userMessage: body.userMessage, installedRegistryIds },
+            user: { userId },
+            llmClient,
+          });
+
+          if (!result.fellBackToDeterministic) {
+            return res.json(result.output);
+          }
+        } catch (err) {
+          log.warn('reverse-capability-intent prompt failed, using deterministic fallback', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+
+      // Deterministic fallback: heuristic match against installed registry.
+      // v1: no heuristic — return unknown. The LLM path is the value add here.
+      res.json({ action: 'unknown', candidate_capabilities: [], confidence: 0 });
     } catch (err) {
       next(err);
     }

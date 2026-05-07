@@ -17,6 +17,10 @@
     "test": "vitest run",
     "lint": "tsc --noEmit"
   },
+  "dependencies": {
+    "@skytwin/llm-client": "workspace:*",
+    "@skytwin/policy-prompts": "workspace:*"
+  },
   "devDependencies": {
     "@types/node": "^20.0.0",
     "typescript": "^5.4.0",

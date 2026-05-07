@@ -24,6 +24,7 @@
     "@skytwin/mcp-host": "workspace:*",
     "@skytwin/registry-client": "workspace:*",
     "@skytwin/policy-engine": "workspace:*",
+    "@skytwin/policy-prompts": "workspace:*",
     "@skytwin/shared-types": "workspace:*",
     "@skytwin/twin-model": "workspace:*",
     "bonjour-service": "^1.3.0",
