@@ -1,5 +1,68 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [unreleased] — Capability changelog flow + new-skill opt-in (#184 follow-up)
+
+Implements #184 AC#2 deferred from the previous PR: `changelog://` resource
+fetching, new-destructive-skill opt-in prompts, hard-rail execution block, and
+weekly worker sweep.
+
+### Added — Migration `033-mcp-server-changelogs.sql`
+
+Two new tables:
+- `mcp_server_changelogs` — one row per installed server; tracks
+  `current_version`, `raw_text`, `fetched_at`, `last_seen_skills`, and
+  `last_known_destructive_skills`. Updated on install, on `list_tools`
+  refresh, and on the weekly worker sweep.
+- `pending_skill_opt_ins` — pending opt-in prompts for newly added
+  destructive skills. Unique on `(server_id, skill_name)`. Partial index
+  on unresolved rows.
+
+### Added — `mcpServerChangelogRepository` (`@skytwin/db`)
+
+Methods: `upsert`, `getForServer`, `addPendingOptIn` (idempotent),
+`listPendingOptInsForUser`, `acceptOptIn`, `rejectOptIn`,
+`hasPendingOptIn`.
+
+### Added — `McpHost.fetchChangelog` + `isDestructiveSkill` (`@skytwin/mcp-host`)
+
+`fetchChangelog(serverId)` uses `client.listResources()` to locate a
+`changelog://` resource and reads its text content. Version extraction
+uses a `## vX.Y.Z` / `# X.Y.Z` heuristic (first match wins). Returns
+null on any error — best-effort.
+
+`isDestructiveSkill(skillName)` heuristic gating for opt-in prompts.
+Matches create/delete/update/write/send/post/commit/push/merge/mutate/set/remove.
+
+`onChangelogFetch` hook added to `McpHostOptions` — mirrors `onToolCall`
+pattern. Wired in `execution-setup.ts` to persist changelog snapshots.
+
+Hard rail: `checkPendingOptIn` injected from `execution-setup.ts` blocks
+execution of any destructive skill that has an unaccepted `pending_skill_opt_ins`
+row. Fail-safe: if the check itself throws, execution is blocked.
+
+### Added — Worker job `changelog-poll.ts` (7-day cadence)
+
+`runChangelogPollJob` iterates all active MCP servers, rate-limits per server
+to 12 hours, diffs new destructive skills against `last_known_destructive_skills`,
+and writes opt-in prompts for new ones. Wired in `apps/worker/src/index.ts`
+alongside the existing metrics-rollup pattern.
+
+### Added — API routes (in `createCapabilitiesRouter`)
+
+- `GET  /api/capabilities/:id/changelog` — ownership-checked changelog read
+- `GET  /api/capabilities/pending-opt-ins` — pending opt-in feed for user
+- `POST /api/capabilities/pending-opt-ins/:id/accept` — accept with ownership check
+- `POST /api/capabilities/pending-opt-ins/:id/reject` — reject with ownership check
+
+### Added — Web UI extensions
+
+`apps/web/public/js/pages/capability-detail.js` — Changelog card (version badge
++ collapsible raw_text). Singleton delegator unchanged.
+
+`apps/web/public/js/pages/capabilities.js` — "New skills awaiting opt-in" section
+at top of page with Accept/Reject buttons. Uses existing `_capabilitiesListenerWired`
+singleton guard and adds `accept-opt-in` / `reject-opt-in` to the delegator.
+
 ## [unreleased] — Credential vault envelope encryption (#183 follow-up)
 
 Implements AC#5 from issue #183: envelope encryption of OAuth tokens in the

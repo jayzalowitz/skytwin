@@ -6,6 +6,9 @@ import {
   snoozeCapabilitySuggestion,
   installCapabilityRecipe,
   uninstallCapability,
+  fetchPendingSkillOptIns,
+  acceptSkillOptIn,
+  rejectSkillOptIn,
   escapeHtml,
   renderApiError,
   wireApiRetry,
@@ -31,6 +34,7 @@ let _cachedInstalled = [];
 let _cachedSuggestions = [];
 let _cachedDormant = [];
 let _cachedRecipes = [];
+let _cachedPendingOptIns = [];
 let _lastContainer = null;
 
 function getCurrentUserId() {
@@ -128,6 +132,16 @@ function handleCapabilitiesAction(e) {
       showToast('Reactivation not yet wired — coming soon.', { kind: 'info' });
       break;
     }
+    case 'accept-opt-in': {
+      const optInId = btn.getAttribute('data-opt-in-id');
+      if (optInId) handleAcceptOptIn(optInId, userId, btn);
+      break;
+    }
+    case 'reject-opt-in': {
+      const optInId = btn.getAttribute('data-opt-in-id');
+      if (optInId) handleRejectOptIn(optInId, userId, btn);
+      break;
+    }
   }
 }
 
@@ -142,6 +156,7 @@ export async function renderCapabilities(container, userId) {
 
   let capData;
   let recipesData;
+  let optInsData;
 
   try {
     [capData, recipesData] = await Promise.all([
@@ -157,13 +172,23 @@ export async function renderCapabilities(container, userId) {
     return;
   }
 
+  // Best-effort — don't block capabilities render if opt-ins fetch fails
+  try {
+    optInsData = await fetchPendingSkillOptIns(userId);
+  } catch {
+    optInsData = { optIns: [] };
+  }
+
   _cachedInstalled = capData.installed ?? [];
   _cachedSuggestions = capData.suggestions ?? [];
   _cachedDormant = capData.dormant ?? [];
   _cachedRecipes = recipesData.recipes ?? [];
+  _cachedPendingOptIns = optInsData.optIns ?? [];
 
   container.innerHTML = `
     <div style="display: flex; flex-direction: column; gap: 1.5rem;">
+
+      ${renderPendingOptInsSection(_cachedPendingOptIns)}
 
       ${renderSuggestionsSection(_cachedSuggestions)}
 
@@ -586,5 +611,104 @@ async function handleUninstall(serverId, userId, btn) {
   } catch (err) {
     showToast(err.friendlyMessage || err.message || 'Could not uninstall.', { kind: 'error' });
     if (btn) { btn.disabled = false; btn.textContent = 'Uninstall'; }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pending skill opt-ins (#184 AC#2)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function renderPendingOptInsSection(optIns) {
+  if (!optIns || optIns.length === 0) return '';
+
+  return `
+    <div class="card" id="pending-opt-ins-section">
+      <div class="card-header">
+        <span class="card-title">New skills awaiting opt-in</span>
+        <span class="badge badge-warning">${optIns.length}</span>
+      </div>
+      <div class="card-subtitle" style="margin-bottom: 1rem;">
+        These destructive skills were added to installed servers since your last review.
+        You must explicitly accept each skill before it can be called.
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 0.5rem;">
+        ${optIns.map(renderOptInCard).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function renderOptInCard(optIn) {
+  const version = optIn.changelog_version
+    ? `<span class="badge badge-muted" style="font-size: 0.72rem;">${escapeHtml(optIn.changelog_version)}</span>`
+    : '';
+  const serverName = optIn.server_display_name
+    ? escapeHtml(optIn.server_display_name)
+    : escapeHtml(optIn.server_id);
+
+  return `
+    <div id="opt-in-${escapeHtml(optIn.id)}" style="display: flex; align-items: center; justify-content: space-between; padding: 0.65rem 0.75rem; background: var(--bg); border-radius: var(--radius-sm); border-left: 3px solid var(--warning);">
+      <div style="min-width: 0;">
+        <div style="font-weight: 600; font-size: 0.9rem; font-family: monospace;">${escapeHtml(optIn.skill_name)}</div>
+        <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.1rem;">
+          ${serverName} ${version}
+        </div>
+      </div>
+      <div style="display: flex; gap: 0.4rem; align-items: center; flex-shrink: 0;">
+        <button class="btn btn-primary btn-sm"
+          data-action="accept-opt-in"
+          data-opt-in-id="${escapeHtml(optIn.id)}">Accept</button>
+        <button class="btn btn-outline btn-sm"
+          data-action="reject-opt-in"
+          data-opt-in-id="${escapeHtml(optIn.id)}"
+          style="color: var(--danger);">Reject</button>
+      </div>
+    </div>
+  `;
+}
+
+async function handleAcceptOptIn(optInId, userId, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = 'Accepting…'; }
+  try {
+    await acceptSkillOptIn(optInId, userId);
+    const el = document.getElementById(`opt-in-${optInId}`);
+    if (el) {
+      el.style.opacity = '0.4';
+      el.style.pointerEvents = 'none';
+      const actionBtns = el.querySelectorAll('[data-action]');
+      actionBtns.forEach((b) => b.replaceWith(
+        Object.assign(document.createElement('span'), {
+          className: 'badge badge-success',
+          textContent: 'Accepted',
+        }),
+      ));
+    }
+    showToast('Skill opt-in accepted.', { kind: 'success' });
+  } catch (err) {
+    showToast(err.friendlyMessage || err.message || 'Could not accept opt-in.', { kind: 'error' });
+    if (btn) { btn.disabled = false; btn.textContent = 'Accept'; }
+  }
+}
+
+async function handleRejectOptIn(optInId, userId, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = 'Rejecting…'; }
+  try {
+    await rejectSkillOptIn(optInId, userId);
+    const el = document.getElementById(`opt-in-${optInId}`);
+    if (el) {
+      el.style.opacity = '0.4';
+      el.style.pointerEvents = 'none';
+      const actionBtns = el.querySelectorAll('[data-action]');
+      actionBtns.forEach((b) => b.replaceWith(
+        Object.assign(document.createElement('span'), {
+          className: 'badge badge-muted',
+          textContent: 'Rejected',
+        }),
+      ));
+    }
+    showToast('Skill opt-in rejected.', { kind: 'info' });
+  } catch (err) {
+    showToast(err.friendlyMessage || err.message || 'Could not reject opt-in.', { kind: 'error' });
+    if (btn) { btn.disabled = false; btn.textContent = 'Reject'; }
   }
 }

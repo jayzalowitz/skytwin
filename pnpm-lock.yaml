@@ -273,6 +273,9 @@ importers:
       '@skytwin/llm-client':
         specifier: workspace:*
         version: link:../../packages/llm-client
+      '@skytwin/mcp-host':
+        specifier: workspace:*
+        version: link:../../packages/mcp-host
       '@skytwin/observability':
         specifier: workspace:*
         version: link:../../packages/observability

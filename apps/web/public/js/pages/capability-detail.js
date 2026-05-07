@@ -4,6 +4,7 @@ import {
   rehearseCapability,
   regretCapability,
   fetchCapabilityProvenance,
+  fetchCapabilityChangelog,
   escapeHtml,
   renderApiError,
   wireApiRetry,
@@ -194,6 +195,16 @@ export async function renderCapabilityDetail(container, userId, serverId) {
         </div>
       </div>
 
+      <!-- Changelog (#184 AC#2) -->
+      <div class="card" id="changelog-card">
+        <div class="card-header">
+          <span class="card-title">Changelog</span>
+        </div>
+        <div id="changelog-container">
+          <div style="color: var(--text-muted); font-size: 0.85rem;">Loading changelog…</div>
+        </div>
+      </div>
+
       <!-- Monthly cost meter (#183) -->
       <div class="card" id="monthly-cost-card">
         <div class="card-header">
@@ -271,9 +282,10 @@ export async function renderCapabilityDetail(container, userId, serverId) {
     </div>
   `;
 
-  // Best-effort: load sparklines and monthly cost meter asynchronously
+  // Best-effort: load sparklines, monthly cost meter, and changelog asynchronously
   loadSparklines(serverId, userId);
   loadMonthlyCostMeter(serverId, userId, server);
+  loadChangelog(serverId, userId);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -400,6 +412,51 @@ async function loadMonthlyCostMeter(serverId, userId, server) {
     `;
   } catch {
     el.innerHTML = '<div style="color: var(--text-muted); font-size: 0.82rem;">Spend data unavailable.</div>';
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Changelog card (#184 AC#2)
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function loadChangelog(serverId, userId) {
+  const el = document.getElementById('changelog-container');
+  if (!el) return;
+  try {
+    const data = await fetchCapabilityChangelog(serverId, userId);
+    const changelog = data.changelog;
+    if (!changelog) {
+      el.innerHTML = '<div style="color: var(--text-muted); font-size: 0.85rem;">No changelog published by this server.</div>';
+      return;
+    }
+
+    const version = changelog.current_version
+      ? `<span style="font-weight: 600; font-size: 1rem;">${escapeHtml(changelog.current_version)}</span>`
+      : '<span style="color: var(--text-muted); font-size: 0.85rem;">Version unknown</span>';
+
+    const fetchedAt = changelog.fetched_at
+      ? `<div style="font-size: 0.75rem; color: var(--text-dim); margin-top: 0.25rem;">Last fetched: ${escapeHtml(formatRelative(changelog.fetched_at))}</div>`
+      : '';
+
+    const rawHtml = changelog.raw_text
+      ? `<details style="margin-top: 0.75rem;">
+           <summary style="cursor: pointer; font-size: 0.85rem; color: var(--accent);">Show full changelog</summary>
+           <pre style="white-space: pre-wrap; word-break: break-word; font-size: 0.78rem; color: var(--text); margin-top: 0.5rem; background: var(--surface-2); padding: 0.75rem; border-radius: var(--radius-sm); overflow-x: auto;">${escapeHtml(changelog.raw_text)}</pre>
+         </details>`
+      : '<div style="font-size: 0.82rem; color: var(--text-muted); margin-top: 0.5rem;">No changelog text available.</div>';
+
+    el.innerHTML = `
+      <div>${version}</div>
+      ${fetchedAt}
+      ${rawHtml}
+    `;
+  } catch (err) {
+    // 404 means no changelog fetched yet — show a gentle nudge
+    if (err && err.kind === 'not-found') {
+      el.innerHTML = '<div style="color: var(--text-muted); font-size: 0.85rem;">No changelog fetched yet. The weekly sweep will check again soon.</div>';
+    } else {
+      el.innerHTML = '<div style="color: var(--text-muted); font-size: 0.82rem;">Changelog unavailable.</div>';
+    }
   }
 }
 

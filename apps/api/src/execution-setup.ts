@@ -30,7 +30,7 @@ import {
 import { McpHost } from '@skytwin/mcp-host';
 import { sharedMetricsCollector } from '@skytwin/observability';
 import type { OpenClawCredentialRequirement } from '@skytwin/execution-router';
-import { credentialRequirementRepository, ironClawToolRepository, serviceCredentialRepository } from '@skytwin/db';
+import { credentialRequirementRepository, ironClawToolRepository, serviceCredentialRepository, mcpServerChangelogRepository } from '@skytwin/db';
 import { createLogger } from '@skytwin/core';
 import { sseManager } from './sse.js';
 
@@ -139,6 +139,9 @@ export async function createExecutionRouter(): Promise<ExecutionRouter> {
   // are added via the user-facing install flow (#176). On first boot the host
   // has zero servers and reports healthy with empty skill set.
   // onToolCall feeds the shared metrics collector for #183 observability.
+  // onChangelogFetch persists changelog snapshots to DB (#184 AC#2).
+  // checkPendingOptIn enforces the hard rail: destructive skills require
+  //   explicit user acceptance before the MCP host will invoke them.
   const mcpHost = new McpHost({
     onToolCall: (event) => {
       sharedMetricsCollector.record({
@@ -150,6 +153,22 @@ export async function createExecutionRouter(): Promise<ExecutionRouter> {
         ts: event.ts,
       });
     },
+    onChangelogFetch: (event) => {
+      // Best-effort — errors must never block execution
+      mcpServerChangelogRepository.upsert(event.serverId, {
+        currentVersion: event.currentVersion,
+        rawText: event.rawText ?? undefined,
+        lastSeenSkills: [],
+        lastKnownDestructiveSkills: [],
+      }).catch((err) => {
+        log.warn('onChangelogFetch: failed to persist changelog', {
+          serverId: event.serverId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+    },
+    checkPendingOptIn: (serverId, skillName) =>
+      mcpServerChangelogRepository.hasPendingOptIn(serverId, skillName),
   });
   registry.register('mcp-host', mcpHost, MCP_HOST_TRUST_PROFILE);
   log.info('Registered MCP host adapter (Capability Acquisition Loop)');

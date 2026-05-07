@@ -65,17 +65,76 @@ export interface McpHostToolCallEvent {
   ts: Date;
 }
 
+/**
+ * Hook fired after a changelog fetch (at install time, on list_tools refresh,
+ * or weekly sweep). rawText is null when the server has no changelog:// resource.
+ * Failures inside the hook are swallowed so changelog fetches never block install.
+ */
+export interface McpHostChangelogFetchEvent {
+  serverId: string;
+  rawText: string | null;
+  currentVersion?: string;
+}
+
 export interface McpHostOptions {
   onToolCall?: (event: McpHostToolCallEvent) => void;
+  /** Optional hook fired after each changelog fetch. Errors are swallowed. */
+  onChangelogFetch?: (event: McpHostChangelogFetchEvent) => void;
+  /**
+   * Hard-rail hook (#184 AC#2): called before executing a tool to check
+   * whether the user has an unaccepted pending opt-in for this skill.
+   *
+   * If this returns true, the execution is blocked with a 'failed' result
+   * and an explanatory error message. Callers should inject this from the
+   * DB layer (mcpServerChangelogRepository.hasPendingOptIn). Omit in tests
+   * or contexts where the DB is not available.
+   *
+   * This is an async callback so the DB round-trip stays outside mcp-host.
+   */
+  checkPendingOptIn?: (serverId: string, skillName: string) => Promise<boolean>;
+}
+
+// ─── Destructive skill heuristic ─────────────────────────────────────────────
+// A skill is considered destructive if its name contains any of the following
+// verb prefixes. This is a conservative over-approximation — false positives
+// are safer than false negatives for opt-in gate purposes.
+const DESTRUCTIVE_PREFIXES = [
+  'create', 'delete', 'update', 'write', 'send', 'post',
+  'commit', 'push', 'merge', 'mutate', 'set', 'remove',
+] as const;
+
+/**
+ * Returns true if the skill name matches the destructive-skill heuristic.
+ *
+ * The check is case-insensitive and matches anywhere in the skill name so
+ * that compound names like `batch_create_issues` or `filesystem_write` are
+ * correctly flagged.
+ */
+export function isDestructiveSkill(skillName: string): boolean {
+  const lower = skillName.toLowerCase();
+  return DESTRUCTIVE_PREFIXES.some((prefix) => lower.includes(prefix));
+}
+
+// ─── Version-heading extraction ───────────────────────────────────────────────
+// Looks for `## v1.2.3` or `# 1.2.3` style headings in the changelog text.
+const VERSION_HEADING_RE = /^#{1,3}\s+v?([\d]+\.[\d]+(?:\.[\d]+)?(?:-[a-zA-Z0-9.]+)?)\b/m;
+
+function extractVersionFromChangelog(text: string): string | undefined {
+  const match = VERSION_HEADING_RE.exec(text);
+  return match?.[1] ?? undefined;
 }
 
 export class McpHost implements IronClawAdapter {
   private readonly servers = new Map<string, ServerEntry>();
   private readonly executions = new Map<string, McpExecutionLog>();
   private readonly onToolCall: ((event: McpHostToolCallEvent) => void) | undefined;
+  private readonly onChangelogFetch: ((event: McpHostChangelogFetchEvent) => void) | undefined;
+  private readonly checkPendingOptIn: ((serverId: string, skillName: string) => Promise<boolean>) | undefined;
 
   constructor(options: McpHostOptions = {}) {
     this.onToolCall = options.onToolCall;
+    this.onChangelogFetch = options.onChangelogFetch;
+    this.checkPendingOptIn = options.checkPendingOptIn;
   }
 
   private emitToolCall(event: McpHostToolCallEvent): void {
@@ -84,6 +143,15 @@ export class McpHost implements IronClawAdapter {
       this.onToolCall(event);
     } catch {
       // observability hook must never block execution
+    }
+  }
+
+  private emitChangelogFetch(event: McpHostChangelogFetchEvent): void {
+    if (!this.onChangelogFetch) return;
+    try {
+      this.onChangelogFetch(event);
+    } catch {
+      // changelog hook must never block execution
     }
   }
 
@@ -155,6 +223,19 @@ export class McpHost implements IronClawAdapter {
       handle.startedAt = new Date();
 
       this.servers.set(config.id, { config, handle, client, circuit, stop });
+
+      // Best-effort changelog fetch at install time (#184 AC#2).
+      // Errors are swallowed — a failing changelog fetch must never block install.
+      this.fetchChangelog(config.id).then((changelog) => {
+        this.emitChangelogFetch({
+          serverId: config.id,
+          rawText: changelog?.rawText ?? null,
+          currentVersion: changelog?.currentVersion,
+        });
+      }).catch(() => {
+        // Swallow — best effort
+      });
+
       return { success: true };
     } catch (err) {
       handle.status = 'failed';
@@ -208,6 +289,52 @@ export class McpHost implements IronClawAdapter {
       return { success: true, skills };
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  /**
+   * Fetch the upstream server's changelog via the `changelog://` MCP resource
+   * convention (issue #184 AC#2).
+   *
+   * 1. Calls client.listResources() to discover resources.
+   * 2. If a resource with URI starting with `changelog://` is found, reads it.
+   * 3. Extracts a heuristic version from the first `## vX.Y.Z` or `# X.Y.Z` heading.
+   * 4. Returns null (best-effort) if:
+   *    - The server is not installed.
+   *    - listResources is not supported (throws).
+   *    - No changelog:// resource is present.
+   *
+   * Rate-limit enforcement (12h cadence) is the caller's responsibility —
+   * this method always attempts the fetch when called.
+   */
+  async fetchChangelog(serverId: string): Promise<{ currentVersion?: string; rawText?: string } | null> {
+    const entry = this.servers.get(serverId);
+    if (!entry) return null;
+
+    let resources: Array<{ uri: string }>;
+    try {
+      const listResult = await entry.client.listResources();
+      resources = (listResult.resources ?? []) as Array<{ uri: string }>;
+    } catch {
+      // listResources not supported by this server — best effort, return null
+      return null;
+    }
+
+    const changelogResource = resources.find((r) => r.uri?.startsWith('changelog://'));
+    if (!changelogResource) return null;
+
+    try {
+      const readResult = await entry.client.readResource({ uri: changelogResource.uri });
+      // readResource returns { contents: Array<{ type, text? }> }
+      const contents = (readResult as { contents?: Array<{ type?: string; text?: string }> }).contents ?? [];
+      const textContent = contents.find((c) => c.type === 'text' || typeof c.text === 'string');
+      const rawText = textContent?.text ?? '';
+      if (!rawText) return null;
+
+      const currentVersion = extractVersionFromChangelog(rawText);
+      return { currentVersion, rawText };
+    } catch {
+      return null;
     }
   }
 
@@ -298,6 +425,24 @@ export class McpHost implements IronClawAdapter {
 
     log.serverId = serverId;
     log.toolName = toolName;
+
+    // Hard rail (#184 AC#2): block execution if the user has not yet opted in
+    // to this destructive skill. The checkPendingOptIn callback is injected
+    // from the API layer to avoid a DB dependency in mcp-host.
+    if (this.checkPendingOptIn && isDestructiveSkill(toolName)) {
+      let blocked = false;
+      try {
+        blocked = await this.checkPendingOptIn(serverId, toolName);
+      } catch {
+        // If the opt-in check itself fails, fail safe: block execution.
+        blocked = true;
+      }
+      if (blocked) {
+        log.status = 'failed';
+        log.error = `Skill '${toolName}' requires explicit opt-in before it can be executed. Accept the pending opt-in prompt in the Capabilities dashboard.`;
+        return errorResult(plan.id, startedAt, log.error);
+      }
+    }
 
     const entry = this.servers.get(serverId);
     if (!entry) {
