@@ -133,3 +133,6 @@ export type {
   TwinBriefingRow,
   CreateTwinBriefingInput,
 } from './briefing-repository.js';
+
+export { onboardingRepository } from './onboarding-repository.js';
+export type { OnboardingStateRow } from './onboarding-repository.js';
