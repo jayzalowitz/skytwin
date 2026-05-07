@@ -30,6 +30,7 @@ import { createDemoRouter } from './routes/demo.js';
 import { createCapabilitiesRouter } from './routes/capabilities.js';
 import { createRiskProfileRouter } from './routes/risk-profile.js';
 import { createAboutMeRouter } from './routes/about-me.js';
+import { createTwinBriefingsRouter } from './routes/twin-briefings.js';
 import { getExecutionRouter } from './execution-setup.js';
 import { startMdnsAdvertisement, stopMdnsAdvertisement } from './mdns.js';
 import { closePool } from '@skytwin/db';
@@ -205,6 +206,7 @@ app.use('/api/v1/demo', createDemoRouter()); // public — onboarding tour disco
 app.use('/api/capabilities', sessionAuth, requireOwnership, createCapabilitiesRouter());
 app.use('/api/risk-profile', sessionAuth, requireOwnership, createRiskProfileRouter());
 app.use('/api/about-me', sessionAuth, requireOwnership, createAboutMeRouter());
+app.use('/api/twin-briefings', sessionAuth, requireOwnership, createTwinBriefingsRouter());
 
 // Error handling middleware
 app.use(

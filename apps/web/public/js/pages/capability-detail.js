@@ -3,6 +3,7 @@ import {
   uninstallCapability,
   rehearseCapability,
   regretCapability,
+  fetchCapabilityProvenance,
   escapeHtml,
   renderApiError,
   wireApiRetry,
@@ -77,8 +78,10 @@ function handleCapabilityDetailAction(e) {
       break;
     }
     case 'capability-provenance':
-      // Navigate to the provenance graph page (#184 wires the viz)
-      window.location.hash = `#/provenance/${serverId}`;
+      handleProvenanceFlyout(serverId, userId);
+      break;
+    case 'provenance-flyout-close':
+      closeProvenanceFlyout();
       break;
   }
 }
@@ -230,7 +233,7 @@ export async function renderCapabilityDetail(container, userId, serverId) {
             Regret last 24h
           </button>
           <button class="btn btn-outline btn-sm" data-action="capability-provenance">
-            Provenance graph
+            View provenance
           </button>
           <button class="btn btn-outline btn-sm" data-action="capability-export-dxt">
             Export DXT
@@ -320,6 +323,118 @@ async function handleSaveSpendCap(serverId, userId, perActionCents, perDayCents,
     if (statusEl) statusEl.innerHTML = `<span style="color: var(--danger);">${escapeHtml(err.friendlyMessage || err.message)}</span>`;
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = 'Save'; }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Provenance flyout (issue #177)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const PROVENANCE_FLYOUT_ID = 'provenance-flyout';
+
+function closeProvenanceFlyout() {
+  const flyout = document.getElementById(PROVENANCE_FLYOUT_ID);
+  if (flyout) flyout.remove();
+  // Remove backdrop
+  const backdrop = document.getElementById('provenance-flyout-backdrop');
+  if (backdrop) backdrop.remove();
+}
+
+const NODE_TYPE_LABELS = {
+  signal:         { icon: '📡', label: 'Signal detected' },
+  entity:         { icon: '🔍', label: 'Entity extracted' },
+  suggestion:     { icon: '💡', label: 'Install suggested' },
+  install:        { icon: '✅', label: 'Installed' },
+  tier_promotion: { icon: '⬆️', label: 'Tier promoted' },
+  action:         { icon: '⚡', label: 'Action executed' },
+  feedback:       { icon: '💬', label: 'Feedback recorded' },
+  uninstall:      { icon: '🗑️', label: 'Uninstalled' },
+  external_agent: { icon: '🤖', label: 'External agent' },
+};
+
+function renderProvenanceNode(node) {
+  const meta = NODE_TYPE_LABELS[node.node_type] || { icon: '•', label: node.node_type };
+  const when = node.occurred_at ? formatRelative(node.occurred_at) : '';
+  const payload = node.payload ? JSON.stringify(node.payload) : null;
+  // Truncate payload for display
+  const payloadPreview = payload && payload.length > 120
+    ? payload.slice(0, 117) + '…'
+    : payload;
+
+  return `
+    <div class="provenance-node" style="display: flex; gap: 0.75rem; align-items: flex-start; padding: 0.6rem 0; border-bottom: 1px solid var(--border);">
+      <span style="font-size: 1.1rem; flex-shrink: 0; margin-top: 0.1rem;">${meta.icon}</span>
+      <div style="flex: 1; min-width: 0;">
+        <div style="font-weight: 500; font-size: 0.85rem;">${escapeHtml(meta.label)}</div>
+        ${payloadPreview
+          ? `<div style="font-size: 0.78rem; color: var(--text-dim); word-break: break-all; margin-top: 0.1rem;">${escapeHtml(payloadPreview)}</div>`
+          : ''}
+      </div>
+      <span style="font-size: 0.75rem; color: var(--text-dim); flex-shrink: 0; white-space: nowrap;">${escapeHtml(when)}</span>
+    </div>
+  `;
+}
+
+async function handleProvenanceFlyout(serverId, userId) {
+  // Backdrop
+  closeProvenanceFlyout(); // close any previous
+
+  const backdrop = document.createElement('div');
+  backdrop.id = 'provenance-flyout-backdrop';
+  backdrop.style.cssText = 'position: fixed; inset: 0; background: rgba(0,0,0,0.25); z-index: 200;';
+  backdrop.addEventListener('click', closeProvenanceFlyout);
+  document.body.appendChild(backdrop);
+
+  // Flyout drawer
+  const flyout = document.createElement('div');
+  flyout.id = PROVENANCE_FLYOUT_ID;
+  flyout.style.cssText = [
+    'position: fixed; right: 0; top: 0; bottom: 0; z-index: 201;',
+    'width: min(420px, 100vw);',
+    'background: var(--bg-card); border-left: 1px solid var(--border);',
+    'box-shadow: -4px 0 20px rgba(0,0,0,0.12);',
+    'display: flex; flex-direction: column; overflow: hidden;',
+  ].join(' ');
+
+  flyout.innerHTML = `
+    <div style="padding: 1rem 1.25rem; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;">
+      <h3 style="margin: 0; font-size: 1rem;">Capability provenance</h3>
+      <button class="btn btn-sm" data-action="provenance-flyout-close"
+              aria-label="Close provenance flyout"
+              style="background: none; border: none; font-size: 1.25rem; cursor: pointer; padding: 0; color: var(--text-dim);">&times;</button>
+    </div>
+    <div id="provenance-flyout-body" style="flex: 1; overflow-y: auto; padding: 0.75rem 1.25rem;">
+      <p class="muted">Loading provenance chain…</p>
+    </div>
+  `;
+
+  document.body.appendChild(flyout);
+
+  const bodyEl = flyout.querySelector('#provenance-flyout-body');
+
+  try {
+    const data = await fetchCapabilityProvenance(serverId, userId);
+    const nodes = data?.nodes || [];
+
+    if (nodes.length === 0) {
+      bodyEl.innerHTML = `
+        <div class="empty-state" style="padding: 2rem 0;">
+          <div class="empty-state-title">No provenance nodes yet</div>
+          <div class="empty-state-desc">The lineage chain will populate as this capability is used.</div>
+        </div>
+      `;
+    } else {
+      bodyEl.innerHTML = `
+        <p class="muted" style="font-size: 0.82rem; margin-bottom: 1rem;">
+          ${nodes.length} event${nodes.length === 1 ? '' : 's'} — oldest first
+        </p>
+        <div class="provenance-chain">
+          ${nodes.map(renderProvenanceNode).join('')}
+        </div>
+      `;
+    }
+  } catch (err) {
+    bodyEl.innerHTML = renderApiError(err, { context: "Couldn't load provenance chain." });
   }
 }
 

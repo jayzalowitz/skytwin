@@ -1,7 +1,19 @@
 import { Router } from 'express';
-import { mcpServerRepository, appSuggestionRepository, query } from '@skytwin/db';
+import { mcpServerRepository, appSuggestionRepository, provenanceRepository, query } from '@skytwin/db';
+import type { McpServerRow } from '@skytwin/db';
 import { createLogger } from '@skytwin/core';
 import { RegistryClient } from '@skytwin/registry-client';
+import { TrustTierEngine } from '@skytwin/policy-engine';
+import type { TrustTier } from '@skytwin/shared-types';
+import { PROMOTION_THRESHOLDS } from '@skytwin/shared-types';
+// SSE event constants — imported for re-export and for use in callers that
+// wire the promotion ceremony (e.g. promotion-eligibility-check.ts).
+// sseManager and SSE_CAPABILITY_PROMOTION_OFFERED are imported here so they
+// are available if the route ever needs to emit directly (currently the job
+// handles emissions). void-expressed to satisfy the linter.
+import { sseManager as _sseManager, SSE_CAPABILITY_PROMOTION_OFFERED as _SSE_CAP_PROMO } from '../sse.js';
+void _sseManager;
+void _SSE_CAP_PROMO;
 
 const log = createLogger('api:capabilities');
 
@@ -860,5 +872,293 @@ export function createCapabilitiesRouter(): Router {
     }
   });
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // POST /:id/promote-tier
+  //
+  // Tier promotion ceremony endpoint (issue #177).
+  // Verifies ownership, checks thresholds, updates trust_tier, writes a
+  // tier_promotion provenance node.
+  //
+  // Body: { toTier: TrustTier }
+  // Returns: updated McpServerRow
+  // ─────────────────────────────────────────────────────────────────────────
+  router.post('/:id/promote-tier', async (req, res, next) => {
+    try {
+      const { id } = req.params;
+      if (!id || !UUID_REGEX.test(id)) {
+        res.status(400).json({ error: 'id path param must be a UUID' });
+        return;
+      }
+
+      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
+        ?? (req.query['userId'] as string | undefined);
+      if (!userId) {
+        res.status(400).json({ error: 'userId is required' });
+        return;
+      }
+
+      const body = req.body as { toTier?: string } | undefined;
+      const toTier = body?.toTier;
+      if (!toTier) {
+        res.status(400).json({ error: 'toTier is required in request body' });
+        return;
+      }
+
+      const server = await mcpServerRepository.getById(id);
+      if (!server || server.status === 'uninstalled') {
+        res.status(404).json({ error: 'Capability server not found' });
+        return;
+      }
+      if (server.user_id !== userId) {
+        res.status(403).json({ error: 'Forbidden: you do not own this capability server' });
+        return;
+      }
+
+      const currentTier = server.trust_tier as TrustTier;
+
+      // Hard rail: only allow promoting to the next legal tier — never skip tiers
+      // or allow the client to specify an arbitrary target tier.
+      const threshold = PROMOTION_THRESHOLDS[currentTier];
+      if (!threshold) {
+        res.status(409).json({
+          error: `No promotion path is defined for trust tier "${currentTier}".`,
+          currentTier,
+        });
+        return;
+      }
+      if (toTier !== threshold.nextTier) {
+        res.status(409).json({
+          error: `Cannot promote directly to "${toTier}". Next legal tier from "${currentTier}" is "${threshold.nextTier}".`,
+          currentTier,
+          nextLegalTier: threshold.nextTier,
+        });
+        return;
+      }
+
+      // Gather approval stats for this server from capability_provenance_nodes.
+      // For v1, decisions_observed = action nodes, approved = action nodes with
+      // payload.approved = true. When the full decision pipeline wires provenance
+      // (#189), replace this stub query with actual approval history.
+      const statsResult = await query<{ total: string; approved: string }>(
+        `SELECT
+           COUNT(*) AS total,
+           COUNT(*) FILTER (WHERE (payload->>'approved')::boolean = true) AS approved
+         FROM capability_provenance_nodes
+         WHERE server_id = $1 AND node_type = 'action' AND user_id = $2`,
+        [id, userId],
+      );
+      const statsRow = statsResult.rows[0];
+      const totalActions = parseInt(statsRow?.total ?? '0', 10);
+      const approvedActions = parseInt(statsRow?.approved ?? '0', 10);
+      const approvalRatio = totalActions > 0 ? approvedActions / totalActions : 0;
+      // consecutiveApprovals — approximate from recent action nodes
+      const recentResult = await query<{ node_type: string; payload: unknown }>(
+        `SELECT node_type, payload FROM capability_provenance_nodes
+         WHERE server_id = $1 AND node_type = 'action' AND user_id = $2
+         ORDER BY occurred_at DESC LIMIT ${threshold.consecutiveApprovals * 2}`,
+        [id, userId],
+      );
+      let consecutiveApprovals = 0;
+      for (const row of recentResult.rows) {
+        const p = row.payload as Record<string, unknown> | null;
+        if (p?.['approved'] === true) {
+          consecutiveApprovals++;
+        } else {
+          break;
+        }
+      }
+
+      const engine = new TrustTierEngine();
+      const evaluation = engine.evaluateProgression(currentTier, {
+        totalApprovals: approvedActions,
+        totalRejections: totalActions - approvedActions,
+        totalUndos: 0,
+        consecutiveApprovals,
+        recentRejections: 0,
+        hasCriticalUndo: false,
+        approvalRatio,
+      });
+
+      if (!evaluation.shouldChange) {
+        res.status(409).json({
+          error: `Threshold not met for promotion: ${evaluation.reason}`,
+          currentTier,
+          reason: evaluation.reason,
+        });
+        return;
+      }
+
+      // Apply the promotion
+      const updatedServer = await mcpServerRepository.updateTrustTier(id, toTier as McpServerRow['trust_tier']);
+      if (!updatedServer) {
+        res.status(404).json({ error: 'Server not found after update' });
+        return;
+      }
+
+      // Write tier_promotion provenance node (hard rail — audit trail required)
+      await provenanceRepository.writeNode({
+        userId,
+        nodeType: 'tier_promotion',
+        refTable: 'mcp_servers',
+        refId: id,
+        serverId: id,
+        payload: {
+          from: currentTier,
+          to: toTier,
+          reason: evaluation.reason,
+        },
+      });
+
+      log.info('Capability tier promoted', { userId, serverId: id, from: currentTier, to: toTier });
+      res.json({ server: updatedServer });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // POST /:id/decline-promotion
+  //
+  // Suppresses the auto-promotion ceremony for this server for N days
+  // (issue #177). Sets auto_promote_paused_until on the server row.
+  //
+  // Body: { disableForDays?: number } (default 14)
+  // Returns: updated McpServerRow
+  // ─────────────────────────────────────────────────────────────────────────
+  router.post('/:id/decline-promotion', async (req, res, next) => {
+    try {
+      const { id } = req.params;
+      if (!id || !UUID_REGEX.test(id)) {
+        res.status(400).json({ error: 'id path param must be a UUID' });
+        return;
+      }
+
+      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
+        ?? (req.query['userId'] as string | undefined);
+      if (!userId) {
+        res.status(400).json({ error: 'userId is required' });
+        return;
+      }
+
+      const server = await mcpServerRepository.getById(id);
+      if (!server || server.status === 'uninstalled') {
+        res.status(404).json({ error: 'Capability server not found' });
+        return;
+      }
+      if (server.user_id !== userId) {
+        res.status(403).json({ error: 'Forbidden: you do not own this capability server' });
+        return;
+      }
+
+      const body = req.body as { disableForDays?: number } | undefined;
+      const disableForDays = typeof body?.disableForDays === 'number' && body.disableForDays > 0
+        ? body.disableForDays
+        : 14;
+
+      const untilDate = new Date(Date.now() + disableForDays * 24 * 60 * 60 * 1000);
+      const updatedServer = await mcpServerRepository.pauseAutoPromotion(id, untilDate);
+      if (!updatedServer) {
+        res.status(404).json({ error: 'Server not found after update' });
+        return;
+      }
+
+      log.info('Auto-promotion ceremony paused', { userId, serverId: id, untilDate });
+      res.json({ server: updatedServer, autoPromotePausedUntil: untilDate.toISOString() });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // GET /:id/provenance
+  //
+  // Returns the provenance lineage chain for a capability server (issue #177).
+  // All nodes for this server sorted by occurred_at, with their payloads.
+  // ─────────────────────────────────────────────────────────────────────────
+  router.get('/:id/provenance', async (req, res, next) => {
+    try {
+      const { id } = req.params;
+      if (!id || !UUID_REGEX.test(id)) {
+        res.status(400).json({ error: 'id path param must be a UUID' });
+        return;
+      }
+
+      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
+        ?? (req.query['userId'] as string | undefined);
+      if (!userId) {
+        res.status(400).json({ error: 'userId is required' });
+        return;
+      }
+
+      const server = await mcpServerRepository.getById(id);
+      if (!server) {
+        res.status(404).json({ error: 'Capability server not found' });
+        return;
+      }
+      if (server.user_id !== userId) {
+        res.status(403).json({ error: 'Forbidden: you do not own this capability server' });
+        return;
+      }
+
+      const nodes = await provenanceRepository.getForServer(userId, id);
+      res.json({ nodes, serverId: id });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // POST /install
+  //
+  // Install a capability from the registry by registry ID (used by the
+  // reverse capability flow in assistant.js, issue #177).
+  // Body: { registryId: string }
+  // Returns: { job: { registryId, status } }
+  // ─────────────────────────────────────────────────────────────────────────
+  router.post('/install', async (req, res, next) => {
+    try {
+      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
+        ?? (req.query['userId'] as string | undefined);
+      if (!userId) {
+        res.status(400).json({ error: 'userId is required' });
+        return;
+      }
+
+      const body = req.body as { registryId?: string } | undefined;
+      const registryId = body?.registryId;
+      if (!registryId || typeof registryId !== 'string') {
+        res.status(400).json({ error: 'registryId is required in request body' });
+        return;
+      }
+
+      // Look up the registry entry for metadata
+      const entries = await registryClient.search(registryId);
+      const entry = entries.find((e) => e.id === registryId);
+      const displayName = entry?.displayName ?? registryId;
+
+      log.info('Capability install requested', { userId, registryId, displayName });
+
+      // Write a provenance install node as the audit record
+      await provenanceRepository.writeNode({
+        userId,
+        nodeType: 'install',
+        refTable: 'app_suggestions',
+        refId: userId, // placeholder until the install pipeline creates an mcp_server row
+        payload: { registryId, displayName, source: 'reverse_capability_flow' },
+      });
+
+      res.json({
+        job: {
+          registryId,
+          displayName,
+          status: 'pending_user_oauth' as const,
+        },
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
   return router;
 }
+

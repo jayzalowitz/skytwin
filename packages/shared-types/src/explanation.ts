@@ -16,6 +16,14 @@ export interface ExplanationRecord {
   correctionGuidance: string;
   riskTier: RiskTier;
   overallConfidence: ConfidenceLevel;
+  /**
+   * Optional link to a capability_provenance_nodes row.
+   * When set, the provenance lineage view can walk from action → explanation.
+   * Populated in issue #189 when the decision pipeline is wired to the
+   * capability execution path.
+   * TODO(#189): Populate this field in the action-execution path.
+   */
+  capabilityProvenanceNodeId?: string;
   createdAt: Date;
 }
 

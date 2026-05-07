@@ -3,12 +3,15 @@ import {
   fetchAssistantThread,
   deleteAssistantThread,
   sendAssistantMessageStream,
+  searchCapabilityRegistry,
+  installCapability,
   escapeHtml,
   renderApiError,
   wireApiRetry,
 } from '../api-client.js';
-import { assistantDraftKey } from '../storage-keys.js';
+import { assistantDraftKey, KEY_USER_ID } from '../storage-keys.js';
 import { showToast } from '../toast.js';
+import { renderTierPromotionModal } from '../components/tier-promotion-modal.js';
 
 // State for the currently-rendered thread. Module-scope because the click
 // delegator (singleton, document-level) needs to read the active thread to
@@ -41,6 +44,7 @@ let _assistantListenerWired = false;
 export async function renderAssistant(container, userId) {
   _state.userId = userId;
   ensureAssistantListener();
+  wirePromotionSseListener();
 
   // Initial fetch — threads and (if any) the most recent thread's messages.
   let threads = [];
@@ -340,6 +344,190 @@ function renderError(err) {
   });
 }
 
+// ── Reverse capability flow (issue #177) ─────────────────────────────────────
+//
+// v1 heuristic-based detector: after the assistant responds, scan the reply
+// for unfulfillable-intent phrases. If found, search the registry for matching
+// capabilities and surface an inline "Connect X to enable this" affordance.
+//
+// TODO(#189): Replace the heuristic with `runPrompt('reverse-capability-intent', context)`.
+// The one-line swap-in: `const intent = await runPrompt('reverse-capability-intent', { userMessage, reply });`
+// then use intent.registryId directly instead of the keyword scan below.
+//
+// Demo flows that work with the heuristic:
+//   1. "create a Linear issue"   → no Linear installed → "Connect Linear"
+//   2. "search Notion for X"     → no Notion          → "Connect Notion"
+//   3. "check my GitHub PRs"     → no GitHub          → "Connect GitHub"
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Phrases that indicate the assistant couldn't fulfill the request. */
+const UNFULFILLABLE_PHRASES = [
+  "i don't have access to",
+  "i can't",
+  "i'm not connected to",
+  "you'd need to connect",
+  "not connected",
+  "no access to",
+  "i'm unable to",
+  "i cannot",
+  "don't have the ability to",
+  "i lack access",
+];
+
+/** Service-name → registry-id hints for the heuristic detector. */
+const SERVICE_HINTS = [
+  { keywords: ['linear', 'linear issue', 'linear ticket'], registryId: 'linear-mcp', displayName: 'Linear' },
+  { keywords: ['notion', 'notion page', 'notion doc'], registryId: '@notionhq/notion-mcp-server', displayName: 'Notion' },
+  { keywords: ['github', 'github pr', 'github issue', 'pull request'], registryId: '@modelcontextprotocol/server-github', displayName: 'GitHub' },
+  { keywords: ['gmail', 'google mail', 'email'], registryId: 'gmail-mcp', displayName: 'Gmail' },
+  { keywords: ['google calendar', 'calendar', 'gcal'], registryId: 'google-calendar-mcp', displayName: 'Google Calendar' },
+  { keywords: ['slack'], registryId: '@modelcontextprotocol/server-slack', displayName: 'Slack' },
+  { keywords: ['google drive', 'gdrive', 'drive'], registryId: '@modelcontextprotocol/server-google-drive', displayName: 'Google Drive' },
+  { keywords: ['sqlite', 'database', 'db'], registryId: '@modelcontextprotocol/server-sqlite', displayName: 'SQLite' },
+  { keywords: ['filesystem', 'files', 'file system'], registryId: '@modelcontextprotocol/server-filesystem', displayName: 'Filesystem' },
+];
+
+/**
+ * Detect if a reply from the assistant indicates an unfulfillable intent.
+ * Returns true if any of the UNFULFILLABLE_PHRASES appear in the (lowercased) reply.
+ */
+function detectUnfulfillableReply(replyText) {
+  if (!replyText) return false;
+  const lower = replyText.toLowerCase();
+  return UNFULFILLABLE_PHRASES.some((phrase) => lower.includes(phrase));
+}
+
+/**
+ * Scan the user's message for known service names.
+ * Returns an array of { registryId, displayName } matches.
+ */
+function detectServiceHints(userMessage) {
+  if (!userMessage) return [];
+  const lower = userMessage.toLowerCase();
+  const matches = [];
+  for (const hint of SERVICE_HINTS) {
+    if (hint.keywords.some((kw) => lower.includes(kw))) {
+      matches.push({ registryId: hint.registryId, displayName: hint.displayName });
+    }
+  }
+  return matches;
+}
+
+/**
+ * After the assistant responds, check for reverse-capability opportunities.
+ * If found, render an inline "Connect X" affordance appended after the last
+ * assistant bubble.
+ *
+ * Falls back gracefully if registry-client throws.
+ *
+ * @param {string} userMessage  - the user's original message
+ * @param {string} replyText    - the assistant's full reply text
+ * @param {HTMLElement} container
+ */
+async function checkReverseCapabilityFlow(userMessage, replyText, container) {
+  try {
+    if (!detectUnfulfillableReply(replyText)) return;
+
+    const hints = detectServiceHints(userMessage);
+    if (hints.length === 0) {
+      // Fall back to registry search with the user's message as query
+      // TODO(#189): replace with runPrompt('reverse-capability-intent', ...)
+      return;
+    }
+
+    const affordances = hints.map((h) => `
+      <button class="btn btn-sm btn-outline"
+              data-action="reverse-capability-install"
+              data-registry-id="${escapeHtml(h.registryId)}"
+              data-display-name="${escapeHtml(h.displayName)}"
+              style="font-size: 0.82rem;">
+        Connect ${escapeHtml(h.displayName)}
+      </button>
+    `).join('');
+
+    // Append the inline suggestion below the last assistant bubble
+    const msgRegion = container.querySelector('[data-region="messages"]');
+    if (!msgRegion) return;
+
+    const existing = msgRegion.querySelector('.reverse-capability-affordance');
+    if (existing) existing.remove();
+
+    const affordanceEl = document.createElement('div');
+    affordanceEl.className = 'reverse-capability-affordance assistant-bubble assistant-bubble-assistant';
+    affordanceEl.style.cssText = 'display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; padding: 0.6rem 1rem;';
+    affordanceEl.innerHTML = `
+      <span style="font-size: 0.82rem; color: var(--text-dim); flex-basis: 100%; margin-bottom: 0.25rem;">
+        I can do this if you connect:
+      </span>
+      ${affordances}
+    `;
+    msgRegion.appendChild(affordanceEl);
+    msgRegion.scrollTop = msgRegion.scrollHeight;
+  } catch {
+    // Reverse flow is best-effort — never surface errors from this path
+  }
+}
+
+/**
+ * Handle the "Connect X" install button from the reverse capability affordance.
+ * Calls POST /api/capabilities/install and shows a toast.
+ */
+async function handleReverseCapabilityInstall(registryId, displayName) {
+  const userId = localStorage.getItem(KEY_USER_ID) || _state.userId || '';
+  if (!userId) {
+    showToast('Log in to connect capabilities.', { kind: 'warning' });
+    return;
+  }
+
+  showToast(`Connecting ${displayName}…`, { kind: 'info', durationMs: 2000 });
+
+  try {
+    await installCapability(registryId, userId);
+    showToast(`${displayName} connection started — complete OAuth to finish.`, { kind: 'success' });
+    // Remove the affordance once install is initiated
+    const affordanceEl = document.querySelector('.reverse-capability-affordance');
+    if (affordanceEl) affordanceEl.remove();
+  } catch (err) {
+    showToast(
+      `Couldn't connect ${displayName}: ${err?.message || 'unknown error'}`,
+      { kind: 'error' },
+    );
+  }
+}
+
+// Wire the tier-promotion-offered SSE event to the modal (issue #177).
+// This runs once when the assistant page first loads.
+// We subscribe on the global EventSource that app.js maintains.
+let _promotionSseWired = false;
+function wirePromotionSseListener() {
+  if (_promotionSseWired || typeof window === 'undefined') return;
+  _promotionSseWired = true;
+  // app.js exposes a window.__sseSource EventSource; subscribe to the event.
+  // If it's not available yet (race), we schedule a retry on the next renderAssistant.
+  const wireIt = () => {
+    const src = window['__sseSource'];
+    if (!src) return false;
+    src.addEventListener('capability:promotion-offered', (ev) => {
+      try {
+        const data = JSON.parse(ev.data);
+        renderTierPromotionModal({
+          serverName: data.serverName,
+          serverId: data.serverId,
+          currentTier: data.currentTier,
+          proposedTier: data.proposedTier,
+          decisionsObservedCount: data.decisionsObservedCount,
+          approvedCount: data.approvedCount,
+        });
+      } catch { /* ignore malformed events */ }
+    });
+    return true;
+  };
+  if (!wireIt()) {
+    // Retry after a tick in case app.js hasn't set window.__sseSource yet
+    setTimeout(wireIt, 500);
+  }
+}
+
 function formatThreadStamp(iso) {
   if (!iso) return '';
   const d = new Date(iso);
@@ -423,6 +611,10 @@ function ensureAssistantListener() {
       if (prompt) handleSuggestion(prompt);
     } else if (action === 'stop-stream') {
       handleStop();
+    } else if (action === 'reverse-capability-install') {
+      const registryId = btn.getAttribute('data-registry-id');
+      const displayName = btn.getAttribute('data-display-name') || registryId || '';
+      if (registryId) handleReverseCapabilityInstall(registryId, displayName);
     } else if (action === 'jump-latest') {
       const c = document.getElementById('page-content');
       if (c) {
@@ -701,6 +893,10 @@ async function handleSend() {
           .filter((m) => m.id !== streamingAssistantId)
           .concat([assistantMessage]);
         if (container) paint(container);
+        // Reverse capability flow (issue #177): check if the assistant's
+        // reply indicates an unfulfillable intent and surface install affordance.
+        // Best-effort — never blocks the render path.
+        checkReverseCapabilityFlow(content, assistantMessage.content, container).catch(() => {});
       },
       onError: ({ message, partialContent }) => {
         // Mid-stream error — keep the partial content if any, append an

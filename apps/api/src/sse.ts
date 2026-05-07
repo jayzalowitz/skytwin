@@ -142,6 +142,17 @@ export const sseManager = new SseConnectionManager();
 //   sseManager.emit(userId, SSE_CAPABILITY_INSTALLED, { serverId, registryId, displayName });
 //   sseManager.emit(userId, SSE_CAPABILITY_HEALTH,    { serverId, healthStatus });
 // ─────────────────────────────────────────────────────────────────────────────
-export const SSE_CAPABILITY_SUGGESTED = 'capability:suggested' as const;
-export const SSE_CAPABILITY_INSTALLED = 'capability:installed' as const;
-export const SSE_CAPABILITY_HEALTH    = 'capability:health'    as const;
+export const SSE_CAPABILITY_SUGGESTED  = 'capability:suggested'         as const;
+export const SSE_CAPABILITY_INSTALLED  = 'capability:installed'         as const;
+export const SSE_CAPABILITY_HEALTH     = 'capability:health'            as const;
+// issue #177 — tier promotion ceremony hook point.
+// Emitted when PROMOTION_THRESHOLDS is met for an active server that has not
+// yet been promoted. The web client subscribes to this and renders the
+// TierPromotionModal component.
+// Usage: sseManager.emit(userId, SSE_CAPABILITY_PROMOTION_OFFERED, {
+//   serverId, serverName, currentTier, proposedTier,
+//   decisionsObservedCount, approvedCount,
+// });
+// The actual emission is wired in the hourly promotion-eligibility-check
+// worker job (apps/worker/src/jobs/promotion-eligibility-check.ts).
+export const SSE_CAPABILITY_PROMOTION_OFFERED = 'capability:promotion-offered' as const;

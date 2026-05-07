@@ -10,6 +10,7 @@ import { renderOnboarding } from './pages/onboarding.js';
 import { renderCapabilities } from './pages/capabilities.js';
 import { renderCapabilityDetail } from './pages/capability-detail.js';
 import { renderAboutMe } from './pages/about-me.js';
+import { renderTwinBriefing } from './pages/twin-briefing.js';
 import { renderGlobalPauseButton } from './components/global-pause-button.js';
 import { fetchPendingApprovals, fetchHealth, fetchUser, listUsers, escapeHtml, isApiKnownOffline } from './api-client.js';
 import { initTheme } from './theme-switcher.js';
@@ -31,6 +32,7 @@ const routes = {
   '/setup': { title: 'Connect', render: renderSetup },
   '/capabilities': { title: 'Capabilities', render: renderCapabilities },
   '/about-me': { title: 'About me', render: renderAboutMe },
+  '/briefing': { title: 'Twin Briefing', render: renderTwinBriefing },
 };
 
 /**
