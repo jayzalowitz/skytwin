@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { mcpServerRepository, appSuggestionRepository, provenanceRepository, mcpServerMetricsRepository, query } from '@skytwin/db';
+import { mcpServerRepository, appSuggestionRepository, provenanceRepository, mcpServerMetricsRepository, mcpServerChangelogRepository, query } from '@skytwin/db';
 import type { McpServerRow } from '@skytwin/db';
 import type { Request } from 'express';
 import { createLogger } from '@skytwin/core';
@@ -1641,6 +1641,161 @@ export function createCapabilitiesRouter(): Router {
       }
 
       res.json({ nodes, edges });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // GET /:id/changelog
+  //
+  // Returns the most recently fetched changelog snapshot for a server.
+  // Returns 404 if no changelog has been fetched yet.
+  // Ownership check: server must belong to the requesting user.
+  // Issue #184 AC#2 — Capability changelog flow.
+  // ─────────────────────────────────────────────────────────────────────────
+  router.get('/:id/changelog', async (req, res, next) => {
+    try {
+      const { id } = req.params;
+      if (!id || !UUID_REGEX.test(id)) {
+        res.status(400).json({ error: 'id path param must be a UUID' });
+        return;
+      }
+
+      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
+        ?? (req.query['userId'] as string | undefined);
+      if (!userId) {
+        res.status(400).json({ error: 'userId is required' });
+        return;
+      }
+
+      const server = await mcpServerRepository.getById(id);
+      if (!server) {
+        res.status(404).json({ error: 'Capability server not found' });
+        return;
+      }
+      if (server.user_id !== userId) {
+        res.status(403).json({ error: 'Forbidden: you do not own this capability server' });
+        return;
+      }
+
+      const changelog = await mcpServerChangelogRepository.getForServer(id);
+      if (!changelog) {
+        res.status(404).json({ error: 'No changelog fetched yet for this server' });
+        return;
+      }
+
+      res.json({ changelog });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // GET /pending-opt-ins
+  //
+  // Returns all unresolved opt-in prompts for the requesting user.
+  // Used by the Capabilities page to surface the opt-in prompt feed.
+  // Issue #184 AC#2 — Capability changelog flow.
+  // ─────────────────────────────────────────────────────────────────────────
+  router.get('/pending-opt-ins', async (req, res, next) => {
+    try {
+      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
+        ?? (req.query['userId'] as string | undefined);
+      if (!userId) {
+        res.status(400).json({ error: 'userId is required' });
+        return;
+      }
+
+      const optIns = await mcpServerChangelogRepository.listPendingOptInsForUser(userId);
+      res.json({ optIns });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // POST /pending-opt-ins/:id/accept
+  //
+  // Accept a pending opt-in prompt.
+  // Verifies ownership via JOIN with mcp_servers (done in listPendingOptInsForUser
+  // cross-check — we re-check here by fetching and confirming user_id).
+  // Issue #184 AC#2 — Capability changelog flow.
+  // ─────────────────────────────────────────────────────────────────────────
+  router.post('/pending-opt-ins/:id/accept', async (req, res, next) => {
+    try {
+      const { id } = req.params;
+      if (!id || !UUID_REGEX.test(id)) {
+        res.status(400).json({ error: 'id path param must be a UUID' });
+        return;
+      }
+
+      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
+        ?? (req.query['userId'] as string | undefined);
+      if (!userId) {
+        res.status(400).json({ error: 'userId is required' });
+        return;
+      }
+
+      // Ownership check: the opt-in must be for a server owned by this user.
+      // We re-use listPendingOptInsForUser which filters by user_id.
+      const userOptIns = await mcpServerChangelogRepository.listPendingOptInsForUser(userId);
+      const optIn = userOptIns.find((o) => o.id === id);
+      if (!optIn) {
+        res.status(404).json({ error: 'Pending opt-in not found or already resolved' });
+        return;
+      }
+
+      const result = await mcpServerChangelogRepository.acceptOptIn(id);
+      if (!result.found) {
+        res.status(409).json({ error: 'Opt-in already accepted or rejected' });
+        return;
+      }
+
+      log.info('Skill opt-in accepted', { userId, optInId: id, skillName: optIn.skill_name, serverId: optIn.server_id });
+      res.status(204).end();
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // POST /pending-opt-ins/:id/reject
+  //
+  // Reject a pending opt-in prompt.
+  // Issue #184 AC#2 — Capability changelog flow.
+  // ─────────────────────────────────────────────────────────────────────────
+  router.post('/pending-opt-ins/:id/reject', async (req, res, next) => {
+    try {
+      const { id } = req.params;
+      if (!id || !UUID_REGEX.test(id)) {
+        res.status(400).json({ error: 'id path param must be a UUID' });
+        return;
+      }
+
+      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
+        ?? (req.query['userId'] as string | undefined);
+      if (!userId) {
+        res.status(400).json({ error: 'userId is required' });
+        return;
+      }
+
+      // Ownership check: same pattern as accept above.
+      const userOptIns = await mcpServerChangelogRepository.listPendingOptInsForUser(userId);
+      const optIn = userOptIns.find((o) => o.id === id);
+      if (!optIn) {
+        res.status(404).json({ error: 'Pending opt-in not found or already resolved' });
+        return;
+      }
+
+      const result = await mcpServerChangelogRepository.rejectOptIn(id);
+      if (!result.found) {
+        res.status(409).json({ error: 'Opt-in already accepted or rejected' });
+        return;
+      }
+
+      log.info('Skill opt-in rejected', { userId, optInId: id, skillName: optIn.skill_name, serverId: optIn.server_id });
+      res.status(204).end();
     } catch (err) {
       next(err);
     }

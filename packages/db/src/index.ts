@@ -120,6 +120,13 @@ export type {
   SparklinePoint,
 } from './repositories/index.js';
 export type { ForwardedSignalRow } from './repositories/index.js';
+
+export { mcpServerChangelogRepository } from './repositories/index.js';
+export type {
+  McpServerChangelogRow,
+  UpsertChangelogInput,
+  PendingSkillOptInRow,
+} from './repositories/index.js';
 export type { ConnectorCursorRow } from './repositories/index.js';
 export type { SessionRow } from './repositories/index.js';
 export type {

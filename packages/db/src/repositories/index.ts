@@ -152,3 +152,10 @@ export type {
   MetricsBucketRow,
   SparklinePoint,
 } from './mcp-server-metrics-repository.js';
+
+export { mcpServerChangelogRepository } from './mcp-server-changelog-repository.js';
+export type {
+  McpServerChangelogRow,
+  UpsertChangelogInput,
+  PendingSkillOptInRow,
+} from './mcp-server-changelog-repository.js';

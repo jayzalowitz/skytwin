@@ -866,3 +866,25 @@ export function postOnboardingComplete(userId, choice, recipeSlug) {
     body: JSON.stringify({ choice, recipeSlug }),
   });
 }
+
+// ── Capability changelog + skill opt-ins (#184 AC#2) ─────────────────────────
+
+export function fetchCapabilityChangelog(serverId, userId) {
+  return fetchJSON(`${API}/capabilities/${encodeURIComponent(serverId)}/changelog?userId=${encodeURIComponent(userId)}`);
+}
+
+export function fetchPendingSkillOptIns(userId) {
+  return fetchJSON(`${API}/capabilities/pending-opt-ins?userId=${encodeURIComponent(userId)}`);
+}
+
+export function acceptSkillOptIn(optInId, userId) {
+  return fetchJSON(`${API}/capabilities/pending-opt-ins/${encodeURIComponent(optInId)}/accept?userId=${encodeURIComponent(userId)}`, {
+    method: 'POST',
+  });
+}
+
+export function rejectSkillOptIn(optInId, userId) {
+  return fetchJSON(`${API}/capabilities/pending-opt-ins/${encodeURIComponent(optInId)}/reject?userId=${encodeURIComponent(userId)}`, {
+    method: 'POST',
+  });
+}
