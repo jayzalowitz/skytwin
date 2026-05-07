@@ -124,3 +124,24 @@ class SseConnectionManager {
 
 /** Singleton SSE connection manager */
 export const sseManager = new SseConnectionManager();
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Capability-lifecycle event type declarations (issue #176).
+//
+// These event type strings are declared here so the frontend SSE listener
+// can subscribe to them consistently. Emitters are wired downstream once
+// the install pipeline and health-check polling are plumbed in.
+//
+// Event types:
+//   capability:suggested — a new AppSuggestion has been created for the user
+//   capability:installed — an mcp_server has transitioned to status='active'
+//   capability:health    — an mcp_server's health_status has changed
+//
+// Usage (when wiring emitters, call sseManager.emit(userId, EVENT_TYPE, data)):
+//   sseManager.emit(userId, SSE_CAPABILITY_SUGGESTED, { suggestionId, registryId, displayName });
+//   sseManager.emit(userId, SSE_CAPABILITY_INSTALLED, { serverId, registryId, displayName });
+//   sseManager.emit(userId, SSE_CAPABILITY_HEALTH,    { serverId, healthStatus });
+// ─────────────────────────────────────────────────────────────────────────────
+export const SSE_CAPABILITY_SUGGESTED = 'capability:suggested' as const;
+export const SSE_CAPABILITY_INSTALLED = 'capability:installed' as const;
+export const SSE_CAPABILITY_HEALTH    = 'capability:health'    as const;

@@ -68,6 +68,9 @@ importers:
       '@skytwin/policy-engine':
         specifier: workspace:*
         version: link:../../packages/policy-engine
+      '@skytwin/registry-client':
+        specifier: workspace:*
+        version: link:../../packages/registry-client
       '@skytwin/shared-types':
         specifier: workspace:*
         version: link:../../packages/shared-types

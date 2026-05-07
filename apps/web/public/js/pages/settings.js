@@ -133,6 +133,21 @@ export async function renderSettings(container, userId) {
       </div>
     </div>
 
+    <!-- TODO: delete the standalone Google block above 14 days post-launch of
+         the Capabilities page (#176). Capabilities (including Google connectors)
+         are managed via the dedicated Capabilities page linked below.
+         The block remains here during the rollback window. -->
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Capabilities</span>
+      </div>
+      <div class="card-subtitle" style="margin-bottom: 1rem;">
+        Manage which skills your twin has access to — install MCP servers,
+        review suggestions, and browse the registry.
+      </div>
+      <a href="#/capabilities" class="btn">Open Capabilities →</a>
+    </div>
+
     <details class="card collapsible-card" id="ai-brain-card">
       <summary class="card-header collapsible-header">
         <span class="card-title">${aiProviders.length > 0 ? 'AI brain — connected providers' : 'AI brain — needed for Chat (optional otherwise)'}</span>

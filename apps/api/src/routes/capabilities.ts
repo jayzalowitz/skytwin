@@ -1,10 +1,107 @@
 import { Router } from 'express';
-import { mcpServerRepository, query } from '@skytwin/db';
+import { mcpServerRepository, appSuggestionRepository, query } from '@skytwin/db';
 import { createLogger } from '@skytwin/core';
+import { RegistryClient } from '@skytwin/registry-client';
 
 const log = createLogger('api:capabilities');
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Singleton registry client for the lifetime of the process.
+// RegistryClient reads curated.json on construction; constructing once
+// avoids re-parsing the file on every request.
+const registryClient = new RegistryClient();
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Hardcoded recipes (v1). Each recipe bundles a set of registry IDs that a
+// user can install with one click. The install endpoint returns job
+// descriptors — the actual install pipeline wiring is deferred to the
+// mcp-host integration (#176 follow-up).
+// ─────────────────────────────────────────────────────────────────────────────
+interface CapabilityRecipe {
+  slug: string;
+  displayName: string;
+  description: string;
+  registryIds: string[];
+  category: 'developer' | 'productivity' | 'lifestyle';
+}
+
+const CAPABILITY_RECIPES: CapabilityRecipe[] = [
+  {
+    slug: 'developer-pack',
+    displayName: 'Developer pack',
+    description: 'Everything you need to work with code: GitHub, Linear, Notion, Slack, filesystem access, Git, and SQLite.',
+    registryIds: [
+      '@modelcontextprotocol/server-github',
+      'linear-mcp',
+      '@notionhq/notion-mcp-server',
+      '@modelcontextprotocol/server-slack',
+      '@modelcontextprotocol/server-filesystem',
+      '@modelcontextprotocol/server-git',
+      '@modelcontextprotocol/server-sqlite',
+    ],
+    category: 'developer',
+  },
+  {
+    slug: 'productivity-pack',
+    displayName: 'Productivity pack',
+    description: 'Keep your inbox and calendar in order: Gmail, Google Calendar, Notion, and Slack.',
+    registryIds: [
+      'gmail-mcp',
+      'google-calendar-mcp',
+      '@notionhq/notion-mcp-server',
+      '@modelcontextprotocol/server-slack',
+    ],
+    category: 'productivity',
+  },
+  {
+    slug: 'travel-pack',
+    displayName: 'Travel pack',
+    description: 'Plan and book travel. Community MCPs for Booking, Expedia, and flight search — install once they publish.',
+    registryIds: [
+      // TODO: replace with real IDs once Booking/Expedia MCPs are published
+      'booking-mcp-placeholder',
+      'expedia-mcp-placeholder',
+      'flight-search-mcp-placeholder',
+    ],
+    category: 'lifestyle',
+  },
+  {
+    slug: 'research-pack',
+    displayName: 'Research pack',
+    description: 'Augment your thinking with web search, Brave Search, and Exa semantic search.',
+    registryIds: [
+      '@modelcontextprotocol/server-brave-search',
+      'exa-mcp-server',
+      '@modelcontextprotocol/server-fetch',
+    ],
+    category: 'developer',
+  },
+  {
+    slug: 'data-pack',
+    displayName: 'Data pack',
+    description: 'Work with structured data: SQLite, PostgreSQL, Google Drive, and the filesystem.',
+    registryIds: [
+      '@modelcontextprotocol/server-sqlite',
+      '@modelcontextprotocol/server-postgres',
+      '@modelcontextprotocol/server-google-drive',
+      '@modelcontextprotocol/server-filesystem',
+    ],
+    category: 'developer',
+  },
+  {
+    slug: 'lifestyle-pack',
+    displayName: 'Lifestyle pack',
+    description: 'Manage your home and life: smart home controls, shopping lists, and reminders.',
+    registryIds: [
+      // TODO: add real smart-home MCP IDs as community publishes them
+      'smart-home-mcp-placeholder',
+      'reminders-mcp-placeholder',
+      'shopping-mcp-placeholder',
+    ],
+    category: 'lifestyle',
+  },
+];
 
 /**
  * Write an audit node into capability_provenance_nodes.
@@ -374,6 +471,329 @@ export function createCapabilitiesRouter(): Router {
       }));
 
       res.json({ wouldHaveActions });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // GET /
+  // Returns installed, suggestions, and dormant capability servers for the
+  // requesting user.
+  // ─────────────────────────────────────────────────────────────────────────
+  router.get('/', async (req, res, next) => {
+    try {
+      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
+        ?? (req.query['userId'] as string | undefined);
+      if (!userId) {
+        res.status(400).json({ error: 'userId is required' });
+        return;
+      }
+
+      const [allServers, suggestions] = await Promise.all([
+        mcpServerRepository.listForUser(userId),
+        appSuggestionRepository.getPendingForUser(userId),
+      ]);
+
+      const installed = allServers.filter(
+        (s) => s.status === 'active' || s.status === 'installed' || s.status === 'authorized',
+      );
+      const dormant = allServers.filter((s) => s.status === 'dormant' || s.status === 'paused');
+
+      res.json({ installed, suggestions, dormant });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // GET /suggestions
+  // Returns pending app_suggestions for the requesting user (standalone).
+  // ─────────────────────────────────────────────────────────────────────────
+  router.get('/suggestions', async (req, res, next) => {
+    try {
+      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
+        ?? (req.query['userId'] as string | undefined);
+      if (!userId) {
+        res.status(400).json({ error: 'userId is required' });
+        return;
+      }
+
+      const suggestions = await appSuggestionRepository.getPendingForUser(userId);
+      res.json({ suggestions });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // POST /suggestions/:id/dismiss
+  // Dismiss a suggestion. Verifies ownership before mutating.
+  // ─────────────────────────────────────────────────────────────────────────
+  router.post('/suggestions/:id/dismiss', async (req, res, next) => {
+    try {
+      const { id } = req.params;
+      if (!id || !UUID_REGEX.test(id)) {
+        res.status(400).json({ error: 'id path param must be a UUID' });
+        return;
+      }
+
+      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
+        ?? (req.query['userId'] as string | undefined);
+      if (!userId) {
+        res.status(400).json({ error: 'userId is required' });
+        return;
+      }
+
+      // Fetch active suggestions (pending + snoozed) to find + verify ownership
+      // before mutating. repository's markDismissed doesn't take a userId parameter
+      // so we cross-check here.
+      const allSuggestions = await appSuggestionRepository.getActiveForUser(userId);
+      const suggestion = allSuggestions.find((s) => s.id === id);
+
+      if (!suggestion) {
+        // Try to get it anyway — might be dismissed already
+        res.status(404).json({ error: 'Suggestion not found' });
+        return;
+      }
+
+      if (suggestion.user_id !== userId) {
+        res.status(403).json({ error: 'Forbidden: you do not own this suggestion' });
+        return;
+      }
+
+      await appSuggestionRepository.markDismissed(id);
+      res.status(204).end();
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // POST /suggestions/:id/snooze
+  // Snooze a suggestion. Body: { untilDays: number }.
+  // ─────────────────────────────────────────────────────────────────────────
+  router.post('/suggestions/:id/snooze', async (req, res, next) => {
+    try {
+      const { id } = req.params;
+      if (!id || !UUID_REGEX.test(id)) {
+        res.status(400).json({ error: 'id path param must be a UUID' });
+        return;
+      }
+
+      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
+        ?? (req.query['userId'] as string | undefined);
+      if (!userId) {
+        res.status(400).json({ error: 'userId is required' });
+        return;
+      }
+
+      const body = req.body as { untilDays?: number } | undefined;
+      const untilDays = typeof body?.untilDays === 'number' && body.untilDays > 0
+        ? body.untilDays
+        : 7;
+
+      const allSuggestions = await appSuggestionRepository.getActiveForUser(userId);
+      const suggestion = allSuggestions.find((s) => s.id === id);
+
+      if (!suggestion) {
+        res.status(404).json({ error: 'Suggestion not found' });
+        return;
+      }
+
+      if (suggestion.user_id !== userId) {
+        res.status(403).json({ error: 'Forbidden: you do not own this suggestion' });
+        return;
+      }
+
+      const untilDate = new Date(Date.now() + untilDays * 24 * 60 * 60 * 1000);
+      await appSuggestionRepository.markSnoozed(id, untilDate);
+      res.json({ snoozedUntil: untilDate.toISOString() });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // GET /registry
+  // Proxies to RegistryClient.search() with optional ?q= and ?category= filters.
+  // v1: returns all matching entries with nextCursor=null (no pagination).
+  // ─────────────────────────────────────────────────────────────────────────
+  router.get('/registry', async (req, res, next) => {
+    try {
+      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
+        ?? (req.query['userId'] as string | undefined);
+      if (!userId) {
+        res.status(400).json({ error: 'userId is required' });
+        return;
+      }
+
+      const q = typeof req.query['q'] === 'string' ? req.query['q'] : '';
+      const category = typeof req.query['category'] === 'string' ? req.query['category'] : '';
+
+      let entries = await registryClient.search(q);
+
+      if (category) {
+        entries = entries.filter((e) => e.category === category);
+      }
+
+      res.json({ entries, nextCursor: null });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // GET /recipes
+  // Returns the 6 hardcoded recipe definitions.
+  // ─────────────────────────────────────────────────────────────────────────
+  router.get('/recipes', async (req, res, next) => {
+    try {
+      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
+        ?? (req.query['userId'] as string | undefined);
+      if (!userId) {
+        res.status(400).json({ error: 'userId is required' });
+        return;
+      }
+
+      res.json({ recipes: CAPABILITY_RECIPES });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // POST /recipes/:slug/install
+  // Look up a recipe and return placeholder install job descriptors.
+  // Does NOT start actual MCP server installs — that wiring goes through
+  // @skytwin/mcp-host which is an adapter, not HTTP-callable from here.
+  // TODO (#176 follow-up): wire the mcp-host install pipeline once the
+  // adapter exposes a programmatic install() method.
+  // ─────────────────────────────────────────────────────────────────────────
+  router.post('/recipes/:slug/install', async (req, res, next) => {
+    try {
+      const { slug } = req.params;
+
+      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
+        ?? (req.query['userId'] as string | undefined);
+      if (!userId) {
+        res.status(400).json({ error: 'userId is required' });
+        return;
+      }
+
+      const recipe = CAPABILITY_RECIPES.find((r) => r.slug === slug);
+      if (!recipe) {
+        res.status(404).json({ error: `Recipe '${slug}' not found` });
+        return;
+      }
+
+      // Return a job descriptor per registry ID. The actual install is
+      // deferred — pending_user_oauth means the user still needs to
+      // authorise each server that requires OAuth.
+      const jobs = recipe.registryIds.map((registryId) => ({
+        registryId,
+        status: 'pending_user_oauth' as const,
+      }));
+
+      log.info('Recipe install requested', { userId, slug, count: jobs.length });
+      res.json({ jobs });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // GET /dependency-graph
+  // Returns nodes + edges for a D3 force-directed capability graph.
+  // Nodes are skills from mcp_server_skills joined to installed servers.
+  // Edges represent "if you have server X, here are the skills it brings".
+  // v1: derives from mcp_server_skills; marks TODO for smarter inference.
+  // Falls back to a deterministic example shape if the schema query fails.
+  // ─────────────────────────────────────────────────────────────────────────
+  router.get('/dependency-graph', async (req, res, next) => {
+    try {
+      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
+        ?? (req.query['userId'] as string | undefined);
+      if (!userId) {
+        res.status(400).json({ error: 'userId is required' });
+        return;
+      }
+
+      // TODO (#176 follow-up): replace with a smarter skill-gap inference
+      // query once mcp_server_skills is fully populated by the install pipeline.
+      // For now, query what we have and fall back to a deterministic example
+      // shape so the D3 vis always has something to render.
+      let nodes: Array<{ id: string; label: string; installed: boolean }> = [];
+      let edges: Array<{ from: string; to: string }> = [];
+
+      try {
+        const installedServers = await mcpServerRepository.listForUser(userId);
+        const installedIds = new Set(
+          installedServers
+            .filter((s) => s.status === 'active' || s.status === 'installed' || s.status === 'authorized')
+            .map((s) => s.id),
+        );
+
+        // Pull skills from mcp_server_skills for installed servers
+        const skillResult = await query<{ server_id: string; skill_name: string; server_display_name: string }>(
+          `SELECT mss.server_id, mss.skill_name, ms.display_name AS server_display_name
+           FROM mcp_server_skills mss
+           JOIN mcp_servers ms ON ms.id = mss.server_id
+           WHERE ms.user_id = $1
+             AND ms.status IN ('active', 'installed', 'authorized')
+           LIMIT 200`,
+          [userId],
+        );
+
+        // Build nodes: one node per server + one per skill
+        const serverNodes = new Map<string, { id: string; label: string; installed: boolean }>();
+        const skillNodes = new Map<string, { id: string; label: string; installed: boolean }>();
+
+        for (const row of skillResult.rows) {
+          const serverId = `server:${row.server_id}`;
+          const skillId = `skill:${row.skill_name}`;
+
+          if (!serverNodes.has(serverId)) {
+            serverNodes.set(serverId, {
+              id: serverId,
+              label: row.server_display_name,
+              installed: installedIds.has(row.server_id),
+            });
+          }
+
+          if (!skillNodes.has(skillId)) {
+            skillNodes.set(skillId, { id: skillId, label: row.skill_name, installed: true });
+          }
+
+          edges.push({ from: serverId, to: skillId });
+        }
+
+        nodes = [...serverNodes.values(), ...skillNodes.values()];
+      } catch (queryErr) {
+        log.warn('dependency-graph: skill query failed, using fallback', {
+          error: queryErr instanceof Error ? queryErr.message : String(queryErr),
+        });
+      }
+
+      // If we have nothing (no mcp_server_skills rows yet), return a
+      // deterministic example shape so the D3 vis always renders.
+      if (nodes.length === 0) {
+        nodes = [
+          { id: 'server:github', label: 'GitHub', installed: false },
+          { id: 'server:gmail', label: 'Gmail', installed: false },
+          { id: 'server:notion', label: 'Notion', installed: false },
+          { id: 'skill:create_issue', label: 'Create issue', installed: false },
+          { id: 'skill:read_email', label: 'Read email', installed: false },
+          { id: 'skill:write_page', label: 'Write page', installed: false },
+        ];
+        edges = [
+          { from: 'server:github', to: 'skill:create_issue' },
+          { from: 'server:gmail', to: 'skill:read_email' },
+          { from: 'server:notion', to: 'skill:write_page' },
+        ];
+      }
+
+      res.json({ nodes, edges });
     } catch (err) {
       next(err);
     }
