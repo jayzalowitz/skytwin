@@ -136,3 +136,9 @@ export type {
 
 export { onboardingRepository } from './onboarding-repository.js';
 export type { OnboardingStateRow } from './onboarding-repository.js';
+
+export { externalAgentTokenRepository } from './external-agent-token-repository.js';
+export type {
+  ExternalAgentTokenRow,
+  CreateExternalAgentTokenInput,
+} from './external-agent-token-repository.js';

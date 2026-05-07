@@ -32,6 +32,7 @@ import { createRiskProfileRouter } from './routes/risk-profile.js';
 import { createAboutMeRouter } from './routes/about-me.js';
 import { createTwinBriefingsRouter } from './routes/twin-briefings.js';
 import { createOnboardingRouter } from './routes/onboarding.js';
+import { createExternalAgentsRouter } from './routes/external-agents.js';
 import { getExecutionRouter } from './execution-setup.js';
 import { startMdnsAdvertisement, stopMdnsAdvertisement } from './mdns.js';
 import { closePool } from '@skytwin/db';
@@ -209,6 +210,7 @@ app.use('/api/risk-profile', sessionAuth, requireOwnership, createRiskProfileRou
 app.use('/api/about-me', sessionAuth, requireOwnership, createAboutMeRouter());
 app.use('/api/twin-briefings', sessionAuth, requireOwnership, createTwinBriefingsRouter());
 app.use('/api/onboarding', sessionAuth, requireOwnership, createOnboardingRouter());
+app.use('/api/external-agents', sessionAuth, requireOwnership, createExternalAgentsRouter());
 
 // Error handling middleware
 app.use(
