@@ -18,6 +18,8 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
+    "@skytwin/llm-client": "workspace:*",
+    "@skytwin/policy-prompts": "workspace:*",
     "@skytwin/shared-types": "workspace:*"
   },
   "devDependencies": {

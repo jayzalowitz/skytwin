@@ -17,7 +17,9 @@
     "@skytwin/core": "workspace:*",
     "@skytwin/db": "workspace:*",
     "@skytwin/ironclaw-adapter": "workspace:*",
+    "@skytwin/llm-client": "workspace:*",
     "@skytwin/policy-engine": "workspace:*",
+    "@skytwin/policy-prompts": "workspace:*",
     "@skytwin/registry-client": "workspace:*",
     "@skytwin/shared-types": "workspace:*"
   },
