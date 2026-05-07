@@ -6,7 +6,7 @@ export {
   RiskDimension,
 } from './enums.js';
 
-export type { User, AutonomySettings } from './user.js';
+export type { User, AutonomySettings, PerAppOverride } from './user.js';
 
 export type {
   TwinProfile,

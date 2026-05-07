@@ -1,0 +1,88 @@
+{
+  "@notionhq/notion-mcp-server": {
+    "authMode": "oauth2",
+    "authorizeUrl": "https://api.notion.com/v1/oauth/authorize",
+    "tokenUrl": "https://api.notion.com/v1/oauth/token",
+    "scopes": ["read_content", "update_content", "insert_content", "read_user", "read_user.without_email"],
+    "envVarMapping": {
+      "NOTION_API_TOKEN": "access_token"
+    },
+    "notes": "Notion uses workspace-scoped tokens — surface a workspace picker before the OAuth handshake. The integration must be added to individual pages/databases by the user after authorization. Internal integrations use a plain API key instead of OAuth."
+  },
+  "linear-mcp": {
+    "authMode": "oauth2",
+    "authorizeUrl": "https://linear.app/oauth/authorize",
+    "tokenUrl": "https://api.linear.app/oauth/token",
+    "scopes": ["read", "write", "issues:create", "comments:create"],
+    "envVarMapping": {
+      "LINEAR_API_KEY": "access_token"
+    },
+    "notes": "Linear also supports personal API keys (Settings → API). Prefer API keys for single-user setups; OAuth for multi-user. Access tokens expire after 10 years but can be revoked in the Linear dashboard."
+  },
+  "@modelcontextprotocol/server-slack": {
+    "authMode": "oauth2",
+    "authorizeUrl": "https://slack.com/oauth/v2/authorize",
+    "tokenUrl": "https://slack.com/api/oauth.v2.access",
+    "scopes": ["channels:history", "channels:read", "chat:write", "groups:history", "groups:read", "im:history", "users:read"],
+    "envVarMapping": {
+      "SLACK_BOT_TOKEN": "access_token"
+    },
+    "notes": "Slack issues two token types: xoxb- (bot tokens) and xoxp- (user tokens). Use xoxb- tokens for bot actions like posting messages. Use xoxp- tokens only when you need to act as a specific user. The Bot Token Scopes and User Token Scopes are configured separately in the app manifest. Store xoxb- in SLACK_BOT_TOKEN."
+  },
+  "@modelcontextprotocol/server-github": {
+    "authMode": "oauth2",
+    "authorizeUrl": "https://github.com/login/oauth/authorize",
+    "tokenUrl": "https://github.com/login/oauth/access_token",
+    "scopes": ["repo", "read:user", "read:org"],
+    "envVarMapping": {
+      "GITHUB_TOKEN": "access_token"
+    },
+    "notes": "GitHub supports both classic PATs and fine-grained PATs. Fine-grained PATs (github.com/settings/personal-access-tokens) are preferred as they are scoped to specific repos and permissions. For OAuth apps the classic scopes still apply. Never use `repo` scope with write access unless the workflow requires commits or PR creation."
+  },
+  "@modelcontextprotocol/server-google-drive": {
+    "authMode": "oauth2",
+    "authorizeUrl": "https://accounts.google.com/o/oauth2/v2/auth",
+    "tokenUrl": "https://oauth2.googleapis.com/token",
+    "scopes": [
+      "https://www.googleapis.com/auth/drive.readonly",
+      "https://www.googleapis.com/auth/drive.file"
+    ],
+    "envVarMapping": {
+      "GOOGLE_CLIENT_ID": "client_id",
+      "GOOGLE_CLIENT_SECRET": "client_secret",
+      "GOOGLE_REFRESH_TOKEN": "refresh_token"
+    },
+    "notes": "Requires access_type=offline in the authorization URL to receive a refresh_token on first auth. Without offline access the token expires in 1 hour with no way to refresh. For domain-wide access in Google Workspace use a Service Account with domain-wide delegation instead of user OAuth."
+  },
+  "gmail-mcp": {
+    "authMode": "oauth2",
+    "authorizeUrl": "https://accounts.google.com/o/oauth2/v2/auth",
+    "tokenUrl": "https://oauth2.googleapis.com/token",
+    "scopes": [
+      "https://www.googleapis.com/auth/gmail.readonly",
+      "https://www.googleapis.com/auth/gmail.send",
+      "https://www.googleapis.com/auth/gmail.modify"
+    ],
+    "envVarMapping": {
+      "GMAIL_CLIENT_ID": "client_id",
+      "GMAIL_CLIENT_SECRET": "client_secret",
+      "GMAIL_REFRESH_TOKEN": "refresh_token"
+    },
+    "notes": "Use access_type=offline and prompt=consent when requesting authorization to guarantee receiving a refresh_token even if the user has previously authorized the app. Use the narrowest scope required: gmail.readonly if write access is not needed. The gmail.modify scope covers labeling and archiving without send permission."
+  },
+  "google-calendar-mcp": {
+    "authMode": "oauth2",
+    "authorizeUrl": "https://accounts.google.com/o/oauth2/v2/auth",
+    "tokenUrl": "https://oauth2.googleapis.com/token",
+    "scopes": [
+      "https://www.googleapis.com/auth/calendar.readonly",
+      "https://www.googleapis.com/auth/calendar.events"
+    ],
+    "envVarMapping": {
+      "GOOGLE_CLIENT_ID": "client_id",
+      "GOOGLE_CLIENT_SECRET": "client_secret",
+      "GOOGLE_REFRESH_TOKEN": "refresh_token"
+    },
+    "notes": "Requires access_type=offline for refresh tokens. The calendar.events scope allows creating and editing events but not deleting calendars. Use calendar.readonly for read-only access. Google Calendar API has a per-user quota of 1,000,000 queries/day; batch requests if reading many events."
+  }
+}

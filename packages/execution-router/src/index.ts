@@ -5,6 +5,7 @@ export {
   IRONCLAW_TRUST_PROFILE,
   OPENCLAW_TRUST_PROFILE,
   DIRECT_TRUST_PROFILE,
+  MCP_HOST_TRUST_PROFILE,
   type AdapterEntry,
 } from './adapter-registry.js';
 

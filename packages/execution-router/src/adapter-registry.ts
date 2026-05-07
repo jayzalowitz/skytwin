@@ -38,6 +38,22 @@ export const DIRECT_TRUST_PROFILE: AdapterTrustProfile = {
 };
 
 /**
+ * Trust profile for the MCP host adapter (Capability Acquisition Loop, #173).
+ *
+ * MCP servers can be community-published, so we treat the surface as
+ * partially-reversible (some servers expose paired undo tools, most don't)
+ * and add a small risk modifier. Per-server zero-trust isolation (#183)
+ * tightens this further when enabled by the user.
+ */
+export const MCP_HOST_TRUST_PROFILE: AdapterTrustProfile = {
+  name: 'mcp-host',
+  reversibilityGuarantee: 'partial',
+  authModel: 'oauth',
+  auditTrail: true,
+  riskModifier: 1,
+};
+
+/**
  * Registry that maps adapter names to their implementation and trust profile.
  *
  * Each adapter is registered with a unique name and an associated trust profile

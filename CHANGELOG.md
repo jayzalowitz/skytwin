@@ -1,5 +1,69 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [unreleased] — Capability Acquisition Loop foundation (#173)
+
+First child of Epic #195 (Capability Acquisition Loop). Establishes the
+MCP-as-capability-port and per-app autonomy primitives that the rest of
+Phase 1 builds on. Companion architecture document: `docs/architecture-philosophy.md`.
+
+### Added — `@skytwin/mcp-host`
+
+New package implementing `IronClawAdapter` over MCP (Model Context Protocol).
+Stdio + HTTP/SSE transports. Each MCP server runs under `@skytwin/core`
+`CircuitBreaker`: 3 failures in 60s → status `failed`, no auto-restart loop.
+Per-server resource limits (memory cap via `--max-old-space-size`, CPU/no-egress
+are container-level placeholders documented for #180/#183). Best-effort rollback
+via paired `*_undo` / `unsend_*` heuristics. 23 unit tests passing + 3 skipped
+real-MCP-server integration tests TODO'd for follow-up commit.
+
+### Added — `@skytwin/registry-client`
+
+New package projecting a unified MCP server catalog. Embedded `data/curated.json`
+ships 66 hand-vetted entries (15 Anthropic-verified reference servers + 51
+community), distributed across 9 categories (developer, productivity, lifestyle,
+data, search, media, home, finance, social). Works without internet access.
+Smithery API client augments the embedded list nightly; falls back to embedded
+on 5xx; rolling-1h failure window with `circuit_open` after 3 failures. 19 unit
+tests passing.
+
+`data/oauth_quirks.json` documents per-server OAuth handoff quirks for
+notion, linear, slack, github, google-drive, gmail, google-calendar.
+
+### Added — Per-app autonomy overrides
+
+`AutonomySettings.perAppOverrides` keyed by registry id. Per-app overrides may
+only narrow autonomy; the user-global cap is always the upper bound. Hard rails
+(FS denylist, resource caps, audit log) are not subject to overrides.
+
+`SpendTracker.checkDailyLimit` accepts an optional `appRegistryId`. When supplied,
+the per-app cap is consulted before falling back to user-global. Rejection
+messages include the per-app context for debuggability.
+`resolveEffectiveCaps(settings, appRegistryId)` is exported for reuse by the
+policy engine and decision pipeline. 15 new unit tests.
+
+### Added — Migration `027-capability-acquisition.sql`
+
+Additive only. Down-migration drops new tables in reverse FK order. New tables:
+`mcp_servers`, `mcp_server_skills`, `app_suggestions`,
+`capability_provenance_nodes`/`_edges`, `fs_scan_roots`, `fs_file_index`,
+`capability_recipes`, `twin_briefings`, `mcp_server_metrics`, `dxt_exports`.
+Per-app spend caps (`per_app_*_cents`) live on `mcp_servers` and feed the
+SpendTracker per-app override path.
+
+### Added — `MCP_HOST_TRUST_PROFILE` + boot wiring
+
+New trust profile registered in `@skytwin/execution-router`: partial
+reversibility, OAuth auth model, `riskModifier: 1`. `apps/api`'s
+`createExecutionRouter()` now constructs an `McpHost` and registers it on the
+`AdapterRegistry` at startup with zero servers. Servers are added via the
+user-facing install flow coming in #176.
+
+### Tests
+
+103/103 in `@skytwin/policy-engine` (88 existing + 15 new per-app overrides).
+19/19 in `@skytwin/registry-client`. 23 passing + 3 skipped in `@skytwin/mcp-host`.
+Full workspace `pnpm build` green across 22 packages.
+
 ## [0.6.21.0] - 2026-05-06
 
 Bump `electron-builder` from 24.x to 26.8.1. Supersedes Dependabot PR #65, which was held back because the version bump alone broke `electron-builder --linux/win/mac` with a config schema validation error.
