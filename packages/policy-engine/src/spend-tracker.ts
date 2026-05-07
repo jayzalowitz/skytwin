@@ -1,35 +1,81 @@
 import type { AutonomySettings, PerAppOverride } from '@skytwin/shared-types';
 
 /**
- * Resolves the effective caps for a given action, given the user's
- * AutonomySettings and an optional per-app override (Capability
- * Acquisition Loop, #173).
+ * Apply interpreted_caps as a clamp-down on top of user-global settings.
  *
- * Per-app overrides may only narrow autonomy. The user-global cap is
- * always the upper bound; an override that requests a higher cap is
- * silently clamped down to the global value.
+ * interpreted_caps (derived from the user's free-form risk profile, #190) may
+ * only NARROW autonomy below the user-global value. Fields that would widen
+ * autonomy beyond the global cap are silently discarded.
+ *
+ * Hard rails (e.g. requireApprovalForIrreversible=true globally) are never
+ * relaxed by interpreted_caps — this function OR-combines boolean flags.
+ *
+ * @internal Used by resolveEffectiveCaps. Not exported separately.
+ */
+function applyInterpretedCaps(
+  settings: AutonomySettings,
+  interpretedCaps: Partial<AutonomySettings>,
+): AutonomySettings {
+  return {
+    ...settings,
+    maxSpendPerActionCents: clampDown(
+      settings.maxSpendPerActionCents,
+      interpretedCaps.maxSpendPerActionCents,
+    ),
+    maxDailySpendCents: clampDown(
+      settings.maxDailySpendCents,
+      interpretedCaps.maxDailySpendCents,
+    ),
+    // requireApprovalForIrreversible is OR-ed: interpreted_caps can only tighten.
+    requireApprovalForIrreversible:
+      settings.requireApprovalForIrreversible ||
+      interpretedCaps.requireApprovalForIrreversible === true,
+  };
+}
+
+/**
+ * Resolves the effective caps for a given action, given the user's
+ * AutonomySettings, an optional per-app override (Capability
+ * Acquisition Loop, #173), and an optional interpreted_caps projection
+ * from the user's risk profile (#190).
+ *
+ * Resolution order (each layer may only narrow, never widen):
+ *   1. user-global AutonomySettings (upper bound / hard ceiling)
+ *   2. interpretedCaps — LLM-interpreted risk profile projection (#190)
+ *   3. per-app override — further narrows for a specific app
+ *
+ * Any cap that tries to widen beyond the user-global ceiling is silently
+ * clamped. Hard rails are not subject to this: a global
+ * requireApprovalForIrreversible=true cannot be relaxed by any layer.
  */
 export function resolveEffectiveCaps(
   settings: AutonomySettings,
   appRegistryId?: string,
+  interpretedCaps?: Partial<AutonomySettings>,
 ): {
   maxSpendPerActionCents: number;
   maxDailySpendCents: number;
   requireApprovalForIrreversible: boolean;
   override?: PerAppOverride;
 } {
-  const override = appRegistryId ? settings.perAppOverrides?.[appRegistryId] : undefined;
+  // Layer 2: apply interpreted_caps on top of global settings (narrows only).
+  const baseSettings = interpretedCaps
+    ? applyInterpretedCaps(settings, interpretedCaps)
+    : settings;
+
+  // Layer 3: apply per-app override on top of the (possibly narrowed) base.
+  const override = appRegistryId ? baseSettings.perAppOverrides?.[appRegistryId] : undefined;
   const maxPerAction = clampDown(
-    settings.maxSpendPerActionCents,
+    baseSettings.maxSpendPerActionCents,
     override?.maxSpendPerActionCents,
   );
   const maxDaily = clampDown(
-    settings.maxDailySpendCents,
+    baseSettings.maxDailySpendCents,
     override?.maxDailySpendCents,
   );
   // Require-approval is OR-ed: either the global flag or a stricter override turns it on.
   const requireApproval =
-    settings.requireApprovalForIrreversible ||
+    baseSettings.requireApprovalForIrreversible ||
     override?.requireApprovalForIrreversible === true;
 
   return {
@@ -104,6 +150,9 @@ export class SpendTracker {
    *   When supplied, per-app overrides from `settings.perAppOverrides` are
    *   applied, narrowing the effective daily cap if the override is tighter.
    *   Per-app caps may never widen autonomy beyond the user-global cap.
+   * @param interpretedCaps Optional structured projection of the user's risk profile (#190).
+   *   When supplied, this narrows the effective caps below the user-global value before
+   *   per-app overrides are applied. May only narrow — never widen.
    */
   async checkDailyLimit(
     userId: string,
@@ -111,8 +160,9 @@ export class SpendTracker {
     settings: AutonomySettings,
     windowHours: number = 24,
     appRegistryId?: string,
+    interpretedCaps?: Partial<AutonomySettings>,
   ): Promise<SpendCheckResult> {
-    const effectiveDaily = resolveEffectiveCaps(settings, appRegistryId).maxDailySpendCents;
+    const effectiveDaily = resolveEffectiveCaps(settings, appRegistryId, interpretedCaps).maxDailySpendCents;
 
     // Reject negative costs — these could bypass spend tracking
     if (proposedCostCents < 0) {

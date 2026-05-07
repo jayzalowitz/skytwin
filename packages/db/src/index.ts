@@ -88,9 +88,14 @@ export type {
 
 export { signalRepository, proposalRepository, skillGapRepository, proactiveScanRepository } from './repositories/index.js';
 
-export { trustTierAuditRepository, spendRepository, domainAutonomyRepository, escalationTriggerRepository, preferenceHistoryRepository, sessionRepository, mempalaceRepository, serviceCredentialRepository, credentialRequirementRepository, aiProviderRepository, ironClawToolRepository, forwardedSignalsRepository, connectorCursorRepository, emailLabelRepository, assistantRepository, deriveThreadTitle, appSuggestionRepository, mcpServerRepository } from './repositories/index.js';
+export { trustTierAuditRepository, spendRepository, domainAutonomyRepository, escalationTriggerRepository, preferenceHistoryRepository, sessionRepository, mempalaceRepository, serviceCredentialRepository, credentialRequirementRepository, aiProviderRepository, ironClawToolRepository, forwardedSignalsRepository, connectorCursorRepository, emailLabelRepository, assistantRepository, deriveThreadTitle, appSuggestionRepository, mcpServerRepository, riskProfileRepository } from './repositories/index.js';
 export type { AppSuggestionRow, UpsertPendingSuggestionInput } from './repositories/index.js';
 export type { McpServerRow } from './repositories/index.js';
+export type {
+  RiskProfileRow,
+  UpsertRiskProfileInput,
+  UpdateInterpretedCapsInput,
+} from './repositories/index.js';
 export type { AssistantThread, AssistantMessage } from './repositories/index.js';
 export type { ForwardedSignalRow } from './repositories/index.js';
 export type { ConnectorCursorRow } from './repositories/index.js';
