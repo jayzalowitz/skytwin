@@ -4,24 +4,37 @@ import type { Express } from 'express';
 
 // ── Hoisted mocks ─────────────────────────────────────────────────────────────
 
-const { mockVaultMetaRepo, mockKeyCache } = vi.hoisted(() => ({
-  mockVaultMetaRepo: {
-    getForUser: vi.fn(),
-    create: vi.fn(),
-    incrementKeyVersion: vi.fn(),
-  },
-  mockKeyCache: {
-    get: vi.fn(),
-    has: vi.fn(),
-    set: vi.fn(),
-    evict: vi.fn(),
-    clear: vi.fn(),
-    size: vi.fn(),
-  },
-}));
+const { mockVaultMetaRepo, mockOAuthRepo, mockWithTransaction, mockKeyCache } = vi.hoisted(() => {
+  // Capture the transaction fn so tests can inspect / replace it
+  const mockWithTransaction = vi.fn(async (fn: (client: unknown) => Promise<unknown>) => fn({}));
+
+  return {
+    mockVaultMetaRepo: {
+      getForUser: vi.fn(),
+      create: vi.fn(),
+      incrementKeyVersion: vi.fn(),
+      rotatePassphrase: vi.fn(),
+    },
+    mockOAuthRepo: {
+      listEncryptedForUser: vi.fn(),
+      rotateEncrypted: vi.fn(),
+    },
+    mockWithTransaction,
+    mockKeyCache: {
+      get: vi.fn(),
+      has: vi.fn(),
+      set: vi.fn(),
+      evict: vi.fn(),
+      clear: vi.fn(),
+      size: vi.fn(),
+    },
+  };
+});
 
 vi.mock('@skytwin/db', () => ({
   credentialVaultMetaRepository: mockVaultMetaRepo,
+  oauthRepository: mockOAuthRepo,
+  withTransaction: mockWithTransaction,
 }));
 
 // Mock the KeyCache so it returns our mockKeyCache instance
@@ -38,7 +51,9 @@ vi.mock('@skytwin/credential-vault', async () => {
 import {
   createCredentialVaultRouter,
   checkUnlockRateLimit,
+  checkRotateRateLimit,
   _resetUnlockRateLimitForTests,
+  _resetRotateRateLimitForTests,
 } from '../routes/credential-vault.js';
 
 // ── Test helpers ───────────────────────────────────────────────────────────────
@@ -96,8 +111,13 @@ async function req(
 beforeEach(() => {
   vi.clearAllMocks();
   _resetUnlockRateLimitForTests();
+  _resetRotateRateLimitForTests();
   mockKeyCache.has.mockReturnValue(false);
   mockKeyCache.get.mockReturnValue(null);
+  // Default withTransaction: execute the fn and return its result
+  mockWithTransaction.mockImplementation(
+    async (fn: (client: unknown) => Promise<unknown>) => fn({}),
+  );
 });
 
 // ── GET /status ───────────────────────────────────────────────────────────────
@@ -315,5 +335,213 @@ describe('checkUnlockRateLimit', () => {
     }
     expect(checkUnlockRateLimit('rl-user-a', now).allowed).toBe(false);
     expect(checkUnlockRateLimit('rl-user-b', now).allowed).toBe(true);
+  });
+});
+
+// ── POST /rotate ──────────────────────────────────────────────────────────────
+
+// Helper: build a meta row with a real passphrase hash derived from a known
+// passphrase. Tests that need to verify a passphrase use this.
+async function buildMetaRow(passphrase: string) {
+  const { deriveKey: realDeriveKey, generateSalt: realGenerateSalt, hashDerivedKey: realHashKey } =
+    await import('@skytwin/credential-vault');
+  const salt = realGenerateSalt();
+  const key = await realDeriveKey(passphrase, salt);
+  const hash = realHashKey(key);
+  return {
+    user_id: USER_ID,
+    passphrase_salt: salt,
+    passphrase_hash: hash,
+    current_key_version: 1,
+    created_at: new Date(),
+    rotated_at: null,
+  };
+}
+
+describe('POST /api/credential-vault/rotate', () => {
+  it('returns 400 when vault not initialised', async () => {
+    mockVaultMetaRepo.getForUser.mockResolvedValueOnce(null);
+
+    const res = await req(buildApp(), 'POST', '/api/credential-vault/rotate', {
+      currentPassphrase: 'current-passphrase-long',
+      newPassphrase: 'new-passphrase-long',
+    });
+    expect(res.status).toBe(400);
+    expect((res.body as Record<string, unknown>)['error']).toMatch(/not been initialised/);
+  });
+
+  it('returns 422 when newPassphrase is too short', async () => {
+    const res = await req(buildApp(), 'POST', '/api/credential-vault/rotate', {
+      currentPassphrase: 'current-passphrase-long',
+      newPassphrase: 'short',
+    });
+    expect(res.status).toBe(422);
+    expect((res.body as Record<string, unknown>)['error']).toMatch(/at least/);
+  });
+
+  it('returns 422 when newPassphrase is missing', async () => {
+    const res = await req(buildApp(), 'POST', '/api/credential-vault/rotate', {
+      currentPassphrase: 'current-passphrase-long',
+    });
+    expect(res.status).toBe(422);
+  });
+
+  it('returns 401 when currentPassphrase is wrong', async () => {
+    // Use a real derived hash — wrong passphrase will not match
+    const meta = await buildMetaRow('correct-current-passphrase-xyz');
+    mockVaultMetaRepo.getForUser.mockResolvedValueOnce(meta);
+
+    const res = await req(buildApp(), 'POST', '/api/credential-vault/rotate', {
+      currentPassphrase: 'this-is-the-wrong-passphrase-long',
+      newPassphrase: 'new-valid-passphrase-here',
+    });
+    expect(res.status).toBe(401);
+    expect((res.body as Record<string, unknown>)['error']).toMatch(/[Ww]rong passphrase/);
+  });
+
+  it('returns 429 when rotate rate limit is exceeded', async () => {
+    const app = buildApp();
+
+    // Exhaust 5 attempts with wrong passphrase
+    for (let i = 0; i < 5; i++) {
+      mockVaultMetaRepo.getForUser.mockResolvedValueOnce({
+        user_id: USER_ID,
+        passphrase_salt: Buffer.alloc(32, 0x01),
+        passphrase_hash: Buffer.alloc(32, 0xff), // won't match
+        current_key_version: 1,
+        created_at: new Date(),
+        rotated_at: null,
+      });
+      await req(app, 'POST', '/api/credential-vault/rotate', {
+        currentPassphrase: 'wrong-current-passphrase-long',
+        newPassphrase: 'new-valid-passphrase-here',
+      });
+    }
+
+    // 6th should be rate-limited
+    const res = await req(app, 'POST', '/api/credential-vault/rotate', {
+      currentPassphrase: 'wrong-current-passphrase-long',
+      newPassphrase: 'new-valid-passphrase-here',
+    });
+    expect(res.status).toBe(429);
+    expect((res.body as Record<string, unknown>)['error']).toMatch(/Too many/);
+  });
+
+  it('happy path: no encrypted tokens — bumps keyVersion, returns rotated', async () => {
+    const passphrase = 'correct-current-passphrase-xyz';
+    const meta = await buildMetaRow(passphrase);
+    mockVaultMetaRepo.getForUser.mockResolvedValueOnce(meta);
+    mockOAuthRepo.listEncryptedForUser.mockResolvedValueOnce([]);
+    mockVaultMetaRepo.rotatePassphrase.mockResolvedValueOnce(2);
+
+    const res = await req(buildApp(), 'POST', '/api/credential-vault/rotate', {
+      currentPassphrase: passphrase,
+      newPassphrase: 'new-valid-passphrase-here',
+    });
+    expect(res.status).toBe(200);
+    const body = res.body as Record<string, unknown>;
+    expect(body['status']).toBe('rotated');
+    expect(body['tokensReencrypted']).toBe(0);
+    expect(body['keyVersion']).toBe(2);
+    expect(mockKeyCache.set).toHaveBeenCalledWith(USER_ID, expect.any(Buffer));
+  });
+
+  it('happy path: re-encrypts token rows and bumps keyVersion', async () => {
+    const { encrypt: rEncrypt } = await import('@skytwin/credential-vault');
+
+    const passphrase = 'correct-current-passphrase-xyz';
+    const meta = await buildMetaRow(passphrase);
+
+    // Build a valid packed encrypted token using the actual key derived from passphrase
+    const { passphrase_salt } = meta;
+    const { deriveKey: realDeriveKey } = await import('@skytwin/credential-vault');
+    const oldKey = await realDeriveKey(passphrase, passphrase_salt);
+    const atResult = rEncrypt('access-token-value', oldKey);
+    const rtResult = rEncrypt('refresh-token-value', oldKey);
+    const packedAt = Buffer.concat([atResult.iv, atResult.tag, atResult.ciphertext]);
+    const packedRt = Buffer.concat([rtResult.iv, rtResult.tag, rtResult.ciphertext]);
+
+    const fakeRow = {
+      id: 'row-id-1',
+      user_id: USER_ID,
+      provider: 'google',
+      account_email: 'test@example.com',
+      account_provider_id: null,
+      access_token: null,
+      refresh_token: null,
+      expires_at: new Date(),
+      scopes: ['email'],
+      created_at: new Date(),
+      updated_at: new Date(),
+      encrypted_access_token: packedAt,
+      encrypted_refresh_token: packedRt,
+      encryption_iv: null,
+      encryption_tag: null,
+      encryption_key_version: 1,
+    };
+
+    mockVaultMetaRepo.getForUser.mockResolvedValueOnce(meta);
+    mockOAuthRepo.listEncryptedForUser.mockResolvedValueOnce([fakeRow]);
+    mockOAuthRepo.rotateEncrypted.mockResolvedValueOnce(undefined);
+    mockVaultMetaRepo.rotatePassphrase.mockResolvedValueOnce(2);
+
+    const res = await req(buildApp(), 'POST', '/api/credential-vault/rotate', {
+      currentPassphrase: passphrase,
+      newPassphrase: 'new-valid-passphrase-here',
+    });
+    expect(res.status).toBe(200);
+    const body = res.body as Record<string, unknown>;
+    expect(body['status']).toBe('rotated');
+    expect(body['tokensReencrypted']).toBe(1);
+    expect(body['keyVersion']).toBe(2);
+    expect(mockOAuthRepo.rotateEncrypted).toHaveBeenCalledOnce();
+    expect(mockKeyCache.set).toHaveBeenCalledWith(USER_ID, expect.any(Buffer));
+  });
+
+  it('returns 500 and rolls back when re-encryption throws mid-transaction', async () => {
+    const passphrase = 'correct-current-passphrase-xyz';
+    const meta = await buildMetaRow(passphrase);
+    mockVaultMetaRepo.getForUser.mockResolvedValueOnce(meta);
+
+    // Make withTransaction throw to simulate a mid-transaction failure
+    mockWithTransaction.mockImplementationOnce(async () => {
+      throw new Error('simulated DB error during rotation');
+    });
+
+    const res = await req(buildApp(), 'POST', '/api/credential-vault/rotate', {
+      currentPassphrase: passphrase,
+      newPassphrase: 'new-valid-passphrase-here',
+    });
+    expect(res.status).toBe(500);
+    // KeyCache must NOT have been updated with the new key
+    expect(mockKeyCache.set).not.toHaveBeenCalled();
+  });
+});
+
+// ── checkRotateRateLimit unit tests ───────────────────────────────────────────
+
+describe('checkRotateRateLimit', () => {
+  it('allows up to 5 requests per minute', () => {
+    const now = 10_000_000;
+    for (let i = 0; i < 5; i++) {
+      expect(checkRotateRateLimit('rotate-user', now).allowed).toBe(true);
+    }
+  });
+
+  it('blocks the 6th request within the same window', () => {
+    const now = 11_000_000;
+    for (let i = 0; i < 5; i++) {
+      checkRotateRateLimit('rotate-user-2', now);
+    }
+    expect(checkRotateRateLimit('rotate-user-2', now).allowed).toBe(false);
+  });
+
+  it('allows again after window resets', () => {
+    const now = 12_000_000;
+    for (let i = 0; i < 5; i++) {
+      checkRotateRateLimit('rotate-user-3', now);
+    }
+    expect(checkRotateRateLimit('rotate-user-3', now).allowed).toBe(false);
+    expect(checkRotateRateLimit('rotate-user-3', now + 60_001).allowed).toBe(true);
   });
 });

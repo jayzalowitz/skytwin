@@ -1,3 +1,4 @@
+import type { PoolClient } from 'pg';
 import { query } from '../connection.js';
 import type { OAuthTokenRow, OAuthTokenRowWithEncrypted } from '../types.js';
 
@@ -254,5 +255,67 @@ export const oauthRepository = {
         id,
       ],
     );
+  },
+
+  /**
+   * Return all rows for a user that have encrypted_access_token present.
+   * Used by the key-rotation path to iterate over rows that need re-encryption.
+   *
+   * Accepts an optional PoolClient so the caller can include this SELECT in a
+   * serialisable transaction — required by the rotation flow to avoid a TOCTOU
+   * race between SELECT and the per-row UPDATEs.
+   */
+  async listEncryptedForUser(
+    userId: string,
+    client?: PoolClient,
+  ): Promise<OAuthTokenRowWithEncrypted[]> {
+    const sql = `SELECT id, user_id, provider, account_email, account_provider_id,
+              access_token, refresh_token, expires_at, scopes, created_at, updated_at,
+              encrypted_access_token, encrypted_refresh_token,
+              encryption_iv, encryption_tag, encryption_key_version
+       FROM oauth_tokens
+       WHERE user_id = $1
+         AND encrypted_access_token IS NOT NULL`;
+    const result = client
+      ? await client.query<OAuthTokenRowWithEncrypted>(sql, [userId])
+      : await query<OAuthTokenRowWithEncrypted>(sql, [userId]);
+    return result.rows;
+  },
+
+  /**
+   * Re-encrypt a single row's encrypted columns in place.
+   * Unlike updateEncrypted, this does NOT touch plaintext columns — they are
+   * already NULL for fully-migrated rows, and rotation must not clear them again.
+   *
+   * Accepts an optional PoolClient so the caller can include this in a
+   * serialisable transaction.
+   */
+  async rotateEncrypted(
+    id: string,
+    input: {
+      encryptedAccessToken: Buffer;
+      encryptedRefreshToken: Buffer;
+      keyVersion: number;
+    },
+    client?: PoolClient,
+  ): Promise<void> {
+    const sql = `UPDATE oauth_tokens
+       SET encrypted_access_token  = $1,
+           encrypted_refresh_token = $2,
+           encryption_key_version  = $3,
+           updated_at              = now()
+       WHERE id = $4`;
+    const params = [
+      input.encryptedAccessToken,
+      input.encryptedRefreshToken,
+      input.keyVersion,
+      id,
+    ];
+
+    if (client) {
+      await client.query(sql, params);
+    } else {
+      await query(sql, params);
+    }
   },
 };

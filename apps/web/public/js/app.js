@@ -11,6 +11,7 @@ import { renderCapabilities } from './pages/capabilities.js';
 import { renderCapabilityDetail } from './pages/capability-detail.js';
 import { renderCapabilitiesAudit } from './pages/capabilities-audit.js';
 import { renderAboutMe } from './pages/about-me.js';
+import { renderCredentialVault } from './pages/credential-vault.js';
 import { renderTwinBriefing } from './pages/twin-briefing.js';
 import { renderTwinServerTokens } from './pages/twin-server-tokens.js';
 import { renderProvenanceGraph } from './pages/provenance-graph.js';
@@ -39,6 +40,7 @@ const routes = {
   '/briefing': { title: 'Twin Briefing', render: renderTwinBriefing },
   '/twin-server-tokens': { title: 'MCP Agent Tokens', render: renderTwinServerTokens },
   '/provenance': { title: 'Provenance Graph', render: renderProvenanceGraph },
+  '/credential-vault': { title: 'Credential Vault', render: renderCredentialVault },
 };
 
 /**
