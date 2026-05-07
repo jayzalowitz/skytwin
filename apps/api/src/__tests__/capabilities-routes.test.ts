@@ -9,6 +9,7 @@ import type { Express } from 'express';
 
 const {
   mockMcpServerRepository,
+  mockAppSuggestionRepository,
   mockQuery,
 } = vi.hoisted(() => ({
   mockMcpServerRepository: {
@@ -23,12 +24,38 @@ const {
     updateLastActive: vi.fn(),
     getInactiveSince: vi.fn(),
   },
+  mockAppSuggestionRepository: {
+    getPendingForUser: vi.fn(),
+    getActiveForUser: vi.fn(),
+    markDismissed: vi.fn(),
+    markSnoozed: vi.fn(),
+  },
   mockQuery: vi.fn(),
 }));
 
 vi.mock('@skytwin/db', () => ({
   mcpServerRepository: mockMcpServerRepository,
+  appSuggestionRepository: mockAppSuggestionRepository,
   query: mockQuery,
+}));
+
+// Mock RegistryClient so tests don't hit the filesystem during vitest
+vi.mock('@skytwin/registry-client', () => ({
+  RegistryClient: vi.fn().mockImplementation(() => ({
+    search: vi.fn().mockResolvedValue([
+      {
+        id: '@modelcontextprotocol/server-filesystem',
+        displayName: 'Filesystem',
+        transport: 'stdio',
+        oauthProvider: null,
+        category: 'developer',
+        description: 'Read and write files.',
+        keywords: ['files', 'filesystem'],
+        verified: 'anthropic',
+      },
+    ]),
+    getAll: vi.fn().mockResolvedValue([]),
+  })),
 }));
 
 // ---------------------------------------------------------------------------
@@ -152,6 +179,13 @@ describe('Capabilities API routes', () => {
     vi.clearAllMocks();
     // Default: query succeeds with empty rows (used for provenance insert)
     mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
+    // Default: suggestion mocks return empty arrays
+    mockAppSuggestionRepository.getPendingForUser.mockResolvedValue([]);
+    mockAppSuggestionRepository.getActiveForUser.mockResolvedValue([]);
+    mockAppSuggestionRepository.markDismissed.mockResolvedValue(null);
+    mockAppSuggestionRepository.markSnoozed.mockResolvedValue(null);
+    // Default: listForUser returns empty array
+    mockMcpServerRepository.listForUser.mockResolvedValue([]);
   });
 
   // =========================================================================
@@ -404,6 +438,299 @@ describe('Capabilities API routes', () => {
       expect(body.wouldHaveActions).toHaveLength(2);
       expect(body.wouldHaveActions[0]!.decisionId).toBe('dec-1');
       expect(body.wouldHaveActions[0]!.skippedDueToTier).toBe('observer');
+    });
+  });
+
+  // =========================================================================
+  // GET / — list capabilities
+  // =========================================================================
+  describe('GET /', () => {
+    it('returns installed, suggestions, and dormant slices', async () => {
+      const activeServer = makeMcpServer({ status: 'active' });
+      const dormantServer = makeMcpServer({ id: 'bbbbbbbb-bbbb-cccc-dddd-000000000002', status: 'dormant' });
+      const suggestion = {
+        id: 'cccccccc-dddd-eeee-ffff-000000000001',
+        user_id: USER_ID,
+        registry_id: 'gmail-mcp',
+        display_name: 'Gmail',
+        evidence_count: 5,
+        evidence_sources: {},
+        evidence_kinds_distinct: 2,
+        first_evidence_at: new Date(),
+        last_evidence_at: new Date(),
+        confidence_score: '0.85',
+        status: 'pending' as const,
+        snoozed_until: null,
+        reason_summary: 'You use Gmail frequently.',
+        push_notified_at: null,
+        created_at: new Date(),
+        updated_at: new Date(),
+      };
+
+      mockMcpServerRepository.listForUser.mockResolvedValue([activeServer, dormantServer]);
+      mockAppSuggestionRepository.getPendingForUser.mockResolvedValue([suggestion]);
+
+      const app = buildApp(USER_ID);
+      const res = await request(app, 'GET', `/api/capabilities?userId=${USER_ID}`);
+
+      expect(res.status).toBe(200);
+      const body = res.body as {
+        installed: unknown[];
+        suggestions: unknown[];
+        dormant: unknown[];
+      };
+      expect(body.installed).toHaveLength(1);
+      expect(body.dormant).toHaveLength(1);
+      expect(body.suggestions).toHaveLength(1);
+    });
+
+    it('returns 400 when userId is missing', async () => {
+      // Override synthetic user injection to omit userId
+      const appNoUser = express();
+      appNoUser.use(express.json());
+      appNoUser.use('/api/capabilities', createCapabilitiesRouter());
+      const res = await request(appNoUser, 'GET', '/api/capabilities');
+      expect(res.status).toBe(400);
+    });
+  });
+
+  // =========================================================================
+  // GET /registry
+  // =========================================================================
+  describe('GET /registry', () => {
+    it('returns registry entries for an empty search query', async () => {
+      const app = buildApp(USER_ID);
+      const res = await request(app, 'GET', `/api/capabilities/registry?userId=${USER_ID}`);
+
+      expect(res.status).toBe(200);
+      const body = res.body as { entries: unknown[]; nextCursor: null };
+      expect(Array.isArray(body.entries)).toBe(true);
+      expect(body.nextCursor).toBeNull();
+    });
+
+    it('filters by category when provided', async () => {
+      const app = buildApp(USER_ID);
+      const res = await request(
+        app,
+        'GET',
+        `/api/capabilities/registry?userId=${USER_ID}&category=developer`,
+      );
+      expect(res.status).toBe(200);
+      const body = res.body as { entries: Array<{ category: string }>; nextCursor: null };
+      // All returned entries should have category=developer (or the filtered mock returns all)
+      for (const entry of body.entries) {
+        expect(entry.category).toBe('developer');
+      }
+    });
+  });
+
+  // =========================================================================
+  // POST /suggestions/:id/dismiss
+  // =========================================================================
+  describe('POST /suggestions/:id/dismiss', () => {
+    const SUGGESTION_ID = 'dddddddd-eeee-ffff-aaaa-000000000003';
+
+    it('returns 204 on success', async () => {
+      const suggestion = {
+        id: SUGGESTION_ID,
+        user_id: USER_ID,
+        registry_id: 'gmail-mcp',
+        display_name: 'Gmail',
+        evidence_count: 3,
+        evidence_sources: {},
+        evidence_kinds_distinct: 1,
+        first_evidence_at: new Date(),
+        last_evidence_at: new Date(),
+        confidence_score: '0.7',
+        status: 'pending' as const,
+        snoozed_until: null,
+        reason_summary: null,
+        push_notified_at: null,
+        created_at: new Date(),
+        updated_at: new Date(),
+      };
+      mockAppSuggestionRepository.getActiveForUser.mockResolvedValue([suggestion]);
+      mockAppSuggestionRepository.markDismissed.mockResolvedValue({ ...suggestion, status: 'dismissed' as const });
+
+      const app = buildApp(USER_ID);
+      const res = await request(
+        app,
+        'POST',
+        `/api/capabilities/suggestions/${SUGGESTION_ID}/dismiss?userId=${USER_ID}`,
+      );
+
+      expect(res.status).toBe(204);
+      expect(mockAppSuggestionRepository.markDismissed).toHaveBeenCalledWith(SUGGESTION_ID);
+    });
+
+    it('returns 404 when suggestion not found', async () => {
+      mockAppSuggestionRepository.getActiveForUser.mockResolvedValue([]);
+
+      const app = buildApp(USER_ID);
+      const res = await request(
+        app,
+        'POST',
+        `/api/capabilities/suggestions/${SUGGESTION_ID}/dismiss?userId=${USER_ID}`,
+      );
+
+      expect(res.status).toBe(404);
+      expect(mockAppSuggestionRepository.markDismissed).not.toHaveBeenCalled();
+    });
+
+    it('returns 403 when user does not own the suggestion', async () => {
+      const OTHER_USER = 'eeeeeeee-ffff-aaaa-bbbb-000000000099';
+      const suggestion = {
+        id: SUGGESTION_ID,
+        user_id: OTHER_USER,
+        registry_id: 'gmail-mcp',
+        display_name: 'Gmail',
+        evidence_count: 1,
+        evidence_sources: {},
+        evidence_kinds_distinct: 1,
+        first_evidence_at: new Date(),
+        last_evidence_at: new Date(),
+        confidence_score: '0.5',
+        status: 'pending' as const,
+        snoozed_until: null,
+        reason_summary: null,
+        push_notified_at: null,
+        created_at: new Date(),
+        updated_at: new Date(),
+      };
+      mockAppSuggestionRepository.getActiveForUser.mockResolvedValue([suggestion]);
+
+      const app = buildApp(USER_ID);
+      const res = await request(
+        app,
+        'POST',
+        `/api/capabilities/suggestions/${SUGGESTION_ID}/dismiss?userId=${USER_ID}`,
+      );
+
+      expect(res.status).toBe(403);
+    });
+  });
+
+  // =========================================================================
+  // POST /suggestions/:id/snooze
+  // =========================================================================
+  describe('POST /suggestions/:id/snooze', () => {
+    const SUGGESTION_ID = 'eeeeeeee-ffff-aaaa-bbbb-000000000004';
+
+    it('returns snoozedUntil for valid request', async () => {
+      const suggestion = {
+        id: SUGGESTION_ID,
+        user_id: USER_ID,
+        registry_id: 'linear-mcp',
+        display_name: 'Linear',
+        evidence_count: 2,
+        evidence_sources: {},
+        evidence_kinds_distinct: 1,
+        first_evidence_at: new Date(),
+        last_evidence_at: new Date(),
+        confidence_score: '0.6',
+        status: 'pending' as const,
+        snoozed_until: null,
+        reason_summary: null,
+        push_notified_at: null,
+        created_at: new Date(),
+        updated_at: new Date(),
+      };
+      mockAppSuggestionRepository.getActiveForUser.mockResolvedValue([suggestion]);
+      mockAppSuggestionRepository.markSnoozed.mockResolvedValue({
+        ...suggestion,
+        status: 'snoozed' as const,
+        snoozed_until: new Date(),
+      });
+
+      const app = buildApp(USER_ID);
+      const res = await request(
+        app,
+        'POST',
+        `/api/capabilities/suggestions/${SUGGESTION_ID}/snooze?userId=${USER_ID}`,
+        { untilDays: 14 },
+      );
+
+      expect(res.status).toBe(200);
+      const body = res.body as { snoozedUntil: string };
+      expect(typeof body.snoozedUntil).toBe('string');
+      expect(mockAppSuggestionRepository.markSnoozed).toHaveBeenCalled();
+    });
+  });
+
+  // =========================================================================
+  // GET /recipes + POST /recipes/:slug/install
+  // =========================================================================
+  describe('GET /recipes', () => {
+    it('returns all 6 hardcoded recipes', async () => {
+      const app = buildApp(USER_ID);
+      const res = await request(app, 'GET', `/api/capabilities/recipes?userId=${USER_ID}`);
+
+      expect(res.status).toBe(200);
+      const body = res.body as { recipes: Array<{ slug: string; displayName: string; registryIds: string[] }> };
+      expect(body.recipes).toHaveLength(6);
+      const slugs = body.recipes.map((r) => r.slug);
+      expect(slugs).toContain('developer-pack');
+      expect(slugs).toContain('productivity-pack');
+    });
+  });
+
+  describe('POST /recipes/:slug/install', () => {
+    it('returns job descriptors for a valid recipe slug', async () => {
+      const app = buildApp(USER_ID);
+      const res = await request(
+        app,
+        'POST',
+        `/api/capabilities/recipes/developer-pack/install?userId=${USER_ID}`,
+      );
+
+      expect(res.status).toBe(200);
+      const body = res.body as { jobs: Array<{ registryId: string; status: string }> };
+      expect(Array.isArray(body.jobs)).toBe(true);
+      expect(body.jobs.length).toBeGreaterThan(0);
+      for (const job of body.jobs) {
+        expect(job.status).toBe('pending_user_oauth');
+        expect(typeof job.registryId).toBe('string');
+      }
+    });
+
+    it('returns 404 for an unknown recipe slug', async () => {
+      const app = buildApp(USER_ID);
+      const res = await request(
+        app,
+        'POST',
+        `/api/capabilities/recipes/nonexistent-pack/install?userId=${USER_ID}`,
+      );
+      expect(res.status).toBe(404);
+    });
+  });
+
+  // =========================================================================
+  // GET /dependency-graph
+  // =========================================================================
+  describe('GET /dependency-graph', () => {
+    it('returns nodes and edges with fallback shape when no skills exist', async () => {
+      // listForUser returns empty (no installed servers → fallback example nodes)
+      mockMcpServerRepository.listForUser.mockResolvedValue([]);
+      // skillResult query returns empty
+      mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
+
+      const app = buildApp(USER_ID);
+      const res = await request(
+        app,
+        'GET',
+        `/api/capabilities/dependency-graph?userId=${USER_ID}`,
+      );
+
+      expect(res.status).toBe(200);
+      const body = res.body as {
+        nodes: Array<{ id: string; label: string; installed: boolean }>;
+        edges: Array<{ from: string; to: string }>;
+      };
+      expect(Array.isArray(body.nodes)).toBe(true);
+      expect(Array.isArray(body.edges)).toBe(true);
+      // Fallback shape has at least 5 nodes
+      expect(body.nodes.length).toBeGreaterThanOrEqual(5);
+      expect(body.edges.length).toBeGreaterThan(0);
     });
   });
 });

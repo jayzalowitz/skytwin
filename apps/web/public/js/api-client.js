@@ -676,3 +676,68 @@ function parseSseEvent(raw) {
     return { event, data: payload };
   }
 }
+
+// ── Capabilities (issue #176) ────────────────────────────
+
+export function fetchCapabilities(userId) {
+  return fetchJSON(`${API}/capabilities?userId=${encodeURIComponent(userId)}`);
+}
+
+export function fetchCapabilitySuggestions(userId) {
+  return fetchJSON(`${API}/capabilities/suggestions?userId=${encodeURIComponent(userId)}`);
+}
+
+export function dismissCapabilitySuggestion(id, userId) {
+  return fetchJSON(`${API}/capabilities/suggestions/${encodeURIComponent(id)}/dismiss?userId=${encodeURIComponent(userId)}`, {
+    method: 'POST',
+  });
+}
+
+export function snoozeCapabilitySuggestion(id, userId, untilDays = 7) {
+  return fetchJSON(`${API}/capabilities/suggestions/${encodeURIComponent(id)}/snooze?userId=${encodeURIComponent(userId)}`, {
+    method: 'POST',
+    body: JSON.stringify({ untilDays }),
+  });
+}
+
+export function searchCapabilityRegistry(userId, q = '', category = '') {
+  const params = new URLSearchParams({ userId });
+  if (q) params.set('q', q);
+  if (category) params.set('category', category);
+  return fetchJSON(`${API}/capabilities/registry?${params}`);
+}
+
+export function fetchCapabilityRecipes(userId) {
+  return fetchJSON(`${API}/capabilities/recipes?userId=${encodeURIComponent(userId)}`);
+}
+
+export function installCapabilityRecipe(userId, slug) {
+  return fetchJSON(`${API}/capabilities/recipes/${encodeURIComponent(slug)}/install?userId=${encodeURIComponent(userId)}`, {
+    method: 'POST',
+  });
+}
+
+export function fetchCapabilityDependencyGraph(userId) {
+  return fetchJSON(`${API}/capabilities/dependency-graph?userId=${encodeURIComponent(userId)}`);
+}
+
+export function uninstallCapability(id, userId, opts = {}) {
+  return fetchJSON(`${API}/capabilities/${encodeURIComponent(id)}/uninstall?userId=${encodeURIComponent(userId)}`, {
+    method: 'POST',
+    body: JSON.stringify(opts),
+  });
+}
+
+export function rehearseCapability(id, userId, daysBack = 30) {
+  return fetchJSON(`${API}/capabilities/${encodeURIComponent(id)}/rehearse?userId=${encodeURIComponent(userId)}`, {
+    method: 'POST',
+    body: JSON.stringify({ daysBack }),
+  });
+}
+
+export function regretCapability(id, userId, withinHours = 24) {
+  return fetchJSON(`${API}/capabilities/${encodeURIComponent(id)}/regret?userId=${encodeURIComponent(userId)}`, {
+    method: 'POST',
+    body: JSON.stringify({ withinHours }),
+  });
+}

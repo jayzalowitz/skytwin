@@ -7,6 +7,8 @@ import { renderAudit } from './pages/audit.js';
 import { renderSetup } from './pages/setup.js';
 import { renderAssistant } from './pages/assistant.js';
 import { renderOnboarding } from './pages/onboarding.js';
+import { renderCapabilities } from './pages/capabilities.js';
+import { renderCapabilityDetail } from './pages/capability-detail.js';
 import { fetchPendingApprovals, fetchHealth, fetchUser, listUsers, escapeHtml, isApiKnownOffline } from './api-client.js';
 import { initTheme } from './theme-switcher.js';
 import { connectSSE, disconnectSSE, isConnected } from './sse-client.js';
@@ -25,6 +27,7 @@ const routes = {
   '/settings': { title: 'Settings', render: renderSettings },
   '/audit': { title: 'Audit Trail', render: renderAudit },
   '/setup': { title: 'Connect', render: renderSetup },
+  '/capabilities': { title: 'Capabilities', render: renderCapabilities },
 };
 
 /**
@@ -320,7 +323,18 @@ function navigate() {
   // the dashboard route while preserving the params for that page to read.
   const hashRaw = window.location.hash.slice(1) || '/';
   const hash = hashRaw.split('?')[0] || '/';
-  const route = routes[hash] || routes['/'];
+
+  // Dynamic route: /capabilities/:id — check before static lookup
+  const capabilityDetailMatch = hash.match(/^\/capabilities\/([^/]+)$/);
+
+  // Resolve route — dynamic segments before static table
+  let route = routes[hash];
+  let dynamicParam = null;
+  if (!route && capabilityDetailMatch) {
+    dynamicParam = capabilityDetailMatch[1];
+    route = { title: 'Capability', render: (c, uid) => renderCapabilityDetail(c, uid, dynamicParam) };
+  }
+  route = route || routes['/'];
 
   document.getElementById('page-title').textContent = route.title;
   // Show friendly name instead of UUID, and make the badge a switcher.
@@ -330,7 +344,9 @@ function navigate() {
   document.querySelectorAll('.nav-link, .bottom-nav-link').forEach(link => {
     const page = link.getAttribute('data-page');
     const isActive = (hash === '/' && page === 'dashboard') ||
-                     hash === `/${page}`;
+                     hash === `/${page}` ||
+                     // Mark Capabilities nav link active for both list and detail routes
+                     (page === 'capabilities' && (hash === '/capabilities' || hash.startsWith('/capabilities/')));
     link.classList.toggle('active', isActive);
   });
 
