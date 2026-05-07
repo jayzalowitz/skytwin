@@ -1,5 +1,37 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [unreleased] — memory-gbrain + memory-hybrid scaffolding (#197 partial scaffold for v1.0.5)
+
+SKELETON only. No live gbrain integration is included in this entry.
+
+### Added — `@skytwin/memory-gbrain`
+
+New package at `packages/memory-gbrain/`. Implements `MemoryPort` from
+`@skytwin/memory-port` with best-effort gbrain CLI integration:
+
+- `src/cli-detector.ts` — detects whether `gbrain` is in PATH via `which`/`where`; returns false on any error so callers fall back cleanly.
+- `src/gbrain-port.ts` — `GbrainMemoryPort` implements `MemoryPort`. Declares capabilities `{ semantic_search, code_aware_search }` only. `searchSemantic` shells out to `gbrain search --json --query=... --limit=N` with a 5 s hard timeout; returns `[]` (not an error) when gbrain is absent, exits non-zero, or times out. All write methods and `walkGraph`/`getEpisodes`/`getTriples`/`summarize`/`compress` throw `NotImplementedError` — the `HybridMemoryPort` routes these to MemPalace.
+- No PII in logs: only operation names and result counts are logged, never query text.
+
+### Added — `@skytwin/memory-hybrid`
+
+New package at `packages/memory-hybrid/`. `HybridMemoryPort` composes any two `MemoryPort` implementations:
+
+- Constructor: `new HybridMemoryPort({ primary, secondary, routing? })`.
+- Writes go to BOTH backends. Primary write must succeed; secondary write is best-effort (failures logged, never propagated).
+- Reads route per-capability: `searchSemantic` and `code_aware_search` go to primary if it declares the capability; `walkGraph`, `getEpisodes`, `getTriples`, `summarize`, `compress` go to secondary by default. Overrideable via `RoutingRules`.
+- `capabilities()` returns the union of primary + secondary capabilities.
+- `exportAll`/`importAll` route to secondary only.
+- Verified type-compatible with `MemPalaceMemoryPort` as secondary (compile-time assertion in tests).
+
+### Explicitly deferred to v1.0.5
+
+- CRDB driver shim (`@skytwin/memory-gbrain-crdb-adapter`) — not included.
+- Full gbrain MCP integration — not included.
+- Embedding pipeline wiring — not included.
+- `federated_sources` capability (gbrain v1.1+) — not included.
+- Web UI for memory backend selection — not included.
+
 ## [unreleased] — Capability changelog flow + new-skill opt-in (#184 follow-up)
 
 Implements #184 AC#2 deferred from the previous PR: `changelog://` resource

@@ -600,6 +600,50 @@ importers:
         specifier: ^1.3.0
         version: 1.6.1(@types/node@20.19.37)(lightningcss@1.32.0)(terser@5.46.2)
 
+  packages/memory-gbrain:
+    dependencies:
+      '@skytwin/core':
+        specifier: workspace:*
+        version: link:../core
+      '@skytwin/memory-port':
+        specifier: workspace:*
+        version: link:../memory-port
+      '@skytwin/shared-types':
+        specifier: workspace:*
+        version: link:../shared-types
+    devDependencies:
+      '@types/node':
+        specifier: ^20.0.0
+        version: 20.19.37
+      typescript:
+        specifier: ^5.4.0
+        version: 5.9.3
+      vitest:
+        specifier: ^1.3.0
+        version: 1.6.1(@types/node@20.19.37)(lightningcss@1.32.0)(terser@5.46.2)
+
+  packages/memory-hybrid:
+    dependencies:
+      '@skytwin/core':
+        specifier: workspace:*
+        version: link:../core
+      '@skytwin/memory-port':
+        specifier: workspace:*
+        version: link:../memory-port
+    devDependencies:
+      '@skytwin/memory-mempalace':
+        specifier: workspace:*
+        version: link:../memory-mempalace
+      '@types/node':
+        specifier: ^20.0.0
+        version: 20.19.37
+      typescript:
+        specifier: ^5.4.0
+        version: 5.9.3
+      vitest:
+        specifier: ^1.3.0
+        version: 1.6.1(@types/node@20.19.37)(lightningcss@1.32.0)(terser@5.46.2)
+
   packages/memory-mempalace:
     dependencies:
       '@skytwin/memory-port':
