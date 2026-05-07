@@ -3,9 +3,10 @@ import { SpendTracker } from '../spend-tracker.js';
 import type { SpendRepositoryPort } from '../spend-tracker.js';
 import type { AutonomySettings } from '@skytwin/shared-types';
 
-function createMockRepo(dailyTotal: number = 0): SpendRepositoryPort {
+function createMockRepo(dailyTotal: number = 0, monthlyTotal: number = 0): SpendRepositoryPort {
   return {
     getDailyTotal: vi.fn().mockResolvedValue(dailyTotal),
+    getMonthlyTotal: vi.fn().mockResolvedValue(monthlyTotal),
     reconcile: vi.fn().mockResolvedValue(null),
   };
 }
@@ -156,6 +157,90 @@ describe('SpendTracker', () => {
       expect(result.varianceCents).toBe(0);
       expect(result.variancePercent).toBe(0);
       expect(result.overEstimated).toBe(false);
+    });
+  });
+
+  describe('checkMonthlyLimit', () => {
+    it('allows action when no per-app monthly cap is configured', async () => {
+      const repo = createMockRepo(0, 500);
+      const tracker = new SpendTracker(repo);
+      const settings = createSettings(); // no perAppOverrides
+
+      const result = await tracker.checkMonthlyLimit('user1', 100, settings, '@foo/server');
+      expect(result.allowed).toBe(true);
+      expect(result.reason).toContain('No monthly cap');
+    });
+
+    it('allows action within per-app monthly cap', async () => {
+      const repo = createMockRepo(0, 300); // $3 spent this month
+      const tracker = new SpendTracker(repo);
+      const settings = createSettings({
+        perAppOverrides: {
+          '@foo/server': { maxMonthlySpendCents: 500 },
+        },
+      });
+
+      const result = await tracker.checkMonthlyLimit('user1', 100, settings, '@foo/server');
+      expect(result.allowed).toBe(true);
+      expect(result.currentMonthlySpendCents).toBe(300);
+      expect(result.remainingCents).toBe(100);
+    });
+
+    it('blocks action that would exceed per-app monthly cap', async () => {
+      const repo = createMockRepo(0, 450); // $4.50 spent
+      const tracker = new SpendTracker(repo);
+      const settings = createSettings({
+        perAppOverrides: {
+          '@foo/server': { maxMonthlySpendCents: 500 },
+        },
+      });
+
+      const result = await tracker.checkMonthlyLimit('user1', 100, settings, '@foo/server');
+      expect(result.allowed).toBe(false);
+      expect(result.reason).toContain('Monthly spend limit exceeded');
+    });
+
+    it('blocks when proposed cost is negative', async () => {
+      const repo = createMockRepo(0, 0);
+      const tracker = new SpendTracker(repo);
+      const settings = createSettings({
+        perAppOverrides: {
+          '@foo/server': { maxMonthlySpendCents: 500 },
+        },
+      });
+
+      const result = await tracker.checkMonthlyLimit('user1', -10, settings, '@foo/server');
+      expect(result.allowed).toBe(false);
+      expect(result.reason).toContain('negative cost');
+    });
+  });
+
+  describe('getMonthlySpendForApp', () => {
+    it('returns null capCents and percentUsed when no monthly cap is configured', async () => {
+      const repo = createMockRepo(0, 200);
+      const tracker = new SpendTracker(repo);
+      const settings = createSettings();
+
+      const summary = await tracker.getMonthlySpendForApp('user1', settings, '@foo/server');
+      expect(summary.spentCents).toBe(200);
+      expect(summary.capCents).toBeNull();
+      expect(summary.percentUsed).toBeNull();
+    });
+
+    it('returns correct percentUsed when cap is configured', async () => {
+      const repo = createMockRepo(0, 342); // $3.42 spent
+      const tracker = new SpendTracker(repo);
+      const settings = createSettings({
+        perAppOverrides: {
+          '@foo/server': { maxMonthlySpendCents: 500 }, // $5.00 cap
+        },
+      });
+
+      const summary = await tracker.getMonthlySpendForApp('user1', settings, '@foo/server');
+      expect(summary.spentCents).toBe(342);
+      expect(summary.capCents).toBe(500);
+      // 342/500 = 68.4%, rounds to 68
+      expect(summary.percentUsed).toBe(68);
     });
   });
 });

@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { mcpServerRepository, appSuggestionRepository, provenanceRepository, query } from '@skytwin/db';
+import { mcpServerRepository, appSuggestionRepository, provenanceRepository, mcpServerMetricsRepository, query } from '@skytwin/db';
 import type { McpServerRow } from '@skytwin/db';
 import { createLogger } from '@skytwin/core';
 import { RegistryClient } from '@skytwin/registry-client';
@@ -1256,6 +1256,175 @@ export function createCapabilitiesRouter(): Router {
     }
   });
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // GET /audit
+  //
+  // Paginated list of capability_provenance_nodes for the requesting user.
+  // Filters: node_type, server_id, date_from, date_to, q (free-text on payload).
+  // PII in payload is redacted before serialisation (#183 hard constraint).
+  // ─────────────────────────────────────────────────────────────────────────
+  router.get('/audit', async (req, res, next) => {
+    try {
+      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
+        ?? (req.query['userId'] as string | undefined);
+      if (!userId) {
+        res.status(400).json({ error: 'userId is required' });
+        return;
+      }
+
+      const nodeType = typeof req.query['nodeType'] === 'string' ? req.query['nodeType'] : '';
+      const serverId = typeof req.query['serverId'] === 'string' ? req.query['serverId'] : '';
+      const dateFrom = typeof req.query['dateFrom'] === 'string' ? req.query['dateFrom'] : '';
+      const dateTo = typeof req.query['dateTo'] === 'string' ? req.query['dateTo'] : '';
+      const q = typeof req.query['q'] === 'string' ? req.query['q'].toLowerCase() : '';
+      const limitRaw = typeof req.query['limit'] === 'string' ? parseInt(req.query['limit'], 10) : 50;
+      const offsetRaw = typeof req.query['offset'] === 'string' ? parseInt(req.query['offset'], 10) : 0;
+      const limit = Number.isFinite(limitRaw) && limitRaw > 0 && limitRaw <= 200 ? limitRaw : 50;
+      const offset = Number.isFinite(offsetRaw) && offsetRaw >= 0 ? offsetRaw : 0;
+
+      // Build parameterised query — additive filters.
+      const conditions: string[] = ['user_id = $1'];
+      const params: unknown[] = [userId];
+      let paramIdx = 2;
+
+      if (nodeType) {
+        conditions.push(`node_type = $${paramIdx++}`);
+        params.push(nodeType);
+      }
+      if (serverId && UUID_REGEX.test(serverId)) {
+        conditions.push(`server_id = $${paramIdx++}`);
+        params.push(serverId);
+      }
+      if (dateFrom) {
+        conditions.push(`occurred_at >= $${paramIdx++}`);
+        params.push(new Date(dateFrom));
+      }
+      if (dateTo) {
+        conditions.push(`occurred_at <= $${paramIdx++}`);
+        params.push(new Date(dateTo));
+      }
+
+      const where = conditions.join(' AND ');
+
+      const countResult = await query<{ count: string }>(
+        `SELECT COUNT(*) AS count FROM capability_provenance_nodes WHERE ${where}`,
+        params,
+      );
+      const total = parseInt(countResult.rows[0]?.count ?? '0', 10);
+
+      params.push(limit, offset);
+      const dataResult = await query<{
+        id: string;
+        node_type: string;
+        ref_table: string;
+        ref_id: string;
+        server_id: string | null;
+        occurred_at: Date;
+        payload: unknown;
+      }>(
+        `SELECT id, node_type, ref_table, ref_id, server_id, occurred_at, payload
+         FROM capability_provenance_nodes
+         WHERE ${where}
+         ORDER BY occurred_at DESC
+         LIMIT $${paramIdx++} OFFSET $${paramIdx++}`,
+        params,
+      );
+
+      let nodes = dataResult.rows.map((row) => ({
+        ...row,
+        payload: redactPII(row.payload as Record<string, unknown> | null),
+      }));
+
+      // Free-text filter on redacted payload string (post-redaction for safety)
+      if (q) {
+        nodes = nodes.filter((n) => {
+          const payloadStr = n.payload ? JSON.stringify(n.payload).toLowerCase() : '';
+          return n.node_type.includes(q) || payloadStr.includes(q);
+        });
+      }
+
+      res.json({ nodes, total, limit, offset });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // GET /:id/metrics
+  //
+  // Returns sparkline data (latency p50/p95, success rate) for the last 24h
+  // plus the most recent 60 metric buckets for the capability detail page.
+  // ─────────────────────────────────────────────────────────────────────────
+  router.get('/:id/metrics', async (req, res, next) => {
+    try {
+      const { id } = req.params;
+      if (!id || !UUID_REGEX.test(id)) {
+        res.status(400).json({ error: 'id path param must be a UUID' });
+        return;
+      }
+
+      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
+        ?? (req.query['userId'] as string | undefined);
+      if (!userId) {
+        res.status(400).json({ error: 'userId is required' });
+        return;
+      }
+
+      const server = await mcpServerRepository.getById(id);
+      if (!server) {
+        res.status(404).json({ error: 'Capability server not found' });
+        return;
+      }
+      if (server.user_id !== userId) {
+        res.status(403).json({ error: 'Forbidden: you do not own this capability server' });
+        return;
+      }
+
+      const hoursRaw = typeof req.query['hours'] === 'string' ? parseInt(req.query['hours'], 10) : 24;
+      const hours = Number.isFinite(hoursRaw) && hoursRaw > 0 && hoursRaw <= 168 ? hoursRaw : 24;
+
+      const [sparkline, recent] = await Promise.all([
+        mcpServerMetricsRepository.getSparkline(id, hours),
+        mcpServerMetricsRepository.getRecent(id, 60),
+      ]);
+
+      res.json({ sparkline, recent, serverId: id });
+    } catch (err) {
+      next(err);
+    }
+  });
+
   return router;
+}
+
+/**
+ * Redact PII from a provenance node payload before serialising to the audit
+ * endpoint. Stored lowercase; keys are lowercased before lookup.
+ * Non-object payloads are returned as-is (null, primitives).
+ *
+ * Note: matched on exact field names (not patterns) so that legitimate
+ * non-PII fields like `serverName`, `skillName`, `recipeName` stay visible
+ * in the audit trail.
+ */
+const PII_FIELDS = new Set([
+  'email', 'phone', 'password', 'token', 'secret', 'ssn', 'credit_card',
+  'card_number', 'cvv', 'api_key', 'apikey', 'authorization', 'credential',
+  'access_token', 'refresh_token',
+]);
+
+function redactPII(payload: Record<string, unknown> | null | undefined): Record<string, unknown> | null {
+  if (!payload || typeof payload !== 'object') return payload ?? null;
+
+  const redacted: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(payload)) {
+    if (PII_FIELDS.has(key.toLowerCase())) {
+      redacted[key] = '[REDACTED]';
+    } else if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+      redacted[key] = redactPII(value as Record<string, unknown>);
+    } else {
+      redacted[key] = value;
+    }
+  }
+  return redacted;
 }
 

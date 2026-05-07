@@ -8,6 +8,11 @@ import {
   renderApiError,
   wireApiRetry,
 } from '../api-client.js';
+
+/** Warn threshold for success-rate display. Matches @skytwin/observability constant. */
+const SUCCESS_RATE_WARN_THRESHOLD = 0.9;
+/** Warn threshold for p95 latency (ms). Matches @skytwin/observability constant. */
+const LATENCY_P95_WARN_MS = 2000;
 import { showToast } from '../toast.js';
 import { KEY_USER_ID } from '../storage-keys.js';
 
@@ -173,18 +178,30 @@ export async function renderCapabilityDetail(container, userId, serverId) {
         }
       </div>
 
-      <!-- Metrics dashboard (sparklines placeholder — #183 lands the data) -->
-      <div class="card">
+      <!-- Performance metrics (#183) -->
+      <div class="card" id="metrics-card">
         <div class="card-header">
-          <span class="card-title">Usage metrics</span>
+          <span class="card-title">Performance</span>
         </div>
-        <div class="card-subtitle">
-          Detailed usage sparklines are coming in #183. Right now:
+        <div class="card-subtitle" style="margin-bottom: 0.75rem;">
+          Last 24 hours — latency and success rate.
           ${server.last_active_at
-            ? `last used ${escapeHtml(formatRelative(server.last_active_at))}.`
-            : 'no usage recorded yet.'}
+            ? `Last used ${escapeHtml(formatRelative(server.last_active_at))}.`
+            : 'No usage recorded yet.'}
         </div>
-        <!-- TODO (#183): mount sparkline component here once metrics-rollup lands -->
+        <div id="sparkline-container">
+          <div style="color: var(--text-muted); font-size: 0.85rem;">Loading metrics…</div>
+        </div>
+      </div>
+
+      <!-- Monthly cost meter (#183) -->
+      <div class="card" id="monthly-cost-card">
+        <div class="card-header">
+          <span class="card-title">Monthly spend</span>
+        </div>
+        <div id="monthly-cost-container">
+          <div style="color: var(--text-muted); font-size: 0.85rem;">Loading spend data…</div>
+        </div>
       </div>
 
       <!-- Per-app policy editor -->
@@ -253,6 +270,137 @@ export async function renderCapabilityDetail(container, userId, serverId) {
 
     </div>
   `;
+
+  // Best-effort: load sparklines and monthly cost meter asynchronously
+  loadSparklines(serverId, userId);
+  loadMonthlyCostMeter(serverId, userId, server);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sparkline + monthly cost meter (#183)
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function loadSparklines(serverId, userId) {
+  const el = document.getElementById('sparkline-container');
+  if (!el) return;
+  try {
+    const data = await fetchJSON(
+      `${API}/capabilities/${encodeURIComponent(serverId)}/metrics?userId=${encodeURIComponent(userId)}&hours=24`,
+    );
+    const points = data.sparkline || [];
+    if (points.length === 0) {
+      el.innerHTML = '<div style="color: var(--text-muted); font-size: 0.85rem;">No metrics collected yet — tool call data populates once the server is used.</div>';
+      return;
+    }
+    el.innerHTML = renderSparklineSvgs(points);
+  } catch {
+    el.innerHTML = '<div style="color: var(--text-muted); font-size: 0.82rem;">Metrics unavailable.</div>';
+  }
+}
+
+function renderSparklineSvgs(points) {
+  const latencies50 = points.map(p => p.latencyP50Ms ?? 0);
+  const latencies95 = points.map(p => p.latencyP95Ms ?? 0);
+  const successRates = points.map(p => p.successRate ?? 1);
+
+  const p50Last = latencies50.at(-1) ?? 0;
+  const p95Last = latencies95.at(-1) ?? 0;
+  const srLast = successRates.at(-1) ?? 1;
+
+  const p95Color = p95Last > LATENCY_P95_WARN_MS ? 'var(--warning)' : 'var(--accent)';
+  const srColor = srLast < SUCCESS_RATE_WARN_THRESHOLD ? 'var(--danger)' : 'var(--success)';
+
+  return `
+    <div style="display: flex; gap: 1.5rem; flex-wrap: wrap;">
+      <div>
+        <div style="font-size: 0.78rem; color: var(--text-muted); margin-bottom: 0.25rem;">Latency p50</div>
+        <div style="font-size: 1.1rem; font-weight: 600;">${p50Last}ms</div>
+        ${renderSvgSparkline(latencies50, 'var(--accent)')}
+      </div>
+      <div>
+        <div style="font-size: 0.78rem; color: var(--text-muted); margin-bottom: 0.25rem;">Latency p95</div>
+        <div style="font-size: 1.1rem; font-weight: 600; color: ${escapeHtml(p95Color)};">${p95Last}ms</div>
+        ${renderSvgSparkline(latencies95, p95Color)}
+      </div>
+      <div>
+        <div style="font-size: 0.78rem; color: var(--text-muted); margin-bottom: 0.25rem;">Success rate</div>
+        <div style="font-size: 1.1rem; font-weight: 600; color: ${escapeHtml(srColor)};">${Math.round(srLast * 100)}%</div>
+        ${renderSvgSparkline(successRates.map(r => r * 100), srColor)}
+      </div>
+    </div>
+    <div style="font-size: 0.75rem; color: var(--text-dim); margin-top: 0.5rem;">${points.length} minute-buckets in the last 24h</div>
+  `;
+}
+
+/**
+ * Render a simple SVG polyline sparkline from an array of values.
+ * No external library — lightweight inline SVG.
+ */
+function renderSvgSparkline(values, color) {
+  if (!values.length) return '';
+  const W = 120, H = 32, PAD = 2;
+  const max = Math.max(...values, 1);
+  const step = (W - PAD * 2) / Math.max(values.length - 1, 1);
+  const points = values.map((v, i) => {
+    const x = PAD + i * step;
+    const y = H - PAD - ((v / max) * (H - PAD * 2));
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  return `<svg width="${W}" height="${H}" style="display:block;" aria-hidden="true">
+    <polyline points="${escapeHtml(points)}" fill="none" stroke="${escapeHtml(color)}" stroke-width="1.5" stroke-linejoin="round"/>
+  </svg>`;
+}
+
+async function loadMonthlyCostMeter(serverId, userId, server) {
+  const el = document.getElementById('monthly-cost-container');
+  if (!el) return;
+
+  // Fetch the server's monthly cap from the server record (set via mcp_servers table)
+  const perMonthCap = server.per_app_monthly_spend_cents ?? null;
+
+  if (perMonthCap === null) {
+    el.innerHTML = `
+      <div style="font-size: 0.85rem; color: var(--text-muted);">
+        No monthly cap configured.
+        <a href="#/settings" style="color: var(--accent); margin-left: 0.25rem;">Configure in settings</a>
+      </div>
+    `;
+    return;
+  }
+
+  try {
+    // Fetch current month spend from the metrics table
+    const data = await fetchJSON(
+      `${API}/capabilities/${encodeURIComponent(serverId)}/metrics?userId=${encodeURIComponent(userId)}&hours=720`,
+    );
+    const recent = data.recent || [];
+    // Sum spend_cents across all buckets in the current calendar month
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const spentCents = recent
+      .filter(b => new Date(b.bucket_started_at) >= monthStart)
+      .reduce((sum, b) => sum + (b.spend_cents || 0), 0);
+
+    const spentDollars = (spentCents / 100).toFixed(2);
+    const capDollars = (perMonthCap / 100).toFixed(2);
+    const pct = perMonthCap > 0 ? Math.min(100, Math.round((spentCents / perMonthCap) * 100)) : 0;
+    const barColor = pct >= 90 ? 'var(--danger)' : pct >= 70 ? 'var(--warning)' : 'var(--success)';
+
+    el.innerHTML = `
+      <div style="font-size: 0.9rem; margin-bottom: 0.5rem;">
+        $${escapeHtml(spentDollars)} of $${escapeHtml(capDollars)} used this month
+        <span style="font-size: 0.8rem; color: var(--text-muted);">(${pct}%)</span>
+      </div>
+      <div style="background: var(--border); border-radius: 9999px; height: 8px; overflow: hidden;">
+        <div style="width: ${pct}%; background: ${escapeHtml(barColor)}; height: 100%; border-radius: 9999px; transition: width 0.3s;"></div>
+      </div>
+      ${server.per_app_monthly_rollover
+        ? '<div style="font-size: 0.75rem; color: var(--text-dim); margin-top: 0.35rem;">Unspent budget rolls over monthly.</div>'
+        : ''}
+    `;
+  } catch {
+    el.innerHTML = '<div style="color: var(--text-muted); font-size: 0.82rem;">Spend data unavailable.</div>';
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

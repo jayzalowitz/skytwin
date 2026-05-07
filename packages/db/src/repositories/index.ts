@@ -142,3 +142,10 @@ export type {
   ExternalAgentTokenRow,
   CreateExternalAgentTokenInput,
 } from './external-agent-token-repository.js';
+
+export { mcpServerMetricsRepository } from './mcp-server-metrics-repository.js';
+export type {
+  WriteBucketInput,
+  MetricsBucketRow,
+  SparklinePoint,
+} from './mcp-server-metrics-repository.js';

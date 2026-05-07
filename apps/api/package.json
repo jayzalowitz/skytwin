@@ -22,6 +22,7 @@
     "@skytwin/ironclaw-adapter": "workspace:*",
     "@skytwin/llm-client": "workspace:*",
     "@skytwin/mcp-host": "workspace:*",
+    "@skytwin/observability": "workspace:*",
     "@skytwin/registry-client": "workspace:*",
     "@skytwin/policy-engine": "workspace:*",
     "@skytwin/policy-prompts": "workspace:*",

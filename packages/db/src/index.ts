@@ -107,6 +107,13 @@ export type {
   ExternalAgentTokenRow,
   CreateExternalAgentTokenInput,
 } from './repositories/index.js';
+
+export { mcpServerMetricsRepository } from './repositories/index.js';
+export type {
+  WriteBucketInput,
+  MetricsBucketRow,
+  SparklinePoint,
+} from './repositories/index.js';
 export type { ForwardedSignalRow } from './repositories/index.js';
 export type { ConnectorCursorRow } from './repositories/index.js';
 export type { SessionRow } from './repositories/index.js';

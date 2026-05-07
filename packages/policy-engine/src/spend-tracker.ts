@@ -55,6 +55,7 @@ export function resolveEffectiveCaps(
 ): {
   maxSpendPerActionCents: number;
   maxDailySpendCents: number;
+  maxMonthlySpendCents: number | undefined;
   requireApprovalForIrreversible: boolean;
   override?: PerAppOverride;
 } {
@@ -73,6 +74,11 @@ export function resolveEffectiveCaps(
     baseSettings.maxDailySpendCents,
     override?.maxDailySpendCents,
   );
+  // Monthly cap: per-app override only (no user-global monthly cap in AutonomySettings).
+  // Clamp-down-only semantics: if the override narrows below a hypothetical global,
+  // the per-app value wins (per spec). Currently no global monthly cap, so we
+  // simply surface the override value if present.
+  const maxMonthlyCents = override?.maxMonthlySpendCents;
   // Require-approval is OR-ed: either the global flag or a stricter override turns it on.
   const requireApproval =
     baseSettings.requireApprovalForIrreversible ||
@@ -81,6 +87,7 @@ export function resolveEffectiveCaps(
   return {
     maxSpendPerActionCents: maxPerAction,
     maxDailySpendCents: maxDaily,
+    maxMonthlySpendCents: maxMonthlyCents,
     requireApprovalForIrreversible: requireApproval,
     override,
   };
@@ -97,6 +104,11 @@ function clampDown(globalCap: number, overrideCap: number | undefined): number {
  */
 export interface SpendRepositoryPort {
   getDailyTotal(userId: string, windowHours?: number): Promise<number>;
+  /**
+   * Return total spend for a given user and optional app registry id over the
+   * current calendar month (UTC). Used by checkMonthlyLimit.
+   */
+  getMonthlyTotal(userId: string, appRegistryId?: string): Promise<number>;
   reconcile(actionId: string, actualCostCents: number): Promise<unknown>;
   /**
    * Atomically check limit and record spend in one transaction.
@@ -119,6 +131,29 @@ export interface SpendCheckResult {
   dailyLimitCents: number;
   remainingCents: number;
   reason: string;
+}
+
+/**
+ * Result of a monthly spend limit check.
+ */
+export interface MonthlySpendCheckResult {
+  allowed: boolean;
+  currentMonthlySpendCents: number;
+  proposedActionCents: number;
+  monthlyLimitCents: number;
+  remainingCents: number;
+  reason: string;
+}
+
+/**
+ * Summary of monthly spend vs cap for UI display.
+ */
+export interface MonthlySpendSummary {
+  spentCents: number;
+  /** null when no per-app monthly cap is configured. */
+  capCents: number | null;
+  /** 0–100 percentage, or null when no cap is configured. */
+  percentUsed: number | null;
 }
 
 /**
@@ -216,6 +251,104 @@ export class SpendTracker {
       remainingCents: remaining - proposedCostCents,
       reason:
         `Within daily limit${appNote}. ${totalAfterAction} of ${effectiveDaily} cents used after this action.`,
+    };
+  }
+
+  /**
+   * Check if a proposed spend amount is within the per-app monthly limit.
+   *
+   * When appRegistryId is provided, the per-app monthly cap from
+   * AutonomySettings.perAppOverrides is consulted.
+   * If no monthly cap is configured for this app, the check always passes.
+   *
+   * Clamp-down semantics: the per-app cap may only be more restrictive
+   * than the user-global cap (which currently does not include a monthly
+   * field, so per-app is the sole source of monthly ceilings).
+   */
+  async checkMonthlyLimit(
+    userId: string,
+    proposedCostCents: number,
+    settings: AutonomySettings,
+    appRegistryId?: string,
+  ): Promise<MonthlySpendCheckResult> {
+    const caps = resolveEffectiveCaps(settings, appRegistryId);
+    const monthlyLimitCents = caps.maxMonthlySpendCents;
+
+    // No per-app monthly cap configured — always pass.
+    if (monthlyLimitCents === undefined) {
+      return {
+        allowed: true,
+        currentMonthlySpendCents: 0,
+        proposedActionCents: proposedCostCents,
+        monthlyLimitCents: 0,
+        remainingCents: 0,
+        reason: 'No monthly cap configured for this app.',
+      };
+    }
+
+    if (proposedCostCents < 0) {
+      return {
+        allowed: false,
+        currentMonthlySpendCents: 0,
+        proposedActionCents: proposedCostCents,
+        monthlyLimitCents,
+        remainingCents: 0,
+        reason: `Invalid negative cost (${proposedCostCents} cents). Actions cannot have negative costs.`,
+      };
+    }
+
+    const currentSpend = await this.repository.getMonthlyTotal(userId, appRegistryId);
+    const totalAfterAction = currentSpend + proposedCostCents;
+    const remaining = monthlyLimitCents - currentSpend;
+    const appNote = appRegistryId ? ` for ${appRegistryId}` : '';
+
+    if (totalAfterAction > monthlyLimitCents) {
+      return {
+        allowed: false,
+        currentMonthlySpendCents: currentSpend,
+        proposedActionCents: proposedCostCents,
+        monthlyLimitCents,
+        remainingCents: Math.max(0, remaining),
+        reason:
+          `Monthly spend limit exceeded${appNote}. Current: ${currentSpend} cents + ` +
+          `proposed: ${proposedCostCents} cents = ${totalAfterAction} cents, ` +
+          `which exceeds the ${monthlyLimitCents} cent monthly limit. ` +
+          `Remaining budget: ${Math.max(0, remaining)} cents.`,
+      };
+    }
+
+    return {
+      allowed: true,
+      currentMonthlySpendCents: currentSpend,
+      proposedActionCents: proposedCostCents,
+      monthlyLimitCents,
+      remainingCents: remaining - proposedCostCents,
+      reason:
+        `Within monthly limit${appNote}. ${totalAfterAction} of ${monthlyLimitCents} cents used after this action.`,
+    };
+  }
+
+  /**
+   * Return a monthly spend summary for the UI cost meter.
+   *
+   * When no per-app monthly cap is configured, capCents and percentUsed
+   * are null — the UI should display "No monthly cap configured".
+   */
+  async getMonthlySpendForApp(
+    userId: string,
+    settings: AutonomySettings,
+    appRegistryId: string,
+  ): Promise<MonthlySpendSummary> {
+    const caps = resolveEffectiveCaps(settings, appRegistryId);
+    const capCents = caps.maxMonthlySpendCents ?? null;
+    const spentCents = await this.repository.getMonthlyTotal(userId, appRegistryId);
+
+    return {
+      spentCents,
+      capCents,
+      percentUsed: capCents !== null && capCents > 0
+        ? Math.min(100, Math.round((spentCents / capCents) * 100))
+        : null,
     };
   }
 

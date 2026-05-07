@@ -28,6 +28,7 @@ import {
   discoverAdapters,
 } from '@skytwin/execution-router';
 import { McpHost } from '@skytwin/mcp-host';
+import { sharedMetricsCollector } from '@skytwin/observability';
 import type { OpenClawCredentialRequirement } from '@skytwin/execution-router';
 import { credentialRequirementRepository, ironClawToolRepository, serviceCredentialRepository } from '@skytwin/db';
 import { createLogger } from '@skytwin/core';
@@ -137,7 +138,19 @@ export async function createExecutionRouter(): Promise<ExecutionRouter> {
   // MCP host — Capability Acquisition Loop (#173). Always registered; servers
   // are added via the user-facing install flow (#176). On first boot the host
   // has zero servers and reports healthy with empty skill set.
-  const mcpHost = new McpHost();
+  // onToolCall feeds the shared metrics collector for #183 observability.
+  const mcpHost = new McpHost({
+    onToolCall: (event) => {
+      sharedMetricsCollector.record({
+        serverId: event.serverId,
+        skillName: event.toolName,
+        latencyMs: event.latencyMs,
+        success: event.success,
+        spendCents: event.spendCents,
+        ts: event.ts,
+      });
+    },
+  });
   registry.register('mcp-host', mcpHost, MCP_HOST_TRUST_PROFILE);
   log.info('Registered MCP host adapter (Capability Acquisition Loop)');
 

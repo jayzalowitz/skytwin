@@ -33,6 +33,7 @@
       "@skytwin/connectors": ["./packages/connectors/src"],
       "@skytwin/evals": ["./packages/evals/src"],
       "@skytwin/mempalace": ["./packages/mempalace/src"],
+      "@skytwin/observability": ["./packages/observability/src"],
       "@skytwin/idle-miner": ["./packages/idle-miner/src"],
       "@skytwin/capability-engine": ["./packages/capability-engine/src"],
       "@skytwin/registry-client": ["./packages/registry-client/src"],

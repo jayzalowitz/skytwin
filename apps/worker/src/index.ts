@@ -22,6 +22,7 @@ import {
 import { withRetry, RetryableHttpError, CircuitBreaker, createLogger } from '@skytwin/core';
 import { SignalDeduper, DEFAULT_TTL_MS } from './signal-dedupe.js';
 import { createPruneThrottle } from './label-signal-pruner.js';
+import { runMetricsRollupJob } from './jobs/metrics-rollup.js';
 
 const config = loadConfig();
 const log = createLogger('worker');
@@ -455,6 +456,8 @@ async function main(): Promise<void> {
 
   clearTimeout(startupTimer);
   let pollCount = 0;
+  let lastMetricsRollupAt = 0;
+  const METRICS_ROLLUP_INTERVAL_MS = 60_000;
 
   // Poll loop
   while (running) {
@@ -463,6 +466,13 @@ async function main(): Promise<void> {
     }
 
     pollCount++;
+
+    // Drain in-memory metrics buffer to DB at most once per minute (#183).
+    const nowMs = Date.now();
+    if (nowMs - lastMetricsRollupAt >= METRICS_ROLLUP_INTERVAL_MS) {
+      await runMetricsRollupJob();
+      lastMetricsRollupAt = nowMs;
+    }
 
     // Expire stale approval requests every 10 poll cycles
     if (pollCount % 10 === 0) {
