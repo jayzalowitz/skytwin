@@ -1,3 +1,4 @@
+import type { PoolClient } from 'pg';
 import { query } from '../connection.js';
 
 export interface CredentialVaultMetaRow {
@@ -71,5 +72,33 @@ export const credentialVaultMetaRepository = {
       [userId],
     );
     return result.rows[0] ?? null;
+  },
+
+  /**
+   * Rotate the passphrase: update salt, hash, bump key_version by 1, and set
+   * rotated_at = now(). Accepts an optional PoolClient so the caller can include
+   * this UPDATE in a serialisable transaction alongside oauth_tokens re-encryption.
+   *
+   * Returns the new current_key_version, or null if no row exists.
+   */
+  async rotatePassphrase(
+    userId: string,
+    input: { newSalt: Buffer; newPassphraseHash: Buffer },
+    client?: PoolClient,
+  ): Promise<number | null> {
+    const sql = `UPDATE user_credential_vault_meta
+       SET passphrase_salt    = $1,
+           passphrase_hash    = $2,
+           current_key_version = current_key_version + 1,
+           rotated_at         = now()
+       WHERE user_id = $3
+       RETURNING current_key_version`;
+    const params = [input.newSalt, input.newPassphraseHash, userId];
+
+    const result = client
+      ? await client.query<{ current_key_version: number }>(sql, params)
+      : await query<{ current_key_version: number }>(sql, params);
+
+    return result.rows[0]?.current_key_version ?? null;
   },
 };

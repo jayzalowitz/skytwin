@@ -1,5 +1,42 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [unreleased] — Credential vault passphrase rotation (#183 vault follow-up)
+
+Implements the key-rotation flow for the per-user credential vault.
+
+### Added — `POST /api/credential-vault/rotate`
+
+New endpoint for passphrase rotation. Accepts `{ currentPassphrase, newPassphrase }`.
+Verifies the current passphrase (rate-limited 5/min/user), derives a new key from a
+new random salt, re-encrypts every `oauth_tokens` row for the user inside a single
+serialisable CockroachDB transaction, bumps `current_key_version` and updates
+`passphrase_salt` + `passphrase_hash` in `user_credential_vault_meta`, then refreshes
+the in-memory `KeyCache`. Returns `{ status: 'rotated', tokensReencrypted: N, keyVersion: N }`.
+On any transaction failure the ROLLBACK leaves the original passphrase intact.
+
+### Added — `oauthRepository.listEncryptedForUser(userId, client?)`
+
+SELECT all `oauth_tokens` rows with `encrypted_access_token IS NOT NULL` for the given
+user. Accepts an optional `PoolClient` so the rotation transaction's serialisable
+isolation actually covers the read.
+
+### Added — `oauthRepository.rotateEncrypted(id, input, client?)`
+
+UPDATE encrypted columns for a single row without touching plaintext columns (which
+are already NULL for fully-migrated rows). Accepts an optional `PoolClient`.
+
+### Added — `credentialVaultMetaRepository.rotatePassphrase(userId, input, client?)`
+
+UPDATE `user_credential_vault_meta`: new salt, new passphrase hash, `current_key_version + 1`,
+`rotated_at = now()`. Accepts an optional `PoolClient`.
+
+### Added — `apps/web/public/js/pages/credential-vault.js`
+
+New web page at hash route `#/credential-vault`. Shows vault status (initialized/unlocked,
+key version, last rotated), init form, unlock form, rotate form, and lock button. Uses
+the singleton-delegator pattern (`_credentialVaultListenerWired` guard, hash-route gated).
+Wired into `app.js` routes and `index.html` nav.
+
 ## [unreleased] — Lazy credential-vault migration: observability hook (#183 follow-up)
 
 The fire-and-forget `_lazyMigrate` path in `DbTokenStore.getToken` previously

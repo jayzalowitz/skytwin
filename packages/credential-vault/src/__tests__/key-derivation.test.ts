@@ -114,3 +114,52 @@ describe('MIN_PASSPHRASE_LENGTH', () => {
     expect(MIN_PASSPHRASE_LENGTH).toBeGreaterThanOrEqual(12);
   });
 });
+
+describe('rotation sanity — new salt produces a different key', () => {
+  /**
+   * This test verifies the core rotation invariant: deriving a key with a new
+   * salt (even for the same passphrase) produces a distinct key. If this
+   * failed, rotation would not actually change the encryption key.
+   */
+  it('old key !== new key after generating a new salt', async () => {
+    const passphrase = 'rotation-test-passphrase-long-enough';
+
+    const oldSalt = generateSalt();
+    const newSalt = generateSalt();
+
+    const oldKey = await deriveKey(passphrase, oldSalt);
+    const newKey = await deriveKey(passphrase, newSalt);
+
+    expect(oldKey.equals(newKey)).toBe(false);
+    expect(oldKey.length).toBe(32);
+    expect(newKey.length).toBe(32);
+  }, 30_000);
+
+  it('verifyPassphrase succeeds for old passphrase before rotation', async () => {
+    const passphrase = 'pre-rotation-passphrase-test-xyz';
+    const salt = generateSalt();
+    const key = await deriveKey(passphrase, salt);
+    const hash = hashDerivedKey(key);
+
+    expect(await verifyPassphrase(passphrase, salt, hash)).toBe(true);
+  }, 30_000);
+
+  it('old passphrase fails against new hash after rotation (new salt + new passphrase)', async () => {
+    const oldPassphrase = 'old-passphrase-rotation-test-123';
+    const newPassphrase = 'new-passphrase-rotation-test-456';
+
+    const oldSalt = generateSalt();
+    const oldKey = await deriveKey(oldPassphrase, oldSalt);
+    void hashDerivedKey(oldKey); // compute to verify it doesn't throw, but not compared here
+
+    // Simulate rotation: new salt, new passphrase, new hash
+    const newSalt = generateSalt();
+    const newKey = await deriveKey(newPassphrase, newSalt);
+    const newHash = hashDerivedKey(newKey);
+
+    // Old passphrase should NOT verify against new hash
+    expect(await verifyPassphrase(oldPassphrase, newSalt, newHash)).toBe(false);
+    // New passphrase SHOULD verify against new hash
+    expect(await verifyPassphrase(newPassphrase, newSalt, newHash)).toBe(true);
+  }, 60_000);
+});
