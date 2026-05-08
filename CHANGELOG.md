@@ -1,5 +1,51 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [unreleased] — DXT export/import scaffold (#180 partial)
+
+The capability-transfer pipeline that `docs/dxt-transfer.md` (shipped in #211)
+described — implemented end-to-end except for the desktop drag-drop UI and
+the actual confirmed-install flow.
+
+### Added — `@skytwin/dxt`
+
+New package implementing the binary artifact format:
+
+- 4-byte magic `DXT1` + 4-byte version + 32-byte SHA-256 + 8-byte length + JSON payload
+- `serialize(input)` packs an `mcp_servers` row + skills into the binary form
+- `deserialize(blob)` returns a typed `DxtResult<T>` (no thrown exceptions
+  on user input — boundary contract)
+- `redactCommand(args)` masks any `--token=*` / `--api-key=*` / `--secret=*`
+  CLI argument before it reaches the artifact
+
+15 unit tests (round-trip, magic mismatch, version mismatch, length mismatch,
+SHA-256 tamper detection, redaction).
+
+### Added — `dxtExportRepository` (`@skytwin/db`)
+
+`create(input)`, `findById(id)`, `listForUser(userId)` against the
+existing `dxt_exports` table from migration 027.
+
+### Added — `apps/api/src/routes/dxt.ts`
+
+Four routes wired under `sessionAuth + requireOwnership`:
+
+- `POST /api/dxt/export/:serverId` — serialize + persist + return base64 blob
+- `GET  /api/dxt/exports` — metadata-only listing
+- `GET  /api/dxt/exports/:id/blob` — download `application/octet-stream`
+- `POST /api/dxt/import` — preview-only deserialization with detection of
+  whether the capability is already installed
+
+9 API integration tests (UUID validation, ownership checks, round-trip
+export → import, magic-mismatch on garbage, missing-blob 400).
+
+### Out of scope (deferred to environmental work)
+
+- Drag-drop UI on the desktop app — needs Electron testing
+- The actual install-from-DXT flow (preview only — explicit-confirm + install
+  step deferred)
+- Idle bridge from #180
+- Zero-trust container hooks from #180 / #183 AC#4
+
 ## [unreleased] — Always-on service: headless daemon scaffold (#191 partial)
 
 Code-bound subset of #191. Ships:

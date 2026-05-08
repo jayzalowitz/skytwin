@@ -159,3 +159,9 @@ export type {
   UpsertChangelogInput,
   PendingSkillOptInRow,
 } from './mcp-server-changelog-repository.js';
+
+export { dxtExportRepository } from './dxt-export-repository.js';
+export type {
+  DxtExportRow,
+  CreateDxtExportInput,
+} from './dxt-export-repository.js';

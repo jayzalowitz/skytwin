@@ -27,6 +27,7 @@
       "@skytwin/credential-vault": ["./packages/credential-vault/src"],
       "@skytwin/db": ["./packages/db/src"],
       "@skytwin/decision-engine": ["./packages/decision-engine/src"],
+      "@skytwin/dxt": ["./packages/dxt/src"],
       "@skytwin/evals": ["./packages/evals/src"],
       "@skytwin/execution-router": ["./packages/execution-router/src"],
       "@skytwin/explanations": ["./packages/explanations/src"],
