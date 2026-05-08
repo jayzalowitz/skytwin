@@ -110,6 +110,12 @@ export type {
   CreateExternalAgentTokenInput,
 } from './repositories/index.js';
 
+export { dxtExportRepository } from './repositories/index.js';
+export type {
+  DxtExportRow,
+  CreateDxtExportInput,
+} from './repositories/index.js';
+
 export { mcpServerMetricsRepository } from './repositories/index.js';
 
 export { credentialVaultMetaRepository } from './repositories/index.js';
