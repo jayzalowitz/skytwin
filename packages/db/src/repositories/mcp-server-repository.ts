@@ -55,6 +55,20 @@ export const mcpServerRepository = {
     return result.rows;
   },
 
+  /**
+   * Return the cached list_tools() skill names for a server. Used by the DXT
+   * exporter so the artifact records the skill set the user actually has,
+   * not an empty placeholder. Cheap query — only the names; full schemas
+   * stay in the table.
+   */
+  async listSkillNamesForServer(serverId: string): Promise<string[]> {
+    const result = await query<{ skill_name: string }>(
+      `SELECT skill_name FROM mcp_server_skills WHERE server_id = $1 ORDER BY skill_name`,
+      [serverId],
+    );
+    return result.rows.map((r) => r.skill_name);
+  },
+
   async listActive(): Promise<McpServerRow[]> {
     const result = await query<McpServerRow>(
       `SELECT * FROM mcp_servers WHERE status = 'active' ORDER BY last_active_at DESC`,
