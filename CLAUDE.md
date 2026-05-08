@@ -59,6 +59,26 @@ grep '<NAME>' packages/shared-types/dist/index.js
 
 This shows up most often after rebasing across changes to `packages/shared-types/src/index.ts`. CI is unaffected (fresh installs). Only the local worktree sees it.
 
+### Build gotcha: turbo parallel race on @skytwin/db dist
+
+If `pnpm build` fails on `@skytwin/api` with `Property 'X' does not exist on type {...}` for a method that's clearly in `packages/db/src/repositories/*.ts`, turbo's default parallel concurrency is racing on the `@skytwin/db` dist between dependent builds. Direct `pnpm --filter @skytwin/api build` succeeds because there's no race; full `pnpm build` fails because parallel writers stomp on each other's `.d.ts` output.
+
+Workaround:
+
+```bash
+pnpm build --concurrency=1   # serial build, ~10s slower but always correct
+```
+
+Or pre-build `@skytwin/db` to a stable state, then full build:
+
+```bash
+rm -rf packages/db/dist packages/db/tsconfig.tsbuildinfo \
+  && pnpm --filter @skytwin/db build \
+  && pnpm build
+```
+
+CI is unaffected (clean dist on every run).
+
 ## Package Descriptions
 
 | Package | Purpose |
