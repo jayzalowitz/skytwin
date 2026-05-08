@@ -116,6 +116,12 @@ export type {
   CreateDxtExportInput,
 } from './repositories/index.js';
 
+export { dxtImportRepository } from './repositories/index.js';
+export type {
+  DxtImportRow,
+  CreateDxtImportInput,
+} from './repositories/index.js';
+
 export { mcpServerMetricsRepository } from './repositories/index.js';
 
 export { credentialVaultMetaRepository } from './repositories/index.js';

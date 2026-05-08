@@ -14,6 +14,7 @@ import { renderAboutMe } from './pages/about-me.js';
 import { renderCredentialVault } from './pages/credential-vault.js';
 import { renderTwinBriefing } from './pages/twin-briefing.js';
 import { renderTwinServerTokens } from './pages/twin-server-tokens.js';
+import { renderDxtImports } from './pages/dxt-imports.js';
 import { renderProvenanceGraph } from './pages/provenance-graph.js';
 import { renderGlobalPauseButton } from './components/global-pause-button.js';
 import { fetchPendingApprovals, fetchHealth, fetchUser, listUsers, escapeHtml, isApiKnownOffline } from './api-client.js';
@@ -41,6 +42,7 @@ const routes = {
   '/twin-server-tokens': { title: 'MCP Agent Tokens', render: renderTwinServerTokens },
   '/provenance': { title: 'Provenance Graph', render: renderProvenanceGraph },
   '/credential-vault': { title: 'Credential Vault', render: renderCredentialVault },
+  '/dxt/imports': { title: 'DXT Imports', render: renderDxtImports },
 };
 
 /**

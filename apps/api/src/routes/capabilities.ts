@@ -228,7 +228,7 @@ const CAPABILITY_RECIPES: CapabilityRecipe[] = [
  */
 async function writeProvenanceNode(opts: {
   userId: string;
-  nodeType: 'uninstall' | 'action' | 'feedback' | 'signal' | 'entity' | 'suggestion' | 'install' | 'tier_promotion' | 'external_agent';
+  nodeType: 'uninstall' | 'action' | 'feedback' | 'signal' | 'entity' | 'suggestion' | 'install' | 'tier_promotion' | 'external_agent' | 'manual_install';
   refTable: string;
   refId: string;
   serverId: string | null;
