@@ -1,5 +1,31 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [unreleased] — Always-on service: headless daemon scaffold (#191 partial)
+
+Code-bound subset of #191. Ships:
+
+- **Headless daemon entry point** (`apps/desktop/src/headless.ts`) — runs the
+  API + worker without spawning Electron windows. Listens on
+  `SKYTWIN_API_PORT` (default 4000), exposes `/health`, handles SIGTERM →
+  graceful shutdown.
+- **Tray menu data definitions** (`apps/desktop/src/tray.ts`) — pure-data
+  `buildTrayMenuItems(state)` returning `{ label, action, enabled }[]` for
+  the four states (idle / scanning / acting / paused). Testable without
+  Electron. Wrapper `applyTrayMenu()` exists but is not unit-tested.
+- **Service install scripts** — `install-launchd.plist` (macOS),
+  `install-systemd.service` (Linux), `install-windows-service.ps1`
+  (Windows). Static config files. Reference `~/.skytwin/logs/` and
+  `/usr/local/bin/skytwin` as documented placeholders pending #188's
+  signed-binary install path.
+
+### Out of scope (deferred to environmental work)
+
+- The actual Electron tray (icon registration, click handling) — needs UI testing
+- Auto-launch on system startup (Settings toggle) — needs UI work
+- E2E tests on real macOS / Linux / Windows (#191 AC#7)
+
+8 unit tests for headless + tray data layer.
+
 ## [unreleased] — Credential vault passphrase rotation (#183 vault follow-up)
 
 Implements the key-rotation flow for the per-user credential vault.

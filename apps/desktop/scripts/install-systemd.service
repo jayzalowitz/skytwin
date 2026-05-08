@@ -1,0 +1,71 @@
+# systemd user service for the SkyTwin headless daemon.
+#
+# Install steps (user-level, no root required):
+#   mkdir -p ~/.config/systemd/user
+#   cp install-systemd.service ~/.config/systemd/user/skytwin-headless.service
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now skytwin-headless
+#
+# Uninstall:
+#   systemctl --user disable --now skytwin-headless
+#   rm ~/.config/systemd/user/skytwin-headless.service
+#   systemctl --user daemon-reload
+#
+# View logs:
+#   journalctl --user -u skytwin-headless -f
+#
+# Binary path:
+#   ExecStart uses /usr/local/bin/skytwin as a PLACEHOLDER.
+#   Issue #188 (turnkey distribution) provides the actual signed binary
+#   and will patch this path during the installer run. Do not hard-code
+#   a path here without consulting #188.
+#
+# Log files:
+#   ~/.skytwin/logs/ is used for supplementary file-based logs.
+#   The SkyTwin installer (#188) creates this directory. If you are
+#   installing this unit manually, create it first:
+#     mkdir -p ~/.skytwin/logs
+
+[Unit]
+Description=SkyTwin Headless Daemon
+Documentation=https://github.com/jayzalowitz/skytwin
+# Start only after the network stack is fully online so that the API
+# and worker can reach their upstream dependencies (DB, OAuth endpoints).
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# PLACEHOLDER: #188 turnkey distribution will supply the real binary path.
+ExecStart=/usr/local/bin/skytwin --headless
+
+# Environment variables passed to the daemon.
+# Override SKYTWIN_API_PORT here if port 4000 is in use.
+Environment=SKYTWIN_API_PORT=4000
+Environment=__HEADLESS_MAIN__=1
+
+# Supplementary log directory (journald is the primary log sink).
+# Ensure this exists: mkdir -p ~/.skytwin/logs
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=skytwin-headless
+
+# Restart policy: always restart on non-zero exit.
+Restart=always
+# Wait 5 seconds between restart attempts to avoid a tight crash loop.
+RestartSec=5s
+
+# Keep the service running for at most 10 restarts in 30 seconds
+# before systemd gives up and marks it as failed.
+StartLimitIntervalSec=30
+StartLimitBurst=10
+
+# Security hardening — run as the installing user, not root.
+# systemd user services already run as the installing user, but these
+# directives add an extra layer of restriction.
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

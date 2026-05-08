@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS launchd plist for the SkyTwin headless daemon.
+
+  Install steps:
+    cp install-launchd.plist ~/Library/LaunchAgents/com.skytwin.headless.plist
+    launchctl load ~/Library/LaunchAgents/com.skytwin.headless.plist
+
+  Uninstall:
+    launchctl unload ~/Library/LaunchAgents/com.skytwin.headless.plist
+    rm ~/Library/LaunchAgents/com.skytwin.headless.plist
+
+  Binary path:
+    The ExecStart value (/usr/local/bin/skytwin) is a PLACEHOLDER.
+    Issue #188 (turnkey distribution) provides the actual signed binary
+    and will patch this path during the installer run. Do not hard-code
+    a path here without consulting #188.
+
+  Log paths:
+    ~/.skytwin/logs/ must exist before launchd starts the daemon.
+    The SkyTwin installer (#188) creates this directory. If you are
+    running this plist manually, create the directory first:
+      mkdir -p ~/.skytwin/logs
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.skytwin.headless</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <!-- PLACEHOLDER: #188 turnkey distribution will supply the real path. -->
+    <string>/usr/local/bin/skytwin</string>
+    <string>--headless</string>
+  </array>
+
+  <!--
+    Environment variables passed to the daemon.
+    Override SKYTWIN_API_PORT here if 4000 conflicts with another service.
+  -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>SKYTWIN_API_PORT</key>
+    <string>4000</string>
+    <key>__HEADLESS_MAIN__</key>
+    <string>1</string>
+  </dict>
+
+  <!-- Start the daemon when the user logs in. -->
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- Restart the daemon if it exits for any reason. -->
+  <key>KeepAlive</key>
+  <true/>
+
+  <!--
+    Throttle relaunches to avoid a crash loop consuming CPU.
+    launchd will not relaunch faster than once per 10 seconds.
+  -->
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+
+  <!-- Log paths — directory must exist (created by #188 installer). -->
+  <key>StandardOutPath</key>
+  <string>/Users/Shared/.skytwin/logs/headless.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/Shared/.skytwin/logs/headless.stderr.log</string>
+
+  <!--
+    Run as a user agent (LaunchAgents), not a system daemon (LaunchDaemons),
+    so the process has access to the user's keychain and home directory.
+  -->
+</dict>
+</plist>
