@@ -1,5 +1,45 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [unreleased] — Embedded LLM port scaffold (#187 partial)
+
+Scaffolds the runtime detection + port interfaces so the rest of the
+codebase can call into a future embedded-LLM implementation through a
+stable contract. Real llama.cpp / Whisper / Piper integrations are
+explicitly deferred — they require binary distribution and integration
+testing on real models.
+
+### Added — `@skytwin/embedded-llm`
+
+- `detectEmbeddedRuntimes()` — checks `which`/`where` for `llama-cli`,
+  `whisper-cli`, `piper`. Honors env vars (`SKYTWIN_LLAMACPP_BIN`,
+  `SKYTWIN_WHISPER_BIN`, `SKYTWIN_PIPER_BIN`) for explicit overrides.
+  Never spawns the binaries — existence-check only.
+- `EmbeddedTextPort` / `EmbeddedSttPort` / `EmbeddedTtsPort` interfaces
+  with `Null*` fallback impls. Calling `generate` / `transcribe` /
+  `synthesize` on a Null impl throws `NotAvailableError` with a typed
+  `runtime` field.
+- 22 tests across runtime-detector and null-ports.
+
+### Explicitly deferred
+
+- Real llama.cpp / Whisper / Piper integration — needs binaries
+- Model auto-download / auto-upgrade — needs CDN + cryptographic
+  verification of model artifacts
+- Speaker diarization, voice cloning, fine-tuning — out of scope for v1
+- Web UI for model management — needs the real backend first
+
+### Known interface gaps for the real-implementation PR
+
+- `generate()` returns `Promise<string>` (full completion) — no token
+  streaming. llama.cpp typically streams; the real PR may add an
+  overload or a separate `generateStream()` method.
+- `transcribe()` takes a raw `Buffer` — audio format implicit. Whisper
+  needs a known format; the real PR may add `opts.format`.
+- `synthesize()` returns a raw `Buffer` — audio mime type unspecified.
+  The real PR may return `{ audio: Buffer; mimeType: string }`.
+- No `init`/`dispose` lifecycle — model loading happens internally.
+  The real PR may add a `create(opts)` factory.
+
 ## [unreleased] — DXT export/import scaffold (#180 partial)
 
 The capability-transfer pipeline that `docs/dxt-transfer.md` (shipped in #211)

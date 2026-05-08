@@ -28,6 +28,7 @@
       "@skytwin/db": ["./packages/db/src"],
       "@skytwin/decision-engine": ["./packages/decision-engine/src"],
       "@skytwin/dxt": ["./packages/dxt/src"],
+      "@skytwin/embedded-llm": ["./packages/embedded-llm/src"],
       "@skytwin/evals": ["./packages/evals/src"],
       "@skytwin/execution-router": ["./packages/execution-router/src"],
       "@skytwin/explanations": ["./packages/explanations/src"],
