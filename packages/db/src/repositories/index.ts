@@ -165,3 +165,9 @@ export type {
   DxtExportRow,
   CreateDxtExportInput,
 } from './dxt-export-repository.js';
+
+export { dxtImportRepository } from './dxt-import-repository.js';
+export type {
+  DxtImportRow,
+  CreateDxtImportInput,
+} from './dxt-import-repository.js';

@@ -1,5 +1,45 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [unreleased] — DXT install confirm flow (#180 follow-up)
+
+Closes the backend half of the DXT import flow. `POST /api/dxt/import` now
+persists a `dxt_imports` row (`status='pending'`) so the user can confirm or
+reject in a dedicated step. A second call to the confirm endpoint installs
+the capability by inserting into `mcp_servers`, writing a provenance node, and
+returning the new server ID.
+
+### Ships
+
+- **Migration `035-dxt-imports.sql`** — `dxt_imports` table with
+  `pending | installed | rejected | failed` status lifecycle; composite index on
+  `(user_id, status, imported_at DESC)`. Also extends `cpn_node_type_check`
+  to include `'manual_install'`.
+- **`dxtImportRepository`** (`packages/db/src/repositories/dxt-import-repository.ts`)
+  — `create`, `findById`, `listForUser`, `markRejected`, `markInstalled`,
+  `markFailed`. Exported from `@skytwin/db`.
+- **`POST /api/dxt/import`** updated — now persists a pending row and returns
+  `importId` alongside the preview. The old `note` field is removed.
+- **`POST /api/dxt/imports/:id/confirm`** — ownership-checked, pending-only,
+  re-verifies SHA-256 on stored blob, inserts into `mcp_servers`, writes
+  `manual_install` provenance node, returns `{ status, serverId, registryId }`.
+- **`POST /api/dxt/imports/:id/reject`** — ownership-checked, pending-only,
+  returns 204. Audit trail.
+- **`GET /api/dxt/imports`** — lists all imports for the user, newest first.
+  No blob bytes in response. Supports `?status=` filter.
+- **Web page `apps/web/public/js/pages/dxt-imports.js`** — route `#/dxt/imports`,
+  singleton delegator (`_dxtImportsListenerWired` guard, hash-route gated),
+  pending review list with expand-to-review + Install / Reject buttons, history
+  with status badges. Wired into `app.js`.
+- **14 new tests** — 9 in `dxt-import-confirm-flow.test.ts` (API layer) +
+  5 in `dxt-import-repository.test.ts` (db layer).
+
+### Defers
+
+- Drag-drop UI on the desktop (Electron file-picker integration) — needs
+  real Electron testing environment.
+- Bulk import — one artifact at a time by design.
+- Cross-instance federation (push) — DXT is one-way file transfer.
+
 ## [unreleased] — Zero-trust mode policy + UI (#183 AC#4 partial)
 
 Closes the policy + UI half of #183 AC#4. The container runtime hooks

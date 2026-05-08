@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import express from 'express';
 import type { Express } from 'express';
 
-const { mockMcpServerRepo, mockDxtExportRepo } = vi.hoisted(() => ({
+const { mockMcpServerRepo, mockDxtExportRepo, mockDxtImportRepo, mockProvenanceRepo, mockQuery } = vi.hoisted(() => ({
   mockMcpServerRepo: {
     getById: vi.fn(),
     getByUserAndRegistry: vi.fn(),
@@ -12,11 +12,26 @@ const { mockMcpServerRepo, mockDxtExportRepo } = vi.hoisted(() => ({
     findById: vi.fn(),
     listForUser: vi.fn(),
   },
+  mockDxtImportRepo: {
+    create: vi.fn(),
+    findById: vi.fn(),
+    listForUser: vi.fn(),
+    markRejected: vi.fn(),
+    markInstalled: vi.fn(),
+    markFailed: vi.fn(),
+  },
+  mockProvenanceRepo: {
+    writeNode: vi.fn(),
+  },
+  mockQuery: vi.fn(),
 }));
 
 vi.mock('@skytwin/db', () => ({
   mcpServerRepository: mockMcpServerRepo,
   dxtExportRepository: mockDxtExportRepo,
+  dxtImportRepository: mockDxtImportRepo,
+  provenanceRepository: mockProvenanceRepo,
+  query: mockQuery,
 }));
 
 import { createDxtRouter } from '../routes/dxt.js';
@@ -24,6 +39,7 @@ import { createDxtRouter } from '../routes/dxt.js';
 const USER_ID = 'ffffffff-eeee-dddd-cccc-111111111111';
 const SERVER_ID = 'aaaaaaaa-bbbb-cccc-dddd-222222222222';
 const EXPORT_ID = 'bbbbbbbb-cccc-dddd-eeee-333333333333';
+const IMPORT_ID = 'cccccccc-dddd-eeee-ffff-444444444444';
 
 function buildApp(userId = USER_ID): Express {
   const app = express();
@@ -239,9 +255,24 @@ describe('POST /api/dxt/import', () => {
 
     // Now import preview
     mockMcpServerRepo.getByUserAndRegistry.mockResolvedValueOnce(null);
+    mockDxtImportRepo.create.mockResolvedValueOnce({
+      id: IMPORT_ID,
+      user_id: USER_ID,
+      imported_at: new Date(),
+      artifact_blob: Buffer.alloc(0),
+      artifact_sha256: Buffer.alloc(32),
+      registry_id: 'notion-mcp',
+      source_instance_id: null,
+      status: 'pending',
+      installed_server_id: null,
+      rejected_at: null,
+      installed_at: null,
+      error_message: null,
+    });
     const importResult = await req(app, 'POST', '/api/dxt/import', { blob });
     expect(importResult.status).toBe(200);
     const importBody = importResult.body as Record<string, unknown>;
+    expect(importBody['importId']).toBe(IMPORT_ID);
     expect(importBody['preview']).toBeDefined();
     expect(importBody['alreadyInstalled']).toBe(false);
     expect(typeof importBody['sha256']).toBe('string');

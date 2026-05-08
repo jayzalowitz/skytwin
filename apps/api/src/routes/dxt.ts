@@ -1,16 +1,20 @@
 /**
- * dxt.ts — REST endpoints for DXT artifact export, list, download, import.
+ * dxt.ts — REST endpoints for DXT artifact export, list, download, import,
+ * confirm, reject, and import listing.
  *
  * Routes (all under sessionAuth + requireOwnership):
- *   POST   /api/dxt/export/:serverId  — serialize an mcp_servers row, persist, return blob
- *   GET    /api/dxt/exports           — list this user's exports (metadata only)
- *   GET    /api/dxt/exports/:id/blob  — download the raw blob
- *   POST   /api/dxt/import            — preview an artifact (no install)
+ *   POST   /api/dxt/export/:serverId      — serialize an mcp_servers row, persist, return blob
+ *   GET    /api/dxt/exports               — list this user's exports (metadata only)
+ *   GET    /api/dxt/exports/:id/blob      — download the raw blob
+ *   POST   /api/dxt/import               — preview an artifact + persist pending import row
+ *   POST   /api/dxt/imports/:id/confirm  — confirm a pending import; installs the capability
+ *   POST   /api/dxt/imports/:id/reject   — reject a pending import (audit trail)
+ *   GET    /api/dxt/imports              — list all imports for the user (metadata only)
  */
 
 import { Router } from 'express';
 import type { Request } from 'express';
-import { mcpServerRepository, dxtExportRepository } from '@skytwin/db';
+import { mcpServerRepository, dxtExportRepository, dxtImportRepository, provenanceRepository, query } from '@skytwin/db';
 import type { McpServerRow, DxtExportRow } from '@skytwin/db';
 import { createLogger } from '@skytwin/core';
 import { serialize, deserialize, redactCommand } from '@skytwin/dxt';
@@ -177,8 +181,9 @@ export function createDxtRouter(): Router {
   // ─────────────────────────────────────────────────────────────────────────
   // POST /import
   // Body: { blob: base64String }
-  // Returns a parsed preview — does NOT install. The user must explicitly
-  // confirm via a separate flow (deferred to environmental UI work).
+  // Parses the artifact, returns a preview, and persists a dxt_imports row
+  // with status='pending'. Returns importId so the client can reference it
+  // on confirm.
   // ─────────────────────────────────────────────────────────────────────────
   router.post('/import', async (req, res, next) => {
     try {
@@ -209,6 +214,7 @@ export function createDxtRouter(): Router {
       }
 
       const payload: DxtJsonPayload = result.data.payload;
+      const sha256 = result.data.computedSha256;
 
       // Detect if this capability is already installed for this user
       let alreadyInstalled = false;
@@ -219,19 +225,313 @@ export function createDxtRouter(): Router {
         // Best-effort lookup — swallow errors so import preview still works
       }
 
-      log.info('DXT import preview', {
+      // Parse sourceInstanceId — must be a UUID if present, else null
+      const rawSourceId = payload.sourceInstanceId;
+      const sourceInstanceId =
+        typeof rawSourceId === 'string' && UUID_REGEX.test(rawSourceId)
+          ? rawSourceId
+          : null;
+
+      // Persist the import row so the user can confirm or reject later
+      const importRow = await dxtImportRepository.create({
         userId,
+        blob,
+        sha256,
         registryId: payload.capability.registryId,
-        sourceInstanceId: payload.sourceInstanceId,
+        sourceInstanceId,
+      });
+
+      log.info('DXT import preview persisted', {
+        userId,
+        importId: importRow.id,
+        registryId: payload.capability.registryId,
+        sourceInstanceId,
         alreadyInstalled,
       });
 
       res.json({
+        importId: importRow.id,
         preview: payload,
         alreadyInstalled,
-        sha256: result.data.computedSha256.toString('hex'),
-        note: 'This is a preview only. Confirmation + install flow lands in #180 environmental work.',
+        sha256: sha256.toString('hex'),
       });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // POST /imports/:id/confirm
+  // Installs a previewed DXT artifact. The import row must be status='pending'.
+  //
+  // Steps:
+  //  1. Look up the import row, verify ownership, check status='pending'
+  //  2. Re-deserialize the stored blob (SHA-256 re-verify — defense in depth)
+  //  3. Build an McpServerConfig from the payload
+  //  4. Insert into mcp_servers
+  //  5. Update import row to status='installed'
+  //  6. Write a capability_provenance_nodes row (node_type='manual_install')
+  //
+  // Returns { status, serverId, registryId } on success.
+  // ─────────────────────────────────────────────────────────────────────────
+  router.post('/imports/:id/confirm', async (req, res, next) => {
+    try {
+      const { id } = req.params;
+      if (!id || !UUID_REGEX.test(id)) {
+        res.status(400).json({ error: 'id must be a UUID' });
+        return;
+      }
+
+      const userId = getUserId(req);
+      if (!userId) {
+        res.status(400).json({ error: 'userId is required' });
+        return;
+      }
+
+      const importRow = await dxtImportRepository.findById(id);
+      if (!importRow) {
+        res.status(404).json({ error: 'Import not found' });
+        return;
+      }
+      if (importRow.user_id !== userId) {
+        res.status(403).json({ error: 'Forbidden: you do not own this import' });
+        return;
+      }
+      if (importRow.status !== 'pending') {
+        res.status(400).json({
+          error: `Import is not pending (status: ${importRow.status}). Only pending imports can be confirmed.`,
+        });
+        return;
+      }
+
+      // Re-deserialize from stored blob — verifies SHA-256 again
+      const reResult = deserialize(importRow.artifact_blob);
+      if (!reResult.success) {
+        // Stored blob is corrupt — mark failed, return error
+        await dxtImportRepository.markFailed(id, `Stored blob failed re-deserialization: ${reResult.code}`);
+        log.info('DXT confirm failed: stored blob tampered or corrupt', { userId, importId: id });
+        res.status(400).json({
+          error: 'Stored artifact failed integrity check. Import has been marked failed.',
+          code: reResult.code,
+        });
+        return;
+      }
+
+      // Verify SHA-256 matches what we stored
+      const storedSha256Hex = importRow.artifact_sha256.toString('hex');
+      const recomputedSha256Hex = reResult.data.computedSha256.toString('hex');
+      if (storedSha256Hex !== recomputedSha256Hex) {
+        await dxtImportRepository.markFailed(id, 'SHA-256 mismatch on re-deserialization');
+        log.info('DXT confirm failed: SHA-256 mismatch', { userId, importId: id });
+        res.status(400).json({
+          error: 'Artifact integrity check failed: SHA-256 mismatch. Import has been marked failed.',
+        });
+        return;
+      }
+
+      const payload: DxtJsonPayload = reResult.data.payload;
+      const cap = payload.capability;
+
+      // Build mcp_servers insert. Transport determines which fields are set.
+      // args and env are JSONB — pass as JSON strings.
+      const argsJson = JSON.stringify(cap.args ?? []);
+      const envJson = JSON.stringify({});
+
+      let insertedServer: { id: string } | null = null;
+      try {
+        const insertResult = await query<{ id: string }>(
+          `INSERT INTO mcp_servers
+             (user_id, registry_id, display_name, transport, command, args, env, url,
+              trust_tier, status, installed_at)
+           VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8,
+                   'observer', 'installed', now())
+           RETURNING id`,
+          [
+            userId,
+            cap.registryId,
+            cap.registryId,       // display_name defaults to registryId
+            cap.transport,
+            cap.command ?? null,
+            argsJson,
+            envJson,
+            cap.url ?? null,
+          ],
+        );
+        insertedServer = insertResult.rows[0] ?? null;
+      } catch (dbErr: unknown) {
+        // Handle duplicate registry_id for this user (unique constraint)
+        const errMsg = dbErr instanceof Error ? dbErr.message : String(dbErr);
+        if (errMsg.includes('unique') || errMsg.includes('duplicate') || errMsg.includes('UNIQUE')) {
+          await dxtImportRepository.markFailed(id, 'Registry ID already installed for this user');
+          log.info('DXT confirm failed: duplicate registry_id', { userId, importId: id, registryId: cap.registryId });
+          res.status(400).json({
+            error: 'A capability with this registry ID is already installed for your account.',
+          });
+          return;
+        }
+        await dxtImportRepository.markFailed(id, `DB insert failed: ${errMsg.slice(0, 200)}`);
+        throw dbErr;
+      }
+
+      if (!insertedServer) {
+        await dxtImportRepository.markFailed(id, 'mcp_servers insert returned no row');
+        res.status(500).json({ error: 'Failed to create capability server record' });
+        return;
+      }
+
+      const serverId = insertedServer.id;
+
+      // Apply spend caps from payload if present
+      if (payload.perAppSpendCaps) {
+        const caps = payload.perAppSpendCaps;
+        try {
+          await query(
+            `UPDATE mcp_servers
+             SET per_app_spend_per_action_cents = $2,
+                 per_app_daily_spend_cents = $3,
+                 per_app_monthly_spend_cents = $4,
+                 updated_at = now()
+             WHERE id = $1`,
+            [
+              serverId,
+              caps.perActionCents ?? null,
+              caps.dailyCents ?? null,
+              caps.monthlyCents ?? null,
+            ],
+          );
+        } catch {
+          // Best-effort — spend caps are not fatal
+        }
+      }
+
+      // Mark import as installed
+      await dxtImportRepository.markInstalled(id, serverId);
+
+      // Write provenance node (hard rail: every install must write provenance)
+      try {
+        await provenanceRepository.writeNode({
+          userId,
+          nodeType: 'manual_install',
+          refTable: 'dxt_imports',
+          refId: id,
+          serverId,
+          payload: {
+            source: 'dxt_import',
+            importId: id,
+            sourceInstanceId: importRow.source_instance_id,
+            registryId: importRow.registry_id,
+          },
+        });
+      } catch (provErr) {
+        // Provenance write failure is logged but not fatal — install already committed
+        log.info('DXT confirm: provenance write failed (non-fatal)', {
+          userId,
+          importId: id,
+          serverId,
+          error: provErr instanceof Error ? provErr.message : String(provErr),
+        });
+      }
+
+      log.info('DXT import confirmed and installed', {
+        userId,
+        importId: id,
+        serverId,
+        registryId: importRow.registry_id,
+      });
+
+      res.status(201).json({
+        status: 'installed',
+        serverId,
+        registryId: importRow.registry_id,
+      });
+    } catch (err) {
+      // Attempt to mark the import as failed so the row reflects reality
+      try {
+        const { id } = req.params;
+        if (id && UUID_REGEX.test(id)) {
+          await dxtImportRepository.markFailed(id, err instanceof Error ? err.message.slice(0, 200) : 'Unknown error');
+        }
+      } catch {
+        // Ignore secondary failure
+      }
+      next(err);
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // POST /imports/:id/reject
+  // Mark a pending import as rejected (audit trail). Returns 204.
+  // ─────────────────────────────────────────────────────────────────────────
+  router.post('/imports/:id/reject', async (req, res, next) => {
+    try {
+      const { id } = req.params;
+      if (!id || !UUID_REGEX.test(id)) {
+        res.status(400).json({ error: 'id must be a UUID' });
+        return;
+      }
+
+      const userId = getUserId(req);
+      if (!userId) {
+        res.status(400).json({ error: 'userId is required' });
+        return;
+      }
+
+      const importRow = await dxtImportRepository.findById(id);
+      if (!importRow) {
+        res.status(404).json({ error: 'Import not found' });
+        return;
+      }
+      if (importRow.user_id !== userId) {
+        res.status(403).json({ error: 'Forbidden: you do not own this import' });
+        return;
+      }
+      if (importRow.status !== 'pending') {
+        res.status(400).json({
+          error: `Import is not pending (status: ${importRow.status}). Only pending imports can be rejected.`,
+        });
+        return;
+      }
+
+      await dxtImportRepository.markRejected(id);
+
+      log.info('DXT import rejected', { userId, importId: id, registryId: importRow.registry_id });
+
+      res.status(204).send();
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // GET /imports
+  // List all imports for the user, newest first. No blob bytes in response.
+  // ─────────────────────────────────────────────────────────────────────────
+  router.get('/imports', async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      if (!userId) {
+        res.status(400).json({ error: 'userId is required' });
+        return;
+      }
+
+      const statusFilter = typeof req.query['status'] === 'string' ? req.query['status'] : undefined;
+      const rows = await dxtImportRepository.listForUser(userId, statusFilter ? { status: statusFilter } : undefined);
+
+      const imports = rows.map((r) => ({
+        id: r.id,
+        registryId: r.registry_id,
+        sourceInstanceId: r.source_instance_id,
+        importedAt: r.imported_at,
+        status: r.status,
+        installedServerId: r.installed_server_id,
+        installedAt: r.installed_at,
+        rejectedAt: r.rejected_at,
+        errorMessage: r.error_message,
+        sha256: r.artifact_sha256.toString('hex'),
+        blobBytes: r.artifact_blob.length,
+      }));
+
+      res.json({ imports });
     } catch (err) {
       next(err);
     }
