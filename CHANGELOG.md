@@ -1,5 +1,38 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [unreleased] — Mobile Capabilities + Briefing screens (#179 partial)
+
+Read-only mobile UX for Capabilities + Briefing. Voice STT/TTS, push
+notifications, deep-linking, and full offline support all need real
+device testing — those are deferred.
+
+### Ships
+
+- `apps/mobile/src/screens/CapabilitiesScreen.tsx` — installed capabilities
+  list with name, status badge, last-active timestamp, zero-trust indicator,
+  pull-to-refresh. Pending suggestions at top with Snooze / Dismiss
+  (Install redirects to web). Tap row → detail.
+- `apps/mobile/src/screens/CapabilityDetailScreen.tsx` — skills, monthly
+  spend meter, zero-trust badge, "View provenance" link via `Linking`.
+  Read-only — no inline edit forms.
+- `apps/mobile/src/screens/BriefingScreen.tsx` — today's headline, key
+  signals, pending-approvals count, pull-to-refresh.
+- `apps/mobile/src/services/api-client.ts` — `fetchCapabilities`,
+  `fetchCapabilityDetail`, `fetchTwinBriefing` + 7 new types.
+- `apps/mobile/src/App.tsx` — Briefing + Capabilities tabs added to the
+  bottom tab bar (now 5 tabs). Capability detail is a sub-page inside the
+  Capabilities tab (state-driven, resets on tab switch — avoids nested
+  navigators).
+- 36 new unit tests in `capabilities-briefing.test.ts`.
+
+### Defers (out of scope this session)
+
+- Voice STT/TTS — needs device microphone + speakers
+- Push notifications — needs APNs/FCM credentials
+- Deep-linking web → mobile — needs URL scheme registration
+- Full offline support — needs sync engine work
+- Install / activate from mobile — management stays on web
+
 ## [unreleased] — DXT install confirm flow (#180 follow-up)
 
 Closes the backend half of the DXT import flow. `POST /api/dxt/import` now

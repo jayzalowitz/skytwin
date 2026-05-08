@@ -12,6 +12,9 @@ import { WelcomeScreen } from './screens/WelcomeScreen';
 import { ApprovalsScreen } from './screens/ApprovalsScreen';
 import { DashboardScreen } from './screens/DashboardScreen';
 import { SettingsScreen } from './screens/SettingsScreen';
+import { CapabilitiesScreen } from './screens/CapabilitiesScreen';
+import { CapabilityDetailScreen } from './screens/CapabilityDetailScreen';
+import { BriefingScreen } from './screens/BriefingScreen';
 
 // -- Navigation types --
 
@@ -39,31 +42,91 @@ const SkyTwinTheme = {
 
 // -- Bottom tab bar --
 
+// Tab type now includes Capabilities and Briefing.
+type MainTab = 'approvals' | 'briefing' | 'capabilities' | 'dashboard' | 'settings';
+
 function MainWithTabs({ onDisconnect }: { onDisconnect: () => void }): React.JSX.Element {
-  const [activeTab, setActiveTab] = useState<'approvals' | 'dashboard' | 'settings'>('approvals');
+  const [activeTab, setActiveTab] = useState<MainTab>('approvals');
+  // When a capability row is tapped we push a detail "sub-page" within the
+  // Capabilities tab without leaving the tab bar or introducing a nested
+  // navigator. This keeps the nav stack simple for v1.
+  const [selectedCapabilityId, setSelectedCapabilityId] = useState<string | null>(null);
+
+  const handleSelectCapability = useCallback((serverId: string) => {
+    setSelectedCapabilityId(serverId);
+  }, []);
+
+  const handleBackFromDetail = useCallback(() => {
+    setSelectedCapabilityId(null);
+  }, []);
+
+  const handleOpenApprovals = useCallback(() => {
+    setActiveTab('approvals');
+  }, []);
+
+  const renderContent = (): React.JSX.Element => {
+    switch (activeTab) {
+      case 'approvals':
+        return <ApprovalsScreen />;
+      case 'briefing':
+        return <BriefingScreen onOpenApprovals={handleOpenApprovals} />;
+      case 'capabilities':
+        if (selectedCapabilityId !== null) {
+          return (
+            <CapabilityDetailScreen
+              serverId={selectedCapabilityId}
+              onBack={handleBackFromDetail}
+            />
+          );
+        }
+        return <CapabilitiesScreen onSelectCapability={handleSelectCapability} />;
+      case 'dashboard':
+        return <DashboardScreen />;
+      case 'settings':
+        return <SettingsScreen onDisconnect={onDisconnect} />;
+    }
+  };
+
+  // Reset detail view when switching away from Capabilities tab so that
+  // returning later shows the list, not a stale detail page.
+  const handleTabPress = useCallback(
+    (tab: MainTab) => {
+      if (tab !== 'capabilities') {
+        setSelectedCapabilityId(null);
+      }
+      setActiveTab(tab);
+    },
+    [],
+  );
 
   return (
     <View style={styles.tabContainer}>
-      <View style={styles.tabContent}>
-        {activeTab === 'approvals' && <ApprovalsScreen />}
-        {activeTab === 'dashboard' && <DashboardScreen />}
-        {activeTab === 'settings' && <SettingsScreen onDisconnect={onDisconnect} />}
-      </View>
+      <View style={styles.tabContent}>{renderContent()}</View>
       <View style={styles.tabBar}>
         <TabButton
           label="Approvals"
           active={activeTab === 'approvals'}
-          onPress={() => setActiveTab('approvals')}
+          onPress={() => handleTabPress('approvals')}
+        />
+        <TabButton
+          label="Briefing"
+          active={activeTab === 'briefing'}
+          onPress={() => handleTabPress('briefing')}
+        />
+        <TabButton
+          label="Capabilities"
+          active={activeTab === 'capabilities'}
+          onPress={() => handleTabPress('capabilities')}
         />
         <TabButton
           label="Dashboard"
           active={activeTab === 'dashboard'}
-          onPress={() => setActiveTab('dashboard')}
+          onPress={() => handleTabPress('dashboard')}
         />
         <TabButton
           label="Settings"
           active={activeTab === 'settings'}
-          onPress={() => setActiveTab('settings')}
+          onPress={() => handleTabPress('settings')}
         />
       </View>
     </View>

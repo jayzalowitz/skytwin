@@ -56,6 +56,68 @@ export interface TwinProfile {
   confidenceScores: Record<string, unknown>;
 }
 
+// -- Capabilities types --
+
+export interface CapabilitySkill {
+  name: string;
+  description: string;
+  riskLevel: string;
+}
+
+export interface InstalledCapability {
+  id: string;
+  name: string;
+  status: 'running' | 'stopped' | 'error' | 'dormant';
+  lastActiveAt: string | null;
+  zeroTrustMode: boolean;
+  spendCapMonthlyUsd: number | null;
+  skills: CapabilitySkill[];
+}
+
+export interface CapabilitySuggestion {
+  id: string;
+  registryId: string;
+  name: string;
+  reason: string;
+  category: string;
+}
+
+export interface CapabilitiesPayload {
+  installed: InstalledCapability[];
+  suggestions: CapabilitySuggestion[];
+  dormant: InstalledCapability[];
+}
+
+export interface CapabilityDetail {
+  id: string;
+  name: string;
+  status: string;
+  lastActiveAt: string | null;
+  zeroTrustMode: boolean;
+  spendCapMonthlyUsd: number | null;
+  spendUsedMonthUsd: number | null;
+  skills: CapabilitySkill[];
+  provenanceUrl: string | null;
+}
+
+// -- Briefing types --
+
+export interface TwinBriefing {
+  id: string;
+  cadence: 'daily' | 'weekly';
+  headline: string;
+  keySignals: string[];
+  pendingApprovalsCount: number;
+  generatedAt: string;
+  readAt: string | null;
+  proseMarkdown: string;
+}
+
+export interface TwinBriefingPayload {
+  briefing: TwinBriefing | null;
+  unreadCount: number;
+}
+
 export interface ApprovalResponse {
   requestId: string;
   action: string;
@@ -153,6 +215,36 @@ export class SkyTwinApiClient {
    */
   async getTwinProfile(userId: string): Promise<ApiResult<TwinProfile>> {
     return this.get<TwinProfile>(`/api/twin/${encodeURIComponent(userId)}`);
+  }
+
+  /**
+   * Fetch installed capabilities plus pending suggestions for a user.
+   */
+  async fetchCapabilities(userId: string): Promise<ApiResult<CapabilitiesPayload>> {
+    return this.get<CapabilitiesPayload>(
+      `/api/capabilities/${encodeURIComponent(userId)}`,
+    );
+  }
+
+  /**
+   * Fetch detailed information for a single capability (server + skills + policy).
+   */
+  async fetchCapabilityDetail(
+    userId: string,
+    serverId: string,
+  ): Promise<ApiResult<CapabilityDetail>> {
+    return this.get<CapabilityDetail>(
+      `/api/capabilities/${encodeURIComponent(userId)}/${encodeURIComponent(serverId)}`,
+    );
+  }
+
+  /**
+   * Fetch the most recent twin briefing and count of unread briefings.
+   */
+  async fetchTwinBriefing(userId: string): Promise<ApiResult<TwinBriefingPayload>> {
+    return this.get<TwinBriefingPayload>(
+      `/api/briefing/${encodeURIComponent(userId)}/latest`,
+    );
   }
 
   // -- Internal helpers --
