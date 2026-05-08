@@ -1801,6 +1801,120 @@ export function createCapabilitiesRouter(): Router {
     }
   });
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // POST /:id/zero-trust/enable   — enable zero-trust mode (#183 AC#4)
+  // POST /:id/zero-trust/disable  — disable zero-trust mode (#183 AC#4)
+  //
+  // Both endpoints:
+  //   - Verify ownership
+  //   - Toggle mcp_servers.zero_trust_mode
+  //   - Write a 'zero_trust_change' provenance node (hard rail — audit trail)
+  //   - Return the updated McpServerRow
+  //
+  // Container-level network isolation is enforced by the desktop app (#180).
+  // ─────────────────────────────────────────────────────────────────────────
+  router.post('/:id/zero-trust/enable', async (req, res, next) => {
+    try {
+      const { id } = req.params;
+      if (!id || !UUID_REGEX.test(id)) {
+        res.status(400).json({ error: 'id path param must be a UUID' });
+        return;
+      }
+
+      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
+        ?? (req.query['userId'] as string | undefined);
+      if (!userId) {
+        res.status(400).json({ error: 'userId is required' });
+        return;
+      }
+
+      const server = await mcpServerRepository.getById(id);
+      if (!server || server.status === 'uninstalled') {
+        res.status(404).json({ error: 'Capability server not found' });
+        return;
+      }
+
+      if (server.user_id !== userId) {
+        res.status(403).json({ error: 'Forbidden: you do not own this capability server' });
+        return;
+      }
+
+      const previousValue = server.zero_trust_mode;
+      const updatedServer = await mcpServerRepository.setZeroTrustMode(id, true);
+      if (!updatedServer) {
+        res.status(404).json({ error: 'Capability server not found after update' });
+        return;
+      }
+
+      // Hard rail: write provenance node for every zero-trust toggle.
+      // Payload records the transition only — no user content.
+      await provenanceRepository.writeNode({
+        userId,
+        nodeType: 'zero_trust_change',
+        refTable: 'mcp_servers',
+        refId: id,
+        serverId: id,
+        payload: { from: previousValue, to: true },
+      });
+
+      log.info('Zero-trust mode enabled', { serverId: id });
+      res.json({ server: updatedServer });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.post('/:id/zero-trust/disable', async (req, res, next) => {
+    try {
+      const { id } = req.params;
+      if (!id || !UUID_REGEX.test(id)) {
+        res.status(400).json({ error: 'id path param must be a UUID' });
+        return;
+      }
+
+      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
+        ?? (req.query['userId'] as string | undefined);
+      if (!userId) {
+        res.status(400).json({ error: 'userId is required' });
+        return;
+      }
+
+      const server = await mcpServerRepository.getById(id);
+      if (!server || server.status === 'uninstalled') {
+        res.status(404).json({ error: 'Capability server not found' });
+        return;
+      }
+
+      if (server.user_id !== userId) {
+        res.status(403).json({ error: 'Forbidden: you do not own this capability server' });
+        return;
+      }
+
+      const previousValue = server.zero_trust_mode;
+      const updatedServer = await mcpServerRepository.setZeroTrustMode(id, false);
+      if (!updatedServer) {
+        res.status(404).json({ error: 'Capability server not found after update' });
+        return;
+      }
+
+      // Hard rail: write provenance node for every zero-trust toggle.
+      // Payload records the transition only — no user content.
+      await provenanceRepository.writeNode({
+        userId,
+        nodeType: 'zero_trust_change',
+        refTable: 'mcp_servers',
+        refId: id,
+        serverId: id,
+        payload: { from: previousValue, to: false },
+      });
+
+      log.info('Zero-trust mode disabled', { serverId: id });
+      res.json({ server: updatedServer });
+    } catch (err) {
+      next(err);
+    }
+  });
+
   return router;
 }
 
