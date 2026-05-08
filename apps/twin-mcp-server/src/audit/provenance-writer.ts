@@ -8,18 +8,25 @@ const PII_FIELDS = new Set([
 ]);
 
 /**
- * Recursively redact PII fields from an args object.
- * Only redacts top-level keys whose names match PII_FIELDS.
+ * Recursively redact PII fields anywhere in a value tree (objects, arrays,
+ * nested objects-in-arrays). Keys matched case-insensitively against PII_FIELDS;
+ * values for matched keys are replaced with '[REDACTED]'. Primitives pass
+ * through unchanged.
  */
 export function redactPII(args: Record<string, unknown>): Record<string, unknown> {
+  return redactValue(args) as Record<string, unknown>;
+}
+
+function redactValue(value: unknown): unknown {
+  if (value === null || value === undefined) return value;
+  if (Array.isArray(value)) return value.map(redactValue);
+  if (typeof value !== 'object') return value;
   const result: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(args)) {
+  for (const [key, v] of Object.entries(value as Record<string, unknown>)) {
     if (PII_FIELDS.has(key.toLowerCase())) {
       result[key] = '[REDACTED]';
-    } else if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
-      result[key] = redactPII(value as Record<string, unknown>);
     } else {
-      result[key] = value;
+      result[key] = redactValue(v);
     }
   }
   return result;

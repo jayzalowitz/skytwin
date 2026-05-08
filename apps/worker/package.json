@@ -17,6 +17,7 @@
     "@skytwin/config": "workspace:*",
     "@skytwin/connectors": "workspace:*",
     "@skytwin/core": "workspace:*",
+    "@skytwin/credential-vault": "workspace:*",
     "@skytwin/db": "workspace:*",
     "@skytwin/ironclaw-adapter": "workspace:*",
     "@skytwin/llm-client": "workspace:*",

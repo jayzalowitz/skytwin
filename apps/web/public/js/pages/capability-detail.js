@@ -288,9 +288,13 @@ export async function renderCapabilityDetail(container, userId, serverId) {
           ${server.zero_trust_mode ? '<span class="badge badge-warning">enabled</span>' : '<span class="badge" style="opacity: 0.6;">disabled</span>'}
         </div>
         <div style="font-size: 0.85rem; color: var(--text-muted); margin: 0.5rem 0 0.75rem;">
-          When enabled, this capability runs with elevated scrutiny. Adds +1 risk modifier
-          to every action proposal and forces explicit approval regardless of trust tier.
-          Container-level network isolation is enforced by the desktop app (when installed).
+          When enabled, the toggle is recorded as a provenance event and surfaced
+          throughout the capability's audit trail. The runtime enforcement —
+          a +1 risk modifier on every action and a forced approval prompt regardless
+          of trust tier — is wired through <code>applyZeroTrustOverride()</code> in
+          <code>@skytwin/policy-engine</code> but not yet invoked from the decision
+          pipeline; that wiring is tracked as a #222 follow-up. Container-level
+          network isolation lives in the desktop app (#180).
         </div>
         ${server.zero_trust_mode
           ? `<button class="btn btn-outline btn-sm" data-action="capability-zero-trust-disable">Disable zero-trust</button>`

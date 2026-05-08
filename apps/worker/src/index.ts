@@ -20,6 +20,7 @@ import {
   serviceCredentialRepository,
 } from '@skytwin/db';
 import { withRetry, RetryableHttpError, CircuitBreaker, createLogger } from '@skytwin/core';
+import { KeyCache } from '@skytwin/credential-vault';
 import { SignalDeduper, DEFAULT_TTL_MS } from './signal-dedupe.js';
 import { createPruneThrottle } from './label-signal-pruner.js';
 import { runMetricsRollupJob } from './jobs/metrics-rollup.js';
@@ -30,6 +31,22 @@ const log = createLogger('worker');
 
 /** Per-user circuit breakers to skip users with persistent failures. */
 const userCircuitBreakers = new Map<string, CircuitBreaker>();
+
+/**
+ * Worker-local KeyCache. Wired into every DbTokenStore the worker creates so
+ * the read path can decrypt at-rest tokens AND the lazy-migration path can
+ * fire (without setKeyCache, plaintext-token rows never get encrypted —
+ * the at-rest encryption feature is dead weight).
+ *
+ * Cross-process unlock IPC is not yet implemented (see #212 follow-up): the
+ * API process unlocks via passphrase but the worker process doesn't see that
+ * derived key. Until that lands, this cache is empty and the worker behaves
+ * exactly as it did before — plaintext tokens flow through, encrypted-only
+ * rows surface as `credentials unavailable`. The wiring below ensures that
+ * once IPC lands, the worker's DbTokenStore instances will decrypt and
+ * lazy-migrate without any further code change.
+ */
+const workerKeyCache = new KeyCache({ ttlMs: 60 * 60 * 1000 });
 
 /**
  * Persistent cursor for Gmail's History API. Survives worker restarts so
@@ -345,6 +362,7 @@ async function discoverUsers(): Promise<UserConnectors[]> {
         }
         if (googleConfig) {
           const tokenStore = new DbTokenStore(oauthRepository, googleConfig);
+          tokenStore.setKeyCache(workerKeyCache);
           connectors.push(new GmailConnector(userId, tokenStore, gmailCursorStore, gmailLabelObserver));
           connectors.push(new GoogleCalendarConnector(userId, tokenStore, gmailCursorStore));
         }

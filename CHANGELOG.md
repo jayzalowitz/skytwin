@@ -238,19 +238,108 @@ returning the new server ID.
 - Bulk import — one artifact at a time by design.
 - Cross-instance federation (push) — DXT is one-way file transfer.
 
+## [unreleased] — Copilot review sweep, batch 1 (security + correctness)
+
+Audited Copilot comments across this week's epic PRs (#198, #206-#215,
+#218, #219, #221, #222) and fixed the security-critical and obviously-
+broken items in one pass. Lower-severity items (frontend nits, doc drift,
+adaptive-prompt input mismatches, observability rollup architecture, vault
+rotation polish) are scoped into themed follow-up PRs.
+
+### Security
+
+- **Shell injection — `@skytwin/memory-gbrain`.** `searchSemantic` was
+  building a shell command string with the user query interpolated through
+  `JSON.stringify`. Replaced with `execFileSync` (no shell), so query
+  metacharacters (`$()`, backticks, `;`, `&&`, …) are passed as a single
+  argv element and cannot inject. Added regression test using a malicious
+  query.
+- **PII leak via array payloads — `redactPII` and `redactPayload`.** Both
+  helpers in `apps/twin-mcp-server/src/audit/provenance-writer.ts` and
+  `apps/api/src/routes/capabilities.ts` skipped arrays, so PII in
+  array-of-object payloads (e.g. `recipients: [{email: ...}]`) was
+  written to provenance and returned in API responses unredacted. Both
+  now recurse through arrays.
+- **PII leak — `GET /api/capabilities/suggestions`.** The response
+  spread `...row` over the suggestion, returning the raw
+  `evidence_sources` JSONB (the unredacted source signals) alongside the
+  redacted `evidence` preview. Switched to an explicit field projection
+  so only the safe preview leaves the API.
+- **Broken email-redaction regex — `[A-Z|a-z]{2,}`.** Inside a character
+  class `|` is literal, so the regex was matching `|` as a TLD char and
+  failing to match valid TLDs. Fixed to `[A-Za-z]{2,}` in both subject
+  and body redactions.
+
+### Correctness
+
+- **Credential vault never engaged in production.** `DbTokenStore` exposes
+  `setKeyCache()` for at-rest encryption + lazy migration, but only the
+  worker creates `DbTokenStore` and never called `setKeyCache`. The
+  encryption feature was dead weight: lazy migration never fired, so
+  existing plaintext tokens stayed plaintext forever. Added a
+  worker-local `KeyCache` and wired it. The cache is empty until
+  cross-process unlock IPC lands (#212 follow-up), but the seam now
+  exists and a comment documents the limitation.
+- **DXT routes broken under real auth.** `getUserId(req)` read
+  `req.user?.id`, but production session-auth middleware sets
+  `req.authenticatedUserId`. All DXT endpoints returned 400 unless
+  callers passed `?userId=` explicitly. Switched to read
+  `authenticatedUserId` first; tests updated to mirror production
+  middleware.
+- **Twin MCP provenance only on success.** Per safety invariant, every
+  external-agent tool call must produce an audit row. The previous
+  pattern only awaited `writeExternalAgentProvenance` after the tool
+  succeeded — failed calls were invisible. Wrapped each handler in
+  try/finally so the audit fires for both success and failure; a
+  separate try/catch ensures provenance failures never mask the original
+  tool result/error.
+- **Migration 027 inline partial-index syntax.** CockroachDB does not
+  support `INDEX (col) WHERE ...` inside `CREATE TABLE`. Pulled the two
+  affected partial indexes out as standalone `CREATE INDEX IF NOT EXISTS`
+  statements (matching the pattern in 011-sessions.sql). Idempotent if
+  the migration already applied; safe if it hadn't.
+- **Onboarding always recorded `first_run_choice = 'about-me'`.** Three
+  call sites (skip-recipe, install-recipe, complete) hard-coded the
+  string regardless of which entry path the user took. Added
+  `_wizardState.firstRunChoice` set on the welcome-screen choices and
+  read everywhere downstream — email and computer users now record their
+  real path.
+- **Briefing generator dropped users past 500.** `getActiveUserIds`
+  ran a single `LIMIT 500` query and silently dropped the rest. Switched
+  to a 500-row paged scan over `mcp_servers` ordered by `user_id`.
+- **Zero-trust mode is helpers-only.** The `applyZeroTrustOverride` and
+  `getEffectiveRiskModifier` helpers exist and are unit-tested, but no
+  production caller invokes them — toggling the UI badge does not
+  change runtime behavior. Updated CHANGELOG and capability-detail
+  copy to be honest about that, with a #222 follow-up tracked for the
+  decision-pipeline wiring.
+
+### Tests
+
+- Added shell-injection regression test for `GbrainMemoryPort`.
+- Added array-of-object PII redaction tests for `redactPII` and
+  `redactPayload` (one of which previously asserted the bug as
+  expected behavior — corrected).
+- Added "capabilities() returns empty when not installed" test for
+  `GbrainMemoryPort`.
+
 ## [unreleased] — Zero-trust mode policy + UI (#183 AC#4 partial)
 
 Closes the policy + UI half of #183 AC#4. The container runtime hooks
 themselves (the actual `--network=none` spawn) live in the desktop app
 and are deferred to #180's environmental work.
 
-### Added — Backend policy logic
+### Added — Backend policy logic (helpers; not yet wired into pipeline)
 
 - `getEffectiveRiskModifier(server)` returns `1 + (zero_trust_mode ? 1 : 0)`,
   stacking on the existing `MCP_HOST_TRUST_PROFILE.riskModifier` of 1.
-- `applyZeroTrustOverride()` forces every action from a zero-trust server
-  to require approval regardless of the user's trust tier.
-- New helpers exported from `@skytwin/policy-engine`.
+- `applyZeroTrustOverride()` returns a `PolicyDecision` that forces approval
+  for every action when `zero_trust_mode` is true.
+- Both helpers are exported from `@skytwin/policy-engine` and unit-tested,
+  but **no production caller invokes them yet** — the decision pipeline
+  wiring is a #222 follow-up. Until that lands, enabling zero-trust mode
+  records a provenance event and changes the UI badge but does not change
+  runtime behavior.
 
 ### Added — `mcp-server-repository.setZeroTrustMode(id, enabled)`
 

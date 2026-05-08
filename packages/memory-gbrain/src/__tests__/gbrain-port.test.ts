@@ -2,19 +2,19 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Must mock before module import so the GbrainMemoryPort constructor calls the mock.
 vi.mock('node:child_process', () => ({
-  execSync: vi.fn(),
+  execFileSync: vi.fn(),
 }));
 
 vi.mock('../cli-detector.js', () => ({
   isGbrainInstalled: vi.fn(),
 }));
 
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { isGbrainInstalled } from '../cli-detector.js';
 import { GbrainMemoryPort, NotImplementedError } from '../gbrain-port.js';
 import type { SemanticHit } from '@skytwin/memory-port';
 
-const mockExecSync = execSync as ReturnType<typeof vi.fn>;
+const mockExecSync = execFileSync as ReturnType<typeof vi.fn>;
 const mockIsInstalled = isGbrainInstalled as ReturnType<typeof vi.fn>;
 
 describe('GbrainMemoryPort', () => {
@@ -30,6 +30,29 @@ describe('GbrainMemoryPort', () => {
       expect(caps.has('semantic_search')).toBe(true);
       expect(caps.has('code_aware_search')).toBe(true);
       expect(caps.has('federated_sources')).toBe(false);
+    });
+
+    it('returns empty set when gbrain is not installed', () => {
+      mockIsInstalled.mockReturnValue(false);
+      const port = new GbrainMemoryPort();
+      expect(port.capabilities().size).toBe(0);
+    });
+  });
+
+  describe('shell-injection safety', () => {
+    it('passes the query as an argv element, not a shell-interpolated string', async () => {
+      mockIsInstalled.mockReturnValue(true);
+      mockExecSync.mockReturnValue('[]');
+      const port = new GbrainMemoryPort();
+      const malicious = 'foo$(touch /tmp/pwned)`whoami`; rm -rf /';
+      await port.searchSemantic(malicious, 5);
+      expect(mockExecSync).toHaveBeenCalledTimes(1);
+      const [cmd, args] = mockExecSync.mock.calls[0]!;
+      expect(cmd).toBe('gbrain');
+      expect(Array.isArray(args)).toBe(true);
+      // The query is one discrete argv element — no shell, so metacharacters
+      // are inert.
+      expect(args).toContain(`--query=${malicious}`);
     });
   });
 

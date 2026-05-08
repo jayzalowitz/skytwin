@@ -440,10 +440,34 @@ describe('redactPayload', () => {
     expect(outer['safe']).toBe(1);
   });
 
-  it('preserves arrays unchanged (only recurses into plain objects)', () => {
+  it('preserves arrays of primitives unchanged', () => {
     const result = redactPayload({ tags: ['a', 'b'], email: 'x@y.com' })!;
     expect(result['tags']).toEqual(['a', 'b']);
     expect(result['email']).toBe('[REDACTED]');
+  });
+
+  it('recurses into arrays of objects (fixes PII leak via array payloads)', () => {
+    const result = redactPayload({
+      contacts: [
+        { name: 'Alice', email: 'a@x.com' },
+        { name: 'Bob', token: 'secret-bob' },
+      ],
+    })!;
+    const contacts = result['contacts'] as Array<Record<string, unknown>>;
+    expect(contacts).toHaveLength(2);
+    expect(contacts[0]?.['name']).toBe('Alice');
+    expect(contacts[0]?.['email']).toBe('[REDACTED]');
+    expect(contacts[1]?.['token']).toBe('[REDACTED]');
+  });
+
+  it('redacts deeply nested PII inside object-in-array-in-object', () => {
+    const result = redactPayload({
+      people: [{ profile: { authorization: 'Bearer xyz', name: 'Alice' } }],
+    })!;
+    const people = result['people'] as Array<Record<string, unknown>>;
+    const profile = people[0]?.['profile'] as Record<string, unknown>;
+    expect(profile['authorization']).toBe('[REDACTED]');
+    expect(profile['name']).toBe('Alice');
   });
 
   it('returns null for null/undefined input', () => {

@@ -41,9 +41,13 @@ CREATE TABLE IF NOT EXISTS mcp_servers (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (user_id, registry_id),
-  INDEX (user_id, status),
-  INDEX (last_active_at) WHERE status = 'active'
+  INDEX (user_id, status)
 );
+-- Partial index — pulled out of CREATE TABLE because some CRDB versions
+-- choke on inline `INDEX (...) WHERE ...`. Standalone form (matches the
+-- pattern in 011-sessions.sql).
+CREATE INDEX IF NOT EXISTS mcp_servers_active_last_active_idx
+  ON mcp_servers (last_active_at) WHERE status = 'active';
 
 -- ============================================================================
 -- mcp_server_skills — cache of list_tools() results per installed server
@@ -83,9 +87,11 @@ CREATE TABLE IF NOT EXISTS app_suggestions (
   reason_summary STRING,
   push_notified_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  INDEX (user_id) WHERE status = 'pending'
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- Pulled out of CREATE TABLE for the same CRDB-compat reason as above.
+CREATE INDEX IF NOT EXISTS app_suggestions_user_pending_idx
+  ON app_suggestions (user_id) WHERE status = 'pending';
 CREATE UNIQUE INDEX IF NOT EXISTS app_suggestions_user_pending_unique
   ON app_suggestions (user_id, registry_id) WHERE status = 'pending';
 

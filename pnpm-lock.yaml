@@ -270,6 +270,9 @@ importers:
       '@skytwin/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@skytwin/credential-vault':
+        specifier: workspace:*
+        version: link:../../packages/credential-vault
       '@skytwin/db':
         specifier: workspace:*
         version: link:../../packages/db

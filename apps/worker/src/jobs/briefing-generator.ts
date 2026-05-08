@@ -38,15 +38,34 @@ export interface BriefingGeneratorJobDeps {
   llmClient?: LlmClient;
 }
 
-/** Active users who have installed at least one MCP server. */
+/**
+ * Active users who have installed at least one MCP server.
+ *
+ * Pages through the result set in `BRIEFING_USER_PAGE_SIZE` chunks so we
+ * don't silently drop users when the population grows past one page.
+ * Previously this was hard-capped at LIMIT 500 — anyone past 500 got no
+ * briefing at all.
+ */
+const BRIEFING_USER_PAGE_SIZE = 500;
+
 async function getActiveUserIds(): Promise<string[]> {
-  const result = await query<{ user_id: string }>(
-    `SELECT DISTINCT user_id
-     FROM mcp_servers
-     WHERE status IN ('active', 'installed', 'authorized')
-     LIMIT 500`,
-  );
-  return result.rows.map((r) => r.user_id);
+  const allIds: string[] = [];
+  let offset = 0;
+  for (;;) {
+    const result = await query<{ user_id: string }>(
+      `SELECT DISTINCT user_id
+       FROM mcp_servers
+       WHERE status IN ('active', 'installed', 'authorized')
+       ORDER BY user_id
+       LIMIT $1 OFFSET $2`,
+      [BRIEFING_USER_PAGE_SIZE, offset],
+    );
+    if (result.rows.length === 0) break;
+    for (const row of result.rows) allIds.push(row.user_id);
+    if (result.rows.length < BRIEFING_USER_PAGE_SIZE) break;
+    offset += BRIEFING_USER_PAGE_SIZE;
+  }
+  return allIds;
 }
 
 /**

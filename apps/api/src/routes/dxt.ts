@@ -24,11 +24,17 @@ const log = createLogger('api:dxt');
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/**
+ * Production middleware (`session-auth`) sets `req.authenticatedUserId`. In the
+ * dev bypass path or when explicitly testing as another user, fall back to
+ * `?userId=` then to a legacy `req.user.id`. Other route modules use the same
+ * order — keep them in sync.
+ */
 function getUserId(req: Request): string | undefined {
-  const asAny = req as unknown as { user?: { id?: string } };
-  const fromUser = asAny.user?.id;
+  const fromAuth = req.authenticatedUserId;
   const fromQuery = typeof req.query['userId'] === 'string' ? req.query['userId'] : undefined;
-  return fromUser ?? fromQuery;
+  const fromLegacy = (req as unknown as { user?: { id?: string } }).user?.id;
+  return fromAuth ?? fromQuery ?? fromLegacy;
 }
 
 /**
