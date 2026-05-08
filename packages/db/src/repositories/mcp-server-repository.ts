@@ -201,4 +201,24 @@ export const mcpServerRepository = {
     );
     return result.rows;
   },
+
+  /**
+   * Toggle zero-trust mode for a single MCP server (#183 AC#4).
+   *
+   * When enabled, the policy engine applies an additional +1 riskModifier
+   * to all action proposals and forces every action to require approval
+   * regardless of trust tier.
+   *
+   * Container-level network isolation is enforced by the desktop app (#180).
+   */
+  async setZeroTrustMode(id: string, enabled: boolean): Promise<McpServerRow | null> {
+    const result = await query<McpServerRow>(
+      `UPDATE mcp_servers
+       SET zero_trust_mode = $1, updated_at = now()
+       WHERE id = $2
+       RETURNING *`,
+      [enabled, id],
+    );
+    return result.rows[0] ?? null;
+  },
 };

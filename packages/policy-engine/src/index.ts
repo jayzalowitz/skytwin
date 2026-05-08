@@ -35,3 +35,8 @@ export {
   type EscalationResult,
   type EscalationContext,
 } from './escalation-triggers.js';
+export {
+  getEffectiveRiskModifier,
+  applyZeroTrustOverride,
+  type ZeroTrustServerShape,
+} from './zero-trust.js';

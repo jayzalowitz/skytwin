@@ -3,7 +3,7 @@ import { query } from '../connection.js';
 export interface ProvenanceNodeRow {
   id: string;
   user_id: string;
-  node_type: 'signal' | 'entity' | 'suggestion' | 'install' | 'tier_promotion' | 'action' | 'feedback' | 'uninstall' | 'external_agent';
+  node_type: 'signal' | 'entity' | 'suggestion' | 'install' | 'tier_promotion' | 'action' | 'feedback' | 'uninstall' | 'external_agent' | 'zero_trust_change';
   ref_table: string;
   ref_id: string;
   server_id: string | null;

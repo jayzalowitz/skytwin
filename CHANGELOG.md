@@ -1,5 +1,51 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [unreleased] — Zero-trust mode policy + UI (#183 AC#4 partial)
+
+Closes the policy + UI half of #183 AC#4. The container runtime hooks
+themselves (the actual `--network=none` spawn) live in the desktop app
+and are deferred to #180's environmental work.
+
+### Added — Backend policy logic
+
+- `getEffectiveRiskModifier(server)` returns `1 + (zero_trust_mode ? 1 : 0)`,
+  stacking on the existing `MCP_HOST_TRUST_PROFILE.riskModifier` of 1.
+- `applyZeroTrustOverride()` forces every action from a zero-trust server
+  to require approval regardless of the user's trust tier.
+- New helpers exported from `@skytwin/policy-engine`.
+
+### Added — `mcp-server-repository.setZeroTrustMode(id, enabled)`
+
+Toggles the existing `mcp_servers.zero_trust_mode` column.
+
+### Added — Migration `034-zero-trust-provenance.sql`
+
+Extends `capability_provenance_nodes.node_type` CHECK constraint to
+include `'zero_trust_change'` for toggle audit.
+
+### Added — API routes
+
+- `POST /api/capabilities/:id/zero-trust/enable`
+- `POST /api/capabilities/:id/zero-trust/disable`
+
+Both ownership-checked, both write a `capability_provenance_nodes` row
+with `payload: { from, to }`.
+
+### Added — Web UX
+
+New "Zero-trust mode" card on `apps/web/public/js/pages/capability-detail.js`
+with state badge, toggle button, and explanation text.
+
+### Tests
+
+18 new (6 policy-engine + 4 db + 8 api).
+
+### Out of scope (deferred)
+
+- Container runtime hooks — needs Docker / Electron testing, lives in #180
+- Per-server allowlist of OAuth-provider domains — lives in #180
+- E2E verifying the container has no internet — needs Docker
+
 ## [unreleased] — Embedded LLM port scaffold (#187 partial)
 
 Scaffolds the runtime detection + port interfaces so the rest of the

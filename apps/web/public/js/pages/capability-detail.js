@@ -89,6 +89,39 @@ function handleCapabilityDetailAction(e) {
     case 'provenance-flyout-close':
       closeProvenanceFlyout();
       break;
+    case 'capability-zero-trust-enable':
+      handleZeroTrustToggle(serverId, userId, true, btn);
+      break;
+    case 'capability-zero-trust-disable':
+      handleZeroTrustToggle(serverId, userId, false, btn);
+      break;
+  }
+}
+
+async function handleZeroTrustToggle(serverId, userId, enable, btn) {
+  if (!serverId || !userId) return;
+  if (btn) btn.setAttribute('disabled', 'disabled');
+  try {
+    const path = enable ? 'enable' : 'disable';
+    const res = await fetchJSON(
+      `${API}/capabilities/${encodeURIComponent(serverId)}/zero-trust/${path}?userId=${encodeURIComponent(userId)}`,
+      { method: 'POST' },
+    );
+    showToast(
+      `Zero-trust ${enable ? 'enabled' : 'disabled'}.`,
+      { kind: 'success' },
+    );
+    void res;
+    // Re-render to reflect new state
+    const container = document.getElementById('page-content');
+    if (container) await renderCapabilityDetail(container, userId, serverId);
+  } catch (err) {
+    showToast(
+      err instanceof Error ? err.message : 'Failed to toggle zero-trust',
+      { kind: 'error' },
+    );
+  } finally {
+    if (btn) btn.removeAttribute('disabled');
   }
 }
 
@@ -246,6 +279,22 @@ export async function renderCapabilityDetail(container, userId, serverId) {
         </div>
         <button class="btn btn-primary btn-sm" data-action="capability-save-spend-cap">Save</button>
         <div id="cap-policy-status" style="font-size: 0.8rem; margin-top: 0.5rem;"></div>
+      </div>
+
+      <!-- Zero-trust mode (#183 AC#4) -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Zero-trust mode</span>
+          ${server.zero_trust_mode ? '<span class="badge badge-warning">enabled</span>' : '<span class="badge" style="opacity: 0.6;">disabled</span>'}
+        </div>
+        <div style="font-size: 0.85rem; color: var(--text-muted); margin: 0.5rem 0 0.75rem;">
+          When enabled, this capability runs with elevated scrutiny. Adds +1 risk modifier
+          to every action proposal and forces explicit approval regardless of trust tier.
+          Container-level network isolation is enforced by the desktop app (when installed).
+        </div>
+        ${server.zero_trust_mode
+          ? `<button class="btn btn-outline btn-sm" data-action="capability-zero-trust-disable">Disable zero-trust</button>`
+          : `<button class="btn btn-warning btn-sm" data-action="capability-zero-trust-enable">Enable zero-trust</button>`}
       </div>
 
       <!-- Actions -->
