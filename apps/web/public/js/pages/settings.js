@@ -1,4 +1,4 @@
-import { fetchUser, updateTrustTier, fetchOAuthStatus, getGoogleAuthUrl, disconnectProvider, escapeHtml, fetchSettings, updateAutonomySettings, updateIronClawChannel, upsertDomainPolicy, deleteDomainPolicy, createEscalationTrigger, deleteEscalationTrigger, createSession, fetchSessions, revokeSession, saveAIProviders, testAIProvider, fetchRoutines, deleteRoutine } from '../api-client.js';
+import { fetchUser, updateTrustTier, fetchOAuthStatus, getGoogleAuthUrl, disconnectProvider, escapeHtml, fetchSettings, updateAutonomySettings, updateIronClawChannel, upsertDomainPolicy, deleteDomainPolicy, createEscalationTrigger, deleteEscalationTrigger, createSession, fetchSessions, revokeSession, saveAIProviders, testAIProvider, fetchRoutines, deleteRoutine, startFederationPairing, completeFederationPairing, listFederationPeers, unpairFederationPeer } from '../api-client.js';
 import { mountThemeSwitcher } from '../theme-switcher.js';
 import { showSavedToast, showErrorToast } from '../toast.js';
 import { KEY_USER_ID, KEY_ONBOARDED, KEY_SESSION_TOKEN } from '../storage-keys.js';
@@ -392,6 +392,23 @@ export async function renderSettings(container, userId) {
       ` : ''}
     </div>
 
+    <div class="card" id="federation-card">
+      <div class="card-header">
+        <span class="card-title">Linked devices</span>
+      </div>
+      <div class="card-subtitle" style="margin-bottom: 1rem;">
+        Pair another SkyTwin instance (your phone, your office laptop) so they
+        share installed capabilities, earned trust tiers, and recent decisions.
+        OAuth tokens stay on each device — only the metadata syncs.
+      </div>
+      <div id="federation-peers-list">Loading…</div>
+      <div style="margin-top: 0.75rem; display: flex; gap: 0.5rem;">
+        <button class="btn btn-primary btn-sm" data-action="federation-pair-start">Pair a new device</button>
+        <button class="btn btn-outline btn-sm" data-action="federation-pair-complete">I have a code</button>
+      </div>
+      <div id="federation-pair-output" style="margin-top: 0.75rem;"></div>
+    </div>
+
     <div class="card" style="margin-top: 2rem; text-align: center;">
       <div class="card-subtitle" style="margin-bottom: 0.75rem;">
         Signed in as <strong>${escapeHtml(user?.name || user?.email || `You (${userId.slice(0, 4)}…)`)}</strong>
@@ -417,7 +434,109 @@ export async function renderSettings(container, userId) {
       .then((enabled) => { launchToggle.checked = !!enabled; })
       .catch(() => { /* leave unchecked */ });
   }
+
+  // Federation: render the peer list. Fetched fresh per render so a
+  // newly-paired peer shows up immediately after the success toast.
+  const peerListEl = document.getElementById('federation-peers-list');
+  if (peerListEl) {
+    listFederationPeers(userId).then((data) => {
+      const peers = Array.isArray(data?.peers) ? data.peers : [];
+      peerListEl.innerHTML = renderFederationPeerList(peers);
+    }).catch(() => {
+      peerListEl.innerHTML = '<div style="color: var(--text-muted); font-size: 0.85rem;">No linked devices yet.</div>';
+    });
+  }
 }
+
+function renderFederationPeerList(peers) {
+  if (!Array.isArray(peers) || peers.length === 0) {
+    return '<div style="color: var(--text-muted); font-size: 0.85rem;">No linked devices yet.</div>';
+  }
+  return peers.map((p) => {
+    const status = p.lastSyncStatus ?? 'never';
+    const statusColor = status === 'ok' ? 'var(--success)'
+      : status === 'failed' ? 'var(--danger)'
+      : 'var(--text-muted)';
+    const lastSyncLabel = p.lastSyncAt
+      ? new Date(p.lastSyncAt).toLocaleString()
+      : 'never synced';
+    return `
+      <div style="display: flex; align-items: center; justify-content: space-between; padding: 0.5rem 0.75rem; background: var(--bg); border-radius: var(--radius-sm); margin-bottom: 0.5rem;">
+        <div style="min-width: 0;">
+          <div style="font-weight: 500;">${escapeHtml(p.label)}</div>
+          <div style="font-size: 0.75rem; color: var(--text-muted);">
+            <span style="color: ${statusColor}; font-weight: 500;">${escapeHtml(status)}</span> · last sync ${escapeHtml(lastSyncLabel)}
+          </div>
+        </div>
+        <button class="btn btn-outline btn-sm" data-action="federation-unpair" data-peer-id="${escapeHtml(p.id)}">Unpair</button>
+      </div>
+    `;
+  }).join('');
+}
+
+window.federationPairStart = async function(userId) {
+  const out = document.getElementById('federation-pair-output');
+  if (!out) return;
+  out.innerHTML = '<div class="card-subtitle">Generating code…</div>';
+  try {
+    const data = await startFederationPairing(userId);
+    out.innerHTML = `
+      <div class="card" style="background: var(--bg); padding: 1rem;">
+        <div style="font-weight: 600; margin-bottom: 0.5rem;">Code for the other device:</div>
+        <div style="font-family: monospace; font-size: 1.5rem; letter-spacing: 0.25rem; padding: 0.5rem 0;">${escapeHtml(data.code)}</div>
+        <div style="font-size: 0.75rem; color: var(--text-muted);">Expires in ${Math.floor((data.ttlSeconds || 600) / 60)} minutes. Enter this on your other device under Settings → Linked devices → "I have a code".</div>
+      </div>
+    `;
+  } catch (err) {
+    showErrorToast(`Couldn't generate code: ${err?.friendlyMessage || err?.message || 'unknown error'}`);
+    out.innerHTML = '';
+  }
+};
+
+window.federationPairComplete = async function(userId) {
+  const code = window.prompt('Enter the 6-digit code shown on the other device:');
+  if (!code) return;
+  if (!/^\d{6}$/.test(code.trim())) {
+    showErrorToast('Code must be 6 digits.');
+    return;
+  }
+  const label = window.prompt('Label this device (e.g. "Office laptop"):');
+  if (!label || !label.trim()) {
+    showErrorToast('Label required.');
+    return;
+  }
+  try {
+    // Generate a public key for this device. We use crypto.getRandomValues +
+    // a 32-byte buffer encoded as base64 — this is a placeholder identity
+    // for the joiner; the server validates length, not provenance.
+    // (The real key-exchange flow uses tweetnacl on the server side; the
+    // joiner's role here is to commit a public key it controls. v1
+    // generates an opaque-but-validly-shaped key client-side and stores
+    // it nowhere — this MVP only exercises the pairing handshake, not
+    // long-term peer identity.)
+    const bytes = new Uint8Array(32);
+    crypto.getRandomValues(bytes);
+    const peerPublicKey = btoa(String.fromCharCode(...bytes));
+    await completeFederationPairing(userId, code.trim(), label.trim(), peerPublicKey, undefined);
+    showSavedToast('Device paired');
+    const { renderSettings } = await import('./settings.js');
+    await renderSettings(document.getElementById('page-content'), userId);
+  } catch (err) {
+    showErrorToast(`Pair failed: ${err?.friendlyMessage || err?.message || 'unknown error'}`);
+  }
+};
+
+window.federationUnpair = async function(userId, peerId) {
+  if (!confirm('Unpair this device? It will stop receiving syncs immediately.')) return;
+  try {
+    await unpairFederationPeer(userId, peerId);
+    showSavedToast('Device unpaired');
+    const { renderSettings } = await import('./settings.js');
+    await renderSettings(document.getElementById('page-content'), userId);
+  } catch (err) {
+    showErrorToast(`Unpair failed: ${err?.friendlyMessage || err?.message || 'unknown error'}`);
+  }
+};
 
 // Singleton click delegator. Settings re-renders after every successful
 // save/delete (saveTier, addDomainPolicy, deleteRoutineHandler, etc. all
@@ -606,6 +725,17 @@ function ensureSettingsListener() {
       case 'sign-out':
         window.signOut();
         return;
+      case 'federation-pair-start':
+        window.federationPairStart?.(uid);
+        return;
+      case 'federation-pair-complete':
+        window.federationPairComplete?.(uid);
+        return;
+      case 'federation-unpair': {
+        const peerId = el.getAttribute('data-peer-id');
+        if (peerId) window.federationUnpair?.(uid, peerId);
+        return;
+      }
       case 'toggle-launch-at-login': {
         const checkbox = el;
         if (!(checkbox instanceof HTMLInputElement)) return;

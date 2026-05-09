@@ -26,6 +26,7 @@ import { createPruneThrottle } from './label-signal-pruner.js';
 import { runMetricsRollupJob } from './jobs/metrics-rollup.js';
 import { runChangelogPollJob } from './jobs/changelog-poll.js';
 import { runDomainExtractionJob } from './jobs/domain-extraction.js';
+import { runFederationSyncJob } from './jobs/federation-sync.js';
 
 const config = loadConfig();
 const log = createLogger('worker');
@@ -482,6 +483,8 @@ async function main(): Promise<void> {
   const CHANGELOG_POLL_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
   let lastDomainExtractionAt = 0;
   const DOMAIN_EXTRACTION_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days (#193 Child 1)
+  let lastFederationSyncAt = 0;
+  const FEDERATION_SYNC_INTERVAL_MS = 60 * 60 * 1000; // hourly (#194 Child 1)
 
   // Poll loop
   while (running) {
@@ -519,6 +522,16 @@ async function main(): Promise<void> {
         });
       });
       lastDomainExtractionAt = nowMs;
+    }
+
+    // Push federation deltas to active peers hourly (#194 Child 1).
+    if (nowMs - lastFederationSyncAt >= FEDERATION_SYNC_INTERVAL_MS) {
+      await runFederationSyncJob().catch((err) => {
+        log.warn('Federation sync job failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+      lastFederationSyncAt = nowMs;
     }
 
     // Expire stale approval requests every 10 poll cycles

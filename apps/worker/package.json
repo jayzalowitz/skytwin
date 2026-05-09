@@ -24,7 +24,8 @@
     "@skytwin/policy-engine": "workspace:*",
     "@skytwin/policy-prompts": "workspace:*",
     "@skytwin/registry-client": "workspace:*",
-    "@skytwin/shared-types": "workspace:*"
+    "@skytwin/shared-types": "workspace:*",
+    "tweetnacl": "^1.0.3"
   },
   "devDependencies": {
     "tsx": "^4.7.0",
