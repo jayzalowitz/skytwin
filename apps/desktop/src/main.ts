@@ -1,16 +1,18 @@
-import { app, BrowserWindow, ipcMain, shell, type Tray } from 'electron';
+import { app, BrowserWindow, ipcMain, powerMonitor, shell, type Tray } from 'electron';
 import { join } from 'path';
 import { ServiceManager } from './service-manager.js';
 import { createTray } from './tray.js';
 import { getSavedBounds, trackWindowState } from './window-state.js';
 import { checkDependencies, showDependencyDialog } from './first-launch.js';
 import { AutoUpdateController, defaultAutoUpdateConfig } from './auto-update.js';
+import { IdleBridge, type IdleState, type IdleStateReason } from './idle-bridge.js';
 
 const serviceManager = new ServiceManager();
 let mainWindow: BrowserWindow | null = null;
 let splashWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let updateController: AutoUpdateController | null = null;
+let idleBridge: IdleBridge | null = null;
 
 declare module 'electron' {
   interface BrowserWindow {
@@ -127,6 +129,19 @@ async function startApp(): Promise<void> {
     updateController.schedulePeriodicChecks();
     console.info('[auto-update] Periodic update checks scheduled.');
   }
+
+  idleBridge = new IdleBridge({
+    powerMonitor,
+    onStateChange: handleIdleStateChange,
+  });
+  idleBridge.start();
+}
+
+function handleIdleStateChange(state: IdleState, reason: IdleStateReason): void {
+  console.info(`[idle-bridge] state=${state} reason=${reason}`);
+  if (mainWindow !== null && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('idle-state-changed', { state, reason });
+  }
 }
 
 async function waitForWeb(timeoutMs: number): Promise<boolean> {
@@ -190,5 +205,6 @@ app.on('before-quit', () => {
     mainWindow.isQuitting = true;
   }
   updateController?.cancelScheduledChecks();
+  idleBridge?.stop();
   serviceManager.stopAll();
 });
