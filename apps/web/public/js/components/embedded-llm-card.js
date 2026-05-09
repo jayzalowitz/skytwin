@@ -35,7 +35,14 @@ function getCurrentUserId() {
   }
 }
 
+// Statuses that mean "something is in flight" — drives the polling
+// loop and keeps the card showing a progress UI rather than the picker.
 const ACTIVE_STATUSES = new Set(['pending', 'downloading', 'verifying', 'installing']);
+// Subset where the backend can actually pause. pauseDownload() returns
+// ok:false for verifying/installing, so we hide the Pause button there.
+// Cancel still works through verify/install — the runner checks the
+// cancelled flag at phase boundaries.
+const PAUSABLE_STATUSES = new Set(['pending', 'downloading']);
 
 const POLL_INTERVAL_MS = 1000;
 
@@ -94,12 +101,16 @@ function downloadCardHtml(download, modelName) {
   const bytesSoFar = formatBytes(download.bytesDownloaded);
   const totalSize = formatBytes(download.totalBytes);
   const isActive = ACTIVE_STATUSES.has(status);
+  const isPausable = PAUSABLE_STATUSES.has(status);
   const isPaused = status === 'paused';
   const isError = status === 'failed';
 
   const actionButtons = (() => {
     if (isActive) {
-      return `<button class="btn btn-outline btn-sm" data-action="embedded-pause-download" data-download-id="${escapeHtml(download.id)}">Pause</button>
+      const pauseBtn = isPausable
+        ? `<button class="btn btn-outline btn-sm" data-action="embedded-pause-download" data-download-id="${escapeHtml(download.id)}">Pause</button>`
+        : '';
+      return `${pauseBtn}
               <button class="btn btn-outline btn-sm" data-action="embedded-cancel-download" data-download-id="${escapeHtml(download.id)}">Cancel</button>`;
     }
     if (isPaused) {

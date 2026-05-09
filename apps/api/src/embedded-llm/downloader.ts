@@ -8,7 +8,7 @@ import {
   statSync,
   unlinkSync,
 } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -218,13 +218,20 @@ async function runDownload(download: ModelDownloadRow): Promise<void> {
   }
 
   const partialPath = partialPathFor(download.target_path);
+  // Only resume from the partial if THIS row had progress recorded.
+  // A fresh row (bytes_downloaded === 0) finding a partial on disk
+  // means the previous attempt didn't clean up — e.g., a cancel that
+  // failed to unlink on Windows. Resuming from those stale bytes
+  // would corrupt the download.
   let resumeFrom = 0;
-  if (existsSync(partialPath)) {
+  if (download.bytes_downloaded > 0 && existsSync(partialPath)) {
     try {
       resumeFrom = statSync(partialPath).size;
     } catch {
       resumeFrom = 0;
     }
+  } else if (existsSync(partialPath)) {
+    try { unlinkSync(partialPath); } catch { /* best effort */ }
   }
 
   const controller = new AbortController();
@@ -336,7 +343,13 @@ async function runDownload(download: ModelDownloadRow): Promise<void> {
     return;
   }
 
-  inFlight.delete(download.id);
+  // Bail if the user clicked Cancel during the byte transfer. The
+  // network stream finishes after a controller.abort(), so we may
+  // arrive here with handle.cancelled already true.
+  if (handle.cancelled) {
+    inFlight.delete(download.id);
+    return;
+  }
   await modelDownloadRepository.setStatus(download.id, 'verifying', {
     bytesDownloaded: totalBytes,
   });
@@ -352,10 +365,18 @@ async function runDownload(download: ModelDownloadRow): Promise<void> {
     // Stream the file through the hash — multi-GB GGUFs would OOM the
     // API process if we readFile()'d the whole thing into memory.
     const actual = await computeSha256(partialPath);
+    // Cancel can fire mid-hash. If it did, cancelDownload() already
+    // marked the row 'cancelled' and removed the partial — don't
+    // overwrite that with verify's outcome.
+    if (handle.cancelled) {
+      inFlight.delete(download.id);
+      return;
+    }
     if (actual !== expectedHash) {
       // Corrupt download. Delete the partial — user should retry,
       // and we don't want a half-bad GGUF lingering on disk.
       try { unlinkSync(partialPath); } catch { /* best effort */ }
+      inFlight.delete(download.id);
       await modelDownloadRepository.setStatus(download.id, 'failed', {
         error: `sha256 mismatch: expected ${expectedHash}, got ${actual}`,
         bytesDownloaded: 0,
@@ -364,18 +385,26 @@ async function runDownload(download: ModelDownloadRow): Promise<void> {
     }
   }
 
+  if (handle.cancelled) {
+    inFlight.delete(download.id);
+    return;
+  }
   await modelDownloadRepository.setStatus(download.id, 'installing');
   // Atomic rename — partial → final. Same filesystem so this is O(1).
   try {
     if (existsSync(download.target_path)) unlinkSync(download.target_path);
     renameSync(partialPath, download.target_path);
   } catch (err) {
+    inFlight.delete(download.id);
+    if (handle.cancelled) return;
     await modelDownloadRepository.setStatus(download.id, 'failed', {
       error: `install (rename) failed: ${err instanceof Error ? err.message : String(err)}`,
     });
     return;
   }
 
+  inFlight.delete(download.id);
+  if (handle.cancelled) return;
   await modelDownloadRepository.setStatus(download.id, 'complete');
   log.info('Model download complete', {
     downloadId: download.id,
@@ -401,15 +430,6 @@ export async function recoverOnBoot(): Promise<void> {
       error: err instanceof Error ? err.message : String(err),
     });
   }
-}
-
-/**
- * Helper used by the dirname-only check in tests. Exported so the
- * route handler doesn't need to import `node:path` separately.
- */
-export function ensureDirectory(filePath: string): void {
-  const dir = dirname(filePath);
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 }
 
 /**
