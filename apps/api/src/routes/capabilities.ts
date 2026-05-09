@@ -34,16 +34,28 @@ const PII_FIELDS = new Set([
   'access_token', 'refresh_token',
 ]);
 
-export function redactPayload(obj: Record<string, unknown> | null | undefined): Record<string, unknown> | null {
-  if (!obj || typeof obj !== 'object') return obj ?? null;
+export function redactPayload(
+  obj: Record<string, unknown> | null | undefined,
+): Record<string, unknown> | null {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return obj ?? null;
+  return redactUnknown(obj) as Record<string, unknown>;
+}
+
+/**
+ * Recursive helper: walks objects AND arrays (Copilot caught that the previous
+ * implementation skipped arrays, leaking PII inside array-of-object payloads).
+ * Always pair with redactPayload at API boundaries — never log raw payloads.
+ */
+function redactUnknown(value: unknown): unknown {
+  if (value === null || value === undefined) return value;
+  if (Array.isArray(value)) return value.map(redactUnknown);
+  if (typeof value !== 'object') return value;
   const result: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(obj)) {
+  for (const [key, v] of Object.entries(value as Record<string, unknown>)) {
     if (PII_FIELDS.has(key.toLowerCase())) {
       result[key] = '[REDACTED]';
-    } else if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
-      result[key] = redactPayload(value as Record<string, unknown>);
     } else {
-      result[key] = value;
+      result[key] = redactUnknown(v);
     }
   }
   return result;
@@ -77,12 +89,12 @@ export function buildEvidencePreview(signal: Record<string, unknown>): EvidenceP
     const rawBody = typeof signal['body'] === 'string' ? signal['body'] : '';
     // Redact PII from subject before sending
     const subject = rawSubject.replace(
-      /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/g,
+      /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g,
       '[email]',
     );
     // Server-side redact: max 80 chars, strip PII patterns
     const snippet = rawBody
-      .replace(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/g, '[email]')
+      .replace(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g, '[email]')
       .replace(/\b\d{3}[-.\s]?\d{3}[-.\s]?\d{4}\b/g, '[phone]')
       .slice(0, 80);
     return { kind: 'email', subject, snippet };
@@ -639,15 +651,33 @@ export function createCapabilitiesRouter(): Router {
 
       const suggestions = await appSuggestionRepository.getPendingForUser(userId);
 
-      // Attach multi-modal evidence previews to each suggestion.
-      // evidence_sources is a JSONB array of raw signal rows stored on the suggestion.
-      // We build a redacted preview for each signal and attach before sending.
+      // Project safe fields explicitly — never spread the row, because
+      // `evidence_sources` is the JSONB array of raw signals (with PII) and
+      // must NOT leave the API. The `evidence` array below is the
+      // redacted/redactable preview clients are allowed to see.
       const suggestionsWithEvidence = suggestions.map((s) => {
         const rawSources: unknown[] = Array.isArray(s.evidence_sources) ? s.evidence_sources : [];
         const evidence: EvidencePreview[] = rawSources
           .filter((src): src is Record<string, unknown> => src !== null && typeof src === 'object' && !Array.isArray(src))
           .map((src) => buildEvidencePreview(src));
-        return { ...s, evidence };
+        return {
+          id: s.id,
+          user_id: s.user_id,
+          registry_id: s.registry_id,
+          display_name: s.display_name,
+          evidence_count: s.evidence_count,
+          evidence_kinds_distinct: s.evidence_kinds_distinct,
+          first_evidence_at: s.first_evidence_at,
+          last_evidence_at: s.last_evidence_at,
+          confidence_score: s.confidence_score,
+          status: s.status,
+          snoozed_until: s.snoozed_until,
+          reason_summary: s.reason_summary,
+          push_notified_at: s.push_notified_at,
+          created_at: s.created_at,
+          updated_at: s.updated_at,
+          evidence,
+        };
       });
 
       res.json({ suggestions: suggestionsWithEvidence });

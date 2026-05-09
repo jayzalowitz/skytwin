@@ -45,15 +45,35 @@ function buildMcpServer(tokenCtx: ExternalAgentToken): McpServer {
 
   const { userId, scope, agentName } = tokenCtx;
 
+  /**
+   * Wrap each tool handler in try/finally so the provenance write fires for
+   * BOTH successful and failed calls. Per safety invariant, every external-
+   * agent tool call must produce an audit row — silently dropping audit on
+   * failure was the bug Copilot caught (#209).
+   */
+  async function withProvenance<T>(toolName: string, args: Record<string, unknown>, run: () => Promise<T>): Promise<T> {
+    try {
+      return await run();
+    } finally {
+      try {
+        await writeExternalAgentProvenance({ userId, agentName, toolName, args });
+      } catch (provErr) {
+        // Provenance failure must never mask the underlying tool result/error.
+        log.error('Failed to write external-agent provenance', {
+          userId,
+          agentName,
+          toolName,
+          error: provErr instanceof Error ? provErr.message : String(provErr),
+        });
+      }
+    }
+  }
+
   // ── whoami (no scope requirement — visible to all) ────────────────────
   server.tool(
     'whoami',
     'Return identity and trust tier information for the authenticated user.',
-    async () => {
-      const result = await whoami(userId);
-      await writeExternalAgentProvenance({ userId, agentName, toolName: 'whoami', args: {} });
-      return result;
-    },
+    async () => withProvenance('whoami', {}, () => whoami(userId)),
   );
 
   // ── query_memory (scope: read) ─────────────────────────────────────────
@@ -65,19 +85,9 @@ function buildMcpServer(tokenCtx: ExternalAgentToken): McpServer {
         question: z.string().describe('The question or topic to search for.'),
         limit: z.number().int().min(1).max(50).optional().describe('Max results to return (1-50, default 10).'),
       },
-      async (args) => {
-        const result = await queryMemory(userId, {
-          question: args.question,
-          limit: args.limit ?? 10,
-        });
-        await writeExternalAgentProvenance({
-          userId,
-          agentName,
-          toolName: 'query_memory',
-          args: args as Record<string, unknown>,
-        });
-        return result;
-      },
+      async (args) => withProvenance('query_memory', args as Record<string, unknown>, () =>
+        queryMemory(userId, { question: args.question, limit: args.limit ?? 10 }),
+      ),
     );
   }
 
@@ -89,18 +99,9 @@ function buildMcpServer(tokenCtx: ExternalAgentToken): McpServer {
       {
         domain: z.string().optional().describe('Filter preferences by domain (e.g. "email", "calendar"). Optional.'),
       },
-      async (args) => {
-        const result = await getPreferences(userId, {
-          domain: args.domain,
-        });
-        await writeExternalAgentProvenance({
-          userId,
-          agentName,
-          toolName: 'get_preferences',
-          args: args as Record<string, unknown>,
-        });
-        return result;
-      },
+      async (args) => withProvenance('get_preferences', args as Record<string, unknown>, () =>
+        getPreferences(userId, { domain: args.domain }),
+      ),
     );
   }
 
@@ -122,23 +123,16 @@ function buildMcpServer(tokenCtx: ExternalAgentToken): McpServer {
           .optional()
           .describe('Identifier of the agent proposing this action (e.g. "claude-desktop").'),
       },
-      async (args) => {
-        const result = await proposeAction(userId, {
+      async (args) => withProvenance('propose_action', args as Record<string, unknown>, () =>
+        proposeAction(userId, {
           action: {
             type: args.action.type,
             parameters: args.action.parameters as Record<string, unknown>,
             reasoning: args.action.reasoning,
           },
           sourceAgent: args.sourceAgent ?? agentName,
-        });
-        await writeExternalAgentProvenance({
-          userId,
-          agentName,
-          toolName: 'propose_action',
-          args: args as Record<string, unknown>,
-        });
-        return result;
-      },
+        }),
+      ),
     );
   }
 
@@ -152,20 +146,13 @@ function buildMcpServer(tokenCtx: ExternalAgentToken): McpServer {
         limit: z.number().int().min(1).max(100).optional().describe('Max signals to return (1-100, default 20).'),
         since: z.string().optional().describe('Only return signals after this ISO 8601 timestamp. Optional.'),
       },
-      async (args) => {
-        const result = await subscribeSignals(userId, {
+      async (args) => withProvenance('subscribe_signals', args as Record<string, unknown>, () =>
+        subscribeSignals(userId, {
           type: args.type,
           limit: args.limit ?? 20,
           since: args.since,
-        });
-        await writeExternalAgentProvenance({
-          userId,
-          agentName,
-          toolName: 'subscribe_signals',
-          args: args as Record<string, unknown>,
-        });
-        return result;
-      },
+        }),
+      ),
     );
   }
 

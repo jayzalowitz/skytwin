@@ -45,7 +45,8 @@ function buildApp(userId = USER_ID): Express {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as unknown as { user: { id: string } }).user = { id: userId };
+    // Mirror production session-auth middleware: set req.authenticatedUserId.
+    req.authenticatedUserId = userId;
     next();
   });
   app.use('/api/dxt', createDxtRouter());

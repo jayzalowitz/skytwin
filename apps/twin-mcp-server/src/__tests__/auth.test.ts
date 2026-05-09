@@ -154,4 +154,17 @@ describe('redactPII', () => {
     redactPII(input);
     expect(input.email).toBe('test@test.com'); // original unchanged
   });
+
+  it('recurses into arrays of objects (closes the array-PII-leak hole)', () => {
+    const result = redactPII({
+      recipients: [
+        { name: 'Alice', email: 'a@x.com' },
+        { name: 'Bob', authorization: 'Bearer xyz' },
+      ],
+    });
+    const recipients = result['recipients'] as Array<Record<string, unknown>>;
+    expect(recipients[0]?.['email']).toBe('[REDACTED]');
+    expect(recipients[1]?.['authorization']).toBe('[REDACTED]');
+    expect(recipients[0]?.['name']).toBe('Alice');
+  });
 });

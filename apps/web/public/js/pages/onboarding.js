@@ -37,7 +37,19 @@ import { KEY_USER_ID, KEY_ONBOARDED, KEY_TOUR_MODE } from '../storage-keys.js';
 
 let _wizardListenerWired = false;
 let _onCompleteCallback = null;   // set by renderOnboarding
-let _wizardState = null;          // { screen, userId, hasLlmProvider, history, recipeSlug, recommendedRegistryIds }
+let _wizardState = null;          // { screen, userId, hasLlmProvider, history, recipeSlug, recommendedRegistryIds, firstRunChoice }
+
+// The three real entry paths users can take from the welcome screen. We
+// stash the chosen path on _wizardState.firstRunChoice so every
+// finishWizard/postOnboardingComplete site below can record the correct
+// value — previously every call hard-coded 'about-me', which mis-recorded
+// telemetry for email and computer users.
+function recordFirstRunChoice(choice) {
+  if (_wizardState) _wizardState.firstRunChoice = choice;
+}
+function getFirstRunChoice() {
+  return (_wizardState && _wizardState.firstRunChoice) || 'about-me';
+}
 
 function isOnWizard() {
   // The wizard overlay is shown at the root hash (empty or '#/').
@@ -73,12 +85,15 @@ async function handleOnboardingClick(e) {
   switch (action) {
     // ── Welcome screen ──────────────────────────────────────────────────────
     case 'onb-choose-email':
+      recordFirstRunChoice('email');
       transitionTo('email_choice');
       break;
     case 'onb-choose-computer':
+      recordFirstRunChoice('computer');
       transitionTo('computer_choice');
       break;
     case 'onb-choose-about-me':
+      recordFirstRunChoice('about-me');
       transitionTo('about_me_choice');
       break;
 
@@ -183,7 +198,7 @@ async function handleOnboardingClick(e) {
       break;
     }
     case 'onb-skip-recipe':
-      await finishWizard(userId || getCurrentUserId(), 'about-me', undefined);
+      await finishWizard(userId || getCurrentUserId(), getFirstRunChoice(), undefined);
       break;
 
     // ── Complete ────────────────────────────────────────────────────────────
@@ -894,7 +909,7 @@ async function handleInstallRecipe(slug, btn) {
   try {
     const { jobs } = await installCapabilityRecipe(userId, slug);
     const count = jobs?.length ?? 0;
-    await postOnboardingComplete(userId, 'about-me', slug);
+    await postOnboardingComplete(userId, getFirstRunChoice(), slug);
     renderInstallComplete(slug, count);
   } catch (err) {
     renderContent(`
@@ -994,7 +1009,7 @@ async function transitionTo(screen) {
       renderInstalling();
       break;
     case 'complete':
-      await finishWizard(getCurrentUserId(), 'about-me', _wizardState.recipeSlug);
+      await finishWizard(getCurrentUserId(), getFirstRunChoice(), _wizardState.recipeSlug);
       break;
   }
 }

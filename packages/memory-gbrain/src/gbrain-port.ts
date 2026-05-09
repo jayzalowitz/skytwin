@@ -1,4 +1,4 @@
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import type {
   MemoryPort,
   MemoryCapability,
@@ -65,6 +65,7 @@ export class GbrainMemoryPort implements MemoryPort {
   }
 
   capabilities(): Set<MemoryCapability> {
+    if (!this.installed) return new Set<MemoryCapability>();
     return new Set<MemoryCapability>(['semantic_search', 'code_aware_search']);
   }
 
@@ -106,8 +107,12 @@ export class GbrainMemoryPort implements MemoryPort {
     }
 
     try {
-      const raw = execSync(
-        `gbrain search --json --query=${JSON.stringify(_query)} --limit=${k}`,
+      // execFileSync (no shell) — args are passed directly to argv, so the
+      // user-supplied query cannot inject shell metacharacters ($(), backticks,
+      // ;, &&, etc.). Do not switch back to execSync without re-evaluating.
+      const raw = execFileSync(
+        'gbrain',
+        ['search', '--json', `--query=${_query}`, `--limit=${String(k)}`],
         { timeout: GBRAIN_TIMEOUT_MS, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
       );
 
