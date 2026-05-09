@@ -141,6 +141,13 @@ export type {
   UpdateSyncStatusInput,
 } from './repositories/index.js';
 
+export {
+  recoveryCodeRepository,
+  vacationModeRepository,
+  generatePlainCode,
+} from './repositories/index.js';
+export type { RecoveryCodeRow } from './repositories/index.js';
+
 export { mcpServerMetricsRepository } from './repositories/index.js';
 
 export { credentialVaultMetaRepository } from './repositories/index.js';

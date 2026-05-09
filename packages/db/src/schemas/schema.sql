@@ -303,3 +303,18 @@ CREATE INDEX IF NOT EXISTS lifebooks_user_visible_idx
   ON lifebooks (user_id, importance, last_seen_at DESC)
   WHERE hidden_at IS NULL;
 CREATE INDEX IF NOT EXISTS lifebooks_user_all_idx ON lifebooks (user_id, last_seen_at DESC);
+
+CREATE TABLE IF NOT EXISTS recovery_codes (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  code_hash BYTES NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  used_at TIMESTAMPTZ,
+  used_for STRING
+);
+CREATE INDEX IF NOT EXISTS recovery_codes_user_active_idx
+  ON recovery_codes (user_id, used_at) WHERE used_at IS NULL;
+CREATE INDEX IF NOT EXISTS recovery_codes_user_all_idx
+  ON recovery_codes (user_id, created_at DESC);
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS vacation_mode_until TIMESTAMPTZ;

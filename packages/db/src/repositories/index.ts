@@ -190,3 +190,11 @@ export type {
   CreatePeerInput,
   UpdateSyncStatusInput,
 } from './federation-peer-repository.js';
+
+export {
+  recoveryCodeRepository,
+  generatePlainCode,
+} from './recovery-code-repository.js';
+export type { RecoveryCodeRow } from './recovery-code-repository.js';
+
+export { vacationModeRepository } from './vacation-mode-repository.js';
