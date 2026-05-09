@@ -33,3 +33,22 @@ export {
   type EmbeddedTtsPort,
   type EmbeddedTtsCapabilities,
 } from './tts-port.js';
+
+export {
+  LlamaCppTextBackend,
+  findFirstGgufModel,
+  type LlamaCppBackendOptions,
+} from './llama-cpp-backend.js';
+
+export {
+  WhisperCppSttBackend,
+  findFirstWhisperModel,
+  parseWhisperJson,
+  type WhisperCppBackendOptions,
+} from './whisper-cpp-backend.js';
+
+export {
+  createEmbeddedTextPort,
+  createEmbeddedSttPort,
+  type CreatePortOverrides,
+} from './factory.js';
