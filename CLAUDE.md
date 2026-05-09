@@ -176,6 +176,10 @@ These are non-negotiable rules. Do not write code that violates them.
 
 7. **Risk assessment is mandatory.** Every `CandidateAction` must include a `RiskAssessment` with reasoning. Skipping risk assessment is not a valid optimization.
 
+## Zero-trust mode runtime constraint
+
+When `McpServerConfig.zeroTrustMode` is `true`, the MCP server process is spawned inside `docker run --network=none` so it has no network access. This applies **only to stdio transport** — HTTP/SSE servers are remote processes and `--network=none` would sever the connection entirely. Requires Docker to be running on the host; if Docker is unavailable the server starts without isolation and `McpServerHandle.failedToIsolate` is set to `true`. MCP server packages must be pre-installed on the host via `npm install -g <package>` so the host global `node_modules` mount (resolved via `npm root -g`) makes them visible inside the container. See `packages/mcp-host/src/docker-spawn.ts` for implementation details.
+
 ## Review Discipline
 
 These are habits that have already prevented "PR ships a regression of the bug it claims to fix" from landing on this codebase. Don't skip them.

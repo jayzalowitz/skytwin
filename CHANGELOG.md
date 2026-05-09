@@ -1,5 +1,64 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [unreleased] — Zero-trust Docker runtime (#183 AC#4 closes)
+
+Completes AC#4 of issue #183. PR #222 shipped the policy + UI half (riskModifier
++1, force-approve, toggle endpoints, capability-detail card). This PR adds the
+runtime enforcement: stdio MCP servers with `zeroTrustMode=true` are now spawned
+inside a Docker container with `--network=none` so the server process has no
+network access.
+
+### Ships
+
+- `packages/mcp-host/src/docker-spawn.ts` — `isDockerAvailable()`,
+  `spawnInDockerNoNetworkAsync()` (async, resolves `npm root -g`),
+  `spawnInDockerNoNetwork()` (sync, uses fallback path), and `buildDockerArgs()`
+  (exported for testing). Resource caps: `--memory=512m --cpus=1` by default.
+  Container flags: `--network=none --rm --init --read-only --cap-drop=ALL
+  --security-opt=no-new-privileges --user=uid:gid`.
+- `packages/mcp-host/src/docker-stdio-transport.ts` — `DockerStdioTransport`
+  implements `Transport` using pre-spawned Docker stdin/stdout. Wires container
+  exit to `onclose` so the McpHost CircuitBreaker is notified.
+- `McpServerConfig.zeroTrustMode?: boolean` and
+  `McpServerHandle.failedToIsolate?: boolean` added to
+  `packages/mcp-host/src/types.ts`.
+- `McpHost.installServer` wired: stdio + `zeroTrustMode=true` + Docker available
+  → `DockerStdioTransport`; Docker unavailable → warning logged,
+  `failedToIsolate=true`, regular spawn (graceful fallback).
+- 18 unit tests + 1 integration test in
+  `packages/mcp-host/src/__tests__/docker-spawn.test.ts`. Integration test runs
+  when Docker is available and verifies `--network=none` blocks outbound fetch
+  from the container (exits 0 = blocked).
+
+### Constraints (document clearly)
+
+- **stdio transport only.** HTTP/SSE servers are remote processes; applying
+  `--network=none` would sever the connection entirely. `zeroTrustMode` is
+  silently ignored for `transport: 'http'` and `transport: 'sse'`.
+- **User must pre-install MCP packages on the host** via `npm install -g
+  <package>`. The host's global `node_modules` directory (resolved via `npm root
+  -g`) is mounted read-only into the container so `npx` can find packages without
+  internet access during startup. See code comments in `docker-spawn.ts` for the
+  rationale.
+- **Resource cap defaults:** 512 MB memory, 1 CPU. Configurable via
+  `McpServerConfig.resourceLimits.memoryMb`.
+- **Graceful fallback:** if Docker is not running, the server starts without
+  isolation and `McpServerHandle.failedToIsolate` is set to `true`. The UI can
+  surface "isolation requested but Docker not available" (deferred).
+
+### Out of scope
+
+- HTTP/SSE transport zero-trust — network required by design. Documented.
+- Per-server OAuth domain allowlist — needs sidecar HTTP proxy or iptables. Defer.
+- Pre-built containers per MCP server — too invasive for v1. Defer.
+- Auto-install MCP packages inside container — needs network. Defer.
+- "Isolation requested but Docker not available" UI banner — `failedToIsolate`
+  field is set; UI reads it in a follow-up.
+
+### Closes
+
+- #183 AC#4
+
 ## [unreleased] — Turnkey distribution config (#188 partial)
 
 Scaffolds the electron-builder signing configuration, build orchestration

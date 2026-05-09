@@ -12,3 +12,12 @@ export type {
   McpSkill,
   McpExecutionLog,
 } from './types.js';
+
+export {
+  isDockerAvailable,
+  spawnInDockerNoNetwork,
+  spawnInDockerNoNetworkAsync,
+  buildDockerArgs,
+} from './docker-spawn.js';
+export type { DockerSpawnConfig, DockerSpawnResult } from './docker-spawn.js';
+export { DockerStdioTransport } from './docker-stdio-transport.js';
