@@ -37,6 +37,7 @@ import { createExternalAgentsRouter } from './routes/external-agents.js';
 import { createCredentialVaultRouter } from './routes/credential-vault.js';
 import { createDxtRouter } from './routes/dxt.js';
 import { createFederationRouter } from './routes/federation.js';
+import { createVoiceRouter } from './routes/voice.js';
 import { getExecutionRouter } from './execution-setup.js';
 import { startMdnsAdvertisement, stopMdnsAdvertisement } from './mdns.js';
 import { closePool, mcpServerMetricsRepository } from '@skytwin/db';
@@ -220,6 +221,7 @@ app.use('/api/credential-vault', sessionAuth, requireOwnership, createCredential
 app.use('/api/dxt', sessionAuth, requireOwnership, createDxtRouter());
 app.use('/api/lifebooks', sessionAuth, requireOwnership, createLifebooksRouter());
 app.use('/api/federation', sessionAuth, createFederationRouter()); // userId-param ownership applied in-router
+app.use('/api/voice', sessionAuth, createVoiceRouter()); // userId-param ownership applied in-router
 
 // Error handling middleware
 app.use(

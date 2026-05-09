@@ -1,5 +1,13 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [unreleased] — Accessibility: high-contrast + text-scale + voice STT route (#194 Child 4)
+
+Closes the a11y commitments of #194 Child 4: high-contrast theme,
+text-scale slider, reduced-motion override, voice-first toggle, and a
+real `/api/voice/transcribe` endpoint backed by the WhisperCppSttBackend
+from #238. Plus a baseline WCAG sweep (focus rings, skip-link,
+prefers-reduced-motion). Detailed entry in PR #244.
+
 ## [unreleased] — Federation pairing protocol + delta sync (#194 Child 1)
 
 Closes Child 1 of #194: real federation between a single user's instances

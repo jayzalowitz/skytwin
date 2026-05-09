@@ -491,6 +491,9 @@ body,
 .theme-swatch.swatch-wg-dark { background: #0c0a14; }
 .theme-swatch.swatch-wg-dark::after { content: ''; position: absolute; bottom: 0; left: 0; right: 0; height: 3px; background: linear-gradient(90deg, #a78bfa, #2dd4bf); }
 
+.theme-swatch.swatch-hc-dark { background: #000000; border: 2px solid #ffffff; }
+.theme-swatch.swatch-hc-dark::after { content: ''; position: absolute; bottom: 0; left: 0; right: 0; height: 3px; background: #ffff00; }
+
 .theme-option .theme-meta {
   flex: 1;
   min-width: 0;
@@ -556,3 +559,148 @@ body,
 
 /* Google font import for Mission Control */
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+/* ================================================================
+   HIGH CONTRAST — WCAG AAA-aimed monochrome theme (#194 Child 4)
+   Pure black/white pairing with bold accents. The point is maximum
+   readability for users with low vision; aesthetics are secondary.
+   ================================================================ */
+
+[data-variant="high-contrast"][data-mode="dark"] {
+  --bg: #000000;
+  --bg-card: #0a0a0a;
+  --bg-hover: #1a1a1a;
+  --bg-input: #050505;
+  --text: #ffffff;
+  --text-muted: #d0d0d0;
+  --text-dim: #a0a0a0;
+  --border: #ffffff;
+  --accent: #ffff00;
+  --accent-hover: #ffff66;
+  --accent-soft: rgba(255,255,0,.15);
+  --success: #00ff00;
+  --success-soft: rgba(0,255,0,.15);
+  --warning: #ffaa00;
+  --warning-soft: rgba(255,170,0,.15);
+  --danger: #ff4040;
+  --danger-soft: rgba(255,64,64,.15);
+  --info: #66ccff;
+  --info-soft: rgba(102,204,255,.15);
+}
+
+[data-variant="high-contrast"][data-mode="light"] {
+  --bg: #ffffff;
+  --bg-card: #f5f5f5;
+  --bg-hover: #e5e5e5;
+  --bg-input: #fafafa;
+  --text: #000000;
+  --text-muted: #2a2a2a;
+  --text-dim: #555555;
+  --border: #000000;
+  --accent: #0000aa;
+  --accent-hover: #0000dd;
+  --accent-soft: rgba(0,0,170,.10);
+  --success: #006600;
+  --success-soft: rgba(0,102,0,.10);
+  --warning: #884400;
+  --warning-soft: rgba(136,68,0,.10);
+  --danger: #aa0000;
+  --danger-soft: rgba(170,0,0,.10);
+  --info: #003388;
+  --info-soft: rgba(0,51,136,.10);
+}
+
+[data-variant="high-contrast"] .card,
+[data-variant="high-contrast"] .btn,
+[data-variant="high-contrast"] .form-input,
+[data-variant="high-contrast"] .stat-card {
+  border-width: 2px;
+}
+
+[data-variant="high-contrast"] :focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ================================================================
+   TEXT-SCALE — global multiplier for users who need bigger text.
+   Applied via [data-text-scale] on <html>; every font-size that uses
+   `rem` reflows automatically. Values 100, 125, 150, 200 cover the
+   useful range without breaking layouts that assume a baseline.
+   ================================================================ */
+
+html[data-text-scale="125"] { font-size: 17.5px; }   /* 1.25× of 14px */
+html[data-text-scale="150"] { font-size: 21px; }     /* 1.5× of 14px */
+html[data-text-scale="200"] { font-size: 28px; }     /* 2× of 14px */
+
+/* ================================================================
+   FOCUS RINGS — visible on every interactive element. Defaults across
+   variants so keyboard-only users always know where they are. The
+   high-contrast variant overrides this with a thicker yellow ring.
+   ================================================================ */
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[role="button"]:focus-visible,
+[data-action]:focus-visible {
+  outline: 2px solid var(--accent, #6366f1);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm, 4px);
+}
+
+/* ================================================================
+   SKIP LINK — first focusable element on the page; jumps past the
+   nav into the main content. Hidden until focused.
+   ================================================================ */
+
+.skip-link {
+  position: fixed;
+  top: -100px;
+  left: 0;
+  z-index: 10000;
+  padding: 0.75rem 1rem;
+  background: var(--accent, #6366f1);
+  color: #ffffff;
+  text-decoration: none;
+  border-radius: 0 0 4px 0;
+  transition: top 0.2s;
+}
+.skip-link:focus {
+  top: 0;
+}
+
+/* Reduce motion preference — disable transitions for users with
+   prefers-reduced-motion: reduce. Respects OS-level accessibility. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* User-forced reduced motion — pulls from a11y settings card. Overrides
+   even when prefers-reduced-motion is "no-preference". */
+html[data-force-reduced-motion="on"] *,
+html[data-force-reduced-motion="on"] *::before,
+html[data-force-reduced-motion="on"] *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+}
+
+/* Voice-first body class — currently used to surface a microphone
+   affordance on the assistant page. Hidden until enabled via Settings. */
+.voice-mic-button {
+  display: none;
+}
+body.voice-first .voice-mic-button {
+  display: inline-flex;
+}

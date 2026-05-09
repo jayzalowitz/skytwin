@@ -19,6 +19,7 @@ import { renderProvenanceGraph } from './pages/provenance-graph.js';
 import { renderGlobalPauseButton } from './components/global-pause-button.js';
 import { fetchPendingApprovals, fetchHealth, fetchUser, listUsers, escapeHtml, isApiKnownOffline } from './api-client.js';
 import { initTheme } from './theme-switcher.js';
+import { initA11y } from './a11y.js';
 import { connectSSE, disconnectSSE, isConnected } from './sse-client.js';
 import { showToast } from './toast.js';
 import { KEY_USER_ID, KEY_ONBOARDED, KEY_SESSION_TOKEN } from './storage-keys.js';
@@ -523,6 +524,22 @@ function wireDxtDropAndOpen() {
 }
 
 window.addEventListener('DOMContentLoaded', () => {
+  // Apply saved a11y preferences (text scale, reduced motion, voice-first)
+  // before any render so users with prefs don't see a flash of base UI.
+  initA11y();
+
+  // Inject the WCAG skip-link as the first focusable element. Hidden
+  // until focused (CSS pulls it in from -100px). Lets keyboard / screen
+  // reader users jump past the nav into main content.
+  if (!document.getElementById('skytwin-skip-link')) {
+    const skip = document.createElement('a');
+    skip.id = 'skytwin-skip-link';
+    skip.className = 'skip-link';
+    skip.href = '#page-content';
+    skip.textContent = 'Skip to main content';
+    document.body.insertBefore(skip, document.body.firstChild);
+  }
+
   // Wire dashboard event handlers + document-level delegators.
   // Idempotent so re-running this in tests is safe.
   initDashboardGlobals();

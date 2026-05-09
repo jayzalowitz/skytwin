@@ -56,6 +56,9 @@ importers:
       '@skytwin/dxt':
         specifier: workspace:*
         version: link:../../packages/dxt
+      '@skytwin/embedded-llm':
+        specifier: workspace:*
+        version: link:../../packages/embedded-llm
       '@skytwin/execution-router':
         specifier: workspace:*
         version: link:../../packages/execution-router
