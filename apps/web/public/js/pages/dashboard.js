@@ -283,7 +283,7 @@ export async function renderDashboard(container, userId) {
   // and user action move them around constantly.
   // Slow-changing data — wrapped in slowFetch so a 4s first-scan tick or
   // a debounced SSE re-render doesn't burn 13 round-trips per cycle.
-  const [health, accuracy, confidence, learning, approvals, decisions, skillGaps, progress, learned, unmetCreds, googleOAuth, credsStatus, briefingData, twinBriefingData, lifebooksData, settingsData] = await Promise.allSettled([
+  const [health, accuracy, confidence, learning, approvals, decisions, skillGaps, progress, learned, unmetCreds, googleOAuth, credsStatus, briefingData, twinBriefingData, lifebooksData] = await Promise.allSettled([
     fetchHealth(),
     fetchAccuracy(userId),
     fetchConfidence(userId),
@@ -299,11 +299,6 @@ export async function renderDashboard(container, userId) {
     fetchBriefing(userId),
     fetchLatestTwinBriefing(userId, 'daily').catch(() => null),
     slowFetch(`lifebooks-${userId}`, fetchLifebooks, [userId]),
-    // Not slow-cached: a user enabling their first AI provider in
-    // Settings should make the first-run prompt go away on the next
-    // dashboard render, not 30s later. The endpoint is small and
-    // only relevant on first-run renders anyway.
-    fetchSettings(userId),
   ]);
 
   const healthOk = health.status === 'fulfilled';
@@ -367,25 +362,28 @@ export async function renderDashboard(container, userId) {
 
   const tourMode = (() => { try { return localStorage.getItem(KEY_TOUR_MODE) === '1'; } catch { return false; } })();
 
-  // Only show the prompt when we have positive evidence the user is
-  // in the first-run state. If either fetch failed, we don't know
-  // their provider count or decision count — falling back to "show
-  // the prompt" would surface it during transient API errors and
-  // for users who actually have providers but hit a blip.
-  // Skip in tour mode — seeded demo user has providers pre-configured.
-  const settingsFulfilled = settingsData?.status === 'fulfilled';
+  // First-run "needs a brain" prompt. Two prerequisites are cheap and
+  // already known here: tour mode (always-off) and recentDecisions
+  // (zero only on first-run-ish accounts). Only when both clear do we
+  // pay for a settings fetch — keeps SSE-driven re-renders from hitting
+  // /api/settings on every tick once the user has any history.
+  // Provider enablement matches settings.js: a provider is "enabled"
+  // unless `enabled === false`, so existing rows without an explicit
+  // field are treated as on (same convention the Settings UI uses).
   const decisionsFulfilled = decisions?.status === 'fulfilled';
-  const aiProviders = settingsFulfilled
-    ? (settingsData.value?.aiProviders ?? [])
-    : [];
-  const enabledProviderCount = Array.isArray(aiProviders)
-    ? aiProviders.filter((p) => p?.enabled).length
-    : 0;
-  const showBrainPrompt = !tourMode
-    && settingsFulfilled
-    && decisionsFulfilled
-    && enabledProviderCount === 0
-    && recentDecisions.length === 0;
+  let showBrainPrompt = false;
+  if (!tourMode && decisionsFulfilled && recentDecisions.length === 0) {
+    try {
+      const settings = await fetchSettings(userId);
+      const aiProviders = Array.isArray(settings?.aiProviders) ? settings.aiProviders : [];
+      const enabledProviderCount = aiProviders.filter((p) => p?.enabled !== false).length;
+      showBrainPrompt = enabledProviderCount === 0;
+    } catch {
+      // Settings fetch failed — don't surface the banner on a transient
+      // error. The next render will retry.
+      showBrainPrompt = false;
+    }
+  }
 
   // "While you were away" — count anything new since the last visit so the
   // user feels like the twin has been working for them, not just sitting
