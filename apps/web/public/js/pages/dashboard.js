@@ -1,4 +1,4 @@
-import { fetchHealth, fetchDecisions, fetchAccuracy, fetchConfidence, fetchLearning, fetchPendingApprovals, fetchSkillGaps, fetchTrustProgress, fetchLearned, fetchUnmetCredentials, fetchOAuthStatus, fetchCredentialsStatus, fetchBriefing, fetchLatestTwinBriefing, fetchLifebooks, escapeHtml } from '../api-client.js';
+import { fetchHealth, fetchDecisions, fetchAccuracy, fetchConfidence, fetchLearning, fetchPendingApprovals, fetchSkillGaps, fetchTrustProgress, fetchLearned, fetchUnmetCredentials, fetchOAuthStatus, fetchCredentialsStatus, fetchBriefing, fetchLatestTwinBriefing, fetchLifebooks, fetchSettings, escapeHtml } from '../api-client.js';
 import { renderTrustProgress } from '../components/progress-bar.js';
 import {
   KEY_USER_ID,
@@ -87,6 +87,24 @@ const SLOW_CACHE_TTL_MS = 30 * 1000;
 // matches the one captured at request time.
 const _slowCache = new Map();
 let _cacheGeneration = 0;
+
+// Short-TTL cache for the first-run brain-prompt settings lookup.
+// Separate from _slowCache because we want a much shorter TTL (the
+// user enabling a provider should make the prompt vanish near-instant)
+// without changing the 30s default that other consumers rely on.
+const BRAIN_PROMPT_TTL_MS = 5000;
+let _settingsCache = null;
+async function getCachedSettings(userId) {
+  const now = Date.now();
+  if (_settingsCache
+      && _settingsCache.userId === userId
+      && _settingsCache.expiresAt > now) {
+    return _settingsCache.value;
+  }
+  const value = await fetchSettings(userId);
+  _settingsCache = { userId, value, expiresAt: now + BRAIN_PROMPT_TTL_MS };
+  return value;
+}
 
 /**
  * Wrap a fetch function so its result is memoized for SLOW_CACHE_TTL_MS.
@@ -243,6 +261,27 @@ function renderLifebooksCard(lifebooks) {
   `;
 }
 
+function renderBrainPrompt() {
+  return `
+    <div class="card" style="border-left: 3px solid var(--accent);">
+      <div class="card-header">
+        <span class="card-title">Your twin needs a brain to start</span>
+      </div>
+      <div class="card-subtitle" style="margin-bottom: 0.75rem; line-height: 1.5;">
+        Pick how your twin thinks. Either path takes about 5 minutes from Settings.
+      </div>
+      <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.75rem;">
+        <a href="#/settings" class="btn btn-primary btn-sm">Set up the local brain</a>
+        <a href="#/settings" class="btn btn-outline btn-sm">Or bring your own API key</a>
+      </div>
+      <div style="font-size: 0.8rem; color: var(--text-muted); line-height: 1.5;">
+        <strong>Local brain</strong> — runs on your machine, no API keys, no per-message cost, your data never leaves the device.<br>
+        <strong>API key</strong> — uses Anthropic / OpenAI / Google. Faster on a small laptop, but each message goes to that provider.
+      </div>
+    </div>
+  `;
+}
+
 function formatDashboardTime(d) {
   if (!d) return '';
   const now = new Date();
@@ -341,6 +380,33 @@ export async function renderDashboard(container, userId) {
 
   const tourMode = (() => { try { return localStorage.getItem(KEY_TOUR_MODE) === '1'; } catch { return false; } })();
 
+  // First-run "needs a brain" prompt. Two prerequisites are cheap and
+  // already known here: tour mode (always-off) and recentDecisions
+  // (zero only on first-run-ish accounts). Only when both clear do we
+  // pay for a settings fetch — keeps SSE-driven re-renders from hitting
+  // /api/settings on every tick once the user has any history.
+  // Provider enablement matches settings.js: a provider is "enabled"
+  // unless `enabled === false`, so existing rows without an explicit
+  // field are treated as on (same convention the Settings UI uses).
+  // The result is memoized for 5s so the post-OAuth first-scan window
+  // (4s polling) doesn't fire /api/settings on every tick. Short
+  // enough that "user enables a provider in Settings, comes back" is
+  // perceived as instant; long enough to avoid the 4s storm.
+  const decisionsFulfilled = decisions?.status === 'fulfilled';
+  let showBrainPrompt = false;
+  if (!tourMode && decisionsFulfilled && recentDecisions.length === 0) {
+    try {
+      const settings = await getCachedSettings(userId);
+      const aiProviders = Array.isArray(settings?.aiProviders) ? settings.aiProviders : [];
+      const enabledProviderCount = aiProviders.filter((p) => p?.enabled !== false).length;
+      showBrainPrompt = enabledProviderCount === 0;
+    } catch {
+      // Settings fetch failed — don't surface the banner on a transient
+      // error. The next render will retry.
+      showBrainPrompt = false;
+    }
+  }
+
   // "While you were away" — count anything new since the last visit so the
   // user feels like the twin has been working for them, not just sitting
   // there. The baseline is only updated when the user actually leaves
@@ -397,6 +463,7 @@ export async function renderDashboard(container, userId) {
     ${tourMode ? renderTourBanner() : ''}
     ${renderJustConnectedCelebration({ justConnectedProvider, justConnectedAccount, recentDecisionsCount: recentDecisions.length, learnedCount: learn?.totalPreferences ?? 0 })}
     ${sinceLastVisit && !tourMode ? renderSinceLastVisit(sinceLastVisit) : ''}
+    ${showBrainPrompt ? renderBrainPrompt() : ''}
     ${tourMode ? '' : renderConnectGoogleHero({ googleConnected, googleSystemConfigured, userId })}
     ${renderAskTwinWidget({ userId, tourMode })}
     ${showBriefing ? renderBriefingCard({ items: briefingItems, createdAt: briefing.createdAt }) : ''}
