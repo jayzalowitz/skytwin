@@ -88,6 +88,24 @@ const SLOW_CACHE_TTL_MS = 30 * 1000;
 const _slowCache = new Map();
 let _cacheGeneration = 0;
 
+// Short-TTL cache for the first-run brain-prompt settings lookup.
+// Separate from _slowCache because we want a much shorter TTL (the
+// user enabling a provider should make the prompt vanish near-instant)
+// without changing the 30s default that other consumers rely on.
+const BRAIN_PROMPT_TTL_MS = 5000;
+let _settingsCache = null;
+async function getCachedSettings(userId) {
+  const now = Date.now();
+  if (_settingsCache
+      && _settingsCache.userId === userId
+      && _settingsCache.expiresAt > now) {
+    return _settingsCache.value;
+  }
+  const value = await fetchSettings(userId);
+  _settingsCache = { userId, value, expiresAt: now + BRAIN_PROMPT_TTL_MS };
+  return value;
+}
+
 /**
  * Wrap a fetch function so its result is memoized for SLOW_CACHE_TTL_MS.
  * The cache key combines the supplied id with the function's name, so
@@ -370,11 +388,15 @@ export async function renderDashboard(container, userId) {
   // Provider enablement matches settings.js: a provider is "enabled"
   // unless `enabled === false`, so existing rows without an explicit
   // field are treated as on (same convention the Settings UI uses).
+  // The result is memoized for 5s so the post-OAuth first-scan window
+  // (4s polling) doesn't fire /api/settings on every tick. Short
+  // enough that "user enables a provider in Settings, comes back" is
+  // perceived as instant; long enough to avoid the 4s storm.
   const decisionsFulfilled = decisions?.status === 'fulfilled';
   let showBrainPrompt = false;
   if (!tourMode && decisionsFulfilled && recentDecisions.length === 0) {
     try {
-      const settings = await fetchSettings(userId);
+      const settings = await getCachedSettings(userId);
       const aiProviders = Array.isArray(settings?.aiProviders) ? settings.aiProviders : [];
       const enabledProviderCount = aiProviders.filter((p) => p?.enabled !== false).length;
       showBrainPrompt = enabledProviderCount === 0;
