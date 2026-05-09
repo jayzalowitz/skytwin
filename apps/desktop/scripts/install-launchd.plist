@@ -19,9 +19,14 @@
     a path here without consulting #188.
 
   Log paths:
-    ~/.skytwin/logs/ must exist before launchd starts the daemon.
-    The SkyTwin installer (#188) creates this directory. If you are
-    running this plist manually, create the directory first:
+    /Users/Shared/.skytwin/logs/ (see StandardOutPath / StandardErrorPath
+    below) must exist before launchd starts the daemon. launchd plists
+    cannot expand `~` — the SkyTwin installer (#188) substitutes the
+    real per-user home directory at install time. If you are running
+    this plist manually, EITHER create the shared directory:
+      sudo mkdir -p /Users/Shared/.skytwin/logs && sudo chmod 1777 /Users/Shared/.skytwin/logs
+    OR edit the plist to point at your home dir:
+      sed -i '' "s|/Users/Shared/|$HOME/|g" install-launchd.plist
       mkdir -p ~/.skytwin/logs
 -->
 <plist version="1.0">
