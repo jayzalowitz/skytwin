@@ -1,5 +1,84 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [unreleased] — Real llama.cpp + whisper.cpp backends for embedded LLM (#187 partial)
+
+Replaces the `Null*Port` stubs in `@skytwin/embedded-llm` with real subprocess
+backends. PR #221 shipped the port interfaces and runtime detector; this PR
+ships the actual implementations that spawn the binaries and parse output.
+
+Validated end-to-end against `/opt/homebrew/bin/llama-cli` (Homebrew llama.cpp)
+and `/opt/homebrew/bin/whisper-cli` (Homebrew whisper.cpp) — confirmed real
+binary spawn, arg construction, exit-code handling, and stderr-tail
+propagation. With a bogus model path, the backend correctly surfaces
+`llama_model_load: error loading model` from the binary's stderr.
+
+### Ships
+
+- `packages/embedded-llm/src/llama-cpp-backend.ts` — `LlamaCppTextBackend`
+  implements `EmbeddedTextPort`, spawns `llama-cli` with
+  `-m <model> -p <prompt> -n <maxTokens> --temp <temp> --no-display-prompt
+  --no-warmup -no-cnv` (no-cnv suppresses the interactive REPL banner so
+  stdout contains only generated tokens). Strips `[end of text]`, `<|im_end|>`,
+  `<|endoftext|>`, `</s>` markers from output. Configurable `timeoutMs`
+  (default 120s) and `threads`. Exit code ≠ 0 → rejects with last 5 stderr
+  lines as the error message tail.
+- `packages/embedded-llm/src/whisper-cpp-backend.ts` — `WhisperCppSttBackend`
+  implements `EmbeddedSttPort`, writes audio buffer to a `mkdtemp`'d temp
+  directory, spawns `whisper-cli` with `-m <model> -f <audio> -oj -of <basename>
+  -np -nt`, reads `<basename>.json` and joins `transcription[].text` with
+  spaces. Cleans up the temp dir in a `finally` block (even on whisper-cli
+  failure). Optional `-l <lang>` and `-t <threads>`. `parseWhisperJson`
+  exported separately for test isolation.
+- `packages/embedded-llm/src/factory.ts` — `createEmbeddedTextPort()` and
+  `createEmbeddedSttPort()` pick real vs Null based on
+  `detectEmbeddedRuntimes()`. Model resolution order: explicit override →
+  `SKYTWIN_LLAMA_MODEL`/`SKYTWIN_WHISPER_MODEL` env var → first matching
+  file in detected `modelDir` (`*.gguf` for llama, `ggml-*.bin` for whisper)
+  → fall back to Null port.
+- `findFirstGgufModel()` and `findFirstWhisperModel()` — directory scan helpers
+  with safe error handling (returns null if dir missing, readdir throws, or
+  statSync fails on individual entries).
+- 36 new unit tests across `llama-cpp-backend.test.ts`,
+  `whisper-cpp-backend.test.ts`, and `factory.test.ts`. Mocks `node:child_process`
+  and `node:fs` so tests never spawn real binaries. Total package now: 58 tests.
+
+### Closes for #187
+
+- AC#1 runtime: real llama.cpp text generation (the binary spawn + parse layer).
+  Bundling the model file is a separate distribution concern.
+- AC#3 runtime: real whisper.cpp transcription. Voice integration in mobile/desktop
+  consumes this via `createEmbeddedSttPort()`.
+
+### Still open for #187
+
+- AC#1 bundling: shipping a default GGUF in installer payload (separate distribution
+  concern; runtime accepts any GGUF via env var or model dir).
+- AC#2: background download with pause/resume UI (model downloader app work).
+- AC#4: Piper TTS — `piper` binary not installed locally; `NullEmbeddedTtsPort`
+  remains the production fallback until `brew install piper` (or equivalent)
+  lands. Real `PiperTtsBackend` will mirror the spawn pattern of these two.
+- AC#5: auto-upgrade model registry (model registry / version-check work).
+- AC#6/7/8: UI mode switch + prompt-eval parity + cost dashboard zero-cost
+  display.
+
+### How to use
+
+```ts
+import { createEmbeddedTextPort } from '@skytwin/embedded-llm';
+
+const port = await createEmbeddedTextPort();
+if (port.capabilities.available) {
+  const text = await port.generate('Summarize this email: ...', {
+    maxTokens: 256,
+    temperature: 0.3,
+  });
+}
+// Else: fall back to API-keyed providers via @skytwin/llm-client.
+```
+
+Set `SKYTWIN_LLAMACPP_BIN=/path/to/llama-cli` and `SKYTWIN_LLAMA_MODEL=/path/to/model.gguf`
+(or `SKYTWIN_LLAMA_MODELS=/dir/with/models/`) to pin a specific binary/model.
+
 ## [unreleased] — GitHub Releases auto-update channel + workflow (#188 follow-up)
 
 Closes the real auto-update channel for #188. #223 shipped the scaffold with
