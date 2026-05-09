@@ -1,5 +1,35 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [unreleased] — Turnkey distribution config (#188 partial)
+
+Scaffolds the electron-builder signing configuration, build orchestration
+scripts, and auto-update wiring needed for a signed installer release. All
+credentials are env-var-driven — no certificate material appears in the
+codebase. Unsigned builds continue to work exactly as before; signing
+activates only when `SKYTWIN_SIGN_RELEASE=true` and the required env vars
+are present.
+
+### Ships
+
+- electron-builder config: minimal mac/win/linux targets. No env-interpolation
+  in build config (those failed CI schema validation when env vars were unset).
+- `apps/desktop/scripts/sign-and-notarize.ts` — orchestration helper validating
+  required env vars when `SKYTWIN_SIGN_RELEASE='true'`.
+- `apps/desktop/src/auto-update.ts` — `AutoUpdateController` with injectable
+  `UpdateBackend`. `NoopUpdateBackend` default; real `ElectronUpdaterBackend`
+  lands when E2E confirms.
+- `apps/desktop/scripts/build-single-binary.sh` — bundles api+worker+web into
+  `apps/desktop/dist/embedded/`.
+- 17 unit tests for `AutoUpdateController`.
+
+### Out of scope (deferred)
+
+- Real signing certificates — env-var only; certs flow via CI secret storage
+- Real CDN URL — env-var only
+- Real `ElectronUpdaterBackend` implementation — needs E2E
+- SQLite-vec embed — v1.1 per #197
+- Auto-update CI workflow — separate ops PR
+
 ## [unreleased] — Mobile Capabilities + Briefing screens (#179 partial)
 
 Read-only mobile UX for Capabilities + Briefing. Voice STT/TTS, push
@@ -60,9 +90,8 @@ returning the new server ID.
 - **`GET /api/dxt/imports`** — lists all imports for the user, newest first.
   No blob bytes in response. Supports `?status=` filter.
 - **Web page `apps/web/public/js/pages/dxt-imports.js`** — route `#/dxt/imports`,
-  singleton delegator (`_dxtImportsListenerWired` guard, hash-route gated),
-  pending review list with expand-to-review + Install / Reject buttons, history
-  with status badges. Wired into `app.js`.
+  singleton delegator, pending review list with expand-to-review + Install /
+  Reject buttons, history with status badges. Wired into `app.js`.
 - **14 new tests** — 9 in `dxt-import-confirm-flow.test.ts` (API layer) +
   5 in `dxt-import-repository.test.ts` (db layer).
 

@@ -1,7 +1,7 @@
 {
   "name": "@skytwin/desktop",
   "version": "0.3.0",
-  "description": "SkyTwin Desktop — Your personal AI assistant",
+  "description": "SkyTwin Desktop \u2014 Your personal AI assistant",
   "author": {
     "name": "Jay Zalowitz",
     "email": "jay@skytwin.dev"
@@ -17,7 +17,9 @@
     "package:mac": "tsc && electron-builder --mac",
     "package:win": "tsc && electron-builder --win",
     "package:linux": "tsc && electron-builder --linux",
-    "package:all": "tsc && electron-builder --mac --win --linux"
+    "package:all": "tsc && electron-builder --mac --win --linux",
+    "package:signed": "tsc && npx ts-node scripts/sign-and-notarize.ts -- --mac --win --linux",
+    "build:single-binary": "bash scripts/build-single-binary.sh"
   },
   "build": {
     "appId": "com.skytwin.desktop",
@@ -26,12 +28,17 @@
       "output": "dist-electron"
     },
     "mac": {
-      "target": ["dmg", "zip"],
+      "target": [
+        "dmg",
+        "zip"
+      ],
       "category": "public.app-category.productivity",
       "icon": "assets/icon.icns"
     },
     "win": {
-      "target": ["nsis"],
+      "target": [
+        "nsis"
+      ],
       "icon": "assets/icon.ico"
     },
     "nsis": {
@@ -42,7 +49,11 @@
       "shortcutName": "SkyTwin"
     },
     "linux": {
-      "target": ["AppImage", "deb", "rpm"],
+      "target": [
+        "AppImage",
+        "deb",
+        "rpm"
+      ],
       "category": "Utility",
       "icon": "assets/icons",
       "desktop": {
@@ -62,7 +73,10 @@
       {
         "from": "../../packages",
         "to": "packages",
-        "filter": ["**/dist/**", "**/package.json"]
+        "filter": [
+          "**/dist/**",
+          "**/package.json"
+        ]
       },
       {
         "from": "../../apps/api/dist",
@@ -75,6 +89,13 @@
       {
         "from": "../../apps/web/public",
         "to": "web"
+      },
+      {
+        "from": "dist/embedded",
+        "to": "embedded",
+        "filter": [
+          "**/*"
+        ]
       }
     ]
   },
