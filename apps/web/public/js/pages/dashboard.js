@@ -250,11 +250,15 @@ function renderBrainPrompt() {
         <span class="card-title">Your twin needs a brain to start</span>
       </div>
       <div class="card-subtitle" style="margin-bottom: 0.75rem; line-height: 1.5;">
-        SkyTwin runs <strong>locally on your machine</strong> — no API keys, no per-message cost, your data never leaves the device. Pick up a free model in 5 minutes, or bring your own paid provider if you'd rather.
+        Pick how your twin thinks. Either path takes about 5 minutes from Settings.
       </div>
-      <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+      <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.75rem;">
         <a href="#/settings" class="btn btn-primary btn-sm">Set up the local brain</a>
         <a href="#/settings" class="btn btn-outline btn-sm">Or bring your own API key</a>
+      </div>
+      <div style="font-size: 0.8rem; color: var(--text-muted); line-height: 1.5;">
+        <strong>Local brain</strong> — runs on your machine, no API keys, no per-message cost, your data never leaves the device.<br>
+        <strong>API key</strong> — uses Anthropic / OpenAI / Google. Faster on a small laptop, but each message goes to that provider.
       </div>
     </div>
   `;
@@ -295,7 +299,11 @@ export async function renderDashboard(container, userId) {
     fetchBriefing(userId),
     fetchLatestTwinBriefing(userId, 'daily').catch(() => null),
     slowFetch(`lifebooks-${userId}`, fetchLifebooks, [userId]),
-    slowFetch(`settings-${userId}`, fetchSettings, [userId]),
+    // Not slow-cached: a user enabling their first AI provider in
+    // Settings should make the first-run prompt go away on the next
+    // dashboard render, not 30s later. The endpoint is small and
+    // only relevant on first-run renders anyway.
+    fetchSettings(userId),
   ]);
 
   const healthOk = health.status === 'fulfilled';
@@ -359,14 +367,25 @@ export async function renderDashboard(container, userId) {
 
   const tourMode = (() => { try { return localStorage.getItem(KEY_TOUR_MODE) === '1'; } catch { return false; } })();
 
+  // Only show the prompt when we have positive evidence the user is
+  // in the first-run state. If either fetch failed, we don't know
+  // their provider count or decision count — falling back to "show
+  // the prompt" would surface it during transient API errors and
+  // for users who actually have providers but hit a blip.
   // Skip in tour mode — seeded demo user has providers pre-configured.
-  const aiProviders = settingsData?.status === 'fulfilled'
+  const settingsFulfilled = settingsData?.status === 'fulfilled';
+  const decisionsFulfilled = decisions?.status === 'fulfilled';
+  const aiProviders = settingsFulfilled
     ? (settingsData.value?.aiProviders ?? [])
     : [];
   const enabledProviderCount = Array.isArray(aiProviders)
     ? aiProviders.filter((p) => p?.enabled).length
     : 0;
-  const showBrainPrompt = !tourMode && enabledProviderCount === 0 && recentDecisions.length === 0;
+  const showBrainPrompt = !tourMode
+    && settingsFulfilled
+    && decisionsFulfilled
+    && enabledProviderCount === 0
+    && recentDecisions.length === 0;
 
   // "While you were away" — count anything new since the last visit so the
   // user feels like the twin has been working for them, not just sitting
