@@ -1,5 +1,10 @@
 import { fetchUser, updateTrustTier, fetchOAuthStatus, getGoogleAuthUrl, disconnectProvider, escapeHtml, fetchSettings, updateAutonomySettings, updateIronClawChannel, upsertDomainPolicy, deleteDomainPolicy, createEscalationTrigger, deleteEscalationTrigger, createSession, fetchSessions, revokeSession, saveAIProviders, testAIProvider, fetchRoutines, deleteRoutine, startFederationPairing, completeFederationPairing, listFederationPeers, unpairFederationPeer } from '../api-client.js';
 import { mountThemeSwitcher } from '../theme-switcher.js';
+import {
+  getTextScale, setTextScale,
+  getReducedMotion, setReducedMotion,
+  isVoiceFirstEnabled, setVoiceFirst,
+} from '../a11y.js';
 import { showSavedToast, showErrorToast } from '../toast.js';
 import { KEY_USER_ID, KEY_ONBOARDED, KEY_SESSION_TOKEN } from '../storage-keys.js';
 
@@ -107,6 +112,50 @@ export async function renderSettings(container, userId) {
         Pick how the dashboard looks. Changes apply immediately.
       </div>
       <div id="theme-switcher-target"></div>
+    </div>
+
+    <div class="card" id="a11y-settings-card">
+      <div class="card-header">
+        <span class="card-title">Accessibility</span>
+      </div>
+      <div class="card-subtitle" style="margin-bottom: 1rem;">
+        Make the interface easier on your eyes, ears, and motor skills.
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 1rem;">
+        <div>
+          <label for="a11y-text-scale" style="display: block; font-weight: 500; margin-bottom: 0.25rem;">Text size</label>
+          <div style="display: flex; gap: 0.5rem; align-items: center;">
+            <select class="form-input" id="a11y-text-scale" style="flex: 1;" data-action="a11y-set-text-scale">
+              <option value="100">Default</option>
+              <option value="125">Larger (125%)</option>
+              <option value="150">Much larger (150%)</option>
+              <option value="200">Maximum (200%)</option>
+            </select>
+          </div>
+          <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem;">All text reflows at the new size. Layouts adapt.</div>
+        </div>
+
+        <div>
+          <label for="a11y-reduced-motion" style="display: block; font-weight: 500; margin-bottom: 0.25rem;">Animations</label>
+          <select class="form-input" id="a11y-reduced-motion" data-action="a11y-set-reduced-motion">
+            <option value="auto">Match system preference</option>
+            <option value="off">Show animations</option>
+            <option value="on">Reduce motion</option>
+          </select>
+          <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem;">"Reduce motion" stops transitions and scroll animations site-wide.</div>
+        </div>
+
+        <div style="display: flex; align-items: center; justify-content: space-between; padding: 0.5rem 0.75rem; background: var(--bg); border-radius: var(--radius-sm);">
+          <div>
+            <div style="font-weight: 500;">Voice-first mode</div>
+            <div style="font-size: 0.75rem; color: var(--text-muted);">Show microphone affordances throughout the app. Uses your local Whisper model when available.</div>
+          </div>
+          <label class="toggle-switch">
+            <input type="checkbox" id="a11y-voice-first" data-action="a11y-toggle-voice-first">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
     </div>
 
     <div class="card">
@@ -446,6 +495,16 @@ export async function renderSettings(container, userId) {
       peerListEl.innerHTML = '<div style="color: var(--text-muted); font-size: 0.85rem;">No linked devices yet.</div>';
     });
   }
+
+  // Hydrate the a11y controls from localStorage (#194 Child 4). These
+  // values are already applied to <html> by initA11y at boot — the
+  // selects + checkbox here just reflect the persisted state.
+  const textScaleSel = document.getElementById('a11y-text-scale');
+  if (textScaleSel instanceof HTMLSelectElement) textScaleSel.value = getTextScale();
+  const reducedMotionSel = document.getElementById('a11y-reduced-motion');
+  if (reducedMotionSel instanceof HTMLSelectElement) reducedMotionSel.value = getReducedMotion();
+  const voiceFirstCb = document.getElementById('a11y-voice-first');
+  if (voiceFirstCb instanceof HTMLInputElement) voiceFirstCb.checked = isVoiceFirstEnabled();
 }
 
 function renderFederationPeerList(peers) {
@@ -584,6 +643,18 @@ function ensureSettingsListener() {
     if (!(target instanceof HTMLInputElement) && !(target instanceof HTMLSelectElement)) return;
     const action = target.getAttribute('data-action');
     if (!action) return;
+    // Accessibility selects fire on `change` and don't live in an
+    // ai-provider-card, so handle them before the AI-card guard below.
+    if (action === 'a11y-set-text-scale' && target instanceof HTMLSelectElement) {
+      setTextScale(target.value);
+      showSavedToast('Text size updated');
+      return;
+    }
+    if (action === 'a11y-set-reduced-motion' && target instanceof HTMLSelectElement) {
+      setReducedMotion(target.value);
+      showSavedToast('Animation preference updated');
+      return;
+    }
     const card = target.closest('[data-region="ai-provider-card"]');
     if (!card) return;
     const idx = parseInt(card.getAttribute('data-idx') || '', 10);
@@ -746,6 +817,13 @@ function ensureSettingsListener() {
             checkbox.checked = !enabled;
             showErrorToast(`Couldn\'t save: ${err?.message || 'unknown error'}`);
           });
+        return;
+      }
+      case 'a11y-toggle-voice-first': {
+        const checkbox = el;
+        if (!(checkbox instanceof HTMLInputElement)) return;
+        setVoiceFirst(checkbox.checked);
+        showSavedToast(checkbox.checked ? 'Voice-first on' : 'Voice-first off');
         return;
       }
       case 'ai-test-provider': {

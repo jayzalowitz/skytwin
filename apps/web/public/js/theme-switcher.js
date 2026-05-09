@@ -28,6 +28,12 @@ const VARIANTS = [
     desc: 'Glass-morphism, violet/teal gradients',
     swatch: 'swatch-wg-dark',
   },
+  {
+    id: 'high-contrast',
+    name: 'High Contrast',
+    desc: 'Maximum readability — pure black/white, bold accents',
+    swatch: 'swatch-hc-dark',
+  },
 ];
 
 function getCurrentVariant() {

@@ -19,6 +19,7 @@
     "@skytwin/db": "workspace:*",
     "@skytwin/decision-engine": "workspace:*",
     "@skytwin/dxt": "workspace:*",
+    "@skytwin/embedded-llm": "workspace:*",
     "@skytwin/execution-router": "workspace:*",
     "@skytwin/explanations": "workspace:*",
     "@skytwin/ironclaw-adapter": "workspace:*",
