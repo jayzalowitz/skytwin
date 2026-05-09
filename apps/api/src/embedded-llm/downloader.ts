@@ -39,13 +39,25 @@ export function resolveModelDir(): string {
  * Compute the absolute target path for a registry model. The basename
  * is `<modelId>.gguf`. We never use the registry's URL filename — that
  * could be anything (or could change over time without our control).
+ *
+ * Final paths are *not* namespaced by user — the GGUF is content-
+ * addressable (we verify SHA-256 before rename), so two users on the
+ * same host downloading the same model land identical bytes at the
+ * same path. The race-prone bit is the in-flight `.partial`, which
+ * `partialPathFor()` namespaces by download row id below.
  */
 export function targetPathFor(modelId: string): string {
   return join(resolveModelDir(), `${modelId}.gguf`);
 }
 
-function partialPathFor(targetPath: string): string {
-  return `${targetPath}.partial`;
+/**
+ * In-flight downloads write to a per-row partial so concurrent downloads
+ * of the same model by different users (or even the same user across
+ * cancel/retry cycles) can't corrupt each other's stream. After verify,
+ * we atomically rename to the shared final path.
+ */
+function partialPathFor(targetPath: string, downloadId: string): string {
+  return `${targetPath}.${downloadId}.partial`;
 }
 
 /**
@@ -185,7 +197,7 @@ export async function cancelDownload(downloadId: string): Promise<boolean> {
     inFlight.delete(downloadId);
   }
 
-  const partial = partialPathFor(row.target_path);
+  const partial = partialPathFor(row.target_path, downloadId);
   if (existsSync(partial)) {
     try {
       unlinkSync(partial);
@@ -217,7 +229,19 @@ async function runDownload(download: ModelDownloadRow): Promise<void> {
     return;
   }
 
-  const partialPath = partialPathFor(download.target_path);
+  // Pause/cancel can fire between startDownload() returning the row
+  // and runDownload() picking up the async kickoff. The DB is the
+  // source of truth for that intent — re-fetch and bail if the user
+  // already changed their mind. Without this, a quick pause-on-pending
+  // would be silently overwritten back to 'downloading'.
+  const current = await modelDownloadRepository.findById(download.id);
+  if (!current) return; // row was deleted somehow
+  if (current.status === 'paused' || current.status === 'cancelled'
+      || current.status === 'complete' || current.status === 'failed') {
+    return;
+  }
+
+  const partialPath = partialPathFor(download.target_path, download.id);
   // Only resume from the partial if THIS row had progress recorded.
   // A fresh row (bytes_downloaded === 0) finding a partial on disk
   // means the previous attempt didn't clean up — e.g., a cancel that
