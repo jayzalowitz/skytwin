@@ -1,5 +1,46 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [unreleased] — Desktop idle bridge via Electron powerMonitor (#180 partial)
+
+Closes one of the four "desktop integration" sub-asks of #180: a real
+OS-level idle bridge in the Electron main process. Wires Electron's
+`powerMonitor` (lock-screen, unlock-screen, suspend, resume + a polled
+`getSystemIdleTime()` check) into a single `onStateChange(state, reason)`
+callback that the renderer subscribes to via the `skytwinDesktop` preload
+API. This gives the web dashboard a real signal it can use to fire a
+proactive scan when the user steps away — not a `setInterval` heartbeat
+that fires whether the user is at the keyboard or not.
+
+### Ships
+
+- `apps/desktop/src/idle-bridge.ts` — `IdleBridge` class. Listens to
+  `powerMonitor.on('lock-screen' | 'unlock-screen' | 'suspend' | 'resume')`
+  and runs a polled `getSystemIdleTime()` check at a configurable interval
+  (default 30s) against a configurable threshold (default 300s = 5min).
+  Internal state machine debounces transitions so the callback fires
+  exactly once per idle ↔ active flip — no flapping at the threshold.
+  Handler exceptions are isolated so a renderer crash can't tear down
+  the bridge.
+- `apps/desktop/src/main.ts` — constructs `IdleBridge` after services
+  start, wires it to `mainWindow.webContents.send('idle-state-changed', ...)`,
+  and stops it on `before-quit`.
+- `apps/desktop/src/preload.ts` — exposes `skytwinDesktop.onIdleStateChanged(listener)`
+  via contextBridge. Returns an unsubscribe function.
+- `apps/desktop/src/__tests__/idle-bridge.test.ts` — 13 unit tests
+  covering threshold transitions, debouncing, lock/unlock, suspend/resume,
+  same-state no-op, handler isolation, idempotent start/stop, listener
+  cleanup on stop, and the no-op fallback when powerMonitor is absent.
+  Injectable `PowerMonitorLike` fake — tests never touch real Electron.
+
+### Why this is distinct from `@skytwin/idle-miner.ElectronIdleDetector`
+
+The existing detector lives inside the worker package and powers
+filesystem mining at idle. The desktop "idle bridge" is the renderer-facing
+integration — it surfaces the same OS signal to the web dashboard via
+IPC so consumers can fire proactive scans, pause expensive work when
+the screen locks, etc. Both read `powerMonitor` independently with
+their own debouncing and thresholds tuned to their use cases.
+
 ## [unreleased] — Real llama.cpp + whisper.cpp backends for embedded LLM (#187 partial)
 
 Replaces the `Null*Port` stubs in `@skytwin/embedded-llm` with real subprocess
