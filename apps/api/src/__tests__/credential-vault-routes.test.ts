@@ -498,6 +498,59 @@ describe('POST /api/credential-vault/rotate', () => {
     expect(mockKeyCache.set).toHaveBeenCalledWith(USER_ID, expect.any(Buffer));
   });
 
+  it('rotates access-only rows (no refresh token) without skipping them', async () => {
+    const { encrypt: rEncrypt } = await import('@skytwin/credential-vault');
+    const passphrase = 'correct-current-passphrase-xyz';
+    const meta = await buildMetaRow(passphrase);
+    const { passphrase_salt } = meta;
+    const { deriveKey: realDeriveKey } = await import('@skytwin/credential-vault');
+    const oldKey = await realDeriveKey(passphrase, passphrase_salt);
+    const atResult = rEncrypt('access-only-token', oldKey);
+    const packedAt = Buffer.concat([atResult.iv, atResult.tag, atResult.ciphertext]);
+
+    const accessOnlyRow = {
+      id: 'access-only-row',
+      user_id: USER_ID,
+      provider: 'github',
+      account_email: 'test@example.com',
+      account_provider_id: null,
+      access_token: null,
+      refresh_token: null,
+      expires_at: new Date(),
+      scopes: ['repo'],
+      created_at: new Date(),
+      updated_at: new Date(),
+      encrypted_access_token: packedAt,
+      encrypted_refresh_token: null, // <-- the case Copilot caught
+      encryption_iv: null,
+      encryption_tag: null,
+      encryption_key_version: 1,
+    };
+
+    mockVaultMetaRepo.getForUser.mockResolvedValueOnce(meta);
+    mockOAuthRepo.listEncryptedForUser.mockResolvedValueOnce([accessOnlyRow]);
+    mockOAuthRepo.rotateEncrypted.mockResolvedValueOnce(undefined);
+    mockVaultMetaRepo.rotatePassphrase.mockResolvedValueOnce(2);
+
+    const res = await req(buildApp(), 'POST', '/api/credential-vault/rotate', {
+      currentPassphrase: passphrase,
+      newPassphrase: 'new-valid-passphrase-here',
+    });
+
+    expect(res.status).toBe(200);
+    const body = res.body as Record<string, unknown>;
+    expect(body['tokensReencrypted']).toBe(1);
+    // rotateEncrypted called with encryptedRefreshToken === null (not skipped)
+    expect(mockOAuthRepo.rotateEncrypted).toHaveBeenCalledWith(
+      'access-only-row',
+      expect.objectContaining({
+        encryptedAccessToken: expect.any(Buffer),
+        encryptedRefreshToken: null,
+      }),
+      expect.anything(),
+    );
+  });
+
   it('returns 500 and rolls back when re-encryption throws mid-transaction', async () => {
     const passphrase = 'correct-current-passphrase-xyz';
     const meta = await buildMetaRow(passphrase);
