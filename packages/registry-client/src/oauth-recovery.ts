@@ -52,12 +52,13 @@ export async function recoverOAuthFlow(opts: {
   if (!opts.llmClient) return null;
 
   try {
+    // Map to the snake_case keys the prompt template expects.
+    // Template: {{failure_trace}} {{server_auth_metadata}}
     const result = await runPrompt<OAuthRecoveryLlmOutput>({
       promptName: 'oauth-recovery',
       inputs: {
-        registryId: opts.registryId,
-        failureTrace: opts.failureTrace,
-        authMetadata: opts.authMetadata ?? null,
+        failure_trace: opts.failureTrace,
+        server_auth_metadata: opts.authMetadata ?? null,
       },
       user: { userId: 'system' },
       llmClient: opts.llmClient,

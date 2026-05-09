@@ -146,13 +146,31 @@ async function judgePromotion(opts: {
     return deterministicPromotion(opts.currentTier, opts.approvalStats);
   }
 
+  // Map our internal camelCase fields to the snake_case keys the prompt
+  // template expects ({{current_tier}}, {{target_tier}}, {{risk_profile}},
+  // {{feedback_history}}, {{decision_summary}}). Without this mapping the
+  // template renders literal `{{current_tier}}` placeholders, the LLM
+  // returns garbage, schema validation fails, and we silently fall back
+  // to deterministic — meaning the adaptive judgment never actually ran.
+  const next = nextTier(opts.currentTier);
+  const stats = opts.approvalStats;
+  const totalDecisions = stats.totalApprovals + stats.totalRejections;
+  const decisionSummary =
+    `${totalDecisions} total decisions, ${stats.approvalRatio.toFixed(2)} approval ratio, ` +
+    `${stats.consecutiveApprovals} consecutive approvals`;
+  const feedbackHistory =
+    `recent rejections: ${stats.recentRejections}; ` +
+    `total undos: ${stats.totalUndos}; ` +
+    `critical undo present: ${stats.hasCriticalUndo}`;
   try {
     const result = await runPrompt<TierPromotionLlmOutput>({
       promptName: 'tier-promotion-judgment',
       inputs: {
-        currentTier: opts.currentTier,
-        approvalStats: opts.approvalStats,
-        riskProfile: opts.riskProfileText ?? '',
+        current_tier: opts.currentTier,
+        target_tier: next ?? opts.currentTier,
+        risk_profile: opts.riskProfileText ?? '',
+        feedback_history: feedbackHistory,
+        decision_summary: decisionSummary,
       },
       user: { userId: opts.userId },
       llmClient: opts.llmClient,
@@ -163,7 +181,6 @@ async function judgePromotion(opts: {
     }
 
     const output = result.output;
-    const next = nextTier(opts.currentTier);
 
     return {
       shouldPromote: output.recommend_promote,

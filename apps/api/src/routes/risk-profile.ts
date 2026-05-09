@@ -46,9 +46,10 @@ async function interpretProfileText(
   if (!llmClient || !profileText.trim()) return {};
 
   try {
+    // Template expects {{risk_profile_text}}, not {{profileText}}.
     const result = await runPrompt<RiskProfileInterpretationOutput>({
       promptName: 'risk-profile-interpretation',
-      inputs: { profileText },
+      inputs: { risk_profile_text: profileText },
       user: { userId },
       llmClient,
     });

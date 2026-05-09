@@ -213,8 +213,13 @@ async function generateBriefingProse(
   // ── Adaptive path (H: briefing-prose) ─────────────────────────────────
   if (llmClient) {
     try {
-      const briefingData = {
-        cadence,
+      // Map our internal cadence/structured data to the snake_case keys the
+      // template expects ({{date}}, {{events}}, {{language}}, {{pending_tasks}},
+      // {{risk_profile}}). Previously this passed an object whose keys
+      // shared no name with the template — every placeholder rendered
+      // literally, the LLM returned garbage, schema validation failed,
+      // and the deterministic fallback ran every time.
+      const events = {
         activeCapabilities: data.active.slice(0, 20).map((s) => ({
           name: s.display_name,
           trustTier: s.trust_tier,
@@ -235,23 +240,31 @@ async function generateBriefingProse(
           name: s.display_name,
           status: s.status,
         })),
-        suggestions: data.suggestions.slice(0, 5).map((s) => ({
-          name: s.display_name,
-          reason: s.reason_summary ?? '',
-        })),
+        cadence,
         sourceEventCount,
       };
+      const pendingTasks = data.suggestions.slice(0, 5).map((s) => ({
+        name: s.display_name,
+        reason: s.reason_summary ?? '',
+      }));
 
-      const result = await runPrompt<{ prose: string }>({
+      // Output type matches the prompt's documented schema: { briefing: string }.
+      const result = await runPrompt<{ briefing: string; highlight_count?: number }>({
         promptName: 'briefing-prose',
-        inputs: briefingData,
+        inputs: {
+          date: new Date().toISOString().slice(0, 10),
+          events,
+          language: 'en',
+          pending_tasks: pendingTasks,
+          risk_profile: '',
+        },
         user: { userId },
         llmClient,
       });
 
-      if (!result.fellBackToDeterministic && typeof result.output?.prose === 'string' && result.output.prose.trim()) {
+      if (!result.fellBackToDeterministic && typeof result.output?.briefing === 'string' && result.output.briefing.trim()) {
         return {
-          prose: result.output.prose,
+          prose: result.output.briefing,
           sourceEventCount,
           llmProvider: result.modelUsed,
         };

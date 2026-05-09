@@ -195,7 +195,9 @@ export function createOnboardingRouter(): Router {
 
       const body = req.body as DialogueBody | undefined;
       const history: DialogueTurn[] = Array.isArray(body?.history) ? body.history : [];
-      const context = body?.context;
+      // body?.context is no longer threaded into the prompt — the
+      // onboarding-dialogue template doesn't read it. Kept on the request
+      // shape for future extension but intentionally unused.
 
       const llmClient = getLlmClientFromConfig();
 
@@ -206,15 +208,16 @@ export function createOnboardingRouter(): Router {
             .map((t) => `${t.role === 'user' ? 'User' : 'Assistant'}: ${t.content}`)
             .join('\n');
 
+          // Template inputs: {{previous_turns}}, {{goal}}, {{language}},
+          // {{risk_profile}}. Drop the redundant `history` alias and the
+          // `current_capabilities` key the template doesn't use.
           const result = await runPrompt<{ type: string; text?: string; recipeSlug?: string; recommendedRegistryIds?: string[]; summary?: string }>({
             promptName: 'onboarding-dialogue',
             inputs: {
-              history: previousTurns,
               previous_turns: previousTurns,
               goal: history.length < 3 ? 'gather_context' : 'finalize',
               language: 'en',
               risk_profile: '',
-              current_capabilities: JSON.stringify(context?.current_capabilities ?? []),
             },
             user: { userId },
             llmClient,

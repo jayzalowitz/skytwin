@@ -830,15 +830,42 @@ export function createCapabilitiesRouter(): Router {
             category: e.category,
           }));
 
-          const result = await runPrompt<CapabilityRecipe[]>({
+          // Template expects {{registry}}, {{detected_services}}, {{risk_profile}}.
+          // Output type is a list of {registryId, name, reason,
+          // estimatedValueScore, riskLevel} — NOT CapabilityRecipe; we
+          // transform below before returning.
+          interface RecipeRecOutput {
+            registryId: string;
+            name: string;
+            reason: string;
+            estimatedValueScore: number;
+            riskLevel: 'low' | 'medium' | 'high';
+          }
+          const result = await runPrompt<RecipeRecOutput[]>({
             promptName: 'recipe-recommendation',
-            inputs: { registrySummary },
+            inputs: {
+              registry: registrySummary,
+              detected_services: [],
+              risk_profile: '',
+            },
             user: { userId },
             llmClient,
           });
 
           if (!result.fellBackToDeterministic && Array.isArray(result.output) && result.output.length > 0) {
-            return res.json({ recipes: result.output });
+            // Synthesize a single recipe from the LLM's ordered registry list.
+            // CapabilityRecipe (local-defined above) is the API response shape;
+            // it doesn't have a slot for per-item rationale, so we fold the
+            // reasons into the description and order the registryIds by the
+            // LLM's priority.
+            const recipe: CapabilityRecipe = {
+              slug: 'llm-recommended',
+              displayName: 'Recommended for you',
+              description: result.output.map((r) => `${r.name}: ${r.reason}`).join('\n'),
+              registryIds: result.output.map((r) => r.registryId),
+              category: 'productivity',
+            };
+            return res.json({ recipes: [recipe] });
           }
         } catch (err) {
           log.warn('recipe-recommendation prompt failed, using hardcoded fallback', {
@@ -888,13 +915,19 @@ export function createCapabilitiesRouter(): Router {
       const llmClient = getLlmClientFromConfig();
       if (llmClient) {
         try {
+          // Template expects {{user_message}}, {{installed_capabilities}},
+          // {{risk_profile}}.
           const result = await runPrompt<{
             action: string;
             candidate_capabilities: string[];
             confidence: number;
           }>({
             promptName: 'reverse-capability-intent',
-            inputs: { userMessage: body.userMessage, installedRegistryIds },
+            inputs: {
+              user_message: body.userMessage,
+              installed_capabilities: installedRegistryIds,
+              risk_profile: '',
+            },
             user: { userId },
             llmClient,
           });
