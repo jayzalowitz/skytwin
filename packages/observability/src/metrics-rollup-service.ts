@@ -104,7 +104,10 @@ function aggregateRecords(records: ToolCallRecord[]): {
 } {
   const total = records.length;
   const failed = records.filter((r) => !r.success).length;
-  const spendCents = records.reduce((sum, r) => sum + r.spendCents, 0);
+  // Treat undefined as "unattributed" — sum only known costs. This was
+  // implicitly NaN when callers omitted spendCents and the field became
+  // optional; explicit ?? 0 makes the intent clear.
+  const spendCents = records.reduce((sum, r) => sum + (r.spendCents ?? 0), 0);
 
   const latencies = records.map((r) => r.latencyMs).sort((a, b) => a - b);
 

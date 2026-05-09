@@ -45,7 +45,18 @@ export interface SparklinePoint {
 export const mcpServerMetricsRepository = {
   /**
    * Upsert a metrics bucket.
+   *
    * ON CONFLICT updates aggregate columns; existing rows accumulate counts.
+   *
+   * Percentile fields use GREATEST(existing, new) rather than overwrite —
+   * exact percentile merging across rollups would need stored samples or
+   * t-digest sketches; until that lands, taking the max preserves "we
+   * observed at least this latency in this bucket", which is monotone and
+   * deterministic across rollup orderings (the previous "overwrite" was
+   * order-dependent across multi-process rollups).
+   *
+   * COALESCE handles the case where one side has NULL (no latency samples
+   * in that rollup batch) — without it, GREATEST(x, NULL) returns NULL.
    */
   async writeBucket(input: WriteBucketInput): Promise<void> {
     await query(
@@ -59,9 +70,9 @@ export const mcpServerMetricsRepository = {
        DO UPDATE SET
          invocations_total  = mcp_server_metrics.invocations_total  + EXCLUDED.invocations_total,
          invocations_failed = mcp_server_metrics.invocations_failed + EXCLUDED.invocations_failed,
-         latency_p50_ms     = EXCLUDED.latency_p50_ms,
-         latency_p95_ms     = EXCLUDED.latency_p95_ms,
-         latency_p99_ms     = EXCLUDED.latency_p99_ms,
+         latency_p50_ms     = GREATEST(COALESCE(mcp_server_metrics.latency_p50_ms, 0), COALESCE(EXCLUDED.latency_p50_ms, 0)),
+         latency_p95_ms     = GREATEST(COALESCE(mcp_server_metrics.latency_p95_ms, 0), COALESCE(EXCLUDED.latency_p95_ms, 0)),
+         latency_p99_ms     = GREATEST(COALESCE(mcp_server_metrics.latency_p99_ms, 0), COALESCE(EXCLUDED.latency_p99_ms, 0)),
          bytes_in           = mcp_server_metrics.bytes_in  + EXCLUDED.bytes_in,
          bytes_out          = mcp_server_metrics.bytes_out + EXCLUDED.bytes_out,
          spend_cents        = mcp_server_metrics.spend_cents + EXCLUDED.spend_cents`,

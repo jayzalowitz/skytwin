@@ -23,7 +23,11 @@ export interface ToolCallRecord {
   skillName: string;
   latencyMs: number;
   success: boolean;
-  spendCents: number;
+  /**
+   * Cost in cents. Undefined when unattributable — the rollup treats
+   * undefined and 0 differently; see metrics-rollup-service.ts.
+   */
+  spendCents?: number;
   ts: Date;
 }
 

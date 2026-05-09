@@ -37,7 +37,8 @@ import { createCredentialVaultRouter } from './routes/credential-vault.js';
 import { createDxtRouter } from './routes/dxt.js';
 import { getExecutionRouter } from './execution-setup.js';
 import { startMdnsAdvertisement, stopMdnsAdvertisement } from './mdns.js';
-import { closePool } from '@skytwin/db';
+import { closePool, mcpServerMetricsRepository } from '@skytwin/db';
+import { MetricsRollupService, sharedMetricsCollector } from '@skytwin/observability';
 
 const config = loadConfig();
 
@@ -243,6 +244,31 @@ const server = app.listen(port, () => {
   }
 });
 
+// In-process metrics rollup (gated by METRICS_ROLLUP_ENABLED).
+//
+// The MCP host's onToolCall hook records into sharedMetricsCollector in the
+// API process — but the singleton is per-process, so the worker's existing
+// rollup job drains its own (empty) buffer. Without this interval the
+// API-recorded tool-call metrics never reach the DB. The repository's
+// writeBucket upserts on (server_id, bucket_started_at, bucket_duration),
+// so a separate API-side rollup safely accumulates with the worker's
+// rollup of any worker-initiated tool calls.
+let metricsRollupTimer: NodeJS.Timeout | null = null;
+const METRICS_ROLLUP_INTERVAL_MS = 60_000;
+if (process.env['METRICS_ROLLUP_ENABLED'] !== 'false') {
+  const rollupSvc = new MetricsRollupService(sharedMetricsCollector, mcpServerMetricsRepository);
+  metricsRollupTimer = setInterval(() => {
+    rollupSvc.rollup().catch((err: unknown) => {
+      log.warn('In-process metrics rollup failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+  }, METRICS_ROLLUP_INTERVAL_MS);
+  // unref so the timer doesn't keep the event loop alive during graceful shutdown.
+  metricsRollupTimer.unref();
+  log.info(`Metrics rollup enabled (interval=${METRICS_ROLLUP_INTERVAL_MS}ms)`);
+}
+
 // Graceful shutdown
 let shuttingDown = false;
 function handleShutdown(signal: string): void {
@@ -250,6 +276,7 @@ function handleShutdown(signal: string): void {
   shuttingDown = true;
   log.info(`Received ${signal}, shutting down gracefully...`);
   stopMdnsAdvertisement();
+  if (metricsRollupTimer) clearInterval(metricsRollupTimer);
   // Force exit after 25s if connections don't drain (e.g. SSE keep-alive).
   // Set below K8s default terminationGracePeriodSeconds (30s) so we clean up
   // before the orchestrator sends SIGKILL.
