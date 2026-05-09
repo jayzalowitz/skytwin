@@ -341,6 +341,8 @@ function navigate() {
 
   // Dynamic route: /capabilities/:id — check before static lookup
   const capabilityDetailMatch = hash.match(/^\/capabilities\/([^/]+)$/);
+  // Dynamic route: /lifebook/<domain> (#193 Child 1)
+  const lifebookMatch = hash.match(/^\/lifebook\/([^/?]+)$/);
 
   // Resolve route — dynamic segments before static table
   let route = routes[hash];
@@ -348,6 +350,11 @@ function navigate() {
   if (!route && capabilityDetailMatch) {
     dynamicParam = capabilityDetailMatch[1];
     route = { title: 'Capability', render: (c, uid) => renderCapabilityDetail(c, uid, dynamicParam) };
+  }
+  if (!route && lifebookMatch) {
+    let title = 'Lifebook';
+    try { title = `Lifebook · ${decodeURIComponent(lifebookMatch[1])}`; } catch { /* keep default */ }
+    route = { title, render: renderLifebook };
   }
   route = route || routes['/'];
 

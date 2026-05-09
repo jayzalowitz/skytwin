@@ -285,3 +285,21 @@ CREATE TABLE IF NOT EXISTS ironclaw_tools (
   discovered_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_ironclaw_tools_discovered ON ironclaw_tools (discovered_at DESC);
+
+CREATE TABLE IF NOT EXISTS lifebooks (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  domain_name STRING NOT NULL,
+  importance STRING NOT NULL CHECK (importance IN ('core', 'secondary', 'emerging')),
+  sample_signals JSONB NOT NULL DEFAULT '[]',
+  suggested_capabilities JSONB NOT NULL DEFAULT '[]',
+  wing_id UUID,
+  detected_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  hidden_at TIMESTAMPTZ,
+  UNIQUE (user_id, domain_name)
+);
+CREATE INDEX IF NOT EXISTS lifebooks_user_visible_idx
+  ON lifebooks (user_id, importance, last_seen_at DESC)
+  WHERE hidden_at IS NULL;
+CREATE INDEX IF NOT EXISTS lifebooks_user_all_idx ON lifebooks (user_id, last_seen_at DESC);

@@ -25,6 +25,7 @@ import { SignalDeduper, DEFAULT_TTL_MS } from './signal-dedupe.js';
 import { createPruneThrottle } from './label-signal-pruner.js';
 import { runMetricsRollupJob } from './jobs/metrics-rollup.js';
 import { runChangelogPollJob } from './jobs/changelog-poll.js';
+import { runDomainExtractionJob } from './jobs/domain-extraction.js';
 
 const config = loadConfig();
 const log = createLogger('worker');
@@ -479,6 +480,8 @@ async function main(): Promise<void> {
   const METRICS_ROLLUP_INTERVAL_MS = 60_000;
   let lastChangelogPollAt = 0;
   const CHANGELOG_POLL_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+  let lastDomainExtractionAt = 0;
+  const DOMAIN_EXTRACTION_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days (#193 Child 1)
 
   // Poll loop
   while (running) {
@@ -504,6 +507,18 @@ async function main(): Promise<void> {
         });
       });
       lastChangelogPollAt = nowMs;
+    }
+
+    // Re-extract life domains weekly (#193 Child 1). The job no-ops when no
+    // LlmClient is available — extraction is LLM-dependent. Per-user errors
+    // are absorbed inside the job.
+    if (nowMs - lastDomainExtractionAt >= DOMAIN_EXTRACTION_INTERVAL_MS) {
+      await runDomainExtractionJob().catch((err) => {
+        log.warn('Domain extraction job failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+      lastDomainExtractionAt = nowMs;
     }
 
     // Expire stale approval requests every 10 poll cycles

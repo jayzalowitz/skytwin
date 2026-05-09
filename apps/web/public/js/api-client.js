@@ -840,6 +840,32 @@ export function markBriefingRead(briefingId, userId) {
   });
 }
 
+// ── Lifebooks (#193 Child 1) ──────────────────────────────────────────────────
+
+export function fetchLifebooks(userId) {
+  return fetchJSON(`${API}/lifebooks/${encodeURIComponent(userId)}`);
+}
+
+export function fetchLifebook(userId, domainName) {
+  return fetchJSON(
+    `${API}/lifebooks/${encodeURIComponent(userId)}/${encodeURIComponent(domainName)}`,
+  );
+}
+
+export function hideLifebook(userId, domainName) {
+  return fetchJSON(
+    `${API}/lifebooks/${encodeURIComponent(userId)}/${encodeURIComponent(domainName)}/hide`,
+    { method: 'POST' },
+  );
+}
+
+export function unhideLifebook(userId, domainName) {
+  return fetchJSON(
+    `${API}/lifebooks/${encodeURIComponent(userId)}/${encodeURIComponent(domainName)}/unhide`,
+    { method: 'POST' },
+  );
+}
+
 // ── Onboarding (issue #181) ───────────────────────────────────────────────────
 
 export function fetchOnboardingState(userId) {

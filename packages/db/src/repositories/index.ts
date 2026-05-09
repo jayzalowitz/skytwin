@@ -172,3 +172,10 @@ export type {
   DxtImportRow,
   CreateDxtImportInput,
 } from './dxt-import-repository.js';
+
+export { lifebookRepository } from './lifebook-repository.js';
+export type {
+  LifebookRow,
+  LifebookImportance,
+  UpsertLifebookInput,
+} from './lifebook-repository.js';
