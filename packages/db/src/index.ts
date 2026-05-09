@@ -148,6 +148,13 @@ export {
 } from './repositories/index.js';
 export type { RecoveryCodeRow } from './repositories/index.js';
 
+export { modelDownloadRepository } from './repositories/index.js';
+export type {
+  ModelDownloadRow,
+  ModelDownloadStatus,
+  CreateModelDownloadInput,
+} from './repositories/index.js';
+
 export { mcpServerMetricsRepository } from './repositories/index.js';
 
 export { credentialVaultMetaRepository } from './repositories/index.js';

@@ -1,5 +1,6 @@
 import { fetchUser, updateTrustTier, fetchOAuthStatus, getGoogleAuthUrl, disconnectProvider, escapeHtml, fetchSettings, updateAutonomySettings, updateIronClawChannel, upsertDomainPolicy, deleteDomainPolicy, createEscalationTrigger, deleteEscalationTrigger, createSession, fetchSessions, revokeSession, saveAIProviders, testAIProvider, fetchRoutines, deleteRoutine, startFederationPairing, completeFederationPairing, listFederationPeers, unpairFederationPeer } from '../api-client.js';
 import { mountThemeSwitcher } from '../theme-switcher.js';
+import { mountEmbeddedLlmCard } from '../components/embedded-llm-card.js';
 import {
   getTextScale, setTextScale,
   getReducedMotion, setReducedMotion,
@@ -113,6 +114,8 @@ export async function renderSettings(container, userId) {
       </div>
       <div id="theme-switcher-target"></div>
     </div>
+
+    <div id="embedded-llm-card-target"></div>
 
     <div class="card" id="a11y-settings-card">
       <div class="card-header">
@@ -473,6 +476,14 @@ export async function renderSettings(container, userId) {
   // selection (no stale state across save-induced re-renders).
   const themeTarget = document.getElementById('theme-switcher-target');
   if (themeTarget) mountThemeSwitcher(themeTarget);
+
+  // Mount the embedded-LLM card (#187 AC#2). Async fetches the
+  // registry + current download state and renders into its target.
+  // No-await — render shouldn't block the rest of the settings page.
+  const embeddedTarget = document.getElementById('embedded-llm-card-target');
+  if (embeddedTarget) {
+    void mountEmbeddedLlmCard(embeddedTarget, userId).catch(() => { /* best-effort */ });
+  }
 
   // Hydrate the launch-at-login toggle from the desktop API. Skipped in
   // pure-web mode (no skytwinDesktop). The fetch is best-effort — if it

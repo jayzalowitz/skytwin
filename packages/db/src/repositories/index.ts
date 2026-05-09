@@ -198,3 +198,10 @@ export {
 export type { RecoveryCodeRow } from './recovery-code-repository.js';
 
 export { vacationModeRepository } from './vacation-mode-repository.js';
+
+export { modelDownloadRepository } from './model-download-repository.js';
+export type {
+  ModelDownloadRow,
+  ModelDownloadStatus,
+  CreateModelDownloadInput,
+} from './model-download-repository.js';

@@ -893,6 +893,53 @@ export function unpairFederationPeer(userId, peerId) {
   );
 }
 
+// ── Embedded LLM downloads (#187 AC#2) ────────────────────────────────────────
+
+export function fetchEmbeddedLlmRegistry() {
+  return fetchJSON(`${API}/embedded-llm/registry`);
+}
+
+export function fetchEmbeddedLlmModelDir() {
+  return fetchJSON(`${API}/embedded-llm/model-dir`);
+}
+
+export function recommendEmbeddedDefault(bracket) {
+  return fetchJSON(`${API}/embedded-llm/recommend-default?bracket=${encodeURIComponent(bracket)}`);
+}
+
+export function startModelDownload(userId, modelId) {
+  return fetchJSON(`${API}/embedded-llm/downloads/start`, {
+    method: 'POST',
+    body: JSON.stringify({ userId, modelId }),
+  });
+}
+
+export function fetchModelDownload(downloadId) {
+  return fetchJSON(`${API}/embedded-llm/downloads/${encodeURIComponent(downloadId)}`);
+}
+
+export function listUserModelDownloads(userId) {
+  return fetchJSON(`${API}/embedded-llm/downloads/user/${encodeURIComponent(userId)}`);
+}
+
+export function pauseModelDownload(downloadId) {
+  return fetchJSON(`${API}/embedded-llm/downloads/${encodeURIComponent(downloadId)}/pause`, {
+    method: 'POST',
+  });
+}
+
+export function resumeModelDownload(downloadId) {
+  return fetchJSON(`${API}/embedded-llm/downloads/${encodeURIComponent(downloadId)}/resume`, {
+    method: 'POST',
+  });
+}
+
+export function cancelModelDownload(downloadId) {
+  return fetchJSON(`${API}/embedded-llm/downloads/${encodeURIComponent(downloadId)}/cancel`, {
+    method: 'POST',
+  });
+}
+
 // ── Onboarding (issue #181) ───────────────────────────────────────────────────
 
 export function fetchOnboardingState(userId) {

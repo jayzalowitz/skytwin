@@ -1,6 +1,147 @@
 All notable changes to SkyTwin will be documented in this file.
 
-## [unreleased] — Accessibility: high-contrast + text-scale + voice STT route (#194 Child 4)
+## [unreleased] — Embedded LLM model downloader (#187 AC#2)
+
+Closes AC#2 of #187. The single piece between "developer tool" and
+"consumer app": a fresh install can now fetch its own model with no
+config, no API keys, no per-message cost. The registry shipped in #246
+told us *which* model to download; this PR makes it actually happen,
+with pause / resume / cancel and persistence across API restarts.
+
+### Why this is the launch-gating piece
+
+A non-technical user opening SkyTwin previously hit a wall: the twin
+needed an LLM, but configuring one meant either installing llama.cpp
+manually + downloading a GGUF + setting `SKYTWIN_LLAMA_MODELS`, or
+buying API keys from Anthropic/OpenAI. Now: open Settings → "Local AI
+brain" card detects the user's RAM bracket via `navigator.deviceMemory`,
+recommends the highest-quality model that fits, click Download → 3-15
+minutes later the twin works fully offline.
+
+### Ships
+
+- `039-model-downloads.sql`: `model_downloads` table tracking each
+  download — model_id, target_path, total_bytes, bytes_downloaded,
+  sha256_expected, status (pending → downloading → verifying →
+  installing → complete; or paused / failed / cancelled), started_at,
+  paused_at, completed_at.
+- `modelDownloadRepository`: create, findById, listForUser, findActive
+  (idempotency on user+model), updateProgress (chunk-tick), setStatus
+  (with paused_at / completed_at side effects), `recoverOrphanedDownloads`
+  (boot-time recovery — orphaned `downloading` rows flip to `paused`).
+- `apps/api/src/embedded-llm/downloader.ts`: the download engine.
+  - Streams `fetch()` body to `<target_path>.partial`, atomic rename
+    on success.
+  - Resume via HTTP `Range` header — server that ignores Range falls
+    back to full re-download (rare; logged).
+  - Progress flushed to DB every ~1MB to keep transactions cheap.
+  - SHA-256 verification post-download (skipped when registry hash is
+    placeholder all-zeros — v1 hashes are stubs pending real artifact
+    measurement).
+  - In-flight `AbortController` map for pause/cancel.
+  - Default model dir: `~/.skytwin/models/llama` if `SKYTWIN_LLAMA_MODELS`
+    unset (matches the runtime detector's read path).
+- `apps/api/src/routes/embedded-llm.ts`: extended with downloader
+  endpoints (start, get, list-for-user, pause, resume, cancel,
+  model-dir). Idempotent on `(userId, modelId)` so spam-clicking
+  Download doesn't spawn duplicate transfers.
+- Boot-time recovery wired into `apps/api/src/index.ts` —
+  `recoverOnBoot()` runs alongside execution-router init.
+- `apps/web/public/js/components/embedded-llm-card.js`: Settings card.
+  Detects RAM bracket, recommends a default, shows a select for
+  override, renders the download in progress with progress bar (reuses
+  existing `.confidence-bar` styles), pause/resume/cancel buttons,
+  error surface. Polls `/downloads/:id` every 1s while a download is
+  active; stops polling on terminal status.
+- 25 unit tests for the route layer in
+  `apps/api/src/__tests__/embedded-llm-downloads-routes.test.ts`:
+  start happy + missing-userId/modelId + 404 unknown-model, get +
+  404, percent capping at 100% for over-fetch, percent=0 for pending,
+  list-for-user, pause ok/false, pause-404, resume + 404, cancel,
+  cancel-404, plus 7 cross-user-403 tests covering every mutating
+  endpoint plus the dev-bypass-allowed case. Mocks `@skytwin/db` +
+  the downloader module — no real HTTP / filesystem.
+
+API total: 486 passing (24 skipped). All 34 packages build clean.
+
+### Fixed (post-/review)
+
+Copilot review on PR #247 surfaced 12 substantive findings; all
+addressed before merge:
+
+- **IDOR on `POST /downloads/start`**: applied `requireOwnership`
+  middleware so the request body's `userId` must match the
+  authenticated user.
+- **IDOR on `GET /downloads/:id` and the pause/resume/cancel routes**:
+  introduced a `loadOwnedDownload(req, res, id)` helper that fetches
+  the row and rejects with 403 if `req.authenticatedUserId` doesn't
+  match `row.user_id`. Dev bypass (no `authenticatedUserId`) keeps
+  current behavior.
+- **OOM on multi-GB SHA-256 verify**: replaced `readFile(path)` with a
+  streaming `createReadStream → hash.update(chunk)` loop in a new
+  `computeSha256(path)` helper. A 4GB GGUF no longer needs 4GB of
+  Node heap to verify.
+- **DB-level idempotency**: schema changed from a non-unique partial
+  index to a `UNIQUE` partial index on `(user_id, model_id)` for
+  non-terminal statuses, so two concurrent `/downloads/start` calls
+  can't both win past `findActive()`. `startDownload()` now also
+  catches the `23505` unique-violation that the loser's `INSERT`
+  raises and re-fetches the surviving row.
+- **In-memory race**: `startDownload()` now bails if the row is
+  already in `inFlight`, preventing two concurrent runners writing
+  the same `.partial`.
+- **Stale progress on Range-ignored**: when the server returns 200 to
+  a Range request, we now `updateProgress(id, 0)` immediately so the
+  poll UI doesn't display stale `bytes_downloaded` until the next
+  1MB flush.
+- **`total_bytes` never persisted**: added
+  `modelDownloadRepository.updateTotalBytes(id, n)` and call it when
+  Content-Length disagrees with the registry by >1MB. The progress
+  bar denominator now matches reality.
+- **DOM update broke action buttons**: the polling tick was finding
+  `labelLine.firstElementChild` and replacing it, which clobbered
+  the size/percent span on first run and the action-button span on
+  subsequent runs. Switched to stable `data-role` selectors
+  (`embedded-llm-progress-text`, `embedded-llm-status`) so updates
+  are scoped.
+- **Singleton listener stale closure**: `ensureListener()` no longer
+  closes over `container` or `userId` from the first mount. The
+  delegator now re-derives both at click time:
+  `document.getElementById('embedded-llm-card-target')` for the
+  container, `localStorage.getItem(KEY_USER_ID)` for the userId.
+  Same pattern as the other singleton delegators in this codebase.
+- **Test auth pattern**: switched from injecting `req.user.id` to
+  `req.authenticatedUserId` to match production. Added 7 new tests
+  covering cross-user 403 on every mutating endpoint plus the
+  dev-bypass-allowed path.
+
+### Why this fits the theme
+
+This is "boring deterministic" infrastructure — `fetch()` with `Range`,
+SHA-256 verify, atomic rename. No LLM in the cryptography or the
+download path. Every byte is accounted for; every state transition is
+reflected in the row; every user-facing button has a deterministic
+back-end consequence. The adaptive layer (the prompts that consume the
+model once installed) doesn't change at all.
+
+### Out of scope
+
+- **Real SHA-256 hashes in the registry**: the v1 registry ships with
+  all-zero placeholder hashes. The downloader detects this and skips
+  verification. Filling in real hashes is a one-line change per model
+  once an artifact has been measured (download once, `shasum -a 256`,
+  paste). Tracking as a follow-up.
+- **First-run onboarding integration**: the card lives in Settings
+  today. The natural follow-up is to surface it as the first card on
+  the dashboard when no model is installed AND no LLM provider is
+  configured — making "your twin is downloading its brain" the
+  explicit first-run state. Small change to `dashboard.js`.
+- **Resume after API restart with a UI prompt**: orphaned downloads
+  flip to `paused` on boot; the user sees a "Paused" download with a
+  Resume button on next Settings visit, which is the desired UX. A
+  toast / banner alerting them proactively is a small follow-up.
+
+
 
 Closes the a11y commitments of #194 Child 4. Detailed entry in PR #244.
 
