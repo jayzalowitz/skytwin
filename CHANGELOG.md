@@ -2,11 +2,11 @@ All notable changes to SkyTwin will be documented in this file.
 
 ## [unreleased] — Accessibility: high-contrast + text-scale + voice STT route (#194 Child 4)
 
-Closes the a11y commitments of #194 Child 4: high-contrast theme,
-text-scale slider, reduced-motion override, voice-first toggle, and a
-real `/api/voice/transcribe` endpoint backed by the WhisperCppSttBackend
-from #238. Plus a baseline WCAG sweep (focus rings, skip-link,
-prefers-reduced-motion). Detailed entry in PR #244.
+Closes the a11y commitments of #194 Child 4. Detailed entry in PR #244.
+
+## [unreleased] — Crisis modes: recovery codes + vacation mode (#194 Child 3 partial)
+
+Closes 2 of 4 sub-features in #194 Child 3: recovery codes + vacation mode. Detailed entry in PR #245.
 
 ## [unreleased] — Federation pairing protocol + delta sync (#194 Child 1)
 

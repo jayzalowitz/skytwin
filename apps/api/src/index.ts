@@ -38,6 +38,7 @@ import { createCredentialVaultRouter } from './routes/credential-vault.js';
 import { createDxtRouter } from './routes/dxt.js';
 import { createFederationRouter } from './routes/federation.js';
 import { createVoiceRouter } from './routes/voice.js';
+import { createCrisisModesRouter } from './routes/crisis-modes.js';
 import { getExecutionRouter } from './execution-setup.js';
 import { startMdnsAdvertisement, stopMdnsAdvertisement } from './mdns.js';
 import { closePool, mcpServerMetricsRepository } from '@skytwin/db';
@@ -222,6 +223,7 @@ app.use('/api/dxt', sessionAuth, requireOwnership, createDxtRouter());
 app.use('/api/lifebooks', sessionAuth, requireOwnership, createLifebooksRouter());
 app.use('/api/federation', sessionAuth, createFederationRouter()); // userId-param ownership applied in-router
 app.use('/api/voice', sessionAuth, createVoiceRouter()); // userId-param ownership applied in-router
+app.use('/api/crisis-modes', sessionAuth, createCrisisModesRouter()); // userId-param ownership in-router
 
 // Error handling middleware
 app.use(
