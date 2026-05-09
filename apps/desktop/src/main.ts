@@ -1,4 +1,5 @@
 import { app, BrowserWindow, ipcMain, powerMonitor, shell, type Tray } from 'electron';
+import { promises as fs } from 'fs';
 import { join } from 'path';
 import { ServiceManager } from './service-manager.js';
 import { createTray } from './tray.js';
@@ -121,6 +122,10 @@ async function startApp(): Promise<void> {
   splashWindow?.close();
   splashWindow = null;
 
+  // If a .dxt file was double-clicked before the window finished loading,
+  // the open-file event fired into pendingDxtPath. Drain it now.
+  mainWindow.webContents.once('did-finish-load', forwardPendingDxtPathIfReady);
+
   // Wire auto-update only for packaged (production) builds.
   // Skipped in dev mode to avoid noisy update checks against GitHub Releases
   // during local development where the version may lag the published channel.
@@ -183,6 +188,32 @@ ipcMain.handle('resume-twin', async () => {
   await serviceManager.resume();
   return serviceManager.getStatus();
 });
+
+ipcMain.handle('read-dxt-file', async (_event, filePath: string) => {
+  if (typeof filePath !== 'string' || filePath === '') {
+    throw new Error('filePath required');
+  }
+  const lower = filePath.toLowerCase();
+  if (!lower.endsWith('.dxt') && !lower.endsWith('.json')) {
+    throw new Error('only .dxt or .json files are accepted');
+  }
+  const data = await fs.readFile(filePath);
+  return { name: filePath.split(/[\\/]/).pop() ?? 'artifact.dxt', base64: data.toString('base64') };
+});
+
+app.on('open-file', (event, filePath) => {
+  event.preventDefault();
+  pendingDxtPath = filePath;
+  forwardPendingDxtPathIfReady();
+});
+
+let pendingDxtPath: string | null = null;
+function forwardPendingDxtPathIfReady(): void {
+  if (pendingDxtPath === null) return;
+  if (mainWindow === null || mainWindow.isDestroyed() || mainWindow.webContents.isLoading()) return;
+  mainWindow.webContents.send('dxt-file-opened', { path: pendingDxtPath });
+  pendingDxtPath = null;
+}
 
 // App lifecycle
 app.whenReady().then(startApp);

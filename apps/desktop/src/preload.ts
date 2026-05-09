@@ -47,4 +47,30 @@ contextBridge.exposeInMainWorld('skytwinDesktop', {
     ipcRenderer.on('idle-state-changed', wrapped);
     return () => ipcRenderer.off('idle-state-changed', wrapped);
   },
+
+  /**
+   * Read a DXT file from disk by path. Used by the renderer when the OS
+   * passed us a path via the `open-file` event (double-click on a .dxt file)
+   * or via drag-drop where the renderer extracted only the path. Returns
+   * `{ name, base64 }`.
+   */
+  readDxtFile: (filePath: string) =>
+    ipcRenderer.invoke('read-dxt-file', filePath) as Promise<{ name: string; base64: string }>,
+
+  /**
+   * Subscribe to OS-level "open this DXT file" events. Returns an
+   * unsubscribe function. Fires when the user double-clicks a .dxt file
+   * in Finder/Explorer (file association required) or otherwise hands one
+   * to the OS to open with SkyTwin.
+   */
+  onDxtFileOpened: (
+    listener: (payload: { path: string }) => void,
+  ): (() => void) => {
+    const wrapped = (
+      _e: Electron.IpcRendererEvent,
+      payload: { path: string },
+    ) => listener(payload);
+    ipcRenderer.on('dxt-file-opened', wrapped);
+    return () => ipcRenderer.off('dxt-file-opened', wrapped);
+  },
 });

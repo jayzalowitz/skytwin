@@ -148,6 +148,27 @@ export async function renderSettings(container, userId) {
       <a href="#/capabilities" class="btn">Open Capabilities →</a>
     </div>
 
+    ${window.skytwinDesktop?.isDesktop ? `
+    <div class="card" id="desktop-settings-card">
+      <div class="card-header">
+        <span class="card-title">Desktop</span>
+      </div>
+      <div class="card-subtitle" style="margin-bottom: 1rem;">
+        Settings that only apply when you're running the SkyTwin desktop app.
+      </div>
+      <div style="display: flex; align-items: center; justify-content: space-between; padding: 0.75rem; background: var(--bg); border-radius: var(--radius-sm);">
+        <div>
+          <div style="font-weight: 500;">Start at login</div>
+          <div style="font-size: 0.85rem; color: var(--text-muted);">Launch SkyTwin automatically when you sign in to your computer.</div>
+        </div>
+        <label class="toggle-switch">
+          <input type="checkbox" id="launch-at-login-toggle" data-action="toggle-launch-at-login">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+    </div>
+    ` : ''}
+
     <details class="card collapsible-card" id="ai-brain-card">
       <summary class="card-header collapsible-header">
         <span class="card-title">${aiProviders.length > 0 ? 'AI brain — connected providers' : 'AI brain — needed for Chat (optional otherwise)'}</span>
@@ -385,6 +406,16 @@ export async function renderSettings(container, userId) {
   // selection (no stale state across save-induced re-renders).
   const themeTarget = document.getElementById('theme-switcher-target');
   if (themeTarget) mountThemeSwitcher(themeTarget);
+
+  // Hydrate the launch-at-login toggle from the desktop API. Skipped in
+  // pure-web mode (no skytwinDesktop). The fetch is best-effort — if it
+  // fails the toggle stays unchecked rather than blocking page render.
+  const launchToggle = document.getElementById('launch-at-login-toggle');
+  if (launchToggle instanceof HTMLInputElement && window.skytwinDesktop?.getLaunchAtLogin) {
+    window.skytwinDesktop.getLaunchAtLogin()
+      .then((enabled) => { launchToggle.checked = !!enabled; })
+      .catch(() => { /* leave unchecked */ });
+  }
 }
 
 // Singleton click delegator. Settings re-renders after every successful
@@ -574,6 +605,18 @@ function ensureSettingsListener() {
       case 'sign-out':
         window.signOut();
         return;
+      case 'toggle-launch-at-login': {
+        const checkbox = el;
+        if (!(checkbox instanceof HTMLInputElement)) return;
+        const enabled = checkbox.checked;
+        window.skytwinDesktop?.setLaunchAtLogin?.(enabled)
+          .then(() => showSavedToast(enabled ? 'Will start at login' : 'Won\'t start at login'))
+          .catch((err) => {
+            checkbox.checked = !enabled;
+            showErrorToast(`Couldn\'t save: ${err?.message || 'unknown error'}`);
+          });
+        return;
+      }
       case 'ai-test-provider': {
         const idx = parseInt(el.getAttribute('data-idx') || '', 10);
         if (Number.isFinite(idx)) window.aiTestProvider(idx, uid);

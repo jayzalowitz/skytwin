@@ -411,10 +411,115 @@ document.querySelectorAll('.nav-link').forEach(link => {
 });
 
 window.addEventListener('hashchange', navigate);
+
+/**
+ * Body-wide drag-drop entry point for .dxt artifacts.
+ *
+ * Drops anywhere on the page route through the existing /api/dxt/import
+ * preview flow, then navigate to the imports page so the user lands on
+ * the confirm/reject UI shipped in #224. Skips any drop that doesn't
+ * carry exactly one .dxt or .json file so we never interfere with text /
+ * image / link drags.
+ *
+ * Also subscribes to the desktop `onDxtFileOpened` event so double-clicking
+ * a .dxt file in Finder/Explorer (with file association registered) lands
+ * in the same flow.
+ */
+function wireDxtDropAndOpen() {
+  if (window._dxtDropWired) return;
+  window._dxtDropWired = true;
+
+  const isDxtFile = (f) => {
+    const name = (f?.name ?? '').toLowerCase();
+    return name.endsWith('.dxt') || name.endsWith('.json');
+  };
+
+  const importBlob = async (base64) => {
+    const userId = localStorage.getItem(KEY_USER_ID) ?? '';
+    if (!userId) {
+      showToast('Sign in first, then drop the file again', 'error');
+      return;
+    }
+    try {
+      const res = await fetch(`/api/dxt/import?userId=${encodeURIComponent(userId)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ blob: base64 }),
+      });
+      if (!res.ok) {
+        const txt = await res.text().catch(() => '');
+        throw new Error(`HTTP ${res.status}: ${txt.slice(0, 200)}`);
+      }
+      const data = await res.json();
+      showToast(`Capability ready to review: ${data.preview?.capability?.name ?? 'unknown'}`);
+      window.location.hash = '#/dxt/imports';
+    } catch (err) {
+      showToast(`DXT import failed: ${err?.message ?? 'unknown error'}`, 'error');
+    }
+  };
+
+  const fileToBase64 = (file) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result;
+      if (typeof result !== 'string') {
+        reject(new Error('FileReader returned non-string'));
+        return;
+      }
+      const comma = result.indexOf(',');
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    reader.onerror = () => reject(reader.error ?? new Error('read failed'));
+    reader.readAsDataURL(file);
+  });
+
+  document.addEventListener('dragover', (e) => {
+    if (!e.dataTransfer) return;
+    const types = Array.from(e.dataTransfer.types ?? []);
+    if (!types.includes('Files')) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  });
+
+  document.addEventListener('drop', async (e) => {
+    if (!e.dataTransfer) return;
+    const files = Array.from(e.dataTransfer.files ?? []);
+    if (files.length === 0) return;
+    const dxtFiles = files.filter(isDxtFile);
+    if (dxtFiles.length === 0) return;
+    e.preventDefault();
+    if (dxtFiles.length > 1) {
+      showToast('Drop one .dxt file at a time', 'error');
+      return;
+    }
+    try {
+      const base64 = await fileToBase64(dxtFiles[0]);
+      await importBlob(base64);
+    } catch (err) {
+      showToast(`Couldn't read file: ${err?.message ?? 'unknown error'}`, 'error');
+    }
+  });
+
+  // Desktop file-association entry point. The main process forwards
+  // OS open-file events here; we read the file via IPC and route it
+  // through the same import flow.
+  if (window.skytwinDesktop?.onDxtFileOpened && window.skytwinDesktop.readDxtFile) {
+    window.skytwinDesktop.onDxtFileOpened(async ({ path }) => {
+      try {
+        const { base64 } = await window.skytwinDesktop.readDxtFile(path);
+        await importBlob(base64);
+      } catch (err) {
+        showToast(`Couldn't open ${path}: ${err?.message ?? 'unknown error'}`, 'error');
+      }
+    });
+  }
+}
+
 window.addEventListener('DOMContentLoaded', () => {
   // Wire dashboard event handlers + document-level delegators.
   // Idempotent so re-running this in tests is safe.
   initDashboardGlobals();
+  wireDxtDropAndOpen();
 
   // Mount the always-visible Pause-everything safety button (#190).
   // Floats top-right across all routes so the panic affordance is always
