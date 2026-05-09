@@ -182,8 +182,9 @@ export async function pauseDownload(downloadId: string): Promise<boolean> {
 }
 
 /**
- * Cancel and clean up. Aborts in-flight transfer, deletes the
- * `<target_path>.partial` file, marks the row 'cancelled'.
+ * Cancel and clean up. Aborts in-flight transfer, deletes this row's
+ * partial (`<target_path>.<downloadId>.partial`), marks the row
+ * 'cancelled'. The shared final GGUF at `<target_path>` is left alone.
  */
 export async function cancelDownload(downloadId: string): Promise<boolean> {
   const row = await modelDownloadRepository.findById(downloadId);
@@ -242,6 +243,15 @@ async function runDownload(download: ModelDownloadRow): Promise<void> {
   }
 
   const partialPath = partialPathFor(download.target_path, download.id);
+  // Migration: PR #247 wrote to a non-namespaced `<target>.partial`.
+  // After this PR, partials are namespaced by download row id. Any
+  // pre-namespacing partial on disk is orphan junk from before the
+  // upgrade — clean it up unconditionally so it doesn't waste space
+  // forever.
+  const legacyPartial = `${download.target_path}.partial`;
+  if (existsSync(legacyPartial)) {
+    try { unlinkSync(legacyPartial); } catch { /* best effort */ }
+  }
   // Only resume from the partial if THIS row had progress recorded.
   // A fresh row (bytes_downloaded === 0) finding a partial on disk
   // means the previous attempt didn't clean up — e.g., a cancel that
@@ -414,17 +424,34 @@ async function runDownload(download: ModelDownloadRow): Promise<void> {
     return;
   }
   await modelDownloadRepository.setStatus(download.id, 'installing');
-  // Atomic rename — partial → final. Same filesystem so this is O(1).
-  try {
-    if (existsSync(download.target_path)) unlinkSync(download.target_path);
-    renameSync(partialPath, download.target_path);
-  } catch (err) {
-    inFlight.delete(download.id);
-    if (handle.cancelled) return;
-    await modelDownloadRepository.setStatus(download.id, 'failed', {
-      error: `install (rename) failed: ${err instanceof Error ? err.message : String(err)}`,
-    });
-    return;
+  // The final target is shared across users (content-addressable —
+  // we just verified SHA-256 above, so any existing file at this
+  // path is by definition the same model). If another download
+  // already installed it (concurrent same-model fetch from a
+  // different user/row), skip the rename entirely and just discard
+  // our partial. The previous "unlink target → rename" sequence had
+  // a window where a renameSync failure could leave the host with
+  // no GGUF after we'd already deleted the good one.
+  if (existsSync(download.target_path)) {
+    try { unlinkSync(partialPath); } catch { /* best effort */ }
+  } else {
+    try {
+      renameSync(partialPath, download.target_path);
+    } catch (err) {
+      // Race fallback: someone else won between our existsSync and
+      // our rename. If the target now exists, treat as installed —
+      // otherwise this is a real install failure.
+      if (existsSync(download.target_path)) {
+        try { unlinkSync(partialPath); } catch { /* best effort */ }
+      } else {
+        inFlight.delete(download.id);
+        if (handle.cancelled) return;
+        await modelDownloadRepository.setStatus(download.id, 'failed', {
+          error: `install (rename) failed: ${err instanceof Error ? err.message : String(err)}`,
+        });
+        return;
+      }
+    }
   }
 
   inFlight.delete(download.id);
