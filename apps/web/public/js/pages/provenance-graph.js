@@ -62,8 +62,10 @@ function handleProvenanceGraphAction(e) {
       break;
     }
     case 'pg-view-full-graph': {
+      // Reload with a higher cap. The server hard-limits the graph endpoint
+      // to 1000 nodes; passing the same default 200 here would be a no-op.
       const userId = getCurrentUserId();
-      renderProvenanceGraph(document.getElementById('page-content'), userId);
+      renderProvenanceGraph(document.getElementById('page-content'), userId, { limit: 1000 });
       break;
     }
     default:
@@ -98,19 +100,19 @@ async function fetchProvenanceGraph(userId, { nodeType = '', since = '', limit =
 // Main render entry point
 // ─────────────────────────────────────────────────────────────────────────────
 
-export async function renderProvenanceGraph(container, userId) {
+export async function renderProvenanceGraph(container, userId, opts = {}) {
   ensureProvenanceGraphListener();
   container.innerHTML = '<div class="loading">Loading provenance graph…</div>';
 
   let data;
   try {
-    data = await fetchProvenanceGraph(userId);
+    data = await fetchProvenanceGraph(userId, opts);
   } catch (err) {
     container.innerHTML = renderApiError(err, {
       context: "Couldn't load provenance graph.",
-      retry: () => renderProvenanceGraph(container, userId),
+      retry: () => renderProvenanceGraph(container, userId, opts),
     });
-    wireApiRetry(container, () => renderProvenanceGraph(container, userId));
+    wireApiRetry(container, () => renderProvenanceGraph(container, userId, opts));
     return;
   }
 
@@ -155,8 +157,8 @@ export async function renderProvenanceGraph(container, userId) {
         </div>
         ${isTruncated ? `
           <div style="margin-top: 0.5rem; font-size: 0.8rem; color: var(--text-muted);">
-            Showing densest 200 nodes.
-            <button class="btn btn-outline btn-sm" style="font-size: 0.75rem; padding: 0.2rem 0.5rem;" data-action="pg-view-full-graph">Reload without limit</button>
+            Showing the 200 most recent nodes.
+            <button class="btn btn-outline btn-sm" style="font-size: 0.75rem; padding: 0.2rem 0.5rem;" data-action="pg-view-full-graph">Reload with higher limit</button>
           </div>
         ` : ''}
       </div>
@@ -421,7 +423,9 @@ function openFlyout(nodeId, sim) {
   if (!flyout || !title || !body || !node) return;
 
   flyout.style.display = 'block';
-  title.textContent = escapeHtml(node.label) || escapeHtml(node.type);
+  // textContent escapes automatically — running escapeHtml here would
+  // double-escape, e.g. an `&` would render as `&amp;` literally.
+  title.textContent = node.label || node.type;
 
   const occurredAt = node.occurredAt ? new Date(node.occurredAt).toLocaleString() : '';
 

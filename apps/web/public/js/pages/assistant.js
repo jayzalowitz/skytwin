@@ -499,14 +499,24 @@ async function handleReverseCapabilityInstall(registryId, displayName) {
 // This runs once when the assistant page first loads.
 // We subscribe on the global EventSource that app.js maintains.
 let _promotionSseWired = false;
+const PROMOTION_SSE_RETRY_MS = 500;
+const PROMOTION_SSE_MAX_ATTEMPTS = 20; // ~10s total
 function wirePromotionSseListener() {
   if (_promotionSseWired || typeof window === 'undefined') return;
-  _promotionSseWired = true;
-  // app.js exposes a window.__sseSource EventSource; subscribe to the event.
-  // If it's not available yet (race), we schedule a retry on the next renderAssistant.
+  // Set the flag ONLY after a successful wire — previously we set it
+  // up-front, so a single missed-then-retried attempt would mark the
+  // listener as wired and the second renderAssistant() call would no-op
+  // even if app.js created the EventSource later.
+  let attempts = 0;
   const wireIt = () => {
+    attempts += 1;
     const src = window['__sseSource'];
-    if (!src) return false;
+    if (!src) {
+      if (attempts < PROMOTION_SSE_MAX_ATTEMPTS) {
+        setTimeout(wireIt, PROMOTION_SSE_RETRY_MS);
+      }
+      return;
+    }
     src.addEventListener('capability:promotion-offered', (ev) => {
       try {
         const data = JSON.parse(ev.data);
@@ -520,12 +530,9 @@ function wirePromotionSseListener() {
         });
       } catch { /* ignore malformed events */ }
     });
-    return true;
+    _promotionSseWired = true;
   };
-  if (!wireIt()) {
-    // Retry after a tick in case app.js hasn't set window.__sseSource yet
-    setTimeout(wireIt, 500);
-  }
+  wireIt();
 }
 
 function formatThreadStamp(iso) {
