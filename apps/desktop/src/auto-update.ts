@@ -6,15 +6,11 @@
  * makes the controller fully testable without spawning Electron or touching
  * the network.
  *
- * Default backend: NoopUpdateBackend — always returns { status: 'no-update' }.
- * Nothing is fetched on a fresh install unless an explicit ElectronUpdaterBackend
- * is wired in (see TODO below).
- *
- * TODO(#188 follow-up): ElectronUpdaterBackend using electron-updater.
- *   import { autoUpdater } from 'electron-updater';
- *   The real backend wires autoUpdater.setFeedURL, calls autoUpdater.checkForUpdates(),
- *   and maps its events to UpdateCheckResult. Land this once E2E testing on a
- *   signed, running app confirms the update channel is stable.
+ * Default backend: resolved at construction time via defaultBackend().
+ * When running inside Electron, defaultBackend() returns ElectronUpdaterBackend
+ * which uses electron-updater + GitHub Releases (provider: github).
+ * In all other contexts (tests, headless.ts, Node.js CLI) it returns
+ * NoopUpdateBackend — no network calls, no side effects.
  */
 
 export interface AutoUpdateConfig {
@@ -42,6 +38,63 @@ export class NoopUpdateBackend implements UpdateBackend {
   async checkForUpdates(): Promise<UpdateCheckResult> {
     return { status: 'no-update' };
   }
+}
+
+/**
+ * Real backend: delegates to electron-updater and the GitHub Releases channel.
+ *
+ * electron-updater reads the publish config from package.json at runtime and
+ * uses GH_TOKEN from the environment when publishing. Checking for updates
+ * (the read path) works without a token because GitHub Releases are public.
+ *
+ * autoDownload + autoInstallOnAppQuit are set so a downloaded update is
+ * installed silently the next time the user quits — no mid-session surprise.
+ */
+export class ElectronUpdaterBackend implements UpdateBackend {
+  private readonly opts: { channel: 'stable' | 'beta' };
+
+  constructor(opts: { channel: 'stable' | 'beta' } = { channel: 'stable' }) {
+    this.opts = opts;
+  }
+
+  async checkForUpdates(): Promise<UpdateCheckResult> {
+    // Dynamic require so the module is only resolved inside a real Electron
+    // process where the native bindings exist. Static import would cause
+    // Node.js to try loading electron-updater's Electron-dependent internals
+    // at module parse time, which breaks in test/headless environments.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { autoUpdater } = require('electron-updater') as typeof import('electron-updater');
+
+    autoUpdater.channel = this.opts.channel;
+    autoUpdater.autoDownload = true;
+    autoUpdater.autoInstallOnAppQuit = true;
+
+    try {
+      const result = await autoUpdater.checkForUpdates();
+      if (!result?.updateInfo) return { status: 'no-update' };
+      return { status: 'available', version: result.updateInfo.version };
+    } catch (err) {
+      return { status: 'error', error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+}
+
+/**
+ * Lazy backend factory.
+ *
+ * Returns ElectronUpdaterBackend when running inside Electron
+ * (process.versions.electron is truthy). Returns NoopUpdateBackend otherwise —
+ * so unit tests, headless.ts, and any non-Electron Node context get a safe,
+ * network-free default.
+ */
+export function defaultBackend(opts?: { channel: 'stable' | 'beta' }): UpdateBackend {
+  if (
+    typeof process !== 'undefined' &&
+    (process.versions as Record<string, string | undefined>)['electron']
+  ) {
+    return new ElectronUpdaterBackend(opts);
+  }
+  return new NoopUpdateBackend();
 }
 
 const DEFAULT_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1_000; // 6 hours
@@ -79,11 +132,12 @@ export class AutoUpdateController {
 
   /**
    * @param config - Update configuration. Use defaultAutoUpdateConfig() for env-driven defaults.
-   * @param backend - Injectable backend. Defaults to NoopUpdateBackend (no network calls).
+   * @param backend - Injectable backend. When omitted, defaultBackend() is called:
+   *   ElectronUpdaterBackend in a packaged Electron process, NoopUpdateBackend everywhere else.
    */
-  constructor(config: AutoUpdateConfig, backend: UpdateBackend = new NoopUpdateBackend()) {
+  constructor(config: AutoUpdateConfig, backend?: UpdateBackend) {
     this.config = config;
-    this.backend = backend;
+    this.backend = backend ?? defaultBackend({ channel: config.channel });
   }
 
   /**

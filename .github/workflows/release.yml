@@ -1,0 +1,103 @@
+# release.yml — Build and publish SkyTwin Desktop to GitHub Releases.
+#
+# Triggered by pushing a version tag (v*.*.*) or manually via workflow_dispatch.
+# Builds on macOS, Windows, and Linux in parallel. Publishes artifacts as a
+# GitHub Release using electron-builder's github provider.
+#
+# ---------------------------------------------------------------------------
+# Required GitHub repository secrets
+# ---------------------------------------------------------------------------
+#
+# GITHUB_TOKEN       — auto-provided by GitHub Actions; no setup needed.
+#
+# macOS code-signing + notarization:
+#   APPLE_ID                  Apple ID email (e.g. dev@example.com)
+#   APPLE_APP_SPECIFIC_PASSWORD
+#                             App-specific password from appleid.apple.com
+#                             → Security → App-Specific Passwords
+#   APPLE_TEAM_ID             10-character team ID from developer.apple.com
+#   MAC_CERT_P12_BASE64       base64-encoded Developer ID Application cert:
+#                               base64 -i cert.p12 | pbcopy
+#   MAC_CERT_PASSWORD         password used when exporting the .p12
+#
+# Windows code-signing:
+#   WIN_CERT_PFX_BASE64       base64-encoded .pfx file:
+#                               base64 -i cert.pfx | pbcopy  (macOS/Linux)
+#                               [Convert]::ToBase64String([IO.File]::ReadAllBytes('cert.pfx')) | clip  (PowerShell)
+#   WIN_CERT_PASSWORD         password for the .pfx
+#
+# Until the secrets are added the workflow produces UNSIGNED artifacts, which
+# is the same posture as the local dev build. Unsigned builds still auto-update
+# correctly; they just trigger OS security warnings on first launch.
+# ---------------------------------------------------------------------------
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+jobs:
+  build-and-release:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build TypeScript (desktop)
+        run: pnpm --filter @skytwin/desktop build
+
+      # macOS: inject Apple cert via CSC_LINK so electron-builder can sign.
+      # The env vars are read by electron-builder directly; nothing to run here.
+      - name: Import Apple cert (macOS)
+        if: matrix.os == 'macos-latest'
+        env:
+          CSC_LINK: ${{ secrets.MAC_CERT_P12_BASE64 }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+        run: echo "Apple cert injected via electron-builder env vars (CSC_LINK / CSC_KEY_PASSWORD)"
+
+      # Windows: same pattern with the PFX cert.
+      - name: Set up Windows cert env (Windows)
+        if: matrix.os == 'windows-latest'
+        env:
+          CSC_LINK: ${{ secrets.WIN_CERT_PFX_BASE64 }}
+          CSC_KEY_PASSWORD: ${{ secrets.WIN_CERT_PASSWORD }}
+        run: echo "Windows cert injected via electron-builder env vars (CSC_LINK / CSC_KEY_PASSWORD)"
+
+      - name: Build and publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # macOS notarization
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Code-signing cert (each runner only has one platform's secret set)
+          CSC_LINK: ${{ matrix.os == 'macos-latest' && secrets.MAC_CERT_P12_BASE64 || secrets.WIN_CERT_PFX_BASE64 }}
+          CSC_KEY_PASSWORD: ${{ matrix.os == 'macos-latest' && secrets.MAC_CERT_PASSWORD || secrets.WIN_CERT_PASSWORD }}
+        run: |
+          if [ "${{ matrix.os }}" = "macos-latest" ]; then
+            pnpm --filter @skytwin/desktop run package:mac -- --publish always
+          elif [ "${{ matrix.os }}" = "windows-latest" ]; then
+            pnpm --filter @skytwin/desktop run package:win -- --publish always
+          else
+            pnpm --filter @skytwin/desktop run package:linux -- --publish always
+          fi
+        shell: bash
