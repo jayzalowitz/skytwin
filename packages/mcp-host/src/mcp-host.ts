@@ -63,7 +63,13 @@ export interface McpHostToolCallEvent {
   toolName: string;
   latencyMs: number;
   success: boolean;
-  spendCents: number;
+  /**
+   * Cost of the tool call in cents, when the adapter can attribute it
+   * (e.g. an LLM-backed MCP server reporting token usage). Undefined when
+   * the call is free or the cost is unknown — do NOT report 0, since 0
+   * is a valid cost value and the rollup sums it.
+   */
+  spendCents?: number;
   ts: Date;
 }
 
@@ -520,12 +526,15 @@ export class McpHost implements IronClawAdapter {
       log.completedAt = completedAt;
       log.output = extractOutput(callResult);
 
+      // spendCents intentionally omitted — MCP tool calls have no
+      // cost attribution today. Reporting 0 would have polluted
+      // sum-aggregations with N spurious zero entries; omitting lets
+      // the rollup treat unknown-cost calls correctly.
       this.emitToolCall({
         serverId,
         toolName,
         latencyMs: completedAt.getTime() - startedAt.getTime(),
         success: true,
-        spendCents: 0,
         ts: completedAt,
       });
 
@@ -553,7 +562,6 @@ export class McpHost implements IronClawAdapter {
         toolName,
         latencyMs: completedAt.getTime() - startedAt.getTime(),
         success: false,
-        spendCents: 0,
         ts: completedAt,
       });
 
