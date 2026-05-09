@@ -131,9 +131,11 @@ export function createAboutMeRouter(): Router {
             userFacts.recentActions.length > 0;
 
           if (hasFacts) {
+            // Template expects {{memory_facts}} (single key); previously
+            // passed `user_facts` so the placeholder rendered literally.
             const result = await runPrompt<SelfPortraitOutput>({
               promptName: 'self-portrait',
-              inputs: { user_facts: userFacts },
+              inputs: { memory_facts: userFacts },
               user: { userId },
               llmClient,
             });

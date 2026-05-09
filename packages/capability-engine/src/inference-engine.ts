@@ -110,9 +110,31 @@ export class CapabilityInferenceEngine {
   }
 
   async run(userId: string, signals: SignalLike[]): Promise<AppSuggestionInput[]> {
+    // Cache the registry entries for the duration of this call. Both the
+    // adaptive path (verifyAgainstRegistry → aggregateAndScore) and the
+    // deterministic path (runDeterministic) used to fetch entries
+    // separately, doubling the registry I/O on every run.
+    this._cachedRegistryEntries = await this.getRegistryEntriesCached();
+    try {
+      return await this._runInner(userId, signals);
+    } finally {
+      this._cachedRegistryEntries = null;
+    }
+  }
+
+  private _cachedRegistryEntries: RegistryEntry[] | null = null;
+  private async getRegistryEntriesCached(): Promise<RegistryEntry[]> {
+    return this._cachedRegistryEntries ?? this.options.registry.getAll();
+  }
+
+  private async _runInner(userId: string, signals: SignalLike[]): Promise<AppSuggestionInput[]> {
     // ── Adaptive path (B: service-detection) ──────────────────────────────
     if (this.llmClient) {
       try {
+        // service-detection template expects {{signals}} and {{risk_profile}}.
+        // Pass risk_profile as empty string when no profile is available;
+        // omitting it leaves the template literal `{{risk_profile}}` in the
+        // rendered prompt (the runner only substitutes keys it finds).
         const detected = await runPrompt<ServiceDetectionOutput[]>({
           promptName: 'service-detection',
           inputs: {
@@ -121,6 +143,7 @@ export class CapabilityInferenceEngine {
               excerpt: s.excerpt,
               occurredAt: s.occurredAt,
             })),
+            risk_profile: '',
           },
           user: { userId },
           llmClient: this.llmClient,
@@ -144,7 +167,7 @@ export class CapabilityInferenceEngine {
    * Run the deterministic v1 keyword-match pipeline.
    */
   async runDeterministic(userId: string, signals: SignalLike[]): Promise<AppSuggestionInput[]> {
-    const entries = await this.options.registry.getAll();
+    const entries = await this.getRegistryEntriesCached();
 
     const allMentions: SignalMention[] = [];
     for (const signal of signals) {
@@ -179,7 +202,7 @@ export class CapabilityInferenceEngine {
   private async verifyAgainstRegistry(
     detected: ServiceDetectionOutput[],
   ): Promise<SignalMention[]> {
-    const entries = await this.options.registry.getAll();
+    const entries = await this.getRegistryEntriesCached();
     const byId = new Map(entries.map((e) => [e.id.toLowerCase(), e]));
     const byName = new Map(entries.map((e) => [e.displayName.toLowerCase(), e]));
 
@@ -225,7 +248,7 @@ export class CapabilityInferenceEngine {
     mentions: SignalMention[],
     _signals: SignalLike[],
   ): Promise<AppSuggestionInput[]> {
-    const entries = await this.options.registry.getAll();
+    const entries = await this.getRegistryEntriesCached();
     const displayNames = new Map(entries.map((e) => [e.id, e.displayName]));
     const aggregated = aggregateMentions(userId, mentions, displayNames);
     const suggestions = [...aggregated.values()];
@@ -242,9 +265,18 @@ export class CapabilityInferenceEngine {
 
     if (this.llmClient) {
       try {
+        // capability-ranking template expects {{capabilities}},
+        // {{user_profile_summary}}, {{language}}, {{risk_profile}}.
+        // Previously this passed { suggestions } so every placeholder
+        // rendered literally and the LLM had nothing to score.
         const ranked = await runPrompt<CapabilityRankingOutput[]>({
           promptName: 'capability-ranking',
-          inputs: { suggestions },
+          inputs: {
+            capabilities: suggestions,
+            user_profile_summary: '',
+            language: 'en',
+            risk_profile: '',
+          },
           user: { userId },
           llmClient: this.llmClient,
         });

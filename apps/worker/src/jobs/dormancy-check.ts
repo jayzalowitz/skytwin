@@ -187,13 +187,17 @@ export async function runDormancyCheckJob(deps: DormancyCheckJobDeps = {}): Prom
             getRiskProfileText(server.user_id),
           ]);
 
+          // Map to snake_case keys per the dormancy-judgment template:
+          // {{server_name}}, {{server_id}}, {{activity_history}},
+          // {{user_activity}}, {{risk_profile}}.
           const judgment = await runPrompt<DormancyJudgmentOutput>({
             promptName: 'dormancy-judgment',
             inputs: {
-              serverName: server.display_name,
-              lastActiveDaysAgo: lastActiveDays,
-              activityHistory,
-              riskProfile,
+              server_name: server.display_name,
+              server_id: server.id,
+              activity_history: activityHistory,
+              user_activity: '',
+              risk_profile: riskProfile,
             },
             user: { userId: server.user_id },
             llmClient,
