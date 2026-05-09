@@ -222,6 +222,17 @@ describe('InMemoryBrainStore — settings + embedding queue', () => {
     expect(b.hybrid_notification_dismissed).toBe(true);
   });
 
+  it('upsertSettings on a fresh user with no backend defaults to gbrain (NOT hybrid)', () => {
+    // Regression test for /review finding: dismissing the hybrid notification
+    // for a brand-new user (no existing brain_settings row) used to silently
+    // create the row with backend='hybrid'. The default must match the
+    // factory's 'gbrain' default — see apps/api/src/memory-setup.ts.
+    const store = new InMemoryBrainStore();
+    const row = store.upsertSettings('fresh-user', { hybrid_notification_dismissed: true });
+    expect(row.backend).toBe('gbrain');
+    expect(row.hybrid_notification_dismissed).toBe(true);
+  });
+
   it('lease/markDone job queue lifecycle', () => {
     const store = new InMemoryBrainStore();
     const page = store.insertPage({ userId: 'u1', content: 'x', source: 'note' });

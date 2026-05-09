@@ -428,9 +428,14 @@ export async function upsertSettings(
   userId: string,
   patch: Partial<Pick<BrainSettingsRow, 'backend' | 'hybrid_notification_dismissed' | 'routing'>>,
 ): Promise<BrainSettingsRow> {
+  // Default backend on first insert MUST match `apps/api/src/memory-setup.ts`
+  // `getMemoryPortForUser`'s 'gbrain' default and the brain_settings.backend
+  // column DEFAULT in migration 040. Otherwise a partial upsert (e.g. when
+  // POST /api/memory-config/dismiss-notification fires for a fresh user)
+  // would silently flip them to hybrid.
   const result = await query<BrainSettingsRow>(
     `INSERT INTO brain_settings (user_id, backend, hybrid_notification_dismissed, routing, updated_at)
-     VALUES ($1, COALESCE($2, 'hybrid'), COALESCE($3, false), COALESCE($4::JSONB, '{}'::JSONB), now())
+     VALUES ($1, COALESCE($2, 'gbrain'), COALESCE($3, false), COALESCE($4::JSONB, '{}'::JSONB), now())
      ON CONFLICT (user_id) DO UPDATE
        SET backend = COALESCE($2, brain_settings.backend),
            hybrid_notification_dismissed = COALESCE($3, brain_settings.hybrid_notification_dismissed),

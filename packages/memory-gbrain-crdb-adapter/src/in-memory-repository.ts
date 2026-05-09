@@ -353,7 +353,8 @@ export class InMemoryBrainStore {
     const existing = this.settings.get(userId);
     const merged: BrainSettingsRow = {
       user_id: userId,
-      backend: patch.backend ?? existing?.backend ?? 'hybrid',
+      // Default matches `apps/api/src/memory-setup.ts` and migration 040.
+      backend: patch.backend ?? existing?.backend ?? 'gbrain',
       hybrid_notification_dismissed:
         patch.hybrid_notification_dismissed ?? existing?.hybrid_notification_dismissed ?? false,
       routing: patch.routing ?? existing?.routing ?? {},

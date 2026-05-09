@@ -139,7 +139,10 @@ CREATE INDEX IF NOT EXISTS brain_signals_user_ts_idx ON brain_signals (user_id, 
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS brain_settings (
   user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-  backend STRING NOT NULL DEFAULT 'hybrid'
+  -- Default matches `apps/api/src/memory-setup.ts:getMemoryPortForUser`'s
+  -- 'gbrain' default. Drift here means partial upserts (e.g.
+  -- dismiss-notification on a fresh user) silently switch the backend.
+  backend STRING NOT NULL DEFAULT 'gbrain'
     CHECK (backend IN ('hybrid', 'gbrain', 'mempalace')),
   hybrid_notification_dismissed BOOL NOT NULL DEFAULT false,
   routing JSONB NOT NULL DEFAULT '{}',
