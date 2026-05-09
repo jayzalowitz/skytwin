@@ -1,5 +1,60 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [unreleased] — Auto-launch toggle UI + DXT drag-drop entry point (#191 + #180)
+
+Closes the auto-launch UX for #191 and the DXT drag-drop entry point for
+#180. The IPC handlers `get-launch-at-login` / `set-launch-at-login`
+landed in #218 with no UI; this PR puts a real toggle in Settings → Desktop
+and wires the `app.setLoginItemSettings` round-trip end-to-end.
+
+For #180, the existing DXT import flow (#219 export, #224 install confirm)
+had no entry point — users could only POST a `.dxt` file via curl. This
+PR adds two real entry points: body-wide drag-drop in the renderer and an
+OS file-association handler in the main process.
+
+### Ships
+
+- `apps/web/public/js/pages/settings.js` — new "Desktop" card visible
+  only when `window.skytwinDesktop?.isDesktop`. Toggle switch wired to
+  `setLaunchAtLogin(boolean)`; hydrates from `getLaunchAtLogin()` on
+  render. Toast on save success / failure; on failure the toggle reverts
+  to its previous state.
+- `apps/desktop/src/main.ts` — `read-dxt-file` IPC handler (`.dxt` or
+  `.json` path → `{ name, base64 }`); `app.on('open-file', ...)` handler
+  that buffers the path and forwards it to the renderer once the
+  webContents finish loading. Pending-path drain on `did-finish-load`
+  covers the case where the user double-clicks a `.dxt` before the window
+  is ready.
+- `apps/desktop/src/preload.ts` — exposes `readDxtFile(filePath)` and
+  `onDxtFileOpened(listener)` (returns unsubscribe fn).
+- `apps/web/public/js/app.js` — `wireDxtDropAndOpen()` runs once on
+  `DOMContentLoaded`. Document-level `dragover`/`drop` handlers filter
+  for `.dxt`/`.json` files (via `DataTransfer.types.includes('Files')`
+  + filename check), read via `FileReader.readAsDataURL`, POST to
+  `/api/dxt/import` with the base64 blob, and navigate to `#/dxt/imports`
+  on success. Subscribes to `skytwinDesktop.onDxtFileOpened` for the
+  Finder/Explorer double-click path — same import flow, file is read via
+  the IPC handler instead of FileReader. Toast feedback on every code
+  path. Multi-file drops produce a "drop one at a time" toast rather than
+  silently picking the first.
+
+### Why drag-drop runs in the renderer, not the main process
+
+Browser file drops carry the `File` object directly — we already have the
+bytes without touching disk. The OS-passed path from `app.on('open-file')`
+is the only case where the renderer doesn't have bytes; that's why the
+`readDxtFile` IPC exists as a narrow allowlist (`.dxt`/`.json` only,
+explicit filePath argument). Keeping the body-wide drag-drop in the
+renderer also means it works in the pure-web build of the dashboard where
+no `skytwinDesktop` exists.
+
+### Out of scope
+
+- File-association registration in `electron-builder` config (the OS won't
+  fire `open-file` for `.dxt` until macOS Info.plist `CFBundleDocumentTypes`
+  / Windows registry associations are declared at install time — that's a
+  packaging concern, not a runtime one).
+
 ## [unreleased] — Desktop idle bridge via Electron powerMonitor (#180 partial)
 
 Closes one of the four "desktop integration" sub-asks of #180: a real
