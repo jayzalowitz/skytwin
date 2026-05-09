@@ -24,6 +24,7 @@ import { sessionAuth } from './middleware/session-auth.js';
 import { requireOwnership } from './middleware/require-ownership.js';
 import { createPoliciesRouter } from './routes/policies.js';
 import { createMempalaceRouter } from './routes/mempalace.js';
+import { createMemoryConfigRouter } from './routes/memory-config.js';
 import { createAssistantRouter } from './routes/assistant.js';
 import { createCredentialsRouter } from './routes/credentials.js';
 import { createRoutinesRouter } from './routes/routines.js';
@@ -219,6 +220,7 @@ app.use('/api/sessions', createSessionsRouter()); // POST pairing is public; oth
 app.use('/api/audit', sessionAuth, requireOwnership, createAuditRouter());
 app.use('/api/policies', sessionAuth, requireOwnership, createPoliciesRouter());
 app.use('/api/mempalace', sessionAuth, requireOwnership, createMempalaceRouter());
+app.use('/api/memory-config', sessionAuth, requireOwnership, createMemoryConfigRouter());
 app.use('/api/assistant', sessionAuth, requireOwnership, createAssistantRouter());
 app.use('/api/credentials', sessionAuth, requireOwnership, createCredentialsRouter());
 app.use('/api/routines', sessionAuth, requireOwnership, createRoutinesRouter());

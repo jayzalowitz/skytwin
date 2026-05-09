@@ -29,6 +29,91 @@ Implementation lives in `apps/web/public/js/pages/dashboard.js`. Reuses
 the existing `GET /api/settings/:userId` endpoint via `fetchSettings` —
 no new API. One new card, no other UI changes.
 
+## [unreleased] — gbrain memory backend + CRDB adapter + hybrid composer (#197)
+
+Closes the major remaining work on #197 by promoting `@skytwin/memory-gbrain`
+from a CLI-shell-out skeleton (PR #215) to a real, in-process, CockroachDB-backed
+memory layer. The default `MemoryPort` for new installs is now gbrain — vector
+embeddings + tsvector full-text search, fused via Reciprocal Rank Fusion. No
+separate Postgres process, no external CLI install — gbrain runs against the
+SkyTwin DB stack directly.
+
+### Why this matters
+
+The mempalace search story today is `ILIKE %term%` over `memory_drawers.content`.
+Works for hundreds of drawers per user; doesn't work at the size we want twins
+to operate at. Gbrain's hybrid retrieval engine is what mempalace was a sketch
+of: indexed semantic + keyword fusion that scales to tens of thousands of pages
+per user with sub-100ms search latency on the in-process backend.
+
+User direction was explicit: gbrain is the **default**, mempalace is the
+**second option**, and everything must work against CRDB where possible. Done.
+
+### Ships
+
+- **`040-gbrain-memory.sql`** — new tables: `brain_pages` (FLOAT8[] embedding
+  + TSVECTOR + INVERTED INDEX), `brain_entities`, `brain_triples`,
+  `brain_episodes`, `brain_signals`, `brain_settings`, `brain_embedding_jobs`
+  (durable queue with `SELECT FOR UPDATE SKIP LOCKED` lease semantics).
+- **`@skytwin/memory-gbrain-crdb-adapter`** (NEW) — driver-level layer:
+  - `repository.ts` — CRDB-backed CRUD + `hybridSearch` (parallel text + vector
+    queries, application-side RRF fold).
+  - `in-memory-repository.ts` — same surface, in-process; used by tests and
+    hermetic boots.
+  - `embedding.ts` — `EmbeddingProvider` interface + two impls:
+    `HashEmbeddingProvider` (deterministic, hash-trick, zero-config) and
+    `OpenAiEmbeddingProvider` (any OpenAI-compatible /v1/embeddings endpoint —
+    works with Ollama, llamafile, vLLM).
+  - `rrf.ts` — Reciprocal Rank Fusion fold (k=60 standard).
+- **`@skytwin/memory-gbrain`** — promoted from skeleton:
+  - `EmbeddedGbrainMemoryPort` — full `MemoryPort` impl. Capabilities:
+    `semantic_search`, `code_aware_search`, `temporal_triples`, `episodic`,
+    `graph_walk`. Synchronous embedding when fast (hash); async via the
+    embedding job queue when an external provider is configured.
+  - `searchCodeAware` — boosts pages with `source = 'code'` 1.25×.
+  - `hasExternalGbrainConfig()` — detects existing `~/.config/gbrain/` so the
+    dashboard can surface the hybrid-mode opt-in prompt.
+- **`@skytwin/memory-hybrid`** — diagnostics-aware composer:
+  - `HybridDiagnostics` counters expose routing + write outcomes.
+  - `resolveReadPort` falls through to the secondary when the primary lacks the
+    relevant capability (instead of silently returning empty).
+- **`apps/api/src/memory-setup.ts`** — per-user backend factory:
+  - Default `gbrain`; `MEMORY_BACKEND` env override; per-user `brain_settings`
+    override beats env.
+  - Embedding provider selection: OpenAI when key present, hash fallback.
+- **`apps/api/src/routes/memory-config.ts`** — new REST surface:
+  `GET / POST /api/memory-config`, `POST /dismiss-notification`,
+  `GET /diagnostics`. Mounted under `sessionAuth + requireOwnership`.
+- **`apps/web/public/js/pages/memory-settings.js`** — settings page
+  (`#/memory-settings`): backend switcher, capability list, page index counts,
+  hybrid diagnostics, "Your twin just got smarter" first-run notice with
+  dismiss action. Singleton click delegator gated on `window.location.hash`
+  per CLAUDE.md frontend event-handling discipline.
+- **`docs/memory-swap.md`** — backends-at-a-glance, env knobs, migration
+  recipe, rollback path.
+
+### Tests
+
+- `@skytwin/memory-gbrain-crdb-adapter`: 49 unit (embedding 25, rrf 6, in-memory
+  repo 18) + 6 DB-gated integration (skipped unless `RUN_DB_TESTS=1`).
+- `@skytwin/memory-gbrain`: 50 (cli-detector 10, gbrain-port 20,
+  embedded-port 20, integration 5) + 1 always-on quality benchmark + 1
+  opt-in perf benchmark gated on `GBRAIN_PERF=1`.
+- `@skytwin/memory-hybrid`: 19 (10 existing + 9 new diagnostics).
+- `@skytwin/api`: +21 (13 memory-setup unit + 8 memory-config-routes E2E).
+- Total: 145+ new tests; full suite: 70/70 turbo tasks pass.
+
+### Operational notes
+
+- Set `MEMORY_BACKEND=gbrain` (default) or `hybrid` or `mempalace` to switch the
+  per-installation default; per-user override via the dashboard.
+- Set `OPENAI_EMBEDDING_API_KEY` (or `OPENAI_API_KEY`) to switch from the
+  hash-trick fallback to real embeddings. `OPENAI_EMBEDDING_BASE_URL` lets you
+  point at any OpenAI-compatible endpoint (Ollama, llamafile, vLLM, …).
+- Rollback: `MEMORY_BACKEND=mempalace`. The legacy `/api/mempalace` REST surface
+  still works regardless — it queries `memory_*` tables directly, not via
+  `MemoryPort`.
+
 ## [unreleased] — Embedded LLM model downloader (#187 AC#2)
 
 Closes AC#2 of #187. The single piece between "developer tool" and

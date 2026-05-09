@@ -16,6 +16,7 @@ import { renderTwinBriefing } from './pages/twin-briefing.js';
 import { renderTwinServerTokens } from './pages/twin-server-tokens.js';
 import { renderDxtImports } from './pages/dxt-imports.js';
 import { renderProvenanceGraph } from './pages/provenance-graph.js';
+import { renderMemorySettings } from './pages/memory-settings.js';
 import { renderGlobalPauseButton } from './components/global-pause-button.js';
 import { fetchPendingApprovals, fetchHealth, fetchUser, listUsers, escapeHtml, isApiKnownOffline } from './api-client.js';
 import { initTheme } from './theme-switcher.js';
@@ -44,6 +45,7 @@ const routes = {
   '/provenance': { title: 'Provenance Graph', render: renderProvenanceGraph },
   '/credential-vault': { title: 'Credential Vault', render: renderCredentialVault },
   '/dxt/imports': { title: 'DXT Imports', render: renderDxtImports },
+  '/memory-settings': { title: 'Memory backend', render: renderMemorySettings },
 };
 
 /**

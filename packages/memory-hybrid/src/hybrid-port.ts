@@ -22,6 +22,20 @@ import { createLogger } from '@skytwin/core';
 const log = createLogger('memory-hybrid');
 
 /**
+ * Counters surfaced for observability — a hybrid backend that silently
+ * loses secondary writes is hard to debug, so we keep counts the caller
+ * can inspect (and the API exposes via `/api/memory-config/diagnostics`).
+ */
+export interface HybridDiagnostics {
+  routedPrimary: number;
+  routedSecondary: number;
+  writesPrimaryOk: number;
+  writesSecondaryOk: number;
+  writesSecondaryFailed: number;
+  writesPrimaryFailed: number;
+}
+
+/**
  * Per-method routing overrides. Each key is a MemoryPort method name. A value
  * of 'primary' routes to the primary port; 'secondary' routes to the
  * secondary port. Missing keys fall back to the defaults.
@@ -75,11 +89,36 @@ export class HybridMemoryPort implements MemoryPort {
   private readonly primary: MemoryPort;
   private readonly secondary: MemoryPort;
   private readonly routing: Required<RoutingRules>;
+  private readonly diagnostics: HybridDiagnostics = {
+    routedPrimary: 0,
+    routedSecondary: 0,
+    writesPrimaryOk: 0,
+    writesSecondaryOk: 0,
+    writesSecondaryFailed: 0,
+    writesPrimaryFailed: 0,
+  };
 
   constructor({ primary, secondary, routing }: HybridMemoryPortOptions) {
     this.primary = primary;
     this.secondary = secondary;
     this.routing = { ...DEFAULT_ROUTING, ...routing };
+  }
+
+  /**
+   * Snapshot of routing + write outcome counters. Reset by `resetDiagnostics`.
+   * Uses a defensive copy so the caller can't mutate the underlying counters.
+   */
+  getDiagnostics(): HybridDiagnostics {
+    return { ...this.diagnostics };
+  }
+
+  resetDiagnostics(): void {
+    this.diagnostics.routedPrimary = 0;
+    this.diagnostics.routedSecondary = 0;
+    this.diagnostics.writesPrimaryOk = 0;
+    this.diagnostics.writesSecondaryOk = 0;
+    this.diagnostics.writesSecondaryFailed = 0;
+    this.diagnostics.writesPrimaryFailed = 0;
   }
 
   capabilities(): Set<MemoryCapability> {
@@ -92,23 +131,37 @@ export class HybridMemoryPort implements MemoryPort {
   // ── Write — best-effort dual-write ───────────────────────────────
 
   async recordSignal(s: RawSignal): Promise<void> {
-    await this.primary.recordSignal(s);
+    await this.primaryWrite('recordSignal', () => this.primary.recordSignal(s));
     await this.bestEffortSecondary('recordSignal', () => this.secondary.recordSignal(s));
   }
 
   async recordEntity(e: KnowledgeEntity): Promise<void> {
-    await this.primary.recordEntity(e);
+    await this.primaryWrite('recordEntity', () => this.primary.recordEntity(e));
     await this.bestEffortSecondary('recordEntity', () => this.secondary.recordEntity(e));
   }
 
   async recordTriple(t: KnowledgeTriple): Promise<void> {
-    await this.primary.recordTriple(t);
+    await this.primaryWrite('recordTriple', () => this.primary.recordTriple(t));
     await this.bestEffortSecondary('recordTriple', () => this.secondary.recordTriple(t));
   }
 
   async recordEpisode(e: Episode): Promise<void> {
-    await this.primary.recordEpisode(e);
+    await this.primaryWrite('recordEpisode', () => this.primary.recordEpisode(e));
     await this.bestEffortSecondary('recordEpisode', () => this.secondary.recordEpisode(e));
+  }
+
+  private async primaryWrite(op: string, fn: () => Promise<void>): Promise<void> {
+    try {
+      await fn();
+      this.diagnostics.writesPrimaryOk++;
+    } catch (err) {
+      this.diagnostics.writesPrimaryFailed++;
+      log.warn(`primary write failed for ${op}; rethrowing`, {
+        operation: op,
+        errorName: err instanceof Error ? err.name : 'unknown',
+      });
+      throw err;
+    }
   }
 
   // ── Read — route by capability ────────────────────────────────────
@@ -174,27 +227,41 @@ export class HybridMemoryPort implements MemoryPort {
   /**
    * Resolve which port to use for a read operation.
    *
-   * Priority:
-   *   1. Explicit routing override for the method name.
-   *   2. Default routing table.
+   * Priority (in order):
+   *   1. Explicit routing override for the method name. If the override names
+   *      the primary but the primary lacks the capability, fall through to
+   *      the secondary anyway — never silently route to a port that can't
+   *      serve the call.
+   *   2. Default routing table preference.
+   *   3. Final fallback: whichever port declares the capability.
    *
-   * The capability check is used only as a tie-breaker fallback for unrecognised
-   * methods; the default routing table covers all known methods.
+   * Diagnostics counters track every read so misrouting bugs surface in the
+   * `/api/memory-config/diagnostics` snapshot.
    */
   private resolveReadPort(
     methodKey: keyof RoutingRules,
     capability: MemoryCapability,
   ): MemoryPort {
     const rule = this.routing[methodKey];
+    const primaryHas = this.primary.capabilities().has(capability);
+    const secondaryHas = this.secondary.capabilities().has(capability);
+
+    let chosen: MemoryPort;
     if (rule === 'primary') {
-      return this.primary.capabilities().has(capability) ? this.primary : this.secondary;
+      chosen = primaryHas ? this.primary : this.secondary;
+    } else {
+      chosen = secondaryHas ? this.secondary : this.primary;
     }
-    return this.secondary;
+
+    if (chosen === this.primary) this.diagnostics.routedPrimary++;
+    else this.diagnostics.routedSecondary++;
+    return chosen;
   }
 
   /**
    * Run a secondary write in the background. Errors are logged and swallowed
-   * so they never interfere with the primary write result.
+   * so they never interfere with the primary write result. Counters move so
+   * silent regressions are observable.
    */
   private async bestEffortSecondary(
     operation: string,
@@ -202,7 +269,9 @@ export class HybridMemoryPort implements MemoryPort {
   ): Promise<void> {
     try {
       await fn();
+      this.diagnostics.writesSecondaryOk++;
     } catch (err: unknown) {
+      this.diagnostics.writesSecondaryFailed++;
       log.warn(`secondary write failed for ${operation}; ignoring`, {
         operation,
         errorName: err instanceof Error ? err.name : 'unknown',

@@ -74,6 +74,24 @@ importers:
       '@skytwin/mcp-host':
         specifier: workspace:*
         version: link:../../packages/mcp-host
+      '@skytwin/memory-gbrain':
+        specifier: workspace:*
+        version: link:../../packages/memory-gbrain
+      '@skytwin/memory-gbrain-crdb-adapter':
+        specifier: workspace:*
+        version: link:../../packages/memory-gbrain-crdb-adapter
+      '@skytwin/memory-hybrid':
+        specifier: workspace:*
+        version: link:../../packages/memory-hybrid
+      '@skytwin/memory-mempalace':
+        specifier: workspace:*
+        version: link:../../packages/memory-mempalace
+      '@skytwin/memory-port':
+        specifier: workspace:*
+        version: link:../../packages/memory-port
+      '@skytwin/mempalace':
+        specifier: workspace:*
+        version: link:../../packages/mempalace
       '@skytwin/observability':
         specifier: workspace:*
         version: link:../../packages/observability
@@ -664,12 +682,40 @@ importers:
       '@skytwin/core':
         specifier: workspace:*
         version: link:../core
+      '@skytwin/memory-gbrain-crdb-adapter':
+        specifier: workspace:*
+        version: link:../memory-gbrain-crdb-adapter
       '@skytwin/memory-port':
         specifier: workspace:*
         version: link:../memory-port
       '@skytwin/shared-types':
         specifier: workspace:*
         version: link:../shared-types
+    devDependencies:
+      '@skytwin/memory-hybrid':
+        specifier: workspace:*
+        version: link:../memory-hybrid
+      '@types/node':
+        specifier: ^20.0.0
+        version: 20.19.37
+      typescript:
+        specifier: ^5.4.0
+        version: 5.9.3
+      vitest:
+        specifier: ^1.3.0
+        version: 1.6.1(@types/node@20.19.37)(lightningcss@1.32.0)(terser@5.46.2)
+
+  packages/memory-gbrain-crdb-adapter:
+    dependencies:
+      '@skytwin/core':
+        specifier: workspace:*
+        version: link:../core
+      '@skytwin/db':
+        specifier: workspace:*
+        version: link:../db
+      '@skytwin/memory-port':
+        specifier: workspace:*
+        version: link:../memory-port
     devDependencies:
       '@types/node':
         specifier: ^20.0.0

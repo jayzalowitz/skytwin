@@ -95,7 +95,12 @@ CI is unaffected (clean dist on every run).
 | `@skytwin/llm-client` | Unified LLM client with provider chain (Anthropic, OpenAI, Google, Ollama). Per-provider circuit breakers, SSRF-safe URL validation, prompt builder, and response parser. No SDK dependencies. |
 | `@skytwin/explanations` | Generates human-readable explanations for decisions and actions. |
 | `@skytwin/connectors` | Gmail, Google Calendar, and mock signal connectors with OAuth token management (DbTokenStore). |
-| `@skytwin/mempalace` | Memory Palace system: spatial memory organization (wings/rooms/drawers), 4-layer retrieval stack, knowledge graph with temporal triples, episodic memory, AAAK compression. Enriches DecisionContext with past episodes. |
+| `@skytwin/mempalace` | Legacy memory system: spatial memory organization (wings/rooms/drawers), 4-layer retrieval stack, knowledge graph with temporal triples, episodic memory, AAAK compression. Selectable as a backend via `MEMORY_BACKEND=mempalace`; otherwise gbrain is the default. |
+| `@skytwin/memory-port` | Backend-agnostic `MemoryPort` interface + `SignalsRouter` polyfill engine + capability negotiation. The contract every memory backend implements (#196). |
+| `@skytwin/memory-gbrain` | Default memory backend (#197). `EmbeddedGbrainMemoryPort` runs in-process against the brain_* CRDB tables; vector + tsvector RRF for semantic and code-aware search. CLI-shellout `GbrainMemoryPort` kept for users with an external gbrain. |
+| `@skytwin/memory-gbrain-crdb-adapter` | CockroachDB-backed driver for the gbrain backend. Repository functions, embedding providers (hash-trick fallback + OpenAI-compatible HTTP), in-memory store for tests, RRF fold. |
+| `@skytwin/memory-hybrid` | Composes any two `MemoryPort` impls. Reads route per-capability; writes dual-write best-effort. Exposes diagnostics counters. |
+| `@skytwin/memory-mempalace` | `MemPalaceMemoryPort` adapter — wraps the legacy `@skytwin/mempalace` classes against the `MemoryPort` contract. |
 | `@skytwin/evals` | Evaluation framework for measuring decision quality over time. |
 
 ### Apps

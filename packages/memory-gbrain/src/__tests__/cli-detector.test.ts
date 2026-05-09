@@ -4,11 +4,19 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('node:child_process', () => ({
   execSync: vi.fn(),
 }));
+vi.mock('node:fs', () => ({
+  existsSync: vi.fn(),
+}));
+vi.mock('node:os', () => ({
+  homedir: vi.fn(() => '/fake/home'),
+}));
 
 import { execSync } from 'node:child_process';
-import { isGbrainInstalled } from '../cli-detector.js';
+import { existsSync } from 'node:fs';
+import { isGbrainInstalled, hasExternalGbrainConfig } from '../cli-detector.js';
 
 const mockExecSync = execSync as ReturnType<typeof vi.fn>;
+const mockExistsSync = existsSync as ReturnType<typeof vi.fn>;
 
 describe('isGbrainInstalled', () => {
   beforeEach(() => {
@@ -71,5 +79,37 @@ describe('isGbrainInstalled', () => {
     if (origPlatform) {
       Object.defineProperty(process, 'platform', origPlatform);
     }
+  });
+});
+
+describe('hasExternalGbrainConfig', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('returns true when ~/.config/gbrain exists', () => {
+    mockExistsSync.mockImplementation((p: unknown) =>
+      String(p).endsWith('.config/gbrain'),
+    );
+    expect(hasExternalGbrainConfig()).toBe(true);
+  });
+
+  it('returns true when ~/.gbrain exists (legacy path)', () => {
+    mockExistsSync.mockImplementation((p: unknown) =>
+      String(p).endsWith('/.gbrain'),
+    );
+    expect(hasExternalGbrainConfig()).toBe(true);
+  });
+
+  it('returns false when neither path exists', () => {
+    mockExistsSync.mockReturnValue(false);
+    expect(hasExternalGbrainConfig()).toBe(false);
+  });
+
+  it('returns false when existsSync throws (defensive)', () => {
+    mockExistsSync.mockImplementation(() => {
+      throw new Error('boom');
+    });
+    expect(hasExternalGbrainConfig()).toBe(false);
   });
 });
