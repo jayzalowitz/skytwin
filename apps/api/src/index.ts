@@ -15,6 +15,7 @@ import { createUsersRouter } from './routes/users.js';
 import { createProposalsRouter } from './routes/proposals.js';
 import { createAskRouter } from './routes/ask.js';
 import { createBriefingsRouter } from './routes/briefings.js';
+import { createLifebooksRouter } from './routes/lifebooks.js';
 import { createSkillGapsRouter } from './routes/skill-gaps.js';
 import { createSettingsRouter } from './routes/settings.js';
 import { createSessionsRouter } from './routes/sessions.js';
@@ -216,6 +217,7 @@ app.use('/api/onboarding', sessionAuth, requireOwnership, createOnboardingRouter
 app.use('/api/external-agents', sessionAuth, requireOwnership, createExternalAgentsRouter());
 app.use('/api/credential-vault', sessionAuth, requireOwnership, createCredentialVaultRouter());
 app.use('/api/dxt', sessionAuth, requireOwnership, createDxtRouter());
+app.use('/api/lifebooks', sessionAuth, requireOwnership, createLifebooksRouter());
 
 // Error handling middleware
 app.use(

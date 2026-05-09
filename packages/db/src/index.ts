@@ -123,6 +123,13 @@ export type {
   CreateDxtImportInput,
 } from './repositories/index.js';
 
+export { lifebookRepository } from './repositories/index.js';
+export type {
+  LifebookRow,
+  LifebookImportance,
+  UpsertLifebookInput,
+} from './repositories/index.js';
+
 export { mcpServerMetricsRepository } from './repositories/index.js';
 
 export { credentialVaultMetaRepository } from './repositories/index.js';

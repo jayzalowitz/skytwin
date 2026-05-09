@@ -1,4 +1,4 @@
-import { fetchHealth, fetchDecisions, fetchAccuracy, fetchConfidence, fetchLearning, fetchPendingApprovals, fetchSkillGaps, fetchTrustProgress, fetchLearned, fetchUnmetCredentials, fetchOAuthStatus, fetchCredentialsStatus, fetchBriefing, fetchLatestTwinBriefing, escapeHtml } from '../api-client.js';
+import { fetchHealth, fetchDecisions, fetchAccuracy, fetchConfidence, fetchLearning, fetchPendingApprovals, fetchSkillGaps, fetchTrustProgress, fetchLearned, fetchUnmetCredentials, fetchOAuthStatus, fetchCredentialsStatus, fetchBriefing, fetchLatestTwinBriefing, fetchLifebooks, escapeHtml } from '../api-client.js';
 import { renderTrustProgress } from '../components/progress-bar.js';
 import {
   KEY_USER_ID,
@@ -201,6 +201,48 @@ function renderTwinBriefingWidget(briefing) {
   `;
 }
 
+/**
+ * "Your Lifebooks" card (#193 Child 1). Surfaces up to 5 detected
+ * domains with importance badges. Empty list → no card (silent — most
+ * users won't have run extraction yet, and a "no lifebooks detected"
+ * placeholder would confuse rather than inform).
+ */
+function renderLifebooksCard(lifebooks) {
+  if (!Array.isArray(lifebooks) || lifebooks.length === 0) return '';
+
+  const importanceColor = (imp) => {
+    if (imp === 'core') return 'var(--success)';
+    if (imp === 'secondary') return 'var(--text)';
+    return 'var(--text-muted)';
+  };
+  const importanceLabel = (imp) => {
+    if (imp === 'core') return 'Core';
+    if (imp === 'secondary') return 'Secondary';
+    return 'Emerging';
+  };
+
+  return `
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Your Lifebooks</span>
+        <span style="font-size: 0.75rem; color: var(--text-muted);">${lifebooks.length} detected</span>
+      </div>
+      <div class="card-subtitle" style="margin-bottom: 0.75rem;">
+        Life domains your twin noticed in your memory. Each is a wing in your memory palace.
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 0.5rem;">
+        ${lifebooks.map((lb) => `
+          <a href="#/lifebook/${encodeURIComponent(lb.domainName)}"
+             style="display: flex; align-items: center; justify-content: space-between; padding: 0.5rem 0.75rem; background: var(--bg); border-radius: var(--radius-sm); text-decoration: none; color: inherit;">
+            <span style="font-weight: 500;">${escapeHtml(lb.domainName)}</span>
+            <span style="display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 0.75rem; font-weight: 600; color: ${importanceColor(lb.importance)}; border: 1px solid ${importanceColor(lb.importance)};">${escapeHtml(importanceLabel(lb.importance))}</span>
+          </a>
+        `).join('')}
+      </div>
+    </div>
+  `;
+}
+
 function formatDashboardTime(d) {
   if (!d) return '';
   const now = new Date();
@@ -220,7 +262,7 @@ export async function renderDashboard(container, userId) {
   // and user action move them around constantly.
   // Slow-changing data — wrapped in slowFetch so a 4s first-scan tick or
   // a debounced SSE re-render doesn't burn 13 round-trips per cycle.
-  const [health, accuracy, confidence, learning, approvals, decisions, skillGaps, progress, learned, unmetCreds, googleOAuth, credsStatus, briefingData, twinBriefingData] = await Promise.allSettled([
+  const [health, accuracy, confidence, learning, approvals, decisions, skillGaps, progress, learned, unmetCreds, googleOAuth, credsStatus, briefingData, twinBriefingData, lifebooksData] = await Promise.allSettled([
     fetchHealth(),
     fetchAccuracy(userId),
     fetchConfidence(userId),
@@ -235,6 +277,7 @@ export async function renderDashboard(container, userId) {
     slowFetch('creds-status', fetchCredentialsStatus, []),
     fetchBriefing(userId),
     fetchLatestTwinBriefing(userId, 'daily').catch(() => null),
+    slowFetch(`lifebooks-${userId}`, fetchLifebooks, [userId]),
   ]);
 
   const healthOk = health.status === 'fulfilled';
@@ -265,6 +308,11 @@ export async function renderDashboard(container, userId) {
 
   // Twin Briefing widget (issue #177): the latest daily briefing prose.
   const _twinBriefing = twinBriefingData?.status === 'fulfilled' ? twinBriefingData.value?.briefing : null;
+
+  // Your Lifebooks (#193 Child 1): top 5 detected life domains.
+  const lifebooks = (lifebooksData?.status === 'fulfilled' && Array.isArray(lifebooksData.value?.lifebooks))
+    ? lifebooksData.value.lifebooks.slice(0, 5)
+    : [];
 
   // Read post-OAuth query so we can celebrate the moment they connect.
   // App.js strips the query before routing; we re-parse it from the raw hash.
@@ -353,6 +401,7 @@ export async function renderDashboard(container, userId) {
     ${renderAskTwinWidget({ userId, tourMode })}
     ${showBriefing ? renderBriefingCard({ items: briefingItems, createdAt: briefing.createdAt }) : ''}
     ${renderTwinBriefingWidget(_twinBriefing)}
+    ${renderLifebooksCard(lifebooks)}
     ${pending > 0 ? `<div class="card" style="border-left: 3px solid var(--warning); cursor: pointer;" data-action="goto" data-hash="#/approvals">
       <span style="font-weight: 600;">You have ${pending} pending approval${pending > 1 ? 's' : ''}</span>
       <span style="color: var(--text-muted); font-size: 0.85rem;"> — your twin wants to do something and needs your OK.</span>

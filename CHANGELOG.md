@@ -1,5 +1,105 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [unreleased] — Emergent Lifebooks Child 1: domain extractor + dynamic wings + dashboard surface (#193)
+
+The OSS-launch headline made executable. Closes Child 1 of #193 in two
+slices delivered as one PR.
+
+The naive approach to "life management" hardcodes a fixed taxonomy
+(Health, Money, Relationships, …) with curated capability bundles per
+vertical. Wrong: it assumes every user's life decomposes the same way.
+What about Kayaking? Aging Parents? Caregiving? Job Search?
+
+The right approach: emergent verticals. The twin reads the user's
+MemPalace, names the life domains *that user actually operates in*,
+creates a wing per domain, and surfaces them on the dashboard. No
+hardcoded list. Adding a new "kind" of Lifebook doesn't need a code
+deploy — just a better domain-extraction prompt.
+
+### Ships
+
+#### Slice 1 — domain extractor worker (#193 Child 1, AC#1-#3)
+
+- `packages/db/src/migrations/036-lifebooks.sql` — `lifebooks` table
+  with `(user_id, domain_name)` unique key, importance enum (core /
+  secondary / emerging), JSONB sample_signals + suggested_capabilities,
+  optional wing_id pointer, soft-hide via `hidden_at`. Two indices:
+  visible-only (for dashboard) and all (for management UX).
+- `packages/db/src/repositories/lifebook-repository.ts` — `upsert`
+  (idempotent on `(user_id, domain_name)`, never resurrects hidden rows
+  on re-extraction), `listVisible`, `listAll`, `findByDomain`, `hide`,
+  `unhide`. SQL-direct, parameterized, no ORM.
+- `apps/worker/src/jobs/domain-extraction.ts` — `runDomainExtractionJob`
+  walks active users (anyone with installed servers OR populated wings),
+  builds a memory_summary from `knowledge_entities` + `knowledge_triples`
+  (top 40 of each), runs `runPrompt('domain-extraction')`, validates the
+  array output, and per-domain calls `mempalaceRepository.getWingByName`
+  → `createWing` (with idempotent get-or-create) → `lifebookRepository.upsert`.
+  Wired into `apps/worker/src/index.ts` poll loop on a 7-day cadence.
+  Per-domain persist failures don't abort the user-loop; per-user errors
+  don't abort the job. No-ops if no LlmClient is available — extraction
+  is LLM-dependent.
+- `apps/worker/src/__tests__/domain-extraction.test.ts` — 12 unit tests:
+  empty-memory short-circuit, missing-LLM short-circuit, persist-each-
+  domain happy path, reuse-existing-wing, invalid-entry filtering, non-
+  array output handling, domain-cap-at-10, per-domain failure resilience,
+  job-level user-loop, no-active-users skip. Mocks all of `@skytwin/db`,
+  `@skytwin/policy-prompts` so tests never spawn DB or LLM.
+
+#### Slice 2 — dashboard surface + per-Lifebook UX (#193 Child 1, AC#4-#7)
+
+- `apps/api/src/routes/lifebooks.ts` — `GET /api/lifebooks/:userId`,
+  `GET /api/lifebooks/:userId/all`, `GET /api/lifebooks/:userId/:domainName`
+  (returns lifebook + wing room/drawer counts), `POST .../:domainName/hide`,
+  `POST .../:domainName/unhide`. Mounted under `requireOwnership` so
+  cross-user reads are blocked at the middleware layer. Worker is the
+  only writer of *content*; this router only adjusts visibility.
+- `apps/web/public/js/api-client.js` — `fetchLifebooks`, `fetchLifebook`,
+  `hideLifebook`, `unhideLifebook` helpers.
+- `apps/web/public/js/pages/dashboard.js` — "Your Lifebooks" card.
+  Shows top 5 detected domains with importance badges, each linking to
+  `#/lifebook/<domain>`. Renders nothing when no lifebooks exist (silent
+  rather than a confusing "no domains detected" placeholder for users
+  who haven't yet had the worker run).
+- `apps/web/public/js/pages/lifebook.js` — per-Lifebook page at
+  `#/lifebook/<domain>`: importance badge, sample signals, suggested
+  capabilities, wing summary, and "Hide from dashboard" button. Singleton
+  delegator gated by hash route — same pattern the rest of the SPA uses.
+- `apps/web/public/js/app.js` — registers the dynamic
+  `/lifebook/<domain>` route with title decoded from the path segment.
+
+### Why this fits the theme
+
+This slice is the architectural philosophy made executable:
+
+- **Hard rails preserved**: lifebook visibility is the only user-driven
+  write; domains *cannot* be added by hand. They emerge from memory.
+- **Boring deterministic**: wings, rooms, drawers — same `KnowledgeEntity`
+  + wing/room/drawer schema MemPalace already provides. No new
+  vertical-specific tables. The lifebooks table is a thin index pointing
+  at existing memory.
+- **Adaptive**: domain naming, importance scoring, capability suggestions
+  all flow through `@skytwin/policy-prompts` (`domain-extraction` v1).
+  Adding a new "kind" of Lifebook is a prompt edit, not a code deploy.
+- **Memory port**: the worker's read path is the existing MemPalace
+  query; the write path goes through `Palace.ensureWing` (idempotent).
+  Future MemoryPort backends (gbrain in #197) will plug in without
+  touching this worker.
+
+### Out of scope (explicitly deferred)
+
+- Per-Lifebook briefing prose (#193 Child 1 AC#4 second half) — the
+  briefing-generator (#177) is unchanged. Per-domain briefings are a
+  natural follow-up but require schema changes to `twin_briefings`
+  that aren't worth bundling here.
+- Capability filtering "by domain" on the existing Capabilities page —
+  the suggested categories are stored on the lifebook row but the
+  Capabilities page itself is unchanged. Cross-link is a follow-up.
+- Provenance graph filtering by wing (deep-link from Lifebook page).
+  The href is wired but the graph page doesn't yet read the `wing`
+  query param. Tracking as a separate small UX issue.
+
+
 ## [unreleased] — Embedded LLM as a first-class llm-client provider (#187 AC#7)
 
 Closes AC#7 of #187: "Same `@skytwin/policy-prompts` prompts work
