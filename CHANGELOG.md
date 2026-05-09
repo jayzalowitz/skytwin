@@ -323,6 +323,21 @@ rotation polish) are scoped into themed follow-up PRs.
 - Added "capabilities() returns empty when not installed" test for
   `GbrainMemoryPort`.
 
+### Fixed (post-/review)
+
+- **Migration 027 idempotency.** Added defensive
+  `DROP INDEX IF EXISTS` for the auto-named partial indexes CockroachDB
+  would have created had an earlier run accepted the inline form. A
+  re-apply now yields exactly one partial index per predicate, not two.
+- **Briefing-generator pagination scales linearly.** Switched from
+  `LIMIT/OFFSET` to keyset pagination (`AND user_id > $last`) so
+  per-page cost stays flat as the user table grows, instead of paying
+  to scan + skip earlier rows on every page.
+- **gbrain test mock variable rename.** `mockExecSync` →
+  `mockExecFileSync` so the variable name matches the API under test.
+- **DXT-route docstring honesty.** Removed the misleading "other route
+  modules use the same order" claim — they don't.
+
 ## [unreleased] — Zero-trust mode policy + UI (#183 AC#4 partial)
 
 Closes the policy + UI half of #183 AC#4. The container runtime hooks
