@@ -182,13 +182,33 @@ When `McpServerConfig.zeroTrustMode` is `true`, the MCP server process is spawne
 
 ## Review Discipline
 
-These are habits that have already prevented "PR ships a regression of the bug it claims to fix" from landing on this codebase. Don't skip them.
+### PR merge gate — non-negotiable
 
-- **Run `/review` on every non-trivial PR before merging, even when CI is green.** CI verifies code compiles and tests pass; it does not verify that the PR's stated intent landed correctly. Two of the highest-impact bugs caught on this codebase were "the loop walks the wrong direction" and "the verification curl produces no output" — both compiled, both passed tests, both would have shipped a regression of the original bug.
+Every PR MUST clear a three-step gate **before merge**. Skipping any step is grounds to revert the merge. Adapted from the gate Robot-Robot-and-Human (RRH) uses, which closed a class of "Copilot left dozens of unaddressed inline comments" misses that this codebase has accumulated.
+
+**NEVER push to main directly.** All changes — including doc-only typo fixes — go through a Pull Request. Feature branches only. If a commit lands on main by mistake, immediately revert and move the change to a feature branch.
+
+**Add Copilot as a reviewer on every PR.** Right after `gh pr create`, run `gh pr edit <PR> --add-reviewer @copilot`. This is the cheapest second pair of eyes available and it is the reviewer that catches the most things on this codebase. The pre-merge gate depends on Copilot having actually reviewed.
+
+**Pre-merge — all three required, in order:**
+
+1. **Run `/review`** against the PR diff. The skill catches SQL safety issues, LLM trust-boundary violations, conditional side effects, and structural problems that Copilot's automated review misses (and vice versa — they catch different classes of issue, which is why we run both). Treat its findings the same as Copilot's: address valid concerns, dismiss non-applicable ones with a one-line explanation in the PR comment thread.
+
+2. **Wait for Copilot review and address every comment.** After `gh pr edit <PR> --add-reviewer @copilot`, wait for the review to land. `gh pr view <PR> --json reviews` shows review summaries (state + author); for the actual inline comments use `gh api repos/:owner/:repo/pulls/<PR>/comments` (PR review comments) and `gh api repos/:owner/:repo/issues/<PR>/comments` (top-level conversation comments). For each: either push a fix (preferred — same reviewer often catches additional issues on the second pass) or dismiss with a one-line reason in a reply. **Do NOT merge until every comment is resolved or explicitly dismissed.** This is the gate the May 2026 epic week skipped, which led to ~70 REAL unresolved Copilot findings across 15 PRs and the multi-batch sweep PR (#226 → #232) to clean them up.
+
+3. **Run `/document-release`** against the PR diff. The skill cross-references the diff against `README.md`, `ARCHITECTURE.md` (if present), `CONTRIBUTING.md`, this `CLAUDE.md`, and `CHANGELOG.md`, updates them where they've drifted from what shipped, polishes CHANGELOG voice, and cleans up TODOs the PR superseded. Running this **pre-merge** keeps code + docs atomic — reviewers see proposed doc updates alongside the code, no drift window between merge and the doc-update commit, no follow-up "docs: sync with X" commits cluttering main. If review feedback in step 2 changes the code, re-run `/document-release` (it's idempotent).
+
+The order is non-negotiable: `/review` first (catches structural issues), Copilot second (catches what `/review` missed plus inline nits), `/document-release` third (docs reflect the final pre-merge state). Don't merge before step 3; the diff that ships includes the doc updates.
+
+### Habits that prevent "PR ships a regression of the bug it claims to fix"
+
+These have already prevented several bugs from landing on this codebase. Don't skip them — the merge gate above is necessary but not sufficient.
+
+- **`/review` and CI catch different things.** CI verifies code compiles and tests pass; it does not verify that the PR's stated intent landed correctly. Two of the highest-impact bugs caught on this codebase were "the loop walks the wrong direction" and "the verification curl produces no output" — both compiled, both passed tests, both would have shipped a regression of the original bug.
 - **When migrating event-handler patterns, trace re-render paths first.** Before adding any `addEventListener` inside a render function, write down what triggers a re-render of that container (route changes? SSE events? post-save mutations?). If anything other than a one-time mount triggers re-render, use a singleton wired via `_listenerWired` guard. See "Frontend Event Handling" above.
 - **Verify shared-types `dist/` has the export you're importing before declaring the build clean.** After changes to `packages/shared-types/src/index.ts`, run `grep <EXPORT> packages/shared-types/dist/index.js`. Catches the turbo-cache regression in two seconds.
 - **Write the unit test alongside any parse / validation / regex hardening.** "Falls back to safe default on garbage input" without a test is one rebase away from silently regressing. Five test cases for input validation are faster to write than to argue about whether you need them.
-- **Post-`/review` fixes get their own commits inside the PR.** Don't squash them into the original change locally before pushing — separate commits give reviewers a clear "what was the first cut, what did review catch" diff. CHANGELOG can carry a `### Fixed (post-/review)` subsection for the same reason.
+- **Post-`/review` and post-Copilot fixes get their own commits inside the PR.** Don't squash them into the original change locally before pushing — separate commits give reviewers a clear "what was the first cut, what did review catch" diff. CHANGELOG can carry a `### Fixed (post-/review)` subsection for the same reason.
 - **Documentation that describes engine behavior must cite the source-of-truth file.** The trust-tier promotion criteria, spend-limit thresholds, and policy gates all live in code (`packages/shared-types/src/policy.ts`, `packages/policy-engine/`). When docs describe these, link to the file so future drift is visible. `docs/safety-model.md` does this; new docs should follow.
 
 ## Code Style

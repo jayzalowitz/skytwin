@@ -63,6 +63,20 @@ Certificate procurement is tracked separately.
 
 ---
 
+## [unreleased] — PR merge gate codified in CLAUDE.md
+
+Adds a three-step pre-merge gate to `CLAUDE.md` (`/review` → Copilot
+review resolved → `/document-release`), plus two non-negotiable rules:
+NEVER push to main directly, ALWAYS add Copilot as reviewer. Adapted
+from the gate `Robot-Robot-and-Human/RRH` uses; closes the gap that
+allowed ~70 unaddressed Copilot comments to accumulate across this
+week's 15 epic PRs (cleaned up by the #226 → #232 stack).
+
+The existing six "habits" bullets (re-render path tracing, shared-types
+dist verification, unit tests for hardening, separate post-/review
+commits, source-of-truth doc citations) are kept as supporting guidance
+under a renamed sub-section.
+
 ## [unreleased] — Zero-trust Docker runtime (#183 AC#4 closes)
 
 Completes AC#4 of issue #183. PR #222 shipped the policy + UI half (riskModifier
