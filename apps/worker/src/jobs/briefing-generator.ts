@@ -41,29 +41,38 @@ export interface BriefingGeneratorJobDeps {
 /**
  * Active users who have installed at least one MCP server.
  *
- * Pages through the result set in `BRIEFING_USER_PAGE_SIZE` chunks so we
- * don't silently drop users when the population grows past one page.
- * Previously this was hard-capped at LIMIT 500 — anyone past 500 got no
- * briefing at all.
+ * Keyset pagination on `user_id` — OFFSET pagination would scan/skip
+ * earlier rows on every page, so the job's runtime grows quadratically
+ * with the user count. Keyset stays linear: each page filters
+ * `user_id > $last`, which the (user_id, status) index can serve as a
+ * range scan.
  */
 const BRIEFING_USER_PAGE_SIZE = 500;
 
 async function getActiveUserIds(): Promise<string[]> {
   const allIds: string[] = [];
-  let offset = 0;
+  let lastSeen: string | null = null;
   for (;;) {
-    const result = await query<{ user_id: string }>(
-      `SELECT DISTINCT user_id
-       FROM mcp_servers
-       WHERE status IN ('active', 'installed', 'authorized')
-       ORDER BY user_id
-       LIMIT $1 OFFSET $2`,
-      [BRIEFING_USER_PAGE_SIZE, offset],
-    );
+    const sql: string = lastSeen === null
+      ? `SELECT DISTINCT user_id
+         FROM mcp_servers
+         WHERE status IN ('active', 'installed', 'authorized')
+         ORDER BY user_id
+         LIMIT $1`
+      : `SELECT DISTINCT user_id
+         FROM mcp_servers
+         WHERE status IN ('active', 'installed', 'authorized')
+           AND user_id > $2
+         ORDER BY user_id
+         LIMIT $1`;
+    const params: (string | number)[] = lastSeen === null
+      ? [BRIEFING_USER_PAGE_SIZE]
+      : [BRIEFING_USER_PAGE_SIZE, lastSeen];
+    const result: { rows: Array<{ user_id: string }> } = await query<{ user_id: string }>(sql, params);
     if (result.rows.length === 0) break;
     for (const row of result.rows) allIds.push(row.user_id);
     if (result.rows.length < BRIEFING_USER_PAGE_SIZE) break;
-    offset += BRIEFING_USER_PAGE_SIZE;
+    lastSeen = result.rows[result.rows.length - 1]!.user_id;
   }
   return allIds;
 }

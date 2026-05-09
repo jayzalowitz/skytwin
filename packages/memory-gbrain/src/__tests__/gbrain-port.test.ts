@@ -14,7 +14,7 @@ import { isGbrainInstalled } from '../cli-detector.js';
 import { GbrainMemoryPort, NotImplementedError } from '../gbrain-port.js';
 import type { SemanticHit } from '@skytwin/memory-port';
 
-const mockExecSync = execFileSync as ReturnType<typeof vi.fn>;
+const mockExecFileSync = execFileSync as ReturnType<typeof vi.fn>;
 const mockIsInstalled = isGbrainInstalled as ReturnType<typeof vi.fn>;
 
 describe('GbrainMemoryPort', () => {
@@ -42,12 +42,12 @@ describe('GbrainMemoryPort', () => {
   describe('shell-injection safety', () => {
     it('passes the query as an argv element, not a shell-interpolated string', async () => {
       mockIsInstalled.mockReturnValue(true);
-      mockExecSync.mockReturnValue('[]');
+      mockExecFileSync.mockReturnValue('[]');
       const port = new GbrainMemoryPort();
       const malicious = 'foo$(touch /tmp/pwned)`whoami`; rm -rf /';
       await port.searchSemantic(malicious, 5);
-      expect(mockExecSync).toHaveBeenCalledTimes(1);
-      const [cmd, args] = mockExecSync.mock.calls[0]!;
+      expect(mockExecFileSync).toHaveBeenCalledTimes(1);
+      const [cmd, args] = mockExecFileSync.mock.calls[0]!;
       expect(cmd).toBe('gbrain');
       expect(Array.isArray(args)).toBe(true);
       // The query is one discrete argv element — no shell, so metacharacters
@@ -62,7 +62,7 @@ describe('GbrainMemoryPort', () => {
       const port = new GbrainMemoryPort();
       const result = await port.searchSemantic('some query', 5);
       expect(result).toEqual([]);
-      expect(mockExecSync).not.toHaveBeenCalled();
+      expect(mockExecFileSync).not.toHaveBeenCalled();
     });
 
     it('returns parsed SemanticHit[] on successful gbrain output', async () => {
@@ -71,7 +71,7 @@ describe('GbrainMemoryPort', () => {
         { id: 'h1', score: 0.95, content: 'result text', source: 'file.ts' },
         { id: 'h2', score: 0.8, content: 'other text', source: 'readme.md', metadata: { line: 42 } },
       ];
-      mockExecSync.mockReturnValue(JSON.stringify(hits));
+      mockExecFileSync.mockReturnValue(JSON.stringify(hits));
       const port = new GbrainMemoryPort();
       const result = await port.searchSemantic('query', 10);
       expect(result).toHaveLength(2);
@@ -80,7 +80,7 @@ describe('GbrainMemoryPort', () => {
 
     it('returns [] on non-zero exit (execSync throws)', async () => {
       mockIsInstalled.mockReturnValue(true);
-      mockExecSync.mockImplementation(() => { throw new Error('exit code 1'); });
+      mockExecFileSync.mockImplementation(() => { throw new Error('exit code 1'); });
       const port = new GbrainMemoryPort();
       const result = await port.searchSemantic('query', 5);
       expect(result).toEqual([]);
@@ -89,7 +89,7 @@ describe('GbrainMemoryPort', () => {
     it('returns [] on timeout', async () => {
       mockIsInstalled.mockReturnValue(true);
       const err = Object.assign(new Error('spawnSync gbrain ETIMEDOUT'), { code: 'ETIMEDOUT' });
-      mockExecSync.mockImplementation(() => { throw err; });
+      mockExecFileSync.mockImplementation(() => { throw err; });
       const port = new GbrainMemoryPort();
       const result = await port.searchSemantic('query', 5);
       expect(result).toEqual([]);
@@ -97,7 +97,7 @@ describe('GbrainMemoryPort', () => {
 
     it('returns [] when gbrain returns non-array JSON', async () => {
       mockIsInstalled.mockReturnValue(true);
-      mockExecSync.mockReturnValue(JSON.stringify({ error: 'unexpected' }));
+      mockExecFileSync.mockReturnValue(JSON.stringify({ error: 'unexpected' }));
       const port = new GbrainMemoryPort();
       const result = await port.searchSemantic('query', 5);
       expect(result).toEqual([]);
@@ -111,7 +111,7 @@ describe('GbrainMemoryPort', () => {
         null,
         42,
       ];
-      mockExecSync.mockReturnValue(JSON.stringify(mixed));
+      mockExecFileSync.mockReturnValue(JSON.stringify(mixed));
       const port = new GbrainMemoryPort();
       const result = await port.searchSemantic('query', 5);
       expect(result).toHaveLength(1);

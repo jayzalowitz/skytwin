@@ -46,6 +46,12 @@ CREATE TABLE IF NOT EXISTS mcp_servers (
 -- Partial index — pulled out of CREATE TABLE because some CRDB versions
 -- choke on inline `INDEX (...) WHERE ...`. Standalone form (matches the
 -- pattern in 011-sessions.sql).
+--
+-- If an earlier run of this migration succeeded with the inline form,
+-- CRDB will have auto-named the index `mcp_servers_last_active_at_idx`.
+-- Drop that defensively so re-running this migration doesn't leave two
+-- partial indexes covering the same predicate.
+DROP INDEX IF EXISTS mcp_servers@mcp_servers_last_active_at_idx;
 CREATE INDEX IF NOT EXISTS mcp_servers_active_last_active_idx
   ON mcp_servers (last_active_at) WHERE status = 'active';
 
@@ -90,6 +96,9 @@ CREATE TABLE IF NOT EXISTS app_suggestions (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 -- Pulled out of CREATE TABLE for the same CRDB-compat reason as above.
+-- Defensive drop of the auto-named inline form, see note above the
+-- mcp_servers_active_last_active_idx block.
+DROP INDEX IF EXISTS app_suggestions@app_suggestions_user_id_idx;
 CREATE INDEX IF NOT EXISTS app_suggestions_user_pending_idx
   ON app_suggestions (user_id) WHERE status = 'pending';
 CREATE UNIQUE INDEX IF NOT EXISTS app_suggestions_user_pending_unique
