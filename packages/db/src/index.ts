@@ -130,6 +130,17 @@ export type {
   UpsertLifebookInput,
 } from './repositories/index.js';
 
+export {
+  federationPeerRepository,
+  federationPairingCodeRepository,
+} from './repositories/index.js';
+export type {
+  FederationPeerRow,
+  PairingCodeRow,
+  CreatePeerInput,
+  UpdateSyncStatusInput,
+} from './repositories/index.js';
+
 export { mcpServerMetricsRepository } from './repositories/index.js';
 
 export { credentialVaultMetaRepository } from './repositories/index.js';

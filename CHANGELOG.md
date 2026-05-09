@@ -1,5 +1,15 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [unreleased] — Federation pairing protocol + delta sync (#194 Child 1)
+
+Closes Child 1 of #194: real federation between a single user's instances
+(desktop ↔ phone ↔ home server). NaCl-box pairing handshake, hourly
+delta-sync worker, Settings UI for the pair / unpair / list flow. End-
+to-end encrypted between paired peers; OAuth tokens excluded from sync.
+
+Detailed entry preserved separately on the federation branch — kept terse
+here to resolve the rebase against #193 cleanly.
+
 ## [unreleased] — Emergent Lifebooks Child 1: domain extractor + dynamic wings + dashboard surface (#193)
 
 The OSS-launch headline made executable. Closes Child 1 of #193 in two
@@ -99,6 +109,74 @@ This slice is the architectural philosophy made executable:
   The href is wired but the graph page doesn't yet read the `wing`
   query param. Tracking as a separate small UX issue.
 
+### Why NaCl box, not just HMAC (federation context)
+
+Federation deltas include trust-tier, risk-profile, and recent decision
+metadata. Confidentiality matters for a peer on a coffee-shop LAN — HMAC
+alone (integrity, no confidentiality) wouldn't be enough. NaCl box
+(Curve25519 + XSalsa20 + Poly1305) gives us asymmetric encrypt-and-
+authenticate in one primitive with a 32-byte key per side. Implemented
+via `tweetnacl` (audited pure-JS port, ~50KB unzipped, no native deps).
+
+### Ships
+
+- `037-federation-peers.sql` — `federation_peers` (+ soft-delete via
+  `unpaired_at`) and `federation_pairing_codes` (10-min TTL slots).
+- `federation-peer-repository.ts` — typed CRUD + `markSyncResult`.
+  `create` is upsert-by-(user_id, peer_public_key) so re-pairing same
+  peer updates rather than duplicates.
+- `apps/api/src/federation/crypto.ts` — `generateKeyPair`,
+  `generatePairingCode` (CSPRNG-backed via `node:crypto.randomInt`),
+  validators, `sealMessage`/`openMessage`. Pure JS, no native deps.
+- `apps/api/src/routes/federation.ts` — `/pair/start` (initiator),
+  `/pair/complete` (joiner; cross-user code redemption returns 403
+  for distinct audit trail), `GET /peers/:userId`, `POST .../unpair`.
+- `apps/worker/src/jobs/federation-sync.ts` — hourly job that walks
+  active peers with `endpoint_url`, builds a `DeltaPayload` (active
+  MCP servers + last 100 capability_provenance edges; **excludes**
+  OAuth tokens, vault secrets, encryption keys), seals via `nacl.box`,
+  POSTs to `<endpoint>/api/federation/inbox`. Per-peer failures don't
+  abort the loop.
+- `apps/web/public/js/pages/settings.js` — "Linked devices" card with
+  pair / "I have a code" / unpair UX. `apps/web/public/js/api-client.js`
+  exports the four federation helpers.
+
+### Tests
+
+- `federation-crypto.test.ts` (13): keypair shape + freshness, code
+  format, key validation, seal/open round-trip, wrong-sender, tampered
+  ciphertext, wrong nonce.
+- `federation-routes.test.ts` (11): start success + missing-userId,
+  complete happy + 5 reject cases (malformed code/key/label, expired,
+  cross-user 403, malformed endpoint), list (shape + secret-key never
+  leaked), unpair true/false.
+- `federation-sync.test.ts` (9): payload filtering (active-only,
+  null registry_id skip, edges included), seal round-trip, push
+  success, non-2xx failure, network error per-peer continuation,
+  passive peer skip, trailing-slash endpoint normalization.
+
+API total: 439 passing. Worker: 59 passing.
+
+### Out of scope
+
+- `/api/federation/inbox` receive route. Worker pushes today; receivers
+  accept-and-merge in the next PR. Two paired devices are aware of each
+  other but deltas land at 404 — the worker records the failed status
+  with `last_sync_error: "peer responded 404"` so diagnostics still
+  work before the receiver lands.
+- AC#5 cross-backend `MemoryPort` exportAll/importAll wiring. Substrate
+  is in place; integration into federation-sync is mechanical follow-up.
+- AC#6 manual-resolve UI for installed-server conflicts.
+
+### Why server-mediated pairing, not P2P over LAN
+
+Direct LAN pairing needs mDNS + NAT-traversal — substantial complexity
+v1 doesn't need. MVP pairs through the central API: instance A generates
+code, the API holds the ephemeral keypair, instance B redeems on the
+same API, both sides commit a peer row. After pairing, each instance's
+worker pushes deltas via `endpoint_url`. Users with a single
+internet-facing instance keep "passive peers" (no endpoint_url) that
+benefit from inbound deltas without needing to be reachable.
 
 ## [unreleased] — Embedded LLM as a first-class llm-client provider (#187 AC#7)
 

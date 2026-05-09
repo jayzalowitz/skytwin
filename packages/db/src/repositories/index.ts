@@ -179,3 +179,14 @@ export type {
   LifebookImportance,
   UpsertLifebookInput,
 } from './lifebook-repository.js';
+
+export {
+  federationPeerRepository,
+  federationPairingCodeRepository,
+} from './federation-peer-repository.js';
+export type {
+  FederationPeerRow,
+  PairingCodeRow,
+  CreatePeerInput,
+  UpdateSyncStatusInput,
+} from './federation-peer-repository.js';

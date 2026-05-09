@@ -866,6 +866,33 @@ export function unhideLifebook(userId, domainName) {
   );
 }
 
+// ── Federation (#194 Child 1) ─────────────────────────────────────────────────
+
+export function startFederationPairing(userId) {
+  return fetchJSON(`${API}/federation/pair/start`, {
+    method: 'POST',
+    body: JSON.stringify({ userId }),
+  });
+}
+
+export function completeFederationPairing(userId, code, label, peerPublicKey, endpointUrl) {
+  return fetchJSON(`${API}/federation/pair/complete`, {
+    method: 'POST',
+    body: JSON.stringify({ userId, code, label, peerPublicKey, endpointUrl }),
+  });
+}
+
+export function listFederationPeers(userId) {
+  return fetchJSON(`${API}/federation/peers/${encodeURIComponent(userId)}`);
+}
+
+export function unpairFederationPeer(userId, peerId) {
+  return fetchJSON(
+    `${API}/federation/peers/${encodeURIComponent(userId)}/${encodeURIComponent(peerId)}/unpair`,
+    { method: 'POST' },
+  );
+}
+
 // ── Onboarding (issue #181) ───────────────────────────────────────────────────
 
 export function fetchOnboardingState(userId) {
