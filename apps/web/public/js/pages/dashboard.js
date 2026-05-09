@@ -1,4 +1,4 @@
-import { fetchHealth, fetchDecisions, fetchAccuracy, fetchConfidence, fetchLearning, fetchPendingApprovals, fetchSkillGaps, fetchTrustProgress, fetchLearned, fetchUnmetCredentials, fetchOAuthStatus, fetchCredentialsStatus, fetchBriefing, fetchLatestTwinBriefing, fetchLifebooks, escapeHtml } from '../api-client.js';
+import { fetchHealth, fetchDecisions, fetchAccuracy, fetchConfidence, fetchLearning, fetchPendingApprovals, fetchSkillGaps, fetchTrustProgress, fetchLearned, fetchUnmetCredentials, fetchOAuthStatus, fetchCredentialsStatus, fetchBriefing, fetchLatestTwinBriefing, fetchLifebooks, fetchSettings, escapeHtml } from '../api-client.js';
 import { renderTrustProgress } from '../components/progress-bar.js';
 import {
   KEY_USER_ID,
@@ -243,6 +243,23 @@ function renderLifebooksCard(lifebooks) {
   `;
 }
 
+function renderBrainPrompt() {
+  return `
+    <div class="card" style="border-left: 3px solid var(--accent);">
+      <div class="card-header">
+        <span class="card-title">Your twin needs a brain to start</span>
+      </div>
+      <div class="card-subtitle" style="margin-bottom: 0.75rem; line-height: 1.5;">
+        SkyTwin runs <strong>locally on your machine</strong> — no API keys, no per-message cost, your data never leaves the device. Pick up a free model in 5 minutes, or bring your own paid provider if you'd rather.
+      </div>
+      <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+        <a href="#/settings" class="btn btn-primary btn-sm">Set up the local brain</a>
+        <a href="#/settings" class="btn btn-outline btn-sm">Or bring your own API key</a>
+      </div>
+    </div>
+  `;
+}
+
 function formatDashboardTime(d) {
   if (!d) return '';
   const now = new Date();
@@ -262,7 +279,7 @@ export async function renderDashboard(container, userId) {
   // and user action move them around constantly.
   // Slow-changing data — wrapped in slowFetch so a 4s first-scan tick or
   // a debounced SSE re-render doesn't burn 13 round-trips per cycle.
-  const [health, accuracy, confidence, learning, approvals, decisions, skillGaps, progress, learned, unmetCreds, googleOAuth, credsStatus, briefingData, twinBriefingData, lifebooksData] = await Promise.allSettled([
+  const [health, accuracy, confidence, learning, approvals, decisions, skillGaps, progress, learned, unmetCreds, googleOAuth, credsStatus, briefingData, twinBriefingData, lifebooksData, settingsData] = await Promise.allSettled([
     fetchHealth(),
     fetchAccuracy(userId),
     fetchConfidence(userId),
@@ -278,6 +295,7 @@ export async function renderDashboard(container, userId) {
     fetchBriefing(userId),
     fetchLatestTwinBriefing(userId, 'daily').catch(() => null),
     slowFetch(`lifebooks-${userId}`, fetchLifebooks, [userId]),
+    slowFetch(`settings-${userId}`, fetchSettings, [userId]),
   ]);
 
   const healthOk = health.status === 'fulfilled';
@@ -341,6 +359,15 @@ export async function renderDashboard(container, userId) {
 
   const tourMode = (() => { try { return localStorage.getItem(KEY_TOUR_MODE) === '1'; } catch { return false; } })();
 
+  // Skip in tour mode — seeded demo user has providers pre-configured.
+  const aiProviders = settingsData?.status === 'fulfilled'
+    ? (settingsData.value?.aiProviders ?? [])
+    : [];
+  const enabledProviderCount = Array.isArray(aiProviders)
+    ? aiProviders.filter((p) => p?.enabled).length
+    : 0;
+  const showBrainPrompt = !tourMode && enabledProviderCount === 0 && recentDecisions.length === 0;
+
   // "While you were away" — count anything new since the last visit so the
   // user feels like the twin has been working for them, not just sitting
   // there. The baseline is only updated when the user actually leaves
@@ -397,6 +424,7 @@ export async function renderDashboard(container, userId) {
     ${tourMode ? renderTourBanner() : ''}
     ${renderJustConnectedCelebration({ justConnectedProvider, justConnectedAccount, recentDecisionsCount: recentDecisions.length, learnedCount: learn?.totalPreferences ?? 0 })}
     ${sinceLastVisit && !tourMode ? renderSinceLastVisit(sinceLastVisit) : ''}
+    ${showBrainPrompt ? renderBrainPrompt() : ''}
     ${tourMode ? '' : renderConnectGoogleHero({ googleConnected, googleSystemConfigured, userId })}
     ${renderAskTwinWidget({ userId, tourMode })}
     ${showBriefing ? renderBriefingCard({ items: briefingItems, createdAt: briefing.createdAt }) : ''}

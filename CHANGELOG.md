@@ -1,5 +1,34 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [unreleased] — First-run dashboard "needs a brain" prompt (#187 follow-up)
+
+A tiny but launch-critical UX gap: a brand-new user lands on the dashboard
+with no AI provider configured and an empty state that offers no path
+forward. They're left to discover Settings → AI brain on their own.
+
+Closes the gap with a banner that surfaces only when (a) the dashboard
+fetch promises resolved successfully (no false-positive on transient API
+errors), (b) zero decisions exist yet, AND (c) zero AI providers are
+enabled. The provider check matches the Settings UI's truthiness rule
+(`p.enabled !== false`), so existing rows without an explicit `enabled`
+field aren't misread as off.
+
+Two CTAs: "Set up the local brain" (routes to Settings → Local AI brain
+card from #187 AC#2) and "Or bring your own API key". Privacy framing
+is per-option (not global): the local-first claim is scoped to the
+local brain row; the API-key row clearly notes "each message goes to
+that provider." Skipped in tour mode (seeded demo user has providers
+pre-configured), so the demo experience stays clean.
+
+Settings is fetched conditionally — only when the cheap prerequisites
+(`!tourMode && recentDecisions.length === 0`) already point at first-run.
+Once the user has any activity, no extra `/api/settings` round-trip per
+SSE-driven dashboard re-render.
+
+Implementation lives in `apps/web/public/js/pages/dashboard.js`. Reuses
+the existing `GET /api/settings/:userId` endpoint via `fetchSettings` —
+no new API. One new card, no other UI changes.
+
 ## [unreleased] — Embedded LLM model downloader (#187 AC#2)
 
 Closes AC#2 of #187. The single piece between "developer tool" and
@@ -142,6 +171,7 @@ model once installed) doesn't change at all.
   toast / banner alerting them proactively is a small follow-up.
 
 
+## [unreleased] — Accessibility: high-contrast + text-scale + voice STT route (#194 Child 4)
 
 Closes the a11y commitments of #194 Child 4. Detailed entry in PR #244.
 
