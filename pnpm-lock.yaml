@@ -611,6 +611,9 @@ importers:
       '@skytwin/core':
         specifier: workspace:*
         version: link:../core
+      '@skytwin/embedded-llm':
+        specifier: workspace:*
+        version: link:../embedded-llm
       '@skytwin/shared-types':
         specifier: workspace:*
         version: link:../shared-types

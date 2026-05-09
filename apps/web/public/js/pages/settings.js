@@ -190,6 +190,7 @@ export async function renderSettings(container, userId) {
             <option value="openai">OpenAI (GPT)</option>
             <option value="google">Google (Gemini)</option>
             <option value="ollama">Local AI on this machine (Ollama)</option>
+            <option value="embedded">Embedded (llama.cpp, no install)</option>
           </select>
         </div>
         <div style="margin-top: 0.75rem; display: flex; gap: 0.5rem; justify-content: space-between; align-items: center;">
@@ -972,6 +973,9 @@ const PROVIDER_MODELS = {
     { id: 'llama3.1', label: 'Llama 3.1' },
     { id: 'mistral', label: 'Mistral' },
   ],
+  embedded: [
+    { id: 'auto', label: 'Auto-detect (first GGUF in model dir)' },
+  ],
 };
 
 const PROVIDER_LABELS = {
@@ -979,6 +983,7 @@ const PROVIDER_LABELS = {
   openai: 'OpenAI (GPT)',
   google: 'Google (Gemini)',
   ollama: 'Ollama (local)',
+  embedded: 'Embedded (llama.cpp)',
 };
 
 // In-memory state for the current chain being edited

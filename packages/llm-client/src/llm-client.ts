@@ -16,12 +16,14 @@ import {
 import { generate as openaiGenerate } from './providers/openai.js';
 import { generate as googleGenerate } from './providers/google.js';
 import { generate as ollamaGenerate } from './providers/ollama.js';
+import { generate as embeddedGenerate } from './providers/embedded.js';
 
 const PROVIDER_FNS: Record<AIProviderName, ProviderGenerateFn> = {
   anthropic: anthropicGenerate,
   openai: openaiGenerate,
   google: googleGenerate,
   ollama: ollamaGenerate,
+  embedded: embeddedGenerate,
 };
 
 /**
@@ -41,6 +43,7 @@ const PROVIDER_STREAM_FNS: Record<AIProviderName, ProviderStreamFn> = {
   openai: makeFallbackStream(openaiGenerate),
   google: makeFallbackStream(googleGenerate),
   ollama: makeFallbackStream(ollamaGenerate),
+  embedded: makeFallbackStream(embeddedGenerate),
 };
 
 /**
