@@ -55,8 +55,9 @@ export const dxtExportRepository = {
 
   /**
    * List all exports for a user, newest first.
-   * Blob bytes are included — callers that need metadata-only should project
-   * away artifact_blob themselves.
+   * Blob bytes are included — for metadata-only listings (e.g. the
+   * `/api/dxt/exports` endpoint), prefer `listMetadataForUser` so we
+   * don't ship the full artifact bytes through Postgres → API → response.
    */
   async listForUser(userId: string): Promise<DxtExportRow[]> {
     const result = await query<DxtExportRow>(
@@ -68,4 +69,29 @@ export const dxtExportRepository = {
     );
     return result.rows;
   },
+
+  /**
+   * Metadata-only variant of listForUser — excludes artifact_blob and uses
+   * octet_length() for the byte count so blobs don't leave Postgres.
+   */
+  async listMetadataForUser(userId: string): Promise<DxtExportMetadataRow[]> {
+    const result = await query<DxtExportMetadataRow>(
+      `SELECT id, user_id, server_id, exported_at, artifact_sha256,
+              octet_length(artifact_blob)::INT AS blob_bytes
+       FROM dxt_exports
+       WHERE user_id = $1
+       ORDER BY exported_at DESC`,
+      [userId],
+    );
+    return result.rows;
+  },
 };
+
+export interface DxtExportMetadataRow {
+  id: string;
+  user_id: string;
+  server_id: string;
+  exported_at: Date;
+  artifact_sha256: Buffer;
+  blob_bytes: number;
+}

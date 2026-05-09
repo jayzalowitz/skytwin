@@ -113,6 +113,7 @@ export type {
 export { dxtExportRepository } from './repositories/index.js';
 export type {
   DxtExportRow,
+  DxtExportMetadataRow,
   CreateDxtExportInput,
 } from './repositories/index.js';
 

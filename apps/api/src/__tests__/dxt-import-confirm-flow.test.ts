@@ -20,11 +20,13 @@ const {
   mockMcpServerRepo: {
     getById: vi.fn(),
     getByUserAndRegistry: vi.fn(),
+    listSkillNamesForServer: vi.fn(async () => [] as string[]),
   },
   mockDxtExportRepo: {
     create: vi.fn(),
     findById: vi.fn(),
     listForUser: vi.fn(),
+    listMetadataForUser: vi.fn(),
   },
   mockDxtImportRepo: {
     create: vi.fn(),

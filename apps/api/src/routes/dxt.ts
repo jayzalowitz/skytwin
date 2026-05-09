@@ -15,7 +15,7 @@
 import { Router } from 'express';
 import type { Request } from 'express';
 import { mcpServerRepository, dxtExportRepository, dxtImportRepository, provenanceRepository, query } from '@skytwin/db';
-import type { McpServerRow, DxtExportRow } from '@skytwin/db';
+import type { McpServerRow, DxtExportMetadataRow } from '@skytwin/db';
 import { createLogger } from '@skytwin/core';
 import { serialize, deserialize, redactCommand } from '@skytwin/dxt';
 import type { DxtArtifactInput, DxtJsonPayload } from '@skytwin/dxt';
@@ -40,12 +40,21 @@ function getUserId(req: Request): string | undefined {
 
 /**
  * Build the DXT artifact input from an mcp_servers row.
- * Pulls the redacted args + transport details + per-app spend caps.
+ *
+ * `sourceInstanceId` is the originating MCP server row id (NOT the user id —
+ * passing the user there confused install-attribution on import).
+ *
+ * `skills` is the cached `list_tools()` set fetched from `mcp_server_skills`;
+ * the previous version always passed an empty array, so receivers couldn't
+ * see which tools the source had registered.
  */
 function buildArtifactInput(server: McpServerRow, sourceInstanceId: string, skills: string[]): DxtArtifactInput {
   const rawArgs = Array.isArray(server.args) ? (server.args as unknown[]).filter((a): a is string => typeof a === 'string') : [];
   const result: DxtArtifactInput = {
     sourceInstanceId,
+    // registry_id is required so the artifact identifies its capability by a
+    // stable id. display_name is unstable (rename-able) and isn't a valid
+    // import key — getByUserAndRegistry() only matches on registry_id.
     registryId: server.registry_id ?? server.display_name,
     transport: server.transport,
     skills,
@@ -98,7 +107,18 @@ export function createDxtRouter(): Router {
         return;
       }
 
-      const input = buildArtifactInput(server, userId, []);
+      // Reject export of capabilities without a stable registry_id — the
+      // import path can only round-trip rows it can re-resolve via
+      // getByUserAndRegistry, which keys on registry_id.
+      if (!server.registry_id) {
+        res.status(400).json({
+          error: 'Cannot export: this capability has no registry_id and cannot be re-imported safely',
+        });
+        return;
+      }
+
+      const skills = await mcpServerRepository.listSkillNamesForServer(serverId);
+      const input = buildArtifactInput(server, serverId, skills);
       const { blob, sha256 } = await serialize(input);
 
       const row = await dxtExportRepository.create({
@@ -134,13 +154,14 @@ export function createDxtRouter(): Router {
         return;
       }
 
-      const rows = await dxtExportRepository.listForUser(userId);
-      const exports = rows.map((r: DxtExportRow) => ({
+      // Metadata-only — never load full blobs into memory just to render the list.
+      const rows = await dxtExportRepository.listMetadataForUser(userId);
+      const exports = rows.map((r: DxtExportMetadataRow) => ({
         id: r.id,
         serverId: r.server_id,
         exportedAt: r.exported_at,
         sha256: r.artifact_sha256.toString('hex'),
-        blobBytes: r.artifact_blob.length,
+        blobBytes: r.blob_bytes,
       }));
 
       res.json({ exports });
@@ -206,11 +227,17 @@ export function createDxtRouter(): Router {
         return;
       }
 
-      let blob: Buffer;
-      try {
-        blob = Buffer.from(body.blob, 'base64');
-      } catch {
+      // Buffer.from(str, 'base64') silently drops invalid chars rather than
+      // throwing — the previous try/catch was unreachable. Validate the
+      // shape explicitly with a strict regex (RFC 4648 base64 alphabet,
+      // optional padding) before decoding.
+      if (!/^[A-Za-z0-9+/]+={0,2}$/.test(body.blob) || body.blob.length % 4 !== 0) {
         res.status(400).json({ error: 'blob must be valid base64' });
+        return;
+      }
+      const blob = Buffer.from(body.blob, 'base64');
+      if (blob.length === 0) {
+        res.status(400).json({ error: 'blob decoded to zero bytes' });
         return;
       }
 

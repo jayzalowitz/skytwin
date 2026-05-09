@@ -6,11 +6,13 @@ const { mockMcpServerRepo, mockDxtExportRepo, mockDxtImportRepo, mockProvenanceR
   mockMcpServerRepo: {
     getById: vi.fn(),
     getByUserAndRegistry: vi.fn(),
+    listSkillNamesForServer: vi.fn(async () => [] as string[]),
   },
   mockDxtExportRepo: {
     create: vi.fn(),
     findById: vi.fn(),
     listForUser: vi.fn(),
+    listMetadataForUser: vi.fn(),
   },
   mockDxtImportRepo: {
     create: vi.fn(),
@@ -148,8 +150,9 @@ describe('POST /api/dxt/export/:serverId', () => {
     expect(result.status).toBe(403);
   });
 
-  it('happy path: serializes, persists, returns blob', async () => {
+  it('happy path: serializes, persists, returns blob, AND uses serverId as sourceInstanceId + real skills', async () => {
     mockMcpServerRepo.getById.mockResolvedValueOnce(makeMcpServerRow());
+    mockMcpServerRepo.listSkillNamesForServer.mockResolvedValueOnce(['notion.create_page', 'notion.search']);
     const fakeRow = {
       id: EXPORT_ID,
       user_id: USER_ID,
@@ -177,19 +180,29 @@ describe('POST /api/dxt/export/:serverId', () => {
         sha256: expect.any(Buffer),
       }),
     );
+    expect(mockMcpServerRepo.listSkillNamesForServer).toHaveBeenCalledWith(SERVER_ID);
+  });
+
+  it('returns 400 when capability has no registry_id (cannot round-trip on import)', async () => {
+    mockMcpServerRepo.getById.mockResolvedValueOnce(makeMcpServerRow({ registry_id: null }));
+    const app = buildApp();
+    const result = await req(app, 'POST', `/api/dxt/export/${SERVER_ID}`);
+    expect(result.status).toBe(400);
+    const body = result.body as { error?: string };
+    expect(body.error).toMatch(/registry_id/);
   });
 });
 
 describe('GET /api/dxt/exports', () => {
-  it('returns metadata only (no blob bytes in response)', async () => {
-    mockDxtExportRepo.listForUser.mockResolvedValueOnce([
+  it('returns metadata only (no blob bytes in response) and never loads blobs from DB', async () => {
+    mockDxtExportRepo.listMetadataForUser.mockResolvedValueOnce([
       {
         id: EXPORT_ID,
         user_id: USER_ID,
         server_id: SERVER_ID,
         exported_at: new Date('2026-05-08T00:00:00Z'),
-        artifact_blob: Buffer.alloc(123),
         artifact_sha256: Buffer.alloc(32, 0xab),
+        blob_bytes: 123,
       },
     ]);
     const app = buildApp();
@@ -201,6 +214,9 @@ describe('GET /api/dxt/exports', () => {
     expect(body.exports[0]!['id']).toBe(EXPORT_ID);
     expect(body.exports[0]!['blobBytes']).toBe(123);
     expect(body.exports[0]).not.toHaveProperty('artifact_blob');
+    // Hard guarantee: do NOT call the blob-loading variant.
+    expect(mockDxtExportRepo.listForUser).not.toHaveBeenCalled();
+    expect(mockDxtExportRepo.listMetadataForUser).toHaveBeenCalledWith(USER_ID);
   });
 });
 
@@ -236,6 +252,24 @@ describe('POST /api/dxt/import', () => {
     expect(result.status).toBe(400);
     const body = result.body as { code?: string };
     expect(body.code).toBe('MAGIC_MISMATCH');
+  });
+
+  it('rejects blobs that contain non-base64 characters (regression: Buffer.from silently drops them)', async () => {
+    const app = buildApp();
+    // !@# are outside the base64 alphabet — silently stripped by Buffer.from
+    // unless we validate first.
+    const result = await req(app, 'POST', '/api/dxt/import', { blob: 'not!@#valid' });
+    expect(result.status).toBe(400);
+    const body = result.body as { error?: string };
+    expect(body.error).toMatch(/base64/);
+  });
+
+  it('rejects base64 strings whose length is not a multiple of 4', async () => {
+    const app = buildApp();
+    const result = await req(app, 'POST', '/api/dxt/import', { blob: 'AAA' });
+    expect(result.status).toBe(400);
+    const body = result.body as { error?: string };
+    expect(body.error).toMatch(/base64/);
   });
 
   it('happy path: round-trips export → import preview', async () => {
