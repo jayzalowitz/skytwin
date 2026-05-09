@@ -12,6 +12,8 @@ import type {
 } from '@skytwin/shared-types';
 import { CircuitBreaker, CircuitOpenError, withRetry } from '@skytwin/core';
 import { createStdioTransport } from './stdio-runner.js';
+import { isDockerAvailable, spawnInDockerNoNetworkAsync } from './docker-spawn.js';
+import { DockerStdioTransport } from './docker-stdio-transport.js';
 import type {
   McpExecutionLog,
   McpServerConfig,
@@ -190,19 +192,70 @@ export class McpHost implements IronClawAdapter {
       let stop: () => void | Promise<void>;
 
       if (config.transport === 'stdio') {
-        const { transport } = createStdioTransport(config);
-
-        transport.onclose = () => {
-          const entry = this.servers.get(config.id);
-          if (entry && entry.handle.status === 'running') {
-            entry.handle.status = 'failed';
-            entry.handle.lastError = 'Transport closed unexpectedly';
-            circuit.recordFailure();
+        // Zero-trust mode: wrap spawn in docker --network=none when requested.
+        // Only applies to stdio transport. HTTP/SSE servers are remote — network
+        // isolation would sever the connection entirely.
+        if (config.zeroTrustMode === true) {
+          if (!config.command) {
+            return { success: false, error: `Zero-trust stdio server '${config.id}' requires a command.` };
           }
-        };
 
-        await client.connect(transport);
-        stop = () => client.close();
+          const dockerAvailable = await isDockerAvailable();
+          if (!dockerAvailable) {
+            // Graceful fallback: log warning, mark failedToIsolate, continue with regular spawn.
+            process.stderr.write(
+              `[mcp-host] WARNING: zero-trust mode requested for '${config.id}' but Docker is not available. ` +
+              `Starting without container isolation. Set failedToIsolate=true.\n`,
+            );
+            handle.failedToIsolate = true;
+
+            const { transport } = createStdioTransport(config);
+            transport.onclose = () => {
+              const entry = this.servers.get(config.id);
+              if (entry && entry.handle.status === 'running') {
+                entry.handle.status = 'failed';
+                entry.handle.lastError = 'Transport closed unexpectedly';
+                circuit.recordFailure();
+              }
+            };
+            await client.connect(transport);
+            stop = () => client.close();
+          } else {
+            const dockerResult = await spawnInDockerNoNetworkAsync({
+              command: config.command,
+              args: config.args ?? [],
+              env: config.env,
+              mountGlobalNodeModules: true,
+              memoryMb: config.resourceLimits?.memoryMb,
+            });
+
+            const transport = new DockerStdioTransport(dockerResult);
+            transport.onclose = () => {
+              const entry = this.servers.get(config.id);
+              if (entry && entry.handle.status === 'running') {
+                entry.handle.status = 'failed';
+                entry.handle.lastError = 'Docker transport closed unexpectedly';
+                circuit.recordFailure();
+              }
+            };
+            await client.connect(transport);
+            stop = () => client.close();
+          }
+        } else {
+          const { transport } = createStdioTransport(config);
+
+          transport.onclose = () => {
+            const entry = this.servers.get(config.id);
+            if (entry && entry.handle.status === 'running') {
+              entry.handle.status = 'failed';
+              entry.handle.lastError = 'Transport closed unexpectedly';
+              circuit.recordFailure();
+            }
+          };
+
+          await client.connect(transport);
+          stop = () => client.close();
+        }
       } else if (config.transport === 'sse') {
         if (!config.url) {
           return { success: false, error: `SSE transport requires 'url'.` };
