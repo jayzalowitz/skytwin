@@ -1,18 +1,50 @@
-import { Router } from 'express';
+import { Router, type Request, type Response } from 'express';
 import {
   MODEL_REGISTRY,
   checkForUpgrade,
   recommendDefault,
   type RamBracket,
 } from '@skytwin/embedded-llm';
-import { modelDownloadRepository } from '@skytwin/db';
-import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
+import { modelDownloadRepository, type ModelDownloadRow } from '@skytwin/db';
+import {
+  bindUserIdParamOwnership,
+  requireOwnership,
+} from '../middleware/require-ownership.js';
 import {
   cancelDownload,
   pauseDownload,
   resolveModelDir,
   startDownload,
 } from '../embedded-llm/downloader.js';
+
+/**
+ * Fetch a download row and enforce that the authenticated user owns
+ * it. In dev-bypass mode (`req.authenticatedUserId === undefined`) the
+ * ownership check is skipped, matching `requireOwnership`'s contract.
+ *
+ * Returns the row on success, or null if the response has already been
+ * sent (404 / 403).
+ */
+async function loadOwnedDownload(
+  req: Request,
+  res: Response,
+  id: string,
+): Promise<ModelDownloadRow | null> {
+  const row = await modelDownloadRepository.findById(id);
+  if (!row) {
+    res.status(404).json({ error: 'download not found' });
+    return null;
+  }
+  const authUserId = req.authenticatedUserId;
+  if (authUserId !== undefined && authUserId !== row.user_id) {
+    res.status(403).json({
+      error: 'Forbidden',
+      message: 'You do not have access to this resource.',
+    });
+    return null;
+  }
+  return row;
+}
 
 /**
  * Embedded LLM routes (#187 AC#2 + AC#5).
@@ -73,7 +105,7 @@ export function createEmbeddedLlmRouter(): Router {
     res.json({ modelDir: resolveModelDir() });
   });
 
-  router.post('/downloads/start', async (req, res, next) => {
+  router.post('/downloads/start', requireOwnership, async (req, res, next) => {
     try {
       const body = req.body as Record<string, unknown>;
       const userId = body['userId'];
@@ -120,8 +152,8 @@ export function createEmbeddedLlmRouter(): Router {
     try {
       const { id } = req.params;
       if (!id) { res.status(400).json({ error: 'id required' }); return; }
-      const row = await modelDownloadRepository.findById(id);
-      if (!row) { res.status(404).json({ error: 'download not found' }); return; }
+      const row = await loadOwnedDownload(req, res, id);
+      if (!row) return;
       res.json({ download: rowToJson(row) });
     } catch (err) {
       next(err);
@@ -132,6 +164,8 @@ export function createEmbeddedLlmRouter(): Router {
     try {
       const { id } = req.params;
       if (!id) { res.status(400).json({ error: 'id required' }); return; }
+      const row = await loadOwnedDownload(req, res, id);
+      if (!row) return;
       const ok = await pauseDownload(id);
       res.json({ ok });
     } catch (err) {
@@ -143,8 +177,8 @@ export function createEmbeddedLlmRouter(): Router {
     try {
       const { id } = req.params;
       if (!id) { res.status(400).json({ error: 'id required' }); return; }
-      const row = await modelDownloadRepository.findById(id);
-      if (!row) { res.status(404).json({ error: 'download not found' }); return; }
+      const row = await loadOwnedDownload(req, res, id);
+      if (!row) return;
       // Resume re-runs `startDownload` for this row's (userId, modelId).
       // The function's idempotent-on-active-row behavior picks up the
       // existing row and continues from `bytes_downloaded`.
@@ -159,6 +193,8 @@ export function createEmbeddedLlmRouter(): Router {
     try {
       const { id } = req.params;
       if (!id) { res.status(400).json({ error: 'id required' }); return; }
+      const row = await loadOwnedDownload(req, res, id);
+      if (!row) return;
       const ok = await cancelDownload(id);
       res.json({ ok });
     } catch (err) {

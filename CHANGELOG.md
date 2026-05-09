@@ -53,14 +53,67 @@ minutes later the twin works fully offline.
   existing `.confidence-bar` styles), pause/resume/cancel buttons,
   error surface. Polls `/downloads/:id` every 1s while a download is
   active; stops polling on terminal status.
-- 14 unit tests for the route layer in
+- 25 unit tests for the route layer in
   `apps/api/src/__tests__/embedded-llm-downloads-routes.test.ts`:
   start happy + missing-userId/modelId + 404 unknown-model, get +
   404, percent capping at 100% for over-fetch, percent=0 for pending,
-  list-for-user, pause ok/false, resume + 404, cancel. Mocks
-  `@skytwin/db` + the downloader module — no real HTTP / filesystem.
+  list-for-user, pause ok/false, pause-404, resume + 404, cancel,
+  cancel-404, plus 7 cross-user-403 tests covering every mutating
+  endpoint plus the dev-bypass-allowed case. Mocks `@skytwin/db` +
+  the downloader module — no real HTTP / filesystem.
 
-API total: 477 passing (24 skipped). All 34 packages build clean.
+API total: 486 passing (24 skipped). All 34 packages build clean.
+
+### Fixed (post-/review)
+
+Copilot review on PR #247 surfaced 12 substantive findings; all
+addressed before merge:
+
+- **IDOR on `POST /downloads/start`**: applied `requireOwnership`
+  middleware so the request body's `userId` must match the
+  authenticated user.
+- **IDOR on `GET /downloads/:id` and the pause/resume/cancel routes**:
+  introduced a `loadOwnedDownload(req, res, id)` helper that fetches
+  the row and rejects with 403 if `req.authenticatedUserId` doesn't
+  match `row.user_id`. Dev bypass (no `authenticatedUserId`) keeps
+  current behavior.
+- **OOM on multi-GB SHA-256 verify**: replaced `readFile(path)` with a
+  streaming `createReadStream → hash.update(chunk)` loop in a new
+  `computeSha256(path)` helper. A 4GB GGUF no longer needs 4GB of
+  Node heap to verify.
+- **DB-level idempotency**: schema changed from a non-unique partial
+  index to a `UNIQUE` partial index on `(user_id, model_id)` for
+  non-terminal statuses, so two concurrent `/downloads/start` calls
+  can't both win past `findActive()`. `startDownload()` now also
+  catches the `23505` unique-violation that the loser's `INSERT`
+  raises and re-fetches the surviving row.
+- **In-memory race**: `startDownload()` now bails if the row is
+  already in `inFlight`, preventing two concurrent runners writing
+  the same `.partial`.
+- **Stale progress on Range-ignored**: when the server returns 200 to
+  a Range request, we now `updateProgress(id, 0)` immediately so the
+  poll UI doesn't display stale `bytes_downloaded` until the next
+  1MB flush.
+- **`total_bytes` never persisted**: added
+  `modelDownloadRepository.updateTotalBytes(id, n)` and call it when
+  Content-Length disagrees with the registry by >1MB. The progress
+  bar denominator now matches reality.
+- **DOM update broke action buttons**: the polling tick was finding
+  `labelLine.firstElementChild` and replacing it, which clobbered
+  the size/percent span on first run and the action-button span on
+  subsequent runs. Switched to stable `data-role` selectors
+  (`embedded-llm-progress-text`, `embedded-llm-status`) so updates
+  are scoped.
+- **Singleton listener stale closure**: `ensureListener()` no longer
+  closes over `container` or `userId` from the first mount. The
+  delegator now re-derives both at click time:
+  `document.getElementById('embedded-llm-card-target')` for the
+  container, `localStorage.getItem(KEY_USER_ID)` for the userId.
+  Same pattern as the other singleton delegators in this codebase.
+- **Test auth pattern**: switched from injecting `req.user.id` to
+  `req.authenticatedUserId` to match production. Added 7 new tests
+  covering cross-user 403 on every mutating endpoint plus the
+  dev-bypass-allowed path.
 
 ### Why this fits the theme
 

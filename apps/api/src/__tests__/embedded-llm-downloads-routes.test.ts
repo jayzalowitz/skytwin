@@ -52,12 +52,19 @@ const SAMPLE_ROW = {
   completed_at: null,
 };
 
-function buildApp(userId: string | null = USER_ID): Express {
+/**
+ * Build an Express app for tests. Production auth sets
+ * `req.authenticatedUserId` via `sessionAuth`; the ownership middleware
+ * compares it against userId in params/body/query (or against the row's
+ * user_id for `:id`-keyed routes). Pass `null` to simulate dev bypass —
+ * `requireOwnership` skips the check when `authenticatedUserId` is undefined.
+ */
+function buildApp(authUserId: string | null = USER_ID): Express {
   const app = express();
   app.use(express.json());
-  if (userId !== null) {
+  if (authUserId !== null) {
     app.use((req, _res, next) => {
-      (req as unknown as { user: { id: string } }).user = { id: userId };
+      req.authenticatedUserId = authUserId;
       next();
     });
   }
@@ -229,6 +236,7 @@ describe('GET /api/embedded-llm/downloads/user/:userId', () => {
 
 describe('POST /api/embedded-llm/downloads/:id/pause', () => {
   it('returns ok=true on successful pause', async () => {
+    mockRepo.findById.mockResolvedValue(SAMPLE_ROW);
     mockPauseDownload.mockResolvedValue(true);
     const { status, body } = await req(
       buildApp(),
@@ -241,6 +249,7 @@ describe('POST /api/embedded-llm/downloads/:id/pause', () => {
   });
 
   it('returns ok=false when row is not pausable', async () => {
+    mockRepo.findById.mockResolvedValue(SAMPLE_ROW);
     mockPauseDownload.mockResolvedValue(false);
     const { body } = await req(
       buildApp(),
@@ -248,6 +257,17 @@ describe('POST /api/embedded-llm/downloads/:id/pause', () => {
       `/api/embedded-llm/downloads/${DOWNLOAD_ID}/pause`,
     );
     expect(body['ok']).toBe(false);
+  });
+
+  it('returns 404 when download not found', async () => {
+    mockRepo.findById.mockResolvedValue(null);
+    const { status } = await req(
+      buildApp(),
+      'POST',
+      `/api/embedded-llm/downloads/${DOWNLOAD_ID}/pause`,
+    );
+    expect(status).toBe(404);
+    expect(mockPauseDownload).not.toHaveBeenCalled();
   });
 });
 
@@ -281,6 +301,7 @@ describe('POST /api/embedded-llm/downloads/:id/resume', () => {
 
 describe('POST /api/embedded-llm/downloads/:id/cancel', () => {
   it('returns ok=true on successful cancel', async () => {
+    mockRepo.findById.mockResolvedValue(SAMPLE_ROW);
     mockCancelDownload.mockResolvedValue(true);
     const { status, body } = await req(
       buildApp(),
@@ -289,5 +310,93 @@ describe('POST /api/embedded-llm/downloads/:id/cancel', () => {
     );
     expect(status).toBe(200);
     expect(body['ok']).toBe(true);
+  });
+
+  it('returns 404 when download not found', async () => {
+    mockRepo.findById.mockResolvedValue(null);
+    const { status } = await req(
+      buildApp(),
+      'POST',
+      `/api/embedded-llm/downloads/${DOWNLOAD_ID}/cancel`,
+    );
+    expect(status).toBe(404);
+    expect(mockCancelDownload).not.toHaveBeenCalled();
+  });
+});
+
+describe('cross-user access is forbidden', () => {
+  const OTHER_USER_ID = '11111111-2222-3333-4444-555555555555';
+
+  it('POST /downloads/start rejects when body userId differs from authenticated user', async () => {
+    const { status } = await req(
+      buildApp(USER_ID),
+      'POST',
+      '/api/embedded-llm/downloads/start',
+      { userId: OTHER_USER_ID, modelId: 'qwen-2.5-3b-q4' },
+    );
+    expect(status).toBe(403);
+    expect(mockStartDownload).not.toHaveBeenCalled();
+  });
+
+  it('GET /downloads/:id rejects when row belongs to another user', async () => {
+    mockRepo.findById.mockResolvedValue({ ...SAMPLE_ROW, user_id: OTHER_USER_ID });
+    const { status } = await req(
+      buildApp(USER_ID),
+      'GET',
+      `/api/embedded-llm/downloads/${DOWNLOAD_ID}`,
+    );
+    expect(status).toBe(403);
+  });
+
+  it('POST /downloads/:id/pause rejects when row belongs to another user', async () => {
+    mockRepo.findById.mockResolvedValue({ ...SAMPLE_ROW, user_id: OTHER_USER_ID });
+    const { status } = await req(
+      buildApp(USER_ID),
+      'POST',
+      `/api/embedded-llm/downloads/${DOWNLOAD_ID}/pause`,
+    );
+    expect(status).toBe(403);
+    expect(mockPauseDownload).not.toHaveBeenCalled();
+  });
+
+  it('POST /downloads/:id/resume rejects when row belongs to another user', async () => {
+    mockRepo.findById.mockResolvedValue({ ...SAMPLE_ROW, user_id: OTHER_USER_ID });
+    const { status } = await req(
+      buildApp(USER_ID),
+      'POST',
+      `/api/embedded-llm/downloads/${DOWNLOAD_ID}/resume`,
+    );
+    expect(status).toBe(403);
+    expect(mockStartDownload).not.toHaveBeenCalled();
+  });
+
+  it('POST /downloads/:id/cancel rejects when row belongs to another user', async () => {
+    mockRepo.findById.mockResolvedValue({ ...SAMPLE_ROW, user_id: OTHER_USER_ID });
+    const { status } = await req(
+      buildApp(USER_ID),
+      'POST',
+      `/api/embedded-llm/downloads/${DOWNLOAD_ID}/cancel`,
+    );
+    expect(status).toBe(403);
+    expect(mockCancelDownload).not.toHaveBeenCalled();
+  });
+
+  it('GET /downloads/user/:userId rejects when path userId differs from authenticated user', async () => {
+    const { status } = await req(
+      buildApp(USER_ID),
+      'GET',
+      `/api/embedded-llm/downloads/user/${OTHER_USER_ID}`,
+    );
+    expect(status).toBe(403);
+  });
+
+  it('dev bypass (no authenticatedUserId) allows access', async () => {
+    mockRepo.findById.mockResolvedValue({ ...SAMPLE_ROW, user_id: OTHER_USER_ID });
+    const { status } = await req(
+      buildApp(null),
+      'GET',
+      `/api/embedded-llm/downloads/${DOWNLOAD_ID}`,
+    );
+    expect(status).toBe(200);
   });
 });

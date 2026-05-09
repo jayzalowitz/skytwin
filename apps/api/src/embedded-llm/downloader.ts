@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import {
+  createReadStream,
   createWriteStream,
   existsSync,
   mkdirSync,
@@ -97,13 +98,34 @@ export async function startDownload(
     download = existing;
     resumed = existing.bytes_downloaded > 0;
   } else {
-    download = await modelDownloadRepository.create({
-      userId,
-      modelId,
-      targetPath,
-      totalBytes: model.approxBytes,
-      sha256Expected: model.sha256,
-    });
+    try {
+      download = await modelDownloadRepository.create({
+        userId,
+        modelId,
+        targetPath,
+        totalBytes: model.approxBytes,
+        sha256Expected: model.sha256,
+      });
+    } catch (err) {
+      // The DB-level unique partial index can reject concurrent inserts
+      // that both passed findActive(). Re-fetch and treat as resumed.
+      if (isUniqueViolation(err)) {
+        const refetch = await modelDownloadRepository.findActive(userId, modelId);
+        if (refetch === null) throw err;
+        download = refetch;
+        resumed = refetch.bytes_downloaded > 0;
+      } else {
+        throw err;
+      }
+    }
+  }
+
+  // If a runner is already executing for this row, skip kicking off a
+  // second one — two concurrent .partial writers would corrupt the
+  // file. The active runner will keep streaming and the caller polls
+  // for progress on the same row.
+  if (inFlight.has(download.id)) {
+    return { download, resumed };
   }
 
   // Kick off the async transfer. Caller doesn't await this — it polls
@@ -116,6 +138,12 @@ export async function startDownload(
   });
 
   return { download, resumed };
+}
+
+function isUniqueViolation(err: unknown): boolean {
+  if (typeof err !== 'object' || err === null) return false;
+  const code = (err as { code?: unknown }).code;
+  return code === '23505';
 }
 
 /**
@@ -244,6 +272,9 @@ async function runDownload(download: ModelDownloadRow): Promise<void> {
     if (existsSync(partialPath)) {
       try { unlinkSync(partialPath); } catch { /* best effort */ }
     }
+    // Persist the reset immediately so the polling UI doesn't briefly
+    // report a stale `bytes_downloaded` until the next 1MB flush.
+    await modelDownloadRepository.updateProgress(download.id, 0);
   }
   if (response.body === null) {
     inFlight.delete(download.id);
@@ -262,10 +293,7 @@ async function runDownload(download: ModelDownloadRow): Promise<void> {
     if (Number.isFinite(len) && len > 0) {
       const totalFromServer = response.status === 206 ? resumeFrom + len : len;
       if (Math.abs(totalFromServer - download.total_bytes) > 1024 * 1024) {
-        // Drift > 1MB — update so progress bar isn't lying.
-        await modelDownloadRepository.setStatus(download.id, 'downloading', {
-          bytesDownloaded: resumeFrom,
-        });
+        await modelDownloadRepository.updateTotalBytes(download.id, totalFromServer);
       }
     }
   }
@@ -321,9 +349,9 @@ async function runDownload(download: ModelDownloadRow): Promise<void> {
   const expectedHash = model.sha256.toLowerCase();
   const isPlaceholder = /^0+$/.test(expectedHash);
   if (!isPlaceholder) {
-    const fs = await import('node:fs/promises');
-    const buf = await fs.readFile(partialPath);
-    const actual = createHash('sha256').update(buf).digest('hex');
+    // Stream the file through the hash — multi-GB GGUFs would OOM the
+    // API process if we readFile()'d the whole thing into memory.
+    const actual = await computeSha256(partialPath);
     if (actual !== expectedHash) {
       // Corrupt download. Delete the partial — user should retry,
       // and we don't want a half-bad GGUF lingering on disk.
@@ -382,4 +410,16 @@ export async function recoverOnBoot(): Promise<void> {
 export function ensureDirectory(filePath: string): void {
   const dir = dirname(filePath);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+}
+
+/**
+ * Stream the file through a SHA-256 hash. Multi-GB GGUFs would OOM
+ * the API process if we loaded them into memory whole.
+ */
+async function computeSha256(path: string): Promise<string> {
+  const hash = createHash('sha256');
+  for await (const chunk of createReadStream(path)) {
+    hash.update(chunk as Buffer);
+  }
+  return hash.digest('hex');
 }

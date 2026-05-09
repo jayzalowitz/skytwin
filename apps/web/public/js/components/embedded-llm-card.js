@@ -22,7 +22,18 @@ import {
   resumeModelDownload,
   startModelDownload,
 } from '../api-client.js';
+import { KEY_USER_ID } from '../storage-keys.js';
 import { showErrorToast, showSavedToast } from '../toast.js';
+
+const CARD_TARGET_ID = 'embedded-llm-card-target';
+
+function getCurrentUserId() {
+  try {
+    return localStorage.getItem(KEY_USER_ID) || '';
+  } catch {
+    return '';
+  }
+}
 
 const ACTIVE_STATUSES = new Set(['pending', 'downloading', 'verifying', 'installing']);
 
@@ -105,11 +116,11 @@ function downloadCardHtml(download, modelName) {
     <div style="margin-top: 0.75rem;">
       <div style="display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem;">
         <span style="font-weight: 500;">${escapeHtml(modelName)}</span>
-        <span style="font-size: 0.8rem; color: ${isError ? 'var(--danger)' : 'var(--text-muted)'};">${escapeHtml(statusLabel(status))}</span>
+        <span data-role="embedded-llm-status" style="font-size: 0.8rem; color: ${isError ? 'var(--danger)' : 'var(--text-muted)'};">${escapeHtml(statusLabel(status))}</span>
       </div>
       ${progressBarHtml(percent)}
       <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 0.4rem; font-size: 0.75rem; color: var(--text-muted);">
-        <span>${bytesSoFar} / ${totalSize} · ${percent}%</span>
+        <span data-role="embedded-llm-progress-text">${bytesSoFar} / ${totalSize} · ${percent}%</span>
         <span style="display: flex; gap: 0.4rem;">${actionButtons}</span>
       </div>
       ${isError && download.error ? `<div style="margin-top: 0.5rem; font-size: 0.75rem; color: var(--danger);">${escapeHtml(download.error)}</div>` : ''}
@@ -215,21 +226,17 @@ function startPolling(container, userId, downloadId) {
         return;
       }
       // Active mid-download: just update the visible progress without
-      // re-fetching the registry.
+      // re-fetching the registry. Targeted updates via data-role
+      // selectors so the action-button span isn't disturbed.
       const fillEl = container.querySelector('.confidence-fill');
       if (fillEl instanceof HTMLElement) {
         fillEl.style.width = `${dl.percent}%`;
       }
       const bar = container.querySelector('[role="progressbar"]');
       if (bar) bar.setAttribute('aria-valuenow', String(dl.percent));
-      const labelLine = container.querySelector('#embedded-llm-card div[style*="font-size: 0.75rem"]');
-      if (labelLine) {
-        labelLine.firstElementChild?.replaceWith?.(document.createTextNode(''));
-        // Simpler: replace the size+percent text node only
-        const sizeSpan = labelLine.querySelector('span');
-        if (sizeSpan) {
-          sizeSpan.textContent = `${formatBytes(dl.bytesDownloaded)} / ${formatBytes(dl.totalBytes)} · ${dl.percent}%`;
-        }
+      const progressText = container.querySelector('[data-role="embedded-llm-progress-text"]');
+      if (progressText) {
+        progressText.textContent = `${formatBytes(dl.bytesDownloaded)} / ${formatBytes(dl.totalBytes)} · ${dl.percent}%`;
       }
     } catch {
       // Best-effort poll. The next render will pick up state.
@@ -246,10 +253,15 @@ function stopPolling() {
 }
 
 let _listenerWired = false;
-function ensureListener(container, userId) {
+function ensureListener() {
   if (_listenerWired) return;
   _listenerWired = true;
 
+  // Singleton document-level delegator. We deliberately don't close
+  // over `container` or `userId` — `renderSettings()` creates a new
+  // `#embedded-llm-card-target` element on every navigation, and a
+  // captured reference would point at a detached DOM node. Both are
+  // re-derived inside the handler from the current document state.
   document.addEventListener('click', async (e) => {
     const hash = (window.location.hash || '').split('?')[0];
     if (hash !== '#/settings') return;
@@ -258,6 +270,11 @@ function ensureListener(container, userId) {
     const el = target.closest('[data-action]');
     if (!el) return;
     const action = el.getAttribute('data-action');
+
+    const container = document.getElementById(CARD_TARGET_ID);
+    if (!container) return;
+    const userId = getCurrentUserId();
+    if (!userId) return;
 
     if (action === 'embedded-start-download') {
       const sel = container.querySelector('#embedded-model-select');
@@ -318,6 +335,6 @@ function ensureListener(container, userId) {
  */
 export async function mountEmbeddedLlmCard(container, userId) {
   if (!container) return;
-  ensureListener(container, userId);
+  ensureListener();
   await renderCardInto(container, userId);
 }

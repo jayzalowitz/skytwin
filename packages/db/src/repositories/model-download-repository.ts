@@ -104,6 +104,15 @@ export const modelDownloadRepository = {
     );
   },
 
+  async updateTotalBytes(id: string, totalBytes: number): Promise<void> {
+    await query(
+      `UPDATE model_downloads
+       SET total_bytes = $2
+       WHERE id = $1`,
+      [id, totalBytes],
+    );
+  },
+
   async setStatus(
     id: string,
     status: ModelDownloadStatus,

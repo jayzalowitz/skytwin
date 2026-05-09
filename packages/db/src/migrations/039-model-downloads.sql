@@ -40,9 +40,13 @@ CREATE TABLE IF NOT EXISTS model_downloads (
   completed_at TIMESTAMPTZ
 );
 
-CREATE INDEX IF NOT EXISTS model_downloads_user_active_idx
-  ON model_downloads (user_id, started_at DESC)
-  WHERE status NOT IN ('complete', 'failed', 'cancelled');
-
 CREATE INDEX IF NOT EXISTS model_downloads_user_all_idx
   ON model_downloads (user_id, started_at DESC);
+
+-- Partial UNIQUE index enforces "at most one active download per (user,
+-- model)" at the DB level. Without this, two concurrent /downloads/start
+-- calls can both pass the application-layer findActive() check and
+-- INSERT two rows that race on the same .partial file.
+CREATE UNIQUE INDEX IF NOT EXISTS model_downloads_user_active_uniq
+  ON model_downloads (user_id, model_id)
+  WHERE status NOT IN ('complete', 'failed', 'cancelled');

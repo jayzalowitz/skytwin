@@ -335,8 +335,10 @@ CREATE TABLE IF NOT EXISTS model_downloads (
   paused_at TIMESTAMPTZ,
   completed_at TIMESTAMPTZ
 );
-CREATE INDEX IF NOT EXISTS model_downloads_user_active_idx
-  ON model_downloads (user_id, started_at DESC)
-  WHERE status NOT IN ('complete', 'failed', 'cancelled');
 CREATE INDEX IF NOT EXISTS model_downloads_user_all_idx
   ON model_downloads (user_id, started_at DESC);
+-- Enforces "at most one active download per (user, model)" at the DB
+-- level so concurrent /downloads/start can't race past findActive().
+CREATE UNIQUE INDEX IF NOT EXISTS model_downloads_user_active_uniq
+  ON model_downloads (user_id, model_id)
+  WHERE status NOT IN ('complete', 'failed', 'cancelled');
