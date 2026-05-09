@@ -1,5 +1,71 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [unreleased] — Embedded LLM as a first-class llm-client provider (#187 AC#7)
+
+Closes AC#7 of #187: "Same `@skytwin/policy-prompts` prompts work
+against embedded model AND hosted models." Adds `'embedded'` as a
+fifth `AIProviderName` alongside the existing four (anthropic, openai,
+google, ollama). Callers of `LlmClient.generate()` now get embedded
+inference transparently when `embedded` is in their provider chain —
+no separate code path, no separate prompt format. Same circuit
+breaker, same fallback chain, same streaming wrapper. Local
+inference becomes one entry in the user's chain instead of a parallel
+universe the rest of the codebase has to know about.
+
+### Ships
+
+- `packages/shared-types/src/ai-provider.ts` — `AIProviderName` extended
+  with `'embedded'`. `PROVIDER_MODELS.embedded` lists `'auto'` (the
+  factory's default model resolution). `PROVIDER_INFO.embedded` carries
+  user-facing label/description plus `requiresApiKey: false`,
+  `requiresBaseUrl: false`.
+- `packages/llm-client/src/providers/embedded.ts` — provider function
+  that wraps `createEmbeddedTextPort()`. Renders `ChatMessage[]` to the
+  `role: content` block format `llama-cli -p` consumes (`system: ...`
+  → `user: ...` → `assistant:` trailing prompt). Inline `system`
+  messages take precedence over `options.systemPrompt`, matching the
+  OpenAI / Ollama providers. Caches the port instance per
+  resolved-model-key so detection runs once per model. Exports
+  `_clearEmbeddedPortCache()` for test isolation.
+- `packages/llm-client/src/llm-client.ts` — `embedded` registered in
+  `PROVIDER_FNS` and `PROVIDER_STREAM_FNS` (via `makeFallbackStream`,
+  the same path Ollama uses today). No structural changes to the
+  client; the new provider just slots into the existing chain.
+- `packages/llm-client/package.json` — declares
+  `@skytwin/embedded-llm: workspace:*`.
+- `apps/web/public/js/pages/settings.js` — adds `embedded` to the
+  `Settings → AI brain` provider picker dropdown plus its
+  `PROVIDER_MODELS` and `PROVIDER_LABELS` maps.
+- `packages/llm-client/src/__tests__/embedded-provider.test.ts` —
+  11 unit tests: trims output, passes maxTokens/temperature,
+  renders multi-turn ChatMessage[] with assistant trailer, inline
+  vs options system precedence, explicit modelPath vs auto, port
+  caching across calls, separate cache entries per model, error
+  propagation, ignored apiKey/baseUrl. Mocks `@skytwin/embedded-llm`
+  via `vi.mock` so tests never touch the real subprocess. Total
+  package now: 126 tests passing.
+
+### How callers use it
+
+```ts
+import { LlmClient } from '@skytwin/llm-client';
+
+const client = new LlmClient(userId, [
+  { provider: 'anthropic', apiKey: '...', model: 'claude-...' },
+  { provider: 'embedded', apiKey: '', model: 'auto' },        // local fallback
+]);
+
+// Identical call site whether the chain runs hosted or embedded.
+const { content } = await client.generate(prompt, { maxTokens: 256 });
+```
+
+### Out of scope
+
+- Streaming with token-level granularity from llama-cli — wrapped via
+  `makeFallbackStream` for now (single chunk on completion).
+- Cost dashboard zero-cost rendering for `embedded` provider — small
+  UI tweak in the cost panel; tracked as follow-up under #187 AC#8.
+
 ## [unreleased] — Auto-launch toggle UI + DXT drag-drop entry point (#191 + #180)
 
 Closes the auto-launch UX for #191 and the DXT drag-drop entry point for

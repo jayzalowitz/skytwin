@@ -1,7 +1,10 @@
 /**
  * Supported AI provider identifiers.
+ *
+ * `embedded` runs llama.cpp via subprocess (no HTTP, no API key) using
+ * `@skytwin/embedded-llm` — see `packages/llm-client/src/providers/embedded.ts`.
  */
-export type AIProviderName = 'anthropic' | 'openai' | 'google' | 'ollama';
+export type AIProviderName = 'anthropic' | 'openai' | 'google' | 'ollama' | 'embedded';
 
 /**
  * A single provider configuration in the user's AI chain.
@@ -42,6 +45,9 @@ export const PROVIDER_MODELS: Record<AIProviderName, { id: string; label: string
     { id: 'llama3.1', label: 'Llama 3.1' },
     { id: 'mistral', label: 'Mistral' },
   ],
+  embedded: [
+    { id: 'auto', label: 'Auto-detect (first GGUF in model dir)' },
+  ],
 };
 
 /**
@@ -71,5 +77,12 @@ export const PROVIDER_INFO: Record<AIProviderName, { label: string; description:
     description: 'Free, runs on your machine. Requires Ollama running locally.',
     requiresApiKey: false,
     requiresBaseUrl: true,
+  },
+  embedded: {
+    label: 'Embedded (llama.cpp)',
+    description:
+      'Free, runs in-process via llama.cpp. Requires `llama-cli` on PATH and a GGUF model (auto-detected from SKYTWIN_LLAMA_MODELS or pinned via SKYTWIN_LLAMA_MODEL).',
+    requiresApiKey: false,
+    requiresBaseUrl: false,
   },
 };

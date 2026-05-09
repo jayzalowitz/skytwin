@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@skytwin/core": "workspace:*",
+    "@skytwin/embedded-llm": "workspace:*",
     "@skytwin/shared-types": "workspace:*"
   },
   "devDependencies": {
