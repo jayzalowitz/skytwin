@@ -4,11 +4,13 @@ import { ServiceManager } from './service-manager.js';
 import { createTray } from './tray.js';
 import { getSavedBounds, trackWindowState } from './window-state.js';
 import { checkDependencies, showDependencyDialog } from './first-launch.js';
+import { AutoUpdateController, defaultAutoUpdateConfig } from './auto-update.js';
 
 const serviceManager = new ServiceManager();
 let mainWindow: BrowserWindow | null = null;
 let splashWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
+let updateController: AutoUpdateController | null = null;
 
 declare module 'electron' {
   interface BrowserWindow {
@@ -116,6 +118,15 @@ async function startApp(): Promise<void> {
   mainWindow.focus();
   splashWindow?.close();
   splashWindow = null;
+
+  // Wire auto-update only for packaged (production) builds.
+  // Skipped in dev mode to avoid noisy update checks against GitHub Releases
+  // during local development where the version may lag the published channel.
+  if (app.isPackaged) {
+    updateController = new AutoUpdateController(defaultAutoUpdateConfig());
+    updateController.schedulePeriodicChecks();
+    console.info('[auto-update] Periodic update checks scheduled.');
+  }
 }
 
 async function waitForWeb(timeoutMs: number): Promise<boolean> {
@@ -178,5 +189,6 @@ app.on('before-quit', () => {
   if (mainWindow) {
     mainWindow.isQuitting = true;
   }
+  updateController?.cancelScheduledChecks();
   serviceManager.stopAll();
 });

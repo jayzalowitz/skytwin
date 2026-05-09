@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   AutoUpdateController,
   NoopUpdateBackend,
+  ElectronUpdaterBackend,
+  defaultBackend,
   defaultAutoUpdateConfig,
   resolveFeedURL,
   type AutoUpdateConfig,
@@ -270,5 +272,75 @@ describe('defaultAutoUpdateConfig', () => {
     const cfg = defaultAutoUpdateConfig();
     expect(cfg.feedURL).toMatch(/\.local\//);
     if (saved !== undefined) process.env['SKYTWIN_UPDATE_URL'] = saved;
+  });
+});
+
+// ---------------------------------------------------------------------------
+// defaultBackend() — Electron-runtime detection
+// ---------------------------------------------------------------------------
+
+describe('defaultBackend()', () => {
+  it('returns NoopUpdateBackend when process.versions.electron is unset (test environment)', () => {
+    // In Vitest / Node.js, process.versions.electron is not set.
+    const backend = defaultBackend();
+    expect(backend).toBeInstanceOf(NoopUpdateBackend);
+  });
+
+  it('returns NoopUpdateBackend with explicit channel option when not in Electron', () => {
+    const backend = defaultBackend({ channel: 'beta' });
+    expect(backend).toBeInstanceOf(NoopUpdateBackend);
+  });
+
+  it('returns ElectronUpdaterBackend when process.versions.electron is set', () => {
+    // Temporarily simulate an Electron process by setting the version string.
+    const versions = process.versions as Record<string, string | undefined>;
+    const original = versions['electron'];
+    versions['electron'] = '30.0.0';
+    try {
+      const backend = defaultBackend({ channel: 'stable' });
+      expect(backend).toBeInstanceOf(ElectronUpdaterBackend);
+    } finally {
+      // Always restore — never leave the test process in a fake-Electron state.
+      if (original === undefined) {
+        delete versions['electron'];
+      } else {
+        versions['electron'] = original;
+      }
+    }
+  });
+
+  it('returns ElectronUpdaterBackend with beta channel when in Electron', () => {
+    const versions = process.versions as Record<string, string | undefined>;
+    const original = versions['electron'];
+    versions['electron'] = '30.0.0';
+    try {
+      const backend = defaultBackend({ channel: 'beta' });
+      expect(backend).toBeInstanceOf(ElectronUpdaterBackend);
+    } finally {
+      if (original === undefined) {
+        delete versions['electron'];
+      } else {
+        versions['electron'] = original;
+      }
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AutoUpdateController — defaultBackend wired via constructor
+// ---------------------------------------------------------------------------
+
+describe('AutoUpdateController — omitted backend uses defaultBackend()', () => {
+  it('constructs without a backend arg and returns no-update in test env', async () => {
+    // In test env (no process.versions.electron), defaultBackend() → Noop.
+    const controller = new AutoUpdateController(makeConfig());
+    const result = await controller.checkNow();
+    expect(result.status).toBe('no-update');
+  });
+
+  it('explicit NoopUpdateBackend passed still works (regression guard)', async () => {
+    const controller = new AutoUpdateController(makeConfig(), new NoopUpdateBackend());
+    const result = await controller.checkNow();
+    expect(result.status).toBe('no-update');
   });
 });

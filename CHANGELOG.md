@@ -1,5 +1,68 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [unreleased] — GitHub Releases auto-update channel + workflow (#188 follow-up)
+
+Closes the real auto-update channel for #188. #223 shipped the scaffold with
+`NoopUpdateBackend` and a `provider: generic` placeholder that was removed
+because env-interpolation (`${env.SKYTWIN_UPDATE_URL}`) failed CI. This PR
+switches to GitHub Releases (`provider: github`), which embeds a static
+owner/repo pair in the build config and reads `GH_TOKEN` from the environment
+only at publish time — no env vars needed for CI to build cleanly.
+
+### Ships
+
+- `apps/desktop/package.json` — `build.publish` block set to `provider: github`,
+  `owner: jayzalowitz`, `repo: skytwin`, `releaseType: release`. `electron-updater
+  ^6.6.0` added to `dependencies`.
+- `apps/desktop/src/auto-update.ts` — `ElectronUpdaterBackend` class: wraps
+  `autoUpdater` from electron-updater, sets `autoDownload = true` and
+  `autoInstallOnAppQuit = true` (silent install on next quit), maps result to
+  `UpdateCheckResult`. Uses a dynamic `require` so the import is deferred to
+  runtime inside a real Electron process and never resolved in tests or headless.
+  `defaultBackend(opts?)` factory: returns `ElectronUpdaterBackend` when
+  `process.versions.electron` is set, `NoopUpdateBackend` otherwise. `AutoUpdateController`
+  constructor now accepts an optional backend and falls back to `defaultBackend()`.
+- `apps/desktop/src/main.ts` — On `app.whenReady()` + `app.isPackaged`, constructs
+  `AutoUpdateController` and calls `schedulePeriodicChecks()`. On `before-quit`,
+  calls `cancelScheduledChecks()`. Skipped in dev mode (unpackaged runs).
+- `.github/workflows/release.yml` — Matrix build (macOS/Windows/Linux) triggered on
+  `v*.*.*` tags or `workflow_dispatch`. Publishes via `--publish always`. Secret names
+  documented in the file header comment block. Until secrets are added, produces
+  unsigned artifacts (same posture as before).
+- `apps/desktop/src/__tests__/auto-update.test.ts` — 6 new tests (total 23):
+  `defaultBackend()` returns Noop in test env, returns `ElectronUpdaterBackend` when
+  `process.versions.electron` is set (mocked inline), handles `channel: beta`, and
+  two constructor-level regression guards.
+
+### How to cut a release
+
+```
+git tag v0.x.y && git push origin v0.x.y
+```
+
+The workflow fires automatically. Binaries appear in GitHub Releases once the
+matrix jobs complete (typically 15-30 min). Clients running the previous version
+will pick up the update on their next 6-hour check cycle (or on next launch).
+
+### Code-signing status
+
+Signing is conditional on secrets being present in the GitHub repo:
+`MAC_CERT_P12_BASE64`, `MAC_CERT_PASSWORD`, `APPLE_ID`,
+`APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID` (macOS);
+`WIN_CERT_PFX_BASE64`, `WIN_CERT_PASSWORD` (Windows).
+Without these secrets the workflow publishes unsigned artifacts. Unsigned builds
+auto-update correctly but trigger OS security warnings on first launch.
+Certificate procurement is tracked separately.
+
+### Out of scope
+
+- In-app update notification UI (deferred to v1.1 polish)
+- Beta channel automation (stable channel only for v1)
+- Delta/patch deployment (electron-updater handles this automatically once the
+  channel has at least two releases)
+
+---
+
 ## [unreleased] — Zero-trust Docker runtime (#183 AC#4 closes)
 
 Completes AC#4 of issue #183. PR #222 shipped the policy + UI half (riskModifier

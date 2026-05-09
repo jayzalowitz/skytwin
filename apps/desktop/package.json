@@ -64,6 +64,12 @@
         }
       }
     },
+    "publish": {
+      "provider": "github",
+      "owner": "jayzalowitz",
+      "repo": "skytwin",
+      "releaseType": "release"
+    },
     "files": [
       "dist/**/*",
       "src/splash.html",
@@ -100,7 +106,8 @@
     ]
   },
   "dependencies": {
-    "electron-store": "^11.0.2"
+    "electron-store": "^11.0.2",
+    "electron-updater": "^6.6.0"
   },
   "devDependencies": {
     "electron": "^41.5.0",
