@@ -667,6 +667,25 @@ function renderOptInCard(optIn) {
   `;
 }
 
+/**
+ * Replace every action button in `el` with a single status badge.
+ *
+ * Per-button replaceWith on the previous implementation produced one badge
+ * per button — Accept + Reject buttons left two stacked "Accepted" badges.
+ * Now: remove all action buttons, then append one badge.
+ */
+function replaceActionsWithBadge(el, { className, text }) {
+  const actionBtns = el.querySelectorAll('[data-action]');
+  if (actionBtns.length === 0) return;
+  const parent = actionBtns[0].parentNode;
+  actionBtns.forEach((b) => b.remove());
+  if (!parent) return;
+  const badge = document.createElement('span');
+  badge.className = className;
+  badge.textContent = text;
+  parent.appendChild(badge);
+}
+
 async function handleAcceptOptIn(optInId, userId, btn) {
   if (btn) { btn.disabled = true; btn.textContent = 'Accepting…'; }
   try {
@@ -675,13 +694,7 @@ async function handleAcceptOptIn(optInId, userId, btn) {
     if (el) {
       el.style.opacity = '0.4';
       el.style.pointerEvents = 'none';
-      const actionBtns = el.querySelectorAll('[data-action]');
-      actionBtns.forEach((b) => b.replaceWith(
-        Object.assign(document.createElement('span'), {
-          className: 'badge badge-success',
-          textContent: 'Accepted',
-        }),
-      ));
+      replaceActionsWithBadge(el, { className: 'badge badge-success', text: 'Accepted' });
     }
     showToast('Skill opt-in accepted.', { kind: 'success' });
   } catch (err) {
@@ -698,13 +711,7 @@ async function handleRejectOptIn(optInId, userId, btn) {
     if (el) {
       el.style.opacity = '0.4';
       el.style.pointerEvents = 'none';
-      const actionBtns = el.querySelectorAll('[data-action]');
-      actionBtns.forEach((b) => b.replaceWith(
-        Object.assign(document.createElement('span'), {
-          className: 'badge badge-muted',
-          textContent: 'Rejected',
-        }),
-      ));
+      replaceActionsWithBadge(el, { className: 'badge badge-muted', text: 'Rejected' });
     }
     showToast('Skill opt-in rejected.', { kind: 'info' });
   } catch (err) {

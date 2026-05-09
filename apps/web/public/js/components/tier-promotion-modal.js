@@ -176,7 +176,11 @@ export function renderTierPromotionModal({
             ? 'suggest actions for your approval — nothing runs without your say-so.'
             : proposedTier === 'low_autonomy'
               ? 'handle small, low-risk actions without checking in each time.'
-              : 'handle most tasks on your behalf — you can still review and undo.'
+              : proposedTier === 'moderate_autonomy'
+                ? 'handle most routine tasks on your behalf — you can still review and undo.'
+                : proposedTier === 'high_autonomy'
+                  ? 'act broadly on your behalf, including higher-stakes work — you can still review, undo, or pull back to a lower tier at any time.'
+                  : 'take more autonomous action on your behalf — you can still review and undo.'
           }
         </p>
         <p class="muted" style="font-size: 0.82rem;">You can always adjust or reverse this from Capabilities settings.</p>
