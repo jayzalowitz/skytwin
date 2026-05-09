@@ -318,3 +318,25 @@ CREATE INDEX IF NOT EXISTS recovery_codes_user_all_idx
   ON recovery_codes (user_id, created_at DESC);
 
 ALTER TABLE users ADD COLUMN IF NOT EXISTS vacation_mode_until TIMESTAMPTZ;
+
+CREATE TABLE IF NOT EXISTS model_downloads (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  model_id STRING NOT NULL,
+  target_path STRING NOT NULL,
+  total_bytes INT8 NOT NULL,
+  bytes_downloaded INT8 NOT NULL DEFAULT 0,
+  sha256_expected STRING NOT NULL,
+  status STRING NOT NULL CHECK (status IN (
+    'pending', 'downloading', 'paused', 'verifying', 'installing', 'complete', 'failed', 'cancelled'
+  )),
+  error STRING,
+  started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  paused_at TIMESTAMPTZ,
+  completed_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS model_downloads_user_active_idx
+  ON model_downloads (user_id, started_at DESC)
+  WHERE status NOT IN ('complete', 'failed', 'cancelled');
+CREATE INDEX IF NOT EXISTS model_downloads_user_all_idx
+  ON model_downloads (user_id, started_at DESC);

@@ -40,6 +40,7 @@ import { createFederationRouter } from './routes/federation.js';
 import { createVoiceRouter } from './routes/voice.js';
 import { createCrisisModesRouter } from './routes/crisis-modes.js';
 import { createEmbeddedLlmRouter } from './routes/embedded-llm.js';
+import { recoverOnBoot as recoverEmbeddedLlmDownloads } from './embedded-llm/downloader.js';
 import { getExecutionRouter } from './execution-setup.js';
 import { startMdnsAdvertisement, stopMdnsAdvertisement } from './mdns.js';
 import { closePool, mcpServerMetricsRepository } from '@skytwin/db';
@@ -85,6 +86,15 @@ if (configErrors.length > 0) {
 // Initialize the execution router early to log adapter registration
 getExecutionRouter().catch((err) =>
   log.error('Failed to initialize execution router', {
+    error: err instanceof Error ? err.message : String(err),
+  }),
+);
+
+// Boot-time recovery for orphaned model downloads (#187 AC#2). Any row
+// stuck in 'downloading' from a prior process flips to 'paused' so the
+// user can resume manually. Best-effort — never blocks startup.
+recoverEmbeddedLlmDownloads().catch((err) =>
+  log.warn('Failed to recover orphaned model downloads', {
     error: err instanceof Error ? err.message : String(err),
   }),
 );
