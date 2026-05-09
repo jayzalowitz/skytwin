@@ -52,3 +52,14 @@ export {
   createEmbeddedSttPort,
   type CreatePortOverrides,
 } from './factory.js';
+
+export {
+  MODEL_REGISTRY,
+  findById,
+  listByBracket,
+  checkForUpgrade,
+  recommendDefault,
+  type ModelEntry,
+  type RamBracket,
+  type UpgradeRecommendation,
+} from './model-registry.js';

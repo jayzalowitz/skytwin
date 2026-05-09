@@ -39,6 +39,7 @@ import { createDxtRouter } from './routes/dxt.js';
 import { createFederationRouter } from './routes/federation.js';
 import { createVoiceRouter } from './routes/voice.js';
 import { createCrisisModesRouter } from './routes/crisis-modes.js';
+import { createEmbeddedLlmRouter } from './routes/embedded-llm.js';
 import { getExecutionRouter } from './execution-setup.js';
 import { startMdnsAdvertisement, stopMdnsAdvertisement } from './mdns.js';
 import { closePool, mcpServerMetricsRepository } from '@skytwin/db';
@@ -224,6 +225,7 @@ app.use('/api/lifebooks', sessionAuth, requireOwnership, createLifebooksRouter()
 app.use('/api/federation', sessionAuth, createFederationRouter()); // userId-param ownership applied in-router
 app.use('/api/voice', sessionAuth, createVoiceRouter()); // userId-param ownership applied in-router
 app.use('/api/crisis-modes', sessionAuth, createCrisisModesRouter()); // userId-param ownership in-router
+app.use('/api/embedded-llm', sessionAuth, createEmbeddedLlmRouter()); // catalog endpoints; no userId in path
 
 // Error handling middleware
 app.use(
