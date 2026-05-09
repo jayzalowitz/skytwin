@@ -32,7 +32,24 @@ function packEncrypted(result: { ciphertext: Buffer; iv: Buffer; tag: Buffer }):
   return Buffer.concat([result.iv, result.tag, result.ciphertext]);
 }
 
+/**
+ * Reverse of packEncrypted. Validates length up-front so corruption surfaces
+ * as a clear "packed buffer too short" error rather than the cryptic
+ * "Unsupported state or unable to authenticate data" thrown by AES-GCM
+ * when it's handed a too-short ciphertext.
+ *
+ * Minimum is IV_LENGTH (12) + TAG_LENGTH (16) = 28 bytes; that's an empty
+ * plaintext. Anything shorter is corruption or a wrong-format buffer.
+ */
+const MIN_PACKED_LENGTH = IV_LENGTH + TAG_LENGTH;
+
 function unpackEncrypted(packed: Buffer): { iv: Buffer; tag: Buffer; ciphertext: Buffer } {
+  if (!Buffer.isBuffer(packed) || packed.length < MIN_PACKED_LENGTH) {
+    throw new Error(
+      `unpackEncrypted: packed buffer too short (got ${packed?.length ?? 0} bytes, ` +
+        `need at least ${MIN_PACKED_LENGTH} for IV + tag)`,
+    );
+  }
   const iv = packed.subarray(0, IV_LENGTH);
   const tag = packed.subarray(IV_LENGTH, IV_LENGTH + TAG_LENGTH);
   const ciphertext = packed.subarray(IV_LENGTH + TAG_LENGTH);
@@ -84,6 +101,16 @@ interface OAuthRepositoryLike {
       tag: Buffer;
       keyVersion: number;
     },
+  ) => Promise<void>;
+  /**
+   * Update only the encrypted access token (for refresh-rotation when the
+   * row is stored encrypted). Leaves refresh token alone, NULLs the
+   * plaintext column so subsequent reads cannot fall back to the old value.
+   */
+  updateEncryptedAccessToken?: (
+    id: string,
+    encryptedAccessToken: Buffer,
+    expiresAt: Date,
   ) => Promise<void>;
 }
 
@@ -272,13 +299,29 @@ export class DbTokenStore implements OAuthTokenStore {
     // Token is expired or about to expire — refresh it
     const refreshed = await refreshAccessToken(this.oauthConfig, existing.refreshToken);
 
-    // Persist the new access token
-    await this.repo.updateAccessToken(
-      userId,
-      provider,
-      refreshed.accessToken,
-      refreshed.expiresAt,
-    );
+    // Persist the new access token. If the row is currently stored
+    // encrypted (key cache populated AND row has encrypted_access_token),
+    // write the new token to the ENCRYPTED column — otherwise getToken
+    // would keep returning the old, still-encrypted access token while
+    // the new plaintext sat unread.
+    const row = await this.repo.getToken(userId, provider);
+    const key = this.keyCache?.get(userId) ?? null;
+    if (
+      row?.id
+      && row.encrypted_access_token
+      && key !== null
+      && this.repo.updateEncryptedAccessToken
+    ) {
+      const packed = packEncrypted(encrypt(refreshed.accessToken, key));
+      await this.repo.updateEncryptedAccessToken(row.id, packed, refreshed.expiresAt);
+    } else {
+      await this.repo.updateAccessToken(
+        userId,
+        provider,
+        refreshed.accessToken,
+        refreshed.expiresAt,
+      );
+    }
 
     return {
       ...refreshed,

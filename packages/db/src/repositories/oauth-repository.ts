@@ -195,6 +195,33 @@ export const oauthRepository = {
     return result.rows[0] ?? null;
   },
 
+  /**
+   * Update the encrypted access-token column for a row whose tokens are
+   * stored encrypted (packed IV+tag+ciphertext format). Leaves the refresh
+   * token alone — Google rotates access tokens on refresh but not refresh
+   * tokens. Critical: also clears `access_token` plaintext so a subsequent
+   * read can't fall back to the old/stale plaintext.
+   *
+   * Without this method, refreshIfExpired wrote the new token to
+   * `access_token` (plaintext) while `encrypted_access_token` continued to
+   * hold the previous value — and getToken would then decrypt the old one.
+   */
+  async updateEncryptedAccessToken(
+    id: string,
+    encryptedAccessToken: Buffer,
+    expiresAt: Date,
+  ): Promise<void> {
+    await query(
+      `UPDATE oauth_tokens
+       SET encrypted_access_token = $1,
+           access_token           = NULL,
+           expires_at             = $2,
+           updated_at             = now()
+       WHERE id = $3`,
+      [encryptedAccessToken, expiresAt, id],
+    );
+  },
+
   async getUsersWithActiveTokens(): Promise<OAuthTokenRow[]> {
     return this.listAllConnections();
   },
@@ -294,23 +321,38 @@ export const oauthRepository = {
     id: string,
     input: {
       encryptedAccessToken: Buffer;
-      encryptedRefreshToken: Buffer;
+      // null means "this row had no refresh token to begin with — leave the
+      // column alone". Required for access-only rows; previously the type
+      // forced both Buffers and rotation skipped them, leaving them
+      // encrypted under the OLD key after rotation (undecryptable).
+      encryptedRefreshToken: Buffer | null;
       keyVersion: number;
     },
     client?: PoolClient,
   ): Promise<void> {
-    const sql = `UPDATE oauth_tokens
-       SET encrypted_access_token  = $1,
-           encrypted_refresh_token = $2,
-           encryption_key_version  = $3,
-           updated_at              = now()
-       WHERE id = $4`;
-    const params = [
-      input.encryptedAccessToken,
-      input.encryptedRefreshToken,
-      input.keyVersion,
-      id,
-    ];
+    // When refresh token is null we omit it from the UPDATE so the column
+    // keeps its existing value (NULL stays NULL). Two SQL shapes is fewer
+    // foot-guns than COALESCE on a Buffer column.
+    const sql = input.encryptedRefreshToken === null
+      ? `UPDATE oauth_tokens
+         SET encrypted_access_token = $1,
+             encryption_key_version = $2,
+             updated_at             = now()
+         WHERE id = $3`
+      : `UPDATE oauth_tokens
+         SET encrypted_access_token  = $1,
+             encrypted_refresh_token = $2,
+             encryption_key_version  = $3,
+             updated_at              = now()
+         WHERE id = $4`;
+    const params = input.encryptedRefreshToken === null
+      ? [input.encryptedAccessToken, input.keyVersion, id]
+      : [
+          input.encryptedAccessToken,
+          input.encryptedRefreshToken,
+          input.keyVersion,
+          id,
+        ];
 
     if (client) {
       await client.query(sql, params);

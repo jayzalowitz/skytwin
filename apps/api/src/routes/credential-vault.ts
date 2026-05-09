@@ -282,7 +282,15 @@ export function createCredentialVaultRouter(): Router {
       const initialized = meta !== null;
       const unlocked = sharedKeyCache.has(userId);
 
-      res.status(200).json({ initialized, unlocked });
+      // Expose keyVersion + lastRotated so the UI can render passphrase-age
+      // badges. The vault settings page reads these; previously it bound to
+      // undefined and rendered nothing.
+      res.status(200).json({
+        initialized,
+        unlocked,
+        keyVersion: meta?.current_key_version ?? null,
+        lastRotated: meta?.rotated_at ?? null,
+      });
     } catch (err) {
       next(err);
     }
@@ -378,29 +386,34 @@ export function createCredentialVaultRouter(): Router {
           // silently overwritten.
           const rows = await oauthRepository.listEncryptedForUser(userId, client);
 
-          // Re-encrypt each row
+          // Re-encrypt each row. Access-only rows (no refresh token) are
+          // re-encrypted too — previously they were silently skipped via
+          // `continue`, leaving them encrypted under the old key after the
+          // meta row's key_version bumped, i.e. undecryptable.
           for (const row of rows) {
-            if (!row.encrypted_access_token || !row.encrypted_refresh_token) continue;
+            if (!row.encrypted_access_token) continue;
 
             const {
               iv: atIv,
               tag: atTag,
               ciphertext: atCipher,
             } = unpackEncrypted(row.encrypted_access_token);
-            const {
-              iv: rtIv,
-              tag: rtTag,
-              ciphertext: rtCipher,
-            } = unpackEncrypted(row.encrypted_refresh_token);
-
             const accessToken = decrypt({ ciphertext: atCipher, iv: atIv, tag: atTag }, oldKey);
-            const refreshToken = decrypt(
-              { ciphertext: rtCipher, iv: rtIv, tag: rtTag },
-              oldKey,
-            );
-
             const newAtPacked = packEncrypted(encrypt(accessToken, newKey));
-            const newRtPacked = packEncrypted(encrypt(refreshToken, newKey));
+
+            let newRtPacked: Buffer | null = null;
+            if (row.encrypted_refresh_token) {
+              const {
+                iv: rtIv,
+                tag: rtTag,
+                ciphertext: rtCipher,
+              } = unpackEncrypted(row.encrypted_refresh_token);
+              const refreshToken = decrypt(
+                { ciphertext: rtCipher, iv: rtIv, tag: rtTag },
+                oldKey,
+              );
+              newRtPacked = packEncrypted(encrypt(refreshToken, newKey));
+            }
 
             await oauthRepository.rotateEncrypted(
               row.id,
@@ -433,6 +446,10 @@ export function createCredentialVaultRouter(): Router {
         log.error('Credential vault rotation transaction failed; rolled back', {
           userId,
           tokensAttempted: tokensReencrypted,
+          // Surface the actual error — without this, prod debugging is blind
+          // to whatever failed inside the tx (decrypt error, FK violation, …).
+          error: txErr instanceof Error ? txErr.message : String(txErr),
+          stack: txErr instanceof Error ? txErr.stack : undefined,
         });
         next(txErr);
         return;
