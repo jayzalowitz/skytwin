@@ -19,6 +19,7 @@ import { getExecutionRouter } from '../execution-setup.js';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
 import { sseManager } from '../sse.js';
 import { createLogger } from '@skytwin/core';
+import { getMemoryPortForUser } from '../memory-setup.js';
 
 const log = createLogger('api:approvals');
 
@@ -231,10 +232,10 @@ export function createApprovalsRouter(): Router {
         const interpretedSummary =
           (decision?.interpreted_situation?.['summary'] as string | undefined) ??
           undefined;
-        await mempalaceRepository.createEpisode({
+        const summary = interpretedSummary ?? `User ${body.action}d ${actionType}`;
+        const episodeRow = await mempalaceRepository.createEpisode({
           userId: body.userId,
-          situationSummary:
-            interpretedSummary ?? `User ${body.action}d ${actionType}`,
+          situationSummary: summary,
           domain: decision?.domain ?? 'general',
           situationType: decision?.situation_type ?? 'generic',
           contextSnapshot: {
@@ -250,6 +251,33 @@ export function createApprovalsRouter(): Router {
           decisionId: approval.decision_id,
           utilityScore: body.action === 'approve' ? 0.9 : 0.0,
         });
+
+        // Also push the episode into the gbrain memory backend so its
+        // semantic index covers approved/rejected outcomes (#197). The
+        // stub mempalace adapter no-ops; the real gbrain backend stores
+        // it in brain_episodes + brain_pages so the next similar
+        // signal's searchSemantic will surface this episode.
+        const resolved = await getMemoryPortForUser(body.userId);
+        await resolved.port
+          .recordEpisode({
+            id: episodeRow.id,
+            userId: body.userId,
+            wing: decision?.domain ?? undefined,
+            summary,
+            startedAt: new Date(),
+            endedAt: new Date(),
+            metadata: {
+              feedbackType: body.action,
+              actionType,
+              utilityScore: body.action === 'approve' ? 0.9 : 0.0,
+            },
+          })
+          .catch((portErr) => {
+            log.warn('Memory port recordEpisode failed (legacy table updated regardless)', {
+              decisionId: approval.decision_id,
+              error: portErr instanceof Error ? portErr.message : String(portErr),
+            });
+          });
       } catch (err) {
         // Episode recording is best-effort — never block the approval
         // response on a memory-layer hiccup.

@@ -43,6 +43,37 @@ import { getExecutionRouter } from '../execution-setup.js';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
 import { sseManager } from '../sse.js';
 import { validateEventIngest } from '../validators/event-ingest.js';
+import { getMemoryPortForUser } from '../memory-setup.js';
+import type { DecisionObject as _DecisionObject } from '@skytwin/shared-types';
+
+/**
+ * Best-effort: write an inbound raw event into the user's MemoryPort as a
+ * RawSignal so future searchSemantic queries can recover it. The default
+ * gbrain backend stores it in brain_pages with a vector + tsvector index;
+ * mempalace and the stub no-op silently. Errors are caller-swallowed.
+ *
+ * Why we don't reuse `mempalaceRepository.createSignal` directly: the
+ * MemoryPort is the contract every backend implements, and a future swap
+ * (e.g. to a remote gbrain MCP server) shouldn't require touching
+ * events.ts. Calling MemoryPort.recordSignal preserves that swap point.
+ */
+async function recordSignalToMemory(
+  userId: string,
+  decision: _DecisionObject,
+  rawEvent: Record<string, unknown>,
+): Promise<void> {
+  const resolved = await getMemoryPortForUser(userId);
+  // Build a stable id deterministic in `decision.id` so the same event
+  // can't double-write on retry.
+  const data = (rawEvent['data'] as Record<string, unknown> | undefined) ?? rawEvent;
+  await resolved.port.recordSignal({
+    id: `sig_${decision.id}`,
+    source: String(rawEvent['source'] ?? 'unknown'),
+    type: String(rawEvent['type'] ?? decision.situationType),
+    timestamp: decision.interpretedAt,
+    data,
+  });
+}
 
 /**
  * Create the events router for ingesting raw events.
@@ -257,6 +288,22 @@ export function createEventsRouter(): Router {
         temporalProfile,
         episodicMemories,
       };
+
+      // 6b. Best-effort: write the inbound signal into the gbrain memory
+      // backend so future searchSemantic queries can recover it. Without
+      // this, brain_pages stays empty in production for every signal that
+      // doesn't go through an explicit `MemoryPort.recordSignal` caller —
+      // which is to say, all of them, since events.ts is the entry point.
+      // This is the production path for the "twin remembers what happened"
+      // promise. Failures are swallowed so a memory-layer hiccup never
+      // blocks the decision pipeline.
+      void recordSignalToMemory(userId, decision, rawEvent).catch((err) => {
+        log.warn('Failed to record inbound signal into memory backend', {
+          userId,
+          decisionId: decision.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
 
       // 7. Evaluate through decision maker
       const outcome = await decisionMaker.evaluate(context);
