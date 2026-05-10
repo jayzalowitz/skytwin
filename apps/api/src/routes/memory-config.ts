@@ -6,6 +6,7 @@ import {
   countPages,
   pendingEmbeddingJobs,
 } from '@skytwin/memory-gbrain-crdb-adapter';
+import { mempalaceRepository } from '@skytwin/db';
 import {
   getMemoryPortForUser,
   setUserBackend,
@@ -136,6 +137,97 @@ export function createMemoryConfigRouter(): Router {
         error: err instanceof Error ? err.message : String(err),
       });
       return res.status(500).json({ error: 'diagnostics unavailable' });
+    }
+  });
+
+  /**
+   * GET /api/memory-config/dashboard — operator + user-facing view of what
+   * the twin actually remembers right now. Reads from the legacy
+   * `episodic_memories` + `knowledge_entities` tables (which all backends
+   * write through). Useful as evidence that the memory layer is doing
+   * something, both for debugging and for the dashboard UI.
+   */
+  router.get('/dashboard', async (req, res) => {
+    const userId = String(req.query['userId'] ?? '');
+    if (!UUID_REGEX.test(userId)) {
+      return res.status(400).json({ error: 'invalid userId' });
+    }
+    try {
+      const [counts, pendingJobs, recentEpisodes, entities] = await Promise.all([
+        countPages(userId).catch(() => ({ total: 0, embedded: 0 })),
+        pendingEmbeddingJobs().catch(() => 0),
+        mempalaceRepository.getEpisodes(userId, { limit: 10 }).catch(() => []),
+        mempalaceRepository.getEntities(userId).catch(() => []),
+      ]);
+
+      // Compute feedback trend across the recent episode window.
+      const feedbackCounts: Record<string, number> = {};
+      for (const ep of recentEpisodes) {
+        const ft = (ep.feedback_type as string | null) ?? 'no_feedback';
+        feedbackCounts[ft] = (feedbackCounts[ft] ?? 0) + 1;
+      }
+
+      // Entity histogram by type (top 5).
+      const entityByType: Record<string, number> = {};
+      for (const e of entities) {
+        const t = e.entity_type as string;
+        entityByType[t] = (entityByType[t] ?? 0) + 1;
+      }
+      const topEntityTypes = Object.entries(entityByType)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5)
+        .map(([type, count]) => ({ type, count }));
+
+      // Top 10 entities by recency (lastSeenAt desc).
+      const topEntities = entities
+        .slice()
+        .sort((a, b) => {
+          const at = a.updated_at instanceof Date ? a.updated_at.getTime() : new Date(a.updated_at as unknown as string).getTime();
+          const bt = b.updated_at instanceof Date ? b.updated_at.getTime() : new Date(b.updated_at as unknown as string).getTime();
+          return bt - at;
+        })
+        .slice(0, 10)
+        .map((e) => ({
+          id: e.id,
+          name: e.name,
+          entityType: e.entity_type,
+          lastSeenAt: e.updated_at,
+        }));
+
+      const formattedEpisodes = recentEpisodes.map((ep) => ({
+        id: ep.id,
+        summary: ep.situation_summary,
+        domain: ep.domain,
+        situationType: ep.situation_type,
+        actionTaken: ep.action_taken,
+        feedbackType: ep.feedback_type,
+        utilityScore: typeof ep.utility_score === 'number' ? ep.utility_score : Number(ep.utility_score),
+        createdAt: ep.created_at,
+      }));
+
+      return res.json({
+        userId,
+        index: {
+          totalPages: counts.total,
+          embeddedPages: counts.embedded,
+          pendingEmbeddingJobs: pendingJobs,
+        },
+        episodes: {
+          recent: formattedEpisodes,
+          feedbackCounts,
+        },
+        entities: {
+          total: entities.length,
+          topByRecency: topEntities,
+          topByType: topEntityTypes,
+        },
+      });
+    } catch (err) {
+      log.error('dashboard failed', {
+        userId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return res.status(500).json({ error: 'dashboard unavailable' });
     }
   });
 

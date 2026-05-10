@@ -86,11 +86,16 @@ export async function renderMemorySettings(container, userId) {
   container.innerHTML = `<div class="card"><h2>Memory backend</h2><p>Loading…</p></div>`;
   let data = null;
   let diagnostics = null;
+  let dashboard = null;
   try {
-    const res = await api('/api/memory-config');
-    if (res.ok) data = await res.json();
-    const dRes = await api('/api/memory-config/diagnostics');
-    if (dRes.ok) diagnostics = await dRes.json();
+    const [r1, r2, r3] = await Promise.all([
+      api('/api/memory-config'),
+      api('/api/memory-config/diagnostics'),
+      api('/api/memory-config/dashboard'),
+    ]);
+    if (r1.ok) data = await r1.json();
+    if (r2.ok) diagnostics = await r2.json();
+    if (r3.ok) dashboard = await r3.json();
   } catch (err) {
     container.innerHTML = `<div class="card"><h2>Memory backend</h2><p>Failed to load: ${escapeHtml(String(err))}</p></div>`;
     return;
@@ -177,5 +182,92 @@ export async function renderMemorySettings(container, userId) {
       </p>
     </div>
     ${diagBlock}
+    ${renderDashboard(dashboard)}
   `;
+}
+
+function renderDashboard(dashboard) {
+  if (!dashboard) return '';
+  const eps = dashboard.episodes?.recent ?? [];
+  const fbCounts = dashboard.episodes?.feedbackCounts ?? {};
+  const ents = dashboard.entities?.topByRecency ?? [];
+  const typeHist = dashboard.entities?.topByType ?? [];
+
+  const episodesBlock = eps.length === 0
+    ? `<p class="card-subtitle">No episodes yet. They'll appear here once your twin makes some decisions.</p>`
+    : `<table class="data-table" style="margin-top: 0.5rem; width: 100%;">
+        <thead><tr><th>When</th><th>Action</th><th>Outcome</th><th>Summary</th></tr></thead>
+        <tbody>
+          ${eps.map((ep) => `
+            <tr>
+              <td>${formatRelativeTime(ep.createdAt)}</td>
+              <td>${escapeHtml(ep.actionTaken ?? '—')}</td>
+              <td>${renderFeedbackBadge(ep.feedbackType)}</td>
+              <td>${escapeHtml(ep.summary ?? '')}</td>
+            </tr>`).join('')}
+        </tbody>
+      </table>`;
+
+  const fbBlock = Object.keys(fbCounts).length === 0
+    ? ''
+    : `<div style="margin-top: 0.5rem; font-size: 0.9em;">
+        ${Object.entries(fbCounts).map(([k, v]) =>
+          `<span style="margin-right: 0.75rem;">${renderFeedbackBadge(k)} <strong>${v}</strong></span>`
+        ).join('')}
+      </div>`;
+
+  const entitiesBlock = ents.length === 0
+    ? `<p class="card-subtitle">No entities mined yet. Connect Gmail / Calendar to start.</p>`
+    : `<ul style="margin-top: 0.5rem;">
+        ${ents.map((e) => `
+          <li>
+            <strong>${escapeHtml(e.name)}</strong>
+            <span class="card-subtitle">(${escapeHtml(e.entityType)})</span>
+          </li>`).join('')}
+      </ul>`;
+
+  const typeBlock = typeHist.length === 0
+    ? ''
+    : `<div style="margin-top: 0.5rem; font-size: 0.9em;">
+        ${typeHist.map((t) =>
+          `<span style="margin-right: 0.75rem;">${escapeHtml(t.type)} <strong>${t.count}</strong></span>`
+        ).join('')}
+      </div>`;
+
+  return `
+    <div class="card" style="margin-top: 1rem;">
+      <h3>What your twin remembers</h3>
+      <p class="card-subtitle" style="margin-bottom: 1rem;">
+        ${dashboard.entities?.total ?? 0} entities and
+        ${eps.length} recent episodes indexed.
+        Memory feeds back into every decision — past approvals boost similar actions,
+        past rejections push them down.
+      </p>
+      <h4>Recent decisions</h4>
+      ${episodesBlock}
+      ${fbBlock}
+      <h4 style="margin-top: 1rem;">Top entities</h4>
+      ${entitiesBlock}
+      ${typeBlock}
+    </div>
+  `;
+}
+
+function renderFeedbackBadge(type) {
+  if (type === 'approve') return '<span style="color: var(--success);">✓ approved</span>';
+  if (type === 'reject') return '<span style="color: var(--danger);">✗ rejected</span>';
+  if (type === 'undo') return '<span style="color: var(--danger);">↶ undone</span>';
+  if (type === 'correct') return '<span style="color: var(--warning);">✎ corrected</span>';
+  return '<span class="card-subtitle">pending</span>';
+}
+
+function formatRelativeTime(timestamp) {
+  if (!timestamp) return '—';
+  const ts = new Date(timestamp).getTime();
+  if (!Number.isFinite(ts)) return '—';
+  const seconds = Math.floor((Date.now() - ts) / 1000);
+  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  return `${Math.floor(seconds / 86400)}d ago`;
 }

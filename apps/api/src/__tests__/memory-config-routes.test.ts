@@ -38,6 +38,18 @@ vi.mock('@skytwin/memory-gbrain-crdb-adapter', async () => {
   };
 });
 
+const { mockGetEpisodes, mockGetEntities } = vi.hoisted(() => ({
+  mockGetEpisodes: vi.fn(),
+  mockGetEntities: vi.fn(),
+}));
+
+vi.mock('@skytwin/db', () => ({
+  mempalaceRepository: {
+    getEpisodes: mockGetEpisodes,
+    getEntities: mockGetEntities,
+  },
+}));
+
 vi.mock('@skytwin/core', () => ({
   createLogger: () => ({
     info: vi.fn(),
@@ -95,6 +107,8 @@ beforeEach(() => {
   mockCountPages.mockResolvedValue({ total: 42, embedded: 30 });
   mockPendingJobs.mockResolvedValue(7);
   mockGetSettings.mockResolvedValue(null);
+  mockGetEpisodes.mockResolvedValue([]);
+  mockGetEntities.mockResolvedValue([]);
   mockUpsertSettings.mockResolvedValue({
     user_id: USER_ID,
     backend: 'gbrain',
@@ -223,5 +237,82 @@ describe('GET /api/memory-config/diagnostics', () => {
       writesSecondaryFailed: 0,
       writesPrimaryFailed: 0,
     });
+  });
+});
+
+describe('GET /api/memory-config/dashboard', () => {
+  it('returns 400 on invalid userId', async () => {
+    const app = buildApp();
+    const res = await request(app, 'GET', '/api/memory-config/dashboard?userId=bad');
+    expect(res.status).toBe(400);
+  });
+
+  it('returns empty shape when no episodes/entities exist', async () => {
+    mockGetEpisodes.mockResolvedValue([]);
+    mockGetEntities.mockResolvedValue([]);
+    const app = buildApp();
+    const res = await request(app, 'GET', `/api/memory-config/dashboard?userId=${USER_ID}`);
+    expect(res.status).toBe(200);
+    const body = res.body as {
+      index: { totalPages: number; embeddedPages: number; pendingEmbeddingJobs: number };
+      episodes: { recent: unknown[]; feedbackCounts: Record<string, number> };
+      entities: { total: number; topByRecency: unknown[]; topByType: unknown[] };
+    };
+    expect(body.index.totalPages).toBe(42);
+    expect(body.episodes.recent).toHaveLength(0);
+    expect(body.entities.total).toBe(0);
+  });
+
+  it('aggregates feedback counts across recent episodes', async () => {
+    mockGetEpisodes.mockResolvedValue([
+      { id: 'e1', situation_summary: 's1', domain: 'email', situation_type: 'email_triage', action_taken: 'archive_email', feedback_type: 'approve', utility_score: 0.9, created_at: new Date() },
+      { id: 'e2', situation_summary: 's2', domain: 'email', situation_type: 'email_triage', action_taken: 'send_reply', feedback_type: 'reject', utility_score: 0, created_at: new Date() },
+      { id: 'e3', situation_summary: 's3', domain: 'email', situation_type: 'email_triage', action_taken: 'archive_email', feedback_type: 'approve', utility_score: 0.85, created_at: new Date() },
+    ]);
+    mockGetEntities.mockResolvedValue([]);
+    const app = buildApp();
+    const res = await request(app, 'GET', `/api/memory-config/dashboard?userId=${USER_ID}`);
+    expect(res.status).toBe(200);
+    const body = res.body as { episodes: { feedbackCounts: Record<string, number> } };
+    expect(body.episodes.feedbackCounts.approve).toBe(2);
+    expect(body.episodes.feedbackCounts.reject).toBe(1);
+  });
+
+  it('builds top entities by recency + type histogram', async () => {
+    const now = new Date();
+    const earlier = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    mockGetEpisodes.mockResolvedValue([]);
+    mockGetEntities.mockResolvedValue([
+      { id: 'p1', name: 'Alice', entity_type: 'person', updated_at: now },
+      { id: 'p2', name: 'Bob', entity_type: 'person', updated_at: earlier },
+      { id: 'org1', name: 'Acme', entity_type: 'organization', updated_at: now },
+    ]);
+    const app = buildApp();
+    const res = await request(app, 'GET', `/api/memory-config/dashboard?userId=${USER_ID}`);
+    expect(res.status).toBe(200);
+    const body = res.body as {
+      entities: {
+        total: number;
+        topByRecency: Array<{ name: string; entityType: string }>;
+        topByType: Array<{ type: string; count: number }>;
+      };
+    };
+    expect(body.entities.total).toBe(3);
+    // Most recent first
+    expect(body.entities.topByRecency[0]?.name).not.toBe('Bob');
+    // Type histogram sorted by count desc
+    expect(body.entities.topByType[0]?.type).toBe('person');
+    expect(body.entities.topByType[0]?.count).toBe(2);
+  });
+
+  it('survives a DB failure on one of the queries — returns partial data', async () => {
+    mockGetEpisodes.mockRejectedValue(new Error('db down'));
+    mockGetEntities.mockResolvedValue([{ id: 'p1', name: 'Alice', entity_type: 'person', updated_at: new Date() }]);
+    const app = buildApp();
+    const res = await request(app, 'GET', `/api/memory-config/dashboard?userId=${USER_ID}`);
+    expect(res.status).toBe(200);
+    const body = res.body as { episodes: { recent: unknown[] }; entities: { total: number } };
+    expect(body.episodes.recent).toHaveLength(0);
+    expect(body.entities.total).toBe(1);
   });
 });
