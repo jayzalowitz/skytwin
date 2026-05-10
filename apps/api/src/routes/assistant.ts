@@ -34,6 +34,7 @@ import { createLogger } from '@skytwin/core';
 
 import { sseManager } from '../sse.js';
 import { validateAssistantMessage } from '../validators/assistant-message.js';
+import { getMemoryPortForUser } from '../memory-setup.js';
 
 const log = createLogger('api:assistant');
 
@@ -131,30 +132,77 @@ function buildContextBuilder(): ContextBuilder {
   };
 
   /**
-   * Memory provider — splits the query into search terms and asks
-   * `mempalaceRepository.searchEpisodes` (the same backing call that
-   * `@skytwin/mempalace.MemoryStack.search` uses for its L3 deep-search
-   * layer). Stop-words and very short tokens are dropped so a query like
-   * "the plan for X" doesn't ILIKE-match every episode containing "the".
+   * Memory provider — uses the user's selected MemoryPort
+   * (`getMemoryPortForUser`). The default gbrain backend runs vector +
+   * tsvector RRF over brain_pages; mempalace runs the legacy ILIKE
+   * search; hybrid runs both and folds. We also fall back to the legacy
+   * `mempalaceRepository.searchEpisodes` ILIKE path so that even on a
+   * fresh install with an empty brain_pages table, the chat surfaces
+   * recent decisions immediately (without waiting for the embedding
+   * worker to backfill).
+   *
+   * The tradeoff: a hot install gets union-of-best (gbrain when it has
+   * pages, mempalace when it doesn't). A cold install with empty gbrain
+   * still answers from mempalace. No additional latency on the hot path
+   * because both sources are fetched in parallel.
    */
   const memoryProvider: MemoryContextProvider = {
     async search(userId, query, limit = 5) {
-      const terms = query
-        .toLowerCase()
-        .split(/[^a-z0-9]+/i)
-        .filter((t) => t.length >= 3);
-      if (terms.length === 0) return [];
-      const rows = await mempalaceRepository.searchEpisodes(userId, terms, limit);
-      return rows.map((r) => ({
+      // Run gbrain semantic search and mempalace ILIKE in parallel, then
+      // dedupe by (summary, occurredAt). Both calls have their own internal
+      // failure handling so caller can't throw.
+      const [semanticHits, mempalaceRows] = await Promise.all([
+        getMemoryPortForUser(userId)
+          .then((res) => res.port.searchSemantic(query, limit))
+          .catch(() => []),
+        (async () => {
+          const terms = query
+            .toLowerCase()
+            .split(/[^a-z0-9]+/i)
+            .filter((t) => t.length >= 3);
+          if (terms.length === 0) return [];
+          return mempalaceRepository.searchEpisodes(userId, terms, limit).catch(() => []);
+        })(),
+      ]);
+
+      interface MergedHit {
+        summary: string;
+        domain: string;
+        actionTaken: string | undefined;
+        outcome: string | undefined;
+        occurredAt: string | undefined;
+      }
+      // Convert both shapes into the renderer-friendly contract.
+      const fromSemantic: MergedHit[] = semanticHits.map((h) => {
+        const meta = (h.metadata ?? {}) as Record<string, unknown>;
+        return {
+          summary: h.content,
+          domain: typeof meta['domain'] === 'string' ? (meta['domain'] as string) : 'memory',
+          actionTaken:
+            typeof meta['actionType'] === 'string' ? (meta['actionType'] as string) : undefined,
+          outcome: undefined,
+          occurredAt: undefined,
+        };
+      });
+      const fromMempalace: MergedHit[] = mempalaceRows.map((r) => ({
         summary: r.situation_summary,
         domain: r.domain,
         actionTaken: r.action_taken ?? undefined,
-        // outcome is JSON; surface a compact 'kind' if present, else
-        // stringify a tiny preview. The renderer only needs a short
-        // human-readable hint, not a full structured payload.
         outcome: r.outcome ? renderOutcomeHint(r.outcome) : undefined,
         occurredAt: r.created_at instanceof Date ? r.created_at.toISOString() : undefined,
       }));
+
+      // Dedupe by summary text — same episode may surface from both sources.
+      const seen = new Set<string>();
+      const merged: MergedHit[] = [];
+      for (const item of [...fromSemantic, ...fromMempalace]) {
+        const key = item.summary.trim().toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        merged.push(item);
+        if (merged.length >= limit) break;
+      }
+      return merged;
     },
   };
 
