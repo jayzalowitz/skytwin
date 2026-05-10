@@ -309,6 +309,9 @@ importers:
       '@skytwin/mcp-host':
         specifier: workspace:*
         version: link:../../packages/mcp-host
+      '@skytwin/memory-gbrain-crdb-adapter':
+        specifier: workspace:*
+        version: link:../../packages/memory-gbrain-crdb-adapter
       '@skytwin/observability':
         specifier: workspace:*
         version: link:../../packages/observability
