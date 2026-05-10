@@ -15,6 +15,7 @@ export { LlmSituationStrategy } from './strategies/llm-situation.js';
 export { LlmCandidateGenerator } from './strategies/llm-candidates.js';
 export { FallbackSituationStrategy, FallbackCandidateGenerator } from './strategies/fallback-strategy.js';
 export { RuleBasedCandidateGenerator } from './strategies/rule-based-candidates.js';
+export { SenderAwareCandidateGenerator } from './strategies/sender-aware-candidates.js';
 
 export type {
   WhatWouldIDoRequest,

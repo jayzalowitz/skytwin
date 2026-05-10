@@ -7,6 +7,7 @@ import {
   FallbackSituationStrategy,
   FallbackCandidateGenerator,
   RuleBasedCandidateGenerator,
+  SenderAwareCandidateGenerator,
 } from '@skytwin/decision-engine';
 import { TwinService } from '@skytwin/twin-model';
 import { PolicyEvaluator } from '@skytwin/policy-engine';
@@ -18,13 +19,14 @@ import {
   userRepository,
   aiProviderRepository,
   emailLabelRepository,
+  mempalaceRepository,
   TwinRepositoryAdapter,
   PatternRepositoryAdapter,
   decisionRepositoryAdapter,
   explanationRepositoryAdapter,
   policyRepositoryAdapter,
 } from '@skytwin/db';
-import type { DecisionContext, ExecutionEvent, RiskAssessment, DimensionAssessment } from '@skytwin/shared-types';
+import type { DecisionContext, ExecutionEvent, RiskAssessment, DimensionAssessment, EpisodicMemory } from '@skytwin/shared-types';
 import { SituationType, TrustTier, RiskTier, RiskDimension } from '@skytwin/shared-types';
 import type { AIProviderName } from '@skytwin/shared-types';
 import { LlmClient } from '@skytwin/llm-client';
@@ -101,13 +103,26 @@ export function createEventsRouter(): Router {
       return emailLabelRepository.topLabelsForListId(userId, listId, limit);
     },
   };
-  // Rule-based fallbacks (always available)
+  // Rule-based fallbacks (always available). The DecisionMaker constructor
+  // takes an optional CandidateGenerator — when an LLM client is not
+  // configured we wrap the built-in rule-based generator with the
+  // sender-aware safety pre-pass so board / investor / legal / CFO emails
+  // never auto-archive even at MODERATE_AUTONOMY+ trust tiers. See
+  // packages/decision-engine/src/strategies/sender-aware-candidates.ts.
   const ruleBasedInterpreter = new SituationInterpreter();
-  const ruleBasedDecisionMaker = new DecisionMaker(
+  const baseRuleBasedDecisionMaker = new DecisionMaker(
     twinService,
     policyEvaluator,
     decisionRepositoryAdapter,
     undefined,
+    labelInferencePort,
+  );
+  const senderAwareGenerator = new SenderAwareCandidateGenerator(baseRuleBasedDecisionMaker);
+  const ruleBasedDecisionMaker = new DecisionMaker(
+    twinService,
+    policyEvaluator,
+    decisionRepositoryAdapter,
+    senderAwareGenerator,
     labelInferencePort,
   );
   // Set up workflow registry
@@ -151,6 +166,10 @@ export function createEventsRouter(): Router {
       if (llmClient && llmClient.hasProviders) {
         const llmSituation = new LlmSituationStrategy(llmClient);
         const llmCandidates = new LlmCandidateGenerator(llmClient);
+        // The LLM fallback path uses the sender-aware rule-based generator
+        // so if the LLM call fails (network / quota / parse error), the
+        // safety pre-pass for protected senders still runs. RuleBasedCandidateGenerator
+        // wraps a DecisionMaker; we pass the sender-aware-wrapped one.
         const ruleBasedCandidates = new RuleBasedCandidateGenerator(ruleBasedDecisionMaker);
         const situationStrategy = new FallbackSituationStrategy(llmSituation, ruleBasedInterpreter);
         const candidateStrategy = new FallbackCandidateGenerator(llmCandidates, ruleBasedCandidates);
@@ -186,12 +205,45 @@ export function createEventsRouter(): Router {
         decision.summary,
       );
 
-      // 5. Fetch patterns, traits, and temporal profile for richer scoring
-      const [patterns, traits, temporalProfile] = await Promise.all([
+      // 5. Fetch patterns, traits, temporal profile, and episodic memories
+      // for richer scoring. Episodes seed the DecisionMaker.scoreCandidate
+      // boost (decision-maker.ts:1285+) so past similar decisions with high
+      // utility nudge their action up the rankings — closing the
+      // memory-feeds-decisions loop. Episodes come from the mempalace table
+      // which is the legacy backing store and remains valid regardless of
+      // which gbrain backend the user has selected.
+      const [patterns, traits, temporalProfile, episodeRows] = await Promise.all([
         twinService.getPatterns(userId),
         twinService.getTraits(userId),
         twinService.getTemporalProfile(userId),
+        mempalaceRepository.getEpisodes(userId, {
+          domain: decision.domain,
+          situationType: decision.situationType,
+          limit: 10,
+        }).catch(() => []),
       ]);
+
+      const episodicMemories: EpisodicMemory[] = episodeRows.map((row) => ({
+        id: row.id,
+        userId: row.user_id,
+        situationSummary: row.situation_summary,
+        domain: row.domain,
+        situationType: row.situation_type,
+        contextSnapshot:
+          typeof row.context_snapshot === 'string'
+            ? (JSON.parse(row.context_snapshot) as EpisodicMemory['contextSnapshot'])
+            : ((row.context_snapshot as EpisodicMemory['contextSnapshot']) ?? {}),
+        actionTaken: row.action_taken ?? undefined,
+        outcome: undefined,
+        feedbackType: row.feedback_type as EpisodicMemory['feedbackType'],
+        feedbackDetail: row.feedback_detail ?? undefined,
+        decisionId: row.decision_id ?? undefined,
+        signalIds: row.signal_ids ?? [],
+        drawerIds: row.drawer_ids ?? [],
+        utilityScore: typeof row.utility_score === 'number' ? row.utility_score : Number(row.utility_score),
+        createdAt: row.created_at instanceof Date ? row.created_at : new Date(row.created_at),
+        updatedAt: row.updated_at instanceof Date ? row.updated_at : new Date(row.updated_at),
+      }));
 
       // 6. Build decision context
       const context: DecisionContext = {
@@ -203,6 +255,7 @@ export function createEventsRouter(): Router {
         patterns,
         traits,
         temporalProfile,
+        episodicMemories,
       };
 
       // 7. Evaluate through decision maker
