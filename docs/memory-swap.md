@@ -21,8 +21,10 @@ This document is a developer-facing runbook. Read
   backend — typically a mempalace adapter — to get the union of capabilities
   (semantic + spatial + AAAK compression).
 - **Legacy / single-engine:** `mempalace`. Selectable for users who prefer
-  the original spatial system; declares no semantic_search capability so
-  most retrieval falls back to keyword search.
+  the original spatial system. Declares `semantic_search` but its
+  underlying implementation is keyword `ILIKE` over drawer content — fine
+  for exact-token queries, weak on paraphrase-tolerant retrieval (see the
+  capability table below).
 
 ## Backends at a glance
 
