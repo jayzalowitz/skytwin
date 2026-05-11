@@ -177,9 +177,12 @@ export class GmailConnector implements SignalConnector {
 
   /**
    * Helper: GET a `users/me/messages?q=...` listing and return the message
-   * ids, swallowing network errors as an empty list (Layer 3 bootstrap should
-   * never hard-fail just because one of the two list queries returned 500 —
-   * the other batch can still serve the first-impression need).
+   * ids. Only transient failures (rate-limit / 5xx after retries) degrade
+   * to `[]` so Layer 3 bootstrap can still serve the first-impression need
+   * from the other batch. Non-transient failures (persistent auth, 4xx
+   * other than 404, malformed account state) propagate so the worker
+   * surfaces "your Google connection has a problem" instead of silently
+   * doing nothing forever — Copilot caught this on PR #252.
    */
   private async listMessageIds(url: string, accessToken: string): Promise<string[]> {
     try {
@@ -187,11 +190,13 @@ export class GmailConnector implements SignalConnector {
       const body = await resp.json() as { messages?: Array<{ id: string }> };
       return (body.messages ?? []).map((m) => m.id);
     } catch (err) {
-      console.warn(
-        `[gmail] Bootstrap list failed (${url}):`,
-        err instanceof Error ? err.message : String(err),
-      );
-      return [];
+      if (err instanceof RetryableHttpError) {
+        console.warn(
+          `[gmail] Transient bootstrap list failure (${url}): ${err.message}`,
+        );
+        return [];
+      }
+      throw err;
     }
   }
 

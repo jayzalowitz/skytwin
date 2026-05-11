@@ -65,9 +65,15 @@ const AUTOMATED_LOCAL_PARTS = new Set<string>([
 
 /**
  * Known transactional sender-domain patterns. These are domains that
- * structurally do not host humans — only system-generated mail. Anchored to
- * the end of the host so subdomains of legitimate human mail providers don't
- * false-match.
+ * structurally do not host humans — only system-generated mail.
+ *
+ * Most patterns are anchored at BOTH the host-component boundary
+ * `(^|\.)` and the end of the host `$` so subdomains of legitimate
+ * human mail providers don't false-match. The `noreply\.` pattern is
+ * deliberately NOT end-anchored: it matches the `noreply.<anything>`
+ * subdomain alias pattern SaaS apps use (e.g. `noreply.github.com`,
+ * `noreply.acme.com`). The trade-off is intentional and Copilot
+ * called it out on PR #252.
  */
 const AUTOMATED_DOMAIN_PATTERNS: RegExp[] = [
   /(^|\.)mailchimp\.com$/i,
@@ -76,9 +82,9 @@ const AUTOMATED_DOMAIN_PATTERNS: RegExp[] = [
   /(^|\.)amazonses\.com$/i,
   /(^|\.)sparkpostmail\.com$/i,
   /(^|\.)mailgun\.org$/i,
-  // GitHub notifications: from `notifications@github.com`, but the local-part
-  // match already catches that. The subdomain `noreply.` catch covers the
-  // long tail of `noreply.<vendor>.com` aliases used by SaaS apps.
+  // Subdomain-prefix anchor only: catches the `noreply.<vendor>.com`
+  // long tail. Intentional asymmetry with the end-anchored entries
+  // above, which target a specific apex domain.
   /(^|\.)noreply\./i,
 ];
 

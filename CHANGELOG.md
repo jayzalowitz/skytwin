@@ -2,6 +2,22 @@ All notable changes to SkyTwin will be documented in this file.
 
 ## [unreleased] — Memory bootstrap: stamp every signal with an authoring tier (#251 Layer 1)
 
+### Fixed (post-Copilot review)
+
+- `listMessageIds()` no longer swallows all errors. Non-transient
+  failures (persistent auth, 4xx other than 404, malformed account
+  state) propagate so the worker surfaces "your Google connection has
+  a problem" rather than silently bootstrapping zero signals forever.
+  Only `RetryableHttpError` (rate-limit / 5xx after retries) still
+  degrades to `[]` so one transient list failure doesn't take out the
+  other batch.
+- `AUTOMATED_DOMAIN_PATTERNS` doc comment now accurately describes
+  the deliberate asymmetry: most entries are end-anchored at the
+  apex domain (`$`), but `noreply\.` is intentionally NOT end-
+  anchored so the `noreply.<vendor>.com` long tail is caught.
+
+### Original change
+
 The first slice of #251. Layer 1 only labels the data — no retrieval-side
 weighting yet (that's Layer 2, gated on `realistic-retrieval.test.ts`
 improving) — so this PR is reversible and observable on its own.
