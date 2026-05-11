@@ -37,35 +37,43 @@ docker run -d --name "$CONTAINER_NAME" \
   start-single-node --insecure --listen-addr=0.0.0.0 >/dev/null
 
 echo "[harness] waiting for cockroach to accept connections"
+ready=0
 for i in {1..30}; do
   if PGPASSWORD= psql "postgres://root@localhost:${PG_PORT}/defaultdb?sslmode=disable" \
     -c "SELECT 1" >/dev/null 2>&1; then
+    ready=1
     break
   fi
   sleep 1
 done
+if [ "$ready" = "0" ]; then
+  echo "[harness] cockroach failed to accept connections within 30s; aborting"
+  docker logs "$CONTAINER_NAME" 2>&1 | tail -20 || true
+  exit 1
+fi
 
-echo "[harness] creating test database and user"
-psql "postgres://root@localhost:${PG_PORT}/defaultdb?sslmode=disable" -c \
+echo "[harness] creating test database"
+psql -v ON_ERROR_STOP=on "postgres://root@localhost:${PG_PORT}/defaultdb?sslmode=disable" -c \
   "CREATE DATABASE IF NOT EXISTS $DB_NAME" >/dev/null
-psql "postgres://root@localhost:${PG_PORT}/defaultdb?sslmode=disable" -c \
+
+# brain_* tables reference users(id) via FK. CRDB FKs cannot cross databases,
+# so inline a minimal users table into skytwin_test BEFORE applying the
+# migration. In production the users table is created via the main schema.
+echo "[harness] inlining minimal users table for FK resolution"
+psql -v ON_ERROR_STOP=on "postgres://root@localhost:${PG_PORT}/${DB_NAME}?sslmode=disable" -c \
   "CREATE TABLE IF NOT EXISTS users (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), email STRING NOT NULL UNIQUE, name STRING NOT NULL DEFAULT '', trust_tier STRING NOT NULL DEFAULT 'observer', autonomy_settings JSONB NOT NULL DEFAULT '{}', created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now())" >/dev/null
-# Note: in production the users table is created via the main schema; we
-# inline a minimal version here so the brain_* FKs resolve.
 
 echo "[harness] applying brain_* migration"
-psql "postgres://root@localhost:${PG_PORT}/${DB_NAME}?sslmode=disable" \
-  -f packages/db/src/migrations/040-gbrain-memory.sql >/dev/null
-# users table is in defaultdb; brain_* are in skytwin_test → FK won't
-# cross databases. Inline the users table into skytwin_test too.
-psql "postgres://root@localhost:${PG_PORT}/${DB_NAME}?sslmode=disable" -c \
-  "CREATE TABLE IF NOT EXISTS users (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), email STRING NOT NULL UNIQUE, name STRING NOT NULL DEFAULT '', trust_tier STRING NOT NULL DEFAULT 'observer', autonomy_settings JSONB NOT NULL DEFAULT '{}', created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now())" >/dev/null
-psql "postgres://root@localhost:${PG_PORT}/${DB_NAME}?sslmode=disable" \
+psql -v ON_ERROR_STOP=on "postgres://root@localhost:${PG_PORT}/${DB_NAME}?sslmode=disable" \
   -f packages/db/src/migrations/040-gbrain-memory.sql >/dev/null
 
 echo "[harness] seeding test user"
-TEST_USER_ID=$(psql -t "postgres://root@localhost:${PG_PORT}/${DB_NAME}?sslmode=disable" -c \
-  "INSERT INTO users (email, name) VALUES ('test@example.com', 'Test') RETURNING id" | tr -d ' \n')
+TEST_USER_ID=$(psql -v ON_ERROR_STOP=on -t -A "postgres://root@localhost:${PG_PORT}/${DB_NAME}?sslmode=disable" -c \
+  "INSERT INTO users (email, name) VALUES ('test@example.com', 'Test') RETURNING id" | tr -d '[:space:]')
+if [ -z "$TEST_USER_ID" ]; then
+  echo "[harness] failed to seed test user; aborting"
+  exit 1
+fi
 echo "[harness] test user id: $TEST_USER_ID"
 
 echo "[harness] running RUN_DB_TESTS=1 integration suite"
