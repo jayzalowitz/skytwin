@@ -94,10 +94,19 @@ memory_rooms
 | `knowledge_triples` | Temporal fact triples (subject-predicate-object) | On fact extraction | Point-in-time queries, timelines |
 | `episodic_memories` | Full decision episodes (situation→action→outcome) | Per-decision | Similar episode retrieval for decisions |
 | `entity_codes` | 3-letter AAAK compression codes | On compression | AAAK encoding/decoding |
+| `brain_pages` | Vector + tsvector pages backing the gbrain memory layer (#197) | Per-signal / per-episode | Hybrid RRF retrieval — `searchSemantic` |
+| `brain_entities` | Typed entities mined for gbrain | On entity extraction | gbrain knowledge graph |
+| `brain_triples` | Temporal triples for gbrain | On fact extraction | gbrain graph walks |
+| `brain_episodes` | Episodes recorded via the MemoryPort surface | Per-approval feedback | Memory-feeds-decisions boost |
+| `brain_signals` | Lossless RawSignal mirror (port export/import) | Per inbound signal | gbrain MemoryRecord round-trips |
+| `brain_settings` | Per-user backend choice (gbrain / hybrid / mempalace) + hybrid notice dismissal | On dashboard switch | Backend factory in `apps/api/src/memory-setup.ts` |
+| `brain_embedding_jobs` | Durable queue for async embedding (FOR UPDATE SKIP LOCKED) | When write-path embedding fails | Worker drain every 30s |
 
 ### Primary Keys
 
-All primary keys use UUIDs (`gen_random_uuid()`). CockroachDB handles UUID distribution well across nodes, and UUIDs avoid the hot-spot problems that sequential IDs create in distributed systems.
+Most primary keys use UUIDs (`gen_random_uuid()`). CockroachDB handles UUID distribution well across nodes, and UUIDs avoid the hot-spot problems that sequential IDs create in distributed systems.
+
+The `brain_*` tables (#197 gbrain memory backend) use **STRING primary keys** with a UUID default (`gen_random_uuid()::STRING`). This is load-bearing: production signal IDs are connector-assigned opaque strings like `sig_gmail_abc123`, not UUIDs. Forcing UUID on `brain_signals.id` etc. would 500 every `recordSignal`. The MemoryPort contract treats record IDs as opaque strings, so the storage layer follows.
 
 ```sql
 CREATE TABLE users (

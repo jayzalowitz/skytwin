@@ -30,7 +30,12 @@ skytwin/
     explanations/    # Human-readable explanation generation
     connectors/      # External service integrations (email, calendar, etc.)
     evals/           # Evaluation harness for decision quality
-    mempalace/       # Memory Palace: episodic memory, knowledge graph, 4-layer retrieval
+    memory-port/     # Backend-agnostic MemoryPort contract + capability negotiation (#196)
+    memory-gbrain/   # Default memory backend (#197) — CRDB-native vector + tsvector RRF
+    memory-gbrain-crdb-adapter/  # CRDB driver, embedding providers, in-memory store, RRF fold
+    memory-hybrid/   # Composes two MemoryPort impls with routing + dual-write
+    memory-mempalace/ # MemPalaceMemoryPort adapter (legacy backend, selectable)
+    mempalace/       # Legacy memory system: episodic memory, knowledge graph, 4-layer retrieval
 
   docs/              # Architecture and design documentation
   planning/          # Milestone and issue tracking documents
@@ -244,6 +249,26 @@ FeedbackEvent → user response, feeds back to twin
     v
 @skytwin/mempalace
 (depends on: shared-types, db, core)
+    |
+    v
+@skytwin/memory-port
+(depends on: shared-types)
+    |
+    v
+@skytwin/memory-gbrain-crdb-adapter
+(depends on: memory-port, db, core)
+    |
+    v
+@skytwin/memory-gbrain
+(depends on: memory-port, memory-gbrain-crdb-adapter, core, shared-types)
+    |
+    v
+@skytwin/memory-mempalace
+(depends on: memory-port, mempalace, shared-types)
+    |
+    v
+@skytwin/memory-hybrid
+(depends on: memory-port, core)
     |
     v
 @skytwin/evals
