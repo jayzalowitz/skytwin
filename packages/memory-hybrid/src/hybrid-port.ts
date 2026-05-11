@@ -240,13 +240,16 @@ export class HybridMemoryPort implements MemoryPort {
   /**
    * Resolve which port to use for a read operation.
    *
-   * Priority (in order):
-   *   1. Explicit routing override for the method name. If the override names
-   *      the primary but the primary lacks the capability, fall through to
-   *      the secondary anyway — never silently route to a port that can't
-   *      serve the call.
-   *   2. Default routing table preference.
-   *   3. Final fallback: whichever port declares the capability.
+   * Logic:
+   *   - Read the routing preference for the method (`'primary'` or
+   *     `'secondary'`) from `this.routing[methodKey]`.
+   *   - Use the preferred port if it declares the relevant capability;
+   *     otherwise fall through to the other port. Never silently route to
+   *     a port that can't serve the call.
+   *
+   * If neither port declares the capability the fallback simply returns
+   * the non-preferred port, which then surfaces a no-results response —
+   * matching the contract for "this backend doesn't support that operation".
    *
    * Diagnostics counters track every read so misrouting bugs surface in the
    * `/api/memory-config/diagnostics` snapshot.

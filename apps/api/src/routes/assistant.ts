@@ -149,8 +149,11 @@ function buildContextBuilder(): ContextBuilder {
   const memoryProvider: MemoryContextProvider = {
     async search(userId, query, limit = 5) {
       // Run gbrain semantic search and mempalace ILIKE in parallel, then
-      // dedupe by (summary, occurredAt). Both calls have their own internal
-      // failure handling so caller can't throw.
+      // dedupe by normalized summary text — the gbrain side never has an
+      // occurredAt, so including it in the key would prevent cross-source
+      // dedupe entirely (every gbrain hit's occurredAt is undefined while
+      // every mempalace hit's is a string, so they'd never match). Both
+      // calls have their own internal failure handling so caller can't throw.
       const [semanticHits, mempalaceRows] = await Promise.all([
         getMemoryPortForUser(userId)
           .then((res) => res.port.searchSemantic(query, limit))

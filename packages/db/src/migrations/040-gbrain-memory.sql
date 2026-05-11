@@ -163,7 +163,10 @@ CREATE TABLE IF NOT EXISTS brain_settings (
 CREATE TABLE IF NOT EXISTS brain_embedding_jobs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  page_id UUID NOT NULL REFERENCES brain_pages(id) ON DELETE CASCADE,
+  -- Matches brain_pages.id (STRING). Earlier draft had UUID here, but
+  -- brain_pages.id is STRING so non-UUID page ids (e.g. signal-derived
+  -- pages) could not be enqueued without a type-cast error.
+  page_id STRING NOT NULL REFERENCES brain_pages(id) ON DELETE CASCADE,
   status STRING NOT NULL DEFAULT 'pending'
     CHECK (status IN ('pending', 'in_progress', 'completed', 'failed')),
   attempts INT NOT NULL DEFAULT 0,

@@ -591,18 +591,25 @@ export function formatVector(v: number[]): number[] {
   return v;
 }
 
-function parsePageRow(row: BrainPageRow): BrainPageRow {
-  // pg returns FLOAT8[] as a string like "{0.1,0.2}" only if no parser is
-  // installed; with the default parser it's already number[] — but defensive
-  // parsing is cheap.
-  if (typeof row.embedding === 'string') {
-    row = { ...row, embedding: parsePgArray(row.embedding) };
-  }
+/**
+ * Raw shape pg can hand us before the FLOAT8[] parser normalizes things.
+ * `embedding` can come back as a `number[]` (default) or the bare
+ * `"{0.1,0.2}"` array literal (when the array parser isn't installed or
+ * on some pg-compatible drivers). `parsePageRow` narrows it.
+ */
+type RawBrainPageRow = Omit<BrainPageRow, 'embedding'> & {
+  embedding: number[] | string | null;
+};
+
+function parsePageRow(raw: RawBrainPageRow): BrainPageRow {
+  const embedding =
+    typeof raw.embedding === 'string' ? parsePgArray(raw.embedding) : raw.embedding;
   return {
-    ...row,
-    metadata: parseJson(row.metadata) ?? {},
-    created_at: new Date(row.created_at),
-    updated_at: new Date(row.updated_at),
+    ...raw,
+    embedding,
+    metadata: parseJson(raw.metadata) ?? {},
+    created_at: new Date(raw.created_at),
+    updated_at: new Date(raw.updated_at),
   };
 }
 
