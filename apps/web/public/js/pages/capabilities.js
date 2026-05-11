@@ -116,12 +116,7 @@ function handleCapabilitiesAction(e) {
       if (slug) handleInstallRecipe(slug, userId, btn);
       break;
     }
-    case 'registry-search-submit':
-    case 'registry-filter-change': {
-      renderRegistryResults(userId, readRegistryFilterState());
-      break;
-    }
-    case 'registry-category-change': {
+    case 'registry-search-submit': {
       renderRegistryResults(userId, readRegistryFilterState());
       break;
     }
@@ -207,7 +202,12 @@ export async function renderCapabilities(container, userId) {
   _cachedDormant = capData.dormant ?? [];
   _cachedRecipes = recipesData.recipes ?? [];
   _cachedPendingOptIns = optInsData.optIns ?? [];
-  _cachedLifebooks = (lifebooksData?.lifebooks ?? []).filter((lb) => !lb.hiddenAt);
+  // `GET /api/lifebooks/:userId` already calls `listVisible()` server-side,
+  // so the response is hidden-filtered. Defensive client-side filter uses
+  // the actual API field (`hidden: boolean`) — Copilot caught that the
+  // prior `!lb.hiddenAt` was a no-op (wrong field name) and would have
+  // fail-opened if the endpoint ever changed to return hidden rows.
+  _cachedLifebooks = (lifebooksData?.lifebooks ?? []).filter((lb) => !lb.hidden);
 
   container.innerHTML = `
     <div style="display: flex; flex-direction: column; gap: 1.5rem;">
@@ -227,7 +227,12 @@ export async function renderCapabilities(container, userId) {
         </div>
         <div style="display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap;">
           <input class="form-input" id="registry-search" placeholder="Search capabilities…" style="flex: 2; min-width: 160px;">
-          <select class="form-input" id="registry-category" style="flex: 1; min-width: 120px;" data-action="registry-category-change">
+          <!-- The explicit change listener wired below is the sole
+               entry point for this select. Previously a data-action
+               attribute also forwarded clicks through the global
+               delegator, double-firing renderRegistryResults on every
+               dropdown-open. Copilot caught the duplicate on PR #256. -->
+          <select class="form-input" id="registry-category" style="flex: 1; min-width: 120px;">
             <option value="">All categories</option>
             <option value="developer">Developer</option>
             <option value="productivity">Productivity</option>
@@ -273,8 +278,11 @@ export async function renderCapabilities(container, userId) {
  */
 function renderLifebookFilterDropdown(lifebooks) {
   if (!Array.isArray(lifebooks) || lifebooks.length === 0) return '';
+  // No data-action — change events are wired explicitly below. Keeping
+  // the action would double-fire `renderRegistryResults` (once on the
+  // click that opens the dropdown, again on the change after selection).
   return `
-    <select class="form-input" id="registry-lifebook" style="flex: 1; min-width: 140px;" data-action="registry-filter-change" aria-label="Filter by Lifebook">
+    <select class="form-input" id="registry-lifebook" style="flex: 1; min-width: 140px;" aria-label="Filter by Lifebook">
       <option value="">All Lifebooks</option>
       ${lifebooks.map((lb) => `<option value="${escapeHtml(lb.domainName)}">${escapeHtml(lb.domainName)}</option>`).join('')}
     </select>
@@ -578,19 +586,23 @@ async function renderRegistryResults(userId, state) {
 
 /**
  * Intersect a registry-entries list with the selected Lifebook's
- * `suggestedCapabilities` set. Pure function so it's trivial to unit-test
- * separately if a vitest harness for `apps/web` lands later.
+ * `suggestedCapabilities` set. Pure function — all three inputs are
+ * arguments; no module-scope reads — so a future vitest harness for
+ * `apps/web` can drive it without monkeypatching `_cachedLifebooks`.
+ * The default parameter pulls from cache only at the call site inside
+ * `renderRegistryResults`, where module state is the right source.
  *
- * Returns the input unchanged when:
- *   - No Lifebook is selected (empty string passed)
- *   - The Lifebook isn't in our cached list (defensive — should never happen)
- *   - The Lifebook has no suggested capabilities (empty registryId[] means
- *     "the domain extractor didn't propose anything yet" — better to show
- *     all than show nothing)
+ * Returns `entries` unchanged when:
+ *   - No Lifebook is selected (empty string passed).
+ *   - The Lifebook isn't in `lifebooks` (defensive — should never happen).
+ *   - The Lifebook has an empty `suggestedCapabilities` list (the domain
+ *     extractor proposed nothing yet — better to show all than collapse,
+ *     so "extractor hasn't decided" doesn't look like "extractor found
+ *     no matches").
  */
-function applyLifebookFilter(entries, lifebookDomain) {
+function applyLifebookFilter(entries, lifebookDomain, lifebooks = _cachedLifebooks) {
   if (!lifebookDomain) return entries;
-  const lb = _cachedLifebooks.find((x) => x.domainName === lifebookDomain);
+  const lb = lifebooks.find((x) => x.domainName === lifebookDomain);
   if (!lb) return entries;
   const allowed = lb.suggestedCapabilities ?? [];
   if (allowed.length === 0) return entries;

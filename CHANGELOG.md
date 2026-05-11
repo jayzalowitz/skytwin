@@ -2,6 +2,27 @@ All notable changes to SkyTwin will be documented in this file.
 
 ## [unreleased] — Capabilities: filter the registry by Lifebook (#193 follow-up)
 
+### Fixed (post-Copilot review)
+
+- Lifebook visibility filter now uses the correct API field
+  (`hidden: boolean`) instead of the nonexistent `hiddenAt`. The
+  previous filter was a no-op AND would have fail-opened if the
+  endpoint ever returned hidden rows. The server-side `listVisible`
+  call still does the real filtering; the client-side guard is
+  defense in depth.
+- Removed `data-action` from the category and Lifebook `<select>`
+  elements. Each had an explicit `change` listener too, so the
+  global click delegator double-fired `renderRegistryResults` on
+  every dropdown-open. The change listener is now the sole entry
+  point. Dead switch cases (`registry-filter-change`,
+  `registry-category-change`) deleted.
+- `applyLifebookFilter()` is now actually pure — lifebooks is the
+  third argument with a default that pulls from cache only at the
+  call site. The docstring's "pure function" claim no longer
+  requires monkeypatching `_cachedLifebooks` to be true.
+
+### Original change
+
 Closes the "capability filter by domain on Capabilities page" item that
 PR #242 (#193 Child 1) explicitly deferred. The Capabilities page now
 carries a Lifebook dropdown alongside the existing category dropdown;
