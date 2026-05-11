@@ -9,6 +9,7 @@ import {
   Alert,
   Animated,
   Easing,
+  Linking,
 } from 'react-native';
 import {
   AudioModule,
@@ -159,11 +160,18 @@ export function VoiceScreen(): React.JSX.Element {
 
   const reset = useCallback(() => setState({ kind: 'idle' }), []);
 
-  const openSystemSettings = useCallback(() => {
-    Alert.alert(
-      'Microphone access needed',
-      'Open Settings → SkyTwin and enable Microphone to use voice. We never store recordings anywhere besides your paired desktop.',
-    );
+  const openSystemSettings = useCallback(async () => {
+    // Prefer one-tap deep link to the system settings page. Falls back
+    // to an explanatory alert when Linking.openSettings is unavailable
+    // (some Expo Go runtimes don't expose it).
+    try {
+      await Linking.openSettings();
+    } catch {
+      Alert.alert(
+        'Microphone access needed',
+        'Open Settings → SkyTwin and enable Microphone to use voice. Recorded audio is stored briefly on this device, then sent to your paired SkyTwin desktop for transcription — it never goes to a cloud.',
+      );
+    }
   }, []);
 
   return (
@@ -219,7 +227,7 @@ export function VoiceScreen(): React.JSX.Element {
             <View style={styles.resultCard}>
               <Text style={styles.resultText}>{state.transcript.trim() || '(silence)'}</Text>
             </View>
-            <Text style={styles.resultMeta}>{formatBytes(state.durationBytes)} of audio</Text>
+            <Text style={styles.resultMeta}>Audio size: {formatBytes(state.durationBytes)}</Text>
             <Pressable onPress={reset} style={styles.primaryButton} accessibilityRole="button">
               <Text style={styles.primaryButtonText}>Record again</Text>
             </Pressable>

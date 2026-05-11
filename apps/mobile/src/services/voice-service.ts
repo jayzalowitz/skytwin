@@ -16,7 +16,7 @@
  */
 
 import { File } from 'expo-file-system';
-import { SkyTwinApiClient } from './api-client';
+import type { SkyTwinApiClient } from './api-client';
 
 export interface VoiceTranscriptResult {
   ok: true;
@@ -26,7 +26,13 @@ export interface VoiceTranscriptResult {
 
 export interface VoiceTranscriptError {
   ok: false;
-  /** Stable code so callers can branch on `permission_denied` vs. generic. */
+  /**
+   * Stable code so callers can branch on cause without parsing free-form
+   * messages. `no_audio` covers both "recorder returned no URI" and
+   * "file decoded to zero bytes." Microphone-permission denial is handled
+   * inside `VoiceScreen` before this layer is reached, so there's no
+   * `permission_denied` here.
+   */
   code: 'no_audio' | 'read_failed' | 'whisper_unavailable' | 'network' | 'unknown';
   message: string;
 }

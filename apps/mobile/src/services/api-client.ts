@@ -258,10 +258,11 @@ export class SkyTwinApiClient {
    * Upload base64-encoded audio to the desktop's whisper-cli for
    * transcription. #179: mobile voice flow.
    *
-   * The API tolerates audio up to 25MB base64 (~18MB decoded). The
-   * recorder hook bounds clip length in the UI, so we don't pre-check
-   * size here — let the server return the 413 and the screen renders
-   * the message.
+   * The API enforces a 25MB *decoded* audio cap (≈33MB base64). The
+   * mobile recorder has no explicit cap; the screen surfaces the 413
+   * if the user records past the limit. A future improvement is to
+   * cap recording duration client-side to avoid the round-trip when
+   * the upload is going to be rejected anyway.
    *
    * Increased timeout to 60s because whisper transcription can take
    * several seconds on first run while the model loads into memory.

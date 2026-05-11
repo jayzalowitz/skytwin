@@ -2,6 +2,31 @@ All notable changes to SkyTwin will be documented in this file.
 
 ## [unreleased] — Mobile voice recording module (#179 voice side)
 
+### Fixed (post-Copilot review)
+
+- `voice-service.ts` switched to `import type { SkyTwinApiClient }` —
+  the client is only used as a type; importing it as a runtime value
+  added unnecessary coupling and bundle weight.
+- Removed the misleading "branch on `permission_denied`" hint from
+  the `VoiceTranscriptError` docstring. Microphone-permission denial
+  is handled inside `VoiceScreen` before this layer is reached;
+  there is no `permission_denied` code in the union.
+- `transcribeVoice` docstring corrected: the API enforces a 25MB
+  *decoded* cap (~33MB base64), not "25MB base64."
+- `openSystemSettings` now actually opens the OS settings page via
+  `Linking.openSettings()` and falls back to the explanatory alert
+  only when that's unavailable. One-tap recovery for permission
+  denial instead of just an explainer.
+- Permission-denial copy now acknowledges the temporary on-device
+  audio file (read back as base64 for upload). The earlier "never
+  store recordings anywhere besides your paired desktop" was
+  technically inaccurate.
+- Result-state UI label changed from "{X} of audio" to "Audio size:
+  {X}" — `durationBytes` is a byte count, and the previous wording
+  implied a time-based duration.
+
+### Original change
+
 The mobile app can now capture audio and ship it to the paired
 desktop's `/api/voice/transcribe` (the route landed in PR #244). This
 closes the code-bound half of #179 voice — the remaining work is QA on
