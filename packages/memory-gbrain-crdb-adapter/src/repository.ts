@@ -527,7 +527,23 @@ export async function markJobFailed(jobId: string, errMsg: string): Promise<void
   );
 }
 
-export async function pendingEmbeddingJobs(): Promise<number> {
+/**
+ * Pending embedding job count.
+ *
+ * `userId` is required for user-facing surfaces (the dashboard reports
+ * per-user numbers). Passing `userId = undefined` returns the global count,
+ * which is the right number for the worker's drain loop telemetry.
+ */
+export async function pendingEmbeddingJobs(userId?: string): Promise<number> {
+  if (userId) {
+    const result = await query<{ count: string }>(
+      `SELECT count(*)::STRING AS count
+         FROM brain_embedding_jobs
+        WHERE status = 'pending' AND user_id = $1`,
+      [userId],
+    );
+    return Number(result.rows[0]?.count ?? 0);
+  }
   const result = await query<{ count: string }>(
     `SELECT count(*)::STRING AS count FROM brain_embedding_jobs WHERE status = 'pending'`,
   );

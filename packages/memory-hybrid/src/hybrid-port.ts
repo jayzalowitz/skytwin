@@ -46,6 +46,7 @@ export interface RoutingRules {
   walkGraph?: 'primary' | 'secondary';
   getEpisodes?: 'primary' | 'secondary';
   getTriples?: 'primary' | 'secondary';
+  getEntitiesByType?: 'primary' | 'secondary';
   summarize?: 'primary' | 'secondary';
   compress?: 'primary' | 'secondary';
 }
@@ -56,6 +57,11 @@ const DEFAULT_ROUTING: Required<RoutingRules> = {
   walkGraph: 'secondary',
   getEpisodes: 'secondary',
   getTriples: 'secondary',
+  // Embedded gbrain backend supports entity reads natively; default to
+  // primary so we don't lose entities the gbrain side has indexed.
+  // Fallback to secondary still kicks in via resolveReadPort when primary
+  // lacks the capability.
+  getEntitiesByType: 'primary',
   summarize: 'secondary',
   compress: 'secondary',
 };
@@ -185,8 +191,15 @@ export class HybridMemoryPort implements MemoryPort {
     type: MemoryEntityType,
     filter?: EntityFilter,
   ): Promise<KnowledgeEntity[]> {
-    // Always route to secondary; primary (gbrain) does not implement this.
-    return this.secondary.getEntitiesByType(type, filter);
+    // Route through resolveReadPort so the routing rule + capability check
+    // are honoured. The embedded gbrain backend now supports entity reads;
+    // previously this was hard-wired to the secondary, which sent entity
+    // queries through the secondary even when the primary could serve them.
+    // We fold in a `temporal_triples` capability check as a stand-in for
+    // entity support — both gbrain and mempalace declare it iff they store
+    // structured entity/triple state.
+    const port = this.resolveReadPort('getEntitiesByType', 'temporal_triples');
+    return port.getEntitiesByType(type, filter);
   }
 
   async getTriples(

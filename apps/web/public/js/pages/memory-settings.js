@@ -41,6 +41,10 @@ function ensurePageListener() {
 
   document.addEventListener('click', async (event) => {
     if (window.location.hash.split('?')[0] !== '#/memory-settings') return;
+    // event.target can be a Text node when the click lands on whitespace —
+    // Text nodes have no .closest(). Other pages guard the same way; see
+    // CLAUDE.md "Frontend Event Handling".
+    if (!(event.target instanceof Element)) return;
     const target = event.target.closest('[data-action]');
     if (!target) return;
     const action = target.dataset.action;

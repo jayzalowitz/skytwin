@@ -414,7 +414,9 @@ export class InMemoryBrainStore {
     job.leasedUntil = undefined;
   }
 
-  pendingEmbeddingJobs(): number {
-    return this.jobs.filter((j) => j.status === 'pending').length;
+  pendingEmbeddingJobs(userId?: string): number {
+    return this.jobs.filter(
+      (j) => j.status === 'pending' && (!userId || j.userId === userId),
+    ).length;
   }
 }

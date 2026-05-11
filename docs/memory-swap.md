@@ -30,10 +30,16 @@ This document is a developer-facing runbook. Read
 |-------------|:---------------:|:-----------------:|:--------:|:----------:|:----------------:|:-------------:|:----------------:|
 | `gbrain`    |        ✓        |         ✓         |    ✓     |     ✓      |        ✓         |               |                  |
 | `hybrid`    |        ✓        |         ✓         |    ✓     |     ✓      |        ✓         |       ✓       |        ✓         |
-| `mempalace` |                 |                   |          |            |                  |       ✓       |        ✓         |
+| `mempalace` |       ILIKE     |                   |    ✓     |     ✓      |        ✓         |       ✓       |        ✓         |
 
 Hybrid is the union; gbrain on its own covers the operations most consumers
 care about.
+
+`mempalace` declares `semantic_search` capability but its underlying search
+is keyword `ILIKE` over drawer content — useful for exact-token queries,
+not for paraphrase-tolerant retrieval. Use `gbrain` or `hybrid` for the
+production retrieval experience; `mempalace`-only is for users who
+explicitly want the legacy stack.
 
 ## Selecting a backend
 

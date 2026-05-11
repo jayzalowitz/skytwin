@@ -27,8 +27,12 @@
 -- A "page" is a textual unit: a signal summary, an episode, a note, a code def.
 -- The hybrid retrieval engine searches across pages and ranks them by
 -- vector + tsvector RRF.
+-- IMPORTANT: id is STRING, not UUID, so connector-assigned identifiers like
+-- `sig_gmail_abc123` (which the MemoryPort.RawSignal contract treats as opaque
+-- strings) round-trip correctly. Forcing UUID would 500 every recordSignal
+-- whose id wasn't UUID-shaped. Same applies to every other brain_* PK below.
 CREATE TABLE IF NOT EXISTS brain_pages (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  id STRING PRIMARY KEY DEFAULT gen_random_uuid()::STRING,
   user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   title STRING NOT NULL DEFAULT '',
   content STRING NOT NULL,
@@ -61,7 +65,7 @@ CREATE INVERTED INDEX IF NOT EXISTS brain_pages_tsv_idx ON brain_pages (content_
 -- Mirrors knowledge_entities (mempalace) but keyed independently so the gbrain
 -- backend can be enabled / rebuilt without touching mempalace state.
 CREATE TABLE IF NOT EXISTS brain_entities (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  id STRING PRIMARY KEY DEFAULT gen_random_uuid()::STRING,
   user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   name STRING NOT NULL,
   entity_type STRING NOT NULL,
@@ -78,7 +82,7 @@ CREATE INDEX IF NOT EXISTS brain_entities_user_type_idx ON brain_entities (user_
 -- brain_triples: temporal (subject, predicate, object) facts.
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS brain_triples (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  id STRING PRIMARY KEY DEFAULT gen_random_uuid()::STRING,
   user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   subject STRING NOT NULL,
   predicate STRING NOT NULL,
@@ -102,7 +106,7 @@ CREATE INDEX IF NOT EXISTS brain_triples_user_object_idx ON brain_triples (user_
 -- decision pipeline). brain_episodes is a leaner shape exposed via MemoryPort
 -- so the hybrid composer can write to either side without lossy mapping.
 CREATE TABLE IF NOT EXISTS brain_episodes (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  id STRING PRIMARY KEY DEFAULT gen_random_uuid()::STRING,
   user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   wing STRING,
   summary STRING NOT NULL,
@@ -123,7 +127,7 @@ CREATE INDEX IF NOT EXISTS brain_episodes_user_started_idx ON brain_episodes (us
 -- metadata (domain, retention_until); brain_signals stores the lossless port
 -- shape so MemoryRecord round-trips without information loss.
 CREATE TABLE IF NOT EXISTS brain_signals (
-  id UUID PRIMARY KEY,
+  id STRING PRIMARY KEY,
   user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   source STRING NOT NULL,
   type STRING NOT NULL,

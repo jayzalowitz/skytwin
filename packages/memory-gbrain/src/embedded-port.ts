@@ -92,7 +92,8 @@ export class EmbeddedGbrainMemoryPort implements MemoryPort {
   private readonly backend: EmbeddedGbrainBackend;
   private readonly store: InMemoryBrainStore | undefined;
   private readonly rrfK: number;
-  private readonly candidatePoolSize: number;
+  /** User override; when undefined we compute `max(k*4, 40)` per query. */
+  private readonly candidatePoolOverride: number | undefined;
   private readonly embedQueriesSync: boolean;
 
   // Lazy-loaded CRDB repository (only imported when backend === 'crdb').
@@ -107,7 +108,7 @@ export class EmbeddedGbrainMemoryPort implements MemoryPort {
     this.backend = opts.backend ?? 'crdb';
     this.store = opts.store ?? (this.backend === 'memory' ? new InMemoryBrainStore() : undefined);
     this.rrfK = opts.rrfK ?? 60;
-    this.candidatePoolSize = opts.candidatePoolSize ?? 40;
+    this.candidatePoolOverride = opts.candidatePoolSize;
     this.embedQueriesSync = opts.embedQueriesSynchronously ?? true;
   }
 
@@ -144,6 +145,12 @@ export class EmbeddedGbrainMemoryPort implements MemoryPort {
         data,
         signalTimestamp: s.timestamp,
       });
+      // Match the CRDB path's conditional embedding wiring (only set
+      // `embeddingModel` when an embedding actually succeeded). Prior
+      // implementation set `embeddingModel` even on failure, which left
+      // pages with a non-null model but null embedding — diverging from
+      // the CRDB row shape and breaking dim-based replay logic.
+      const embedding = await this.embedding.embed(summaryText).catch(() => undefined);
       this.store!.insertPage({
         userId: this.userId,
         title: `${s.source}/${s.type}`,
@@ -151,8 +158,7 @@ export class EmbeddedGbrainMemoryPort implements MemoryPort {
         source: 'signal',
         sourceRef: s.id,
         metadata: { signalSource: s.source, signalType: s.type },
-        embedding: await this.embedding.embed(summaryText).catch(() => undefined),
-        embeddingModel: this.embedding.model,
+        ...(embedding ? { embedding, embeddingModel: this.embedding.model } : {}),
       });
       return;
     }
@@ -195,7 +201,8 @@ export class EmbeddedGbrainMemoryPort implements MemoryPort {
         firstSeenAt: e.firstSeenAt,
         lastSeenAt: e.lastSeenAt,
       });
-      // Also write a text page so the entity is searchable.
+      // Match CRDB path: only set embeddingModel when embedding succeeded.
+      const embedding = await this.embedding.embed(`${e.name} ${e.entityType}`).catch(() => undefined);
       this.store!.insertPage({
         userId: this.userId,
         title: e.name,
@@ -203,8 +210,7 @@ export class EmbeddedGbrainMemoryPort implements MemoryPort {
         source: 'extract',
         sourceRef: e.id,
         metadata: { entityType: e.entityType, attributes: e.attributes ?? {} },
-        embedding: await this.embedding.embed(`${e.name} ${e.entityType}`).catch(() => undefined),
-        embeddingModel: this.embedding.model,
+        ...(embedding ? { embedding, embeddingModel: this.embedding.model } : {}),
       });
       return;
     }
@@ -273,7 +279,9 @@ export class EmbeddedGbrainMemoryPort implements MemoryPort {
         startedAt: e.startedAt,
         endedAt: e.endedAt,
       });
-      // Also index for search.
+      // Also index for search. Match CRDB path: only set embeddingModel
+      // when embedding succeeded.
+      const embedding = await this.embedding.embed(e.summary).catch(() => undefined);
       this.store!.insertPage({
         userId: this.userId,
         title: e.wing ? `episode (${e.wing})` : 'episode',
@@ -281,8 +289,7 @@ export class EmbeddedGbrainMemoryPort implements MemoryPort {
         source: 'episode',
         sourceRef: e.id,
         metadata: { wing: e.wing },
-        embedding: await this.embedding.embed(e.summary).catch(() => undefined),
-        embeddingModel: this.embedding.model,
+        ...(embedding ? { embedding, embeddingModel: this.embedding.model } : {}),
       });
       return;
     }
@@ -353,13 +360,17 @@ export class EmbeddedGbrainMemoryPort implements MemoryPort {
     k: number,
     queryEmbedding?: number[],
   ): Promise<RrfHit[]> {
+    // Per-query default per the docstring: max(k*4, 40). Previously the
+    // constructor pinned a 40 floor that ignored k, so k=20 queries pulled
+    // only 40 candidates from each side before RRF — truncating recall.
+    const candidatePoolSize = this.candidatePoolOverride ?? Math.max(k * 4, 40);
     if (this.backend === 'memory') {
       return this.store!.hybridSearch({
         userId: this.userId,
         query: queryText,
         ...(queryEmbedding ? { queryEmbedding } : {}),
         k,
-        candidatePoolSize: this.candidatePoolSize,
+        candidatePoolSize,
         rrfK: this.rrfK,
       });
     }
@@ -369,7 +380,7 @@ export class EmbeddedGbrainMemoryPort implements MemoryPort {
       query: queryText,
       ...(queryEmbedding ? { queryEmbedding } : {}),
       k,
-      candidatePoolSize: this.candidatePoolSize,
+      candidatePoolSize,
       rrfK: this.rrfK,
     });
   }

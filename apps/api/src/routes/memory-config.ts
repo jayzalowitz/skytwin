@@ -46,7 +46,8 @@ export function createMemoryConfigRouter(): Router {
         getMemoryPortForUser(userId),
         Promise.resolve(suggestHybridUpgrade()),
         countPages(userId).catch(() => ({ total: 0, embedded: 0 })),
-        pendingEmbeddingJobs().catch(() => 0),
+        // Per-user count — multi-tenant installs were getting the global queue depth.
+        pendingEmbeddingJobs(userId).catch(() => 0),
       ]);
 
       const capabilitiesArr = [...resolved.port.capabilities()];
@@ -155,7 +156,8 @@ export function createMemoryConfigRouter(): Router {
     try {
       const [counts, pendingJobs, recentEpisodes, entities] = await Promise.all([
         countPages(userId).catch(() => ({ total: 0, embedded: 0 })),
-        pendingEmbeddingJobs().catch(() => 0),
+        // Per-user count — multi-tenant installs were getting the global queue depth.
+        pendingEmbeddingJobs(userId).catch(() => 0),
         mempalaceRepository.getEpisodes(userId, { limit: 10 }).catch(() => []),
         mempalaceRepository.getEntities(userId).catch(() => []),
       ]);
