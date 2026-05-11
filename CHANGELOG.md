@@ -1,5 +1,69 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [unreleased] — Mobile voice recording module (#179 voice side)
+
+The mobile app can now capture audio and ship it to the paired
+desktop's `/api/voice/transcribe` (the route landed in PR #244). This
+closes the code-bound half of #179 voice — the remaining work is QA on
+physical devices, which has always been the actual blocker.
+
+- **`apps/mobile/src/screens/VoiceScreen.tsx`** — new tab.
+  Tap-to-record → tap-to-stop → upload → transcript. Six-state machine
+  (`idle`, `denied`, `recording`, `processing`, `result`, `error`) with
+  the recording lifecycle driven by `useAudioRecorder` from
+  `expo-audio`. Pulse animation + tabular-numeric timer while
+  recording; permission-denied screen has a "How to fix" affordance.
+
+- **`apps/mobile/src/services/voice-service.ts`** — pure helpers.
+  `audioFileToBase64(uri)` reads the recorder's output via
+  `expo-file-system`'s `File.base64()` API. `transcribeRecording(...)`
+  orchestrates base64 → upload → result mapping with stable error
+  codes (`no_audio` / `read_failed` / `whisper_unavailable` /
+  `network` / `unknown`) so the UI can branch on cause without
+  parsing free-form error strings.
+
+- **`apps/mobile/src/services/api-client.ts`** — new
+  `transcribeVoice(userId, audioBase64, language?)` method. Uses the
+  existing request layer with a 60s timeout (whisper's first-run model
+  load can take several seconds on cold start; the default 10s would
+  abort mid-transcribe). `TranscribeResponse` type added to the
+  response-type block.
+
+- **`apps/mobile/app.json`** — `NSMicrophoneUsageDescription` on iOS,
+  `RECORD_AUDIO` on Android, `expo-audio` plugin entry. Permission
+  copy emphasizes "sent to your paired SkyTwin desktop for on-device
+  transcription" so the install prompt matches the privacy story.
+
+- **`apps/mobile/src/App.tsx`** — `voice` added to the `MainTab`
+  enum, registered in the `renderContent` switch, and a "Voice"
+  `TabButton` placed between Capabilities and Dashboard.
+
+- **`apps/mobile/package.json`** — adds `expo-audio: ~55.0.14` and
+  `expo-file-system: ~55.0.19` (the latter was already transitively
+  installed; declared explicitly so the dep is auditable).
+
+Test plan: 11 new vitest cases in `voice-service.test.ts` mocking the
+`File.base64()` path and `fetch` for the transcribe endpoint. The
+test file mirrors the inlined-class pattern at `api-client.test.ts:23`
+to keep React Native imports out of Node's test runner. Full mobile
+suite: 165 tests, 163 passing + 2 skipped (skips are unrelated
+discovery tests). Full workspace: 70/70 turbo tasks green;
+`pnpm build --concurrency=1` clean.
+
+What this does NOT ship (deliberate, follow-ups):
+
+- **TTS playback.** The screen displays the transcript but does not
+  speak responses back. That's a separate flow that pairs with #187
+  AC#4 (desktop Piper TTS) once a `piper` binary is on PATH.
+- **"Send to twin" hand-off.** The transcript is shown but not yet
+  pipelined to the assistant or the decision pipeline. A follow-up
+  will route the transcribed text through the existing chat /
+  assistant route once that mobile surface lands.
+- **Physical-device QA.** The Expo SDK 55 `expo-audio` API works in
+  the simulator but real-device behavior (silent-mode switch, AirPods
+  routing, background record interruption) needs a physical device to
+  verify.
+
 ## [unreleased] — Per-Lifebook briefing prose (#193 follow-up)
 
 ### Fixed (post-Copilot round 1)
@@ -365,7 +429,6 @@ What this doesn't ship (deliberate, deferred to follow-ups):
   on signals written after this lands. A backfill migration is cheap to
   write (re-read the Gmail label + From header for stored signal rows)
   but is a separate concern from the live ingest path.
-
 ## [unreleased] — Embedded LLM downloader: round-3 review fixes (#187 AC#2 follow-up)
 
 Copilot's third-round review of PR #247 landed after merge — four

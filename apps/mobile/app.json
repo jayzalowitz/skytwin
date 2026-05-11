@@ -20,6 +20,7 @@
       "infoPlist": {
         "NSCameraUsageDescription": "SkyTwin needs camera access to scan QR codes for pairing with your desktop.",
         "NSLocalNetworkUsageDescription": "SkyTwin needs local network access to discover and communicate with the SkyTwin API on your computer.",
+        "NSMicrophoneUsageDescription": "SkyTwin uses the microphone for voice input — recorded audio is sent to your paired SkyTwin desktop for on-device transcription and is never uploaded to the cloud.",
         "NSBonjourServices": [
           "_skytwin._tcp."
         ]
@@ -33,7 +34,8 @@
       "package": "com.skytwin.mobile",
       "permissions": [
         "CAMERA",
-        "VIBRATE"
+        "VIBRATE",
+        "RECORD_AUDIO"
       ]
     },
     "plugins": [
@@ -41,6 +43,12 @@
         "expo-camera",
         {
           "cameraPermission": "SkyTwin needs camera access to scan QR codes for pairing."
+        }
+      ],
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "SkyTwin uses the microphone for voice input — recorded audio is sent to your paired SkyTwin desktop for on-device transcription."
         }
       ],
       [

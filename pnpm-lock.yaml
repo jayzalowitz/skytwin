@@ -172,12 +172,18 @@ importers:
       expo-asset:
         specifier: ~55.0.16
         version: 55.0.16(expo@55.0.23(@babel/core@7.29.0)(@expo/dom-webview@55.0.5)(react-native@0.85.2(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.5))(react@19.2.5)(typescript@5.9.3))(react-native@0.85.2(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.5))(react@19.2.5)(typescript@5.9.3)
+      expo-audio:
+        specifier: ~55.0.14
+        version: 55.0.14(expo-asset@55.0.16(expo@55.0.23(@babel/core@7.29.0)(@expo/dom-webview@55.0.5)(react-native@0.85.2(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.5))(react@19.2.5)(typescript@5.9.3))(react-native@0.85.2(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.5))(react@19.2.5)(typescript@5.9.3))(expo@55.0.23(@babel/core@7.29.0)(@expo/dom-webview@55.0.5)(react-native@0.85.2(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.5))(react@19.2.5)(typescript@5.9.3))(react-native@0.85.2(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.5))(react@19.2.5)
       expo-barcode-scanner:
         specifier: ~13.0.0
         version: 13.0.1(expo@55.0.23(@babel/core@7.29.0)(@expo/dom-webview@55.0.5)(react-native@0.85.2(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.5))(react@19.2.5)(typescript@5.9.3))
       expo-camera:
         specifier: ~55.0.17
         version: 55.0.17(@types/emscripten@1.41.5)(expo@55.0.23(@babel/core@7.29.0)(@expo/dom-webview@55.0.5)(react-native@0.85.2(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.5))(react@19.2.5)(typescript@5.9.3))(react-native@0.85.2(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.5))(react@19.2.5)
+      expo-file-system:
+        specifier: ~55.0.19
+        version: 55.0.19(expo@55.0.23(@babel/core@7.29.0)(@expo/dom-webview@55.0.5)(react-native@0.85.2(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.5))(react@19.2.5)(typescript@5.9.3))(react-native@0.85.2(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.5))
       expo-notifications:
         specifier: ~55.0.22
         version: 55.0.22(expo@55.0.23(@babel/core@7.29.0)(@expo/dom-webview@55.0.5)(react-native@0.85.2(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.5))(react@19.2.5)(typescript@5.9.3))(react-native@0.85.2(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.5))(react@19.2.5)(typescript@5.9.3)
@@ -3280,6 +3286,14 @@ packages:
     resolution: {integrity: sha512-pK9HHJuFqjE8kDUcbMFsZj3Cz8WdXpvZHZmYl7ouFQp59P83BvHln6VnqPDGlO+/4929G0Lm8ZUzbONuNRhi9w==}
     peerDependencies:
       expo: '*'
+      react: '*'
+      react-native: '*'
+
+  expo-audio@55.0.14:
+    resolution: {integrity: sha512-Biy6ffKXrnKHgcWSVWLKVdWLNhV/pj1JWJeotY6nDR6fVe8mjXQDCvi6EbaSFPdffVHym6UB2siKzWUNSnG+kQ==}
+    peerDependencies:
+      expo: '*'
+      expo-asset: '*'
       react: '*'
       react-native: '*'
 
@@ -8609,6 +8623,13 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
       - typescript
+
+  expo-audio@55.0.14(expo-asset@55.0.16(expo@55.0.23(@babel/core@7.29.0)(@expo/dom-webview@55.0.5)(react-native@0.85.2(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.5))(react@19.2.5)(typescript@5.9.3))(react-native@0.85.2(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.5))(react@19.2.5)(typescript@5.9.3))(expo@55.0.23(@babel/core@7.29.0)(@expo/dom-webview@55.0.5)(react-native@0.85.2(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.5))(react@19.2.5)(typescript@5.9.3))(react-native@0.85.2(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.5))(react@19.2.5):
+    dependencies:
+      expo: 55.0.23(@babel/core@7.29.0)(@expo/dom-webview@55.0.5)(react-native@0.85.2(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.5))(react@19.2.5)(typescript@5.9.3)
+      expo-asset: 55.0.16(expo@55.0.23(@babel/core@7.29.0)(@expo/dom-webview@55.0.5)(react-native@0.85.2(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.5))(react@19.2.5)(typescript@5.9.3))(react-native@0.85.2(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.5))(react@19.2.5)(typescript@5.9.3)
+      react: 19.2.5
+      react-native: 0.85.2(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.5)
 
   expo-barcode-scanner@13.0.1(expo@55.0.23(@babel/core@7.29.0)(@expo/dom-webview@55.0.5)(react-native@0.85.2(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.5))(react@19.2.5)(typescript@5.9.3)):
     dependencies:
