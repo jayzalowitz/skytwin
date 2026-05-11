@@ -1,5 +1,65 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [unreleased] — Provenance graph: filter by Lifebook wing (#193 follow-up)
+
+Closes the **"provenance graph wing-filter consumer"** item that
+PR #242 (#193 Child 1) explicitly deferred. The lifebook page has
+been linking to `#/provenance?wing=<wingId>` since #242 shipped, but
+the provenance page couldn't honor that filter because nodes had no
+wing linkage. This PR adds the wing-id column + write-time
+population + API filter + frontend consumer end-to-end.
+
+### Migration
+
+- `041-provenance-wing-id.sql` — adds nullable `wing_id UUID`
+  column to `capability_provenance_nodes` plus a partial index
+  `(user_id, wing_id, occurred_at DESC) WHERE wing_id IS NOT NULL`
+  so per-wing graph queries are indexed without bloating the index
+  with the long tail of NULL rows. No FK to lifebooks (would block
+  lifebook hard-delete); the frontend filter naturally excludes
+  NULL rows.
+
+### Write-time population
+
+- `provenanceRepository.writeNode()` auto-derives `wing_id` when
+  the caller doesn't pass one explicitly: if the payload carries
+  a `registryId`, look up the lifebook whose
+  `suggested_capabilities` contains that id and stamp its
+  `wing_id` on the node. Best-effort — a registryId not in any
+  lifebook stays NULL. Explicit `wingId` argument always wins
+  over auto-derivation, so future call sites with their own wing
+  context can bypass the lookup.
+- Older rows written before migration 041 stay NULL forever
+  unless a future backfill utility runs.
+
+### API
+
+- `GET /api/capabilities/provenance-graph` now accepts an optional
+  `wing=<uuid>` query param. UUID-validated (returns 400 on bad
+  shape, same pattern as `serverId`). Each node in the response
+  includes `wingId: string | null`.
+
+### Frontend
+
+- `provenance-graph.js` reads the `wing` param off the hash query
+  string (the lifebook page's `#/provenance?wing=<uuid>` link),
+  passes it through `fetchProvenanceGraph`, and renders a
+  scoped-state indicator above the graph with a "Show all wings"
+  button to clear the filter. UUID-validated client-side too so a
+  malformed hash doesn't reach the API.
+
+### Test plan
+
+3 new vitest cases for the API surface (wing filter active,
+invalid wing → 400, response includes `wingId` per node). Full
+api suite: 547/547. Workspace: 70/70 turbo tasks green.
+
+What this does NOT do: per-domain briefing prose (the other #193
+deferred follow-up — separate PR), and backfill of `wing_id` for
+existing provenance rows. The wing filter shows post-migration
+nodes; older ones can be filled in by a follow-up utility if
+usage demands it.
+
 ## [unreleased] — Capabilities: filter the registry by Lifebook (#193 follow-up)
 
 ### Fixed (post-Copilot review)

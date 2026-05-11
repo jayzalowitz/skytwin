@@ -68,6 +68,18 @@ function handleProvenanceGraphAction(e) {
       renderProvenanceGraph(document.getElementById('page-content'), userId, { limit: 1000 });
       break;
     }
+    case 'pg-clear-wing-filter': {
+      // Strip the `?wing=` query from the hash so subsequent renders
+      // load the un-scoped graph. Re-render explicitly so we don't
+      // depend on the hashchange listener firing.
+      const newHash = '#/provenance';
+      if (window.location.hash !== newHash) {
+        window.location.hash = newHash;
+      } else {
+        renderProvenanceGraph(document.getElementById('page-content'), getCurrentUserId(), { wing: '' });
+      }
+      break;
+    }
     default:
       break;
   }
@@ -77,10 +89,11 @@ function handleProvenanceGraphAction(e) {
 // API fetch helper
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function fetchProvenanceGraph(userId, { nodeType = '', since = '', limit = 200 } = {}) {
+async function fetchProvenanceGraph(userId, { nodeType = '', since = '', limit = 200, wing = '' } = {}) {
   const params = new URLSearchParams({ userId });
   if (nodeType) params.set('nodeType', nodeType);
   if (since) params.set('since', since);
+  if (wing) params.set('wing', wing);
   if (limit !== 200) params.set('limit', String(limit));
 
   const res = await fetch(`/api/capabilities/provenance-graph?${params}`, {
@@ -96,6 +109,25 @@ async function fetchProvenanceGraph(userId, { nodeType = '', since = '', limit =
   return res.json();
 }
 
+/**
+ * Read the `wing` query param off the hash. Hash routes are like
+ * `#/provenance?wing=<uuid>`; the lifebook page links here with that
+ * shape. Returns '' when no wing param is set. Validates against the
+ * UUID shape so a malformed value can't get forwarded to the API.
+ */
+function readWingFromHash() {
+  const hash = window.location.hash || '';
+  const qIdx = hash.indexOf('?');
+  if (qIdx === -1) return '';
+  const search = new URLSearchParams(hash.slice(qIdx + 1));
+  const wing = search.get('wing') || '';
+  // RFC 4122 UUID shape — same regex the API uses to validate.
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(wing)) {
+    return '';
+  }
+  return wing;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Main render entry point
 // ─────────────────────────────────────────────────────────────────────────────
@@ -104,9 +136,15 @@ export async function renderProvenanceGraph(container, userId, opts = {}) {
   ensureProvenanceGraphListener();
   container.innerHTML = '<div class="loading">Loading provenance graph…</div>';
 
+  // Read `wing` from the hash query string unless the caller explicitly
+  // overrode it. The lifebook page links here with `?wing=<uuid>`; the
+  // graph filters to nodes scoped to that Lifebook wing.
+  const wing = opts.wing !== undefined ? opts.wing : readWingFromHash();
+  const fetchOpts = { ...opts, wing };
+
   let data;
   try {
-    data = await fetchProvenanceGraph(userId, opts);
+    data = await fetchProvenanceGraph(userId, fetchOpts);
   } catch (err) {
     container.innerHTML = renderApiError(err, {
       context: "Couldn't load provenance graph.",
@@ -133,6 +171,12 @@ export async function renderProvenanceGraph(container, userId, opts = {}) {
           Capability lifecycle events — signals, installs, promotions, actions.
           Click a node to see its full payload.
         </div>
+        ${wing ? `
+          <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.4rem 0.6rem; margin-bottom: 0.5rem; background: var(--bg-accent, var(--bg-card)); border-left: 3px solid var(--primary); border-radius: var(--radius-sm); font-size: 0.8rem;">
+            <span>Scoped to one Lifebook wing.</span>
+            <button class="btn btn-outline btn-sm" style="font-size: 0.7rem; padding: 0.1rem 0.4rem;" data-action="pg-clear-wing-filter">Show all wings</button>
+          </div>
+        ` : ''}
         <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: flex-end;">
           <label style="font-size: 0.8rem; color: var(--text-muted);">
             Filter by type

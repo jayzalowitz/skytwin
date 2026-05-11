@@ -1601,6 +1601,11 @@ export function createCapabilitiesRouter(): Router {
       const nodeType = typeof req.query['nodeType'] === 'string' ? req.query['nodeType'] : null;
       const since = typeof req.query['since'] === 'string' ? req.query['since'] : null;
       const serverId = typeof req.query['serverId'] === 'string' ? req.query['serverId'] : null;
+      // #193 follow-up: scope the graph to a single Lifebook wing.
+      // Lifebook page links here with `?wing=<lb.wingId>`; nodes that
+      // don't have a matching `wing_id` (older rows, node types without
+      // a lifebook linkage) are filtered out.
+      const wingId = typeof req.query['wing'] === 'string' ? req.query['wing'] : null;
       const limitRaw = typeof req.query['limit'] === 'string' ? parseInt(req.query['limit'], 10) : 200;
       const limit = Number.isFinite(limitRaw) && limitRaw > 0
         ? Math.min(limitRaw, 500)
@@ -1609,6 +1614,12 @@ export function createCapabilitiesRouter(): Router {
       // Validate serverId if provided
       if (serverId && !UUID_REGEX.test(serverId)) {
         res.status(400).json({ error: 'serverId must be a valid UUID' });
+        return;
+      }
+
+      // Validate wingId if provided
+      if (wingId && !UUID_REGEX.test(wingId)) {
+        res.status(400).json({ error: 'wing must be a valid UUID' });
         return;
       }
 
@@ -1636,6 +1647,10 @@ export function createCapabilitiesRouter(): Router {
         params.push(serverId);
         whereClause += ` AND server_id = $${params.length}`;
       }
+      if (wingId) {
+        params.push(wingId);
+        whereClause += ` AND wing_id = $${params.length}`;
+      }
 
       const nodeResult = await query<{
         id: string;
@@ -1643,10 +1658,11 @@ export function createCapabilitiesRouter(): Router {
         ref_table: string;
         ref_id: string;
         server_id: string | null;
+        wing_id: string | null;
         occurred_at: Date;
         payload: unknown;
       }>(
-        `SELECT id, node_type, ref_table, ref_id, server_id, occurred_at, payload
+        `SELECT id, node_type, ref_table, ref_id, server_id, wing_id, occurred_at, payload
          FROM capability_provenance_nodes
          ${whereClause}
          ORDER BY occurred_at DESC
@@ -1676,6 +1692,7 @@ export function createCapabilitiesRouter(): Router {
           id: n.id,
           type: n.node_type,
           label,
+          wingId: n.wing_id,
           occurredAt: n.occurred_at,
           payload: rawPayload,
         };
