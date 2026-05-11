@@ -372,7 +372,13 @@ export function createSettingsRouter(): Router {
         return;
       }
 
-      const validProviders = new Set(['anthropic', 'openai', 'google', 'ollama']);
+      // #187 AC#6 / AC#7: `embedded` is a first-class provider in the
+      // LlmClient chain (landed in PR #241) and the Smart-mode toggle in
+      // settings.js relies on PUT-ing an `embedded` entry here. Pre-AC#6
+      // this set only listed hosted + ollama, so the Smart pill round-
+      // tripped through `applySmartMode` and then 400'd at the API.
+      // Copilot caught this on PR #253.
+      const validProviders = new Set(['anthropic', 'openai', 'google', 'ollama', 'embedded']);
       const seenProviders = new Set<string>();
       for (const p of providers) {
         if (!validProviders.has(p.provider)) {

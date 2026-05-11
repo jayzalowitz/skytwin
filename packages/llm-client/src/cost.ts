@@ -24,18 +24,20 @@ import type { AIProviderName } from '@skytwin/shared-types';
  * `embedded === 0 AND ollama === 0`.
  */
 const RATE_DECICENTS_PER_M_TOKENS: Record<AIProviderName, { input: number; output: number }> = {
-  // Anthropic — based on Claude 3.5 Haiku list price ($0.80/$4.00 per
-  // 1M). Deci-cents/M: input 8, output 40.
-  anthropic: { input: 8, output: 40 },
-  // OpenAI — based on GPT-4o-mini list price ($0.15/$0.60 per 1M).
-  // Deci-cents/M: input 1.5 → rounded up to 2 (we use integers and
-  // round UP everywhere so the cap stays conservative), output 6.
-  openai: { input: 2, output: 6 },
-  // Google — based on Gemini 1.5 Flash list price ($0.075/$0.30 per
-  // 1M for prompts <128k tokens). Deci-cents/M: input 1 (rounded up
-  // from 0.75), output 3.
-  google: { input: 1, output: 3 },
-  // Local-runtime: zero by definition.
+  // Conversion sanity check before adjusting any of these: 1 cent =
+  // 10 deci-cents, so $0.80 = 80 cents = 800 deci-cents. A $0.80/1M
+  // input rate stores as 800. An earlier draft of this table was off
+  // by 100× because the dollars→cents step was skipped — Copilot
+  // caught it on PR #253. Tests below pin the corrected values.
+  //
+  // Anthropic — Claude 3.5 Haiku list price ($0.80/$4.00 per 1M).
+  anthropic: { input: 800, output: 4000 },
+  // OpenAI — GPT-4o-mini list price ($0.15/$0.60 per 1M).
+  openai: { input: 150, output: 600 },
+  // Google — Gemini 1.5 Flash list price ($0.075/$0.30 per 1M for
+  // prompts <128k tokens).
+  google: { input: 75, output: 300 },
+  // Local-runtime providers carry zero per-token cost by definition.
   ollama: { input: 0, output: 0 },
   embedded: { input: 0, output: 0 },
 };

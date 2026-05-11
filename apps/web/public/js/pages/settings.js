@@ -1346,14 +1346,14 @@ function renderModeToggle(providers) {
           : 'No API costs, runs offline.',
       )}
       ${pill(
-        'Smarter (paid API)',
+        'Smarter (paid API or Ollama)',
         mode === 'smarter',
         hasSmarterCandidate ? 'switch-to-smarter' : 'switch-to-smarter-blocked',
         mode === 'smarter'
-          ? 'Your paid provider is the top choice.'
+          ? 'Your hosted provider or Ollama is the top choice.'
           : hasSmarterCandidate
             ? 'Sharper reasoning on tricky calls.'
-            : 'Add a paid provider below first.',
+            : 'Add a hosted provider or Ollama below first.',
       )}
     </div>
   `;
@@ -1506,6 +1506,13 @@ window.switchAIBrainMode = async function(userId, target) {
     // gets routed here anyway.
     return;
   }
+  // Snapshot the previous chain so we can roll back the optimistic
+  // render if the save fails. Copilot's review of PR #253 caught that
+  // the prior implementation left the pill + provider list visually
+  // implying success when the server actually rejected the write
+  // (e.g. when the API didn't accept `embedded` yet — see paired fix
+  // in apps/api/src/routes/settings.ts).
+  const prev = _aiChain.map((p) => ({ ...p }));
   _aiChain = next;
   // Re-render the pill + provider chain optimistically so the click
   // produces an immediate visual change while the save round-trips.
@@ -1528,6 +1535,11 @@ window.switchAIBrainMode = async function(userId, target) {
     const { renderSettings } = await import('./settings.js');
     await renderSettings(document.getElementById('page-content'), userId);
   } catch (err) {
+    // Roll back the optimistic state so the user doesn't think the
+    // switch succeeded.
+    _aiChain = prev;
+    document.getElementById('ai-mode-toggle').innerHTML = renderModeToggle(_aiChain);
+    document.getElementById('ai-provider-chain').innerHTML = renderProviderChain(_aiChain);
     document.getElementById('page-content').insertAdjacentHTML(
       'afterbegin',
       `<div class="error-banner">Failed to switch mode: ${escapeHtml(err.message)}</div>`,

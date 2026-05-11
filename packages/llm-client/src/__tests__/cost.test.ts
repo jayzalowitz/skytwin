@@ -24,26 +24,40 @@ describe('estimateLlmCostCents', () => {
   });
 
   it('estimates anthropic cost in integer cents with safe rounding up', () => {
-    // 1M input + 1M output at 8/40 deci-cents per million → 4.8¢ → 5¢.
-    expect(estimateLlmCostCents('anthropic', 1_000_000, 1_000_000)).toBe(5);
+    // 1M input + 1M output at 800/4000 deci-cents per million →
+    // 4800 deci-cents → 480 cents = $4.80. Locks the corrected
+    // unit conversion (1 cent = 10 deci-cents).
+    expect(estimateLlmCostCents('anthropic', 1_000_000, 1_000_000)).toBe(480);
   });
 
   it('estimates openai cost in integer cents', () => {
-    // 1M output at 6 deci-cents per million → 0.6¢ → 1¢ (rounded up).
-    expect(estimateLlmCostCents('openai', 0, 1_000_000)).toBe(1);
+    // 1M output at 600 deci-cents per million → 600 deci-cents →
+    // 60 cents = $0.60. Matches GPT-4o-mini list price exactly.
+    expect(estimateLlmCostCents('openai', 0, 1_000_000)).toBe(60);
   });
 
   it('estimates google cost in integer cents', () => {
-    // 1M output at 3 deci-cents per million → 0.3¢ → 1¢ (rounded up).
-    expect(estimateLlmCostCents('google', 0, 1_000_000)).toBe(1);
+    // 1M output at 300 deci-cents per million → 300 deci-cents →
+    // 30 cents = $0.30. Matches Gemini 1.5 Flash list price exactly.
+    expect(estimateLlmCostCents('google', 0, 1_000_000)).toBe(30);
   });
 
   it('rounds up so the cap-enforcement direction is always safe', () => {
     // Anthropic at small token counts (10k input, 10k output) →
-    // (8*10_000 + 40*10_000) / 1_000_000 = 0.48 deci-cents → ceil = 1 →
-    // ceil(1/10) = 1¢. The exact float would be 0.048¢; rounding up
-    // means cap checks see 1¢ instead of zeroing out tiny usage.
-    expect(estimateLlmCostCents('anthropic', 10_000, 10_000)).toBe(1);
+    // (800*10_000 + 4000*10_000) / 1_000_000 = 48 deci-cents →
+    // ceil(48/10) = 5 cents. Exact value would be 4.8¢; rounding up
+    // means the cap sees 5¢ instead of dropping the fractional cent.
+    expect(estimateLlmCostCents('anthropic', 10_000, 10_000)).toBe(5);
+  });
+
+  it('rounds up tiny usage to at least 1 cent for non-zero rates', () => {
+    // Regression coverage for the original under-estimation bug
+    // (which had 100×-too-small rates and reported 1¢ for 10k+10k
+    // Anthropic — almost zero usage). With corrected rates, a single
+    // token of OpenAI output still rounds up from
+    // (150 + 600) / 1M ≈ 0.0006 deci-cents to 1¢. Same direction:
+    // the cap can never under-bill.
+    expect(estimateLlmCostCents('openai', 1, 1)).toBe(1);
   });
 
   it('is a pure function — same input twice yields the same output', () => {
