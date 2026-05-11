@@ -1,6 +1,7 @@
 import {
   fetchCapabilities,
   fetchCapabilityRecipes,
+  fetchLifebooks,
   searchCapabilityRegistry,
   dismissCapabilitySuggestion,
   snoozeCapabilitySuggestion,
@@ -35,6 +36,11 @@ let _cachedSuggestions = [];
 let _cachedDormant = [];
 let _cachedRecipes = [];
 let _cachedPendingOptIns = [];
+// #193 deferred follow-up: lifebooks power the "filter registry by Lifebook"
+// dropdown. Each lifebook carries a `suggestedCapabilities: string[]` (registry
+// ids) — selecting a lifebook intersects registry results with that set so
+// users browsing for a specific life domain don't see the firehose.
+let _cachedLifebooks = [];
 let _lastContainer = null;
 
 function getCurrentUserId() {
@@ -57,12 +63,22 @@ function handleCapabilitiesInput(e) {
     if (_registrySearchTimer) clearTimeout(_registrySearchTimer);
     _registrySearchTimer = setTimeout(() => {
       _registrySearchTimer = null;
-      const q = target.value.trim();
-      const categorySelect = document.getElementById('registry-category');
-      const category = categorySelect ? categorySelect.value : '';
-      renderRegistryResults(getCurrentUserId(), q, category);
+      renderRegistryResults(getCurrentUserId(), readRegistryFilterState());
     }, 400);
   }
+}
+
+/**
+ * Read the three registry filter controls into a single state object. Kept as
+ * a tiny helper so every call site stays in sync when we add or remove a
+ * filter — adding the Lifebook filter without this would have required
+ * editing five separate `renderRegistryResults(...)` call sites.
+ */
+function readRegistryFilterState() {
+  const q = document.getElementById('registry-search')?.value?.trim() ?? '';
+  const category = document.getElementById('registry-category')?.value ?? '';
+  const lifebookDomain = document.getElementById('registry-lifebook')?.value ?? '';
+  return { q, category, lifebookDomain };
 }
 
 function handleCapabilitiesAction(e) {
@@ -100,16 +116,13 @@ function handleCapabilitiesAction(e) {
       if (slug) handleInstallRecipe(slug, userId, btn);
       break;
     }
-    case 'registry-search-submit': {
-      const q = document.getElementById('registry-search')?.value?.trim() || '';
-      const category = document.getElementById('registry-category')?.value || '';
-      renderRegistryResults(userId, q, category);
+    case 'registry-search-submit':
+    case 'registry-filter-change': {
+      renderRegistryResults(userId, readRegistryFilterState());
       break;
     }
     case 'registry-category-change': {
-      const q = document.getElementById('registry-search')?.value?.trim() || '';
-      const category = btn.getAttribute('data-category') || document.getElementById('registry-category')?.value || '';
-      renderRegistryResults(userId, q, category);
+      renderRegistryResults(userId, readRegistryFilterState());
       break;
     }
     case 'install-registry-entry': {
@@ -158,6 +171,7 @@ export async function renderCapabilities(container, userId) {
   let recipesData;
   let optInsData;
 
+  let lifebooksData;
   try {
     [capData, recipesData] = await Promise.all([
       fetchCapabilities(userId),
@@ -179,11 +193,21 @@ export async function renderCapabilities(container, userId) {
     optInsData = { optIns: [] };
   }
 
+  // Best-effort — lifebooks power the Lifebook filter dropdown. If the user
+  // hasn't run the domain extractor yet (or it returned nothing) we degrade
+  // to "no filter offered" rather than blocking the whole capabilities page.
+  try {
+    lifebooksData = await fetchLifebooks(userId);
+  } catch {
+    lifebooksData = { lifebooks: [] };
+  }
+
   _cachedInstalled = capData.installed ?? [];
   _cachedSuggestions = capData.suggestions ?? [];
   _cachedDormant = capData.dormant ?? [];
   _cachedRecipes = recipesData.recipes ?? [];
   _cachedPendingOptIns = optInsData.optIns ?? [];
+  _cachedLifebooks = (lifebooksData?.lifebooks ?? []).filter((lb) => !lb.hiddenAt);
 
   container.innerHTML = `
     <div style="display: flex; flex-direction: column; gap: 1.5rem;">
@@ -209,6 +233,7 @@ export async function renderCapabilities(container, userId) {
             <option value="productivity">Productivity</option>
             <option value="lifestyle">Lifestyle</option>
           </select>
+          ${renderLifebookFilterDropdown(_cachedLifebooks)}
           <button class="btn btn-primary btn-sm" data-action="registry-search-submit">Search</button>
         </div>
         <div id="registry-results">
@@ -223,15 +248,37 @@ export async function renderCapabilities(container, userId) {
     </div>
   `;
 
-  // Wire category change separately since it's on a <select>
-  document.getElementById('registry-category')?.addEventListener('change', (e) => {
-    const q = document.getElementById('registry-search')?.value?.trim() || '';
-    const category = e.target.value || '';
-    renderRegistryResults(userId, q, category);
+  // Wire category + lifebook <select> change events. The singleton-delegator
+  // pattern in `handleCapabilitiesAction` handles clicks via `data-action`,
+  // but native `change` events on form controls don't bubble through the
+  // same path on every browser — wire them explicitly. Using
+  // `readRegistryFilterState()` keeps both selectors agreeing on the state
+  // they hand to renderRegistryResults.
+  document.getElementById('registry-category')?.addEventListener('change', () => {
+    renderRegistryResults(userId, readRegistryFilterState());
+  });
+  document.getElementById('registry-lifebook')?.addEventListener('change', () => {
+    renderRegistryResults(userId, readRegistryFilterState());
   });
 
   // Auto-load all entries on first render
-  renderRegistryResults(userId, '', '');
+  renderRegistryResults(userId, { q: '', category: '', lifebookDomain: '' });
+}
+
+/**
+ * Render the Lifebook filter dropdown options. When the user has no
+ * lifebooks yet (e.g. domain extractor hasn't run, or every lifebook is
+ * hidden), the dropdown is hidden entirely — there's nothing useful to
+ * filter by, and an empty selector would just confuse.
+ */
+function renderLifebookFilterDropdown(lifebooks) {
+  if (!Array.isArray(lifebooks) || lifebooks.length === 0) return '';
+  return `
+    <select class="form-input" id="registry-lifebook" style="flex: 1; min-width: 140px;" data-action="registry-filter-change" aria-label="Filter by Lifebook">
+      <option value="">All Lifebooks</option>
+      ${lifebooks.map((lb) => `<option value="${escapeHtml(lb.domainName)}">${escapeHtml(lb.domainName)}</option>`).join('')}
+    </select>
+  `;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -490,25 +537,65 @@ function renderDormantCard(s) {
 // Registry search (partial re-render — no full page reload)
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function renderRegistryResults(userId, q, category) {
+/**
+ * Render the registry results section, applying the three filter inputs:
+ * free-text search, category, and Lifebook. Search + category are
+ * forwarded to the server; Lifebook filtering is client-side because the
+ * server doesn't know about lifebooks (and adding it would require a
+ * registry-id JOIN on every request). The lifebook's
+ * `suggestedCapabilities: registryId[]` set is the source of truth — we
+ * intersect the server's results with that set after the round-trip.
+ *
+ * Back-compat: older callers passed positional `(userId, q, category)`.
+ * Those call sites have all been migrated to `(userId, state)`; this
+ * signature is the only form going forward.
+ */
+async function renderRegistryResults(userId, state) {
   const resultsEl = document.getElementById('registry-results');
   if (!resultsEl) return;
+  const { q = '', category = '', lifebookDomain = '' } = state ?? {};
   resultsEl.innerHTML = '<div style="color: var(--text-muted); font-size: 0.85rem;">Searching…</div>';
 
   try {
     const { entries } = await searchCapabilityRegistry(userId, q, category);
-    if (!entries || entries.length === 0) {
-      resultsEl.innerHTML = '<div style="color: var(--text-muted); font-size: 0.85rem;">No results found.</div>';
+    const filtered = applyLifebookFilter(entries ?? [], lifebookDomain);
+    if (filtered.length === 0) {
+      const lifebookMsg = lifebookDomain
+        ? ` for the "${escapeHtml(lifebookDomain)}" Lifebook`
+        : '';
+      resultsEl.innerHTML = `<div style="color: var(--text-muted); font-size: 0.85rem;">No results found${lifebookMsg}.</div>`;
       return;
     }
     resultsEl.innerHTML = `
       <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 0.6rem;">
-        ${entries.map(renderRegistryEntryCard).join('')}
+        ${filtered.map(renderRegistryEntryCard).join('')}
       </div>
     `;
   } catch (err) {
     resultsEl.innerHTML = `<div class="error-banner">${escapeHtml(err.friendlyMessage || err.message)}</div>`;
   }
+}
+
+/**
+ * Intersect a registry-entries list with the selected Lifebook's
+ * `suggestedCapabilities` set. Pure function so it's trivial to unit-test
+ * separately if a vitest harness for `apps/web` lands later.
+ *
+ * Returns the input unchanged when:
+ *   - No Lifebook is selected (empty string passed)
+ *   - The Lifebook isn't in our cached list (defensive — should never happen)
+ *   - The Lifebook has no suggested capabilities (empty registryId[] means
+ *     "the domain extractor didn't propose anything yet" — better to show
+ *     all than show nothing)
+ */
+function applyLifebookFilter(entries, lifebookDomain) {
+  if (!lifebookDomain) return entries;
+  const lb = _cachedLifebooks.find((x) => x.domainName === lifebookDomain);
+  if (!lb) return entries;
+  const allowed = lb.suggestedCapabilities ?? [];
+  if (allowed.length === 0) return entries;
+  const allowSet = new Set(allowed);
+  return entries.filter((e) => allowSet.has(e.id));
 }
 
 function renderRegistryEntryCard(entry) {

@@ -1,5 +1,55 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [unreleased] — Capabilities: filter the registry by Lifebook (#193 follow-up)
+
+Closes the "capability filter by domain on Capabilities page" item that
+PR #242 (#193 Child 1) explicitly deferred. The Capabilities page now
+carries a Lifebook dropdown alongside the existing category dropdown;
+selecting a Lifebook intersects the registry results with that
+Lifebook's `suggestedCapabilities: registryId[]` set so users browsing
+for a specific life domain see only the capabilities the domain
+extractor actually proposed for it.
+
+**No DB migration required.** The filter is purely client-side: the
+intersection set already lives on `lifebooks.suggested_capabilities`
+(populated by the domain-extraction worker that landed in #242). The
+capabilities page now fetches `/api/lifebooks/:userId` alongside its
+existing data and runs the intersect in `applyLifebookFilter()` — a
+pure helper that's trivial to lift to a vitest harness if/when one
+lands in `apps/web`.
+
+UX details:
+
+- Dropdown shows visible (non-hidden) Lifebooks only. Hidden Lifebooks
+  stay in memory but disappear from this dropdown, matching the
+  "hidden surfaces stay queryable in memory; surface visibility is the
+  user's call" contract Lifebooks already follow.
+- When the user has zero Lifebooks (domain extractor hasn't run, or
+  everything is hidden), the dropdown is omitted entirely — an empty
+  selector with no options would just confuse.
+- Empty-result state when a Lifebook filter narrows everything away
+  surfaces the active Lifebook name in the empty-state copy ("No
+  results found for the 'Health' Lifebook.") so the user can
+  immediately tell *why* nothing's showing.
+- A Lifebook with an empty `suggestedCapabilities: []` array means the
+  extractor proposed nothing yet — the filter shows everything rather
+  than collapsing to zero results, on the principle that "extractor
+  hasn't decided" should not look the same as "extractor decided
+  nothing matches."
+
+Internal cleanup that fell out of the change:
+
+- Three `renderRegistryResults(userId, q, category)` call sites
+  collapsed to `renderRegistryResults(userId, readRegistryFilterState())`
+  via a new pure `readRegistryFilterState()` helper. Adding the
+  Lifebook filter without this would have meant editing five separate
+  call sites. The next filter that lands gets to add itself in two
+  places: the dropdown markup and the state reader.
+
+Test plan: smoke-tested in Chrome with mocked Lifebook + registry data
+— filter toggles correctly across three scenarios (all-Lifebooks, one
+specific Lifebook, switch back to all). `node --check` clean.
+
 ## [unreleased] — Smart / Smarter mode toggle + zero-cost helper (#187 AC#6 + AC#8)
 
 ### Fixed (post-Copilot review)
@@ -133,6 +183,7 @@ What this doesn't ship (deliberate, deferred to follow-ups):
   on signals written after this lands. A backfill migration is cheap to
   write (re-read the Gmail label + From header for stored signal rows)
   but is a separate concern from the live ingest path.
+
 
 ## [unreleased] — Embedded LLM downloader: round-3 review fixes (#187 AC#2 follow-up)
 
