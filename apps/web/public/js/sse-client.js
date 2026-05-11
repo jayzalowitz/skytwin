@@ -79,6 +79,20 @@ export function connectSSE(userId) {
     );
   });
 
+  // gbrain memory layer events (#197). The memory-settings page subscribes
+  // via window.addEventListener so it refreshes counts + recent decisions
+  // without polling. No user-visible toast — these fire frequently as
+  // signals stream in, and a toast for every signal would be noise.
+  eventSource.addEventListener('memory:page-indexed', (e) => {
+    const data = JSON.parse(e.data);
+    window.dispatchEvent(new CustomEvent('sse:memory:page-indexed', { detail: data }));
+  });
+
+  eventSource.addEventListener('memory:episode-recorded', (e) => {
+    const data = JSON.parse(e.data);
+    window.dispatchEvent(new CustomEvent('sse:memory:episode-recorded', { detail: data }));
+  });
+
   eventSource.onerror = () => {
     eventSource.close();
     eventSource = null;

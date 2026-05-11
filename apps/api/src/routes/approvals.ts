@@ -253,10 +253,7 @@ export function createApprovalsRouter(): Router {
         });
 
         // Also push the episode into the gbrain memory backend so its
-        // semantic index covers approved/rejected outcomes (#197). The
-        // stub mempalace adapter no-ops; the real gbrain backend stores
-        // it in brain_episodes + brain_pages so the next similar
-        // signal's searchSemantic will surface this episode.
+        // semantic index covers approved/rejected outcomes (#197).
         const resolved = await getMemoryPortForUser(body.userId);
         await resolved.port
           .recordEpisode({
@@ -278,6 +275,21 @@ export function createApprovalsRouter(): Router {
               error: portErr instanceof Error ? portErr.message : String(portErr),
             });
           });
+
+        // Tell the dashboard. The memory-settings page subscribes and
+        // refreshes its "recent decisions" table + feedback histogram
+        // without polling. Best-effort SSE — never gates the approval.
+        try {
+          sseManager.emit(body.userId, 'memory:episode-recorded', {
+            episodeId: episodeRow.id,
+            decisionId: approval.decision_id,
+            actionType,
+            feedbackType: body.action,
+            summary,
+          });
+        } catch {
+          // sseManager.emit is synchronous; an internal throw is non-fatal.
+        }
       } catch (err) {
         // Episode recording is best-effort — never block the approval
         // response on a memory-layer hiccup.

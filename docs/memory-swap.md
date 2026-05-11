@@ -122,6 +122,44 @@ The `apps/api` factory (`apps/api/src/memory-setup.ts:getEmbeddingProvider`)
 picks OpenAI if a key is present, otherwise hash. Custom providers can be
 plugged in by importing the port directly.
 
+#### Recipe: 100% local embeddings via Ollama
+
+Ollama exposes an OpenAI-compatible `/v1/embeddings` endpoint, so you can
+run real embeddings without any cloud round-trip or API key:
+
+```bash
+# 1. Install Ollama (https://ollama.com) and pull an embedding model.
+#    nomic-embed-text is 768-dim, 274 MB, fast, and good enough for
+#    personal-twin-scale corpora.
+ollama pull nomic-embed-text
+
+# 2. Confirm the embeddings endpoint works.
+curl -s http://localhost:11434/v1/embeddings \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"nomic-embed-text","input":"hello world"}' | jq '.data[0].embedding | length'
+# → 768
+
+# 3. Configure SkyTwin to use it.
+export OPENAI_EMBEDDING_API_KEY=ollama        # any non-empty string — Ollama ignores it
+export OPENAI_EMBEDDING_BASE_URL=http://localhost:11434/v1
+export OPENAI_EMBEDDING_MODEL=nomic-embed-text
+```
+
+The `EmbeddingProvider`'s `dim` defaults to 1536 (OpenAI's
+`text-embedding-3-small`) — for Ollama models you may want to pin it via
+the constructor if you're building a custom provider. The
+`@skytwin/memory-gbrain-crdb-adapter`'s `vectorSearch` skips rows whose
+embedding length doesn't match the query, so model swaps degrade
+gracefully (mixed-dim corpus → only same-dim rows contribute to vector
+RRF) rather than crashing.
+
+Other Ollama embedding models that work the same way: `mxbai-embed-large`
+(1024-dim, ~334 MB), `snowflake-arctic-embed` (1024-dim, ~669 MB),
+`all-minilm` (384-dim, ~46 MB, smallest).
+
+For llamafile, vLLM, LocalAI, or any other OpenAI-compatible server —
+same `OPENAI_EMBEDDING_BASE_URL` knob, point it at the server's port.
+
 ### Embedding job queue
 
 `recordSignal` / `recordEntity` / `recordEpisode` synchronously embed in
@@ -177,6 +215,35 @@ console.log(`imported ${summary.imported}, skipped ${summary.skipped}`);
 
 (The `apps/api` `getMemoryPortForUser` doesn't take an override yet —
 follow-up: extract a pure factory.)
+
+## Verifying the CRDB SQL paths
+
+The `@skytwin/memory-gbrain-crdb-adapter` package has 6 DB-gated integration
+tests covering `insertPage` + `hybridSearch`, entity/triple round-trip,
+episode persistence, the embedding job queue lifecycle, settings round-trip,
+and `countPages`. They're skipped by default (no live DB) and gated on
+`RUN_DB_TESTS=1`.
+
+To exercise them against a hermetic local CRDB:
+
+```bash
+# From the repo root. Requires Docker + psql client.
+pnpm --filter @skytwin/memory-gbrain-crdb-adapter test:crdb
+```
+
+The script (`packages/memory-gbrain-crdb-adapter/scripts/run-crdb-integration.sh`):
+
+1. Spins up `cockroachdb/cockroach:latest-v23.2` on a non-default port
+   (26259, so it doesn't collide with a dev cluster).
+2. Creates a `skytwin_test` database + a minimal `users` table for the FK.
+3. Applies `040-gbrain-memory.sql`.
+4. Seeds one test user.
+5. Runs the integration suite with `RUN_DB_TESTS=1` and the right `DATABASE_*`
+   env vars.
+6. Tears the container down on exit (trap).
+
+CI doesn't run this — it requires Docker + a clean port. Useful before merge
+of any change to `repository.ts` or migration 040.
 
 ## Operational knobs
 

@@ -265,4 +265,33 @@ describe('events.ts wires gbrain MemoryPort writes on signal ingest', () => {
     });
     expect(inserted).toBeDefined();
   }, 30_000);
+
+  it('emits sse memory:page-indexed after successful signal write', async () => {
+    const { sseManager } = await import('../sse.js');
+    const emit = sseManager.emit as ReturnType<typeof vi.fn>;
+    emit.mockClear();
+    const app = buildApp();
+    await postJson(app, '/api/events/ingest', {
+      userId: USER_ID,
+      source: 'gmail',
+      type: 'email',
+      urgency: 'medium',
+      from: 'someone@example.com',
+      subject: 'note for the dashboard',
+      body: 'memory dashboard should refresh',
+      data: {
+        emailId: 'msg-sse-1',
+        from: 'someone@example.com',
+        subject: 'note for the dashboard',
+        text: 'memory dashboard should refresh',
+      },
+    });
+    // recordSignalToMemory → sseManager.emit is fire-and-forget; let it settle.
+    await new Promise((r) => setTimeout(r, 1000));
+    const pageIndexed = emit.mock.calls.find((c) => c[1] === 'memory:page-indexed');
+    expect(pageIndexed).toBeDefined();
+    const payload = pageIndexed![2] as Record<string, unknown>;
+    expect(payload['decisionId']).toBeDefined();
+    expect(payload['source']).toBe('gmail');
+  }, 30_000);
 });

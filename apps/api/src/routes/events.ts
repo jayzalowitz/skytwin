@@ -297,13 +297,23 @@ export function createEventsRouter(): Router {
       // This is the production path for the "twin remembers what happened"
       // promise. Failures are swallowed so a memory-layer hiccup never
       // blocks the decision pipeline.
-      void recordSignalToMemory(userId, decision, rawEvent).catch((err) => {
-        log.warn('Failed to record inbound signal into memory backend', {
-          userId,
-          decisionId: decision.id,
-          error: err instanceof Error ? err.message : String(err),
+      void recordSignalToMemory(userId, decision, rawEvent)
+        .then(() => {
+          // Tell the dashboard a page was indexed so it refreshes the
+          // counts + recent-episodes block without polling.
+          sseManager.emit(userId, 'memory:page-indexed', {
+            decisionId: decision.id,
+            source: rawEvent['source'] ?? 'unknown',
+            type: rawEvent['type'] ?? decision.situationType,
+          });
+        })
+        .catch((err) => {
+          log.warn('Failed to record inbound signal into memory backend', {
+            userId,
+            decisionId: decision.id,
+            error: err instanceof Error ? err.message : String(err),
+          });
         });
-      });
 
       // 7. Evaluate through decision maker
       const outcome = await decisionMaker.evaluate(context);

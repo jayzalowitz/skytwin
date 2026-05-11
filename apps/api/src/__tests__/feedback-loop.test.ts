@@ -184,6 +184,7 @@ beforeEach(() => {
     responded_at: new Date(),
   });
   fakeFeedbackRepo.create.mockResolvedValue({ id: 'fb-1' });
+  fakeMempalaceRepo.createEpisode.mockResolvedValue({ id: 'ep-1' });
   fakeDecisionRepo.findById.mockResolvedValue({
     id: 'dec-1',
     user_id: USER_ID,
@@ -251,6 +252,22 @@ describe('feedback loop — approval records an episode for memory boost', () =>
     // Approval still succeeds — episode is best-effort
     expect(res.status).toBe(200);
     expect(fakeMempalaceRepo.createEpisode).toHaveBeenCalledTimes(1);
+  });
+
+  it('approve → sseManager emits memory:episode-recorded for live dashboard refresh', async () => {
+    const { sseManager } = await import('../sse.js');
+    const app = buildApp();
+    await postJson(app, '/api/approvals/app-1/respond', {
+      action: 'approve',
+      userId: USER_ID,
+    });
+    const calls = (sseManager.emit as ReturnType<typeof vi.fn>).mock.calls;
+    const memoryEvent = calls.find((c) => c[1] === 'memory:episode-recorded');
+    expect(memoryEvent).toBeDefined();
+    const payload = memoryEvent![2] as Record<string, unknown>;
+    expect(payload['actionType']).toBe('archive_email');
+    expect(payload['feedbackType']).toBe('approve');
+    expect(payload['decisionId']).toBe('dec-1');
   });
 
   it('falls back to a synthetic summary when the decision row has no interpreted summary', async () => {

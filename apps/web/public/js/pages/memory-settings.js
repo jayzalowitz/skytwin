@@ -16,9 +16,35 @@ import { showSavedToast, showErrorToast } from '../toast.js';
  */
 
 let _pageListenerWired = false;
+let _sseListenerWired = false;
+let _sseRefreshTimer = null;
 
 function getCurrentUserId() {
   return localStorage.getItem('skytwin.userId') ?? '';
+}
+
+/**
+ * Subscribe to memory-layer SSE events and debounce a re-render. Memory
+ * writes can come in bursts (rapid signal ingest); debouncing to 1s means
+ * the dashboard updates once per burst instead of thrashing the DOM.
+ *
+ * Singleton-wired via a `_sseListenerWired` guard. Gated on hash so the
+ * listener no-ops when the user is on another page.
+ */
+function ensureSseListener() {
+  if (_sseListenerWired) return;
+  _sseListenerWired = true;
+  const refresh = () => {
+    if (window.location.hash.split('?')[0] !== '#/memory-settings') return;
+    if (_sseRefreshTimer) clearTimeout(_sseRefreshTimer);
+    _sseRefreshTimer = setTimeout(() => {
+      _sseRefreshTimer = null;
+      const container = document.getElementById('page-content');
+      if (container) renderMemorySettings(container, getCurrentUserId());
+    }, 1000);
+  };
+  window.addEventListener('sse:memory:page-indexed', refresh);
+  window.addEventListener('sse:memory:episode-recorded', refresh);
 }
 
 async function api(path, init = {}) {
@@ -87,6 +113,7 @@ function ensurePageListener() {
 
 export async function renderMemorySettings(container, userId) {
   ensurePageListener();
+  ensureSseListener();
   container.innerHTML = `<div class="card"><h2>Memory backend</h2><p>Loading…</p></div>`;
   let data = null;
   let diagnostics = null;
