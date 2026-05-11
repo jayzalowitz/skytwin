@@ -1,5 +1,37 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [unreleased] — Embedded LLM downloader: round-3 review fixes (#187 AC#2 follow-up)
+
+Copilot's third-round review of PR #247 landed after merge — four
+substantive findings, addressed in a follow-up PR:
+
+- **Multi-user partial-file collision**: two users on the same API
+  host downloading the same model both wrote to
+  `<modelDir>/<modelId>.gguf.partial`, so concurrent streams could
+  corrupt each other and one user's cancel could delete the other's
+  partial. The final GGUF is content-addressable (SHA-256 verified
+  before rename), so we keep that shared at `<modelDir>/<modelId>.gguf`,
+  but partials now namespace by download row id:
+  `<modelDir>/<modelId>.gguf.<download.id>.partial`.
+
+- **Pause-on-pending was a no-op**: `pauseDownload()` would set DB to
+  `paused`, but the already-scheduled `runDownload()` invocation
+  would start anyway and immediately overwrite back to `downloading`
+  via `setStatus`. Same bug for pending→cancelled. Fixed by
+  re-fetching the row at the top of `runDownload()` and bailing
+  early if status changed to `paused`/`cancelled`/`complete`/`failed`
+  between `startDownload()` returning and the runner picking up.
+
+- **Polling continued after navigating away**: the 1s poll callback
+  in `embedded-llm-card.js` had no termination condition tied to
+  page navigation. A user who started a download and then went to
+  Approvals would keep hitting `/api/embedded-llm/downloads/:id`
+  every second and hold a reference to a detached
+  `#embedded-llm-card-target` node. Now the poll callback checks
+  `window.location.hash !== '#/settings'` and
+  `document.getElementById(CARD_TARGET_ID) !== container` at the
+  top and stops itself when either is true.
+
 ## [unreleased] — First-run dashboard "needs a brain" prompt (#187 follow-up)
 
 A tiny but launch-critical UX gap: a brand-new user lands on the dashboard

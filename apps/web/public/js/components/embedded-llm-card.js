@@ -227,6 +227,20 @@ function startPolling(container, userId, downloadId) {
   stopPolling();
   _activeDownloadId = downloadId;
   _pollTimer = setInterval(async () => {
+    // Stop polling if the user navigated away from Settings or the
+    // card container was detached/replaced (e.g. by a different
+    // settings sub-render). Otherwise we'd keep hitting the API
+    // every second forever and hold a reference to a dead DOM node.
+    const hash = (window.location.hash || '').split('?')[0];
+    if (hash !== '#/settings') {
+      stopPolling();
+      return;
+    }
+    if (typeof document !== 'undefined'
+        && document.getElementById(CARD_TARGET_ID) !== container) {
+      stopPolling();
+      return;
+    }
     try {
       const data = await fetchModelDownload(downloadId);
       const dl = data?.download;
