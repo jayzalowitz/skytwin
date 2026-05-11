@@ -1,6 +1,11 @@
 import type { SignalConnector, RawSignal, SignalHandler } from './connector-interface.js';
 import type { OAuthTokenStore } from './oauth/token-store.js';
 import { withRetry, RetryableHttpError, parseRetryAfter, normalizeSenderAddress } from '@skytwin/core';
+import {
+  classifyEmailAuthoringTier,
+  splitAddressList,
+  type AuthoringTier,
+} from './authoring-tier.js';
 
 const GMAIL_API = 'https://gmail.googleapis.com/gmail/v1';
 
@@ -129,15 +134,33 @@ export class GmailConnector implements SignalConnector {
   // ── First-run bootstrap ───────────────────────────────────────────────
 
   /**
-   * No cursor yet — list recent unread, emit them as signals, then store
-   * the highest historyId we observed so the next poll switches to
-   * incremental mode.
+   * No cursor yet — bootstrap by listing recent sent + unread mail, emit
+   * them as signals, then store the highest historyId we observed so the
+   * next poll switches to incremental mode.
+   *
+   * #251 Layer 3 (minimal): sent mail is fetched FIRST so the user's first-
+   * impression brain pages lead with things they wrote themselves rather
+   * than with whatever happened to be unread in the inbox. The two batches
+   * are deduped by message id, sent ids are processed first, and
+   * historyId-derived cursor advancement is unchanged (the cursor still
+   * picks the max across all observed messages).
    */
   private async bootstrapAndEmit(accessToken: string): Promise<RawSignal[]> {
-    const listUrl = `${GMAIL_API}/users/me/messages?q=${encodeURIComponent('is:unread newer_than:1d')}&maxResults=10`;
-    const listResp = await this.gmailGet(listUrl, accessToken, 'list');
-    const listJson = await listResp.json() as { messages?: Array<{ id: string }> };
-    const ids = (listJson.messages ?? []).map((m) => m.id);
+    const sentUrl = `${GMAIL_API}/users/me/messages?q=${encodeURIComponent('in:sent newer_than:7d')}&maxResults=10`;
+    const unreadUrl = `${GMAIL_API}/users/me/messages?q=${encodeURIComponent('is:unread newer_than:1d')}&maxResults=10`;
+
+    const sentIds = await this.listMessageIds(sentUrl, accessToken);
+    const unreadIds = await this.listMessageIds(unreadUrl, accessToken);
+
+    // Dedupe while preserving sent-first ordering.
+    const seen = new Set<string>();
+    const ids: string[] = [];
+    for (const id of [...sentIds, ...unreadIds]) {
+      if (!seen.has(id)) {
+        seen.add(id);
+        ids.push(id);
+      }
+    }
 
     if (ids.length === 0) {
       // Even with no messages we want a cursor for next poll. Use the
@@ -150,6 +173,26 @@ export class GmailConnector implements SignalConnector {
     const { signals, maxHistoryId } = await this.fetchAndConvert(ids, accessToken);
     if (maxHistoryId) await this.persistCursor(maxHistoryId);
     return signals;
+  }
+
+  /**
+   * Helper: GET a `users/me/messages?q=...` listing and return the message
+   * ids, swallowing network errors as an empty list (Layer 3 bootstrap should
+   * never hard-fail just because one of the two list queries returned 500 —
+   * the other batch can still serve the first-impression need).
+   */
+  private async listMessageIds(url: string, accessToken: string): Promise<string[]> {
+    try {
+      const resp = await this.gmailGet(url, accessToken, 'list');
+      const body = await resp.json() as { messages?: Array<{ id: string }> };
+      return (body.messages ?? []).map((m) => m.id);
+    } catch (err) {
+      console.warn(
+        `[gmail] Bootstrap list failed (${url}):`,
+        err instanceof Error ? err.message : String(err),
+      );
+      return [];
+    }
   }
 
   // ── Incremental polling ───────────────────────────────────────────────
@@ -309,7 +352,12 @@ export class GmailConnector implements SignalConnector {
     messageId: string,
     accessToken: string,
   ): Promise<GmailMessage | null> {
-    const url = `${GMAIL_API}/users/me/messages/${messageId}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date&metadataHeaders=List-Id`;
+    // #251 Layer 1: classifier reads To/Cc (recipient count → broadcast vs.
+    // personal), In-Reply-To (originated vs. reply for SENT mail), and
+    // List-Unsubscribe (newsletter detection beyond CATEGORY_PROMOTIONS).
+    // Adding these to metadataHeaders is cheap — Gmail returns one extra
+    // header value per requested name and we only fetch when present.
+    const url = `${GMAIL_API}/users/me/messages/${messageId}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date&metadataHeaders=List-Id&metadataHeaders=To&metadataHeaders=Cc&metadataHeaders=In-Reply-To&metadataHeaders=List-Unsubscribe`;
     try {
       const response = await this.gmailGet(url, accessToken, 'detail');
       return response.json() as Promise<GmailMessage>;
@@ -334,6 +382,15 @@ export class GmailConnector implements SignalConnector {
     const subject = getHeader('Subject');
     const listId = parseListId(getHeader('List-Id'));
     const type = this.inferEmailType(from, subject, message.labelIds);
+    const authoringTier: AuthoringTier = classifyEmailAuthoringTier({
+      labels: message.labelIds ?? [],
+      fromAddress: from,
+      toAddresses: splitAddressList(getHeader('To')),
+      ccAddresses: splitAddressList(getHeader('Cc')),
+      hasInReplyTo: getHeader('In-Reply-To').trim().length > 0,
+      hasListUnsubscribe: getHeader('List-Unsubscribe').trim().length > 0,
+      listId,
+    });
 
     return {
       id: `sig_gmail_${message.id}`,
@@ -347,6 +404,7 @@ export class GmailConnector implements SignalConnector {
         snippet: message.snippet,
         labels: message.labelIds,
         listId,
+        authoringTier,
         receivedAt: new Date(parseInt(message.internalDate, 10)).toISOString(),
         requiresResponse: type === 'work_email' || type === 'meeting_invite',
       },
@@ -441,3 +499,4 @@ export function parseListId(raw: string): string {
   // Some senders ship the bare identifier with no angle brackets.
   return raw.trim().toLowerCase();
 }
+
