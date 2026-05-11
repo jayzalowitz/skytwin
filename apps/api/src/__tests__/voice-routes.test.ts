@@ -206,7 +206,7 @@ describe('POST /api/voice/synthesize (#187 AC#4)', () => {
     });
     expect(status).toBe(200);
     expect(body['audioBase64']).toBe(wav.toString('base64'));
-    expect(body['durationBytes']).toBe(wav.length);
+    expect(body['audioBytes']).toBe(wav.length);
     expect(body['voice']).toBe('en_US-amy-medium');
     expect(mockSynthesize).toHaveBeenCalledWith('hello twin', {});
   });

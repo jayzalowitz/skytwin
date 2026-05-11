@@ -133,7 +133,12 @@ export class PiperTtsBackend implements EmbeddedTtsPort {
 
   private spawnPiper(args: string[], stdinText: string): Promise<void> {
     return new Promise((resolve, reject) => {
-      const child = spawn(this.binaryPath, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+      // stdout is `ignore` — we read the WAV from the --output_file path,
+      // never from stdout. Leaving it as `pipe` without consuming it
+      // would block piper once the OS pipe buffer fills (rare but real,
+      // caught by Copilot on PR #255). Matches the proven whisper-cli
+      // spawn pattern.
+      const child = spawn(this.binaryPath, args, { stdio: ['pipe', 'ignore', 'pipe'] });
       let stderr = '';
       let settled = false;
 
@@ -163,11 +168,11 @@ export class PiperTtsBackend implements EmbeddedTtsPort {
         resolve();
       });
 
-      // Write the text to piper's stdin and close. Piper reads from
-      // stdin in newline-delimited mode by default — we send the
-      // entire text as one line so the output is a single utterance
-      // rather than chunked into sentence-per-WAV.
-      child.stdin?.write(stdinText);
+      // Write the text to piper's stdin terminated with a newline, then
+      // close stdin. Piper treats each newline-delimited line as one
+      // utterance — the trailing `\n` ensures it knows the input is
+      // complete instead of relying on EOF semantics.
+      child.stdin?.write(stdinText.endsWith('\n') ? stdinText : `${stdinText}\n`);
       child.stdin?.end();
     });
   }

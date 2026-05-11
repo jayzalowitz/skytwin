@@ -2,6 +2,28 @@ All notable changes to SkyTwin will be documented in this file.
 
 ## [unreleased] — Piper TTS backend + `/api/voice/synthesize` route (#187 AC#4)
 
+### Fixed (post-Copilot review)
+
+- `/api/voice` now mounts through `requireOwnership` so POST
+  `/transcribe` and `/synthesize` can't be called with another
+  user's `userId` in the body. The in-router
+  `bindUserIdParamOwnership` only covered `:userId` path params,
+  leaving body-userId POSTs structurally unprotected.
+- `PiperTtsBackend.spawnPiper` switched stdout to `ignore` (was
+  `pipe`). The WAV is read from `--output_file`, not stdout —
+  leaving stdout piped without consuming it could block Piper
+  once the OS pipe buffer filled. Matches the proven whisper-cli
+  spawn pattern.
+- Piper stdin now gets a trailing `\n` so the newline-delimited
+  reader treats the input as one complete utterance instead of
+  relying on EOF semantics. Matches the docstring; test updated.
+- `/api/voice/synthesize` response field renamed from
+  `durationBytes` to `audioBytes`. The former implied a time
+  measurement; the value is a byte count of the WAV. New endpoint,
+  no compat concern.
+
+### Original change
+
 Closes #187 AC#4. Mirrors the proven spawn pattern of
 `LlamaCppTextBackend` and `WhisperCppSttBackend`. Three pieces:
 

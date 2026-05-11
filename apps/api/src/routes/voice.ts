@@ -139,12 +139,14 @@ export function createVoiceRouter(): Router {
    * #187 AC#4 consumer: synthesize spoken audio from text using Piper.
    *
    * Body: `{ userId: string, text: string, voice?: string }`.
-   * Response: `{ audioBase64: string, durationBytes: number, voice: string }`
+   * Response: `{ audioBase64: string, audioBytes: number, voice: string }`
    * — base64 instead of binary so it goes through the same JSON
    * envelope the rest of the API uses (the mobile client + the web
-   * dashboard both decode base64 → Blob/audio element). The 25MB cap
-   * on the request side doesn't apply here because Piper output is
-   * always under 1MB for the 8000-char text ceiling.
+   * dashboard both decode base64 → Blob/audio element). `audioBytes`
+   * is the WAV byte count; we deliberately did not name it
+   * `durationBytes` (which would imply seconds) since this is a new
+   * endpoint with no compat concern — Copilot caught the confusion
+   * with the existing transcribe response on PR #255.
    *
    * 503 when the Null port is in play (no piper binary). Same hint
    * shape as the transcribe path so clients can surface a uniform
@@ -190,7 +192,7 @@ export function createVoiceRouter(): Router {
       });
       res.json({
         audioBase64: wav.toString('base64'),
-        durationBytes: wav.length,
+        audioBytes: wav.length,
         voice: opts.voice ?? port.capabilities.voices[0] ?? '',
       });
     } catch (err) {

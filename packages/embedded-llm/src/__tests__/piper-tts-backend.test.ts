@@ -104,8 +104,9 @@ describe('PiperTtsBackend.synthesize', () => {
     expect(args).toContain('/tmp/skytwin-piper-abc/out.wav');
     expect(args).toContain('--quiet');
 
-    // Text written to stdin verbatim then stream closed
-    expect(child.stdin.write).toHaveBeenCalledWith('hello twin');
+    // Text written to stdin with a trailing newline so Piper treats
+    // it as one complete utterance (its reader is newline-delimited).
+    expect(child.stdin.write).toHaveBeenCalledWith('hello twin\n');
     expect(child.stdin.end).toHaveBeenCalled();
 
     expect(mockReadFileSync).toHaveBeenCalledWith('/tmp/skytwin-piper-abc/out.wav');
