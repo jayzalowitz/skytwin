@@ -5,13 +5,16 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import express from 'express';
 import type { Express } from 'express';
 
-const { mockTranscribe, mockCreatePort } = vi.hoisted(() => ({
+const { mockTranscribe, mockSynthesize, mockCreatePort, mockCreateTtsPort } = vi.hoisted(() => ({
   mockTranscribe: vi.fn(),
+  mockSynthesize: vi.fn(),
   mockCreatePort: vi.fn(),
+  mockCreateTtsPort: vi.fn(),
 }));
 
 vi.mock('@skytwin/embedded-llm', () => ({
   createEmbeddedSttPort: mockCreatePort,
+  createEmbeddedTtsPort: mockCreateTtsPort,
 }));
 
 import { _resetVoicePortCache, createVoiceRouter } from '../routes/voice.js';
@@ -60,6 +63,13 @@ async function req(
 beforeEach(() => {
   vi.clearAllMocks();
   _resetVoicePortCache();
+  // Default TTS mock — most tests don't care about TTS, they just need
+  // `getTtsPort()` to resolve to *something*. Tests that exercise the
+  // synthesize path override this with their own mock.
+  mockCreateTtsPort.mockResolvedValue({
+    capabilities: { available: false, voices: [] },
+    synthesize: mockSynthesize,
+  });
 });
 
 describe('GET /api/voice/capabilities/:userId', () => {
@@ -157,5 +167,100 @@ describe('POST /api/voice/transcribe', () => {
       audioBase64: oversized,
     });
     expect(status).toBe(413);
+  });
+});
+
+describe('GET /api/voice/capabilities/:userId — TTS surface (#187 AC#4)', () => {
+  it('reports stt + tts capability blocks alongside the legacy fields', async () => {
+    mockCreatePort.mockResolvedValue({
+      capabilities: { available: true, supportedFormats: ['wav'] },
+      transcribe: mockTranscribe,
+    });
+    mockCreateTtsPort.mockResolvedValue({
+      capabilities: { available: true, voices: ['en_US-amy-medium'] },
+      synthesize: mockSynthesize,
+    });
+    const { status, body } = await req(buildApp(), 'GET', `/api/voice/capabilities/${USER_ID}`);
+    expect(status).toBe(200);
+    // Nested blocks
+    expect(body['stt']).toEqual({ available: true, supportedFormats: ['wav'] });
+    expect(body['tts']).toEqual({ available: true, voices: ['en_US-amy-medium'] });
+    // Legacy fields preserved for older clients
+    expect(body['available']).toBe(true);
+    expect(body['supportedFormats']).toEqual(['wav']);
+  });
+});
+
+describe('POST /api/voice/synthesize (#187 AC#4)', () => {
+  it('returns base64-encoded WAV on the happy path', async () => {
+    mockCreateTtsPort.mockResolvedValue({
+      capabilities: { available: true, voices: ['en_US-amy-medium'] },
+      synthesize: mockSynthesize,
+    });
+    const wav = Buffer.from([0x52, 0x49, 0x46, 0x46, 0x01, 0x02, 0x03]); // 'RIFF...'
+    mockSynthesize.mockResolvedValue(wav);
+
+    const { status, body } = await req(buildApp(), 'POST', '/api/voice/synthesize', {
+      userId: USER_ID,
+      text: 'hello twin',
+    });
+    expect(status).toBe(200);
+    expect(body['audioBase64']).toBe(wav.toString('base64'));
+    expect(body['durationBytes']).toBe(wav.length);
+    expect(body['voice']).toBe('en_US-amy-medium');
+    expect(mockSynthesize).toHaveBeenCalledWith('hello twin', {});
+  });
+
+  it('forwards a caller-provided voice option to the port', async () => {
+    mockCreateTtsPort.mockResolvedValue({
+      capabilities: { available: true, voices: ['en_US-amy-medium'] },
+      synthesize: mockSynthesize,
+    });
+    mockSynthesize.mockResolvedValue(Buffer.from('RIFF'));
+    await req(buildApp(), 'POST', '/api/voice/synthesize', {
+      userId: USER_ID,
+      text: 'hi',
+      voice: 'en_US-amy-medium',
+    });
+    expect(mockSynthesize).toHaveBeenCalledWith('hi', { voice: 'en_US-amy-medium' });
+  });
+
+  it('returns 503 when piper is not available', async () => {
+    mockCreateTtsPort.mockResolvedValue({
+      capabilities: { available: false, voices: [] },
+      synthesize: mockSynthesize,
+    });
+    const { status, body } = await req(buildApp(), 'POST', '/api/voice/synthesize', {
+      userId: USER_ID,
+      text: 'hi',
+    });
+    expect(status).toBe(503);
+    expect(body['error']).toMatch(/not available/);
+    expect(body['hint']).toMatch(/piper/);
+    expect(mockSynthesize).not.toHaveBeenCalled();
+  });
+
+  it('rejects missing userId', async () => {
+    const { status } = await req(buildApp(), 'POST', '/api/voice/synthesize', {
+      text: 'hi',
+    });
+    expect(status).toBe(400);
+  });
+
+  it('rejects empty text', async () => {
+    const { status } = await req(buildApp(), 'POST', '/api/voice/synthesize', {
+      userId: USER_ID,
+      text: '',
+    });
+    expect(status).toBe(400);
+  });
+
+  it('rejects text exceeding the 8000-char ceiling', async () => {
+    const { status, body } = await req(buildApp(), 'POST', '/api/voice/synthesize', {
+      userId: USER_ID,
+      text: 'x'.repeat(8001),
+    });
+    expect(status).toBe(413);
+    expect(body['error']).toMatch(/too long/);
   });
 });

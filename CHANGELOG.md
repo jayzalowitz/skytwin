@@ -1,5 +1,61 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [unreleased] — Piper TTS backend + `/api/voice/synthesize` route (#187 AC#4)
+
+Closes #187 AC#4. Mirrors the proven spawn pattern of
+`LlamaCppTextBackend` and `WhisperCppSttBackend`. Three pieces:
+
+- **`packages/embedded-llm/src/piper-tts-backend.ts`** —
+  `PiperTtsBackend` implements `EmbeddedTtsPort`. Spawns `piper`
+  with `--model <model.onnx> --output_file <tmp> --quiet`, writes
+  text to stdin, reads the resulting WAV into a Buffer on
+  successful exit. Cleans up the tempdir on both success and
+  failure. Bounded inputs: text required, max 8000 chars; mismatched
+  voice request fails hard rather than silently substituting.
+
+- **`packages/embedded-llm/src/piper-tts-backend.ts` —
+  `findFirstPiperModel(dir)`** locates the first `.onnx` voice
+  model with a paired `.onnx.json` config (Piper requires both).
+  Catches "stray .onnx, missing config" at boot instead of at
+  synth time when the failure would be a confusing
+  `NotAvailableError` chain.
+
+- **`packages/embedded-llm/src/factory.ts` —
+  `createEmbeddedTtsPort(overrides?)`**. Same shape as
+  `createEmbeddedSttPort`: probe `runtime-detector` for a `piper`
+  binary (env-var override → PATH lookup), then resolve a voice
+  model (env-var override → first valid pair in the configured
+  model dir). Falls back to `NullEmbeddedTtsPort` when either is
+  missing — same contract the STT side already exposes.
+
+- **`apps/api/src/routes/voice.ts`** — new `POST /api/voice/synthesize`
+  consumer. Body `{ userId, text, voice? }` → response
+  `{ audioBase64, durationBytes, voice }`. 503 + recovery hint when
+  no piper binary is on PATH, matching the STT path's shape. The
+  `GET /capabilities` endpoint now reports `stt` and `tts` capability
+  blocks alongside the legacy STT-shaped fields so older clients
+  keep working.
+
+Tests: 15 new vitest cases for `PiperTtsBackend` + `findFirstPiperModel`
+(mocked `node:child_process` + `node:fs` so they run hermetically with
+no piper on the host). 9 new API tests for `/synthesize` and the
+updated `/capabilities` shape. Full workspace: 70/70 turbo tasks
+green; build clean.
+
+What this does NOT ship (deliberate):
+
+- **Bundled piper binary / voice model.** Still requires the operator
+  to install piper-tts (`brew install piper-tts` on macOS,
+  `apt install piper-tts` on Ubuntu) and drop an `.onnx` + matching
+  `.onnx.json` config in the configured model dir. Bundling joins the
+  same distribution work as #187 AC#1 (default GGUF) paired with
+  #188 turnkey distribution.
+- **Briefing → speech wiring.** The API surface is now reachable but
+  the dashboard / mobile briefing screen doesn't yet auto-speak the
+  current briefing. That's a UI follow-up gated on the existing
+  briefing surface; the backend it needs is in main as of this PR.
+
+
 ## [unreleased] — Mobile voice recording module (#179 voice side)
 
 ### Fixed (post-Copilot review)
