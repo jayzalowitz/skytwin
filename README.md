@@ -330,7 +330,7 @@ SkyTwin is in **active development** (v0.5.4.0). The core decision pipeline, twi
 - LLM-powered decisions via configurable provider chain (Claude, GPT, Gemini, Ollama) with automatic fallback to built-in rules
 - Twin model with versioned profiles, confidence scoring, and preference learning
 - Policy engine with spend limits, trust tiers, and domain-specific rules
-- Memory Palace with episodic memory, knowledge graph, and 4-layer retrieval
+- Swappable memory backend: gbrain (default — vector + tsvector RRF on CRDB) plus optional hybrid mode that adds the legacy spatial Memory Palace (#197). Selectable per-installation via `MEMORY_BACKEND` and per-user via the dashboard. See [`docs/memory-swap.md`](./docs/memory-swap.md).
 - Web dashboard for reviewing decisions, managing preferences, configuring AI providers, and auditing
 - Desktop app (macOS, Windows, Linux) with system-browser OAuth for Google accounts
 - Mobile app (iOS, Android) with QR pairing and push notifications

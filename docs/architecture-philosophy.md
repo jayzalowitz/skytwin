@@ -10,7 +10,7 @@ SkyTwin commits to **no proprietary protocol, no proprietary judgment, no propri
 |---|---|---|---|
 | **MCP** | Capabilities (tools, signal sources) | `@modelcontextprotocol/server-*` community servers | Any MCP-compatible server, including ones the user authors |
 | **Prompts** | Judgment (ranking, classification, dialogue, copy) | `@skytwin/policy-prompts` versioned prompts | User overrides, A/B variants, community PRs, future prompt formats |
-| **Memory** | Knowledge of the user | `@skytwin/memory-mempalace` wrapping `@skytwin/mempalace` | gbrain (interim), next-generation memory engines as they land, anything that implements the port |
+| **Memory** | Knowledge of the user | `@skytwin/memory-gbrain` (CRDB-native vector + tsvector RRF, in-process). Hybrid mode composes with `@skytwin/memory-mempalace` (legacy spatial + AAAK). | Next-generation memory engines as they land — any `MemoryPort` implementation. See [`docs/memory-swap.md`](./memory-swap.md). |
 
 Each port corresponds to a piece of SkyTwin that the open ecosystem will rebuild faster than we can. Owning any of them is a liability on a six-month timeline.
 
@@ -137,7 +137,7 @@ No hand-curated catalog. No hardcoded rules. No fixed memory schema. Every layer
 
 This isn't framework-fundamentalism. The architecture has clear hard rails because some things should never be probabilistic. It isn't LLM-maximalism either — boring deterministic code does most of the work in any given operation. The LLM is invoked only where its specific strength (judgment under context) outperforms code's specific strength (deterministic facts).
 
-It also isn't backend-agnostic in some absolute sense. Every port has a *first* implementation that proves the contract. The first MCP host implementation is `@skytwin/mcp-host`. The first memory port implementation is `@skytwin/memory-mempalace`. The first prompts package is `@skytwin/policy-prompts`. New implementations are welcome but not required.
+It also isn't backend-agnostic in some absolute sense. Every port has a *first* implementation that proves the contract. The first MCP host implementation is `@skytwin/mcp-host`. The first memory port implementations are `@skytwin/memory-gbrain` (default — CRDB-native) and `@skytwin/memory-mempalace` (legacy — selectable as a fallback). The first prompts package is `@skytwin/policy-prompts`. New implementations are welcome but not required.
 
 ## Related
 

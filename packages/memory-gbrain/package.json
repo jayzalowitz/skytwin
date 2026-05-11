@@ -19,10 +19,12 @@
   },
   "dependencies": {
     "@skytwin/core": "workspace:*",
+    "@skytwin/memory-gbrain-crdb-adapter": "workspace:*",
     "@skytwin/memory-port": "workspace:*",
     "@skytwin/shared-types": "workspace:*"
   },
   "devDependencies": {
+    "@skytwin/memory-hybrid": "workspace:*",
     "@types/node": "^20.0.0",
     "typescript": "^5.4.0",
     "vitest": "^1.3.0"

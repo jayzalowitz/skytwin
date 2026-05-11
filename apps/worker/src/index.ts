@@ -27,6 +27,7 @@ import { runMetricsRollupJob } from './jobs/metrics-rollup.js';
 import { runChangelogPollJob } from './jobs/changelog-poll.js';
 import { runDomainExtractionJob } from './jobs/domain-extraction.js';
 import { runFederationSyncJob } from './jobs/federation-sync.js';
+import { runEmbeddingBackfillJob } from './jobs/embedding-backfill.js';
 
 const config = loadConfig();
 const log = createLogger('worker');
@@ -485,6 +486,11 @@ async function main(): Promise<void> {
   const DOMAIN_EXTRACTION_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days (#193 Child 1)
   let lastFederationSyncAt = 0;
   const FEDERATION_SYNC_INTERVAL_MS = 60 * 60 * 1000; // hourly (#194 Child 1)
+  let lastEmbeddingBackfillAt = 0;
+  // Drain the brain_embedding_jobs queue every 30 seconds (#197). The job is
+  // backed by SELECT FOR UPDATE SKIP LOCKED so it's safe to run from
+  // multiple worker instances simultaneously.
+  const EMBEDDING_BACKFILL_INTERVAL_MS = 30_000;
 
   // Poll loop
   while (running) {
@@ -532,6 +538,19 @@ async function main(): Promise<void> {
         });
       });
       lastFederationSyncAt = nowMs;
+    }
+
+    // Drain the brain_embedding_jobs queue every 30s (#197). The write path
+    // queues jobs when synchronous embedding fails (rate limit, network);
+    // this catches them up. SELECT FOR UPDATE SKIP LOCKED makes it safe
+    // under multiple worker instances.
+    if (nowMs - lastEmbeddingBackfillAt >= EMBEDDING_BACKFILL_INTERVAL_MS) {
+      await runEmbeddingBackfillJob().catch((err) => {
+        log.warn('Embedding backfill job failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+      lastEmbeddingBackfillAt = nowMs;
     }
 
     // Expire stale approval requests every 10 poll cycles

@@ -33,6 +33,7 @@ vi.mock('@skytwin/decision-engine', () => ({
   FallbackSituationStrategy: vi.fn(),
   FallbackCandidateGenerator: vi.fn(),
   RuleBasedCandidateGenerator: vi.fn(),
+  SenderAwareCandidateGenerator: vi.fn(),
 }));
 
 vi.mock('@skytwin/twin-model', () => ({
@@ -59,6 +60,13 @@ vi.mock('@skytwin/db', () => ({
   executionRepository: mockExecutionRepository,
   userRepository: { findById: vi.fn().mockResolvedValue({ id: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', trust_tier: 'observer', ironclaw_channel: 'skytwin' }) },
   aiProviderRepository: { getEnabledForUser: vi.fn().mockResolvedValue([]) },
+  emailLabelRepository: {
+    topLabelsForSender: vi.fn().mockResolvedValue([]),
+    topLabelsForListId: vi.fn().mockResolvedValue([]),
+  },
+  mempalaceRepository: {
+    getEpisodes: vi.fn().mockResolvedValue([]),
+  },
   TwinRepositoryAdapter: vi.fn(),
   PatternRepositoryAdapter: vi.fn(),
   decisionRepositoryAdapter: { saveDecision: vi.fn(), saveCandidates: vi.fn() },

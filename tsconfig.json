@@ -36,6 +36,7 @@
       "@skytwin/ironclaw-adapter": ["./packages/ironclaw-adapter/src"],
       "@skytwin/mempalace": ["./packages/mempalace/src"],
       "@skytwin/memory-gbrain": ["./packages/memory-gbrain/src"],
+      "@skytwin/memory-gbrain-crdb-adapter": ["./packages/memory-gbrain-crdb-adapter/src"],
       "@skytwin/memory-hybrid": ["./packages/memory-hybrid/src"],
       "@skytwin/memory-mempalace": ["./packages/memory-mempalace/src"],
       "@skytwin/memory-port": ["./packages/memory-port/src"],

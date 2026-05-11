@@ -1,5 +1,10 @@
 export { SituationInterpreter } from './situation-interpreter.js';
-export { DecisionMaker, type DecisionRepositoryPort } from './decision-maker.js';
+export {
+  DecisionMaker,
+  type DecisionRepositoryPort,
+  type LabelInferencePort,
+  type SenderLabelHint,
+} from './decision-maker.js';
 export { RiskAssessor } from './risk-assessor.js';
 export { ProactiveEvaluator } from './proactive-evaluator.js';
 
@@ -10,6 +15,7 @@ export { LlmSituationStrategy } from './strategies/llm-situation.js';
 export { LlmCandidateGenerator } from './strategies/llm-candidates.js';
 export { FallbackSituationStrategy, FallbackCandidateGenerator } from './strategies/fallback-strategy.js';
 export { RuleBasedCandidateGenerator } from './strategies/rule-based-candidates.js';
+export { SenderAwareCandidateGenerator } from './strategies/sender-aware-candidates.js';
 
 export type {
   WhatWouldIDoRequest,

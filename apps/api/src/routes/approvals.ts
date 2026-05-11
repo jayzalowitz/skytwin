@@ -3,6 +3,7 @@ import {
   approvalRepository,
   decisionRepository,
   feedbackRepository,
+  mempalaceRepository,
   oauthRepository,
   userRepository,
   TwinRepositoryAdapter,
@@ -18,6 +19,7 @@ import { getExecutionRouter } from '../execution-setup.js';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
 import { sseManager } from '../sse.js';
 import { createLogger } from '@skytwin/core';
+import { getMemoryPortForUser } from '../memory-setup.js';
 
 const log = createLogger('api:approvals');
 
@@ -215,6 +217,88 @@ export function createApprovalsRouter(): Router {
       };
 
       const updatedProfile = await twinService.processFeedback(body.userId, feedbackEvent);
+
+      // Record an episode in the memory layer (#197). Future similar
+      // decisions will pull this back via DecisionContext.episodicMemories
+      // and DecisionMaker.calculateEpisodicBoost will tilt scoring toward
+      // (or away from) the user's chosen path. Approve → utility 0.9;
+      // reject → utility 0.0 → next time the same candidate comes up its
+      // boost will be negative-ish, lowering its score and making it more
+      // likely to be requeued for approval rather than picked outright.
+      try {
+        const decision = await decisionRepository.findById(approval.decision_id);
+        const storedAction = (approval.candidate_action ?? {}) as Record<string, unknown>;
+        const actionType = (storedAction['actionType'] as string) ?? 'unknown';
+        const interpretedSummary =
+          (decision?.interpreted_situation?.['summary'] as string | undefined) ??
+          undefined;
+        const summary = interpretedSummary ?? `User ${body.action}d ${actionType}`;
+        const episodeRow = await mempalaceRepository.createEpisode({
+          userId: body.userId,
+          situationSummary: summary,
+          domain: decision?.domain ?? 'general',
+          situationType: decision?.situation_type ?? 'generic',
+          contextSnapshot: {
+            timeOfDay: undefined,
+            dayOfWeek: undefined,
+            urgency: undefined,
+            activePreferences: [],
+            activePatterns: [],
+          },
+          actionTaken: actionType,
+          feedbackType: body.action === 'approve' ? 'approve' : 'reject',
+          feedbackDetail: body.reason,
+          decisionId: approval.decision_id,
+          utilityScore: body.action === 'approve' ? 0.9 : 0.0,
+        });
+
+        // Also push the episode into the gbrain memory backend so its
+        // semantic index covers approved/rejected outcomes (#197).
+        const resolved = await getMemoryPortForUser(body.userId);
+        await resolved.port
+          .recordEpisode({
+            id: episodeRow.id,
+            userId: body.userId,
+            wing: decision?.domain ?? undefined,
+            summary,
+            startedAt: new Date(),
+            endedAt: new Date(),
+            metadata: {
+              feedbackType: body.action,
+              actionType,
+              utilityScore: body.action === 'approve' ? 0.9 : 0.0,
+            },
+          })
+          .catch((portErr) => {
+            log.warn('Memory port recordEpisode failed (legacy table updated regardless)', {
+              decisionId: approval.decision_id,
+              error: portErr instanceof Error ? portErr.message : String(portErr),
+            });
+          });
+
+        // Tell the dashboard. The memory-settings page subscribes and
+        // refreshes its "recent decisions" table + feedback histogram
+        // without polling. Best-effort SSE — never gates the approval.
+        try {
+          sseManager.emit(body.userId, 'memory:episode-recorded', {
+            episodeId: episodeRow.id,
+            decisionId: approval.decision_id,
+            actionType,
+            feedbackType: body.action,
+            summary,
+          });
+        } catch {
+          // sseManager.emit is synchronous; an internal throw is non-fatal.
+        }
+      } catch (err) {
+        // Episode recording is best-effort — never block the approval
+        // response on a memory-layer hiccup.
+        log.warn('Failed to record approval episode for memory layer', {
+          decisionId: approval.decision_id,
+          action: body.action,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
 
       // If approved, execute via the trust-ranked execution router
       let executionResult: { status: string; planId?: string; adapterUsed?: unknown; error?: string } | null = null;
