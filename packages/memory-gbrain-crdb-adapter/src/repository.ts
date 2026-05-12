@@ -103,6 +103,13 @@ export interface HybridSearchOptions {
   rrfK?: number;
   /** Cap on rows scanned from CRDB; ceiling for correctness on huge corpora. */
   scanLimit?: number;
+  /**
+   * Optional post-fold scoring hook (#251 Layer 2). When set, every
+   * accumulated rrfScore is multiplied by `tierWeight(page.metadata)` before
+   * the final sort. A multiplier of 0 drops the page entirely (used by
+   * `metadata.userOverride: 'hidden'`).
+   */
+  tierWeight?: (metadata: unknown) => number;
 }
 
 /**
@@ -126,7 +133,9 @@ export async function hybridSearch(opts: HybridSearchOptions): Promise<RrfHit[]>
       : Promise.resolve([] as Array<{ page: BrainPageRow; score: number }>),
   ]);
 
-  return rrfFold(textHits, vectorHits, opts.k, rrfK);
+  return rrfFold(textHits, vectorHits, opts.k, rrfK, {
+    ...(opts.tierWeight ? { tierWeight: opts.tierWeight } : {}),
+  });
 }
 
 interface ScoredHit {
@@ -426,7 +435,16 @@ export async function getSettings(userId: string): Promise<BrainSettingsRow | nu
 
 export async function upsertSettings(
   userId: string,
-  patch: Partial<Pick<BrainSettingsRow, 'backend' | 'hybrid_notification_dismissed' | 'routing'>>,
+  patch: Partial<
+    Pick<
+      BrainSettingsRow,
+      | 'backend'
+      | 'hybrid_notification_dismissed'
+      | 'routing'
+      | 'tier_weighting'
+      | 'tier_calibration'
+    >
+  >,
 ): Promise<BrainSettingsRow> {
   // Default backend on first insert MUST match `apps/api/src/memory-setup.ts`
   // `getMemoryPortForUser`'s 'gbrain' default and the brain_settings.backend
@@ -434,12 +452,25 @@ export async function upsertSettings(
   // POST /api/memory-config/dismiss-notification fires for a fresh user)
   // would silently flip them to hybrid.
   const result = await query<BrainSettingsRow>(
-    `INSERT INTO brain_settings (user_id, backend, hybrid_notification_dismissed, routing, updated_at)
-     VALUES ($1, COALESCE($2, 'gbrain'), COALESCE($3, false), COALESCE($4::JSONB, '{}'::JSONB), now())
+    `INSERT INTO brain_settings (
+       user_id, backend, hybrid_notification_dismissed, routing,
+       tier_weighting, tier_calibration, updated_at
+     )
+     VALUES (
+       $1,
+       COALESCE($2, 'gbrain'),
+       COALESCE($3, false),
+       COALESCE($4::JSONB, '{}'::JSONB),
+       COALESCE($5, false),
+       COALESCE($6, 'normal'),
+       now()
+     )
      ON CONFLICT (user_id) DO UPDATE
        SET backend = COALESCE($2, brain_settings.backend),
            hybrid_notification_dismissed = COALESCE($3, brain_settings.hybrid_notification_dismissed),
            routing = COALESCE($4::JSONB, brain_settings.routing),
+           tier_weighting = COALESCE($5, brain_settings.tier_weighting),
+           tier_calibration = COALESCE($6, brain_settings.tier_calibration),
            updated_at = now()
      RETURNING *`,
     [
@@ -447,9 +478,31 @@ export async function upsertSettings(
       patch.backend ?? null,
       patch.hybrid_notification_dismissed ?? null,
       patch.routing ? JSON.stringify(patch.routing) : null,
+      patch.tier_weighting ?? null,
+      patch.tier_calibration ?? null,
     ],
   );
   return parseSettingsRow(result.rows[0]!);
+}
+
+/**
+ * Count the user_sent_* pages in the last N days. Used to compute the
+ * calibration band (#251). Cheap — uses the existing user-id + created_at
+ * index plus an inline filter on the metadata JSONB field.
+ */
+export async function countUserSentPages(
+  userId: string,
+  windowDays = 90,
+): Promise<number> {
+  const result = await query<{ count: string }>(
+    `SELECT count(*)::STRING AS count
+       FROM brain_pages
+      WHERE user_id = $1
+        AND created_at > now() - ($2 || ' days')::INTERVAL
+        AND metadata->>'authoringTier' IN ('user_sent_originated', 'user_sent_reply')`,
+    [userId, String(windowDays)],
+  );
+  return Number(result.rows[0]?.count ?? 0);
 }
 
 // ── Embedding job queue ─────────────────────────────────────────────────────
@@ -560,6 +613,22 @@ export async function getAllPages(userId: string, limit = 10000): Promise<BrainP
   return result.rows.map(parsePageRow);
 }
 
+/**
+ * Most recently created pages for a user, newest first. Used by the
+ * memory dashboard to show the user a snippet of "what your twin just
+ * indexed" — including the authoring tier badge from `metadata`.
+ */
+export async function getRecentPages(
+  userId: string,
+  limit = 10,
+): Promise<BrainPageRow[]> {
+  const result = await query<BrainPageRow>(
+    `SELECT * FROM brain_pages WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2`,
+    [userId, limit],
+  );
+  return result.rows.map(parsePageRow);
+}
+
 // ── Counts (for diagnostics) ────────────────────────────────────────────────
 
 export async function countPages(userId: string): Promise<{ total: number; embedded: number }> {
@@ -651,9 +720,16 @@ function parseSignalRow(row: BrainSignalRow): BrainSignalRow {
 }
 
 function parseSettingsRow(row: BrainSettingsRow): BrainSettingsRow {
+  // Defensive fallbacks for installs that haven't yet applied migration 043
+  // (tier_weighting / tier_calibration). A SELECT * on the pre-043 schema
+  // returns rows without those columns, which surface as undefined in the
+  // TS row object. Treat the runtime values as their migration defaults so
+  // downstream code never has to null-check.
   return {
     ...row,
     routing: parseJson(row.routing) ?? {},
+    tier_weighting: typeof row.tier_weighting === 'boolean' ? row.tier_weighting : false,
+    tier_calibration: row.tier_calibration ?? 'normal',
     updated_at: new Date(row.updated_at),
   };
 }

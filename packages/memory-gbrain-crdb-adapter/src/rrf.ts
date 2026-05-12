@@ -6,6 +6,20 @@ interface ScoredHit {
 }
 
 /**
+ * Optional post-fold scoring hook (#251 Layer 2). Receives the page's
+ * `metadata` object and returns a multiplier to apply to its rrfScore.
+ * The fold passes `metadata` rather than the whole page so callers can't
+ * depend on shape changes elsewhere — the only signal that should change
+ * a page's retrieval rank is what's in metadata (authoringTier, userOverride,
+ * bodyLen). When omitted the fold is pure RRF as before.
+ */
+export type TierWeightFn = (metadata: unknown) => number;
+
+export interface RrfFoldOptions {
+  tierWeight?: TierWeightFn;
+}
+
+/**
  * Reciprocal Rank Fusion fold. Given two ranked lists (text + vector), compute
  * `1 / (k + rank)` per list and sum per document. Documents missing from a
  * list get zero contribution from that list (rank → ∞).
@@ -13,14 +27,18 @@ interface ScoredHit {
  * Standard literature uses k = 60. Smaller k weights the head harder; larger k
  * flattens the curve and gives the tail more influence.
  *
- * Returned rows include `textRank` and `vectorRank` so consumers can reason
- * about *why* a page ranked where it did — useful in observability + tests.
+ * When `options.tierWeight` is provided, the per-page multiplier is applied
+ * to the accumulated rrfScore before the final sort. A multiplier of 0 drops
+ * the page from results (used by `userOverride: 'hidden'`). The original
+ * `textRank` / `vectorRank` fields are preserved so consumers can still see
+ * the raw ranking signal in observability or tests.
  */
 export function rrfFold(
   textHits: ScoredHit[],
   vectorHits: ScoredHit[],
   k: number,
   rrfK: number,
+  options: RrfFoldOptions = {},
 ): RrfHit[] {
   const acc = new Map<string, RrfHit>();
 
@@ -60,7 +78,19 @@ export function rrfFold(
     }
   });
 
-  return [...acc.values()]
-    .sort((a, b) => b.rrfScore - a.rrfScore)
-    .slice(0, k);
+  let entries = [...acc.values()];
+
+  if (options.tierWeight) {
+    const weight = options.tierWeight;
+    for (const hit of entries) {
+      const mult = weight(hit.page.metadata);
+      hit.rrfScore *= mult;
+    }
+    // Drop hidden pages (multiplier 0); keep everything else even if it
+    // got pushed down. Filtering before sort means k slots stay full of
+    // surviving results.
+    entries = entries.filter((h) => h.rrfScore > 0);
+  }
+
+  return entries.sort((a, b) => b.rrfScore - a.rrfScore).slice(0, k);
 }

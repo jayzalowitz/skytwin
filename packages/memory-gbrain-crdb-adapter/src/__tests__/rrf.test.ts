@@ -92,4 +92,71 @@ describe('rrfFold', () => {
     // Lower k makes top-1 stand out more.
     expect(lowGap).toBeGreaterThan(highGap);
   });
+
+  describe('with tierWeight (#251 Layer 2)', () => {
+    function pageWithTier(id: string, tier: string): BrainPageRow {
+      const p = makePage(id);
+      return { ...p, metadata: { authoringTier: tier } };
+    }
+
+    it('flips ranking when a lower-base-rank authored page outweighs a top-rank newsletter', () => {
+      // Both pages match the query equally on text — newsletter happens
+      // to rank first (e.g. the corpus had more of them). Without tier
+      // weighting newsletter wins; with normal-band weighting authored wins.
+      const text = [
+        { page: pageWithTier('newsletter', 'inbox_newsletter'), score: 1 },
+        { page: pageWithTier('authored', 'user_sent_originated'), score: 0.99 },
+      ];
+      const pure = rrfFold(text, [], 5, 60);
+      expect(pure[0]!.id).toBe('newsletter');
+
+      const weighted = rrfFold(text, [], 5, 60, {
+        tierWeight: (meta) => {
+          const t = (meta as { authoringTier?: string } | null)?.authoringTier;
+          if (t === 'user_sent_originated') return 1.5;
+          if (t === 'inbox_newsletter') return 0.4;
+          return 1.0;
+        },
+      });
+      expect(weighted[0]!.id).toBe('authored');
+    });
+
+    it('userOverride: hidden (weight 0) drops the page entirely', () => {
+      const text = [
+        { page: pageWithTier('keep', 'inbox_personal'), score: 1 },
+        { page: pageWithTier('hide-me', 'user_sent_originated'), score: 0.5 },
+      ];
+      const out = rrfFold(text, [], 5, 60, {
+        tierWeight: (meta) => {
+          const o = (meta as { id?: string; authoringTier?: string } | null);
+          // simulate "the hide-me page was marked hidden"
+          if (text.find((t) => t.page.id === 'hide-me')?.page.metadata === o)
+            return 0;
+          return 1.0;
+        },
+      });
+      expect(out.map((h) => h.id)).not.toContain('hide-me');
+      expect(out[0]!.id).toBe('keep');
+    });
+
+    it('preserves textRank/vectorRank even after weighting', () => {
+      const text = [
+        { page: pageWithTier('a', 'inbox_newsletter'), score: 1 },
+        { page: pageWithTier('b', 'user_sent_originated'), score: 0.9 },
+      ];
+      const out = rrfFold(text, [], 5, 60, {
+        tierWeight: (meta) => {
+          const t = (meta as { authoringTier?: string } | null)?.authoringTier;
+          return t === 'user_sent_originated' ? 1.5 : 0.4;
+        },
+      });
+      const a = out.find((h) => h.id === 'a');
+      const b = out.find((h) => h.id === 'b');
+      // Raw text ranks survive even though the multiplier reorders rrfScore.
+      expect(a?.textRank).toBe(1);
+      expect(b?.textRank).toBe(2);
+      // b wins despite ranking #2 on text because of the tier multiplier.
+      expect(out[0]!.id).toBe('b');
+    });
+  });
 });

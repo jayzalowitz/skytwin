@@ -4,7 +4,11 @@ import {
   getSettings as getBrainSettings,
   upsertSettings as upsertBrainSettings,
   countPages,
+  countUserSentPages,
+  getRecentPages,
   pendingEmbeddingJobs,
+  calibrationFromSentVolume,
+  type TierCalibration,
 } from '@skytwin/memory-gbrain-crdb-adapter';
 import { mempalaceRepository } from '@skytwin/db';
 import {
@@ -56,6 +60,11 @@ export function createMemoryConfigRouter(): Router {
         backend: resolved.backend,
         capabilities: capabilitiesArr,
         hybridNotificationDismissed: settings?.hybrid_notification_dismissed ?? false,
+        // #251 Layer 2: surface tier-weighting toggle + calibration band so
+        // the dashboard can show + flip them. Falls back to defaults when
+        // the brain_settings row is missing (fresh user).
+        tierWeighting: settings?.tier_weighting ?? false,
+        tierCalibration: settings?.tier_calibration ?? 'normal',
         suggestion,
         index: {
           totalPages: counts.total,
@@ -92,6 +101,66 @@ export function createMemoryConfigRouter(): Router {
         error: err instanceof Error ? err.message : String(err),
       });
       return res.status(500).json({ error: 'failed to update backend' });
+    }
+  });
+
+  // POST toggle tier_weighting (#251 Layer 2). On enable, recompute the
+  // calibration band from the user's current `user_sent_*` page count over
+  // the last 90 days so a sparse-writer doesn't get the wide-spread weights.
+  // Body: `{ enabled: boolean, calibration?: 'sparse' | 'normal' | 'dense' }`.
+  // An explicit `calibration` override skips the auto-recompute and is the
+  // escape hatch for users who want to pin the band themselves.
+  router.post('/tier-weighting', async (req, res) => {
+    const userId = String(req.query['userId'] ?? '');
+    if (!UUID_REGEX.test(userId)) {
+      return res.status(400).json({ error: 'invalid userId' });
+    }
+    const body = (req.body ?? {}) as {
+      enabled?: unknown;
+      calibration?: unknown;
+    };
+    if (typeof body.enabled !== 'boolean') {
+      return res.status(400).json({ error: 'enabled (bool) is required' });
+    }
+
+    let calibration: TierCalibration | null = null;
+    if (
+      body.calibration === 'sparse' ||
+      body.calibration === 'normal' ||
+      body.calibration === 'dense'
+    ) {
+      calibration = body.calibration;
+    } else if (body.enabled) {
+      // Auto-compute from the user's writing volume. Worst case (transient
+      // DB error) we fall back to 'normal'.
+      try {
+        const sentVolume = await countUserSentPages(userId, 90);
+        calibration = calibrationFromSentVolume(sentVolume);
+      } catch (err) {
+        log.warn('tier_calibration auto-recompute failed; using normal', {
+          userId,
+          reason: err instanceof Error ? err.name : 'unknown',
+        });
+        calibration = 'normal';
+      }
+    }
+
+    try {
+      const next = await upsertBrainSettings(userId, {
+        tier_weighting: body.enabled,
+        ...(calibration ? { tier_calibration: calibration } : {}),
+      });
+      return res.json({
+        ok: true,
+        tierWeighting: next.tier_weighting,
+        tierCalibration: next.tier_calibration,
+      });
+    } catch (err) {
+      log.error('tier-weighting POST failed', {
+        userId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return res.status(500).json({ error: 'failed to update tier weighting' });
     }
   });
 
@@ -154,12 +223,16 @@ export function createMemoryConfigRouter(): Router {
       return res.status(400).json({ error: 'invalid userId' });
     }
     try {
-      const [counts, pendingJobs, recentEpisodes, entities] = await Promise.all([
+      const [counts, pendingJobs, recentEpisodes, entities, recentPages] = await Promise.all([
         countPages(userId).catch(() => ({ total: 0, embedded: 0 })),
         // Per-user count — multi-tenant installs were getting the global queue depth.
         pendingEmbeddingJobs(userId).catch(() => 0),
         mempalaceRepository.getEpisodes(userId, { limit: 10 }).catch(() => []),
         mempalaceRepository.getEntities(userId).catch(() => []),
+        // #251 Layer 1 surfaces — recent indexed pages, with the authoring
+        // tier badge from metadata. Empty array on failure so the rest of
+        // the dashboard still renders.
+        getRecentPages(userId, 10).catch(() => []),
       ]);
 
       // Compute feedback trend across the recent episode window.
@@ -207,6 +280,23 @@ export function createMemoryConfigRouter(): Router {
         createdAt: ep.created_at,
       }));
 
+      // Sanitize recent pages for the wire — strip the embedding vector
+      // (large, irrelevant for UI) and surface only the fields the dashboard
+      // actually renders. Tier comes from metadata.authoringTier.
+      const formattedPages = recentPages.map((p) => {
+        const meta = (p.metadata ?? {}) as Record<string, unknown>;
+        const tier = typeof meta['authoringTier'] === 'string' ? (meta['authoringTier'] as string) : null;
+        const userOverride = typeof meta['userOverride'] === 'string' ? (meta['userOverride'] as string) : null;
+        return {
+          id: p.id,
+          title: p.title,
+          source: p.source,
+          createdAt: p.created_at,
+          authoringTier: tier,
+          userOverride,
+        };
+      });
+
       return res.json({
         userId,
         index: {
@@ -222,6 +312,9 @@ export function createMemoryConfigRouter(): Router {
           total: entities.length,
           topByRecency: topEntities,
           topByType: topEntityTypes,
+        },
+        pages: {
+          recent: formattedPages,
         },
       });
     } catch (err) {
