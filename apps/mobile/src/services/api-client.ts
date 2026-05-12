@@ -118,6 +118,13 @@ export interface TwinBriefingPayload {
   unreadCount: number;
 }
 
+// -- Voice types --
+
+export interface TranscribeResponse {
+  transcript: string;
+  durationBytes: number;
+}
+
 export interface ApprovalResponse {
   requestId: string;
   action: string;
@@ -247,6 +254,29 @@ export class SkyTwinApiClient {
     );
   }
 
+  /**
+   * Upload base64-encoded audio to the desktop's whisper-cli for
+   * transcription. #179: mobile voice flow.
+   *
+   * The API enforces a 25MB *decoded* audio cap (≈33MB base64). The
+   * mobile recorder has no explicit cap; the screen surfaces the 413
+   * if the user records past the limit. A future improvement is to
+   * cap recording duration client-side to avoid the round-trip when
+   * the upload is going to be rejected anyway.
+   *
+   * Increased timeout to 60s because whisper transcription can take
+   * several seconds on first run while the model loads into memory.
+   */
+  async transcribeVoice(
+    userId: string,
+    audioBase64: string,
+    language?: string,
+  ): Promise<ApiResult<TranscribeResponse>> {
+    const body: Record<string, string> = { userId, audioBase64 };
+    if (language !== undefined && language.length > 0) body['language'] = language;
+    return this.request<TranscribeResponse>('POST', '/api/voice/transcribe', body, 60_000);
+  }
+
   // -- Internal helpers --
 
   private headers(): Record<string, string> {
@@ -269,9 +299,10 @@ export class SkyTwinApiClient {
     method: string,
     path: string,
     body?: unknown,
+    timeoutOverrideMs?: number,
   ): Promise<ApiResult<T>> {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    const timer = setTimeout(() => controller.abort(), timeoutOverrideMs ?? this.timeoutMs);
 
     try {
       const response = await fetch(`${this.baseUrl}${path}`, {

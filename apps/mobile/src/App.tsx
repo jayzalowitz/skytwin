@@ -15,6 +15,7 @@ import { SettingsScreen } from './screens/SettingsScreen';
 import { CapabilitiesScreen } from './screens/CapabilitiesScreen';
 import { CapabilityDetailScreen } from './screens/CapabilityDetailScreen';
 import { BriefingScreen } from './screens/BriefingScreen';
+import { VoiceScreen } from './screens/VoiceScreen';
 
 // -- Navigation types --
 
@@ -43,7 +44,7 @@ const SkyTwinTheme = {
 // -- Bottom tab bar --
 
 // Tab type now includes Capabilities and Briefing.
-type MainTab = 'approvals' | 'briefing' | 'capabilities' | 'dashboard' | 'settings';
+type MainTab = 'approvals' | 'briefing' | 'capabilities' | 'voice' | 'dashboard' | 'settings';
 
 function MainWithTabs({ onDisconnect }: { onDisconnect: () => void }): React.JSX.Element {
   const [activeTab, setActiveTab] = useState<MainTab>('approvals');
@@ -80,6 +81,8 @@ function MainWithTabs({ onDisconnect }: { onDisconnect: () => void }): React.JSX
           );
         }
         return <CapabilitiesScreen onSelectCapability={handleSelectCapability} />;
+      case 'voice':
+        return <VoiceScreen />;
       case 'dashboard':
         return <DashboardScreen />;
       case 'settings':
@@ -117,6 +120,11 @@ function MainWithTabs({ onDisconnect }: { onDisconnect: () => void }): React.JSX
           label="Capabilities"
           active={activeTab === 'capabilities'}
           onPress={() => handleTabPress('capabilities')}
+        />
+        <TabButton
+          label="Voice"
+          active={activeTab === 'voice'}
+          onPress={() => handleTabPress('voice')}
         />
         <TabButton
           label="Dashboard"
