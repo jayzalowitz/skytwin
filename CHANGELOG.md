@@ -62,10 +62,12 @@ Internal cleanup that fell out of the change:
 
 - Three `renderRegistryResults(userId, q, category)` call sites
   collapsed to `renderRegistryResults(userId, readRegistryFilterState())`
-  via a new pure `readRegistryFilterState()` helper. Adding the
-  Lifebook filter without this would have meant editing five separate
-  call sites. The next filter that lands gets to add itself in two
-  places: the dropdown markup and the state reader.
+  via a new `readRegistryFilterState()` helper. The helper reads the
+  current dropdown/input values from the DOM (not pure, but isolated
+  — one place to change when filters are added). Adding the Lifebook
+  filter without this would have meant editing five separate call
+  sites. The next filter to land gets to add itself in two places:
+  the dropdown markup and the state reader.
 
 Test plan: smoke-tested in Chrome with mocked Lifebook + registry data
 — filter toggles correctly across three scenarios (all-Lifebooks, one
