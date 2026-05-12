@@ -235,7 +235,11 @@ app.use('/api/credential-vault', sessionAuth, requireOwnership, createCredential
 app.use('/api/dxt', sessionAuth, requireOwnership, createDxtRouter());
 app.use('/api/lifebooks', sessionAuth, requireOwnership, createLifebooksRouter());
 app.use('/api/federation', sessionAuth, createFederationRouter()); // userId-param ownership applied in-router
-app.use('/api/voice', sessionAuth, createVoiceRouter()); // userId-param ownership applied in-router
+// /api/voice — `requireOwnership` enforces body/path/query userId matches the
+// authenticated session. POST /transcribe + /synthesize take userId in the
+// body, so the in-router :userId middleware alone wasn't sufficient — caught
+// by Copilot on PR #255.
+app.use('/api/voice', sessionAuth, requireOwnership, createVoiceRouter());
 app.use('/api/crisis-modes', sessionAuth, createCrisisModesRouter()); // userId-param ownership in-router
 app.use('/api/embedded-llm', sessionAuth, createEmbeddedLlmRouter()); // catalog endpoints; no userId in path
 

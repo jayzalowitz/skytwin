@@ -48,8 +48,15 @@ export {
 } from './whisper-cpp-backend.js';
 
 export {
+  PiperTtsBackend,
+  findFirstPiperModel,
+  type PiperTtsBackendOptions,
+} from './piper-tts-backend.js';
+
+export {
   createEmbeddedTextPort,
   createEmbeddedSttPort,
+  createEmbeddedTtsPort,
   type CreatePortOverrides,
 } from './factory.js';
 

@@ -1,42 +1,59 @@
 import { Router } from 'express';
-import { createEmbeddedSttPort, type EmbeddedSttPort } from '@skytwin/embedded-llm';
+import {
+  createEmbeddedSttPort,
+  createEmbeddedTtsPort,
+  type EmbeddedSttPort,
+  type EmbeddedTtsPort,
+} from '@skytwin/embedded-llm';
 import { createLogger } from '@skytwin/core';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
 
 const log = createLogger('api:voice');
 
 /**
- * Voice transcription routes (#194 Child 4 + #187 AC#3 consumer).
+ * Voice routes (#194 Child 4 + #187 AC#3 + AC#4 consumer).
  *
- *   GET  /api/voice/capabilities/:userId  — does this server have whisper?
- *   POST /api/voice/transcribe           — body: { userId, audioBase64, mime?, language? }
+ *   GET  /api/voice/capabilities/:userId  — does this server have whisper / piper?
+ *   POST /api/voice/transcribe           — body: { userId, audioBase64, language? }
+ *   POST /api/voice/synthesize           — body: { userId, text, voice? }
  *
- * Backed by `createEmbeddedSttPort()` from `@skytwin/embedded-llm`. The
- * port returns a `NullEmbeddedSttPort` when whisper-cli isn't installed
- * — its `transcribe()` throws `NotAvailableError`, which we surface as
- * 503 so the client can fall back to a manual transcript.
+ * Backed by `createEmbeddedSttPort()` + `createEmbeddedTtsPort()` from
+ * `@skytwin/embedded-llm`. Each returns its `Null*` fallback when the
+ * corresponding binary isn't installed — those throw `NotAvailableError`
+ * on use, which we surface as 503 so the client can fall back to a
+ * manual transcript / silent text rendering.
  *
- * Why the binary lives behind a single port: the same backend serves
- * desktop voice-first (#194 Child 4) and mobile voice (#179). Both
- * clients POST audio here; one place to install/upgrade the model.
+ * Why both ports live in this router: the same backend serves desktop
+ * voice-first (#194 Child 4) and mobile voice (#179). Both clients
+ * POST here; one place to install/upgrade the binaries and models.
  */
 
-let cachedPort: Promise<EmbeddedSttPort> | null = null;
-function getPort(): Promise<EmbeddedSttPort> {
-  if (cachedPort === null) cachedPort = createEmbeddedSttPort();
-  return cachedPort;
+let cachedSttPort: Promise<EmbeddedSttPort> | null = null;
+let cachedTtsPort: Promise<EmbeddedTtsPort> | null = null;
+
+function getSttPort(): Promise<EmbeddedSttPort> {
+  if (cachedSttPort === null) cachedSttPort = createEmbeddedSttPort();
+  return cachedSttPort;
+}
+
+function getTtsPort(): Promise<EmbeddedTtsPort> {
+  if (cachedTtsPort === null) cachedTtsPort = createEmbeddedTtsPort();
+  return cachedTtsPort;
 }
 
 /**
- * Test helper — clears the cached port so a beforeEach can swap out
- * `createEmbeddedSttPort` mocks between cases. Production callers never
- * need this; the port is intentionally cached for hot-path latency.
+ * Test helper — clears the cached ports so a beforeEach can swap out
+ * `createEmbeddedSttPort` / `createEmbeddedTtsPort` mocks between
+ * cases. Production callers never need this; the ports are
+ * intentionally cached for hot-path latency.
  */
 export function _resetVoicePortCache(): void {
-  cachedPort = null;
+  cachedSttPort = null;
+  cachedTtsPort = null;
 }
 
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024; // 25MB, ~10 minutes of WAV
+const MAX_TTS_TEXT_LENGTH = 8000; // Mirror PiperTtsBackend's internal ceiling.
 
 export function createVoiceRouter(): Router {
   const router = Router();
@@ -44,10 +61,20 @@ export function createVoiceRouter(): Router {
 
   router.get('/capabilities/:userId', async (_req, res, next) => {
     try {
-      const port = await getPort();
+      const [stt, tts] = await Promise.all([getSttPort(), getTtsPort()]);
       res.json({
-        available: port.capabilities.available,
-        supportedFormats: port.capabilities.supportedFormats,
+        // Legacy STT-shaped fields preserved for clients written before
+        // TTS landed. New clients should prefer the nested objects.
+        available: stt.capabilities.available,
+        supportedFormats: stt.capabilities.supportedFormats,
+        stt: {
+          available: stt.capabilities.available,
+          supportedFormats: stt.capabilities.supportedFormats,
+        },
+        tts: {
+          available: tts.capabilities.available,
+          voices: tts.capabilities.voices,
+        },
       });
     } catch (err) {
       next(err);
@@ -83,7 +110,7 @@ export function createVoiceRouter(): Router {
         return;
       }
 
-      const port = await getPort();
+      const port = await getSttPort();
       if (!port.capabilities.available) {
         res.status(503).json({
           error: 'whisper-cli not available on this server',
@@ -103,6 +130,71 @@ export function createVoiceRouter(): Router {
         chars: transcript.length,
       });
       res.json({ transcript, durationBytes: audio.length });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  /**
+   * #187 AC#4 consumer: synthesize spoken audio from text using Piper.
+   *
+   * Body: `{ userId: string, text: string, voice?: string }`.
+   * Response: `{ audioBase64: string, audioBytes: number, voice: string }`
+   * — base64 instead of binary so it goes through the same JSON
+   * envelope the rest of the API uses (the mobile client + the web
+   * dashboard both decode base64 → Blob/audio element). `audioBytes`
+   * is the WAV byte count; we deliberately did not name it
+   * `durationBytes` (which would imply seconds) since this is a new
+   * endpoint with no compat concern — Copilot caught the confusion
+   * with the existing transcribe response on PR #255.
+   *
+   * 503 when the Null port is in play (no piper binary). Same hint
+   * shape as the transcribe path so clients can surface a uniform
+   * "install whisper / piper" message in the embedded-llm card.
+   */
+  router.post('/synthesize', async (req, res, next) => {
+    try {
+      const body = req.body as Record<string, unknown>;
+      const userId = body['userId'];
+      const text = body['text'];
+      const voice = body['voice'];
+
+      if (typeof userId !== 'string' || userId.length === 0) {
+        res.status(400).json({ error: 'userId required' });
+        return;
+      }
+      if (typeof text !== 'string' || text.length === 0) {
+        res.status(400).json({ error: 'text required' });
+        return;
+      }
+      if (text.length > MAX_TTS_TEXT_LENGTH) {
+        res.status(413).json({ error: `text too long (max ${MAX_TTS_TEXT_LENGTH} chars)` });
+        return;
+      }
+
+      const port = await getTtsPort();
+      if (!port.capabilities.available) {
+        res.status(503).json({
+          error: 'piper not available on this server',
+          hint: 'install piper-tts and an .onnx voice model, or set SKYTWIN_PIPER_BIN + SKYTWIN_PIPER_MODEL',
+        });
+        return;
+      }
+
+      const opts: { voice?: string } = {};
+      if (typeof voice === 'string' && voice.length > 0) opts.voice = voice;
+      const wav = await port.synthesize(text, opts);
+      log.info('Synthesized audio', {
+        userId,
+        chars: text.length,
+        bytes: wav.length,
+        voice: opts.voice ?? port.capabilities.voices[0],
+      });
+      res.json({
+        audioBase64: wav.toString('base64'),
+        audioBytes: wav.length,
+        voice: opts.voice ?? port.capabilities.voices[0] ?? '',
+      });
     } catch (err) {
       next(err);
     }
