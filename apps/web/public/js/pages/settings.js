@@ -1288,9 +1288,18 @@ export function applySmartMode(chain) {
 }
 
 /**
- * Reorder the chain so the first non-embedded enabled provider becomes
- * top-priority. Returns null if there's nothing to switch to (caller
- * should surface a "configure a paid provider first" message).
+ * Reorder the chain so the first hosted/Ollama provider (by priority)
+ * becomes top-priority. The selected provider is force-enabled — a
+ * deliberately-disabled hosted entry is treated as "configured but
+ * paused," and switching to Smarter re-enables it. Returns null when
+ * no hosted/Ollama provider exists in the chain at all (caller
+ * surfaces "configure a paid provider first").
+ *
+ * Note: this scans the full chain regardless of `enabled` state, then
+ * force-enables the chosen entry. The previous docstring said "first
+ * non-embedded *enabled* provider" — that wording implied a filter
+ * we don't actually apply. Doc updated to match behavior; Copilot
+ * round-2 on PR #253 caught the mismatch.
  */
 export function applySmarterMode(chain) {
   const next = chain.map((p) => ({ ...p }));
@@ -1540,9 +1549,14 @@ window.switchAIBrainMode = async function(userId, target) {
     _aiChain = prev;
     document.getElementById('ai-mode-toggle').innerHTML = renderModeToggle(_aiChain);
     document.getElementById('ai-provider-chain').innerHTML = renderProviderChain(_aiChain);
+    // Defensive `err.message` access — a non-Error rejection (string,
+    // object, undefined) would otherwise produce "Failed to switch
+    // mode: undefined" on the banner. Copilot round-2 on PR #253
+    // flagged the prior direct-access.
+    const msg = err instanceof Error ? err.message : String(err);
     document.getElementById('page-content').insertAdjacentHTML(
       'afterbegin',
-      `<div class="error-banner">Failed to switch mode: ${escapeHtml(err.message)}</div>`,
+      `<div class="error-banner">Failed to switch mode: ${escapeHtml(msg)}</div>`,
     );
   }
 };

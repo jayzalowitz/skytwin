@@ -62,8 +62,36 @@ export function estimateLlmCostCents(
   tokensOut = 0,
 ): number {
   const rate = RATE_DECICENTS_PER_M_TOKENS[provider];
-  if (!rate) return 0;
-  // Deci-cents per million tokens × tokens / 1M = deci-cents.
+  // Unknown provider — fail loud rather than report fake-free usage.
+  // The `AIProviderName` type is the source of truth; if a DB string
+  // bypasses it (cast from `unknown`, etc.) we'd rather throw at the
+  // spend-recording call site than silently mis-bill. Copilot round-2
+  // on PR #253 caught the prior silent-zero behavior.
+  if (!rate) {
+    throw new Error(
+      `estimateLlmCostCents: unknown provider "${String(provider)}". Add it to RATE_DECICENTS_PER_M_TOKENS.`,
+    );
+  }
+  // Deci-cents per million tokens × tokens / 1M = deci-cents. JS
+  // numbers are safe up to 2^53 ≈ 9e15. The intermediate product
+  // (rate.output ≈ 4000) × (tokens ≈ 2^53 / 4000 ≈ 2.2e12) overflows
+  // safe-integer territory only for caller-supplied token counts
+  // above ~2 trillion — orders of magnitude beyond any real prompt.
+  // Guard explicitly so an untrusted input can't silently produce
+  // a wrong cents value through IEEE-754 rounding.
+  const MAX_SAFE_TOKEN_COUNT = 2_000_000_000_000; // 2e12, well below 2^53
+  if (
+    !Number.isFinite(tokensIn) ||
+    !Number.isFinite(tokensOut) ||
+    tokensIn < 0 ||
+    tokensOut < 0 ||
+    tokensIn > MAX_SAFE_TOKEN_COUNT ||
+    tokensOut > MAX_SAFE_TOKEN_COUNT
+  ) {
+    throw new Error(
+      `estimateLlmCostCents: token counts must be finite non-negative integers ≤ ${MAX_SAFE_TOKEN_COUNT}; got tokensIn=${tokensIn}, tokensOut=${tokensOut}.`,
+    );
+  }
   // Cents = ceil(deci-cents / 10). Integer math throughout.
   const deciCents = (rate.input * tokensIn + rate.output * tokensOut);
   const tokenScale = 1_000_000;

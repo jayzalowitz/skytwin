@@ -9,7 +9,11 @@ describe('estimateLlmCostCents', () => {
   it('returns 0 for embedded provider regardless of token counts', () => {
     expect(estimateLlmCostCents('embedded', 0, 0)).toBe(0);
     expect(estimateLlmCostCents('embedded', 1_000_000, 1_000_000)).toBe(0);
-    expect(estimateLlmCostCents('embedded', Number.MAX_SAFE_INTEGER, 0)).toBe(0);
+    // Largest token count the safe-integer guard accepts. The guard
+    // throws above 2e12, which is far beyond any real prompt; the
+    // embedded path still returns 0 at that boundary because the rate
+    // table entry is { 0, 0 } regardless of token count.
+    expect(estimateLlmCostCents('embedded', 2_000_000_000_000, 0)).toBe(0);
   });
 
   it('returns 0 for ollama provider regardless of token counts', () => {
@@ -64,6 +68,31 @@ describe('estimateLlmCostCents', () => {
     const a = estimateLlmCostCents('anthropic', 500_000, 250_000);
     const b = estimateLlmCostCents('anthropic', 500_000, 250_000);
     expect(a).toBe(b);
+  });
+
+  // #253 round-2: unknown provider must throw rather than report fake-
+  // free usage. `AIProviderName` is the type guard at compile time;
+  // this asserts the runtime fallback for code paths that cast a
+  // string from the DB or an external source.
+  it('throws when given a provider name not in the rate table', () => {
+    expect(() =>
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      estimateLlmCostCents('mystery-provider' as any, 100, 100),
+    ).toThrow(/unknown provider/);
+  });
+
+  // #253 round-2: token counts beyond the safe-integer guard throw so
+  // an untrusted aggregator can't sneak a bogus value past IEEE-754
+  // rounding into a wrong cents value.
+  it('throws on non-finite or negative token counts', () => {
+    expect(() => estimateLlmCostCents('anthropic', Number.NaN, 0)).toThrow();
+    expect(() => estimateLlmCostCents('anthropic', -1, 0)).toThrow();
+    expect(() => estimateLlmCostCents('anthropic', 0, Infinity)).toThrow();
+  });
+
+  it('throws on token counts above the safe-integer guard', () => {
+    // 3e12 is well above the 2e12 guard, far below 2^53.
+    expect(() => estimateLlmCostCents('anthropic', 3_000_000_000_000, 0)).toThrow(/must be/);
   });
 });
 
