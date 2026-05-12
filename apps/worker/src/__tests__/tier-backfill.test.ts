@@ -164,6 +164,23 @@ describe('runTierBackfillJob', () => {
     });
   });
 
+  it('counts updatePageMetadata returning 0 affected rows as failed', async () => {
+    mockFind.mockResolvedValueOnce([
+      {
+        page_id: 'p-gone',
+        user_id: 'u-1',
+        signal_data: { authoringTier: 'inbox_personal', from: 'a@example.com' },
+      },
+    ]);
+    // Simulate a race where the page got deleted between find + update.
+    mockUpdate.mockResolvedValueOnce(0);
+    const summary = await runTierBackfillJob({ batchSize: 5 });
+    expect(summary.attempted).toBe(1);
+    expect(summary.failed).toBe(1);
+    expect(summary.copiedFromSignal).toBe(0);
+    expect(summary.reclassified).toBe(0);
+  });
+
   it('returns an empty summary when the find query throws', async () => {
     mockFind.mockRejectedValueOnce(new Error('connection refused'));
     const summary = await runTierBackfillJob({ batchSize: 5 });

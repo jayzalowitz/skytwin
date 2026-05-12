@@ -98,7 +98,19 @@ export async function runTierBackfillJob(
       patch['fromAddress'] = result.fromAddress;
     }
     try {
-      await updatePageMetadata(row.user_id, row.page_id, patch);
+      const affected = await updatePageMetadata(row.user_id, row.page_id, patch);
+      if (affected === 0) {
+        // updatePageMetadata returns 0 when the page disappeared between
+        // the find query and the update (deleted, user reassigned, etc.),
+        // or when ownership doesn't match. Counted as failed so the
+        // summary surfaces it instead of silently lying about success.
+        summary.failed++;
+        log.warn('tier backfill: updatePageMetadata reported 0 affected rows', {
+          pageId: row.page_id,
+          userId: row.user_id,
+        });
+        continue;
+      }
       if (result.source === 'signal-tier') summary.copiedFromSignal++;
       else summary.reclassified++;
     } catch (err) {

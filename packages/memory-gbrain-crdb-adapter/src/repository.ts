@@ -157,9 +157,9 @@ export async function updatePageMetadata(
  * those came from a non-signal write path (episode, entity) and don't
  * have classifiable email headers.
  *
- * Limit is mandatory and caps the worker's per-pass work — a thousand
- * pages per cycle is the default in the worker; callers can pass less
- * for tests.
+ * Limit is mandatory and caps the worker's per-pass work — the worker's
+ * default batch size is 200; callers can pass any value (lower for tests,
+ * higher if you're catching up a large back-catalog manually).
  */
 export interface PageMissingTierRow {
   page_id: string;
@@ -185,10 +185,11 @@ export async function findPagesMissingAuthoringTier(
   return result.rows.map((row) => ({
     page_id: row.page_id,
     user_id: row.user_id,
-    signal_data:
-      typeof row.signal_data === 'string'
-        ? (JSON.parse(row.signal_data) as Record<string, unknown>)
-        : (row.signal_data ?? {}),
+    // Reuse the file-local `parseJson` helper so a single malformed/corrupt
+    // signal row can't blow up the whole worker pass. parseJson returns
+    // null on JSON.parse failure; we coerce to {} so the worker logs the
+    // row as "unreclassifiable" rather than crashing.
+    signal_data: parseJson(row.signal_data) ?? {},
   }));
 }
 
