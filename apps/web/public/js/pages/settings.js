@@ -232,6 +232,9 @@ export async function renderSettings(container, userId) {
             ? `Out of the box your twin uses the local AI on your machine plus built-in rules — that's enough for most decisions. Add a paid provider here if you want sharper reasoning on the tricky calls. Multiple are tried in order with automatic fallback.`
             : `<strong>The Chat surface needs at least one AI provider configured here</strong> to generate replies. Other features (decisions, approvals) work without one — they fall back to local AI + built-in rules. Multiple providers are tried in priority order with automatic fallback.`}
         </div>
+        <div id="ai-mode-toggle">
+          ${renderModeToggle(aiProviders)}
+        </div>
         <div id="ai-provider-chain">
           ${renderProviderChain(aiProviders)}
         </div>
@@ -766,6 +769,19 @@ function ensureSettingsListener() {
       case 'save-ai-providers':
         window.saveAIProvidersHandler(uid);
         return;
+      case 'switch-to-smart':
+        window.switchAIBrainMode(uid, 'smart');
+        return;
+      case 'switch-to-smarter':
+        window.switchAIBrainMode(uid, 'smarter');
+        return;
+      case 'switch-to-smarter-blocked':
+        // Visual feedback only — Smarter mode needs a paid provider in
+        // the chain first. The pill helper text already says this; on
+        // click we just flash the provider-add dropdown so the user's
+        // eye is drawn there.
+        document.getElementById('add-provider-select')?.focus();
+        return;
       case 'delete-routine': {
         const routineId = el.getAttribute('data-routine-id');
         if (routineId) window.deleteRoutineHandler(routineId, uid);
@@ -1205,8 +1221,152 @@ const PROVIDER_LABELS = {
   embedded: 'Embedded (llama.cpp)',
 };
 
+// #187 AC#6: providers that count as "Smarter" — i.e. external paid APIs
+// the user is choosing to delegate the harder thinking to. `ollama` lives
+// on a third rail: it's local like `embedded` but the user installed it
+// themselves, so we treat it as Smarter too (the operator chose it
+// deliberately and may have a beefier model than the embedded default).
+const SMARTER_PROVIDERS = new Set(['anthropic', 'openai', 'google', 'ollama']);
+
+/**
+ * Determine the user's current AI mode from their provider chain.
+ *
+ *   'smart'    — top enabled provider is `embedded` (Smart mode default
+ *                per #187 AC#6).
+ *   'smarter'  — top enabled provider is hosted / Ollama (BYO API path).
+ *   'none'     — no enabled providers; the LlmClient will return null and
+ *                callers fall back to local AI + built-in rules.
+ *
+ * Pure helper so the mode pill, the action handler, and any future audit
+ * route all agree on one definition.
+ */
+export function detectAIMode(chain) {
+  const enabled = chain.filter((p) => p.enabled !== false);
+  if (enabled.length === 0) return 'none';
+  const top = enabled.slice().sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0))[0];
+  if (!top) return 'none';
+  if (top.provider === 'embedded') return 'smart';
+  if (SMARTER_PROVIDERS.has(top.provider)) return 'smarter';
+  return 'none';
+}
+
+/**
+ * Reorder the chain so `embedded` is the top-priority enabled provider.
+ * Adds an `embedded` entry if one doesn't exist yet so first-time-Smart
+ * users get a working configuration in one click. Returns the new chain
+ * (does not mutate the input).
+ *
+ * The embedded entry uses `'auto'` as the model so the runtime resolves
+ * the first GGUF in the detected modelDir — matching the convention
+ * `apps/web/public/js/components/embedded-llm-card.js` uses for fresh
+ * installs.
+ */
+export function applySmartMode(chain) {
+  const next = chain.map((p) => ({ ...p }));
+  let embedded = next.find((p) => p.provider === 'embedded');
+  if (!embedded) {
+    embedded = {
+      provider: 'embedded',
+      model: 'auto',
+      apiKey: '',
+      baseUrl: undefined,
+      priority: 0,
+      enabled: true,
+      hasApiKey: false,
+      apiKeyPreview: '',
+    };
+    next.push(embedded);
+  } else {
+    embedded.enabled = true;
+  }
+  // Rebuild priorities so embedded is at 0 and the rest preserve their
+  // relative order. This is the contract the API expects (priorities are
+  // unique sequential integers).
+  const others = next.filter((p) => p !== embedded);
+  others.sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0));
+  return [embedded, ...others].map((p, i) => ({ ...p, priority: i }));
+}
+
+/**
+ * Reorder the chain so the first hosted/Ollama provider (by priority)
+ * becomes top-priority. The selected provider is force-enabled — a
+ * deliberately-disabled hosted entry is treated as "configured but
+ * paused," and switching to Smarter re-enables it. Returns null when
+ * no hosted/Ollama provider exists in the chain at all (caller
+ * surfaces "configure a paid provider first").
+ *
+ * Note: this scans the full chain regardless of `enabled` state, then
+ * force-enables the chosen entry. The previous docstring said "first
+ * non-embedded *enabled* provider" — that wording implied a filter
+ * we don't actually apply. Doc updated to match behavior; Copilot
+ * round-2 on PR #253 caught the mismatch.
+ */
+export function applySmarterMode(chain) {
+  const next = chain.map((p) => ({ ...p }));
+  next.sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0));
+  const smarterIdx = next.findIndex((p) => SMARTER_PROVIDERS.has(p.provider));
+  if (smarterIdx === -1) return null;
+  const target = next[smarterIdx];
+  target.enabled = true;
+  const others = next.filter((p) => p !== target);
+  return [target, ...others].map((p, i) => ({ ...p, priority: i }));
+}
+
 // In-memory state for the current chain being edited
 let _aiChain = [];
+
+/**
+ * #187 AC#6: render the Smart / Smarter mode pill above the provider
+ * chain. Active mode is highlighted; clicking the inactive pill reorders
+ * priorities and auto-saves.
+ *
+ * Disabled states (rendered as helper text under the inactive pill):
+ *   - Switch-to-Smarter is disabled when no hosted/Ollama provider exists
+ *     in the chain (we don't auto-add one because the user has to supply
+ *     an API key).
+ *   - Switch-to-Smart is always available — if no embedded entry exists
+ *     yet, `applySmartMode` adds one with `model: 'auto'` so the runtime
+ *     picks up the first GGUF in the detected model directory.
+ */
+function renderModeToggle(providers) {
+  const mode = detectAIMode(providers);
+  const hasSmarterCandidate = providers.some((p) => SMARTER_PROVIDERS.has(p.provider));
+
+  const pill = (label, isActive, action, helperText) => `
+    <div style="flex: 1; min-width: 0;">
+      <button class="btn ${isActive ? 'btn-primary' : 'btn-outline'} btn-sm"
+              style="width: 100%; padding: 0.5rem 0.75rem; font-size: 0.85rem;"
+              data-action="${action}"
+              ${isActive ? 'disabled' : ''}>
+        ${isActive ? '✓ ' : ''}${label}${isActive ? '' : ' →'}
+      </button>
+      ${helperText ? `<div style="font-size: 0.7rem; color: var(--text-dim); margin-top: 0.25rem;">${helperText}</div>` : ''}
+    </div>
+  `;
+
+  return `
+    <div style="display: flex; gap: 0.5rem; margin-bottom: 0.75rem;">
+      ${pill(
+        'Smart (free, on-device)',
+        mode === 'smart',
+        'switch-to-smart',
+        mode === 'smart'
+          ? 'Embedded model is your top choice.'
+          : 'No API costs, runs offline.',
+      )}
+      ${pill(
+        'Smarter (paid API or Ollama)',
+        mode === 'smarter',
+        hasSmarterCandidate ? 'switch-to-smarter' : 'switch-to-smarter-blocked',
+        mode === 'smarter'
+          ? 'Your hosted provider or Ollama is the top choice.'
+          : hasSmarterCandidate
+            ? 'Sharper reasoning on tricky calls.'
+            : 'Add a hosted provider or Ollama below first.',
+      )}
+    </div>
+  `;
+}
 
 function renderProviderChain(providers) {
   _aiChain = providers.map((p, i) => ({ ...p, priority: i }));
@@ -1334,6 +1494,70 @@ window.aiTestProvider = async function(idx, userId) {
     }
   } catch (err) {
     resultEl.innerHTML = `<span style="font-size: 0.75rem; color: var(--danger);">Error: ${escapeHtml(err instanceof Error ? err.message : String(err))}</span>`;
+  }
+};
+
+/**
+ * #187 AC#6: click handler for the Smart / Smarter mode pills. Applies
+ * the priority reorder locally, then auto-saves through the same
+ * `saveAIProviders` round-trip the manual "Save" button uses. After save
+ * the settings page re-renders so the pill state and the provider chain
+ * agree.
+ */
+window.switchAIBrainMode = async function(userId, target) {
+  const next = target === 'smart'
+    ? applySmartMode(_aiChain)
+    : applySmarterMode(_aiChain);
+  if (!next) {
+    // applySmarterMode returned null — no paid provider in the chain.
+    // The `switch-to-smarter-blocked` action handles the focus-the-add-
+    // dropdown UX; this branch is defense in depth in case the action
+    // gets routed here anyway.
+    return;
+  }
+  // Snapshot the previous chain so we can roll back the optimistic
+  // render if the save fails. Copilot's review of PR #253 caught that
+  // the prior implementation left the pill + provider list visually
+  // implying success when the server actually rejected the write
+  // (e.g. when the API didn't accept `embedded` yet — see paired fix
+  // in apps/api/src/routes/settings.ts).
+  const prev = _aiChain.map((p) => ({ ...p }));
+  _aiChain = next;
+  // Re-render the pill + provider chain optimistically so the click
+  // produces an immediate visual change while the save round-trips.
+  document.getElementById('ai-mode-toggle').innerHTML = renderModeToggle(_aiChain);
+  document.getElementById('ai-provider-chain').innerHTML = renderProviderChain(_aiChain);
+
+  try {
+    await saveAIProviders(userId, _aiChain.map((p, i) => ({
+      provider: p.provider,
+      apiKey: p.apiKey || '',
+      model: p.model,
+      baseUrl: p.baseUrl,
+      priority: i,
+      enabled: p.enabled !== false,
+    })));
+    // Re-fetch from the server so the pill reflects the persisted state
+    // (handles edge cases like an existing-but-disabled embedded entry
+    // that was re-enabled by applySmartMode, where the server response
+    // may carry extra fields not in our optimistic copy).
+    const { renderSettings } = await import('./settings.js');
+    await renderSettings(document.getElementById('page-content'), userId);
+  } catch (err) {
+    // Roll back the optimistic state so the user doesn't think the
+    // switch succeeded.
+    _aiChain = prev;
+    document.getElementById('ai-mode-toggle').innerHTML = renderModeToggle(_aiChain);
+    document.getElementById('ai-provider-chain').innerHTML = renderProviderChain(_aiChain);
+    // Defensive `err.message` access — a non-Error rejection (string,
+    // object, undefined) would otherwise produce "Failed to switch
+    // mode: undefined" on the banner. Copilot round-2 on PR #253
+    // flagged the prior direct-access.
+    const msg = err instanceof Error ? err.message : String(err);
+    document.getElementById('page-content').insertAdjacentHTML(
+      'afterbegin',
+      `<div class="error-banner">Failed to switch mode: ${escapeHtml(msg)}</div>`,
+    );
   }
 };
 

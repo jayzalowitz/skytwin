@@ -10,3 +10,4 @@ export type {
   ChatMessage,
 } from './types.js';
 export { toMessages, splitSystemAndConversation } from './messages.js';
+export { estimateLlmCostCents, isZeroCostProvider } from './cost.js';

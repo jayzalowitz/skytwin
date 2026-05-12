@@ -1,5 +1,70 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [unreleased] — Smart / Smarter mode toggle + zero-cost helper (#187 AC#6 + AC#8)
+
+### Fixed (post-Copilot review)
+
+- Cost rate table was off by 100× — the original draft stored
+  `{ input: 8, output: 40 }` for Anthropic and called it "deci-cents
+  per 1M" when the conversion is actually `$0.80 → 80¢ → 800
+  deci-cents`. The table now stores `{ input: 800, output: 4000 }`
+  for Anthropic and the corresponding corrected values for OpenAI and
+  Google. The unit tests now pin the expected dollar-equivalent
+  outputs ($4.80 for 1M+1M Anthropic, $0.60 for 1M output OpenAI,
+  $0.30 for 1M output Google) so the unit conversion can't silently
+  regress again. Embedded + Ollama still return 0¢ at any volume.
+- `PUT /api/settings/:userId/ai` now accepts `embedded` as a valid
+  provider. The Smart mode toggle inserts an `embedded` entry; the
+  pre-existing validation set only allowed `anthropic` / `openai`
+  / `google` / `ollama`, so clicking "Use Smart mode" round-tripped
+  through `applySmartMode` and then 400'd at the API.
+- `switchAIBrainMode` rolls back the optimistic UI state on save
+  failure. Previously the pill + provider chain stayed in the
+  reordered state with only an error banner — visually implying the
+  switch succeeded when the server actually rejected it.
+- "Smarter" pill copy now says "paid API or Ollama" — the
+  `SMARTER_PROVIDERS` set includes Ollama (local, free) and the
+  earlier copy would have confused users running Ollama into thinking
+  the option didn't apply to them.
+
+### Original change
+
+Two pieces close out the user-visible side of the embedded LLM story:
+
+- **AC#6 — Smart / Smarter mode toggle in the AI brain card.** A two-pill
+  row at the top of Settings → AI brain shows the user which mode is
+  active (computed from their provider chain: top-priority enabled =
+  `embedded` → Smart; hosted / Ollama → Smarter; nothing enabled →
+  none). Clicking the inactive pill reorders priorities and auto-saves
+  through the existing `PUT /api/settings/:userId/ai` round-trip.
+  Switching to Smart adds an `embedded` entry with `model: 'auto'` if
+  the chain doesn't have one yet — first-time-Smart users get a working
+  configuration in one click. Switching to Smarter when no paid
+  provider exists routes to a `switch-to-smarter-blocked` action that
+  focuses the "+ Add a provider…" dropdown so the user's eye is drawn
+  to the next step instead of failing silently.
+
+  Pure helpers (`detectAIMode`, `applySmartMode`, `applySmarterMode`)
+  factored out at the top of `apps/web/public/js/pages/settings.js`
+  with module exports so the mode pill, the action handler, and any
+  future audit route all agree on one definition. 16 cases smoke-tested
+  via Node ESM import; toggle visually verified in Chrome across three
+  scenarios (Smart-active, Smarter-active, no-paid-provider).
+
+- **AC#8 — `estimateLlmCostCents()` helper in `@skytwin/llm-client`.**
+  Provider-keyed rate table (Anthropic / OpenAI / Google list-price
+  cheapest model) plus an absolute zero for `embedded` and `ollama`.
+  Rounds up to the nearest cent everywhere so spend-cap enforcement
+  stays conservative — the failure direction is "approval required,"
+  never "silently exceeded the cap." Exposed as
+  `estimateLlmCostCents(provider, tokensIn, tokensOut)` and
+  `isZeroCostProvider(provider)`. 10 unit tests; the load-bearing one
+  asserts `embedded` and `ollama` return 0 regardless of token volume.
+  The future spend-recording call site can compute
+  `costCents = estimateLlmCostCents(response.provider, tokensIn,
+  tokensOut)` and trust that local-runtime calls record zero — no
+  embedded-special-case branch needed at the recording site.
+
 ## [unreleased] — Memory bootstrap: stamp every signal with an authoring tier (#251 Layer 1)
 
 ### Fixed (post-Copilot review)
