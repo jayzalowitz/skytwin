@@ -17,6 +17,23 @@ export type TierWeightFn = (metadata: unknown) => number;
 
 export interface RrfFoldOptions {
   tierWeight?: TierWeightFn;
+  /**
+   * When `tierWeight` is set, apply the multiplier ONLY to pages whose
+   * raw rrfScore is at least this fraction of the top page's raw score.
+   * Default 0.85. Prevents weak-match distractors that happen to share an
+   * authored tier from being boosted above legitimate rank-1 primary hits
+   * with a demoted tier. The labeled retrieval ablation showed this was
+   * load-bearing — without the gate, a rank-30 authored distractor at
+   * score 0.010 × 1.5 = 0.015 beat a rank-1 received primary at score
+   * 0.016 × 0.8 = 0.013, breaking `received_content` queries entirely.
+   *
+   * RRF scores decay slowly (1/(60+rank)) so the floor needs to be high
+   * enough to keep tail-of-pool candidates out: at floor 0.5 the gate is
+   * effectively no-op (rank 1..62 all pass); at 0.85 the gate lets in
+   * roughly top-12 candidates, which matches the "rerank plausible
+   * candidates, don't promote noise" intent of Layer 2.
+   */
+  tierWeightFloorRatio?: number;
 }
 
 /**
@@ -82,7 +99,20 @@ export function rrfFold(
 
   if (options.tierWeight) {
     const weight = options.tierWeight;
+    const floorRatio = options.tierWeightFloorRatio ?? 0.85;
+    // Determine the gating threshold: only pages whose raw rrfScore is
+    // at least `floorRatio * topRawScore` get tier-weighted. Pages below
+    // the threshold are kept at their unweighted rrfScore — they can
+    // neither boost above strong matches nor get demoted below noise.
+    // This is the load-bearing change for the labeled-retrieval ablation.
+    let topRawScore = 0;
     for (const hit of entries) {
+      if (hit.rrfScore > topRawScore) topRawScore = hit.rrfScore;
+    }
+    const threshold = topRawScore * floorRatio;
+
+    for (const hit of entries) {
+      if (hit.rrfScore < threshold) continue;
       // Coerce non-finite or non-number multipliers to 1.0 (identity) so a
       // misbehaving callback can't poison rrfScore into NaN/Infinity. Clamp
       // negatives to 0 — they share the same "drop the page" semantics as
@@ -100,7 +130,8 @@ export function rrfFold(
     }
     // Drop hidden / clamped-to-zero pages; keep everything else even if it
     // got pushed down. Filtering before sort means k slots stay full of
-    // surviving results.
+    // surviving results. Pages below the threshold aren't affected by the
+    // multiplier, so they survive at their original rrfScore.
     entries = entries.filter((h) => h.rrfScore > 0);
   }
 

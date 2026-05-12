@@ -166,13 +166,13 @@ describe('#251 Layer 2 — tier-weighted retrieval', () => {
     expect(ids).toContain('authored_board');
   });
 
-  it('a brief user_sent_reply does NOT outrank the newsletter — brief-reply downweight kicks in', async () => {
+  it('brief-reply downweight: short authored reply gets inbox_personal weight, not user_sent_reply', async () => {
     const store = new InMemoryBrainStore();
     const port = await seedPort(store);
 
     // Add a one-line authored reply that matches the query but is short.
-    // bodyLen is stamped by buildPageMetadata from the summarised content,
-    // so we explicitly pass a short body to verify the threshold path.
+    // bodyLen is stamped by buildPageMetadata from the summarised content
+    // length, so the brief-reply downweight fires automatically.
     await port.recordSignal(
       makeSignal(
         'authored_brief',
@@ -180,24 +180,27 @@ describe('#251 Layer 2 — tier-weighted retrieval', () => {
         'email',
         'user_sent_reply',
         'Re: board prep',
-        'k', // intentionally tiny
+        'k', // intentionally tiny — falls below BRIEF_BODY_THRESHOLD
       ),
     );
 
     store.upsertSettings(USER, { tier_weighting: true });
 
-    const hits = await port.searchSemantic('board prep', 5);
+    const hits = await port.searchSemantic('board prep', 10);
     const briefIdx = hits.findIndex((h) => h.id === 'authored_brief');
-    const newsletterIdx = hits.findIndex((h) => h.id === 'newsletter_board');
+    const fullAuthoredIdx = hits.findIndex((h) => h.id === 'authored_board');
 
-    // The brief reply gets inbox_personal weight (1.0) instead of
-    // user_sent_reply weight (1.2). It should NOT outrank a newsletter
-    // that matches the query much more thoroughly on text.
-    if (briefIdx >= 0 && newsletterIdx >= 0) {
-      // Both present — the brief one should not beat the heavily-matching
-      // newsletter just because it was authored.
-      expect(briefIdx).toBeGreaterThan(newsletterIdx);
-    }
+    // Both authored variants should appear in results.
+    expect(briefIdx).toBeGreaterThanOrEqual(0);
+    expect(fullAuthoredIdx).toBeGreaterThanOrEqual(0);
+
+    // The full authored email (proper-length body, normal-band weight
+    // 1.5×) MUST outrank the brief reply (treated as inbox_personal
+    // weight 1.0× because bodyLen < BRIEF_BODY_THRESHOLD). This is the
+    // load-bearing claim of the brief-reply downweight: short "k"
+    // replies don't get the full authored boost just because they
+    // carry the SENT label.
+    expect(fullAuthoredIdx).toBeLessThan(briefIdx);
   });
 
   it('toggle is per-user — one user with flag on, another off, do not affect each other', async () => {

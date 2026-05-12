@@ -17,28 +17,31 @@ describe('tierMultiplier — authoring-tier base weights', () => {
 
   it('applies the normal band weights for each tier', () => {
     const m = (tier: string) => tierMultiplier({ authoringTier: tier }, 'normal');
+    // Promote authored aggressively, demote received softly — see the
+    // tier-ablation eval for the rationale (aggressive demotion broke
+    // received_content queries by pushing primary hits below distractors).
     expect(m('user_sent_originated')).toBe(1.5);
     expect(m('user_sent_reply')).toBe(1.2);
     expect(m('inbox_personal')).toBe(1.0);
-    expect(m('inbox_broadcast')).toBe(0.8);
-    expect(m('inbox_newsletter')).toBe(0.4);
-    expect(m('inbox_automated')).toBe(0.2);
+    expect(m('inbox_broadcast')).toBe(0.9);
+    expect(m('inbox_newsletter')).toBe(0.85);
+    expect(m('inbox_automated')).toBe(0.8);
   });
 
   it('sparse calibration compresses the spread', () => {
     const m = (tier: string) => tierMultiplier({ authoringTier: tier }, 'sparse');
     expect(m('user_sent_originated')).toBe(1.2);
     expect(m('user_sent_reply')).toBe(1.1);
-    expect(m('inbox_newsletter')).toBe(0.5);
-    expect(m('inbox_automated')).toBe(0.5);
+    expect(m('inbox_newsletter')).toBe(0.9);
+    expect(m('inbox_automated')).toBe(0.9);
   });
 
   it('dense calibration widens the spread', () => {
     const m = (tier: string) => tierMultiplier({ authoringTier: tier }, 'dense');
     expect(m('user_sent_originated')).toBe(2.0);
     expect(m('user_sent_reply')).toBe(1.5);
-    expect(m('inbox_newsletter')).toBe(0.3);
-    expect(m('inbox_automated')).toBe(0.1);
+    expect(m('inbox_newsletter')).toBe(0.75);
+    expect(m('inbox_automated')).toBe(0.7);
   });
 });
 
@@ -51,13 +54,13 @@ describe('tierMultiplier — userOverride composes orthogonally', () => {
         'normal',
       ),
     ).toBe(3.0);
-    // pinned + newsletter (normal band) = 0.4 * 2 = 0.8
+    // pinned + newsletter (normal band) = 0.85 * 2 = 1.7
     expect(
       tierMultiplier(
         { authoringTier: 'inbox_newsletter', userOverride: 'pinned' },
         'normal',
       ),
-    ).toBe(0.8);
+    ).toBe(1.7);
   });
 
   it('pinned alone (no tier) still boosts to 2.0', () => {
@@ -125,7 +128,7 @@ describe('buildTierWeightFn closes over the calibration band', () => {
   it('returned function is stable per calibration', () => {
     const fn = buildTierWeightFn('dense');
     expect(fn({ authoringTier: 'user_sent_originated' })).toBe(2.0);
-    expect(fn({ authoringTier: 'inbox_newsletter' })).toBe(0.3);
+    expect(fn({ authoringTier: 'inbox_newsletter' })).toBe(0.75);
     expect(fn({})).toBe(1.0);
   });
 });
