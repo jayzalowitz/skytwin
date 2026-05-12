@@ -212,6 +212,37 @@ export class InMemoryBrainStore {
     return 1;
   }
 
+  /**
+   * Mirror of `repository.findPagesMissingAuthoringTier`. Returns at most
+   * `limit` pages whose metadata is missing `authoringTier` and whose
+   * `source_ref` matches a stored signal id.
+   */
+  findPagesMissingAuthoringTier(
+    userId: string | null,
+    limit: number,
+  ): Array<{ page_id: string; user_id: string; signal_data: Record<string, unknown> }> {
+    const out: Array<{
+      page_id: string;
+      user_id: string;
+      signal_data: Record<string, unknown>;
+    }> = [];
+    for (const page of this.pages.values()) {
+      if (userId !== null && page.user_id !== userId) continue;
+      const meta = (page.metadata ?? {}) as Record<string, unknown>;
+      if (typeof meta['authoringTier'] === 'string') continue;
+      if (!page.source_ref) continue;
+      const sig = this.signals.get(page.source_ref);
+      if (!sig) continue;
+      out.push({
+        page_id: page.id,
+        user_id: page.user_id,
+        signal_data: sig.data as Record<string, unknown>,
+      });
+      if (out.length >= limit) break;
+    }
+    return out;
+  }
+
   /** Mirror of `repository.hideAllPagesFromSender`. */
   hideAllPagesFromSender(userId: string, fromAddress: string): number {
     const target = fromAddress.toLowerCase();

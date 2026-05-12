@@ -28,6 +28,7 @@ import { runChangelogPollJob } from './jobs/changelog-poll.js';
 import { runDomainExtractionJob } from './jobs/domain-extraction.js';
 import { runFederationSyncJob } from './jobs/federation-sync.js';
 import { runEmbeddingBackfillJob } from './jobs/embedding-backfill.js';
+import { runTierBackfillJob } from './jobs/tier-backfill.js';
 
 const config = loadConfig();
 const log = createLogger('worker');
@@ -492,6 +493,14 @@ async function main(): Promise<void> {
   // multiple worker instances simultaneously.
   const EMBEDDING_BACKFILL_INTERVAL_MS = 30_000;
 
+  let lastTierBackfillAt = 0;
+  // Backfill `metadata.authoringTier` on pages that predate Layer 1 of
+  // #251. Hourly cadence is plenty — the find query is `metadata->>'authoringTier'
+  // IS NULL` so once the corpus is fully tagged the worker becomes a no-op.
+  // Batch size keeps each pass bounded; multiple passes converge the corpus
+  // over a few hours for a heavy mailbox.
+  const TIER_BACKFILL_INTERVAL_MS = 60 * 60 * 1000;
+
   // Poll loop
   while (running) {
     for (const uc of userConnectors) {
@@ -551,6 +560,17 @@ async function main(): Promise<void> {
         });
       });
       lastEmbeddingBackfillAt = nowMs;
+    }
+
+    // Backfill authoringTier on pre-Layer-1 pages (#251 follow-up).
+    // Hourly; converges to no-op once the corpus is fully tagged.
+    if (nowMs - lastTierBackfillAt >= TIER_BACKFILL_INTERVAL_MS) {
+      await runTierBackfillJob().catch((err) => {
+        log.warn('Tier backfill job failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+      lastTierBackfillAt = nowMs;
     }
 
     // Expire stale approval requests every 10 poll cycles

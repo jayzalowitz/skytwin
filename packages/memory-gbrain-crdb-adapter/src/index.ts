@@ -74,5 +74,7 @@ export {
   countUserSentPages,
   updatePageMetadata,
   hideAllPagesFromSender,
+  findPagesMissingAuthoringTier,
 } from './repository.js';
+export type { PageMissingTierRow } from './repository.js';
 export type { HybridSearchOptions } from './repository.js';
