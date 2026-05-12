@@ -1,5 +1,51 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [unreleased] — Layer 2 ablation eval + tuned multipliers + floor-ratio gate (#251 follow-up)
+
+Stood up a labeled-retrieval ablation eval at
+`packages/memory-gbrain/src/__tests__/tier-ablation-eval.test.ts` that runs
+the same query set against the same corpus twice — once with
+`tier_weighting=false` (pure RRF) and once with it on — and reports R@5,
+P@5, and MRR-of-primary side-by-side, broken down by query class. Three
+classes: `user_behavior` (the multiplier should lift these), `received_content`
+(must not collapse), `neutral` (must not break).
+
+### What we measured
+
+Running on a hand-built 47-signal fixture with hash-trick embeddings:
+
+| Metric | pure-RRF | tier-weighted |
+|---|---|---|
+| user_behavior MRR (n=3) | 0.667 | **1.000** |
+| received_content MRR (n=3) | 1.000 | 0.542 |
+| neutral MRR (n=1) | 1.000 | 1.000 |
+| aggregate R@5 | 1.000 | 0.857 |
+
+### What the eval surfaced
+
+Two things, both real:
+
+1. **Aggressive demote weights were structurally wrong.** Original normal-band multipliers (newsletter 0.4×, automated 0.2×) pushed primary-hit notifications BELOW the distractor pool. Layer 2 became unusable for "find my AWS billing alert" queries. **Fixed** by rebalancing to promote-strong/demote-soft: newsletter 0.85×, automated 0.8× in the normal band.
+
+2. **Multiplicative weighting without a gate lets weak matches leapfrog strong ones.** A rank-30 distractor with an `authored` tier (×1.5 = 0.024) could beat a rank-1 primary with an `automated` tier (×0.8 = 0.013) — because the RRF score curve decays slowly enough that a 50% drop in raw score still leaves room for a 50% boost to overtake it. **Fixed** by adding `tierWeightFloorRatio` (default 0.85) to the RRF fold: only pages whose raw rrfScore is ≥ 85% of the top score are eligible for the multiplier. Tail-of-pool candidates stay at their unweighted score.
+
+### What remains
+
+`received_content` MRR is at 0.542 with hash-trick embeddings. The honest read: the multiplier still pushes the user's reply about a received item above the received item itself when both are in the result set. This is sometimes-right (the user usually wants their own response, not the raw notification) and sometimes-wrong (sometimes you really do want the raw alert). The number should improve with real OpenAI embeddings — most of the loss is from spurious hash-trick overlap promoting unrelated authored content into the candidate pool for received-content queries.
+
+**Layer 2 stays beta / opt-in.** This eval is the gate, not the result. Default-on rollout is still blocked on (a) running this with OpenAI embeddings against a real-traffic corpus, (b) the tier-aware exclude UI from the privacy follow-up. The eval test now runs in CI as a permanent regression guardrail — anything that drops `user_behavior` MRR below `pure-RRF` or `received_content` MRR below 0.40 will fail.
+
+### Engine changes
+
+- **`rrf.ts`**: added `RrfFoldOptions.tierWeightFloorRatio` (default 0.85). Computes the top raw rrfScore before applying any multiplier; pages below `floorRatio * top` keep their unweighted score. Coerces non-finite multiplier returns to 1.0 and clamps negatives to 0 (same drop-the-page semantics as `userOverride: 'hidden'`).
+- **`tier-weights.ts`**: rebalanced multiplier tables. Normal band is now `user_sent_originated` 1.5× / `user_sent_reply` 1.2× / `inbox_personal` 1.0× / `inbox_broadcast` 0.9× / `inbox_newsletter` 0.85× / `inbox_automated` 0.8×. Sparse and dense bands recalibrated to match the new asymmetry: promote strongly, demote softly.
+
+### Tests
+
+- New `tier-ablation-eval.test.ts` (1 ablation case + side-by-side report printed at the end of every run as a tuning artifact).
+- New `tier-ablation-corpus.ts` fixture: 17 labeled signals (7 queries × authored/received variants) + 40 realistic-mix distractors (12% authored / 40% personal / 15% broadcast / 20% newsletter / 13% automated).
+- Existing `tier-weights.test.ts` and `tier-weighted-retrieval.test.ts` updated to match the rebalanced multipliers. Brief-reply downweight test now compares against a full authored email (the load-bearing claim) instead of newsletter — softer demote means the brief reply no longer falls below newsletter, but it still falls below a proper-length authored email, which is the actual mechanism worth testing.
+
 ## [unreleased] — Authoring-tier weighting in gbrain retrieval (#251 Layer 2 + companion fields)
 
 You can now flip a toggle in **Settings → Memory backend** that tells gbrain to treat the emails you *wrote* as higher-signal than the emails you *received* when ranking semantic-search results. A newsletter that mentions "board prep" stops out-ranking the strategy email you actually wrote about board prep. The toggle is **off by default** — we're gating Layer 2 on labeled-retrieval evals before flipping it on for everyone — but it's available today for anyone who wants to try it.

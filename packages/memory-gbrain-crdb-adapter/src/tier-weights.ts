@@ -45,31 +45,42 @@ interface TierWeightTable {
   readonly inbox_automated: number;
 }
 
+// Calibration tables. The asymmetry between the "promote" side
+// (user_sent_*) and the "demote" side (inbox_newsletter, inbox_automated)
+// is load-bearing: the labeled-retrieval ablation at
+// `packages/memory-gbrain/src/__tests__/tier-ablation-eval.test.ts` showed
+// that aggressive demotion (newsletter 0.4×, automated 0.2×) pushed
+// primary-hit notifications and newsletters BELOW the distractor pool on
+// received_content queries — catastrophic regression on "find my AWS
+// billing alert" queries. The intent of Layer 2 is to lift authored
+// content on AMBIGUOUS queries, not to suppress received content when
+// the user is specifically asking about a received item. So we promote
+// strongly (×1.2..×2.0) and demote softly (×0.7..×0.95).
 const WEIGHTS_SPARSE: TierWeightTable = {
   user_sent_originated: 1.2,
   user_sent_reply: 1.1,
   inbox_personal: 1.0,
-  inbox_broadcast: 0.9,
-  inbox_newsletter: 0.5,
-  inbox_automated: 0.5,
+  inbox_broadcast: 0.95,
+  inbox_newsletter: 0.9,
+  inbox_automated: 0.9,
 };
 
 const WEIGHTS_NORMAL: TierWeightTable = {
   user_sent_originated: 1.5,
   user_sent_reply: 1.2,
   inbox_personal: 1.0,
-  inbox_broadcast: 0.8,
-  inbox_newsletter: 0.4,
-  inbox_automated: 0.2,
+  inbox_broadcast: 0.9,
+  inbox_newsletter: 0.85,
+  inbox_automated: 0.8,
 };
 
 const WEIGHTS_DENSE: TierWeightTable = {
   user_sent_originated: 2.0,
   user_sent_reply: 1.5,
   inbox_personal: 1.0,
-  inbox_broadcast: 0.7,
-  inbox_newsletter: 0.3,
-  inbox_automated: 0.1,
+  inbox_broadcast: 0.85,
+  inbox_newsletter: 0.75,
+  inbox_automated: 0.7,
 };
 
 const TABLES: Record<TierCalibration, TierWeightTable> = {
