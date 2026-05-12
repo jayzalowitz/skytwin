@@ -136,6 +136,74 @@ function ensurePageListener() {
       }
       return;
     }
+
+    // #251 privacy: per-page pin/hide. Sends the chosen override
+    // (or null to clear) to /pages/:pageId/override.
+    if (action === 'page-override') {
+      const pageId = target.dataset.pageId;
+      const override = target.dataset.override === 'null' ? null : target.dataset.override;
+      if (!pageId) return;
+      target.disabled = true;
+      try {
+        const res = await api(
+          `/api/memory-config/pages/${encodeURIComponent(pageId)}/override`,
+          {
+            method: 'POST',
+            body: JSON.stringify({ override }),
+          },
+        );
+        if (!res.ok) {
+          showErrorToast('Failed to update page');
+          return;
+        }
+        const label =
+          override === 'pinned' ? 'Pinned' : override === 'hidden' ? 'Hidden' : 'Cleared';
+        showSavedToast(label);
+        const container = document.getElementById('page-content');
+        if (container) await renderMemorySettings(container, getCurrentUserId());
+      } catch {
+        showErrorToast('Failed to update page');
+      } finally {
+        target.disabled = false;
+      }
+      return;
+    }
+
+    // #251 privacy: per-sender bulk hide. Confirms with the user first
+    // since this can hide many rows at once.
+    if (action === 'hide-sender') {
+      const fromAddress = target.dataset.fromAddress;
+      if (!fromAddress) return;
+      // Native confirm — not a custom modal because nothing on this page
+      // surfaces a generic confirmation UI yet, and "stop indexing all
+      // mail from X" is exactly the kind of action that deserves a
+      // friction prompt.
+      // eslint-disable-next-line no-alert
+      const ok = window.confirm(
+        `Hide all indexed pages from ${fromAddress}? This won't delete the data — they just won't surface in memory search any more.`,
+      );
+      if (!ok) return;
+      target.disabled = true;
+      try {
+        const res = await api('/api/memory-config/senders/hide', {
+          method: 'POST',
+          body: JSON.stringify({ fromAddress }),
+        });
+        if (!res.ok) {
+          showErrorToast('Failed to hide sender');
+          return;
+        }
+        const json = (await res.json()) ?? {};
+        showSavedToast(`Hid ${json.hidden ?? 0} pages from ${fromAddress}`);
+        const container = document.getElementById('page-content');
+        if (container) await renderMemorySettings(container, getCurrentUserId());
+      } catch {
+        showErrorToast('Failed to hide sender');
+      } finally {
+        target.disabled = false;
+      }
+      return;
+    }
   });
 }
 
@@ -339,7 +407,7 @@ function renderDashboard(dashboard) {
   const pagesBlock = recentPages.length === 0
     ? `<p class="card-subtitle">No pages indexed yet. Connect a signal source to start.</p>`
     : `<table class="data-table" style="margin-top: 0.5rem; width: 100%;">
-        <thead><tr><th>When</th><th>Tier</th><th>Source</th><th>Title</th></tr></thead>
+        <thead><tr><th>When</th><th>Tier</th><th>Source</th><th>Title</th><th style="text-align:right;">Actions</th></tr></thead>
         <tbody>
           ${recentPages.map((p) => `
             <tr>
@@ -347,6 +415,7 @@ function renderDashboard(dashboard) {
               <td>${renderTierBadge(p.authoringTier, p.userOverride)}</td>
               <td>${escapeHtml(p.source ?? '')}</td>
               <td>${escapeHtml(p.title ?? '')}</td>
+              <td style="text-align:right; white-space:nowrap;">${renderPageActions(p)}</td>
             </tr>`).join('')}
         </tbody>
       </table>`;
@@ -369,6 +438,46 @@ function renderDashboard(dashboard) {
       ${entitiesBlock}
       ${typeBlock}
     </div>
+  `;
+}
+
+/**
+ * #251 privacy: per-row actions for the Recent pages table. The pin and
+ * hide buttons swap between "set" and "clear" depending on the current
+ * override. The "hide sender" button only shows up for pages that have a
+ * fromAddress stamped on metadata (which is most email-derived pages —
+ * calendar invites and idle-miner code pages skip it).
+ *
+ * Buttons emit `data-action` events that the singleton click delegator
+ * in `ensurePageListener` catches. No inline onclick — see CLAUDE.md
+ * "Frontend Event Handling".
+ */
+function renderPageActions(page) {
+  const pageId = String(page.id ?? '');
+  const fromAddress = typeof page.fromAddress === 'string' ? page.fromAddress : '';
+  const override = page.userOverride ?? null;
+  const pinned = override === 'pinned';
+  const hidden = override === 'hidden';
+  // If currently pinned/hidden, the button clears; otherwise it sets.
+  const pinNext = pinned ? 'null' : 'pinned';
+  const hideNext = hidden ? 'null' : 'hidden';
+  const pinLabel = pinned ? 'Unpin' : 'Pin';
+  const hideLabel = hidden ? 'Unhide' : 'Hide';
+  const senderBtn = fromAddress
+    ? `<button class="btn btn-sm btn-outline" data-action="hide-sender"
+              data-from-address="${escapeHtml(fromAddress)}"
+              title="Hide all pages from ${escapeHtml(fromAddress)}"
+              style="margin-left: 0.25rem;">Hide sender</button>`
+    : '';
+  return `
+    <button class="btn btn-sm btn-outline" data-action="page-override"
+            data-page-id="${escapeHtml(pageId)}"
+            data-override="${pinNext}">${pinLabel}</button>
+    <button class="btn btn-sm btn-outline" data-action="page-override"
+            data-page-id="${escapeHtml(pageId)}"
+            data-override="${hideNext}"
+            style="margin-left: 0.25rem;">${hideLabel}</button>
+    ${senderBtn}
   `;
 }
 

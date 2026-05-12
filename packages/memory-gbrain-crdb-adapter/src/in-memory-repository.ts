@@ -189,6 +189,37 @@ export class InMemoryBrainStore {
       .slice(0, limit);
   }
 
+  /** Mirror of `repository.updatePageMetadata`. Returns row count. */
+  updatePageMetadata(
+    userId: string,
+    pageId: string,
+    patch: Record<string, unknown>,
+  ): number {
+    const page = this.pages.get(pageId);
+    if (!page || page.user_id !== userId) return 0;
+    page.metadata = {
+      ...(page.metadata as Record<string, unknown>),
+      ...patch,
+    };
+    page.updated_at = new Date();
+    return 1;
+  }
+
+  /** Mirror of `repository.hideAllPagesFromSender`. */
+  hideAllPagesFromSender(userId: string, fromAddress: string): number {
+    const target = fromAddress.toLowerCase();
+    let n = 0;
+    for (const page of this.pages.values()) {
+      if (page.user_id !== userId) continue;
+      const meta = (page.metadata ?? {}) as Record<string, unknown>;
+      if (meta['fromAddress'] !== target) continue;
+      page.metadata = { ...meta, userOverride: 'hidden' };
+      page.updated_at = new Date();
+      n++;
+    }
+    return n;
+  }
+
   countPages(userId: string): { total: number; embedded: number } {
     let total = 0;
     let embedded = 0;

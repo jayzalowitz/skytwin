@@ -90,6 +90,61 @@ export async function updatePageEmbedding(
   );
 }
 
+/**
+ * Merge a partial metadata patch into `brain_pages.metadata`, scoped to
+ * the owning user. Uses CRDB's JSONB `||` concat-merge so existing keys
+ * are overwritten but other keys are preserved. Used by the per-page
+ * pin/hide actions (#251 privacy follow-up) — sets
+ * `metadata.userOverride` to `'pinned' | 'hidden' | null` without
+ * touching the connector-stamped `authoringTier`/`fromAddress`/`bodyLen`
+ * fields.
+ *
+ * Returns the affected row count. A return value of 0 means the page
+ * wasn't found or belonged to a different user — the route layer
+ * surfaces that as 404. The `user_id` predicate is load-bearing — it
+ * stops a caller from mutating another user's pages even if they hold
+ * a guessable page id.
+ */
+export async function updatePageMetadata(
+  userId: string,
+  pageId: string,
+  patch: Record<string, unknown>,
+): Promise<number> {
+  const result = await query(
+    `UPDATE brain_pages
+       SET metadata = COALESCE(metadata, '{}'::JSONB) || $3::JSONB,
+           updated_at = now()
+     WHERE id = $1 AND user_id = $2`,
+    [pageId, userId, JSON.stringify(patch)],
+  );
+  return result.rowCount ?? 0;
+}
+
+/**
+ * Bulk-hide every brain_page where `metadata.fromAddress` matches the
+ * given sender. Used by the per-sender "stop indexing this address"
+ * action (#251 privacy follow-up). Returns the affected row count so
+ * the UI can show "hid N pages from X".
+ *
+ * Address match is exact-equality after lowering — the indexer stamps
+ * `fromAddress` lowercased at write time, so this query doesn't have
+ * to do anything case-aware.
+ */
+export async function hideAllPagesFromSender(
+  userId: string,
+  fromAddress: string,
+): Promise<number> {
+  const result = await query(
+    `UPDATE brain_pages
+       SET metadata = COALESCE(metadata, '{}'::JSONB) || '{"userOverride":"hidden"}'::JSONB,
+           updated_at = now()
+     WHERE user_id = $1
+       AND metadata->>'fromAddress' = $2`,
+    [userId, fromAddress.toLowerCase()],
+  );
+  return result.rowCount ?? 0;
+}
+
 // ── Hybrid retrieval (RRF) ──────────────────────────────────────────────────
 
 export interface HybridSearchOptions {

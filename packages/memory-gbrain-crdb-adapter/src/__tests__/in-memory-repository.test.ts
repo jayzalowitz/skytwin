@@ -258,3 +258,103 @@ describe('InMemoryBrainStore — settings + embedding queue', () => {
     expect(store.pendingEmbeddingJobs()).toBe(0);
   });
 });
+
+describe('InMemoryBrainStore — metadata overrides (#251 privacy)', () => {
+  let store: InMemoryBrainStore;
+  beforeEach(() => {
+    store = new InMemoryBrainStore();
+  });
+
+  it('updatePageMetadata merges a patch, preserving other metadata keys', () => {
+    const page = store.insertPage({
+      userId: 'u1',
+      content: 'hello',
+      source: 'signal',
+      metadata: { signalSource: 'gmail', authoringTier: 'inbox_personal', bodyLen: 5 },
+    });
+    const n = store.updatePageMetadata('u1', page.id, { userOverride: 'pinned' });
+    expect(n).toBe(1);
+    const after = store.getRecentPages('u1', 1)[0]!;
+    expect(after.metadata).toEqual({
+      signalSource: 'gmail',
+      authoringTier: 'inbox_personal',
+      bodyLen: 5,
+      userOverride: 'pinned',
+    });
+  });
+
+  it("updatePageMetadata returns 0 when the page isn't owned by the user", () => {
+    const page = store.insertPage({
+      userId: 'u1',
+      content: 'x',
+      source: 'signal',
+    });
+    // u2 tries to mutate u1's page — must be a no-op.
+    const n = store.updatePageMetadata('u2', page.id, { userOverride: 'hidden' });
+    expect(n).toBe(0);
+    const after = store.getRecentPages('u1', 1)[0]!;
+    expect((after.metadata as Record<string, unknown>)['userOverride']).toBeUndefined();
+  });
+
+  it('updatePageMetadata returns 0 for a missing page id', () => {
+    const n = store.updatePageMetadata('u1', 'nonexistent', { userOverride: 'pinned' });
+    expect(n).toBe(0);
+  });
+
+  it('hideAllPagesFromSender hides every matching page (case-insensitive)', () => {
+    store.insertPage({
+      userId: 'u1',
+      content: 'a',
+      source: 'signal',
+      metadata: { fromAddress: 'spam@vendor.example.com' },
+    });
+    store.insertPage({
+      userId: 'u1',
+      content: 'b',
+      source: 'signal',
+      metadata: { fromAddress: 'spam@vendor.example.com', authoringTier: 'inbox_newsletter' },
+    });
+    store.insertPage({
+      userId: 'u1',
+      content: 'c',
+      source: 'signal',
+      metadata: { fromAddress: 'someone-else@example.com' },
+    });
+    // Different user — must not be touched.
+    store.insertPage({
+      userId: 'u2',
+      content: 'd',
+      source: 'signal',
+      metadata: { fromAddress: 'spam@vendor.example.com' },
+    });
+
+    // Upper-case input still matches lower-case stored values.
+    const n = store.hideAllPagesFromSender('u1', 'SPAM@VENDOR.EXAMPLE.COM');
+    expect(n).toBe(2);
+
+    const u1Pages = store.getRecentPages('u1', 10);
+    for (const p of u1Pages) {
+      const meta = p.metadata as Record<string, unknown>;
+      if (meta['fromAddress'] === 'spam@vendor.example.com') {
+        expect(meta['userOverride']).toBe('hidden');
+      } else {
+        expect(meta['userOverride']).toBeUndefined();
+      }
+    }
+
+    // u2's page is untouched.
+    const u2Pages = store.getRecentPages('u2', 10);
+    expect((u2Pages[0]!.metadata as Record<string, unknown>)['userOverride']).toBeUndefined();
+  });
+
+  it('hideAllPagesFromSender returns 0 when no pages match the sender', () => {
+    store.insertPage({
+      userId: 'u1',
+      content: 'x',
+      source: 'signal',
+      metadata: { fromAddress: 'alice@example.com' },
+    });
+    const n = store.hideAllPagesFromSender('u1', 'bob@example.com');
+    expect(n).toBe(0);
+  });
+});

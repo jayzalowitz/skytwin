@@ -25,6 +25,8 @@ const {
   mockPendingJobs,
   mockCountUserSentPages,
   mockGetRecentPages,
+  mockUpdatePageMetadata,
+  mockHideAllPagesFromSender,
 } = vi.hoisted(() => ({
   mockGetSettings: vi.fn(),
   mockUpsertSettings: vi.fn(),
@@ -32,6 +34,8 @@ const {
   mockPendingJobs: vi.fn(),
   mockCountUserSentPages: vi.fn(),
   mockGetRecentPages: vi.fn(),
+  mockUpdatePageMetadata: vi.fn(),
+  mockHideAllPagesFromSender: vi.fn(),
 }));
 
 vi.mock('@skytwin/memory-gbrain-crdb-adapter', async () => {
@@ -45,6 +49,8 @@ vi.mock('@skytwin/memory-gbrain-crdb-adapter', async () => {
     pendingEmbeddingJobs: mockPendingJobs,
     countUserSentPages: mockCountUserSentPages,
     getRecentPages: mockGetRecentPages,
+    updatePageMetadata: mockUpdatePageMetadata,
+    hideAllPagesFromSender: mockHideAllPagesFromSender,
   };
 });
 
@@ -121,6 +127,8 @@ beforeEach(() => {
   mockGetEntities.mockResolvedValue([]);
   mockCountUserSentPages.mockResolvedValue(0);
   mockGetRecentPages.mockResolvedValue([]);
+  mockUpdatePageMetadata.mockResolvedValue(1);
+  mockHideAllPagesFromSender.mockResolvedValue(0);
   mockUpsertSettings.mockResolvedValue({
     user_id: USER_ID,
     backend: 'gbrain',
@@ -484,5 +492,105 @@ describe('POST /api/memory-config/tier-weighting (#251 Layer 2)', () => {
       tier_weighting: true,
       tier_calibration: 'normal',
     });
+  });
+});
+
+describe('POST /api/memory-config/pages/:pageId/override (#251 privacy)', () => {
+  it('rejects an invalid override value', async () => {
+    const app = buildApp();
+    const res = await request(
+      app,
+      'POST',
+      `/api/memory-config/pages/page-1/override?userId=${USER_ID}`,
+      { override: 'bogus' },
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('accepts pinned + hidden + null and writes a metadata patch', async () => {
+    const app = buildApp();
+    for (const value of ['pinned', 'hidden', null]) {
+      mockUpdatePageMetadata.mockResolvedValueOnce(1);
+      const res = await request(
+        app,
+        'POST',
+        `/api/memory-config/pages/page-1/override?userId=${USER_ID}`,
+        { override: value },
+      );
+      expect(res.status).toBe(200);
+      expect(mockUpdatePageMetadata).toHaveBeenCalledWith(USER_ID, 'page-1', {
+        userOverride: value,
+      });
+    }
+  });
+
+  it('returns 404 when the adapter reports zero affected rows', async () => {
+    mockUpdatePageMetadata.mockResolvedValueOnce(0);
+    const app = buildApp();
+    const res = await request(
+      app,
+      'POST',
+      `/api/memory-config/pages/page-foreign/override?userId=${USER_ID}`,
+      { override: 'pinned' },
+    );
+    expect(res.status).toBe(404);
+  });
+});
+
+describe('POST /api/memory-config/senders/hide (#251 privacy)', () => {
+  it('rejects a missing or non-string fromAddress', async () => {
+    const app = buildApp();
+    const res = await request(
+      app,
+      'POST',
+      `/api/memory-config/senders/hide?userId=${USER_ID}`,
+      {},
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('passes the lower-cased fromAddress and reports the affected count', async () => {
+    mockHideAllPagesFromSender.mockResolvedValueOnce(7);
+    const app = buildApp();
+    const res = await request(
+      app,
+      'POST',
+      `/api/memory-config/senders/hide?userId=${USER_ID}`,
+      { fromAddress: 'Spam@Vendor.Example.com' },
+    );
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      ok: true,
+      fromAddress: 'spam@vendor.example.com',
+      hidden: 7,
+    });
+    expect(mockHideAllPagesFromSender).toHaveBeenCalledWith(
+      USER_ID,
+      'Spam@Vendor.Example.com',
+    );
+  });
+
+  it('returns the new dashboard payload with fromAddress + userOverride', async () => {
+    mockGetRecentPages.mockResolvedValueOnce([
+      {
+        id: 'p-pinned',
+        user_id: USER_ID,
+        title: 'Pinned',
+        content: '',
+        source: 'signal',
+        source_ref: 'sig-1',
+        metadata: { authoringTier: 'user_sent_originated', userOverride: 'pinned', fromAddress: 'me@example.com' },
+        embedding: null,
+        embedding_model: null,
+        embedding_dim: null,
+        created_at: new Date(),
+        updated_at: new Date(),
+      },
+    ]);
+    const app = buildApp();
+    const res = await request(app, 'GET', `/api/memory-config/dashboard?userId=${USER_ID}`);
+    const body = res.body as { pages: { recent: Array<Record<string, unknown>> } };
+    expect(body.pages.recent[0]?.['userOverride']).toBe('pinned');
+    expect(body.pages.recent[0]?.['fromAddress']).toBe('me@example.com');
   });
 });
