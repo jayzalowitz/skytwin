@@ -2,6 +2,36 @@ All notable changes to SkyTwin will be documented in this file.
 
 ## [unreleased] — Per-Lifebook briefing prose (#193 follow-up)
 
+### Fixed (post-Copilot round 1)
+
+- **Tier-promotion rows now flow into per-Lifebook briefings.** The
+  prior filter checked `payload.registryId`, but `tier_promotion`
+  payloads carry `{ from, to, reason }` (no registry id) and
+  reference the server via `server_id`. `gatherBriefingData` now
+  computes a `server_id → registry_id` map and `filterDataByLifebook`
+  uses it to attribute promotions to the right lifebook.
+- **N+1 query pattern eliminated.** The orchestrator now calls
+  `gatherBriefingData` ONCE per user and passes the bundle through
+  both the global briefing and every per-Lifebook briefing. Per-
+  lifebook DB cost dropped from "2 repo calls + 1 query per
+  lifebook" to "filter the in-memory bundle."
+- **Empty-allowlist footgun fixed.** `filterDataByLifebook` now
+  returns an EMPTY bundle when the lifebook has no
+  `suggested_capabilities`, instead of returning the unfiltered
+  global bundle. Previously a scoped call with an empty allowlist
+  would have written a global briefing under the domain's label.
+- **`listForUser` scoped to global by default.** Adding the
+  `domain_name` column would otherwise have silently interleaved
+  per-Lifebook rows into the existing twin-briefings history. New
+  `opts.includeDomainScoped` lets callers opt in. New
+  `listForUserDomain()` mirror serves the per-domain history.
+- **6 new route-level tests** for `GET /lifebook/:domain/latest`
+  (returns briefing when present, returns `null` when absent,
+  forwards cadence, ignores bogus cadence, 403 on cross-user,
+  400 on missing userId).
+
+### Original change
+
 Closes the last of the three #193 Child 1 follow-ups deferred by
 PR #242 (capabilities Lifebook filter shipped in #256; provenance
 wing filter shipped in #257; this one). The weekly briefing worker

@@ -121,14 +121,28 @@ export const briefingRepository = {
   },
 
   /**
-   * List briefings for a user, ordered newest-first.
+   * List briefings for a user, ordered newest-first. Scoped to GLOBAL
+   * briefings (domain_name IS NULL) by default — the historical
+   * surface this method has always served. Set
+   * `opts.includeDomainScoped: true` to include per-Lifebook rows in
+   * the same list (used by the audit / history surfaces that want
+   * the complete timeline).
+   *
+   * Copilot round-2 on PR #258 flagged that the unscoped query would
+   * silently change `/api/twin-briefings/` history results by
+   * interleaving per-domain rows once migration 042 lands. Default-
+   * to-global preserves the existing contract.
    */
-  async listForUser(userId: string, opts: { cadence?: 'daily' | 'weekly'; limit?: number } = {}): Promise<TwinBriefingRow[]> {
+  async listForUser(
+    userId: string,
+    opts: { cadence?: 'daily' | 'weekly'; limit?: number; includeDomainScoped?: boolean } = {},
+  ): Promise<TwinBriefingRow[]> {
     const limit = opts.limit ?? 20;
+    const scopeClause = opts.includeDomainScoped ? '' : ' AND domain_name IS NULL';
     if (opts.cadence) {
       const result = await query<TwinBriefingRow>(
         `SELECT * FROM twin_briefings
-         WHERE user_id = $1 AND cadence = $2
+         WHERE user_id = $1 AND cadence = $2${scopeClause}
          ORDER BY generated_at DESC
          LIMIT $3`,
         [userId, opts.cadence, limit],
@@ -137,10 +151,42 @@ export const briefingRepository = {
     }
     const result = await query<TwinBriefingRow>(
       `SELECT * FROM twin_briefings
-       WHERE user_id = $1
+       WHERE user_id = $1${scopeClause}
        ORDER BY generated_at DESC
        LIMIT $2`,
       [userId, limit],
+    );
+    return result.rows;
+  },
+
+  /**
+   * #193 follow-up: list per-Lifebook briefings for a domain, newest
+   * first. Mirror of `listForUser` but scoped to one `domain_name`.
+   * Used by the lifebook history surface (future) and any caller that
+   * needs the per-domain timeline.
+   */
+  async listForUserDomain(
+    userId: string,
+    domainName: string,
+    opts: { cadence?: 'daily' | 'weekly'; limit?: number } = {},
+  ): Promise<TwinBriefingRow[]> {
+    const limit = opts.limit ?? 20;
+    if (opts.cadence) {
+      const result = await query<TwinBriefingRow>(
+        `SELECT * FROM twin_briefings
+         WHERE user_id = $1 AND domain_name = $2 AND cadence = $3
+         ORDER BY generated_at DESC
+         LIMIT $4`,
+        [userId, domainName, opts.cadence, limit],
+      );
+      return result.rows;
+    }
+    const result = await query<TwinBriefingRow>(
+      `SELECT * FROM twin_briefings
+       WHERE user_id = $1 AND domain_name = $2
+       ORDER BY generated_at DESC
+       LIMIT $3`,
+      [userId, domainName, limit],
     );
     return result.rows;
   },

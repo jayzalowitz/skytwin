@@ -96,15 +96,26 @@ async function gatherBriefingData(userId: string, cadence: 'daily' | 'weekly') {
   const since = new Date(Date.now() - lookbackMs);
   const recentlyInstalled = active.filter((s) => s.installed_at && s.installed_at > since);
 
-  const promotionResult = await query<{ payload: unknown; occurred_at: Date }>(
-    `SELECT payload, occurred_at
+  const promotionResult = await query<{ payload: unknown; occurred_at: Date; server_id: string | null }>(
+    `SELECT payload, occurred_at, server_id
      FROM capability_provenance_nodes
      WHERE user_id = $1 AND node_type = 'tier_promotion' AND occurred_at > $2
      ORDER BY occurred_at DESC`,
     [userId, since],
   );
 
-  return { suggestions, active, dormant, recentlyInstalled, promotionResult, since };
+  // Pre-compute server_id → registry_id so filterDataByLifebook can
+  // map tier-promotion rows (which carry server_id but not registry_id
+  // in the payload) to their owning lifebook. Copilot round-2 on #258
+  // flagged that the previous filter checked payload.registryId, which
+  // tier_promotion never sets — so promotions were always dropped from
+  // per-Lifebook briefings.
+  const serverIdToRegistry = new Map<string, string>();
+  for (const s of allServers) {
+    if (s.registry_id) serverIdToRegistry.set(s.id, s.registry_id);
+  }
+
+  return { suggestions, active, dormant, recentlyInstalled, promotionResult, serverIdToRegistry, since };
 }
 
 /**
@@ -209,15 +220,31 @@ function filterDataByLifebook(
   registryIds: ReadonlySet<string>,
 ): typeof data {
   if (registryIds.size === 0) {
-    // Empty allow-list = "the domain extractor proposed nothing yet";
-    // pass through unchanged rather than emit an empty briefing.
-    return data;
+    // Empty allow-list = "the domain extractor proposed nothing yet."
+    // Return an EMPTY bundle so sourceEventCount is 0 and the caller
+    // skips the write — previously this returned the unfiltered global
+    // bundle, which Copilot round-2 on #258 flagged as a footgun: a
+    // global briefing could end up labeled with the lifebook's domain.
+    return {
+      suggestions: [],
+      active: [],
+      dormant: [],
+      recentlyInstalled: [],
+      promotionResult: { ...data.promotionResult, rows: [] },
+      serverIdToRegistry: data.serverIdToRegistry,
+      since: data.since,
+    };
   }
   const inSet = (registryId: string | null | undefined): boolean =>
     typeof registryId === 'string' && registryIds.has(registryId);
+  // tier_promotion provenance rows don't carry registryId in their
+  // payload (they're { from, to, reason }); instead they reference an
+  // mcp_servers row via server_id. Map server_id → registry_id and
+  // check membership against the lifebook's allowlist that way.
   const filteredPromotions = data.promotionResult.rows.filter((r) => {
-    const p = r.payload as Record<string, unknown> | null;
-    return inSet(typeof p?.['registryId'] === 'string' ? (p['registryId'] as string) : null);
+    if (!r.server_id) return false;
+    const registryId = data.serverIdToRegistry.get(r.server_id);
+    return inSet(registryId);
   });
   return {
     suggestions: data.suggestions.filter((s) => inSet(s.registry_id)),
@@ -225,6 +252,7 @@ function filterDataByLifebook(
     dormant: data.dormant.filter((s) => inSet(s.registry_id)),
     recentlyInstalled: data.recentlyInstalled.filter((s) => inSet(s.registry_id)),
     promotionResult: { ...data.promotionResult, rows: filteredPromotions },
+    serverIdToRegistry: data.serverIdToRegistry,
     since: data.since,
   };
 }
@@ -238,14 +266,23 @@ function filterDataByLifebook(
  * Lifebook's registry-id set and the prompt receives the domain name
  * so the prose stays scoped. Otherwise this generates a global
  * briefing (the historical semantic — untouched).
+ *
+ * Callers that emit multiple briefings for the same user (global +
+ * per-Lifebook) should pre-gather the data ONCE via
+ * `gatherBriefingData()` and pass it in as `preGathered` — this
+ * avoids the N+1 query pattern Copilot round-2 on #258 flagged
+ * (suggestion-repo + server-repo + promotion-query call per
+ * lifebook). When `preGathered` is omitted the function does its own
+ * gather for the single-briefing case.
  */
 async function generateBriefingProse(
   userId: string,
   cadence: 'daily' | 'weekly',
   llmClient?: LlmClient,
   scope?: { domainName: string; registryIds: ReadonlySet<string> },
+  preGathered?: Awaited<ReturnType<typeof gatherBriefingData>>,
 ): Promise<{ prose: string; sourceEventCount: number; llmProvider?: string }> {
-  const rawData = await gatherBriefingData(userId, cadence);
+  const rawData = preGathered ?? await gatherBriefingData(userId, cadence);
   const data = scope ? filterDataByLifebook(rawData, scope.registryIds) : rawData;
 
   const sourceEventCount =
@@ -354,10 +391,19 @@ export async function runBriefingGeneratorJob(
 
   for (const userId of userIds) {
     try {
+      // Gather once per user; share the bundle across global +
+      // per-Lifebook briefings. Copilot round-2 on #258 flagged the
+      // prior N+1 pattern (every per-Lifebook call hit
+      // suggestion-repo, server-repo, and the promotion query
+      // independently).
+      const sharedData = await gatherBriefingData(userId, cadence);
+
       const { prose, sourceEventCount, llmProvider } = await generateBriefingProse(
         userId,
         cadence,
         llmClient,
+        undefined,
+        sharedData,
       );
       await briefingRepository.create({
         userId,
@@ -374,7 +420,12 @@ export async function runBriefingGeneratorJob(
       // domains so we don't fill the table with "nothing happened in
       // Health" rows. Failures on one domain don't fail the whole
       // user — each lifebook gets its own try/catch.
-      perDomainGenerated += await emitPerDomainBriefings(userId, cadence, llmClient);
+      perDomainGenerated += await emitPerDomainBriefings(
+        userId,
+        cadence,
+        llmClient,
+        sharedData,
+      );
     } catch (err) {
       failed++;
       log.warn('Failed to generate briefing for user', {
@@ -402,7 +453,8 @@ export async function runBriefingGeneratorJob(
 async function emitPerDomainBriefings(
   userId: string,
   cadence: 'daily' | 'weekly',
-  llmClient?: LlmClient,
+  llmClient: LlmClient | undefined,
+  sharedData: Awaited<ReturnType<typeof gatherBriefingData>>,
 ): Promise<number> {
   let lifebooks: Awaited<ReturnType<typeof lifebookRepository.listVisible>>;
   try {
@@ -432,6 +484,7 @@ async function emitPerDomainBriefings(
         cadence,
         llmClient,
         { domainName: lb.domain_name, registryIds },
+        sharedData,
       );
 
       // Skip empty domains — "nothing happened in Health this week"
