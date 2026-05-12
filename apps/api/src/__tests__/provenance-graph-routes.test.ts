@@ -338,6 +338,57 @@ describe('GET /api/capabilities/provenance-graph', () => {
     );
     expect(status).toBe(400);
   });
+
+  // #193 follow-up: provenance graph filtered to a Lifebook wing.
+  it('filters by wing when provided', async () => {
+    const node = makeNode({ node_type: 'install' });
+    mockQuery
+      .mockResolvedValueOnce({ rows: [node], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+    const wingId = 'cccccccc-1111-2222-3333-444444444444';
+    const { status } = await req(
+      buildApp(),
+      'GET',
+      `/api/capabilities/provenance-graph?userId=${USER_ID}&wing=${wingId}`,
+    );
+
+    expect(status).toBe(200);
+    expect(mockQuery).toHaveBeenCalledWith(
+      expect.stringContaining('wing_id'),
+      expect.arrayContaining([wingId]),
+    );
+  });
+
+  it('returns 400 when wing is not a valid UUID', async () => {
+    const { status, body } = await req(
+      buildApp(),
+      'GET',
+      `/api/capabilities/provenance-graph?userId=${USER_ID}&wing=not-a-uuid`,
+    );
+    expect(status).toBe(400);
+    expect((body as { error?: string }).error).toMatch(/wing/);
+  });
+
+  it('includes wingId on each node in the response', async () => {
+    const wingId = 'dddddddd-1111-2222-3333-555555555555';
+    const node = {
+      ...makeNode({ id: 'aaaaaaaa-9999-0000-0000-000000000001' }),
+      wing_id: wingId,
+    };
+    mockQuery
+      .mockResolvedValueOnce({ rows: [node], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+    const { status, body } = await req(
+      buildApp(),
+      'GET',
+      `/api/capabilities/provenance-graph?userId=${USER_ID}`,
+    );
+    expect(status).toBe(200);
+    const typedBody = body as { nodes: Array<{ wingId: string | null }> };
+    expect(typedBody.nodes[0]?.wingId).toBe(wingId);
+  });
 });
 
 // ── Tests: buildEvidencePreview helper ────────────────────────────────────
