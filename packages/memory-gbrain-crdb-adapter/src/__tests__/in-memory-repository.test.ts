@@ -283,6 +283,25 @@ describe('InMemoryBrainStore — metadata overrides (#251 privacy)', () => {
     });
   });
 
+  it('updatePageMetadata treats null patch values as a delete-key request', async () => {
+    const page = store.insertPage({
+      userId: 'u1',
+      content: 'x',
+      source: 'signal',
+      metadata: { authoringTier: 'inbox_newsletter', userOverride: 'pinned', bodyLen: 200 },
+    });
+    const n = store.updatePageMetadata('u1', page.id, { userOverride: null });
+    expect(n).toBe(1);
+    const after = store.getRecentPages('u1', 1)[0]!;
+    const meta = after.metadata as Record<string, unknown>;
+    // Key is gone — not set to null — so downstream consumers that
+    // distinguish "absent" from "present-but-null" see the cleared shape.
+    expect('userOverride' in meta).toBe(false);
+    // Other keys preserved.
+    expect(meta['authoringTier']).toBe('inbox_newsletter');
+    expect(meta['bodyLen']).toBe(200);
+  });
+
   it("updatePageMetadata returns 0 when the page isn't owned by the user", () => {
     const page = store.insertPage({
       userId: 'u1',

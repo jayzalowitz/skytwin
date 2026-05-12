@@ -94,10 +94,13 @@ export async function updatePageEmbedding(
  * Merge a partial metadata patch into `brain_pages.metadata`, scoped to
  * the owning user. Uses CRDB's JSONB `||` concat-merge so existing keys
  * are overwritten but other keys are preserved. Used by the per-page
- * pin/hide actions (#251 privacy follow-up) — sets
- * `metadata.userOverride` to `'pinned' | 'hidden' | null` without
- * touching the connector-stamped `authoringTier`/`fromAddress`/`bodyLen`
- * fields.
+ * pin/hide actions (#251 privacy follow-up).
+ *
+ * Keys with a value of `null` in `patch` are treated as a *delete*
+ * request — they're removed from `metadata` rather than written as a
+ * JSON-null. `jsonb ||` would otherwise store `{"userOverride": null}`
+ * which would (a) clutter the row indefinitely and (b) confuse any
+ * downstream code that distinguishes "key absent" from "key is null".
  *
  * Returns the affected row count. A return value of 0 means the page
  * wasn't found or belonged to a different user — the route layer
@@ -110,12 +113,34 @@ export async function updatePageMetadata(
   pageId: string,
   patch: Record<string, unknown>,
 ): Promise<number> {
+  // Split the patch into "set" entries (non-null values) and "drop"
+  // keys (null values). Set entries go through JSONB ||; drop keys go
+  // through repeated JSONB - operators so the column shape stays clean.
+  const setPatch: Record<string, unknown> = {};
+  const dropKeys: string[] = [];
+  for (const [k, v] of Object.entries(patch)) {
+    if (v === null) dropKeys.push(k);
+    else setPatch[k] = v;
+  }
+  // Build the metadata expression: start from existing column, apply
+  // each drop key via `- 'key'`, then merge the set patch.
+  let expr = `COALESCE(metadata, '{}'::JSONB)`;
+  const params: unknown[] = [pageId, userId];
+  for (const key of dropKeys) {
+    params.push(key);
+    expr = `${expr} - $${params.length}`;
+  }
+  const hasSet = Object.keys(setPatch).length > 0;
+  if (hasSet) {
+    params.push(JSON.stringify(setPatch));
+    expr = `${expr} || $${params.length}::JSONB`;
+  }
   const result = await query(
     `UPDATE brain_pages
-       SET metadata = COALESCE(metadata, '{}'::JSONB) || $3::JSONB,
+       SET metadata = ${expr},
            updated_at = now()
      WHERE id = $1 AND user_id = $2`,
-    [pageId, userId, JSON.stringify(patch)],
+    params,
   );
   return result.rowCount ?? 0;
 }

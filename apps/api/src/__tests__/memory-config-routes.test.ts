@@ -549,14 +549,17 @@ describe('POST /api/memory-config/senders/hide (#251 privacy)', () => {
     expect(res.status).toBe(400);
   });
 
-  it('passes the lower-cased fromAddress and reports the affected count', async () => {
+  it('trims + lower-cases fromAddress at the boundary before passing to the adapter', async () => {
     mockHideAllPagesFromSender.mockResolvedValueOnce(7);
     const app = buildApp();
+    // Whitespace + mixed case — both should be normalized away before
+    // the adapter sees the value (otherwise the stored fromAddress, which
+    // is trimmed + lower-cased at write time, would never match).
     const res = await request(
       app,
       'POST',
       `/api/memory-config/senders/hide?userId=${USER_ID}`,
-      { fromAddress: 'Spam@Vendor.Example.com' },
+      { fromAddress: '  Spam@Vendor.Example.com  ' },
     );
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
@@ -566,7 +569,7 @@ describe('POST /api/memory-config/senders/hide (#251 privacy)', () => {
     });
     expect(mockHideAllPagesFromSender).toHaveBeenCalledWith(
       USER_ID,
-      'Spam@Vendor.Example.com',
+      'spam@vendor.example.com',
     );
   });
 

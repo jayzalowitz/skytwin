@@ -189,7 +189,12 @@ export class InMemoryBrainStore {
       .slice(0, limit);
   }
 
-  /** Mirror of `repository.updatePageMetadata`. Returns row count. */
+  /**
+   * Mirror of `repository.updatePageMetadata`. Returns row count. Treats
+   * `null` values in `patch` as a delete-request — matches the SQL helper
+   * which uses `jsonb - 'key'` for those, so downstream consumers can't
+   * tell the in-memory and CRDB paths apart.
+   */
   updatePageMetadata(
     userId: string,
     pageId: string,
@@ -197,10 +202,12 @@ export class InMemoryBrainStore {
   ): number {
     const page = this.pages.get(pageId);
     if (!page || page.user_id !== userId) return 0;
-    page.metadata = {
-      ...(page.metadata as Record<string, unknown>),
-      ...patch,
-    };
+    const next = { ...(page.metadata as Record<string, unknown>) };
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === null) delete next[k];
+      else next[k] = v;
+    }
+    page.metadata = next;
     page.updated_at = new Date();
     return 1;
   }

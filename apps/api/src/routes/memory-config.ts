@@ -197,8 +197,10 @@ export function createMemoryConfigRouter(): Router {
       });
     }
     try {
-      // JSONB || merges; passing `userOverride: null` removes the key on
-      // PostgreSQL's strip-nulls behavior. CRDB matches PG here.
+      // `updatePageMetadata` treats null-valued patch keys as delete
+      // requests (uses `jsonb - 'key'` in SQL, `delete` in the in-memory
+      // mirror) so a `clear` action leaves the column clean rather than
+      // storing `{"userOverride": null}` indefinitely.
       const patch =
         body.override === null
           ? { userOverride: null }
@@ -232,13 +234,19 @@ export function createMemoryConfigRouter(): Router {
     if (typeof body.fromAddress !== 'string' || body.fromAddress.trim().length === 0) {
       return res.status(400).json({ error: 'fromAddress (string) is required' });
     }
+    // Normalize once at the boundary — trim AND lower-case — so the
+    // adapter query, the response, and any logged context all see the
+    // same canonical form. Without the trim, "  spam@x.com  " would
+    // pass validation but never match the stored fromAddress field
+    // (which is trimmed + lower-cased at write time).
+    const normalizedFrom = body.fromAddress.trim().toLowerCase();
     try {
-      const hidden = await hideAllPagesFromSender(userId, body.fromAddress);
-      return res.json({ ok: true, fromAddress: body.fromAddress.toLowerCase(), hidden });
+      const hidden = await hideAllPagesFromSender(userId, normalizedFrom);
+      return res.json({ ok: true, fromAddress: normalizedFrom, hidden });
     } catch (err) {
       log.error('senders hide POST failed', {
         userId,
-        fromAddress: body.fromAddress,
+        fromAddress: normalizedFrom,
         error: err instanceof Error ? err.message : String(err),
       });
       return res.status(500).json({ error: 'failed to hide sender' });
