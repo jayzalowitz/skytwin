@@ -83,10 +83,22 @@ export function rrfFold(
   if (options.tierWeight) {
     const weight = options.tierWeight;
     for (const hit of entries) {
-      const mult = weight(hit.page.metadata);
+      // Coerce non-finite or non-number multipliers to 1.0 (identity) so a
+      // misbehaving callback can't poison rrfScore into NaN/Infinity. Clamp
+      // negatives to 0 — they share the same "drop the page" semantics as
+      // userOverride: 'hidden'.
+      const raw = weight(hit.page.metadata);
+      let mult: number;
+      if (typeof raw !== 'number' || !Number.isFinite(raw)) {
+        mult = 1.0;
+      } else if (raw < 0) {
+        mult = 0;
+      } else {
+        mult = raw;
+      }
       hit.rrfScore *= mult;
     }
-    // Drop hidden pages (multiplier 0); keep everything else even if it
+    // Drop hidden / clamped-to-zero pages; keep everything else even if it
     // got pushed down. Filtering before sort means k slots stay full of
     // surviving results.
     entries = entries.filter((h) => h.rrfScore > 0);

@@ -30,8 +30,11 @@ function makeSignal(
   tier: string,
   subject: string,
   body: string,
-  bodyLen?: number,
 ): RawSignal {
+  // NOTE: `bodyLen` is *not* a `data` field. EmbeddedGbrainMemoryPort.
+  // buildPageMetadata derives it from the summarised page content at write
+  // time, so to exercise the brief-reply downweight in tests, vary the
+  // length of `body` itself (e.g. pass "k" for the brief case).
   return {
     id,
     source,
@@ -42,7 +45,6 @@ function makeSignal(
       subject,
       text: body,
       authoringTier: tier,
-      ...(bodyLen !== undefined ? { bodyLen } : {}),
     },
     timestamp: new Date(),
   };

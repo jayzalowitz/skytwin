@@ -139,6 +139,34 @@ describe('rrfFold', () => {
       expect(out[0]!.id).toBe('keep');
     });
 
+    it('coerces non-finite or negative weights defensively (NaN → 1.0, <0 → 0)', () => {
+      const text = [
+        { page: pageWithTier('keep-nan', 'inbox_personal'), score: 1 },
+        { page: pageWithTier('keep-undef', 'inbox_personal'), score: 0.9 },
+        { page: pageWithTier('drop-neg', 'inbox_personal'), score: 0.8 },
+      ];
+      const out = rrfFold(text, [], 5, 60, {
+        tierWeight: (meta) => {
+          const id = (meta as { authoringTier?: string } | null);
+          // Return progressively misbehaving values; the fold must survive.
+          if (id === text[0]!.page.metadata) return Number.NaN;
+          if (id === text[1]!.page.metadata) return undefined as unknown as number;
+          if (id === text[2]!.page.metadata) return -5;
+          return 1;
+        },
+      });
+      const ids = out.map((h) => h.id);
+      // NaN and undefined → identity (kept); negative → dropped like 'hidden'.
+      expect(ids).toContain('keep-nan');
+      expect(ids).toContain('keep-undef');
+      expect(ids).not.toContain('drop-neg');
+      // rrfScore should be a finite number for survivors.
+      for (const hit of out) {
+        expect(Number.isFinite(hit.rrfScore)).toBe(true);
+        expect(hit.rrfScore).toBeGreaterThan(0);
+      }
+    });
+
     it('preserves textRank/vectorRank even after weighting', () => {
       const text = [
         { page: pageWithTier('a', 'inbox_newsletter'), score: 1 },

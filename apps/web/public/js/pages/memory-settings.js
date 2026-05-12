@@ -126,6 +126,11 @@ function ensurePageListener() {
         showSavedToast(next ? 'Tier weighting enabled' : 'Tier weighting disabled');
         const container = document.getElementById('page-content');
         if (container) await renderMemorySettings(container, getCurrentUserId());
+      } catch {
+        // Offline / DNS / network — `api()` throws rather than returning an
+        // ok=false response, so without this branch the user would only see
+        // the button re-enable with no feedback.
+        showErrorToast('Failed to update tier weighting');
       } finally {
         target.disabled = false;
       }
