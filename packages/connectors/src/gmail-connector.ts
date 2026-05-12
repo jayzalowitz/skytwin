@@ -306,8 +306,16 @@ export class GmailConnector implements SignalConnector {
       const resp = await this.gmailGet(`${GMAIL_API}/users/me/profile`, accessToken, 'profile');
       const body = await resp.json() as { historyId?: string };
       return body.historyId ?? null;
-    } catch {
-      return null;
+    } catch (err) {
+      // Symmetric with listMessageIds: transient failures degrade
+      // to null (the caller writes no cursor and re-tries next poll);
+      // non-transient failures (persistent auth, 4xx) propagate so a
+      // broken token/scope surfaces as a hard failure rather than an
+      // infinite "bootstrap returns [] with no cursor" loop. Copilot
+      // round-2 on PR #252 flagged the prior `catch { return null }`
+      // for hiding auth errors.
+      if (err instanceof RetryableHttpError) return null;
+      throw err;
     }
   }
 
