@@ -18,20 +18,20 @@ const log = createLogger('api:voice');
  *   POST /api/voice/synthesize           — body: { userId, text, voice? }
  *
  * Backed by `createEmbeddedSttPort()` + `createEmbeddedTtsPort()` from
- * `@skytwin/embedded-llm`. Ports return their Null* fallbacks when the
+ * `@skytwin/embedded-llm`. Each returns its `Null*` fallback when the
  * corresponding binary isn't installed — those throw `NotAvailableError`
  * on use, which we surface as 503 so the client can fall back to a
  * manual transcript / silent text rendering.
  *
- * Why the binaries live behind a single port: the same backend serves
- * desktop voice-first (#194 Child 4) and mobile voice (#179). Both
- * clients POST here; one place to install/upgrade the model.
+ * Why both ports live in this router: the same backend serves desktop
+ * voice-first (#194 Child 4) and mobile voice (#179). Both clients
+ * POST here; one place to install/upgrade the binaries and models.
  */
 
 let cachedSttPort: Promise<EmbeddedSttPort> | null = null;
 let cachedTtsPort: Promise<EmbeddedTtsPort> | null = null;
 
-function getPort(): Promise<EmbeddedSttPort> {
+function getSttPort(): Promise<EmbeddedSttPort> {
   if (cachedSttPort === null) cachedSttPort = createEmbeddedSttPort();
   return cachedSttPort;
 }
@@ -61,7 +61,7 @@ export function createVoiceRouter(): Router {
 
   router.get('/capabilities/:userId', async (_req, res, next) => {
     try {
-      const [stt, tts] = await Promise.all([getPort(), getTtsPort()]);
+      const [stt, tts] = await Promise.all([getSttPort(), getTtsPort()]);
       res.json({
         // Legacy STT-shaped fields preserved for clients written before
         // TTS landed. New clients should prefer the nested objects.
@@ -110,7 +110,7 @@ export function createVoiceRouter(): Router {
         return;
       }
 
-      const port = await getPort();
+      const port = await getSttPort();
       if (!port.capabilities.available) {
         res.status(503).json({
           error: 'whisper-cli not available on this server',

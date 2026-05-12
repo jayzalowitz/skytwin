@@ -25,7 +25,7 @@ All notable changes to SkyTwin will be documented in this file.
 ### Original change
 
 Closes #187 AC#4. Mirrors the proven spawn pattern of
-`LlamaCppTextBackend` and `WhisperCppSttBackend`. Three pieces:
+`LlamaCppTextBackend` and `WhisperCppSttBackend`. Four pieces:
 
 - **`packages/embedded-llm/src/piper-tts-backend.ts`** —
   `PiperTtsBackend` implements `EmbeddedTtsPort`. Spawns `piper`
