@@ -1,5 +1,74 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [unreleased] — Per-Lifebook briefing prose (#193 follow-up)
+
+Closes the last of the three #193 Child 1 follow-ups deferred by
+PR #242 (capabilities Lifebook filter shipped in #256; provenance
+wing filter shipped in #257; this one). The weekly briefing worker
+now emits, in addition to the existing global briefing, one
+per-Lifebook briefing for each visible domain with activity in the
+window. The lifebook page renders the per-domain briefing when one
+exists.
+
+### Migration
+
+- `042-briefing-domain.sql` — adds nullable `domain_name STRING`
+  column to `twin_briefings`. NULL preserves the historical global-
+  briefing semantic untouched. A string value scopes the briefing
+  to that lifebook's domain (matching `lifebooks.domain_name`).
+  Partial index `(user_id, domain_name, generated_at DESC) WHERE
+  domain_name IS NOT NULL` keeps per-domain queries fast without
+  bloating storage for global rows.
+
+### Repository
+
+- `briefingRepository.create()` accepts an optional `domainName`.
+- `briefingRepository.getLatestForUser()` now explicitly scopes to
+  `domain_name IS NULL` — the historical method only ever served
+  global briefings, so the implicit semantic is now explicit.
+- New `briefingRepository.getLatestForUserDomain(userId, domain,
+  cadence?)` for the per-Lifebook surface.
+
+### Worker
+
+- `apps/worker/src/jobs/briefing-generator.ts` extends the job:
+  after writing the global briefing, fetch the user's visible
+  lifebooks and emit one per-domain briefing per lifebook with
+  events in the window. Events are filtered by
+  `registry_id ∈ lifebook.suggested_capabilities` — the same set
+  the domain extractor proposed. Empty filtered sets are skipped
+  (a "nothing happened in Health this week" briefing is noise).
+  Per-lifebook failures are caught and logged so one broken domain
+  doesn't kill the rest.
+- The prompt carries an optional `{{domain}}` input; the
+  template's `{{#if domain}}` block adds a one-sentence framing
+  for the scoped domain. Deterministic fallback unchanged.
+
+### API
+
+- New `GET /api/twin-briefings/lifebook/:domain/latest?cadence=`
+  returns `{ briefing: TwinBriefingRow | null }`. Null when no
+  per-domain briefing exists yet — the common case while the
+  worker hasn't run, the domain is too new, or it had zero events.
+
+### Frontend
+
+- `apps/web/public/js/pages/lifebook.js` fetches the per-domain
+  briefing best-effort and renders it as a card. When no briefing
+  exists yet, a friendly empty state explains when one will
+  appear. Best-effort fetch — the rest of the page renders even
+  if the briefing endpoint is unavailable.
+
+### Test plan
+
+3 new vitest cases in `briefing-generator.test.ts`:
+- Per-Lifebook briefing written per visible lifebook with matching events.
+- Lifebook with no matching events skipped (no empty rows).
+- Per-lifebook failure doesn't take out the other lifebooks (resilience).
+
+worker 86/86 (+3 new), api 547/547, db 189/189. Workspace: 70/70
+turbo tasks green; build clean.
+
 ## [unreleased] — Provenance graph: filter by Lifebook wing (#193 follow-up)
 
 Closes the **"provenance graph wing-filter consumer"** item that
@@ -266,7 +335,6 @@ What this doesn't ship (deliberate, deferred to follow-ups):
   on signals written after this lands. A backfill migration is cheap to
   write (re-read the Gmail label + From header for stored signal rows)
   but is a separate concern from the live ingest path.
-
 
 ## [unreleased] — Embedded LLM downloader: round-3 review fixes (#187 AC#2 follow-up)
 

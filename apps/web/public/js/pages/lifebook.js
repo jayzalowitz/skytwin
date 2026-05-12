@@ -1,4 +1,4 @@
-import { fetchLifebook, hideLifebook, escapeHtml } from '../api-client.js';
+import { fetchLifebook, fetchLifebookBriefing, hideLifebook, escapeHtml } from '../api-client.js';
 import { showSavedToast, showErrorToast } from '../toast.js';
 import { KEY_USER_ID } from '../storage-keys.js';
 
@@ -73,6 +73,19 @@ export async function renderLifebook(container, _userIdFromArg) {
     return;
   }
 
+  // #193 follow-up: best-effort fetch of the per-Lifebook briefing.
+  // No briefing yet is the common case (the worker only emits one per
+  // domain that has events in the window); we render a friendly empty
+  // state rather than treating it as an error.
+  let briefing = null;
+  try {
+    const briefingData = await fetchLifebookBriefing(userId, domainName);
+    briefing = briefingData?.briefing ?? null;
+  } catch {
+    // Swallow — the rest of the page should render even when the
+    // briefing endpoint is unavailable.
+  }
+
   const signals = Array.isArray(lb.sampleSignals) ? lb.sampleSignals : [];
   const caps = Array.isArray(lb.suggestedCapabilities) ? lb.suggestedCapabilities : [];
 
@@ -89,6 +102,8 @@ export async function renderLifebook(container, _userIdFromArg) {
         Detected ${lb.detectedAt ? formatDate(lb.detectedAt) : 'recently'} · last seen ${lb.lastSeenAt ? formatDate(lb.lastSeenAt) : 'recently'}
       </div>
     </div>
+
+    ${renderLifebookBriefingCard(briefing, lb.domainName)}
 
     ${wing ? `
     <div class="card">
@@ -117,6 +132,45 @@ export async function renderLifebook(container, _userIdFromArg) {
       <a href="#/capabilities" class="btn btn-outline btn-sm" style="margin-top:0.75rem;">Browse capabilities</a>
     </div>
     ` : ''}
+  `;
+}
+
+/**
+ * #193 follow-up: render the per-Lifebook briefing card. Three states:
+ *   1. briefing exists: show the prose + the generation timestamp.
+ *   2. no briefing yet: friendly empty state explaining when one
+ *      shows up (weekly worker run after at least one event in the
+ *      domain's window).
+ *   3. briefing was returned but has empty prose: defensive — render
+ *      the empty state, same as case 2.
+ *
+ * The prose is server-side Markdown but the dashboard doesn't bundle
+ * a Markdown renderer; we render the raw text inside a <pre>-style
+ * block that preserves line breaks. A future enhancement could wire
+ * up a Markdown renderer for the whole twin-briefings surface.
+ */
+function renderLifebookBriefingCard(briefing, domainName) {
+  if (briefing && typeof briefing.prose_markdown === 'string' && briefing.prose_markdown.trim().length > 0) {
+    const when = briefing.generated_at ? formatDate(briefing.generated_at) : 'recently';
+    const cadenceLabel = briefing.cadence === 'weekly' ? 'Weekly' : 'Daily';
+    return `
+      <div class="card">
+        <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;gap:0.75rem;">
+          <span class="card-title">${escapeHtml(cadenceLabel)} briefing — ${escapeHtml(domainName)}</span>
+          <span class="card-subtitle" style="margin:0;font-size:0.75rem;">Generated ${escapeHtml(when)}</span>
+        </div>
+        <div style="margin-top:0.75rem;white-space:pre-wrap;line-height:1.55;font-size:0.9rem;color:var(--text);">${escapeHtml(briefing.prose_markdown)}</div>
+      </div>
+    `;
+  }
+  return `
+    <div class="card">
+      <div class="card-header"><span class="card-title">${escapeHtml(domainName)} briefing</span></div>
+      <div class="card-subtitle">
+        Your twin will write a per-${escapeHtml(domainName)} briefing on the next briefing run if
+        there's been activity in this Lifebook. Until then you'll see the global briefing on the dashboard.
+      </div>
+    </div>
   `;
 }
 
