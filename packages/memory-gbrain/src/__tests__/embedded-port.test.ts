@@ -71,6 +71,67 @@ describe('EmbeddedGbrainMemoryPort — recordSignal', () => {
     await port.recordSignal(sig);
     await expect(port.recordSignal(sig)).rejects.toThrow(/duplicate/);
   });
+
+  // #251 Layer 1: when a connector stamps `data.authoringTier`, the embedded
+  // port projects it onto `brain_pages.metadata.authoringTier` so Layer 2
+  // retrieval weighting can read it without a join back to the signal row.
+  it('projects data.authoringTier onto brain_pages.metadata', async () => {
+    const sig: RawSignal = {
+      id: 'sig-tier',
+      source: 'gmail',
+      type: 'email',
+      timestamp: new Date('2026-05-01'),
+      data: {
+        subject: 'Re: Q2 plan',
+        from: 'me@example.com',
+        authoringTier: 'user_sent_reply',
+      },
+    };
+    await port.recordSignal(sig);
+    const pages = store.getAllPages(USER);
+    expect(pages).toHaveLength(1);
+    expect(pages[0]!.metadata).toMatchObject({
+      signalSource: 'gmail',
+      signalType: 'email',
+      authoringTier: 'user_sent_reply',
+    });
+  });
+
+  it('omits authoringTier from metadata when the connector did not stamp one', async () => {
+    const sig: RawSignal = {
+      id: 'sig-no-tier',
+      source: 'cal',
+      type: 'event',
+      timestamp: new Date('2026-05-01'),
+      data: { subject: 'Lunch' },
+    };
+    await port.recordSignal(sig);
+    const pages = store.getAllPages(USER);
+    expect(pages).toHaveLength(1);
+    expect(pages[0]!.metadata).toEqual({
+      signalSource: 'cal',
+      signalType: 'event',
+    });
+    expect((pages[0]!.metadata as Record<string, unknown>)['authoringTier']).toBeUndefined();
+  });
+
+  it('ignores non-string authoringTier values defensively', async () => {
+    const sig: RawSignal = {
+      id: 'sig-bad-tier',
+      source: 'gmail',
+      type: 'email',
+      timestamp: new Date('2026-05-01'),
+      data: {
+        subject: 'X',
+        // Deliberately wrong shape to exercise the defensive non-string check
+        // in buildPageMetadata. `data: Record<string, unknown>` accepts this.
+        authoringTier: 42,
+      },
+    };
+    await port.recordSignal(sig);
+    const pages = store.getAllPages(USER);
+    expect((pages[0]!.metadata as Record<string, unknown>)['authoringTier']).toBeUndefined();
+  });
 });
 
 describe('EmbeddedGbrainMemoryPort — searchSemantic', () => {

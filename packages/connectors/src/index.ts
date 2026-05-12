@@ -18,6 +18,13 @@ export { MockCalendarConnector } from './mock-calendar-connector.js';
 // Real connector implementations
 export { GmailConnector, normalizeSenderAddress, parseListId } from './gmail-connector.js';
 export type { CursorStore, LabelObserver } from './gmail-connector.js';
+export {
+  classifyEmailAuthoringTier,
+  extractBareAddress,
+  isAutomatedSender,
+  splitAddressList,
+} from './authoring-tier.js';
+export type { AuthoringTier, EmailAuthoringInputs } from './authoring-tier.js';
 export { GoogleCalendarConnector } from './google-calendar-connector.js';
 
 // OAuth

@@ -204,6 +204,118 @@ describe('GmailConnector.messageToSignal', () => {
     expect(sig.data.from).toBe('');
     expect(sig.data.subject).toBe('');
   });
+
+  // #251 Layer 1: messageToSignal stamps `data.authoringTier` so downstream
+  // memory writers can project it onto brain_pages.metadata without re-
+  // reading raw Gmail headers.
+  it('stamps authoringTier=user_sent_originated for SENT mail with no In-Reply-To', () => {
+    const msg = {
+      id: 'm-sent',
+      threadId: 't-sent',
+      labelIds: ['SENT'],
+      snippet: '',
+      payload: {
+        headers: [
+          { name: 'From', value: 'me@example.com' },
+          { name: 'To', value: 'friend@example.com' },
+        ],
+      },
+      internalDate: '1735689600000',
+    };
+    const sig = toSignal(msg) as { data: { authoringTier: string } };
+    expect(sig.data.authoringTier).toBe('user_sent_originated');
+  });
+
+  it('stamps authoringTier=user_sent_reply when In-Reply-To is present', () => {
+    const msg = {
+      id: 'm-sent-reply',
+      threadId: 't-sent-reply',
+      labelIds: ['SENT'],
+      snippet: '',
+      payload: {
+        headers: [
+          { name: 'From', value: 'me@example.com' },
+          { name: 'To', value: 'friend@example.com' },
+          { name: 'In-Reply-To', value: '<original-id@mail.example.com>' },
+        ],
+      },
+      internalDate: '1735689600000',
+    };
+    const sig = toSignal(msg) as { data: { authoringTier: string } };
+    expect(sig.data.authoringTier).toBe('user_sent_reply');
+  });
+
+  it('stamps authoringTier=inbox_newsletter when List-Unsubscribe is present', () => {
+    const msg = {
+      id: 'm-news',
+      threadId: 't-news',
+      labelIds: ['INBOX'],
+      snippet: '',
+      payload: {
+        headers: [
+          { name: 'From', value: 'updates@vendor.com' },
+          { name: 'List-Unsubscribe', value: '<mailto:unsubscribe@vendor.com>' },
+        ],
+      },
+      internalDate: '1735689600000',
+    };
+    const sig = toSignal(msg) as { data: { authoringTier: string } };
+    expect(sig.data.authoringTier).toBe('inbox_newsletter');
+  });
+
+  it('stamps authoringTier=inbox_automated for noreply senders without list semantics', () => {
+    const msg = {
+      id: 'm-auto',
+      threadId: 't-auto',
+      labelIds: ['INBOX'],
+      snippet: '',
+      payload: {
+        headers: [
+          { name: 'From', value: 'noreply@stripe.com' },
+          { name: 'To', value: 'me@example.com' },
+        ],
+      },
+      internalDate: '1735689600000',
+    };
+    const sig = toSignal(msg) as { data: { authoringTier: string } };
+    expect(sig.data.authoringTier).toBe('inbox_automated');
+  });
+
+  it('stamps authoringTier=inbox_broadcast when To has multiple recipients', () => {
+    const msg = {
+      id: 'm-bcast',
+      threadId: 't-bcast',
+      labelIds: ['INBOX'],
+      snippet: '',
+      payload: {
+        headers: [
+          { name: 'From', value: 'leader@example.com' },
+          { name: 'To', value: 'me@example.com, other@example.com' },
+        ],
+      },
+      internalDate: '1735689600000',
+    };
+    const sig = toSignal(msg) as { data: { authoringTier: string } };
+    expect(sig.data.authoringTier).toBe('inbox_broadcast');
+  });
+
+  it('defaults inbox single-recipient mail to authoringTier=inbox_personal', () => {
+    const msg = {
+      id: 'm-personal',
+      threadId: 't-personal',
+      labelIds: ['INBOX'],
+      snippet: '',
+      payload: {
+        headers: [
+          { name: 'From', value: 'friend@example.com' },
+          { name: 'To', value: 'me@example.com' },
+        ],
+      },
+      internalDate: '1735689600000',
+    };
+    const sig = toSignal(msg) as { data: { authoringTier: string } };
+    expect(sig.data.authoringTier).toBe('inbox_personal');
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -433,5 +545,72 @@ describe('GmailConnector History API', () => {
     const conn = new GmailConnector('user-1', makeFreshTokenStore());
     await conn.connect();
     await expect(conn.poll()).resolves.toEqual([]);
+  });
+
+  // #251 Layer 3 (minimal): bootstrap emits sent mail FIRST so the user's
+  // first-impression brain pages lead with things they wrote rather than
+  // whatever happened to be unread. Layer 1 above stamps the tier; this
+  // test verifies the ordering side of the contract.
+  it('bootstrap emits in:sent results before is:unread, deduped by id', async () => {
+    const listCalls: string[] = [];
+    vi.stubGlobal('fetch', makeFetchRouter({
+      '/users/me/messages?q=': (url) => {
+        listCalls.push(url);
+        if (url.includes('in%3Asent')) {
+          return jsonResponse({ messages: [{ id: 'sent-1' }, { id: 'shared' }] });
+        }
+        // is:unread branch
+        return jsonResponse({ messages: [{ id: 'shared' }, { id: 'unread-1' }] });
+      },
+      '/users/me/messages/sent-1': () => jsonResponse({
+        id: 'sent-1',
+        threadId: 't-sent-1',
+        labelIds: ['SENT'],
+        snippet: '',
+        payload: { headers: [{ name: 'From', value: 'me@example.com' }] },
+        internalDate: '1735689600000',
+        historyId: '1100',
+      }),
+      '/users/me/messages/shared': () => jsonResponse({
+        id: 'shared',
+        threadId: 't-shared',
+        labelIds: ['SENT', 'INBOX'],
+        snippet: '',
+        payload: { headers: [{ name: 'From', value: 'me@example.com' }] },
+        internalDate: '1735689600000',
+        historyId: '1200',
+      }),
+      '/users/me/messages/unread-1': () => jsonResponse({
+        id: 'unread-1',
+        threadId: 't-unread-1',
+        labelIds: ['INBOX'],
+        snippet: '',
+        payload: { headers: [{ name: 'From', value: 'friend@example.com' }] },
+        internalDate: '1735689600000',
+        historyId: '1300',
+      }),
+    }));
+
+    const cursor = makeMemoryCursor();
+    const conn = new GmailConnector('user-1', makeFreshTokenStore(), cursor);
+    await conn.connect();
+    const signals = await conn.poll();
+
+    // Both list queries hit (sent-first), and unread is fetched even though
+    // the sent list already covered one of its ids.
+    expect(listCalls.length).toBe(2);
+    expect(listCalls[0]).toContain('in%3Asent');
+    expect(listCalls[1]).toContain('is%3Aunread');
+
+    // Sent ids appear first; shared id is deduped to its sent-list position;
+    // unread-only id appears last.
+    expect(signals.map((s) => s.id)).toEqual([
+      'sig_gmail_sent-1',
+      'sig_gmail_shared',
+      'sig_gmail_unread-1',
+    ]);
+
+    // Highest historyId observed across all three messages wins the cursor.
+    expect(cursor.snapshot['user-1:gmail:history_id']).toBe('1300');
   });
 });

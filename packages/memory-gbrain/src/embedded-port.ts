@@ -136,6 +136,12 @@ export class EmbeddedGbrainMemoryPort implements MemoryPort {
   async recordSignal(s: RawSignal): Promise<void> {
     const data = s.data ?? {};
     const summaryText = this.summariseSignal(s);
+    // #251 Layer 1: connectors stamp `data.authoringTier` (whether the user
+    // wrote the content or merely received it). Project it onto the brain
+    // page metadata so Layer 2 retrieval weighting can read it without a
+    // join back to the signal row. No-op when the connector didn't stamp it
+    // (e.g. calendar signals, custom event ingests).
+    const pageMetadata = this.buildPageMetadata(s, data);
     if (this.backend === 'memory') {
       this.store!.insertSignal({
         id: s.id,
@@ -157,7 +163,7 @@ export class EmbeddedGbrainMemoryPort implements MemoryPort {
         content: summaryText,
         source: 'signal',
         sourceRef: s.id,
-        metadata: { signalSource: s.source, signalType: s.type },
+        metadata: pageMetadata,
         ...(embedding ? { embedding, embeddingModel: this.embedding.model } : {}),
       });
       return;
@@ -185,9 +191,28 @@ export class EmbeddedGbrainMemoryPort implements MemoryPort {
       content: summaryText,
       source: 'signal',
       sourceRef: s.id,
-      metadata: { signalSource: s.source, signalType: s.type },
+      metadata: pageMetadata,
       ...(embedding ? { embedding, embeddingModel: this.embedding.model } : {}),
     });
+  }
+
+  /**
+   * Build the `brain_pages.metadata` object for a signal-derived page.
+   * Always carries `signalSource` / `signalType`; carries `authoringTier`
+   * only when the connector stamped one on `data.authoringTier`. Kept
+   * tolerant of unknown shapes — defensive against future connectors that
+   * may pass an object or null instead of a tier string.
+   */
+  private buildPageMetadata(s: RawSignal, data: Record<string, unknown>): Record<string, unknown> {
+    const metadata: Record<string, unknown> = {
+      signalSource: s.source,
+      signalType: s.type,
+    };
+    const tier = data['authoringTier'];
+    if (typeof tier === 'string' && tier.length > 0) {
+      metadata['authoringTier'] = tier;
+    }
+    return metadata;
   }
 
   async recordEntity(e: KnowledgeEntity): Promise<void> {

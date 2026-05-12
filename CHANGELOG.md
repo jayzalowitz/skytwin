@@ -1,5 +1,74 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [unreleased] — Memory bootstrap: stamp every signal with an authoring tier (#251 Layer 1)
+
+### Fixed (post-Copilot review)
+
+- `listMessageIds()` no longer swallows all errors. Non-transient
+  failures (persistent auth, 4xx other than 404, malformed account
+  state) propagate so the worker surfaces "your Google connection has
+  a problem" rather than silently bootstrapping zero signals forever.
+  Only `RetryableHttpError` (rate-limit / 5xx after retries) still
+  degrades to `[]` so one transient list failure doesn't take out the
+  other batch.
+- `AUTOMATED_DOMAIN_PATTERNS` doc comment now accurately describes
+  the deliberate asymmetry: most entries are end-anchored at the
+  apex domain (`$`), but `noreply\.` is intentionally NOT end-
+  anchored so the `noreply.<vendor>.com` long tail is caught.
+
+### Original change
+
+The first slice of #251. Layer 1 only labels the data — no retrieval-side
+weighting yet (that's Layer 2, gated on `realistic-retrieval.test.ts`
+improving) — so this PR is reversible and observable on its own.
+
+- **New: `AuthoringTier` enum + classifier in `@skytwin/connectors`.**
+  Six tiers (`user_sent_originated`, `user_sent_reply`, `inbox_personal`,
+  `inbox_broadcast`, `inbox_newsletter`, `inbox_automated`) capturing the
+  asymmetry between mail the user authored vs. merely received. The field
+  name is channel-agnostic on purpose (`authoringTier`, not
+  `gmailLabel`/`senderTier`); Slack/Notion connectors can extend the enum
+  later without rebuilding the memory schema.
+
+- **Gmail connector fetches the headers needed to classify.** Added
+  `To`, `Cc`, `In-Reply-To`, `List-Unsubscribe` to the
+  `metadataHeaders=` URL on `messages/<id>?format=metadata`. One extra
+  HTTP-header byte per message; the rest of the payload is unchanged.
+  Every emitted `RawSignal` carries `data.authoringTier`.
+
+- **Embedded gbrain port projects `authoringTier` onto
+  `brain_pages.metadata`.** When a connector stamps the field, the page
+  metadata gets `{ signalSource, signalType, authoringTier }`; when the
+  field is missing or non-string the page metadata falls back to the
+  previous two-key shape. No schema migration — `metadata` is JSONB.
+
+- **Layer 3 minimal: sent-first bootstrap ordering.** The first poll
+  for a new user now lists `in:sent newer_than:7d` BEFORE
+  `is:unread newer_than:1d` and deduplicates by message id. The user's
+  first brain pages lead with things they wrote, not the inbox noise that
+  happens to be unread. Failure on either list query degrades gracefully
+  to the other; both empty falls back to `/users/me/profile` for the
+  cursor exactly as before.
+
+Tests: 18 new unit tests for the classifier (`authoring-tier.test.ts`),
+6 new tests for the Gmail signal pipeline (tier stamping for each of the
+six tiers), 1 new test for sent-first bootstrap ordering, and 3 new tests
+for the embedded-port metadata projection. Full workspace test run:
+70 tasks, all green.
+
+What this doesn't ship (deliberate, deferred to follow-ups):
+
+- **Layer 2 retrieval weighting.** The RRF fold and `DecisionMaker`
+  pattern boost still read `brain_pages` uniformly. Wiring those to the
+  new tier requires re-running `realistic-retrieval.test.ts` with
+  candidate weight schedules and accepting whichever schedule moves R@5
+  up (or holds it constant) on the labeled corpus. That gate is the
+  whole point of Layer 2 being a separate PR.
+- **Migration backfilling tier on existing pages.** Tier is only stamped
+  on signals written after this lands. A backfill migration is cheap to
+  write (re-read the Gmail label + From header for stored signal rows)
+  but is a separate concern from the live ingest path.
+
 ## [unreleased] — Embedded LLM downloader: round-3 review fixes (#187 AC#2 follow-up)
 
 Copilot's third-round review of PR #247 landed after merge — four
