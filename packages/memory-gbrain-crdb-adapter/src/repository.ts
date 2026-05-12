@@ -90,6 +90,86 @@ export async function updatePageEmbedding(
   );
 }
 
+/**
+ * Merge a partial metadata patch into `brain_pages.metadata`, scoped to
+ * the owning user. Uses CRDB's JSONB `||` concat-merge so existing keys
+ * are overwritten but other keys are preserved. Used by the per-page
+ * pin/hide actions (#251 privacy follow-up).
+ *
+ * Keys with a value of `null` in `patch` are treated as a *delete*
+ * request — they're removed from `metadata` rather than written as a
+ * JSON-null. `jsonb ||` would otherwise store `{"userOverride": null}`
+ * which would (a) clutter the row indefinitely and (b) confuse any
+ * downstream code that distinguishes "key absent" from "key is null".
+ *
+ * Returns the affected row count. A return value of 0 means the page
+ * wasn't found or belonged to a different user — the route layer
+ * surfaces that as 404. The `user_id` predicate is load-bearing — it
+ * stops a caller from mutating another user's pages even if they hold
+ * a guessable page id.
+ */
+export async function updatePageMetadata(
+  userId: string,
+  pageId: string,
+  patch: Record<string, unknown>,
+): Promise<number> {
+  // Split the patch into "set" entries (non-null values) and "drop"
+  // keys (null values). Set entries go through JSONB ||; drop keys go
+  // through repeated JSONB - operators so the column shape stays clean.
+  const setPatch: Record<string, unknown> = {};
+  const dropKeys: string[] = [];
+  for (const [k, v] of Object.entries(patch)) {
+    if (v === null) dropKeys.push(k);
+    else setPatch[k] = v;
+  }
+  // Build the metadata expression: start from existing column, apply
+  // each drop key via `- 'key'`, then merge the set patch.
+  let expr = `COALESCE(metadata, '{}'::JSONB)`;
+  const params: unknown[] = [pageId, userId];
+  for (const key of dropKeys) {
+    params.push(key);
+    expr = `${expr} - $${params.length}`;
+  }
+  const hasSet = Object.keys(setPatch).length > 0;
+  if (hasSet) {
+    params.push(JSON.stringify(setPatch));
+    expr = `${expr} || $${params.length}::JSONB`;
+  }
+  const result = await query(
+    `UPDATE brain_pages
+       SET metadata = ${expr},
+           updated_at = now()
+     WHERE id = $1 AND user_id = $2`,
+    params,
+  );
+  return result.rowCount ?? 0;
+}
+
+/**
+ * Bulk-hide every brain_page where `metadata.fromAddress` matches the
+ * given sender. Used by the per-sender "stop indexing this address"
+ * action (#251 privacy follow-up). Returns the affected row count so
+ * the UI can show "hid N pages from X".
+ *
+ * Address match is exact-equality after lowering — the indexer stamps
+ * `fromAddress` lowercased at write time, so this query doesn't have
+ * to do anything case-aware.
+ */
+export async function hideAllPagesFromSender(
+  userId: string,
+  fromAddress: string,
+): Promise<number> {
+  const result = await query(
+    `UPDATE brain_pages
+       SET metadata = COALESCE(metadata, '{}'::JSONB) || '{"userOverride":"hidden"}'::JSONB,
+           updated_at = now()
+     WHERE user_id = $1
+       AND metadata->>'fromAddress' = $2`,
+    [userId, fromAddress.toLowerCase()],
+  );
+  return result.rowCount ?? 0;
+}
+
 // ── Hybrid retrieval (RRF) ──────────────────────────────────────────────────
 
 export interface HybridSearchOptions {

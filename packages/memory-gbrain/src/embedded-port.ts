@@ -207,12 +207,15 @@ export class EmbeddedGbrainMemoryPort implements MemoryPort {
 
   /**
    * Build the `brain_pages.metadata` object for a signal-derived page.
-   * Always carries `signalSource` / `signalType`; carries `authoringTier`
-   * only when the connector stamped one on `data.authoringTier`. Also
-   * stamps `bodyLen` (length of the summarised content) so Layer 2's
-   * brief-reply downweight has something to read. Kept tolerant of
-   * unknown shapes — defensive against future connectors that may pass
-   * an object or null instead of a tier string.
+   * Always carries `signalSource` / `signalType` and `bodyLen` (length of
+   * the summarised content, for Layer 2's brief-reply downweight). Carries
+   * `authoringTier` and `fromAddress` only when the connector supplied
+   * them — `fromAddress` is the From header (or equivalent) extracted from
+   * `data`, used by the per-sender bulk hide action so a user can "stop
+   * indexing this sender" without having to delete pages one by one.
+   *
+   * Kept tolerant of unknown shapes — defensive against future connectors
+   * that may pass an object or null where we expect a string.
    */
   private buildPageMetadata(
     s: RawSignal,
@@ -227,6 +230,20 @@ export class EmbeddedGbrainMemoryPort implements MemoryPort {
     const tier = data['authoringTier'];
     if (typeof tier === 'string' && tier.length > 0) {
       metadata['authoringTier'] = tier;
+    }
+    // Normalize fromAddress at write time so the bulk-hide query is a
+    // simple equality match against `metadata->>'fromAddress'`. We lower
+    // the address to avoid case-sensitivity bugs at query time. The same
+    // shape lives in `@skytwin/connectors` as `extractBareAddress`; inlined
+    // here as a 3-line helper to avoid pulling the connectors package
+    // into the memory layer's dependency graph.
+    const rawFrom = data['from'];
+    if (typeof rawFrom === 'string' && rawFrom.trim().length > 0) {
+      const angle = rawFrom.match(/<([^>]+)>/);
+      const bare = angle?.[1]
+        ? angle[1].trim().toLowerCase()
+        : rawFrom.trim().toLowerCase();
+      if (bare.length > 0) metadata['fromAddress'] = bare;
     }
     return metadata;
   }

@@ -72,5 +72,7 @@ export {
   getRecentPages,
   countPages,
   countUserSentPages,
+  updatePageMetadata,
+  hideAllPagesFromSender,
 } from './repository.js';
 export type { HybridSearchOptions } from './repository.js';

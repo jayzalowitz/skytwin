@@ -8,6 +8,8 @@ import {
   getRecentPages,
   pendingEmbeddingJobs,
   calibrationFromSentVolume,
+  updatePageMetadata,
+  hideAllPagesFromSender,
   type TierCalibration,
 } from '@skytwin/memory-gbrain-crdb-adapter';
 import { mempalaceRepository } from '@skytwin/db';
@@ -164,6 +166,93 @@ export function createMemoryConfigRouter(): Router {
     }
   });
 
+  // POST per-page userOverride (#251 privacy follow-up).
+  //
+  // Body: `{ override: 'pinned' | 'hidden' | null }`. `null` clears the
+  // override (no-op if there wasn't one). The :pageId param is matched
+  // against `brain_pages.id`; the row's `user_id` column is checked
+  // against the query-string userId so a guessable page id can't be
+  // used to mutate another user's pages.
+  //
+  // 404 when the page doesn't exist or belongs to a different user —
+  // we don't distinguish the two so a caller can't probe for foreign
+  // page-id existence.
+  router.post('/pages/:pageId/override', async (req, res) => {
+    const userId = String(req.query['userId'] ?? '');
+    if (!UUID_REGEX.test(userId)) {
+      return res.status(400).json({ error: 'invalid userId' });
+    }
+    const pageId = String(req.params['pageId'] ?? '');
+    if (!pageId) {
+      return res.status(400).json({ error: 'missing pageId' });
+    }
+    const body = (req.body ?? {}) as { override?: unknown };
+    if (
+      body.override !== 'pinned' &&
+      body.override !== 'hidden' &&
+      body.override !== null
+    ) {
+      return res.status(400).json({
+        error: "override must be 'pinned', 'hidden', or null",
+      });
+    }
+    try {
+      // `updatePageMetadata` treats null-valued patch keys as delete
+      // requests (uses `jsonb - 'key'` in SQL, `delete` in the in-memory
+      // mirror) so a `clear` action leaves the column clean rather than
+      // storing `{"userOverride": null}` indefinitely.
+      const patch =
+        body.override === null
+          ? { userOverride: null }
+          : { userOverride: body.override };
+      const affected = await updatePageMetadata(userId, pageId, patch);
+      if (affected === 0) {
+        return res.status(404).json({ error: 'page not found' });
+      }
+      return res.json({ ok: true, pageId, override: body.override });
+    } catch (err) {
+      log.error('pages override POST failed', {
+        userId,
+        pageId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return res.status(500).json({ error: 'failed to update page override' });
+    }
+  });
+
+  // POST per-sender bulk hide (#251 privacy follow-up). Body:
+  // `{ fromAddress: string }`. Sets `metadata.userOverride='hidden'`
+  // on every brain_page where `metadata.fromAddress` equals (case-
+  // insensitively) the supplied address. The connector lower-cases at
+  // write time so the query is exact-match.
+  router.post('/senders/hide', async (req, res) => {
+    const userId = String(req.query['userId'] ?? '');
+    if (!UUID_REGEX.test(userId)) {
+      return res.status(400).json({ error: 'invalid userId' });
+    }
+    const body = (req.body ?? {}) as { fromAddress?: unknown };
+    if (typeof body.fromAddress !== 'string' || body.fromAddress.trim().length === 0) {
+      return res.status(400).json({ error: 'fromAddress (string) is required' });
+    }
+    // Normalize once at the boundary — trim AND lower-case — so the
+    // adapter query, the response, and any logged context all see the
+    // same canonical form. Without the trim, "  spam@x.com  " would
+    // pass validation but never match the stored fromAddress field
+    // (which is trimmed + lower-cased at write time).
+    const normalizedFrom = body.fromAddress.trim().toLowerCase();
+    try {
+      const hidden = await hideAllPagesFromSender(userId, normalizedFrom);
+      return res.json({ ok: true, fromAddress: normalizedFrom, hidden });
+    } catch (err) {
+      log.error('senders hide POST failed', {
+        userId,
+        fromAddress: normalizedFrom,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return res.status(500).json({ error: 'failed to hide sender' });
+    }
+  });
+
   // POST dismiss the "your twin got smarter" notification.
   router.post('/dismiss-notification', async (req, res) => {
     const userId = String(req.query['userId'] ?? '');
@@ -282,11 +371,13 @@ export function createMemoryConfigRouter(): Router {
 
       // Sanitize recent pages for the wire — strip the embedding vector
       // (large, irrelevant for UI) and surface only the fields the dashboard
-      // actually renders. Tier comes from metadata.authoringTier.
+      // actually renders. Tier comes from metadata.authoringTier;
+      // fromAddress is what the per-sender bulk-hide UI sends back.
       const formattedPages = recentPages.map((p) => {
         const meta = (p.metadata ?? {}) as Record<string, unknown>;
         const tier = typeof meta['authoringTier'] === 'string' ? (meta['authoringTier'] as string) : null;
         const userOverride = typeof meta['userOverride'] === 'string' ? (meta['userOverride'] as string) : null;
+        const fromAddress = typeof meta['fromAddress'] === 'string' ? (meta['fromAddress'] as string) : null;
         return {
           id: p.id,
           title: p.title,
@@ -294,6 +385,7 @@ export function createMemoryConfigRouter(): Router {
           createdAt: p.created_at,
           authoringTier: tier,
           userOverride,
+          fromAddress,
         };
       });
 

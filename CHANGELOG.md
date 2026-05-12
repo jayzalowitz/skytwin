@@ -1,5 +1,34 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [unreleased] — Tier-aware privacy controls: pin / hide / hide-sender (#251 follow-up)
+
+The memory dashboard's "Recent pages indexed" table now shows three action buttons per row: **Pin**, **Hide**, and **Hide sender**. The first two flip `metadata.userOverride` between `'pinned'`, `'hidden'`, and unset (the gbrain RRF fold already reads this — pinned doubles the rrfScore, hidden drops the page from search entirely). The third one bulk-hides every indexed page from the same sender — useful for tidying out a newsletter or transactional sender you don't want the twin learning from.
+
+This is the privacy guardrail that gates Layer 2's default-on rollout. With it in place, users can keep tier-weighting enabled while still curating what the twin treats as signal.
+
+### Engine work
+
+- **`buildPageMetadata`** in `EmbeddedGbrainMemoryPort` now stamps `fromAddress` (lower-cased bare address from `data.from`) on every page that carries one. The bulk-hide action queries against this field, so it's a precondition for the sender action being useful. No schema change — `metadata` is JSONB.
+- **`updatePageMetadata(userId, pageId, patch)`** (new repository helper): merges a JSONB patch into the page's metadata column, scoped by `user_id` so a caller can't mutate someone else's pages even if they hold a guessable id. Returns affected row count; 0 maps to 404 at the route layer.
+- **`hideAllPagesFromSender(userId, fromAddress)`** (new): bulk `UPDATE` that sets `metadata.userOverride='hidden'` on every page where `metadata->>'fromAddress'` matches the supplied address (lower-cased). Returns affected row count for "hid N pages from X" toast feedback.
+- Both helpers have matching in-memory mirrors for tests.
+
+### API surface
+
+- **`POST /api/memory-config/pages/:pageId/override`**. Body `{ override: 'pinned' | 'hidden' | null }`. 404 when the page doesn't exist or belongs to another user (deliberately doesn't distinguish, so a caller can't probe for foreign page-id existence).
+- **`POST /api/memory-config/senders/hide`**. Body `{ fromAddress: string }`. Returns `{ ok: true, fromAddress, hidden: <count> }`.
+- `GET /api/memory-config/dashboard` now includes `pages.recent[].fromAddress` so the UI knows what to send to the sender endpoint.
+
+### Web
+
+- New per-row actions on the Recent pages indexed table: Pin / Unpin, Hide / Unhide, Hide sender. Buttons swap their action depending on current state. The sender button only appears for pages with a `fromAddress` (i.e. email-derived). The bulk action surfaces a confirmation prompt before firing (since one click can hide hundreds of rows).
+
+### Tests
+
+- 5 new unit tests on the in-memory repository: `updatePageMetadata` merges + respects user ownership + 404s on missing pages; `hideAllPagesFromSender` matches case-insensitively, scopes by user, and reports 0 when nothing matches.
+- 3 new embedded-port tests: `fromAddress` stamping lower-cases display-name addresses, handles bare addresses, omits when `data.from` is missing.
+- 6 new memory-config-routes tests: per-page override rejects bogus values, accepts pinned/hidden/null, 404s on missing pages; sender bulk-hide rejects missing `fromAddress`, lower-cases on the wire, surfaces affected count; dashboard payload includes `userOverride` + `fromAddress`.
+
 ## [unreleased] — Layer 2 ablation eval + tuned multipliers + floor-ratio gate (#251 follow-up)
 
 Stood up a labeled-retrieval ablation eval at

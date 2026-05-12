@@ -116,6 +116,54 @@ describe('EmbeddedGbrainMemoryPort — recordSignal', () => {
     expect(meta['authoringTier']).toBeUndefined();
   });
 
+  // #251 privacy follow-up: stamp the From address on metadata so the
+  // "hide all from this sender" bulk-action has something to query against.
+  it('stamps lower-cased fromAddress on metadata from data.from', async () => {
+    const sig: RawSignal = {
+      id: 'sig-from',
+      source: 'gmail',
+      type: 'email',
+      timestamp: new Date('2026-05-01'),
+      data: {
+        subject: 'Newsletter',
+        from: 'Acme <Newsletter@Acme.Example.com>',
+      },
+    };
+    await port.recordSignal(sig);
+    const pages = store.getAllPages(USER);
+    expect((pages[0]!.metadata as Record<string, unknown>)['fromAddress']).toBe(
+      'newsletter@acme.example.com',
+    );
+  });
+
+  it('handles a bare address (no display name) for fromAddress', async () => {
+    const sig: RawSignal = {
+      id: 'sig-from-bare',
+      source: 'gmail',
+      type: 'email',
+      timestamp: new Date('2026-05-01'),
+      data: { from: 'BARE@Example.com' },
+    };
+    await port.recordSignal(sig);
+    const pages = store.getAllPages(USER);
+    expect((pages[0]!.metadata as Record<string, unknown>)['fromAddress']).toBe(
+      'bare@example.com',
+    );
+  });
+
+  it('omits fromAddress when data.from is missing or empty', async () => {
+    const sig: RawSignal = {
+      id: 'sig-from-missing',
+      source: 'cal',
+      type: 'event',
+      timestamp: new Date('2026-05-01'),
+      data: { subject: 'Standup' },
+    };
+    await port.recordSignal(sig);
+    const pages = store.getAllPages(USER);
+    expect((pages[0]!.metadata as Record<string, unknown>)['fromAddress']).toBeUndefined();
+  });
+
   it('ignores non-string authoringTier values defensively', async () => {
     const sig: RawSignal = {
       id: 'sig-bad-tier',
