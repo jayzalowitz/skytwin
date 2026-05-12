@@ -9,11 +9,13 @@ const {
   mockBriefingRepository,
   mockAppSuggestionRepository,
   mockMcpServerRepository,
+  mockLifebookRepository,
   mockQuery,
 } = vi.hoisted(() => ({
   mockBriefingRepository: {
     create: vi.fn(),
     getLatestForUser: vi.fn(),
+    getLatestForUserDomain: vi.fn(),
     listForUser: vi.fn(),
     markRead: vi.fn(),
   },
@@ -39,6 +41,13 @@ const {
     markAllResumedForUser: vi.fn(),
     updateLastActive: vi.fn(),
   },
+  mockLifebookRepository: {
+    listVisible: vi.fn(),
+    upsert: vi.fn(),
+    getByUserAndDomain: vi.fn(),
+    hide: vi.fn(),
+    unhide: vi.fn(),
+  },
   mockQuery: vi.fn(),
 }));
 
@@ -46,6 +55,7 @@ vi.mock('@skytwin/db', () => ({
   briefingRepository: mockBriefingRepository,
   appSuggestionRepository: mockAppSuggestionRepository,
   mcpServerRepository: mockMcpServerRepository,
+  lifebookRepository: mockLifebookRepository,
   query: mockQuery,
 }));
 
@@ -95,6 +105,9 @@ describe('runBriefingGeneratorJob', () => {
     vi.clearAllMocks();
     // Default: no provenance nodes for promotions
     mockQuery.mockResolvedValue({ rows: [] });
+    // Default: user has no lifebooks (no per-domain briefings written).
+    // Tests that exercise the per-domain path override this.
+    mockLifebookRepository.listVisible.mockResolvedValue([]);
   });
 
   it('generates a daily briefing for an active user with an installed server', async () => {
@@ -177,5 +190,188 @@ describe('runBriefingGeneratorJob', () => {
 
     expect(mockBriefingRepository.create).not.toHaveBeenCalled();
     expect(mockMcpServerRepository.listForUser).not.toHaveBeenCalled();
+  });
+
+  // ── #193 follow-up: per-Lifebook briefings ───────────────────────────────
+
+  it('emits a per-Lifebook briefing for each visible lifebook with matching events', async () => {
+    const healthServer = makeServer({
+      id: 'srv-health',
+      user_id: 'user-poly',
+      registry_id: 'fitbit-mcp',
+      display_name: 'Fitbit',
+    });
+    const moneyServer = makeServer({
+      id: 'srv-money',
+      user_id: 'user-poly',
+      registry_id: 'mint-mcp',
+      display_name: 'Mint',
+    });
+    mockMcpServerRepository.listForUser.mockResolvedValue([healthServer, moneyServer]);
+    mockAppSuggestionRepository.getPendingForUser.mockResolvedValue([]);
+    mockLifebookRepository.listVisible.mockResolvedValue([
+      {
+        id: 'lb-health',
+        user_id: 'user-poly',
+        domain_name: 'Health',
+        importance: 'core',
+        sample_signals: [],
+        suggested_capabilities: ['fitbit-mcp'],
+        wing_id: 'wing-h',
+        detected_at: new Date(),
+        last_seen_at: new Date(),
+        hidden_at: null,
+      },
+      {
+        id: 'lb-money',
+        user_id: 'user-poly',
+        domain_name: 'Money',
+        importance: 'core',
+        sample_signals: [],
+        suggested_capabilities: ['mint-mcp'],
+        wing_id: 'wing-m',
+        detected_at: new Date(),
+        last_seen_at: new Date(),
+        hidden_at: null,
+      },
+    ]);
+    mockBriefingRepository.create.mockImplementation(async (input) => ({
+      id: 'briefing-x',
+      user_id: input.userId,
+      cadence: input.cadence,
+      generated_at: new Date(),
+      prose_markdown: input.proseMarkdown,
+      source_event_count: input.sourceEventCount,
+      llm_provider: input.llmProvider ?? null,
+      llm_cost_cents: input.llmCostCents ?? null,
+      read_at: null,
+      domain_name: input.domainName ?? null,
+    }));
+
+    await runBriefingGeneratorJob({ cadence: 'daily', userIds: ['user-poly'] });
+
+    // 1 global + 2 per-Lifebook = 3 create calls.
+    expect(mockBriefingRepository.create).toHaveBeenCalledTimes(3);
+    const calls = mockBriefingRepository.create.mock.calls.map((c) => c[0]);
+    const globalCall = calls.find((c) => c.domainName === undefined);
+    const healthCall = calls.find((c) => c.domainName === 'Health');
+    const moneyCall = calls.find((c) => c.domainName === 'Money');
+    expect(globalCall).toBeDefined();
+    expect(healthCall).toBeDefined();
+    expect(moneyCall).toBeDefined();
+    // Each per-Lifebook briefing should mention the scoped capability name.
+    expect(healthCall!.proseMarkdown).toContain('Fitbit');
+    expect(moneyCall!.proseMarkdown).toContain('Mint');
+  });
+
+  it('skips per-Lifebook emission when the lifebook has no events in the window', async () => {
+    // User has one active server (Linear) but a Health lifebook whose
+    // suggested_capabilities don't include it. The filter should
+    // collapse to zero events → no per-domain briefing written.
+    const server = makeServer({ user_id: 'user-empty-lb' });
+    mockMcpServerRepository.listForUser.mockResolvedValue([server]);
+    mockAppSuggestionRepository.getPendingForUser.mockResolvedValue([]);
+    mockLifebookRepository.listVisible.mockResolvedValue([
+      {
+        id: 'lb-health',
+        user_id: 'user-empty-lb',
+        domain_name: 'Health',
+        importance: 'core',
+        sample_signals: [],
+        suggested_capabilities: ['unrelated-mcp'],
+        wing_id: 'wing-h',
+        detected_at: new Date(),
+        last_seen_at: new Date(),
+        hidden_at: null,
+      },
+    ]);
+    mockBriefingRepository.create.mockImplementation(async (input) => ({
+      id: 'briefing-y',
+      user_id: input.userId,
+      cadence: input.cadence,
+      generated_at: new Date(),
+      prose_markdown: input.proseMarkdown,
+      source_event_count: input.sourceEventCount,
+      llm_provider: null,
+      llm_cost_cents: null,
+      read_at: null,
+      domain_name: input.domainName ?? null,
+    }));
+
+    await runBriefingGeneratorJob({ cadence: 'daily', userIds: ['user-empty-lb'] });
+
+    // Only the global briefing is written — Health gets skipped.
+    expect(mockBriefingRepository.create).toHaveBeenCalledTimes(1);
+    const onlyCall = mockBriefingRepository.create.mock.calls[0]?.[0];
+    expect(onlyCall.domainName).toBeUndefined();
+  });
+
+  it('continues writing other per-Lifebook briefings when one lifebook throws', async () => {
+    const healthServer = makeServer({
+      id: 'srv-h',
+      user_id: 'user-resilient',
+      registry_id: 'fitbit-mcp',
+    });
+    const moneyServer = makeServer({
+      id: 'srv-m',
+      user_id: 'user-resilient',
+      registry_id: 'mint-mcp',
+    });
+    mockMcpServerRepository.listForUser.mockResolvedValue([healthServer, moneyServer]);
+    mockAppSuggestionRepository.getPendingForUser.mockResolvedValue([]);
+    mockLifebookRepository.listVisible.mockResolvedValue([
+      {
+        id: 'lb-health',
+        user_id: 'user-resilient',
+        domain_name: 'Health',
+        importance: 'core',
+        sample_signals: [],
+        suggested_capabilities: ['fitbit-mcp'],
+        wing_id: 'wing-h',
+        detected_at: new Date(),
+        last_seen_at: new Date(),
+        hidden_at: null,
+      },
+      {
+        id: 'lb-money',
+        user_id: 'user-resilient',
+        domain_name: 'Money',
+        importance: 'core',
+        sample_signals: [],
+        suggested_capabilities: ['mint-mcp'],
+        wing_id: 'wing-m',
+        detected_at: new Date(),
+        last_seen_at: new Date(),
+        hidden_at: null,
+      },
+    ]);
+    // First per-domain create (Health) throws; the rest must still go through.
+    let createCallIdx = 0;
+    mockBriefingRepository.create.mockImplementation(async (input) => {
+      createCallIdx++;
+      if (createCallIdx === 2) {
+        throw new Error('simulated Health write failure');
+      }
+      return {
+        id: `briefing-${createCallIdx}`,
+        user_id: input.userId,
+        cadence: input.cadence,
+        generated_at: new Date(),
+        prose_markdown: input.proseMarkdown,
+        source_event_count: input.sourceEventCount,
+        llm_provider: null,
+        llm_cost_cents: null,
+        read_at: null,
+        domain_name: input.domainName ?? null,
+      };
+    });
+
+    await runBriefingGeneratorJob({ cadence: 'daily', userIds: ['user-resilient'] });
+
+    // Global + Health (threw) + Money = 3 attempts; one threw but the
+    // job didn't abort, so Money still landed.
+    expect(mockBriefingRepository.create).toHaveBeenCalledTimes(3);
+    const written = mockBriefingRepository.create.mock.calls.map((c) => c[0].domainName);
+    expect(written).toContain('Money');
   });
 });

@@ -866,6 +866,20 @@ export function unhideLifebook(userId, domainName) {
   );
 }
 
+/**
+ * #193 follow-up: fetch the latest per-Lifebook briefing for one
+ * domain. Returns `{ briefing: TwinBriefingRow | null }` — null when
+ * no per-domain briefing exists yet (the worker hasn't emitted one,
+ * the domain is too new, or the domain had no events in the window).
+ */
+export function fetchLifebookBriefing(userId, domainName, cadence) {
+  const qs = new URLSearchParams({ userId });
+  if (cadence === 'daily' || cadence === 'weekly') qs.set('cadence', cadence);
+  return fetchJSON(
+    `${API}/twin-briefings/lifebook/${encodeURIComponent(domainName)}/latest?${qs}`,
+  );
+}
+
 // ── Federation (#194 Child 1) ─────────────────────────────────────────────────
 
 export function startFederationPairing(userId) {

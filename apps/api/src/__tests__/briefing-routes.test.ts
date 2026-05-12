@@ -15,7 +15,9 @@ const { mockBriefingRepository } = vi.hoisted(() => ({
   mockBriefingRepository: {
     create: vi.fn(),
     getLatestForUser: vi.fn(),
+    getLatestForUserDomain: vi.fn(),
     listForUser: vi.fn(),
+    listForUserDomain: vi.fn(),
     markRead: vi.fn(),
   },
 }));
@@ -185,6 +187,104 @@ describe('POST /api/twin-briefings/:id/read', () => {
 
   it('returns 400 for a non-UUID id path param', async () => {
     const { status } = await req(buildApp(), 'POST', '/api/twin-briefings/not-a-uuid/read');
+    expect(status).toBe(400);
+  });
+});
+
+// ── #193 follow-up: GET /api/twin-briefings/lifebook/:domain/latest ─────
+
+describe('GET /api/twin-briefings/lifebook/:domain/latest', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('returns the per-Lifebook briefing when one exists', async () => {
+    const row = { ...BRIEFING_ROW, domain_name: 'Health' };
+    mockBriefingRepository.getLatestForUserDomain.mockResolvedValue(row);
+
+    const { status, body } = await req(
+      buildApp(),
+      'GET',
+      '/api/twin-briefings/lifebook/Health/latest',
+    );
+
+    expect(status).toBe(200);
+    expect((body as { briefing: { domain_name: string } }).briefing.domain_name).toBe('Health');
+    expect(mockBriefingRepository.getLatestForUserDomain).toHaveBeenCalledWith(
+      USER_ID,
+      'Health',
+      undefined,
+    );
+  });
+
+  it('returns { briefing: null } when no per-Lifebook briefing exists yet', async () => {
+    mockBriefingRepository.getLatestForUserDomain.mockResolvedValue(null);
+
+    const { status, body } = await req(
+      buildApp(),
+      'GET',
+      '/api/twin-briefings/lifebook/EmptyDomain/latest',
+    );
+
+    expect(status).toBe(200);
+    expect(body).toEqual({ briefing: null });
+  });
+
+  it('forwards the cadence query param to the repository', async () => {
+    mockBriefingRepository.getLatestForUserDomain.mockResolvedValue({
+      ...BRIEFING_ROW,
+      domain_name: 'Money',
+      cadence: 'weekly',
+    });
+
+    await req(
+      buildApp(),
+      'GET',
+      '/api/twin-briefings/lifebook/Money/latest?cadence=weekly',
+    );
+
+    expect(mockBriefingRepository.getLatestForUserDomain).toHaveBeenCalledWith(
+      USER_ID,
+      'Money',
+      'weekly',
+    );
+  });
+
+  it('ignores an unknown cadence value (passes undefined to the repo)', async () => {
+    mockBriefingRepository.getLatestForUserDomain.mockResolvedValue(null);
+
+    await req(
+      buildApp(),
+      'GET',
+      '/api/twin-briefings/lifebook/Money/latest?cadence=bogus',
+    );
+
+    expect(mockBriefingRepository.getLatestForUserDomain).toHaveBeenCalledWith(
+      USER_ID,
+      'Money',
+      undefined,
+    );
+  });
+
+  it('returns 403 when the briefing belongs to another user', async () => {
+    mockBriefingRepository.getLatestForUserDomain.mockResolvedValue({
+      ...BRIEFING_ROW,
+      domain_name: 'Health',
+      user_id: 'someone-else',
+    });
+
+    const { status } = await req(
+      buildApp(),
+      'GET',
+      '/api/twin-briefings/lifebook/Health/latest',
+    );
+
+    expect(status).toBe(403);
+  });
+
+  it('returns 400 when no userId is present (session missing + no query)', async () => {
+    const appNoUser = buildApp(null);
+    const { status } = await req(appNoUser, 'GET', '/api/twin-briefings/lifebook/Health/latest');
     expect(status).toBe(400);
   });
 });
