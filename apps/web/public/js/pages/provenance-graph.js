@@ -70,8 +70,16 @@ function handleProvenanceGraphAction(e) {
     }
     case 'pg-clear-wing-filter': {
       // Strip the `?wing=` query from the hash so subsequent renders
-      // load the un-scoped graph. Re-render explicitly so we don't
-      // depend on the hashchange listener firing.
+      // load the un-scoped graph. Two branches:
+      //   - Hash currently has `?wing=…` → setting `window.location.hash`
+      //     to `#/provenance` triggers a hashchange event; the SPA
+      //     router responds by re-routing into this page, which calls
+      //     renderProvenanceGraph again. We rely on the router here.
+      //   - Hash is already `#/provenance` (unlikely path — clear was
+      //     somehow clicked twice or the URL was edited) → call
+      //     renderProvenanceGraph explicitly with wing='' so the
+      //     scope clears without depending on a hashchange that
+      //     won't fire.
       const newHash = '#/provenance';
       if (window.location.hash !== newHash) {
         window.location.hash = newHash;

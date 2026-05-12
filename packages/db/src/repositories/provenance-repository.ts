@@ -119,9 +119,16 @@ export const provenanceRepository = {
  * payload carries a `registryId` matching a lifebook's
  * `suggested_capabilities` entry. Returns null when:
  *
- *   - The payload is null / not an object / has no `registryId`.
+ *   - The payload is undefined.
+ *   - The payload has no `registryId` string (missing key or non-string
+ *     value — registryId is the only key we look at, so any other
+ *     payload shape is treated the same as "no registryId").
  *   - No lifebook claims that registryId.
  *   - The matching lifebook hasn't been bound to a wing yet.
+ *
+ * The argument type is `Record<string, unknown> | undefined` so the
+ * non-object case is already excluded at compile time — that's why the
+ * runtime check only looks at falsy payload + the `registryId` shape.
  *
  * Used by `writeNode()` to auto-derive wing_id when the caller doesn't
  * pass one explicitly. Kept as a module-local helper rather than a
