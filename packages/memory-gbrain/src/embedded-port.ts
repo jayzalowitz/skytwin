@@ -23,8 +23,10 @@ import {
   type EmbeddingProvider,
   InMemoryBrainStore,
   rrfFold,
+  buildTierWeightFn,
   type BrainPageRow,
   type RrfHit,
+  type TierCalibration,
 } from '@skytwin/memory-gbrain-crdb-adapter';
 
 const log = createLogger('memory-gbrain-embedded');
@@ -141,7 +143,14 @@ export class EmbeddedGbrainMemoryPort implements MemoryPort {
     // page metadata so Layer 2 retrieval weighting can read it without a
     // join back to the signal row. No-op when the connector didn't stamp it
     // (e.g. calendar signals, custom event ingests).
-    const pageMetadata = this.buildPageMetadata(s, data);
+    //
+    // Also stamp `bodyLen` so brief-reply downweighting can fire: an
+    // `authored_*` page whose body is shorter than BRIEF_BODY_THRESHOLD
+    // gets treated as `inbox_personal` weight in the RRF fold. The length
+    // here is the indexed summary content, not the raw email body, which
+    // is the right size to measure against (one-line replies summarize to
+    // tens of chars; multi-paragraph emails to hundreds).
+    const pageMetadata = this.buildPageMetadata(s, data, summaryText);
     if (this.backend === 'memory') {
       this.store!.insertSignal({
         id: s.id,
@@ -199,14 +208,21 @@ export class EmbeddedGbrainMemoryPort implements MemoryPort {
   /**
    * Build the `brain_pages.metadata` object for a signal-derived page.
    * Always carries `signalSource` / `signalType`; carries `authoringTier`
-   * only when the connector stamped one on `data.authoringTier`. Kept
-   * tolerant of unknown shapes — defensive against future connectors that
-   * may pass an object or null instead of a tier string.
+   * only when the connector stamped one on `data.authoringTier`. Also
+   * stamps `bodyLen` (length of the summarised content) so Layer 2's
+   * brief-reply downweight has something to read. Kept tolerant of
+   * unknown shapes — defensive against future connectors that may pass
+   * an object or null instead of a tier string.
    */
-  private buildPageMetadata(s: RawSignal, data: Record<string, unknown>): Record<string, unknown> {
+  private buildPageMetadata(
+    s: RawSignal,
+    data: Record<string, unknown>,
+    content: string,
+  ): Record<string, unknown> {
     const metadata: Record<string, unknown> = {
       signalSource: s.source,
       signalType: s.type,
+      bodyLen: content.length,
     };
     const tier = data['authoringTier'];
     if (typeof tier === 'string' && tier.length > 0) {
@@ -389,6 +405,12 @@ export class EmbeddedGbrainMemoryPort implements MemoryPort {
     // constructor pinned a 40 floor that ignored k, so k=20 queries pulled
     // only 40 candidates from each side before RRF — truncating recall.
     const candidatePoolSize = this.candidatePoolOverride ?? Math.max(k * 4, 40);
+
+    // #251 Layer 2: build a tier-weight function if the user has opted in.
+    // Reading settings is best-effort — if it fails (no row yet, pre-043
+    // schema, transient DB hiccup) we silently fall back to pure RRF.
+    const tierWeight = await this.resolveTierWeightFn();
+
     if (this.backend === 'memory') {
       return this.store!.hybridSearch({
         userId: this.userId,
@@ -397,6 +419,7 @@ export class EmbeddedGbrainMemoryPort implements MemoryPort {
         k,
         candidatePoolSize,
         rrfK: this.rrfK,
+        ...(tierWeight ? { tierWeight } : {}),
       });
     }
     const repo = await this.crdb();
@@ -407,7 +430,45 @@ export class EmbeddedGbrainMemoryPort implements MemoryPort {
       k,
       candidatePoolSize,
       rrfK: this.rrfK,
+      ...(tierWeight ? { tierWeight } : {}),
     });
+  }
+
+  /**
+   * Look up the per-user `tier_weighting` toggle (and the calibration band)
+   * and return a tier-weight function if both are present, else `undefined`.
+   * Defensive: any failure leaves retrieval as pure RRF, the safe default.
+   */
+  private async resolveTierWeightFn(): Promise<
+    ((metadata: unknown) => number) | undefined
+  > {
+    let enabled = false;
+    let calibration: TierCalibration = 'normal';
+
+    try {
+      if (this.backend === 'memory') {
+        const row = this.store!.getSettings(this.userId);
+        if (row) {
+          enabled = row.tier_weighting === true;
+          calibration = row.tier_calibration ?? 'normal';
+        }
+      } else {
+        const repo = await this.crdb();
+        const row = await repo.getSettings(this.userId);
+        if (row) {
+          enabled = row.tier_weighting === true;
+          calibration = row.tier_calibration ?? 'normal';
+        }
+      }
+    } catch (err) {
+      log.warn('tier-weight settings lookup failed; falling back to pure RRF', {
+        reason: err instanceof Error ? err.name : 'unknown',
+      });
+      return undefined;
+    }
+
+    if (!enabled) return undefined;
+    return buildTierWeightFn(calibration);
   }
 
   async walkGraph(spec: GraphWalkSpec): Promise<KnowledgeNode[]> {

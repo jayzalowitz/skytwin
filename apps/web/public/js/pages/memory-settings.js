@@ -108,6 +108,34 @@ function ensurePageListener() {
       }
       return;
     }
+
+    // #251 Layer 2: tier-weighting toggle. Enabling auto-recomputes the
+    // calibration band server-side from the user's recent writing volume.
+    if (action === 'toggle-tier-weighting') {
+      const next = target.dataset.next === 'true';
+      target.disabled = true;
+      try {
+        const res = await api('/api/memory-config/tier-weighting', {
+          method: 'POST',
+          body: JSON.stringify({ enabled: next }),
+        });
+        if (!res.ok) {
+          showErrorToast('Failed to update tier weighting');
+          return;
+        }
+        showSavedToast(next ? 'Tier weighting enabled' : 'Tier weighting disabled');
+        const container = document.getElementById('page-content');
+        if (container) await renderMemorySettings(container, getCurrentUserId());
+      } catch {
+        // Offline / DNS / network — `api()` throws rather than returning an
+        // ok=false response, so without this branch the user would only see
+        // the button re-enable with no feedback.
+        showErrorToast('Failed to update tier weighting');
+      } finally {
+        target.disabled = false;
+      }
+      return;
+    }
   });
 }
 
@@ -212,9 +240,51 @@ export async function renderMemorySettings(container, userId) {
         for users who prefer the original stack.
       </p>
     </div>
+    ${renderTierWeightingCard(data)}
     ${diagBlock}
     ${renderDashboard(dashboard)}
   `;
+}
+
+/**
+ * #251 Layer 2 control: toggle authoring-tier-weighted retrieval. Off by
+ * default. Enabling auto-recomputes the calibration band server-side from
+ * the user's `user_sent_*` page count in the last 90 days, so a thin-sent
+ * user gets the sparse weights (capped spread) and a heavy writer gets the
+ * dense weights (wide spread).
+ */
+function renderTierWeightingCard(data) {
+  const enabled = data.tierWeighting === true;
+  const calibration = data.tierCalibration ?? 'normal';
+  const nextState = enabled ? 'false' : 'true';
+  return `
+    <div class="card" style="margin-top: 1rem;">
+      <h3>Weight what you wrote (Layer 2 — beta)</h3>
+      <p class="card-subtitle" style="margin: 0.25rem 0 0.75rem;">
+        Treat emails you <em>sent</em> as higher-signal than emails you
+        received when ranking memory search results. A newsletter that
+        mentions "board prep" gets demoted relative to an email you
+        actually wrote about board prep. See
+        <a href="https://github.com/jayzalowitz/skytwin/issues/251" target="_blank" rel="noopener">issue&nbsp;#251</a>
+        for the rationale and calibration table.
+      </p>
+      <p style="margin: 0 0 0.5rem;">
+        Status:
+        <strong>${enabled ? 'Enabled' : 'Disabled'}</strong>
+        ${enabled ? `<span class="card-subtitle">— calibration: <code>${escapeHtml(calibration)}</code></span>` : ''}
+      </p>
+      <button class="btn ${enabled ? 'btn-outline' : ''}"
+              data-action="toggle-tier-weighting"
+              data-next="${nextState}">
+        ${enabled ? 'Disable tier weighting' : 'Enable tier weighting'}
+      </button>
+      <p class="card-subtitle" style="margin-top: 0.75rem;">
+        Off by default — we're treating Layer 2 as opt-in until the
+        labeled-retrieval eval confirms recall@5 improves on a real
+        production corpus. Off mode keeps pure Reciprocal Rank Fusion
+        scoring; on mode applies the per-tier multipliers from the issue.
+      </p>
+    </div>`;
 }
 
 function renderDashboard(dashboard) {
@@ -265,6 +335,22 @@ function renderDashboard(dashboard) {
         ).join('')}
       </div>`;
 
+  const recentPages = dashboard.pages?.recent ?? [];
+  const pagesBlock = recentPages.length === 0
+    ? `<p class="card-subtitle">No pages indexed yet. Connect a signal source to start.</p>`
+    : `<table class="data-table" style="margin-top: 0.5rem; width: 100%;">
+        <thead><tr><th>When</th><th>Tier</th><th>Source</th><th>Title</th></tr></thead>
+        <tbody>
+          ${recentPages.map((p) => `
+            <tr>
+              <td>${formatRelativeTime(p.createdAt)}</td>
+              <td>${renderTierBadge(p.authoringTier, p.userOverride)}</td>
+              <td>${escapeHtml(p.source ?? '')}</td>
+              <td>${escapeHtml(p.title ?? '')}</td>
+            </tr>`).join('')}
+        </tbody>
+      </table>`;
+
   return `
     <div class="card" style="margin-top: 1rem;">
       <h3>What your twin remembers</h3>
@@ -274,7 +360,9 @@ function renderDashboard(dashboard) {
         Memory feeds back into every decision — past approvals boost similar actions,
         past rejections push them down.
       </p>
-      <h4>Recent decisions</h4>
+      <h4>Recent pages indexed</h4>
+      ${pagesBlock}
+      <h4 style="margin-top: 1rem;">Recent decisions</h4>
       ${episodesBlock}
       ${fbBlock}
       <h4 style="margin-top: 1rem;">Top entities</h4>
@@ -282,6 +370,34 @@ function renderDashboard(dashboard) {
       ${typeBlock}
     </div>
   `;
+}
+
+/**
+ * #251: small inline badge showing the authoring tier a page was classified
+ * into. Lets the user see at a glance how the twin is weighting what it
+ * reads. Color-coded for skimmability — green for "you wrote it," neutral
+ * for personal mail, muted for newsletter/automated noise.
+ */
+function renderTierBadge(tier, userOverride) {
+  if (userOverride === 'pinned') {
+    return '<span style="color: var(--info); font-size: 0.85em;">📌 pinned</span>';
+  }
+  if (userOverride === 'hidden') {
+    return '<span style="color: var(--muted); font-size: 0.85em; text-decoration: line-through;">hidden</span>';
+  }
+  if (!tier) {
+    return '<span class="card-subtitle" style="font-size: 0.85em;">—</span>';
+  }
+  const map = {
+    user_sent_originated: { label: 'you wrote', color: 'var(--success)' },
+    user_sent_reply: { label: 'you replied', color: 'var(--success)' },
+    inbox_personal: { label: 'personal', color: 'var(--text)' },
+    inbox_broadcast: { label: 'broadcast', color: 'var(--text)' },
+    inbox_newsletter: { label: 'newsletter', color: 'var(--muted)' },
+    inbox_automated: { label: 'automated', color: 'var(--muted)' },
+  };
+  const meta = map[tier] ?? { label: tier, color: 'var(--text)' };
+  return `<span style="color: ${meta.color}; font-size: 0.85em;">${escapeHtml(meta.label)}</span>`;
 }
 
 function renderFeedbackBadge(type) {

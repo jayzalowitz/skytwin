@@ -1,5 +1,42 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [unreleased] — Authoring-tier weighting in gbrain retrieval (#251 Layer 2 + companion fields)
+
+You can now flip a toggle in **Settings → Memory backend** that tells gbrain to treat the emails you *wrote* as higher-signal than the emails you *received* when ranking semantic-search results. A newsletter that mentions "board prep" stops out-ranking the strategy email you actually wrote about board prep. The toggle is **off by default** — we're gating Layer 2 on labeled-retrieval evals before flipping it on for everyone — but it's available today for anyone who wants to try it.
+
+### What this changes for the user
+
+- A new **"Weight what you wrote (Layer 2 — beta)"** card on Settings → Memory backend with a single toggle. Enabling it auto-detects your calibration band from how much you've written in the last 90 days (sparse / normal / dense) so a thin-sent corpus doesn't get over-amplified.
+- The "What your twin remembers" dashboard now leads with a **Recent pages indexed** table that shows a small tier badge next to each page (`you wrote`, `you replied`, `personal`, `broadcast`, `newsletter`, `automated`, plus `📌 pinned` / `hidden` when the user has explicitly overridden). First-week product feel is no longer "1,247 newsletters" — it's "the things you wrote, plus the things sent to you, plus the noise."
+
+### Engine work
+
+- **Migration 043** adds `tier_weighting` (bool, default false) and `tier_calibration` (enum `sparse` / `normal` / `dense`, default `normal`) to `brain_settings`. Out-of-band: a fresh user gets reasonable defaults via `parseSettingsRow` even before the migration runs.
+- **`packages/memory-gbrain-crdb-adapter/src/tier-weights.ts`** (new) — the multiplier table with three calibration bands. `user_sent_originated` ranges 1.2× / 1.5× / 2.0×; `inbox_newsletter` ranges 0.5× / 0.4× / 0.3×; etc. Composes orthogonally with `metadata.userOverride` (`pinned` doubles, `hidden` drops the page from results entirely) and includes a brief-reply downweight: an `authored_*` page whose body is shorter than 50 chars gets `inbox_personal` weight so a one-line "k" reply can't outrank a 500-word strategy email.
+- **`rrf.ts`** accepts an optional `tierWeight(metadata)` callback. Default behaviour is pure RRF; passing the callback multiplies each accumulated rrfScore by the per-page weight before the final sort. `textRank` / `vectorRank` survive unchanged for observability.
+- **`embedded-port.ts`** reads `brain_settings.tier_weighting` per-query; when on, it builds a tier-weight function for the user's calibration band and passes it through to `hybridSearch`. Lookups are best-effort: any DB error falls back to pure RRF rather than blocking the search.
+- **`buildPageMetadata`** now stamps `bodyLen` on every page so the brief-reply downweight has something to read. Adds one field; no schema change.
+
+### API surface
+
+- `GET /api/memory-config` now returns `tierWeighting` and `tierCalibration` alongside the existing backend + capabilities + index fields. The dashboard reads it to render the toggle.
+- `POST /api/memory-config/tier-weighting` (new). Body `{ enabled: boolean, calibration?: 'sparse' | 'normal' | 'dense' }`. On enable without an explicit `calibration`, the route counts `user_sent_*` pages from the last 90 days and picks the band from `calibrationFromSentVolume`. Falls back to `normal` on DB failure.
+- `GET /api/memory-config/dashboard` now includes `pages.recent[]` (10 newest brain pages) with `authoringTier` + `userOverride` projected out of metadata. Embedding vectors are stripped from the wire response.
+
+### Tests
+
+- **16 unit tests** in `tier-weights.test.ts` cover the multiplier table for all three calibrations, `userOverride: pinned/hidden` composition, brief-reply downweight thresholds, and `calibrationFromSentVolume` thresholds.
+- **3 new rrf.test.ts cases** exercise the `tierWeight` branch: a higher-base-rank newsletter falling behind a lower-base-rank authored page once weighting flips on, `hidden` dropping pages entirely, and `textRank` / `vectorRank` surviving the reorder.
+- **5 end-to-end cases** in `tier-weighted-retrieval.test.ts` seed a mixed-tier corpus and assert the load-bearing claim: with `tier_weighting = true`, an authored page that ranks #2 on text alone reaches index 0 in the results. Also covers the per-user isolation invariant (one user with the flag on doesn't affect another with the flag off).
+- **5 new memory-config-routes.test.ts cases** cover the new POST endpoint: invalid body, auto-recompute on enable, explicit `calibration` overrides the auto-recompute, disable doesn't recompute, and a DB failure during `countUserSentPages` falls back to `normal`.
+
+### Deferred to follow-ups
+
+- `relationshipTier` (separate axis for relationship strength, from bidirectional thread count) — separate sub-issue.
+- Migration backfill that re-derives `authoringTier` for pages indexed pre-Layer 1 — separate concern from the live ingest path.
+- Tier-aware exclude UI for the privacy story (per-thread "don't index from this") — sub-issue, will block flipping Layer 2 on by default.
+- Layer 2 default-on rollout — gated on the labeled-relevant-doc eval improving recall@5 on a real production corpus.
+
 ## [unreleased] — Piper TTS backend + `/api/voice/synthesize` route (#187 AC#4)
 
 ### Fixed (post-Copilot review)

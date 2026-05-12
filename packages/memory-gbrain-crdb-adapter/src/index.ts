@@ -17,6 +17,7 @@ export type {
   BrainEpisodeRow,
   BrainSignalRow,
   BrainSettingsRow,
+  TierCalibration,
   RrfHit,
   InsertBrainPageInput,
 } from './types.js';
@@ -31,6 +32,15 @@ export {
 export type { EmbeddingProvider, OpenAiEmbeddingOptions } from './embedding.js';
 
 export { rrfFold } from './rrf.js';
+export type { TierWeightFn, RrfFoldOptions } from './rrf.js';
+
+export {
+  tierMultiplier,
+  buildTierWeightFn,
+  calibrationFromSentVolume,
+  BRIEF_BODY_THRESHOLD,
+} from './tier-weights.js';
+export type { AuthoringTier, UserOverride } from './tier-weights.js';
 
 export { InMemoryBrainStore } from './in-memory-repository.js';
 
@@ -59,6 +69,8 @@ export {
   markJobFailed,
   pendingEmbeddingJobs,
   getAllPages,
+  getRecentPages,
   countPages,
+  countUserSentPages,
 } from './repository.js';
 export type { HybridSearchOptions } from './repository.js';

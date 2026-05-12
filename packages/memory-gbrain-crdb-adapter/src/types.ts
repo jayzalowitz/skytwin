@@ -64,11 +64,25 @@ export interface BrainSignalRow {
   signal_timestamp: Date;
 }
 
+export type TierCalibration = 'sparse' | 'normal' | 'dense';
+
 export interface BrainSettingsRow {
   user_id: string;
   backend: 'hybrid' | 'gbrain' | 'mempalace';
   hybrid_notification_dismissed: boolean;
   routing: Record<string, unknown>;
+  /**
+   * When true, retrieval applies the authoring-tier multiplier in the RRF
+   * fold so user-authored pages outrank received noise on equal-text queries.
+   * Default false — Layer 2 is eval-gated and opt-in (#251).
+   */
+  tier_weighting: boolean;
+  /**
+   * Calibration band tuned to the user's writing volume. Computed from
+   * `user_sent_*` page count in last 90 days. Sparse caps the multiplier so
+   * a thin sent corpus doesn't get over-amplified; dense uses the wide spread.
+   */
+  tier_calibration: TierCalibration;
   updated_at: Date;
 }
 

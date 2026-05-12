@@ -18,13 +18,21 @@ import type { Express } from 'express';
 
 // ── Hoisted mocks (so they apply during module init) ────────────────────────
 
-const { mockGetSettings, mockUpsertSettings, mockCountPages, mockPendingJobs } =
-  vi.hoisted(() => ({
-    mockGetSettings: vi.fn(),
-    mockUpsertSettings: vi.fn(),
-    mockCountPages: vi.fn(),
-    mockPendingJobs: vi.fn(),
-  }));
+const {
+  mockGetSettings,
+  mockUpsertSettings,
+  mockCountPages,
+  mockPendingJobs,
+  mockCountUserSentPages,
+  mockGetRecentPages,
+} = vi.hoisted(() => ({
+  mockGetSettings: vi.fn(),
+  mockUpsertSettings: vi.fn(),
+  mockCountPages: vi.fn(),
+  mockPendingJobs: vi.fn(),
+  mockCountUserSentPages: vi.fn(),
+  mockGetRecentPages: vi.fn(),
+}));
 
 vi.mock('@skytwin/memory-gbrain-crdb-adapter', async () => {
   const actual: typeof import('@skytwin/memory-gbrain-crdb-adapter') =
@@ -35,6 +43,8 @@ vi.mock('@skytwin/memory-gbrain-crdb-adapter', async () => {
     upsertSettings: mockUpsertSettings,
     countPages: mockCountPages,
     pendingEmbeddingJobs: mockPendingJobs,
+    countUserSentPages: mockCountUserSentPages,
+    getRecentPages: mockGetRecentPages,
   };
 });
 
@@ -109,11 +119,15 @@ beforeEach(() => {
   mockGetSettings.mockResolvedValue(null);
   mockGetEpisodes.mockResolvedValue([]);
   mockGetEntities.mockResolvedValue([]);
+  mockCountUserSentPages.mockResolvedValue(0);
+  mockGetRecentPages.mockResolvedValue([]);
   mockUpsertSettings.mockResolvedValue({
     user_id: USER_ID,
     backend: 'gbrain',
     hybrid_notification_dismissed: false,
     routing: {},
+    tier_weighting: false,
+    tier_calibration: 'normal',
     updated_at: new Date(),
   });
 });
@@ -314,5 +328,161 @@ describe('GET /api/memory-config/dashboard', () => {
     const body = res.body as { episodes: { recent: unknown[] }; entities: { total: number } };
     expect(body.episodes.recent).toHaveLength(0);
     expect(body.entities.total).toBe(1);
+  });
+
+  it('returns recent pages with tier badge fields (#251)', async () => {
+    mockGetRecentPages.mockResolvedValue([
+      {
+        id: 'p1',
+        user_id: USER_ID,
+        title: 'Q3 board prep',
+        content: 'long body',
+        source: 'signal',
+        source_ref: 'sig_gmail_abc',
+        metadata: { authoringTier: 'user_sent_originated', bodyLen: 600 },
+        embedding: null,
+        embedding_model: null,
+        embedding_dim: null,
+        created_at: new Date('2026-05-11T12:00:00Z'),
+        updated_at: new Date(),
+      },
+      {
+        id: 'p2',
+        user_id: USER_ID,
+        title: 'Weekly Stripe receipt',
+        content: 'short',
+        source: 'signal',
+        source_ref: 'sig_gmail_def',
+        metadata: { authoringTier: 'inbox_automated', userOverride: 'hidden' },
+        embedding: null,
+        embedding_model: null,
+        embedding_dim: null,
+        created_at: new Date('2026-05-10T12:00:00Z'),
+        updated_at: new Date(),
+      },
+    ]);
+    const app = buildApp();
+    const res = await request(app, 'GET', `/api/memory-config/dashboard?userId=${USER_ID}`);
+    expect(res.status).toBe(200);
+    const body = res.body as { pages: { recent: Array<Record<string, unknown>> } };
+    expect(body.pages.recent).toHaveLength(2);
+    expect(body.pages.recent[0]?.['authoringTier']).toBe('user_sent_originated');
+    expect(body.pages.recent[1]?.['userOverride']).toBe('hidden');
+    // Embedding vector NOT echoed to the wire (large + irrelevant).
+    expect(body.pages.recent[0]?.['embedding']).toBeUndefined();
+  });
+});
+
+describe('POST /api/memory-config/tier-weighting (#251 Layer 2)', () => {
+  it('rejects non-boolean enabled', async () => {
+    const app = buildApp();
+    const res = await request(
+      app,
+      'POST',
+      `/api/memory-config/tier-weighting?userId=${USER_ID}`,
+      { enabled: 'yes' },
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('on enable, auto-computes the calibration band from sent volume', async () => {
+    mockCountUserSentPages.mockResolvedValue(50); // sparse threshold (<100)
+    mockUpsertSettings.mockResolvedValue({
+      user_id: USER_ID,
+      backend: 'gbrain',
+      hybrid_notification_dismissed: false,
+      routing: {},
+      tier_weighting: true,
+      tier_calibration: 'sparse',
+      updated_at: new Date(),
+    });
+    const app = buildApp();
+    const res = await request(
+      app,
+      'POST',
+      `/api/memory-config/tier-weighting?userId=${USER_ID}`,
+      { enabled: true },
+    );
+    expect(res.status).toBe(200);
+    const body = res.body as { tierWeighting: boolean; tierCalibration: string };
+    expect(body.tierWeighting).toBe(true);
+    expect(body.tierCalibration).toBe('sparse');
+    expect(mockUpsertSettings).toHaveBeenCalledWith(USER_ID, {
+      tier_weighting: true,
+      tier_calibration: 'sparse',
+    });
+  });
+
+  it('an explicit calibration override skips the auto-recompute', async () => {
+    mockCountUserSentPages.mockResolvedValue(50); // would be sparse
+    mockUpsertSettings.mockResolvedValue({
+      user_id: USER_ID,
+      backend: 'gbrain',
+      hybrid_notification_dismissed: false,
+      routing: {},
+      tier_weighting: true,
+      tier_calibration: 'dense',
+      updated_at: new Date(),
+    });
+    const app = buildApp();
+    const res = await request(
+      app,
+      'POST',
+      `/api/memory-config/tier-weighting?userId=${USER_ID}`,
+      { enabled: true, calibration: 'dense' },
+    );
+    expect(res.status).toBe(200);
+    expect(mockCountUserSentPages).not.toHaveBeenCalled();
+    expect(mockUpsertSettings).toHaveBeenCalledWith(USER_ID, {
+      tier_weighting: true,
+      tier_calibration: 'dense',
+    });
+  });
+
+  it('disable does NOT auto-recompute calibration (leaves it where it was)', async () => {
+    mockUpsertSettings.mockResolvedValue({
+      user_id: USER_ID,
+      backend: 'gbrain',
+      hybrid_notification_dismissed: false,
+      routing: {},
+      tier_weighting: false,
+      tier_calibration: 'normal',
+      updated_at: new Date(),
+    });
+    const app = buildApp();
+    const res = await request(
+      app,
+      'POST',
+      `/api/memory-config/tier-weighting?userId=${USER_ID}`,
+      { enabled: false },
+    );
+    expect(res.status).toBe(200);
+    expect(mockCountUserSentPages).not.toHaveBeenCalled();
+    expect(mockUpsertSettings).toHaveBeenCalledWith(USER_ID, { tier_weighting: false });
+  });
+
+  it('falls back to normal calibration when countUserSentPages fails', async () => {
+    mockCountUserSentPages.mockRejectedValue(new Error('db hiccup'));
+    mockUpsertSettings.mockResolvedValue({
+      user_id: USER_ID,
+      backend: 'gbrain',
+      hybrid_notification_dismissed: false,
+      routing: {},
+      tier_weighting: true,
+      tier_calibration: 'normal',
+      updated_at: new Date(),
+    });
+    const app = buildApp();
+    const res = await request(
+      app,
+      'POST',
+      `/api/memory-config/tier-weighting?userId=${USER_ID}`,
+      { enabled: true },
+    );
+    expect(res.status).toBe(200);
+    expect(mockUpsertSettings).toHaveBeenCalledWith(USER_ID, {
+      tier_weighting: true,
+      tier_calibration: 'normal',
+    });
   });
 });

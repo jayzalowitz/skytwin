@@ -149,6 +149,7 @@ export class InMemoryBrainStore {
     k: number;
     candidatePoolSize?: number;
     rrfK?: number;
+    tierWeight?: (metadata: unknown) => number;
   }): RrfHit[] {
     const pool = opts.candidatePoolSize ?? Math.max(opts.k * 4, 40);
     const rrfK = opts.rrfK ?? 60;
@@ -156,13 +157,36 @@ export class InMemoryBrainStore {
     const vec = opts.queryEmbedding
       ? this.vectorSearch(opts.userId, opts.queryEmbedding, pool)
       : [];
-    return rrfFold(text, vec, opts.k, rrfK);
+    return rrfFold(text, vec, opts.k, rrfK, {
+      ...(opts.tierWeight ? { tierWeight: opts.tierWeight } : {}),
+    });
+  }
+
+  /** Same calibration helper as the CRDB repo; mirrors the SQL count. */
+  countUserSentPages(userId: string, windowDays = 90): number {
+    const cutoff = Date.now() - windowDays * 24 * 60 * 60 * 1000;
+    let n = 0;
+    for (const p of this.pages.values()) {
+      if (p.user_id !== userId) continue;
+      if (p.created_at.getTime() < cutoff) continue;
+      const tier = (p.metadata as Record<string, unknown>)?.['authoringTier'];
+      if (tier === 'user_sent_originated' || tier === 'user_sent_reply') n++;
+    }
+    return n;
   }
 
   getAllPages(userId: string): BrainPageRow[] {
     return [...this.pages.values()]
       .filter((p) => p.user_id === userId)
       .sort((a, b) => a.created_at.getTime() - b.created_at.getTime());
+  }
+
+  /** Mirror of `repository.getRecentPages`. Newest first. */
+  getRecentPages(userId: string, limit = 10): BrainPageRow[] {
+    return [...this.pages.values()]
+      .filter((p) => p.user_id === userId)
+      .sort((a, b) => b.created_at.getTime() - a.created_at.getTime())
+      .slice(0, limit);
   }
 
   countPages(userId: string): { total: number; embedded: number } {
@@ -348,7 +372,16 @@ export class InMemoryBrainStore {
 
   upsertSettings(
     userId: string,
-    patch: Partial<Pick<BrainSettingsRow, 'backend' | 'hybrid_notification_dismissed' | 'routing'>>,
+    patch: Partial<
+      Pick<
+        BrainSettingsRow,
+        | 'backend'
+        | 'hybrid_notification_dismissed'
+        | 'routing'
+        | 'tier_weighting'
+        | 'tier_calibration'
+      >
+    >,
   ): BrainSettingsRow {
     const existing = this.settings.get(userId);
     const merged: BrainSettingsRow = {
@@ -358,6 +391,8 @@ export class InMemoryBrainStore {
       hybrid_notification_dismissed:
         patch.hybrid_notification_dismissed ?? existing?.hybrid_notification_dismissed ?? false,
       routing: patch.routing ?? existing?.routing ?? {},
+      tier_weighting: patch.tier_weighting ?? existing?.tier_weighting ?? false,
+      tier_calibration: patch.tier_calibration ?? existing?.tier_calibration ?? 'normal',
       updated_at: new Date(),
     };
     this.settings.set(userId, merged);

@@ -108,11 +108,12 @@ describe('EmbeddedGbrainMemoryPort — recordSignal', () => {
     await port.recordSignal(sig);
     const pages = store.getAllPages(USER);
     expect(pages).toHaveLength(1);
-    expect(pages[0]!.metadata).toEqual({
-      signalSource: 'cal',
-      signalType: 'event',
-    });
-    expect((pages[0]!.metadata as Record<string, unknown>)['authoringTier']).toBeUndefined();
+    const meta = pages[0]!.metadata as Record<string, unknown>;
+    expect(meta['signalSource']).toBe('cal');
+    expect(meta['signalType']).toBe('event');
+    // bodyLen is always stamped for the brief-reply downweight (#251 Layer 2).
+    expect(typeof meta['bodyLen']).toBe('number');
+    expect(meta['authoringTier']).toBeUndefined();
   });
 
   it('ignores non-string authoringTier values defensively', async () => {
