@@ -377,3 +377,121 @@ describe('InMemoryBrainStore — metadata overrides (#251 privacy)', () => {
     expect(n).toBe(0);
   });
 });
+
+describe('InMemoryBrainStore — findPagesMissingAuthoringTier (#251 backfill)', () => {
+  let store: InMemoryBrainStore;
+  beforeEach(() => {
+    store = new InMemoryBrainStore();
+  });
+
+  it('returns pages missing authoringTier paired with their signal data', () => {
+    // Seed a signal + a page that references it via source_ref.
+    store.insertSignal({
+      id: 'sig-1',
+      userId: 'u1',
+      source: 'gmail',
+      type: 'email',
+      data: { from: 'me@example.com', labels: ['SENT'] },
+      signalTimestamp: new Date(),
+    });
+    store.insertPage({
+      userId: 'u1',
+      content: 'a',
+      source: 'signal',
+      sourceRef: 'sig-1',
+      metadata: { signalSource: 'gmail' }, // intentionally no authoringTier
+    });
+    // A second page that already HAS a tier — must not be returned.
+    store.insertSignal({
+      id: 'sig-2',
+      userId: 'u1',
+      source: 'gmail',
+      type: 'email',
+      data: { from: 'a@example.com' },
+      signalTimestamp: new Date(),
+    });
+    store.insertPage({
+      userId: 'u1',
+      content: 'b',
+      source: 'signal',
+      sourceRef: 'sig-2',
+      metadata: { authoringTier: 'inbox_personal' },
+    });
+
+    const rows = store.findPagesMissingAuthoringTier(null, 10);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.user_id).toBe('u1');
+    expect(rows[0]!.signal_data['from']).toBe('me@example.com');
+  });
+
+  it('skips pages whose source_ref does not match a stored signal', () => {
+    store.insertPage({
+      userId: 'u1',
+      content: 'orphan',
+      source: 'signal',
+      sourceRef: 'no-such-signal',
+      metadata: {},
+    });
+    const rows = store.findPagesMissingAuthoringTier(null, 10);
+    expect(rows).toHaveLength(0);
+  });
+
+  it('scopes by userId when supplied', () => {
+    store.insertSignal({
+      id: 'sig-a',
+      userId: 'u1',
+      source: 'gmail',
+      type: 'email',
+      data: { from: 'x@example.com' },
+      signalTimestamp: new Date(),
+    });
+    store.insertSignal({
+      id: 'sig-b',
+      userId: 'u2',
+      source: 'gmail',
+      type: 'email',
+      data: { from: 'y@example.com' },
+      signalTimestamp: new Date(),
+    });
+    store.insertPage({
+      userId: 'u1',
+      content: 'a',
+      source: 'signal',
+      sourceRef: 'sig-a',
+      metadata: {},
+    });
+    store.insertPage({
+      userId: 'u2',
+      content: 'b',
+      source: 'signal',
+      sourceRef: 'sig-b',
+      metadata: {},
+    });
+
+    expect(store.findPagesMissingAuthoringTier('u1', 10)).toHaveLength(1);
+    expect(store.findPagesMissingAuthoringTier('u2', 10)).toHaveLength(1);
+    expect(store.findPagesMissingAuthoringTier(null, 10)).toHaveLength(2);
+  });
+
+  it('caps the result set at `limit`', () => {
+    for (let i = 0; i < 5; i++) {
+      const id = `sig-${i}`;
+      store.insertSignal({
+        id,
+        userId: 'u1',
+        source: 'gmail',
+        type: 'email',
+        data: { from: 'x@example.com' },
+        signalTimestamp: new Date(),
+      });
+      store.insertPage({
+        userId: 'u1',
+        content: `p${i}`,
+        source: 'signal',
+        sourceRef: id,
+        metadata: {},
+      });
+    }
+    expect(store.findPagesMissingAuthoringTier(null, 2)).toHaveLength(2);
+  });
+});

@@ -1,5 +1,39 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [unreleased] — Authoring-tier backfill worker (#251 follow-up)
+
+Pages indexed before Layer 1 of #251 (where the Gmail connector started stamping `authoringTier` on every signal) had no tier on their metadata — which meant the Layer 2 multiplier did nothing for them. This adds a worker job that retroactively fills in the tier for those pages, plus the connector keeps the raw headers needed to reclassify going forward.
+
+### What's running now
+
+- A new **`runTierBackfillJob`** worker runs hourly. It scans `brain_pages` for rows where `metadata->>'authoringTier' IS NULL`, joins on `brain_signals` via `source_ref`, and either:
+  1. Copies `signal.data.authoringTier` to page metadata when it already exists (post-#252 ingest paths that bypassed the metadata projection for any reason — cheap and lossless).
+  2. Runs the classifier locally on the raw `to` / `cc` / `inReplyTo` / `listUnsubscribe` / `listId` / `labels` headers (post-this-PR signal shape).
+  3. Logs an "unreclassifiable" count and leaves the page alone (pre-Layer-1 signals that don't carry classification headers — full re-fetch from Gmail is a separate sub-issue).
+- The Gmail connector now persists those raw header fields in `signal.data` so option (2) becomes available for every page indexed after this lands. Cost: a few extra short strings per row. The fields the classifier already consumed are now also queryable downstream.
+
+### Why bother
+
+Without this, existing-user corpora are silently stuck: their pages have no tier, so they see no Layer 2 benefit even if they enable the toggle. With it, the multiplier becomes useful on day one — the worker converges the back-catalog within a few passes (batch size 200, hourly cadence) and is a strict no-op once it's done.
+
+The job is idempotent and bounded — re-running on a fully-tagged corpus does nothing because the find query filters on `metadata->>'authoringTier' IS NULL`.
+
+### Engine
+
+- **`findPagesMissingAuthoringTier(userId | null, limit)`** (new adapter helper): JOIN brain_pages ↔ brain_signals on `source_ref = id`, filter on tier-missing, optional user scope. Returns `{ page_id, user_id, signal_data }[]`.
+- **`apps/worker/src/jobs/tier-backfill.ts`** (new): the worker job. Reclassifies via the two paths above, calls `updatePageMetadata` to write `{ authoringTier, fromAddress }`, returns a summary with attempted / copied-from-signal / reclassified / unreclassifiable / failed counts.
+- **Gmail connector**: `messageToSignal` now stamps `to` / `cc` / `inReplyTo` / `listUnsubscribe` on `signal.data` alongside the existing fields. No behavior change to the classifier; just preserves the raw inputs for downstream reclassification.
+- In-memory adapter mirror for tests.
+
+### Tests
+
+- 9 new worker unit tests (`tier-backfill.test.ts`) cover: signal-tier copy path, header reclassification (SENT label / List-Unsubscribe), unreclassifiable count, failed-update isolation, find-query throwing yields empty summary, fromAddress omission when missing, userId scoping, default null-scope.
+- 4 new in-memory repository tests on `findPagesMissingAuthoringTier`: page-with-tier excluded, signal-missing page skipped, userId scoping, limit cap.
+
+### Deferred
+
+- Pre-#252 signals that don't carry classification headers stay untagged after this lands. Recovering those requires an OAuth-token-dependent re-fetch from Gmail — separate sub-issue, lower priority since each pass converges new ingest quickly.
+
 ## [unreleased] — Tier-aware privacy controls: pin / hide / hide-sender (#251 follow-up)
 
 The memory dashboard's "Recent pages indexed" table now shows three action buttons per row: **Pin**, **Hide**, and **Hide sender**. The first two flip `metadata.userOverride` between `'pinned'`, `'hidden'`, and unset (the gbrain RRF fold already reads this — pinned doubles the rrfScore, hidden drops the page from search entirely). The third one bulk-hides every indexed page from the same sender — useful for tidying out a newsletter or transactional sender you don't want the twin learning from.

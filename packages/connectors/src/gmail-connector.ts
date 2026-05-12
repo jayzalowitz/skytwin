@@ -394,14 +394,18 @@ export class GmailConnector implements SignalConnector {
     const from = getHeader('From');
     const subject = getHeader('Subject');
     const listId = parseListId(getHeader('List-Id'));
+    const toRaw = getHeader('To');
+    const ccRaw = getHeader('Cc');
+    const inReplyTo = getHeader('In-Reply-To').trim();
+    const listUnsubscribe = getHeader('List-Unsubscribe').trim();
     const type = this.inferEmailType(from, subject, message.labelIds);
     const authoringTier: AuthoringTier = classifyEmailAuthoringTier({
       labels: message.labelIds ?? [],
       fromAddress: from,
-      toAddresses: splitAddressList(getHeader('To')),
-      ccAddresses: splitAddressList(getHeader('Cc')),
-      hasInReplyTo: getHeader('In-Reply-To').trim().length > 0,
-      hasListUnsubscribe: getHeader('List-Unsubscribe').trim().length > 0,
+      toAddresses: splitAddressList(toRaw),
+      ccAddresses: splitAddressList(ccRaw),
+      hasInReplyTo: inReplyTo.length > 0,
+      hasListUnsubscribe: listUnsubscribe.length > 0,
       listId,
     });
 
@@ -413,6 +417,14 @@ export class GmailConnector implements SignalConnector {
         messageId: message.id,
         threadId: message.threadId,
         from,
+        // Persist the raw header fields used by the classifier so the
+        // tier-backfill worker (#251 follow-up) can reclassify any page
+        // that's missing `authoringTier` without re-fetching from Gmail.
+        // Cheap — these are short strings already pulled into memory.
+        to: toRaw,
+        cc: ccRaw,
+        inReplyTo,
+        listUnsubscribe,
         subject,
         snippet: message.snippet,
         labels: message.labelIds,

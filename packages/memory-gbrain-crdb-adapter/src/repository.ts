@@ -146,6 +146,53 @@ export async function updatePageMetadata(
 }
 
 /**
+ * Find pages whose metadata is missing `authoringTier` and that have a
+ * matching brain_signals row (so the worker can reclassify from the
+ * stored signal data). Used by the tier-backfill worker (#251 follow-up).
+ *
+ * Returns rows scoped to a single user when `userId` is provided, or all
+ * users when called with `null`. The page's `source_ref` carries the
+ * signal id (`sig_gmail_*`), so we join brain_pages → brain_signals on
+ * `id = source_ref`. Pages without a matching signal row are skipped —
+ * those came from a non-signal write path (episode, entity) and don't
+ * have classifiable email headers.
+ *
+ * Limit is mandatory and caps the worker's per-pass work — a thousand
+ * pages per cycle is the default in the worker; callers can pass less
+ * for tests.
+ */
+export interface PageMissingTierRow {
+  page_id: string;
+  user_id: string;
+  signal_data: Record<string, unknown>;
+}
+
+export async function findPagesMissingAuthoringTier(
+  userId: string | null,
+  limit: number,
+): Promise<PageMissingTierRow[]> {
+  const userFilter = userId === null ? '' : 'AND p.user_id = $2';
+  const params: unknown[] = userId === null ? [limit] : [limit, userId];
+  const result = await query<PageMissingTierRow>(
+    `SELECT p.id AS page_id, p.user_id AS user_id, s.data AS signal_data
+       FROM brain_pages p
+       JOIN brain_signals s ON s.id = p.source_ref
+      WHERE p.metadata->>'authoringTier' IS NULL
+        ${userFilter}
+      LIMIT $1`,
+    params,
+  );
+  return result.rows.map((row) => ({
+    page_id: row.page_id,
+    user_id: row.user_id,
+    signal_data:
+      typeof row.signal_data === 'string'
+        ? (JSON.parse(row.signal_data) as Record<string, unknown>)
+        : (row.signal_data ?? {}),
+  }));
+}
+
+/**
  * Bulk-hide every brain_page where `metadata.fromAddress` matches the
  * given sender. Used by the per-sender "stop indexing this address"
  * action (#251 privacy follow-up). Returns the affected row count so
