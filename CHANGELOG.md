@@ -12,7 +12,7 @@ classes: `user_behavior` (the multiplier should lift these), `received_content`
 
 ### What we measured
 
-Running on a hand-built 47-signal fixture with hash-trick embeddings:
+Running on a hand-built 52-signal fixture (12 labeled + 40 distractors) with hash-trick embeddings:
 
 | Metric | pure-RRF | tier-weighted |
 |---|---|---|
@@ -27,7 +27,7 @@ Two things, both real:
 
 1. **Aggressive demote weights were structurally wrong.** Original normal-band multipliers (newsletter 0.4×, automated 0.2×) pushed primary-hit notifications BELOW the distractor pool. Layer 2 became unusable for "find my AWS billing alert" queries. **Fixed** by rebalancing to promote-strong/demote-soft: newsletter 0.85×, automated 0.8× in the normal band.
 
-2. **Multiplicative weighting without a gate lets weak matches leapfrog strong ones.** A rank-30 distractor with an `authored` tier (×1.5 = 0.024) could beat a rank-1 primary with an `automated` tier (×0.8 = 0.013) — because the RRF score curve decays slowly enough that a 50% drop in raw score still leaves room for a 50% boost to overtake it. **Fixed** by adding `tierWeightFloorRatio` (default 0.85) to the RRF fold: only pages whose raw rrfScore is ≥ 85% of the top score are eligible for the multiplier. Tail-of-pool candidates stay at their unweighted score.
+2. **Multiplicative weighting without a gate lets weak matches leapfrog strong ones.** RRF scores decay slowly: at the default `rrfK=60`, rank-1 = `1/(60+1) ≈ 0.0164`, rank-30 = `1/(60+30) ≈ 0.0111`. A rank-30 authored distractor at `0.0111 × 1.5 ≈ 0.0167` could beat a rank-1 received primary at `0.0164 × 0.8 ≈ 0.0131` — the curve is shallow enough that a small raw-score gap leaves room for the multiplier to flip the order. **Fixed** by adding `tierWeightFloorRatio` (default 0.85) to the RRF fold: only pages whose raw rrfScore is ≥ 85% of the top score are eligible for the multiplier. Tail-of-pool candidates stay at their unweighted score.
 
 ### What remains
 

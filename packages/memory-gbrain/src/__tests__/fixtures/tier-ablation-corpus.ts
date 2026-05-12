@@ -1,11 +1,13 @@
 /**
  * Tier-ablation fixture for the Layer 2 retrieval eval (#251).
  *
- * Purpose-built corpus where each labeled query has paired authored +
- * received variants matching the same query text. The tier multiplier
- * is the actual deciding factor for ranking — text + vector overlap is
- * tuned so the variants land at adjacent ranks without weighting, and
- * the multiplier is what flips the order.
+ * Purpose-built corpus where MOST labeled queries have paired authored +
+ * received variants matching the same query text — q5 and q6 (received-only
+ * notifications, no realistic authored sibling) are kept single-variant on
+ * purpose. The tier multiplier is the actual deciding factor for ranking
+ * on the paired queries — text + vector overlap is tuned so the variants
+ * land at adjacent ranks without weighting, and the multiplier is what
+ * flips the order.
  *
  * Three query classes:
  *
@@ -251,7 +253,7 @@ const LABELED: TierAblationSignal[] = [
 // ─────────────────────────────────────────────────────────────────────────
 
 // Distractor topics deliberately avoid keywords from the labeled queries
-// ("investor", "hiring", "billing", "Friday doc", "newsletter", "Github",
+// ("investor", "hiring", "billing", "Friday doc", "newsletter", "GitHub",
 // "remote work", "Maya Chen"). The point of a distractor is to be plausible
 // padding that *doesn't* compete on text overlap with any labeled query —
 // so the eval measures whether the tier multiplier alone is moving real

@@ -222,7 +222,7 @@ describe('#251 Layer 2 ablation — tier weighting vs pure RRF', () => {
 
     // ── Findings & assertions ──────────────────────────────────────
     //
-    // The numbers above reflect *hash-trick embeddings on a 47-signal
+    // The numbers above reflect *hash-trick embeddings on a 52-signal
     // ablation corpus*. They are NOT a production benchmark. The eval is
     // intentionally a guardrail + tuning aid, not a gate that pretends
     // hash-trick embeddings should match what OpenAI embeddings would do.
