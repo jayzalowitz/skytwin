@@ -551,6 +551,77 @@ export async function getAllSignals(userId: string, limit = 10000): Promise<Brai
   return result.rows.map(parseSignalRow);
 }
 
+/**
+ * Compute bidirectional thread counts per contact address for a user
+ * over the last N days. A "bidirectional thread" means the user both
+ * SENT a message to and RECEIVED a message from the same thread (or
+ * the same contact, in the simpler approximation we use here).
+ *
+ * Used by the relationship-tier backfill worker (#251 Phase 2). Returns
+ * `Map<contactAddress, threadCount>` keyed by lower-cased contact
+ * address. Contacts the user only ever received from (or only sent to)
+ * have count 0 → `relationshipTier = 'stranger'`.
+ *
+ * Implementation detail: we approximate "bidirectional thread" as
+ * "any 90d window in which the user has BOTH a signal with the contact
+ * as `data.from` AND a signal where the contact is in `data.to`/`data.cc`."
+ * Per-thread granularity would be more accurate but requires parsing
+ * `In-Reply-To`/`References` chains; for the v1 we use per-contact-day
+ * as the thread proxy, which is a small over-count but cheap to compute
+ * and matches the four-band granularity we actually need.
+ */
+export async function computeBidirectionalThreadCounts(
+  userId: string,
+  windowDays = 90,
+): Promise<Map<string, number>> {
+  const sql = `
+    WITH user_signals AS (
+      SELECT
+        data,
+        signal_timestamp,
+        DATE_TRUNC('day', signal_timestamp) AS day
+      FROM brain_signals
+      WHERE user_id = $1
+        AND signal_timestamp > now() - ($2 || ' days')::INTERVAL
+        AND source = 'gmail'
+    ),
+    received AS (
+      SELECT
+        LOWER(TRIM(BOTH '<>' FROM data->>'from')) AS contact,
+        day
+      FROM user_signals
+      WHERE data->>'from' IS NOT NULL
+        AND data->>'from' != ''
+        AND NOT (data->'labels' @> '"SENT"'::JSONB)
+    ),
+    sent AS (
+      SELECT
+        LOWER(TRIM(BOTH '<>' FROM data->>'to')) AS contact,
+        day
+      FROM user_signals
+      WHERE data->>'to' IS NOT NULL
+        AND data->>'to' != ''
+        AND data->'labels' @> '"SENT"'::JSONB
+    )
+    SELECT
+      r.contact AS contact,
+      COUNT(DISTINCT r.day) AS bidirectional_days
+    FROM received r
+    INNER JOIN sent s ON s.contact = r.contact
+    GROUP BY r.contact
+  `;
+  const result = await query<{ contact: string; bidirectional_days: string }>(sql, [
+    userId,
+    String(windowDays),
+  ]);
+  const out = new Map<string, number>();
+  for (const row of result.rows) {
+    if (!row.contact) continue;
+    out.set(row.contact, Number(row.bidirectional_days));
+  }
+  return out;
+}
+
 // ── Settings ────────────────────────────────────────────────────────────────
 
 export async function getSettings(userId: string): Promise<BrainSettingsRow | null> {

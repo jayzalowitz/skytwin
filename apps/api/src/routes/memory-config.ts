@@ -376,6 +376,7 @@ export function createMemoryConfigRouter(): Router {
       const formattedPages = recentPages.map((p) => {
         const meta = (p.metadata ?? {}) as Record<string, unknown>;
         const tier = typeof meta['authoringTier'] === 'string' ? (meta['authoringTier'] as string) : null;
+        const relationshipTier = typeof meta['relationshipTier'] === 'string' ? (meta['relationshipTier'] as string) : null;
         const userOverride = typeof meta['userOverride'] === 'string' ? (meta['userOverride'] as string) : null;
         const fromAddress = typeof meta['fromAddress'] === 'string' ? (meta['fromAddress'] as string) : null;
         return {
@@ -384,6 +385,7 @@ export function createMemoryConfigRouter(): Router {
           source: p.source,
           createdAt: p.created_at,
           authoringTier: tier,
+          relationshipTier,
           userOverride,
           fromAddress,
         };

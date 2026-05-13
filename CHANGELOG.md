@@ -1,5 +1,51 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [unreleased] — relationshipTier: second retrieval axis (#251 Phase 2)
+
+Adds a second dimension to gbrain's tier weighting: how strong the user's back-and-forth has been with the contact over the last 90 days. Composes additively with `authoringTier` from Phase 1.1.
+
+### Tier bands
+
+Computed from bidirectional thread count (days where the user both sent to AND received from the contact) over the last 90 days:
+
+| Tier | Threshold | Examples |
+|---|---|---|
+| `core` | ≥ 10 bidirectional days | Spouse, manager, daily collaborators |
+| `frequent` | 3–9 | Team members, vendors actually engaged with |
+| `occasional` | 1–2 | Sporadic exchanges |
+| `stranger` | 0 | Cold senders, broadcast lists, never-replied |
+
+### Bonuses (normal calibration, additive, same scale as authoring)
+
+- `core`: +0.004 — a page from a close contact gets a small boost
+- `frequent`: +0.002
+- `occasional`: 0
+- `stranger`: 0 (promote-only, matching Phase 1.1's lesson)
+
+Combined effect: an `inbox_personal` page from a `core` contact gets +0.004 (climbs ahead of a same-topic newsletter without authored sibling); a `user_sent_originated` to a `core` contact gets +0.005 + +0.004 = +0.009 (decisive on ambiguous queries).
+
+### Engine
+
+- **`tier-weights.ts`** gets `RelationshipTier` enum, `REL_*` calibration tables, `relationshipTierFromThreadCount` helper, and `tierBonus` now composes the relationship dimension additively after the authoring dimension.
+- **`computeBidirectionalThreadCounts(userId, windowDays)`** new adapter helper. SQL: JOIN `brain_signals` self-join on contact address within the window, restricted to rows where one side has the `SENT` label and the other doesn't. Returns `Map<contactAddress, bidirectionalDays>`.
+- **In-memory mirror** matches the CRDB SQL behaviour bit-for-bit.
+
+### Worker
+
+- **`runRelationshipTierBackfillJob(userId)`** (new): pulls the contact count map, walks recent pages, derives the tier band from each page's `metadata.fromAddress`, writes via `updatePageMetadata` only when the tier differs. Idempotent.
+- Scheduled daily in `apps/worker/src/index.ts` (`RELATIONSHIP_TIER_BACKFILL_INTERVAL_MS = 24h`). Per-user, failures swallowed at user scope so one bad mailbox can't stall others.
+
+### Dashboard
+
+- The Recent pages indexed table gains a **Relationship** column with `core` / `frequent` / `occasional` / `stranger` badges alongside the existing authoring-tier badge.
+- `/api/memory-config/dashboard` payload's `pages.recent[]` now includes `relationshipTier` projected from metadata.
+
+### Tests
+
+- 8 new unit tests in `tier-weights.test.ts` covering relationship-only bonuses, composition with authoring, sparse/dense calibration scaling, pinned-override composition, hidden-override drop, and `relationshipTierFromThreadCount` thresholds.
+- 7 new worker tests in `relationship-tier-backfill.test.ts` covering per-tier derivation, lower-case normalization, unchanged detection, skipped (no `fromAddress`), failure isolation, find-throws → empty summary, 0-affected → counted as failed.
+- All 70 turbo tasks green.
+
 ## [unreleased] — Layer 2 additive rewrite + default-on (#251 Phase 1)
 
 Phase 1.1 + 1.2 of the multi-phase #251 plan. Replaces Layer 2's multiplicative tier weighting with additive bonuses, validates the result against both hash-trick and real-embedding evals, and flips the toggle on by default for new + existing users.

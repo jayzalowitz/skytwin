@@ -45,6 +45,22 @@ export type AuthoringTier =
   | 'inbox_newsletter'
   | 'inbox_automated';
 
+/**
+ * Relationship-strength band (#251 Phase 2) computed from bidirectional
+ * thread count with the contact over the last 90 days. Used as a
+ * SECOND axis alongside `authoringTier` — composes additively with the
+ * authoring bonus.
+ *
+ *   - `core`        — ≥10 bidirectional threads in 90d. Close contacts
+ *                     (spouse, manager, daily collaborators).
+ *   - `frequent`    — 3–9 bidirectional threads. Team members, vendors
+ *                     the user actually engages with.
+ *   - `occasional`  — 1–2 bidirectional threads.
+ *   - `stranger`    — 0 bidirectional threads. Cold senders / pure
+ *                     broadcast / lists the user never replied to.
+ */
+export type RelationshipTier = 'core' | 'frequent' | 'occasional' | 'stranger';
+
 export type UserOverride = 'pinned' | 'hidden';
 
 interface TierBonusTable {
@@ -113,6 +129,60 @@ const TABLES: Record<TierCalibration, TierBonusTable> = {
   dense: BONUSES_DENSE,
 };
 
+// Phase 2: relationship-tier bonuses. Promote-only, same as the authoring
+// dimension — no negative bonus on `stranger` because the Phase-1.1 eval
+// showed demoting received content past distractors. A page from a `core`
+// contact gets a small additive bump alongside any authoring bonus. The
+// effect is most visible on `received_*` pages — a question from your
+// manager outranks a same-topic newsletter even though both are received.
+//
+// Same calibration shape as authoring (sparse/normal/dense) keyed off the
+// existing `tier_calibration` setting — no separate config knob.
+interface RelationshipBonusTable {
+  readonly core: number;
+  readonly frequent: number;
+  readonly occasional: number;
+  readonly stranger: number;
+}
+
+const REL_SPARSE: RelationshipBonusTable = {
+  core: 0.002,
+  frequent: 0.001,
+  occasional: 0,
+  stranger: 0,
+};
+
+const REL_NORMAL: RelationshipBonusTable = {
+  core: 0.004,
+  frequent: 0.002,
+  occasional: 0,
+  stranger: 0,
+};
+
+const REL_DENSE: RelationshipBonusTable = {
+  core: 0.006,
+  frequent: 0.003,
+  occasional: 0,
+  stranger: 0,
+};
+
+const REL_TABLES: Record<TierCalibration, RelationshipBonusTable> = {
+  sparse: REL_SPARSE,
+  normal: REL_NORMAL,
+  dense: REL_DENSE,
+};
+
+/**
+ * Bidirectional-thread-count → relationship band thresholds. Stays in
+ * one place so the backfill worker and any future tuning live together.
+ */
+export function relationshipTierFromThreadCount(count: number): RelationshipTier {
+  if (count >= 10) return 'core';
+  if (count >= 3) return 'frequent';
+  if (count >= 1) return 'occasional';
+  return 'stranger';
+}
+
 /**
  * Pinned override boost. Added on top of the tier bonus; sized to put
  * a pinned page in front of unpinned authored content at the same raw
@@ -172,7 +242,18 @@ export function tierBonus(metadata: unknown, calibration: TierCalibration): numb
     }
   }
 
-  return base + pinnedBoost;
+  // Phase 2: relationship-tier bonus composes additively with authoring.
+  // Missing or unrecognized → 0 contribution; the page just doesn't get
+  // the relationship boost.
+  const relRaw = m['relationshipTier'];
+  let relBonus = 0;
+  if (typeof relRaw === 'string') {
+    const relTable = REL_TABLES[calibration];
+    const lookup = (relTable as unknown as Record<string, number>)[relRaw];
+    if (typeof lookup === 'number') relBonus = lookup;
+  }
+
+  return base + relBonus + pinnedBoost;
 }
 
 /**

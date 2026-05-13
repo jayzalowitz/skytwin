@@ -35,12 +35,22 @@ export { rrfFold } from './rrf.js';
 export type { TierWeightFn, RrfFoldOptions } from './rrf.js';
 
 export {
+  tierBonus,
+  buildTierBonusFn,
+  // Back-compat aliases (deprecated).
   tierMultiplier,
   buildTierWeightFn,
   calibrationFromSentVolume,
+  relationshipTierFromThreadCount,
   BRIEF_BODY_THRESHOLD,
+  PINNED_BOOST,
+  HIDDEN_SENTINEL,
 } from './tier-weights.js';
-export type { AuthoringTier, UserOverride } from './tier-weights.js';
+export type {
+  AuthoringTier,
+  RelationshipTier,
+  UserOverride,
+} from './tier-weights.js';
 
 export { InMemoryBrainStore } from './in-memory-repository.js';
 
@@ -75,6 +85,7 @@ export {
   updatePageMetadata,
   hideAllPagesFromSender,
   findPagesMissingAuthoringTier,
+  computeBidirectionalThreadCounts,
 } from './repository.js';
 export type { PageMissingTierRow } from './repository.js';
 export type { HybridSearchOptions } from './repository.js';

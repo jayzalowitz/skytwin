@@ -29,6 +29,7 @@ import { runDomainExtractionJob } from './jobs/domain-extraction.js';
 import { runFederationSyncJob } from './jobs/federation-sync.js';
 import { runEmbeddingBackfillJob } from './jobs/embedding-backfill.js';
 import { runTierBackfillJob } from './jobs/tier-backfill.js';
+import { runRelationshipTierBackfillJob } from './jobs/relationship-tier-backfill.js';
 
 const config = loadConfig();
 const log = createLogger('worker');
@@ -501,6 +502,13 @@ async function main(): Promise<void> {
   // over a few hours for a heavy mailbox.
   const TIER_BACKFILL_INTERVAL_MS = 60 * 60 * 1000;
 
+  let lastRelationshipTierBackfillAt = 0;
+  // Compute `metadata.relationshipTier` from bidirectional thread counts
+  // over the last 90d (#251 Phase 2). Daily cadence is plenty — the
+  // tier band changes slowly as a user's contact density shifts. Per-user
+  // pass, idempotent: re-runs do nothing when nothing has changed.
+  const RELATIONSHIP_TIER_BACKFILL_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
   // Poll loop
   while (running) {
     for (const uc of userConnectors) {
@@ -571,6 +579,22 @@ async function main(): Promise<void> {
         });
       });
       lastTierBackfillAt = nowMs;
+    }
+
+    // Compute relationshipTier per page from bidirectional thread counts
+    // (#251 Phase 2). Daily, per-user. Read-only writes to metadata via
+    // `updatePageMetadata`. Failures swallowed at user-scope so one bad
+    // mailbox can't stall the others.
+    if (nowMs - lastRelationshipTierBackfillAt >= RELATIONSHIP_TIER_BACKFILL_INTERVAL_MS) {
+      for (const uc of userConnectors) {
+        await runRelationshipTierBackfillJob(uc.userId).catch((err) => {
+          log.warn('Relationship-tier backfill job failed', {
+            userId: uc.userId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
+      }
+      lastRelationshipTierBackfillAt = nowMs;
     }
 
     // Expire stale approval requests every 10 poll cycles
