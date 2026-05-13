@@ -551,6 +551,109 @@ export async function getAllSignals(userId: string, limit = 10000): Promise<Brai
   return result.rows.map(parseSignalRow);
 }
 
+/**
+ * Compute bidirectional thread counts per contact address for a user
+ * over the last N days. A "bidirectional thread" means the user both
+ * SENT a message to and RECEIVED a message from the same thread (or
+ * the same contact, in the simpler approximation we use here).
+ *
+ * Used by the relationship-tier backfill worker (#251 Phase 2). Returns
+ * `Map<contactAddress, threadCount>` keyed by lower-cased contact
+ * address. Contacts the user only ever received from (or only sent to)
+ * have count 0 → `relationshipTier = 'stranger'`.
+ *
+ * Implementation detail: we approximate "bidirectional thread" as
+ * "any 90d window in which the user has BOTH a signal with the contact
+ * as `data.from` AND a signal where the contact is in `data.to`/`data.cc`."
+ * Per-thread granularity would be more accurate but requires parsing
+ * `In-Reply-To`/`References` chains; for the v1 we use per-contact-day
+ * as the thread proxy, which is a small over-count but cheap to compute
+ * and matches the four-band granularity we actually need.
+ */
+export async function computeBidirectionalThreadCounts(
+  userId: string,
+  windowDays = 90,
+): Promise<Map<string, number>> {
+  // Address extraction must mirror `extractBareAddress` in
+  // `packages/connectors/src/authoring-tier.ts` and the inline helper in
+  // `EmbeddedGbrainMemoryPort.buildPageMetadata`, otherwise the contact
+  // keys here won't match `metadata.fromAddress` on `brain_pages` (which
+  // is what the worker reads when classifying each page). Two pieces:
+  //
+  //   1. From `"Display Name <addr@x.com>"`, pull out the inside-angle
+  //      portion. `regexp_replace(..., '.*<([^>]+)>.*', '\1')` returns
+  //      the captured group when matched, OR the original string
+  //      unchanged when not matched (raw `addr@x.com` with no brackets).
+  //   2. `to`/`cc` are comma-separated lists. `string_to_array` + lateral
+  //      `unnest` splits them; we then apply the same bracket extraction
+  //      per-element. Without this, multi-recipient sent emails
+  //      contribute zero matchable contacts.
+  const sql = `
+    WITH user_signals AS (
+      SELECT
+        data,
+        signal_timestamp,
+        DATE_TRUNC('day', signal_timestamp) AS day
+      FROM brain_signals
+      WHERE user_id = $1
+        AND signal_timestamp > now() - ($2 || ' days')::INTERVAL
+        AND source = 'gmail'
+    ),
+    received AS (
+      SELECT
+        LOWER(TRIM(regexp_replace(data->>'from', '.*<([^>]+)>.*', '\\1'))) AS contact,
+        day
+      FROM user_signals
+      WHERE data->>'from' IS NOT NULL
+        AND data->>'from' != ''
+        -- COALESCE the @> result: when labels is NULL/missing the
+        -- predicate yields NULL, which is falsy in WHERE and silently
+        -- drops the row from BOTH the received AND sent CTEs (since
+        -- received uses NOT (NULL) = NULL = falsy too). Treat missing
+        -- labels as "not SENT" so received still picks it up, matching
+        -- the in-memory mirror which reads labels as [] when absent.
+        AND NOT COALESCE(data->'labels' @> '"SENT"'::JSONB, false)
+    ),
+    sent_recipients AS (
+      SELECT
+        TRIM(recip) AS recip_raw,
+        day
+      FROM user_signals,
+        LATERAL unnest(
+          string_to_array(
+            COALESCE(data->>'to', '') || ',' || COALESCE(data->>'cc', ''),
+            ','
+          )
+        ) AS recip
+      WHERE COALESCE(data->'labels' @> '"SENT"'::JSONB, false)
+    ),
+    sent AS (
+      SELECT
+        LOWER(TRIM(regexp_replace(recip_raw, '.*<([^>]+)>.*', '\\1'))) AS contact,
+        day
+      FROM sent_recipients
+      WHERE recip_raw != ''
+    )
+    SELECT
+      r.contact AS contact,
+      COUNT(DISTINCT r.day) AS bidirectional_days
+    FROM received r
+    INNER JOIN sent s ON s.contact = r.contact
+    WHERE r.contact != ''
+    GROUP BY r.contact
+  `;
+  const result = await query<{ contact: string; bidirectional_days: string }>(sql, [
+    userId,
+    String(windowDays),
+  ]);
+  const out = new Map<string, number>();
+  for (const row of result.rows) {
+    if (!row.contact) continue;
+    out.set(row.contact, Number(row.bidirectional_days));
+  }
+  return out;
+}
+
 // ── Settings ────────────────────────────────────────────────────────────────
 
 export async function getSettings(userId: string): Promise<BrainSettingsRow | null> {

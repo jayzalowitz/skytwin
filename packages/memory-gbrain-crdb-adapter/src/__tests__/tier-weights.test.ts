@@ -3,6 +3,7 @@ import {
   tierBonus,
   buildTierBonusFn,
   calibrationFromSentVolume,
+  relationshipTierFromThreadCount,
   BRIEF_BODY_THRESHOLD,
   HIDDEN_SENTINEL,
   PINNED_BOOST,
@@ -174,6 +175,102 @@ describe('calibrationFromSentVolume — thresholds', () => {
   it('> 1000 → dense', () => {
     expect(calibrationFromSentVolume(1001)).toBe('dense');
     expect(calibrationFromSentVolume(10_000)).toBe('dense');
+  });
+});
+
+describe('relationshipTier — Phase 2 axis composes additively with authoring', () => {
+  it('returns 0 contribution when relationshipTier is missing or unknown', () => {
+    expect(tierBonus({ authoringTier: 'inbox_personal' }, 'normal')).toBe(0);
+    expect(
+      tierBonus(
+        { authoringTier: 'inbox_personal', relationshipTier: 'who_knows' },
+        'normal',
+      ),
+    ).toBe(0);
+  });
+
+  it('adds the relationship bonus on top of the authoring bonus (normal)', () => {
+    // inbox_personal authoring = 0; core relationship = 0.004 → 0.004
+    expect(
+      tierBonus(
+        { authoringTier: 'inbox_personal', relationshipTier: 'core' },
+        'normal',
+      ),
+    ).toBeCloseTo(0.004);
+    // user_sent_originated = 0.005; core = 0.004 → 0.009 strong promote
+    expect(
+      tierBonus(
+        { authoringTier: 'user_sent_originated', relationshipTier: 'core' },
+        'normal',
+      ),
+    ).toBeCloseTo(0.009);
+    // user_sent_originated = 0.005; stranger = 0 → 0.005 (no rel demote)
+    expect(
+      tierBonus(
+        { authoringTier: 'user_sent_originated', relationshipTier: 'stranger' },
+        'normal',
+      ),
+    ).toBeCloseTo(0.005);
+  });
+
+  it('sparse and dense calibrations also scale the relationship band', () => {
+    expect(
+      tierBonus(
+        { authoringTier: 'inbox_personal', relationshipTier: 'core' },
+        'sparse',
+      ),
+    ).toBeCloseTo(0.002);
+    expect(
+      tierBonus(
+        { authoringTier: 'inbox_personal', relationshipTier: 'core' },
+        'dense',
+      ),
+    ).toBeCloseTo(0.006);
+  });
+
+  it('relationship bonus composes with pinned override too', () => {
+    // user_sent_originated + core + pinned = 0.005 + 0.004 + 0.012 = 0.021
+    expect(
+      tierBonus(
+        {
+          authoringTier: 'user_sent_originated',
+          relationshipTier: 'core',
+          userOverride: 'pinned',
+        },
+        'normal',
+      ),
+    ).toBeCloseTo(0.005 + 0.004 + 0.012);
+  });
+
+  it('hidden override still drops the page even with relationship bonus', () => {
+    expect(
+      tierBonus(
+        {
+          authoringTier: 'inbox_personal',
+          relationshipTier: 'core',
+          userOverride: 'hidden',
+        },
+        'normal',
+      ),
+    ).toBe(HIDDEN_SENTINEL);
+  });
+});
+
+describe('relationshipTierFromThreadCount thresholds', () => {
+  it('0 → stranger', () => {
+    expect(relationshipTierFromThreadCount(0)).toBe('stranger');
+  });
+  it('1..2 → occasional', () => {
+    expect(relationshipTierFromThreadCount(1)).toBe('occasional');
+    expect(relationshipTierFromThreadCount(2)).toBe('occasional');
+  });
+  it('3..9 → frequent', () => {
+    expect(relationshipTierFromThreadCount(3)).toBe('frequent');
+    expect(relationshipTierFromThreadCount(9)).toBe('frequent');
+  });
+  it('>=10 → core', () => {
+    expect(relationshipTierFromThreadCount(10)).toBe('core');
+    expect(relationshipTierFromThreadCount(500)).toBe('core');
   });
 });
 

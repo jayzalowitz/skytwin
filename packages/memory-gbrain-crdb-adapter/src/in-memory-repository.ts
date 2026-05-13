@@ -29,6 +29,19 @@ import type {
 import { cosineSimilarity, tokenise } from './embedding.js';
 import { rrfFold } from './rrf.js';
 
+/**
+ * Strip display name and angle brackets from an RFC 5322 address.
+ * Mirrors the inlined helper in `EmbeddedGbrainMemoryPort.buildPageMetadata`
+ * and the `extractBareAddress` from `@skytwin/connectors`. Duplicated
+ * locally so this module stays free of the connectors dep.
+ */
+function bareAddrInMemory(raw: string): string {
+  if (!raw) return '';
+  const angle = raw.match(/<([^>]+)>/);
+  if (angle && angle[1]) return angle[1].trim().toLowerCase();
+  return raw.trim().toLowerCase();
+}
+
 interface ScoredHit {
   page: BrainPageRow;
   score: number;
@@ -210,6 +223,51 @@ export class InMemoryBrainStore {
     page.metadata = next;
     page.updated_at = new Date();
     return 1;
+  }
+
+  /**
+   * Mirror of `repository.computeBidirectionalThreadCounts`. Returns a
+   * Map<contactAddress, bidirectionalDayCount>. The CRDB version
+   * approximates threads as day-windows; the in-memory mirror does the
+   * same so behaviour is identical between backends.
+   */
+  computeBidirectionalThreadCounts(userId: string, windowDays = 90): Map<string, number> {
+    const cutoff = Date.now() - windowDays * 24 * 60 * 60 * 1000;
+    const received = new Map<string, Set<string>>();
+    const sent = new Map<string, Set<string>>();
+    for (const sig of this.signals.values()) {
+      if (sig.user_id !== userId) continue;
+      if (sig.signal_timestamp.getTime() < cutoff) continue;
+      const data = sig.data as Record<string, unknown>;
+      const day = sig.signal_timestamp.toISOString().slice(0, 10);
+      const labels = Array.isArray(data['labels']) ? (data['labels'] as string[]) : [];
+      const isSent = labels.includes('SENT');
+      if (isSent) {
+        // Include both `to` and `cc` — a user who only ever replies via CC
+        // would otherwise show zero sent-side contacts and never reach
+        // the bidirectional join.
+        const toRaw = typeof data['to'] === 'string' ? (data['to'] as string) : '';
+        const ccRaw = typeof data['cc'] === 'string' ? (data['cc'] as string) : '';
+        const recipients = `${toRaw},${ccRaw}`.split(',').map((s) => bareAddrInMemory(s));
+        for (const addr of recipients) {
+          if (!addr) continue;
+          if (!sent.has(addr)) sent.set(addr, new Set());
+          sent.get(addr)!.add(day);
+        }
+      } else {
+        const fromRaw = typeof data['from'] === 'string' ? (data['from'] as string) : '';
+        const addr = bareAddrInMemory(fromRaw);
+        if (!addr) continue;
+        if (!received.has(addr)) received.set(addr, new Set());
+        received.get(addr)!.add(day);
+      }
+    }
+    const out = new Map<string, number>();
+    for (const [contact, recvDays] of received) {
+      if (!sent.has(contact)) continue;
+      out.set(contact, recvDays.size);
+    }
+    return out;
   }
 
   /**

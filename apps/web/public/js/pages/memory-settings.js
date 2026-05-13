@@ -407,12 +407,13 @@ function renderDashboard(dashboard) {
   const pagesBlock = recentPages.length === 0
     ? `<p class="card-subtitle">No pages indexed yet. Connect a signal source to start.</p>`
     : `<table class="data-table" style="margin-top: 0.5rem; width: 100%;">
-        <thead><tr><th>When</th><th>Tier</th><th>Source</th><th>Title</th><th style="text-align:right;">Actions</th></tr></thead>
+        <thead><tr><th>When</th><th>Tier</th><th>Relationship</th><th>Source</th><th>Title</th><th style="text-align:right;">Actions</th></tr></thead>
         <tbody>
           ${recentPages.map((p) => `
             <tr>
               <td>${formatRelativeTime(p.createdAt)}</td>
               <td>${renderTierBadge(p.authoringTier, p.userOverride)}</td>
+              <td>${renderRelationshipBadge(p.relationshipTier)}</td>
               <td>${escapeHtml(p.source ?? '')}</td>
               <td>${escapeHtml(p.title ?? '')}</td>
               <td style="text-align:right; white-space:nowrap;">${renderPageActions(p)}</td>
@@ -479,6 +480,26 @@ function renderPageActions(page) {
             style="margin-left: 0.25rem;">${hideLabel}</button>
     ${senderBtn}
   `;
+}
+
+/**
+ * #251 Phase 2: relationship-tier badge. Shows how strong the user's
+ * back-and-forth with this sender has been over the last 90 days. Used
+ * alongside the authoring-tier badge — together they explain why a page
+ * ranks where it does.
+ */
+function renderRelationshipBadge(tier) {
+  if (!tier) {
+    return '<span class="card-subtitle" style="font-size: 0.85em;">—</span>';
+  }
+  const map = {
+    core: { label: 'core', color: 'var(--success)' },
+    frequent: { label: 'frequent', color: 'var(--text)' },
+    occasional: { label: 'occasional', color: 'var(--text)' },
+    stranger: { label: 'stranger', color: 'var(--muted)' },
+  };
+  const meta = map[tier] ?? { label: tier, color: 'var(--text)' };
+  return `<span style="color: ${meta.color}; font-size: 0.85em;">${escapeHtml(meta.label)}</span>`;
 }
 
 /**
