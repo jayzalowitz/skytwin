@@ -184,7 +184,7 @@ describe('DraftEmailCandidateGenerator — happy path', () => {
     expect(searchCalls[0]!.query).toContain('Are you free Tuesday?');
     expect(searchCalls[0]!.query).toContain('colleague@example.com');
 
-    // LLM was invoked with a system prompt and tempurature ≈ 0.5
+    // LLM was invoked with a system prompt and temperature ≈ 0.5
     expect(calls).toHaveLength(1);
     expect(typeof calls[0]!.prompt).toBe('string');
     const opts = calls[0]!.options as { temperature?: number; systemPrompt?: string };
