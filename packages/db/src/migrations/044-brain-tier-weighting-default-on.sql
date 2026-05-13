@@ -8,23 +8,27 @@
 -- baseline (0.54).
 --
 -- Two changes here:
+--
 --   1. Default for new rows flips to TRUE so fresh users get the
 --      Phase-1.1 retrieval shape out of the box.
---   2. Existing rows that still have `tier_weighting = false` AND have
---      never been explicitly set by the user get migrated up to TRUE.
---      We can't tell "user said no" vs "default applied" from the schema
---      alone, but the prior default was false for everyone, so any row
---      with the default value is opt-in-by-default candidate. Users who
---      want to opt out can flip it back via Settings → Memory backend.
+--
+--   2. **Unconditional opt-in for existing rows.** Every existing
+--      `tier_weighting = false` row gets flipped to true.
+--
+-- IMPORTANT: this DOES override explicit user opt-outs that existed at
+-- migration time. We don't have a "set by user" audit column to
+-- distinguish "default applied" from "user said no," and Phase 1.1's
+-- new retrieval shape is materially better than the prior default-off
+-- behavior on both the user_behavior and aggregate metrics. The honest
+-- call is that the prior opt-out was a workaround for a bug we now
+-- fixed, so we re-enable for everyone and leave the dashboard toggle
+-- available for anyone who wants to opt back out.
+--
+-- If preserving prior opt-outs becomes important later, add an
+-- `tier_weighting_explicit BOOL` audit column in a follow-up migration
+-- and gate this UPDATE on it.
 
 ALTER TABLE brain_settings
   ALTER COLUMN tier_weighting SET DEFAULT true;
 
--- Backfill existing rows. Limit to rows that were never explicitly
--- touched (proxy: updated_at within ~10s of the row's implied creation,
--- which is impossible to read reliably without a separate audit column).
--- Simplest honest behavior: opt every existing user in. The dashboard
--- toggle remains available for anyone who wants to opt out, and the
--- realistic-retrieval result is now strictly better than the prior
--- default-off path.
 UPDATE brain_settings SET tier_weighting = true WHERE tier_weighting = false;

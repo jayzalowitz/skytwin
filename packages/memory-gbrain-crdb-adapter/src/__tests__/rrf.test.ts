@@ -122,33 +122,17 @@ describe('rrfFold', () => {
     });
 
     it('does NOT let a weak-match authored page leapfrog a strong primary', () => {
-      // This is the bug PR #272 surfaced and PR #_ (this PR) is fixing.
-      // rank-1 newsletter at score 1/(60+1)=0.0164. rank-10 authored at
-      // 1/(60+10)=0.0143. With multiplicative weighting (1.5× vs 0.8×)
-      // the rank-10 authored at 0.0143*1.5=0.0214 would beat the rank-1
-      // newsletter at 0.0164*0.8=0.0131. With additive ±0.005 it can't:
-      // 0.0143+0.005=0.0193 vs 0.0164-0.005=0.0114. Wait — additive DOES
-      // flip this. The point isn't "never flip" but "don't flip when the
-      // gap is large enough that flipping is wrong." Build a fixture
-      // with a wider raw gap and verify additive holds.
-      //
-      // 30 placeholder text-only ranks → the rank-1 has score 0.0164
-      // and rank-30 has 1/(60+30)=0.0111. Gap = 0.0053. Additive ±0.005
-      // doesn't fully bridge this — additive bonus brings authored
-      // rank-30 to 0.0111+0.005=0.0161, just barely below the rank-1
-      // newsletter at 0.0164-0.004=0.0124. Wait that puts authored
-      // (0.0161) ABOVE newsletter (0.0124). Hmm — the example doesn't
-      // quite hold for narrow numbers. Multiply ranks to widen.
-      //
-      // Real test: rank-1 strong primary at 0.033 (in both lists),
-      // weak authored at rank 20 of text only (0.0125). Even with
-      // additive +0.005 the authored climbs to 0.0175, well below the
-      // primary's 0.033-0.005=0.028. Primary still wins.
+      // Strong primary: rank 1 in BOTH lists → rrfScore ≈ 2/(60+1) = 0.0328.
+      // Weak authored distractor: rank 20 in text only → rrfScore ≈
+      // 1/(60+20) = 0.0125. Even with +0.005 authored bonus the weak
+      // distractor lands at 0.0175, well below the primary's worst case
+      // of 0.0328 + (any received bonus). The 0.85 floor-ratio gate also
+      // prevents the bonus from applying at this rank (0.0125 < 0.85 ×
+      // 0.0328 = 0.0279), so the bonus isn't even computed for it.
       const text = Array.from({ length: 20 }, (_, i) => ({
         page: pageWithTier(`text-${i}`, i === 19 ? 'user_sent_originated' : 'inbox_personal'),
         score: 1 - i * 0.01,
       }));
-      // Put the newsletter at rank 1 in both lists so it scores ~0.033.
       const newsletter = pageWithTier('strong-newsletter', 'inbox_newsletter');
       text.unshift({ page: newsletter, score: 1 });
       const vec = [{ page: newsletter, score: 1 }];
@@ -161,7 +145,6 @@ describe('rrfFold', () => {
         },
       });
       expect(out[0]!.id).toBe('strong-newsletter');
-      // The weak authored at rank 20 should NOT have leapfrogged it.
       const weakAuthoredIdx = out.findIndex((h) => h.id === 'text-19');
       expect(weakAuthoredIdx).toBeGreaterThan(0);
     });

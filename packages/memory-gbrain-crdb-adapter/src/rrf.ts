@@ -27,14 +27,16 @@ interface ScoredHit {
  * breaking close ties in favor of authored content.
  *
  * Special sentinel: `Number.NEGATIVE_INFINITY` means "drop this page
- * entirely" — used by `userOverride: 'hidden'`.
+ * entirely" — used by `userOverride: 'hidden'`. This is the ONLY way a
+ * tier-weight callback can remove a page from results; ordinary negative
+ * bonuses demote rank without affecting inclusion.
  */
 export type TierWeightFn = (metadata: unknown) => number;
 
 export interface RrfFoldOptions {
   /**
-   * Per-page additive bonus to apply to rrfScore. Returns `Number.
-   * NEGATIVE_INFINITY` to drop the page (hidden override).
+   * Per-page additive bonus to apply to rrfScore. Returns
+   * `Number.NEGATIVE_INFINITY` to drop the page (hidden override).
    */
   tierWeight?: TierWeightFn;
   /**
@@ -148,11 +150,13 @@ export function rrfFold(
       if (typeof raw !== 'number' || !Number.isFinite(raw)) continue;
       hit.rrfScore += raw;
     }
-    // Drop pages that were explicitly hidden or pushed to or below zero
-    // by aggressive demote bonuses on already-weak pages. Keeping the
-    // `> 0` filter preserves the prior contract that hidden pages don't
-    // appear in results.
-    entries = entries.filter((h) => h.rrfScore > 0);
+    // Drop ONLY pages that were explicitly hidden via the
+    // NEGATIVE_INFINITY sentinel. Ordinary negative bonuses are allowed
+    // to push scores below zero; they reorder, they don't remove.
+    // (Without this, a sufficiently negative bonus would silently
+    // change inclusion semantics in a way the tier-weight contract
+    // doesn't promise.)
+    entries = entries.filter((h) => h.rrfScore !== Number.NEGATIVE_INFINITY);
   }
 
   return entries.sort((a, b) => b.rrfScore - a.rrfScore).slice(0, k);

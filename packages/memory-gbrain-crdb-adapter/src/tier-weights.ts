@@ -15,7 +15,7 @@
  *
  * Additive bonuses fix this. RRF scores live in the 0.005–0.033 range at
  * default `rrfK=60`; bonuses of ±0.005 are large enough to flip close
- * calls (rank-1 vs rank-2 raw, diff ~0.001) but small enough that a
+ * calls (rank-1 vs rank-2 raw, diff ~0.0003) but small enough that a
  * truly-strong primary (rank 1 in both lists, score ~0.033) keeps its
  * lead over any weak-overlap authored noise (rank 10+, score < 0.015).
  *
