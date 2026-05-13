@@ -46,6 +46,19 @@ describe('classifyCalendarAuthoringTier', () => {
     ).toBe('inbox_automated');
   });
 
+  it('returns inbox_automated for weather-feed organizer', () => {
+    // Matches the /^.+#weather@/i pattern in AUTOMATED_ORGANIZER_PATTERNS.
+    // Without this case the regex could regress silently — only birthdays
+    // and holidays were exercised previously.
+    expect(
+      classifyCalendarAuthoringTier({
+        organizerEmail: 'en.usa#weather@group.v.calendar.google.com',
+        selfEmail: 'me@example.com',
+        attendeeCount: 0,
+      }),
+    ).toBe('inbox_automated');
+  });
+
   it('returns inbox_broadcast for multi-attendee invites the user is on', () => {
     expect(
       classifyCalendarAuthoringTier({

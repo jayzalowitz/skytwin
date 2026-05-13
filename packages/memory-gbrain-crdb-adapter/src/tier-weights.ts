@@ -225,26 +225,34 @@ export function tierBonus(metadata: unknown, calibration: TierCalibration): numb
   if (override === 'hidden') return HIDDEN_SENTINEL;
   const pinnedBoost = override === 'pinned' ? PINNED_BOOST : 0;
 
+  // Authoring + relationship are two independent axes. A page can have
+  // a recognized relationshipTier even if authoringTier is missing
+  // (e.g. a calendar event before Phase 3 classification lands, or a
+  // page from a channel that doesn't author-classify yet). Compute
+  // each contribution separately so neither axis blocks the other.
+  let base = 0;
   const tier = m['authoringTier'];
-  if (typeof tier !== 'string') return pinnedBoost;
-
-  const table = TABLES[calibration];
-  let base = (table as unknown as Record<string, number>)[tier];
-  if (typeof base !== 'number') return pinnedBoost;
-
-  // Brief-reply downweight: short authored body gets inbox_personal
-  // bonus (zero) instead of full authored. Cheap heuristic — no need to
-  // look at recipient tier or edit time yet.
-  if (tier === 'user_sent_originated' || tier === 'user_sent_reply') {
-    const bodyLen = m['bodyLen'];
-    if (typeof bodyLen === 'number' && bodyLen < BRIEF_BODY_THRESHOLD) {
-      base = table.inbox_personal;
+  if (typeof tier === 'string') {
+    const table = TABLES[calibration];
+    const lookup = (table as unknown as Record<string, number>)[tier];
+    if (typeof lookup === 'number') {
+      base = lookup;
+      // Brief-reply downweight: short authored body gets inbox_personal
+      // bonus (zero) instead of full authored. Cheap heuristic — no need
+      // to look at recipient tier or edit time yet.
+      if (tier === 'user_sent_originated' || tier === 'user_sent_reply') {
+        const bodyLen = m['bodyLen'];
+        if (typeof bodyLen === 'number' && bodyLen < BRIEF_BODY_THRESHOLD) {
+          base = table.inbox_personal;
+        }
+      }
     }
   }
 
   // Phase 2: relationship-tier bonus composes additively with authoring.
   // Missing or unrecognized → 0 contribution; the page just doesn't get
-  // the relationship boost.
+  // the relationship boost. Applied regardless of authoring presence so
+  // the two axes stay independent (Copilot finding on Phase 3).
   const relRaw = m['relationshipTier'];
   let relBonus = 0;
   if (typeof relRaw === 'string') {

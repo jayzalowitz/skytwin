@@ -254,6 +254,48 @@ describe('relationshipTier — Phase 2 axis composes additively with authoring',
       ),
     ).toBe(HIDDEN_SENTINEL);
   });
+
+  // Axis independence — Copilot finding on Phase 3.
+  it('applies relationship bonus when authoringTier is missing entirely', () => {
+    // A page with no authoringTier (e.g. pre-Phase-3 calendar page, or
+    // any source that doesn't author-classify yet) should still get the
+    // relationship boost. The two axes are independent — neither blocks
+    // the other.
+    expect(
+      tierBonus({ relationshipTier: 'core' }, 'normal'),
+    ).toBeCloseTo(0.004);
+    expect(
+      tierBonus({ relationshipTier: 'frequent' }, 'normal'),
+    ).toBeCloseTo(0.002);
+  });
+
+  it('applies relationship bonus when authoringTier is unrecognized', () => {
+    expect(
+      tierBonus(
+        { authoringTier: 'made_up_tier', relationshipTier: 'core' },
+        'normal',
+      ),
+    ).toBeCloseTo(0.004);
+  });
+
+  it('applies relationship bonus when authoringTier is non-string', () => {
+    expect(
+      tierBonus(
+        { authoringTier: 42, relationshipTier: 'core' },
+        'normal',
+      ),
+    ).toBeCloseTo(0.004);
+  });
+
+  it('composes pinned + relationship even without authoringTier', () => {
+    // pinned (0.012) + core (0.004) + no authoring (0) = 0.016
+    expect(
+      tierBonus(
+        { relationshipTier: 'core', userOverride: 'pinned' },
+        'normal',
+      ),
+    ).toBeCloseTo(0.016);
+  });
 });
 
 describe('relationshipTierFromThreadCount thresholds', () => {
