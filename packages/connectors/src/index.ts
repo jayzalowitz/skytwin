@@ -25,6 +25,8 @@ export {
   splitAddressList,
 } from './authoring-tier.js';
 export type { AuthoringTier, EmailAuthoringInputs } from './authoring-tier.js';
+export { classifyCalendarAuthoringTier } from './calendar-authoring-tier.js';
+export type { CalendarAuthoringInputs } from './calendar-authoring-tier.js';
 export { GoogleCalendarConnector } from './google-calendar-connector.js';
 
 // OAuth
