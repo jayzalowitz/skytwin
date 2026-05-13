@@ -30,6 +30,8 @@ import { EmbeddedGbrainMemoryPort } from '../embedded-port.js';
 import {
   HashEmbeddingProvider,
   InMemoryBrainStore,
+  OpenAiEmbeddingProvider,
+  type EmbeddingProvider,
 } from '@skytwin/memory-gbrain-crdb-adapter';
 import {
   buildTierAblationCorpus,
@@ -125,9 +127,10 @@ async function runOneMode(args: {
   enabled: boolean;
   queries: TierAblationQuery[];
   corpus: ReturnType<typeof buildTierAblationCorpus>;
+  embedding?: EmbeddingProvider;
 }): Promise<AblationRun> {
   const store = new InMemoryBrainStore();
-  const emb = new HashEmbeddingProvider(256);
+  const emb = args.embedding ?? new HashEmbeddingProvider(256);
   const port = new EmbeddedGbrainMemoryPort({
     userId: USER,
     backend: 'memory',
@@ -187,8 +190,17 @@ function printReport(off: AblationRun, on: AblationRun): void {
     );
     // If the primary slipped off the top-10 with tier-on but was found
     // with pure-RRF, dump what's actually in the top-10 — this is the
-    // signal for tuning the multipliers.
-    if (Number.isFinite(o.rankPrimary) && !Number.isFinite(n.rankPrimary)) {
+    // signal for tuning the multipliers. Also dump when the primary
+    // degrades by more than 3 ranks — that's the case where Layer 2
+    // is reordering legitimately-strong primary hits behind other content.
+    const degradedSignificantly =
+      Number.isFinite(o.rankPrimary) &&
+      Number.isFinite(n.rankPrimary) &&
+      n.rankPrimary - o.rankPrimary > 2;
+    if (
+      (Number.isFinite(o.rankPrimary) && !Number.isFinite(n.rankPrimary)) ||
+      degradedSignificantly
+    ) {
       console.log(`    └─ tier-on top-10: ${n.topIdsExpanded.slice(0, 10).join(', ')}`);
     }
   }
@@ -267,3 +279,86 @@ describe('#251 Layer 2 ablation — tier weighting vs pure RRF', () => {
     expect(on.meanRecallAt5).toBeGreaterThanOrEqual(0.7);
   }, 30_000);
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// Real-embedding ablation — opt-in. Validates the working hypothesis that
+// hash-trick embeddings exaggerate the `received_content` MRR regression
+// because of spurious token overlap, and that real semantic embeddings
+// preserve the user_behavior lift WITHOUT the regression. Gated on
+// `RUN_REAL_EMBEDDING_EVAL=1` and an OpenAI-compatible endpoint reachable
+// at `OPENAI_EMBEDDING_BASE_URL` (defaults to local Ollama).
+// ─────────────────────────────────────────────────────────────────────────
+
+const RUN_REAL = process.env['RUN_REAL_EMBEDDING_EVAL'] === '1';
+
+describe.runIf(RUN_REAL)(
+  '#251 Layer 2 ablation — REAL embeddings (Ollama / nomic-embed-text)',
+  () => {
+    /**
+     * Reality-check result from the real-embedding run:
+     *
+     *   user_behavior MRR       0.667 → 1.000   (intended lift, holds)
+     *   received_content MRR    1.000 → ~0.54   (structural regression)
+     *   neutral MRR             1.000 → 1.000
+     *
+     * The received_content number is essentially identical to the
+     * hash-trick floor (~0.54). My earlier hypothesis — that hash-trick
+     * spurious overlap was inflating the regression — was wrong. The
+     * regression is structural to the multiplicative approach:
+     *
+     *   - authored_originated × 1.5 vs inbox_automated × 0.8 = 1.875×
+     *     swing. Any page within 53% of the top raw score that's
+     *     `authored_*` will leapfrog a strong-but-demoted primary hit.
+     *   - The floor-ratio gate (0.85) helps but isn't enough: with real
+     *     semantic embeddings, q1 Series B authored content has
+     *     non-trivial similarity to q5 ("GitHub Actions CI failure")
+     *     even though they're topically unrelated. That q1 page lands
+     *     in the candidate pool above threshold, gets 1.5×, beats the
+     *     legitimate q5 primary.
+     *
+     * Conclusion: Layer 2 should NOT ship default-on as currently
+     * designed. The honest fix is structural — switch from
+     * multiplicative weighting to additive bonuses (e.g.
+     * `final = raw_rrf + bonus(tier)` with bonuses sized to flip
+     * close calls without leapfrogging strong matches). That's a
+     * follow-up sub-issue, not a knob change.
+     *
+     * For now: keep Layer 2 opt-in, keep the eval as a permanent
+     * artifact that anyone with Ollama can reproduce, and document
+     * the finding in the CHANGELOG / issue.
+     */
+    it('produces the side-by-side numbers + asserts the realistic guardrail bars', async () => {
+      const corpus = buildTierAblationCorpus();
+      const queries = buildTierAblationQueries();
+      const baseUrl =
+        process.env['OPENAI_EMBEDDING_BASE_URL'] ?? 'http://localhost:11434/v1';
+      const model = process.env['OPENAI_EMBEDDING_MODEL'] ?? 'nomic-embed-text';
+      const apiKey = process.env['OPENAI_EMBEDDING_API_KEY'] ?? 'ollama';
+      const real = new OpenAiEmbeddingProvider({ apiKey, model, baseUrl });
+
+      const off = await runOneMode({ enabled: false, queries, corpus, embedding: real });
+      const on = await runOneMode({ enabled: true, queries, corpus, embedding: real });
+
+      // Print the side-by-side numbers — the headline result this eval
+      // exists to produce. Captured in CHANGELOG entries when meaningful.
+      printReport(off, on);
+
+      // user_behavior queries must still lift with real embeddings.
+      expect(on.byClass.user_behavior.meanRRPrimary).toBeGreaterThanOrEqual(
+        off.byClass.user_behavior.meanRRPrimary,
+      );
+
+      // neutral queries must not regress.
+      expect(on.byClass.neutral.meanRRPrimary).toBeGreaterThanOrEqual(
+        off.byClass.neutral.meanRRPrimary - 0.05,
+      );
+
+      // received_content: realistic guardrail bar matches the hash-trick
+      // test (0.40). The known structural regression measured at ~0.54
+      // sits comfortably above. A future redesign (additive tier
+      // bonuses) should push this number toward 0.95; tighten the bar
+      // at that point.
+      expect(on.byClass.received_content.meanRRPrimary).toBeGreaterThanOrEqual(0.4);
+    }, 90_000);
+  },
+);

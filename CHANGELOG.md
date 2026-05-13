@@ -1,5 +1,45 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [unreleased] — Real-embedding ablation result for Layer 2 (#251 follow-up)
+
+Ran the tier-ablation eval against a real semantic embedding model (Ollama's `nomic-embed-text`) to validate the hypothesis that hash-trick spurious overlap was the cause of the `received_content` MRR regression first surfaced in PR #260. **The hypothesis was wrong.**
+
+### Result
+
+| Metric | pure-RRF | tier-weighted |
+|---|---|---|
+| user_behavior MRR (n=3) | 0.667 | **1.000** |
+| received_content MRR (n=3) | 1.000 | **~0.54** |
+| neutral MRR (n=1) | 1.000 | 1.000 |
+
+The `received_content` number with real embeddings (~0.54) is essentially identical to the hash-trick floor (0.542 in PR #260). Hash-trick was not the cause.
+
+### Diagnosis
+
+The regression is structural to the multiplicative weighting approach:
+
+- `user_sent_originated × 1.5` vs `inbox_automated × 0.8` produces a **1.875×** swing. Any page within 53% of the top raw score that's `authored_*` will leapfrog a strong-but-demoted primary hit.
+- The floor-ratio gate (default 0.85) helps but isn't enough. With real semantic embeddings, an authored page from a *completely unrelated* query (e.g. q1 Series B pitch) has non-trivial similarity to q5 ("GitHub Actions CI failure") — enough to land in the candidate pool above the threshold. The 1.5× boost on that unrelated content then beats the 0.8× demote on the actually-relevant primary.
+- Diagnostic dump from the eval confirms: q5's primary lands at rank 8/9 with tier-on, behind three authored pages from unrelated queries plus several distractors.
+
+### Decision
+
+**Layer 2 stays opt-in.** The default-on rollout is blocked on a structural fix, not on environment / corpus / eval setup. The likely path:
+
+- Switch from multiplicative weighting (`score *= tier_weight`) to additive bonuses (`score += tier_bonus`) sized to flip close calls without leapfrogging strong matches. Estimated +0.005 for authored-originated, -0.005 for automated, on raw RRF scores in the 0.016–0.033 range — enough to break ties without overwhelming relevance.
+- Re-run the ablation with the additive approach. Target: received_content MRR ≥ 0.95 while preserving user_behavior MRR = 1.0.
+
+That's a separate sub-issue — out of scope for tonight.
+
+### What ships now
+
+- New opt-in test branch in `tier-ablation-eval.test.ts` gated on `RUN_REAL_EMBEDDING_EVAL=1`. Anyone with Ollama on `localhost:11434` and `nomic-embed-text` pulled can reproduce. Defaults respect `OPENAI_EMBEDDING_BASE_URL` / `OPENAI_EMBEDDING_MODEL` / `OPENAI_EMBEDDING_API_KEY` so a real OpenAI key works too.
+- `runOneMode` in the eval helper takes an optional `embedding` provider so the same harness drives both the always-on (hash-trick) and opt-in (real) tests.
+
+### Side note
+
+This is exactly what the eval was designed to surface — and exactly the kind of negative-result-with-clear-next-step that justifies the engineering effort of building an eval guardrail. PR #260's `received_content ≥ 0.40` assertion held; we just learned where the real ceiling sits under the current design.
+
 ## [unreleased] — Authoring-tier backfill worker (#251 follow-up)
 
 Pages indexed before Layer 1 of #251 (where the Gmail connector started stamping `authoringTier` on every signal) had no tier on their metadata — which meant the Layer 2 multiplier did nothing for them. This adds a worker job that retroactively fills in the tier for those pages, plus the connector keeps the raw headers needed to reclassify going forward.
