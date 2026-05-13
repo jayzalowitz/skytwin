@@ -29,7 +29,7 @@ The regression is structural to the multiplicative weighting approach:
 - Switch from multiplicative weighting (`score *= tier_weight`) to additive bonuses (`score += tier_bonus`) sized to flip close calls without leapfrogging strong matches. Estimated +0.005 for authored-originated, -0.005 for automated, on raw RRF scores in the 0.016–0.033 range — enough to break ties without overwhelming relevance.
 - Re-run the ablation with the additive approach. Target: received_content MRR ≥ 0.95 while preserving user_behavior MRR = 1.0.
 
-That's a separate sub-issue — out of scope for tonight.
+That's a separate sub-issue — out of scope for this PR.
 
 ### What ships now
 

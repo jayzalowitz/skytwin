@@ -191,12 +191,12 @@ function printReport(off: AblationRun, on: AblationRun): void {
     // If the primary slipped off the top-10 with tier-on but was found
     // with pure-RRF, dump what's actually in the top-10 — this is the
     // signal for tuning the multipliers. Also dump when the primary
-    // degrades by more than 3 ranks — that's the case where Layer 2
-    // is reordering legitimately-strong primary hits behind other content.
+    // degrades by 3 or more ranks — that's the case where Layer 2 is
+    // reordering legitimately-strong primary hits behind other content.
     const degradedSignificantly =
       Number.isFinite(o.rankPrimary) &&
       Number.isFinite(n.rankPrimary) &&
-      n.rankPrimary - o.rankPrimary > 2;
+      n.rankPrimary - o.rankPrimary >= 3;
     if (
       (Number.isFinite(o.rankPrimary) && !Number.isFinite(n.rankPrimary)) ||
       degradedSignificantly
@@ -281,12 +281,15 @@ describe('#251 Layer 2 ablation — tier weighting vs pure RRF', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────
-// Real-embedding ablation — opt-in. Validates the working hypothesis that
-// hash-trick embeddings exaggerate the `received_content` MRR regression
-// because of spurious token overlap, and that real semantic embeddings
-// preserve the user_behavior lift WITHOUT the regression. Gated on
-// `RUN_REAL_EMBEDDING_EVAL=1` and an OpenAI-compatible endpoint reachable
-// at `OPENAI_EMBEDDING_BASE_URL` (defaults to local Ollama).
+// Real-embedding ablation — opt-in. Captures the side-by-side R@5 / P@5 /
+// MRR-primary numbers when the eval runs against a real semantic embedding
+// model (Ollama nomic-embed-text by default; any OpenAI-compatible
+// endpoint via OPENAI_EMBEDDING_BASE_URL). Originally added to test
+// whether real embeddings would close the `received_content` MRR gap; the
+// answer turned out to be no (see the long comment on the test below).
+// Now lives on as a permanent reproducible artifact so the next person
+// touching Layer 2 weighting can re-run the same harness against whatever
+// they ship. Gated on `RUN_REAL_EMBEDDING_EVAL=1`.
 // ─────────────────────────────────────────────────────────────────────────
 
 const RUN_REAL = process.env['RUN_REAL_EMBEDDING_EVAL'] === '1';
