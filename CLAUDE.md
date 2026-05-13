@@ -102,6 +102,15 @@ CI is unaffected (clean dist on every run).
 | `@skytwin/memory-gbrain-crdb-adapter` | CockroachDB-backed driver for the gbrain backend. Repository functions, embedding providers (hash-trick fallback + OpenAI-compatible HTTP), in-memory store for tests, RRF fold with tier-weighted scoring (#251 Layer 2) that multiplies fused scores by per-tier weights tuned on the ablation corpus. Pin/hide controls (#270) and the authoring-tier backfill worker (#271) operate against the same `brain_pages.metadata.authoringTier` field. |
 | `@skytwin/memory-hybrid` | Composes any two `MemoryPort` impls. Reads route per-capability; writes dual-write best-effort. Exposes diagnostics counters. |
 | `@skytwin/memory-mempalace` | `MemPalaceMemoryPort` adapter — wraps the legacy `@skytwin/mempalace` classes against the `MemoryPort` contract. |
+| `@skytwin/assistant` | Stateless chat service that wraps `LlmClient` for text-only conversations with optional context enrichment (twin + memory) and action-intent routing (#135). |
+| `@skytwin/capability-engine` | Infers which user-facing apps the twin should learn capabilities for, from raw signals. Keyword matching in v1; LLM-verified service detection plus adaptive scoring landed in #202. |
+| `@skytwin/credential-vault` | Envelope encryption for OAuth tokens and other per-user secrets (AES-256-GCM with scrypt KDF) plus an in-process key cache (#212). Sits between the connectors and `db` so the encryption boundary is one obvious place. |
+| `@skytwin/idle-miner` | Filesystem scanner that runs during idle time, extracts project metadata, and emits signals that feed `capability-engine` (#201). Triggered by the desktop idle bridge (#239). |
+| `@skytwin/mcp-host` | Manages MCP servers (stdio / HTTP / SSE) — spawns, tool-call routing with per-server circuit breakers, telemetry, and Docker-isolated stdio servers when `zeroTrustMode` is on (#183 AC#4). |
+| `@skytwin/dxt` | Serializes / deserializes DXT artifacts — packed binary files that carry MCP server configs (with secrets redacted) so a twin can hand its tool set to another instance (#219). |
+| `@skytwin/observability` | In-memory metrics collection (latency, success rate, spend) with a ring-buffered rollup that powers the capability acquisition loop dashboards (#210). |
+| `@skytwin/policy-prompts` | Versioned LLM prompt templates with JSON-schema-validated outputs and deterministic fallbacks when no LLM is configured. Used by briefing prose, draft-email generation, and risk profiling (#200). |
+| `@skytwin/registry-client` | Loads the curated MCP registry, knows about each entry's OAuth quirks, and looks services up by keyword. Smithery-augmented when configured. |
 | `@skytwin/evals` | Evaluation framework for measuring decision quality over time. |
 
 ### Apps
