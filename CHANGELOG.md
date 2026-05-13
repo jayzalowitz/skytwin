@@ -1,5 +1,39 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [unreleased] — Layer 2 additive rewrite + default-on (#251 Phase 1)
+
+Phase 1.1 + 1.2 of the multi-phase #251 plan. Replaces Layer 2's multiplicative tier weighting with additive bonuses, validates the result against both hash-trick and real-embedding evals, and flips the toggle on by default for new + existing users.
+
+### Headline result (real embeddings, Ollama nomic-embed-text)
+
+| Metric | pure-RRF | Phase-0 multiplier | **Phase 1 additive** |
+|---|---|---|---|
+| user_behavior MRR (n=3) | 0.667 | 1.000 | **1.000** |
+| received_content MRR (n=3) | 1.000 | 0.537 | **0.833** |
+| neutral MRR (n=1) | 1.000 | 1.000 | 1.000 |
+| aggregate MRR primary | 0.857 | 0.804 | **0.929** |
+
+received_content MRR recovered from 0.537 → 0.833. Aggregate MRR primary went *above* the pure-RRF baseline. The remaining 0.83-vs-1.0 gap on received_content is the q4 case where the user wrote a reply about the alert — surfacing their own reply first is defensible product behavior, not a bug.
+
+### Engine
+
+- **`tier-weights.ts` rewrite.** `tierBonus(metadata, calibration)` replaces `tierMultiplier`. Returns an additive bonus (~±0.005 in the normal band) rather than a multiplier. Sized so a bonus can flip close calls (rank-2 vs rank-1, raw diff ~0.0003) but not leapfrog strong matches.
+- **Promote-only configuration.** All received tier bonuses are 0; only authored tiers get a positive bonus. The real-embedding eval showed any negative bonus pushes legitimate primary hits below distractors on queries that don't have an authored alternative.
+- **`HIDDEN_SENTINEL` / `PINNED_BOOST` constants** make the userOverride composition explicit. Hidden returns `Number.NEGATIVE_INFINITY`; the RRF fold special-cases that to drop the page.
+- **Floor-ratio gate retained.** Default 0.85. The additive approach still benefits from the gate when real embeddings give spurious vector overlap to topically-unrelated content. Without the gate, q5's "GitHub Actions CI failed" query returned q1's Series B authored content above the primary; with the gate, the cross-query authored leak goes away.
+- **Back-compat aliases.** `tierMultiplier` and `buildTierWeightFn` are re-exported as deprecated aliases of `tierBonus` / `buildTierBonusFn` so internal callers keep working in this PR. Cleanup is a separate follow-up.
+
+### Default-on flip (Phase 1.2)
+
+- **Migration 044** flips `brain_settings.tier_weighting` default to `true` and backfills existing rows that were never explicitly toggled. Users can still opt out via Settings → Memory backend.
+- **All in-code defaults** updated to match: `parseSettingsRow`, in-memory `upsertSettings`, repository `upsertSettings`, route GET default.
+
+### Tests
+
+- `tier-weights.test.ts` rewritten for additive semantics. 19 tests covering all three calibrations, userOverride composition, brief-reply downweight, calibration thresholds, back-compat aliases.
+- `rrf.test.ts` tier-weight section rewritten. Includes a new test verifying that a weak-match authored page does NOT leapfrog a strong primary even with the additive bonus + gate.
+- `tier-ablation-eval.test.ts` guardrail bars tightened: `received_content ≥ 0.55` (hash-trick), `≥ 0.75` (real embeddings). Both above the new measured floor of 0.58 / 0.83.
+
 ## [unreleased] — Real-embedding ablation result for Layer 2 (#251 follow-up)
 
 Ran the tier-ablation eval against a real semantic embedding model (Ollama's `nomic-embed-text`) to validate the hypothesis that hash-trick spurious overlap was the cause of the `received_content` MRR regression first surfaced in PR #260. **The hypothesis was wrong.**

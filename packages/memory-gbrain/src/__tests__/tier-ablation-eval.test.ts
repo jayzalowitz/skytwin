@@ -234,31 +234,26 @@ describe('#251 Layer 2 ablation — tier weighting vs pure RRF', () => {
 
     // ── Findings & assertions ──────────────────────────────────────
     //
-    // The numbers above reflect *hash-trick embeddings on a 52-signal
-    // ablation corpus*. They are NOT a production benchmark. The eval is
-    // intentionally a guardrail + tuning aid, not a gate that pretends
-    // hash-trick embeddings should match what OpenAI embeddings would do.
+    // Numbers above reflect *hash-trick embeddings on a 52-signal
+    // ablation corpus* with the **additive bonus rewrite** (Phase 1.1).
+    // Hash-trick produces spurious vector overlap that real semantic
+    // embedders don't, so this is a CONSERVATIVE floor — real-embedding
+    // numbers are materially better (received_content 0.83 vs 0.58
+    // here; see the gated RUN_REAL_EMBEDDING_EVAL block below).
     //
-    // What we *do* require from this eval:
+    // What we require:
     //
     //   1. user_behavior queries get a CLEAR lift from tier weighting.
-    //      The whole point of Layer 2 is to surface what the user wrote
-    //      above what they received on ambiguous queries — if this
-    //      doesn't fire on a hand-crafted fixture, the implementation
-    //      is broken.
+    //      Authored content for the same query must reach rank 1.
     //
     //   2. neutral queries don't regress. Layer 2 must not break
     //      retrieval for entity-name lookups and the like.
     //
-    //   3. received_content queries must NOT collapse to MRR=0. A bar
-    //      of 0.40 reflects the known tradeoff: when a received_content
-    //      query has an authored sibling (q4 case) Layer 2 will surface
-    //      the authored one first, which is sometimes-right + sometimes
-    //      -wrong. With OpenAI embeddings the spurious-overlap hits
-    //      should disappear and this number should improve materially.
+    //   3. received_content queries — additive rewrite + 0.85 gate
+    //      keeps the regression bounded. Hash-trick floor ≈ 0.58.
+    //      Required: ≥ 0.55, allowing minor sampling noise.
     //
-    //   4. Aggregate recall@5 doesn't fall off a cliff. Layer 2 reorders;
-    //      it shouldn't drop hits that pure-RRF found.
+    //   4. Aggregate recall@5 doesn't fall off a cliff.
 
     expect(on.byClass.user_behavior.meanRRPrimary).toBeGreaterThan(
       off.byClass.user_behavior.meanRRPrimary,
@@ -268,15 +263,14 @@ describe('#251 Layer 2 ablation — tier weighting vs pure RRF', () => {
       off.byClass.neutral.meanRRPrimary - 0.05,
     );
 
-    // received_content tradeoff guardrail. Hash-trick measurement was
-    // 0.548; we require >= 0.40 so a future regression would be caught
-    // but the known tradeoff doesn't fail CI. When OpenAI embeddings get
-    // wired into the eval, tighten this back to ~0.95.
-    expect(on.byClass.received_content.meanRRPrimary).toBeGreaterThanOrEqual(0.4);
+    // received_content additive-rewrite floor. Hash-trick measurement
+    // was 0.58; we require >= 0.55. The real-embedding path lands
+    // around 0.83 — see the gated RUN_REAL_EMBEDDING_EVAL block.
+    expect(on.byClass.received_content.meanRRPrimary).toBeGreaterThanOrEqual(0.55);
 
-    // Aggregate recall@5 must remain reasonable. Hash-trick measurement
-    // was ~0.86; require >= 0.7 as a regression floor.
-    expect(on.meanRecallAt5).toBeGreaterThanOrEqual(0.7);
+    // Aggregate recall@5: with additive bonuses + 0.85 gate, this
+    // typically matches pure-RRF (1.0) on this corpus. Floor at 0.85.
+    expect(on.meanRecallAt5).toBeGreaterThanOrEqual(0.85);
   }, 30_000);
 });
 
@@ -356,12 +350,11 @@ describe.runIf(RUN_REAL)(
         off.byClass.neutral.meanRRPrimary - 0.05,
       );
 
-      // received_content: realistic guardrail bar matches the hash-trick
-      // test (0.40). The known structural regression measured at ~0.54
-      // sits comfortably above. A future redesign (additive tier
-      // bonuses) should push this number toward 0.95; tighten the bar
-      // at that point.
-      expect(on.byClass.received_content.meanRRPrimary).toBeGreaterThanOrEqual(0.4);
+      // received_content: with the additive rewrite (Phase 1.1) the
+      // real-embedding measurement lands around 0.83 — above the
+      // 0.55 hash-trick bar. Floor at 0.75 to leave room for sampling
+      // noise without masking a regression.
+      expect(on.byClass.received_content.meanRRPrimary).toBeGreaterThanOrEqual(0.75);
     }, 90_000);
   },
 );
