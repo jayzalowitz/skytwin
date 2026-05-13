@@ -1,5 +1,37 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [unreleased] — Cross-channel tier: calendar events get authoringTier (#251 Phase 3)
+
+Calendar events now carry the same `authoringTier` vocabulary as Gmail signals. The classification logic lives in `packages/connectors/src/calendar-authoring-tier.ts` and runs at signal-build time in `GoogleCalendarConnector.eventToSignal`. The result lands on `brain_pages.metadata.authoringTier` exactly like Gmail-derived pages do — same RRF fold, same Phase 1 additive bonuses, same Phase 2 relationship-tier composition.
+
+### Mapping
+
+| Calendar shape | AuthoringTier |
+|---|---|
+| User organized the event (organizer email = self) | `user_sent_originated` |
+| Auto-generated event (Google Contacts birthdays, holidays feed) | `inbox_automated` |
+| Multi-attendee invite the user is on (>2 attendees) | `inbox_broadcast` |
+| 1-on-1 invite or shared calendar entry | `inbox_personal` |
+
+`user_sent_reply` and `inbox_newsletter` aren't applicable to calendar and aren't used.
+
+### Engine
+
+- New file `packages/connectors/src/calendar-authoring-tier.ts` with `classifyCalendarAuthoringTier(input)`. Recognizes Google Contacts birthdays (`addressbook#contacts@`), holiday calendars (`en.usa#holiday@`), and weather feeds via regex.
+- `GoogleCalendarConnector.eventToSignal` now calls the classifier and stamps both `authoringTier` and `from` (organizer email) on `signal.data`. The `from` field matters because the embedded port's `buildPageMetadata` reads it to populate `metadata.fromAddress` — that's what Phase 2's relationship-tier worker queries, and what the per-sender bulk-hide UI from PR #270 sends to.
+
+### Why the vocabulary is reused (not extended)
+
+The original #251 spec deliberately picked tier value names that generalize across channels — `user_sent_originated` reads as "user authored, fresh," not as "an email the user sent." Reusing the same enum keeps the retrieval pipeline channel-agnostic: one bonus table, one set of weights, one eval covers everything.
+
+### Tests
+
+- 8 cases in `calendar-authoring-tier.test.ts`: user-organized (case-insensitive), birthdays/holidays/weather → automated, multi-attendee → broadcast, 1-on-1 → personal, edge cases for empty `selfEmail`.
+
+### Out of scope for this phase
+
+- GitHub authoring tier — no GitHub connector currently in the codebase. The vocabulary is already channel-agnostic, so a future GitHub connector can stamp tiers the same way without engine changes.
+
 ## [unreleased] — relationshipTier: second retrieval axis (#251 Phase 2)
 
 Adds a second dimension to gbrain's tier weighting: how strong the user's back-and-forth has been with the contact over the last 90 days. Composes additively with `authoringTier` from Phase 1.1.

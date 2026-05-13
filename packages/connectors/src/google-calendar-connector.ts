@@ -2,6 +2,7 @@ import type { SignalConnector, RawSignal, SignalHandler } from './connector-inte
 import type { OAuthTokenStore } from './oauth/token-store.js';
 import type { CursorStore } from './gmail-connector.js';
 import { withRetry, RetryableHttpError, parseRetryAfter } from '@skytwin/core';
+import { classifyCalendarAuthoringTier } from './calendar-authoring-tier.js';
 
 const SYNC_TOKEN_KIND = 'sync_token';
 
@@ -196,6 +197,18 @@ export class GoogleCalendarConnector implements SignalConnector {
     const version = (event.updated ?? event.created ?? event.start.dateTime ?? event.start.date ?? 'unknown')
       .replace(/[^a-zA-Z0-9]/g, '');
 
+    // #251 Phase 3: stamp authoringTier on calendar signals using the
+    // same six-value vocabulary as Gmail. Events the user organized get
+    // `user_sent_originated`; invites the user is on get `inbox_personal`
+    // (1-on-1) or `inbox_broadcast` (multi-attendee); auto-generated
+    // calendar entries get `inbox_automated`. The downstream RRF fold
+    // treats these the same as email tiers.
+    const authoringTier = classifyCalendarAuthoringTier({
+      organizerEmail: event.organizer.email,
+      selfEmail: selfAttendee?.email ?? '',
+      attendeeCount: event.attendees?.length ?? 0,
+    });
+
     return {
       id: `sig_cal_${event.id}_${version || 'unknown'}`,
       source: 'google_calendar',
@@ -208,6 +221,10 @@ export class GoogleCalendarConnector implements SignalConnector {
         endTime: event.end.dateTime ?? event.end.date ?? '',
         organizer: event.organizer.email,
         organizerName: event.organizer.displayName ?? '',
+        // Mirror Gmail's data.from so embedded-port.buildPageMetadata
+        // stamps fromAddress consistently across channels — that's what
+        // the per-sender bulk-hide and Phase-2 relationship tier read.
+        from: event.organizer.email,
         attendees: (event.attendees ?? []).map((a) => ({
           email: a.email,
           responseStatus: a.responseStatus,
@@ -217,6 +234,7 @@ export class GoogleCalendarConnector implements SignalConnector {
         hasConflict,
         requiresResponse: needsResponse,
         htmlLink: event.htmlLink,
+        authoringTier,
       },
       timestamp: new Date(event.updated ?? event.created),
     };
