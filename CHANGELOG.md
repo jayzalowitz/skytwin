@@ -1,5 +1,37 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [unreleased] — End-to-end Phase 1+2+4 loop test (#251 Phase 5)
+
+Final phase of the #251 arc. Adds an end-to-end loop test that exercises the full composition of Phase 1 (tier-aware retrieval), Phase 2 (relationshipTier axis), and Phase 4 (`DraftEmailCandidateGenerator`) through a single realistic scenario — without any real LLM or CRDB.
+
+### What ships
+
+- `packages/decision-engine/src/__tests__/draft-email-e2e-loop.test.ts` — 4 scenarios exercising the layer composition:
+  - **Authored-only grounding**: user has 4 authored emails + 3 newsletter / automated noise pages. Inbound `requiresResponse: true` email lands. Generator produces one `draft_email`. The prompt must contain authored bodies and must NOT contain newsletter / automated bodies. `examplesUsed: 4`.
+  - **LOW-confidence fallback**: authored corpus is empty (only noise). Generator still drafts but `examplesUsed: 0` and reasoning warns about voice-match weakness.
+  - **Cost gate**: `requiresResponse: false` inbound — generator skips entirely. LLM is never invoked.
+  - **Phase 2 in spirit**: two authored examples with equal topical overlap; the `core`-tagged one renders before the `occasional`-tagged one in the prompt.
+
+### `AuthoredCorpusAdapter` example
+
+The test ships a minimal `AuthoredExamplesPort` adapter that filters an in-memory corpus by `authoringTier ∈ {user_sent_originated, user_sent_reply}` and ranks by token-overlap with a small `core`-relationship boost. This is the wiring pattern callers should follow when adapting their `MemoryPort` to the generator — push the tier filter down to the SQL layer and let the RRF fold handle ranking.
+
+### Why no real LLM here
+
+Phase 4 already pins LLM-call shape, failure modes, and prompt structure with unit tests. The loop test's job is the *dataflow* — does the generator pass the right examples to the right LLM call when wired against a realistic adapter — and that's verified by inspecting the prompt the fake LLM receives. Real-LLM evals (voice match, drift, regressions) belong in their own dedicated suite, gated by API-key presence and run on a slower cadence than CI.
+
+### Phase 5 closing notes
+
+The five phases of #251 deliberately ordered to compound:
+
+1. Phase 1.1 fixed Layer 2 weighting so authored content reliably wins close calls without leapfrogging strong primaries.
+2. Phase 2 added a second axis (`relationshipTier`) so close contacts get the bonus even when authoring tier is the same.
+3. Phase 3 generalized the vocabulary across channels (calendar) so the same retrieval logic powers everything.
+4. Phase 4 shipped the building-block (`DraftEmailCandidateGenerator`) that uses the tier-aware retrieval as voice grounding.
+5. Phase 5 (this) is the smoke test that the layers actually compose as designed.
+
+The marquee feature — twin-drafted replies in the user's voice — is now end-to-end wired. The deploy decision (when to flip on, eval gates, cost gating, which LLM provider) lives outside the engine and is a separate roll-out item.
+
 ## [unreleased] — draft_email candidate generator (#251 Phase 4)
 
 The marquee feature Layers 1+2+3 were building toward. When an inbound email needs a reply, a new candidate generator drafts the body in the user's voice using their authored corpus as few-shot grounding.
