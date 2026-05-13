@@ -1,5 +1,38 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [unreleased] — draft_email candidate generator (#251 Phase 4)
+
+The marquee feature Layers 1+2+3 were building toward. When an inbound email needs a reply, a new candidate generator drafts the body in the user's voice using their authored corpus as few-shot grounding.
+
+### What's new
+
+- `packages/decision-engine/src/strategies/draft-email-candidate.ts` — `DraftEmailCandidateGenerator` implementing `CandidateGenerator`. Fires only when `decision.domain === 'email'` and `rawData.requiresResponse` is truthy. Produces one `CandidateAction` with `actionType: 'draft_email'`.
+- `AuthoredExamplesPort` interface — the minimal port the generator needs from the memory layer. Decoupled from `@skytwin/memory-port` so the decision-engine package stays leaf-level.
+- `buildDraftPrompt(input)` — exported helper that renders the few-shot prompt. Structure is load-bearing for voice match, so it's testable directly.
+
+### Wiring approach: opt-in
+
+The generator is **exported but not wired into `DecisionMaker.evaluate` by default**. The deploy decision (which LLM client, when to flip it on, eval gates) lives outside the decision-engine layer. Callers instantiate it explicitly and add it to their generator list. This phase ships the building block.
+
+### Confidence and safety
+
+- `reversible: true` (the candidate is reversible up to the user clicking Send; the policy engine handles the actual send threshold)
+- `MODERATE` confidence when ≥ 3 authored examples were available, `LOW` otherwise — the approval UI surfaces "drafted from N of your prior emails" via `parameters.examplesUsed` so the user sees the grounding strength
+- Always requires explicit approval at v1 regardless of trust tier (no auto-send)
+- Fail-open on memory error (drafts without grounding, `LOW` confidence, copy explicitly warns about weak voice match)
+- Fail-closed on LLM error (returns no candidate rather than shipping a bad template-y draft)
+
+### Prompt shape
+
+- System prompt instructs the LLM to match voice/length/opening/closing/vocabulary from the few-shot examples; output ONLY the body, no subject/signature/preamble; 1–4 short paragraphs
+- Few-shot examples are truncated at `MAX_EXAMPLE_CHARS = 800` to stop a 5KB email from dominating context
+- Default `DEFAULT_AUTHORED_EXAMPLE_COUNT = 6` (~1500 prompt tokens budget for examples)
+- Query for the memory search is composed from inbound subject + first body line + from address, capped at 500 chars
+
+### Tests
+
+20 cases in `__tests__/draft-email-candidate.test.ts`: domain gating (email + requiresResponse), happy-path candidate shape and parameter projection, confidence based on example count, fail-open / fail-closed on subsystem failure, rawData fallbacks (snippet → body, messageId → emailId), prompt rendering (with/without examples, truncation at MAX_EXAMPLE_CHARS, placeholder copy for empty fields), query construction (500-char cap, empty-field stripping).
+
 ## [unreleased] — Cross-channel tier: calendar events get authoringTier (#251 Phase 3)
 
 Calendar events now carry the same `authoringTier` vocabulary as Gmail signals. The classification logic lives in `packages/connectors/src/calendar-authoring-tier.ts` and runs at signal-build time in `GoogleCalendarConnector.eventToSignal`. The result lands on `brain_pages.metadata.authoringTier` exactly like Gmail-derived pages do — same RRF fold, same Phase 1 additive bonuses, same Phase 2 relationship-tier composition.

@@ -16,6 +16,13 @@ export { LlmCandidateGenerator } from './strategies/llm-candidates.js';
 export { FallbackSituationStrategy, FallbackCandidateGenerator } from './strategies/fallback-strategy.js';
 export { RuleBasedCandidateGenerator } from './strategies/rule-based-candidates.js';
 export { SenderAwareCandidateGenerator } from './strategies/sender-aware-candidates.js';
+export {
+  DraftEmailCandidateGenerator,
+  buildDraftPrompt,
+  DEFAULT_AUTHORED_EXAMPLE_COUNT,
+  MAX_EXAMPLE_CHARS,
+} from './strategies/draft-email-candidate.js';
+export type { AuthoredExamplesPort } from './strategies/draft-email-candidate.js';
 
 export type {
   WhatWouldIDoRequest,
