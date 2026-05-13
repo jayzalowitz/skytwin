@@ -589,7 +589,7 @@ export async function upsertSettings(
        COALESCE($2, 'gbrain'),
        COALESCE($3, false),
        COALESCE($4::JSONB, '{}'::JSONB),
-       COALESCE($5, false),
+       COALESCE($5, true),
        COALESCE($6, 'normal'),
        now()
      )
@@ -856,7 +856,7 @@ function parseSettingsRow(row: BrainSettingsRow): BrainSettingsRow {
   return {
     ...row,
     routing: parseJson(row.routing) ?? {},
-    tier_weighting: typeof row.tier_weighting === 'boolean' ? row.tier_weighting : false,
+    tier_weighting: typeof row.tier_weighting === 'boolean' ? row.tier_weighting : true,
     tier_calibration: row.tier_calibration ?? 'normal',
     updated_at: new Date(row.updated_at),
   };

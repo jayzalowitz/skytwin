@@ -65,7 +65,7 @@ export function createMemoryConfigRouter(): Router {
         // #251 Layer 2: surface tier-weighting toggle + calibration band so
         // the dashboard can show + flip them. Falls back to defaults when
         // the brain_settings row is missing (fresh user).
-        tierWeighting: settings?.tier_weighting ?? false,
+        tierWeighting: settings?.tier_weighting ?? true,
         tierCalibration: settings?.tier_calibration ?? 'normal',
         suggestion,
         index: {

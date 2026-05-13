@@ -1,135 +1,161 @@
 import { describe, it, expect } from 'vitest';
 import {
-  tierMultiplier,
-  buildTierWeightFn,
+  tierBonus,
+  buildTierBonusFn,
   calibrationFromSentVolume,
   BRIEF_BODY_THRESHOLD,
+  HIDDEN_SENTINEL,
+  PINNED_BOOST,
+  // Back-compat aliases.
+  tierMultiplier,
+  buildTierWeightFn,
 } from '../tier-weights.js';
 
-describe('tierMultiplier — authoring-tier base weights', () => {
-  it('returns 1.0 (identity) for unknown / missing metadata', () => {
-    expect(tierMultiplier(null, 'normal')).toBe(1.0);
-    expect(tierMultiplier(undefined, 'normal')).toBe(1.0);
-    expect(tierMultiplier({}, 'normal')).toBe(1.0);
-    expect(tierMultiplier({ authoringTier: 'who_knows' }, 'normal')).toBe(1.0);
-    expect(tierMultiplier({ authoringTier: 42 }, 'normal')).toBe(1.0);
+describe('tierBonus — authoring-tier additive bonuses (#251 additive rewrite)', () => {
+  it('returns 0 (no contribution) for unknown / missing metadata', () => {
+    expect(tierBonus(null, 'normal')).toBe(0);
+    expect(tierBonus(undefined, 'normal')).toBe(0);
+    expect(tierBonus({}, 'normal')).toBe(0);
+    expect(tierBonus({ authoringTier: 'who_knows' }, 'normal')).toBe(0);
+    expect(tierBonus({ authoringTier: 42 }, 'normal')).toBe(0);
   });
 
-  it('applies the normal band weights for each tier', () => {
-    const m = (tier: string) => tierMultiplier({ authoringTier: tier }, 'normal');
-    // Promote authored aggressively, demote received softly — see the
-    // tier-ablation eval for the rationale (aggressive demotion broke
-    // received_content queries by pushing primary hits below distractors).
-    expect(m('user_sent_originated')).toBe(1.5);
-    expect(m('user_sent_reply')).toBe(1.2);
-    expect(m('inbox_personal')).toBe(1.0);
-    expect(m('inbox_broadcast')).toBe(0.9);
-    expect(m('inbox_newsletter')).toBe(0.85);
-    expect(m('inbox_automated')).toBe(0.8);
+  it('applies the normal-band bonuses for each tier (promote only — no received demote)', () => {
+    const b = (tier: string) => tierBonus({ authoringTier: tier }, 'normal');
+    // Promote authored on close calls. Received tiers are 0 (untouched)
+    // because the real-embedding ablation showed that any negative
+    // bonus pushes legitimate primary hits below distractors on queries
+    // without an authored alternative.
+    expect(b('user_sent_originated')).toBeCloseTo(0.005);
+    expect(b('user_sent_reply')).toBeCloseTo(0.003);
+    expect(b('inbox_personal')).toBe(0);
+    expect(b('inbox_broadcast')).toBe(0);
+    expect(b('inbox_newsletter')).toBe(0);
+    expect(b('inbox_automated')).toBe(0);
   });
 
   it('sparse calibration compresses the spread', () => {
-    const m = (tier: string) => tierMultiplier({ authoringTier: tier }, 'sparse');
-    expect(m('user_sent_originated')).toBe(1.2);
-    expect(m('user_sent_reply')).toBe(1.1);
-    expect(m('inbox_newsletter')).toBe(0.9);
-    expect(m('inbox_automated')).toBe(0.9);
+    const b = (tier: string) => tierBonus({ authoringTier: tier }, 'sparse');
+    expect(b('user_sent_originated')).toBeCloseTo(0.002);
+    expect(b('user_sent_reply')).toBeCloseTo(0.001);
+    expect(b('inbox_newsletter')).toBe(0);
+    expect(b('inbox_automated')).toBe(0);
   });
 
   it('dense calibration widens the spread', () => {
-    const m = (tier: string) => tierMultiplier({ authoringTier: tier }, 'dense');
-    expect(m('user_sent_originated')).toBe(2.0);
-    expect(m('user_sent_reply')).toBe(1.5);
-    expect(m('inbox_newsletter')).toBe(0.75);
-    expect(m('inbox_automated')).toBe(0.7);
+    const b = (tier: string) => tierBonus({ authoringTier: tier }, 'dense');
+    expect(b('user_sent_originated')).toBeCloseTo(0.008);
+    expect(b('user_sent_reply')).toBeCloseTo(0.005);
+    expect(b('inbox_newsletter')).toBe(0);
+    expect(b('inbox_automated')).toBe(0);
+  });
+
+  it('all bonuses are small relative to typical rrfScore (~0.016)', () => {
+    // Sanity check on the absolute scale: a bonus should be enough to
+    // flip a near-tie (rank-1 vs rank-2 raw differ by ~0.0003 at rrfK=60)
+    // without leapfrogging strong matches (rank-1-in-both at ~0.033 vs
+    // rank-10-in-one at ~0.014).
+    for (const calibration of ['sparse', 'normal', 'dense'] as const) {
+      for (const tier of [
+        'user_sent_originated',
+        'user_sent_reply',
+        'inbox_personal',
+        'inbox_broadcast',
+        'inbox_newsletter',
+        'inbox_automated',
+      ]) {
+        const b = tierBonus({ authoringTier: tier }, calibration);
+        expect(Math.abs(b)).toBeLessThan(0.015); // half the gap to strong-match top
+      }
+    }
   });
 });
 
-describe('tierMultiplier — userOverride composes orthogonally', () => {
-  it("pinned doubles whatever the tier weight would otherwise be", () => {
-    // pinned + originated (normal band) = 1.5 * 2 = 3.0
+describe('tierBonus — userOverride composes additively', () => {
+  it('pinned adds PINNED_BOOST on top of the tier bonus', () => {
+    // pinned + originated (normal band) = 0.005 + 0.012 = 0.017
     expect(
-      tierMultiplier(
+      tierBonus(
         { authoringTier: 'user_sent_originated', userOverride: 'pinned' },
         'normal',
       ),
-    ).toBe(3.0);
-    // pinned + newsletter (normal band) = 0.85 * 2 = 1.7
+    ).toBeCloseTo(0.005 + PINNED_BOOST);
+    // pinned + newsletter (normal band) = 0 + 0.012 = 0.012
+    // (newsletter tier bonus is 0 in the promote-only configuration)
     expect(
-      tierMultiplier(
+      tierBonus(
         { authoringTier: 'inbox_newsletter', userOverride: 'pinned' },
         'normal',
       ),
-    ).toBe(1.7);
+    ).toBeCloseTo(PINNED_BOOST);
   });
 
-  it('pinned alone (no tier) still boosts to 2.0', () => {
-    expect(tierMultiplier({ userOverride: 'pinned' }, 'normal')).toBe(2.0);
+  it('pinned alone (no tier) still boosts by PINNED_BOOST', () => {
+    expect(tierBonus({ userOverride: 'pinned' }, 'normal')).toBeCloseTo(PINNED_BOOST);
   });
 
-  it("hidden forces 0 — page is dropped from retrieval entirely", () => {
+  it('hidden returns HIDDEN_SENTINEL — page gets dropped in the RRF fold', () => {
     expect(
-      tierMultiplier(
+      tierBonus(
         { authoringTier: 'user_sent_originated', userOverride: 'hidden' },
         'normal',
       ),
-    ).toBe(0);
-    expect(tierMultiplier({ userOverride: 'hidden' }, 'normal')).toBe(0);
+    ).toBe(HIDDEN_SENTINEL);
+    expect(tierBonus({ userOverride: 'hidden' }, 'normal')).toBe(HIDDEN_SENTINEL);
   });
 });
 
-describe('tierMultiplier — brief authored-reply downweight', () => {
-  it('treats short user_sent_reply as inbox_personal weight', () => {
-    // 1.2 (reply) would apply, but bodyLen < 50 drops to 1.0 (personal).
-    const w = tierMultiplier(
+describe('tierBonus — brief authored-reply downweight', () => {
+  it('treats short user_sent_reply as inbox_personal bonus (zero)', () => {
+    const b = tierBonus(
       {
         authoringTier: 'user_sent_reply',
         bodyLen: BRIEF_BODY_THRESHOLD - 1,
       },
       'normal',
     );
-    expect(w).toBe(1.0);
+    expect(b).toBe(0);
   });
 
-  it('a long user_sent_reply keeps the full authored weight', () => {
-    const w = tierMultiplier(
+  it('a long user_sent_reply keeps the full authored bonus', () => {
+    const b = tierBonus(
       { authoringTier: 'user_sent_reply', bodyLen: 500 },
       'normal',
     );
-    expect(w).toBe(1.2);
+    expect(b).toBeCloseTo(0.003);
   });
 
   it('short user_sent_originated is also downweighted (proactive but tiny)', () => {
-    const w = tierMultiplier(
+    const b = tierBonus(
       { authoringTier: 'user_sent_originated', bodyLen: 20 },
       'normal',
     );
-    expect(w).toBe(1.0);
+    expect(b).toBe(0);
   });
 
-  it('bodyLen is ignored for inbox_* tiers — they get their normal weight', () => {
-    const w = tierMultiplier(
+  it('bodyLen is ignored for inbox_* tiers — they get their normal bonus', () => {
+    const b = tierBonus(
       { authoringTier: 'inbox_personal', bodyLen: 10 },
       'normal',
     );
-    expect(w).toBe(1.0);
+    expect(b).toBe(0);
   });
 
   it('non-numeric bodyLen is treated as absent', () => {
-    const w = tierMultiplier(
+    const b = tierBonus(
       { authoringTier: 'user_sent_reply', bodyLen: 'short' },
       'normal',
     );
-    expect(w).toBe(1.2);
+    expect(b).toBeCloseTo(0.003);
   });
 });
 
-describe('buildTierWeightFn closes over the calibration band', () => {
+describe('buildTierBonusFn closes over the calibration band', () => {
   it('returned function is stable per calibration', () => {
-    const fn = buildTierWeightFn('dense');
-    expect(fn({ authoringTier: 'user_sent_originated' })).toBe(2.0);
-    expect(fn({ authoringTier: 'inbox_newsletter' })).toBe(0.75);
-    expect(fn({})).toBe(1.0);
+    const fn = buildTierBonusFn('dense');
+    expect(fn({ authoringTier: 'user_sent_originated' })).toBeCloseTo(0.008);
+    expect(fn({ authoringTier: 'inbox_newsletter' })).toBe(0);
+    expect(fn({})).toBe(0);
   });
 });
 
@@ -148,5 +174,14 @@ describe('calibrationFromSentVolume — thresholds', () => {
   it('> 1000 → dense', () => {
     expect(calibrationFromSentVolume(1001)).toBe('dense');
     expect(calibrationFromSentVolume(10_000)).toBe('dense');
+  });
+});
+
+describe('back-compat aliases', () => {
+  it('tierMultiplier and tierBonus are the same function', () => {
+    expect(tierMultiplier).toBe(tierBonus);
+  });
+  it('buildTierWeightFn and buildTierBonusFn are the same function', () => {
+    expect(buildTierWeightFn).toBe(buildTierBonusFn);
   });
 });

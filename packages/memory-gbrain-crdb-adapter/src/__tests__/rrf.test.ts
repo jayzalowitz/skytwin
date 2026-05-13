@@ -93,16 +93,16 @@ describe('rrfFold', () => {
     expect(lowGap).toBeGreaterThan(highGap);
   });
 
-  describe('with tierWeight (#251 Layer 2)', () => {
+  describe('with tierWeight (#251 Layer 2 — additive)', () => {
     function pageWithTier(id: string, tier: string): BrainPageRow {
       const p = makePage(id);
       return { ...p, metadata: { authoringTier: tier } };
     }
 
-    it('flips ranking when a lower-base-rank authored page outweighs a top-rank newsletter', () => {
-      // Both pages match the query equally on text — newsletter happens
-      // to rank first (e.g. the corpus had more of them). Without tier
-      // weighting newsletter wins; with normal-band weighting authored wins.
+    it('flips a close call: rank-2 authored beats rank-1 newsletter with additive bonus', () => {
+      // Both pages match equally on text — newsletter happens to rank
+      // first. Without weighting newsletter wins; with a small additive
+      // authored bonus, the close gap flips.
       const text = [
         { page: pageWithTier('newsletter', 'inbox_newsletter'), score: 1 },
         { page: pageWithTier('authored', 'user_sent_originated'), score: 0.99 },
@@ -113,61 +113,83 @@ describe('rrfFold', () => {
       const weighted = rrfFold(text, [], 5, 60, {
         tierWeight: (meta) => {
           const t = (meta as { authoringTier?: string } | null)?.authoringTier;
-          if (t === 'user_sent_originated') return 1.5;
-          if (t === 'inbox_newsletter') return 0.4;
-          return 1.0;
+          if (t === 'user_sent_originated') return 0.005; // additive
+          if (t === 'inbox_newsletter') return -0.004; // additive
+          return 0;
         },
       });
       expect(weighted[0]!.id).toBe('authored');
     });
 
-    it('userOverride: hidden (weight 0) drops the page entirely', () => {
+    it('does NOT let a weak-match authored page leapfrog a strong primary', () => {
+      // Strong primary: rank 1 in BOTH lists → rrfScore ≈ 2/(60+1) = 0.0328.
+      // Weak authored distractor: rank 20 in text only → rrfScore ≈
+      // 1/(60+20) = 0.0125. Even with +0.005 authored bonus the weak
+      // distractor lands at 0.0175, well below the primary's worst case
+      // of 0.0328 + (any received bonus). The 0.85 floor-ratio gate also
+      // prevents the bonus from applying at this rank (0.0125 < 0.85 ×
+      // 0.0328 = 0.0279), so the bonus isn't even computed for it.
+      const text = Array.from({ length: 20 }, (_, i) => ({
+        page: pageWithTier(`text-${i}`, i === 19 ? 'user_sent_originated' : 'inbox_personal'),
+        score: 1 - i * 0.01,
+      }));
+      const newsletter = pageWithTier('strong-newsletter', 'inbox_newsletter');
+      text.unshift({ page: newsletter, score: 1 });
+      const vec = [{ page: newsletter, score: 1 }];
+      const out = rrfFold(text, vec, 25, 60, {
+        tierWeight: (meta) => {
+          const t = (meta as { authoringTier?: string } | null)?.authoringTier;
+          if (t === 'user_sent_originated') return 0.005;
+          if (t === 'inbox_newsletter') return -0.004;
+          return 0;
+        },
+      });
+      expect(out[0]!.id).toBe('strong-newsletter');
+      const weakAuthoredIdx = out.findIndex((h) => h.id === 'text-19');
+      expect(weakAuthoredIdx).toBeGreaterThan(0);
+    });
+
+    it('userOverride: hidden (NEGATIVE_INFINITY sentinel) drops the page entirely', () => {
       const text = [
         { page: pageWithTier('keep', 'inbox_personal'), score: 1 },
         { page: pageWithTier('hide-me', 'user_sent_originated'), score: 0.5 },
       ];
       const out = rrfFold(text, [], 5, 60, {
         tierWeight: (meta) => {
-          const o = (meta as { id?: string; authoringTier?: string } | null);
-          // simulate "the hide-me page was marked hidden"
-          if (text.find((t) => t.page.id === 'hide-me')?.page.metadata === o)
-            return 0;
-          return 1.0;
+          const m = meta as { authoringTier?: string } | null;
+          if (text.find((t) => t.page.id === 'hide-me')?.page.metadata === m)
+            return Number.NEGATIVE_INFINITY;
+          return 0;
         },
       });
       expect(out.map((h) => h.id)).not.toContain('hide-me');
       expect(out[0]!.id).toBe('keep');
     });
 
-    it('coerces non-finite or negative weights defensively (NaN → 1.0, <0 → 0)', () => {
+    it('coerces non-finite returns defensively (NaN/undefined → 0, no contribution)', () => {
       const text = [
         { page: pageWithTier('keep-nan', 'inbox_personal'), score: 1 },
         { page: pageWithTier('keep-undef', 'inbox_personal'), score: 0.9 },
-        { page: pageWithTier('drop-neg', 'inbox_personal'), score: 0.8 },
       ];
       const out = rrfFold(text, [], 5, 60, {
         tierWeight: (meta) => {
-          const id = (meta as { authoringTier?: string } | null);
-          // Return progressively misbehaving values; the fold must survive.
-          if (id === text[0]!.page.metadata) return Number.NaN;
-          if (id === text[1]!.page.metadata) return undefined as unknown as number;
-          if (id === text[2]!.page.metadata) return -5;
-          return 1;
+          const m = meta as { authoringTier?: string } | null;
+          if (m === text[0]!.page.metadata) return Number.NaN;
+          if (m === text[1]!.page.metadata) return undefined as unknown as number;
+          return 0;
         },
       });
       const ids = out.map((h) => h.id);
-      // NaN and undefined → identity (kept); negative → dropped like 'hidden'.
+      // Both NaN and undefined → 0 contribution → page kept at raw rrfScore.
       expect(ids).toContain('keep-nan');
       expect(ids).toContain('keep-undef');
-      expect(ids).not.toContain('drop-neg');
-      // rrfScore should be a finite number for survivors.
       for (const hit of out) {
         expect(Number.isFinite(hit.rrfScore)).toBe(true);
         expect(hit.rrfScore).toBeGreaterThan(0);
       }
     });
 
-    it('preserves textRank/vectorRank even after weighting', () => {
+    it('preserves textRank/vectorRank even after additive bonus', () => {
       const text = [
         { page: pageWithTier('a', 'inbox_newsletter'), score: 1 },
         { page: pageWithTier('b', 'user_sent_originated'), score: 0.9 },
@@ -175,15 +197,15 @@ describe('rrfFold', () => {
       const out = rrfFold(text, [], 5, 60, {
         tierWeight: (meta) => {
           const t = (meta as { authoringTier?: string } | null)?.authoringTier;
-          return t === 'user_sent_originated' ? 1.5 : 0.4;
+          return t === 'user_sent_originated' ? 0.005 : -0.004;
         },
       });
       const a = out.find((h) => h.id === 'a');
       const b = out.find((h) => h.id === 'b');
-      // Raw text ranks survive even though the multiplier reorders rrfScore.
+      // Raw text ranks survive even though the bonus reorders rrfScore.
       expect(a?.textRank).toBe(1);
       expect(b?.textRank).toBe(2);
-      // b wins despite ranking #2 on text because of the tier multiplier.
+      // b wins despite ranking #2 on text because of the additive bonus.
       expect(out[0]!.id).toBe('b');
     });
   });

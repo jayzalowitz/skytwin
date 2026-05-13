@@ -460,7 +460,7 @@ export class InMemoryBrainStore {
       hybrid_notification_dismissed:
         patch.hybrid_notification_dismissed ?? existing?.hybrid_notification_dismissed ?? false,
       routing: patch.routing ?? existing?.routing ?? {},
-      tier_weighting: patch.tier_weighting ?? existing?.tier_weighting ?? false,
+      tier_weighting: patch.tier_weighting ?? existing?.tier_weighting ?? true,
       tier_calibration: patch.tier_calibration ?? existing?.tier_calibration ?? 'normal',
       updated_at: new Date(),
     };
