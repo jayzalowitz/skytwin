@@ -243,8 +243,13 @@ export class InMemoryBrainStore {
       const labels = Array.isArray(data['labels']) ? (data['labels'] as string[]) : [];
       const isSent = labels.includes('SENT');
       if (isSent) {
+        // Include both `to` and `cc` — a user who only ever replies via CC
+        // would otherwise show zero sent-side contacts and never reach
+        // the bidirectional join.
         const toRaw = typeof data['to'] === 'string' ? (data['to'] as string) : '';
-        for (const addr of toRaw.split(',').map((s) => bareAddrInMemory(s))) {
+        const ccRaw = typeof data['cc'] === 'string' ? (data['cc'] as string) : '';
+        const recipients = `${toRaw},${ccRaw}`.split(',').map((s) => bareAddrInMemory(s));
+        for (const addr of recipients) {
           if (!addr) continue;
           if (!sent.has(addr)) sent.set(addr, new Set());
           sent.get(addr)!.add(day);

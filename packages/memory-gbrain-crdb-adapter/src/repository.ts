@@ -574,6 +574,20 @@ export async function computeBidirectionalThreadCounts(
   userId: string,
   windowDays = 90,
 ): Promise<Map<string, number>> {
+  // Address extraction must mirror `extractBareAddress` in
+  // `packages/connectors/src/authoring-tier.ts` and the inline helper in
+  // `EmbeddedGbrainMemoryPort.buildPageMetadata`, otherwise the contact
+  // keys here won't match `metadata.fromAddress` on `brain_pages` (which
+  // is what the worker reads when classifying each page). Two pieces:
+  //
+  //   1. From `"Display Name <addr@x.com>"`, pull out the inside-angle
+  //      portion. `regexp_replace(..., '.*<([^>]+)>.*', '\1')` returns
+  //      the captured group when matched, OR the original string
+  //      unchanged when not matched (raw `addr@x.com` with no brackets).
+  //   2. `to`/`cc` are comma-separated lists. `string_to_array` + lateral
+  //      `unnest` splits them; we then apply the same bracket extraction
+  //      per-element. Without this, multi-recipient sent emails
+  //      contribute zero matchable contacts.
   const sql = `
     WITH user_signals AS (
       SELECT
@@ -587,27 +601,39 @@ export async function computeBidirectionalThreadCounts(
     ),
     received AS (
       SELECT
-        LOWER(TRIM(BOTH '<>' FROM data->>'from')) AS contact,
+        LOWER(TRIM(regexp_replace(data->>'from', '.*<([^>]+)>.*', '\\1'))) AS contact,
         day
       FROM user_signals
       WHERE data->>'from' IS NOT NULL
         AND data->>'from' != ''
         AND NOT (data->'labels' @> '"SENT"'::JSONB)
     ),
+    sent_recipients AS (
+      SELECT
+        TRIM(recip) AS recip_raw,
+        day
+      FROM user_signals,
+        LATERAL unnest(
+          string_to_array(
+            COALESCE(data->>'to', '') || ',' || COALESCE(data->>'cc', ''),
+            ','
+          )
+        ) AS recip
+      WHERE data->'labels' @> '"SENT"'::JSONB
+    ),
     sent AS (
       SELECT
-        LOWER(TRIM(BOTH '<>' FROM data->>'to')) AS contact,
+        LOWER(TRIM(regexp_replace(recip_raw, '.*<([^>]+)>.*', '\\1'))) AS contact,
         day
-      FROM user_signals
-      WHERE data->>'to' IS NOT NULL
-        AND data->>'to' != ''
-        AND data->'labels' @> '"SENT"'::JSONB
+      FROM sent_recipients
+      WHERE recip_raw != ''
     )
     SELECT
       r.contact AS contact,
       COUNT(DISTINCT r.day) AS bidirectional_days
     FROM received r
     INNER JOIN sent s ON s.contact = r.contact
+    WHERE r.contact != ''
     GROUP BY r.contact
   `;
   const result = await query<{ contact: string; bidirectional_days: string }>(sql, [

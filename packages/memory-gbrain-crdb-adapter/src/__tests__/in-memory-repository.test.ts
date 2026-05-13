@@ -495,3 +495,99 @@ describe('InMemoryBrainStore — findPagesMissingAuthoringTier (#251 backfill)',
     expect(store.findPagesMissingAuthoringTier(null, 2)).toHaveLength(2);
   });
 });
+
+describe('InMemoryBrainStore — computeBidirectionalThreadCounts (#251 Phase 2)', () => {
+  let store: InMemoryBrainStore;
+  beforeEach(() => {
+    store = new InMemoryBrainStore();
+  });
+
+  function seedReceived(id: string, fromHeader: string, day: string) {
+    store.insertSignal({
+      id,
+      userId: 'u1',
+      source: 'gmail',
+      type: 'email',
+      data: { from: fromHeader, labels: ['INBOX'] },
+      signalTimestamp: new Date(day),
+    });
+  }
+  function seedSent(id: string, toHeader: string, day: string, ccHeader?: string) {
+    store.insertSignal({
+      id,
+      userId: 'u1',
+      source: 'gmail',
+      type: 'email',
+      data: {
+        from: 'me@example.com',
+        to: toHeader,
+        ...(ccHeader ? { cc: ccHeader } : {}),
+        labels: ['SENT'],
+      },
+      signalTimestamp: new Date(day),
+    });
+  }
+
+  it('extracts bare address from RFC 5322 display-name format', () => {
+    seedReceived('r1', 'Alice Smith <alice@example.com>', '2026-05-01');
+    seedSent('s1', 'Alice Smith <alice@example.com>', '2026-05-02');
+    const out = store.computeBidirectionalThreadCounts('u1', 90);
+    expect(out.get('alice@example.com')).toBe(1);
+    expect(out.has('alice smith <alice@example.com>')).toBe(false);
+  });
+
+  it('handles bare addresses without angle brackets', () => {
+    seedReceived('r1', 'bob@example.com', '2026-05-01');
+    seedSent('s1', 'bob@example.com', '2026-05-02');
+    const out = store.computeBidirectionalThreadCounts('u1', 90);
+    expect(out.get('bob@example.com')).toBe(1);
+  });
+
+  it('splits comma-separated `to` lists into individual recipients', () => {
+    // Received once from each of two contacts.
+    seedReceived('r1', 'alice@example.com', '2026-05-01');
+    seedReceived('r2', 'carol@example.com', '2026-05-01');
+    // Single sent email to both — without splitting, neither would match.
+    seedSent('s1', 'alice@example.com, carol@example.com', '2026-05-02');
+    const out = store.computeBidirectionalThreadCounts('u1', 90);
+    expect(out.get('alice@example.com')).toBe(1);
+    expect(out.get('carol@example.com')).toBe(1);
+  });
+
+  it('considers `cc` recipients as bidirectional contacts', () => {
+    seedReceived('r1', 'dan@example.com', '2026-05-01');
+    seedSent('s1', 'alice@example.com', '2026-05-02', 'dan@example.com');
+    const out = store.computeBidirectionalThreadCounts('u1', 90);
+    expect(out.get('dan@example.com')).toBe(1);
+  });
+
+  it('returns 0 for received-only contacts (no bidirectional)', () => {
+    seedReceived('r1', 'eve@example.com', '2026-05-01');
+    seedSent('s1', 'alice@example.com', '2026-05-02');
+    const out = store.computeBidirectionalThreadCounts('u1', 90);
+    expect(out.has('eve@example.com')).toBe(false);
+    expect(out.get('alice@example.com')).toBeUndefined();
+  });
+
+  it('counts distinct days, not distinct messages', () => {
+    seedReceived('r1', 'frank@example.com', '2026-05-01');
+    seedReceived('r2', 'frank@example.com', '2026-05-01'); // same day
+    seedReceived('r3', 'frank@example.com', '2026-05-03');
+    seedSent('s1', 'frank@example.com', '2026-05-02');
+    const out = store.computeBidirectionalThreadCounts('u1', 90);
+    expect(out.get('frank@example.com')).toBe(2); // 05-01 + 05-03
+  });
+
+  it('respects the windowDays cutoff', () => {
+    const longAgo = new Date(Date.now() - 200 * 24 * 60 * 60 * 1000)
+      .toISOString()
+      .slice(0, 10);
+    seedReceived('r-old', 'gary@example.com', longAgo);
+    seedSent('s-old', 'gary@example.com', longAgo);
+    seedReceived('r1', 'henry@example.com', new Date().toISOString().slice(0, 10));
+    seedSent('s1', 'henry@example.com', new Date().toISOString().slice(0, 10));
+    const out = store.computeBidirectionalThreadCounts('u1', 90);
+    expect(out.has('gary@example.com')).toBe(false);
+    expect(out.get('henry@example.com')).toBe(1);
+  });
+});
