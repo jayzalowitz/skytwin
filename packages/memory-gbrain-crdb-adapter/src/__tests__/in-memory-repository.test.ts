@@ -578,6 +578,28 @@ describe('InMemoryBrainStore — computeBidirectionalThreadCounts (#251 Phase 2)
     expect(out.get('frank@example.com')).toBe(2); // 05-01 + 05-03
   });
 
+  it('treats missing labels as received (not silently dropped)', () => {
+    // Copilot finding on Phase 4: when `labels` is missing/NULL the
+    // CRDB predicate `data->'labels' @> '"SENT"'::JSONB` yields NULL,
+    // which is falsy in WHERE — and `NOT NULL` is also falsy — so the
+    // signal was silently dropped from BOTH CTEs. The in-memory mirror
+    // already handled this correctly (Array.isArray check returns []),
+    // but the test pins the behaviour so a future refactor can't
+    // regress to the SQL-divergent state.
+    store.insertSignal({
+      id: 's-no-labels',
+      userId: 'u1',
+      source: 'gmail',
+      type: 'email',
+      // no `labels` key at all
+      data: { from: 'irene@example.com' },
+      signalTimestamp: new Date('2026-05-01'),
+    });
+    seedSent('s1', 'irene@example.com', '2026-05-02');
+    const out = store.computeBidirectionalThreadCounts('u1', 90);
+    expect(out.get('irene@example.com')).toBe(1);
+  });
+
   it('respects the windowDays cutoff', () => {
     const longAgo = new Date(Date.now() - 200 * 24 * 60 * 60 * 1000)
       .toISOString()

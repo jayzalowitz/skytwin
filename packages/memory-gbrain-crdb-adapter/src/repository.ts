@@ -606,7 +606,13 @@ export async function computeBidirectionalThreadCounts(
       FROM user_signals
       WHERE data->>'from' IS NOT NULL
         AND data->>'from' != ''
-        AND NOT (data->'labels' @> '"SENT"'::JSONB)
+        -- COALESCE the @> result: when labels is NULL/missing the
+        -- predicate yields NULL, which is falsy in WHERE and silently
+        -- drops the row from BOTH the received AND sent CTEs (since
+        -- received uses NOT (NULL) = NULL = falsy too). Treat missing
+        -- labels as "not SENT" so received still picks it up, matching
+        -- the in-memory mirror which reads labels as [] when absent.
+        AND NOT COALESCE(data->'labels' @> '"SENT"'::JSONB, false)
     ),
     sent_recipients AS (
       SELECT
@@ -619,7 +625,7 @@ export async function computeBidirectionalThreadCounts(
             ','
           )
         ) AS recip
-      WHERE data->'labels' @> '"SENT"'::JSONB
+      WHERE COALESCE(data->'labels' @> '"SENT"'::JSONB, false)
     ),
     sent AS (
       SELECT
