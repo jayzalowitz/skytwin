@@ -64,7 +64,7 @@ export function createSessionsRouter(): Router {
   router.get('/:userId', sessionAuth, requireOwnership, async (req, res, next) => {
     try {
       const { userId } = req.params;
-      if (!userId) {
+      if (typeof userId !== 'string' || !userId) {
         res.status(400).json({ error: 'Missing userId' });
         return;
       }
@@ -93,7 +93,7 @@ export function createSessionsRouter(): Router {
     try {
       const { sessionId } = req.params;
       const body = req.body as { userId?: string };
-      if (!sessionId) {
+      if (typeof sessionId !== 'string' || !sessionId) {
         res.status(400).json({ error: 'Missing sessionId' });
         return;
       }
