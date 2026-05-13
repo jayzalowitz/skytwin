@@ -92,13 +92,14 @@ CI is unaffected (clean dist on every run).
 | `@skytwin/policy-engine` | Policy evaluation, trust tier enforcement, spend limit checks. |
 | `@skytwin/ironclaw-adapter` | HTTP adapter for the [IronClaw](https://github.com/nearai/ironclaw/) execution server. HMAC-SHA256 auth, retries, circuit breaker. Includes DirectExecutionAdapter fallback and mock for testing. |
 | `@skytwin/execution-router` | Adapter selection between IronClaw, OpenClaw, and Direct execution with trust-ranked fallback chains, risk modifiers, skill gap detection, and dynamic adapter discovery from plugin directories. |
-| `@skytwin/llm-client` | Unified LLM client with provider chain (Anthropic, OpenAI, Google, Ollama). Per-provider circuit breakers, SSRF-safe URL validation, prompt builder, and response parser. No SDK dependencies. |
+| `@skytwin/llm-client` | Unified LLM client with provider chain (Anthropic, OpenAI, Google, Ollama, embedded). Per-provider circuit breakers, SSRF-safe URL validation, prompt builder, response parser, and `estimateLlmCostCents()` helper (embedded/Ollama always return 0). No SDK dependencies. |
+| `@skytwin/embedded-llm` | Local-first LLM runtime: `llama.cpp` text backend, `whisper.cpp` STT backend (`/api/voice/transcribe`), and Piper TTS backend (`/api/voice/synthesize`). Spawn-based — each backend probes for its binary + model and falls back to a `Null*Port` when either is missing. Used by `llm-client` as the `embedded` provider and by `/api/voice/*` for the voice loop. |
 | `@skytwin/explanations` | Generates human-readable explanations for decisions and actions. |
-| `@skytwin/connectors` | Gmail, Google Calendar, and mock signal connectors with OAuth token management (DbTokenStore). |
+| `@skytwin/connectors` | Gmail, Google Calendar, and mock signal connectors with OAuth token management (DbTokenStore). Stamps every signal with an `AuthoringTier` (six tiers from `user_sent_originated` to `inbox_automated`) so retrieval can weight self-authored content above broadcast noise (#251 Layer 1). |
 | `@skytwin/mempalace` | Legacy memory system: spatial memory organization (wings/rooms/drawers), 4-layer retrieval stack, knowledge graph with temporal triples, episodic memory, AAAK compression. Selectable as a backend via `MEMORY_BACKEND=mempalace`; otherwise gbrain is the default. |
 | `@skytwin/memory-port` | Backend-agnostic `MemoryPort` interface + `SignalsRouter` polyfill engine + capability negotiation. The contract every memory backend implements (#196). |
 | `@skytwin/memory-gbrain` | Default memory backend (#197). `EmbeddedGbrainMemoryPort` runs in-process against the brain_* CRDB tables; vector + tsvector RRF for semantic and code-aware search. CLI-shellout `GbrainMemoryPort` kept for users with an external gbrain. |
-| `@skytwin/memory-gbrain-crdb-adapter` | CockroachDB-backed driver for the gbrain backend. Repository functions, embedding providers (hash-trick fallback + OpenAI-compatible HTTP), in-memory store for tests, RRF fold. |
+| `@skytwin/memory-gbrain-crdb-adapter` | CockroachDB-backed driver for the gbrain backend. Repository functions, embedding providers (hash-trick fallback + OpenAI-compatible HTTP), in-memory store for tests, RRF fold with tier-weighted scoring (#251 Layer 2) that multiplies fused scores by per-tier weights tuned on the ablation corpus. Pin/hide controls (#270) and the authoring-tier backfill worker (#271) operate against the same `brain_pages.metadata.authoringTier` field. |
 | `@skytwin/memory-hybrid` | Composes any two `MemoryPort` impls. Reads route per-capability; writes dual-write best-effort. Exposes diagnostics counters. |
 | `@skytwin/memory-mempalace` | `MemPalaceMemoryPort` adapter — wraps the legacy `@skytwin/mempalace` classes against the `MemoryPort` contract. |
 | `@skytwin/evals` | Evaluation framework for measuring decision quality over time. |
@@ -111,8 +112,9 @@ CI is unaffected (clean dist on every run).
 | `web` | Web dashboard for reviewing decisions, managing preferences, and configuring policies. |
 | `worker` | Background job processor for async decision execution and feedback processing. Includes startup hang detection and graceful shutdown. |
 | `desktop` | Electron desktop app with electron-builder. Cross-platform builds for macOS (.dmg), Windows (.exe), and Linux (.AppImage/.deb). |
-| `mobile` | React Native mobile app (Expo). QR code pairing, mDNS API discovery, SSE real-time streaming, push notifications. |
+| `mobile` | React Native mobile app (Expo SDK 55). QR code pairing, mDNS API discovery, SSE real-time streaming, push notifications, and voice capture (`VoiceScreen` records via `expo-audio`, base64-encodes via `expo-file-system`, and ships to the paired desktop's `/api/voice/transcribe` for on-device whisper.cpp transcription). |
 | `openclaw-bridge` | Lightweight bridge server connecting SkyTwin's OpenClaw adapter to a local Ollama instance for LLM reasoning. |
+| `twin-mcp-server` | MCP server exposing the twin's read-only surface (decisions, learnings, recent activity) to external MCP clients. |
 
 ## Key Patterns
 

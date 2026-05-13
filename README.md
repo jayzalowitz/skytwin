@@ -6,7 +6,7 @@
 
 <a href="https://github.com/jayzalowitz/skytwin/actions/workflows/build.yml"><img src="https://github.com/jayzalowitz/skytwin/actions/workflows/build.yml/badge.svg" alt="Build"></a>
 <a href="https://github.com/jayzalowitz/skytwin/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"></a>
-<img src="https://img.shields.io/badge/version-0.6.17.0-green.svg" alt="Version">
+<img src="https://img.shields.io/badge/version-0.6.21.0-green.svg" alt="Version">
 <img src="https://img.shields.io/badge/tests-1436%20passing-brightgreen.svg" alt="Tests">
 <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux%20%7C%20iOS%20%7C%20Android-lightgrey.svg" alt="Platform">
 
@@ -185,7 +185,7 @@ pnpm test   # 1,436 tests across 96 files
 
 ## Architecture
 
-SkyTwin is a TypeScript monorepo (pnpm + Turborepo) with 14 packages and 6 apps:
+SkyTwin is a TypeScript monorepo (pnpm + Turborepo) with 29 packages and 7 apps:
 
 ```
 apps/
@@ -320,7 +320,7 @@ Trust is **domain-specific**. You might be at `moderate_autonomy` for email but 
 
 ## Project Status
 
-SkyTwin is in **active development** (v0.5.4.0). The core decision pipeline, twin model, policy engine, and memory palace are functional. Gmail and Google Calendar connectors work with real OAuth. Desktop builds ship for all three platforms. The mobile app pairs via QR code. v0.5.0.0 brought the one-command installer and a non-technical-user UX overhaul; v0.5.1.0 through v0.5.4.0 closed the post-/review follow-ups.
+SkyTwin is in **active development** (v0.6.21.0). The core decision pipeline, twin model, policy engine, and memory palace are functional. Gmail and Google Calendar connectors work with real OAuth. Desktop builds ship for all three platforms. The mobile app pairs via QR code and can capture voice. v0.5.0.0 brought the one-command installer and a non-technical-user UX overhaul; v0.5.1.0 through v0.5.4.0 closed the post-/review follow-ups; the v0.6 series added the embedded local LLM (#187), tier-aware memory retrieval (#251), per-Lifebook surfaces (#193), and the voice loop (mobile capture + Piper TTS).
 
 **What works today:**
 - One-command install (`curl | bash`) on macOS, Linux, and WSL — installs every dependency, clones the repo, starts the services, opens the dashboard
@@ -333,7 +333,8 @@ SkyTwin is in **active development** (v0.5.4.0). The core decision pipeline, twi
 - Swappable memory backend: gbrain (default — vector + tsvector RRF on CRDB) plus optional hybrid mode that adds the legacy spatial Memory Palace (#197). Selectable per-installation via `MEMORY_BACKEND` and per-user via the dashboard. See [`docs/memory-swap.md`](./docs/memory-swap.md).
 - Web dashboard for reviewing decisions, managing preferences, configuring AI providers, and auditing
 - Desktop app (macOS, Windows, Linux) with system-browser OAuth for Google accounts
-- Mobile app (iOS, Android) with QR pairing and push notifications
+- Mobile app (iOS, Android) with QR pairing, push notifications, and voice capture that ships audio to the paired desktop for transcription
+- Embedded local LLM stack: llama.cpp text, whisper.cpp STT, Piper TTS (`/api/voice/transcribe` and `/api/voice/synthesize`) — runs entirely on-device when binaries + models are present
 - SSRF-safe URL validation for all LLM provider endpoints, with DNS rebinding protection
 - Dynamic adapter discovery for third-party execution plugins
 - 1,436 tests with CI/CD on GitHub Actions
