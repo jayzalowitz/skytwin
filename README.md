@@ -7,7 +7,7 @@
 <a href="https://github.com/jayzalowitz/skytwin/actions/workflows/build.yml"><img src="https://github.com/jayzalowitz/skytwin/actions/workflows/build.yml/badge.svg" alt="Build"></a>
 <a href="https://github.com/jayzalowitz/skytwin/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"></a>
 <img src="https://img.shields.io/badge/version-0.6.21.0-green.svg" alt="Version">
-<img src="https://img.shields.io/badge/tests-1436%20passing-brightgreen.svg" alt="Tests">
+<img src="https://img.shields.io/badge/tests-2985%20passing-brightgreen.svg" alt="Tests">
 <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux%20%7C%20iOS%20%7C%20Android-lightgrey.svg" alt="Platform">
 
 </div>
@@ -180,7 +180,7 @@ The API starts on `localhost:3100`, the web dashboard on `localhost:3200`.
 ### Running Tests
 
 ```bash
-pnpm test   # 1,436 tests across 96 files
+pnpm test   # ~2,985 tests across 36 workspace packages
 ```
 
 ## Architecture
@@ -189,28 +189,44 @@ SkyTwin is a TypeScript monorepo (pnpm + Turborepo) with 29 packages and 7 apps:
 
 ```
 apps/
-  api/              HTTP API — decisions, user management, webhooks
-  web/              Dashboard — review decisions, manage preferences, configure policies
-  worker/           Background jobs — async execution, feedback processing
-  desktop/          Electron app — macOS (.dmg), Windows (.exe), Linux (.AppImage)
-  mobile/           React Native (Expo) — QR pairing, push notifications, SSE streaming
-  openclaw-bridge/  OpenClaw proxy — bridges local API to OpenClaw execution service
+  api/                HTTP API — decisions, user management, webhooks, /api/voice/*
+  web/                Dashboard — review decisions, manage preferences, configure policies
+  worker/             Background jobs — async execution, briefing generation, tier backfill
+  desktop/            Electron app — macOS (.dmg), Windows (.exe), Linux (.AppImage)
+  mobile/             React Native (Expo) — QR pairing, push notifications, SSE, voice capture
+  openclaw-bridge/    OpenClaw proxy — bridges local API to OpenClaw execution service
+  twin-mcp-server/    MCP server exposing the twin's read-only surface to external clients
 
 packages/
-  shared-types/     TypeScript interfaces — the dependency root for everything
-  config/           Env var loading and validation
-  core/             Retry logic, circuit breaker, error types, logging
-  db/               CockroachDB client, migrations, repositories
-  twin-model/       Twin profile CRUD, preference learning, confidence scoring
-  decision-engine/  Event interpretation, candidate generation, action selection
-  policy-engine/    Trust tiers, spend limits, domain policies, safety checks
-  ironclaw-adapter/ Execution adapter with HMAC auth, retries, circuit breaker
-  execution-router/ Adapter selection, fallback chains, risk modifiers, plugin discovery
-  llm-client/       Unified LLM client — Anthropic, OpenAI, Google, Ollama with provider chain
-  explanations/     Human-readable explanation generation
-  connectors/       Gmail, Calendar, and mock connectors with OAuth management
-  mempalace/        Episodic memory, knowledge graph, 4-layer retrieval stack
-  evals/            Decision quality evaluation and regression testing
+  shared-types/                   TypeScript interfaces — the dependency root for everything
+  config/                         Env var loading and validation
+  core/                           Retry logic, circuit breaker, error types, logging
+  db/                             CockroachDB client, migrations, repositories
+  twin-model/                     Twin profile CRUD, preference learning, confidence scoring
+  decision-engine/                Event interpretation, candidate generation, action selection
+  policy-engine/                  Trust tiers, spend limits, domain policies, safety checks
+  policy-prompts/                 Versioned LLM prompts with JSON schema validation and deterministic fallbacks
+  ironclaw-adapter/               Execution adapter with HMAC auth, retries, circuit breaker
+  execution-router/               Adapter selection, fallback chains, risk modifiers, plugin discovery
+  llm-client/                     Unified LLM client — Anthropic / OpenAI / Google / Ollama / embedded
+  embedded-llm/                   Local-first: llama.cpp text, whisper.cpp STT, Piper TTS — spawn-based
+  explanations/                   Human-readable explanation generation
+  connectors/                     Gmail / Calendar / mock connectors with OAuth, stamps AuthoringTier
+  assistant/                      Stateless chat service wrapping LlmClient with context enrichment
+  capability-engine/              Infers user app capabilities from signals (keyword v1 + LLM verification)
+  credential-vault/               Envelope encryption for OAuth tokens (AES-256-GCM + scrypt KDF)
+  idle-miner/                     Filesystem scanner that extracts project metadata during idle time
+  mcp-host/                       Manages MCP servers (stdio/HTTP/SSE) with circuit breakers + telemetry
+  dxt/                            Serializes/deserializes DXT artifacts (packed MCP server configs)
+  observability/                  In-memory metrics + ring-buffered rollup for the capability loop
+  registry-client/                Loads curated MCP registry entries with OAuth quirks and service lookup
+  mempalace/                      Legacy memory: episodic, knowledge graph, 4-layer retrieval (opt-in backend)
+  memory-port/                    Backend-agnostic MemoryPort interface + capability negotiation
+  memory-gbrain/                  Default memory backend — vector + tsvector RRF on CRDB brain_* tables
+  memory-gbrain-crdb-adapter/     CRDB driver for gbrain — tier-weighted RRF, pin/hide, embedding providers
+  memory-hybrid/                  Composes any two MemoryPort impls — per-capability read routing
+  memory-mempalace/               MemoryPort adapter for the legacy mempalace classes
+  evals/                          Decision quality evaluation and regression testing
 ```
 
 ### Tech Stack
