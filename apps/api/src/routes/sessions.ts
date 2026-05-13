@@ -65,7 +65,7 @@ export function createSessionsRouter(): Router {
     try {
       const { userId } = req.params;
       if (typeof userId !== 'string' || !userId) {
-        res.status(400).json({ error: 'Missing userId' });
+        res.status(400).json({ error: 'Missing or invalid userId' });
         return;
       }
       const sessions = await sessionRepository.findActiveByUser(userId);
@@ -94,7 +94,7 @@ export function createSessionsRouter(): Router {
       const { sessionId } = req.params;
       const body = req.body as { userId?: string };
       if (typeof sessionId !== 'string' || !sessionId) {
-        res.status(400).json({ error: 'Missing sessionId' });
+        res.status(400).json({ error: 'Missing or invalid sessionId' });
         return;
       }
       if (!body.userId) {
