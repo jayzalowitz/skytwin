@@ -1,6 +1,79 @@
 All notable changes to SkyTwin will be documented in this file.
 
-## [0.6.22.1] - 2026-05-14
+## [unreleased] — Documentary-poisoning injection guard
+
+Closes the "no risk this thing rm/rf's me" concern: a defense against
+prompt injection through content the twin reads but the user did not
+author — inbound email bodies, files found during the idle filesystem
+crawl, web pages, calendar invites from other people. An attacker who
+gets text in front of the twin can no longer steer it into a
+destructive action that auto-executes.
+
+The guard has two independent axes, deliberately kept separate:
+
+- **Provenance** — *where* the decision originated. `user_originated`
+  (the user authored it), `trusted_context` (their own profile /
+  learned state), or `untrusted_external` (everything else). This is
+  the load-bearing security boundary: it never inspects what the
+  injected text says, only where the triggering content came from, so
+  a brand-new injection vector still lands in `untrusted_external` and
+  is still gated. Missing provenance fails safe — treated as untrusted.
+- **Severity** — *how destructive* the action shape is. `none`,
+  `destructive` (delete mail/events, revoke tokens, bulk operations),
+  or `extreme` (shell execution, recursive filesystem deletion,
+  database drops, account deletion). A pattern-based hint — including
+  detection of destructive command signatures smuggled through string
+  parameters — layered on top to choose one-click vs. two-click.
+
+Nothing is hard-denied. Every action keeps a path to execution; the
+guard only ever escalates to human confirmation:
+
+- **extreme severity** → two-step token-gated confirmation, regardless
+  of provenance or trust tier. Two distinct clicks — documentary-
+  poisoned content cannot click twice on its own.
+- **destructive severity** → one explicit confirmation, never
+  auto-executes, regardless of trust tier.
+- **untrusted provenance + irreversible** → one explicit confirmation.
+- **untrusted provenance + reversible + low-severity** → still
+  auto-executes (the carve-out that keeps "auto-archive newsletters"
+  working — reversible content cannot escape its own blast radius).
+
+Where it lives:
+
+- `@skytwin/shared-types` — `ActionProvenance` / `ActionSeverity` /
+  `ConfirmationLevel` types, `classifyActionSeverity()`,
+  `resolveActionProvenance()`, and `evaluateInjectionGuard()` — the
+  matrix as one pure function so the policy engine and the execution
+  router consult identical logic and cannot drift.
+- `@skytwin/policy-engine` — `checkInjectionGuard()` runs in
+  `evaluate()` before every other check (so a quiet-hours early return
+  cannot skip it) and threads `confirmationLevel` through every
+  approval path.
+- `@skytwin/decision-engine` — the situation interpreter stamps
+  provenance from the signal's authoring tier + source; candidate
+  generators inherit it; the outcome carries `confirmationLevel`.
+- `@skytwin/execution-router` — a defense-in-depth backstop refuses to
+  auto-execute any action the guard would have escalated. Approved-
+  execution callers pass `{ approved: true }` and pass through.
+- `apps/api` — the approvals `/respond` endpoint enforces dual
+  confirmation: the first POST mints a one-time token, the second must
+  carry it within a 10-minute window. The `assistant` chat path is
+  marked `user_originated` (the user instructing the twin in their own
+  words is the one genuinely trusted instruction source).
+- `apps/web` — the approvals page renders a two-step confirm for
+  dual-confirmation actions.
+- Migration `045-approval-confirmation-level.sql` — adds
+  `confirmation_level`, `first_confirmed_at`, `confirmation_token` to
+  `approval_requests` (all `ADD COLUMN IF NOT EXISTS`, idempotent).
+
+Tests: 63 new — 24 for the classifier + provenance resolver + the full
+provenance×severity matrix (`@skytwin/shared-types`), 14 for the
+policy-engine guard + `evaluate()` integration, 8 for the
+execution-router backstop, 5 for the approval-repository changes,
+12 for the dual-confirmation step classifier (token mismatch, length
+mismatch, expired window, boundary).
+
+## [0.6.23.1] - 2026-05-14
 
 ### Fixed
 

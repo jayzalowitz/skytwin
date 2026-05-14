@@ -5,6 +5,7 @@ import {
   SituationType,
   TrustTier,
 } from './enums.js';
+import type { ActionProvenance, ConfirmationLevel } from './action-safety.js';
 import { Preference } from './twin.js';
 
 /**
@@ -18,6 +19,14 @@ export interface DecisionObject {
   summary: string;
   rawData: Record<string, unknown>;
   interpretedAt: Date;
+  /**
+   * Where the triggering content originated — the documentary-poisoning
+   * defense. Set by the situation interpreter from the source signal's
+   * authoring tier + source. When absent, consumers MUST treat it as
+   * `untrusted_external` (fail safe). See `@skytwin/shared-types`
+   * `action-safety.ts`.
+   */
+  provenance?: ActionProvenance;
 }
 
 /**
@@ -55,6 +64,12 @@ export interface CandidateAction {
   reversible: boolean;
   confidence: ConfidenceLevel;
   reasoning: string;
+  /**
+   * Provenance copied from the originating `DecisionObject` so the policy
+   * engine can gate the action without re-deriving where it came from. When
+   * absent, the policy engine treats it as `untrusted_external` (fail safe).
+   */
+  provenance?: ActionProvenance;
 }
 
 /**
@@ -97,6 +112,13 @@ export interface DecisionOutcome {
    * the user could take. Safety Invariant #1.
    */
   policyVerdicts?: Record<string, PolicyVerdict>;
+  /**
+   * How many deliberate human confirmations the selected action needs when
+   * `requiresApproval` is true. `dual` means two distinct confirmations are
+   * required before execution — set by the policy engine's injection guard
+   * for extreme-severity actions. Absent / `single` means one approval.
+   */
+  confirmationLevel?: ConfirmationLevel;
 }
 
 /**

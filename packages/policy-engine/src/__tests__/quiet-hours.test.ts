@@ -18,8 +18,12 @@ function makeAction(overrides: Partial<CandidateAction> = {}): CandidateAction {
   return {
     id: 'test-action',
     decisionId: 'test-decision',
-    actionType: 'email-send',
-    description: 'Send email',
+    // archive_email: reversible and non-destructive, so the injection guard
+    // does not escalate it — keeps these tests exercising quiet-hours logic
+    // rather than tripping the guard. (`email-send` would now classify as
+    // destructive via the `send` marker.)
+    actionType: 'archive_email',
+    description: 'Archive email',
     domain: 'communication',
     parameters: {},
     estimatedCostCents: 0,
