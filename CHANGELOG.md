@@ -1,5 +1,17 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.24.0] - 2026-05-14
+
+### Fixed
+
+- **New users were silently trapped at the `observer` trust tier — their "Needs your OK" page stayed empty forever.** Every new user starts at `observer`. The twin was evaluating their incoming signals, generating candidate actions, and assessing risk — but `observer` was wired as deny-all in *two* places: the trust-tier gate (`checkTrustTierGating`) returned `allowed: false`, and a built-in policy rule (`rule_observer_no_execute`) carried `effect: 'deny'`. So every candidate action was policy-denied, the decision pipeline never selected an action, and no approval request was ever created. Nothing reached the approvals page. Worse, it was a permanent trap: promotion out of `observer` requires 10 approvals, and a denied action produces no approval to ever approve — so a new user could never earn their way to the `suggest` tier. `observer` is now **allow-with-approval**, identical to `suggest`: the twin's proposed actions surface as approval requests you can approve, reject, or edit, and those approvals are what earn promotion. The twin still **never auto-executes** at `observer` — every action requires your explicit click (`decision-maker`'s `shouldAutoExecute()` independently gates this, unchanged). Note: `observer` and `suggest` are now mechanically near-identical (both allow-with-approval, neither auto-executes) — the trust-tier ladder is due for a separate rethink.
+
+### Fixed (post-/review)
+
+- **The trust tier's approval requirement is now explicitly preserved through the quiet-hours early return.** With `observer` no longer hard-denying, it flows through code paths it never reached before — including the quiet-hours escalation. The pre-landing review flagged that the tier's "requires approval" signal survived that early return only by coincidence (the quiet-hours decision happens to also require approval). It is now threaded through deliberately, the same way the injection-guard confirmation level already is — so a future change to quiet-hours behavior can't silently drop an `observer`/`suggest` user's approval requirement.
+- **Added an end-to-end regression test** wiring the real `PolicyEvaluator` into the real `DecisionMaker` for an `observer`-tier decision, asserting the outcome has a non-null selected action, requires approval, and does not auto-execute. The existing tests only proved the fix in fragments (the policy layer in isolation, the decision-maker with a mocked evaluator); none proved the integrated behavior — exactly the gap that let the original bug ship.
+- Synced `docs/safety-model.md`, which still described `observer` as "no autonomous action of any kind" / "records what it *would have* done" — the pre-fix mental model.
+
 ## [0.6.23.2] - 2026-05-14
 
 ### Fixed
