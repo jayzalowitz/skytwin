@@ -488,7 +488,32 @@ export function renderConnectGoogleHero({ googleConnected, googleSystemConfigure
 export async function handleConnectGoogleFromDashboard(userId) {
   try {
     const { startGoogleSignIn } = await import('../google-signin.js');
-    const result = await startGoogleSignIn({ userId });
+    const result = await startGoogleSignIn({
+      userId,
+      // Desktop opens OAuth in the system browser and polls — without an
+      // onComplete the dashboard would never react to the connection
+      // landing. Re-render so the "connect Google" hero is replaced.
+      onComplete: async (connected) => {
+        if (!connected) return;
+        const { renderDashboard, invalidateDashboardCache } = await import('./dashboard.js');
+        // Re-check AFTER the await, not before. The poll runs for up to
+        // 5 minutes, so by the time it fires the user may have navigated
+        // to another route OR switched to a different user (the dev
+        // user-switcher rewrites KEY_USER_ID). Either way, don't render
+        // this poll's stale (route, userId) pair over what's current.
+        const onDashboard = ((window.location.hash.slice(1) || '/').split('?')[0] || '/') === '/';
+        const stillCurrentUser = localStorage.getItem(KEY_USER_ID) === userId;
+        if (!onDashboard || !stillCurrentUser) return;
+        const container = document.getElementById('page-content');
+        if (!container) return;
+        // The dashboard caches the OAuth status in a 30s slowFetch cache.
+        // Bust it first, otherwise the re-render reads the stale
+        // "not connected" status and the hero never goes away. (The web
+        // flow dodges this — it's a full page reload with a fresh cache.)
+        invalidateDashboardCache();
+        await renderDashboard(container, userId);
+      },
+    });
     if (result.status === 'error') {
       console.error('Could not start Google connect flow:', result.error);
       window.location.hash = '#/settings';
