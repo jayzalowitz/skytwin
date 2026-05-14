@@ -581,8 +581,11 @@ window.addEventListener('DOMContentLoaded', () => {
     localStorage.setItem(KEY_ONBOARDED, 'true');
     currentUserId = mobileUserId;
     window.history.replaceState({}, '', window.location.pathname + window.location.hash);
-    connectSSE(currentUserId);
-    navigate();
+    // Route through verification — a forged or stale `?userId=` link must
+    // not boot directly as that id. Legit callers (the OAuth callback
+    // redirect, the user-switcher) pass a real id, which verifies cleanly
+    // and proceeds to connectSSE + navigate inside bootWithVerifiedUser.
+    bootWithVerifiedUser();
     return;
   }
 
