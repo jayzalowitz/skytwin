@@ -109,7 +109,7 @@ async function handleOnboardingClick(e) {
       btn.textContent = 'Redirecting…';
       try {
         const { startGoogleSignIn } = await import('../google-signin.js');
-        const result = await startGoogleSignIn({ userId: null });
+        const result = await startGoogleSignIn({ newUser: true });
         if (result.status === 'redirecting') return;
         if (result.status === 'polling') {
           // Desktop: OAuth opened in the system browser. There's no

@@ -17,21 +17,33 @@ export function isDesktopApp() {
 /**
  * Start a Google sign-in flow.
  *
+ * The new-user flow must be requested explicitly via `newUser: true` —
+ * it is NOT inferred from a falsy `userId`. An existing-user entry point
+ * that passes a missing `userId` gets an error, not a silent fallthrough
+ * into a brand-new-user signup.
+ *
  * @param {object} opts
- * @param {string|null} [opts.userId]   Existing user, or null for new-user.
- * @param {(connected: boolean) => void} [opts.onComplete]  Desktop only — called when polling sees the account land, or when polling times out (with `false`).
+ * @param {string|null} [opts.userId]   The existing user to connect. Required unless `newUser` is true.
+ * @param {boolean} [opts.newUser]      Start the new-user (auto-create from verified email) flow.
+ * @param {(connected: boolean) => void} [opts.onComplete]  Desktop + existing-user only — called when polling sees the account land, or when polling times out (with `false`).
  * @returns {Promise<{ status: 'redirecting' | 'polling' | 'error', error?: string }>}
  */
-export async function startGoogleSignIn({ userId = null, onComplete } = {}) {
+export async function startGoogleSignIn({ userId = null, newUser = false, onComplete } = {}) {
   const desktop = isDesktopApp();
+  if (!newUser && !userId) {
+    return {
+      status: 'error',
+      error: 'No signed-in user. Sign in first, then connect Google.',
+    };
+  }
   let data;
   try {
     // Both branches go through getGoogleAuthUrl -> fetchJSON so error
     // handling (ApiError, friendlyMessage, offline detection) stays
     // consistent with the rest of the codebase.
-    data = userId
-      ? await getGoogleAuthUrl(userId, { desktop })
-      : await getGoogleAuthUrl(null, { desktop, newUser: true });
+    data = newUser
+      ? await getGoogleAuthUrl(null, { desktop, newUser: true })
+      : await getGoogleAuthUrl(userId, { desktop });
   } catch (err) {
     return {
       status: 'error',
@@ -44,7 +56,8 @@ export async function startGoogleSignIn({ userId = null, onComplete } = {}) {
 
   if (desktop) {
     await window.skytwinDesktop.openExternal(data.url);
-    if (userId && typeof onComplete === 'function') {
+    // Polling is keyed on userId — only the existing-user flow can poll.
+    if (!newUser && userId && typeof onComplete === 'function') {
       pollUntilConnected(userId, onComplete);
     }
     return { status: 'polling' };
@@ -66,11 +79,16 @@ function pollUntilConnected(userId, onComplete) {
   }
   let pollCount = 0;
   const maxPolls = 150; // 5 minutes at 2s intervals
+  // Capture this poll's own handle. `stop` must clear the handle it was
+  // started with — not whatever `_activePollHandle` happens to point at
+  // when an async tick resumes, which a newer startGoogleSignIn() may
+  // have already replaced.
+  let handle;
   const stop = () => {
-    clearInterval(_activePollHandle);
-    _activePollHandle = null;
+    clearInterval(handle);
+    if (_activePollHandle === handle) _activePollHandle = null;
   };
-  _activePollHandle = setInterval(async () => {
+  handle = setInterval(async () => {
     pollCount++;
     if (pollCount >= maxPolls) {
       stop();
@@ -87,4 +105,5 @@ function pollUntilConnected(userId, onComplete) {
       // transient — keep polling
     }
   }, 2000);
+  _activePollHandle = handle;
 }

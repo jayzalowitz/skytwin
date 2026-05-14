@@ -36,11 +36,17 @@ const IDEMPOTENT_PG_CODES = new Set(['42710', '42P07', '42701', '23505']);
  * are split on `;` followed by end-of-line, then trimmed; empty blocks
  * are dropped.
  *
- * Caveat: the `--` strip is not string-literal aware, so a future
- * migration with `--` inside a quoted string would be corrupted. The
- * current corpus is verified clean, and `assertBalancedQuotes` below
- * catches the regression at migration-run time (CI + local) rather than
- * letting it corrupt data silently.
+ * Caveats — this is a line-comment-aware splitter, not a SQL parser.
+ * Unsupported constructs (none appear in the current corpus, all
+ * verified):
+ *   - "--" inside a string literal (would be mis-stripped;
+ *     assertBalancedQuotes catches this one at run time)
+ *   - C-style slash-star block comments (not stripped — a ";" inside
+ *     one would still split a statement)
+ *   - dollar-quoted strings, "$$ ... $$" / "$tag$ ... $tag$" (a ";" or
+ *     "--" inside one is not protected)
+ * A migration needing any of these must be split differently, or the
+ * splitter extended into a real tokenizer.
  */
 export function splitSqlStatements(sql: string): string[] {
   const statements = sql
