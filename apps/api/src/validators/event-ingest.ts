@@ -47,6 +47,33 @@ export function validateEventIngest(raw: unknown): EventIngestValidationResult {
     errors.push({ field: 'type', message: 'type must be a string when provided' });
   }
 
+  // `source` and `authoringTier` are the inputs the situation interpreter
+  // feeds into `resolveActionProvenance` — the documentary-poisoning trust
+  // axis. They ARE accepted from the caller here, unlike `trustTier` below.
+  // The trust model that makes this safe:
+  //   1. This endpoint is mounted behind `sessionAuth + requireOwnership` —
+  //      the caller is an authenticated user acting on their own data.
+  //   2. The legitimate caller is the worker forwarding connector signals,
+  //      and connectors derive `authoringTier` from AUTHORITATIVE upstream
+  //      state (Gmail's `SENT` / `INBOX` labels) — not from anything the
+  //      sender of an inbound email controls. An attacker who emails the
+  //      user cannot land their message in the SENT folder, so external
+  //      content can never be classified into the `user_sent_*` tiers.
+  //   3. An unknown / garbage `authoringTier` is harmless: `resolveAction-
+  //      Provenance` falls through to `untrusted_external` (fail safe).
+  // We still type-check it (consistency with `source`/`type`) so a
+  // non-string value can't reach the interpreter.
+  if (
+    'authoringTier' in event &&
+    event['authoringTier'] !== undefined &&
+    typeof event['authoringTier'] !== 'string'
+  ) {
+    errors.push({
+      field: 'authoringTier',
+      message: 'authoringTier must be a string when provided',
+    });
+  }
+
   // Urgency is read directly into the DecisionObject. Accept only the four
   // documented values plus undefined.
   if (event['urgency'] !== undefined) {

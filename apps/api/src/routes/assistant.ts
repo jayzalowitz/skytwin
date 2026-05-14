@@ -290,6 +290,13 @@ function buildActionRouter(): ActionRouter {
       // the shape `SituationInterpreter` produces for real signals so
       // downstream code (DecisionMaker + ExplanationGenerator) can't
       // tell the difference.
+      //
+      // Provenance is `user_originated`: a chat intent is the user
+      // directly instructing the twin in their own words. This is the
+      // one path where the instruction genuinely comes from the user,
+      // so the injection guard does not escalate it on provenance
+      // grounds (it still escalates on action severity — a chat request
+      // to "delete everything" is still destructive-shaped).
       const decision: DecisionObject = {
         id: `chat_intent_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         situationType: intent.situationType as SituationType,
@@ -298,6 +305,7 @@ function buildActionRouter(): ActionRouter {
         summary: intent.summary,
         rawData: { ...intent.rawData, triggerMessage: intent.triggerMessage },
         interpretedAt: new Date(),
+        provenance: 'user_originated',
       };
 
       // Persist the decision so downstream foreign keys (outcomes,
@@ -380,6 +388,10 @@ function buildActionRouter(): ActionRouter {
         },
         reason: outcome.reasoning,
         urgency: decision.urgency,
+        // The injection guard sets `dual` for extreme-severity actions —
+        // even a chat-originated request to do something catastrophic takes
+        // two token-gated confirmations.
+        confirmationLevel: outcome.confirmationLevel === 'dual' ? 'dual' : 'single',
       });
 
       // Mirror the events.ts SSE emission so the existing approvals

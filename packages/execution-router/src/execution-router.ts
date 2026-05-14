@@ -7,9 +7,23 @@ import type {
   RoutingDecision,
   SkillGap,
 } from '@skytwin/shared-types';
+import { evaluateInjectionGuard } from '@skytwin/shared-types';
 import type { AdapterRegistry } from './adapter-registry.js';
 import { applyAdapterRiskModifier } from './risk-modifier.js';
 import { logSkillGap } from './skill-gap-logger.js';
+
+/**
+ * Context the caller threads into the execution methods so the router can
+ * distinguish the auto-execute path from the approved-execution path.
+ *
+ * `approved: true` means the action reached the router through the approval
+ * flow — a human clicked (twice, for `dual` actions; the API enforces the
+ * count). `approved: false` / absent means the decision engine marked the
+ * action `autoExecute` and no human was in the loop.
+ */
+export interface ExecutionContext {
+  approved?: boolean;
+}
 
 /**
  * Built-in trust ranking for adapter selection. Lower index = higher trust.
@@ -64,6 +78,45 @@ function assertValidExecutionInputs(
     throw new InvariantViolationError(
       `RiskAssessment.actionId (${riskAssessment.actionId}) does not match ` +
         `CandidateAction.id (${action.id}). Refusing to execute with a mismatched assessment.`,
+    );
+  }
+}
+
+/**
+ * Defense-in-depth backstop for the documentary-poisoning guard.
+ *
+ * The policy engine's `checkInjectionGuard` is the primary gate — it escalates
+ * injection-risky actions to human approval so they never get `autoExecute`.
+ * This backstop catches the case where a bug in the policy engine or decision
+ * engine lets an escalation-worthy action reach the router anyway with the
+ * auto-execute path (no `approved` context).
+ *
+ * It consults `evaluateInjectionGuard` — the exact same pure function the
+ * policy engine uses — so the two cannot drift. If that function says the
+ * action should have been escalated and the caller did not present an
+ * `approved` context, the router refuses to execute. Approved-execution
+ * callers (the approval flow, after the human clicked) pass `{ approved: true }`
+ * and pass straight through — the human already provided the confirmation the
+ * guard demanded.
+ *
+ * This never silently downgrades an action; it throws, loudly, because
+ * reaching here on the auto-execute path is a programmer error upstream.
+ */
+function assertExecutionPermitted(
+  action: CandidateAction,
+  context?: ExecutionContext,
+): void {
+  const verdict = evaluateInjectionGuard(action);
+  if (verdict.escalate && !context?.approved) {
+    throw new InvariantViolationError(
+      `Injection-guard backstop: refusing to auto-execute action ` +
+        `"${action.actionType}" (id ${action.id}). ${verdict.reason ?? ''} ` +
+        `This action reached the execution router on the auto-execute path, ` +
+        `but the injection guard requires human ` +
+        `${verdict.confirmationLevel === 'dual' ? 'two-step ' : ''}confirmation. ` +
+        `A policy-engine or decision-engine change let an escalation-worthy ` +
+        `action through with autoExecute — that upstream bug must be fixed. ` +
+        `Safety Invariant #1.`,
     );
   }
 }
@@ -169,8 +222,10 @@ export class ExecutionRouter {
     action: CandidateAction,
     riskAssessment: RiskAssessment,
     userId: string,
+    context?: ExecutionContext,
   ): Promise<ExecutionResult> {
     assertValidExecutionInputs(action, riskAssessment);
+    assertExecutionPermitted(action, context);
     const routingDecision = await this.route(action, riskAssessment, userId);
 
     const adapterChain = [routingDecision.selectedAdapter, ...routingDecision.fallbackChain];
@@ -245,8 +300,10 @@ export class ExecutionRouter {
     action: CandidateAction,
     riskAssessment: RiskAssessment,
     userId: string,
+    context?: ExecutionContext,
   ): AsyncIterable<ExecutionEvent> {
     assertValidExecutionInputs(action, riskAssessment);
+    assertExecutionPermitted(action, context);
     const routingDecision = await this.route(action, riskAssessment, userId);
     const adapterChain = [routingDecision.selectedAdapter, ...routingDecision.fallbackChain];
     const attemptedAdapters: string[] = [];

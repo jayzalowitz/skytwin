@@ -1321,4 +1321,72 @@ describe('DecisionMaker', () => {
       expect(response.alternativeActions).toEqual([]);
     });
   });
+
+  describe('Injection-guard plumbing: provenance + confirmationLevel', () => {
+    it('stamps every candidate with the decision provenance (unconditional)', async () => {
+      const twinService = createMockTwinService();
+      const policyEvaluator = createMockPolicyEvaluator({ allowed: true, requiresApproval: false });
+      const decisionRepo = createMockDecisionRepository();
+      const dm = new DecisionMaker(
+        twinService as never,
+        policyEvaluator as never,
+        decisionRepo as never,
+      );
+
+      const decision = createEmailDecision({ provenance: 'untrusted_external' });
+      const outcome = await dm.evaluate(createContext(TrustTier.HIGH_AUTONOMY, decision));
+
+      expect(outcome.allCandidates.length).toBeGreaterThan(0);
+      // Every candidate inherits the decision's provenance — the trust
+      // boundary, not a generator's choice.
+      for (const candidate of outcome.allCandidates) {
+        expect(candidate.provenance).toBe('untrusted_external');
+      }
+    });
+
+    it('threads confirmationLevel: dual onto the outcome when approval is required', async () => {
+      const twinService = createMockTwinService();
+      const policyEvaluator = {
+        evaluate: vi.fn().mockResolvedValue({
+          allowed: true,
+          requiresApproval: true,
+          reason: 'Injection guard: extreme action.',
+          confirmationLevel: 'dual',
+        }),
+        loadPolicies: vi.fn().mockResolvedValue([]),
+        checkSpendLimit: vi.fn().mockReturnValue(true),
+        checkReversibility: vi.fn().mockReturnValue(true),
+        checkDomainAllowlist: vi.fn().mockReturnValue(true),
+      };
+      const decisionRepo = createMockDecisionRepository();
+      const dm = new DecisionMaker(
+        twinService as never,
+        policyEvaluator as never,
+        decisionRepo as never,
+      );
+
+      const outcome = await dm.evaluate(createContext(TrustTier.HIGH_AUTONOMY));
+
+      expect(outcome.requiresApproval).toBe(true);
+      expect(outcome.autoExecute).toBe(false);
+      expect(outcome.confirmationLevel).toBe('dual');
+    });
+
+    it('leaves confirmationLevel unset when the policy verdict carries none', async () => {
+      const twinService = createMockTwinService();
+      // An allowed verdict with no `confirmationLevel` field — the outcome
+      // must not invent one.
+      const policyEvaluator = createMockPolicyEvaluator({ allowed: true, requiresApproval: false });
+      const decisionRepo = createMockDecisionRepository();
+      const dm = new DecisionMaker(
+        twinService as never,
+        policyEvaluator as never,
+        decisionRepo as never,
+      );
+
+      const outcome = await dm.evaluate(createContext(TrustTier.HIGH_AUTONOMY));
+
+      expect(outcome.confirmationLevel).toBeUndefined();
+    });
+  });
 });

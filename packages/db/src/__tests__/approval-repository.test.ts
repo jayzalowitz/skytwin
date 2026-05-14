@@ -101,6 +101,77 @@ describe('approvalRepository', () => {
       const [_sql, params] = mockQuery.mock.calls[0]!;
       expect(params![5]).toEqual(customExpiry);
     });
+
+    it("defaults confirmation_level to 'single' when not provided", async () => {
+      mockQuery.mockResolvedValue({ rows: [fakeApprovalRow()], rowCount: 1 });
+
+      await approvalRepository.create({
+        userId: 'u-001',
+        decisionId: 'd-001',
+        candidateAction: {},
+        reason: 'test',
+        urgency: 'normal',
+      });
+
+      const [sql, params] = mockQuery.mock.calls[0]!;
+      expect(sql).toContain('confirmation_level');
+      expect(params![6]).toBe('single');
+    });
+
+    it("passes confirmation_level='dual' through for extreme-severity approvals", async () => {
+      mockQuery.mockResolvedValue({ rows: [fakeApprovalRow()], rowCount: 1 });
+
+      await approvalRepository.create({
+        userId: 'u-001',
+        decisionId: 'd-001',
+        candidateAction: {},
+        reason: 'extreme action',
+        urgency: 'high',
+        confirmationLevel: 'dual',
+      });
+
+      const [_sql, params] = mockQuery.mock.calls[0]!;
+      expect(params![6]).toBe('dual');
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // recordFirstConfirmation (dual-confirmation injection guard)
+  // -----------------------------------------------------------------------
+
+  describe('recordFirstConfirmation', () => {
+    it('issues a token and scopes the UPDATE to pending dual requests', async () => {
+      mockQuery.mockResolvedValue({ rows: [fakeApprovalRow()], rowCount: 1 });
+
+      const token = await approvalRepository.recordFirstConfirmation('ar-001', 'u-001');
+
+      expect(typeof token).toBe('string');
+      expect((token as string).length).toBeGreaterThan(0);
+
+      const [sql, params] = mockQuery.mock.calls[0]!;
+      expect(sql).toContain('UPDATE approval_requests');
+      expect(sql).toContain("status = 'pending'");
+      expect(sql).toContain("confirmation_level = 'dual'");
+      // Strictly single-shot: the `first_confirmed_at IS NULL` guard means a
+      // token is minted exactly once per request. Re-calling never re-mints,
+      // so a replayed first-confirmation POST cannot invalidate the token the
+      // legitimate user already holds. It is also race-safe — a concurrent
+      // first-confirmation matches zero rows and returns null.
+      expect(sql).toContain('first_confirmed_at IS NULL');
+      // The issued token is param 1; it must match the returned value.
+      expect(params![0]).toBe(token);
+      expect(params![1]).toBe('ar-001');
+      expect(params![2]).toBe('u-001');
+    });
+
+    it('returns null when the request is not an updatable dual/pending row', async () => {
+      // A row already first-confirmed, no longer pending, or not dual fails the
+      // WHERE clause — the UPDATE matches nothing and no token is issued.
+      mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
+
+      const token = await approvalRepository.recordFirstConfirmation('ar-001', 'u-001');
+      expect(token).toBeNull();
+    });
   });
 
   // -----------------------------------------------------------------------
