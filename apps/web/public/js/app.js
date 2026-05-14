@@ -23,7 +23,7 @@ import { initTheme } from './theme-switcher.js';
 import { initA11y } from './a11y.js';
 import { connectSSE, disconnectSSE, isConnected } from './sse-client.js';
 import { showToast } from './toast.js';
-import { KEY_USER_ID, KEY_ONBOARDED, KEY_SESSION_TOKEN } from './storage-keys.js';
+import { KEY_USER_ID, KEY_ONBOARDED, KEY_SESSION_TOKEN, clearAllSkyTwinKeys } from './storage-keys.js';
 
 let currentUserId = localStorage.getItem(KEY_USER_ID) || '';
 
@@ -608,17 +608,25 @@ async function bootWithVerifiedUser() {
   }
   // Verify against the server with `fetchJSON` directly, NOT `fetchUser`
   // — `fetchUser` swallows every failure into `null`, which can't tell a
-  // genuine 404 (user is gone) from a transient blip (don't log them
-  // out). `fetchJSON` throws a typed `ApiError`; only `kind:'not-found'`
-  // means the stored id is truly a phantom.
+  // real "this id is invalid" from a transient blip. `fetchJSON` throws
+  // a typed `ApiError`; two kinds mean the stored id is not valid for
+  // this client and we must NOT boot as it:
+  //   - `not-found` (404): the user row is gone — a phantom id (e.g. the
+  //     dev DB was reseeded between sessions).
+  //   - `auth` (401/403): the id isn't the one this client's session
+  //     authenticates as — a stale token, or a forged `?userId=` link.
+  //     `requireOwnership` on /api/users/:id 403s in that case.
+  // Anything else (`offline`, `server`) is transient — boot normally and
+  // let the app's offline handling cope; don't punish a blip.
   try {
     await fetchJSON(`/api/users/${encodeURIComponent(currentUserId)}`);
   } catch (err) {
-    if (err && err.kind === 'not-found') {
-      // Stored user no longer exists — drop the phantom id and
-      // re-onboard rather than run as a ghost.
-      localStorage.removeItem(KEY_USER_ID);
-      localStorage.removeItem(KEY_ONBOARDED);
+    if (err && (err.kind === 'not-found' || err.kind === 'auth')) {
+      // Stored id is invalid — clear the whole SkyTwin localStorage slate
+      // (id, onboarded flag, session token, tour mode, per-user state)
+      // and re-onboard rather than run as a ghost or keep a stale token
+      // that would 403 the next user.
+      clearAllSkyTwinKeys();
       currentUserId = '';
       showOnboarding();
       return;
