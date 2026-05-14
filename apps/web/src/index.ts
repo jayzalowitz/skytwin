@@ -13,7 +13,7 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, '../public')));
 
 // API proxy to avoid CORS issues — forwards /api/* to the API server
-app.all('/api/*', async (req, res) => {
+app.all('/api/*splat', async (req, res) => {
   try {
     const targetUrl = `${API_BASE}${req.originalUrl}`;
     const response = await fetch(targetUrl, {
@@ -33,7 +33,7 @@ app.all('/api/*', async (req, res) => {
 });
 
 // SPA fallback
-app.get('*', (_req, res) => {
+app.get('/*splat', (_req, res) => {
   res.sendFile(path.join(__dirname, '../public/index.html'));
 });
 
