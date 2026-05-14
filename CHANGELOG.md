@@ -1,5 +1,11 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.22.1] - 2026-05-14
+
+### Fixed
+
+- **Desktop "Connect Google" from the dashboard now updates the page when it finishes.** The dashboard's connect handler never passed an `onComplete` callback, so after a desktop sign-in completed in the system browser the "Connect Google" hero just sat there until a manual reload. It now re-renders the dashboard when the connection lands — and busts the 30-second OAuth-status cache first, so the re-render reflects the new state instead of the stale "not connected" one. (Follow-up to #284; settings and setup already had this, the dashboard was missed.)
+
 ## [0.6.22.0] - 2026-05-14
 
 Fixes that unblock running SkyTwin locally and natively: Google sign-in now works in the desktop app, the web server boots under Express 5, and `pnpm db:migrate` runs clean on a fresh database.
