@@ -144,10 +144,11 @@ Trust is earned, not assumed. Progression is domain-specific: high trust in emai
 ### Tier Definitions
 
 **OBSERVER** (Initial state)
-- System observes events and records what it *would have* done
-- No autonomous action of any kind
-- Purpose: Build initial twin model from observation and explicit preferences
-- Duration: Until user explicitly promotes or provides sufficient feedback
+- System generates candidate actions and surfaces them as approval requests for the user to approve, reject, or edit
+- Never auto-executes — every action requires explicit approval. Enforced in `checkTrustTierGating` (`packages/policy-engine/src/policy-evaluator.ts`), the `rule_observer_approval` rule in `packages/policy-engine/src/default-policies.ts`, and `shouldAutoExecute` (`packages/decision-engine/src/decision-maker.ts`)
+- Purpose: Build the initial twin model from the user's feedback on those approvals — which is also what earns promotion to SUGGEST
+- Duration: Until the user explicitly promotes, or earns promotion (10 consecutive approvals + ≥80% ratio)
+- Mechanically near-identical to SUGGEST today (both are allow-with-approval, neither auto-executes); the OBSERVER/SUGGEST split is currently nominal and the tier ladder is due for a rethink
 
 Promotion criteria below match `PROMOTION_THRESHOLDS` in `@skytwin/shared-types` (`packages/shared-types/src/policy.ts`). The engine gates on `consecutiveApprovals` (resets on any rejection) AND `minApprovalRatio` (cumulative). Both must clear.
 

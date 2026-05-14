@@ -165,14 +165,40 @@ describe('PolicyEvaluator.evaluate — injection guard integration', () => {
     expect(decision.confirmationLevel).toBe('single');
   });
 
-  it('keeps the observer hard-deny — guard never downgrades a deny', async () => {
+  it('a tier-level deny short-circuits before the guard — guard never downgrades a deny', async () => {
+    // Observer is now allow-with-approval, so the only remaining hard-deny
+    // path in checkTrustTierGating is the fail-closed `default` case for an
+    // unrecognized tier. It must return allowed:false *before* the injection
+    // guard runs, so the guard cannot downgrade a tier-level deny into a mere
+    // escalate-to-approval. delete_email is an action the guard *would*
+    // otherwise escalate — proving the deny short-circuits ahead of it.
+    const decision = await evaluator.evaluate(
+      createAction({ actionType: 'delete_email' }),
+      [],
+      'unrecognized_tier' as TrustTier,
+      lowRisk(),
+    );
+    expect(decision.allowed).toBe(false);
+    // The fail-closed default case denies but still flags requiresApproval —
+    // pin the full shape so a regression to a bare `allowed:false` is caught.
+    expect(decision.requiresApproval).toBe(true);
+  });
+
+  it('keeps observer as allow-with-approval — guard escalation rides through', async () => {
+    // Observer flows past the tier check (allowed:true) into the guard.
+    // delete_email is destructive, so the guard escalates to single
+    // confirmation; the observer tier independently requires approval. The
+    // action stays allowed-with-approval — it is never auto-executed (that is
+    // enforced downstream in decision-maker's shouldAutoExecute).
     const decision = await evaluator.evaluate(
       createAction({ actionType: 'delete_email' }),
       [],
       TrustTier.OBSERVER,
       lowRisk(),
     );
-    expect(decision.allowed).toBe(false);
+    expect(decision.allowed).toBe(true);
+    expect(decision.requiresApproval).toBe(true);
+    expect(decision.confirmationLevel).toBe('single');
   });
 
   it('threads confirmationLevel through even when the trust tier also escalates', async () => {

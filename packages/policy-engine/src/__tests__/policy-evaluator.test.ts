@@ -185,7 +185,10 @@ describe('PolicyEvaluator', () => {
   });
 
   describe('Trust tier gating', () => {
-    it('should block all actions for observer trust tier', async () => {
+    it('should require approval for all actions on observer trust tier', async () => {
+      // Observer is allow-with-approval, not deny: the twin never auto-executes
+      // at this tier, but actions must surface as approval requests so the
+      // observer→suggest promotion path (10 approvals) is reachable.
       const repo = createMockPolicyRepository();
       const evaluator = new PolicyEvaluator(repo as never);
       const action = createAction();
@@ -198,8 +201,69 @@ describe('PolicyEvaluator', () => {
         riskAssessment,
       );
 
-      expect(result.allowed).toBe(false);
+      expect(result.allowed).toBe(true);
+      expect(result.requiresApproval).toBe(true);
       expect(result.reason).toContain('Observer');
+      // A benign reversible action draws no injection-guard escalation, so
+      // the approval requirement here is the tier's alone — proving observer
+      // gates on its own, not by riding a guard escalation.
+      expect(result.confirmationLevel).toBeUndefined();
+    });
+
+    it('regression: observer is never denied at any risk tier — the promotion trap', async () => {
+      // Regression guard for the observer→suggest promotion trap. Observer
+      // gating previously returned `allowed: false` (and the TRUST_TIER_GATING
+      // default policy carried `effect: 'deny'`). A deny produces no approval
+      // request; the observer→suggest promotion needs 10 *approvals*; so a
+      // new user could never leave observer — a permanent chicken-and-egg
+      // trap. Both layers must keep observer at allow-with-approval. If a
+      // future edit reverts either one, this fails loudly.
+      const repo = createMockPolicyRepository();
+      const evaluator = new PolicyEvaluator(repo as never);
+
+      for (const tier of [
+        RiskTier.NEGLIGIBLE,
+        RiskTier.LOW,
+        RiskTier.MODERATE,
+        RiskTier.HIGH,
+        RiskTier.CRITICAL,
+      ]) {
+        const result = await evaluator.evaluate(
+          createAction(),
+          [],
+          TrustTier.OBSERVER,
+          createRiskAssessment(tier),
+        );
+
+        expect(result.allowed).toBe(true);
+        expect(result.requiresApproval).toBe(true);
+      }
+    });
+
+    it('keeps observer allow-with-approval through the quiet-hours early return', async () => {
+      // Observer now flows past the tier check into the autonomy-settings and
+      // quiet-hours paths — it used to hard-deny before reaching them. The
+      // quiet-hours early return must preserve the tier's approval
+      // requirement; pin the clock inside a quiet window to exercise it.
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-01-01T03:00:00'));
+      try {
+        const repo = createMockPolicyRepository();
+        const evaluator = new PolicyEvaluator(repo as never);
+
+        const result = await evaluator.evaluate(
+          createAction(),
+          [],
+          TrustTier.OBSERVER,
+          createRiskAssessment(RiskTier.NEGLIGIBLE),
+          createAutonomySettings({ quietHoursStart: '22:00', quietHoursEnd: '07:00' }),
+        );
+
+        expect(result.allowed).toBe(true);
+        expect(result.requiresApproval).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('should require approval for suggest trust tier', async () => {
