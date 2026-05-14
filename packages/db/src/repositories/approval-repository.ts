@@ -98,9 +98,14 @@ export const approvalRepository = {
     userId: string,
     reason?: string,
   ): Promise<ApprovalRequestRow | null> {
+    // `confirmation_token = NULL` clears the one-time dual-confirmation token
+    // the moment the request resolves — it must not linger in the row after
+    // use. Harmless for single-confirmation rows (their token is already
+    // NULL). The `status = 'pending'` guard still makes this the atomic
+    // single-winner for concurrent responses.
     const result = await query<ApprovalRequestRow>(
       `UPDATE approval_requests
-       SET status = $1, responded_at = now(), response = $2
+       SET status = $1, responded_at = now(), response = $2, confirmation_token = NULL
        WHERE id = $3 AND status = 'pending' AND user_id = $4
        RETURNING *`,
       [

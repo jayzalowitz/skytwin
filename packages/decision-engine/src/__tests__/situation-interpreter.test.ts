@@ -147,4 +147,92 @@ describe('SituationInterpreter', () => {
       expect(update.domain).toBe('calendar');
     });
   });
+
+  describe('provenance derivation (documentary-poisoning defense)', () => {
+    it('stamps user_originated when the email tier says the user sent it', async () => {
+      const d = await interpreter.interpret({
+        source: 'gmail',
+        type: 'email',
+        authoringTier: 'user_sent_originated',
+      });
+      expect(d.provenance).toBe('user_originated');
+    });
+
+    it('stamps untrusted_external for every inbox tier', async () => {
+      for (const tier of ['inbox_personal', 'inbox_broadcast', 'inbox_newsletter', 'inbox_automated']) {
+        const d = await interpreter.interpret({ source: 'gmail', type: 'email', authoringTier: tier });
+        expect(d.provenance).toBe('untrusted_external');
+      }
+    });
+
+    it('reads authoringTier from a nested data envelope (connector signal shape)', async () => {
+      // Gmail connector emits { source, type, data: { ..., authoringTier } }.
+      const d = await interpreter.interpret({
+        source: 'gmail',
+        type: 'email',
+        data: { authoringTier: 'user_sent_reply' },
+      });
+      expect(d.provenance).toBe('user_originated');
+    });
+
+    it('fails safe to untrusted_external for a tier-less inbound signal', async () => {
+      const d = await interpreter.interpret({ source: 'gmail', type: 'email' });
+      expect(d.provenance).toBe('untrusted_external');
+    });
+
+    it('fails safe to untrusted_external for an unknown source', async () => {
+      const d = await interpreter.interpret({ source: 'some-future-connector', type: 'event' });
+      expect(d.provenance).toBe('untrusted_external');
+    });
+
+    it('maps filesystem-crawl signals to untrusted_external', async () => {
+      const d = await interpreter.interpret({ source: 'idle-miner', type: 'file' });
+      expect(d.provenance).toBe('untrusted_external');
+    });
+
+    it('rule-based interpretation also stamps provenance', () => {
+      const d = interpreter.interpretRuleBased({ source: 'gmail', type: 'email' });
+      expect(d.provenance).toBe('untrusted_external');
+    });
+
+    it('derives provenance on the strategy path when the strategy did not set it', async () => {
+      // A SituationStrategy may return a DecisionObject without provenance;
+      // interpret() must still stamp it from the raw event (fail safe).
+      const strategyInterpreter = new SituationInterpreter({
+        interpret: async (raw) => ({
+          id: 'strat-1',
+          situationType: SituationType.EMAIL_TRIAGE,
+          domain: 'email',
+          urgency: 'low' as const,
+          summary: 'strategy-produced',
+          rawData: raw,
+          interpretedAt: new Date(),
+          // deliberately no `provenance`
+        }),
+      });
+      const d = await strategyInterpreter.interpret({
+        source: 'gmail',
+        type: 'email',
+        authoringTier: 'inbox_personal',
+      });
+      expect(d.provenance).toBe('untrusted_external');
+    });
+
+    it('does not override provenance the strategy set itself', async () => {
+      const strategyInterpreter = new SituationInterpreter({
+        interpret: async (raw) => ({
+          id: 'strat-2',
+          situationType: SituationType.EMAIL_TRIAGE,
+          domain: 'email',
+          urgency: 'low' as const,
+          summary: 'strategy-produced',
+          rawData: raw,
+          interpretedAt: new Date(),
+          provenance: 'user_originated' as const,
+        }),
+      });
+      const d = await strategyInterpreter.interpret({ source: 'gmail', type: 'email' });
+      expect(d.provenance).toBe('user_originated');
+    });
+  });
 });

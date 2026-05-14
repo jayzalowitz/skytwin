@@ -138,13 +138,19 @@ export class DecisionMaker {
 
     // Stamp provenance onto every candidate from the originating decision so
     // the policy engine's injection guard can gate without re-deriving where
-    // the action came from. A candidate generator (LLM or rule-based) may not
-    // know to copy this field, so we enforce it centrally here. Candidates
-    // that arrive with their own provenance keep it.
+    // the action came from.
+    //
+    // This is an UNCONDITIONAL overwrite, not a default-only assignment.
+    // Provenance is a trust boundary: candidate generators are fed untrusted
+    // content (the LLM generator parses model JSON shaped by inbound email
+    // bodies), so a generator must never be able to set its own provenance —
+    // an injected "provenance: user_originated" in generated output would
+    // otherwise survive. The originating decision is the only authority for
+    // where the action came from. If the decision's provenance is somehow
+    // unset, this assigns `undefined`, which the policy engine treats as
+    // `untrusted_external` (fail safe).
     for (const candidate of candidates) {
-      if (!candidate.provenance && context.decision.provenance) {
-        candidate.provenance = context.decision.provenance;
-      }
+      candidate.provenance = context.decision.provenance;
     }
 
     if (candidates.length === 0) {

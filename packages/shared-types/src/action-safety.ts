@@ -224,6 +224,13 @@ const EXTREME_PARAMETER_SIGNATURES: readonly RegExp[] = [
  *
  * Severity hint only — the policy gate pairs this with provenance, and
  * provenance is what actually keeps the user safe.
+ *
+ * Markers are matched as plain substrings of `actionType`, so an action type
+ * that merely *contains* a marker (`execute_search` contains `exec`,
+ * `undelete_thread` contains `delete`) over-classifies. That is acceptable
+ * by design: a false positive here escalates a harmless action to one extra
+ * confirmation click — it fails safe. A false negative (a destructive action
+ * the markers miss) is the case provenance is there to backstop.
  */
 export function classifyActionSeverity(action: {
   actionType: string;

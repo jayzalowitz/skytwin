@@ -66,18 +66,26 @@ export class PolicyEvaluator {
       .filter((p) => p.enabled)
       .sort((a, b) => b.priority - a.priority);
 
-    // Check trust tier gating first
+    // Check trust tier gating first. A tier *deny* (e.g. observer) returns
+    // here before the injection guard runs — that is intentional and safe: a
+    // hard deny is strictly stricter than the guard's escalate-to-approval,
+    // so nothing is lost. The guard only needs to run ahead of every path
+    // that could *allow or auto-execute* an action (the autonomy-settings
+    // check, the quiet-hours early return, the policy loop) — which it does,
+    // below. If a future edit makes `checkTrustTierGating` return an
+    // `allowed: true` early-return, the guard must be moved above this block.
     const tierDecision = this.checkTrustTierGating(action, trustTier, riskAssessment);
     if (tierDecision && !tierDecision.allowed) {
       return tierDecision;
     }
 
     // Injection guard — the documentary-poisoning defense. Runs before every
-    // other check so a quiet-hours early return cannot skip it. It never
-    // denies; it only escalates to single- or dual-confirmation. Its verdict
-    // is threaded through every subsequent allowed/approval return path so it
-    // cannot be lost or downgraded. A later `deny` still wins (denied beats
-    // approval) — that is the correct ordering.
+    // check that could allow or auto-execute an action (autonomy settings,
+    // the quiet-hours early return, the policy loop), so none of them can
+    // skip it. It never denies; it only escalates to single- or
+    // dual-confirmation. Its verdict is threaded through every subsequent
+    // allowed/approval return path so it cannot be lost or downgraded. A
+    // later `deny` still wins (denied beats approval) — that is correct.
     const guard = this.checkInjectionGuard(action);
     let requiresApproval = guard.requiresApproval;
     let confirmationLevel: ConfirmationLevel | undefined = guard.confirmationLevel;
