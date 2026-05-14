@@ -9,6 +9,55 @@ const __dirname = dirname(__filename);
 const SCHEMA_PATH = join(__dirname, '..', 'schemas', 'schema.sql');
 
 /**
+ * SQLSTATE codes that mean "this object already exists" — re-running a
+ * migration that hits one of these is a no-op, not a failure. Checking
+ * the code is more robust than substring-matching the error message,
+ * which is vendor-specific and can change between CockroachDB versions.
+ *   42710 duplicate_object   (covers duplicate constraint / index names)
+ *   42P07 duplicate_table
+ *   42701 duplicate_column
+ *   23505 unique_violation   (duplicate key on INSERT)
+ */
+const IDEMPOTENT_PG_CODES = new Set(['42710', '42P07', '42701', '23505']);
+
+/**
+ * Split a .sql migration file into individual statements.
+ *
+ * `--` line comments are stripped *before* splitting so a stray `;` at
+ * the end of a comment line can't break a statement in half. This is
+ * safe for the migration corpus: no migration uses `--` inside a string
+ * literal (verified). Statements are split on `;` followed by
+ * end-of-line, then trimmed; empty blocks are dropped.
+ */
+export function splitSqlStatements(sql: string): string[] {
+  return sql
+    .replace(/--[^\n]*/g, '')
+    .split(/;\s*$/m)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
+/**
+ * True when an error from `pool.query` means the target object already
+ * exists — i.e. the statement was already applied on a prior run and
+ * can be safely skipped. Prefers the stable SQLSTATE code; falls back
+ * to message substrings for drivers/errors that don't surface a code.
+ */
+export function isIdempotentError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  if (typeof code === 'string' && IDEMPOTENT_PG_CODES.has(code)) {
+    return true;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.includes('already exists') ||
+    message.includes('duplicate key') ||
+    message.includes('duplicate column name') ||
+    message.includes('duplicate constraint name')
+  );
+}
+
+/**
  * Run all migrations: schema.sql first, then SQL files 002–011 in order.
  */
 export async function up(): Promise<void> {
@@ -48,14 +97,7 @@ export async function up(): Promise<void> {
 
   for (const file of sqlFiles) {
     const sql = readFileSync(join(__dirname, file), 'utf-8');
-    const statements = sql
-      .split(/;\s*$/m)
-      .map((s) => s.trim())
-      .filter((s) => {
-        // Keep blocks that contain at least one non-comment SQL line
-        const sqlLines = s.split('\n').filter((l) => l.trim() && !l.trim().startsWith('--'));
-        return sqlLines.length > 0;
-      });
+    const statements = splitSqlStatements(sql);
 
     let applied = 0;
     for (const stmt of statements) {
@@ -63,14 +105,8 @@ export async function up(): Promise<void> {
         await pool.query(stmt);
         applied++;
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        if (
-          message.includes('already exists') ||
-          message.includes('duplicate key') ||
-          message.includes('duplicate column name') ||
-          message.includes('duplicate constraint name')
-        ) {
-          // Idempotent — skip
+        if (isIdempotentError(error)) {
+          // Already applied on a prior run — skip
           continue;
         }
         console.error(`[migration] ${file}: statement failed:\n${stmt.substring(0, 120)}`);

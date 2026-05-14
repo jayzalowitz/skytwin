@@ -385,8 +385,10 @@ export function fetchBriefing(userId) {
   return fetchJSON(`${API}/v1/briefings/${encodeURIComponent(userId)}`);
 }
 
-export function getGoogleAuthUrl(userId, { desktop = false } = {}) {
-  const params = new URLSearchParams({ userId });
+export function getGoogleAuthUrl(userId, { desktop = false, newUser = false } = {}) {
+  const params = new URLSearchParams();
+  if (newUser) params.set('newUser', 'true');
+  else params.set('userId', userId);
   if (desktop) params.set('desktop', 'true');
   return fetchJSON(`${API}/oauth/google/authorize?${params.toString()}`);
 }

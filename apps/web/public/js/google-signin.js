@@ -26,17 +26,17 @@ export async function startGoogleSignIn({ userId = null, onComplete } = {}) {
   const desktop = isDesktopApp();
   let data;
   try {
-    if (userId) {
-      data = await getGoogleAuthUrl(userId, { desktop });
-    } else {
-      const params = new URLSearchParams({ newUser: 'true' });
-      if (desktop) params.set('desktop', 'true');
-      const res = await fetch(`/api/oauth/google/authorize?${params.toString()}`);
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
-      data = await res.json();
-    }
+    // Both branches go through getGoogleAuthUrl -> fetchJSON so error
+    // handling (ApiError, friendlyMessage, offline detection) stays
+    // consistent with the rest of the codebase.
+    data = userId
+      ? await getGoogleAuthUrl(userId, { desktop })
+      : await getGoogleAuthUrl(null, { desktop, newUser: true });
   } catch (err) {
-    return { status: 'error', error: err?.message || 'Could not start Google sign-in.' };
+    return {
+      status: 'error',
+      error: err?.friendlyMessage || err?.message || 'Could not start Google sign-in.',
+    };
   }
   if (!data?.url) {
     return { status: 'error', error: 'No authorize URL returned.' };

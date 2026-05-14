@@ -929,14 +929,20 @@ window.handleConnectGoogle = async function(userId) {
     const result = await startGoogleSignIn({
       userId,
       onComplete: async (connected) => {
+        // Desktop polling runs for up to 5 minutes — the user may have
+        // navigated away. Re-query the container and bail unless we're
+        // still on /settings, so we don't render over another page.
+        if (window.location.hash.split('?')[0] !== '#/settings') return;
         const banner = document.getElementById('oauth-polling-banner');
         if (!connected) {
           if (banner) banner.textContent = 'Sign-in timed out. Refresh the page to try again.';
           return;
         }
         banner?.remove();
+        const container = document.getElementById('page-content');
+        if (!container) return;
         const { renderSettings } = await import('./settings.js');
-        await renderSettings(pageContent, userId);
+        await renderSettings(container, userId);
       },
     });
     if (result.status === 'polling') {

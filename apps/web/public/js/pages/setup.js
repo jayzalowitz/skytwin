@@ -537,7 +537,7 @@ window.saveServiceCredentials = async function(service, opts = {}) {
       try {
         const userId = localStorage.getItem(KEY_USER_ID);
         const { startGoogleSignIn } = await import('../google-signin.js');
-        const result = await startGoogleSignIn({ userId });
+        const result = await startGoogleSignIn({ userId, onComplete: reRenderSetupOnConnect });
         if (result.status === 'redirecting' || result.status === 'polling') return;
         if (result.status === 'error') throw new Error(result.error || 'sign-in failed');
       } catch (err) {
@@ -557,13 +557,29 @@ window.saveServiceCredentials = async function(service, opts = {}) {
   }
 };
 
+// Desktop sign-in polls in the background; when the account lands,
+// re-render the setup page so status badges reflect the connection
+// instead of going stale until a manual reload.
+async function reRenderSetupOnConnect(connected) {
+  if (!connected) {
+    const el = document.getElementById('save-status-google');
+    if (el) el.innerHTML = '<span style="color: var(--warning, #e6a700);">Sign-in timed out. Reload to try again.</span>';
+    return;
+  }
+  if (window.location.hash.split('?')[0] !== '#/setup') return;
+  const container = document.getElementById('page-content');
+  if (!container) return;
+  const { renderSetup } = await import('./setup.js');
+  await renderSetup(container, localStorage.getItem(KEY_USER_ID));
+}
+
 window.handleConnectGoogleFromSetup = async function() {
   const statusEl = document.getElementById('save-status-google');
   if (statusEl) statusEl.innerHTML = '<span style="color: var(--text-muted);">Sending you to Google…</span>';
   try {
     const userId = localStorage.getItem(KEY_USER_ID);
     const { startGoogleSignIn } = await import('../google-signin.js');
-    const result = await startGoogleSignIn({ userId });
+    const result = await startGoogleSignIn({ userId, onComplete: reRenderSetupOnConnect });
     if (result.status === 'error') throw new Error(result.error || 'sign-in failed');
     if (result.status === 'polling' && statusEl) {
       statusEl.innerHTML = '<span style="color: var(--text-muted);">Waiting for Google sign-in to complete in your browser…</span>';
