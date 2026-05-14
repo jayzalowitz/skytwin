@@ -1,5 +1,11 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.23.2] - 2026-05-14
+
+### Fixed
+
+- **The app no longer boots as a "phantom" user.** A `skytwin_userId` left in `localStorage` could outlive the user row it pointed at — the dev database gets reseeded between sessions, or a user is deleted — and the app would boot straight into that dead id. Everything keyed on the user then silently broke: the dashboard rendered, but "Connect Google", approvals, and the rest operated on a user the server had never heard of (and the OAuth callback would then quietly reattach the connection to whoever owned the email). On boot the app now verifies the stored id against the server before committing to it: if the server says the id doesn't exist (`404`) or isn't the one this client's session authenticates as (`401/403` — a stale token or a forged `?userId=` link), it clears the whole SkyTwin `localStorage` slate (id, onboarded flag, session token, per-user state) and sends the user back through onboarding. Transient errors (offline, 5xx) still boot normally so a blip doesn't log anyone out.
+
 ## [unreleased] — Documentary-poisoning injection guard
 
 Closes the "no risk this thing rm/rf's me" concern: a defense against

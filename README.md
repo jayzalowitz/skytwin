@@ -6,7 +6,7 @@
 
 <a href="https://github.com/jayzalowitz/skytwin/actions/workflows/build.yml"><img src="https://github.com/jayzalowitz/skytwin/actions/workflows/build.yml/badge.svg" alt="Build"></a>
 <a href="https://github.com/jayzalowitz/skytwin/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"></a>
-<img src="https://img.shields.io/badge/version-0.6.23.1-green.svg" alt="Version">
+<img src="https://img.shields.io/badge/version-0.6.23.2-green.svg" alt="Version">
 <img src="https://img.shields.io/badge/tests-2985%20passing-brightgreen.svg" alt="Tests">
 <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux%20%7C%20iOS%20%7C%20Android-lightgrey.svg" alt="Platform">
 
@@ -336,7 +336,7 @@ Trust is **domain-specific**. You might be at `moderate_autonomy` for email but 
 
 ## Project Status
 
-SkyTwin is in **active development** (v0.6.21.0). The core decision pipeline, twin model, policy engine, and memory palace are functional. Gmail and Google Calendar connectors work with real OAuth. Desktop builds ship for all three platforms. The mobile app pairs via QR code and can capture voice. v0.5.0.0 brought the one-command installer and a non-technical-user UX overhaul; v0.5.1.0 through v0.5.4.0 closed the post-/review follow-ups; the v0.6 series added the embedded local LLM (#187), tier-aware memory retrieval (#251), per-Lifebook surfaces (#193), and the voice loop (mobile capture + Piper TTS).
+SkyTwin is in **active development** (v0.6.23.2). The core decision pipeline, twin model, policy engine, and memory palace are functional. Gmail and Google Calendar connectors work with real OAuth. Desktop builds ship for all three platforms. The mobile app pairs via QR code and can capture voice. v0.5.0.0 brought the one-command installer and a non-technical-user UX overhaul; v0.5.1.0 through v0.5.4.0 closed the post-/review follow-ups; the v0.6 series added the embedded local LLM (#187), tier-aware memory retrieval (#251), per-Lifebook surfaces (#193), and the voice loop (mobile capture + Piper TTS).
 
 **What works today:**
 - One-command install (`curl | bash`) on macOS, Linux, and WSL — installs every dependency, clones the repo, starts the services, opens the dashboard

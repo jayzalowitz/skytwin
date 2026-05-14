@@ -18,12 +18,12 @@ import { renderDxtImports } from './pages/dxt-imports.js';
 import { renderProvenanceGraph } from './pages/provenance-graph.js';
 import { renderMemorySettings } from './pages/memory-settings.js';
 import { renderGlobalPauseButton } from './components/global-pause-button.js';
-import { fetchPendingApprovals, fetchHealth, fetchUser, listUsers, escapeHtml, isApiKnownOffline } from './api-client.js';
+import { fetchPendingApprovals, fetchHealth, fetchUser, listUsers, escapeHtml, isApiKnownOffline, fetchJSON } from './api-client.js';
 import { initTheme } from './theme-switcher.js';
 import { initA11y } from './a11y.js';
 import { connectSSE, disconnectSSE, isConnected } from './sse-client.js';
 import { showToast } from './toast.js';
-import { KEY_USER_ID, KEY_ONBOARDED, KEY_SESSION_TOKEN } from './storage-keys.js';
+import { KEY_USER_ID, KEY_ONBOARDED, KEY_SESSION_TOKEN, clearAllSkyTwinKeys } from './storage-keys.js';
 
 let currentUserId = localStorage.getItem(KEY_USER_ID) || '';
 
@@ -581,18 +581,65 @@ window.addEventListener('DOMContentLoaded', () => {
     localStorage.setItem(KEY_ONBOARDED, 'true');
     currentUserId = mobileUserId;
     window.history.replaceState({}, '', window.location.pathname + window.location.hash);
-    connectSSE(currentUserId);
-    navigate();
+    // Route through verification — a forged or stale `?userId=` link must
+    // not boot directly as that id. Legit callers (the OAuth callback
+    // redirect, the user-switcher) pass a real id, which verifies cleanly
+    // and proceeds to connectSSE + navigate inside bootWithVerifiedUser.
+    bootWithVerifiedUser();
     return;
   }
 
+  bootWithVerifiedUser();
+});
+
+/**
+ * Boot path for the common case (no mobile-pairing / ?userId= override).
+ *
+ * A `skytwin_userId` in localStorage can outlive the user row it points
+ * at — the dev database gets reseeded between sessions, or the user is
+ * deleted. Booting straight into that phantom id silently breaks
+ * everything keyed on userId: the dashboard still renders, but OAuth
+ * connect, approvals, and the rest operate on a user the server has
+ * never heard of (and the OAuth callback then quietly reassigns the
+ * connection to whoever owns the email). So verify the stored id
+ * against the server before committing to it.
+ */
+async function bootWithVerifiedUser() {
   if (needsOnboarding() || !currentUserId) {
     showOnboarding();
-  } else {
-    connectSSE(currentUserId);
-    navigate();
+    return;
   }
-});
+  // Verify against the server with `fetchJSON` directly, NOT `fetchUser`
+  // — `fetchUser` swallows every failure into `null`, which can't tell a
+  // real "this id is invalid" from a transient blip. `fetchJSON` throws
+  // a typed `ApiError`; two kinds mean the stored id is not valid for
+  // this client and we must NOT boot as it:
+  //   - `not-found` (404): the user row is gone — a phantom id (e.g. the
+  //     dev DB was reseeded between sessions).
+  //   - `auth` (401/403): the id isn't the one this client's session
+  //     authenticates as — a stale token, or a forged `?userId=` link.
+  //     `requireOwnership` on /api/users/:id 403s in that case.
+  // Anything else (`offline`, `server`) is transient — boot normally and
+  // let the app's offline handling cope; don't punish a blip.
+  try {
+    await fetchJSON(`/api/users/${encodeURIComponent(currentUserId)}`);
+  } catch (err) {
+    if (err && (err.kind === 'not-found' || err.kind === 'auth')) {
+      // Stored id is invalid — clear the whole SkyTwin localStorage slate
+      // (id, onboarded flag, session token, tour mode, per-user state)
+      // and re-onboard rather than run as a ghost or keep a stale token
+      // that would 403 the next user.
+      clearAllSkyTwinKeys();
+      currentUserId = '';
+      showOnboarding();
+      return;
+    }
+    // Transient network / server error — don't force re-onboarding over
+    // a blip. Boot normally; the app's offline handling covers it.
+  }
+  connectSSE(currentUserId);
+  navigate();
+}
 
 // Make setUserId available globally for settings page
 window.skyTwinSetUserId = setUserId;
