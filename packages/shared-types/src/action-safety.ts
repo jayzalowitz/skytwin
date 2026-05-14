@@ -316,7 +316,7 @@ export function evaluateInjectionGuard(action: {
       confirmationLevel: 'single',
       reason:
         'Injection guard: this action was triggered by external content the ' +
-        'user did not author and is not reversible — explicit confirmation ' +
+        'user did not author and is irreversible — explicit confirmation ' +
         'is required.',
     };
   }
