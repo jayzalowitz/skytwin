@@ -108,9 +108,10 @@ async function handleOnboardingClick(e) {
       btn.disabled = true;
       btn.textContent = 'Redirecting…';
       try {
-        const data = await fetchJSON('/api/oauth/google/authorize?newUser=true');
-        if (data.url) { window.location.href = data.url; return; }
-        throw new Error('No authorize URL returned');
+        const { startGoogleSignIn } = await import('../google-signin.js');
+        const result = await startGoogleSignIn({ userId: null });
+        if (result.status === 'redirecting' || result.status === 'polling') return;
+        throw new Error(result.error || 'No authorize URL returned');
       } catch (err) {
         showWizardError(
           err.message?.includes('credentials')

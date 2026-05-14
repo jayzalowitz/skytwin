@@ -536,12 +536,10 @@ window.saveServiceCredentials = async function(service, opts = {}) {
       statusEl.innerHTML = '<span style="color: var(--success);">Saved! Sending you to Google…</span>';
       try {
         const userId = localStorage.getItem(KEY_USER_ID);
-        const { getGoogleAuthUrl } = await import('../api-client.js');
-        const data = await getGoogleAuthUrl(userId);
-        if (data?.url) {
-          window.location.href = data.url;
-          return;
-        }
+        const { startGoogleSignIn } = await import('../google-signin.js');
+        const result = await startGoogleSignIn({ userId });
+        if (result.status === 'redirecting' || result.status === 'polling') return;
+        if (result.status === 'error') throw new Error(result.error || 'sign-in failed');
       } catch (err) {
         statusEl.innerHTML = `<span style="color: var(--warning, #e6a700);">Saved, but couldn't start sign-in: ${escapeHtml(err.message || 'try the Connect button below.')}</span>`;
       }
@@ -564,9 +562,12 @@ window.handleConnectGoogleFromSetup = async function() {
   if (statusEl) statusEl.innerHTML = '<span style="color: var(--text-muted);">Sending you to Google…</span>';
   try {
     const userId = localStorage.getItem(KEY_USER_ID);
-    const { getGoogleAuthUrl } = await import('../api-client.js');
-    const data = await getGoogleAuthUrl(userId);
-    if (data?.url) window.location.href = data.url;
+    const { startGoogleSignIn } = await import('../google-signin.js');
+    const result = await startGoogleSignIn({ userId });
+    if (result.status === 'error') throw new Error(result.error || 'sign-in failed');
+    if (result.status === 'polling' && statusEl) {
+      statusEl.innerHTML = '<span style="color: var(--text-muted);">Waiting for Google sign-in to complete in your browser…</span>';
+    }
   } catch (err) {
     if (statusEl) statusEl.innerHTML = `<span style="color: var(--danger);">${escapeHtml(err.message)}</span>`;
   }
