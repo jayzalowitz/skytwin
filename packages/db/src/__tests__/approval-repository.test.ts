@@ -133,6 +133,76 @@ describe('approvalRepository', () => {
       const [_sql, params] = mockQuery.mock.calls[0]!;
       expect(params![6]).toBe('dual');
     });
+
+    it('uses ON CONFLICT (decision_id) DO NOTHING so re-ingestion never stacks a duplicate', async () => {
+      // Regression: the same signal can be ingested more than once (a worker
+      // restart, an at-least-once delivery retry, or — the original bug —
+      // two worker processes both polling). Without this guard every
+      // re-ingestion created another approval_request and the dashboard
+      // showed every email twice. The unique index in migration 046 backs
+      // this clause.
+      mockQuery.mockResolvedValue({ rows: [fakeApprovalRow()], rowCount: 1 });
+
+      await approvalRepository.create({
+        userId: 'u-001',
+        decisionId: 'd-001',
+        candidateAction: {},
+        reason: 'test',
+        urgency: 'normal',
+      });
+
+      const [sql] = mockQuery.mock.calls[0]!;
+      expect(sql).toContain('ON CONFLICT (decision_id) DO NOTHING');
+    });
+
+    it('returns the existing approval when the INSERT conflicts (re-ingestion is a no-op)', async () => {
+      // ON CONFLICT DO NOTHING returns zero rows when an approval already
+      // exists for the decision. create() must then fetch and return the
+      // existing row so callers (events.ts, assistant.ts) always get a valid
+      // approval back and re-ingestion never stacks a duplicate. The
+      // fallback SELECT is scoped by user_id to match every other read in
+      // this repository.
+      const existing = fakeApprovalRow({ id: 'ar-existing', decision_id: 'd-001' });
+      mockQuery
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // INSERT … ON CONFLICT DO NOTHING
+        .mockResolvedValueOnce({ rows: [existing], rowCount: 1 }); // fallback SELECT
+
+      const result = await approvalRepository.create({
+        userId: 'u-001',
+        decisionId: 'd-001',
+        candidateAction: {},
+        reason: 'test',
+        urgency: 'normal',
+      });
+
+      expect(result).toEqual(existing);
+      expect(mockQuery).toHaveBeenCalledTimes(2);
+      const [fallbackSql, fallbackParams] = mockQuery.mock.calls[1]!;
+      expect(fallbackSql).toContain('SELECT * FROM approval_requests');
+      expect(fallbackSql).toContain('WHERE decision_id = $1');
+      expect(fallbackSql).toContain('AND user_id = $2');
+      expect(fallbackParams).toEqual(['d-001', 'u-001']);
+    });
+
+    it('throws when the INSERT conflicts but the fallback SELECT finds nothing', async () => {
+      // The conflicting row was hard-deleted between the INSERT and the
+      // fallback SELECT (a concurrent migration dedup or admin cleanup).
+      // create() must throw a typed error rather than return `undefined`
+      // typed as a valid ApprovalRequestRow — callers dereference `.id`.
+      mockQuery
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // INSERT … ON CONFLICT DO NOTHING
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 }); // fallback SELECT also empty
+
+      await expect(
+        approvalRepository.create({
+          userId: 'u-001',
+          decisionId: 'd-001',
+          candidateAction: {},
+          reason: 'test',
+          urgency: 'normal',
+        }),
+      ).rejects.toThrow(/vanished between INSERT conflict and fallback SELECT/);
+    });
   });
 
   // -----------------------------------------------------------------------

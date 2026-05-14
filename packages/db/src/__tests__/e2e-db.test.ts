@@ -343,29 +343,38 @@ describe.skipIf(!E2E)('E2E: CockroachDB integration', () => {
       expect(final.status).toBe('approved');
     });
 
-    it('allows responding to different approvals for the same decision', async () => {
+    it('allows responding to different approvals without cross-interference', async () => {
       const user = await createTestUser('e2e-multi-approval@test.local', 'Multi Approval');
 
-      const decision = await sqlOne<{ id: string }>(
+      // Each decision gets exactly one approval_request (migration 046's
+      // unique index), so this exercises "responding to one approval does
+      // not affect another" with two decisions. The behavior under test is
+      // that respond()'s UPDATE is scoped to a single approval id.
+      const decision1 = await sqlOne<{ id: string }>(
+        `INSERT INTO decisions (user_id, situation_type, raw_event, interpreted_situation, domain)
+         VALUES ($1, 'test_event', '{}', '{}', 'email')
+         RETURNING *`,
+        [user.id],
+      );
+      const decision2 = await sqlOne<{ id: string }>(
         `INSERT INTO decisions (user_id, situation_type, raw_event, interpreted_situation, domain)
          VALUES ($1, 'test_event', '{}', '{}', 'email')
          RETURNING *`,
         [user.id],
       );
 
-      // Create two separate approval requests
       const approval1 = await sqlOne<{ id: string }>(
         `INSERT INTO approval_requests (user_id, decision_id, candidate_action, reason, urgency, status, requested_at, expires_at)
          VALUES ($1, $2, '{"actionType":"reply"}', 'First option', 'normal', 'pending', now(), now() + interval '1 day')
          RETURNING *`,
-        [user.id, decision.id],
+        [user.id, decision1.id],
       );
 
       const approval2 = await sqlOne<{ id: string }>(
         `INSERT INTO approval_requests (user_id, decision_id, candidate_action, reason, urgency, status, requested_at, expires_at)
          VALUES ($1, $2, '{"actionType":"forward"}', 'Second option', 'normal', 'pending', now(), now() + interval '1 day')
          RETURNING *`,
-        [user.id, decision.id],
+        [user.id, decision2.id],
       );
 
       // Approve the first, reject the second
@@ -382,6 +391,106 @@ describe.skipIf(!E2E)('E2E: CockroachDB integration', () => {
         [approval2.id],
       );
       expect(r2).toHaveLength(1);
+    });
+
+    it('enforces one approval_request per decision (migration 046)', async () => {
+      // Regression for the "every email shows twice" bug: two concurrent
+      // worker processes each ingested the same signal, and
+      // approvalRepository.create had no guard, so every decision
+      // accumulated a duplicate approval and the dashboard showed every
+      // email twice. Migration 046 added a unique index on decision_id —
+      // a second INSERT for the same decision must now be rejected.
+      const user = await createTestUser('e2e-dup-approval@test.local', 'Dup Approval');
+
+      const decision = await sqlOne<{ id: string }>(
+        `INSERT INTO decisions (user_id, situation_type, raw_event, interpreted_situation, domain)
+         VALUES ($1, 'test_event', '{}', '{}', 'email')
+         RETURNING *`,
+        [user.id],
+      );
+
+      await sqlOne(
+        `INSERT INTO approval_requests (user_id, decision_id, candidate_action, reason, urgency, status, requested_at, expires_at)
+         VALUES ($1, $2, '{"actionType":"reply"}', 'First', 'normal', 'pending', now(), now() + interval '1 day')
+         RETURNING *`,
+        [user.id, decision.id],
+      );
+
+      // A second approval_request for the same decision_id violates the
+      // unique index — the duplicate INSERT must throw.
+      await expect(
+        pool.query(
+          `INSERT INTO approval_requests (user_id, decision_id, candidate_action, reason, urgency, status, requested_at, expires_at)
+           VALUES ($1, $2, '{"actionType":"forward"}', 'Duplicate', 'normal', 'pending', now(), now() + interval '1 day')`,
+          [user.id, decision.id],
+        ),
+      ).rejects.toThrow();
+    });
+
+    it('migration 046 dedup keeps one row per decision_id (resolved over pending, then earliest)', async () => {
+      // Migration 046 step 1 deletes duplicate approval_requests, keeping ONE
+      // per decision_id by (resolved-before-pending, earliest requested_at,
+      // id). The real table now carries the unique index, so the duplicate
+      // precondition can only be staged on a scratch table — this exercises
+      // the exact DELETE predicate against all three ordering rules.
+      await pool.query(
+        `CREATE TABLE _dedup_test (
+           id UUID DEFAULT gen_random_uuid(),
+           decision_id UUID NOT NULL,
+           status TEXT NOT NULL,
+           requested_at TIMESTAMPTZ NOT NULL
+         )`,
+      );
+      try {
+        const decA = '11111111-1111-4111-8111-111111111111';
+        const decB = '22222222-2222-4222-8222-222222222222';
+        const decC = '33333333-3333-4333-8333-333333333333';
+        const keepA = '00000000-0000-4000-8000-00000000000a';
+        const keepB = '00000000-0000-4000-8000-00000000000b';
+        const keepC = '00000000-0000-4000-8000-00000000000c';
+        // decA: 3 pending rows, distinct requested_at — earliest (keepA) wins.
+        // decB: 2 pending rows, equal requested_at — smaller id (keepB) wins.
+        // decC: a pending row created FIRST + an approved row created LATER —
+        //       the resolved (approved) row (keepC) wins despite being later,
+        //       so a user's response is never discarded for a stale pending copy.
+        await pool.query(
+          `INSERT INTO _dedup_test (id, decision_id, status, requested_at) VALUES
+             ($1, $2, 'pending',  '2026-01-01T00:00:00Z'),
+             (gen_random_uuid(), $2, 'pending',  '2026-01-01T00:00:30Z'),
+             (gen_random_uuid(), $2, 'pending',  '2026-01-01T04:00:00Z'),
+             ($3, $4, 'pending',  '2026-02-01T12:00:00Z'),
+             (gen_random_uuid(), $4, 'pending',  '2026-02-01T12:00:00Z'),
+             (gen_random_uuid(), $5, 'pending',  '2026-03-01T08:00:00Z'),
+             ($6, $5, 'approved', '2026-03-01T09:00:00Z')`,
+          [keepA, decA, keepB, decB, decC, keepC],
+        );
+        // Same predicate as migration 046 step 1, retargeted at the scratch table.
+        await pool.query(
+          `DELETE FROM _dedup_test a
+           WHERE EXISTS (
+             SELECT 1 FROM _dedup_test b
+             WHERE b.decision_id = a.decision_id
+               AND (
+                 CASE WHEN b.status = 'pending' THEN 1 ELSE 0 END,
+                 b.requested_at,
+                 b.id
+               ) < (
+                 CASE WHEN a.status = 'pending' THEN 1 ELSE 0 END,
+                 a.requested_at,
+                 a.id
+               )
+           )`,
+        );
+        const survivors = await sql<{ id: string; decision_id: string }>(
+          'SELECT id, decision_id FROM _dedup_test ORDER BY decision_id',
+        );
+        expect(survivors).toHaveLength(3);
+        expect(survivors.find((r) => r.decision_id === decA)?.id).toBe(keepA);
+        expect(survivors.find((r) => r.decision_id === decB)?.id).toBe(keepB);
+        expect(survivors.find((r) => r.decision_id === decC)?.id).toBe(keepC);
+      } finally {
+        await pool.query('DROP TABLE IF EXISTS _dedup_test');
+      }
     });
   });
 
