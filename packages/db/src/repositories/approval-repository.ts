@@ -1,3 +1,4 @@
+import { randomBytes } from 'crypto';
 import { query } from '../connection.js';
 import type { ApprovalRequestRow } from '../types.js';
 
@@ -12,10 +13,13 @@ export const approvalRepository = {
     reason: string;
     urgency: string;
     expiresAt?: Date;
+    /** 'single' (default) or 'dual'. 'dual' is set by the injection guard
+     *  for extreme-severity actions and requires two token-gated confirms. */
+    confirmationLevel?: 'single' | 'dual';
   }): Promise<ApprovalRequestRow> {
     const result = await query<ApprovalRequestRow>(
-      `INSERT INTO approval_requests (user_id, decision_id, candidate_action, reason, urgency, status, requested_at, expires_at)
-       VALUES ($1, $2, $3, $4, $5, 'pending', now(), $6)
+      `INSERT INTO approval_requests (user_id, decision_id, candidate_action, reason, urgency, status, requested_at, expires_at, confirmation_level)
+       VALUES ($1, $2, $3, $4, $5, 'pending', now(), $6, $7)
        RETURNING *`,
       [
         input.userId,
@@ -24,9 +28,44 @@ export const approvalRepository = {
         input.reason,
         input.urgency,
         input.expiresAt ?? new Date(Date.now() + 24 * 60 * 60 * 1000),
+        input.confirmationLevel ?? 'single',
       ],
     );
     return result.rows[0]!;
+  },
+
+  /**
+   * Record the first confirmation of a dual-confirmation request and issue a
+   * one-time token the caller must present on the second confirmation.
+   *
+   * `first_confirmed_at` is set once (via COALESCE) so the 10-minute window
+   * is anchored to the genuine first confirmation and cannot be extended by
+   * re-calling. The token, however, is always refreshed — that makes the
+   * flow recoverable across a page refresh (a new browser session can get
+   * the current token) without ever extending the window or weakening the
+   * guarantee: execution still requires a separate, token-bearing second
+   * POST. A double-fired first click just re-mints a same-purpose token; it
+   * never executes anything, because only the second confirmation flips
+   * status to `approved`.
+   *
+   * Returns the freshly issued token, or null if the request is no longer
+   * pending or is not a dual-confirmation request.
+   */
+  async recordFirstConfirmation(
+    id: string,
+    userId: string,
+  ): Promise<string | null> {
+    const token = randomBytes(24).toString('base64url');
+    const result = await query<ApprovalRequestRow>(
+      `UPDATE approval_requests
+       SET first_confirmed_at = COALESCE(first_confirmed_at, now()),
+           confirmation_token = $1
+       WHERE id = $2 AND user_id = $3 AND status = 'pending'
+         AND confirmation_level = 'dual'
+       RETURNING *`,
+      [token, id, userId],
+    );
+    return result.rows[0] ? token : null;
   },
 
   async findPending(userId: string, limit: number = 100): Promise<ApprovalRequestRow[]> {

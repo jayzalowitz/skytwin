@@ -41,6 +41,18 @@ export type {
 } from './decision.js';
 
 export type {
+  ActionProvenance,
+  ActionSeverity,
+  ConfirmationLevel,
+  InjectionGuardVerdict,
+} from './action-safety.js';
+export {
+  classifyActionSeverity,
+  resolveActionProvenance,
+  evaluateInjectionGuard,
+} from './action-safety.js';
+
+export type {
   ActionPolicy,
   PolicyRule,
   PolicyCondition,

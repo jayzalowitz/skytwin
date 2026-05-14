@@ -376,6 +376,9 @@ export function createEventsRouter(): Router {
           },
           reason: outcome.reasoning,
           urgency: decision.urgency,
+          // The injection guard sets `dual` for extreme-severity actions —
+          // the approval then needs two token-gated confirmations.
+          confirmationLevel: outcome.confirmationLevel === 'dual' ? 'dual' : 'single',
         });
       } else if (outcome.autoExecute && outcome.selectedAction) {
         // Inject OAuth token if available for real execution

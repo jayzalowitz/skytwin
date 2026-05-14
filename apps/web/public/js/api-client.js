@@ -265,10 +265,14 @@ export function fetchApprovalHistory(userId, limit = 50) {
   return fetchJSON(`${API}/approvals/${userId}/history?limit=${limit}`);
 }
 
-export function respondToApproval(requestId, action, userId, reason) {
+// `confirmationToken` is only used for the second confirmation of a
+// dual-confirmation (extreme-severity) request — it's the one-time token the
+// first confirmation returned. Omitted for single-confirmation requests and
+// for the first confirmation of a dual one.
+export function respondToApproval(requestId, action, userId, reason, confirmationToken) {
   return fetchJSON(`${API}/approvals/${requestId}/respond`, {
     method: 'POST',
-    body: JSON.stringify({ action, userId, reason }),
+    body: JSON.stringify({ action, userId, reason, confirmationToken }),
   });
 }
 

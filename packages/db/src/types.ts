@@ -150,6 +150,16 @@ export interface ApprovalRequestRow {
   response: Record<string, unknown> | null;
   expires_at: Date;
   batch_id: string | null;
+  /** 'single' (default) or 'dual' — set by the injection guard for
+   *  extreme-severity actions. 'dual' requires two token-gated confirms. */
+  confirmation_level: string;
+  /** When the first confirmation of a dual-confirmation request landed.
+   *  NULL for single-confirmation requests or dual requests not yet
+   *  confirmed once. */
+  first_confirmed_at: Date | null;
+  /** One-time token issued on the first confirmation of a dual request;
+   *  the second confirmation must present it. NULL until then. */
+  confirmation_token: string | null;
 }
 
 // ============================================================================

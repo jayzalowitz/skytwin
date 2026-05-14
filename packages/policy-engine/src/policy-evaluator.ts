@@ -3,8 +3,9 @@ import type {
   CandidateAction,
   RiskAssessment,
   AutonomySettings,
+  ConfirmationLevel,
 } from '@skytwin/shared-types';
-import { RiskTier, TrustTier } from '@skytwin/shared-types';
+import { RiskTier, TrustTier, evaluateInjectionGuard } from '@skytwin/shared-types';
 import { DEFAULT_POLICIES } from './default-policies.js';
 
 /**
@@ -32,6 +33,13 @@ export interface PolicyDecision {
   requiresApproval: boolean;
   reason: string;
   blockingPolicy?: ActionPolicy;
+  /**
+   * How many deliberate human confirmations the action needs when
+   * `requiresApproval` is true. `dual` is set by the injection guard for
+   * extreme-severity actions; absent means `single`. Never set when
+   * `requiresApproval` is false.
+   */
+  confirmationLevel?: ConfirmationLevel;
 }
 
 /**
@@ -64,6 +72,17 @@ export class PolicyEvaluator {
       return tierDecision;
     }
 
+    // Injection guard — the documentary-poisoning defense. Runs before every
+    // other check so a quiet-hours early return cannot skip it. It never
+    // denies; it only escalates to single- or dual-confirmation. Its verdict
+    // is threaded through every subsequent allowed/approval return path so it
+    // cannot be lost or downgraded. A later `deny` still wins (denied beats
+    // approval) — that is the correct ordering.
+    const guard = this.checkInjectionGuard(action);
+    let requiresApproval = guard.requiresApproval;
+    let confirmationLevel: ConfirmationLevel | undefined = guard.confirmationLevel;
+    let approvalReason = guard.reason ?? '';
+
     // Check autonomy settings if provided
     if (autonomySettings) {
       const settingsDecision = this.checkAutonomySettings(action, autonomySettings, riskAssessment);
@@ -76,14 +95,19 @@ export class PolicyEvaluator {
     if (autonomySettings) {
       const quietDecision = this.checkQuietHours(autonomySettings);
       if (quietDecision) {
-        return quietDecision;
+        return {
+          ...quietDecision,
+          // Preserve an injection-guard escalation through the quiet-hours
+          // early return — the guard is non-negotiable.
+          ...(confirmationLevel ? { confirmationLevel } : {}),
+          reason: approvalReason
+            ? `${quietDecision.reason} ${approvalReason}`
+            : quietDecision.reason,
+        };
       }
     }
 
     // Evaluate each policy's rules
-    let requiresApproval = false;
-    let approvalReason = '';
-
     for (const policy of allPolicies) {
       const result = this.evaluatePolicy(action, policy, trustTier, riskAssessment);
 
@@ -98,7 +122,9 @@ export class PolicyEvaluator {
 
       if (result === 'require_approval') {
         requiresApproval = true;
-        approvalReason = `Approval required by policy "${policy.name}": ${policy.description}`;
+        approvalReason = approvalReason
+          ? approvalReason
+          : `Approval required by policy "${policy.name}": ${policy.description}`;
       }
     }
 
@@ -107,6 +133,7 @@ export class PolicyEvaluator {
         allowed: true,
         requiresApproval: true,
         reason: approvalReason || tierDecision?.reason || 'Approval required by policy.',
+        ...(confirmationLevel ? { confirmationLevel } : {}),
       };
     }
 
@@ -114,6 +141,33 @@ export class PolicyEvaluator {
       allowed: true,
       requiresApproval: false,
       reason: 'All policies passed. Action is allowed for auto-execution.',
+    };
+  }
+
+  /**
+   * Injection guard — the documentary-poisoning defense.
+   *
+   * Thin adapter over `evaluateInjectionGuard` from `@skytwin/shared-types`.
+   * The matrix lives in one pure function there so this policy check and the
+   * execution-router backstop consult identical logic and cannot drift. See
+   * that function's doc comment for the full matrix and rationale.
+   *
+   * This guard never denies — it only escalates to single- or
+   * dual-confirmation. Missing provenance fails safe (treated as untrusted).
+   */
+  checkInjectionGuard(action: CandidateAction): {
+    requiresApproval: boolean;
+    confirmationLevel?: ConfirmationLevel;
+    reason?: string;
+  } {
+    const verdict = evaluateInjectionGuard(action);
+    if (!verdict.escalate) {
+      return { requiresApproval: false };
+    }
+    return {
+      requiresApproval: true,
+      confirmationLevel: verdict.confirmationLevel,
+      reason: verdict.reason,
     };
   }
 
