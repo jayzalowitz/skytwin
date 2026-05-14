@@ -925,7 +925,6 @@ window.handleConnectGoogle = async function(userId) {
     // sign it into the state — mutating the signed state on the client
     // breaks HMAC verification on the callback.
     const { startGoogleSignIn } = await import('../google-signin.js');
-    const pageContent = document.getElementById('page-content');
     const result = await startGoogleSignIn({
       userId,
       onComplete: async (connected) => {
@@ -941,10 +940,13 @@ window.handleConnectGoogle = async function(userId) {
         banner?.remove();
         const container = document.getElementById('page-content');
         if (!container) return;
-        const { renderSettings } = await import('./settings.js');
         await renderSettings(container, userId);
       },
     });
+    // Re-query the container after the await — a navigation during the
+    // startGoogleSignIn call could have detached the original element.
+    const pageContent = document.getElementById('page-content');
+    if (!pageContent) return;
     if (result.status === 'polling') {
       pageContent.insertAdjacentHTML(
         'afterbegin',
@@ -956,14 +958,14 @@ window.handleConnectGoogle = async function(userId) {
       return;
     }
     if (result.status === 'error') {
-      const msg = /credentials/i.test(result.error || '')
+      const msg = /credentials|authorize url/i.test(result.error || '')
         ? 'Google access isn\'t set up on this server yet. Head to <a href="#/setup">Connect</a> for the 5-minute walkthrough.'
         : escapeHtml(result.error || 'Could not start Google sign-in.');
       pageContent.insertAdjacentHTML('afterbegin', `<div class="error-banner">${msg}</div>`);
       return;
     }
   } catch (err) {
-    document.getElementById('page-content').insertAdjacentHTML(
+    document.getElementById('page-content')?.insertAdjacentHTML(
       'afterbegin',
       `<div class="error-banner">${escapeHtml(err.message)}</div>`,
     );

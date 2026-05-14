@@ -116,6 +116,10 @@ async function handleOnboardingClick(e) {
           // userId yet for a new user, so we can't poll for completion
           // here — re-enable the button instead of leaving it frozen
           // on "Redirecting…" with no way forward.
+          // TODO(desktop-onboarding): auto-advance the wizard after a
+          // desktop new-user sign-in. Needs a userId-less completion
+          // signal (e.g. poll a short-lived pairing token) — the web
+          // flow advances via redirect, desktop currently does not.
           btn.disabled = false;
           btn.textContent = 'Continue with Google';
           showWizardError('Finish signing in with Google in the browser window that just opened, then return here and continue.');

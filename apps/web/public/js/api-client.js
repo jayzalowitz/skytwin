@@ -386,6 +386,11 @@ export function fetchBriefing(userId) {
 }
 
 export function getGoogleAuthUrl(userId, { desktop = false, newUser = false } = {}) {
+  // Fail fast on the client instead of sending `userId=null` and getting
+  // back an opaque 400 "Missing userId" from the server.
+  if (!newUser && !userId) {
+    throw new Error('getGoogleAuthUrl requires either a userId or { newUser: true }');
+  }
   const params = new URLSearchParams();
   if (newUser) params.set('newUser', 'true');
   else params.set('userId', userId);

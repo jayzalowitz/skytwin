@@ -569,7 +569,8 @@ async function reRenderSetupOnConnect(connected) {
   if (window.location.hash.split('?')[0] !== '#/setup') return;
   const container = document.getElementById('page-content');
   if (!container) return;
-  const { renderSetup } = await import('./setup.js');
+  // renderSetup is exported from this same module — call it directly
+  // rather than dynamically re-importing the module that's executing.
   await renderSetup(container, localStorage.getItem(KEY_USER_ID));
 }
 

@@ -17,6 +17,14 @@ const SCHEMA_PATH = join(__dirname, '..', 'schemas', 'schema.sql');
  *   42P07 duplicate_table
  *   42701 duplicate_column
  *   23505 unique_violation   (duplicate key on INSERT)
+ *
+ * Trade-off on 23505: the first three are DDL and always safe to swallow
+ * on a re-run. 23505 is DML — swallowing it makes re-running a seed
+ * `INSERT` idempotent, but it also masks a genuine unique-key conflict
+ * in a future backfill. This matches the pre-existing `duplicate key`
+ * message match (this migration runner has always been best-effort on
+ * DML conflicts); a migration that needs strict insert semantics should
+ * use `INSERT … ON CONFLICT` explicitly rather than rely on the runner.
  */
 const IDEMPOTENT_PG_CODES = new Set(['42710', '42P07', '42701', '23505']);
 
@@ -24,17 +32,44 @@ const IDEMPOTENT_PG_CODES = new Set(['42710', '42P07', '42701', '23505']);
  * Split a .sql migration file into individual statements.
  *
  * `--` line comments are stripped *before* splitting so a stray `;` at
- * the end of a comment line can't break a statement in half. This is
- * safe for the migration corpus: no migration uses `--` inside a string
- * literal (verified). Statements are split on `;` followed by
- * end-of-line, then trimmed; empty blocks are dropped.
+ * the end of a comment line can't break a statement in half. Statements
+ * are split on `;` followed by end-of-line, then trimmed; empty blocks
+ * are dropped.
+ *
+ * Caveat: the `--` strip is not string-literal aware, so a future
+ * migration with `--` inside a quoted string would be corrupted. The
+ * current corpus is verified clean, and `assertBalancedQuotes` below
+ * catches the regression at migration-run time (CI + local) rather than
+ * letting it corrupt data silently.
  */
 export function splitSqlStatements(sql: string): string[] {
-  return sql
+  const statements = sql
     .replace(/--[^\n]*/g, '')
     .split(/;\s*$/m)
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
+  for (const stmt of statements) {
+    assertBalancedQuotes(stmt);
+  }
+  return statements;
+}
+
+/**
+ * Throw if a statement has an odd number of single-quote characters.
+ * In SQL, every string literal opens and closes with `'` and an escaped
+ * quote inside a literal is `''` (two chars) — so a well-formed
+ * statement always has an even count. An odd count means either the
+ * statement is malformed or the comment-strip in `splitSqlStatements`
+ * ate a `--` that was inside a string literal. Either way: fail loud.
+ */
+function assertBalancedQuotes(statement: string): void {
+  const singleQuotes = (statement.match(/'/g) ?? []).length;
+  if (singleQuotes % 2 !== 0) {
+    throw new Error(
+      `[migration] statement has unbalanced single-quotes after comment-strip — ` +
+        `a "--" inside a string literal may have been mis-stripped:\n${statement.substring(0, 200)}`,
+    );
+  }
 }
 
 /**

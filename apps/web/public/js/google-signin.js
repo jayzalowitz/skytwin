@@ -54,20 +54,33 @@ export async function startGoogleSignIn({ userId = null, onComplete } = {}) {
   return { status: 'redirecting' };
 }
 
+// Single in-flight poll handle. A second startGoogleSignIn() call (retry,
+// or a different entry point) cancels the previous poller instead of
+// stacking a second interval that runs for the full 5-minute window.
+let _activePollHandle = null;
+
 function pollUntilConnected(userId, onComplete) {
+  if (_activePollHandle !== null) {
+    clearInterval(_activePollHandle);
+    _activePollHandle = null;
+  }
   let pollCount = 0;
   const maxPolls = 150; // 5 minutes at 2s intervals
-  const handle = setInterval(async () => {
+  const stop = () => {
+    clearInterval(_activePollHandle);
+    _activePollHandle = null;
+  };
+  _activePollHandle = setInterval(async () => {
     pollCount++;
     if (pollCount >= maxPolls) {
-      clearInterval(handle);
+      stop();
       onComplete(false);
       return;
     }
     try {
       const status = await fetchOAuthStatus(userId, 'google');
       if (status.connected) {
-        clearInterval(handle);
+        stop();
         onComplete(true);
       }
     } catch {

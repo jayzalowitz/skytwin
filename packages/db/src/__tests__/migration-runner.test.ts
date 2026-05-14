@@ -38,6 +38,18 @@ describe('splitSqlStatements', () => {
   it('returns no statements for an all-comment file', () => {
     expect(splitSqlStatements('-- just a header\n-- nothing else\n')).toEqual([]);
   });
+
+  it('passes statements with balanced string literals through unchanged', () => {
+    const sql = "INSERT INTO t (name) VALUES ('hello');\n";
+    expect(splitSqlStatements(sql)).toEqual(["INSERT INTO t (name) VALUES ('hello')"]);
+  });
+
+  it('throws if comment-strip corrupts a string literal (unbalanced quotes)', () => {
+    // `--b')` is inside a string literal; the non-string-aware strip
+    // eats it, leaving an unbalanced quote — must fail loud, not corrupt.
+    const sql = "INSERT INTO t (v) VALUES ('a--b');\n";
+    expect(() => splitSqlStatements(sql)).toThrow(/unbalanced single-quotes/);
+  });
 });
 
 describe('isIdempotentError', () => {
