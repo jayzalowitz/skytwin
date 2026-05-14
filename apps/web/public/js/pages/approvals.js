@@ -19,6 +19,14 @@ let visiblePendingCount = PENDING_PAGE_SIZE;
 let _approvalsListenerWired = false;
 let _approvalsUserId = '';
 
+// One-time tokens from the first confirmation of a dual-confirmation
+// (extreme-severity) request, keyed by request id. Held in memory for the
+// session only — never persisted to localStorage. The second confirmation
+// reads the token from here. A page refresh between the two steps drops the
+// token; the user re-does step 1 to get a fresh one (the server re-issues
+// without extending the 10-minute window — see recordFirstConfirmation).
+const _dualConfirmTokens = new Map();
+
 export async function renderApprovals(container, userId) {
   _approvalsUserId = userId;
   ensureApprovalsListener();
@@ -148,6 +156,12 @@ function ensureApprovalsListener() {
       if (id && (decision === 'approve' || decision === 'reject')) {
         handleApproval(id, decision, _approvalsUserId);
       }
+    } else if (action === 'approval-dual') {
+      const id = btn.getAttribute('data-request-id');
+      const step = btn.getAttribute('data-step');
+      if (id && (step === '1' || step === '2')) {
+        handleDualConfirm(id, step, _approvalsUserId, btn);
+      }
     } else if (action === 'escalation-choice') {
       const id = btn.getAttribute('data-request-id');
       const choice = btn.getAttribute('data-choice');
@@ -259,19 +273,40 @@ function renderSignalContext(ctx) {
 }
 
 function renderStandardCard(a, action) {
+  const isDual = a.confirmationLevel === 'dual';
   return `
     <div class="approval-reason">
       ${explainReason(action, a.reason)}
     </div>
     ${renderActionDetails(action)}
+    ${isDual ? renderDualConfirmBanner() : ''}
     <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.8rem; color: var(--text-dim);">
       <span>${a.requestedAt ? formatTime(a.requestedAt) : ''}</span>
       <span>${action.confidence ? `Confidence: ${action.confidence}` : ''}</span>
     </div>
     <div class="approval-actions">
-      <button class="btn btn-success btn-sm" data-action="approval" data-decision="approve" data-request-id="${escapeHtml(a.id)}" data-user-id="${escapeHtml(a.userId || '')}">Yes, do it</button>
+      ${isDual
+        ? `<button class="btn btn-warning btn-sm" data-action="approval-dual" data-step="1" data-request-id="${escapeHtml(a.id)}" data-user-id="${escapeHtml(a.userId || '')}">Confirm — step 1 of 2</button>`
+        : `<button class="btn btn-success btn-sm" data-action="approval" data-decision="approve" data-request-id="${escapeHtml(a.id)}" data-user-id="${escapeHtml(a.userId || '')}">Yes, do it</button>`
+      }
       <button class="btn btn-outline btn-sm" data-action="approval" data-decision="reject" data-request-id="${escapeHtml(a.id)}" data-user-id="${escapeHtml(a.userId || '')}">Not this time</button>
       <input class="form-input" id="reason-${escapeHtml(a.id)}" placeholder="Tell me why so I learn (optional)" style="flex: 1; font-size: 0.8rem;">
+    </div>
+  `;
+}
+
+/**
+ * Warning banner shown on extreme-severity actions the injection guard has
+ * flagged for two-step confirmation (shell / filesystem / database / account
+ * destruction). The two-click requirement is the deliberate friction —
+ * documentary-poisoned content cannot click twice on its own.
+ */
+function renderDualConfirmBanner() {
+  return `
+    <div class="dual-confirm-banner" style="margin: 0.5rem 0; padding: 0.5rem 0.65rem; background: var(--bg-warning, #3a2a00); border-left: 3px solid var(--warning, #e0a000); border-radius: var(--radius-sm); font-size: 0.8rem; line-height: 1.5;">
+      <strong>This is an extreme action.</strong> It can destroy data or run
+      system-level commands, so it takes <strong>two confirmations</strong>.
+      Confirming once gives you a final review step before anything runs.
     </div>
   `;
 }
@@ -763,6 +798,90 @@ async function handleApproval(requestId, action, userId) {
     const el = document.getElementById(`approval-${requestId}`);
     if (el) {
       el.insertAdjacentHTML('beforeend', `<div class="error-banner" style="margin-top: 0.5rem;">${escapeHtml(err.message)}</div>`);
+    }
+  }
+}
+
+/**
+ * Two-step confirmation for extreme-severity actions (the injection guard's
+ * dual-confirmation tier).
+ *
+ * Step 1: POST approve with no token. The server records the first
+ *   confirmation and returns a one-time token. We stash the token in memory
+ *   and swap the button to "step 2 of 2" — a deliberate second click is now
+ *   required. Documentary-poisoned content cannot perform this second click.
+ * Step 2: POST approve WITH the token. The server verifies it (and the
+ *   10-minute window) and only then executes.
+ *
+ * The reason input is read fresh at each step so a note typed before step 1
+ * still rides along on step 2.
+ */
+async function handleDualConfirm(requestId, step, userId, btn) {
+  const reasonInput = document.getElementById(`reason-${requestId}`);
+  const reason = reasonInput?.value?.trim() || undefined;
+  const el = document.getElementById(`approval-${requestId}`);
+
+  try {
+    if (step === '1') {
+      const result = await respondToApproval(requestId, 'approve', userId, reason);
+      if (result?.status !== 'awaiting_second_confirmation' || !result?.confirmationToken) {
+        throw new Error('Unexpected response to first confirmation. Please retry.');
+      }
+      _dualConfirmTokens.set(requestId, result.confirmationToken);
+
+      // Swap step 1 → step 2. A fresh button (not just a relabel) so a
+      // queued double-click on the old button can't fire step 2 early.
+      if (btn && btn.parentElement) {
+        const step2 = document.createElement('button');
+        step2.className = 'btn btn-danger btn-sm';
+        step2.setAttribute('data-action', 'approval-dual');
+        step2.setAttribute('data-step', '2');
+        step2.setAttribute('data-request-id', requestId);
+        step2.setAttribute('data-user-id', userId || '');
+        step2.textContent = 'Confirm — step 2 of 2 (execute)';
+        btn.replaceWith(step2);
+      }
+      const banner = el?.querySelector('.dual-confirm-banner');
+      if (banner) {
+        banner.innerHTML =
+          '<strong>Step 1 confirmed.</strong> Click <strong>step 2</strong> ' +
+          'to execute. This is your final review — nothing has run yet. ' +
+          'The confirmation expires in 10 minutes.';
+      }
+      showToast('First confirmation recorded — confirm once more to execute.', { kind: 'info' });
+      return;
+    }
+
+    // step === '2'
+    const token = _dualConfirmTokens.get(requestId);
+    if (!token) {
+      // The one-time token lives only in this page session. If it is gone
+      // (a refresh between the two steps), the request cannot be completed
+      // here — by design, the token is never re-issued. It stays pending
+      // and expires; reject it and let a fresh decision re-raise it.
+      throw new Error(
+        'The confirmation token from step 1 is no longer available in this ' +
+        'session. For safety it cannot be re-issued — reject this request ' +
+        'and it will be re-raised fresh, or wait for it to expire.',
+      );
+    }
+    await respondToApproval(requestId, 'approve', userId, reason, token);
+    _dualConfirmTokens.delete(requestId);
+
+    if (el) {
+      el.style.opacity = '0.5';
+      el.style.pointerEvents = 'none';
+      const actions = el.querySelector('.approval-actions');
+      if (actions) actions.innerHTML = '<span class="badge badge-success">Approved</span>';
+    }
+    showToast('Both confirmations received — executing now.', { kind: 'success' });
+  } catch (err) {
+    _dualConfirmTokens.delete(requestId);
+    if (el) {
+      el.insertAdjacentHTML(
+        'beforeend',
+        `<div class="error-banner" style="margin-top: 0.5rem;">${escapeHtml(err.message)}</div>`,
+      );
     }
   }
 }

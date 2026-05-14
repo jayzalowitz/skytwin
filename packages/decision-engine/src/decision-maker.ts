@@ -136,6 +136,23 @@ export class DecisionMaker {
       ? await this.candidateGenerator.generate(context.decision, profile, enrichedContext)
       : this.generateCandidates(context.decision, profile, { senderLabelHints });
 
+    // Stamp provenance onto every candidate from the originating decision so
+    // the policy engine's injection guard can gate without re-deriving where
+    // the action came from.
+    //
+    // This is an UNCONDITIONAL overwrite, not a default-only assignment.
+    // Provenance is a trust boundary: candidate generators are fed untrusted
+    // content (the LLM generator parses model JSON shaped by inbound email
+    // bodies), so a generator must never be able to set its own provenance —
+    // an injected "provenance: user_originated" in generated output would
+    // otherwise survive. The originating decision is the only authority for
+    // where the action came from. If the decision's provenance is somehow
+    // unset, this assigns `undefined`, which the policy engine treats as
+    // `untrusted_external` (fail safe).
+    for (const candidate of candidates) {
+      candidate.provenance = context.decision.provenance;
+    }
+
     if (candidates.length === 0) {
       const outcome: DecisionOutcome = {
         id: crypto.randomUUID(),
@@ -180,6 +197,7 @@ export class DecisionMaker {
     let selectedAssessment: RiskAssessment | null = null;
     let autoExecute = false;
     let requiresApproval = true;
+    let confirmationLevel: DecisionOutcome['confirmationLevel'];
     let reasoning = '';
     let lastBlockedReason = '';
 
@@ -209,6 +227,7 @@ export class DecisionMaker {
         selectedAction = candidate;
         selectedAssessment = assessment;
         requiresApproval = policyDecision.requiresApproval;
+        confirmationLevel = policyDecision.confirmationLevel;
         autoExecute = !policyDecision.requiresApproval &&
           this.shouldAutoExecute(candidate, context.trustTier, policies);
         reasoning = autoExecute
@@ -234,6 +253,11 @@ export class DecisionMaker {
       reasoning,
       decidedAt: new Date(),
       policyVerdicts,
+      // Only meaningful when the selected action requires approval; the
+      // injection guard sets `dual` for extreme-severity actions.
+      ...(selectedAction && requiresApproval && confirmationLevel
+        ? { confirmationLevel }
+        : {}),
     };
 
     await this.decisionRepository.saveCandidates(candidates);

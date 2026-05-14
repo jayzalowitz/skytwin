@@ -1,5 +1,9 @@
 import { Router } from 'express';
 import {
+  classifyDualConfirmStep,
+  FIRST_CONFIRMATION_WINDOW_MS,
+} from './dual-confirm.js';
+import {
   approvalRepository,
   decisionRepository,
   feedbackRepository,
@@ -113,6 +117,12 @@ export function createApprovalsRouter(): Router {
           urgency: a.urgency,
           status: a.status,
           requestedAt: a.requested_at,
+          // 'single' | 'dual'. The web UI renders a two-step confirm for
+          // 'dual' (extreme-severity actions flagged by the injection guard).
+          confirmationLevel: a.confirmation_level ?? 'single',
+          // True once the first of a dual confirmation has landed — lets the
+          // UI restore the "confirm again" state across a refresh.
+          firstConfirmed: Boolean(a.first_confirmed_at),
         };
       });
 
@@ -169,6 +179,9 @@ export function createApprovalsRouter(): Router {
         action: 'approve' | 'reject';
         reason?: string;
         userId: string;
+        /** Required on the SECOND confirmation of a dual-confirmation
+         *  request — the one-time token returned by the first confirmation. */
+        confirmationToken?: string;
       };
 
       if (!body.action || !body.userId) {
@@ -191,6 +204,43 @@ export function createApprovalsRouter(): Router {
         res.status(403).json({ error: 'You can only respond to your own approval requests.' });
         return;
       }
+
+      // ── Dual-confirmation gate (documentary-poisoning injection guard) ──
+      // Extreme-severity actions are written with confirmation_level='dual'.
+      // Approving one takes two distinct, token-gated clicks. The branching
+      // logic is a pure classifier (see ./dual-confirm.ts) so it can be unit
+      // tested without the full route harness.
+      const dualStep = classifyDualConfirmStep(existing, body);
+      if (dualStep.kind === 'reject') {
+        res.status(dualStep.httpStatus).json({ error: dualStep.error });
+        return;
+      }
+      if (dualStep.kind === 'issue-first') {
+        // FIRST confirmation — mint a one-time token, do NOT execute. The
+        // request stays pending until the token-bearing second confirmation.
+        const token = await approvalRepository.recordFirstConfirmation(
+          requestId,
+          body.userId,
+        );
+        if (!token) {
+          res.status(409).json({ error: 'Approval request is no longer pending' });
+          return;
+        }
+        res.json({
+          status: 'awaiting_second_confirmation',
+          confirmationLevel: 'dual',
+          confirmationToken: token,
+          expiresInSeconds: FIRST_CONFIRMATION_WINDOW_MS / 1000,
+          message:
+            'This action is extreme-severity and requires two confirmations. ' +
+            'Confirm again with the confirmationToken to execute. The token ' +
+            'expires in 10 minutes.',
+        });
+        return;
+      }
+      // dualStep.kind is 'not-applicable' (single confirmation / reject) or
+      // 'proceed' (valid second confirmation) — both fall through to the
+      // normal approve/reject flow below.
 
       // Atomically update only if still pending (prevents double-execution)
       const approval = await approvalRepository.respond(requestId, body.action, body.userId, body.reason);
@@ -364,10 +414,17 @@ export function createApprovalsRouter(): Router {
 
         try {
           const executionRouter = await getRouter();
+          // Approved-execution path: a human moved this through the approval
+          // flow (and, for dual-confirmation actions, clicked twice — the
+          // confirm-token check above enforces the count). Pass
+          // `{ approved: true }` so the router's injection-guard backstop
+          // lets the action through; the human already supplied the
+          // confirmation the guard demanded.
           const result = await executionRouter.executeWithRouting(
             candidateAction,
             riskAssessment,
             body.userId,
+            { approved: true },
           );
 
           // Persist execution plan + result atomically

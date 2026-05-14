@@ -1,5 +1,5 @@
 import type { DecisionObject } from '@skytwin/shared-types';
-import { SituationType } from '@skytwin/shared-types';
+import { SituationType, resolveActionProvenance } from '@skytwin/shared-types';
 import type { SituationStrategy } from './strategies/situation-strategy.js';
 
 /**
@@ -21,12 +21,22 @@ export class SituationInterpreter {
   /**
    * Interpret a raw event into a structured DecisionObject.
    * If a strategy is configured, delegates to it. Otherwise uses built-in rules.
+   *
+   * Provenance (the documentary-poisoning defense) is stamped here in both
+   * paths: the strategy may set it itself, but if it does not, we derive it
+   * from the raw event so a missing provenance never silently slips through
+   * as "trusted" — the policy engine treats absent provenance as untrusted,
+   * but setting it explicitly keeps the audit trail honest.
    */
   async interpret(rawEvent: Record<string, unknown>): Promise<DecisionObject> {
-    if (this.strategy) {
-      return this.strategy.interpret(rawEvent);
+    const decision = this.strategy
+      ? await this.strategy.interpret(rawEvent)
+      : this.interpretRuleBased(rawEvent);
+
+    if (!decision.provenance) {
+      decision.provenance = this.deriveProvenance(rawEvent);
     }
-    return this.interpretRuleBased(rawEvent);
+    return decision;
   }
 
   /**
@@ -46,10 +56,32 @@ export class SituationInterpreter {
       summary,
       rawData: rawEvent,
       interpretedAt: new Date(),
+      provenance: this.deriveProvenance(rawEvent),
     };
   }
 
   // ── Private helpers ──────────────────────────────────────────────
+
+  /**
+   * Derive the action provenance from a raw signal event. Reads the signal
+   * `source` and an `authoringTier` if the connector stamped one (#251 Layer
+   * 1 — email signals carry it; filesystem signals do not). Checks both the
+   * top-level event and a nested `data` object since connectors are not
+   * consistent about envelope shape. Missing inputs fail safe inside
+   * `resolveActionProvenance` — unknown source → `untrusted_external`.
+   */
+  private deriveProvenance(rawEvent: Record<string, unknown>) {
+    const data =
+      typeof rawEvent['data'] === 'object' && rawEvent['data'] !== null
+        ? (rawEvent['data'] as Record<string, unknown>)
+        : {};
+
+    const source = String(rawEvent['source'] ?? data['source'] ?? '');
+    const tierRaw = rawEvent['authoringTier'] ?? data['authoringTier'];
+    const authoringTier = typeof tierRaw === 'string' ? tierRaw : undefined;
+
+    return resolveActionProvenance(source, authoringTier);
+  }
 
   /**
    * Classify the situation type based on signals in the raw event.
