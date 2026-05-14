@@ -46,3 +46,6 @@ heap_profiler/
 
 # Volatile session lock metadata — runtime artifact, never commit
 .claude/scheduled_tasks.lock
+
+# skytwin-dev process tracking file — runtime artifact, never commit
+.skytwin-pids
