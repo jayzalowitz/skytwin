@@ -35,21 +35,27 @@ export const approvalRepository = {
   },
 
   /**
-   * Record the first confirmation of a dual-confirmation request and issue a
+   * Record the FIRST confirmation of a dual-confirmation request and issue a
    * one-time token the caller must present on the second confirmation.
    *
-   * `first_confirmed_at` is set once (via COALESCE) so the 10-minute window
-   * is anchored to the genuine first confirmation and cannot be extended by
-   * re-calling. The token, however, is always refreshed — that makes the
-   * flow recoverable across a page refresh (a new browser session can get
-   * the current token) without ever extending the window or weakening the
-   * guarantee: execution still requires a separate, token-bearing second
-   * POST. A double-fired first click just re-mints a same-purpose token; it
-   * never executes anything, because only the second confirmation flips
-   * status to `approved`.
+   * The `first_confirmed_at IS NULL` guard makes this strictly single-shot:
+   *
+   * - A token is minted exactly once per request. Re-calling never re-mints,
+   *   so a replayed or double-fired first-confirmation POST can never
+   *   invalidate the token the legitimate user is already holding.
+   * - It is race-safe. Between the route reading the row and calling this,
+   *   another request could first-confirm it; the guard means the second
+   *   UPDATE matches zero rows and returns null, and the route returns 409.
+   *
+   * Trade-off: a page refresh between the two confirmation steps drops the
+   * in-memory token and the request cannot be completed in that session —
+   * it stays pending and expires (or the user rejects it). For an
+   * extreme-severity action that friction is acceptable: "start the whole
+   * approval fresh" is the safe behavior, not a re-issued token.
    *
    * Returns the freshly issued token, or null if the request is no longer
-   * pending or is not a dual-confirmation request.
+   * pending, is not a dual-confirmation request, or was already
+   * first-confirmed.
    */
   async recordFirstConfirmation(
     id: string,
@@ -58,10 +64,9 @@ export const approvalRepository = {
     const token = randomBytes(24).toString('base64url');
     const result = await query<ApprovalRequestRow>(
       `UPDATE approval_requests
-       SET first_confirmed_at = COALESCE(first_confirmed_at, now()),
-           confirmation_token = $1
+       SET first_confirmed_at = now(), confirmation_token = $1
        WHERE id = $2 AND user_id = $3 AND status = 'pending'
-         AND confirmation_level = 'dual'
+         AND confirmation_level = 'dual' AND first_confirmed_at IS NULL
        RETURNING *`,
       [token, id, userId],
     );

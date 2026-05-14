@@ -98,6 +98,17 @@ export function resolveActionProvenance(
   }
 
   // Sources with no authoring tier — classify by source.
+  //
+  // Note on `gmail` / `google_calendar`: these connectors DO stamp an
+  // authoring tier (#251 Layer 1, #276 Phase 3), so in normal operation the
+  // tier branch above handles them and we never reach this switch. They are
+  // intentionally NOT listed here: a Gmail/Calendar signal that arrives
+  // WITHOUT a tier (an older signal predating tier stamping, or a future
+  // calendar source that doesn't stamp one) cannot be disambiguated —
+  // self-authored vs. received is *exactly* what the tier encodes. Falling
+  // through to `untrusted_external` is the correct fail-safe: a user's own
+  // event may get one needless confirmation click, but inbound content never
+  // gets mistaken for a trusted instruction.
   switch (source) {
     // The user directly asked the twin to do something.
     case 'user_request':
@@ -113,7 +124,8 @@ export function resolveActionProvenance(
     case 'idle_miner':
     case 'filesystem':
       return 'untrusted_external';
-    // Anything we do not explicitly recognize fails safe.
+    // Anything we do not explicitly recognize fails safe — including
+    // `gmail` / `google_calendar` without a tier (see note above).
     default:
       return 'untrusted_external';
   }
@@ -149,6 +161,14 @@ const EXTREME_ACTION_MARKERS: readonly string[] = [
 /**
  * Destructive-severity action-type markers. Matched case-insensitively as
  * substrings of `actionType`.
+ *
+ * `send` and `forward` are included deliberately: an outbound message cannot
+ * be unsent, and sending or forwarding is exactly the exfiltration shape a
+ * documentary-poisoning attack aims for ("forward all my mail to …", "email
+ * my boss I quit"). Marking them `destructive` means a `send_*` candidate
+ * always takes one explicit confirmation and never auto-executes — even when
+ * a candidate generator marks it `reversible: true`, which would otherwise
+ * let it slip through the reversible carve-out in `evaluateInjectionGuard`.
  */
 const DESTRUCTIVE_ACTION_MARKERS: readonly string[] = [
   'delete',
@@ -158,7 +178,8 @@ const DESTRUCTIVE_ACTION_MARKERS: readonly string[] = [
   'archive_all',
   'empty_trash',
   'permanently',
-  'forward_all',
+  'send',
+  'forward',
   'bulk_',
 ];
 

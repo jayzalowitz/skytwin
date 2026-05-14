@@ -855,8 +855,14 @@ async function handleDualConfirm(requestId, step, userId, btn) {
     // step === '2'
     const token = _dualConfirmTokens.get(requestId);
     if (!token) {
+      // The one-time token lives only in this page session. If it is gone
+      // (a refresh between the two steps), the request cannot be completed
+      // here — by design, the token is never re-issued. It stays pending
+      // and expires; reject it and let a fresh decision re-raise it.
       throw new Error(
-        'The first confirmation was lost (page refreshed?). Start over with step 1.',
+        'The confirmation token from step 1 is no longer available in this ' +
+        'session. For safety it cannot be re-issued — reject this request ' +
+        'and it will be re-raised fresh, or wait for it to expire.',
       );
     }
     await respondToApproval(requestId, 'approve', userId, reason, token);

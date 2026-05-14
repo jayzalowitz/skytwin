@@ -14,12 +14,16 @@ describe('classifyActionSeverity', () => {
     expect(classifyActionSeverity({ actionType: 'snooze_thread' })).toBe('none');
   });
 
-  it('flags delete / revoke / unsubscribe actionTypes as destructive', () => {
+  it('flags delete / revoke / unsubscribe / send / forward actionTypes as destructive', () => {
     expect(classifyActionSeverity({ actionType: 'delete_email' })).toBe('destructive');
     expect(classifyActionSeverity({ actionType: 'delete_event' })).toBe('destructive');
     expect(classifyActionSeverity({ actionType: 'revoke_token' })).toBe('destructive');
     expect(classifyActionSeverity({ actionType: 'unsubscribe_list' })).toBe('destructive');
     expect(classifyActionSeverity({ actionType: 'remove_contact' })).toBe('destructive');
+    // send / forward: an outbound message cannot be unsent.
+    expect(classifyActionSeverity({ actionType: 'send_email' })).toBe('destructive');
+    expect(classifyActionSeverity({ actionType: 'send_reply' })).toBe('destructive');
+    expect(classifyActionSeverity({ actionType: 'forward_email' })).toBe('destructive');
   });
 
   it('flags shell / filesystem / database / account destruction as extreme', () => {
@@ -136,8 +140,10 @@ describe('evaluateInjectionGuard — the provenance x severity matrix', () => {
   });
 
   it('escalates an irreversible action from untrusted provenance to single confirmation', () => {
+    // book_flight is irreversible-shaped but carries no destructive marker —
+    // so this exercises the provenance axis, not the severity axis.
     const v = evaluateInjectionGuard({
-      actionType: 'send_reply',
+      actionType: 'book_flight',
       reversible: false,
       parameters: {},
       provenance: 'untrusted_external',
@@ -148,7 +154,7 @@ describe('evaluateInjectionGuard — the provenance x severity matrix', () => {
 
   it('does NOT escalate an irreversible action from user_originated provenance on provenance grounds', () => {
     const v = evaluateInjectionGuard({
-      actionType: 'send_reply',
+      actionType: 'book_flight',
       reversible: false,
       parameters: {},
       provenance: 'user_originated',
@@ -194,14 +200,32 @@ describe('evaluateInjectionGuard — the provenance x severity matrix', () => {
   });
 
   it('fails safe — missing provenance is treated as untrusted_external', () => {
-    // Irreversible + no provenance → must escalate (untrusted default).
+    // Irreversible non-destructive action + no provenance → must escalate
+    // purely because the absent provenance defaults to untrusted_external.
     const v = evaluateInjectionGuard({
-      actionType: 'send_reply',
+      actionType: 'book_flight',
       reversible: false,
       parameters: {},
     });
     expect(v.escalate).toBe(true);
     expect(v.confirmationLevel).toBe('single');
+  });
+
+  it('treats send / forward actions as destructive even when marked reversible', () => {
+    // An outbound message cannot be unsent and is the exfiltration shape a
+    // documentary-poisoning attack aims for — so a send_* candidate must
+    // escalate even with reversible: true and user_originated provenance,
+    // closing the reversible carve-out for this action shape.
+    for (const actionType of ['send_email', 'send_reply', 'forward_email']) {
+      const v = evaluateInjectionGuard({
+        actionType,
+        reversible: true,
+        parameters: {},
+        provenance: 'user_originated',
+      });
+      expect(v.escalate).toBe(true);
+      expect(v.confirmationLevel).toBe('single');
+    }
   });
 
   it('always attaches a human-readable reason when it escalates', () => {

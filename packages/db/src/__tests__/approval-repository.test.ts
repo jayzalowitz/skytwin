@@ -152,9 +152,12 @@ describe('approvalRepository', () => {
       expect(sql).toContain('UPDATE approval_requests');
       expect(sql).toContain("status = 'pending'");
       expect(sql).toContain("confirmation_level = 'dual'");
-      // first_confirmed_at is set once via COALESCE so re-calling cannot
-      // extend the confirmation window.
-      expect(sql).toContain('COALESCE(first_confirmed_at');
+      // Strictly single-shot: the `first_confirmed_at IS NULL` guard means a
+      // token is minted exactly once per request. Re-calling never re-mints,
+      // so a replayed first-confirmation POST cannot invalidate the token the
+      // legitimate user already holds. It is also race-safe — a concurrent
+      // first-confirmation matches zero rows and returns null.
+      expect(sql).toContain('first_confirmed_at IS NULL');
       // The issued token is param 1; it must match the returned value.
       expect(params![0]).toBe(token);
       expect(params![1]).toBe('ar-001');
@@ -162,19 +165,12 @@ describe('approvalRepository', () => {
     });
 
     it('returns null when the request is not an updatable dual/pending row', async () => {
+      // A row already first-confirmed, no longer pending, or not dual fails the
+      // WHERE clause — the UPDATE matches nothing and no token is issued.
       mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
 
       const token = await approvalRepository.recordFirstConfirmation('ar-001', 'u-001');
       expect(token).toBeNull();
-    });
-
-    it('mints a distinct token on each call (re-issue is supported)', async () => {
-      mockQuery.mockResolvedValue({ rows: [fakeApprovalRow()], rowCount: 1 });
-
-      const first = await approvalRepository.recordFirstConfirmation('ar-001', 'u-001');
-      const second = await approvalRepository.recordFirstConfirmation('ar-001', 'u-001');
-
-      expect(first).not.toBe(second);
     });
   });
 
