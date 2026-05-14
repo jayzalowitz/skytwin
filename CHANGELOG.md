@@ -5,6 +5,7 @@ All notable changes to SkyTwin will be documented in this file.
 ### Fixed
 
 - **Desktop "Connect Google" from the dashboard now updates the page when it finishes.** The dashboard's connect handler never passed an `onComplete` callback, so after a desktop sign-in completed in the system browser the "Connect Google" hero just sat there until a manual reload. It now re-renders the dashboard when the connection lands — and busts the 30-second OAuth-status cache first, so the re-render reflects the new state instead of the stale "not connected" one. (Follow-up to #284; settings and setup already had this, the dashboard was missed.)
+- **`@skytwin/db` test suite no longer flakes on whether a database is reachable.** `migration-runner.test.ts` imports `001-initial.ts` for its pure helpers, but that module had an unguarded top-level `main()` call that opened a DB connection and called `process.exit` on failure — so the test file passed or failed depending on whether CockroachDB happened to be up. `main()` is now guarded to run only when the file is executed directly as a CLI, not when imported. (Regression from #284.)
 
 ## [0.6.22.0] - 2026-05-14
 

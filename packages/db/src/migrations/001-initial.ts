@@ -1,6 +1,6 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { getPool, closePool } from '../connection.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -247,4 +247,11 @@ async function main(): Promise<void> {
   }
 }
 
-main();
+// Only run the migration when this file is executed directly as a CLI
+// (`tsx src/migrations/001-initial.ts`), NOT when it is imported — e.g.
+// migration-runner.test.ts imports the pure `splitSqlStatements` /
+// `isIdempotentError` helpers and must not trigger a DB connection +
+// `process.exit` on load.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main();
+}
