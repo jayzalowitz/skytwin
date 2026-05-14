@@ -67,7 +67,8 @@ export async function up(): Promise<void> {
         if (
           message.includes('already exists') ||
           message.includes('duplicate key') ||
-          message.includes('duplicate column name')
+          message.includes('duplicate column name') ||
+          message.includes('duplicate constraint name')
         ) {
           // Idempotent — skip
           continue;
