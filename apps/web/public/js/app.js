@@ -18,7 +18,7 @@ import { renderDxtImports } from './pages/dxt-imports.js';
 import { renderProvenanceGraph } from './pages/provenance-graph.js';
 import { renderMemorySettings } from './pages/memory-settings.js';
 import { renderGlobalPauseButton } from './components/global-pause-button.js';
-import { fetchPendingApprovals, fetchHealth, fetchUser, listUsers, escapeHtml, isApiKnownOffline } from './api-client.js';
+import { fetchPendingApprovals, fetchHealth, fetchUser, listUsers, escapeHtml, isApiKnownOffline, fetchJSON } from './api-client.js';
 import { initTheme } from './theme-switcher.js';
 import { initA11y } from './a11y.js';
 import { connectSSE, disconnectSSE, isConnected } from './sse-client.js';
@@ -586,13 +586,49 @@ window.addEventListener('DOMContentLoaded', () => {
     return;
   }
 
+  bootWithVerifiedUser();
+});
+
+/**
+ * Boot path for the common case (no mobile-pairing / ?userId= override).
+ *
+ * A `skytwin_userId` in localStorage can outlive the user row it points
+ * at — the dev database gets reseeded between sessions, or the user is
+ * deleted. Booting straight into that phantom id silently breaks
+ * everything keyed on userId: the dashboard still renders, but OAuth
+ * connect, approvals, and the rest operate on a user the server has
+ * never heard of (and the OAuth callback then quietly reassigns the
+ * connection to whoever owns the email). So verify the stored id
+ * against the server before committing to it.
+ */
+async function bootWithVerifiedUser() {
   if (needsOnboarding() || !currentUserId) {
     showOnboarding();
-  } else {
-    connectSSE(currentUserId);
-    navigate();
+    return;
   }
-});
+  // Verify against the server with `fetchJSON` directly, NOT `fetchUser`
+  // — `fetchUser` swallows every failure into `null`, which can't tell a
+  // genuine 404 (user is gone) from a transient blip (don't log them
+  // out). `fetchJSON` throws a typed `ApiError`; only `kind:'not-found'`
+  // means the stored id is truly a phantom.
+  try {
+    await fetchJSON(`/api/users/${encodeURIComponent(currentUserId)}`);
+  } catch (err) {
+    if (err && err.kind === 'not-found') {
+      // Stored user no longer exists — drop the phantom id and
+      // re-onboard rather than run as a ghost.
+      localStorage.removeItem(KEY_USER_ID);
+      localStorage.removeItem(KEY_ONBOARDED);
+      currentUserId = '';
+      showOnboarding();
+      return;
+    }
+    // Transient network / server error — don't force re-onboarding over
+    // a blip. Boot normally; the app's offline handling covers it.
+  }
+  connectSSE(currentUserId);
+  navigate();
+}
 
 // Make setUserId available globally for settings page
 window.skyTwinSetUserId = setUserId;
