@@ -1,5 +1,17 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.25.0] - 2026-05-14
+
+### Fixed
+
+- **The approvals page no longer shows every email twice.** Every inbound signal (email, calendar event) was being ingested more than once: the worker that polls Gmail had two processes running concurrently, each with its own in-memory dedup that couldn't see the other's, so both forwarded every signal. The decision layer absorbed the double-ingestion (it is idempotent on the signal id), but the approval-creation step had no such guard — each re-ingestion stacked another `approval_request` row for the same decision. The result was a "Needs your OK" page with every email duplicated, some 3-4 times. Approval creation is now idempotent: a unique index on `approval_requests(decision_id)` plus `INSERT ... ON CONFLICT DO NOTHING`, so a re-ingested signal is a transparent no-op instead of a duplicate. A one-time data migration removes the duplicate rows that had already accumulated, keeping the row the user actually acted on — a resolved approval is kept over a still-pending duplicate, so an approve/reject is never lost. The orphaned second worker process was the operational trigger and has been stopped.
+
+### Fixed (post-/review)
+
+- The migration fails loudly instead of silently if its unique index cannot be created. CockroachDB reports a `CREATE UNIQUE INDEX` blocked by residual duplicates as SQLSTATE 23505, which the migration runner's idempotency guard treats as "already applied" — so a failed index build would have left the migration reporting success with no index, and the new `ON CONFLICT` code would then error on every insert. The migration now verifies the unique index is actually in place (correct name, column, and uniqueness) and raises a non-swallowable error if it is not.
+- The dedup keeps the right row. The pre-landing review flagged that "keep the earliest" could discard an approval the user had already approved or rejected in favor of an older still-pending duplicate. The dedup now orders resolved rows ahead of pending ones, so a user's response is never the row that gets dropped.
+- `approvalRepository.create` throws a typed error rather than returning `undefined` if its post-conflict lookup finds nothing, and that lookup is scoped by `user_id` to match every other read in the repository.
+
 ## [0.6.24.0] - 2026-05-14
 
 ### Fixed
