@@ -20,6 +20,7 @@ export const approvalRepository = {
     const result = await query<ApprovalRequestRow>(
       `INSERT INTO approval_requests (user_id, decision_id, candidate_action, reason, urgency, status, requested_at, expires_at, confirmation_level)
        VALUES ($1, $2, $3, $4, $5, 'pending', now(), $6, $7)
+       ON CONFLICT (decision_id) DO NOTHING
        RETURNING *`,
       [
         input.userId,
@@ -31,7 +32,35 @@ export const approvalRepository = {
         input.confirmationLevel ?? 'single',
       ],
     );
-    return result.rows[0]!;
+    if (result.rows[0]) {
+      return result.rows[0];
+    }
+    // ON CONFLICT DO NOTHING returned no row: an approval_request already
+    // exists for this decision. This happens whenever the same signal is
+    // re-ingested — a worker restart, an at-least-once delivery retry, or
+    // two worker processes both polling. The unique index on decision_id
+    // (migration 046) makes the duplicate INSERT a no-op; return the
+    // existing row so re-ingestion is transparent to callers and never
+    // stacks a duplicate approval. Scoped by user_id to match every other
+    // read in this repository — a decision_id belongs to one user, so the
+    // scope is also a belt-and-suspenders guard against ever handing back
+    // another user's row.
+    const existing = await query<ApprovalRequestRow>(
+      'SELECT * FROM approval_requests WHERE decision_id = $1 AND user_id = $2',
+      [input.decisionId, input.userId],
+    );
+    if (!existing.rows[0]) {
+      // The INSERT conflicted but no row came back — the conflicting row
+      // was hard-deleted between the INSERT and this SELECT (a concurrent
+      // migration dedup or admin cleanup). Surface a typed error rather
+      // than returning `undefined` typed as ApprovalRequestRow: a thrown
+      // error is debuggable, `undefined.id` three call frames away is not.
+      throw new Error(
+        `approval_requests row for decision ${input.decisionId} vanished ` +
+          `between INSERT conflict and fallback SELECT`,
+      );
+    }
+    return existing.rows[0];
   },
 
   /**
