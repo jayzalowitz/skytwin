@@ -265,14 +265,18 @@ describe('Safety Invariant 1: Never auto-execute without a policy check', () => 
     expect(typeof outcome.autoExecute).toBe('boolean');
   });
 
-  it('OBSERVER tier blocks all actions even with low risk', async () => {
+  it('OBSERVER tier requires approval for all actions — never auto-executes', async () => {
+    // Observer is allow-with-approval, not deny. It still never auto-executes
+    // (requiresApproval is always true), but actions surface as approval
+    // requests so the observer→suggest promotion path is reachable.
     const policyEvaluator = new PolicyEvaluator(createMockPolicyRepo());
     const action = createAction();
     const risk = createRisk();
 
     const decision = await policyEvaluator.evaluate(action, [], TrustTier.OBSERVER, risk);
 
-    expect(decision.allowed).toBe(false);
+    expect(decision.allowed).toBe(true);
+    expect(decision.requiresApproval).toBe(true);
     expect(decision.reason).toContain('Observer');
   });
 });
@@ -326,13 +330,55 @@ describe('Safety Invariant 2: Always log explanations', () => {
 describe('Safety Invariant 3: Respect trust tiers', () => {
   const policyEvaluator = new PolicyEvaluator(createMockPolicyRepo());
 
-  it('OBSERVER blocks everything', async () => {
+  it('OBSERVER requires approval for everything', async () => {
     for (const tier of [RiskTier.NEGLIGIBLE, RiskTier.LOW, RiskTier.MODERATE, RiskTier.HIGH, RiskTier.CRITICAL]) {
       const result = await policyEvaluator.evaluate(
         createAction(), [], TrustTier.OBSERVER, createRisk({ overallTier: tier }),
       );
-      expect(result.allowed).toBe(false);
+      expect(result.allowed).toBe(true);
+      expect(result.requiresApproval).toBe(true);
     }
+  });
+
+  it('OBSERVER produces an approvable outcome end-to-end — never null, never auto-executes', async () => {
+    // End-to-end regression for the observer-tier trap, through the REAL
+    // PolicyEvaluator + DecisionMaker (not mocks). Before the fix, OBSERVER
+    // policy-denied every candidate, so DecisionMaker left selectedAction
+    // null and no approval_request was ever created — making the
+    // observer→suggest promotion (10 approvals) permanently unreachable. The
+    // outcome must carry a non-null selectedAction with requiresApproval true
+    // and autoExecute false: surfaced for a human to approve, never auto-run.
+    const twinService = new TwinService(createInMemoryTwinRepo(), createInMemoryPatternRepo());
+    const observerPolicyEvaluator = new PolicyEvaluator(createMockPolicyRepo());
+    const decisionMaker = new DecisionMaker(twinService, observerPolicyEvaluator, createInMemoryDecisionRepo());
+
+    const userId = 'user_observer_e2e';
+    await twinService.getOrCreateProfile(userId);
+
+    const decision = await new SituationInterpreter().interpret({
+      source: 'gmail',
+      type: 'new_email',
+      subject: 'Weekly newsletter',
+      from: 'news@example.com',
+      body: 'This week in tech',
+    });
+
+    const context = {
+      userId,
+      decision,
+      trustTier: TrustTier.OBSERVER,
+      relevantPreferences: [],
+      timestamp: new Date(),
+      patterns: [],
+      traits: [],
+      temporalProfile: undefined,
+    };
+
+    const outcome = await decisionMaker.evaluate(context);
+
+    expect(outcome.selectedAction).not.toBeNull();
+    expect(outcome.requiresApproval).toBe(true);
+    expect(outcome.autoExecute).toBe(false);
   });
 
   it('SUGGEST requires approval for everything', async () => {

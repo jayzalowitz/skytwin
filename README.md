@@ -314,7 +314,7 @@ SkyTwin uses a progressive trust model. Autonomy is earned, not assumed.
 
 | Tier | What It Means |
 |------|---------------|
-| `observer` | System watches and suggests. Never acts. Default for new users. |
+| `observer` | Default for new users. The twin proposes actions and surfaces them as approval requests — you approve, reject, or edit. Never auto-executes. |
 | `suggest` | Drafts actions for your review. You approve or edit before anything happens. |
 | `low_autonomy` | Auto-executes low-risk, reversible actions in trusted domains. Escalates everything else. |
 | `moderate_autonomy` | Handles most routine decisions. Escalates novel situations and high-cost actions. |

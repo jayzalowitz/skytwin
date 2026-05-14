@@ -136,18 +136,19 @@ export const TRUST_TIER_GATING: ActionPolicy = {
   name: 'Trust Tier Gating',
   description:
     'Requires progressively higher trust tiers for actions with increasing ' +
-    'risk. Observer tier can only observe; suggest tier can suggest; etc.',
+    'risk. Observer and suggest tiers require approval for every action; ' +
+    'higher tiers earn auto-execution.',
   rules: [
     {
-      id: 'rule_observer_no_execute',
+      id: 'rule_observer_approval',
       policyId: 'builtin_trust_tier_gating',
       condition: {
         field: 'trustTier',
         operator: 'eq',
         value: 'observer',
       },
-      effect: 'deny',
-      reason: 'Observer trust tier does not permit any autonomous actions.',
+      effect: 'require_approval',
+      reason: 'Observer trust tier requires approval for all actions.',
     },
     {
       id: 'rule_suggest_approval',

@@ -66,14 +66,17 @@ export class PolicyEvaluator {
       .filter((p) => p.enabled)
       .sort((a, b) => b.priority - a.priority);
 
-    // Check trust tier gating first. A tier *deny* (e.g. observer) returns
-    // here before the injection guard runs — that is intentional and safe: a
-    // hard deny is strictly stricter than the guard's escalate-to-approval,
-    // so nothing is lost. The guard only needs to run ahead of every path
-    // that could *allow or auto-execute* an action (the autonomy-settings
-    // check, the quiet-hours early return, the policy loop) — which it does,
-    // below. If a future edit makes `checkTrustTierGating` return an
-    // `allowed: true` early-return, the guard must be moved above this block.
+    // Check trust tier gating first. A tier *deny* — now only the fail-closed
+    // `default` case for an unrecognized tier — returns here before the
+    // injection guard runs. That is intentional and safe: a hard deny is
+    // strictly stricter than the guard's escalate-to-approval, so nothing is
+    // lost. Every recognized tier returns `allowed: true` (observer and
+    // suggest carry `requiresApproval: true`), so it flows past this block
+    // into the guard. The guard only needs to run ahead of every path that
+    // could *allow or auto-execute* an action (the autonomy-settings check,
+    // the quiet-hours early return, the policy loop) — which it does, below.
+    // If a future edit makes `checkTrustTierGating` return an `allowed: true`
+    // early-return, the guard must be moved above this block.
     const tierDecision = this.checkTrustTierGating(action, trustTier, riskAssessment);
     if (tierDecision && !tierDecision.allowed) {
       return tierDecision;
@@ -105,8 +108,15 @@ export class PolicyEvaluator {
       if (quietDecision) {
         return {
           ...quietDecision,
-          // Preserve an injection-guard escalation through the quiet-hours
-          // early return — the guard is non-negotiable.
+          // Preserve both non-negotiable escalations through the quiet-hours
+          // early return: the injection-guard confirmation level, and the
+          // trust tier's own approval requirement (observer/suggest). The
+          // tier requirement must outlive every early return that can still
+          // return `allowed: true` — observer reaches this path now that it
+          // is allow-with-approval rather than a hard deny.
+          requiresApproval:
+            quietDecision.requiresApproval ||
+            Boolean(tierDecision?.requiresApproval),
           ...(confirmationLevel ? { confirmationLevel } : {}),
           reason: approvalReason
             ? `${quietDecision.reason} ${approvalReason}`
@@ -338,10 +348,16 @@ export class PolicyEvaluator {
   ): PolicyDecision | null {
     switch (trustTier) {
       case TrustTier.OBSERVER:
+        // Observer is allow-with-approval, not deny. The twin still never
+        // auto-executes at this tier — decision-maker's shouldAutoExecute()
+        // returns false for OBSERVER — but actions must surface as approval
+        // requests. A hard deny here produced no approval rows at all, which
+        // made the observer→suggest promotion path (10 consecutive approvals)
+        // permanently unreachable: a new user could never escape observer.
         return {
-          allowed: false,
-          requiresApproval: false,
-          reason: 'Observer trust tier does not permit any autonomous actions.',
+          allowed: true,
+          requiresApproval: true,
+          reason: 'Observer trust tier requires approval for all actions.',
         };
 
       case TrustTier.SUGGEST:
