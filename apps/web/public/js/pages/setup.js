@@ -536,12 +536,10 @@ window.saveServiceCredentials = async function(service, opts = {}) {
       statusEl.innerHTML = '<span style="color: var(--success);">Saved! Sending you to Google…</span>';
       try {
         const userId = localStorage.getItem(KEY_USER_ID);
-        const { getGoogleAuthUrl } = await import('../api-client.js');
-        const data = await getGoogleAuthUrl(userId);
-        if (data?.url) {
-          window.location.href = data.url;
-          return;
-        }
+        const { startGoogleSignIn } = await import('../google-signin.js');
+        const result = await startGoogleSignIn({ userId, onComplete: reRenderSetupOnConnect });
+        if (result.status === 'redirecting' || result.status === 'polling') return;
+        if (result.status === 'error') throw new Error(result.error || 'sign-in failed');
       } catch (err) {
         statusEl.innerHTML = `<span style="color: var(--warning, #e6a700);">Saved, but couldn't start sign-in: ${escapeHtml(err.message || 'try the Connect button below.')}</span>`;
       }
@@ -559,14 +557,34 @@ window.saveServiceCredentials = async function(service, opts = {}) {
   }
 };
 
+// Desktop sign-in polls in the background; when the account lands,
+// re-render the setup page so status badges reflect the connection
+// instead of going stale until a manual reload.
+async function reRenderSetupOnConnect(connected) {
+  if (!connected) {
+    const el = document.getElementById('save-status-google');
+    if (el) el.innerHTML = '<span style="color: var(--warning, #e6a700);">Sign-in timed out. Reload to try again.</span>';
+    return;
+  }
+  if (window.location.hash.split('?')[0] !== '#/setup') return;
+  const container = document.getElementById('page-content');
+  if (!container) return;
+  // renderSetup is exported from this same module — call it directly
+  // rather than dynamically re-importing the module that's executing.
+  await renderSetup(container, localStorage.getItem(KEY_USER_ID));
+}
+
 window.handleConnectGoogleFromSetup = async function() {
   const statusEl = document.getElementById('save-status-google');
   if (statusEl) statusEl.innerHTML = '<span style="color: var(--text-muted);">Sending you to Google…</span>';
   try {
     const userId = localStorage.getItem(KEY_USER_ID);
-    const { getGoogleAuthUrl } = await import('../api-client.js');
-    const data = await getGoogleAuthUrl(userId);
-    if (data?.url) window.location.href = data.url;
+    const { startGoogleSignIn } = await import('../google-signin.js');
+    const result = await startGoogleSignIn({ userId, onComplete: reRenderSetupOnConnect });
+    if (result.status === 'error') throw new Error(result.error || 'sign-in failed');
+    if (result.status === 'polling' && statusEl) {
+      statusEl.innerHTML = '<span style="color: var(--text-muted);">Waiting for Google sign-in to complete in your browser…</span>';
+    }
   } catch (err) {
     if (statusEl) statusEl.innerHTML = `<span style="color: var(--danger);">${escapeHtml(err.message)}</span>`;
   }

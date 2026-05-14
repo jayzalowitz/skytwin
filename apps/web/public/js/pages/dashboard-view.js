@@ -487,10 +487,11 @@ export function renderConnectGoogleHero({ googleConnected, googleSystemConfigure
 
 export async function handleConnectGoogleFromDashboard(userId) {
   try {
-    const { getGoogleAuthUrl } = await import('../api-client.js');
-    const data = await getGoogleAuthUrl(userId);
-    if (data?.url) {
-      window.location.href = data.url;
+    const { startGoogleSignIn } = await import('../google-signin.js');
+    const result = await startGoogleSignIn({ userId });
+    if (result.status === 'error') {
+      console.error('Could not start Google connect flow:', result.error);
+      window.location.hash = '#/settings';
     }
   } catch (err) {
     console.error('Could not start Google connect flow:', err);

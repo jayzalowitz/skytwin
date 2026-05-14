@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS model_downloads (
   -- will land. We download to `<target_path>.partial` and atomically
   -- rename on success.
   target_path STRING NOT NULL,
-  -- Total bytes per registry (matches registry.approxBytes at start;
+  -- Total bytes per registry (matches registry.approxBytes at start,
   -- gets corrected to Content-Length on first response if different).
   total_bytes INT8 NOT NULL,
   bytes_downloaded INT8 NOT NULL DEFAULT 0,

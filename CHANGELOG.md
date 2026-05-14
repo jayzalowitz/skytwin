@@ -1,5 +1,24 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.22.0] - 2026-05-14
+
+Fixes that unblock running SkyTwin locally and natively: Google sign-in now works in the desktop app, the web server boots under Express 5, and `pnpm db:migrate` runs clean on a fresh database.
+
+### Fixed
+
+- **Google sign-in in the desktop app.** The desktop OAuth flow appended `|desktop` to the HMAC-signed `state` parameter *after* the server signed it, so every desktop sign-in came back from Google as `400 Invalid OAuth state: signature mismatch`. The `desktop` flag is now passed to the authorize endpoint at sign time and folded into the signed payload server-side. Users can complete Google sign-in (including passkeys) from the desktop app again.
+- **Web server boot under Express 5.** `apps/web/src/index.ts` used bare `*` wildcard routes, which Express 5's path parser rejects — the dashboard crashed on startup. Route patterns updated to `/api/*splat` and `/*splat`.
+- **`pnpm db:migrate` on a fresh database.** The migration runner now treats `duplicate constraint name` as an idempotent skip (matching the existing `already exists` / `duplicate key` handling), and a stray `;` inside a SQL comment in migration 039 that split the `CREATE TABLE` mid-statement is removed.
+
+### Added
+
+- `apps/web/public/js/google-signin.js` — shared `startGoogleSignIn()` helper. All four Google sign-in entry points (settings, setup, dashboard, onboarding) route through it, so desktop builds open OAuth in the system browser instead of the Electron `BrowserWindow`, which cannot handle passkeys.
+
+### Changed
+
+- `.gitignore` now excludes `.skytwin-pids`, the runtime process-tracking file written by `bin/skytwin-dev`.
+- Root `package.json` version synced to the `VERSION` file (was drifted at `0.5.4.0`).
+
 ## [unreleased] — End-to-end Phase 1+2+4 loop test (#251 Phase 5)
 
 Final phase of the #251 arc. Adds an end-to-end loop test that exercises the full composition of Phase 1 (tier-aware retrieval), Phase 2 (relationshipTier axis), and Phase 4 (`DraftEmailCandidateGenerator`) through a single realistic scenario — without any real LLM or CRDB.

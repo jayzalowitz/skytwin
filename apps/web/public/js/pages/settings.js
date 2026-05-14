@@ -1,4 +1,4 @@
-import { fetchUser, updateTrustTier, fetchOAuthStatus, getGoogleAuthUrl, disconnectProvider, escapeHtml, fetchSettings, updateAutonomySettings, updateIronClawChannel, upsertDomainPolicy, deleteDomainPolicy, createEscalationTrigger, deleteEscalationTrigger, createSession, fetchSessions, revokeSession, saveAIProviders, testAIProvider, fetchRoutines, deleteRoutine, startFederationPairing, completeFederationPairing, listFederationPeers, unpairFederationPeer } from '../api-client.js';
+import { fetchUser, updateTrustTier, fetchOAuthStatus, disconnectProvider, escapeHtml, fetchSettings, updateAutonomySettings, updateIronClawChannel, upsertDomainPolicy, deleteDomainPolicy, createEscalationTrigger, deleteEscalationTrigger, createSession, fetchSessions, revokeSession, saveAIProviders, testAIProvider, fetchRoutines, deleteRoutine, startFederationPairing, completeFederationPairing, listFederationPeers, unpairFederationPeer } from '../api-client.js';
 import { mountThemeSwitcher } from '../theme-switcher.js';
 import { mountEmbeddedLlmCard } from '../components/embedded-llm-card.js';
 import {
@@ -919,57 +919,53 @@ function scheduleTierAutosave(userId) {
 
 window.handleConnectGoogle = async function(userId) {
   try {
-    const data = await getGoogleAuthUrl(userId);
-    if (data.url) {
-      // In the desktop app, open OAuth in the system browser to support
-      // passkeys/WebAuthn which Electron's BrowserWindow cannot handle.
-      if (window.skytwinDesktop?.isDesktop && window.skytwinDesktop.openExternal) {
-        // Add source=desktop so the callback renders a close-tab page
-        // instead of redirecting back to localhost.
-        const oauthUrl = new URL(data.url);
-        const currentState = oauthUrl.searchParams.get('state') || '';
-        oauthUrl.searchParams.set('state', currentState ? `${currentState}|desktop` : `|desktop`);
-        await window.skytwinDesktop.openExternal(oauthUrl.toString());
-
-        // Poll for OAuth completion (max 5 minutes, then give up)
-        const pageContent = document.getElementById('page-content');
-        pageContent.insertAdjacentHTML(
-          'afterbegin',
-          '<div class="info-banner" id="oauth-polling-banner">Waiting for Google sign-in to complete in your browser\u2026</div>',
-        );
-        let pollCount = 0;
-        const maxPolls = 150; // 5 minutes at 2s intervals
-        const pollInterval = setInterval(async () => {
-          pollCount++;
-          if (pollCount >= maxPolls) {
-            clearInterval(pollInterval);
-            const banner = document.getElementById('oauth-polling-banner');
-            if (banner) banner.textContent = 'Sign-in timed out. Refresh the page to try again.';
-            return;
-          }
-          try {
-            const status = await fetchOAuthStatus(userId, 'google');
-            if (status.connected) {
-              clearInterval(pollInterval);
-              document.getElementById('oauth-polling-banner')?.remove();
-              const { renderSettings } = await import('./settings.js');
-              await renderSettings(pageContent, userId);
-            }
-          } catch {
-            // Ignore transient fetch errors during polling
-          }
-        }, 2000);
-      } else {
-        window.location.href = data.url;
-      }
-    } else {
-      document.getElementById('page-content').insertAdjacentHTML(
+    // In the desktop app, open OAuth in the system browser to support
+    // passkeys/WebAuthn which Electron's BrowserWindow cannot handle.
+    // The `desktop` flag must be set at authorize-time so the server can
+    // sign it into the state — mutating the signed state on the client
+    // breaks HMAC verification on the callback.
+    const { startGoogleSignIn } = await import('../google-signin.js');
+    const result = await startGoogleSignIn({
+      userId,
+      onComplete: async (connected) => {
+        // Desktop polling runs for up to 5 minutes — the user may have
+        // navigated away. Re-query the container and bail unless we're
+        // still on /settings, so we don't render over another page.
+        if (window.location.hash.split('?')[0] !== '#/settings') return;
+        const banner = document.getElementById('oauth-polling-banner');
+        if (!connected) {
+          if (banner) banner.textContent = 'Sign-in timed out. Refresh the page to try again.';
+          return;
+        }
+        banner?.remove();
+        const container = document.getElementById('page-content');
+        if (!container) return;
+        await renderSettings(container, userId);
+      },
+    });
+    // Re-query the container after the await — a navigation during the
+    // startGoogleSignIn call could have detached the original element.
+    const pageContent = document.getElementById('page-content');
+    if (!pageContent) return;
+    if (result.status === 'polling') {
+      pageContent.insertAdjacentHTML(
         'afterbegin',
-        '<div class="error-banner">Google access isn\'t set up on this server yet. Head to <a href="#/setup">Connect</a> for the 5-minute walkthrough.</div>',
+        '<div class="info-banner" id="oauth-polling-banner">Waiting for Google sign-in to complete in your browser\u2026</div>',
       );
+      return;
+    }
+    if (result.status === 'redirecting') {
+      return;
+    }
+    if (result.status === 'error') {
+      const msg = /credentials|authorize url/i.test(result.error || '')
+        ? 'Google access isn\'t set up on this server yet. Head to <a href="#/setup">Connect</a> for the 5-minute walkthrough.'
+        : escapeHtml(result.error || 'Could not start Google sign-in.');
+      pageContent.insertAdjacentHTML('afterbegin', `<div class="error-banner">${msg}</div>`);
+      return;
     }
   } catch (err) {
-    document.getElementById('page-content').insertAdjacentHTML(
+    document.getElementById('page-content')?.insertAdjacentHTML(
       'afterbegin',
       `<div class="error-banner">${escapeHtml(err.message)}</div>`,
     );

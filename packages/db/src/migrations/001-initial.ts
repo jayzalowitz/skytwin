@@ -9,6 +9,96 @@ const __dirname = dirname(__filename);
 const SCHEMA_PATH = join(__dirname, '..', 'schemas', 'schema.sql');
 
 /**
+ * SQLSTATE codes that mean "this object already exists" — re-running a
+ * migration that hits one of these is a no-op, not a failure. Checking
+ * the code is more robust than substring-matching the error message,
+ * which is vendor-specific and can change between CockroachDB versions.
+ *   42710 duplicate_object   (covers duplicate constraint / index names)
+ *   42P07 duplicate_table
+ *   42701 duplicate_column
+ *   23505 unique_violation   (duplicate key on INSERT)
+ *
+ * Trade-off on 23505: the first three are DDL and always safe to swallow
+ * on a re-run. 23505 is DML — swallowing it makes re-running a seed
+ * `INSERT` idempotent, but it also masks a genuine unique-key conflict
+ * in a future backfill. This matches the pre-existing `duplicate key`
+ * message match (this migration runner has always been best-effort on
+ * DML conflicts); a migration that needs strict insert semantics should
+ * use `INSERT … ON CONFLICT` explicitly rather than rely on the runner.
+ */
+const IDEMPOTENT_PG_CODES = new Set(['42710', '42P07', '42701', '23505']);
+
+/**
+ * Split a .sql migration file into individual statements.
+ *
+ * `--` line comments are stripped *before* splitting so a stray `;` at
+ * the end of a comment line can't break a statement in half. Statements
+ * are split on `;` followed by end-of-line, then trimmed; empty blocks
+ * are dropped.
+ *
+ * Caveats — this is a line-comment-aware splitter, not a SQL parser.
+ * Unsupported constructs (none appear in the current corpus, all
+ * verified):
+ *   - "--" inside a string literal (would be mis-stripped;
+ *     assertBalancedQuotes catches this one at run time)
+ *   - C-style slash-star block comments (not stripped — a ";" inside
+ *     one would still split a statement)
+ *   - dollar-quoted strings, "$$ ... $$" / "$tag$ ... $tag$" (a ";" or
+ *     "--" inside one is not protected)
+ * A migration needing any of these must be split differently, or the
+ * splitter extended into a real tokenizer.
+ */
+export function splitSqlStatements(sql: string): string[] {
+  const statements = sql
+    .replace(/--[^\n]*/g, '')
+    .split(/;\s*$/m)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  for (const stmt of statements) {
+    assertBalancedQuotes(stmt);
+  }
+  return statements;
+}
+
+/**
+ * Throw if a statement has an odd number of single-quote characters.
+ * In SQL, every string literal opens and closes with `'` and an escaped
+ * quote inside a literal is `''` (two chars) — so a well-formed
+ * statement always has an even count. An odd count means either the
+ * statement is malformed or the comment-strip in `splitSqlStatements`
+ * ate a `--` that was inside a string literal. Either way: fail loud.
+ */
+function assertBalancedQuotes(statement: string): void {
+  const singleQuotes = (statement.match(/'/g) ?? []).length;
+  if (singleQuotes % 2 !== 0) {
+    throw new Error(
+      `[migration] statement has unbalanced single-quotes after comment-strip — ` +
+        `a "--" inside a string literal may have been mis-stripped:\n${statement.substring(0, 200)}`,
+    );
+  }
+}
+
+/**
+ * True when an error from `pool.query` means the target object already
+ * exists — i.e. the statement was already applied on a prior run and
+ * can be safely skipped. Prefers the stable SQLSTATE code; falls back
+ * to message substrings for drivers/errors that don't surface a code.
+ */
+export function isIdempotentError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  if (typeof code === 'string' && IDEMPOTENT_PG_CODES.has(code)) {
+    return true;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.includes('already exists') ||
+    message.includes('duplicate key') ||
+    message.includes('duplicate column name') ||
+    message.includes('duplicate constraint name')
+  );
+}
+
+/**
  * Run all migrations: schema.sql first, then SQL files 002–011 in order.
  */
 export async function up(): Promise<void> {
@@ -48,14 +138,7 @@ export async function up(): Promise<void> {
 
   for (const file of sqlFiles) {
     const sql = readFileSync(join(__dirname, file), 'utf-8');
-    const statements = sql
-      .split(/;\s*$/m)
-      .map((s) => s.trim())
-      .filter((s) => {
-        // Keep blocks that contain at least one non-comment SQL line
-        const sqlLines = s.split('\n').filter((l) => l.trim() && !l.trim().startsWith('--'));
-        return sqlLines.length > 0;
-      });
+    const statements = splitSqlStatements(sql);
 
     let applied = 0;
     for (const stmt of statements) {
@@ -63,13 +146,8 @@ export async function up(): Promise<void> {
         await pool.query(stmt);
         applied++;
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        if (
-          message.includes('already exists') ||
-          message.includes('duplicate key') ||
-          message.includes('duplicate column name')
-        ) {
-          // Idempotent — skip
+        if (isIdempotentError(error)) {
+          // Already applied on a prior run — skip
           continue;
         }
         console.error(`[migration] ${file}: statement failed:\n${stmt.substring(0, 120)}`);

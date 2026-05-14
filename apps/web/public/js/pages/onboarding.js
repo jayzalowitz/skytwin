@@ -108,9 +108,24 @@ async function handleOnboardingClick(e) {
       btn.disabled = true;
       btn.textContent = 'Redirecting…';
       try {
-        const data = await fetchJSON('/api/oauth/google/authorize?newUser=true');
-        if (data.url) { window.location.href = data.url; return; }
-        throw new Error('No authorize URL returned');
+        const { startGoogleSignIn } = await import('../google-signin.js');
+        const result = await startGoogleSignIn({ newUser: true });
+        if (result.status === 'redirecting') return;
+        if (result.status === 'polling') {
+          // Desktop: OAuth opened in the system browser. There's no
+          // userId yet for a new user, so we can't poll for completion
+          // here — re-enable the button instead of leaving it frozen
+          // on "Redirecting…" with no way forward.
+          // TODO(desktop-onboarding): auto-advance the wizard after a
+          // desktop new-user sign-in. Needs a userId-less completion
+          // signal (e.g. poll a short-lived pairing token) — the web
+          // flow advances via redirect, desktop currently does not.
+          btn.disabled = false;
+          btn.textContent = 'Continue with Google';
+          showWizardError('Finish signing in with Google in the browser window that just opened, then return here and continue.');
+          return;
+        }
+        throw new Error(result.error || 'No authorize URL returned');
       } catch (err) {
         showWizardError(
           err.message?.includes('credentials')
