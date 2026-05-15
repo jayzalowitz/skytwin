@@ -523,13 +523,25 @@ export function createEventsRouter(): Router {
       // for an approval the user has already seen (or already resolved).
       // `approvalNewlyCreated` is false in that case, so the emit is
       // skipped. The DB-level idempotency from migration 046 + ON CONFLICT
-      // is what makes this safe to gate on.
+      // is what makes this safe to gate on. Note: this gates the
+      // `approval:new` SSE specifically — upstream signal-recording emits
+      // (`memory:page-indexed` from the recordSignal path) are intended
+      // to fire per-ingestion and are not affected. When the emit is
+      // suppressed we leave an audit breadcrumb so an operator
+      // investigating "why no notification?" can see the re-ingestion was
+      // recognised and intentionally silenced.
       if (approvalRequest && approvalNewlyCreated) {
         sseManager.emit(userId, 'approval:new', {
           id: approvalRequest.id,
           decisionId: decision.id,
           reason: outcome.reasoning,
           urgency: decision.urgency,
+        });
+      } else if (approvalRequest && !approvalNewlyCreated) {
+        log.info('Suppressed approval:new SSE for re-ingested signal', {
+          userId,
+          decisionId: decision.id,
+          approvalId: approvalRequest.id,
         });
       }
 

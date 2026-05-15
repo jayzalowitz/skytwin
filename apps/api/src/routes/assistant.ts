@@ -401,13 +401,21 @@ function buildActionRouter(): ActionRouter {
       // an identical intent (or that lands on the same decision_id from a
       // signal already in flight on the events path) would otherwise
       // double-fire `approval:new` for an approval the user is already
-      // looking at.
+      // looking at. Suppression leaves an audit breadcrumb for the same
+      // reason as events.ts — operators investigating "why no
+      // notification?" can confirm it was recognised and silenced.
       if (approvalNewlyCreated) {
         sseManager.emit(userId, 'approval:new', {
           id: approvalRequest.id,
           decisionId: decision.id,
           reason: outcome.reasoning,
           urgency: decision.urgency,
+        });
+      } else {
+        log.info('Suppressed approval:new SSE for re-routed assistant intent', {
+          userId,
+          decisionId: decision.id,
+          approvalId: approvalRequest.id,
         });
       }
 
