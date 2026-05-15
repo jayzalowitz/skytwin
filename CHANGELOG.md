@@ -1,5 +1,11 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.26.0] - 2026-05-15
+
+### Fixed
+
+- **Migration runner no longer silently swallows `23505` (unique-violation) errors.** The runner has always absorbed certain errors so that re-running a migration is a no-op rather than a hard failure — duplicate-table, duplicate-column, duplicate-constraint. It also absorbed `23505` (unique-violation / "duplicate key") under the same banner, on the assumption that a re-run seed `INSERT` should be safe. But `23505` is also what CockroachDB returns when a `CREATE UNIQUE INDEX` is blocked by residual duplicates, when an `INSERT ... SELECT` backfill hits a real collision, when an `ALTER TABLE ... ADD CONSTRAINT UNIQUE` fails on dirty data — and all of those used to be silently absorbed too. Migration 046 (the approval_requests unique index) surfaced this: a previous version added a self-verify check that caught the case for that specific migration, but the runner-level bug remained. The runner now has one rule: `23505` always surfaces, even when its message happens to contain "already exists" (an explicit code-anchored guard runs before the message-substring fallback). Seed migrations that need re-run safety use `INSERT ... ON CONFLICT DO NOTHING` to mark the intent at the statement level, which is the idiomatic Postgres pattern (no current migration relies on the old swallow — `grep INSERT packages/db/src/migrations/*.sql` returns zero hits).
+
 ## [0.6.25.0] - 2026-05-14
 
 ### Fixed
