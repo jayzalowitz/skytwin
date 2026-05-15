@@ -95,13 +95,13 @@ describe('isIdempotentError', () => {
     });
 
     it('surfaces 23505 even when the message happens to contain "already exists"', () => {
-      // Some driver variants append "already exists" to a 23505 message —
-      // and an Error from `pg` always carries a `code` property alongside
-      // its message, so the DDL-message-substring fallback could in
-      // principle swallow it. Pinned: the function never returns true on
-      // a 23505. (Construct a real Error here so the message-substring
-      // branch actually runs — a plain object would skip it via the
-      // `instanceof Error` gate.)
+      // Some driver variants append "already exists" to a 23505 message.
+      // The code-anchored 23505 guard runs BEFORE the DDL message-
+      // substring fallback, so the function returns false on this shape.
+      // (Using a real Error rather than a plain object so the message
+      // would in principle be reachable — without the guard, this exact
+      // shape would have been swallowed by `message.includes('already
+      // exists')`. The guard is what makes the test pass.)
       const err = Object.assign(
         new Error('unique index "idx_t_k" already exists with duplicate data'),
         { code: '23505' },
