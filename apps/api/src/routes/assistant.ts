@@ -309,7 +309,12 @@ function buildActionRouter(): ActionRouter {
       };
 
       // Persist the decision so downstream foreign keys (outcomes,
-      // candidates, approvals) resolve.
+      // candidates, approvals) resolve. The `created` flag isn't used
+      // here today — assistant flows don't emit `decision:blocked-by-policy`
+      // and the `approval:new` emit is already gated separately on the
+      // approval-row creation — but the destructure keeps the call shape
+      // consistent with events.ts so future side-effects (briefing pings,
+      // capability suggestions on assistant intent) can adopt the same gate.
       await decisionRepositoryAdapter.saveDecision(decision);
 
       // Build the same context shape events.ts builds. Patterns / traits

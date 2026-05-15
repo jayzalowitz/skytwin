@@ -190,7 +190,7 @@ vi.mock('@skytwin/db', () => {
           signal_id: null,
           created_at: new Date(),
         });
-        return d;
+        return { decision: d, created: true };
       }),
       saveOutcome: vi.fn().mockImplementation(async (o: unknown) => o),
       saveCandidates: vi.fn().mockImplementation(async (cs: unknown) => cs),

@@ -172,8 +172,9 @@ function createInMemoryDecisionRepo(): DecisionRepositoryPort {
 
   return {
     async saveDecision(decision: DecisionObject) {
+      const created = !decisions.has(decision.id);
       decisions.set(decision.id, decision);
-      return decision;
+      return { decision, created };
     },
     async getDecision(id: string) {
       return decisions.get(id) ?? null;

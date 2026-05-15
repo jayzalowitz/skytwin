@@ -149,8 +149,9 @@ class InMemoryDecisionRepo implements DecisionRepositoryPort {
   risks = new Map<string, RiskAssessment>();
 
   async saveDecision(d: DecisionObject) {
+    const created = !this.decisions.has(d.id);
     this.decisions.set(d.id, d);
-    return d;
+    return { decision: d, created };
   }
   async getDecision(id: string) {
     return this.decisions.get(id) ?? null;

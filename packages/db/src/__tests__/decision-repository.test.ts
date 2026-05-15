@@ -144,7 +144,7 @@ describe('decisionRepository', () => {
         domain: 'email',
       });
 
-      expect(result).toEqual(row);
+      expect(result).toEqual({ row, created: true });
 
       const [sql, params] = mockQuery.mock.calls[0]!;
       expect(sql).toContain('INSERT INTO decisions');
@@ -177,7 +177,7 @@ describe('decisionRepository', () => {
         metadata: { source: 'webhook' },
       });
 
-      expect(result).toEqual(row);
+      expect(result).toEqual({ row, created: true });
 
       const [sql, params] = mockQuery.mock.calls[0]!;
       expect(sql).toContain('INSERT INTO decisions');
@@ -236,7 +236,7 @@ describe('decisionRepository', () => {
         domain: 'email',
       });
 
-      expect(result).toEqual(existing);
+      expect(result).toEqual({ row: existing, created: false });
       // Pre-check only — no INSERT call followed it.
       expect(mockQuery).toHaveBeenCalledTimes(1);
     });

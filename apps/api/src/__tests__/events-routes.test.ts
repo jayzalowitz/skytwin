@@ -10,6 +10,7 @@ const {
   mockGetExecutionRouter,
   mockSseManager,
   mockApprovalCreate,
+  mockSaveDecision,
 } = vi.hoisted(() => ({
   mockInterpret: vi.fn(),
   mockEvaluate: vi.fn(),
@@ -25,6 +26,7 @@ const {
     emit: vi.fn(),
   },
   mockApprovalCreate: vi.fn(),
+  mockSaveDecision: vi.fn(),
 }));
 
 vi.mock('@skytwin/decision-engine', () => ({
@@ -71,7 +73,7 @@ vi.mock('@skytwin/db', () => ({
   },
   TwinRepositoryAdapter: vi.fn(),
   PatternRepositoryAdapter: vi.fn(),
-  decisionRepositoryAdapter: { saveDecision: vi.fn(), saveCandidates: vi.fn() },
+  decisionRepositoryAdapter: { saveDecision: mockSaveDecision, saveCandidates: vi.fn() },
   explanationRepositoryAdapter: {},
   policyRepositoryAdapter: {},
 }));
@@ -175,6 +177,12 @@ describe('Events API routes', () => {
     mockExecutionRepository.createEvent.mockResolvedValue({});
     mockExecutionRepository.updatePlanStatus.mockResolvedValue({});
     mockExecutionRepository.createResult.mockResolvedValue({});
+    // Default: every signal is a first-time ingestion. The re-ingestion
+    // tests override this to return `created: false`.
+    mockSaveDecision.mockImplementation(async (d: unknown) => ({
+      decision: d,
+      created: true,
+    }));
   });
 
   // ---------------------------------------------------------------------
@@ -296,6 +304,41 @@ describe('Events API routes', () => {
       expect.anything(),
     );
     expect(mockExecutionRepository.createPlan).not.toHaveBeenCalled();
+  });
+
+  it('does NOT re-emit decision:blocked-by-policy on a re-ingested signal', async () => {
+    // Regression: when the same signal_id is re-ingested (worker dedupe
+    // miss, at-least-once delivery retry, two-worker race), the decision
+    // row is the same one (decisionRepository.create is idempotent on
+    // (user_id, signal_id)). The events route used to re-fire
+    // `decision:blocked-by-policy` on every ingestion, re-flashing the
+    // "blocked" indicator for an event the user had already seen.
+    // saveDecision now returns `created: false` on re-ingest, and the
+    // route gates the SSE emit on it.
+    mockEvaluate.mockResolvedValue({
+      autoExecute: false,
+      requiresApproval: false,
+      reasoning: 'All candidates blocked by policy "No travel auto-bookings".',
+      selectedAction: null,
+      allCandidates: [],
+    });
+    mockSaveDecision.mockImplementation(async (d: unknown) => ({
+      decision: d,
+      created: false,
+    }));
+
+    const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      source: 'test',
+      type: 'travel_decision',
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockSseManager.emit).not.toHaveBeenCalledWith(
+      'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      'decision:blocked-by-policy',
+      expect.anything(),
+    );
   });
 
   it('marks the execution plan failed when streaming execution throws before a terminal event', async () => {

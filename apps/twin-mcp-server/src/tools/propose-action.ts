@@ -47,7 +47,7 @@ export async function proposeAction(
   }
 
   // Create the decision row
-  const decision = await decisionRepository.create({
+  const { row: decision } = await decisionRepository.create({
     userId,
     situationType: action.type,
     rawEvent: {

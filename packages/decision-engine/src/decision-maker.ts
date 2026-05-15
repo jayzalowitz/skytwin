@@ -31,7 +31,13 @@ import type { CandidateGenerator } from './strategies/candidate-strategy.js';
  * satisfy this contract at composition time.
  */
 export interface DecisionRepositoryPort {
-  saveDecision(decision: DecisionObject): Promise<DecisionObject>;
+  /**
+   * Persist a decision, or return the existing one on a re-ingestion of
+   * the same `(user_id, signal_id)`. Returns `{ decision, created }` —
+   * callers gate downstream side-effects (SSE emits, action execution)
+   * on `created` so a re-ingestion is invisible end-to-end.
+   */
+  saveDecision(decision: DecisionObject): Promise<{ decision: DecisionObject; created: boolean }>;
   getDecision(decisionId: string): Promise<DecisionObject | null>;
   saveOutcome(outcome: DecisionOutcome): Promise<DecisionOutcome>;
   getOutcome(decisionId: string): Promise<DecisionOutcome | null>;

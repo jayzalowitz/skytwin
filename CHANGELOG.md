@@ -1,5 +1,11 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.28.0] - 2026-05-15
+
+### Fixed
+
+- **The dashboard no longer re-flashes the "blocked by policy" indicator when the same signal is re-ingested.** Sibling to the `approval:new` fix in v0.6.27.0. The `decisions` table's `(user_id, signal_id)` idempotency (migration 023) makes re-ingestion a DB-level no-op — `decisionRepository.create` returns the existing row instead of inserting. But `events.ts` re-ran interpretation + policy and re-fired `decision:blocked-by-policy` on every ingestion, re-flashing the "blocked" indicator for a signal the user had already seen blocked. `decisionRepository.create` now returns `{ row, created }` (same shape as `approvalRepository.create`); the route gates the SSE emit on `created: true`. Logs an audit breadcrumb on suppression. Foundation for the broader correctness fix in the follow-up PR (auto-execute path also re-runs the action on re-ingestion; tracked separately).
+
 ## [0.6.27.0] - 2026-05-15
 
 ### Fixed

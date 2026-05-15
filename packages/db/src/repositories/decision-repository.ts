@@ -56,15 +56,21 @@ export interface CreateOutcomeInput {
  */
 export const decisionRepository = {
   /**
-   * Create a new decision record.
+   * Create a new decision record, or return the existing one for a
+   * re-ingestion of the same `(user_id, signal_id)`.
    *
    * Pulls `signal_id` out of the rawEvent JSON when present, then pre-checks
    * for an existing `(user_id, signal_id)` row. A duplicate ingest (worker
    * dedupe miss, manual replay, etc.) returns the existing decision rather
    * than racing on the partial unique index from migration 023 — the index
    * is the defense-in-depth backstop, this lookup is the friendly path.
+   *
+   * Returns `{ row, created }` where `created` is true only when this call
+   * inserted the row. Callers gate downstream side-effects on `created` so
+   * a re-ingestion doesn't re-fire SSE emits, re-execute the action, etc.
+   * (Pattern mirrors `approvalRepository.create`.)
    */
-  async create(input: CreateDecisionInput): Promise<DecisionRow> {
+  async create(input: CreateDecisionInput): Promise<{ row: DecisionRow; created: boolean }> {
     const rawEvent = input.rawEvent as Record<string, unknown> | undefined;
     const signalId =
       rawEvent && typeof rawEvent['signalId'] === 'string'
@@ -77,7 +83,7 @@ export const decisionRepository = {
         [input.userId, signalId],
       );
       if (existing.rows[0]) {
-        return existing.rows[0];
+        return { row: existing.rows[0], created: false };
       }
     }
 
@@ -100,7 +106,7 @@ export const decisionRepository = {
           signalId,
         ],
       );
-      return result.rows[0]!;
+      return { row: result.rows[0]!, created: true };
     }
     const result = await query<DecisionRow>(
       `INSERT INTO decisions (user_id, situation_type, raw_event, interpreted_situation, domain, urgency, metadata, signal_id)
@@ -117,7 +123,7 @@ export const decisionRepository = {
         signalId,
       ],
     );
-    return result.rows[0]!;
+    return { row: result.rows[0]!, created: true };
   },
 
   /**
