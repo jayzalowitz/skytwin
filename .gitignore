@@ -49,3 +49,4 @@ heap_profiler/
 
 # skytwin-dev process tracking file — runtime artifact, never commit
 .skytwin-pids
+.claude/skills/gstack/
