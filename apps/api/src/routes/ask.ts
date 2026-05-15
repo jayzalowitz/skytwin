@@ -23,7 +23,7 @@ import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
  */
 function createNoOpDecisionRepository(): DecisionRepositoryPort {
   return {
-    saveDecision: async (d) => d,
+    saveDecision: async (d) => ({ decision: d, created: true }),
     getDecision: async () => null,
     saveOutcome: async (o) => o,
     getOutcome: async () => null,

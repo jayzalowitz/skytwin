@@ -220,8 +220,11 @@ export function createEventsRouter(): Router {
       // 1. Interpret the raw event
       const decision = await interpreter.interpret(rawEvent);
 
-      // 1b. Persist the decision to DB so foreign keys (outcomes, candidates) work
-      await decisionRepositoryAdapter.saveDecision(decision);
+      // 1b. Persist the decision to DB so foreign keys (outcomes, candidates) work.
+      // `decisionCreated` is false when the row was already persisted for this
+      // (user_id, signal_id) — a re-ingestion. Callers gate side-effects on it
+      // so duplicate ingests don't re-fire UI notifications etc.
+      const { created: decisionCreated } = await decisionRepositoryAdapter.saveDecision(decision);
 
       // 2. Get user record (trust tier must come from DB, never from caller)
       const user = await userRepository.findById(userId);
@@ -552,13 +555,28 @@ export function createEventsRouter(): Router {
       // structurally enforced upstream, but the *result* of that check needs
       // to be observable.
       if (!outcome.selectedAction && !approvalRequest && !executionResult) {
-        sseManager.emit(userId, 'decision:blocked-by-policy', {
-          decisionId: decision.id,
-          reason: outcome.reasoning,
-          domain: decision.domain,
-          situationType: decision.situationType,
-          urgency: decision.urgency,
-        });
+        if (decisionCreated) {
+          sseManager.emit(userId, 'decision:blocked-by-policy', {
+            decisionId: decision.id,
+            reason: outcome.reasoning,
+            domain: decision.domain,
+            situationType: decision.situationType,
+            urgency: decision.urgency,
+          });
+        } else {
+          // Re-ingestion of a signal that was already blocked by policy on
+          // first arrival. The decision row is the same one, the policy
+          // verdict is the same one, the UI already showed the user that
+          // nothing happened — re-firing the SSE would re-flash the
+          // "blocked by policy" indicator for an event they've already
+          // seen. Audit-log the suppression (parallel to the
+          // approval:new gate) so an operator investigating "why no
+          // SSE?" can confirm it was recognised and silenced.
+          log.info('Suppressed decision:blocked-by-policy SSE for re-ingested signal', {
+            userId,
+            decisionId: decision.id,
+          });
+        }
       }
 
       // 10. Return result

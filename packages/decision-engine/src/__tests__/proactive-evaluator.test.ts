@@ -68,7 +68,9 @@ function createMockPolicyEvaluator(options?: {
 
 function createMockDecisionRepository() {
   return {
-    saveDecision: vi.fn().mockResolvedValue(undefined),
+    saveDecision: vi
+      .fn()
+      .mockImplementation(async (d: unknown) => ({ decision: d, created: true })),
     getDecision: vi.fn().mockResolvedValue(null),
     saveOutcome: vi.fn().mockResolvedValue(undefined),
     getOutcome: vi.fn().mockResolvedValue(null),

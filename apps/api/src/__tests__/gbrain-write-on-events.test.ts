@@ -128,7 +128,7 @@ vi.mock('@skytwin/db', () => ({
     upsertTrait: vi.fn(),
   })),
   decisionRepositoryAdapter: {
-    saveDecision: vi.fn().mockImplementation(async (d: unknown) => d),
+    saveDecision: vi.fn().mockImplementation(async (d: unknown) => ({ decision: d, created: true })),
     saveOutcome: vi.fn().mockImplementation(async (o: unknown) => o),
     saveCandidates: vi.fn().mockImplementation(async (cs: unknown) => cs),
     saveRiskAssessment: vi.fn().mockImplementation(async (r: unknown) => r),

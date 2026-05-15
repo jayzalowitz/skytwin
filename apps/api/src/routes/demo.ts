@@ -140,7 +140,7 @@ export function createDemoRouter(): Router {
   // step 1 of onboarding can feel the twin reason before signing in.
   // No-op decision repo so previews don't pollute the demo user's history.
   const noOpRepo: DecisionRepositoryPort = {
-    saveDecision: async (d) => d,
+    saveDecision: async (d) => ({ decision: d, created: true }),
     getDecision: async () => null,
     saveOutcome: async (o) => o,
     getOutcome: async () => null,

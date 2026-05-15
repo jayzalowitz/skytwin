@@ -99,7 +99,11 @@ class DecisionRepo {
   outcomes = new Map<string, DecisionOutcome>();
   candidates = new Map<string, CandidateAction[]>();
   risks = new Map<string, RiskAssessment>();
-  async saveDecision(d: DecisionObject) { this.decisions.set(d.id, d); return d; }
+  async saveDecision(d: DecisionObject) {
+    const created = !this.decisions.has(d.id);
+    this.decisions.set(d.id, d);
+    return { decision: d, created };
+  }
   async getDecision(id: string) { return this.decisions.get(id) ?? null; }
   async saveOutcome(o: DecisionOutcome) { this.outcomes.set(o.decisionId, o); return o; }
   async getOutcome(decisionId: string) { return this.outcomes.get(decisionId) ?? null; }

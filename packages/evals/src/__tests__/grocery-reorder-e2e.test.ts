@@ -62,7 +62,11 @@ function createInMemoryDecisionRepo(): DecisionRepositoryPort {
   const d = new Map<string, DecisionObject>(); const o = new Map<string, DecisionOutcome>();
   const c = new Map<string, CandidateAction[]>(); const r = new Map<string, RiskAssessment>();
   return {
-    async saveDecision(dec: DecisionObject) { d.set(dec.id, dec); return dec; },
+    async saveDecision(dec: DecisionObject) {
+      const created = !d.has(dec.id);
+      d.set(dec.id, dec);
+      return { decision: dec, created };
+    },
     async getDecision(id: string) { return d.get(id) ?? null; },
     async saveOutcome(out: DecisionOutcome) { o.set(out.decisionId, out); return out; },
     async getOutcome(id: string) { return o.get(id) ?? null; },

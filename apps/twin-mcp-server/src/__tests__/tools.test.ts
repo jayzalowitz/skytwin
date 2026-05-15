@@ -17,7 +17,7 @@ vi.mock('@skytwin/db', () => ({
     getProfile: vi.fn(),
   },
   decisionRepository: {
-    create: vi.fn().mockResolvedValue({ id: 'decision-abc' }),
+    create: vi.fn().mockResolvedValue({ row: { id: 'decision-abc' }, created: true }),
     addCandidateAction: vi.fn().mockResolvedValue({ id: 'action-abc' }),
     recordOutcome: vi.fn().mockResolvedValue({ id: 'outcome-abc' }),
   },

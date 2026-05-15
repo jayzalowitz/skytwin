@@ -126,11 +126,11 @@ function outcomeRowToDomain(
  * logic to the concrete decisionRepository backed by CockroachDB.
  */
 export const decisionRepositoryAdapter: DecisionRepositoryPort = {
-  async saveDecision(decision: DecisionObject): Promise<DecisionObject> {
+  async saveDecision(decision: DecisionObject): Promise<{ decision: DecisionObject; created: boolean }> {
     const userId =
       (decision.rawData['userId'] as string | undefined) ?? '';
 
-    const row = await decisionRepository.create({
+    const { row, created } = await decisionRepository.create({
       id: decision.id,
       userId,
       situationType: decision.situationType,
@@ -152,7 +152,7 @@ export const decisionRepositoryAdapter: DecisionRepositoryPort = {
       decision.id = row.id;
     }
 
-    return decisionRowToDomain(row);
+    return { decision: decisionRowToDomain(row), created };
   },
 
   async getDecision(decisionId: string): Promise<DecisionObject | null> {
