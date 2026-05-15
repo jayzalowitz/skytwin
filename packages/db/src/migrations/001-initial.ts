@@ -30,8 +30,9 @@ const SCHEMA_PATH = join(__dirname, '..', 'schemas', 'schema.sql');
  * has one rule: 23505 always surfaces. Seed migrations that need
  * re-run safety use `INSERT ... ON CONFLICT DO NOTHING` — the idiomatic
  * Postgres pattern — to mark the intent explicitly. No current migration
- * relies on the old swallow (`grep INSERT packages/db/src/migrations/*.sql`
- * returns zero hits).
+ * relies on the old swallow: `grep -E '^\s*INSERT' packages/db/src/migrations/*.sql`
+ * returns zero hits (one bare `INSERT` appears in 039-model-downloads.sql,
+ * but only inside a `--` comment line, not as a statement).
  */
 const IDEMPOTENT_DDL_CODES = new Set(['42710', '42P07', '42701']);
 
@@ -98,21 +99,33 @@ function assertBalancedQuotes(statement: string): void {
  * DO NOTHING` to mark the intent at the statement level instead of
  * relying on the runner to guess.
  *
- * A 23505 whose message happens to contain "already exists" (some
- * driver variants append that phrase) is rejected via an explicit
- * code-anchored guard before the message-substring fallback runs —
- * otherwise the fallback would swallow it.
+ * The 23505 anti-swallow runs before the message-substring fallback so
+ * a 23505 whose message happens to contain "already exists" (some
+ * driver variants append that phrase) is rejected explicitly instead
+ * of being absorbed via the DDL message path. The check uses
+ * `String(code) === '23505'` so a numeric `code: 23505` is caught too
+ * — node-postgres always stringifies, but other pg clients (or a hand-
+ * built driver) may not, and the safer default is to anchor on value
+ * rather than on the JS type that surfaced it.
+ *
+ * As a belt-and-suspenders, `message.includes('duplicate key')` is
+ * also vetoed before the DDL fallback — covers the case where a
+ * driver elides `code` entirely on a 23505 and only carries the
+ * canonical "duplicate key value" message.
  */
 export function isIdempotentError(error: unknown): boolean {
   const code = (error as { code?: unknown } | null)?.code;
   if (typeof code === 'string' && IDEMPOTENT_DDL_CODES.has(code)) {
     return true;
   }
-  if (code === '23505') {
+  if (code != null && String(code) === '23505') {
     return false;
   }
 
   const message = error instanceof Error ? error.message : String(error);
+  if (message.includes('duplicate key')) {
+    return false;
+  }
   return (
     message.includes('already exists') ||
     message.includes('duplicate column name') ||
@@ -141,9 +154,14 @@ export async function up(): Promise<void> {
   try {
     await pool.query(schema);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    // Skip "already exists" errors for idempotency
-    if (!message.includes('already exists')) {
+    // Use the same idempotency rule as the per-statement loop below —
+    // DDL "already exists" is swallowed; 23505 (unique-violation) and
+    // any other shape always surfaces. Previously this branch used a
+    // raw `message.includes('already exists')` check, which would have
+    // swallowed a 23505 whose message happens to contain that phrase
+    // (some driver variants do append it) — inconsistent with the
+    // per-statement loop's stricter behaviour.
+    if (!isIdempotentError(error)) {
       console.error(`[migration] Failed to execute schema`);
       throw error;
     }

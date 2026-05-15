@@ -108,5 +108,45 @@ describe('isIdempotentError', () => {
       );
       expect(isIdempotentError(err)).toBe(false);
     });
+
+    it('surfaces 23505 when the driver returns the code as a number', () => {
+      // node-postgres always stringifies, but other pg clients (or a
+      // hand-built driver) may surface `code` as a JS number. The guard
+      // uses `String(code) === '23505'` so the value matches regardless
+      // of which JS type carries it. Without this, a numeric-coded 23505
+      // with "already exists" in its message would fall through to the
+      // DDL substring fallback and be silently swallowed.
+      const err = Object.assign(
+        new Error('unique index "idx_t_k" already exists with duplicate data'),
+        { code: 23505 },
+      );
+      expect(isIdempotentError(err)).toBe(false);
+      expect(isIdempotentError({ code: 23505 })).toBe(false);
+    });
+
+    it('surfaces a 23505-shaped error even when the driver elides `code`', () => {
+      // Belt-and-suspenders: a driver that drops `code` on a 23505 still
+      // carries the canonical "duplicate key value" message. The guard
+      // vetoes that substring before the DDL fallback can pick it up,
+      // so the function never absorbs a duplicate-key error just because
+      // its code field was missing.
+      const err = new Error(
+        'duplicate key value violates unique constraint "idx_t_k"',
+      );
+      expect(isIdempotentError(err)).toBe(false);
+    });
+
+    it('still surfaces 23505 even when its message *only* says "already exists"', () => {
+      // Defends the "code-anchored guard runs before message fallback"
+      // ordering: a 23505 whose message says nothing about duplicate
+      // keys and only says "already exists" (a hypothetical driver
+      // variant) must still surface, because the code is what tells us
+      // the operation actually failed on data — not on a name clash.
+      const err = Object.assign(
+        new Error('relation "idx_t_k" already exists'),
+        { code: '23505' },
+      );
+      expect(isIdempotentError(err)).toBe(false);
+    });
   });
 });
