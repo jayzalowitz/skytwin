@@ -6,6 +6,17 @@ import type { ApprovalRequestRow } from '../types.js';
  * Repository for approval request CRUD operations.
  */
 export const approvalRepository = {
+  /**
+   * Insert a pending approval for a decision, or return the existing one
+   * if a re-ingestion of the same signal already created it.
+   *
+   * Returns `{ row, created }` where `created` is true only when this call
+   * was the one that wrote the row — false when ON CONFLICT (decision_id)
+   * absorbed the INSERT and the row came back from the fallback SELECT.
+   * Callers gate side-effects (SSE emission, audit-trail entries, badge
+   * pings) on `created` so a re-ingestion is invisible end-to-end, not
+   * just at the DB level.
+   */
   async create(input: {
     userId: string;
     decisionId: string;
@@ -16,7 +27,7 @@ export const approvalRepository = {
     /** 'single' (default) or 'dual'. 'dual' is set by the injection guard
      *  for extreme-severity actions and requires two token-gated confirms. */
     confirmationLevel?: 'single' | 'dual';
-  }): Promise<ApprovalRequestRow> {
+  }): Promise<{ row: ApprovalRequestRow; created: boolean }> {
     const result = await query<ApprovalRequestRow>(
       `INSERT INTO approval_requests (user_id, decision_id, candidate_action, reason, urgency, status, requested_at, expires_at, confirmation_level)
        VALUES ($1, $2, $3, $4, $5, 'pending', now(), $6, $7)
@@ -33,7 +44,7 @@ export const approvalRepository = {
       ],
     );
     if (result.rows[0]) {
-      return result.rows[0];
+      return { row: result.rows[0], created: true };
     }
     // ON CONFLICT DO NOTHING returned no row: an approval_request already
     // exists for this decision. This happens whenever the same signal is
@@ -60,7 +71,7 @@ export const approvalRepository = {
           `between INSERT conflict and fallback SELECT`,
       );
     }
-    return existing.rows[0];
+    return { row: existing.rows[0], created: false };
   },
 
   /**

@@ -57,7 +57,7 @@ describe('approvalRepository', () => {
   // -----------------------------------------------------------------------
 
   describe('create', () => {
-    it('inserts a pending approval request with correct params', async () => {
+    it('inserts a pending approval request with correct params and reports created=true', async () => {
       const row = fakeApprovalRow();
       mockQuery.mockResolvedValue({ rows: [row], rowCount: 1 });
 
@@ -69,7 +69,7 @@ describe('approvalRepository', () => {
         urgency: 'normal',
       });
 
-      expect(result).toEqual(row);
+      expect(result).toEqual({ row, created: true });
 
       const [sql, params] = mockQuery.mock.calls[0]!;
       expect(sql).toContain('INSERT INTO approval_requests');
@@ -155,13 +155,15 @@ describe('approvalRepository', () => {
       expect(sql).toContain('ON CONFLICT (decision_id) DO NOTHING');
     });
 
-    it('returns the existing approval when the INSERT conflicts (re-ingestion is a no-op)', async () => {
+    it('returns the existing approval with created=false when the INSERT conflicts (re-ingestion is a no-op)', async () => {
       // ON CONFLICT DO NOTHING returns zero rows when an approval already
       // exists for the decision. create() must then fetch and return the
       // existing row so callers (events.ts, assistant.ts) always get a valid
-      // approval back and re-ingestion never stacks a duplicate. The
-      // fallback SELECT is scoped by user_id to match every other read in
-      // this repository.
+      // approval back and re-ingestion never stacks a duplicate. `created`
+      // is false in this case so callers can suppress side-effects like
+      // SSE emissions that would otherwise re-flash the dashboard for an
+      // approval the user has already seen. The fallback SELECT is scoped
+      // by user_id to match every other read in this repository.
       const existing = fakeApprovalRow({ id: 'ar-existing', decision_id: 'd-001' });
       mockQuery
         .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // INSERT … ON CONFLICT DO NOTHING
@@ -175,7 +177,7 @@ describe('approvalRepository', () => {
         urgency: 'normal',
       });
 
-      expect(result).toEqual(existing);
+      expect(result).toEqual({ row: existing, created: false });
       expect(mockQuery).toHaveBeenCalledTimes(2);
       const [fallbackSql, fallbackParams] = mockQuery.mock.calls[1]!;
       expect(fallbackSql).toContain('SELECT * FROM approval_requests');

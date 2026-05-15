@@ -28,9 +28,17 @@ const {
   fakeQuery,
   episodeStore,
   approvalStore,
+  approvalsByDecisionId,
 } = vi.hoisted(() => {
   const episodeStore: Array<Record<string, unknown>> = [];
+  // `approvalStore` is keyed by approval id and serves findById/respond
+  // (the test manually inserts a row at `'app-respondable'` to bridge to
+  // the response step). `approvalsByDecisionId` mirrors the real
+  // repository's conflict semantics — migration 046's unique index is on
+  // `approval_requests(decision_id)`, so the mock's `created` flag must
+  // be derived from decisionId presence, NOT from id presence.
   const approvalStore = new Map<string, Record<string, unknown>>();
+  const approvalsByDecisionId = new Map<string, Record<string, unknown>>();
   const fakeQuery = vi.fn(async (text: string, params?: unknown[]) => {
     if (text.includes('FROM episodic_memories')) {
       const userId = String(params?.[0] ?? '');
@@ -41,7 +49,7 @@ const {
     }
     return { rows: [], rowCount: 0 };
   });
-  return { fakeQuery, episodeStore, approvalStore };
+  return { fakeQuery, episodeStore, approvalStore, approvalsByDecisionId };
 });
 
 vi.mock('@skytwin/db', () => {
@@ -56,9 +64,23 @@ vi.mock('@skytwin/db', () => {
     healthCheck: vi.fn().mockResolvedValue({ healthy: true, latencyMs: 1 }),
     approvalRepository: {
       create: vi.fn().mockImplementation(async (input: Record<string, unknown>) => {
-        const row = { id: 'app-1', ...input, status: 'pending' };
-        approvalStore.set(row.id, row);
-        return row;
+        // The real repository conflicts on `decision_id` (migration 046's
+        // unique index), so derive `created` from decisionId presence
+        // rather than from id presence — otherwise two creates with
+        // different decisionIds would falsely look like a re-ingestion
+        // just because the mock had reused an id. `approvalStore` is
+        // still id-keyed so findById/respond and the manual
+        // `approvalStore.set('app-respondable', …)` bridge at line ~344
+        // keep working unchanged.
+        const decisionId = String(input['decisionId'] ?? '');
+        const existing = approvalsByDecisionId.get(decisionId);
+        if (existing) {
+          return { row: existing, created: false };
+        }
+        const row = { id: `app-${approvalsByDecisionId.size + 1}`, ...input, status: 'pending' };
+        approvalStore.set(String(row.id), row);
+        approvalsByDecisionId.set(decisionId, row);
+        return { row, created: true };
       }),
       findById: vi.fn().mockImplementation(async (id: string) => approvalStore.get(id) ?? null),
       respond: vi.fn().mockImplementation(async (id: string, action: string) => {
@@ -283,6 +305,7 @@ beforeEach(() => {
   fakeQuery.mockClear();
   episodeStore.length = 0;
   approvalStore.clear();
+  approvalsByDecisionId.clear();
 });
 
 describe('full-loop E2E: signal → approve/reject → next signal carries the episode', () => {
