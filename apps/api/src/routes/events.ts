@@ -241,16 +241,47 @@ export function createEventsRouter(): Router {
       //     that auto-execute; observer/suggest are already gated by the
       //     approval-row idempotency from #289).
       //
-      // Fetch the previous outcome + approval and return the same response
-      // shape the first ingestion produced, so an API caller that retried
-      // gets a consistent answer. If the previous outcome row is missing
-      // (the first ingest crashed between saveDecision and saveOutcome) we
-      // fall through to the normal pipeline so the work eventually
-      // completes — `created: false` alone doesn't mean "the previous
-      // attempt finished," only "another attempt wrote the decision row."
+      // Three completeness checks decide whether the previous attempt is
+      // recoverable enough to short-circuit:
+      //
+      //   1. Was an outcome row saved at all? (saveOutcome runs inside
+      //      decisionMaker.evaluate.) If null, the first ingest crashed
+      //      before even recording the verdict — fall through.
+      //   2. Was the outcome an auto-execute one? If yes, also require a
+      //      terminal `execution_result` row. The outcome is saved BEFORE
+      //      the action runs (decision-maker → recordOutcome → events.ts
+      //      → createPlan → execute → createResult), so a saved outcome
+      //      with no execution_result means the action hung mid-flight
+      //      or the process died between saveOutcome and createResult.
+      //      Fall through so the re-ingestion finishes the work — short-
+      //      circuiting here would leave the user thinking the email was
+      //      sent when it wasn't.
+      //   3. If `requiresApproval` is true, the approval row's existence
+      //      is the durable record of completion — `approvalRepository.create`
+      //      is idempotent and re-running it on a re-ingest would be a
+      //      no-op anyway, so this case is always safe to short-circuit
+      //      regardless of approval-row state.
       if (!decisionCreated) {
         const previousOutcome = await decisionRepositoryAdapter.getOutcome(decision.id);
-        if (previousOutcome) {
+        let recoverable = previousOutcome !== null;
+        let executionTerminal: { status: 'completed' | 'failed'; planId: string } | null = null;
+        if (previousOutcome && previousOutcome.autoExecute) {
+          const previousExec = await executionRepository.getByDecisionId(decision.id);
+          if (!previousExec || !previousExec.result) {
+            // Auto-execute outcome with no terminal execution_result — the
+            // first attempt didn't finish (hung HTTP call, crashed worker,
+            // killed process between createPlan and createResult). Fall
+            // through and let this ingest complete the action.
+            recoverable = false;
+          } else {
+            executionTerminal = {
+              status: previousExec.result.success ? 'completed' : 'failed',
+              planId: previousExec.plan.id,
+            };
+          }
+        }
+
+        if (recoverable && previousOutcome) {
           const previousApproval = previousOutcome.requiresApproval
             ? await approvalRepository.findByDecisionId(decision.id, userId)
             : null;
@@ -260,6 +291,7 @@ export function createEventsRouter(): Router {
             hadApproval: previousApproval !== null,
             requiredApproval: previousOutcome.requiresApproval,
             autoExecuted: previousOutcome.autoExecute,
+            executionStatus: executionTerminal?.status ?? null,
           });
           res.json({
             decision: {
@@ -285,11 +317,10 @@ export function createEventsRouter(): Router {
             // explanation:* events already fired on the first ingest. Caller
             // can GET /api/decisions/:id for the persisted explanation.
             explanation: null,
-            // Execution result similarly lives in execution_plans /
-            // execution_results; refetching would need a join and the
-            // re-ingestion semantics here are "the first attempt's result
-            // stands." Caller can look it up by decision.id.
-            execution: null,
+            // Execution surfaces the persisted terminal status when the
+            // previous run was auto-execute. For non-autoExecute outcomes
+            // there is no plan to reference, so it's null.
+            execution: executionTerminal,
             approval: previousApproval
               ? { id: previousApproval.id, status: previousApproval.status }
               : null,
@@ -297,11 +328,11 @@ export function createEventsRouter(): Router {
           });
           return;
         }
-        // Previous outcome missing — fall through and let the pipeline
-        // finish the work the first attempt didn't.
-        log.info('Re-ingestion with no recoverable outcome; running pipeline to completion', {
+        log.info('Re-ingestion with incomplete previous attempt; running pipeline to completion', {
           userId,
           decisionId: decision.id,
+          previousOutcomePresent: previousOutcome !== null,
+          previousOutcomeAutoExecute: previousOutcome?.autoExecute ?? null,
         });
       }
 

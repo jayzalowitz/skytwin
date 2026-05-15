@@ -23,6 +23,7 @@ const {
     createEvent: vi.fn(),
     updatePlanStatus: vi.fn(),
     createResult: vi.fn(),
+    getByDecisionId: vi.fn(),
   },
   mockGetExecutionRouter: vi.fn(),
   mockSseManager: {
@@ -199,6 +200,7 @@ describe('Events API routes', () => {
     mockSaveCandidates.mockResolvedValue([]);
     mockGetOutcome.mockResolvedValue(null);
     mockApprovalFindByDecisionId.mockResolvedValue(null);
+    mockExecutionRepository.getByDecisionId.mockResolvedValue(null);
   });
 
   // ---------------------------------------------------------------------
@@ -387,6 +389,88 @@ describe('Events API routes', () => {
         'decision:blocked-by-policy',
         expect.anything(),
       );
+    });
+
+    it('short-circuits an auto-executed re-ingest without re-running the action when a terminal execution_result exists', async () => {
+      // The high-impact case the PR exists to fix: a previously-auto-
+      // executed signal must NOT execute its action a second time.
+      mockSaveDecision.mockImplementation(async (d: unknown) => ({
+        decision: d,
+        created: false,
+      }));
+      mockGetOutcome.mockResolvedValue({
+        decisionId: 'decision-1',
+        selectedAction: { actionType: 'send_email', description: 'Send draft' },
+        autoExecute: true,
+        requiresApproval: false,
+        reasoning: 'Auto-executed on first ingest',
+      });
+      mockExecutionRepository.getByDecisionId.mockResolvedValue({
+        plan: { id: 'plan-prev', decision_id: 'decision-1', status: 'completed' },
+        result: { plan_id: 'plan-prev', success: true },
+      });
+
+      const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+        userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+        source: 'gmail',
+        type: 'email',
+      });
+
+      expect(res.status).toBe(200);
+      const body = res.body as {
+        reIngested: boolean;
+        execution: { status: string; planId: string } | null;
+      };
+      expect(body.reIngested).toBe(true);
+      expect(body.execution).toEqual({ status: 'completed', planId: 'plan-prev' });
+
+      // The action MUST NOT have run a second time.
+      expect(mockEvaluate).not.toHaveBeenCalled();
+      expect(mockSaveCandidates).not.toHaveBeenCalled();
+      expect(mockExecutionRepository.createPlan).not.toHaveBeenCalled();
+      expect(mockGetExecutionRouter).not.toHaveBeenCalled();
+      expect(mockSseManager.emit).not.toHaveBeenCalledWith(
+        'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+        'decision:executed',
+        expect.anything(),
+      );
+    });
+
+    it('falls through when a previous auto-execute outcome exists but no execution_result is recorded (first attempt hung)', async () => {
+      // Critical edge case: outcome row was saved (decision-maker called
+      // saveOutcome) but execution never completed (hung HTTP call,
+      // killed process between createPlan and createResult). Short-
+      // circuiting here would silently abandon the action. The route
+      // must fall through and let this ingest finish the work.
+      mockSaveDecision.mockImplementation(async (d: unknown) => ({
+        decision: d,
+        created: false,
+      }));
+      mockGetOutcome.mockResolvedValue({
+        decisionId: 'decision-1',
+        selectedAction: { actionType: 'send_email', description: 'Send draft' },
+        autoExecute: true,
+        requiresApproval: false,
+        reasoning: 'Auto-executed on first ingest',
+      });
+      // Plan was created, but no result row yet — the first attempt
+      // didn't finish.
+      mockExecutionRepository.getByDecisionId.mockResolvedValue({
+        plan: { id: 'plan-prev', decision_id: 'decision-1', status: 'running' },
+        result: null,
+      });
+
+      const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+        userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+        source: 'gmail',
+        type: 'email',
+      });
+
+      expect(res.status).toBe(200);
+      const body = res.body as { reIngested?: boolean };
+      expect(body.reIngested).toBeUndefined();
+      // The full pipeline must have run so the action gets retried.
+      expect(mockEvaluate).toHaveBeenCalled();
     });
 
     it('falls through to the normal pipeline when no previous outcome is recoverable (first attempt crashed before saving)', async () => {

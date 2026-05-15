@@ -212,12 +212,13 @@ describe('approvalRepository', () => {
   // -----------------------------------------------------------------------
 
   describe('findByDecisionId', () => {
-    it('returns the approval scoped by decisionId AND userId', async () => {
+    it('returns the approval scoped by decisionId AND userId, filtering out cleaned rows', async () => {
       // The query is the read counterpart to the ON CONFLICT fallback
       // inside create(). The unique index from migration 046 means at
-      // most one approval per decision, and the user_id filter is the
+      // most one approval per decision; the user_id filter is the
       // belt-and-suspenders guard against ever surfacing another user's
-      // row through this method.
+      // row; and the `status != 'cleaned'` filter hides soft-deleted
+      // escalation-only approvals that the dashboard never renders.
       const row = fakeApprovalRow({ id: 'ar-found', decision_id: 'd-001' });
       mockQuery.mockResolvedValue({ rows: [row], rowCount: 1 });
 
@@ -228,6 +229,7 @@ describe('approvalRepository', () => {
       expect(sql).toContain('SELECT * FROM approval_requests');
       expect(sql).toContain('WHERE decision_id = $1');
       expect(sql).toContain('AND user_id = $2');
+      expect(sql).toContain("status != 'cleaned'");
       expect(params).toEqual(['d-001', 'u-001']);
     });
 
