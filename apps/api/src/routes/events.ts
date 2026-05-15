@@ -226,6 +226,126 @@ export function createEventsRouter(): Router {
       // so duplicate ingests don't re-fire UI notifications etc.
       const { created: decisionCreated } = await decisionRepositoryAdapter.saveDecision(decision);
 
+      // 1c. Re-ingestion short-circuit. When `decisionCreated` is false the
+      // (user_id, signal_id) was already evaluated on a prior ingest — the
+      // decision row, candidate_actions, decision_outcome, and any approval
+      // request already exist. Running the rest of the pipeline would:
+      //
+      //   - stack new candidate_actions rows (their UUIDs are fresh, so the
+      //     unique-on-id guard doesn't dedupe them),
+      //   - overwrite the prior `decision_outcomes` row via its
+      //     ON CONFLICT (decision_id) DO UPDATE — losing the original
+      //     audit trail if policy/patterns shifted between ingestions,
+      //   - on the auto-execute path, run the action a SECOND time
+      //     (a real send-the-email-twice bug for users at trust tiers
+      //     that auto-execute; observer/suggest are already gated by the
+      //     approval-row idempotency from #289).
+      //
+      // Three completeness checks decide whether the previous attempt is
+      // recoverable enough to short-circuit:
+      //
+      //   1. Was an outcome row saved at all? (saveOutcome runs inside
+      //      decisionMaker.evaluate.) If null, the first ingest crashed
+      //      before even recording the verdict — fall through.
+      //   2. Was the outcome an auto-execute one? If yes, also require a
+      //      terminal `execution_result` row. The outcome is saved BEFORE
+      //      the action runs (decision-maker → recordOutcome → events.ts
+      //      → createPlan → execute → createResult), so a saved outcome
+      //      with no execution_result means the action hung mid-flight
+      //      or the process died between saveOutcome and createResult.
+      //      Fall through so the re-ingestion finishes the work — short-
+      //      circuiting here would leave the user thinking the email was
+      //      sent when it wasn't.
+      //   3. If `requiresApproval` is true, the approval row's existence
+      //      is the durable record of completion — `approvalRepository.create`
+      //      is idempotent and re-running it on a re-ingest would be a
+      //      no-op anyway, so this case is always safe to short-circuit
+      //      regardless of approval-row state.
+      if (!decisionCreated) {
+        const previousOutcome = await decisionRepositoryAdapter.getOutcome(decision.id);
+        let recoverable = previousOutcome !== null;
+        let executionTerminal: { status: 'completed' | 'failed'; planId: string } | null = null;
+        if (previousOutcome && previousOutcome.autoExecute) {
+          const previousExec = await executionRepository.getByDecisionId(decision.id);
+          if (!previousExec || !previousExec.result) {
+            // Auto-execute outcome with no terminal execution_result — the
+            // first attempt didn't finish (hung HTTP call, crashed worker,
+            // killed process between createPlan and createResult). Fall
+            // through and let this ingest complete the action.
+            recoverable = false;
+          } else {
+            executionTerminal = {
+              status: previousExec.result.success ? 'completed' : 'failed',
+              planId: previousExec.plan.id,
+            };
+          }
+        }
+
+        if (recoverable && previousOutcome) {
+          const [previousApproval, previousExplanation] = await Promise.all([
+            previousOutcome.requiresApproval
+              ? approvalRepository.findByDecisionId(decision.id, userId)
+              : Promise.resolve(null),
+            // Refetch the persisted explanation so the short-circuit
+            // response carries the same `{ summary, riskTier, confidence }`
+            // shape the first-time response did, instead of a null that
+            // would make the endpoint's contract branch-dependent.
+            explanationRepositoryAdapter.getByDecisionId(decision.id),
+          ]);
+          log.info('Suppressed pipeline for re-ingested signal', {
+            userId,
+            decisionId: decision.id,
+            hadApproval: previousApproval !== null,
+            hadExplanation: previousExplanation !== null,
+            requiredApproval: previousOutcome.requiresApproval,
+            autoExecuted: previousOutcome.autoExecute,
+            executionStatus: executionTerminal?.status ?? null,
+          });
+          res.json({
+            decision: {
+              id: decision.id,
+              situationType: decision.situationType,
+              domain: decision.domain,
+              urgency: decision.urgency,
+              summary: decision.summary,
+            },
+            outcome: {
+              selectedAction: previousOutcome.selectedAction
+                ? {
+                    actionType: previousOutcome.selectedAction.actionType,
+                    description: previousOutcome.selectedAction.description,
+                  }
+                : null,
+              autoExecute: previousOutcome.autoExecute,
+              requiresApproval: previousOutcome.requiresApproval,
+              reasoning: previousOutcome.reasoning,
+            },
+            explanation: previousExplanation
+              ? {
+                  summary: previousExplanation.summary,
+                  riskTier: previousExplanation.riskTier,
+                  confidence: previousExplanation.overallConfidence,
+                }
+              : null,
+            // Execution surfaces the persisted terminal status when the
+            // previous run was auto-execute. For non-autoExecute outcomes
+            // there is no plan to reference, so it's null.
+            execution: executionTerminal,
+            approval: previousApproval
+              ? { id: previousApproval.id, status: previousApproval.status }
+              : null,
+            reIngested: true,
+          });
+          return;
+        }
+        log.info('Re-ingestion with incomplete previous attempt; running pipeline to completion', {
+          userId,
+          decisionId: decision.id,
+          previousOutcomePresent: previousOutcome !== null,
+          previousOutcomeAutoExecute: previousOutcome?.autoExecute ?? null,
+        });
+      }
+
       // 2. Get user record (trust tier must come from DB, never from caller)
       const user = await userRepository.findById(userId);
 
@@ -554,29 +674,21 @@ export function createEventsRouter(): Router {
       // Invariant #1 (every auto-execute path went through a policy check) is
       // structurally enforced upstream, but the *result* of that check needs
       // to be observable.
+      //
+      // Note: the per-emit `decisionCreated` gate that this PR's predecessor
+      // (v0.6.28.0) introduced is no longer needed — if a re-ingestion has a
+      // recoverable previous outcome, the short-circuit at step 1c returns
+      // before reaching this code, and if it doesn't (the first attempt
+      // crashed before saving outcome), we WANT the SSE to fire because the
+      // user never saw it the first time.
       if (!outcome.selectedAction && !approvalRequest && !executionResult) {
-        if (decisionCreated) {
-          sseManager.emit(userId, 'decision:blocked-by-policy', {
-            decisionId: decision.id,
-            reason: outcome.reasoning,
-            domain: decision.domain,
-            situationType: decision.situationType,
-            urgency: decision.urgency,
-          });
-        } else {
-          // Re-ingestion of a signal that was already blocked by policy on
-          // first arrival. The decision row is the same one, the policy
-          // verdict is the same one, the UI already showed the user that
-          // nothing happened — re-firing the SSE would re-flash the
-          // "blocked by policy" indicator for an event they've already
-          // seen. Audit-log the suppression (parallel to the
-          // approval:new gate) so an operator investigating "why no
-          // SSE?" can confirm it was recognised and silenced.
-          log.info('Suppressed decision:blocked-by-policy SSE for re-ingested signal', {
-            userId,
-            decisionId: decision.id,
-          });
-        }
+        sseManager.emit(userId, 'decision:blocked-by-policy', {
+          decisionId: decision.id,
+          reason: outcome.reasoning,
+          domain: decision.domain,
+          situationType: decision.situationType,
+          urgency: decision.urgency,
+        });
       }
 
       // 10. Return result

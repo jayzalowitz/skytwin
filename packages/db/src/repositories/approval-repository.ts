@@ -132,6 +132,39 @@ export const approvalRepository = {
     return result.rows[0] ?? null;
   },
 
+  /**
+   * Look up the approval that exists for a decision. The unique index on
+   * `approval_requests(decision_id)` (migration 046) means there is at
+   * most one row per decision; this is the read counterpart to the
+   * ON CONFLICT path inside `create()`. Scoped by `userId` to match
+   * every other read in this repository — a decision belongs to one
+   * user, so the scope is also a belt-and-suspenders guard against ever
+   * handing back another user's row.
+   *
+   * Filters out `status = 'cleaned'` rows: those are soft-deleted
+   * escalation-only approvals that the dashboard never surfaces. A
+   * re-ingestion that sees a cleaned approval should be treated as
+   * "approval is gone" so the caller doesn't render a stale id; the
+   * decision_id uniqueness constraint guarantees there's no other
+   * non-cleaned row to surface in its place.
+   *
+   * Used by `events.ts` to recover the existing approval when a signal
+   * is re-ingested (decisionRepository.create returned `created: false`)
+   * so the API response surfaces the original approval id and status
+   * instead of running the approval-creation step a second time.
+   */
+  async findByDecisionId(
+    decisionId: string,
+    userId: string,
+  ): Promise<ApprovalRequestRow | null> {
+    const result = await query<ApprovalRequestRow>(
+      `SELECT * FROM approval_requests
+       WHERE decision_id = $1 AND user_id = $2 AND status != 'cleaned'`,
+      [decisionId, userId],
+    );
+    return result.rows[0] ?? null;
+  },
+
   async respond(
     id: string,
     action: 'approve' | 'reject',
