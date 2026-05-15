@@ -1,5 +1,17 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.26.0] - 2026-05-15
+
+### Fixed
+
+- **Migration runner no longer silently swallows `23505` (unique-violation) errors.** The runner has always absorbed certain errors so that re-running a migration is a no-op rather than a hard failure — duplicate-table, duplicate-column, duplicate-constraint. It also absorbed `23505` (unique-violation / "duplicate key") under the same banner, on the assumption that a re-run seed `INSERT` should be safe. But `23505` is also what CockroachDB returns when a `CREATE UNIQUE INDEX` is blocked by residual duplicates, when an `INSERT ... SELECT` backfill hits a real collision, when an `ALTER TABLE ... ADD CONSTRAINT UNIQUE` fails on dirty data — and all of those used to be silently absorbed too. Migration 046 (the approval_requests unique index) surfaced this: a previous version added a self-verify check that caught the case for that specific migration, but the runner-level bug remained. The runner now has one rule: `23505` always surfaces, even when its message happens to contain "already exists" (an explicit code-anchored guard runs before the message-substring fallback). Seed migrations that need re-run safety use `INSERT ... ON CONFLICT DO NOTHING` to mark the intent at the statement level, which is the idiomatic Postgres pattern (no current migration relies on the old swallow — `grep -E '^\s*INSERT' packages/db/src/migrations/*.sql` returns zero hits; the one bare `INSERT` token in the corpus is inside a `--` comment in `039-model-downloads.sql`).
+
+### Fixed (post-/review)
+
+- **Schema-batch path uses the same idempotency rule as the per-statement loop.** The initial `pool.query(schema)` block previously used a raw `message.includes('already exists')` check, which would have swallowed a 23505 whose message happens to contain that phrase — inconsistent with the per-statement loop's stricter behaviour. Both paths now call `isIdempotentError`.
+- **The 23505 anti-swallow handles numeric codes and code-less errors.** node-postgres always surfaces `code` as a string, but other pg clients (or a hand-built driver) may return a number, and a driver that elides `code` entirely on a 23505 still carries the canonical "duplicate key value" message. The guard now uses `String(code) === '23505'` and also vetoes `message.includes('duplicate key')` before the DDL message fallback runs.
+- New tests pin both: numeric-coded 23505, code-less 23505-shaped Error, and the schema-batch consistency.
+
 ## [0.6.25.0] - 2026-05-14
 
 ### Fixed

@@ -9,24 +9,32 @@ const __dirname = dirname(__filename);
 const SCHEMA_PATH = join(__dirname, '..', 'schemas', 'schema.sql');
 
 /**
- * SQLSTATE codes that mean "this object already exists" — re-running a
- * migration that hits one of these is a no-op, not a failure. Checking
+ * SQLSTATE codes that mean "this DDL object already exists" — re-running
+ * a migration that hits one of these is a no-op, not a failure. Checking
  * the code is more robust than substring-matching the error message,
  * which is vendor-specific and can change between CockroachDB versions.
  *   42710 duplicate_object   (covers duplicate constraint / index names)
  *   42P07 duplicate_table
  *   42701 duplicate_column
- *   23505 unique_violation   (duplicate key on INSERT)
  *
- * Trade-off on 23505: the first three are DDL and always safe to swallow
- * on a re-run. 23505 is DML — swallowing it makes re-running a seed
- * `INSERT` idempotent, but it also masks a genuine unique-key conflict
- * in a future backfill. This matches the pre-existing `duplicate key`
- * message match (this migration runner has always been best-effort on
- * DML conflicts); a migration that needs strict insert semantics should
- * use `INSERT … ON CONFLICT` explicitly rather than rely on the runner.
+ * 23505 (unique_violation) is deliberately NOT in this set, and the
+ * runner does not absorb it under any circumstances. Earlier versions
+ * swallowed 23505 to make re-running a seed `INSERT` a no-op, but that
+ * carve-out also masked real failures: a `CREATE UNIQUE INDEX` blocked
+ * by residual duplicates, an `INSERT ... SELECT` backfill hitting a real
+ * collision, an `ALTER TABLE ... ADD CONSTRAINT UNIQUE` failing on
+ * dirty data — all of those returned 23505 too and were silently
+ * absorbed. Migration 046 surfaced the bug by writing a self-verify
+ * check; Codex's review of the original "narrow to INSERT" fix called
+ * out that statement-shape carve-outs are also leaky. The runner now
+ * has one rule: 23505 always surfaces. Seed migrations that need
+ * re-run safety use `INSERT ... ON CONFLICT DO NOTHING` — the idiomatic
+ * Postgres pattern — to mark the intent explicitly. No current migration
+ * relies on the old swallow: `grep -E '^\s*INSERT' packages/db/src/migrations/*.sql`
+ * returns zero hits (one bare `INSERT` appears in 039-model-downloads.sql,
+ * but only inside a `--` comment line, not as a statement).
  */
-const IDEMPOTENT_PG_CODES = new Set(['42710', '42P07', '42701', '23505']);
+const IDEMPOTENT_DDL_CODES = new Set(['42710', '42P07', '42701']);
 
 /**
  * Split a .sql migration file into individual statements.
@@ -79,20 +87,47 @@ function assertBalancedQuotes(statement: string): void {
 }
 
 /**
- * True when an error from `pool.query` means the target object already
- * exists — i.e. the statement was already applied on a prior run and
- * can be safely skipped. Prefers the stable SQLSTATE code; falls back
- * to message substrings for drivers/errors that don't surface a code.
+ * True when an error from `pool.query` means the statement is safe to
+ * skip — i.e. it was already applied on a prior run. Prefers the stable
+ * SQLSTATE code; falls back to message substrings for drivers/errors
+ * that don't surface a code.
+ *
+ * Only DDL "already exists" conditions are treated as idempotent.
+ * Unique-violation (23505 / "duplicate key") is deliberately NOT in
+ * this set — see the doc block on `IDEMPOTENT_DDL_CODES` for why.
+ * Seed migrations that need re-run safety use `INSERT ... ON CONFLICT
+ * DO NOTHING` to mark the intent at the statement level instead of
+ * relying on the runner to guess.
+ *
+ * The 23505 anti-swallow runs before the message-substring fallback so
+ * a 23505 whose message happens to contain "already exists" (some
+ * driver variants append that phrase) is rejected explicitly instead
+ * of being absorbed via the DDL message path. The check uses
+ * `String(code) === '23505'` so a numeric `code: 23505` is caught too
+ * — node-postgres always stringifies, but other pg clients (or a hand-
+ * built driver) may not, and the safer default is to anchor on value
+ * rather than on the JS type that surfaced it.
+ *
+ * As a belt-and-suspenders, `message.includes('duplicate key')` is
+ * also vetoed before the DDL fallback — covers the case where a
+ * driver elides `code` entirely on a 23505 and only carries the
+ * canonical "duplicate key value" message.
  */
 export function isIdempotentError(error: unknown): boolean {
   const code = (error as { code?: unknown } | null)?.code;
-  if (typeof code === 'string' && IDEMPOTENT_PG_CODES.has(code)) {
+  if (typeof code === 'string' && IDEMPOTENT_DDL_CODES.has(code)) {
     return true;
   }
+  if (code != null && String(code) === '23505') {
+    return false;
+  }
+
   const message = error instanceof Error ? error.message : String(error);
+  if (message.includes('duplicate key')) {
+    return false;
+  }
   return (
     message.includes('already exists') ||
-    message.includes('duplicate key') ||
     message.includes('duplicate column name') ||
     message.includes('duplicate constraint name')
   );
@@ -119,9 +154,14 @@ export async function up(): Promise<void> {
   try {
     await pool.query(schema);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    // Skip "already exists" errors for idempotency
-    if (!message.includes('already exists')) {
+    // Use the same idempotency rule as the per-statement loop below —
+    // DDL "already exists" is swallowed; 23505 (unique-violation) and
+    // any other shape always surfaces. Previously this branch used a
+    // raw `message.includes('already exists')` check, which would have
+    // swallowed a 23505 whose message happens to contain that phrase
+    // (some driver variants do append it) — inconsistent with the
+    // per-statement loop's stricter behaviour.
+    if (!isIdempotentError(error)) {
       console.error(`[migration] Failed to execute schema`);
       throw error;
     }

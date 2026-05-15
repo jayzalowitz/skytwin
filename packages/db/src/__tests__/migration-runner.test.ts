@@ -53,18 +53,16 @@ describe('splitSqlStatements', () => {
 });
 
 describe('isIdempotentError', () => {
-  it('matches SQLSTATE codes for already-exists conditions', () => {
+  it('matches SQLSTATE codes for DDL already-exists conditions', () => {
     expect(isIdempotentError({ code: '42710' })).toBe(true); // duplicate_object
     expect(isIdempotentError({ code: '42P07' })).toBe(true); // duplicate_table
     expect(isIdempotentError({ code: '42701' })).toBe(true); // duplicate_column
-    expect(isIdempotentError({ code: '23505' })).toBe(true); // unique_violation
   });
 
-  it('falls back to message substrings when no code is present', () => {
+  it('falls back to message substrings for DDL already-exists conditions', () => {
     expect(isIdempotentError(new Error('relation "users" already exists'))).toBe(true);
     expect(isIdempotentError(new Error('duplicate constraint name: "cpn_check"'))).toBe(true);
     expect(isIdempotentError(new Error('duplicate column name "email"'))).toBe(true);
-    expect(isIdempotentError(new Error('duplicate key value'))).toBe(true);
   });
 
   it('does not treat real failures as idempotent', () => {
@@ -73,5 +71,82 @@ describe('isIdempotentError', () => {
     expect(isIdempotentError(new Error('relation "users" does not exist'))).toBe(false);
     expect(isIdempotentError('some string error')).toBe(false);
     expect(isIdempotentError(null)).toBe(false);
+  });
+
+  // 23505 / "duplicate key" is NEVER idempotent-safe at the runner level.
+  // Earlier versions swallowed 23505 to make re-running a seed INSERT a
+  // no-op, but the carve-out also masked real failures: a CREATE UNIQUE
+  // INDEX blocked by residual duplicates, an INSERT ... SELECT backfill
+  // hitting a real collision, an ALTER TABLE ... ADD CONSTRAINT UNIQUE
+  // failing on dirty data — all of those returned 23505 and were silently
+  // absorbed. Migration 046 (the approval_requests unique index) was the
+  // case that surfaced this. The runner now has one rule: 23505 always
+  // surfaces. Seed migrations that need re-run safety use
+  // `INSERT ... ON CONFLICT DO NOTHING` to mark the intent explicitly.
+  describe('unique violation (23505 / "duplicate key")', () => {
+    it('always surfaces 23505 regardless of statement shape', () => {
+      // The carve-out is gone — no statement parameter, no INSERT
+      // heuristic. Every 23505 reaches the migration runner's catch.
+      expect(isIdempotentError({ code: '23505' })).toBe(false);
+      expect(
+        isIdempotentError(new Error('duplicate key value violates unique constraint "users_pkey"')),
+      ).toBe(false);
+      expect(isIdempotentError(new Error('duplicate key value'))).toBe(false);
+    });
+
+    it('surfaces 23505 even when the message happens to contain "already exists"', () => {
+      // Some driver variants append "already exists" to a 23505 message.
+      // The code-anchored 23505 guard runs BEFORE the DDL message-
+      // substring fallback, so the function returns false on this shape.
+      // (Using a real Error rather than a plain object so the message
+      // would in principle be reachable — without the guard, this exact
+      // shape would have been swallowed by `message.includes('already
+      // exists')`. The guard is what makes the test pass.)
+      const err = Object.assign(
+        new Error('unique index "idx_t_k" already exists with duplicate data'),
+        { code: '23505' },
+      );
+      expect(isIdempotentError(err)).toBe(false);
+    });
+
+    it('surfaces 23505 when the driver returns the code as a number', () => {
+      // node-postgres always stringifies, but other pg clients (or a
+      // hand-built driver) may surface `code` as a JS number. The guard
+      // uses `String(code) === '23505'` so the value matches regardless
+      // of which JS type carries it. Without this, a numeric-coded 23505
+      // with "already exists" in its message would fall through to the
+      // DDL substring fallback and be silently swallowed.
+      const err = Object.assign(
+        new Error('unique index "idx_t_k" already exists with duplicate data'),
+        { code: 23505 },
+      );
+      expect(isIdempotentError(err)).toBe(false);
+      expect(isIdempotentError({ code: 23505 })).toBe(false);
+    });
+
+    it('surfaces a 23505-shaped error even when the driver elides `code`', () => {
+      // Belt-and-suspenders: a driver that drops `code` on a 23505 still
+      // carries the canonical "duplicate key value" message. The guard
+      // vetoes that substring before the DDL fallback can pick it up,
+      // so the function never absorbs a duplicate-key error just because
+      // its code field was missing.
+      const err = new Error(
+        'duplicate key value violates unique constraint "idx_t_k"',
+      );
+      expect(isIdempotentError(err)).toBe(false);
+    });
+
+    it('still surfaces 23505 even when its message *only* says "already exists"', () => {
+      // Defends the "code-anchored guard runs before message fallback"
+      // ordering: a 23505 whose message says nothing about duplicate
+      // keys and only says "already exists" (a hypothetical driver
+      // variant) must still surface, because the code is what tells us
+      // the operation actually failed on data — not on a name clash.
+      const err = Object.assign(
+        new Error('relation "idx_t_k" already exists'),
+        { code: '23505' },
+      );
+      expect(isIdempotentError(err)).toBe(false);
+    });
   });
 });
