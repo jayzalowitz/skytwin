@@ -282,13 +282,21 @@ export function createEventsRouter(): Router {
         }
 
         if (recoverable && previousOutcome) {
-          const previousApproval = previousOutcome.requiresApproval
-            ? await approvalRepository.findByDecisionId(decision.id, userId)
-            : null;
+          const [previousApproval, previousExplanation] = await Promise.all([
+            previousOutcome.requiresApproval
+              ? approvalRepository.findByDecisionId(decision.id, userId)
+              : Promise.resolve(null),
+            // Refetch the persisted explanation so the short-circuit
+            // response carries the same `{ summary, riskTier, confidence }`
+            // shape the first-time response did, instead of a null that
+            // would make the endpoint's contract branch-dependent.
+            explanationRepositoryAdapter.getByDecisionId(decision.id),
+          ]);
           log.info('Suppressed pipeline for re-ingested signal', {
             userId,
             decisionId: decision.id,
             hadApproval: previousApproval !== null,
+            hadExplanation: previousExplanation !== null,
             requiredApproval: previousOutcome.requiresApproval,
             autoExecuted: previousOutcome.autoExecute,
             executionStatus: executionTerminal?.status ?? null,
@@ -312,11 +320,13 @@ export function createEventsRouter(): Router {
               requiresApproval: previousOutcome.requiresApproval,
               reasoning: previousOutcome.reasoning,
             },
-            // Explanation isn't refetched — it's persisted but reconstructing
-            // it would require another lookup, and the SSE flow's
-            // explanation:* events already fired on the first ingest. Caller
-            // can GET /api/decisions/:id for the persisted explanation.
-            explanation: null,
+            explanation: previousExplanation
+              ? {
+                  summary: previousExplanation.summary,
+                  riskTier: previousExplanation.riskTier,
+                  confidence: previousExplanation.overallConfidence,
+                }
+              : null,
             // Execution surfaces the persisted terminal status when the
             // previous run was auto-execute. For non-autoExecute outcomes
             // there is no plan to reference, so it's null.

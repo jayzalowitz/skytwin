@@ -88,7 +88,7 @@ vi.mock('@skytwin/db', () => ({
     saveCandidates: mockSaveCandidates,
     getOutcome: mockGetOutcome,
   },
-  explanationRepositoryAdapter: {},
+  explanationRepositoryAdapter: { getByDecisionId: vi.fn().mockResolvedValue(null) },
   policyRepositoryAdapter: {},
 }));
 
