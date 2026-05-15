@@ -226,6 +226,85 @@ export function createEventsRouter(): Router {
       // so duplicate ingests don't re-fire UI notifications etc.
       const { created: decisionCreated } = await decisionRepositoryAdapter.saveDecision(decision);
 
+      // 1c. Re-ingestion short-circuit. When `decisionCreated` is false the
+      // (user_id, signal_id) was already evaluated on a prior ingest — the
+      // decision row, candidate_actions, decision_outcome, and any approval
+      // request already exist. Running the rest of the pipeline would:
+      //
+      //   - stack new candidate_actions rows (their UUIDs are fresh, so the
+      //     unique-on-id guard doesn't dedupe them),
+      //   - overwrite the prior `decision_outcomes` row via its
+      //     ON CONFLICT (decision_id) DO UPDATE — losing the original
+      //     audit trail if policy/patterns shifted between ingestions,
+      //   - on the auto-execute path, run the action a SECOND time
+      //     (a real send-the-email-twice bug for users at trust tiers
+      //     that auto-execute; observer/suggest are already gated by the
+      //     approval-row idempotency from #289).
+      //
+      // Fetch the previous outcome + approval and return the same response
+      // shape the first ingestion produced, so an API caller that retried
+      // gets a consistent answer. If the previous outcome row is missing
+      // (the first ingest crashed between saveDecision and saveOutcome) we
+      // fall through to the normal pipeline so the work eventually
+      // completes — `created: false` alone doesn't mean "the previous
+      // attempt finished," only "another attempt wrote the decision row."
+      if (!decisionCreated) {
+        const previousOutcome = await decisionRepositoryAdapter.getOutcome(decision.id);
+        if (previousOutcome) {
+          const previousApproval = previousOutcome.requiresApproval
+            ? await approvalRepository.findByDecisionId(decision.id, userId)
+            : null;
+          log.info('Suppressed pipeline for re-ingested signal', {
+            userId,
+            decisionId: decision.id,
+            hadApproval: previousApproval !== null,
+            requiredApproval: previousOutcome.requiresApproval,
+            autoExecuted: previousOutcome.autoExecute,
+          });
+          res.json({
+            decision: {
+              id: decision.id,
+              situationType: decision.situationType,
+              domain: decision.domain,
+              urgency: decision.urgency,
+              summary: decision.summary,
+            },
+            outcome: {
+              selectedAction: previousOutcome.selectedAction
+                ? {
+                    actionType: previousOutcome.selectedAction.actionType,
+                    description: previousOutcome.selectedAction.description,
+                  }
+                : null,
+              autoExecute: previousOutcome.autoExecute,
+              requiresApproval: previousOutcome.requiresApproval,
+              reasoning: previousOutcome.reasoning,
+            },
+            // Explanation isn't refetched — it's persisted but reconstructing
+            // it would require another lookup, and the SSE flow's
+            // explanation:* events already fired on the first ingest. Caller
+            // can GET /api/decisions/:id for the persisted explanation.
+            explanation: null,
+            // Execution result similarly lives in execution_plans /
+            // execution_results; refetching would need a join and the
+            // re-ingestion semantics here are "the first attempt's result
+            // stands." Caller can look it up by decision.id.
+            execution: null,
+            approval: previousApproval
+              ? { id: previousApproval.id, status: previousApproval.status }
+              : null,
+            reIngested: true,
+          });
+          return;
+        }
+        // Previous outcome missing — fall through and let the pipeline
+        // finish the work the first attempt didn't.
+        log.info('Re-ingestion with no recoverable outcome; running pipeline to completion', {
+          userId,
+          decisionId: decision.id,
+        });
+      }
+
       // 2. Get user record (trust tier must come from DB, never from caller)
       const user = await userRepository.findById(userId);
 
@@ -554,29 +633,21 @@ export function createEventsRouter(): Router {
       // Invariant #1 (every auto-execute path went through a policy check) is
       // structurally enforced upstream, but the *result* of that check needs
       // to be observable.
+      //
+      // Note: the per-emit `decisionCreated` gate that this PR's predecessor
+      // (v0.6.28.0) introduced is no longer needed — if a re-ingestion has a
+      // recoverable previous outcome, the short-circuit at step 1c returns
+      // before reaching this code, and if it doesn't (the first attempt
+      // crashed before saving outcome), we WANT the SSE to fire because the
+      // user never saw it the first time.
       if (!outcome.selectedAction && !approvalRequest && !executionResult) {
-        if (decisionCreated) {
-          sseManager.emit(userId, 'decision:blocked-by-policy', {
-            decisionId: decision.id,
-            reason: outcome.reasoning,
-            domain: decision.domain,
-            situationType: decision.situationType,
-            urgency: decision.urgency,
-          });
-        } else {
-          // Re-ingestion of a signal that was already blocked by policy on
-          // first arrival. The decision row is the same one, the policy
-          // verdict is the same one, the UI already showed the user that
-          // nothing happened — re-firing the SSE would re-flash the
-          // "blocked by policy" indicator for an event they've already
-          // seen. Audit-log the suppression (parallel to the
-          // approval:new gate) so an operator investigating "why no
-          // SSE?" can confirm it was recognised and silenced.
-          log.info('Suppressed decision:blocked-by-policy SSE for re-ingested signal', {
-            userId,
-            decisionId: decision.id,
-          });
-        }
+        sseManager.emit(userId, 'decision:blocked-by-policy', {
+          decisionId: decision.id,
+          reason: outcome.reasoning,
+          domain: decision.domain,
+          situationType: decision.situationType,
+          urgency: decision.urgency,
+        });
       }
 
       // 10. Return result

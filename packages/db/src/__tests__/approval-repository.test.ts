@@ -208,6 +208,37 @@ describe('approvalRepository', () => {
   });
 
   // -----------------------------------------------------------------------
+  // findByDecisionId
+  // -----------------------------------------------------------------------
+
+  describe('findByDecisionId', () => {
+    it('returns the approval scoped by decisionId AND userId', async () => {
+      // The query is the read counterpart to the ON CONFLICT fallback
+      // inside create(). The unique index from migration 046 means at
+      // most one approval per decision, and the user_id filter is the
+      // belt-and-suspenders guard against ever surfacing another user's
+      // row through this method.
+      const row = fakeApprovalRow({ id: 'ar-found', decision_id: 'd-001' });
+      mockQuery.mockResolvedValue({ rows: [row], rowCount: 1 });
+
+      const result = await approvalRepository.findByDecisionId('d-001', 'u-001');
+
+      expect(result).toEqual(row);
+      const [sql, params] = mockQuery.mock.calls[0]!;
+      expect(sql).toContain('SELECT * FROM approval_requests');
+      expect(sql).toContain('WHERE decision_id = $1');
+      expect(sql).toContain('AND user_id = $2');
+      expect(params).toEqual(['d-001', 'u-001']);
+    });
+
+    it('returns null when no approval exists for the decision', async () => {
+      mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
+      const result = await approvalRepository.findByDecisionId('d-missing', 'u-001');
+      expect(result).toBeNull();
+    });
+  });
+
+  // -----------------------------------------------------------------------
   // recordFirstConfirmation (dual-confirmation injection guard)
   // -----------------------------------------------------------------------
 

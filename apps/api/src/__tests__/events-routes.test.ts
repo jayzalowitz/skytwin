@@ -10,7 +10,10 @@ const {
   mockGetExecutionRouter,
   mockSseManager,
   mockApprovalCreate,
+  mockApprovalFindByDecisionId,
   mockSaveDecision,
+  mockSaveCandidates,
+  mockGetOutcome,
 } = vi.hoisted(() => ({
   mockInterpret: vi.fn(),
   mockEvaluate: vi.fn(),
@@ -26,7 +29,10 @@ const {
     emit: vi.fn(),
   },
   mockApprovalCreate: vi.fn(),
+  mockApprovalFindByDecisionId: vi.fn(),
   mockSaveDecision: vi.fn(),
+  mockSaveCandidates: vi.fn(),
+  mockGetOutcome: vi.fn(),
 }));
 
 vi.mock('@skytwin/decision-engine', () => ({
@@ -59,7 +65,10 @@ vi.mock('@skytwin/explanations', () => ({
 }));
 
 vi.mock('@skytwin/db', () => ({
-  approvalRepository: { create: mockApprovalCreate },
+  approvalRepository: {
+    create: mockApprovalCreate,
+    findByDecisionId: mockApprovalFindByDecisionId,
+  },
   oauthRepository: { getToken: vi.fn().mockResolvedValue(null) },
   executionRepository: mockExecutionRepository,
   userRepository: { findById: vi.fn().mockResolvedValue({ id: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', trust_tier: 'observer', ironclaw_channel: 'skytwin' }) },
@@ -73,7 +82,11 @@ vi.mock('@skytwin/db', () => ({
   },
   TwinRepositoryAdapter: vi.fn(),
   PatternRepositoryAdapter: vi.fn(),
-  decisionRepositoryAdapter: { saveDecision: mockSaveDecision, saveCandidates: vi.fn() },
+  decisionRepositoryAdapter: {
+    saveDecision: mockSaveDecision,
+    saveCandidates: mockSaveCandidates,
+    getOutcome: mockGetOutcome,
+  },
   explanationRepositoryAdapter: {},
   policyRepositoryAdapter: {},
 }));
@@ -183,6 +196,9 @@ describe('Events API routes', () => {
       decision: d,
       created: true,
     }));
+    mockSaveCandidates.mockResolvedValue([]);
+    mockGetOutcome.mockResolvedValue(null);
+    mockApprovalFindByDecisionId.mockResolvedValue(null);
   });
 
   // ---------------------------------------------------------------------
@@ -306,15 +322,109 @@ describe('Events API routes', () => {
     expect(mockExecutionRepository.createPlan).not.toHaveBeenCalled();
   });
 
-  it('does NOT re-emit decision:blocked-by-policy on a re-ingested signal', async () => {
-    // Regression: when the same signal_id is re-ingested (worker dedupe
-    // miss, at-least-once delivery retry, two-worker race), the decision
-    // row is the same one (decisionRepository.create is idempotent on
-    // (user_id, signal_id)). The events route used to re-fire
-    // `decision:blocked-by-policy` on every ingestion, re-flashing the
-    // "blocked" indicator for an event the user had already seen.
-    // saveDecision now returns `created: false` on re-ingest, and the
-    // route gates the SSE emit on it.
+  // ---------------------------------------------------------------------
+  // Re-ingestion pipeline short-circuit
+  // ---------------------------------------------------------------------
+  //
+  // When decisionRepository.create reports `created: false` AND a previous
+  // decision_outcome row is recoverable, the route short-circuits the rest
+  // of the pipeline. Without this, a re-ingested signal would stack new
+  // candidate_actions rows, overwrite the prior decision_outcomes row via
+  // its ON CONFLICT (decision_id) DO UPDATE, and on the auto-execute path
+  // would run the action a SECOND time (real send-the-email-twice bug for
+  // users at trust tiers that auto-execute).
+  describe('re-ingestion pipeline short-circuit', () => {
+    it('skips evaluate / saveCandidates / approvalCreate when a previous outcome is recoverable', async () => {
+      mockSaveDecision.mockImplementation(async (d: unknown) => ({
+        decision: d,
+        created: false,
+      }));
+      mockGetOutcome.mockResolvedValue({
+        decisionId: 'decision-1',
+        selectedAction: {
+          actionType: 'label_email',
+          description: 'Apply label',
+        },
+        autoExecute: false,
+        requiresApproval: true,
+        reasoning: 'Previous run — requires approval',
+      });
+      mockApprovalFindByDecisionId.mockResolvedValue({
+        id: 'ar-existing',
+        status: 'pending',
+      });
+
+      const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+        userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+        source: 'gmail',
+        type: 'email',
+      });
+
+      expect(res.status).toBe(200);
+      const body = res.body as {
+        reIngested: boolean;
+        approval: { id: string; status: string } | null;
+        outcome: { requiresApproval: boolean };
+      };
+      expect(body.reIngested).toBe(true);
+      expect(body.approval).toEqual({ id: 'ar-existing', status: 'pending' });
+      expect(body.outcome.requiresApproval).toBe(true);
+
+      // The downstream pipeline must not have run.
+      expect(mockEvaluate).not.toHaveBeenCalled();
+      expect(mockSaveCandidates).not.toHaveBeenCalled();
+      expect(mockApprovalCreate).not.toHaveBeenCalled();
+      expect(mockExecutionRepository.createPlan).not.toHaveBeenCalled();
+      // No SSE emits — neither approval:new nor decision:blocked-by-policy
+      // — because the user already saw whatever the first ingest emitted.
+      expect(mockSseManager.emit).not.toHaveBeenCalledWith(
+        'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+        'approval:new',
+        expect.anything(),
+      );
+      expect(mockSseManager.emit).not.toHaveBeenCalledWith(
+        'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+        'decision:blocked-by-policy',
+        expect.anything(),
+      );
+    });
+
+    it('falls through to the normal pipeline when no previous outcome is recoverable (first attempt crashed before saving)', async () => {
+      // `created: false` means the decision row exists, but if the prior
+      // attempt died between saveDecision and saveOutcome the recovery
+      // can't reconstruct the result — running the pipeline to completion
+      // is the correct fallback so the work eventually finishes.
+      mockSaveDecision.mockImplementation(async (d: unknown) => ({
+        decision: d,
+        created: false,
+      }));
+      mockGetOutcome.mockResolvedValue(null);
+
+      const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+        userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+        source: 'gmail',
+        type: 'email',
+      });
+
+      expect(res.status).toBe(200);
+      const body = res.body as { reIngested?: boolean };
+      // The pipeline ran — no `reIngested` marker.
+      expect(body.reIngested).toBeUndefined();
+      // mockEvaluate is what runs in the normal pipeline; it must have
+      // fired since we fell through.
+      expect(mockEvaluate).toHaveBeenCalled();
+    });
+  });
+
+  it('re-emits decision:blocked-by-policy when re-ingestion falls through (previous outcome missing)', async () => {
+    // After PR B's short-circuit, a re-ingestion only silences
+    // `decision:blocked-by-policy` when the prior outcome row is
+    // recoverable (the suppression test in the
+    // "re-ingestion pipeline short-circuit" block covers that). When
+    // the prior attempt crashed before saving its outcome,
+    // getOutcome returns null and the route falls through to the
+    // normal pipeline — at which point the SSE MUST fire because the
+    // user never saw it on the failed first attempt.
     mockEvaluate.mockResolvedValue({
       autoExecute: false,
       requiresApproval: false,
@@ -326,6 +436,7 @@ describe('Events API routes', () => {
       decision: d,
       created: false,
     }));
+    mockGetOutcome.mockResolvedValue(null);
 
     const res = await request(buildApp(), 'POST', '/api/events/ingest', {
       userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
@@ -334,10 +445,10 @@ describe('Events API routes', () => {
     });
 
     expect(res.status).toBe(200);
-    expect(mockSseManager.emit).not.toHaveBeenCalledWith(
+    expect(mockSseManager.emit).toHaveBeenCalledWith(
       'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
       'decision:blocked-by-policy',
-      expect.anything(),
+      expect.objectContaining({ decisionId: 'decision-1' }),
     );
   });
 

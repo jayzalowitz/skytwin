@@ -1,5 +1,12 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.29.0] - 2026-05-15
+
+### Fixed
+
+- **A re-ingested signal no longer runs its action a second time.** Sibling/successor to v0.6.28.0's `decision:blocked-by-policy` gate, but a real correctness fix this time. The decision row was idempotent on `(user_id, signal_id)` (migration 023), the approval row was idempotent on `decision_id` (migration 046), but the events route still ran the full pipeline on every ingestion — policy evaluation, candidate persistence, outcome upsert, and on the auto-execute path the **action itself**. A worker dedupe miss or at-least-once delivery retry of an auto-executed signal would run the action twice (send the same email a second time, etc.). The route now short-circuits after `decisionRepository.create` returns `created: false`: fetches the previous outcome via `decisionRepositoryAdapter.getOutcome`, fetches the existing approval via the new `approvalRepository.findByDecisionId`, and returns the same response shape the first ingest produced (plus a `reIngested: true` marker). The downstream side-effects — `saveCandidates` row stacking, the `decision_outcomes` ON CONFLICT DO UPDATE overwriting the original outcome, `approvalRepository.create`, and execution — all skip. If the previous outcome row is missing (the first attempt crashed between `saveDecision` and `saveOutcome`), the route falls through to the normal pipeline so the work eventually completes — `created: false` alone means "another attempt wrote the decision row," not "the previous attempt finished."
+- The per-emit `decisionCreated` gate that v0.6.28.0 introduced for `decision:blocked-by-policy` is now redundant and removed. The short-circuit handles the recoverable case (no emit) and the fall-through case correctly fires the SSE (the user never saw it on the failed first attempt). Two regression tests in `events-routes.test.ts` pin both paths.
+
 ## [0.6.28.0] - 2026-05-15
 
 ### Fixed
