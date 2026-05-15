@@ -34,8 +34,15 @@ export interface DecisionRepositoryPort {
   /**
    * Persist a decision, or return the existing one on a re-ingestion of
    * the same `(user_id, signal_id)`. Returns `{ decision, created }` —
-   * callers gate downstream side-effects (SSE emits, action execution)
-   * on `created` so a re-ingestion is invisible end-to-end.
+   * `created` is true only when this call inserted the row. Callers gate
+   * downstream side-effects on `created` so a re-ingestion doesn't fire
+   * them again. Today the `events.ts` route uses this to gate the
+   * `decision:blocked-by-policy` SSE; a follow-up PR will also use it
+   * to short-circuit the auto-execute path so the action doesn't run a
+   * second time. Note: upstream observation side-effects (signal
+   * recording into the memory backend, the `memory:page-indexed` SSE)
+   * intentionally still fire per ingestion — they record observations,
+   * not decisions.
    */
   saveDecision(decision: DecisionObject): Promise<{ decision: DecisionObject; created: boolean }>;
   getDecision(decisionId: string): Promise<DecisionObject | null>;

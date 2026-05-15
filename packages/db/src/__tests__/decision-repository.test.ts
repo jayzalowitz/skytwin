@@ -241,6 +241,77 @@ describe('decisionRepository', () => {
       expect(mockQuery).toHaveBeenCalledTimes(1);
     });
 
+    it('recovers from a concurrent-insert race (23505) by returning the row the winner wrote', async () => {
+      // The SELECT pre-check and the INSERT aren't in one transaction, so
+      // two concurrent ingestions of the same `(user_id, signal_id)` can
+      // both pass the pre-check ("no existing row") and both attempt
+      // INSERT. The partial unique index from migration 023 fires 23505
+      // on the loser. Without recovery the loser surfaces a 500 to its
+      // caller; with recovery the loser re-fetches the winner's row and
+      // returns `created: false` so the caller treats it as a
+      // re-ingestion — same outcome as the SELECT-pre-check path.
+      const winner = fakeDecisionRow({ id: 'winner-id', signal_id: 'sig_race' });
+      mockQuery
+        // 1. Pre-check SELECT — empty (loser misses on the race window)
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+        // 2. INSERT — fails with 23505 (partial unique index won)
+        .mockRejectedValueOnce(Object.assign(new Error('duplicate key'), { code: '23505' }))
+        // 3. Recovery SELECT — winner's row is now visible
+        .mockResolvedValueOnce({ rows: [winner], rowCount: 1 });
+
+      const result = await decisionRepository.create({
+        userId: 'u-001',
+        situationType: 'email_received',
+        rawEvent: { signalId: 'sig_race' },
+        interpretedSituation: {},
+        domain: 'email',
+      });
+
+      expect(result).toEqual({ row: winner, created: false });
+      expect(mockQuery).toHaveBeenCalledTimes(3);
+    });
+
+    it('does not swallow 23505 when signalId is absent (no unique constraint to lose to)', async () => {
+      // Without a signalId the partial unique index from migration 023
+      // doesn't apply, so a 23505 from the INSERT path is a real
+      // failure (some other constraint was violated) and must surface
+      // rather than be silently absorbed by the race-recovery path.
+      mockQuery.mockRejectedValueOnce(
+        Object.assign(new Error('duplicate key'), { code: '23505' }),
+      );
+
+      await expect(
+        decisionRepository.create({
+          userId: 'u-001',
+          situationType: 'email_received',
+          rawEvent: {},
+          interpretedSituation: {},
+          domain: 'email',
+        }),
+      ).rejects.toThrow(/duplicate key/);
+    });
+
+    it('does not swallow non-23505 errors on the INSERT path', async () => {
+      // A driver/CRDB error other than 23505 (network, syntax, deadlock,
+      // etc.) must surface — the recovery path is only safe for the
+      // specific "another request beat us" case.
+      mockQuery
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // pre-check
+        .mockRejectedValueOnce(
+          Object.assign(new Error('connection reset'), { code: '08006' }),
+        );
+
+      await expect(
+        decisionRepository.create({
+          userId: 'u-001',
+          situationType: 'email_received',
+          rawEvent: { signalId: 'sig_x' },
+          interpretedSituation: {},
+          domain: 'email',
+        }),
+      ).rejects.toThrow(/connection reset/);
+    });
+
     it('defaults urgency to "normal" when not specified', async () => {
       mockQuery.mockResolvedValue({ rows: [fakeDecisionRow()], rowCount: 1 });
 

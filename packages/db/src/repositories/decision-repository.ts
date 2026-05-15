@@ -87,15 +87,33 @@ export const decisionRepository = {
       }
     }
 
-    // If an explicit ID is provided, use it (allows in-memory decisions to
-    // keep their UUID through to persistence for FK consistency).
-    if (input.id) {
+    try {
+      if (input.id) {
+        // Explicit ID path: lets in-memory decisions keep their UUID through
+        // to persistence so candidate_actions FK references resolve.
+        const result = await query<DecisionRow>(
+          `INSERT INTO decisions (id, user_id, situation_type, raw_event, interpreted_situation, domain, urgency, metadata, signal_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+           RETURNING *`,
+          [
+            input.id,
+            input.userId,
+            input.situationType,
+            JSON.stringify(input.rawEvent),
+            JSON.stringify(input.interpretedSituation),
+            input.domain,
+            input.urgency ?? 'normal',
+            JSON.stringify(input.metadata ?? {}),
+            signalId,
+          ],
+        );
+        return { row: result.rows[0]!, created: true };
+      }
       const result = await query<DecisionRow>(
-        `INSERT INTO decisions (id, user_id, situation_type, raw_event, interpreted_situation, domain, urgency, metadata, signal_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        `INSERT INTO decisions (user_id, situation_type, raw_event, interpreted_situation, domain, urgency, metadata, signal_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          RETURNING *`,
         [
-          input.id,
           input.userId,
           input.situationType,
           JSON.stringify(input.rawEvent),
@@ -107,23 +125,30 @@ export const decisionRepository = {
         ],
       );
       return { row: result.rows[0]!, created: true };
+    } catch (err) {
+      // Race-loser path: the SELECT pre-check above and the INSERT below
+      // are not in a single transaction, so two concurrent ingestions of
+      // the same (user_id, signal_id) can both pass the pre-check and
+      // both attempt INSERT. The partial unique index from migration 023
+      // is the backstop — the loser surfaces SQLSTATE 23505. Catch it,
+      // re-fetch the row the winner just wrote, and return `created:
+      // false` so the caller treats the loser as a re-ingestion (no SSE
+      // emit, no duplicate side-effects). Only safe to swallow when
+      // signalId is set — that's the only case where a 23505 here can
+      // mean "the other request beat us." Without a signalId there is no
+      // unique constraint that could legitimately reject the insert.
+      const code = (err as { code?: unknown } | null)?.code;
+      if (signalId && code === '23505') {
+        const recovered = await query<DecisionRow>(
+          'SELECT * FROM decisions WHERE user_id = $1 AND signal_id = $2 LIMIT 1',
+          [input.userId, signalId],
+        );
+        if (recovered.rows[0]) {
+          return { row: recovered.rows[0], created: false };
+        }
+      }
+      throw err;
     }
-    const result = await query<DecisionRow>(
-      `INSERT INTO decisions (user_id, situation_type, raw_event, interpreted_situation, domain, urgency, metadata, signal_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-       RETURNING *`,
-      [
-        input.userId,
-        input.situationType,
-        JSON.stringify(input.rawEvent),
-        JSON.stringify(input.interpretedSituation),
-        input.domain,
-        input.urgency ?? 'normal',
-        JSON.stringify(input.metadata ?? {}),
-        signalId,
-      ],
-    );
-    return { row: result.rows[0]!, created: true };
   },
 
   /**
