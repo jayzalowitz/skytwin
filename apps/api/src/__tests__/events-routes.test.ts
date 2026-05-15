@@ -9,6 +9,7 @@ const {
   mockExecutionRepository,
   mockGetExecutionRouter,
   mockSseManager,
+  mockApprovalCreate,
 } = vi.hoisted(() => ({
   mockInterpret: vi.fn(),
   mockEvaluate: vi.fn(),
@@ -23,6 +24,7 @@ const {
   mockSseManager: {
     emit: vi.fn(),
   },
+  mockApprovalCreate: vi.fn(),
 }));
 
 vi.mock('@skytwin/decision-engine', () => ({
@@ -55,7 +57,7 @@ vi.mock('@skytwin/explanations', () => ({
 }));
 
 vi.mock('@skytwin/db', () => ({
-  approvalRepository: { create: vi.fn() },
+  approvalRepository: { create: mockApprovalCreate },
   oauthRepository: { getToken: vi.fn().mockResolvedValue(null) },
   executionRepository: mockExecutionRepository,
   userRepository: { findById: vi.fn().mockResolvedValue({ id: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', trust_tier: 'observer', ironclaw_channel: 'skytwin' }) },
@@ -173,6 +175,94 @@ describe('Events API routes', () => {
     mockExecutionRepository.createEvent.mockResolvedValue({});
     mockExecutionRepository.updatePlanStatus.mockResolvedValue({});
     mockExecutionRepository.createResult.mockResolvedValue({});
+  });
+
+  // ---------------------------------------------------------------------
+  // approval:new SSE gating (re-ingestion suppression)
+  // ---------------------------------------------------------------------
+  //
+  // The unique index on approval_requests(decision_id) (migration 046)
+  // plus ON CONFLICT DO NOTHING in approvalRepository.create make a
+  // re-ingested signal a DB-level no-op — no duplicate row. But the
+  // route used to emit `approval:new` on every create() return, including
+  // the ON-CONFLICT path, so a duplicate ingestion re-flashed the
+  // dashboard badge and re-played the toast for an approval the user had
+  // already seen (or already resolved). The repository now signals
+  // newly-inserted vs returned-from-conflict via `{ row, created }`, and
+  // the route only emits when `created` is true.
+  describe('approval:new SSE emission gating', () => {
+    const approvalRow = {
+      id: 'ar-1',
+      user_id: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      decision_id: 'decision-1',
+      status: 'pending',
+    };
+
+    function setupApprovalFlow() {
+      mockEvaluate.mockResolvedValue({
+        autoExecute: false,
+        requiresApproval: true,
+        reasoning: 'Requires approval (high cost)',
+        selectedAction: {
+          id: 'action-1',
+          decisionId: 'decision-1',
+          actionType: 'send_email',
+          description: 'Send a draft email',
+          domain: 'email',
+          parameters: {},
+          reversible: false,
+          estimatedCostCents: 0,
+          confidence: 'medium',
+          reasoning: 'User pattern matches',
+        },
+        allCandidates: [],
+      });
+    }
+
+    it('emits approval:new when create reports created=true (first-time approval)', async () => {
+      setupApprovalFlow();
+      mockApprovalCreate.mockResolvedValue({ row: approvalRow, created: true });
+
+      const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+        userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+        source: 'test',
+        type: 'email_received',
+      });
+
+      expect(res.status).toBe(200);
+      expect(mockSseManager.emit).toHaveBeenCalledWith(
+        'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+        'approval:new',
+        expect.objectContaining({ id: 'ar-1', decisionId: 'decision-1' }),
+      );
+    });
+
+    it('does NOT emit approval:new when create reports created=false (re-ingestion)', async () => {
+      // Regression: the route used to emit on every create() return,
+      // including ON CONFLICT DO NOTHING. A re-ingested signal would
+      // re-flash the badge for an approval the user has already seen.
+      setupApprovalFlow();
+      mockApprovalCreate.mockResolvedValue({ row: approvalRow, created: false });
+
+      const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+        userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+        source: 'test',
+        type: 'email_received',
+      });
+
+      expect(res.status).toBe(200);
+      // The route response still surfaces the (existing) approval so the
+      // API caller's bookkeeping is consistent — only the SSE emit is
+      // suppressed.
+      const body = res.body as { approval: { id: string; status: string } | null };
+      expect(body.approval).toEqual({ id: 'ar-1', status: 'pending' });
+      // No approval:new emission.
+      expect(mockSseManager.emit).not.toHaveBeenCalledWith(
+        'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+        'approval:new',
+        expect.anything(),
+      );
+    });
   });
 
   it('emits decision:blocked-by-policy when no action was selected (Safety Invariant #1)', async () => {

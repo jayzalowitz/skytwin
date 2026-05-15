@@ -373,35 +373,43 @@ function buildActionRouter(): ActionRouter {
         ...visibleParameters
       } = (outcome.selectedAction.parameters ?? {}) as Record<string, unknown>;
 
-      const approvalRequest = await approvalRepository.create({
-        userId,
-        decisionId: decision.id,
-        candidateAction: {
-          actionType: outcome.selectedAction.actionType,
-          description: outcome.selectedAction.description,
-          domain: outcome.selectedAction.domain,
-          parameters: visibleParameters,
-          estimatedCostCents: outcome.selectedAction.estimatedCostCents,
-          reversible: outcome.selectedAction.reversible,
-          confidence: outcome.selectedAction.confidence,
-          reasoning: outcome.selectedAction.reasoning,
-        },
-        reason: outcome.reasoning,
-        urgency: decision.urgency,
-        // The injection guard sets `dual` for extreme-severity actions —
-        // even a chat-originated request to do something catastrophic takes
-        // two token-gated confirmations.
-        confirmationLevel: outcome.confirmationLevel === 'dual' ? 'dual' : 'single',
-      });
+      const { row: approvalRequest, created: approvalNewlyCreated } =
+        await approvalRepository.create({
+          userId,
+          decisionId: decision.id,
+          candidateAction: {
+            actionType: outcome.selectedAction.actionType,
+            description: outcome.selectedAction.description,
+            domain: outcome.selectedAction.domain,
+            parameters: visibleParameters,
+            estimatedCostCents: outcome.selectedAction.estimatedCostCents,
+            reversible: outcome.selectedAction.reversible,
+            confidence: outcome.selectedAction.confidence,
+            reasoning: outcome.selectedAction.reasoning,
+          },
+          reason: outcome.reasoning,
+          urgency: decision.urgency,
+          // The injection guard sets `dual` for extreme-severity actions —
+          // even a chat-originated request to do something catastrophic takes
+          // two token-gated confirmations.
+          confirmationLevel: outcome.confirmationLevel === 'dual' ? 'dual' : 'single',
+        });
 
-      // Mirror the events.ts SSE emission so the existing approvals
-      // page badge updates immediately when a chat creates an approval.
-      sseManager.emit(userId, 'approval:new', {
-        id: approvalRequest.id,
-        decisionId: decision.id,
-        reason: outcome.reasoning,
-        urgency: decision.urgency,
-      });
+      // Mirror the events.ts SSE emission so the existing approvals page
+      // badge updates immediately when a chat creates an approval — but
+      // ONLY when this call actually wrote the row. A chat that re-routes
+      // an identical intent (or that lands on the same decision_id from a
+      // signal already in flight on the events path) would otherwise
+      // double-fire `approval:new` for an approval the user is already
+      // looking at.
+      if (approvalNewlyCreated) {
+        sseManager.emit(userId, 'approval:new', {
+          id: approvalRequest.id,
+          decisionId: decision.id,
+          reason: outcome.reasoning,
+          urgency: decision.urgency,
+        });
+      }
 
       return {
         kind: 'requires-approval',

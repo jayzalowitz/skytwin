@@ -343,6 +343,12 @@ export function createEventsRouter(): Router {
       // 9. Handle outcome
       let executionResult = null;
       let approvalRequest = null;
+      // `approvalNewlyCreated` distinguishes a first-time approval row from
+      // one returned by ON CONFLICT (decision_id) DO NOTHING on a re-ingested
+      // signal. Used downstream to gate the `approval:new` SSE emit so a
+      // duplicate ingestion is silent end-to-end (DB no-op + UI no-op),
+      // not just at the DB level.
+      let approvalNewlyCreated = false;
 
       if (outcome.requiresApproval && outcome.selectedAction) {
         // Create an approval request so the user can review it. We include
@@ -361,7 +367,7 @@ export function createEventsRouter(): Router {
           ...visibleParameters
         } = (outcome.selectedAction.parameters ?? {}) as Record<string, unknown>;
 
-        approvalRequest = await approvalRepository.create({
+        const approvalResult = await approvalRepository.create({
           userId,
           decisionId: decision.id,
           candidateAction: {
@@ -380,6 +386,8 @@ export function createEventsRouter(): Router {
           // the approval then needs two token-gated confirmations.
           confirmationLevel: outcome.confirmationLevel === 'dual' ? 'dual' : 'single',
         });
+        approvalRequest = approvalResult.row;
+        approvalNewlyCreated = approvalResult.created;
       } else if (outcome.autoExecute && outcome.selectedAction) {
         // Inject OAuth token if available for real execution
         const tokenRow = await oauthRepository.getToken(userId, 'google');
@@ -507,8 +515,16 @@ export function createEventsRouter(): Router {
         });
       }
 
-      // Notify if a new approval was created
-      if (approvalRequest) {
+      // Emit `approval:new` ONLY when this call actually inserted a row.
+      // A re-ingested signal hits ON CONFLICT (decision_id) DO NOTHING in
+      // approvalRepository.create — the approval already exists, no row
+      // was written, and a duplicate `approval:new` would re-flash the
+      // dashboard badge / re-play the toast / re-bump the unread count
+      // for an approval the user has already seen (or already resolved).
+      // `approvalNewlyCreated` is false in that case, so the emit is
+      // skipped. The DB-level idempotency from migration 046 + ON CONFLICT
+      // is what makes this safe to gate on.
+      if (approvalRequest && approvalNewlyCreated) {
         sseManager.emit(userId, 'approval:new', {
           id: approvalRequest.id,
           decisionId: decision.id,

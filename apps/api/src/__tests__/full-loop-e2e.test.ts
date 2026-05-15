@@ -57,8 +57,9 @@ vi.mock('@skytwin/db', () => {
     approvalRepository: {
       create: vi.fn().mockImplementation(async (input: Record<string, unknown>) => {
         const row = { id: 'app-1', ...input, status: 'pending' };
+        const created = !approvalStore.has(row.id);
         approvalStore.set(row.id, row);
-        return row;
+        return { row, created };
       }),
       findById: vi.fn().mockImplementation(async (id: string) => approvalStore.get(id) ?? null),
       respond: vi.fn().mockImplementation(async (id: string, action: string) => {

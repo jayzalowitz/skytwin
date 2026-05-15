@@ -38,7 +38,11 @@ vi.mock('@skytwin/db', () => ({
   getPool: () => ({}),
   closePool: vi.fn(),
   healthCheck: vi.fn().mockResolvedValue({ healthy: true, latencyMs: 1 }),
-  approvalRepository: { create: vi.fn().mockResolvedValue({}) },
+  approvalRepository: {
+    create: vi
+      .fn()
+      .mockResolvedValue({ row: { id: 'ar-1', status: 'pending' }, created: true }),
+  },
   oauthRepository: { getToken: vi.fn().mockResolvedValue(null) },
   executionRepository: new Proxy(
     {},

@@ -1,5 +1,12 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.27.0] - 2026-05-15
+
+### Fixed
+
+- **The dashboard no longer re-flashes the approvals badge when the same signal is re-ingested.** Migration 046 (the unique index on `approval_requests(decision_id)`) and `INSERT ... ON CONFLICT DO NOTHING` in `approvalRepository.create` made re-ingestion a DB-level no-op — no duplicate row. But the `events.ts` and `assistant.ts` routes both fired the `approval:new` SSE event on every successful `create()` return, including the ON-CONFLICT path. Every re-ingestion of an already-seen signal re-played the "new approval" toast, re-bumped the unread counter, and re-flashed the approvals badge for an approval the user had already opened (or already resolved). `approvalRepository.create` now returns `{ row, created }` where `created` is true only on a genuinely new insert. Both call sites gate the SSE emit on `created`, so a re-ingestion is end-to-end silent (DB no-op + UI no-op). The route still surfaces the existing approval in its JSON response so API callers see consistent bookkeeping — only the broadcast SSE side-effect is suppressed.
+- Regression tests in `events-routes.test.ts` pin both directions: a `created: true` return must emit `approval:new`, a `created: false` return must not.
+
 ## [0.6.26.0] - 2026-05-15
 
 ### Fixed
