@@ -70,6 +70,18 @@ describe('draft-email-setup', () => {
       expect(buildDraftEmailGenerator('u-1', null)).toBeNull();
     });
 
+    it('returns null when the LlmClient has no configured providers', () => {
+      // Match the route's primary-strategy gate (which checks
+      // `llmClient && llmClient.hasProviders`). Without this, a user with
+      // an LlmClient instance but no providers would build a generator
+      // whose `generate()` call has nothing to route to — the candidate
+      // path silently drops to `return []` on every signal. Better to
+      // not construct the generator at all in that case.
+      process.env['SKYTWIN_DRAFTS_ENABLED'] = 'true';
+      const empty = { hasProviders: false } as unknown as LlmClient;
+      expect(buildDraftEmailGenerator('u-1', empty)).toBeNull();
+    });
+
     it('returns a generator when the env flag is on AND an LLM client is present', () => {
       process.env['SKYTWIN_DRAFTS_ENABLED'] = 'true';
       const gen = buildDraftEmailGenerator('u-1', fakeLlm());

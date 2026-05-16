@@ -55,6 +55,15 @@ const USER_AUTHORED_TIERS = new Set(['user_sent_originated', 'user_sent_reply'])
  */
 const OVER_FETCH_FACTOR = 3;
 
+/**
+ * Minimum number of hits to fetch even when `k` is tiny. If the caller
+ * asks for k=1, fetching 3 hits and filtering to 1 user-authored result
+ * is much more likely to find a match than fetching 1 hit and losing it
+ * to a single inbox-tier collision. This is the floor `Math.max` should
+ * have been guarding (Copilot caught the redundant-max).
+ */
+const MIN_FETCH_FLOOR = 6;
+
 function buildAuthoredExamplesPort(userId: string): AuthoredExamplesPort {
   return {
     async searchAuthoredExamples(
@@ -62,7 +71,7 @@ function buildAuthoredExamplesPort(userId: string): AuthoredExamplesPort {
       k: number,
     ): Promise<Array<{ content: string; subject?: string }>> {
       const resolved = await getMemoryPortForUser(userId);
-      const overFetch = Math.max(k * OVER_FETCH_FACTOR, k);
+      const overFetch = Math.max(k * OVER_FETCH_FACTOR, MIN_FETCH_FLOOR);
       const hits = await resolved.port.searchSemantic(query, overFetch);
       const authored = hits
         .filter((hit) => {
@@ -99,7 +108,12 @@ export function buildDraftEmailGenerator(
   llmClient: LlmClient | null,
 ): CandidateGenerator | null {
   if (!draftsEnabled()) return null;
-  if (!llmClient) return null;
+  // Require both the LlmClient AND at least one configured provider —
+  // otherwise the generator's `llmClient.generate()` call has nothing to
+  // route to and the candidate path silently drops to `return []` on
+  // every signal. The route's primary-strategy gate uses the same
+  // `hasProviders` check, so the two stay in sync.
+  if (!llmClient || !llmClient.hasProviders) return null;
   const examples = buildAuthoredExamplesPort(userId);
   return new DraftEmailCandidateGenerator(llmClient, examples);
 }
