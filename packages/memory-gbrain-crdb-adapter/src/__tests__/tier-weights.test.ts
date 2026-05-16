@@ -298,20 +298,26 @@ describe('relationshipTier — Phase 2 axis composes additively with authoring',
   });
 });
 
-describe('relationshipTierFromThreadCount thresholds', () => {
+// Thresholds re-tuned in #281 alongside the count-semantics fix
+// (same-day intersection instead of any-sent-in-window). Same-day
+// intersection is much stricter — the old 10/3/1 bands assumed the
+// loose definition. The new bands (5/2/1) match intersection's
+// expected distribution. See `relationshipTierFromThreadCount` for
+// the docstring rationale.
+describe('relationshipTierFromThreadCount thresholds (same-day intersection)', () => {
   it('0 → stranger', () => {
     expect(relationshipTierFromThreadCount(0)).toBe('stranger');
   });
-  it('1..2 → occasional', () => {
+  it('1 → occasional (one same-day exchange in 90d)', () => {
     expect(relationshipTierFromThreadCount(1)).toBe('occasional');
-    expect(relationshipTierFromThreadCount(2)).toBe('occasional');
   });
-  it('3..9 → frequent', () => {
+  it('2..4 → frequent', () => {
+    expect(relationshipTierFromThreadCount(2)).toBe('frequent');
     expect(relationshipTierFromThreadCount(3)).toBe('frequent');
-    expect(relationshipTierFromThreadCount(9)).toBe('frequent');
+    expect(relationshipTierFromThreadCount(4)).toBe('frequent');
   });
-  it('>=10 → core', () => {
-    expect(relationshipTierFromThreadCount(10)).toBe('core');
+  it('>=5 → core (≥5 same-day exchanges in 90d)', () => {
+    expect(relationshipTierFromThreadCount(5)).toBe('core');
     expect(relationshipTierFromThreadCount(500)).toBe('core');
   });
 });

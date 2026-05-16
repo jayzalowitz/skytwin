@@ -1,5 +1,13 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.31.0] - 2026-05-16
+
+### Fixed
+
+- **`relationshipTier` no longer over-promotes contacts whose received and sent activity never overlapped on the same day (closes #281).** `computeBidirectionalThreadCounts` shipped in #251 Phase 2 with a looser definition than its docstring implied — the SQL `INNER JOIN sent s ON s.contact = r.contact` was a per-contact Cartesian product, so `COUNT(DISTINCT r.day)` returned every received-day as long as any sent activity existed for that contact anywhere in the 90d window. A user who got 10 newsletter-style emails and replied to one of them at month-start would have that contact promoted to `core`. The in-memory mirror had the same shape (`for (received) if (sent.has) recvDays.size`). Both backends now compute the strict same-day intersection: `JOIN ... ON (contact, day)` in SQL, set-intersection in-memory.
+- **Relationship-tier thresholds re-tuned to match the intersection's expected distribution.** Old bands assumed the loose definition (`core >= 10`, `frequent >= 3`, `occasional >= 1`). Under intersection those would push almost every user to `occasional` / `stranger`. New bands: `core >= 5`, `frequent >= 2`, `occasional >= 1`. Most personal users have ≤5 same-day exchanges in 90d even with their closest contacts, so the new bands trade some compression at the top end for more useful separation at the bottom. Calibration against a representative corpus is a follow-up; these are the conservative initial bands and should be revisited once aggregate distribution data from real users is available.
+- Existing in-memory test suite rewritten for intersection semantics; two new tests explicitly pin the intersection-vs-window-presence distinction so a future refactor can't re-introduce the original bug. Worker `relationship-tier-backfill.test.ts` updated to use a count that lands in the new `frequent` band (3 instead of 5).
+
 ## [0.6.30.0] - 2026-05-16
 
 ### Added

@@ -496,7 +496,7 @@ describe('InMemoryBrainStore — findPagesMissingAuthoringTier (#251 backfill)',
   });
 });
 
-describe('InMemoryBrainStore — computeBidirectionalThreadCounts (#251 Phase 2)', () => {
+describe('InMemoryBrainStore — computeBidirectionalThreadCounts (#251 Phase 2, intersection per #281)', () => {
   let store: InMemoryBrainStore;
   beforeEach(() => {
     store = new InMemoryBrainStore();
@@ -529,8 +529,11 @@ describe('InMemoryBrainStore — computeBidirectionalThreadCounts (#251 Phase 2)
   }
 
   it('extracts bare address from RFC 5322 display-name format', () => {
+    // Send + receive on the SAME day so the intersection is 1. (Under
+    // the pre-#281 loose semantics any cross-day pair counted; now they
+    // must share a day.)
     seedReceived('r1', 'Alice Smith <alice@example.com>', '2026-05-01');
-    seedSent('s1', 'Alice Smith <alice@example.com>', '2026-05-02');
+    seedSent('s1', 'Alice Smith <alice@example.com>', '2026-05-01');
     const out = store.computeBidirectionalThreadCounts('u1', 90);
     expect(out.get('alice@example.com')).toBe(1);
     expect(out.has('alice smith <alice@example.com>')).toBe(false);
@@ -538,17 +541,18 @@ describe('InMemoryBrainStore — computeBidirectionalThreadCounts (#251 Phase 2)
 
   it('handles bare addresses without angle brackets', () => {
     seedReceived('r1', 'bob@example.com', '2026-05-01');
-    seedSent('s1', 'bob@example.com', '2026-05-02');
+    seedSent('s1', 'bob@example.com', '2026-05-01');
     const out = store.computeBidirectionalThreadCounts('u1', 90);
     expect(out.get('bob@example.com')).toBe(1);
   });
 
   it('splits comma-separated `to` lists into individual recipients', () => {
-    // Received once from each of two contacts.
+    // Received once from each of two contacts on the same day; sent a
+    // single email to both on that same day. Under intersection, each
+    // contact gets a count of 1.
     seedReceived('r1', 'alice@example.com', '2026-05-01');
     seedReceived('r2', 'carol@example.com', '2026-05-01');
-    // Single sent email to both — without splitting, neither would match.
-    seedSent('s1', 'alice@example.com, carol@example.com', '2026-05-02');
+    seedSent('s1', 'alice@example.com, carol@example.com', '2026-05-01');
     const out = store.computeBidirectionalThreadCounts('u1', 90);
     expect(out.get('alice@example.com')).toBe(1);
     expect(out.get('carol@example.com')).toBe(1);
@@ -556,12 +560,12 @@ describe('InMemoryBrainStore — computeBidirectionalThreadCounts (#251 Phase 2)
 
   it('considers `cc` recipients as bidirectional contacts', () => {
     seedReceived('r1', 'dan@example.com', '2026-05-01');
-    seedSent('s1', 'alice@example.com', '2026-05-02', 'dan@example.com');
+    seedSent('s1', 'alice@example.com', '2026-05-01', 'dan@example.com');
     const out = store.computeBidirectionalThreadCounts('u1', 90);
     expect(out.get('dan@example.com')).toBe(1);
   });
 
-  it('returns 0 for received-only contacts (no bidirectional)', () => {
+  it('returns no entry for received-only contacts (no bidirectional)', () => {
     seedReceived('r1', 'eve@example.com', '2026-05-01');
     seedSent('s1', 'alice@example.com', '2026-05-02');
     const out = store.computeBidirectionalThreadCounts('u1', 90);
@@ -569,33 +573,33 @@ describe('InMemoryBrainStore — computeBidirectionalThreadCounts (#251 Phase 2)
     expect(out.get('alice@example.com')).toBeUndefined();
   });
 
-  it('counts distinct days, not distinct messages', () => {
+  it('counts distinct days where both directions occurred (intersection)', () => {
+    // Frank: received 05-01 (twice — same day), received 05-03, sent
+    // 05-01 and 05-03. Under intersection: 2 days (05-01 and 05-03).
+    // The duplicate received on 05-01 doesn't inflate the count.
     seedReceived('r1', 'frank@example.com', '2026-05-01');
-    seedReceived('r2', 'frank@example.com', '2026-05-01'); // same day
+    seedReceived('r2', 'frank@example.com', '2026-05-01');
     seedReceived('r3', 'frank@example.com', '2026-05-03');
-    seedSent('s1', 'frank@example.com', '2026-05-02');
+    seedSent('s1', 'frank@example.com', '2026-05-01');
+    seedSent('s2', 'frank@example.com', '2026-05-03');
     const out = store.computeBidirectionalThreadCounts('u1', 90);
-    expect(out.get('frank@example.com')).toBe(2); // 05-01 + 05-03
+    expect(out.get('frank@example.com')).toBe(2);
   });
 
   it('treats missing labels as received (not silently dropped)', () => {
     // Copilot finding on Phase 4: when `labels` is missing/NULL the
-    // CRDB predicate `data->'labels' @> '"SENT"'::JSONB` yields NULL,
-    // which is falsy in WHERE — and `NOT NULL` is also falsy — so the
-    // signal was silently dropped from BOTH CTEs. The in-memory mirror
-    // already handled this correctly (Array.isArray check returns []),
-    // but the test pins the behaviour so a future refactor can't
-    // regress to the SQL-divergent state.
+    // CRDB predicate yields NULL → both CTEs drop the row. The in-memory
+    // mirror correctly treats missing as []. Test pins the behaviour so
+    // a future refactor can't regress to the SQL-divergent state.
     store.insertSignal({
       id: 's-no-labels',
       userId: 'u1',
       source: 'gmail',
       type: 'email',
-      // no `labels` key at all
       data: { from: 'irene@example.com' },
       signalTimestamp: new Date('2026-05-01'),
     });
-    seedSent('s1', 'irene@example.com', '2026-05-02');
+    seedSent('s1', 'irene@example.com', '2026-05-01');
     const out = store.computeBidirectionalThreadCounts('u1', 90);
     expect(out.get('irene@example.com')).toBe(1);
   });
@@ -604,12 +608,45 @@ describe('InMemoryBrainStore — computeBidirectionalThreadCounts (#251 Phase 2)
     const longAgo = new Date(Date.now() - 200 * 24 * 60 * 60 * 1000)
       .toISOString()
       .slice(0, 10);
+    const today = new Date().toISOString().slice(0, 10);
     seedReceived('r-old', 'gary@example.com', longAgo);
     seedSent('s-old', 'gary@example.com', longAgo);
-    seedReceived('r1', 'henry@example.com', new Date().toISOString().slice(0, 10));
-    seedSent('s1', 'henry@example.com', new Date().toISOString().slice(0, 10));
+    seedReceived('r1', 'henry@example.com', today);
+    seedSent('s1', 'henry@example.com', today);
     const out = store.computeBidirectionalThreadCounts('u1', 90);
     expect(out.has('gary@example.com')).toBe(false);
     expect(out.get('henry@example.com')).toBe(1);
+  });
+
+  // ── #281 intersection-vs-window-presence pins ─────────────────────────
+  //
+  // The pre-#281 semantics counted "any received-day where the contact
+  // also has any sent activity anywhere in the 90d window." A single
+  // sent email could promote 10 newsletters → core. The intersection
+  // semantics fix that. These tests pin the distinction explicitly so a
+  // future refactor toward window-presence can't re-introduce the bug.
+
+  it('does NOT count cross-day activity (the #281 regression)', () => {
+    // 10 received days from a contact, plus one sent message on a day
+    // with NO received activity. Old semantics: 10. New semantics: 0.
+    for (let i = 1; i <= 10; i++) {
+      const day = `2026-05-${String(i).padStart(2, '0')}`;
+      seedReceived(`r${i}`, 'jim@example.com', day);
+    }
+    seedSent('s1', 'jim@example.com', '2026-05-15'); // no overlap
+    const out = store.computeBidirectionalThreadCounts('u1', 90);
+    expect(out.has('jim@example.com')).toBe(false);
+  });
+
+  it('counts only the days that appear in BOTH directions', () => {
+    // Received on days 1, 2, 3. Sent on days 2, 3, 4. Intersection: 2, 3.
+    seedReceived('r1', 'kate@example.com', '2026-05-01');
+    seedReceived('r2', 'kate@example.com', '2026-05-02');
+    seedReceived('r3', 'kate@example.com', '2026-05-03');
+    seedSent('s1', 'kate@example.com', '2026-05-02');
+    seedSent('s2', 'kate@example.com', '2026-05-03');
+    seedSent('s3', 'kate@example.com', '2026-05-04');
+    const out = store.computeBidirectionalThreadCounts('u1', 90);
+    expect(out.get('kate@example.com')).toBe(2);
   });
 });

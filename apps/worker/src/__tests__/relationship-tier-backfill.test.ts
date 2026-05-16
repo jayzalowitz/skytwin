@@ -77,9 +77,9 @@ describe('runRelationshipTierBackfillJob', () => {
   it('derives the right tier band for each contact and writes to metadata', async () => {
     mockCounts.mockResolvedValueOnce(
       new Map([
-        ['boss@example.com', 25], // core
-        ['teammate@example.com', 5], // frequent
-        ['vendor@example.com', 1], // occasional
+        ['boss@example.com', 25], // core (>= 5)
+        ['teammate@example.com', 3], // frequent (2..4) — re-tuned in #281
+        ['vendor@example.com', 1], // occasional (1)
         // stranger@example.com isn't in the map → 0 → stranger
       ]),
     );

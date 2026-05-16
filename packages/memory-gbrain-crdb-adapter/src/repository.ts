@@ -562,13 +562,15 @@ export async function getAllSignals(userId: string, limit = 10000): Promise<Brai
  * address. Contacts the user only ever received from (or only sent to)
  * have count 0 → `relationshipTier = 'stranger'`.
  *
- * Implementation detail: we approximate "bidirectional thread" as
- * "any 90d window in which the user has BOTH a signal with the contact
- * as `data.from` AND a signal where the contact is in `data.to`/`data.cc`."
- * Per-thread granularity would be more accurate but requires parsing
- * `In-Reply-To`/`References` chains; for the v1 we use per-contact-day
- * as the thread proxy, which is a small over-count but cheap to compute
- * and matches the four-band granularity we actually need.
+ * Implementation detail: we approximate "bidirectional thread" as the
+ * SAME-DAY INTERSECTION — "the number of distinct days on which the
+ * user both SENT TO and RECEIVED FROM the same contact." Per-thread
+ * granularity (via `In-Reply-To`/`References` chain walking) would be
+ * more accurate; same-day-intersection is the cheap-and-correct proxy
+ * that matches the four-band granularity we actually need. The earlier
+ * implementation counted "any sent-anywhere in the window" — a single
+ * sent message + 10 received-days would count as 10 same-day exchanges.
+ * The intersection is the strictly correct shape.
  */
 export async function computeBidirectionalThreadCounts(
   userId: string,
@@ -634,11 +636,19 @@ export async function computeBidirectionalThreadCounts(
       FROM sent_recipients
       WHERE recip_raw != ''
     )
+    -- INNER JOIN on (contact, day) -- only the days where the contact
+    -- appears in BOTH the received and sent sets count. Without the
+    -- "s.day = r.day" predicate the join is the per-contact Cartesian
+    -- product, so COUNT(DISTINCT r.day) returns every received day as
+    -- long as any sent activity exists for that contact anywhere in
+    -- the window. That is the bug #281 fixed: the relationship tier was
+    -- promoting "got 10 newsletters back, replied once at month-start"
+    -- to core.
     SELECT
       r.contact AS contact,
       COUNT(DISTINCT r.day) AS bidirectional_days
     FROM received r
-    INNER JOIN sent s ON s.contact = r.contact
+    INNER JOIN sent s ON s.contact = r.contact AND s.day = r.day
     WHERE r.contact != ''
     GROUP BY r.contact
   `;
