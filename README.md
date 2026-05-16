@@ -130,7 +130,7 @@ Every path produces an explanation. Every outcome feeds back into the twin. The 
 
 **Your twin is inspectable.** It's not a vector embedding or a bag of keywords. It's a typed, versioned data structure where every preference has a confidence level, supporting evidence, and provenance. Contradictions are tracked, not hidden.
 
-**Memory knows who said what.** Every signal entering the twin is stamped with an authoring tier — content you wrote vs. a newsletter vs. an inbound stranger. Retrieval is tier-weighted, so self-authored content outranks broadcast noise. The twin feels like it knows *you* instead of just having read your inbox.
+**Memory knows who said what.** Signals from supported connectors arrive stamped with an authoring tier — content you wrote vs. a newsletter vs. an inbound stranger — and tier-weighted retrieval lets self-authored content outrank broadcast noise. The twin feels like it knows *you* instead of just having read your inbox.
 
 ## Quick Start
 
