@@ -75,36 +75,54 @@ async function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise
  * has either completed, errored, or timed out. Never rejects — all
  * errors are caught and logged. Returns a count of successful /
  * failed / timed-out users for telemetry.
+ *
+ * Concurrency model is a worker pool, not chunked `Promise.all`. With
+ * chunks of N, a slow user in the chunk blocks the next chunk from
+ * starting — so a single 5-minute user stalls the next 3 users behind
+ * it. The pool pulls from a shared queue, so a slow worker doesn't hold
+ * back the rest: as soon as one of the N workers finishes its user, it
+ * grabs the next from the queue. Average throughput improves and tail
+ * latency stops compounding.
+ *
+ * `timeoutMs` is parameterized so the test suite can exercise the
+ * actual `withTimeout` + `Promise.race` path against a tiny timeout
+ * without waiting the production 5 minutes.
  */
 export async function runRelationshipTierBackfillBatch(
   userIds: readonly string[],
+  opts: { timeoutMs?: number; concurrency?: number } = {},
 ): Promise<{ succeeded: number; failed: number; timedOut: number }> {
+  const timeoutMs = opts.timeoutMs ?? RELATIONSHIP_TIER_BACKFILL_USER_TIMEOUT_MS;
+  const concurrency = opts.concurrency ?? RELATIONSHIP_TIER_BACKFILL_CONCURRENCY;
   const summary = { succeeded: 0, failed: 0, timedOut: 0 };
   if (userIds.length === 0) return summary;
 
-  for (let i = 0; i < userIds.length; i += RELATIONSHIP_TIER_BACKFILL_CONCURRENCY) {
-    const slice = userIds.slice(i, i + RELATIONSHIP_TIER_BACKFILL_CONCURRENCY);
-    await Promise.all(
-      slice.map(async (userId) => {
-        try {
-          await withTimeout(
-            runRelationshipTierBackfillJob(userId),
-            RELATIONSHIP_TIER_BACKFILL_USER_TIMEOUT_MS,
-            `relationship-tier backfill user=${userId}`,
-          );
-          summary.succeeded++;
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          if (msg.includes('timed out')) {
-            summary.timedOut++;
-            log.warn('relationship-tier backfill timed out for user', { userId, msg });
-          } else {
-            summary.failed++;
-            log.warn('relationship-tier backfill failed for user', { userId, msg });
-          }
+  const queue: string[] = [...userIds];
+  async function worker(): Promise<void> {
+    for (;;) {
+      const userId = queue.shift();
+      if (userId === undefined) return;
+      try {
+        await withTimeout(
+          runRelationshipTierBackfillJob(userId),
+          timeoutMs,
+          `relationship-tier backfill user=${userId}`,
+        );
+        summary.succeeded++;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.includes('timed out')) {
+          summary.timedOut++;
+          log.warn('relationship-tier backfill timed out for user', { userId, msg });
+        } else {
+          summary.failed++;
+          log.warn('relationship-tier backfill failed for user', { userId, msg });
         }
-      }),
-    );
+      }
+    }
   }
+
+  const workerCount = Math.min(concurrency, userIds.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
   return summary;
 }

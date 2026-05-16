@@ -594,11 +594,19 @@ async function main(): Promise<void> {
     // runs with bounded concurrency + per-user timeout via
     // `runRelationshipTierBackfillBatch`; the poll loop does NOT await
     // it, so signal ingestion is never delayed by backfill work.
+    //
+    // On a scheduler-level failure (the helper itself rejects — distinct
+    // from per-user errors, which it catches internally) we revert
+    // `lastRelationshipTierBackfillAt` so the next poll cycle re-attempts
+    // immediately instead of waiting another 24h. A successful batch
+    // (even with per-user failures inside it) keeps the timestamp so
+    // the cadence stays at one batch / 24h.
     if (
       !relationshipTierBackfillInFlight &&
       nowMs - lastRelationshipTierBackfillAt >= RELATIONSHIP_TIER_BACKFILL_INTERVAL_MS
     ) {
       relationshipTierBackfillInFlight = true;
+      const previousLastAt = lastRelationshipTierBackfillAt;
       lastRelationshipTierBackfillAt = nowMs;
       const userIds = userConnectors.map((uc) => uc.userId);
       void runRelationshipTierBackfillBatch(userIds)
@@ -609,11 +617,13 @@ async function main(): Promise<void> {
           });
         })
         .catch((err) => {
-          // The batch helper catches per-user errors internally, so this
-          // path is for unexpected scheduler-level failures only.
+          // Scheduler-level failure (per-user errors are caught inside
+          // the batch helper). Revert the timestamp so the next cycle
+          // retries immediately rather than waiting another 24h.
           log.warn('Relationship-tier backfill batch failed', {
             error: err instanceof Error ? err.message : String(err),
           });
+          lastRelationshipTierBackfillAt = previousLastAt;
         })
         .finally(() => {
           relationshipTierBackfillInFlight = false;
