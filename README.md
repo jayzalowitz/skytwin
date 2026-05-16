@@ -37,7 +37,8 @@ SkyTwin is different. It builds a structured model of your preferences, risk tol
          ▼
   ┌──────────────┐
   │  Twin Model   │  Your preferences, patterns,
-  │  + MemPalace  │  and episodic memory
+  │  + Memory     │  and episodic memory (gbrain default,
+  │               │  MemPalace optional)
   └──────┬───────┘
          ▼
   ┌──────────────┐
@@ -128,6 +129,8 @@ Every path produces an explanation. Every outcome feeds back into the twin. The 
 **Every action is explainable.** No black boxes. Every automated decision produces an explanation record: what happened, what evidence was used, what preferences were invoked, why this action over alternatives, and how to correct it.
 
 **Your twin is inspectable.** It's not a vector embedding or a bag of keywords. It's a typed, versioned data structure where every preference has a confidence level, supporting evidence, and provenance. Contradictions are tracked, not hidden.
+
+**Memory knows who said what.** Every signal entering the twin is stamped with an authoring tier — content you wrote vs. a newsletter vs. an inbound stranger. Retrieval is tier-weighted, so self-authored content outranks broadcast noise. The twin feels like it knows *you* instead of just having read your inbox.
 
 ## Quick Start
 
@@ -242,7 +245,7 @@ packages/
 | Mobile | React Native + Expo |
 | Testing | Vitest (1,436 tests) |
 | CI/CD | GitHub Actions |
-| Execution | [IronClaw](https://github.com/nearai/ironclaw/) |
+| Execution | [IronClaw](https://github.com/nearai/ironclaw/), OpenClaw (via local bridge), and a Direct fallback — trust-ranked with automatic failover |
 
 ## Deployment
 
@@ -336,7 +339,7 @@ Trust is **domain-specific**. You might be at `moderate_autonomy` for email but 
 
 ## Project Status
 
-SkyTwin is in **active development** (v0.6.23.2). The core decision pipeline, twin model, policy engine, and memory palace are functional. Gmail and Google Calendar connectors work with real OAuth. Desktop builds ship for all three platforms. The mobile app pairs via QR code and can capture voice. v0.5.0.0 brought the one-command installer and a non-technical-user UX overhaul; v0.5.1.0 through v0.5.4.0 closed the post-/review follow-ups; the v0.6 series added the embedded local LLM (#187), tier-aware memory retrieval (#251), per-Lifebook surfaces (#193), and the voice loop (mobile capture + Piper TTS).
+SkyTwin is in **active development** (v0.6.23.2). The core decision pipeline, twin model, policy engine, and swappable memory layer are functional. Gmail and Google Calendar connectors work with real OAuth. Desktop builds ship for all three platforms. The mobile app pairs via QR code and can capture voice. v0.5.0.0 brought the one-command installer and a non-technical-user UX overhaul; v0.5.1.0 through v0.5.4.0 closed the post-/review follow-ups; the v0.6 series added the embedded local LLM (#187), tier-aware memory retrieval (#251), per-Lifebook surfaces (#193), and the voice loop (mobile capture + Piper TTS).
 
 **What works today:**
 - One-command install (`curl | bash`) on macOS, Linux, and WSL — installs every dependency, clones the repo, starts the services, opens the dashboard
