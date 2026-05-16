@@ -19,9 +19,8 @@ export interface ExplanationRecord {
   /**
    * Optional link to a capability_provenance_nodes row.
    * When set, the provenance lineage view can walk from action → explanation.
-   * Populated in issue #189 when the decision pipeline is wired to the
-   * capability execution path.
-   * TODO(#189): Populate this field in the action-execution path.
+   * Tracked in #305 — the parent epic #189 closed without wiring this
+   * specific population path.
    */
   capabilityProvenanceNodeId?: string;
   createdAt: Date;

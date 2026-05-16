@@ -13,13 +13,11 @@ const log = createLogger('worker:promotion-eligibility-check');
  * Cadence: hourly. The promotion ceremony is suppressed for servers whose
  * auto_promote_paused_until is in the future.
  *
- * TODO: Wire into apps/worker/src/index.ts once cron infrastructure lands (#189):
- *
- *   if (pollCount % 60 === 0) {
- *     await runPromotionEligibilityCheckJob(sseManager).catch(
- *       (err) => log.error('Promotion eligibility check failed', { error: err.message }),
- *     );
- *   }
+ * **Not yet wired into the worker poll loop.** Tracked in #304 (parent
+ * epic #189 closed without this wiring). Pattern when wired should
+ * follow the fire-and-forget + single-flight + bounded-concurrency
+ * shape established by `relationship-tier-scheduler.ts` (#282) so the
+ * job doesn't block connector polling.
  *
  * The `emitter` parameter accepts any object with an `emit(userId, event, data)` method,
  * so the real sseManager can be injected in production and a stub in tests.

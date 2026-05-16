@@ -16,18 +16,11 @@ const log = createLogger('worker:briefing-generator');
  *   - daily: 7am user-local time
  *   - weekly: Sunday morning
  *
- * TODO: Wire into apps/worker/src/index.ts once cron infrastructure lands:
- *
- *   if (shouldRunDaily()) {
- *     await runBriefingGeneratorJob({ cadence: 'daily' }).catch(
- *       (err) => log.error('Briefing generator failed', { error: err.message }),
- *     );
- *   }
- *   if (isSundayMorning() && shouldRunWeekly()) {
- *     await runBriefingGeneratorJob({ cadence: 'weekly' }).catch(
- *       (err) => log.error('Weekly briefing generator failed', { error: err.message }),
- *     );
- *   }
+ * **Not yet wired into the worker poll loop.** Tracked in #304 (the
+ * "wire orphaned worker jobs" follow-up). Pattern when wired should
+ * follow the fire-and-forget + single-flight + bounded-concurrency
+ * shape established by `relationship-tier-scheduler.ts` (#282) so the
+ * job doesn't block connector polling.
  */
 
 export interface BriefingGeneratorJobDeps {

@@ -54,17 +54,17 @@ export const spendRepository = {
    * Get total spend for a user in the current calendar month (UTC).
    * When appRegistryId is provided, filters to spend records tagged with
    * that registry id in the action metadata (best-effort; requires the
-   * decision pipeline to record registry_id on spend_records, which is
-   * a TODO for #189). For now, returns user-total if no appRegistryId,
-   * or 0 if appRegistryId is provided (safe fallback — no false positives).
+   * decision pipeline to record registry_id on spend_records — tracked
+   * in #306). For now, returns user-total if no appRegistryId, or 0 if
+   * appRegistryId is provided (safe fallback — no false positives).
    */
   async getMonthlyTotal(userId: string, appRegistryId?: string): Promise<number> {
     // Per-app monthly totals require action-level registry_id linkage that
-    // the schema doesn't yet have (deferred to #189). Return 0 for
+    // the schema doesn't yet have (deferred to #306). Return 0 for
     // per-app queries so the monthly cap check is conservative (never
     // falsely blocks). Return the calendar-month total for user-global queries.
     if (appRegistryId) {
-      // TODO (#189): join through decision_outcomes → spend_records where
+      // TODO (#306): join through decision_outcomes → spend_records where
       // the action's registry_id = appRegistryId once that column exists.
       return 0;
     }
