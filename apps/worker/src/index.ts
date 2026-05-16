@@ -29,7 +29,7 @@ import { runDomainExtractionJob } from './jobs/domain-extraction.js';
 import { runFederationSyncJob } from './jobs/federation-sync.js';
 import { runEmbeddingBackfillJob } from './jobs/embedding-backfill.js';
 import { runTierBackfillJob } from './jobs/tier-backfill.js';
-import { runRelationshipTierBackfillJob } from './jobs/relationship-tier-backfill.js';
+import { runRelationshipTierBackfillBatch } from './jobs/relationship-tier-scheduler.js';
 
 const config = loadConfig();
 const log = createLogger('worker');
@@ -503,11 +503,17 @@ async function main(): Promise<void> {
   const TIER_BACKFILL_INTERVAL_MS = 60 * 60 * 1000;
 
   let lastRelationshipTierBackfillAt = 0;
-  // Compute `metadata.relationshipTier` from bidirectional thread counts
-  // over the last 90d (#251 Phase 2). Daily cadence is plenty — the
-  // tier band changes slowly as a user's contact density shifts. Per-user
-  // pass, idempotent: re-runs do nothing when nothing has changed.
+  // #282: the daily relationship-tier backfill no longer runs INSIDE the
+  // poll loop's await chain. The poll loop only kicks off a batch (a
+  // separate scheduler with bounded concurrency + per-user timeout —
+  // see `relationship-tier-scheduler.ts`) and continues immediately.
+  // `relationshipTierBackfillInFlight` is a single-flight guard so a
+  // long-running batch (e.g. a cold-start pass on dozens of heavy
+  // mailboxes) doesn't get a second batch stacked on top before the
+  // first finishes. The 24h cadence is preserved at minimum; once the
+  // pass is fast enough the trigger can be tightened.
   const RELATIONSHIP_TIER_BACKFILL_INTERVAL_MS = 24 * 60 * 60 * 1000;
+  let relationshipTierBackfillInFlight = false;
 
   // Poll loop
   while (running) {
@@ -581,20 +587,37 @@ async function main(): Promise<void> {
       lastTierBackfillAt = nowMs;
     }
 
-    // Compute relationshipTier per page from bidirectional thread counts
-    // (#251 Phase 2). Daily, per-user. Read-only writes to metadata via
-    // `updatePageMetadata`. Failures swallowed at user-scope so one bad
-    // mailbox can't stall the others.
-    if (nowMs - lastRelationshipTierBackfillAt >= RELATIONSHIP_TIER_BACKFILL_INTERVAL_MS) {
-      for (const uc of userConnectors) {
-        await runRelationshipTierBackfillJob(uc.userId).catch((err) => {
-          log.warn('Relationship-tier backfill job failed', {
-            userId: uc.userId,
+    // #282: kick off a daily relationship-tier backfill batch when one
+    // is not already running and 24h has elapsed since the last START
+    // (not since the last completion — a batch that took a long time
+    // does not delay the next cycle by its own duration). The batch
+    // runs with bounded concurrency + per-user timeout via
+    // `runRelationshipTierBackfillBatch`; the poll loop does NOT await
+    // it, so signal ingestion is never delayed by backfill work.
+    if (
+      !relationshipTierBackfillInFlight &&
+      nowMs - lastRelationshipTierBackfillAt >= RELATIONSHIP_TIER_BACKFILL_INTERVAL_MS
+    ) {
+      relationshipTierBackfillInFlight = true;
+      lastRelationshipTierBackfillAt = nowMs;
+      const userIds = userConnectors.map((uc) => uc.userId);
+      void runRelationshipTierBackfillBatch(userIds)
+        .then((batchSummary) => {
+          log.info('Relationship-tier backfill batch complete', {
+            users: userIds.length,
+            ...batchSummary,
+          });
+        })
+        .catch((err) => {
+          // The batch helper catches per-user errors internally, so this
+          // path is for unexpected scheduler-level failures only.
+          log.warn('Relationship-tier backfill batch failed', {
             error: err instanceof Error ? err.message : String(err),
           });
+        })
+        .finally(() => {
+          relationshipTierBackfillInFlight = false;
         });
-      }
-      lastRelationshipTierBackfillAt = nowMs;
     }
 
     // Expire stale approval requests every 10 poll cycles
