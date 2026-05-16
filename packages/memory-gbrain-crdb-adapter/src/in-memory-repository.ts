@@ -227,9 +227,12 @@ export class InMemoryBrainStore {
 
   /**
    * Mirror of `repository.computeBidirectionalThreadCounts`. Returns a
-   * Map<contactAddress, bidirectionalDayCount>. The CRDB version
-   * approximates threads as day-windows; the in-memory mirror does the
-   * same so behaviour is identical between backends.
+   * Map<contactAddress, bidirectionalDayCount> where the count is the
+   * number of distinct days on which the user both sent to AND received
+   * from the same contact (same-day intersection). Same semantics as
+   * the CRDB version's `JOIN ... ON (contact, day)` — see the docstring
+   * there for why the per-day intersection is the correct shape and
+   * what the earlier "any sent in window" approximation was getting wrong.
    */
   computeBidirectionalThreadCounts(userId: string, windowDays = 90): Map<string, number> {
     const cutoff = Date.now() - windowDays * 24 * 60 * 60 * 1000;
@@ -264,8 +267,14 @@ export class InMemoryBrainStore {
     }
     const out = new Map<string, number>();
     for (const [contact, recvDays] of received) {
-      if (!sent.has(contact)) continue;
-      out.set(contact, recvDays.size);
+      const sentDays = sent.get(contact);
+      if (!sentDays) continue;
+      // Count days present in BOTH sets — the same-day intersection.
+      let intersection = 0;
+      for (const day of recvDays) {
+        if (sentDays.has(day)) intersection++;
+      }
+      if (intersection > 0) out.set(contact, intersection);
     }
     return out;
   }

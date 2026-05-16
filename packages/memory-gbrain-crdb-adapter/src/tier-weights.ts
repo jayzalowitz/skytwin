@@ -173,12 +173,27 @@ const REL_TABLES: Record<TierCalibration, RelationshipBonusTable> = {
 };
 
 /**
- * Bidirectional-thread-count → relationship band thresholds. Stays in
- * one place so the backfill worker and any future tuning live together.
+ * Bidirectional-thread-count → relationship band thresholds.
+ *
+ * `count` is the number of distinct days in the 90d window on which the
+ * user both sent to AND received from the contact (same-day intersection
+ * — see `repository.computeBidirectionalThreadCounts`). Same-day
+ * intersection is a STRICTER definition than the earlier
+ * "any-sent-in-window" approximation — the same user under the new
+ * definition needs ~half the count to land in the same band.
+ *
+ * Re-tuned thresholds (#281): the old ones (10/3/1) assumed the loose
+ * definition; under intersection they would push almost everyone to
+ * `occasional` / `stranger`. The new bands trade some compression at
+ * the top end for more useful separation at the bottom — most personal
+ * users have ≤5 same-day exchanges in 90d even with their closest
+ * contacts. Calibration against a representative corpus is the
+ * follow-up; these are the conservative initial bands and should be
+ * revisited once we have aggregate distribution data from real users.
  */
 export function relationshipTierFromThreadCount(count: number): RelationshipTier {
-  if (count >= 10) return 'core';
-  if (count >= 3) return 'frequent';
+  if (count >= 5) return 'core';
+  if (count >= 2) return 'frequent';
   if (count >= 1) return 'occasional';
   return 'stranger';
 }
