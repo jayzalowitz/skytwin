@@ -350,7 +350,7 @@ function renderError(err) {
 // for unfulfillable-intent phrases. If found, search the registry for matching
 // capabilities and surface an inline "Connect X to enable this" affordance.
 //
-// TODO(#189): Replace the heuristic with `runPrompt('reverse-capability-intent', context)`.
+// TODO(#306): Replace the heuristic with `runPrompt('reverse-capability-intent', context)`.
 // The one-line swap-in: `const intent = await runPrompt('reverse-capability-intent', { userMessage, reply });`
 // then use intent.registryId directly instead of the keyword scan below.
 //
@@ -431,7 +431,7 @@ async function checkReverseCapabilityFlow(userMessage, replyText, container) {
     const hints = detectServiceHints(userMessage);
     if (hints.length === 0) {
       // Fall back to registry search with the user's message as query
-      // TODO(#189): replace with runPrompt('reverse-capability-intent', ...)
+      // TODO(#306): replace with runPrompt('reverse-capability-intent', ...)
       return;
     }
 

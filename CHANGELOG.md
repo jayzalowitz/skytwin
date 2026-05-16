@@ -1,5 +1,15 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.33.0] - 2026-05-16
+
+### Changed
+
+- **Stale `TODO(#189)` markers re-pointed to live follow-up issues.** #189 was a 50h epic that closed without finishing several of its acceptance criteria. The orphaned TODOs scattered across the codebase pointed at the closed issue, so anyone reading "Tracked in #189" couldn't find the actual current status. Three new issues replace it:
+  - **#304** — wire `promotion-eligibility-check` + `briefing-generator` jobs into the worker (both written, neither scheduled). `apps/worker/src/jobs/promotion-eligibility-check.ts` and `briefing-generator.ts` docstrings updated.
+  - **#305** — populate `ExplanationRecord.capabilityProvenanceNodeId` in the action-execution path so the provenance lineage view can walk from action → explanation. `packages/shared-types/src/explanation.ts` docstring updated.
+  - **#306** — catch-all for the remaining #189 deferred work: `oauth_quirks.json` deletion + `runPrompt('oauth-recovery', ...)`, `reverse-capability-intent` prompt wiring, decision-action-execution linkage, `registry_id` on `spend_records`. Five source-file refs updated (`capabilities.ts` × 4 sites, `spend-repository.ts` × 2 sites, `assistant.js` × 2 sites).
+- No behavior change. The dormant code stays dormant; only the comment refs are corrected so future readers find the right tracking issue.
+
 ## [0.6.31.0] - 2026-05-16
 
 ### Fixed

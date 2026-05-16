@@ -408,9 +408,10 @@ export function createCapabilitiesRouter(): Router {
       // We use capability_provenance_nodes as the linkage source (node_type='action',
       // server_id=:id) because the action-to-execution-plan linkage isn't yet
       // finalized in the DB schema.
-      // TODO: Once the decision-action-execution linkage is finalized (see #189),
-      // join through decision_outcomes → execution_plans and resolve actual plan IDs
-      // for rollback via IronClawAdapter.rollback(planId).
+      // Tracked in #306 (catch-all for #189 deferred work): once the
+      // decision-action-execution linkage is finalized, this should join
+      // through decision_outcomes → execution_plans and resolve actual
+      // plan IDs for rollback via IronClawAdapter.rollback(planId).
       const provenanceResult = await query<{
         id: string;
         ref_id: string;
@@ -444,9 +445,10 @@ export function createCapabilitiesRouter(): Router {
           continue;
         }
 
-        // TODO: Call IronClawAdapter.rollback(planId) once the provenance node
-        // stores the execution plan ID directly. For now we record that the intent
-        // was received but cannot yet reach the adapter here (#189 wires this).
+        // TODO: Call IronClawAdapter.rollback(planId) once the provenance
+        // node stores the execution plan ID directly. For now we record
+        // that the intent was received but cannot yet reach the adapter
+        // here. Tracked in #306.
         undone.push({ actionId: node.ref_id, result: 'rolled_back' });
       }
 
@@ -505,19 +507,20 @@ export function createCapabilitiesRouter(): Router {
       }
 
       // Alternate decision computation is a read-only stub for v1.
-      // The full re-run of the decision pipeline with this server removed from
-      // the registry is deferred to #189 (prompt-driven capability evaluation).
-      // This endpoint exists and is read-only; it never mutates the original.
+      // The full re-run of the decision pipeline with this server removed
+      // from the registry is deferred to #306 (catch-all for #189
+      // deferred work). This endpoint exists and is read-only; it never
+      // mutates the original.
       const alternateDecision = withoutCapability
         ? {
-            note: 'alternate decision pipeline not yet wired; this endpoint stubs for #189 to fill in',
+            note: 'alternate decision pipeline not yet wired; this endpoint stubs for #306 to fill in',
             serverId: id,
             serverDisplayName: server.display_name,
           }
         : originalDecision;
 
       const diff = withoutCapability
-        ? `Without "${server.display_name}", the decision pipeline would have lacked this server's tools. Full counterfactual re-run is deferred to #189.`
+        ? `Without "${server.display_name}", the decision pipeline would have lacked this server's tools. Full counterfactual re-run is deferred to #306.`
         : 'No change requested (withoutCapability=false).';
 
       res.json({
@@ -1214,7 +1217,8 @@ export function createCapabilitiesRouter(): Router {
       // Gather approval stats for this server from capability_provenance_nodes.
       // For v1, decisions_observed = action nodes, approved = action nodes with
       // payload.approved = true. When the full decision pipeline wires provenance
-      // (#189), replace this stub query with actual approval history.
+      // (#306, catch-all for #189 deferred work), replace this stub query with
+      // actual approval history.
       const statsResult = await query<{ total: string; approved: string }>(
         `SELECT
            COUNT(*) AS total,
