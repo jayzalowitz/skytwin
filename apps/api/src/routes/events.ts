@@ -8,7 +8,9 @@ import {
   FallbackCandidateGenerator,
   RuleBasedCandidateGenerator,
   SenderAwareCandidateGenerator,
+  CompositeCandidateGenerator,
 } from '@skytwin/decision-engine';
+import { buildDraftEmailGenerator } from '../draft-email-setup.js';
 import { TwinService } from '@skytwin/twin-model';
 import { PolicyEvaluator } from '@skytwin/policy-engine';
 import { ExplanationGenerator } from '@skytwin/explanations';
@@ -194,6 +196,13 @@ export function createEventsRouter(): Router {
       let interpreter: SituationInterpreter;
       let decisionMaker: DecisionMaker;
 
+      // Optional dark-deploy: the draft-email candidate generator (#283)
+      // runs alongside the primary strategy when SKYTWIN_DRAFTS_ENABLED=true
+      // AND the user has an LLM client. Returns null otherwise — no
+      // construction cost, no memory roundtrip — so the default-off path
+      // adds nothing to ingestion latency.
+      const draftGen = buildDraftEmailGenerator(userId, llmClient);
+
       if (llmClient && llmClient.hasProviders) {
         const llmSituation = new LlmSituationStrategy(llmClient);
         const llmCandidates = new LlmCandidateGenerator(llmClient);
@@ -203,7 +212,14 @@ export function createEventsRouter(): Router {
         // wraps a DecisionMaker; we pass the sender-aware-wrapped one.
         const ruleBasedCandidates = new RuleBasedCandidateGenerator(ruleBasedDecisionMaker);
         const situationStrategy = new FallbackSituationStrategy(llmSituation, ruleBasedInterpreter);
-        const candidateStrategy = new FallbackCandidateGenerator(llmCandidates, ruleBasedCandidates);
+        const primaryCandidates = new FallbackCandidateGenerator(llmCandidates, ruleBasedCandidates);
+        // Composite runs the primary strategy AND the draft generator (when
+        // present) in parallel; the engine's scoring layer picks across the
+        // merged candidate list. When draftGen is null the composite is a
+        // single-generator passthrough.
+        const candidateStrategy = draftGen
+          ? new CompositeCandidateGenerator([primaryCandidates, draftGen])
+          : primaryCandidates;
         interpreter = new SituationInterpreter(situationStrategy);
         decisionMaker = new DecisionMaker(
           twinService,
@@ -213,8 +229,29 @@ export function createEventsRouter(): Router {
           labelInferencePort,
         );
       } else {
+        // Rule-based path: still compose with the draft generator when
+        // active — draft generation does not depend on a primary LLM
+        // strategy, only on the user having ANY LLM client (which
+        // buildDraftEmailGenerator already checked). If draftGen is null
+        // (no LLM client at all), this branch is exactly the prior
+        // behaviour.
         interpreter = ruleBasedInterpreter;
-        decisionMaker = ruleBasedDecisionMaker;
+        if (draftGen) {
+          const ruleBasedCandidates = new RuleBasedCandidateGenerator(ruleBasedDecisionMaker);
+          const candidateStrategy = new CompositeCandidateGenerator([
+            ruleBasedCandidates,
+            draftGen,
+          ]);
+          decisionMaker = new DecisionMaker(
+            twinService,
+            policyEvaluator,
+            decisionRepositoryAdapter,
+            candidateStrategy,
+            labelInferencePort,
+          );
+        } else {
+          decisionMaker = ruleBasedDecisionMaker;
+        }
       }
 
       // 1. Interpret the raw event

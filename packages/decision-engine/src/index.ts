@@ -14,6 +14,7 @@ export type { CandidateGenerator } from './strategies/candidate-strategy.js';
 export { LlmSituationStrategy } from './strategies/llm-situation.js';
 export { LlmCandidateGenerator } from './strategies/llm-candidates.js';
 export { FallbackSituationStrategy, FallbackCandidateGenerator } from './strategies/fallback-strategy.js';
+export { CompositeCandidateGenerator } from './strategies/composite-candidates.js';
 export { RuleBasedCandidateGenerator } from './strategies/rule-based-candidates.js';
 export { SenderAwareCandidateGenerator } from './strategies/sender-aware-candidates.js';
 export {

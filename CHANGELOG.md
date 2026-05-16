@@ -1,5 +1,20 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.30.0] - 2026-05-16
+
+### Added
+
+- **`DraftEmailCandidateGenerator` is now wired into the events ingestion pipeline behind a dark-deploy env flag (closes the wiring sub-task of #283).** The generator landed as an opt-in building block in #277 / #251 Phase 4 but was never composed into `DecisionMaker.evaluate`. This PR adds the composition path: when `SKYTWIN_DRAFTS_ENABLED=true` AND the user has an LLM client configured, the route builds a `CompositeCandidateGenerator` that runs the existing rule-based / LLM strategy alongside the draft generator in parallel; the engine's scoring layer picks across the merged candidate list. Default is off (`SKYTWIN_DRAFTS_ENABLED` unset → no construction cost, no memory roundtrip — zero added latency). A memory-port-backed `AuthoredExamplesPort` filters semantic hits client-side to `authoringTier IN ('user_sent_originated', 'user_sent_reply')`; over-fetches 3× to compensate for the client-side narrow. New `CompositeCandidateGenerator` is exported from `@skytwin/decision-engine` for re-use — it runs N generators in parallel, concatenates results, and drops a single generator's failure without losing the others.
+
+#### Still owed before this can be flipped on for any user
+
+These are tracked in #283 and remain open:
+- **Cost gating.** Every `generate()` call invokes the LLM. There is no per-user per-day cap or per-user spend cap surfaced from the policy engine yet. Bound only by the provider's per-token price and the inbound rate.
+- **SQL pushdown on `AuthoredExamplesPort`.** Today's client-side filter works for typical k (≤10) but doesn't scale to high-k or noisy corpora.
+- **Eval bench against real LLM.** Need a held-out paired inbound→reply corpus, then voice / topical / length thresholds gating the flip.
+- **Per-user feature flag.** Today's `SKYTWIN_DRAFTS_ENABLED` is process-wide. A `drafts_enabled` field on `twin_profile` or `brain_settings` is the per-user form.
+- **Approval-UI surface for `draft_email` candidates.** The candidate flows through the normal pipeline, but the dashboard doesn't yet highlight `parameters.examplesUsed`, the prompt, or inline-edit-before-approving.
+
 ## [0.6.29.0] - 2026-05-15
 
 ### Fixed
