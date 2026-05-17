@@ -18,7 +18,6 @@
 import { Router } from 'express';
 import { createLogger } from '@skytwin/core';
 import {
-  mcpServerRepository,
   promotionOffersRepository,
   type PromotionOfferRow,
   type PromotionOfferResponse,
@@ -124,16 +123,78 @@ export function createPromotionOffersRouter(): Router {
         return;
       }
 
-      // Ownership: the offer must belong to the requesting user. Same
-      // pattern as bindUserIdParamOwnership for path-userId, but we
-      // hold userId in the body for this route so the offerId is the
-      // path param. Cross-check explicitly.
-      const sessionUserId = (req as { _userId?: string })._userId;
+      // Ownership: the offer must belong to the requesting user. The
+      // session-auth middleware sets `req.authenticatedUserId`; cross-
+      // check against the body's userId (which is also cross-checked
+      // against the offer's user_id below).
+      const sessionUserId = (req as { authenticatedUserId?: string }).authenticatedUserId;
       if (sessionUserId && sessionUserId !== userId) {
         res.status(403).json({ error: 'Session user does not match body userId' });
         return;
       }
 
+      // Branch on response type. Accept runs through `acceptAtomic`
+      // (single transaction guarding offer state, server tier, and
+      // the tier bump). Rejected/dismissed are simpler: just mark
+      // responded — no tier promotion, no cross-table race.
+      if (response === 'accepted') {
+        // We don't have offer.server_id yet (haven't looked it up),
+        // but acceptAtomic needs it. Do a narrow read first solely
+        // to get server_id + expected current_tier + proposed_tier.
+        // The actual atomicity guarantee comes from acceptAtomic's
+        // SELECT FOR UPDATE inside the transaction — this lookup
+        // is non-authoritative.
+        const offer = await promotionOffersRepository.findById(offerId);
+        if (!offer) {
+          res.status(404).json({ error: 'Offer not found' });
+          return;
+        }
+        if (offer.user_id !== userId) {
+          res.status(403).json({ error: 'Offer does not belong to this user' });
+          return;
+        }
+        const outcome = await promotionOffersRepository.acceptAtomic({
+          offerId,
+          serverId: offer.server_id,
+          expectedCurrentTier: offer.current_tier,
+          proposedTier: offer.proposed_tier,
+        });
+        if (outcome.notFound) {
+          res.status(404).json({ error: 'Offer not found' });
+          return;
+        }
+        if (outcome.alreadyResponded) {
+          res.status(409).json({
+            error: 'Offer already responded',
+            response: outcome.row?.response ?? null,
+          });
+          return;
+        }
+        if (outcome.serverMissing) {
+          res.status(409).json({
+            error: 'Server no longer exists; offer rejected',
+          });
+          return;
+        }
+        if (outcome.staleSnapshot) {
+          res.status(409).json({
+            error:
+              `Server tier has changed since offer (was ${offer.current_tier}); offer rejected`,
+          });
+          return;
+        }
+        log.info('Promotion accepted; server tier updated', {
+          userId,
+          serverId: offer.server_id,
+          fromTier: offer.current_tier,
+          toTier: offer.proposed_tier,
+        });
+        res.json({ ok: true, promotionApplied: true, response: 'accepted' });
+        return;
+      }
+
+      // Rejected / dismissed: simple mark-responded with the
+      // standard race-safe UPDATE.
       const offer = await promotionOffersRepository.findById(offerId);
       if (!offer) {
         res.status(404).json({ error: 'Offer not found' });
@@ -150,42 +211,6 @@ export function createPromotionOffersRouter(): Router {
         });
         return;
       }
-
-      // For 'accepted', verify the server's live tier still matches
-      // the snapshot. If the admin demoted the server in between,
-      // accepting the stale offer would jump the user up TWO tiers
-      // unexpectedly. Refuse and convert to a rejection on the
-      // ledger so the offer doesn't stay pending forever.
-      let promotionApplied = false;
-      if (response === 'accepted') {
-        const server = await mcpServerRepository.getById(offer.server_id);
-        if (!server) {
-          await promotionOffersRepository.markResponded(offerId, 'rejected');
-          res.status(409).json({
-            error: 'Server no longer exists; offer rejected',
-          });
-          return;
-        }
-        if (server.trust_tier !== offer.current_tier) {
-          await promotionOffersRepository.markResponded(offerId, 'rejected');
-          res.status(409).json({
-            error: `Server tier has changed since offer (was ${offer.current_tier}, now ${server.trust_tier}); offer rejected`,
-          });
-          return;
-        }
-        await mcpServerRepository.updateTrustTier(
-          offer.server_id,
-          offer.proposed_tier as TrustTier,
-        );
-        promotionApplied = true;
-        log.info('Promotion accepted; server tier updated', {
-          userId,
-          serverId: offer.server_id,
-          fromTier: offer.current_tier,
-          toTier: offer.proposed_tier,
-        });
-      }
-
       const updated = await promotionOffersRepository.markResponded(
         offerId,
         response as PromotionOfferResponse,
@@ -196,7 +221,7 @@ export function createPromotionOffersRouter(): Router {
         return;
       }
 
-      res.json({ ok: true, promotionApplied, response });
+      res.json({ ok: true, promotionApplied: false, response });
     } catch (err) {
       next(err);
     }
@@ -224,10 +249,12 @@ let sweeperHandle: NodeJS.Timeout | null = null;
 let lastSweepCutoff = new Date();
 
 export async function sweepPromotionOffersOnce(now: Date = new Date()): Promise<number> {
+  // Snapshot the cutoff but DO NOT advance it until we know the read
+  // succeeded. Copilot caught the prior shape — advancing before the
+  // read meant that if `listOfferedSince` threw, the failed window
+  // would be permanently skipped by SSE (dashboard polling would
+  // still pick it up, but live tabs would miss it forever).
   const since = lastSweepCutoff;
-  // Move the cutoff forward BEFORE the read so a row inserted
-  // mid-sweep gets picked up on the next tick rather than dropped.
-  lastSweepCutoff = now;
   try {
     const offers = await promotionOffersRepository.listOfferedSince(since);
     for (const offer of offers) {
@@ -245,9 +272,12 @@ export async function sweepPromotionOffersOnce(now: Date = new Date()): Promise<
         approvedCount: offer.approved_count,
       });
     }
+    // Advance the cutoff only after the read succeeded so a failed
+    // tick re-attempts the same window on the next sweep.
+    lastSweepCutoff = now;
     return offers.length;
   } catch (err) {
-    log.warn('Promotion-offers sweep failed', {
+    log.warn('Promotion-offers sweep failed; cutoff not advanced (will retry same window)', {
       error: err instanceof Error ? err.message : String(err),
     });
     return 0;

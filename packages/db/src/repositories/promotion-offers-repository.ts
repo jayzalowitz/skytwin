@@ -1,4 +1,4 @@
-import { query } from '../connection.js';
+import { query, withTransaction } from '../connection.js';
 
 /**
  * Worker→API bridge for trust-tier promotion ceremonies (#310).
@@ -121,7 +121,9 @@ export const promotionOffersRepository = {
    * Mark an offer as responded. Returns the updated row, or `null`
    * when the offer didn't exist or was already responded to (the
    * WHERE filter excludes already-responded rows so a duplicate
-   * Accept click can't overwrite an earlier response).
+   * click can't overwrite an earlier response). Used by the
+   * rejected/dismissed paths; the accept path uses `acceptAtomic`
+   * below for transaction-safety against concurrent double-clicks.
    */
   async markResponded(
     id: string,
@@ -135,6 +137,127 @@ export const promotionOffersRepository = {
       [response, id],
     );
     return result.rows[0] ?? null;
+  },
+
+  /**
+   * Atomic accept: validate the offer is still pending AND the
+   * server is still at the snapshot tier AND bump the server's
+   * trust_tier — all in one CRDB serializable transaction.
+   *
+   * Replaces a prior sequence that did "validate, update tier,
+   * mark responded" as three separate queries (Copilot caught the
+   * race: two concurrent Accept clicks could each pass the
+   * snapshot check, both bump the tier, and confuse the ledger
+   * about which response "won"). With SELECT FOR UPDATE on both
+   * the offer row and the server row, concurrent transactions
+   * serialize through and the second click sees `alreadyResponded`.
+   *
+   * Returns a tagged result the caller can branch on:
+   *   - { row, ...all-false }                      → success
+   *   - { row: null, alreadyResponded: true }      → 409
+   *   - { row: null, staleSnapshot: true }         → 409 (tier changed)
+   *   - { row: null, serverMissing: true }         → 409 (server gone)
+   * In the stale / missing cases the offer is also marked
+   * responded='rejected' inside the transaction so it doesn't stay
+   * pending forever — the partial unique index on (server_id,
+   * proposed_tier) WHERE responded_at IS NULL would otherwise
+   * prevent the worker from offering at the same tier again.
+   */
+  async acceptAtomic(input: {
+    offerId: string;
+    serverId: string;
+    expectedCurrentTier: string;
+    proposedTier: string;
+  }): Promise<{
+    row: PromotionOfferRow | null;
+    alreadyResponded: boolean;
+    staleSnapshot: boolean;
+    serverMissing: boolean;
+    notFound: boolean;
+  }> {
+    return withTransaction(async (client) => {
+      const offerResult = await client.query<PromotionOfferRow>(
+        'SELECT * FROM promotion_offers WHERE id = $1 FOR UPDATE',
+        [input.offerId],
+      );
+      const offer = offerResult.rows[0];
+      if (!offer) {
+        return {
+          row: null,
+          alreadyResponded: false,
+          staleSnapshot: false,
+          serverMissing: false,
+          notFound: true,
+        };
+      }
+      if (offer.responded_at !== null) {
+        return {
+          row: offer,
+          alreadyResponded: true,
+          staleSnapshot: false,
+          serverMissing: false,
+          notFound: false,
+        };
+      }
+
+      const serverResult = await client.query<{ trust_tier: string }>(
+        'SELECT trust_tier FROM mcp_servers WHERE id = $1 FOR UPDATE',
+        [input.serverId],
+      );
+      const server = serverResult.rows[0];
+      if (!server) {
+        // Server gone — clean up the offer ledger so it doesn't
+        // dangle. Same transaction as the SELECT for consistency.
+        await client.query(
+          `UPDATE promotion_offers
+           SET responded_at = now(), response = $1
+           WHERE id = $2`,
+          ['rejected', input.offerId],
+        );
+        return {
+          row: null,
+          alreadyResponded: false,
+          staleSnapshot: false,
+          serverMissing: true,
+          notFound: false,
+        };
+      }
+      if (server.trust_tier !== input.expectedCurrentTier) {
+        await client.query(
+          `UPDATE promotion_offers
+           SET responded_at = now(), response = $1
+           WHERE id = $2`,
+          ['rejected', input.offerId],
+        );
+        return {
+          row: null,
+          alreadyResponded: false,
+          staleSnapshot: true,
+          serverMissing: false,
+          notFound: false,
+        };
+      }
+
+      // All checks pass — promote + mark accepted, both in this txn.
+      await client.query(
+        'UPDATE mcp_servers SET trust_tier = $1, updated_at = now() WHERE id = $2',
+        [input.proposedTier, input.serverId],
+      );
+      const updatedResult = await client.query<PromotionOfferRow>(
+        `UPDATE promotion_offers
+         SET responded_at = now(), response = $1
+         WHERE id = $2
+         RETURNING *`,
+        ['accepted', input.offerId],
+      );
+      return {
+        row: updatedResult.rows[0] ?? null,
+        alreadyResponded: false,
+        staleSnapshot: false,
+        serverMissing: false,
+        notFound: false,
+      };
+    });
   },
 
   /**

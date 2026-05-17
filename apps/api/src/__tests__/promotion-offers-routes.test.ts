@@ -10,17 +10,13 @@ const mockPromotionOffersRepository = {
   listPendingWithServerName: vi.fn(),
   findById: vi.fn(),
   markResponded: vi.fn(),
+  acceptAtomic: vi.fn(),
   listOfferedSince: vi.fn(),
-};
-const mockMcpServerRepository = {
-  getById: vi.fn(),
-  updateTrustTier: vi.fn(),
 };
 const mockSseEmit = vi.fn();
 
 vi.mock('@skytwin/db', () => ({
   promotionOffersRepository: mockPromotionOffersRepository,
-  mcpServerRepository: mockMcpServerRepository,
 }));
 
 vi.mock('../sse.js', () => ({
@@ -149,12 +145,96 @@ describe('POST /promotion-offers/:offerId/respond', () => {
     expect(status).toBe(403);
   });
 
-  it('409 when the offer was already responded to', async () => {
+  it('409 when the offer was already responded to (non-accept path uses findById guard)', async () => {
     mockPromotionOffersRepository.findById.mockResolvedValue({
       id: 'o-1',
       user_id: 'u-1',
       responded_at: new Date('2026-05-17T00:00:00Z'),
+      response: 'rejected',
+    });
+    const app = makeApp();
+    const { status, body } = await request(app, 'POST', '/promotion-offers/o-1/respond', {
+      userId: 'u-1',
+      response: 'rejected',
+    });
+    expect(status).toBe(409);
+    expect(body['response']).toBe('rejected');
+  });
+
+  it('on accept: defers to acceptAtomic (single transaction guards offer state + server tier + tier bump)', async () => {
+    mockPromotionOffersRepository.findById.mockResolvedValue({
+      id: 'o-1',
+      user_id: 'u-1',
+      server_id: 's-1',
+      current_tier: 'observer',
+      proposed_tier: 'suggest',
+      responded_at: null,
+    });
+    mockPromotionOffersRepository.acceptAtomic.mockResolvedValue({
+      row: { id: 'o-1', response: 'accepted' },
+      alreadyResponded: false,
+      staleSnapshot: false,
+      serverMissing: false,
+      notFound: false,
+    });
+    const app = makeApp();
+    const { status, body } = await request(app, 'POST', '/promotion-offers/o-1/respond', {
+      userId: 'u-1',
       response: 'accepted',
+    });
+    expect(status).toBe(200);
+    expect(body['promotionApplied']).toBe(true);
+    expect(mockPromotionOffersRepository.acceptAtomic).toHaveBeenCalledWith({
+      offerId: 'o-1',
+      serverId: 's-1',
+      expectedCurrentTier: 'observer',
+      proposedTier: 'suggest',
+    });
+  });
+
+  it('on accept with stale snapshot: acceptAtomic returns staleSnapshot → 409 (cleanup happens inside acceptAtomic)', async () => {
+    mockPromotionOffersRepository.findById.mockResolvedValue({
+      id: 'o-1',
+      user_id: 'u-1',
+      server_id: 's-1',
+      current_tier: 'observer',
+      proposed_tier: 'suggest',
+      responded_at: null,
+    });
+    mockPromotionOffersRepository.acceptAtomic.mockResolvedValue({
+      row: null,
+      alreadyResponded: false,
+      staleSnapshot: true,
+      serverMissing: false,
+      notFound: false,
+    });
+    const app = makeApp();
+    const { status, body } = await request(app, 'POST', '/promotion-offers/o-1/respond', {
+      userId: 'u-1',
+      response: 'accepted',
+    });
+    expect(status).toBe(409);
+    expect(String(body['error'])).toContain('Server tier has changed');
+    // markResponded is NOT called from the route — acceptAtomic does
+    // the cleanup inside its transaction.
+    expect(mockPromotionOffersRepository.markResponded).not.toHaveBeenCalled();
+  });
+
+  it('on accept with concurrent already-responded: acceptAtomic returns alreadyResponded → 409', async () => {
+    mockPromotionOffersRepository.findById.mockResolvedValue({
+      id: 'o-1',
+      user_id: 'u-1',
+      server_id: 's-1',
+      current_tier: 'observer',
+      proposed_tier: 'suggest',
+      responded_at: null,
+    });
+    mockPromotionOffersRepository.acceptAtomic.mockResolvedValue({
+      row: { id: 'o-1', response: 'accepted' },
+      alreadyResponded: true,
+      staleSnapshot: false,
+      serverMissing: false,
+      notFound: false,
     });
     const app = makeApp();
     const { status, body } = await request(app, 'POST', '/promotion-offers/o-1/respond', {
@@ -165,7 +245,7 @@ describe('POST /promotion-offers/:offerId/respond', () => {
     expect(body['response']).toBe('accepted');
   });
 
-  it('on accept: validates server still at snapshot tier, then promotes', async () => {
+  it('on accept with server missing: acceptAtomic returns serverMissing → 409', async () => {
     mockPromotionOffersRepository.findById.mockResolvedValue({
       id: 'o-1',
       user_id: 'u-1',
@@ -174,55 +254,23 @@ describe('POST /promotion-offers/:offerId/respond', () => {
       proposed_tier: 'suggest',
       responded_at: null,
     });
-    mockMcpServerRepository.getById.mockResolvedValue({
-      id: 's-1',
-      trust_tier: 'observer',
+    mockPromotionOffersRepository.acceptAtomic.mockResolvedValue({
+      row: null,
+      alreadyResponded: false,
+      staleSnapshot: false,
+      serverMissing: true,
+      notFound: false,
     });
-    mockPromotionOffersRepository.markResponded.mockResolvedValue({
-      id: 'o-1',
-      response: 'accepted',
-    });
-    const app = makeApp();
-    const { status, body } = await request(app, 'POST', '/promotion-offers/o-1/respond', {
-      userId: 'u-1',
-      response: 'accepted',
-    });
-    expect(status).toBe(200);
-    expect(body['promotionApplied']).toBe(true);
-    expect(mockMcpServerRepository.updateTrustTier).toHaveBeenCalledWith('s-1', 'suggest');
-    expect(mockPromotionOffersRepository.markResponded).toHaveBeenCalledWith('o-1', 'accepted');
-  });
-
-  it('on accept with stale snapshot: refuses promotion + marks responded=rejected', async () => {
-    // Admin demoted the server between offer creation and the user's
-    // Accept click. Accepting the stale offer would jump the tier
-    // unexpectedly — we MUST refuse and clean up the stale offer so
-    // it doesn't keep prompting.
-    mockPromotionOffersRepository.findById.mockResolvedValue({
-      id: 'o-1',
-      user_id: 'u-1',
-      server_id: 's-1',
-      current_tier: 'observer',
-      proposed_tier: 'suggest',
-      responded_at: null,
-    });
-    mockMcpServerRepository.getById.mockResolvedValue({
-      id: 's-1',
-      trust_tier: 'low_autonomy', // different from snapshot
-    });
-    mockPromotionOffersRepository.markResponded.mockResolvedValue({ id: 'o-1' });
     const app = makeApp();
     const { status, body } = await request(app, 'POST', '/promotion-offers/o-1/respond', {
       userId: 'u-1',
       response: 'accepted',
     });
     expect(status).toBe(409);
-    expect(String(body['error'])).toContain('Server tier has changed');
-    expect(mockMcpServerRepository.updateTrustTier).not.toHaveBeenCalled();
-    expect(mockPromotionOffersRepository.markResponded).toHaveBeenCalledWith('o-1', 'rejected');
+    expect(String(body['error'])).toContain('Server no longer exists');
   });
 
-  it('on rejected/dismissed: marks responded without touching mcp_servers', async () => {
+  it('on rejected/dismissed: marks responded without invoking acceptAtomic', async () => {
     mockPromotionOffersRepository.findById.mockResolvedValue({
       id: 'o-1',
       user_id: 'u-1',
@@ -242,7 +290,7 @@ describe('POST /promotion-offers/:offerId/respond', () => {
     });
     expect(status).toBe(200);
     expect(body['promotionApplied']).toBe(false);
-    expect(mockMcpServerRepository.updateTrustTier).not.toHaveBeenCalled();
+    expect(mockPromotionOffersRepository.acceptAtomic).not.toHaveBeenCalled();
   });
 });
 
