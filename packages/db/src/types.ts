@@ -43,6 +43,8 @@ export interface TwinProfileRow {
   communication_style: Record<string, unknown>;
   routines: unknown[];
   domain_heuristics: Record<string, unknown>;
+  /** #302: per-user opt-in for the draft-email candidate generator. Defaults to FALSE in migration 047. */
+  drafts_enabled: boolean;
   created_at: Date;
   updated_at: Date;
 }

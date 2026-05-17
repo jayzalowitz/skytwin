@@ -42,6 +42,11 @@ CREATE TABLE IF NOT EXISTS twin_profiles (
   communication_style JSONB NOT NULL DEFAULT '{}',
   routines JSONB NOT NULL DEFAULT '[]',
   domain_heuristics JSONB NOT NULL DEFAULT '{}',
+  -- #302: per-user feature flag for the draft-email candidate
+  -- generator. The wiring in #295 (v0.6.30.0) is gated by a process-
+  -- wide env var (SKYTWIN_DRAFTS_ENABLED); this column AND-gates the
+  -- final check so staged per-user rollout is possible. Default FALSE.
+  drafts_enabled BOOLEAN NOT NULL DEFAULT FALSE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );

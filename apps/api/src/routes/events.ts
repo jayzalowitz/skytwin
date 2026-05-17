@@ -201,7 +201,7 @@ export function createEventsRouter(): Router {
       // AND the user has an LLM client. Returns null otherwise — no
       // construction cost, no memory roundtrip — so the default-off path
       // adds nothing to ingestion latency.
-      const draftGen = buildDraftEmailGenerator(userId, llmClient);
+      const draftGen = await buildDraftEmailGenerator(userId, llmClient);
 
       if (llmClient && llmClient.hasProviders) {
         const llmSituation = new LlmSituationStrategy(llmClient);

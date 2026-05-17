@@ -1,6 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { LlmClient } from '@skytwin/llm-client';
 
+const mockIsDraftsEnabled = vi.fn();
+
+vi.mock('@skytwin/db', () => ({
+  twinRepository: {
+    isDraftsEnabled: (...args: unknown[]) => mockIsDraftsEnabled(...args),
+  },
+}));
+
 vi.mock('../memory-setup.js', () => ({
   getMemoryPortForUser: vi.fn(async () => ({
     port: {
@@ -31,6 +39,10 @@ describe('draft-email-setup', () => {
   let original: string | undefined;
   beforeEach(() => {
     original = process.env['SKYTWIN_DRAFTS_ENABLED'];
+    mockIsDraftsEnabled.mockReset();
+    // Default for tests that don't care about the per-user flag: opted-in.
+    // Tests that exercise the per-user gate override per-test.
+    mockIsDraftsEnabled.mockResolvedValue(true);
   });
   afterEach(() => {
     if (original === undefined) {
@@ -40,8 +52,8 @@ describe('draft-email-setup', () => {
     }
   });
 
-  describe('draftsEnabled()', () => {
-    it('returns false by default (dark-deploy fail-closed)', () => {
+  describe('draftsEnabled() — global env kill-switch', () => {
+    it('returns false by default (fail-closed)', () => {
       delete process.env['SKYTWIN_DRAFTS_ENABLED'];
       expect(draftsEnabled()).toBe(false);
     });
@@ -59,42 +71,64 @@ describe('draft-email-setup', () => {
     });
   });
 
-  describe('buildDraftEmailGenerator()', () => {
-    it('returns null when the env flag is off, even with an LLM client', () => {
+  describe('buildDraftEmailGenerator() — four-gate AND', () => {
+    it('returns null when the env flag is off, even with all other gates satisfied', async () => {
       delete process.env['SKYTWIN_DRAFTS_ENABLED'];
-      expect(buildDraftEmailGenerator('u-1', fakeLlm())).toBeNull();
+      mockIsDraftsEnabled.mockResolvedValue(true);
+      expect(await buildDraftEmailGenerator('u-1', fakeLlm())).toBeNull();
+      // The cheap env check should short-circuit before any DB roundtrip.
+      expect(mockIsDraftsEnabled).not.toHaveBeenCalled();
     });
 
-    it('returns null when the env flag is on but the user has no LLM client', () => {
+    it('returns null when the env flag is on but the user has no LLM client', async () => {
       process.env['SKYTWIN_DRAFTS_ENABLED'] = 'true';
-      expect(buildDraftEmailGenerator('u-1', null)).toBeNull();
+      expect(await buildDraftEmailGenerator('u-1', null)).toBeNull();
+      // The LlmClient check is also synchronous and should short-circuit.
+      expect(mockIsDraftsEnabled).not.toHaveBeenCalled();
     });
 
-    it('returns null when the LlmClient has no configured providers', () => {
-      // Match the route's primary-strategy gate (which checks
-      // `llmClient && llmClient.hasProviders`). Without this, a user with
-      // an LlmClient instance but no providers would build a generator
-      // whose `generate()` call has nothing to route to — the candidate
-      // path silently drops to `return []` on every signal. Better to
-      // not construct the generator at all in that case.
+    it('returns null when the LlmClient has no configured providers', async () => {
       process.env['SKYTWIN_DRAFTS_ENABLED'] = 'true';
       const empty = { hasProviders: false } as unknown as LlmClient;
-      expect(buildDraftEmailGenerator('u-1', empty)).toBeNull();
+      expect(await buildDraftEmailGenerator('u-1', empty)).toBeNull();
+      expect(mockIsDraftsEnabled).not.toHaveBeenCalled();
     });
 
-    it('returns a generator when the env flag is on AND an LLM client is present', () => {
+    it('returns null when env + LlmClient are ON but the per-user flag is OFF (#302)', async () => {
+      // The whole point of #302: a staged rollout means most users have
+      // `drafts_enabled: false` and the feature stays dark for them
+      // even when the global env flag is set. Existing users were not
+      // auto-opted-in by migration 047 (DEFAULT FALSE).
       process.env['SKYTWIN_DRAFTS_ENABLED'] = 'true';
-      const gen = buildDraftEmailGenerator('u-1', fakeLlm());
+      mockIsDraftsEnabled.mockResolvedValue(false);
+      expect(await buildDraftEmailGenerator('u-1', fakeLlm())).toBeNull();
+      expect(mockIsDraftsEnabled).toHaveBeenCalledWith('u-1');
+    });
+
+    it('returns a generator when ALL four gates are satisfied', async () => {
+      process.env['SKYTWIN_DRAFTS_ENABLED'] = 'true';
+      mockIsDraftsEnabled.mockResolvedValue(true);
+      const gen = await buildDraftEmailGenerator('u-1', fakeLlm());
       expect(gen).not.toBeNull();
       expect(typeof gen!.generate).toBe('function');
+    });
+
+    it('env-flag-off path adds zero DB roundtrips (perf contract)', async () => {
+      // The default-off path is the common case in production until a
+      // user opts in. Pin that it never touches the DB for the per-user
+      // check — that would be an extra roundtrip per signal ingest.
+      delete process.env['SKYTWIN_DRAFTS_ENABLED'];
+      await buildDraftEmailGenerator('u-1', fakeLlm());
+      expect(mockIsDraftsEnabled).not.toHaveBeenCalled();
     });
   });
 
   describe('memory-port-backed AuthoredExamplesPort', () => {
     it('filters semantic hits to user-authored tiers and over-fetches to compensate', async () => {
       process.env['SKYTWIN_DRAFTS_ENABLED'] = 'true';
+      mockIsDraftsEnabled.mockResolvedValue(true);
       const llm = fakeLlm();
-      const gen = buildDraftEmailGenerator('u-1', llm);
+      const gen = await buildDraftEmailGenerator('u-1', llm);
       expect(gen).not.toBeNull();
       // Drive the generator end-to-end with a stub decision/context so the
       // examples port runs and we can observe what it returned.
