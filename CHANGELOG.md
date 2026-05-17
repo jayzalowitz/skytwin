@@ -1,5 +1,6 @@
 All notable changes to SkyTwin will be documented in this file.
 
+<<<<<<< HEAD
 ## [0.6.40.0] - 2026-05-17
 
 ### Added
@@ -23,6 +24,34 @@ All notable changes to SkyTwin will be documented in this file.
 ### Why Option B (durable table + polling) over Option A (HTTP from worker)
 
 Per the issue: restart-resilience matters. A pending offer should survive a worker crash, an API restart, or a dashboard reload. The DB table is the durable surface that survives all three; SSE is a UX optimization on top. Option A (HTTP from worker → API → SSE) would have required a new internal endpoint and a service-token, with no restart-safety properties — a pending offer would evaporate if the user's tab was closed when the SSE arrived. Option B's polling endpoint lets the dashboard catch up on offers it missed.
+=======
+## [0.6.41.0] - 2026-05-17
+
+### Added
+
+- **Draft-email eval bench (closes #301).** Quality gate that must clear before any user has `drafts_enabled` flipped on. The bench scores generated drafts against the user's actual sent replies on three metrics:
+  - **Voice** — bigram-jaccard between the draft and the actual reply. The issue's spec proposed embedding cosine; we ship bigram-jaccard as a pure-function surrogate (the memory-port doesn't expose an embed-only primitive today, and bigram-overlap captures "is this in my voice" at acceptable fidelity with zero infra cost). Migrating to embedding cosine when the memory layer exposes an embed primitive is a clean drop-in swap.
+  - **Topical** — content-word jaccard between draft and actual reply, with stop words filtered. Lower-fidelity than LLM-as-judge but free and deterministic. The LLM-judge variant is filed as a documented follow-up.
+  - **Length** — |z-score| of draft length against the user's reply length distribution. Threshold: within 2σ (per the issue spec).
+- **`runEvalBench(pairs, stats, thresholds?)`** in `@skytwin/decision-engine`. Pure: takes pre-generated drafts in `EvalPair` rows plus user reply stats, returns `{ corpusSize, voicePassRate, topicalPassRate, lengthPassRate, overallPassRate, passed, thresholds, notes, pairs[] }`. The caller is responsible for the corpus loader (gmail history → pairs) and the draft generator callback — keeping the bench testable without an LLM in the loop.
+- **`DEFAULT_EVAL_THRESHOLDS`** — voiceJaccardMin 0.25, topicalJaccardMin 0.3, lengthSigmaMax 2, overallPassRateMin 0.8, **minCorpusSize 25**. Per Copilot review: a single perfectly-matched pair can no longer green-light a user; the run must hit the corpus floor before `passed: true` is possible. Starting points; tune after the first real run.
+- **Audit trail.** New `draft_email_eval_runs` table (migration 050) stores one row per run with metric scores, threshold-pass booleans, and the thresholds captured at run time. Newest-first index on `(user_id, ran_at DESC)`.
+- **Per-user gate column.** `twin_profiles.drafts_eval_passed_at TIMESTAMPTZ` — non-NULL means the user's most-recent passing run timestamp. `recordRun()` stamps this column inside the same transaction as the insert on `result.passed === true`.
+- **`twinRepository.isDraftsEvalPassed(userId)` / `getDraftsEvalPassedAt(userId)` / `clearDraftsEvalPass(userId)`** for the dashboard / settings UI to display eval status and (operator-side) manually roll back a passing gate when a follow-up run regresses.
+- **33 new tests** across `eval-bench.test.ts` (per-metric voice / topical / length, stop-word filtering, stddev=0 degenerate case, runner aggregate pass/fail, confidence levels, threshold defaults, **jaccard-empty-returns-0 + minCorpusSize gate from Copilot review**), `twin-repository.test.ts` (6 new for the eval getters/setters), and `draft-email-eval-runs-repository.test.ts` (transaction shape, conditional twin_profiles update on pass, JSONB threshold serialization, latest/list reads).
+
+### Fixed (post-Copilot)
+
+- **`jaccard(empty, empty)` whitewashed short replies as perfect match.** "ok" vs "no" both tokenize to zero bigrams / zero content words; the old code returned 1, scoring them as perfectly aligned. Fixed to return 0 — empty evidence means failed similarity.
+- **No minimum corpus size could green-light a user from a single perfectly-matched pair.** Added `minCorpusSize` (default 25; issue spec suggested 50-100). `passed: true` now requires the corpus size threshold AND per-metric pass rates.
+
+### Not addressed (intentionally deferred)
+
+- **Wiring `drafts_eval_passed_at` into `buildDraftEmailGenerator` as a fifth AND-gate.** Now that #299 (cost gating) and #301 (this PR) both touch `buildDraftEmailGenerator`'s surrounding logic, the hookup is a small follow-up that lands AFTER both PRs merge: one `await twinRepository.isDraftsEvalPassed(userId)` check between the per-user flag check and the LlmClient construction, plus a test update. Until that follow-up ships, the eval bench is a measurement tool — running it doesn't gate generator construction.
+- **Embedding-cosine voice metric.** Bigram-jaccard surrogate ships now.
+- **LLM-as-judge topical metric.** Content-word jaccard ships now; the LLM-judge variant proposed in the issue is more sensitive but expensive (one LLM call per eval pair). The cost-gating from #299 needs to flow into the eval runs themselves before that can ship.
+- **Corpus loader from Gmail.** The bench is pure — it consumes pre-loaded `EvalPair` rows. Loading them from `signals` table (filtered to authoringTier `inbox_personal` / `inbox_work` paired with same-thread `user_sent_reply`) is its own work, filed as follow-up.
+>>>>>>> f262029 (v0.6.39.0 feat: draft-email eval bench (#301))
 
 ## [0.6.38.1] - 2026-05-17
 
@@ -58,7 +87,6 @@ Per the issue: restart-resilience matters. A pending offer should survive a work
 - **#301 (eval bench)** — must clear voice / topical / length thresholds before any user is opted in.
 - **#300 (SQL pushdown on `AuthoredExamplesPort`)** — pure optimization; not a blocker.
 - **#303 (approval-UI surface)** — the candidate lands in the existing approval pipeline, but the dashboard doesn't have a draft-specific render yet.
-
 ## [0.6.37.0] - 2026-05-17
 
 ### Added

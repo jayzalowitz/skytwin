@@ -127,6 +127,12 @@ export type {
   PromotionOfferResponse,
 } from './promotion-offers-repository.js';
 
+export { draftEmailEvalRunsRepository } from './draft-email-eval-runs-repository.js';
+export type {
+  DraftEmailEvalRunRow,
+  RecordEvalRunInput,
+} from './draft-email-eval-runs-repository.js';
+
 export { riskProfileRepository } from './risk-profile-repository.js';
 export type {
   RiskProfileRow,

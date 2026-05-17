@@ -52,6 +52,12 @@ CREATE TABLE IF NOT EXISTS twin_profiles (
   -- net for the "heavy-inbox + paid-provider" cost spiral the issue
   -- describes. Default 100 calls / 24h; tunable per user.
   drafts_daily_call_cap INT NOT NULL DEFAULT 100,
+  -- #301: per-user eval-bench gate. NULL = eval not run / not
+  -- passing. Non-NULL = the most recent eval run's pass timestamp.
+  -- buildDraftEmailGenerator refuses (in a follow-up PR) to wire
+  -- the generator unless this is non-NULL — quality gate on top of
+  -- the cost / opt-in gates.
+  drafts_eval_passed_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );

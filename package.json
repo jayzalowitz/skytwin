@@ -1,6 +1,10 @@
 {
   "name": "skytwin",
+<<<<<<< HEAD
   "version": "0.6.40.0",
+=======
+  "version": "0.6.41.0",
+>>>>>>> f262029 (v0.6.39.0 feat: draft-email eval bench (#301))
   "description": "A delegated judgment layer that builds a digital twin of your preferences and acts on your behalf — with safety constraints, explanations, and progressive trust.",
   "private": true,
   "repository": {

@@ -141,3 +141,67 @@ describe('twinRepository.setDraftsDailyCallCap (#299)', () => {
     expect(await twinRepository.setDraftsDailyCallCap('u-missing', 100)).toBeNull();
   });
 });
+
+describe('twinRepository.isDraftsEvalPassed (#301)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('returns true when the timestamp is non-null', async () => {
+    const now = new Date();
+    mockQuery.mockResolvedValue({
+      rows: [{ drafts_eval_passed_at: now }],
+      rowCount: 1,
+    });
+    expect(await twinRepository.isDraftsEvalPassed('u-1')).toBe(true);
+  });
+
+  it('returns false when the timestamp is null (eval not yet passed)', async () => {
+    mockQuery.mockResolvedValue({
+      rows: [{ drafts_eval_passed_at: null }],
+      rowCount: 1,
+    });
+    expect(await twinRepository.isDraftsEvalPassed('u-1')).toBe(false);
+  });
+
+  it('returns false when the row does not exist (fail-closed)', async () => {
+    mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
+    expect(await twinRepository.isDraftsEvalPassed('u-new')).toBe(false);
+  });
+
+  it('uses a narrow single-column SELECT (hot-path read)', async () => {
+    mockQuery.mockResolvedValue({
+      rows: [{ drafts_eval_passed_at: new Date() }],
+      rowCount: 1,
+    });
+    await twinRepository.isDraftsEvalPassed('u-1');
+    const [sql, params] = mockQuery.mock.calls[0]!;
+    expect(sql).toContain('SELECT drafts_eval_passed_at');
+    expect(sql).not.toContain('preferences');
+    expect(params).toEqual(['u-1']);
+  });
+});
+
+describe('twinRepository.clearDraftsEvalPass (#301)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('clears the timestamp via UPDATE ... RETURNING and touches updated_at', async () => {
+    mockQuery.mockResolvedValue({
+      rows: [{ id: 'p-1', drafts_eval_passed_at: null }],
+      rowCount: 1,
+    });
+    const result = await twinRepository.clearDraftsEvalPass('u-1');
+    expect(result?.id).toBe('p-1');
+    const [sql, params] = mockQuery.mock.calls[0]!;
+    expect(sql).toContain('SET drafts_eval_passed_at = NULL');
+    expect(sql).toContain('updated_at = now()');
+    expect(params).toEqual(['u-1']);
+  });
+
+  it('returns null when the user has no twin_profiles row', async () => {
+    mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
+    expect(await twinRepository.clearDraftsEvalPass('u-missing')).toBeNull();
+  });
+});
