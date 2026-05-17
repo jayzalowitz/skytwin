@@ -1,5 +1,12 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.34.0] - 2026-05-16
+
+### Changed
+
+- **Relationship-tier backfill no longer runs sequentially inside the connector poll loop (closes #282).** The daily backfill was invoked from `apps/worker/src/index.ts` as `await runRelationshipTierBackfillJob(uc.userId)` per user, sequentially. Once a single user crosses ~100k pages / ~1M signals in the 90d window, the per-user pass walks meaningful CPU and SQL time; sequential iteration across all users could starve the connector poll loop for minutes, delaying signal ingestion. The backfill now runs on a fire-and-forget scheduler with a single-flight guard: the poll loop checks "did 24h pass since the last START?" and kicks off `runRelationshipTierBackfillBatch` without awaiting. Inside the batch: worker-pool concurrency (3 users in parallel pulling from a shared queue, so a slow user doesn't block the next chunk), per-user timeout (5 minutes), and per-user error isolation. Signal ingestion is never blocked by backfill work; cadence is preserved at the 24h minimum. A scheduler-level batch failure (the helper itself rejects, distinct from per-user errors) reverts the start-timestamp so the next poll cycle retries immediately rather than waiting another 24h.
+- New `apps/worker/src/jobs/relationship-tier-scheduler.ts` carries the batch helper. Seven tests in `relationship-tier-scheduler.test.ts` pin the contract: empty-list short-circuit, per-user invocation, worker-pool concurrency cap, per-user failure isolation, end-to-end timeout via `Promise.race` + `setTimeout`, sensible production timeout constant, slow-user-does-not-block-others.
+
 ## [0.6.33.0] - 2026-05-16
 
 ### Changed
