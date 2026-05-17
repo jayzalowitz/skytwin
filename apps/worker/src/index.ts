@@ -31,6 +31,7 @@ import { runEmbeddingBackfillJob } from './jobs/embedding-backfill.js';
 import { runTierBackfillJob } from './jobs/tier-backfill.js';
 import { runRelationshipTierBackfillBatch } from './jobs/relationship-tier-scheduler.js';
 import { runBriefingGeneratorJob } from './jobs/briefing-generator.js';
+import { runPromotionEligibilityCheckJob } from './jobs/promotion-eligibility-check.js';
 
 const config = loadConfig();
 const log = createLogger('worker');
@@ -529,13 +530,12 @@ async function main(): Promise<void> {
   // a follow-up should add per-UTC-day idempotency to make the job
   // restart-safe.
   //
-  // The `promotion-eligibility-check` job is NOT wired here. It only
-  // emits SSE events, and the worker has no direct sseManager —
-  // without a worker→API SSE bridge the job would be logging-only.
-  // The DB-side tier change happens when the user clicks Accept on
-  // the dashboard's promotion modal (which the SSE event surfaces);
-  // wiring the job without the bridge would not result in any
-  // promotions being offered or applied. Tracked in #310.
+  // #310: promotion-eligibility-check is now wired. The job no longer
+  // depends on an injected SSE emitter — instead it writes pending
+  // offers to `promotion_offers`, which the API serves to the
+  // dashboard via polling (and may opportunistically SSE-emit for live
+  // connections). The worker→API bridge is the durable DB table; no
+  // direct IPC needed.
   let lastBriefingDailyAt = 0;
   const BRIEFING_DAILY_INTERVAL_MS = 24 * 60 * 60 * 1000;
   let briefingDailyInFlight = false;
@@ -543,6 +543,16 @@ async function main(): Promise<void> {
   let lastBriefingWeeklyAt = 0;
   const BRIEFING_WEEKLY_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
   let briefingWeeklyInFlight = false;
+
+  // #310: promotion-eligibility-check on a 24h cadence. Same fire-and-
+  // forget + single-flight + revert-on-failure pattern as the briefing
+  // generator. The job is idempotent — its writes go through the
+  // ON CONFLICT-guarded `promotionOffersRepository.createIfPending`,
+  // so even concurrent ticks (worker rapidly restarted) can't produce
+  // duplicate pending offers for the same (server, proposed_tier).
+  let lastPromotionEligibilityAt = 0;
+  const PROMOTION_ELIGIBILITY_INTERVAL_MS = 24 * 60 * 60 * 1000;
+  let promotionEligibilityInFlight = false;
 
   // Poll loop
   while (running) {
@@ -703,6 +713,35 @@ async function main(): Promise<void> {
         })
         .finally(() => {
           briefingWeeklyInFlight = false;
+        });
+    }
+
+    // #310: promotion-eligibility check, daily. Idempotent — writes
+    // are dedup'd by the partial unique index on (server_id,
+    // proposed_tier) WHERE responded_at IS NULL, so a re-run during
+    // the same window adds no new rows. Revert-on-failure keeps the
+    // cadence tight when a transient DB error stops a tick.
+    if (
+      !promotionEligibilityInFlight &&
+      nowMs - lastPromotionEligibilityAt >= PROMOTION_ELIGIBILITY_INTERVAL_MS
+    ) {
+      promotionEligibilityInFlight = true;
+      const previousLastAt = lastPromotionEligibilityAt;
+      lastPromotionEligibilityAt = nowMs;
+      void runPromotionEligibilityCheckJob()
+        .then((summary) => {
+          if (summary.offered > 0 || summary.alreadyPending > 0) {
+            log.info('Promotion eligibility tick complete', { ...summary });
+          }
+        })
+        .catch((err) => {
+          log.warn('Promotion eligibility check failed', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+          lastPromotionEligibilityAt = previousLastAt;
+        })
+        .finally(() => {
+          promotionEligibilityInFlight = false;
         });
     }
 

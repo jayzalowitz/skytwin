@@ -41,6 +41,11 @@ import { createFederationRouter } from './routes/federation.js';
 import { createVoiceRouter } from './routes/voice.js';
 import { createCrisisModesRouter } from './routes/crisis-modes.js';
 import { createEmbeddedLlmRouter } from './routes/embedded-llm.js';
+import {
+  createPromotionOffersRouter,
+  startPromotionOffersSweeper,
+  stopPromotionOffersSweeper,
+} from './routes/promotion-offers.js';
 import { recoverOnBoot as recoverEmbeddedLlmDownloads } from './embedded-llm/downloader.js';
 import { getExecutionRouter } from './execution-setup.js';
 import { startMdnsAdvertisement, stopMdnsAdvertisement } from './mdns.js';
@@ -242,6 +247,10 @@ app.use('/api/federation', sessionAuth, createFederationRouter()); // userId-par
 app.use('/api/voice', sessionAuth, requireOwnership, createVoiceRouter());
 app.use('/api/crisis-modes', sessionAuth, createCrisisModesRouter()); // userId-param ownership in-router
 app.use('/api/embedded-llm', sessionAuth, createEmbeddedLlmRouter()); // catalog endpoints; no userId in path
+// #310: promotion-offer durable surface. GET takes :userId in the path
+// (require-ownership enforces); POST takes offerId in the path with
+// userId in the body (cross-checked in-router).
+app.use('/api/promotion-offers', sessionAuth, createPromotionOffersRouter());
 
 // Error handling middleware
 app.use(
@@ -268,6 +277,13 @@ const server = app.listen(port, () => {
   if (config.nodeEnv !== 'production') {
     startMdnsAdvertisement(port);
   }
+  // #310: kick off the promotion-offers SSE sweeper. Watches
+  // `promotion_offers` for newly-inserted rows and emits
+  // `capability:promotion-offered` to live dashboard connections.
+  // Polling is the source of truth; this is a UX optimization for
+  // already-connected tabs. The sweeper's interval is unref'd so
+  // the process can exit cleanly.
+  startPromotionOffersSweeper();
 });
 
 // In-process metrics rollup (gated by METRICS_ROLLUP_ENABLED).
@@ -302,6 +318,7 @@ function handleShutdown(signal: string): void {
   shuttingDown = true;
   log.info(`Received ${signal}, shutting down gracefully...`);
   stopMdnsAdvertisement();
+  stopPromotionOffersSweeper();
   if (metricsRollupTimer) clearInterval(metricsRollupTimer);
   // Force exit after 25s if connections don't drain (e.g. SSE keep-alive).
   // Set below K8s default terminationGracePeriodSeconds (30s) so we clean up

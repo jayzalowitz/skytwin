@@ -93,6 +93,12 @@ export { signalRepository, proposalRepository, skillGapRepository, proactiveScan
 export { trustTierAuditRepository, spendRepository, domainAutonomyRepository, escalationTriggerRepository, preferenceHistoryRepository, sessionRepository, mempalaceRepository, serviceCredentialRepository, credentialRequirementRepository, aiProviderRepository, ironClawToolRepository, forwardedSignalsRepository, connectorCursorRepository, emailLabelRepository, assistantRepository, deriveThreadTitle, appSuggestionRepository, mcpServerRepository, riskProfileRepository, provenanceRepository, briefingRepository } from './repositories/index.js';
 export type { AppSuggestionRow, UpsertPendingSuggestionInput } from './repositories/index.js';
 export type { McpServerRow } from './repositories/index.js';
+export { promotionOffersRepository } from './repositories/index.js';
+export type {
+  PromotionOfferRow,
+  CreatePromotionOfferInput,
+  PromotionOfferResponse,
+} from './repositories/index.js';
 export type { ProvenanceNodeRow, ProvenanceEdgeRow, WriteNodeInput } from './repositories/index.js';
 export type { TwinBriefingRow, CreateTwinBriefingInput } from './repositories/index.js';
 export type {

@@ -120,6 +120,13 @@ export type {
 export { mcpServerRepository } from './mcp-server-repository.js';
 export type { McpServerRow } from './mcp-server-repository.js';
 
+export { promotionOffersRepository } from './promotion-offers-repository.js';
+export type {
+  PromotionOfferRow,
+  CreatePromotionOfferInput,
+  PromotionOfferResponse,
+} from './promotion-offers-repository.js';
+
 export { riskProfileRepository } from './risk-profile-repository.js';
 export type {
   RiskProfileRow,
