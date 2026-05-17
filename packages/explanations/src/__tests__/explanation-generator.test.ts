@@ -368,6 +368,63 @@ describe('ExplanationGenerator gatherPreferenceReferences', () => {
     expect(first?.howUsed).toContain('hello');
     expect(second?.howUsed).toContain('42');
   });
+
+  describe('capabilityProvenanceNodeId (#305)', () => {
+    it('threads the selectedAction.capabilityProvenanceNodeId onto the ExplanationRecord', async () => {
+      // Capability-pipeline action: the candidate carries the install-node id
+      // from the originating MCP server. The lineage view will walk
+      // action → explanation → capability_provenance_nodes via this field.
+      const repo = new InMemoryExplanationRepo();
+      const gen = new ExplanationGenerator(repo);
+
+      const decision = makeDecision();
+      const action = makeAction({
+        capabilityProvenanceNodeId: 'cpn-server-install-abc123',
+      });
+      const outcome = makeOutcome({
+        selectedAction: action,
+        allCandidates: [action],
+      });
+      const context = makeContext({ decision });
+
+      const record = await gen.generate(decision, outcome, context);
+      expect(record.capabilityProvenanceNodeId).toBe('cpn-server-install-abc123');
+    });
+
+    it('leaves capabilityProvenanceNodeId undefined for engine-originated actions', async () => {
+      // Rule-based / LLM-strategy / draft-email candidates do not carry a
+      // capability provenance node. The field should remain undefined so
+      // the DB row lands NULL.
+      const repo = new InMemoryExplanationRepo();
+      const gen = new ExplanationGenerator(repo);
+
+      const decision = makeDecision();
+      const outcome = makeOutcome(); // makeAction() default has no capabilityProvenanceNodeId
+      const context = makeContext({ decision });
+
+      const record = await gen.generate(decision, outcome, context);
+      expect(record.capabilityProvenanceNodeId).toBeUndefined();
+    });
+
+    it('also undefined when there is no selectedAction (no-action outcome)', async () => {
+      // Blocked-by-policy / no-candidates outcomes don't have a selected
+      // action — capabilityProvenanceNodeId stays undefined.
+      const repo = new InMemoryExplanationRepo();
+      const gen = new ExplanationGenerator(repo);
+
+      const decision = makeDecision();
+      const outcome = makeOutcome({
+        selectedAction: null,
+        allCandidates: [],
+        riskAssessment: null,
+        reasoning: 'no candidates',
+      });
+      const context = makeContext({ decision });
+
+      const record = await gen.generate(decision, outcome, context);
+      expect(record.capabilityProvenanceNodeId).toBeUndefined();
+    });
+  });
 });
 
 describe('ExplanationGenerator.formatForUser', () => {

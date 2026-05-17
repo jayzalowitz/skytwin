@@ -1,5 +1,28 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.43.0] - 2026-05-17
+
+### Added
+
+- **`ExplanationRecord.capabilityProvenanceNodeId` populated end-to-end (closes #305).** The field was declared on the type but never written to the DB — the parent epic #189 closed without finalizing the population path. Migration 051 adds `explanation_records.capability_provenance_node_id UUID REFERENCES capability_provenance_nodes(id) ON DELETE SET NULL` (with a partial index on non-null rows). `explanationRepository.create()` accepts the field, the adapter threads it through, and `ExplanationGenerator.generate()` reads `outcome.selectedAction?.capabilityProvenanceNodeId` from the candidate. New optional field on `CandidateAction` carries the id forward from candidate-generation through to the explanation row.
+- **6 new tests**: 3 in `explanation-generator.test.ts` (field threads through on capability-pipeline action; undefined on engine-originated action; undefined on no-action outcome), 3 in `explanation-repository.test.ts` (column written when set; NULL when omitted; NULL when explicitly null).
+
+### Lineage view now walks action → explanation → provenance node
+
+Concretely, this query now resolves the chain:
+\`\`\`sql
+SELECT er.*, cpn.node_type, cpn.ref_table, cpn.ref_id
+FROM explanation_records er
+JOIN capability_provenance_nodes cpn
+  ON cpn.id = er.capability_provenance_node_id
+WHERE er.decision_id = $1;
+\`\`\`
+
+### Not yet wired (intentionally deferred)
+
+- **Candidate generators don't stamp the field today.** The plumbing accepts it from any candidate that sets it; no current generator (rule-based, LLM-strategy, draft-email, sender-aware) does. The MCP-host candidate-suggestion path is the natural future consumer — when an MCP-backed candidate is generated, it should look up the most-recent \`install\` provenance node for the source server and stamp it. That's a follow-up that lands when the MCP-host candidate path itself lands (currently \`@skytwin/mcp-host\` is execution-only, not generation).
+- Until that follow-up ships, all explanation rows have \`capability_provenance_node_id = NULL\`. The plumbing is exercised by tests only.
+
 ## [0.6.42.0] - 2026-05-17
 
 ### Added

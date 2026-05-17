@@ -223,6 +223,17 @@ CREATE TABLE IF NOT EXISTS explanation_records (
   action_rationale STRING NOT NULL,
   escalation_rationale STRING,
   correction_guidance STRING NOT NULL,
+  -- #305: link to the capability_provenance_nodes row this explanation's
+  -- action originated from. NULL for engine-originated actions; populated
+  -- when the candidate carried a capability-pipeline origin. The FK and
+  -- partial index are added in migration 051 (out-of-line ADD CONSTRAINT
+  -- with a fixed name; re-runs raise SQLSTATE 42710 which the migration
+  -- runner swallows as idempotent DDL). Both the bootstrap path and the
+  -- migration path therefore converge on the same final shape — column
+  -- with ON DELETE SET NULL FK and a partial index. The FK can't be
+  -- inlined here because `capability_provenance_nodes` is declared by
+  -- migration 027, not this bootstrap schema.
+  capability_provenance_node_id UUID,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   INDEX (decision_id)
 );

@@ -13,6 +13,13 @@ export interface CreateExplanationInput {
   actionRationale: string;
   escalationRationale?: string | null;
   correctionGuidance: string;
+  /**
+   * #305: link to a `capability_provenance_nodes` row when this explanation's
+   * action originated from a capability-pipeline node. Optional — callers
+   * for engine-originated actions (rule-based, LLM-strategy, draft-email)
+   * leave it unset and the column lands NULL.
+   */
+  capabilityProvenanceNodeId?: string | null;
 }
 
 /**
@@ -26,9 +33,10 @@ export const explanationRepository = {
     const result = await query<ExplanationRecordRow>(
       `INSERT INTO explanation_records (
         decision_id, what_happened, evidence_used, preferences_invoked,
-        confidence_reasoning, action_rationale, escalation_rationale, correction_guidance
+        confidence_reasoning, action_rationale, escalation_rationale,
+        correction_guidance, capability_provenance_node_id
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
       RETURNING *`,
       [
         input.decisionId,
@@ -39,6 +47,7 @@ export const explanationRepository = {
         input.actionRationale,
         input.escalationRationale ?? null,
         input.correctionGuidance,
+        input.capabilityProvenanceNodeId ?? null,
       ],
     );
     return result.rows[0]!;

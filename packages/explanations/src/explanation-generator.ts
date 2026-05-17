@@ -76,6 +76,15 @@ export class ExplanationGenerator {
       ? outcome.riskAssessment.overallTier
       : RiskTier.NEGLIGIBLE;
 
+    // #305: thread the capability-pipeline node id from the selected action
+    // through to the explanation row. Engine-originated actions (rule-based,
+    // LLM-strategy, draft-email, etc.) leave this unset; only candidates
+    // that came from an installed capability (MCP server install, recipe)
+    // carry the field. The lineage view can then walk action → explanation
+    // → capability_provenance_nodes to answer "which capability led here?"
+    const capabilityProvenanceNodeId =
+      outcome.selectedAction?.capabilityProvenanceNodeId;
+
     const record: ExplanationRecord = {
       id: `expl_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
       decisionId: decision.id,
@@ -89,6 +98,7 @@ export class ExplanationGenerator {
       correctionGuidance,
       riskTier,
       overallConfidence,
+      capabilityProvenanceNodeId,
       createdAt: new Date(),
     };
 
