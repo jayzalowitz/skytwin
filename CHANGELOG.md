@@ -1,5 +1,17 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.35.0] - 2026-05-17
+
+### Added
+
+- **Daily + weekly briefings are now actually generated (partial close of #304).** `runBriefingGeneratorJob` shipped with the codebase but never ran — the worker's poll loop didn't kick it off. The worker now fires it on two independent single-flight + revert-on-failure schedules: daily on a 24h interval, weekly on a 7-day interval. Same fire-and-forget pattern as the relationship-tier backfill (#282), so signal ingestion is never blocked.
+- Cadences are **intervals since last START in this worker process**, not UTC-day buckets. On a worker restart the interval resets, so a rapid restart can produce one extra briefing per cadence (briefing INSERT has no ON CONFLICT guard, so the duplicate row lands). For v1 this is acceptable noise; per-UTC-day idempotency is a follow-up. The "7am user-local" / "Sunday morning" targets in the original spec remain aspirational — requires per-user timezone awareness the worker doesn't have yet.
+- Briefings run without an `LlmClient` for now (the deterministic Markdown template path). The adaptive briefing-prose path requires per-user LLM client setup that lives in the API; threading that into the worker is a separate follow-up.
+
+### Not addressed (intentionally deferred)
+
+- **`runPromotionEligibilityCheckJob` is NOT wired** in this PR. Its only side-effect is the SSE emit, and the worker has no `sseManager` — that lives in apps/api. Without a worker→API SSE bridge, calling the job would be logging-only (eligibility computed but never offered to the user, never applied to the tier). The job's docstring now says so explicitly. Tracked in #310 (the SSE-bridge prerequisite). The earlier version of this changelog entry claimed the DB-side tier ceremony runs from the worker — that was inaccurate; Copilot caught it on review.
+
 ## [0.6.34.0] - 2026-05-16
 
 ### Changed

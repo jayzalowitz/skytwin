@@ -7,17 +7,20 @@ import type { TrustTier } from '@skytwin/shared-types';
 const log = createLogger('worker:promotion-eligibility-check');
 
 /**
- * Checks all active MCP servers for tier promotion eligibility and emits
- * `capability:promotion-offered` SSE events to eligible users.
+ * Checks all active MCP servers for tier promotion eligibility and
+ * emits `capability:promotion-offered` SSE events to eligible users.
+ * That SSE event is what surfaces the promotion modal in the dashboard;
+ * the actual tier change happens when the user clicks Accept.
  *
- * Cadence: hourly. The promotion ceremony is suppressed for servers whose
- * auto_promote_paused_until is in the future.
+ * **Not wired in #304 — pending #310 (worker→API SSE bridge).** This
+ * job's only side-effect is the SSE emit; without an `emitter` the
+ * job is logging-only (eligibility computed, never offered, never
+ * applied). The worker has no direct sseManager (that lives in
+ * apps/api), so the cleanest fix is to land the bridge first and
+ * then wire this job in a follow-up. Until then this is dead code.
  *
- * **Not yet wired into the worker poll loop.** Tracked in #304 (parent
- * epic #189 closed without this wiring). Pattern when wired should
- * follow the fire-and-forget + single-flight + bounded-concurrency
- * shape established by `relationship-tier-scheduler.ts` (#282) so the
- * job doesn't block connector polling.
+ * Cadence (when wired): hourly. The promotion ceremony is suppressed
+ * for servers whose `auto_promote_paused_until` is in the future.
  *
  * The `emitter` parameter accepts any object with an `emit(userId, event, data)` method,
  * so the real sseManager can be injected in production and a stub in tests.

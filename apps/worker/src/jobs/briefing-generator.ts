@@ -16,11 +16,24 @@ const log = createLogger('worker:briefing-generator');
  *   - daily: 7am user-local time
  *   - weekly: Sunday morning
  *
- * **Not yet wired into the worker poll loop.** Tracked in #304 (the
- * "wire orphaned worker jobs" follow-up). Pattern when wired should
- * follow the fire-and-forget + single-flight + bounded-concurrency
- * shape established by `relationship-tier-scheduler.ts` (#282) so the
- * job doesn't block connector polling.
+ * Wired into the worker poll loop in #304: daily on a 24h INTERVAL,
+ * weekly on a 7-day INTERVAL. The interval is "time since last START
+ * in this worker process," not a UTC-day bucket. On worker restart
+ * the interval resets, so a rapid restart can produce one extra
+ * briefing per cadence. `briefingRepository.create` has no ON
+ * CONFLICT guard, so the duplicate lands. For v1 this is acceptable
+ * (briefings are user-visible read-only artifacts; an extra one is
+ * mild noise); a follow-up should add per-UTC-day idempotency.
+ *
+ * The "7am user-local time" / "Sunday morning" targets in the
+ * original spec remain aspirational — requires per-user timezone
+ * awareness the worker doesn't have yet.
+ *
+ * Each cadence has its own single-flight guard so a long daily pass
+ * doesn't block the weekly pass and vice versa. The worker passes no
+ * `llmClient` — the deterministic Markdown template fallback runs;
+ * the adaptive briefing-prose path requires per-user LLM client setup
+ * that lives in the API and is a separate follow-up.
  */
 
 export interface BriefingGeneratorJobDeps {

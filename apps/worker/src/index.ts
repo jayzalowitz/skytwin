@@ -30,6 +30,7 @@ import { runFederationSyncJob } from './jobs/federation-sync.js';
 import { runEmbeddingBackfillJob } from './jobs/embedding-backfill.js';
 import { runTierBackfillJob } from './jobs/tier-backfill.js';
 import { runRelationshipTierBackfillBatch } from './jobs/relationship-tier-scheduler.js';
+import { runBriefingGeneratorJob } from './jobs/briefing-generator.js';
 
 const config = loadConfig();
 const log = createLogger('worker');
@@ -515,6 +516,34 @@ async function main(): Promise<void> {
   const RELATIONSHIP_TIER_BACKFILL_INTERVAL_MS = 24 * 60 * 60 * 1000;
   let relationshipTierBackfillInFlight = false;
 
+  // #304: briefing-generator wiring (daily + weekly). Same fire-and-
+  // forget + single-flight + revert-on-failure pattern as the
+  // relationship-tier backfill above.
+  //
+  // Cadences are intervals since the last START, not UTC-day buckets:
+  // a worker restart resets the interval, which on rapid restart can
+  // cause one extra briefing per cadence. Briefings are persisted via
+  // `briefingRepository.create` without an ON CONFLICT guard, so the
+  // duplicate can land. For v1 this is acceptable (briefings are
+  // user-visible read-only artifacts; an extra one is mild noise);
+  // a follow-up should add per-UTC-day idempotency to make the job
+  // restart-safe.
+  //
+  // The `promotion-eligibility-check` job is NOT wired here. It only
+  // emits SSE events, and the worker has no direct sseManager —
+  // without a worker→API SSE bridge the job would be logging-only.
+  // The DB-side tier change happens when the user clicks Accept on
+  // the dashboard's promotion modal (which the SSE event surfaces);
+  // wiring the job without the bridge would not result in any
+  // promotions being offered or applied. Tracked in #310.
+  let lastBriefingDailyAt = 0;
+  const BRIEFING_DAILY_INTERVAL_MS = 24 * 60 * 60 * 1000;
+  let briefingDailyInFlight = false;
+
+  let lastBriefingWeeklyAt = 0;
+  const BRIEFING_WEEKLY_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
+  let briefingWeeklyInFlight = false;
+
   // Poll loop
   while (running) {
     for (const uc of userConnectors) {
@@ -627,6 +656,53 @@ async function main(): Promise<void> {
         })
         .finally(() => {
           relationshipTierBackfillInFlight = false;
+        });
+    }
+
+    // #304: briefing generation, daily and weekly. Two independent
+    // single-flight guards because the cadences are different and a
+    // long daily pass shouldn't block the weekly pass (or vice versa).
+    // `llmClient` is left undefined — the briefing-prose prompt path
+    // requires per-user LLM client setup that lives in the API
+    // (events.ts route). The deterministic Markdown template fallback
+    // runs without an LLM client and is good enough for v1; the
+    // adaptive-prose path can be wired once a worker-side LLM-per-user
+    // path lands (separate follow-up).
+    if (
+      !briefingDailyInFlight &&
+      nowMs - lastBriefingDailyAt >= BRIEFING_DAILY_INTERVAL_MS
+    ) {
+      briefingDailyInFlight = true;
+      const previousLastAt = lastBriefingDailyAt;
+      lastBriefingDailyAt = nowMs;
+      void runBriefingGeneratorJob({ cadence: 'daily' })
+        .catch((err) => {
+          log.warn('Daily briefing generator failed', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+          lastBriefingDailyAt = previousLastAt;
+        })
+        .finally(() => {
+          briefingDailyInFlight = false;
+        });
+    }
+
+    if (
+      !briefingWeeklyInFlight &&
+      nowMs - lastBriefingWeeklyAt >= BRIEFING_WEEKLY_INTERVAL_MS
+    ) {
+      briefingWeeklyInFlight = true;
+      const previousLastAt = lastBriefingWeeklyAt;
+      lastBriefingWeeklyAt = nowMs;
+      void runBriefingGeneratorJob({ cadence: 'weekly' })
+        .catch((err) => {
+          log.warn('Weekly briefing generator failed', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+          lastBriefingWeeklyAt = previousLastAt;
+        })
+        .finally(() => {
+          briefingWeeklyInFlight = false;
         });
     }
 
