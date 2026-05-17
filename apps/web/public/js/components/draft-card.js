@@ -57,7 +57,6 @@ export function renderDraftEmailCard(a, action) {
   const replyToSubject =
     typeof params.replyToSubject === 'string' ? params.replyToSubject : '';
   const confidenceText = confidenceCopy(action.confidence);
-  const subtitle = groundingSubtitle(examplesUsed, replyToFrom);
 
   // Estimate display lines for the textarea: at least 4, at most 12;
   // matches the issue's "one to four short paragraphs" prompt budget.
@@ -67,9 +66,21 @@ export function renderDraftEmailCard(a, action) {
   const userId = a.userId || '';
   const id = a.id;
 
+  // `subtitle` is an HTML fragment composed from a hard-coded template
+  // plus `replyToFrom` (inbound sender, UNTRUSTED — comes from raw email
+  // From headers). Escape the dynamic piece BEFORE building the subtitle
+  // so the only HTML in it comes from our own static strings. (Copilot
+  // caught this: interpolating `replyToFrom` raw would have been an XSS
+  // injection point via a crafted display name.)
+  const subtitle = groundingSubtitle(examplesUsed, escapeHtml(replyToFrom));
+
   return `
     <div class="draft-email-card" data-card-type="draft_email">
-      <div class="draft-email-meta" style="font-size: 0.82rem; color: var(--text-dim); margin: 0.25rem 0 0.5rem;">
+      <div
+        class="draft-email-meta"
+        id="draft-meta-${escapeHtml(id)}"
+        style="font-size: 0.82rem; color: var(--text-dim); margin: 0.25rem 0 0.5rem;"
+      >
         ${subtitle} <span style="margin-left: 0.4rem;">— ${escapeHtml(confidenceText)}.</span>
       </div>
       ${replyToSubject || replyToFrom ? `
