@@ -1,4 +1,4 @@
-import type { MemoryPort } from './port.js';
+import type { MemoryPort, SearchSemanticOptions } from './port.js';
 import type {
   RawSignal,
   KnowledgeEntity,
@@ -100,8 +100,12 @@ export class SignalsRouter implements MemoryPort {
     return this.backend.getTriples(subject, predicate, object);
   }
 
-  async searchSemantic(query: string, k: number): Promise<SemanticHit[]> {
-    return this.backend.searchSemantic(query, k);
+  async searchSemantic(
+    query: string,
+    k: number,
+    options?: SearchSemanticOptions,
+  ): Promise<SemanticHit[]> {
+    return this.backend.searchSemantic(query, k, options);
   }
 
   // ── Aggregations with polyfill fallback ───────────────────────────

@@ -36,20 +36,43 @@ vi.mock('@skytwin/db', () => ({
   },
 }));
 
+// #300 — semantic search now accepts an authoring-tier filter as a third
+// argument. The mock honors the filter so the test pins the
+// SQL-pushdown contract end-to-end: callers pass `options.authoringTier`,
+// the backend returns only matching rows, and the port no longer
+// over-fetches + client-side-filters.
+const mockSearchSemanticArgs: Array<{
+  query: string;
+  k: number;
+  options?: { authoringTier?: string[] };
+}> = [];
 vi.mock('../memory-setup.js', () => ({
   getMemoryPortForUser: vi.fn(async () => ({
     port: {
-      searchSemantic: vi.fn(async (_q: string, k: number) => [
-        // Tier values are stamped on brain_pages.metadata.authoringTier
-        // by the connectors / backfill worker (#251 Layer 1 + #271). Mix
-        // user-authored and inbox tiers so the filter has real work to
-        // do.
-        { id: 'h1', score: 0.9, content: 'sent reply A', source: 'gmail', metadata: { authoringTier: 'user_sent_reply', subject: 'A' } },
-        { id: 'h2', score: 0.8, content: 'inbox personal', source: 'gmail', metadata: { authoringTier: 'inbox_personal' } },
-        { id: 'h3', score: 0.7, content: 'sent originated B', source: 'gmail', metadata: { authoringTier: 'user_sent_originated', subject: 'B' } },
-        { id: 'h4', score: 0.6, content: 'newsletter', source: 'gmail', metadata: { authoringTier: 'inbox_newsletter' } },
-        { id: 'h5', score: 0.5, content: 'untagged', source: 'gmail' },
-      ].slice(0, k)),
+      searchSemantic: vi.fn(
+        async (
+          query: string,
+          k: number,
+          options?: { authoringTier?: string[] },
+        ) => {
+          mockSearchSemanticArgs.push({ query, k, ...(options ? { options } : {}) });
+          const corpus = [
+            { id: 'h1', score: 0.9, content: 'sent reply A', source: 'gmail', metadata: { authoringTier: 'user_sent_reply', subject: 'A' } },
+            { id: 'h2', score: 0.8, content: 'inbox personal', source: 'gmail', metadata: { authoringTier: 'inbox_personal' } },
+            { id: 'h3', score: 0.7, content: 'sent originated B', source: 'gmail', metadata: { authoringTier: 'user_sent_originated', subject: 'B' } },
+            { id: 'h4', score: 0.6, content: 'newsletter', source: 'gmail', metadata: { authoringTier: 'inbox_newsletter' } },
+            { id: 'h5', score: 0.5, content: 'untagged', source: 'gmail' as const, metadata: undefined as Record<string, unknown> | undefined },
+          ];
+          const tiers = options?.authoringTier;
+          const filtered = tiers && tiers.length > 0
+            ? corpus.filter((hit) => {
+                const tier = hit.metadata?.['authoringTier'];
+                return typeof tier === 'string' && tiers.includes(tier);
+              })
+            : corpus;
+          return filtered.slice(0, k);
+        },
+      ),
     },
   })),
 }));
@@ -297,14 +320,17 @@ describe('draft-email-setup', () => {
   });
 
   describe('memory-port-backed AuthoredExamplesPort', () => {
-    it('filters semantic hits to user-authored tiers and over-fetches to compensate', async () => {
+    // #300: post-pushdown contract. The port no longer over-fetches —
+    // it requests exactly k results AND a SQL-side filter on
+    // authoringTier IN ('user_sent_originated', 'user_sent_reply').
+    // The mock honors the filter and returns only matching corpus rows.
+    it('pushes the authoringTier filter into searchSemantic options', async () => {
       process.env['SKYTWIN_DRAFTS_ENABLED'] = 'true';
       mockIsDraftsEnabled.mockResolvedValue(true);
+      mockSearchSemanticArgs.length = 0;
       const llm = fakeLlm();
       const gen = await buildDraftEmailGenerator('u-1', llm);
       expect(gen).not.toBeNull();
-      // Drive the generator end-to-end with a stub decision/context so the
-      // examples port runs and we can observe what it returned.
       const result = await gen!.generate(
         {
           id: 'd-1',
@@ -318,11 +344,22 @@ describe('draft-email-setup', () => {
         {} as never,
         {} as never,
       );
-      // The generator produces one draft candidate.
       expect(result).toHaveLength(1);
-      // The candidate's `examplesUsed` reflects only the user-authored
-      // hits (h1, h3) — the inbox tiers and the untagged hit are filtered
-      // out by the port.
+
+      // 1) The port called searchSemantic with the user-authored tier list.
+      expect(mockSearchSemanticArgs.length).toBeGreaterThan(0);
+      const lastCall = mockSearchSemanticArgs[mockSearchSemanticArgs.length - 1]!;
+      expect(lastCall.options?.authoringTier).toEqual([
+        'user_sent_originated',
+        'user_sent_reply',
+      ]);
+      // 2) k passed straight through — no over-fetch multiplier.
+      //    The generator asks for some k; the port asks the backend
+      //    for the SAME k. Pre-#300, this would have been k*3 or 6.
+      expect(lastCall.k).toBeGreaterThan(0);
+
+      // 3) The candidate's `examplesUsed` reflects only user-authored
+      //    hits (h1, h3). The mock's SQL-side filter dropped inbox tiers.
       expect((result[0]!.parameters as Record<string, unknown>)['examplesUsed']).toBe(2);
     });
   });

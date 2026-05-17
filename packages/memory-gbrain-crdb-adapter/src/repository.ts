@@ -238,6 +238,19 @@ export interface HybridSearchOptions {
    * `metadata.userOverride: 'hidden'`).
    */
   tierWeight?: (metadata: unknown) => number;
+  /**
+   * Optional SQL-side metadata filter (#300). When set, both the text
+   * search and the vector search add
+   * `WHERE metadata->>'authoringTier' = ANY($N)` so only matching rows
+   * land in the candidate pool. Lets callers request k results and
+   * receive up to k MATCHING results, instead of k-times-over_fetch
+   * candidates narrowed in JS afterwards. The metadata column has a
+   * GIN index; the planner can use it for the `->>` accessor when the
+   * cardinality of the array is small.
+   *
+   * Empty array or absent → no filter (identical to pre-#300 behavior).
+   */
+  authoringTier?: string[];
 }
 
 /**
@@ -253,11 +266,15 @@ export async function hybridSearch(opts: HybridSearchOptions): Promise<RrfHit[]>
   const candidatePool = opts.candidatePoolSize ?? Math.max(opts.k * 4, 40);
   const rrfK = opts.rrfK ?? 60;
   const scanLimit = opts.scanLimit ?? 5000;
+  const tierFilter =
+    opts.authoringTier && opts.authoringTier.length > 0
+      ? opts.authoringTier
+      : undefined;
 
   const [textHits, vectorHits] = await Promise.all([
-    textSearch(opts.userId, opts.query, candidatePool),
+    textSearch(opts.userId, opts.query, candidatePool, tierFilter),
     opts.queryEmbedding
-      ? vectorSearch(opts.userId, opts.queryEmbedding, candidatePool, scanLimit)
+      ? vectorSearch(opts.userId, opts.queryEmbedding, candidatePool, scanLimit, tierFilter)
       : Promise.resolve([] as Array<{ page: BrainPageRow; score: number }>),
   ]);
 
@@ -279,19 +296,36 @@ export async function textSearch(
   userId: string,
   q: string,
   limit: number,
+  authoringTier?: string[],
 ): Promise<ScoredHit[]> {
   const sanitised = q.trim();
   if (!sanitised) return [];
 
-  const result = await query<BrainPageRow & { rank: number }>(
-    `SELECT bp.*, ts_rank_cd(bp.content_tsv, plainto_tsquery('english', $2)) AS rank
-       FROM brain_pages bp
-      WHERE bp.user_id = $1
-        AND bp.content_tsv @@ plainto_tsquery('english', $2)
-      ORDER BY rank DESC
-      LIMIT $3`,
-    [userId, sanitised, limit],
-  );
+  // #300: optional metadata filter, pushed into SQL so the candidate
+  // pool returned by the planner already matches the caller's filter.
+  // Without this, the caller has to over-fetch (k * factor) and narrow
+  // client-side — which scales the candidate pool by 1/filter_rate
+  // and runs out of recall on noisy corpora.
+  const useFilter = authoringTier && authoringTier.length > 0;
+  const sql = useFilter
+    ? `SELECT bp.*, ts_rank_cd(bp.content_tsv, plainto_tsquery('english', $2)) AS rank
+         FROM brain_pages bp
+        WHERE bp.user_id = $1
+          AND bp.content_tsv @@ plainto_tsquery('english', $2)
+          AND bp.metadata->>'authoringTier' = ANY($4)
+        ORDER BY rank DESC
+        LIMIT $3`
+    : `SELECT bp.*, ts_rank_cd(bp.content_tsv, plainto_tsquery('english', $2)) AS rank
+         FROM brain_pages bp
+        WHERE bp.user_id = $1
+          AND bp.content_tsv @@ plainto_tsquery('english', $2)
+        ORDER BY rank DESC
+        LIMIT $3`;
+  const params: unknown[] = useFilter
+    ? [userId, sanitised, limit, authoringTier]
+    : [userId, sanitised, limit];
+
+  const result = await query<BrainPageRow & { rank: number }>(sql, params);
 
   return result.rows.map((row) => ({
     page: parsePageRow(row),
@@ -309,16 +343,34 @@ export async function vectorSearch(
   queryEmbedding: number[],
   limit: number,
   scanLimit: number,
+  authoringTier?: string[],
 ): Promise<ScoredHit[]> {
-  const result = await query<BrainPageRow>(
-    `SELECT *
-       FROM brain_pages
-      WHERE user_id = $1
-        AND embedding IS NOT NULL
-      ORDER BY created_at DESC
-      LIMIT $2`,
-    [userId, scanLimit],
-  );
+  // #300: optional metadata filter pushed into SQL. Same shape as
+  // textSearch above — only matching rows enter the cosine-similarity
+  // scoring loop. Without this, the loop scored every row (or
+  // scanLimit, whichever is smaller) and the caller had to narrow
+  // client-side, defeating the cosine-similarity ranking when most
+  // top-scoring rows don't match the filter.
+  const useFilter = authoringTier && authoringTier.length > 0;
+  const sql = useFilter
+    ? `SELECT *
+         FROM brain_pages
+        WHERE user_id = $1
+          AND embedding IS NOT NULL
+          AND metadata->>'authoringTier' = ANY($3)
+        ORDER BY created_at DESC
+        LIMIT $2`
+    : `SELECT *
+         FROM brain_pages
+        WHERE user_id = $1
+          AND embedding IS NOT NULL
+        ORDER BY created_at DESC
+        LIMIT $2`;
+  const params: unknown[] = useFilter
+    ? [userId, scanLimit, authoringTier]
+    : [userId, scanLimit];
+
+  const result = await query<BrainPageRow>(sql, params);
 
   const scored: ScoredHit[] = [];
   for (const raw of result.rows) {

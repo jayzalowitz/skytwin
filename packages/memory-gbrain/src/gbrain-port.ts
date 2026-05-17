@@ -7,6 +7,7 @@ import type {
   KnowledgeTriple,
   Episode,
   SemanticHit,
+  SearchSemanticOptions,
   GraphWalkSpec,
   KnowledgeNode,
   TimeRange,
@@ -101,7 +102,11 @@ export class GbrainMemoryPort implements MemoryPort {
    * Never logs the query text (PII avoidance). Only logs operation name and
    * result count.
    */
-  async searchSemantic(_query: string, k: number): Promise<SemanticHit[]> {
+  async searchSemantic(
+    _query: string,
+    k: number,
+    options?: SearchSemanticOptions,
+  ): Promise<SemanticHit[]> {
     if (!this.installed) {
       return [];
     }
@@ -125,9 +130,16 @@ export class GbrainMemoryPort implements MemoryPort {
         return [];
       }
 
+      const tierFilter = options?.authoringTier?.length ? new Set(options.authoringTier) : null;
       const hits: SemanticHit[] = [];
       for (const item of parsed) {
         if (isGbrainHit(item)) {
+          if (tierFilter) {
+            const metaTier = (item.metadata as Record<string, unknown> | undefined)?.[
+              'authoringTier'
+            ];
+            if (typeof metaTier !== 'string' || !tierFilter.has(metaTier)) continue;
+          }
           hits.push({
             id: item.id,
             score: item.score,

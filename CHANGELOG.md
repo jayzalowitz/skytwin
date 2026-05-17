@@ -1,5 +1,19 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.45.0] - 2026-05-17
+
+### Changed
+
+- **SQL-pushdown `authoringTier` filter on `searchSemantic` (closes #300).** The `MemoryPort.searchSemantic(query, k, options?)` surface now accepts a third `options` argument with `authoringTier?: readonly string[]`. CRDB-backed adapters push the filter into `WHERE metadata->>'authoringTier' = ANY($N)` on both the text and vector legs of the RRF fold, so the caller asks for `k` results and gets up to `k` MATCHING results — no more over-fetch + client-side narrowing.
+- **Caller change in `apps/api/src/draft-email-setup.ts`.** `buildAuthoredExamplesPort()` now passes `{ authoringTier: ['user_sent_originated', 'user_sent_reply'] }` to `searchSemantic` and drops the `OVER_FETCH_FACTOR=3` + `MIN_FETCH_FLOOR=6` constants entirely. With native pushdown, the candidate pool is filtered before RRF runs, so the cosine-similarity ranking isn't defeated by noisy inbox tiers dominating the top-k.
+- **New `SearchSemanticOptions` interface in `@skytwin/memory-port`.** Documented contract: implementations SHOULD push the filter natively; adapters that cannot SHOULD polyfill (fetch generous pool, filter, slice). MemPalace adapter is empty-fallback today so the filter is accepted and ignored; CLI-shellout `GbrainMemoryPort` polyfills client-side from the gbrain CLI's JSON output (over-fetches `max(k*4, 40)` when a filter is set, narrows, then early-exits at `k`).
+- **Migration 052: inverted index on `brain_pages.metadata`.** Adds `CREATE INVERTED INDEX brain_pages_metadata_idx ON brain_pages (metadata)`. CRDB inverted indexes on JSONB support the `->>` text-accessor equality / ANY predicates the #300 filter uses, so the planner narrows by the index before applying ts_rank / cosine — avoids a per-user scan on corpora with tens of thousands of pages.
+- **Tests pinning the SQL-pushdown contract.** 6 new tests in `memory-gbrain-crdb-adapter`'s `in-memory-repository.test.ts` (text + vector + hybrid filter narrows, empty array = no filter, non-string tier values rejected, missing-metadata pages dropped under filter), 2 new tests in `memory-gbrain`'s `embedded-port.test.ts` (options.authoringTier threads through to backend), and the `draft-email-setup.test.ts` regression suite updated to pin the new contract (mock honors the filter, asserts no over-fetch).
+
+### Why this matters
+
+The draft-email generator was over-fetching `k * 3` (floor 6) hits, then client-side-filtering down to user-authored tiers. On noisy corpora (e.g. a user with thousands of inbox emails and dozens of sent ones), the candidate pool's top scores were dominated by inbox-tier matches — and the cosine-similarity ranking the RRF fold relies on never saw the authored hits because they fell off the over-fetch window. Pushing the filter into SQL means the cosine-similarity scoring loop only ever sees rows the caller wants, so retrieval quality scales with corpus size without runaway memory transfer.
+
 ## [0.6.44.0] - 2026-05-17
 
 ### Added

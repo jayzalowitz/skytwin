@@ -2,6 +2,7 @@ import type {
   MemoryPort,
   MemoryCapability,
   RawSignal,
+  SearchSemanticOptions,
   KnowledgeEntity,
   KnowledgeTriple,
   Episode,
@@ -380,7 +381,11 @@ export class EmbeddedGbrainMemoryPort implements MemoryPort {
 
   // ── Read ──────────────────────────────────────────────────────────────────
 
-  async searchSemantic(query: string, k: number): Promise<SemanticHit[]> {
+  async searchSemantic(
+    query: string,
+    k: number,
+    options?: SearchSemanticOptions,
+  ): Promise<SemanticHit[]> {
     if (!query.trim()) return [];
     let embedding: number[] | undefined;
     if (this.embedQueriesSync) {
@@ -393,7 +398,7 @@ export class EmbeddedGbrainMemoryPort implements MemoryPort {
       }
     }
 
-    const hits = await this.searchInternal(query, k, embedding);
+    const hits = await this.searchInternal(query, k, embedding, options);
     return hits.map(rrfHitToSemanticHit);
   }
 
@@ -417,6 +422,7 @@ export class EmbeddedGbrainMemoryPort implements MemoryPort {
     queryText: string,
     k: number,
     queryEmbedding?: number[],
+    options?: SearchSemanticOptions,
   ): Promise<RrfHit[]> {
     // Per-query default per the docstring: max(k*4, 40). Previously the
     // constructor pinned a 40 floor that ignored k, so k=20 queries pulled
@@ -428,6 +434,13 @@ export class EmbeddedGbrainMemoryPort implements MemoryPort {
     // schema, transient DB hiccup) we silently fall back to pure RRF.
     const tierWeight = await this.resolveTierWeightFn();
 
+    // #300: surface the authoring-tier filter to both store + CRDB
+    // backends. Empty list → omitted, treated as "no filter."
+    const authoringTier =
+      options?.authoringTier && options.authoringTier.length > 0
+        ? options.authoringTier
+        : undefined;
+
     if (this.backend === 'memory') {
       return this.store!.hybridSearch({
         userId: this.userId,
@@ -437,6 +450,7 @@ export class EmbeddedGbrainMemoryPort implements MemoryPort {
         candidatePoolSize,
         rrfK: this.rrfK,
         ...(tierWeight ? { tierWeight } : {}),
+        ...(authoringTier ? { authoringTier } : {}),
       });
     }
     const repo = await this.crdb();
@@ -448,6 +462,7 @@ export class EmbeddedGbrainMemoryPort implements MemoryPort {
       candidatePoolSize,
       rrfK: this.rrfK,
       ...(tierWeight ? { tierWeight } : {}),
+      ...(authoringTier ? { authoringTier } : {}),
     });
   }
 
