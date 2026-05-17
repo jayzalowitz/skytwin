@@ -130,7 +130,7 @@ export class InMemoryBrainStore {
    */
   private pageMatchesTierFilter(
     page: BrainPageRow,
-    authoringTier?: string[],
+    authoringTier?: readonly string[],
   ): boolean {
     if (!authoringTier || authoringTier.length === 0) return true;
     const tier = (page.metadata as Record<string, unknown>)?.['authoringTier'];
@@ -142,7 +142,7 @@ export class InMemoryBrainStore {
     userId: string,
     q: string,
     limit: number,
-    authoringTier?: string[],
+    authoringTier?: readonly string[],
   ): ScoredHit[] {
     const queryTokens = new Set(tokenise(q));
     if (queryTokens.size === 0) return [];
@@ -168,7 +168,7 @@ export class InMemoryBrainStore {
     userId: string,
     queryEmbedding: number[],
     limit: number,
-    authoringTier?: string[],
+    authoringTier?: readonly string[],
   ): ScoredHit[] {
     const scored: ScoredHit[] = [];
     for (const page of this.pages.values()) {
@@ -194,7 +194,7 @@ export class InMemoryBrainStore {
      * #300: same authoring-tier filter as the CRDB hybridSearch.
      * Empty array or absent → no filter (identical to pre-#300).
      */
-    authoringTier?: string[];
+    authoringTier?: readonly string[];
   }): RrfHit[] {
     const pool = opts.candidatePoolSize ?? Math.max(opts.k * 4, 40);
     const rrfK = opts.rrfK ?? 60;

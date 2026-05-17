@@ -44,8 +44,13 @@ export interface SearchSemanticOptions {
    * `user_sent_reply`, `inbox_personal`, `inbox_broadcast`,
    * `inbox_newsletter`, `inbox_automated`. Email-shaped today; the
    * vocabulary will expand as other connectors stamp the field.
+   *
+   * Typed as `readonly string[]` so callers can pass `const`/`readonly`
+   * tuples without an allocation-only `[...spread]` clone (Copilot
+   * caught this on the post-#300 review). Implementations treat the
+   * array as read-only input regardless of how it was constructed.
    */
-  authoringTier?: string[];
+  authoringTier?: readonly string[];
 }
 
 export interface MemoryPort {

@@ -77,7 +77,9 @@ function buildAuthoredExamplesPort(userId: string): AuthoredExamplesPort {
     ): Promise<Array<{ content: string; subject?: string }>> {
       const resolved = await getMemoryPortForUser(userId);
       const hits = await resolved.port.searchSemantic(query, k, {
-        authoringTier: [...USER_AUTHORED_TIERS],
+        // `SearchSemanticOptions.authoringTier` accepts `readonly string[]`,
+        // so we pass the module-scope const tuple directly — no spread.
+        authoringTier: USER_AUTHORED_TIERS,
       });
       return hits.map((hit) => {
         const subject =

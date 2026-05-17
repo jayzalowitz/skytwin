@@ -111,13 +111,24 @@ export class GbrainMemoryPort implements MemoryPort {
       return [];
     }
 
+    // Polyfill contract (#300): when a tier filter is set, the CLI can't
+    // push the predicate, so over-fetch then narrow + slice — otherwise
+    // a small `k` with a strict filter could return zero hits when the
+    // unfiltered top-k happened to be all inbox-tier matches. Same shape
+    // as the pre-#300 client-side filter in draft-email-setup. With no
+    // filter, k is passed through 1:1.
+    const tierFilter = options?.authoringTier?.length
+      ? new Set(options.authoringTier)
+      : null;
+    const fetchLimit = tierFilter ? Math.max(k * 4, 40) : k;
+
     try {
       // execFileSync (no shell) — args are passed directly to argv, so the
       // user-supplied query cannot inject shell metacharacters ($(), backticks,
       // ;, &&, etc.). Do not switch back to execSync without re-evaluating.
       const raw = execFileSync(
         'gbrain',
-        ['search', '--json', `--query=${_query}`, `--limit=${String(k)}`],
+        ['search', '--json', `--query=${_query}`, `--limit=${String(fetchLimit)}`],
         { timeout: GBRAIN_TIMEOUT_MS, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
       );
 
@@ -130,7 +141,6 @@ export class GbrainMemoryPort implements MemoryPort {
         return [];
       }
 
-      const tierFilter = options?.authoringTier?.length ? new Set(options.authoringTier) : null;
       const hits: SemanticHit[] = [];
       for (const item of parsed) {
         if (isGbrainHit(item)) {
@@ -147,6 +157,7 @@ export class GbrainMemoryPort implements MemoryPort {
             source: item.source,
             metadata: item.metadata,
           });
+          if (hits.length >= k) break;
         }
       }
 

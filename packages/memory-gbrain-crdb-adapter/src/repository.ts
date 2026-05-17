@@ -244,13 +244,20 @@ export interface HybridSearchOptions {
    * `WHERE metadata->>'authoringTier' = ANY($N)` so only matching rows
    * land in the candidate pool. Lets callers request k results and
    * receive up to k MATCHING results, instead of k-times-over_fetch
-   * candidates narrowed in JS afterwards. The metadata column has a
-   * GIN index; the planner can use it for the `->>` accessor when the
-   * cardinality of the array is small.
+   * candidates narrowed in JS afterwards.
    *
-   * Empty array or absent → no filter (identical to pre-#300 behavior).
+   * Index coverage: migration 052 adds `INVERTED INDEX
+   * brain_pages_metadata_idx ON brain_pages (metadata)`. CockroachDB
+   * inverted indexes on JSONB support the `->>` text accessor with
+   * equality / ANY predicates, so the planner narrows by the index
+   * before applying ts_rank / cosine — avoids a full per-user scan
+   * on corpora with tens of thousands of pages.
+   *
+   * Typed as `readonly string[]` so callers can pass `const` tuples
+   * without an allocation-only spread. Empty array or absent → no
+   * filter (identical to pre-#300 behavior).
    */
-  authoringTier?: string[];
+  authoringTier?: readonly string[];
 }
 
 /**
@@ -296,7 +303,7 @@ export async function textSearch(
   userId: string,
   q: string,
   limit: number,
-  authoringTier?: string[],
+  authoringTier?: readonly string[],
 ): Promise<ScoredHit[]> {
   const sanitised = q.trim();
   if (!sanitised) return [];
@@ -343,7 +350,7 @@ export async function vectorSearch(
   queryEmbedding: number[],
   limit: number,
   scanLimit: number,
-  authoringTier?: string[],
+  authoringTier?: readonly string[],
 ): Promise<ScoredHit[]> {
   // #300: optional metadata filter pushed into SQL. Same shape as
   // textSearch above — only matching rows enter the cosine-similarity
