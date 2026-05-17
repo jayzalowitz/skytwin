@@ -1,4 +1,4 @@
-import { query } from '../connection.js';
+import { query, withTransaction } from '../connection.js';
 
 /**
  * Per-call ledger for the draft-email feature (#299).
@@ -70,5 +70,98 @@ export const draftEmailCallsRepository = {
       ],
     );
     return result.rows[0]!;
+  },
+
+  /**
+   * Atomically check the per-day call cap and reserve a row in one
+   * transaction. Mirrors `spendRepository.checkAndRecordSpend` —
+   * CockroachDB serializable isolation makes the "SELECT COUNT(*)
+   * then INSERT" pair race-safe when both run inside the same txn.
+   *
+   * Without this, two concurrent signal ingests for the same user
+   * could each observe `count < cap` in their separate COUNTs and
+   * both go on to call the LLM, collectively overshooting the cap by
+   * up to N (where N = concurrent ingest workers). Copilot caught
+   * the race on the original COUNT-then-later-INSERT shape.
+   *
+   * Returns `{ allowed, count, record }`:
+   *   - `allowed: true`  → row inserted, `count` is the post-insert
+   *     total, `record` is the inserted row
+   *   - `allowed: false` → cap reached; `record` is null and no row
+   *     was inserted; `count` is the pre-attempt total
+   *
+   * The reservation row starts with `succeeded: true` optimistically;
+   * `updateOutcome()` flips it to `false` when the LLM call fails so
+   * the ledger reflects reality (and a future analytics pass can
+   * distinguish "LLM made it" from "LLM tried but failed").
+   */
+  async checkAndReserveCall(input: {
+    userId: string;
+    decisionId?: string | null;
+    provider?: string | null;
+    estimatedCostCents?: number;
+    cap: number;
+    windowHours?: number;
+  }): Promise<{
+    allowed: boolean;
+    count: number;
+    record: DraftEmailCallRow | null;
+  }> {
+    return withTransaction(async (client) => {
+      const windowHours = input.windowHours ?? 24;
+      const totalResult = await client.query<{ count: string | null }>(
+        `SELECT COUNT(*)::TEXT AS count
+         FROM draft_email_calls
+         WHERE user_id = $1
+           AND called_at >= now() - ($2::INT * INTERVAL '1 hour')`,
+        [input.userId, windowHours],
+      );
+      const currentCount = parseInt(totalResult.rows[0]?.count ?? '0', 10);
+
+      if (currentCount >= input.cap) {
+        return { allowed: false, count: currentCount, record: null };
+      }
+
+      const insertResult = await client.query<DraftEmailCallRow>(
+        `INSERT INTO draft_email_calls
+           (user_id, decision_id, estimated_cost_cents, provider, succeeded)
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING *`,
+        [
+          input.userId,
+          input.decisionId ?? null,
+          input.estimatedCostCents ?? 0,
+          input.provider ?? null,
+          true,
+        ],
+      );
+      return {
+        allowed: true,
+        count: currentCount + 1,
+        record: insertResult.rows[0]!,
+      };
+    });
+  },
+
+  /**
+   * Update a previously-reserved row with the actual provider used
+   * by the LlmClient chain (which can fall through past the gate's
+   * estimate) and the success flag. Returns null when the row
+   * doesn't exist (e.g. record() was called without a prior
+   * reservation — should not happen on the normal path).
+   */
+  async updateOutcome(input: {
+    id: string;
+    provider: string | null;
+    succeeded: boolean;
+  }): Promise<DraftEmailCallRow | null> {
+    const result = await query<DraftEmailCallRow>(
+      `UPDATE draft_email_calls
+       SET provider = $1, succeeded = $2
+       WHERE id = $3
+       RETURNING *`,
+      [input.provider, input.succeeded, input.id],
+    );
+    return result.rows[0] ?? null;
   },
 };

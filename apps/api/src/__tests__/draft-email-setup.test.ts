@@ -4,12 +4,12 @@ import type { CostGatePort } from '@skytwin/decision-engine';
 
 const mockIsDraftsEnabled = vi.fn();
 const mockGetDraftsDailyCallCap = vi.fn();
-const mockCountInWindow = vi.fn();
+const mockCheckAndReserveCall = vi.fn();
+const mockUpdateOutcome = vi.fn();
 const mockRecordCall = vi.fn();
 const mockGetEnabledForUser = vi.fn();
 const mockUserFindById = vi.fn();
-const mockSpendGetDaily = vi.fn();
-const mockSpendGetMonthly = vi.fn();
+const mockCheckAndRecordSpend = vi.fn();
 const mockSpendReconcile = vi.fn();
 
 vi.mock('@skytwin/db', () => ({
@@ -18,7 +18,8 @@ vi.mock('@skytwin/db', () => ({
     getDraftsDailyCallCap: (...args: unknown[]) => mockGetDraftsDailyCallCap(...args),
   },
   draftEmailCallsRepository: {
-    countInWindow: (...args: unknown[]) => mockCountInWindow(...args),
+    checkAndReserveCall: (...args: unknown[]) => mockCheckAndReserveCall(...args),
+    updateOutcome: (...args: unknown[]) => mockUpdateOutcome(...args),
     record: (...args: unknown[]) => mockRecordCall(...args),
   },
   aiProviderRepository: {
@@ -28,8 +29,7 @@ vi.mock('@skytwin/db', () => ({
     findById: (...args: unknown[]) => mockUserFindById(...args),
   },
   spendRepository: {
-    getDailyTotal: (...args: unknown[]) => mockSpendGetDaily(...args),
-    getMonthlyTotal: (...args: unknown[]) => mockSpendGetMonthly(...args),
+    checkAndRecordSpend: (...args: unknown[]) => mockCheckAndRecordSpend(...args),
     reconcile: (...args: unknown[]) => mockSpendReconcile(...args),
   },
 }));
@@ -66,12 +66,12 @@ describe('draft-email-setup', () => {
     original = process.env['SKYTWIN_DRAFTS_ENABLED'];
     mockIsDraftsEnabled.mockReset();
     mockGetDraftsDailyCallCap.mockReset();
-    mockCountInWindow.mockReset();
+    mockCheckAndReserveCall.mockReset();
+    mockUpdateOutcome.mockReset();
     mockRecordCall.mockReset();
     mockGetEnabledForUser.mockReset();
     mockUserFindById.mockReset();
-    mockSpendGetDaily.mockReset();
-    mockSpendGetMonthly.mockReset();
+    mockCheckAndRecordSpend.mockReset();
     mockSpendReconcile.mockReset();
     // Default for tests that don't care about the per-user flag: opted-in.
     // Tests that exercise the per-user gate override per-test.
@@ -83,13 +83,20 @@ describe('draft-email-setup', () => {
     ]);
     // Defaults so the gate's READ side never blocks unless overridden.
     mockGetDraftsDailyCallCap.mockResolvedValue(100);
-    mockCountInWindow.mockResolvedValue(0);
+    mockCheckAndReserveCall.mockResolvedValue({
+      allowed: true,
+      count: 1,
+      record: { id: 'cr-1' },
+    });
     mockUserFindById.mockResolvedValue({
       id: 'u-1',
       autonomy_settings: { maxSpendPerActionCents: 100, maxDailySpendCents: 1000 },
     });
-    mockSpendGetDaily.mockResolvedValue(0);
-    mockSpendGetMonthly.mockResolvedValue(0);
+    mockCheckAndRecordSpend.mockResolvedValue({
+      allowed: true,
+      currentTotal: 5,
+      record: { id: 'sr-1' },
+    });
   });
   afterEach(() => {
     if (original === undefined) {

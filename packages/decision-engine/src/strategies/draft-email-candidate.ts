@@ -37,7 +37,7 @@ import type {
 } from '@skytwin/shared-types';
 import type { LlmClient } from '@skytwin/llm-client';
 import type { CandidateGenerator } from './candidate-strategy.js';
-import type { CostGatePort } from '../cost-gate.js';
+import type { CostGatePort, CostGateReservation } from '../cost-gate.js';
 import { isTrivialAutoEmail } from '../cost-gate.js';
 import { randomUUID } from 'node:crypto';
 
@@ -182,19 +182,24 @@ export class DraftEmailCandidateGenerator implements CandidateGenerator {
     // Cost gate check (#299). When wired, this runs BEFORE the memory
     // port query and the LLM call — both of which cost money or
     // latency. If the gate refuses, return an empty list without
-    // touching either dependency.
+    // touching either dependency. On allow, the gate hands back an
+    // opaque reservation handle we MUST pass to record() so the
+    // gate can finalize the reservation (write the ACTUAL provider
+    // and outcome, reconcile spend on failure).
+    let reservation: CostGateReservation | undefined;
     if (this.costGate) {
-      const decision_ = await this.costGate.check({
+      const gateDecision = await this.costGate.check({
         userId: _context.userId,
         decisionId: decision.id,
         estimatedCostCents: this.estimatedCostCents,
       });
-      if (!decision_.allowed) {
+      if (!gateDecision.allowed) {
         // No log here — the decision-engine package doesn't pull in
         // a logger. The gate implementation is responsible for any
         // structured log entry on its end.
         return [];
       }
+      reservation = gateDecision.reservation;
     }
 
     // Build the query the memory layer will use to pull similar
@@ -227,6 +232,15 @@ export class DraftEmailCandidateGenerator implements CandidateGenerator {
 
     let draftBody: string;
     let llmSucceeded = false;
+    // `actualProvider` is the provider the LlmClient actually routed
+    // to (from `LlmResponse.provider`). May differ from the gate's
+    // pre-call estimate (`this.provider`) when an earlier provider
+    // in the chain trips a circuit breaker and the client falls
+    // through. We pass the ACTUAL provider to gate.record() so the
+    // ledger and the spend reconciliation reflect reality — Copilot
+    // caught the case where an embedded-priority user could fall
+    // through to cloud and have the call recorded as zero-cost.
+    let actualProvider = this.provider;
     try {
       const response = await this.llmClient.generate(prompt, {
         temperature: 0.5,
@@ -240,6 +254,7 @@ export class DraftEmailCandidateGenerator implements CandidateGenerator {
       });
       draftBody = response.content.trim();
       llmSucceeded = true;
+      if (response.provider) actualProvider = response.provider;
     } catch (err) {
       // If the LLM call fails the whole feature degrades to "no draft
       // proposed this time" — that's strictly better than a bad
@@ -260,8 +275,9 @@ export class DraftEmailCandidateGenerator implements CandidateGenerator {
           userId: _context.userId,
           decisionId: decision.id,
           estimatedCostCents: this.estimatedCostCents,
-          provider: this.provider,
+          provider: actualProvider,
           succeeded: llmSucceeded,
+          reservation,
         });
       } catch (err) {
         // Same rationale as the memory-port catch: degrade gracefully.

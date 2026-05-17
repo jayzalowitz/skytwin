@@ -28,7 +28,11 @@ export type {
   DraftEmailCandidateGeneratorOptions,
 } from './strategies/draft-email-candidate.js';
 export { isTrivialAutoEmail } from './cost-gate.js';
-export type { CostGatePort, CostGateDecision } from './cost-gate.js';
+export type {
+  CostGatePort,
+  CostGateDecision,
+  CostGateReservation,
+} from './cost-gate.js';
 
 export type {
   WhatWouldIDoRequest,

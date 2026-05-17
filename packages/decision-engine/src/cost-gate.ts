@@ -20,6 +20,23 @@
 export interface CostGateDecision {
   allowed: boolean;
   reason: string;
+  /**
+   * Opaque reservation handle. The gate impl uses this to find the
+   * row it pre-reserved during check() and update it in record() —
+   * the call ledger's `provider` column gets the actual provider the
+   * LlmClient ended up using (which can fall through past the
+   * gate's estimate when an earlier provider trips its circuit
+   * breaker), and `succeeded` reflects the real outcome. Callers
+   * MUST pass this back to record() so the gate can finalize the
+   * reservation. Undefined when `allowed` is false (no reservation
+   * was made).
+   */
+  reservation?: CostGateReservation;
+}
+
+export interface CostGateReservation {
+  /** Ledger row id from the gate's atomic reserve step. */
+  callRecordId: string;
 }
 
 export interface CostGatePort {
@@ -33,8 +50,18 @@ export interface CostGatePort {
     userId: string;
     decisionId: string;
     estimatedCostCents: number;
+    /**
+     * Actual provider the LlmClient routed to (from
+     * `LlmResponse.provider`). May differ from the gate's pre-call
+     * estimate when an earlier provider in the chain failed and the
+     * client fell through. The gate uses this to (a) write the real
+     * provider to the call ledger and (b) reconcile the spend
+     * reservation — embedded/Ollama gets reconciled to 0 cents.
+     */
     provider: string;
     succeeded: boolean;
+    /** Pass back the reservation handle from check(). */
+    reservation?: CostGateReservation;
   }): Promise<void>;
 }
 
