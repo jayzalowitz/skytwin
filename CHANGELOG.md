@@ -1,5 +1,27 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.42.0] - 2026-05-17
+
+### Added
+
+- **Eval-bench gate wired into `buildDraftEmailGenerator` (closes #314).** The fifth and final AND-gate on top of the four established in #295 / #299 / #301 / #302. A user can manually flip `drafts_enabled = true`, but the generator still refuses to construct until `twin_profiles.drafts_eval_passed_at IS NOT NULL` — proving the eval bench cleared all metric thresholds (voice / topical / length) on a corpus large enough to trust (#301's `minCorpusSize` floor). This is the quality gate on top of the opt-in gate: "the generator produces drafts you would actually send" must be proven on a held-out corpus before drafts can fire for this user.
+- The check runs AFTER `drafts_enabled` (so the staged-rollout cohort costs at most one extra DB read, never two) and BEFORE cost-gate construction. Same fail-closed contract as the per-user flag: a transient DB error treats the gate as off, so `/api/events/ingest` never rejects.
+- File docstring updated from "two flags" / "four gates" framing to the canonical five-gate AND. New tests pin: (a) per-user-ON + eval-NOT-passed returns null, (b) per-user-OFF short-circuits before the eval read, (c) eval-bench read errors fail closed.
+
+### Drafts feature is now structurally complete
+
+With #314 merged, every gate the design called for is in place:
+
+| Gate | Source | Default | What it gates |
+|------|--------|---------|---------------|
+| Env flag | `SKYTWIN_DRAFTS_ENABLED` | off | Global incident kill-switch |
+| LlmClient | per-user `ai_provider_settings` | absent | Provider chain to route to |
+| Per-user opt-in | `twin_profiles.drafts_enabled` (#302) | FALSE | Staged rollout |
+| Eval bench passed | `twin_profiles.drafts_eval_passed_at` (#301 + #314) | NULL | Quality on held-out corpus |
+| Cost gate | call cap + spend cap (#299) | 100/day, $0/day until configured | Runtime cost bound |
+
+Remaining pre-flip work is operational, not structural: write a corpus loader for the eval bench, run it for the first opt-in users, tune thresholds against real distributions, surface the draft candidate in the approval UI (#303). The deploy decision itself (#283) is unblocked.
+
 ## [0.6.41.0] - 2026-05-17
 
 ### Added

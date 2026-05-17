@@ -3,6 +3,7 @@ import type { LlmClient } from '@skytwin/llm-client';
 import type { CostGatePort } from '@skytwin/decision-engine';
 
 const mockIsDraftsEnabled = vi.fn();
+const mockIsDraftsEvalPassed = vi.fn();
 const mockGetDraftsDailyCallCap = vi.fn();
 const mockCheckAndReserveCall = vi.fn();
 const mockUpdateOutcome = vi.fn();
@@ -15,6 +16,7 @@ const mockSpendReconcile = vi.fn();
 vi.mock('@skytwin/db', () => ({
   twinRepository: {
     isDraftsEnabled: (...args: unknown[]) => mockIsDraftsEnabled(...args),
+    isDraftsEvalPassed: (...args: unknown[]) => mockIsDraftsEvalPassed(...args),
     getDraftsDailyCallCap: (...args: unknown[]) => mockGetDraftsDailyCallCap(...args),
   },
   draftEmailCallsRepository: {
@@ -65,6 +67,7 @@ describe('draft-email-setup', () => {
   beforeEach(() => {
     original = process.env['SKYTWIN_DRAFTS_ENABLED'];
     mockIsDraftsEnabled.mockReset();
+    mockIsDraftsEvalPassed.mockReset();
     mockGetDraftsDailyCallCap.mockReset();
     mockCheckAndReserveCall.mockReset();
     mockUpdateOutcome.mockReset();
@@ -76,6 +79,9 @@ describe('draft-email-setup', () => {
     // Default for tests that don't care about the per-user flag: opted-in.
     // Tests that exercise the per-user gate override per-test.
     mockIsDraftsEnabled.mockResolvedValue(true);
+    // Default eval gate: passed. Tests that exercise the eval gate
+    // override per-test.
+    mockIsDraftsEvalPassed.mockResolvedValue(true);
     // Default AI providers: a single embedded provider — cheapest path,
     // so the conservative cost estimate stays at 0 cents.
     mockGetEnabledForUser.mockResolvedValue([
@@ -125,7 +131,7 @@ describe('draft-email-setup', () => {
     });
   });
 
-  describe('buildDraftEmailGenerator() — four-gate AND', () => {
+  describe('buildDraftEmailGenerator() — five-gate AND', () => {
     it('returns null when the env flag is off, even with all other gates satisfied', async () => {
       delete process.env['SKYTWIN_DRAFTS_ENABLED'];
       mockIsDraftsEnabled.mockResolvedValue(true);
@@ -159,12 +165,51 @@ describe('draft-email-setup', () => {
       expect(mockIsDraftsEnabled).toHaveBeenCalledWith('u-1');
     });
 
-    it('returns a generator when ALL four gates are satisfied', async () => {
+    it('returns null when the per-user flag is ON but the eval-bench gate has NOT passed (#314)', async () => {
+      // #314: the quality gate sits on top of the opt-in gate. A user
+      // can manually flip `drafts_enabled` but the generator still
+      // refuses until `drafts_eval_passed_at` is non-NULL — preventing
+      // the "sounds plausible" failure mode where a generator produces
+      // drafts that don't actually match the user's voice / topic /
+      // length distribution.
       process.env['SKYTWIN_DRAFTS_ENABLED'] = 'true';
       mockIsDraftsEnabled.mockResolvedValue(true);
+      mockIsDraftsEvalPassed.mockResolvedValue(false);
+      expect(await buildDraftEmailGenerator('u-1', fakeLlm())).toBeNull();
+      expect(mockIsDraftsEnabled).toHaveBeenCalledWith('u-1');
+      expect(mockIsDraftsEvalPassed).toHaveBeenCalledWith('u-1');
+    });
+
+    it('returns a generator when ALL five gates are satisfied', async () => {
+      process.env['SKYTWIN_DRAFTS_ENABLED'] = 'true';
+      mockIsDraftsEnabled.mockResolvedValue(true);
+      mockIsDraftsEvalPassed.mockResolvedValue(true);
       const gen = await buildDraftEmailGenerator('u-1', fakeLlm());
       expect(gen).not.toBeNull();
       expect(typeof gen!.generate).toBe('function');
+    });
+
+    it('per-user-OFF path stops before the eval check (perf contract: drafts_enabled short-circuits)', async () => {
+      // Staged-rollout cohort cost: at most ONE extra DB read for the
+      // drafts_enabled lookup, never two. The eval-bench check must
+      // only run for users who have opted in.
+      process.env['SKYTWIN_DRAFTS_ENABLED'] = 'true';
+      mockIsDraftsEnabled.mockResolvedValue(false);
+      await buildDraftEmailGenerator('u-1', fakeLlm());
+      expect(mockIsDraftsEnabled).toHaveBeenCalled();
+      expect(mockIsDraftsEvalPassed).not.toHaveBeenCalled();
+    });
+
+    it('fails closed when the eval-bench gate read errors (mirrors per-user flag contract)', async () => {
+      // Critical safety contract: the eval-bench read MUST NOT
+      // propagate. Same rationale as the per-user flag — events.ts
+      // depends on this function never rejecting. Treat as "feature
+      // off" for this signal ingest.
+      process.env['SKYTWIN_DRAFTS_ENABLED'] = 'true';
+      mockIsDraftsEnabled.mockResolvedValue(true);
+      mockIsDraftsEvalPassed.mockRejectedValue(new Error('CRDB pool exhausted'));
+      const result = await buildDraftEmailGenerator('u-1', fakeLlm());
+      expect(result).toBeNull();
     });
 
     it('queries AI providers to pick the cost-cheapest one for the cost estimate (#299)', async () => {
