@@ -30,7 +30,10 @@ import {
 } from '@skytwin/decision-engine';
 import type { LlmClient } from '@skytwin/llm-client';
 import { twinRepository } from '@skytwin/db';
+import { createLogger } from '@skytwin/core';
 import { getMemoryPortForUser } from './memory-setup.js';
+
+const log = createLogger('api:draft-email-setup');
 
 /**
  * Whether the global kill-switch is set. Controlled by
@@ -129,11 +132,34 @@ export async function buildDraftEmailGenerator(
 ): Promise<CandidateGenerator | null> {
   if (!draftsEnabled()) return null;
   if (!llmClient || !llmClient.hasProviders) return null;
-  // Per-user flag check (#302). FAIL-CLOSED: a user with no
-  // twin_profiles row yet returns false here, so the feature only
-  // engages after the profile exists AND the user has explicitly
-  // opted in via dashboard/settings.
-  const perUserEnabled = await twinRepository.isDraftsEnabled(userId);
+  // Per-user flag check (#302). FAIL-CLOSED on every failure mode:
+  //
+  //   - User has no `twin_profiles` row yet → returns false (handled by
+  //     the repo: empty SELECT → falsy default).
+  //   - DB unreachable, query timeout, or column missing during a
+  //     migration rollout → we MUST NOT propagate the error. The
+  //     events.ts route depends on this function to never reject, so
+  //     a transient DB hiccup here can't be allowed to fail
+  //     `/api/events/ingest` — that would take down signal ingestion
+  //     for every LLM-configured user just because an optional opt-in
+  //     read failed. Catch, log once, and treat as "feature off" —
+  //     the same outcome the disabled state lands on.
+  //
+  // Caching the per-user boolean (with invalidation from
+  // `setDraftsEnabled`) would avoid one DB roundtrip per signal-ingest
+  // for the eligible cohort. Left as a follow-up — the read is a
+  // single-column SELECT on a unique-indexed column, so latency is
+  // bounded even without a cache.
+  let perUserEnabled = false;
+  try {
+    perUserEnabled = await twinRepository.isDraftsEnabled(userId);
+  } catch (err) {
+    log.warn('Draft-email per-user flag read failed; treating as off (fail-closed)', {
+      userId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
   if (!perUserEnabled) return null;
   const examples = buildAuthoredExamplesPort(userId);
   return new DraftEmailCandidateGenerator(llmClient, examples);

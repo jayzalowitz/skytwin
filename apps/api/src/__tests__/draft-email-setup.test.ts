@@ -121,6 +121,20 @@ describe('draft-email-setup', () => {
       await buildDraftEmailGenerator('u-1', fakeLlm());
       expect(mockIsDraftsEnabled).not.toHaveBeenCalled();
     });
+
+    it('fails closed (returns null, does not throw) when the per-user flag read errors', async () => {
+      // Critical safety contract: a transient DB hiccup on the per-user
+      // flag read MUST NOT propagate. The events.ts route depends on
+      // this function never rejecting; a thrown error here would take
+      // down `/api/events/ingest` for every LLM-configured user during
+      // a DB blip, a migration window where the column doesn't exist
+      // yet, etc. Catch and treat as "feature off" — same outcome as
+      // the disabled state.
+      process.env['SKYTWIN_DRAFTS_ENABLED'] = 'true';
+      mockIsDraftsEnabled.mockRejectedValue(new Error('CRDB pool exhausted'));
+      const result = await buildDraftEmailGenerator('u-1', fakeLlm());
+      expect(result).toBeNull();
+    });
   });
 
   describe('memory-port-backed AuthoredExamplesPort', () => {
