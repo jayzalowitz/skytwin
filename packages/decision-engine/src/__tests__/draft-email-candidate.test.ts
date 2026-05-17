@@ -14,6 +14,48 @@ import {
   MAX_EXAMPLE_CHARS,
   type AuthoredExamplesPort,
 } from '../strategies/draft-email-candidate.js';
+import type { CostGatePort } from '../cost-gate.js';
+
+function makeFakeGate(opts: {
+  allowed?: boolean;
+  reason?: string;
+  recordThrows?: boolean;
+  checkThrows?: boolean;
+} = {}): {
+  gate: CostGatePort;
+  checkCalls: Array<{ userId: string; decisionId: string; estimatedCostCents: number }>;
+  recordCalls: Array<{
+    userId: string;
+    decisionId: string;
+    estimatedCostCents: number;
+    provider: string;
+    succeeded: boolean;
+  }>;
+} {
+  const checkCalls: Array<{ userId: string; decisionId: string; estimatedCostCents: number }> = [];
+  const recordCalls: Array<{
+    userId: string;
+    decisionId: string;
+    estimatedCostCents: number;
+    provider: string;
+    succeeded: boolean;
+  }> = [];
+  const gate: CostGatePort = {
+    async check(input) {
+      checkCalls.push(input);
+      if (opts.checkThrows) throw new Error('gate-check-down');
+      return {
+        allowed: opts.allowed ?? true,
+        reason: opts.reason ?? 'ok',
+      };
+    },
+    async record(input) {
+      recordCalls.push(input);
+      if (opts.recordThrows) throw new Error('gate-record-down');
+    },
+  };
+  return { gate, checkCalls, recordCalls };
+}
 
 /**
  * Minimal LlmClient double — only `.generate()` is touched. Cast to
@@ -418,6 +460,180 @@ describe('DraftEmailCandidateGenerator — query construction', () => {
     await gen.generate(decision, PROFILE, CONTEXT);
     // No double spaces from empty join fields
     expect(calls[0]!.query).toBe('Only subject here');
+  });
+});
+
+describe('DraftEmailCandidateGenerator — trivial-signal short-circuit (#299)', () => {
+  it('skips drafting when the inbound is from a noreply address even if requiresResponse is true', async () => {
+    const { client, calls: llmCalls } = makeFakeLlm('reply body');
+    const { port, calls: examplesCalls } = makeFakeExamples([]);
+    const gen = new DraftEmailCandidateGenerator(client, port);
+    const out = await gen.generate(
+      makeEmailDecision({
+        subject: 'Real-looking subject',
+        body: 'Real-looking body',
+        from: 'noreply@example.com',
+        requiresResponse: true,
+      }),
+      PROFILE,
+      CONTEXT,
+    );
+    expect(out).toHaveLength(0);
+    // The trivial filter runs BEFORE the memory port and BEFORE the LLM —
+    // neither should have been touched.
+    expect(examplesCalls).toHaveLength(0);
+    expect(llmCalls).toHaveLength(0);
+  });
+
+  it('skips drafting for an out-of-office subject from a real address', async () => {
+    const { client, calls: llmCalls } = makeFakeLlm('reply body');
+    const { port, calls: examplesCalls } = makeFakeExamples([]);
+    const gen = new DraftEmailCandidateGenerator(client, port);
+    const out = await gen.generate(
+      makeEmailDecision({
+        subject: 'Re: Out of office until Monday',
+        from: 'colleague@example.com',
+        body: 'I am away',
+        requiresResponse: true,
+      }),
+      PROFILE,
+      CONTEXT,
+    );
+    expect(out).toHaveLength(0);
+    expect(examplesCalls).toHaveLength(0);
+    expect(llmCalls).toHaveLength(0);
+  });
+
+  it('drafts as normal when the inbound is a real signal', async () => {
+    const { client, calls: llmCalls } = makeFakeLlm('reply body');
+    const { port } = makeFakeExamples([{ content: 'one' }]);
+    const gen = new DraftEmailCandidateGenerator(client, port);
+    const out = await gen.generate(
+      makeEmailDecision({
+        subject: 'Real subject',
+        from: 'colleague@example.com',
+        body: 'Real body',
+        requiresResponse: true,
+      }),
+      PROFILE,
+      CONTEXT,
+    );
+    expect(out).toHaveLength(1);
+    expect(llmCalls).toHaveLength(1);
+  });
+});
+
+describe('DraftEmailCandidateGenerator — cost gate (#299)', () => {
+  it('returns an empty candidate list when the gate refuses (per-day cap reached)', async () => {
+    const { client, calls: llmCalls } = makeFakeLlm('reply body');
+    const { port, calls: examplesCalls } = makeFakeExamples([{ content: 'one' }]);
+    const { gate, checkCalls, recordCalls } = makeFakeGate({
+      allowed: false,
+      reason: 'Daily draft-email call cap reached (100/100 in 24h).',
+    });
+    const gen = new DraftEmailCandidateGenerator(client, port, {
+      costGate: gate,
+      estimatedCostCents: 5,
+      provider: 'anthropic',
+    });
+    const out = await gen.generate(
+      makeEmailDecision({ subject: 'Q', from: 'colleague@example.com', body: 'B' }),
+      PROFILE,
+      CONTEXT,
+    );
+    expect(out).toHaveLength(0);
+    // The gate ran with the wired estimate and the decision context userId.
+    expect(checkCalls).toHaveLength(1);
+    expect(checkCalls[0]!.userId).toBe('u');
+    expect(checkCalls[0]!.estimatedCostCents).toBe(5);
+    // The expensive paths must not have run when the gate refused.
+    expect(examplesCalls).toHaveLength(0);
+    expect(llmCalls).toHaveLength(0);
+    // And we did NOT record a call on the ledger — the gate refused before
+    // we attempted one.
+    expect(recordCalls).toHaveLength(0);
+  });
+
+  it('records a successful call on the gate ledger after a successful LLM invocation', async () => {
+    const { client, calls: llmCalls } = makeFakeLlm('Final draft body');
+    const { port } = makeFakeExamples([{ content: 'one' }]);
+    const { gate, checkCalls, recordCalls } = makeFakeGate({ allowed: true });
+    const gen = new DraftEmailCandidateGenerator(client, port, {
+      costGate: gate,
+      estimatedCostCents: 5,
+      provider: 'anthropic',
+    });
+    const out = await gen.generate(
+      makeEmailDecision({ subject: 'Q', from: 'colleague@example.com', body: 'B' }),
+      PROFILE,
+      CONTEXT,
+    );
+    expect(out).toHaveLength(1);
+    expect(llmCalls).toHaveLength(1);
+    expect(checkCalls).toHaveLength(1);
+    expect(recordCalls).toHaveLength(1);
+    expect(recordCalls[0]!.succeeded).toBe(true);
+    expect(recordCalls[0]!.provider).toBe('anthropic');
+    expect(recordCalls[0]!.estimatedCostCents).toBe(5);
+  });
+
+  it('records a FAILED call on the ledger when the LLM throws — so a flapping provider still counts against the daily cap', async () => {
+    const { client } = makeFakeLlm('', { throwOnGenerate: true });
+    const { port } = makeFakeExamples([{ content: 'one' }]);
+    const { gate, recordCalls } = makeFakeGate({ allowed: true });
+    const gen = new DraftEmailCandidateGenerator(client, port, {
+      costGate: gate,
+      estimatedCostCents: 5,
+      provider: 'anthropic',
+    });
+    const out = await gen.generate(
+      makeEmailDecision({ subject: 'Q', from: 'colleague@example.com', body: 'B' }),
+      PROFILE,
+      CONTEXT,
+    );
+    expect(out).toHaveLength(0);
+    expect(recordCalls).toHaveLength(1);
+    expect(recordCalls[0]!.succeeded).toBe(false);
+  });
+
+  it('does not propagate a gate.record() error — the candidate must still land', async () => {
+    const { client } = makeFakeLlm('body');
+    const { port } = makeFakeExamples([{ content: 'one' }]);
+    const { gate } = makeFakeGate({ allowed: true, recordThrows: true });
+    const gen = new DraftEmailCandidateGenerator(client, port, {
+      costGate: gate,
+      estimatedCostCents: 5,
+      provider: 'anthropic',
+    });
+    // No throw. The draft still lands.
+    const out = await gen.generate(
+      makeEmailDecision({ subject: 'Q', from: 'colleague@example.com', body: 'B' }),
+      PROFILE,
+      CONTEXT,
+    );
+    expect(out).toHaveLength(1);
+  });
+
+  it('skips the gate entirely (back-compat) when no costGate option is provided', async () => {
+    const { client, calls: llmCalls } = makeFakeLlm('body');
+    const { port } = makeFakeExamples([{ content: 'one' }]);
+    const gen = new DraftEmailCandidateGenerator(client, port);
+    const out = await gen.generate(
+      makeEmailDecision({ subject: 'Q', from: 'colleague@example.com', body: 'B' }),
+      PROFILE,
+      CONTEXT,
+    );
+    expect(out).toHaveLength(1);
+    expect(llmCalls).toHaveLength(1);
+  });
+
+  it('honors the back-compat positional exampleCount (third arg as a number)', async () => {
+    const { client } = makeFakeLlm('body');
+    const { port, calls: searchCalls } = makeFakeExamples([]);
+    // Pre-#299 callers passed a number here.
+    const gen = new DraftEmailCandidateGenerator(client, port, 2);
+    await gen.generate(makeEmailDecision({ subject: 's' }), PROFILE, CONTEXT);
+    expect(searchCalls[0]!.k).toBe(2);
   });
 });
 

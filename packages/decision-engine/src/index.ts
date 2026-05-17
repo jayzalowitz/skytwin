@@ -23,7 +23,12 @@ export {
   DEFAULT_AUTHORED_EXAMPLE_COUNT,
   MAX_EXAMPLE_CHARS,
 } from './strategies/draft-email-candidate.js';
-export type { AuthoredExamplesPort } from './strategies/draft-email-candidate.js';
+export type {
+  AuthoredExamplesPort,
+  DraftEmailCandidateGeneratorOptions,
+} from './strategies/draft-email-candidate.js';
+export { isTrivialAutoEmail } from './cost-gate.js';
+export type { CostGatePort, CostGateDecision } from './cost-gate.js';
 
 export type {
   WhatWouldIDoRequest,

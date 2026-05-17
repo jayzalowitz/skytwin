@@ -55,6 +55,47 @@ export const twinRepository = {
   },
 
   /**
+   * #299: read-side of the per-user per-day call cap for draft-email.
+   * Narrow SELECT; cost gate calls this once per opted-in signal-
+   * ingest. Returns the schema default (100) when the user has no
+   * twin_profile row yet — fail-safe-toward-restrictive: a missing
+   * row could only mean the user has never been touched by
+   * `getOrCreateProfile`, so the gate falls back to the documented
+   * default rather than letting an unbounded number of calls through.
+   */
+  async getDraftsDailyCallCap(userId: string): Promise<number> {
+    const result = await query<{ drafts_daily_call_cap: number }>(
+      'SELECT drafts_daily_call_cap FROM twin_profiles WHERE user_id = $1',
+      [userId],
+    );
+    return result.rows[0]?.drafts_daily_call_cap ?? 100;
+  },
+
+  /**
+   * #299: write-side of the per-user per-day call cap. Used by the
+   * settings UI for per-user tuning. Returns the updated row, or null
+   * when the user has no twin_profile row yet.
+   */
+  async setDraftsDailyCallCap(
+    userId: string,
+    cap: number,
+  ): Promise<TwinProfileRow | null> {
+    if (!Number.isInteger(cap) || cap < 0) {
+      throw new Error(
+        `drafts_daily_call_cap must be a non-negative integer; got ${cap}`,
+      );
+    }
+    const result = await query<TwinProfileRow>(
+      `UPDATE twin_profiles
+       SET drafts_daily_call_cap = $1, updated_at = now()
+       WHERE user_id = $2
+       RETURNING *`,
+      [cap, userId],
+    );
+    return result.rows[0] ?? null;
+  },
+
+  /**
    * Get the current twin profile for a user.
    */
   async getProfile(userId: string): Promise<TwinProfileRow | null> {

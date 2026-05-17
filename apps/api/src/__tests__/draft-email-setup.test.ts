@@ -1,11 +1,36 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { LlmClient } from '@skytwin/llm-client';
+import type { CostGatePort } from '@skytwin/decision-engine';
 
 const mockIsDraftsEnabled = vi.fn();
+const mockGetDraftsDailyCallCap = vi.fn();
+const mockCountInWindow = vi.fn();
+const mockRecordCall = vi.fn();
+const mockGetEnabledForUser = vi.fn();
+const mockUserFindById = vi.fn();
+const mockSpendGetDaily = vi.fn();
+const mockSpendGetMonthly = vi.fn();
+const mockSpendReconcile = vi.fn();
 
 vi.mock('@skytwin/db', () => ({
   twinRepository: {
     isDraftsEnabled: (...args: unknown[]) => mockIsDraftsEnabled(...args),
+    getDraftsDailyCallCap: (...args: unknown[]) => mockGetDraftsDailyCallCap(...args),
+  },
+  draftEmailCallsRepository: {
+    countInWindow: (...args: unknown[]) => mockCountInWindow(...args),
+    record: (...args: unknown[]) => mockRecordCall(...args),
+  },
+  aiProviderRepository: {
+    getEnabledForUser: (...args: unknown[]) => mockGetEnabledForUser(...args),
+  },
+  userRepository: {
+    findById: (...args: unknown[]) => mockUserFindById(...args),
+  },
+  spendRepository: {
+    getDailyTotal: (...args: unknown[]) => mockSpendGetDaily(...args),
+    getMonthlyTotal: (...args: unknown[]) => mockSpendGetMonthly(...args),
+    reconcile: (...args: unknown[]) => mockSpendReconcile(...args),
   },
 }));
 
@@ -40,9 +65,31 @@ describe('draft-email-setup', () => {
   beforeEach(() => {
     original = process.env['SKYTWIN_DRAFTS_ENABLED'];
     mockIsDraftsEnabled.mockReset();
+    mockGetDraftsDailyCallCap.mockReset();
+    mockCountInWindow.mockReset();
+    mockRecordCall.mockReset();
+    mockGetEnabledForUser.mockReset();
+    mockUserFindById.mockReset();
+    mockSpendGetDaily.mockReset();
+    mockSpendGetMonthly.mockReset();
+    mockSpendReconcile.mockReset();
     // Default for tests that don't care about the per-user flag: opted-in.
     // Tests that exercise the per-user gate override per-test.
     mockIsDraftsEnabled.mockResolvedValue(true);
+    // Default AI providers: a single embedded provider — cheapest path,
+    // so the conservative cost estimate stays at 0 cents.
+    mockGetEnabledForUser.mockResolvedValue([
+      { provider: 'embedded', api_key: '', model: 'phi-3', base_url: null, priority: 0 },
+    ]);
+    // Defaults so the gate's READ side never blocks unless overridden.
+    mockGetDraftsDailyCallCap.mockResolvedValue(100);
+    mockCountInWindow.mockResolvedValue(0);
+    mockUserFindById.mockResolvedValue({
+      id: 'u-1',
+      autonomy_settings: { maxSpendPerActionCents: 100, maxDailySpendCents: 1000 },
+    });
+    mockSpendGetDaily.mockResolvedValue(0);
+    mockSpendGetMonthly.mockResolvedValue(0);
   });
   afterEach(() => {
     if (original === undefined) {
@@ -111,6 +158,66 @@ describe('draft-email-setup', () => {
       const gen = await buildDraftEmailGenerator('u-1', fakeLlm());
       expect(gen).not.toBeNull();
       expect(typeof gen!.generate).toBe('function');
+    });
+
+    it('queries AI providers to pick the cost-cheapest one for the cost estimate (#299)', async () => {
+      process.env['SKYTWIN_DRAFTS_ENABLED'] = 'true';
+      // User has both anthropic AND embedded enabled. The cost-preferred
+      // resolver should pick embedded (cost-rank 0) → 0 cent estimate.
+      mockGetEnabledForUser.mockResolvedValue([
+        { provider: 'anthropic', api_key: 'sk-...', model: 'claude-3-5-sonnet', base_url: null, priority: 0 },
+        { provider: 'embedded', api_key: '', model: 'phi-3', base_url: null, priority: 1 },
+      ]);
+      const gen = await buildDraftEmailGenerator('u-1', fakeLlm());
+      expect(gen).not.toBeNull();
+      expect(mockGetEnabledForUser).toHaveBeenCalledWith('u-1');
+    });
+
+    it('falls through to a conservative cost estimate when the AI-provider read errors (fail-safe-toward-restrictive)', async () => {
+      process.env['SKYTWIN_DRAFTS_ENABLED'] = 'true';
+      mockGetEnabledForUser.mockRejectedValue(new Error('CRDB pool exhausted'));
+      // No throw — the function must still return a generator, just with
+      // a conservative cost estimate. The mocked LlmClient + per-user
+      // flag are both fine; the AI-provider read failure should NOT
+      // propagate.
+      const gen = await buildDraftEmailGenerator('u-1', fakeLlm());
+      expect(gen).not.toBeNull();
+    });
+
+    it('accepts an explicit CostGatePort override (test seam) and uses it for the generator', async () => {
+      process.env['SKYTWIN_DRAFTS_ENABLED'] = 'true';
+      const checkCalls: Array<unknown> = [];
+      const recordCalls: Array<unknown> = [];
+      const stubGate: CostGatePort = {
+        async check(input) {
+          checkCalls.push(input);
+          return { allowed: true, reason: 'ok' };
+        },
+        async record(input) {
+          recordCalls.push(input);
+        },
+      };
+      const gen = await buildDraftEmailGenerator('u-1', fakeLlm(), stubGate);
+      expect(gen).not.toBeNull();
+      // Drive generate() and verify the stub gate ran instead of DbCostGate.
+      await gen!.generate(
+        {
+          id: 'd-1',
+          domain: 'email',
+          situationType: 'email_triage' as never,
+          urgency: 'normal' as never,
+          summary: 'reply needed',
+          rawData: { requiresResponse: true, from: 'a@b.com', subject: 'Hi', body: 'b' },
+          interpretedAt: new Date(),
+        } as never,
+        {} as never,
+        { userId: 'u-1' } as never,
+      );
+      expect(checkCalls).toHaveLength(1);
+      expect(recordCalls).toHaveLength(1);
+      // The injected stub gate replaced DbCostGate entirely — no DB-side
+      // ledger writes.
+      expect(mockRecordCall).not.toHaveBeenCalled();
     });
 
     it('env-flag-off path adds zero DB roundtrips (perf contract)', async () => {

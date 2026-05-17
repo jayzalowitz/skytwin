@@ -84,3 +84,60 @@ describe('twinRepository.setDraftsEnabled (#302)', () => {
     expect(sql).toContain('updated_at = now()');
   });
 });
+
+describe('twinRepository.getDraftsDailyCallCap (#299)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('returns the integer column value from twin_profiles', async () => {
+    mockQuery.mockResolvedValue({ rows: [{ drafts_daily_call_cap: 250 }], rowCount: 1 });
+    expect(await twinRepository.getDraftsDailyCallCap('u-1')).toBe(250);
+  });
+
+  it('uses a narrow single-column SELECT (hot path: every signal-ingest for opted-in users)', async () => {
+    mockQuery.mockResolvedValue({ rows: [{ drafts_daily_call_cap: 100 }], rowCount: 1 });
+    await twinRepository.getDraftsDailyCallCap('u-1');
+    const [sql, params] = mockQuery.mock.calls[0]!;
+    expect(sql).toContain('SELECT drafts_daily_call_cap');
+    expect(sql).not.toContain('preferences');
+    expect(params).toEqual(['u-1']);
+  });
+
+  it('returns the documented default (100) when no twin_profiles row exists yet', async () => {
+    mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
+    expect(await twinRepository.getDraftsDailyCallCap('u-new')).toBe(100);
+  });
+});
+
+describe('twinRepository.setDraftsDailyCallCap (#299)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('persists the cap via UPDATE ... RETURNING', async () => {
+    const row = { id: 'p-1', user_id: 'u-1', drafts_daily_call_cap: 250 };
+    mockQuery.mockResolvedValue({ rows: [row], rowCount: 1 });
+    const result = await twinRepository.setDraftsDailyCallCap('u-1', 250);
+    expect(result).toEqual(row);
+
+    const [sql, params] = mockQuery.mock.calls[0]!;
+    expect(sql).toContain('UPDATE twin_profiles');
+    expect(sql).toContain('SET drafts_daily_call_cap = $1');
+    expect(sql).toContain('updated_at = now()');
+    expect(params).toEqual([250, 'u-1']);
+  });
+
+  it('throws on non-integer or negative caps — caller is expected to validate, this is defense-in-depth', async () => {
+    await expect(twinRepository.setDraftsDailyCallCap('u-1', -1)).rejects.toThrow();
+    await expect(twinRepository.setDraftsDailyCallCap('u-1', 1.5)).rejects.toThrow();
+    // 0 is a legitimate value — the user wants to disable drafts via cap.
+    mockQuery.mockResolvedValue({ rows: [{ id: 'p-1' }], rowCount: 1 });
+    await expect(twinRepository.setDraftsDailyCallCap('u-1', 0)).resolves.not.toBeNull();
+  });
+
+  it('returns null when the user has no twin_profiles row to update', async () => {
+    mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
+    expect(await twinRepository.setDraftsDailyCallCap('u-missing', 100)).toBeNull();
+  });
+});

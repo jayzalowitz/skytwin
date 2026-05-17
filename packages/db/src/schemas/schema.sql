@@ -47,6 +47,11 @@ CREATE TABLE IF NOT EXISTS twin_profiles (
   -- wide env var (SKYTWIN_DRAFTS_ENABLED); this column AND-gates the
   -- final check so staged per-user rollout is possible. Default FALSE.
   drafts_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+  -- #299: per-user per-day call cap for the draft-email feature.
+  -- Independent of the spend cap on AutonomySettings — coarse safety
+  -- net for the "heavy-inbox + paid-provider" cost spiral the issue
+  -- describes. Default 100 calls / 24h; tunable per user.
+  drafts_daily_call_cap INT NOT NULL DEFAULT 100,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );

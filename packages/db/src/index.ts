@@ -185,6 +185,11 @@ export type { RegisterCredentialRequirementInput } from './repositories/index.js
 export type { UpsertIronClawToolInput } from './repositories/index.js';
 export type { CreateTierAuditInput } from './repositories/index.js';
 export type { CreateSpendRecordInput } from './repositories/index.js';
+export { draftEmailCallsRepository } from './repositories/index.js';
+export type {
+  DraftEmailCallRow,
+  RecordDraftEmailCallInput,
+} from './repositories/index.js';
 export type { UpsertDomainAutonomyInput } from './repositories/index.js';
 export type { CreateEscalationTriggerInput } from './repositories/index.js';
 export type { CreatePreferenceHistoryInput } from './repositories/index.js';

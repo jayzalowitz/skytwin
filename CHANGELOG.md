@@ -1,5 +1,23 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.38.0] - 2026-05-17
+
+### Added
+
+- **Draft-email cost gating (closes #299).** Last gate before any user can have the draft-email feature actually turned on. The wiring in #295 and the per-user flag in #302 left the runtime unbounded: every email signal with `requiresResponse: true` triggered an LLM call, with spend bounded only by the provider's per-token price and the inbound rate. This PR adds three complementary gates:
+  - **Per-user per-day call cap.** New `twin_profiles.drafts_daily_call_cap INT NOT NULL DEFAULT 100` (migration 048) plus a new `draft_email_calls` ledger table. Each attempted LLM call writes one row regardless of outcome; the gate counts rows in the trailing 24h against the cap. Default 100/day is conservative; tunable via `twinRepository.setDraftsDailyCallCap`. Failed calls are counted too — a flapping provider can't bypass the cap by retrying.
+  - **Per-user per-day spend cap.** Wires the existing `AutonomySettings.maxDailySpendCents` enforcement (via `SpendTracker.checkDailyLimit`) into the draft path. Conservative per-call cost estimate (5 cents) for cloud providers, 0 for embedded/Ollama. Zero-cost calls always pass the spend check; only cloud-provider paths can hit the ceiling.
+  - **Trivial-signal short-circuit.** Pure-function classifier (`isTrivialAutoEmail`) catches inbounds that slipped past `gmail-connector.ts:inferEmailType` — noreply senders, mailer-daemon bounces, OOO subjects, auto-reply confirmations, unsubscribe-confirmed mail. Runs BEFORE the memory port and BEFORE the LLM, so a misclassified inbound never burns either dependency.
+- **Cost-preferred provider ordering.** When wiring the generator, `apps/api/src/draft-email-setup.ts` now reads the user's enabled AI providers and picks the cost-cheapest first (embedded / Ollama before cloud). Drives the cost estimate passed to the gate — users with embedded configured get a 0-cent estimate and effectively unlimited spend headroom for drafts. Users on cloud-only get the 5-cent conservative estimate. The user's primary `priority` column still controls non-draft paths.
+- **Architecture: `CostGatePort` interface.** Lives in `@skytwin/decision-engine` so the engine layer doesn't pull in `@skytwin/db`. The DB-backed `DbCostGate` is in `apps/api/src/cost-gate.ts`. `DraftEmailCandidateGenerator` accepts an optional `costGate` constructor option; back-compat preserved for callers that pass the legacy numeric `exampleCount` positional arg.
+- **22 new tests** across `cost-gate.test.ts` (pure-function classifier × 4 buckets, sender / OOO / auto-reply / unsubscribe), `draft-email-candidate.test.ts` (gate refusal short-circuits memory + LLM, ledger records on success AND failure, gate-record errors don't lose the candidate, back-compat exampleCount path), `draft-email-calls-repository.test.ts` (count / record / window-tuning), `twin-repository.test.ts` (cap getter / setter / validation), `cost-gate.test.ts` in api (DbCostGate happy / refuse / zero-cost passes / ledger errors swallow).
+
+### Out of scope (still owed before flipping the per-user flag on)
+
+- **#301 (eval bench)** — must clear voice / topical / length thresholds before any user is opted in.
+- **#300 (SQL pushdown on `AuthoredExamplesPort`)** — pure optimization; not a blocker.
+- **#303 (approval-UI surface)** — the candidate lands in the existing approval pipeline, but the dashboard doesn't have a draft-specific render yet.
+
 ## [0.6.37.0] - 2026-05-17
 
 ### Added
