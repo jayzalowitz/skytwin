@@ -4,12 +4,13 @@ All notable changes to SkyTwin will be documented in this file.
 
 ### Added
 
-- **Trust-tier promotion + briefing jobs are now actually scheduled (closes #304).** Both `runPromotionEligibilityCheckJob` and `runBriefingGeneratorJob` shipped with the codebase but never ran — the worker's poll loop didn't kick them off. Users were stuck at their initial trust tier forever (no automatic promotion no matter how many approvals they cleared) and never received the daily / weekly briefings the spec promised. The worker now fires all three on independent single-flight + revert-on-failure schedules:
-  - **Promotion eligibility check** — hourly. The DB-side tier-update ceremony runs from the worker; the user-facing "you were promoted" SSE emit is still gated on an `emitter` being passed in (the worker has no direct SSE manager — that lives in apps/api). A worker→API SSE bridge is a separate follow-up.
-  - **Daily briefing** — every 24h, UTC-anchored.
-  - **Weekly briefing** — every 7 days. Independent single-flight from the daily so a long daily pass doesn't block the weekly pass.
-- All three follow the same fire-and-forget + single-flight + revert-on-failure pattern as the relationship-tier backfill (#282), so signal ingestion is never blocked by these jobs. The "7am user-local time" cadence target in the briefing spec remains aspirational — requires per-user timezone awareness in the worker that doesn't exist yet.
+- **Daily + weekly briefings are now actually generated (partial close of #304).** `runBriefingGeneratorJob` shipped with the codebase but never ran — the worker's poll loop didn't kick it off. The worker now fires it on two independent single-flight + revert-on-failure schedules: daily on a 24h interval, weekly on a 7-day interval. Same fire-and-forget pattern as the relationship-tier backfill (#282), so signal ingestion is never blocked.
+- Cadences are **intervals since last START in this worker process**, not UTC-day buckets. On a worker restart the interval resets, so a rapid restart can produce one extra briefing per cadence (briefing INSERT has no ON CONFLICT guard, so the duplicate row lands). For v1 this is acceptable noise; per-UTC-day idempotency is a follow-up. The "7am user-local" / "Sunday morning" targets in the original spec remain aspirational — requires per-user timezone awareness the worker doesn't have yet.
 - Briefings run without an `LlmClient` for now (the deterministic Markdown template path). The adaptive briefing-prose path requires per-user LLM client setup that lives in the API; threading that into the worker is a separate follow-up.
+
+### Not addressed (intentionally deferred)
+
+- **`runPromotionEligibilityCheckJob` is NOT wired** in this PR. Its only side-effect is the SSE emit, and the worker has no `sseManager` — that lives in apps/api. Without a worker→API SSE bridge, calling the job would be logging-only (eligibility computed but never offered to the user, never applied to the tier). The job's docstring now says so explicitly. Tracked in #310 (the SSE-bridge prerequisite). The earlier version of this changelog entry claimed the DB-side tier ceremony runs from the worker — that was inaccurate; Copilot caught it on review.
 
 ## [0.6.34.0] - 2026-05-16
 

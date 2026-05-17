@@ -30,7 +30,6 @@ import { runFederationSyncJob } from './jobs/federation-sync.js';
 import { runEmbeddingBackfillJob } from './jobs/embedding-backfill.js';
 import { runTierBackfillJob } from './jobs/tier-backfill.js';
 import { runRelationshipTierBackfillBatch } from './jobs/relationship-tier-scheduler.js';
-import { runPromotionEligibilityCheckJob } from './jobs/promotion-eligibility-check.js';
 import { runBriefingGeneratorJob } from './jobs/briefing-generator.js';
 
 const config = loadConfig();
@@ -517,22 +516,26 @@ async function main(): Promise<void> {
   const RELATIONSHIP_TIER_BACKFILL_INTERVAL_MS = 24 * 60 * 60 * 1000;
   let relationshipTierBackfillInFlight = false;
 
-  // #304: promotion-eligibility-check + briefing-generator wiring. Both
-  // jobs were written but never scheduled, leaving users stuck at their
-  // initial trust tier and never receiving briefings. Same fire-and-
+  // #304: briefing-generator wiring (daily + weekly). Same fire-and-
   // forget + single-flight + revert-on-failure pattern as the
   // relationship-tier backfill above.
   //
-  // Cadences match the docstrings: promotion check hourly (a freshly
-  // accumulated approval should surface a tier offer within the same
-  // working session); briefings daily / weekly (UTC-anchored; the
-  // "7am user-local" target in the docstring is aspirational and
-  // requires the worker to know each user's timezone — a separate
-  // follow-up).
-  let lastPromotionEligibilityAt = 0;
-  const PROMOTION_ELIGIBILITY_INTERVAL_MS = 60 * 60 * 1000; // hourly
-  let promotionEligibilityInFlight = false;
-
+  // Cadences are intervals since the last START, not UTC-day buckets:
+  // a worker restart resets the interval, which on rapid restart can
+  // cause one extra briefing per cadence. Briefings are persisted via
+  // `briefingRepository.create` without an ON CONFLICT guard, so the
+  // duplicate can land. For v1 this is acceptable (briefings are
+  // user-visible read-only artifacts; an extra one is mild noise);
+  // a follow-up should add per-UTC-day idempotency to make the job
+  // restart-safe.
+  //
+  // The `promotion-eligibility-check` job is NOT wired here. It only
+  // emits SSE events, and the worker has no direct sseManager —
+  // without a worker→API SSE bridge the job would be logging-only.
+  // The DB-side tier change happens when the user clicks Accept on
+  // the dashboard's promotion modal (which the SSE event surfaces);
+  // wiring the job without the bridge would not result in any
+  // promotions being offered or applied. Tracked in #310.
   let lastBriefingDailyAt = 0;
   const BRIEFING_DAILY_INTERVAL_MS = 24 * 60 * 60 * 1000;
   let briefingDailyInFlight = false;
@@ -653,34 +656,6 @@ async function main(): Promise<void> {
         })
         .finally(() => {
           relationshipTierBackfillInFlight = false;
-        });
-    }
-
-    // #304: promotion-eligibility-check, hourly. Same fire-and-forget +
-    // single-flight pattern as the relationship-tier backfill. The job
-    // iterates all active MCP servers internally and emits an SSE
-    // event per eligible user — but the worker process has no direct
-    // SSE manager (the SSE manager lives in apps/api), so the
-    // `emitter` parameter is left undefined here. The DB-side promotion
-    // ceremony (tier update on twin_profile) still runs; the user-
-    // facing "you've been promoted" toast is a follow-up that needs a
-    // worker→API SSE bridge.
-    if (
-      !promotionEligibilityInFlight &&
-      nowMs - lastPromotionEligibilityAt >= PROMOTION_ELIGIBILITY_INTERVAL_MS
-    ) {
-      promotionEligibilityInFlight = true;
-      const previousLastAt = lastPromotionEligibilityAt;
-      lastPromotionEligibilityAt = nowMs;
-      void runPromotionEligibilityCheckJob()
-        .catch((err) => {
-          log.warn('Promotion eligibility check failed', {
-            error: err instanceof Error ? err.message : String(err),
-          });
-          lastPromotionEligibilityAt = previousLastAt;
-        })
-        .finally(() => {
-          promotionEligibilityInFlight = false;
         });
     }
 
