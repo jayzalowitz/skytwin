@@ -269,10 +269,14 @@ export function fetchApprovalHistory(userId, limit = 50) {
 // dual-confirmation (extreme-severity) request — it's the one-time token the
 // first confirmation returned. Omitted for single-confirmation requests and
 // for the first confirmation of a dual one.
-export function respondToApproval(requestId, action, userId, reason, confirmationToken) {
+// `editedBody` (optional, #303) — when the user edits a draft_email
+// candidate's body before clicking Send, this carries the edited text
+// to the API. The API overrides `parameters.draftBody` before
+// execution so the SENT email matches what the user saw.
+export function respondToApproval(requestId, action, userId, reason, confirmationToken, editedBody) {
   return fetchJSON(`${API}/approvals/${requestId}/respond`, {
     method: 'POST',
-    body: JSON.stringify({ action, userId, reason, confirmationToken }),
+    body: JSON.stringify({ action, userId, reason, confirmationToken, editedBody }),
   });
 }
 

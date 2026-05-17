@@ -1,5 +1,6 @@
 import { fetchPendingApprovals, fetchApprovalHistory, respondToApproval, escapeHtml, fetchTrustProgress, renderApiError, wireApiRetry } from '../api-client.js';
 import { renderTrustProgress } from '../components/progress-bar.js';
+import { renderDraftEmailCard, readDraftEditedBody } from '../components/draft-card.js';
 import { KEY_TOUR_MODE, firstApprovalIntroSeenKey } from '../storage-keys.js';
 import { showToast } from '../toast.js';
 
@@ -218,11 +219,33 @@ function renderApprovalCard(a) {
   const action = a.candidateAction || {};
   const urgencyClass = a.urgency === 'critical' ? 'urgent' : a.urgency === 'high' ? 'high' : '';
   const isEscalation = action.actionType === 'escalate_to_user';
+  const isDraftEmail = action.actionType === 'draft_email';
 
-  // For escalations, extract a cleaner title from the summary
-  const title = isEscalation
-    ? escapeHtml(extractEscalationSubject(action))
-    : describeAction(action);
+  // For escalations, extract a cleaner title from the summary.
+  // For draft_email, use the dedicated "Draft reply to ..." title that
+  // surfaces the inbound subject/sender instead of the generic
+  // describeAction output (#303).
+  let title;
+  if (isEscalation) {
+    title = escapeHtml(extractEscalationSubject(action));
+  } else if (isDraftEmail) {
+    const p = action.parameters || {};
+    const inboundSubject = typeof p.replyToSubject === 'string' ? p.replyToSubject : '';
+    const inboundFrom = typeof p.replyToFrom === 'string' ? p.replyToFrom : '';
+    const label = inboundSubject || inboundFrom || 'this email';
+    title = `📧 Draft reply to "${escapeHtml(label.length > 60 ? label.slice(0, 57) + '…' : label)}"`;
+  } else {
+    title = describeAction(action);
+  }
+
+  let inner;
+  if (isEscalation) {
+    inner = renderEscalationCard(a, action);
+  } else if (isDraftEmail) {
+    inner = renderDraftEmailCard(a, action);
+  } else {
+    inner = renderStandardCard(a, action);
+  }
 
   return `
     <div class="card approval-card ${urgencyClass}" id="approval-${a.id}">
@@ -231,10 +254,7 @@ function renderApprovalCard(a) {
         <span class="badge badge-${urgencyBadge(a.urgency)}">${a.urgency || 'normal'}</span>
       </div>
       ${renderSignalContext(a.signalContext)}
-      ${isEscalation
-        ? renderEscalationCard(a, action)
-        : renderStandardCard(a, action)
-      }
+      ${inner}
     </div>
   `;
 }
@@ -751,8 +771,16 @@ async function handleApproval(requestId, action, userId) {
   const reasonInput = document.getElementById(`reason-${requestId}`);
   const reason = reasonInput?.value?.trim() || undefined;
 
+  // #303: for draft-email cards, the textarea is the source of truth.
+  // The user may have edited the body before approving; we pass the
+  // edited value to the API as `editedBody`. The API overrides
+  // `parameters.draftBody` before execution. `readDraftEditedBody`
+  // returns null for non-draft cards or when the textarea is gone
+  // (history view).
+  const editedBody = action === 'approve' ? readDraftEditedBody(requestId) : null;
+
   try {
-    await respondToApproval(requestId, action, userId, reason);
+    await respondToApproval(requestId, action, userId, reason, undefined, editedBody ?? undefined);
 
     const el = document.getElementById(`approval-${requestId}`);
     if (el) {

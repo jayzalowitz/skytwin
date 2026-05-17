@@ -1,27 +1,53 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.44.0] - 2026-05-17
+
+### Added
+
+- **Draft-email approval-UI surface (closes #303).** `draft_email` candidates now render with a dedicated card in the approvals queue instead of the generic `renderActionDetails` shape. The user sees the inline body, examplesUsed-derived grounding subtitle, optional prompt-details disclosure, and can edit the draft before clicking "Send this draft" — the textarea's current value is what gets sent.
+- **`renderDraftEmailCard` component** (`apps/web/public/js/components/draft-card.js`). Reads `parameters.draftBody / examplesUsed / replyToFrom / replyToSubject` and `confidence` from the CandidateAction. Confidence wording: HIGH → "high confidence", MODERATE → "moderate confidence", LOW → "review carefully — limited grounding". Grounding subtitle: "Drafted from N of your prior emails to <sender> and similar senders." Never uses "AI-generated" / "LLM" — it's "your draft" / "the draft" throughout.
+- **Edit-before-approve API contract.** `POST /api/approvals/:requestId/respond` accepts an optional `editedBody` string on the body. The route's draft-email branch overrides `candidateAction.parameters.draftBody` with the edited value before the policy check + execution router runs. Original stored body remains in the approval row for the audit trail; only the in-flight action is mutated.
+- **`resolveDraftEditOverride` + `applyDraftEditOverride` pure helpers** (`apps/api/src/routes/draft-edit-merge.ts`). Override rules — fire only when ALL hold: (a) actionType is `draft_email` (guards against misuse on other action types), (b) editedBody is a string, (c) non-whitespace content (whitespace-only blanks a real draft — user almost certainly meant Discard). The strict guards prevent a misused field from accidentally overwriting unrelated parameters.
+- **9 new tests** in `draft-edit-merge.test.ts`: actionType guard (4 cases), non-string guard (4 cases), whitespace-only guard (3 cases), long-body acceptance, in-place mutation, no-mutation-when-skip, preserves-other-parameters, refuses-on-non-draft-action.
+
+### Layout
+
+The card replaces `renderStandardCard` for `draft_email` actions:
+- Header: `📧 Draft reply to "<subject or sender>"` (truncated at 60 chars)
+- Subtitle: grounding line + confidence
+- Inbound metadata: `Re: <subject> · To: <sender>`
+- Editable textarea (rows auto-sized 4–12 based on draft content)
+- `<details>` disclosure: examples used, why-this-draft, estimated cost
+- Actions: `Send this draft` (primary) / `Discard` (outline) / optional reason input
+
+### Out of scope (matches issue body)
+
+- Regenerate button — deferred. The candidate generator's idempotency + cost-gate semantics for re-runs need their own design pass.
+- Multi-turn refinement ("make it shorter") — future feature.
+- Drafts inbox surface — drafts live in the normal approvals queue for v1.
+
 ## [0.6.43.0] - 2026-05-17
 
 ### Added
 
-- **`ExplanationRecord.capabilityProvenanceNodeId` populated end-to-end (closes #305).** The field was declared on the type but never written to the DB — the parent epic #189 closed without finalizing the population path. Migration 051 adds `explanation_records.capability_provenance_node_id UUID REFERENCES capability_provenance_nodes(id) ON DELETE SET NULL` (with a partial index on non-null rows). `explanationRepository.create()` accepts the field, the adapter threads it through, and `ExplanationGenerator.generate()` reads `outcome.selectedAction?.capabilityProvenanceNodeId` from the candidate. New optional field on `CandidateAction` carries the id forward from candidate-generation through to the explanation row.
+- **`ExplanationRecord.capabilityProvenanceNodeId` populated end-to-end (closes #305).** The field was declared on the type but never written to the DB — the parent epic #189 closed without finalizing the population path. Migration 051 adds `explanation_records.capability_provenance_node_id UUID` with the FK + partial index applied out-of-line in the same migration (idempotent `ADD CONSTRAINT explanation_records_capability_node_fk FOREIGN KEY ... REFERENCES capability_provenance_nodes(id) ON DELETE SET NULL`). `explanationRepository.create()` accepts the field, the adapter threads it through, and `ExplanationGenerator.generate()` reads `outcome.selectedAction?.capabilityProvenanceNodeId` from the candidate. New optional field on `CandidateAction` carries the id forward from candidate-generation through to the explanation row.
 - **6 new tests**: 3 in `explanation-generator.test.ts` (field threads through on capability-pipeline action; undefined on engine-originated action; undefined on no-action outcome), 3 in `explanation-repository.test.ts` (column written when set; NULL when omitted; NULL when explicitly null).
 
 ### Lineage view now walks action → explanation → provenance node
 
 Concretely, this query now resolves the chain:
-\`\`\`sql
+```sql
 SELECT er.*, cpn.node_type, cpn.ref_table, cpn.ref_id
 FROM explanation_records er
 JOIN capability_provenance_nodes cpn
   ON cpn.id = er.capability_provenance_node_id
 WHERE er.decision_id = $1;
-\`\`\`
+```
 
 ### Not yet wired (intentionally deferred)
 
-- **Candidate generators don't stamp the field today.** The plumbing accepts it from any candidate that sets it; no current generator (rule-based, LLM-strategy, draft-email, sender-aware) does. The MCP-host candidate-suggestion path is the natural future consumer — when an MCP-backed candidate is generated, it should look up the most-recent \`install\` provenance node for the source server and stamp it. That's a follow-up that lands when the MCP-host candidate path itself lands (currently \`@skytwin/mcp-host\` is execution-only, not generation).
-- Until that follow-up ships, all explanation rows have \`capability_provenance_node_id = NULL\`. The plumbing is exercised by tests only.
+- **Candidate generators don't stamp the field today.** The plumbing accepts it from any candidate that sets it; no current generator (rule-based, LLM-strategy, draft-email, sender-aware) does. The MCP-host candidate-suggestion path is the natural future consumer — when an MCP-backed candidate is generated, it should look up the most-recent `install` provenance node for the source server and stamp it. That's a follow-up that lands when the MCP-host candidate path itself lands (currently `@skytwin/mcp-host` is execution-only, not generation).
+- Until that follow-up ships, all explanation rows have `capability_provenance_node_id = NULL`. The plumbing is exercised by tests only.
 
 ## [0.6.42.0] - 2026-05-17
 
