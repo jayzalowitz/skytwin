@@ -45,6 +45,8 @@ export interface TwinProfileRow {
   domain_heuristics: Record<string, unknown>;
   /** #302: per-user opt-in for the draft-email candidate generator. Defaults to FALSE in migration 047. */
   drafts_enabled: boolean;
+  /** #299: per-user per-day cap for draft-email LLM calls. Defaults to 100 in migration 048. */
+  drafts_daily_call_cap: number;
   created_at: Date;
   updated_at: Date;
 }

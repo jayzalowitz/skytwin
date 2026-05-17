@@ -1,5 +1,40 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.38.1] - 2026-05-17
+
+### Fixed (post-/review + Copilot)
+
+- **Cost-gate enforcement was effectively a no-op for cloud drafts (Copilot caught two issues).**
+  - The spend gate called `SpendTracker.checkDailyLimit`, which is read-only — it never wrote to `spend_records`. Successful draft LLM calls landed in `draft_email_calls` only, so `getDailyTotal()` never accumulated draft spend; the daily spend cap would have to be reached via OTHER spend paths before draft generation refused. **Fixed** by switching to `spendRepository.checkAndRecordSpend`, which atomically reads SUM, compares to cap, and INSERTs a reservation row in one CockroachDB serializable transaction.
+  - The atomic reservation also fixes the TOCTOU race the read-only check had: two parallel signal ingests for the same user could both observe `current_total + estimate <= cap` and proceed to the LLM, collectively exceeding the cap.
+- **Per-day CALL cap had the same TOCTOU race.** The old shape was COUNT-then-later-INSERT (the INSERT happened in `record()`, after the LLM call), so parallel ingests could each pass the cap check before any ledger row existed. **Fixed** with a new `draftEmailCallsRepository.checkAndReserveCall` that does SELECT COUNT + INSERT inside one transaction, mirroring the spend-side pattern. The gate now reserves the call ledger row at check-time; `record()` updates the row's `provider` and `succeeded` fields with the actual outcome.
+- **The pre-call cost estimate didn't survive provider fall-through.** The candidate generator recorded `this.provider` (the gate's pre-call estimate of the cheapest provider) on the ledger. If embedded was estimated but tripped a circuit breaker and the chain fell through to cloud, the call landed on the ledger as zero-cost. **Fixed** by passing `LlmResponse.provider` (the actual provider that served the request) to `gate.record()`. The gate now reconciles the spend reservation based on the actual provider: embedded/Ollama actual → reconcile to 0 cents; cloud actual → leave at the estimate (existing decision-pipeline can refine `actual_cost_cents` later from real token counts).
+- **`TwinProfileRow` type didn't include `drafts_daily_call_cap`.** The new setter returned a row whose type omitted the very column the caller just set. **Fixed** in `packages/db/src/types.ts` — symmetric with the existing `drafts_enabled` field added in #302.
+- **Test name "SUM is NULL" misnamed the assertion.** The repo uses `COUNT(*)`, not `SUM(...)`. Renamed and the docstring now explains the defensive intent.
+- 8 new tests added across `draft-email-calls-repository.test.ts` (atomic-reserve happy path, cap-reached refusal path, updateOutcome happy/missing paths) and `cost-gate.test.ts` (reservation handle returned on allow, reconcile-to-zero on cloud-fallback-to-local, reconcile-to-zero on LLM failure, no-reconcile on zero-cost-call failure, swallow-reconcile-errors). Existing tests rewritten to match the new mock surface.
+
+### Not addressed (intentionally deferred)
+
+- **Double DB read for AI providers (Copilot's perf comment).** `apps/api/src/draft-email-setup.ts:resolveDraftCostShape` reads `ai_provider_settings` to pick the cheapest provider; `apps/api/src/routes/events.ts:buildLlmClientForUser` reads the same table to build the primary LlmClient. Plumbing the rows through requires changing `buildDraftEmailGenerator`'s signature and the events.ts call site — bigger touch than the rest of this fix-up batch. Filed as follow-up in #283 sub-issues. Latency impact is one indexed-lookup query per signal ingest for opted-in users, which the per-user feature flag's default-FALSE shields almost everyone from.
+
+## [0.6.38.0] - 2026-05-17
+
+### Added
+
+- **Draft-email cost gating (closes #299).** Last gate before any user can have the draft-email feature actually turned on. The wiring in #295 and the per-user flag in #302 left the runtime unbounded: every email signal with `requiresResponse: true` triggered an LLM call, with spend bounded only by the provider's per-token price and the inbound rate. This PR adds three complementary gates:
+  - **Per-user per-day call cap.** New `twin_profiles.drafts_daily_call_cap INT NOT NULL DEFAULT 100` (migration 048) plus a new `draft_email_calls` ledger table. Each attempted LLM call writes one row regardless of outcome; the gate counts rows in the trailing 24h against the cap. Default 100/day is conservative; tunable via `twinRepository.setDraftsDailyCallCap`. Failed calls are counted too — a flapping provider can't bypass the cap by retrying.
+  - **Per-user per-day spend cap.** Wires the existing `AutonomySettings.maxDailySpendCents` enforcement (via `SpendTracker.checkDailyLimit`) into the draft path. Conservative per-call cost estimate (5 cents) for cloud providers, 0 for embedded/Ollama. Zero-cost calls always pass the spend check; only cloud-provider paths can hit the ceiling.
+  - **Trivial-signal short-circuit.** Pure-function classifier (`isTrivialAutoEmail`) catches inbounds that slipped past `gmail-connector.ts:inferEmailType` — noreply senders, mailer-daemon bounces, OOO subjects, auto-reply confirmations, unsubscribe-confirmed mail. Runs BEFORE the memory port and BEFORE the LLM, so a misclassified inbound never burns either dependency.
+- **Cost-preferred provider ordering.** When wiring the generator, `apps/api/src/draft-email-setup.ts` now reads the user's enabled AI providers and picks the cost-cheapest first (embedded / Ollama before cloud). Drives the cost estimate passed to the gate — users with embedded configured get a 0-cent estimate and effectively unlimited spend headroom for drafts. Users on cloud-only get the 5-cent conservative estimate. The user's primary `priority` column still controls non-draft paths.
+- **Architecture: `CostGatePort` interface.** Lives in `@skytwin/decision-engine` so the engine layer doesn't pull in `@skytwin/db`. The DB-backed `DbCostGate` is in `apps/api/src/cost-gate.ts`. `DraftEmailCandidateGenerator` accepts an optional `costGate` constructor option; back-compat preserved for callers that pass the legacy numeric `exampleCount` positional arg.
+- **22 new tests** across `cost-gate.test.ts` (pure-function classifier × 4 buckets, sender / OOO / auto-reply / unsubscribe), `draft-email-candidate.test.ts` (gate refusal short-circuits memory + LLM, ledger records on success AND failure, gate-record errors don't lose the candidate, back-compat exampleCount path), `draft-email-calls-repository.test.ts` (count / record / window-tuning), `twin-repository.test.ts` (cap getter / setter / validation), `cost-gate.test.ts` in api (DbCostGate happy / refuse / zero-cost passes / ledger errors swallow).
+
+### Out of scope (still owed before flipping the per-user flag on)
+
+- **#301 (eval bench)** — must clear voice / topical / length thresholds before any user is opted in.
+- **#300 (SQL pushdown on `AuthoredExamplesPort`)** — pure optimization; not a blocker.
+- **#303 (approval-UI surface)** — the candidate lands in the existing approval pipeline, but the dashboard doesn't have a draft-specific render yet.
+
 ## [0.6.37.0] - 2026-05-17
 
 ### Added

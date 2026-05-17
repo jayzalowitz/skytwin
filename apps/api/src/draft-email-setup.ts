@@ -27,11 +27,13 @@ import {
   DraftEmailCandidateGenerator,
   type AuthoredExamplesPort,
   type CandidateGenerator,
+  type CostGatePort,
 } from '@skytwin/decision-engine';
 import type { LlmClient } from '@skytwin/llm-client';
-import { twinRepository } from '@skytwin/db';
+import { aiProviderRepository, twinRepository } from '@skytwin/db';
 import { createLogger } from '@skytwin/core';
 import { getMemoryPortForUser } from './memory-setup.js';
+import { DbCostGate } from './cost-gate.js';
 
 const log = createLogger('api:draft-email-setup');
 
@@ -106,6 +108,80 @@ function buildAuthoredExamplesPort(userId: string): AuthoredExamplesPort {
 }
 
 /**
+ * Cost-rank a provider for the draft-email feature (#299). Lower is
+ * cheaper / preferred. Embedded and Ollama are local (no per-token
+ * cost) so they rank first; the cloud providers stay in their normal
+ * priority order behind them.
+ *
+ * This estimate drives the value passed to the cost gate's spend
+ * check — the gate combines it with the user's running daily spend
+ * to decide whether to allow this call. Conservative: if we can't
+ * determine the first provider, we assume the most expensive case.
+ */
+const PROVIDER_COST_RANK: Record<string, number> = {
+  embedded: 0,
+  ollama: 0,
+  google: 1,
+  anthropic: 2,
+  openai: 2,
+};
+
+/**
+ * Conservative per-call cost estimate (cents) for a cloud-provider
+ * draft generation. Based on roughly 2k input tokens + 1k output
+ * tokens at Anthropic Sonnet rates ($3/MTok in, $15/MTok out) ≈
+ * $0.021 ≈ 2 cents, rounded UP to 5 to leave headroom for prompt
+ * growth (more authored examples, longer inbound bodies). Embedded
+ * and Ollama get estimated as 0 cents.
+ *
+ * This is a starting point — refine after #301 (eval bench) measures
+ * actual cost-per-draft against the eval corpus.
+ */
+const CLOUD_PROVIDER_ESTIMATED_COST_CENTS = 5;
+
+/**
+ * Resolve (a) whether the first provider in the user's chain is a
+ * local / zero-cost provider, and (b) the conservative cost estimate
+ * to pass to the cost gate. Wraps `aiProviderRepository.getEnabledForUser`
+ * with a fail-safe-toward-restrictive default — if the query fails,
+ * we assume the worst case (cloud provider, non-zero cost).
+ */
+async function resolveDraftCostShape(userId: string): Promise<{
+  firstProvider: string;
+  estimatedCostCents: number;
+}> {
+  try {
+    const rows = await aiProviderRepository.getEnabledForUser(userId);
+    if (rows.length === 0) {
+      return { firstProvider: 'unknown', estimatedCostCents: CLOUD_PROVIDER_ESTIMATED_COST_CENTS };
+    }
+    // Pick the cost-cheapest provider that the user has enabled. This
+    // is a draft-email-specific bias — the user's main `priority`
+    // column controls primary-strategy ordering elsewhere. Cost-prefer
+    // here even when the user's primary priority puts cloud first;
+    // the user opted into draft-email's per-user cap and accepts the
+    // implication that we should pick the cheapest viable path.
+    const sorted = [...rows].sort((a, b) => {
+      const ra = PROVIDER_COST_RANK[a.provider] ?? 3;
+      const rb = PROVIDER_COST_RANK[b.provider] ?? 3;
+      return ra - rb;
+    });
+    const first = sorted[0]!.provider;
+    const isFree = first === 'embedded' || first === 'ollama';
+    return {
+      firstProvider: first,
+      estimatedCostCents: isFree ? 0 : CLOUD_PROVIDER_ESTIMATED_COST_CENTS,
+    };
+  } catch (err) {
+    log.warn('Failed to read AI providers for draft cost estimate; assuming cloud-cost', {
+      userId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return { firstProvider: 'unknown', estimatedCostCents: CLOUD_PROVIDER_ESTIMATED_COST_CENTS };
+  }
+}
+
+/**
  * Build a draft-email candidate generator for the given user, or return
  * `null` when any of the four gates is unsatisfied:
  *
@@ -125,10 +201,16 @@ function buildAuthoredExamplesPort(userId: string): AuthoredExamplesPort {
  * The env-flag check is synchronous; the per-user check requires a DB
  * roundtrip. We do the cheap check first so the all-off case stays
  * roundtrip-free.
+ *
+ * Cost gating (#299) wires here. When all four gates pass, the
+ * generator is constructed with a `DbCostGate` plus a conservative
+ * per-call cost estimate derived from the user's cheapest enabled
+ * provider. Per-call AND per-day spend limits both apply.
  */
 export async function buildDraftEmailGenerator(
   userId: string,
   llmClient: LlmClient | null,
+  costGate?: CostGatePort,
 ): Promise<CandidateGenerator | null> {
   if (!draftsEnabled()) return null;
   if (!llmClient || !llmClient.hasProviders) return null;
@@ -161,6 +243,15 @@ export async function buildDraftEmailGenerator(
     return null;
   }
   if (!perUserEnabled) return null;
+
   const examples = buildAuthoredExamplesPort(userId);
-  return new DraftEmailCandidateGenerator(llmClient, examples);
+  // Cost-gate wiring (#299). The optional override exists for tests;
+  // production callers leave it undefined and get a `DbCostGate`.
+  const gate = costGate ?? new DbCostGate();
+  const { firstProvider, estimatedCostCents } = await resolveDraftCostShape(userId);
+  return new DraftEmailCandidateGenerator(llmClient, examples, {
+    costGate: gate,
+    estimatedCostCents,
+    provider: firstProvider,
+  });
 }
