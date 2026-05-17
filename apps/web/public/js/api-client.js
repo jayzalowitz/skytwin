@@ -817,6 +817,19 @@ export function declinePromotion(serverId, userId, disableForDays = 14) {
   });
 }
 
+// ── Promotion offers — durable surface (#310) ─────────────────────────────
+
+export function fetchPendingPromotionOffers(userId) {
+  return fetchJSON(`${API}/promotion-offers/${encodeURIComponent(userId)}`);
+}
+
+export function respondToPromotionOffer(offerId, userId, response) {
+  return fetchJSON(`${API}/promotion-offers/${encodeURIComponent(offerId)}/respond`, {
+    method: 'POST',
+    body: JSON.stringify({ userId, response }),
+  });
+}
+
 // ── Provenance lineage (issue #177) ───────────────────────────────────────
 
 export function fetchCapabilityProvenance(serverId, userId) {
