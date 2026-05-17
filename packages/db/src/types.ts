@@ -47,6 +47,12 @@ export interface TwinProfileRow {
   drafts_enabled: boolean;
   /** #299: per-user per-day cap for draft-email LLM calls. Defaults to 100 in migration 048. */
   drafts_daily_call_cap: number;
+  /**
+   * #301: timestamp of the most recent passing draft-email eval-bench
+   * run. NULL until a run passes; cleared by `clearDraftsEvalPass`
+   * if the operator wants to roll back. Migration 050.
+   */
+  drafts_eval_passed_at: Date | null;
   created_at: Date;
   updated_at: Date;
 }

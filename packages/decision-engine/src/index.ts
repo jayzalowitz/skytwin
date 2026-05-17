@@ -34,6 +34,20 @@ export type {
   CostGateReservation,
 } from './cost-gate.js';
 
+export {
+  runEvalBench,
+  scorePair,
+  evalResultConfidence,
+  DEFAULT_EVAL_THRESHOLDS,
+} from './eval-bench.js';
+export type {
+  EvalPair,
+  EvalThresholds,
+  EvalResult,
+  PairScore,
+  UserReplyLengthStats,
+} from './eval-bench.js';
+
 export type {
   WhatWouldIDoRequest,
   WhatWouldIDoResponse,

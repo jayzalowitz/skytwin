@@ -1,28 +1,31 @@
 All notable changes to SkyTwin will be documented in this file.
 
-## [0.6.40.0] - 2026-05-17
+## [0.6.41.0] - 2026-05-17
 
 ### Added
 
-- **Worker→API SSE bridge for promotion ceremonies (closes #310).** `runPromotionEligibilityCheckJob` shipped in #189 but was logging-only after #304 — its only side-effect was an SSE emit, and the worker had no `sseManager` instance (that lives in apps/api). The job sat dormant; trust-tier promotion had no automatic ladder above `observer`. This PR replaces the direct SSE emit with a durable DB-side ceremony:
-  - **`promotion_offers` table** (migration 049) is the new source of truth. Worker writes one row per (server, proposed_tier) tuple. A partial unique index on `(server_id, proposed_tier) WHERE responded_at IS NULL` makes the insert idempotent — re-running the eligibility job for an already-pending offer is a no-op.
-  - **`promotionOffersRepository`** with `createIfPending` (idempotent insert), `listPending` (per user), `listPendingWithServerName` (joined with `mcp_servers.display_name` for the dashboard), `findById`, `markResponded`, `acceptAtomic` (single-txn accept + tier bump, race-safe per Copilot review), `listOfferedSince` (for the SSE sweeper).
-  - **`runPromotionEligibilityCheckJob` rewired**. No `emitter` dependency anymore — writes via the repo. Job is now wired into the worker poll loop on a 24h cadence with single-flight + revert-on-failure (same pattern as the briefing generator and the relationship-tier backfill batcher). Idempotent at the DB layer, so concurrent ticks during a worker restart can't pile up duplicates.
-  - **API endpoints**. `GET /api/promotion-offers/:userId` returns pending offers for polling. `POST /api/promotion-offers/:offerId/respond` accepts `{ userId, response: 'accepted' | 'rejected' | 'dismissed' }` — accept runs through `acceptAtomic` which validates the snapshot tier, bumps `mcp_servers.trust_tier`, and marks the offer responded, all in one CockroachDB serializable transaction (race-safe under concurrent double-clicks per Copilot review).
-  - **SSE sweeper**. The API runs a 30s background sweeper (`sweepPromotionOffersOnce`) that finds newly-offered rows and emits `capability:promotion-offered` for live dashboard connections. Cutoff advances only on successful read (rolls back the window on error per Copilot review, so a failed sweep re-attempts on the next tick).
-- The existing dashboard SSE listener (`apps/web/public/js/pages/assistant.js:520`) and tier-promotion modal continue to work as-is — the new sweeper emits the same `capability:promotion-offered` event with the same payload shape (plus a new `offerId` for future use). Modal-side migration to call `/api/promotion-offers/:id/respond` is a follow-up; until then the existing `promoteTier`/`declinePromotion` endpoints handle the actual tier update, and `promotion_offers` rows for successfully-promoted servers stay in the `pending` state. This is harmless — the partial unique index won't re-offer the same proposed_tier, and the next eligibility check evaluates from the new tier looking for a DIFFERENT proposed_tier.
-- New `fetchPendingPromotionOffers` and `respondToPromotionOffer` exports in `apps/web/public/js/api-client.js` — the contract for the dashboard polling layer and the modal-side migration.
-- **26 new tests** across `promotion-offers-repository.test.ts` (repo SQL shapes including ON CONFLICT dedup, JOIN-with-server-name, race-safe markResponded), `promotion-eligibility-check.test.ts` (happy path, idempotency dedup counted as `alreadyPending`, paused-server skip, terminal-tier skip, per-server error absorption), `promotion-offers-routes.test.ts` (GET shape, POST validation, ownership, all acceptAtomic branches — success / alreadyResponded / staleSnapshot / serverMissing, SSE sweeper).
+- **Draft-email eval bench (closes #301).** Quality gate that must clear before any user has `drafts_enabled` flipped on. The bench scores generated drafts against the user's actual sent replies on three metrics:
+  - **Voice** — bigram-jaccard between the draft and the actual reply. The issue's spec proposed embedding cosine; we ship bigram-jaccard as a pure-function surrogate (the memory-port doesn't expose an embed-only primitive today, and bigram-overlap captures "is this in my voice" at acceptable fidelity with zero infra cost). Migrating to embedding cosine when the memory layer exposes an embed primitive is a clean drop-in swap.
+  - **Topical** — content-word jaccard between draft and actual reply, with stop words filtered. Lower-fidelity than LLM-as-judge but free and deterministic. The LLM-judge variant is filed as a documented follow-up.
+  - **Length** — |z-score| of draft length against the user's reply length distribution. Threshold: within 2σ (per the issue spec).
+- **`runEvalBench(pairs, stats, thresholds?)`** in `@skytwin/decision-engine`. Pure: takes pre-generated drafts in `EvalPair` rows plus user reply stats, returns `{ corpusSize, voicePassRate, topicalPassRate, lengthPassRate, overallPassRate, passed, thresholds, notes, pairs[] }`. The caller is responsible for the corpus loader (gmail history → pairs) and the draft generator callback — keeping the bench testable without an LLM in the loop.
+- **`DEFAULT_EVAL_THRESHOLDS`** — voiceJaccardMin 0.25, topicalJaccardMin 0.3, lengthSigmaMax 2, overallPassRateMin 0.8, **minCorpusSize 25**. Per Copilot review: a single perfectly-matched pair can no longer green-light a user; the run must hit the corpus floor before `passed: true` is possible. Starting points; tune after the first real run.
+- **Audit trail.** New `draft_email_eval_runs` table (migration 050) stores one row per run with metric scores, threshold-pass booleans, and the thresholds captured at run time. Newest-first index on `(user_id, ran_at DESC)`.
+- **Per-user gate column.** `twin_profiles.drafts_eval_passed_at TIMESTAMPTZ` — non-NULL means the user's most-recent passing run timestamp. `recordRun()` stamps this column inside the same transaction as the insert on `result.passed === true`.
+- **`twinRepository.isDraftsEvalPassed(userId)` / `getDraftsEvalPassedAt(userId)` / `clearDraftsEvalPass(userId)`** for the dashboard / settings UI to display eval status and (operator-side) manually roll back a passing gate when a follow-up run regresses.
+- **33 new tests** across `eval-bench.test.ts` (per-metric voice / topical / length, stop-word filtering, stddev=0 degenerate case, runner aggregate pass/fail, confidence levels, threshold defaults, **jaccard-empty-returns-0 + minCorpusSize gate from Copilot review**), `twin-repository.test.ts` (6 new for the eval getters/setters), and `draft-email-eval-runs-repository.test.ts` (transaction shape, conditional twin_profiles update on pass, JSONB threshold serialization, latest/list reads).
 
-### Fixed (post-Copilot review on this PR)
+### Fixed (post-Copilot)
 
-- **Auth middleware field mismatch.** Original code read `req._userId`, but session-auth sets `req.authenticatedUserId`. Real-auth mode silently bypassed the cross-check. Fixed to read the right field; body's `userId` is still cross-checked against the offer's `user_id`.
-- **TOCTOU race on accept.** Original sequence was three separate queries (read server, update server, mark offer). Concurrent double-clicks could each pass the snapshot check and both bump the tier. Replaced with `promotionOffersRepository.acceptAtomic` that runs SELECT FOR UPDATE on the offer + SELECT FOR UPDATE on the server + UPDATE tier + UPDATE offer responded, all in one CRDB serializable transaction. The second click sees `alreadyResponded`.
-- **Sweeper cutoff advanced before query.** If `listOfferedSince` threw, the window was permanently skipped by SSE. Fixed to snapshot the cutoff, only advancing after a successful read.
+- **`jaccard(empty, empty)` whitewashed short replies as perfect match.** "ok" vs "no" both tokenize to zero bigrams / zero content words; the old code returned 1, scoring them as perfectly aligned. Fixed to return 0 — empty evidence means failed similarity.
+- **No minimum corpus size could green-light a user from a single perfectly-matched pair.** Added `minCorpusSize` (default 25; issue spec suggested 50-100). `passed: true` now requires the corpus size threshold AND per-metric pass rates.
 
-### Why Option B (durable table + polling) over Option A (HTTP from worker)
+### Not addressed (intentionally deferred)
 
-Per the issue: restart-resilience matters. A pending offer should survive a worker crash, an API restart, or a dashboard reload. The DB table is the durable surface that survives all three; SSE is a UX optimization on top. Option A (HTTP from worker → API → SSE) would have required a new internal endpoint and a service-token, with no restart-safety properties — a pending offer would evaporate if the user's tab was closed when the SSE arrived. Option B's polling endpoint lets the dashboard catch up on offers it missed.
+- **Wiring `drafts_eval_passed_at` into `buildDraftEmailGenerator` as a fifth AND-gate.** Now that #299 (cost gating) and #301 (this PR) both touch `buildDraftEmailGenerator`'s surrounding logic, the hookup is a small follow-up that lands AFTER both PRs merge: one `await twinRepository.isDraftsEvalPassed(userId)` check between the per-user flag check and the LlmClient construction, plus a test update. Until that follow-up ships, the eval bench is a measurement tool — running it doesn't gate generator construction.
+- **Embedding-cosine voice metric.** Bigram-jaccard surrogate ships now.
+- **LLM-as-judge topical metric.** Content-word jaccard ships now; the LLM-judge variant proposed in the issue is more sensitive but expensive (one LLM call per eval pair). The cost-gating from #299 needs to flow into the eval runs themselves before that can ship.
+- **Corpus loader from Gmail.** The bench is pure — it consumes pre-loaded `EvalPair` rows. Loading them from `signals` table (filtered to authoringTier `inbox_personal` / `inbox_work` paired with same-thread `user_sent_reply`) is its own work, filed as follow-up.
 
 ## [0.6.38.1] - 2026-05-17
 
@@ -58,7 +61,6 @@ Per the issue: restart-resilience matters. A pending offer should survive a work
 - **#301 (eval bench)** — must clear voice / topical / length thresholds before any user is opted in.
 - **#300 (SQL pushdown on `AuthoredExamplesPort`)** — pure optimization; not a blocker.
 - **#303 (approval-UI surface)** — the candidate lands in the existing approval pipeline, but the dashboard doesn't have a draft-specific render yet.
-
 ## [0.6.37.0] - 2026-05-17
 
 ### Added

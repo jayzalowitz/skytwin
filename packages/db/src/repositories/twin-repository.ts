@@ -96,6 +96,55 @@ export const twinRepository = {
   },
 
   /**
+   * #301: hot-path read of the eval-bench gate. Returns true when
+   * the user has at least one passing eval recorded
+   * (drafts_eval_passed_at IS NOT NULL). Symmetric with
+   * `isDraftsEnabled` — single-column narrow read.
+   *
+   * NOTE: the eval-bench gate is NOT yet wired into
+   * `buildDraftEmailGenerator` — that hookup is a follow-up
+   * coordinated with the cost-gating PR. Until then this getter
+   * exists for the dashboard / settings UI to display eval status
+   * without joining the full `draft_email_eval_runs` history.
+   */
+  async isDraftsEvalPassed(userId: string): Promise<boolean> {
+    const result = await query<{ drafts_eval_passed_at: Date | null }>(
+      'SELECT drafts_eval_passed_at FROM twin_profiles WHERE user_id = $1',
+      [userId],
+    );
+    return result.rows[0]?.drafts_eval_passed_at != null;
+  },
+
+  /**
+   * #301: timestamp accessor — returns when the last passing eval
+   * ran, or null if no passing run exists.
+   */
+  async getDraftsEvalPassedAt(userId: string): Promise<Date | null> {
+    const result = await query<{ drafts_eval_passed_at: Date | null }>(
+      'SELECT drafts_eval_passed_at FROM twin_profiles WHERE user_id = $1',
+      [userId],
+    );
+    return result.rows[0]?.drafts_eval_passed_at ?? null;
+  },
+
+  /**
+   * #301: explicit reset — clears the pass timestamp. Used when a
+   * subsequent eval run fails and the operator wants to roll back
+   * the user's gate. Typical flow uses `recordRun` (which sets the
+   * timestamp on pass); this is the manual-override write side.
+   */
+  async clearDraftsEvalPass(userId: string): Promise<TwinProfileRow | null> {
+    const result = await query<TwinProfileRow>(
+      `UPDATE twin_profiles
+       SET drafts_eval_passed_at = NULL, updated_at = now()
+       WHERE user_id = $1
+       RETURNING *`,
+      [userId],
+    );
+    return result.rows[0] ?? null;
+  },
+
+  /**
    * Get the current twin profile for a user.
    */
   async getProfile(userId: string): Promise<TwinProfileRow | null> {

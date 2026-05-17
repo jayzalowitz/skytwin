@@ -99,6 +99,11 @@ export type {
   CreatePromotionOfferInput,
   PromotionOfferResponse,
 } from './repositories/index.js';
+export { draftEmailEvalRunsRepository } from './repositories/index.js';
+export type {
+  DraftEmailEvalRunRow,
+  RecordEvalRunInput,
+} from './repositories/index.js';
 export type { ProvenanceNodeRow, ProvenanceEdgeRow, WriteNodeInput } from './repositories/index.js';
 export type { TwinBriefingRow, CreateTwinBriefingInput } from './repositories/index.js';
 export type {
