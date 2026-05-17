@@ -1,5 +1,16 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.35.0] - 2026-05-17
+
+### Added
+
+- **Trust-tier promotion + briefing jobs are now actually scheduled (closes #304).** Both `runPromotionEligibilityCheckJob` and `runBriefingGeneratorJob` shipped with the codebase but never ran — the worker's poll loop didn't kick them off. Users were stuck at their initial trust tier forever (no automatic promotion no matter how many approvals they cleared) and never received the daily / weekly briefings the spec promised. The worker now fires all three on independent single-flight + revert-on-failure schedules:
+  - **Promotion eligibility check** — hourly. The DB-side tier-update ceremony runs from the worker; the user-facing "you were promoted" SSE emit is still gated on an `emitter` being passed in (the worker has no direct SSE manager — that lives in apps/api). A worker→API SSE bridge is a separate follow-up.
+  - **Daily briefing** — every 24h, UTC-anchored.
+  - **Weekly briefing** — every 7 days. Independent single-flight from the daily so a long daily pass doesn't block the weekly pass.
+- All three follow the same fire-and-forget + single-flight + revert-on-failure pattern as the relationship-tier backfill (#282), so signal ingestion is never blocked by these jobs. The "7am user-local time" cadence target in the briefing spec remains aspirational — requires per-user timezone awareness in the worker that doesn't exist yet.
+- Briefings run without an `LlmClient` for now (the deterministic Markdown template path). The adaptive briefing-prose path requires per-user LLM client setup that lives in the API; threading that into the worker is a separate follow-up.
+
 ## [0.6.34.0] - 2026-05-16
 
 ### Changed

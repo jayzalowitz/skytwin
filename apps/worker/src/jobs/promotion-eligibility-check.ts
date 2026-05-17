@@ -13,11 +13,13 @@ const log = createLogger('worker:promotion-eligibility-check');
  * Cadence: hourly. The promotion ceremony is suppressed for servers whose
  * auto_promote_paused_until is in the future.
  *
- * **Not yet wired into the worker poll loop.** Tracked in #304 (parent
- * epic #189 closed without this wiring). Pattern when wired should
- * follow the fire-and-forget + single-flight + bounded-concurrency
- * shape established by `relationship-tier-scheduler.ts` (#282) so the
- * job doesn't block connector polling.
+ * Wired into the worker poll loop in #304 with the fire-and-forget +
+ * single-flight + revert-on-failure pattern from
+ * `relationship-tier-scheduler.ts` (#282). The DB-side promotion
+ * ceremony runs from the worker; the user-facing SSE "you were
+ * promoted" emit is gated on an `emitter` being passed in, which the
+ * worker currently doesn't (it has no direct SSE manager — that lives
+ * in apps/api). A worker→API SSE bridge is a separate follow-up.
  *
  * The `emitter` parameter accepts any object with an `emit(userId, event, data)` method,
  * so the real sseManager can be injected in production and a stub in tests.

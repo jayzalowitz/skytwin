@@ -30,6 +30,8 @@ import { runFederationSyncJob } from './jobs/federation-sync.js';
 import { runEmbeddingBackfillJob } from './jobs/embedding-backfill.js';
 import { runTierBackfillJob } from './jobs/tier-backfill.js';
 import { runRelationshipTierBackfillBatch } from './jobs/relationship-tier-scheduler.js';
+import { runPromotionEligibilityCheckJob } from './jobs/promotion-eligibility-check.js';
+import { runBriefingGeneratorJob } from './jobs/briefing-generator.js';
 
 const config = loadConfig();
 const log = createLogger('worker');
@@ -515,6 +517,30 @@ async function main(): Promise<void> {
   const RELATIONSHIP_TIER_BACKFILL_INTERVAL_MS = 24 * 60 * 60 * 1000;
   let relationshipTierBackfillInFlight = false;
 
+  // #304: promotion-eligibility-check + briefing-generator wiring. Both
+  // jobs were written but never scheduled, leaving users stuck at their
+  // initial trust tier and never receiving briefings. Same fire-and-
+  // forget + single-flight + revert-on-failure pattern as the
+  // relationship-tier backfill above.
+  //
+  // Cadences match the docstrings: promotion check hourly (a freshly
+  // accumulated approval should surface a tier offer within the same
+  // working session); briefings daily / weekly (UTC-anchored; the
+  // "7am user-local" target in the docstring is aspirational and
+  // requires the worker to know each user's timezone — a separate
+  // follow-up).
+  let lastPromotionEligibilityAt = 0;
+  const PROMOTION_ELIGIBILITY_INTERVAL_MS = 60 * 60 * 1000; // hourly
+  let promotionEligibilityInFlight = false;
+
+  let lastBriefingDailyAt = 0;
+  const BRIEFING_DAILY_INTERVAL_MS = 24 * 60 * 60 * 1000;
+  let briefingDailyInFlight = false;
+
+  let lastBriefingWeeklyAt = 0;
+  const BRIEFING_WEEKLY_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
+  let briefingWeeklyInFlight = false;
+
   // Poll loop
   while (running) {
     for (const uc of userConnectors) {
@@ -627,6 +653,81 @@ async function main(): Promise<void> {
         })
         .finally(() => {
           relationshipTierBackfillInFlight = false;
+        });
+    }
+
+    // #304: promotion-eligibility-check, hourly. Same fire-and-forget +
+    // single-flight pattern as the relationship-tier backfill. The job
+    // iterates all active MCP servers internally and emits an SSE
+    // event per eligible user — but the worker process has no direct
+    // SSE manager (the SSE manager lives in apps/api), so the
+    // `emitter` parameter is left undefined here. The DB-side promotion
+    // ceremony (tier update on twin_profile) still runs; the user-
+    // facing "you've been promoted" toast is a follow-up that needs a
+    // worker→API SSE bridge.
+    if (
+      !promotionEligibilityInFlight &&
+      nowMs - lastPromotionEligibilityAt >= PROMOTION_ELIGIBILITY_INTERVAL_MS
+    ) {
+      promotionEligibilityInFlight = true;
+      const previousLastAt = lastPromotionEligibilityAt;
+      lastPromotionEligibilityAt = nowMs;
+      void runPromotionEligibilityCheckJob()
+        .catch((err) => {
+          log.warn('Promotion eligibility check failed', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+          lastPromotionEligibilityAt = previousLastAt;
+        })
+        .finally(() => {
+          promotionEligibilityInFlight = false;
+        });
+    }
+
+    // #304: briefing generation, daily and weekly. Two independent
+    // single-flight guards because the cadences are different and a
+    // long daily pass shouldn't block the weekly pass (or vice versa).
+    // `llmClient` is left undefined — the briefing-prose prompt path
+    // requires per-user LLM client setup that lives in the API
+    // (events.ts route). The deterministic Markdown template fallback
+    // runs without an LLM client and is good enough for v1; the
+    // adaptive-prose path can be wired once a worker-side LLM-per-user
+    // path lands (separate follow-up).
+    if (
+      !briefingDailyInFlight &&
+      nowMs - lastBriefingDailyAt >= BRIEFING_DAILY_INTERVAL_MS
+    ) {
+      briefingDailyInFlight = true;
+      const previousLastAt = lastBriefingDailyAt;
+      lastBriefingDailyAt = nowMs;
+      void runBriefingGeneratorJob({ cadence: 'daily' })
+        .catch((err) => {
+          log.warn('Daily briefing generator failed', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+          lastBriefingDailyAt = previousLastAt;
+        })
+        .finally(() => {
+          briefingDailyInFlight = false;
+        });
+    }
+
+    if (
+      !briefingWeeklyInFlight &&
+      nowMs - lastBriefingWeeklyAt >= BRIEFING_WEEKLY_INTERVAL_MS
+    ) {
+      briefingWeeklyInFlight = true;
+      const previousLastAt = lastBriefingWeeklyAt;
+      lastBriefingWeeklyAt = nowMs;
+      void runBriefingGeneratorJob({ cadence: 'weekly' })
+        .catch((err) => {
+          log.warn('Weekly briefing generator failed', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+          lastBriefingWeeklyAt = previousLastAt;
+        })
+        .finally(() => {
+          briefingWeeklyInFlight = false;
         });
     }
 
