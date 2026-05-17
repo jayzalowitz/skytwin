@@ -3,24 +3,33 @@
  *
  * The generator is exported by `@skytwin/decision-engine` (#251 Phase 4)
  * and composed into `DecisionMaker.evaluate` via #295. This module is
- * the deploy gate — two flags must both be set for the generator to
- * actually build:
+ * the deploy gate — FIVE gates must all be satisfied for the generator
+ * to actually build, defense-in-depth against accidental rollouts:
  *
  *   1. **Process-wide env var** `SKYTWIN_DRAFTS_ENABLED=true`. Acts as a
  *      global incident kill-switch — flipping it OFF disables the
  *      feature for everyone in one command without touching the DB.
- *   2. **Per-user `twin_profiles.drafts_enabled`** (#302). Defaults to
+ *   2. **`LlmClient` is non-null AND `hasProviders`.** The generator's
+ *      `llmClient.generate()` call needs somewhere to route. Synchronous
+ *      checks; short-circuit before any DB roundtrip.
+ *   3. **Per-user `twin_profiles.drafts_enabled`** (#302). Defaults to
  *      FALSE so existing users are not auto-opted-in. Lets us stage
- *      rollout user-by-user once eval-bench thresholds (#301) clear.
+ *      rollout user-by-user.
+ *   4. **Per-user `twin_profiles.drafts_eval_passed_at`** (#301 + #314).
+ *      NULL until the user's eval-bench run clears all thresholds
+ *      (voice / topical / length / corpus-size). Quality gate on top
+ *      of the opt-in: "the generator produces drafts you would actually
+ *      send" must be proven on a held-out corpus before the feature
+ *      can fire for the user, even if they've manually opted in.
+ *   5. **Cost-gate construction succeeds** (#299). Per-day call cap +
+ *      per-day spend cap + provider-aware cost estimate.
  *
- * Effective state is `env_on AND per_user_on`. Either-side OFF → the
- * generator is null and the candidate path skips draft generation.
- *
- * Operational note: when both flags are set for a user, every email
- * signal that has `requiresResponse: true` triggers an LLM call. Cost
- * gating (#299) is still owed — without it, spend is bounded only by
- * the configured provider's per-token price and the inbound rate. Do
- * not flip the per-user flag on for any user until #299 ships.
+ * Order matters for perf: the env flag and LlmClient checks are
+ * synchronous and short-circuit before any DB query. The two per-user
+ * DB reads then run before construction work begins, so a user not
+ * yet eval-passed costs at most one extra single-column SELECT per
+ * signal ingest. All DB reads fail-closed: a transient error treats
+ * the gate as off, so `/api/events/ingest` never rejects.
  */
 
 import {
@@ -183,29 +192,27 @@ async function resolveDraftCostShape(userId: string): Promise<{
 
 /**
  * Build a draft-email candidate generator for the given user, or return
- * `null` when any of the four gates is unsatisfied:
+ * `null` when any of the FIVE gates is unsatisfied. See the file
+ * docstring for the full list. Synopsis:
  *
- *   1. Global env flag (`SKYTWIN_DRAFTS_ENABLED`) is off (incident kill).
- *   2. Per-user flag (`twin_profiles.drafts_enabled`) is off (staged
- *      rollout, default for new users).
- *   3. The user has no `LlmClient` configured (the generator's
- *      `llmClient.generate()` call has nothing to route to).
- *   4. The configured `LlmClient` has no providers (same root cause as
- *      #3; matches the route's primary-strategy `hasProviders` check).
+ *   1. Env flag — incident kill-switch.
+ *   2. LlmClient + hasProviders — synchronous; somewhere to route to.
+ *   3. Per-user `drafts_enabled` (#302) — staged rollout opt-in.
+ *   4. Per-user `drafts_eval_passed_at` (#301 + #314) — quality gate.
+ *   5. Cost gate (#299) — construction-time only; per-call gates run
+ *      inside `generate()`.
  *
  * Callers compose the result alongside the rule-based / LLM candidate
  * strategy via `CompositeCandidateGenerator`. `null` short-circuits the
  * wiring entirely — no construction cost, no memory-port roundtrip —
  * so the default-off path adds nothing measurable to ingestion latency.
  *
- * The env-flag check is synchronous; the per-user check requires a DB
- * roundtrip. We do the cheap check first so the all-off case stays
- * roundtrip-free.
- *
- * Cost gating (#299) wires here. When all four gates pass, the
- * generator is constructed with a `DbCostGate` plus a conservative
- * per-call cost estimate derived from the user's cheapest enabled
- * provider. Per-call AND per-day spend limits both apply.
+ * The env-flag and LlmClient checks are synchronous; the per-user
+ * checks each require a DB roundtrip. We do the cheap checks first so
+ * the all-off case stays roundtrip-free. The two DB reads (3 then 4)
+ * are sequential, not parallel — once gate 3 short-circuits we don't
+ * need gate 4, which keeps the staged-rollout cohort (the vast
+ * majority of users) at exactly one extra read.
  */
 export async function buildDraftEmailGenerator(
   userId: string,
@@ -243,6 +250,32 @@ export async function buildDraftEmailGenerator(
     return null;
   }
   if (!perUserEnabled) return null;
+
+  // Per-user eval-bench gate (#301 + #314). The user must have at
+  // least one passing eval-bench run before the generator is allowed
+  // to construct. `drafts_eval_passed_at` is stamped by
+  // `draftEmailEvalRunsRepository.recordRun` when a run clears all
+  // metric thresholds (voice / topical / length) AND the
+  // corpus-size floor. Same fail-closed contract as the per-user
+  // flag — a DB hiccup here can't take down `/api/events/ingest`.
+  //
+  // This is the QUALITY gate on top of the OPT-IN gate. A user can
+  // manually flip `drafts_enabled` but still be locked out if their
+  // eval bench hasn't passed — preventing the "sounds plausible"
+  // failure mode where a generator produces drafts that don't match
+  // the user's voice / topic / length distribution well enough to
+  // be useful.
+  let evalPassed = false;
+  try {
+    evalPassed = await twinRepository.isDraftsEvalPassed(userId);
+  } catch (err) {
+    log.warn('Draft-email eval-bench gate read failed; treating as off (fail-closed)', {
+      userId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
+  if (!evalPassed) return null;
 
   const examples = buildAuthoredExamplesPort(userId);
   // Cost-gate wiring (#299). The optional override exists for tests;
