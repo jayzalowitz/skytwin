@@ -20,6 +20,41 @@ export interface UpdateProfileInput {
  */
 export const twinRepository = {
   /**
+   * #302: hot-path check for the draft-email per-user flag. A narrow
+   * SELECT against a single boolean column — much cheaper than
+   * `getProfile` on every signal ingest. Returns FALSE when the user
+   * has no profile row yet (they haven't been touched by `getOrCreateProfile`
+   * yet) — fail-closed.
+   */
+  async isDraftsEnabled(userId: string): Promise<boolean> {
+    const result = await query<{ drafts_enabled: boolean }>(
+      'SELECT drafts_enabled FROM twin_profiles WHERE user_id = $1',
+      [userId],
+    );
+    return result.rows[0]?.drafts_enabled ?? false;
+  },
+
+  /**
+   * #302: write side of the per-user draft-email flag. Used by the
+   * dashboard / settings UI when the user opts in. Returns the updated
+   * row, or null when the user has no twin_profile row yet (caller
+   * should `getOrCreateProfile` first).
+   */
+  async setDraftsEnabled(
+    userId: string,
+    enabled: boolean,
+  ): Promise<TwinProfileRow | null> {
+    const result = await query<TwinProfileRow>(
+      `UPDATE twin_profiles
+       SET drafts_enabled = $1, updated_at = now()
+       WHERE user_id = $2
+       RETURNING *`,
+      [enabled, userId],
+    );
+    return result.rows[0] ?? null;
+  },
+
+  /**
    * Get the current twin profile for a user.
    */
   async getProfile(userId: string): Promise<TwinProfileRow | null> {

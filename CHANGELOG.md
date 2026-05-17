@@ -1,5 +1,14 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.37.0] - 2026-05-17
+
+### Added
+
+- **Per-user draft-email feature flag (closes #302).** The `SKYTWIN_DRAFTS_ENABLED` env var that #295 introduced was a single global knob — appropriate for internal dogfood, but wrong for staged rollout. Added `twin_profiles.drafts_enabled BOOLEAN NOT NULL DEFAULT FALSE` (migration 047) plus `twinRepository.isDraftsEnabled` (narrow single-column read for the hot path) and `setDraftsEnabled` (for the eventual dashboard toggle). `buildDraftEmailGenerator` is now async and gates on a four-way AND: env on → LlmClient present → providers configured → per-user opt-in. Default-off path stays roundtrip-free — the env check short-circuits before any DB query. Default for existing users is FALSE: nobody is auto-opted-in by the migration.
+- The env var stays as the global incident kill-switch — flipping it OFF disables the feature for everyone in one command, no DB writes needed. Effective state is `env_on AND per_user_on`.
+- The per-user flag read is wrapped in a try/catch that fails closed: a transient DB error (pool exhaustion, migration window with the column not yet visible) returns null instead of propagating, so a flag-read failure can never take down `/api/events/ingest`. Caching the per-user boolean with invalidation from `setDraftsEnabled` is left as a follow-up; the read is a single-column SELECT on a unique-indexed column.
+- Six new repository tests pin the contract (narrow SELECT, fail-closed on missing row, UPDATE shape with RETURNING + updated_at touch); four new setup tests pin the gating (env-off short-circuits before DB roundtrip, per-user-off returns null even with env on, all-four-gates-on returns the generator, and DB-error fails closed without rejecting).
+
 ## [0.6.35.0] - 2026-05-17
 
 ### Added

@@ -1,19 +1,26 @@
 /**
- * Dark-deploy wiring for the draft-email candidate generator (#283).
+ * Wiring for the draft-email candidate generator (#283).
  *
  * The generator is exported by `@skytwin/decision-engine` (#251 Phase 4)
- * but was NOT wired into `DecisionMaker.evaluate` at landing time — the
- * deploy decision is a separate concern from the engine. This module is
- * the deploy decision, gated by an env flag so the wiring lands now but
- * stays off until the rest of #283 (cost gating, real
- * `AuthoredExamplesPort` with SQL pushdown, eval bench, per-user feature
- * flag, approval-UI surface) ships.
+ * and composed into `DecisionMaker.evaluate` via #295. This module is
+ * the deploy gate — two flags must both be set for the generator to
+ * actually build:
  *
- * Operational note: when this is flipped on, every email signal that
- * `requiresResponse: true` triggers an LLM call. With no cost gating yet,
- * cost is bounded only by the configured provider's per-token price and
- * the inbound email rate — verify a per-user spend cap is in place before
- * enabling for any user.
+ *   1. **Process-wide env var** `SKYTWIN_DRAFTS_ENABLED=true`. Acts as a
+ *      global incident kill-switch — flipping it OFF disables the
+ *      feature for everyone in one command without touching the DB.
+ *   2. **Per-user `twin_profiles.drafts_enabled`** (#302). Defaults to
+ *      FALSE so existing users are not auto-opted-in. Lets us stage
+ *      rollout user-by-user once eval-bench thresholds (#301) clear.
+ *
+ * Effective state is `env_on AND per_user_on`. Either-side OFF → the
+ * generator is null and the candidate path skips draft generation.
+ *
+ * Operational note: when both flags are set for a user, every email
+ * signal that has `requiresResponse: true` triggers an LLM call. Cost
+ * gating (#299) is still owed — without it, spend is bounded only by
+ * the configured provider's per-token price and the inbound rate. Do
+ * not flip the per-user flag on for any user until #299 ships.
  */
 
 import {
@@ -22,15 +29,20 @@ import {
   type CandidateGenerator,
 } from '@skytwin/decision-engine';
 import type { LlmClient } from '@skytwin/llm-client';
+import { twinRepository } from '@skytwin/db';
+import { createLogger } from '@skytwin/core';
 import { getMemoryPortForUser } from './memory-setup.js';
 
+const log = createLogger('api:draft-email-setup');
+
 /**
- * Whether the dark wiring is active.
+ * Whether the global kill-switch is set. Controlled by
+ * `SKYTWIN_DRAFTS_ENABLED`. Defaults to `false` — the generator's code
+ * paths are dead until an operator explicitly opts in.
  *
- * Controlled by `SKYTWIN_DRAFTS_ENABLED`. Defaults to `false` — the
- * generator's code paths are dead until an operator explicitly opts in.
- * Per-user gating (sub-issue 4 of #283) is a follow-up; today it's a
- * single process-wide knob.
+ * This is one of two gates; the other is `twin_profiles.drafts_enabled`
+ * per-user (#302). Both must be true for `buildDraftEmailGenerator` to
+ * return a non-null generator.
  */
 export function draftsEnabled(): boolean {
   return process.env['SKYTWIN_DRAFTS_ENABLED'] === 'true';
@@ -95,25 +107,60 @@ function buildAuthoredExamplesPort(userId: string): AuthoredExamplesPort {
 
 /**
  * Build a draft-email candidate generator for the given user, or return
- * `null` when the dark flag is off or the user has no configured LLM
- * client. Callers compose the result alongside the rule-based / LLM
- * candidate strategy via `CompositeCandidateGenerator`.
+ * `null` when any of the four gates is unsatisfied:
  *
- * `null` short-circuits the wiring entirely — no construction cost, no
- * memory-port roundtrip — so the default-off path adds nothing measurable
- * to ingestion latency.
+ *   1. Global env flag (`SKYTWIN_DRAFTS_ENABLED`) is off (incident kill).
+ *   2. Per-user flag (`twin_profiles.drafts_enabled`) is off (staged
+ *      rollout, default for new users).
+ *   3. The user has no `LlmClient` configured (the generator's
+ *      `llmClient.generate()` call has nothing to route to).
+ *   4. The configured `LlmClient` has no providers (same root cause as
+ *      #3; matches the route's primary-strategy `hasProviders` check).
+ *
+ * Callers compose the result alongside the rule-based / LLM candidate
+ * strategy via `CompositeCandidateGenerator`. `null` short-circuits the
+ * wiring entirely — no construction cost, no memory-port roundtrip —
+ * so the default-off path adds nothing measurable to ingestion latency.
+ *
+ * The env-flag check is synchronous; the per-user check requires a DB
+ * roundtrip. We do the cheap check first so the all-off case stays
+ * roundtrip-free.
  */
-export function buildDraftEmailGenerator(
+export async function buildDraftEmailGenerator(
   userId: string,
   llmClient: LlmClient | null,
-): CandidateGenerator | null {
+): Promise<CandidateGenerator | null> {
   if (!draftsEnabled()) return null;
-  // Require both the LlmClient AND at least one configured provider —
-  // otherwise the generator's `llmClient.generate()` call has nothing to
-  // route to and the candidate path silently drops to `return []` on
-  // every signal. The route's primary-strategy gate uses the same
-  // `hasProviders` check, so the two stay in sync.
   if (!llmClient || !llmClient.hasProviders) return null;
+  // Per-user flag check (#302). FAIL-CLOSED on every failure mode:
+  //
+  //   - User has no `twin_profiles` row yet → returns false (handled by
+  //     the repo: empty SELECT → falsy default).
+  //   - DB unreachable, query timeout, or column missing during a
+  //     migration rollout → we MUST NOT propagate the error. The
+  //     events.ts route depends on this function to never reject, so
+  //     a transient DB hiccup here can't be allowed to fail
+  //     `/api/events/ingest` — that would take down signal ingestion
+  //     for every LLM-configured user just because an optional opt-in
+  //     read failed. Catch, log once, and treat as "feature off" —
+  //     the same outcome the disabled state lands on.
+  //
+  // Caching the per-user boolean (with invalidation from
+  // `setDraftsEnabled`) would avoid one DB roundtrip per signal-ingest
+  // for the eligible cohort. Left as a follow-up — the read is a
+  // single-column SELECT on a unique-indexed column, so latency is
+  // bounded even without a cache.
+  let perUserEnabled = false;
+  try {
+    perUserEnabled = await twinRepository.isDraftsEnabled(userId);
+  } catch (err) {
+    log.warn('Draft-email per-user flag read failed; treating as off (fail-closed)', {
+      userId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
+  if (!perUserEnabled) return null;
   const examples = buildAuthoredExamplesPort(userId);
   return new DraftEmailCandidateGenerator(llmClient, examples);
 }
