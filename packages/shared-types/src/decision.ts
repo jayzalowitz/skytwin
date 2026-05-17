@@ -70,6 +70,14 @@ export interface CandidateAction {
    * absent, the policy engine treats it as `untrusted_external` (fail safe).
    */
   provenance?: ActionProvenance;
+  /**
+   * Link to a `capability_provenance_nodes` row (#305). Populated when the
+   * candidate originated from a capability-pipeline node (e.g. an MCP server
+   * the user installed) so the lineage view can walk action → explanation
+   * → provenance node back to the source capability. Engine-originated
+   * candidates (rule-based, LLM-strategy, draft-email) leave this unset.
+   */
+  capabilityProvenanceNodeId?: string;
 }
 
 /**

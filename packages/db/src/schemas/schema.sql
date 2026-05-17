@@ -223,6 +223,12 @@ CREATE TABLE IF NOT EXISTS explanation_records (
   action_rationale STRING NOT NULL,
   escalation_rationale STRING,
   correction_guidance STRING NOT NULL,
+  -- #305: link to the capability_provenance_nodes row this explanation's
+  -- action originated from. NULL for engine-originated actions; populated
+  -- when the candidate carried a capability-pipeline origin (added in
+  -- migration 051; ON DELETE SET NULL so audit history survives capability
+  -- removal).
+  capability_provenance_node_id UUID,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   INDEX (decision_id)
 );

@@ -17,10 +17,18 @@ export interface ExplanationRecord {
   riskTier: RiskTier;
   overallConfidence: ConfidenceLevel;
   /**
-   * Optional link to a capability_provenance_nodes row.
-   * When set, the provenance lineage view can walk from action → explanation.
-   * Tracked in #305 — the parent epic #189 closed without wiring this
-   * specific population path.
+   * Link to a `capability_provenance_nodes` row when the explanation's
+   * action originated from a capability-pipeline node (an installed MCP
+   * server, a recipe). The lineage view walks action → explanation →
+   * provenance node via this field to answer "which capability led
+   * here?" for a user inspecting an MCP-mediated action.
+   *
+   * Engine-originated actions (rule-based, LLM-strategy, draft-email)
+   * leave this unset. As of #305 the plumbing supports the field
+   * end-to-end (CandidateAction.capabilityProvenanceNodeId →
+   * ExplanationGenerator → DB column). No candidate generator stamps
+   * it today; the MCP-host candidate-suggestion path that does is the
+   * follow-up consumer.
    */
   capabilityProvenanceNodeId?: string;
   createdAt: Date;

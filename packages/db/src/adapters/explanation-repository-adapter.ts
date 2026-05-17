@@ -156,6 +156,8 @@ function explanationRowToDomain(
     correctionGuidance: row.correction_guidance,
     riskTier,
     overallConfidence,
+    capabilityProvenanceNodeId:
+      row.capability_provenance_node_id ?? undefined,
     createdAt: row.created_at,
   };
 }
@@ -212,6 +214,7 @@ export const explanationRepositoryAdapter: ExplanationRepositoryPort = {
       actionRationale: record.actionRationale,
       escalationRationale: record.escalationRationale ?? null,
       correctionGuidance: record.correctionGuidance,
+      capabilityProvenanceNodeId: record.capabilityProvenanceNodeId ?? null,
     });
 
     return explanationRowToDomain(row);

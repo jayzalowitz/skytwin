@@ -219,6 +219,12 @@ export interface ExplanationRecordRow {
   action_rationale: string;
   escalation_rationale: string | null;
   correction_guidance: string;
+  /**
+   * #305: link to a `capability_provenance_nodes` row when the action this
+   * explanation describes originated from a capability-pipeline node.
+   * NULL for engine-originated actions. Added in migration 051.
+   */
+  capability_provenance_node_id: string | null;
   created_at: Date;
 }
 
