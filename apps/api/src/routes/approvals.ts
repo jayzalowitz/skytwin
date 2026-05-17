@@ -24,6 +24,7 @@ import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
 import { sseManager } from '../sse.js';
 import { createLogger } from '@skytwin/core';
 import { getMemoryPortForUser } from '../memory-setup.js';
+import { applyDraftEditOverride } from './draft-edit-merge.js';
 
 const log = createLogger('api:approvals');
 
@@ -182,6 +183,15 @@ export function createApprovalsRouter(): Router {
         /** Required on the SECOND confirmation of a dual-confirmation
          *  request — the one-time token returned by the first confirmation. */
         confirmationToken?: string;
+        /**
+         * #303: when approving a `draft_email` candidate, the user may
+         * have edited the body in the dashboard textarea before
+         * clicking Send. The edited text overrides
+         * `parameters.draftBody` before the action executes so the
+         * sent email matches what the user reviewed. Ignored on
+         * reject and on non-draft action types.
+         */
+        editedBody?: string;
       };
 
       if (!body.action || !body.userId) {
@@ -366,6 +376,17 @@ export function createApprovalsRouter(): Router {
           confidence: (storedAction['confidence'] as ConfidenceLevel) ?? ConfidenceLevel.LOW,
           reasoning: (storedAction['reasoning'] as string) ?? '',
         };
+
+        // #303: draft-email edit-before-approve. The dashboard
+        // textarea is the source of truth for what the user actually
+        // wants to send. `applyDraftEditOverride` decides whether to
+        // overwrite `parameters.draftBody` (only fires for
+        // `draft_email` actions with a non-whitespace string).
+        // The original stored body stays in
+        // `approval.candidate_action.parameters.draftBody` for the
+        // audit trail; only the in-flight `candidateAction` is
+        // mutated.
+        applyDraftEditOverride(candidateAction, body.editedBody);
 
         // Run policy check even on approved actions (spend limits, domain restrictions still apply)
         const user = await userRepository.findById(body.userId);
