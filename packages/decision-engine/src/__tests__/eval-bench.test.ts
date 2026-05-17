@@ -110,6 +110,22 @@ describe('scorePair — voice metric (bigram jaccard)', () => {
     expect(r.voiceJaccard).toBe(1);
     expect(r.topicalJaccard).toBe(1);
   });
+
+  it('jaccard refuses to whitewash two short replies as "perfect match" (#301 Copilot fix)', () => {
+    // Both texts tokenize to zero bigrams and zero content words
+    // (too-short tokens get filtered). The old implementation
+    // returned 1 for "both empty", which scored "ok" vs "no" as a
+    // perfect voice + topical match. The fix is to treat empty
+    // evidence as FAILED similarity (return 0).
+    const r = scorePair(
+      pair({ actualReply: 'ok', generatedDraft: 'no' }),
+      STATS_50_15,
+    );
+    expect(r.voiceJaccard).toBe(0);
+    expect(r.topicalJaccard).toBe(0);
+    expect(r.voicePassed).toBe(false);
+    expect(r.topicalPassed).toBe(false);
+  });
 });
 
 describe('scorePair — topical metric (content-word jaccard)', () => {
@@ -160,25 +176,45 @@ describe('runEvalBench — aggregate', () => {
     expect(r.notes).toMatch(/Empty corpus/i);
   });
 
-  it('passes when all pairs score above all thresholds', () => {
-    // Three pairs where draft ≈ actual reply (all metrics high).
-    const sameTextPairs: EvalPair[] = [
-      pair({
-        actualReply: 'Sure, that works. See you Tuesday at 2.',
-        generatedDraft: 'Sure, that works. See you Tuesday at 2.',
-      }),
-      pair({
-        actualReply: 'Sounds good. I will follow up by Friday with the doc.',
-        generatedDraft: 'Sounds good. I will follow up by Friday with the doc.',
-      }),
-      pair({
-        actualReply: 'Thanks for the update. Let me know if anything changes.',
-        generatedDraft: 'Thanks for the update. Let me know if anything changes.',
-      }),
-    ];
-    const r = runEvalBench(sameTextPairs, STATS_50_15);
+  it('passes when all pairs score above all thresholds AND corpus is large enough', () => {
+    // Tighten minCorpusSize for this test so we don't need to write
+    // out 25 identical pairs. The PROD default of 25 is enforced
+    // separately in the "under-corpus" test below.
+    const sameTextPairs: EvalPair[] = Array(3)
+      .fill(0)
+      .map(() =>
+        pair({
+          actualReply: 'Sure, that works. See you Tuesday at 2.',
+          generatedDraft: 'Sure, that works. See you Tuesday at 2.',
+        }),
+      );
+    const r = runEvalBench(sameTextPairs, STATS_50_15, {
+      ...DEFAULT_EVAL_THRESHOLDS,
+      minCorpusSize: 3,
+    });
     expect(r.passed).toBe(true);
     expect(r.overallPassRate).toBe(1);
+  });
+
+  it('REFUSES to pass below minCorpusSize, regardless of how high per-metric rates are (#301 Copilot fix)', () => {
+    // Three perfectly-matched pairs ≠ a green-lit user. The eval
+    // bench is a quality gate over a held-out corpus; a smoke run
+    // should never flip the user's eligibility flag.
+    const perfectPair = pair({
+      actualReply: 'Sure, that works. See you Tuesday at 2.',
+      generatedDraft: 'Sure, that works. See you Tuesday at 2.',
+    });
+    const r = runEvalBench(Array(3).fill(perfectPair), STATS_50_15, {
+      ...DEFAULT_EVAL_THRESHOLDS,
+      minCorpusSize: 25, // explicit; matches the PROD default
+    });
+    expect(r.passed).toBe(false);
+    expect(r.overallPassRate).toBe(1); // metrics are great
+    expect(r.notes).toMatch(/Under-evaluated|corpus size/i);
+  });
+
+  it('PROD default for minCorpusSize is 25 (issue spec said 50-100; 25 is the floor)', () => {
+    expect(DEFAULT_EVAL_THRESHOLDS.minCorpusSize).toBe(25);
   });
 
   it('fails when most pairs miss a metric (overall pass-rate below threshold)', () => {

@@ -84,6 +84,17 @@ export interface EvalThresholds {
    * thresholds for the run as a whole to pass.
    */
   overallPassRateMin: number;
+  /**
+   * Minimum corpus size for the run to count as a valid quality
+   * gate. Copilot caught the original shape that allowed a single
+   * perfectly-matched pair to flip the user's eligibility flag —
+   * which defeats the "held-out corpus" framing the issue called
+   * for. The bench refuses to mark `passed: true` until at least
+   * this many pairs have been evaluated. The issue spec suggests
+   * 50-100 pairs per user; we default to 25 as the floor so smaller
+   * smoke runs are clearly under-corpus rather than green-lit.
+   */
+  minCorpusSize: number;
 }
 
 export const DEFAULT_EVAL_THRESHOLDS: EvalThresholds = {
@@ -91,6 +102,7 @@ export const DEFAULT_EVAL_THRESHOLDS: EvalThresholds = {
   topicalJaccardMin: 0.3,
   lengthSigmaMax: 2,
   overallPassRateMin: 0.8,
+  minCorpusSize: 25,
 };
 
 export interface PairScore {
@@ -160,7 +172,12 @@ function bigrams(text: string): Set<string> {
 }
 
 function jaccard(a: Set<string>, b: Set<string>): number {
-  if (a.size === 0 && b.size === 0) return 1;
+  // Copilot caught the original `if (both empty) return 1` shape —
+  // it scored "ok" vs "no" as a perfect match because both produce
+  // zero bigrams / zero content words. Treat empty evidence as
+  // FAILED similarity: there is no signal to confirm the two texts
+  // are alike. A draft too short to tokenize is precisely the kind
+  // of draft the eval should refuse, not whitewash.
   if (a.size === 0 || b.size === 0) return 0;
   let intersection = 0;
   for (const x of a) if (b.has(x)) intersection += 1;
@@ -266,11 +283,19 @@ export function runEvalBench(
   const lengthPassRate = lengthPass / total;
   const overallPassRate = allPass / total;
 
-  const passed =
+  // Quality-gate semantic: passed requires (a) per-metric rates
+  // cleared AND (b) we evaluated enough samples to trust the
+  // result. Copilot caught the original shape that let a single
+  // perfectly-matched pair flip the gate. Pass-rates can be
+  // measured for any non-empty corpus, but `passed: true` is
+  // gated on `minCorpusSize` first.
+  const corpusSizeMet = total >= thresholds.minCorpusSize;
+  const ratesMet =
     overallPassRate >= thresholds.overallPassRateMin &&
     voicePassRate >= thresholds.overallPassRateMin &&
     topicalPassRate >= thresholds.overallPassRateMin &&
     lengthPassRate >= thresholds.overallPassRateMin;
+  const passed = corpusSizeMet && ratesMet;
 
   const failingMetrics: string[] = [];
   if (voicePassRate < thresholds.overallPassRateMin) failingMetrics.push('voice');
@@ -278,11 +303,23 @@ export function runEvalBench(
   if (lengthPassRate < thresholds.overallPassRateMin) failingMetrics.push('length');
   if (overallPassRate < thresholds.overallPassRateMin) failingMetrics.push('overall');
 
-  const notes = passed
-    ? `Passed all thresholds across ${total} pairs.`
-    : `Failed: ${failingMetrics.join(', ')} below ${thresholds.overallPassRateMin}. ` +
-      `Voice ${(voicePassRate * 100).toFixed(0)}%, topical ${(topicalPassRate * 100).toFixed(0)}%, ` +
-      `length ${(lengthPassRate * 100).toFixed(0)}%, overall ${(overallPassRate * 100).toFixed(0)}%.`;
+  let notes: string;
+  if (passed) {
+    notes = `Passed all thresholds across ${total} pairs.`;
+  } else if (!corpusSizeMet) {
+    notes =
+      `Under-evaluated: corpus size ${total} below minCorpusSize ` +
+      `${thresholds.minCorpusSize}. Not green-lit regardless of metric ` +
+      `rates. Voice ${(voicePassRate * 100).toFixed(0)}%, topical ` +
+      `${(topicalPassRate * 100).toFixed(0)}%, length ` +
+      `${(lengthPassRate * 100).toFixed(0)}%, overall ` +
+      `${(overallPassRate * 100).toFixed(0)}%.`;
+  } else {
+    notes =
+      `Failed: ${failingMetrics.join(', ') || 'none'} below ${thresholds.overallPassRateMin}.` +
+      ` Voice ${(voicePassRate * 100).toFixed(0)}%, topical ${(topicalPassRate * 100).toFixed(0)}%,` +
+      ` length ${(lengthPassRate * 100).toFixed(0)}%, overall ${(overallPassRate * 100).toFixed(0)}%.`;
+  }
 
   return {
     corpusSize: total,

@@ -1,30 +1,5 @@
 All notable changes to SkyTwin will be documented in this file.
 
-<<<<<<< HEAD
-## [0.6.40.0] - 2026-05-17
-
-### Added
-
-- **Worker→API SSE bridge for promotion ceremonies (closes #310).** `runPromotionEligibilityCheckJob` shipped in #189 but was logging-only after #304 — its only side-effect was an SSE emit, and the worker had no `sseManager` instance (that lives in apps/api). The job sat dormant; trust-tier promotion had no automatic ladder above `observer`. This PR replaces the direct SSE emit with a durable DB-side ceremony:
-  - **`promotion_offers` table** (migration 049) is the new source of truth. Worker writes one row per (server, proposed_tier) tuple. A partial unique index on `(server_id, proposed_tier) WHERE responded_at IS NULL` makes the insert idempotent — re-running the eligibility job for an already-pending offer is a no-op.
-  - **`promotionOffersRepository`** with `createIfPending` (idempotent insert), `listPending` (per user), `listPendingWithServerName` (joined with `mcp_servers.display_name` for the dashboard), `findById`, `markResponded`, `acceptAtomic` (single-txn accept + tier bump, race-safe per Copilot review), `listOfferedSince` (for the SSE sweeper).
-  - **`runPromotionEligibilityCheckJob` rewired**. No `emitter` dependency anymore — writes via the repo. Job is now wired into the worker poll loop on a 24h cadence with single-flight + revert-on-failure (same pattern as the briefing generator and the relationship-tier backfill batcher). Idempotent at the DB layer, so concurrent ticks during a worker restart can't pile up duplicates.
-  - **API endpoints**. `GET /api/promotion-offers/:userId` returns pending offers for polling. `POST /api/promotion-offers/:offerId/respond` accepts `{ userId, response: 'accepted' | 'rejected' | 'dismissed' }` — accept runs through `acceptAtomic` which validates the snapshot tier, bumps `mcp_servers.trust_tier`, and marks the offer responded, all in one CockroachDB serializable transaction (race-safe under concurrent double-clicks per Copilot review).
-  - **SSE sweeper**. The API runs a 30s background sweeper (`sweepPromotionOffersOnce`) that finds newly-offered rows and emits `capability:promotion-offered` for live dashboard connections. Cutoff advances only on successful read (rolls back the window on error per Copilot review, so a failed sweep re-attempts on the next tick).
-- The existing dashboard SSE listener (`apps/web/public/js/pages/assistant.js:520`) and tier-promotion modal continue to work as-is — the new sweeper emits the same `capability:promotion-offered` event with the same payload shape (plus a new `offerId` for future use). Modal-side migration to call `/api/promotion-offers/:id/respond` is a follow-up; until then the existing `promoteTier`/`declinePromotion` endpoints handle the actual tier update, and `promotion_offers` rows for successfully-promoted servers stay in the `pending` state. This is harmless — the partial unique index won't re-offer the same proposed_tier, and the next eligibility check evaluates from the new tier looking for a DIFFERENT proposed_tier.
-- New `fetchPendingPromotionOffers` and `respondToPromotionOffer` exports in `apps/web/public/js/api-client.js` — the contract for the dashboard polling layer and the modal-side migration.
-- **26 new tests** across `promotion-offers-repository.test.ts` (repo SQL shapes including ON CONFLICT dedup, JOIN-with-server-name, race-safe markResponded), `promotion-eligibility-check.test.ts` (happy path, idempotency dedup counted as `alreadyPending`, paused-server skip, terminal-tier skip, per-server error absorption), `promotion-offers-routes.test.ts` (GET shape, POST validation, ownership, all acceptAtomic branches — success / alreadyResponded / staleSnapshot / serverMissing, SSE sweeper).
-
-### Fixed (post-Copilot review on this PR)
-
-- **Auth middleware field mismatch.** Original code read `req._userId`, but session-auth sets `req.authenticatedUserId`. Real-auth mode silently bypassed the cross-check. Fixed to read the right field; body's `userId` is still cross-checked against the offer's `user_id`.
-- **TOCTOU race on accept.** Original sequence was three separate queries (read server, update server, mark offer). Concurrent double-clicks could each pass the snapshot check and both bump the tier. Replaced with `promotionOffersRepository.acceptAtomic` that runs SELECT FOR UPDATE on the offer + SELECT FOR UPDATE on the server + UPDATE tier + UPDATE offer responded, all in one CRDB serializable transaction. The second click sees `alreadyResponded`.
-- **Sweeper cutoff advanced before query.** If `listOfferedSince` threw, the window was permanently skipped by SSE. Fixed to snapshot the cutoff, only advancing after a successful read.
-
-### Why Option B (durable table + polling) over Option A (HTTP from worker)
-
-Per the issue: restart-resilience matters. A pending offer should survive a worker crash, an API restart, or a dashboard reload. The DB table is the durable surface that survives all three; SSE is a UX optimization on top. Option A (HTTP from worker → API → SSE) would have required a new internal endpoint and a service-token, with no restart-safety properties — a pending offer would evaporate if the user's tab was closed when the SSE arrived. Option B's polling endpoint lets the dashboard catch up on offers it missed.
-=======
 ## [0.6.41.0] - 2026-05-17
 
 ### Added
@@ -51,7 +26,6 @@ Per the issue: restart-resilience matters. A pending offer should survive a work
 - **Embedding-cosine voice metric.** Bigram-jaccard surrogate ships now.
 - **LLM-as-judge topical metric.** Content-word jaccard ships now; the LLM-judge variant proposed in the issue is more sensitive but expensive (one LLM call per eval pair). The cost-gating from #299 needs to flow into the eval runs themselves before that can ship.
 - **Corpus loader from Gmail.** The bench is pure — it consumes pre-loaded `EvalPair` rows. Loading them from `signals` table (filtered to authoringTier `inbox_personal` / `inbox_work` paired with same-thread `user_sent_reply`) is its own work, filed as follow-up.
->>>>>>> f262029 (v0.6.39.0 feat: draft-email eval bench (#301))
 
 ## [0.6.38.1] - 2026-05-17
 

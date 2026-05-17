@@ -29,6 +29,7 @@ function makeResult(overrides: Partial<EvalResult> = {}): EvalResult {
       topicalJaccardMin: 0.3,
       lengthSigmaMax: 2,
       overallPassRateMin: 0.8,
+      minCorpusSize: 25,
     },
     notes: 'ok',
     pairs: [],
