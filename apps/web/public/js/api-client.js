@@ -898,6 +898,21 @@ export function fetchLifebook(userId, domainName) {
   );
 }
 
+/**
+ * #319: fetch the adaptive layout for a Lifebook detail page. Returns
+ * `{ layout: { layoutId, sections: [{type, title, order}] }, source, histogram }`.
+ * `source` is one of `'llm'`, `'deterministic_fallback'`, `'no_llm_configured'`,
+ * `'sparse_fallback'`, `'no_signals'`, or `'prompt_error'` — used by the UI
+ * to tell the user why they're seeing a generic vs. domain-tuned layout.
+ * Always returns a renderable `layout` shape; never throws on
+ * LLM unavailability.
+ */
+export function fetchLifebookLayout(userId, domainName) {
+  return fetchJSON(
+    `${API}/lifebooks/${encodeURIComponent(userId)}/${encodeURIComponent(domainName)}/layout`,
+  );
+}
+
 export function hideLifebook(userId, domainName) {
   return fetchJSON(
     `${API}/lifebooks/${encodeURIComponent(userId)}/${encodeURIComponent(domainName)}/hide`,

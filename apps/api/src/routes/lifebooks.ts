@@ -1,15 +1,27 @@
 import { Router } from 'express';
-import { lifebookRepository, mempalaceRepository } from '@skytwin/db';
+import {
+  aiProviderRepository,
+  lifebookRepository,
+  mempalaceRepository,
+} from '@skytwin/db';
+import { LlmClient } from '@skytwin/llm-client';
+import type { ProviderEntry } from '@skytwin/llm-client';
+import type { AIProviderName } from '@skytwin/shared-types';
+import { runPrompt } from '@skytwin/policy-prompts';
+import { createLogger } from '@skytwin/core';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
+
+const log = createLogger('api:lifebooks');
 
 /**
  * Routes for the Emergent Lifebooks surface (#193 Child 1).
  *
- *   GET    /api/lifebooks/:userId                       — list visible lifebooks
- *   GET    /api/lifebooks/:userId/all                   — list all (including hidden)
- *   GET    /api/lifebooks/:userId/:domainName           — single lifebook + wing summary
- *   POST   /api/lifebooks/:userId/:domainName/hide      — hide from dashboards
- *   POST   /api/lifebooks/:userId/:domainName/unhide    — restore visibility
+ *   GET    /api/lifebooks/:userId                              — list visible lifebooks
+ *   GET    /api/lifebooks/:userId/all                          — list all (including hidden)
+ *   GET    /api/lifebooks/:userId/:domainName                  — single lifebook + wing summary
+ *   GET    /api/lifebooks/:userId/:domainName/layout           — adaptive layout (#319)
+ *   POST   /api/lifebooks/:userId/:domainName/hide             — hide from dashboards
+ *   POST   /api/lifebooks/:userId/:domainName/unhide           — restore visibility
  *   POST   /api/lifebooks/:userId/:domainName/importance       — set override (#321)
  *   DELETE /api/lifebooks/:userId/:domainName/importance       — clear override (#321)
  *
@@ -146,6 +158,151 @@ export function createLifebooksRouter(): Router {
         return;
       }
       res.json({ lifebook: rowToJson(updated) });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  /**
+   * #319: GET /:userId/:domainName/layout
+   *
+   * Adaptive per-Lifebook layout. Computes a signal-type histogram from
+   * the wing's drawers, runs the `lifebook-layout` prompt to pick a
+   * section ordering tuned to the domain's actual data shape, and
+   * returns the layout JSON. The browser uses this to render the
+   * detail page with sections in the right order (e.g. timeline-first
+   * for Health, decisions-first for projects).
+   *
+   * Falls back to the deterministic generic-two-column layout when
+   * the user has no LLM configured, when the wing is sparse (< 5
+   * drawers / < 3 distinct source_types), or when the prompt errors —
+   * the deterministic shape always renders something useful.
+   *
+   * 404 when the lifebook doesn't exist. Layout is computed per
+   * request; if this gets hot, future cache: `layouts` table keyed
+   * on (user_id, domain_name, signal_count_bucket) with N-hour TTL.
+   */
+  router.get('/:userId/:domainName/layout', async (req, res, next) => {
+    try {
+      const { userId, domainName } = req.params;
+      if (!userId || !domainName) {
+        res.status(400).json({ error: 'Missing userId or domainName' });
+        return;
+      }
+      const lifebook = await lifebookRepository.findByDomain(
+        userId,
+        decodeURIComponent(domainName),
+      );
+      if (!lifebook) {
+        res.status(404).json({ error: 'Lifebook not found' });
+        return;
+      }
+
+      // Compute the signal-type histogram from the wing's drawers.
+      // Cap at 200 drawers to bound query cost — the histogram is
+      // about distribution, not precise totals.
+      const histogram: Record<string, number> = {};
+      let totalDrawers = 0;
+      if (lifebook.wing_id) {
+        const drawers = await mempalaceRepository.getDrawers(userId, {
+          wingId: lifebook.wing_id,
+          limit: 200,
+        });
+        totalDrawers = drawers.length;
+        for (const drawer of drawers) {
+          const key = drawer.source_type || 'unknown';
+          histogram[key] = (histogram[key] ?? 0) + 1;
+        }
+      }
+      const distinctTypes = Object.keys(histogram).length;
+
+      // Deterministic fallback shape — used when no LLM, sparse wing,
+      // or prompt error. The same shape ships in the prompt frontmatter
+      // so the LLM path's fallback matches this exact response.
+      const genericLayout = {
+        layoutId: 'generic-two-column',
+        sections: [
+          { type: 'signals' as const, title: 'Recent Signals', order: 0 },
+          {
+            type: 'capabilities' as const,
+            title: 'Suggested Capabilities',
+            order: 1,
+          },
+        ],
+      };
+
+      // Sparse: skip the LLM entirely — the prompt's own constraint
+      // says to return generic in this case, and not invoking it
+      // saves the token spend.
+      if (totalDrawers < 5 || distinctTypes < 3) {
+        res.json({
+          layout: genericLayout,
+          source: totalDrawers === 0 ? 'no_signals' : 'sparse_fallback',
+          histogram,
+        });
+        return;
+      }
+
+      // Build an LlmClient from the user's enabled providers.
+      let llmClient: LlmClient | null = null;
+      try {
+        const rows = await aiProviderRepository.getEnabledForUser(userId);
+        if (rows.length > 0) {
+          const providers: ProviderEntry[] = rows.map(
+            (r: { provider: string; api_key: string; model: string; base_url: string | null }) => ({
+              name: r.provider as AIProviderName,
+              apiKey: r.api_key,
+              model: r.model,
+              baseUrl: r.base_url ?? undefined,
+            }),
+          );
+          llmClient = new LlmClient(providers, userId);
+        }
+      } catch (err) {
+        log.warn('failed to build LlmClient for layout prompt', {
+          userId,
+          domainName,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+
+      if (!llmClient) {
+        res.json({ layout: genericLayout, source: 'no_llm_configured', histogram });
+        return;
+      }
+
+      try {
+        const result = await runPrompt<{
+          layoutId: string;
+          sections: Array<{ type: string; title: string; order: number }>;
+        }>({
+          promptName: 'lifebook-layout',
+          inputs: {
+            lifebook: JSON.stringify({
+              domainName: lifebook.domain_name,
+              importance: lifebook.importance,
+              sample_signals: lifebook.sample_signals,
+              suggested_capabilities: lifebook.suggested_capabilities,
+            }),
+            signal_histogram: JSON.stringify(histogram),
+          },
+          user: { userId },
+          llmClient,
+        });
+
+        if (result.fellBackToDeterministic) {
+          res.json({ layout: genericLayout, source: 'deterministic_fallback', histogram });
+          return;
+        }
+        res.json({ layout: result.output, source: 'llm', histogram });
+      } catch (err) {
+        log.warn('lifebook-layout prompt failed', {
+          userId,
+          domainName,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        res.json({ layout: genericLayout, source: 'prompt_error', histogram });
+      }
     } catch (err) {
       next(err);
     }

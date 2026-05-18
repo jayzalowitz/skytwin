@@ -1,0 +1,36 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["layoutId", "sections"],
+  "additionalProperties": false,
+  "properties": {
+    "layoutId": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "sections": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 6,
+      "items": {
+        "type": "object",
+        "required": ["type", "title", "order"],
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "timeline",
+              "signals",
+              "capabilities",
+              "entities",
+              "decisions",
+              "metrics",
+              "schedule",
+              "inline_edit"
+            ]
+          },
+          "title": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "order": { "type": "integer", "minimum": 0 }
+        }
+      }
+    }
+  }
+}

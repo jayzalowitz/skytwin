@@ -1,0 +1,16 @@
+{
+  "inputs": {
+    "lifebook": "{\"domainName\":\"Health\",\"importance\":\"core\",\"sample_signals\":[\"Dr. Patel appointment on 2026-06-15\",\"Refilled lisinopril Rx (90-day)\",\"Lab results: A1C 5.8\"],\"suggested_capabilities\":[\"google-calendar-mcp\",\"gmail-mcp\"]}",
+    "signal_histogram": "{\"appointment\":12,\"prescription\":4,\"lab_result\":3,\"insurance\":2,\"general_email\":6,\"calendar_event\":15}"
+  },
+  "expected": {
+    "layoutId": "health-timeline",
+    "sections": [
+      { "type": "timeline", "title": "Recent Health Events", "order": 0 },
+      { "type": "schedule", "title": "Upcoming Appointments", "order": 1 },
+      { "type": "entities", "title": "Providers & Medications", "order": 2 },
+      { "type": "capabilities", "title": "Suggested Capabilities", "order": 3 }
+    ]
+  },
+  "notes": "Dense health-shaped histogram (appointments + prescriptions + labs + calendar). Timeline-first ordering surfaces the chronological signal mix; schedule second pulls upcoming items into focus; entities (doctors / medications) third; capabilities last because the user already has the relevant ones suggested."
+}

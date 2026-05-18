@@ -1,5 +1,31 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.53.0] - 2026-05-18
+
+### Added
+
+- **`lifebook-layout` prompt + adaptive detail-page renderer (#319, partial).** New prompt at `packages/policy-prompts/prompts/lifebook-layout/v1.md` with schema + 3 eval fixtures (health-shaped, project-shaped, sparse-fallback). The prompt picks a section ordering from 8 section types — `timeline`, `signals`, `capabilities`, `entities`, `decisions`, `metrics`, `schedule`, `inline_edit` — tuned to the actual signal-type distribution in a Lifebook's wing, not just the domain name. Health-heavy wings get timeline-first; project-heavy wings get decisions-first; sparse wings always get the generic two-column layout (a constraint clause in the prompt; the route bypasses the LLM entirely when fewer than 5 drawers / 3 distinct types).
+- **New endpoint `GET /api/lifebooks/:userId/:domainName/layout`.** Computes the histogram from `mempalaceRepository.getDrawers(userId, { wingId, limit: 200 })`, runs the prompt with `{ lifebook, signal_histogram }`, returns `{ layout, source, histogram }`. `source` is one of `'llm'`, `'no_signals'`, `'sparse_fallback'`, `'no_llm_configured'`, `'provider_lookup_failed'`, `'deterministic_fallback'`, or `'prompt_error'` — surfaced to the UI so users get an explainable "why am I seeing a generic layout" line. (The browser also synthesizes `'fetch_error'` locally when the HTTP request itself fails; that value is never sent by the endpoint.)
+- **Adaptive `lifebook.js` renderer.** Detail page fetches lifebook + briefing + layout in parallel via `Promise.allSettled`; renders the fixed header + per-Lifebook briefing card first (identity, not data), then iterates the layout's `sections` in `order` and dispatches to per-type renderers. Sections without backend data yet (`entities`, `decisions`, `metrics`, `schedule`, `inline_edit`) render explicit "what this is + how to wire it" placeholder cards rather than empty divs — so prompt-asked-for sections are visible to the next developer instead of silently dropped. Unknown section types render a "Frontend needs an update" card (forward-compatible).
+- **Token-spend protection.** The route skips the LLM entirely (no `runPrompt` call) when the wing has 0 drawers, or when the histogram is < 5 drawers / < 3 distinct types. The prompt's own constraint clause says to return the generic layout in those cases; not invoking it saves the token spend AND keeps latency under ~50ms for sparse Lifebooks.
+
+### Why this matters
+
+Before #319 every Lifebook detail page used a single hardcoded template — Sample signals + Suggested capabilities cards in a fixed order. That works for "any" domain but doesn't lean into what the domain actually contains. A user with a Health Lifebook full of appointments + lab results gets the same shape as a user with a Kayaking Lifebook full of gear receipts. With the adaptive layout, the prompt picks the section ordering from the actual signal histogram in the wing — without any new data backends required for v1 (each section renderer degrades gracefully when its data isn't wired yet).
+
+### What's deferred (issue #319 stays open)
+
+- **Backend data for the speculative section types** — `entities`, `decisions`, `metrics`, `schedule`, `inline_edit` currently render explanatory placeholder cards. Each is its own slice (entity router, per-Lifebook decision filtering, metrics rollup, calendar filter, fact-edit recorder).
+- **Inline edit on extracted facts** — the original #319 AC mentioned inline edit with provenance recording; the layout prompt is forward-compatible (the `inline_edit` section type exists in the schema) but the recorder hasn't shipped.
+
+### Tests
+
+- 7 new route tests in `lifebook-layout-route.test.ts` pinning: 404 on missing lifebook; no_signals path skips LLM; sparse_fallback path skips LLM (token-spend protection); no_llm_configured fallback; LLM happy path returns the prompt's layout + histogram; deterministic-fallback path; fail-soft on `runPrompt` throw. Plus 2 added in post-Copilot fixes: `provider_lookup_failed` source on `getEnabledForUser` throw; centralised `GENERIC_LAYOUT` shape.
+
+### Note on version
+
+Bumped to 0.6.53.0 (was 0.6.52.0 on the branch) after rebase — #334's gbrain floor-ratio sync took the 0.6.52.0 slot on main first.
+
 ## [0.6.52.0] - 2026-05-18
 
 ### Changed
