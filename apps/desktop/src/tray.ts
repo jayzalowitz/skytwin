@@ -162,6 +162,15 @@ export function createTray(
       },
       { type: 'separator' },
       {
+        label: 'Latest Briefing',
+        click: () => {
+          mainWindow.show();
+          mainWindow.focus();
+          mainWindow.webContents.executeJavaScript("location.hash = '#/briefing'");
+        },
+      },
+      { type: 'separator' },
+      {
         label: 'Services',
         submenu: [
           { label: `API: ${statusLabel(status.api)}`, enabled: false },
