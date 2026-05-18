@@ -14,8 +14,42 @@ concurrency:
 
 env:
   NODE_VERSION: '20'
+  # Turbo remote cache — uses the GitHub Actions cache as the backend via
+  # dtinth/setup-github-actions-caching-for-turbo. No external account needed.
+  # All build jobs share cached package outputs, so the second job onward gets
+  # `pnpm build` as cache hits.
+  TURBO_TELEMETRY_DISABLED: '1'
 
 jobs:
+  # ──────────────────────────────────────────────
+  # Change detection — used to skip desktop / mobile packaging on PRs that
+  # don't touch those apps. Push events (main + tags) always run everything.
+  # ──────────────────────────────────────────────
+  changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      desktop: ${{ steps.filter.outputs.desktop }}
+      mobile: ${{ steps.filter.outputs.mobile }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            desktop:
+              - 'apps/desktop/**'
+              - 'packages/**'
+              - 'pnpm-lock.yaml'
+              - 'package.json'
+              - 'turbo.json'
+              - '.github/workflows/build.yml'
+            mobile:
+              - 'apps/mobile/**'
+              - 'pnpm-lock.yaml'
+              - 'package.json'
+              - '.github/workflows/build.yml'
+
   # ──────────────────────────────────────────────
   # Tests — gate all builds behind passing tests
   # ──────────────────────────────────────────────
@@ -32,6 +66,8 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
 
+      - uses: dtinth/setup-github-actions-caching-for-turbo@v1
+
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: pnpm test
@@ -41,7 +77,8 @@ jobs:
   # ──────────────────────────────────────────────
   desktop-mac:
     name: Desktop — macOS (DMG + ZIP)
-    needs: test
+    needs: [test, changes]
+    if: github.event_name != 'pull_request' || needs.changes.outputs.desktop == 'true'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v6
@@ -52,6 +89,18 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
+
+      - uses: dtinth/setup-github-actions-caching-for-turbo@v1
+
+      - name: Cache electron-builder downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/electron
+            ~/Library/Caches/electron-builder
+          key: ${{ runner.os }}-electron-${{ hashFiles('apps/desktop/package.json', 'pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-electron-
 
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
@@ -78,7 +127,8 @@ jobs:
 
   desktop-windows:
     name: Desktop — Windows (NSIS installer)
-    needs: test
+    needs: [test, changes]
+    if: github.event_name != 'pull_request' || needs.changes.outputs.desktop == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6
@@ -89,6 +139,18 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
+
+      - uses: dtinth/setup-github-actions-caching-for-turbo@v1
+
+      - name: Cache electron-builder downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/AppData/Local/electron/Cache
+            ~/AppData/Local/electron-builder/Cache
+          key: ${{ runner.os }}-electron-${{ hashFiles('apps/desktop/package.json', 'pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-electron-
 
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
@@ -105,7 +167,8 @@ jobs:
 
   desktop-linux:
     name: Desktop — Linux (AppImage + deb + rpm)
-    needs: test
+    needs: [test, changes]
+    if: github.event_name != 'pull_request' || needs.changes.outputs.desktop == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -116,6 +179,18 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
+
+      - uses: dtinth/setup-github-actions-caching-for-turbo@v1
+
+      - name: Cache electron-builder downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/electron
+            ~/.cache/electron-builder
+          key: ${{ runner.os }}-electron-${{ hashFiles('apps/desktop/package.json', 'pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-electron-
 
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
@@ -153,7 +228,8 @@ jobs:
   # ──────────────────────────────────────────────
   mobile-android:
     name: Mobile — Android APK
-    needs: test
+    needs: [test, changes]
+    if: github.event_name != 'pull_request' || needs.changes.outputs.mobile == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -170,8 +246,13 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
+      - name: Set up Gradle (cached)
+        uses: gradle/actions/setup-gradle@v4
+
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
+
+      - uses: dtinth/setup-github-actions-caching-for-turbo@v1
 
       - run: pnpm install --frozen-lockfile
 
@@ -210,7 +291,8 @@ jobs:
   # ──────────────────────────────────────────────
   mobile-ios:
     name: Mobile — iOS (simulator build)
-    needs: test
+    needs: [test, changes]
+    if: github.event_name != 'pull_request' || needs.changes.outputs.mobile == 'true'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v6
@@ -221,6 +303,18 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
+
+      - uses: dtinth/setup-github-actions-caching-for-turbo@v1
+
+      - name: Cache CocoaPods
+        uses: actions/cache@v4
+        with:
+          path: |
+            apps/mobile/ios/Pods
+            ~/Library/Caches/CocoaPods
+          key: ${{ runner.os }}-pods-${{ hashFiles('apps/mobile/ios/Podfile.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-pods-
 
       - run: pnpm install --frozen-lockfile
 

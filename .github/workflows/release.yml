@@ -59,6 +59,38 @@ jobs:
           node-version: 20
           cache: pnpm
 
+      - uses: dtinth/setup-github-actions-caching-for-turbo@v1
+
+      - name: Cache electron-builder downloads (macOS)
+        if: matrix.os == 'macos-latest'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/electron
+            ~/Library/Caches/electron-builder
+          key: ${{ runner.os }}-electron-${{ hashFiles('apps/desktop/package.json', 'pnpm-lock.yaml') }}
+          restore-keys: ${{ runner.os }}-electron-
+
+      - name: Cache electron-builder downloads (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/electron
+            ~/.cache/electron-builder
+          key: ${{ runner.os }}-electron-${{ hashFiles('apps/desktop/package.json', 'pnpm-lock.yaml') }}
+          restore-keys: ${{ runner.os }}-electron-
+
+      - name: Cache electron-builder downloads (Windows)
+        if: matrix.os == 'windows-latest'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/AppData/Local/electron/Cache
+            ~/AppData/Local/electron-builder/Cache
+          key: ${{ runner.os }}-electron-${{ hashFiles('apps/desktop/package.json', 'pnpm-lock.yaml') }}
+          restore-keys: ${{ runner.os }}-electron-
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
