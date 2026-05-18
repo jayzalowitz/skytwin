@@ -12,7 +12,7 @@
 -- Future MCP-action spend recording (tracked separately) populates
 -- the field on new writes.
 --
--- Composite index covers the per-app monthly query:
+-- Partial index covers the per-app monthly query:
 --   WHERE user_id = $1 AND registry_id = $2 AND recorded_at >= date_trunc('month', now())
 -- CockroachDB plans this as an index lookup. Without the index the
 -- query falls back to scanning the existing `idx_spend_user_time` rows
@@ -20,8 +20,19 @@
 -- off the first time someone writes a few thousand MCP-action records
 -- per user per month.
 --
+-- WHERE registry_id IS NOT NULL — partial index. Today (and for the
+-- foreseeable future) the cost-gate's draft-email LLM cost writes
+-- registry_id = NULL because LLM cost has no MCP source. Indexing
+-- those NULL rows would amplify writes without ever serving a query
+-- (the per-app lookup `registry_id = $2` never matches NULL by
+-- equality). Indexing only the non-NULL rows keeps the index small +
+-- write-cheap until MCP-action spend recording starts populating it.
+-- (Copilot caught this on review — the unconditional index was
+-- write-amplifying for zero query benefit.)
+--
 -- IF NOT EXISTS — safe to re-run.
 ALTER TABLE spend_records ADD COLUMN IF NOT EXISTS registry_id STRING;
 
 CREATE INDEX IF NOT EXISTS idx_spend_user_registry_time
-  ON spend_records (user_id, registry_id, recorded_at DESC);
+  ON spend_records (user_id, registry_id, recorded_at DESC)
+  WHERE registry_id IS NOT NULL;

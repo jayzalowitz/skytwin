@@ -88,6 +88,32 @@ describe('spendRepository — registry_id wiring (#323)', () => {
       expect(sql).toContain('registry_id = $2');
       expect(params).toEqual(['u-1', '']);
     });
+
+    it('NULL-registry rows roll into the user-global total but never into per-app totals', async () => {
+      // Pins the AC #323 invariant directly: a row with registry_id IS NULL
+      // (which is what cost-gate's draft-email LLM cost writes today, and
+      // what every pre-migration-054 row already has) should contribute
+      // to getMonthlyTotal(userId) but NOT to getMonthlyTotal(userId,
+      // 'anything'). This is the equality semantics of SQL: NULL = $2
+      // is UNKNOWN (not TRUE) for any value of $2, so the per-app WHERE
+      // never matches NULL rows. Test asserts the SQL the repo emits
+      // reflects exactly that — no surprise OR clause sneaks NULL rows
+      // into the per-app sum.
+      mockQuery.mockResolvedValueOnce({ rows: [{ total: '500' }], rowCount: 1 });
+      const globalTotal = await spendRepository.getMonthlyTotal('u-1');
+      expect(globalTotal).toBe(500);
+      const [globalSql] = mockQuery.mock.calls[0]!;
+      expect(globalSql).not.toContain('registry_id');
+
+      mockQuery.mockResolvedValueOnce({ rows: [{ total: null }], rowCount: 1 });
+      const perAppTotal = await spendRepository.getMonthlyTotal('u-1', 'gmail-mcp');
+      expect(perAppTotal).toBe(0);
+      const [perAppSql] = mockQuery.mock.calls[1]!;
+      expect(perAppSql).toContain('registry_id = $2');
+      // No OR / COALESCE around registry_id that would widen to include
+      // NULL rows. Equality predicate only.
+      expect(perAppSql).not.toMatch(/registry_id\s+IS\s+NULL/i);
+    });
   });
 
   describe('checkAndRecordSpend', () => {

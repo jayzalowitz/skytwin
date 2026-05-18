@@ -4,21 +4,26 @@ All notable changes to SkyTwin will be documented in this file.
 
 ### Added
 
-- **`registry_id` column on `spend_records` + real per-app monthly totals (closes #323).** Migration 054 adds a nullable `registry_id STRING` column plus a composite index `idx_spend_user_registry_time` on `(user_id, registry_id, recorded_at DESC)` that covers the per-app query path. `spendRepository.create` and `checkAndRecordSpend` now accept an optional `registryId` and write it through; the policy-engine `SpendRepositoryPort.checkAndRecordSpend` interface grew the same optional field so port consumers can pass it through transparently. `getMonthlyTotal(userId, appRegistryId)` previously returned 0 unconditionally for per-app queries (safe-fallback stub from #306); it now executes the real `WHERE user_id = $1 AND registry_id = $2 AND recorded_at >= date_trunc('month', now())` query.
+- **`registry_id` foundation on `spend_records` + real per-app monthly totals (#323, partial).** Migration 054 adds a nullable `registry_id STRING` column plus a **partial** composite index `idx_spend_user_registry_time` on `(user_id, registry_id, recorded_at DESC) WHERE registry_id IS NOT NULL` (partial keeps the index small + write-cheap while today's writes still default to NULL — Copilot caught the original unconditional-index version as write-amplifying for zero query benefit). `spendRepository.create` and `checkAndRecordSpend` now accept an optional `registryId` and write it through; the policy-engine `SpendRepositoryPort.checkAndRecordSpend` interface grew the same optional field so port consumers can pass it through transparently. `getMonthlyTotal(userId, appRegistryId)` previously returned 0 unconditionally for per-app queries (safe-fallback stub from #306); it now executes the real `WHERE user_id = $1 AND registry_id = $2 AND recorded_at >= date_trunc('month', now())` query.
 
 ### Why this matters
 
-The per-app monthly cap path (`policy-engine.checkMonthlyLimit` → `SpendRepositoryPort.getMonthlyTotal(userId, appRegistryId)`) has been wired since #299 but couldn't ever fire — the repo always returned 0, so no per-app cap could ever be reached. With #323 the foundation is in place: any future spend-recording site that knows its registry source (e.g. an MCP-action spend pipeline) can pass `registryId` and the per-app cap starts attributing correctly. Existing call sites that don't pass `registryId` (cost-gate's draft-email LLM cost, today) write NULL and continue to roll into user-global totals only.
+The per-app monthly cap path (`SpendTracker.checkMonthlyLimit` → `SpendRepositoryPort.getMonthlyTotal(userId, appRegistryId)`) and the per-app summary path (`SpendTracker.getMonthlySpendForApp`, used by monthly-spend dashboards) have both been wired since #299 but couldn't ever fire — the repo always returned 0, so no per-app cap could be reached and per-app summaries always rendered as zero. With #323 the foundation is in place: any future spend-recording site that knows its registry source (e.g. an MCP-action spend pipeline) can pass `registryId` and both paths start attributing correctly. Existing call sites that don't pass `registryId` (cost-gate's draft-email LLM cost, today) write NULL and continue to roll into user-global totals only.
+
+### What's deferred (issue #323 stays open until these land)
+
+- **Decision pipeline population.** No call site passes `registryId` yet — cost-gate records LLM cost which has no MCP-server source. Wiring an MCP-action spend pipeline that knows its registry_id is the follow-up. Depends on #324 (decision↔execution linkage) to know which server an action ran against.
+- **Backfill for pre-054 rows.** Old rows have no `decision_id → execution_plan → server_id` linkage yet; nothing to backfill from until #324 ships.
 
 ### Backward compatibility
 
 - Nullable column; existing rows stay NULL. `getMonthlyTotal(userId)` (no second arg) behavior is unchanged — sums everything regardless of `registry_id`.
 - Cost-gate continues to call `checkAndRecordSpend` without a `registryId`, so per-day cap behavior is unchanged.
-- The `getMonthlyTotal(userId, appRegistryId)` form now returns a real number (was always 0). Any caller that depended on the 0-fallback to gate behavior would notice — but the 0-fallback was an explicit "never falsely blocks" safe stub, and the only consumer is the policy-engine monthly-cap check, which is now correct rather than over-permissive.
+- `getMonthlyTotal(userId, appRegistryId)` now returns a real number (was always 0). Both consumers — `SpendTracker.checkMonthlyLimit` and `SpendTracker.getMonthlySpendForApp` — change from the over-permissive 0-fallback to honest empty-results-until-rows-exist. Today no per-app rows exist, so both still observe 0 in practice; the difference only matters once a spend-recording site starts passing `registryId`.
 
 ### Tests
 
-- 7 new unit tests in `spend-repository.test.ts` pinning: create writes `registry_id` when provided, writes NULL otherwise; `getMonthlyTotal` filters by `registry_id = $2` only when `appRegistryId !== undefined` (empty string is a real filter, not a missing one); `checkAndRecordSpend` writes the registry_id in the atomic insert.
+- 8 new unit tests in `spend-repository.test.ts` pinning: create writes `registry_id` when provided, writes NULL otherwise; `getMonthlyTotal` filters by `registry_id = $2` only when `appRegistryId !== undefined` (empty string is a real filter, not a missing one); `checkAndRecordSpend` writes the registry_id in the atomic insert; **NULL-registry rows roll into the user-global sum but never into per-app totals** (asserts the SQL has no OR/COALESCE that would widen NULL into per-app matches).
 
 ## [0.6.47.0] - 2026-05-18
 
