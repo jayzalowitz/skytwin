@@ -898,6 +898,33 @@ export function fetchLifebook(userId, domainName) {
   );
 }
 
+/**
+ * #319: fetch the adaptive layout for a Lifebook detail page. Returns
+ * `{ layout: { layoutId, sections: [{type, title, order}] }, source, histogram }`.
+ *
+ * `source` enum — what the API can return:
+ *   - `'llm'` — prompt ran, returned a domain-tuned layout
+ *   - `'no_signals'` — wing has no drawers, LLM skipped
+ *   - `'sparse_fallback'` — < 5 drawers OR < 3 distinct types, LLM skipped (token protection)
+ *   - `'no_llm_configured'` — user has no AI providers enabled
+ *   - `'provider_lookup_failed'` — transient DB error fetching providers
+ *   - `'deterministic_fallback'` — `runPrompt` invoked but fell back
+ *   - `'prompt_error'` — `runPrompt` threw, fail-soft response
+ *
+ * Additionally, the page-level caller (`lifebook.js`) synthesizes
+ * `'fetch_error'` when this HTTP request itself fails — that value is
+ * never sent by the server.
+ *
+ * Always returns a renderable `layout` shape on the server side; the
+ * caller is responsible for falling back to its own `GENERIC_LAYOUT`
+ * if the fetch itself rejects.
+ */
+export function fetchLifebookLayout(userId, domainName) {
+  return fetchJSON(
+    `${API}/lifebooks/${encodeURIComponent(userId)}/${encodeURIComponent(domainName)}/layout`,
+  );
+}
+
 export function hideLifebook(userId, domainName) {
   return fetchJSON(
     `${API}/lifebooks/${encodeURIComponent(userId)}/${encodeURIComponent(domainName)}/hide`,

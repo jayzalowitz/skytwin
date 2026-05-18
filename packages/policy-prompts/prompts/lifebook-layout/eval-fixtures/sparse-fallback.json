@@ -1,0 +1,14 @@
+{
+  "inputs": {
+    "lifebook": "{\"domainName\":\"Kayaking\",\"importance\":\"emerging\",\"sample_signals\":[\"REI receipt: dry bag\",\"Photo at Lake Tahoe\"],\"suggested_capabilities\":[\"gmail-mcp\"]}",
+    "signal_histogram": "{\"general_email\":2,\"calendar_event\":1}"
+  },
+  "expected": {
+    "layoutId": "generic-two-column",
+    "sections": [
+      { "type": "signals", "title": "Recent Signals", "order": 0 },
+      { "type": "capabilities", "title": "Suggested Capabilities", "order": 1 }
+    ]
+  },
+  "notes": "Sparse signal mix (3 total, 2 distinct types) — the constraint clause says prefer the generic layout rather than a speculative shape. Prevents 'hobby-browse' from being invented based on the domain name alone when there's not enough data to justify it. Anchor case for the layout system's humility."
+}

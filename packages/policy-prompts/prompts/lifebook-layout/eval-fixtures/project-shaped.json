@@ -1,0 +1,16 @@
+{
+  "inputs": {
+    "lifebook": "{\"domainName\":\"OSS Launch\",\"importance\":\"core\",\"sample_signals\":[\"PR #318 merged: SQL pushdown\",\"Decision: ship unsigned v1 builds\",\"Bug: tray icon missing Latest Briefing\"],\"suggested_capabilities\":[\"@modelcontextprotocol/server-github\",\"linear-mcp\"]}",
+    "signal_histogram": "{\"pull_request\":18,\"decision_log\":7,\"bug_report\":5,\"meeting\":3,\"calendar_event\":3,\"general_email\":2}"
+  },
+  "expected": {
+    "layoutId": "project-status",
+    "sections": [
+      { "type": "decisions", "title": "Recent Decisions", "order": 0 },
+      { "type": "timeline", "title": "PR & Bug Activity", "order": 1 },
+      { "type": "metrics", "title": "Throughput", "order": 2 },
+      { "type": "capabilities", "title": "Connected Tools", "order": 3 }
+    ]
+  },
+  "notes": "Project-shaped histogram dominated by PRs + decisions + bugs. Decision log surfaces first because for a launch the user wants to see what's been decided before drilling into PR/bug activity. Metrics third gives throughput context. Calendar events are sparse here so no schedule section."
+}
