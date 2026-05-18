@@ -192,6 +192,46 @@ export const briefingRepository = {
   },
 
   /**
+   * #320: return the latest per-domain briefing for each `domain_name`
+   * that has at least one `twin_briefings` row for this user. The
+   * rows are sorted by `domain_name` (the `DISTINCT ON` requires
+   * that as the first ORDER BY key); the API route does its own
+   * importance ordering + visibility filtering + omit-empty join
+   * against `lifebookRepository.listVisible`. This method is a
+   * pure-SQL primitive that doesn't know about Lifebooks at all.
+   *
+   * Single SQL query with `DISTINCT ON (domain_name)` so cost is
+   * one round-trip no matter how many domains the user has.
+   * Equivalent to N+1 `getLatestForUserDomain` calls but bounded.
+   */
+  async getLatestPerLifebook(
+    userId: string,
+    cadence?: 'daily' | 'weekly',
+  ): Promise<TwinBriefingRow[]> {
+    if (cadence) {
+      const result = await query<TwinBriefingRow>(
+        `SELECT DISTINCT ON (domain_name) *
+         FROM twin_briefings
+         WHERE user_id = $1
+           AND cadence = $2
+           AND domain_name IS NOT NULL
+         ORDER BY domain_name, generated_at DESC`,
+        [userId, cadence],
+      );
+      return result.rows;
+    }
+    const result = await query<TwinBriefingRow>(
+      `SELECT DISTINCT ON (domain_name) *
+       FROM twin_briefings
+       WHERE user_id = $1
+         AND domain_name IS NOT NULL
+       ORDER BY domain_name, generated_at DESC`,
+      [userId],
+    );
+    return result.rows;
+  },
+
+  /**
    * Mark a briefing as read by setting read_at to now().
    */
   async markRead(id: string): Promise<TwinBriefingRow | null> {
