@@ -59,7 +59,10 @@ jobs:
           node-version: 20
           cache: pnpm
 
+      # Skip turbo cache on Windows — the action writes to /tmp which doesn't
+      # exist on Windows runners. macOS + Linux still benefit.
       - uses: dtinth/setup-github-actions-caching-for-turbo@v1
+        if: matrix.os != 'windows-latest'
 
       - name: Cache electron-builder downloads (macOS)
         if: matrix.os == 'macos-latest'

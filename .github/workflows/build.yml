@@ -140,7 +140,10 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
 
-      - uses: dtinth/setup-github-actions-caching-for-turbo@v1
+      # Turbo remote cache action is skipped on Windows — dtinth/setup-...@v1
+      # writes to /tmp/turbogha.log which doesn't exist on Windows runners
+      # (ENOENT on D:\tmp\turbogha.log). Electron-builder packaging dominates
+      # wall-clock here; missing the TS-compile cache is negligible.
 
       - name: Cache electron-builder downloads
         uses: actions/cache@v4
