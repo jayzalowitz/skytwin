@@ -4,11 +4,11 @@ All notable changes to SkyTwin will be documented in this file.
 
 ### Added
 
-- **\"Latest Briefing\" item in the desktop tray menu (closes #327, deferred from #191 AC#4).** The pure-data `buildTrayMenuItems` builder always advertised four actions including `latest-briefing`, but the actual Electron menu constructed in `createTray` was missing it — users could click into Open Dashboard, Pause/Resume, Services, About, Settings, or Quit, but had no one-click path to the latest briefing from the tray. Now the menu shows `Latest Briefing` between Pause/Resume and Services; clicking it raises the main window and navigates to `#/briefing` (the actual briefing route, per `twin-briefing.js`). Closes AC#4 of the (now-closed) #191 tray epic.
+- **"Latest Briefing" item in the desktop tray menu (closes #327, deferred from #191 AC#4).** The pure-data `buildTrayMenuItems` builder always advertised four actions including `latest-briefing`, but the actual Electron menu constructed in `createTray` was missing it — users could click into Open Dashboard, Pause/Resume, Services, About, Settings, or Quit, but had no one-click path to the latest briefing from the tray. Now the menu shows `Latest Briefing` between Pause/Resume and Services; clicking it raises the main window and navigates to `#/briefing` (the actual briefing route, per `twin-briefing.js`). Closes AC#4 of the (now-closed) #191 tray epic.
 
 ### Why this matters
 
-The tray is the only surface that's always visible — it's where the user reaches when they want to peek without context-switching to a full window. \"What's my latest briefing\" is the single most common reason to peek; making it one tray click instead of \"open the dashboard, find the briefing link, click\" matches the discoverability the original AC called for.
+The tray is the only surface that's always visible — it's where the user reaches when they want to peek without context-switching to a full window. "What's my latest briefing" is the single most common reason to peek; making it one tray click instead of "open the dashboard, find the briefing link, click" matches the discoverability the original AC called for.
 
 ## [0.6.46.0] - 2026-05-17
 
