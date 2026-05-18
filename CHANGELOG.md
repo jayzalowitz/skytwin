@@ -1,5 +1,29 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.51.0] - 2026-05-18
+
+### Added
+
+- **Lifebook importance promote/demote ceremony (#321, partial — UI deferred).** Migration 056 adds `metadata JSONB NOT NULL DEFAULT '{}'` to `lifebooks`; the existing schema.sql declaration is updated in lock-step so fresh-DB bootstrap matches. The `metadata.importanceOverride` shape is `{ value, setAt, decayDays }` where `decayDays = 0` means "never auto-decay until cleared."
+- **Override-respecting upsert in `lifebookRepository.upsert`.** The weekly domain-extraction worker calls this with the LLM's picked `importance`. When a row has a fresh override (within `decayDays` of `setAt`, or `decayDays = 0`), the SQL CASE keeps the override value instead of overwriting from the worker. Race-free: the freshness check happens in SQL so the worker doesn't need a fetch-then-write. Non-importance fields (`sample_signals`, `suggested_capabilities`, `wing_id`, `last_seen_at`) always update fresh — the override is gated only on `importance`.
+- **Two new repo methods**: `setImportanceOverride(userId, domainName, value, decayDays = 90)` writes the override JSON AND sets the `importance` column immediately (so the next read reflects the override without waiting for the extractor to re-run); `clearImportanceOverride(userId, domainName)` strips the override key via the JSONB `-` operator. Both return the updated row or `null` (caller can 404).
+- **Two new endpoints**: `POST /api/lifebooks/:userId/:domainName/importance` (body: `{ value, decayDays? }`) and `DELETE /api/lifebooks/:userId/:domainName/importance`. Both pass through `bindUserIdParamOwnership` middleware. Invalid `value` → 400; missing row → 404.
+- **API response surface grows `importanceOverride`** field on every `LifebookJson` (`null` when no override exists). The UI uses this to render "set by you" vs "auto-detected" labels and offer a Clear button.
+
+### Why this matters
+
+Before #321 the domain-extraction worker unconditionally overwrote `importance` from the LLM's pick every weekly run. That ignored the user's taste — a user who said "Aging Parents is the most important thing in my life right now" would see that promotion silently reverted on the next worker pass. With the override, manual taste persists until the user explicitly clears it or until the decay window expires.
+
+### What's deferred (issue #321 stays open)
+
+- **UI surface** — promote/demote control on the dashboard card + per-Lifebook detail page, plus Settings → Lifebooks hidden-management. Backend is complete; UI is the next slice.
+- **Episode recording** — the issue body called for the override to be recorded as an episode in mempalace so the twin remembers ("user promoted X on date Y"). Foundation is in place (the override has a `setAt` timestamp); wiring it into `mempalaceRepository.recordEpisode` lands with the UI slice.
+
+### Tests
+
+- 10 new unit tests in `lifebook-repository.test.ts` pinning: upsert SQL includes the override-respecting CASE; non-importance fields always update; setImportanceOverride writes the JSON + sets importance immediately; defaults to decayDays = 90; preserves 0 as the never-decay sentinel; returns null on missing row; clearImportanceOverride uses the JSONB minus operator; idempotent.
+- 7 new route tests in `lifebook-importance-routes.test.ts` pinning: 400 on invalid/missing value; 200 happy path returns updated lifebook with `importanceOverride` surfaced; default + custom + zero decayDays pass-through; 404 on missing row; DELETE strips the override.
+
 ## [0.6.50.0] - 2026-05-18
 
 ### Added
