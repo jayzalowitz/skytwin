@@ -137,13 +137,11 @@ CREATE TABLE IF NOT EXISTS decision_outcomes (
   escalation_reason STRING,
   explanation STRING NOT NULL,
   confidence FLOAT NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  -- #324 structural linkage to the execution plan this outcome produced.
-  -- NULL until the plan inserts (approval-pending outcomes have no
-  -- plan yet); populated by executionRepository.createPlan in the
-  -- same logical step that creates the plan row.
-  execution_plan_id UUID REFERENCES execution_plans(id),
-  INDEX (execution_plan_id) WHERE execution_plan_id IS NOT NULL
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  -- #324: execution_plan_id column + FK + index added below, after
+  -- the execution_plans table is defined (forward references aren't
+  -- allowed during a single multi-statement script run). See the
+  -- ALTER TABLE / CREATE INDEX block under "Execution".
 );
 
 -- ============================================================================
@@ -214,6 +212,19 @@ CREATE TABLE IF NOT EXISTS execution_events (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_execution_events_plan ON execution_events (plan_id, created_at ASC);
+
+-- #324: structural linkage from decision_outcomes to execution_plans.
+-- Added here (post `execution_plans` definition) to avoid the forward
+-- FK reference that would break a fresh-DB bootstrap from schema.sql.
+-- Migration 055 applies the same column + index to existing
+-- databases; the named index keeps both paths in sync (IF NOT EXISTS
+-- checks by name, so the fresh-DB bootstrap that runs schema.sql
+-- THEN migration 055 won't create a duplicate).
+ALTER TABLE decision_outcomes
+  ADD COLUMN IF NOT EXISTS execution_plan_id UUID REFERENCES execution_plans(id);
+CREATE INDEX IF NOT EXISTS idx_decision_outcomes_execution_plan
+  ON decision_outcomes (execution_plan_id)
+  WHERE execution_plan_id IS NOT NULL;
 
 -- ============================================================================
 -- Explanation / Audit

@@ -479,16 +479,24 @@ export function createApprovalsRouter(): Router {
 
             // #324: link the decision's outcome to the plan we just
             // created. Same-transaction guarantee: either both the
-            // plan + linkage land, or neither do. `WHERE
-            // execution_plan_id IS NULL` matches the executionRepository
-            // semantics — the FIRST plan for a decision wins the link.
-            // Retry-after-rejection cases (rare) would create a second
-            // plan; the original outcome's link stays put.
+            // plan + linkage land, or neither do. "Latest plan wins"
+            // — overwrite the outcome's FK on every new plan to
+            // match the migration 055 backfill (which picks the
+            // latest plan per decision) and the
+            // `executionRepository.getByDecisionId` read semantics
+            // (`ORDER BY created_at DESC LIMIT 1`).
+            //
+            // NOTE: this UPDATE duplicates the one in
+            // `executionRepository.createPlan`. Any new write site for
+            // execution_plans MUST either call `createPlan` (which
+            // does the UPDATE internally) or repeat this block with
+            // the same `WHERE decision_id = $2` predicate. Future
+            // refactor: route both approvals.ts inserts through
+            // `createPlan` to eliminate the duplication.
             await client.query(
               `UPDATE decision_outcomes
                  SET execution_plan_id = $1
-               WHERE decision_id = $2
-                 AND execution_plan_id IS NULL`,
+               WHERE decision_id = $2`,
               [plan.id, approval.decision_id],
             );
 
@@ -525,12 +533,14 @@ export function createApprovalsRouter(): Router {
               // `execution_plan_id` is populated. The rollback site
               // still reads `success` from `execution_results` before
               // attempting rollback, so a failed plan link doesn't
-              // accidentally trigger rollback of nothing.
+              // accidentally trigger rollback of nothing. "Latest
+              // plan wins" — overwrite to match backfill + read
+              // semantics; same duplication note as the success path
+              // applies.
               await client.query(
                 `UPDATE decision_outcomes
                    SET execution_plan_id = $1
-                 WHERE decision_id = $2
-                   AND execution_plan_id IS NULL`,
+                 WHERE decision_id = $2`,
                 [plan.id, approval.decision_id],
               );
               return plan;

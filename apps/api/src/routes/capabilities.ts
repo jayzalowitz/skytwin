@@ -411,6 +411,15 @@ export function createCapabilitiesRouter(): Router {
       // Returns real plan IDs in the response so callers / the eventual
       // IronClawAdapter.rollback(planId) wiring have something concrete
       // to act on — replaces the prior "stub recorded intent" behavior.
+      //
+      // SUBQUERY rather than LEFT JOIN — even though `selected_action_id`
+      // should be unique per decision in practice, there is no DB
+      // constraint enforcing it, and a malformed row (or future
+      // schema change) where the same candidate_actions.id ends up
+      // on two outcomes would have a LEFT JOIN duplicating the
+      // provenance row in the result set. Subquery + LIMIT 1 keeps
+      // one row per provenance node regardless. (Copilot caught the
+      // JOIN duplication risk.)
       const provenanceResult = await query<{
         id: string;
         ref_id: string;
@@ -419,10 +428,11 @@ export function createCapabilitiesRouter(): Router {
         execution_plan_id: string | null;
       }>(
         `SELECT pn.id, pn.ref_id, pn.payload, pn.occurred_at,
-                doc.execution_plan_id
+                (SELECT doc.execution_plan_id
+                   FROM decision_outcomes doc
+                  WHERE doc.selected_action_id = pn.ref_id
+                  LIMIT 1) AS execution_plan_id
          FROM capability_provenance_nodes pn
-         LEFT JOIN decision_outcomes doc
-           ON doc.selected_action_id = pn.ref_id
          WHERE pn.server_id = $1
            AND pn.node_type = 'action'
            AND pn.occurred_at >= $2
@@ -431,10 +441,19 @@ export function createCapabilitiesRouter(): Router {
         [id, sinceDate, userId],
       );
 
+      // Result enum:
+      //   - 'pending_adapter_wiring' — FK resolved a real plan ID;
+      //     IronClawAdapter.rollback(planId) call is the next step
+      //     (separate follow-up, needs routing through executionRouter)
+      //   - 'no_plan_linkage' — FK lookup returned NULL; can't roll
+      //     back because we don't know which plan to target. Honest
+      //     reporting beats lying about rollback success. (Copilot
+      //     caught the prior inverted enum that returned
+      //     'rolled_back' in this no-linkage branch — never true.)
       const undone: Array<{
         actionId: string;
         planId: string | null;
-        result: 'rolled_back' | 'failed' | 'pending_adapter_wiring';
+        result: 'pending_adapter_wiring' | 'no_plan_linkage';
       }> = [];
       const irreversible: Array<{ actionId: string; reason: string }> = [];
 
@@ -452,18 +471,10 @@ export function createCapabilitiesRouter(): Router {
           continue;
         }
 
-        // #324: report the real execution_plan_id (now resolvable via
-        // the FK). The actual IronClawAdapter.rollback(planId) call is
-        // a follow-up — needs routing through executionRouter to pick
-        // the same adapter that executed the plan. For now the
-        // response shape lets callers see plan IDs (so they can
-        // confirm coverage) and surfaces `pending_adapter_wiring`
-        // when the linkage exists but the rollback hasn't been
-        // dispatched yet.
         undone.push({
           actionId: node.ref_id,
           planId: node.execution_plan_id,
-          result: node.execution_plan_id ? 'pending_adapter_wiring' : 'rolled_back',
+          result: node.execution_plan_id ? 'pending_adapter_wiring' : 'no_plan_linkage',
         });
       }
 

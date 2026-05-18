@@ -34,12 +34,15 @@ describe('executionRepository.createPlan — #324 outcome linkage', () => {
     const [insertSql, insertParams] = mockClientQuery.mock.calls[0]!;
     expect(insertSql).toContain('INSERT INTO execution_plans');
     expect(insertParams).toEqual(['d-1', 'a-1', 'pending', '[]']);
-    // 2nd call: UPDATE decision_outcomes with the new plan id
+    // 2nd call: UPDATE decision_outcomes with the new plan id.
+    // No IS NULL guard — "latest plan wins" matches the migration
+    // 055 backfill and getByDecisionId's ORDER BY created_at DESC
+    // read semantics.
     const [updateSql, updateParams] = mockClientQuery.mock.calls[1]!;
     expect(updateSql).toContain('UPDATE decision_outcomes');
     expect(updateSql).toContain('SET execution_plan_id = $1');
     expect(updateSql).toContain('WHERE decision_id = $2');
-    expect(updateSql).toContain('AND execution_plan_id IS NULL');
+    expect(updateSql).not.toMatch(/AND\s+execution_plan_id\s+IS\s+NULL/i);
     expect(updateParams).toEqual(['plan-1', 'd-1']);
   });
 
@@ -62,15 +65,19 @@ describe('executionRepository.createPlan — #324 outcome linkage', () => {
     expect(insertSql).toContain('INSERT INTO execution_plans');
   });
 
-  it('UPDATE uses execution_plan_id IS NULL guard — retry plans cannot stomp original link', async () => {
-    // When a decision already has a linked plan (e.g. the original
-    // auto-execute plan), a retry-after-rejection plan should NOT
-    // overwrite the original outcome's link. The IS NULL guard
-    // enforces "first plan wins" — same semantics as
-    // executionRepository.getByDecisionId's ORDER BY created_at LIMIT 1.
+  it('retry plans overwrite the outcome link — "latest plan wins"', async () => {
+    // When a decision already has a linked plan and a
+    // retry-after-rejection plan is created, the outcome's
+    // execution_plan_id should point at the NEW plan. This matches:
+    //   - the migration 055 backfill (ORDER BY created_at DESC, latest)
+    //   - getByDecisionId's read semantics (ORDER BY created_at DESC LIMIT 1)
+    //   - the conceptual model: the outcome's FK is the "current
+    //     plan" pointer, not an immutable first-write record.
+    // Historical plans remain reachable via
+    // `SELECT * FROM execution_plans WHERE decision_id = ?`.
     mockClientQuery
       .mockResolvedValueOnce({ rows: [{ id: 'plan-retry', decision_id: 'd-1' }], rowCount: 1 })
-      .mockResolvedValueOnce({ rowCount: 0 }); // UPDATE matched 0 rows
+      .mockResolvedValueOnce({ rowCount: 1 });
 
     const plan = await executionRepository.createPlan({
       decisionId: 'd-1',
@@ -78,9 +85,11 @@ describe('executionRepository.createPlan — #324 outcome linkage', () => {
     });
 
     expect(plan.id).toBe('plan-retry');
-    const [updateSql] = mockClientQuery.mock.calls[1]!;
-    // The guard clause is the load-bearing line here — assert it's present.
-    expect(updateSql).toContain('AND execution_plan_id IS NULL');
+    const [updateSql, updateParams] = mockClientQuery.mock.calls[1]!;
+    // UPDATE always runs — no IS NULL guard means every new plan
+    // overwrites the outcome's pointer to itself.
+    expect(updateSql).not.toMatch(/AND\s+execution_plan_id\s+IS\s+NULL/i);
+    expect(updateParams).toEqual(['plan-retry', 'd-1']);
   });
 
   it('plan insert and outcome link share one transaction (both or neither lands)', async () => {

@@ -73,16 +73,23 @@ export const executionRepository = {
       const plan = insertResult.rows[0]!;
 
       if (input.decisionId) {
-        // Link the matching outcome to this plan. ON UPDATE skips
-        // outcomes that already point at a plan — protects against a
-        // retry's later plan stomping the original outcome's linkage
-        // (matches the `ORDER BY created_at DESC LIMIT 1` semantics
-        // of `getByDecisionId`).
+        // Link the matching outcome to this plan. "Latest plan wins" —
+        // every new plan overwrites the outcome's pointer to itself.
+        // This matches both:
+        //   - the migration 055 backfill, which picks the latest plan
+        //     (`ORDER BY created_at DESC`) for existing rows, and
+        //   - `executionRepository.getByDecisionId`'s
+        //     `ORDER BY created_at DESC LIMIT 1` read semantics.
+        // Historical plans for the same decision are still reachable
+        // via `SELECT * FROM execution_plans WHERE decision_id = ?` —
+        // the outcome's FK is the "current plan" pointer, not an
+        // immutable first-write record. (Copilot caught the prior
+        // `WHERE execution_plan_id IS NULL` guard as inconsistent
+        // with backfill + read paths.)
         await client.query(
           `UPDATE decision_outcomes
              SET execution_plan_id = $1
-           WHERE decision_id = $2
-             AND execution_plan_id IS NULL`,
+           WHERE decision_id = $2`,
           [plan.id, input.decisionId],
         );
       }
