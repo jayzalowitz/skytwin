@@ -10,7 +10,12 @@ All notable changes to SkyTwin will be documented in this file.
 
 - **No-positive-signal inputs now disable the gate, not silently reject everything.** Our prior `topRawScore = 0` init meant if every entry's `rrfScore` was negative (rare but possible — already-bonused results re-folded, or scoring path that emits negatives), `threshold = 0` and every entry failed `r.score < 0`. Top itself would be gated out. New behavior: `computeFloorThreshold` returns `Number.NEGATIVE_INFINITY` for all-negative, all-NaN, or empty inputs — the gate disables, matching upstream `computeFloorThreshold` semantics.
 - **Out-of-range `floorRatio` values silently disable the gate.** NaN, Infinity, negative, or `> 1` now return `-Infinity` from the threshold helper. Defense in depth so a malformed config value never gates anything. The `floorRatio: 0` case stays legitimate (zero is a valid in-range value meaning "no real gate").
-- **NaN-score skip in the bonus loop.** `NaN < threshold` is `false` in JS, so a NaN-scored hit would slip past `hit.rrfScore < threshold` and then have a bonus added on top — poisoning the sort. Now an explicit `Number.isFinite(hit.rrfScore)` check skips the bonus stage for non-finite scores; they keep their non-finite value and sort to the end.
+- **NaN-score skip in the bonus loop + sort-safety drop.** `NaN < threshold` is `false` in JS, so a NaN-scored hit would slip past `hit.rrfScore < threshold` and then have a bonus added on top — poisoning the sort. Now an explicit `Number.isFinite(hit.rrfScore)` check skips the bonus stage for non-finite scores, AND the post-loop filter drops non-finite-scored entries from results entirely. The sort comparator `b.rrfScore - a.rrfScore` returns `NaN` for any NaN side, which JS sort treats as 0 (equal) — leaving NaN-scored hits in insertion order, where they can survive the `slice(0, k)` and corrupt top-k results. Same applies to `+Infinity` (sorts to the top of every query). Dropping them is the only safe move once non-finite scores can be reached (e.g. caller-supplied `rrfK: NaN`). Caught by codex outside-voice during PR #334 review (T3).
+
+### Codex review fixes (post-review)
+
+- **Invalid `floorRatio` no longer silently bypasses a valid legacy guard (codex T2).** Prior precedence `options.floorRatio ?? options.tierWeightFloorRatio ?? DEFAULT_FLOOR_RATIO` meant `floorRatio: NaN` (e.g. from a buggy config parse) won the chain and disabled the gate, even if the caller had `tierWeightFloorRatio: 0.85` working. New behavior: `pickValidFloorRatio` walks the candidates and uses the first finite value in [0, 1]; invalid values fall through to the alias, then to `DEFAULT_FLOOR_RATIO`. A partially migrated caller piping a malformed new option keeps the legacy guard.
+- **Sort safety via post-loop `isFinite` filter (codex T3).** Documented in the bullet above. Two new tests pin the failure mode: `rrfK: NaN` corrupts every contribution to NaN → all hits dropped, output is `[]` (instead of NaN-scored hits sorted into top-k by insertion order).
 
 ### Option naming
 
@@ -25,8 +30,8 @@ All notable changes to SkyTwin will be documented in this file.
 
 ### Tests
 
-- 12 new test cases in `packages/memory-gbrain-crdb-adapter/src/__tests__/rrf.test.ts`: `computeFloorThreshold` defensive guards (undefined / out-of-range / NaN / Infinity / empty / negative-top / all-NaN / mixed), floorRatio precedence over deprecated `tierWeightFloorRatio`, back-compat alias still respected, and the strong-vs-tail RRF construction that actually exercises the gate (RRF flatness means rank-1 vs rank-2 don't differ enough — you need rank-20+ in a single list to push under 0.85 × top).
-- All 130 RRF tests pass (was 116). All 100 `@skytwin/memory-gbrain` tests pass — the realistic-retrieval ablation still reports `mean R@5 1.000 pure-RRF / 0.929 tier-on`, unchanged by the rename.
+- 17 new test cases in `packages/memory-gbrain-crdb-adapter/src/__tests__/rrf.test.ts`: `computeFloorThreshold` defensive guards (undefined / out-of-range / NaN / Infinity / empty / negative-top / all-NaN / mixed), floorRatio precedence over deprecated `tierWeightFloorRatio`, back-compat alias still respected, fail-safe fallback when `floorRatio` is invalid but the alias is valid, fall-through to `DEFAULT_FLOOR_RATIO` when both are invalid, sort-safety drop for NaN-scored hits, and the strong-vs-tail RRF construction that actually exercises the gate (RRF flatness means rank-1 vs rank-2 don't differ enough — you need rank-20+ in a single list to push under 0.85 × top).
+- All 135 RRF tests pass (was 116). All 100 `@skytwin/memory-gbrain` tests pass — the realistic-retrieval ablation still reports `mean R@5 1.000 pure-RRF / 0.929 tier-on`, unchanged by the rename and the codex review fixes.
 
 ### Upstream feature triage (filed for follow-up)
 

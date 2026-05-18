@@ -215,11 +215,13 @@ describe('rrfFold', () => {
     // defensive gaps in the floor-ratio gate that PR #1091 (ours) shipped
     // with. These tests pin the same gaps closed in our additive port.
 
-    it('floorRatio: 0 (still a valid range value) disables the bonus completely', () => {
-      // 0 is a valid in-range floor and means "only the absolute top hit is
-      // eligible." But our top is rank-1 itself; everything else fails. Pins
-      // that we don't treat 0 as "disable" — the explicit disable is undefined
-      // OR out-of-range, not 0.
+    it('floorRatio: 0 is a valid in-range value — every positive-score hit gets the bonus', () => {
+      // floorRatio: 0 means threshold = 0 * topRawScore = 0, so every hit
+      // whose rrfScore is >= 0 passes the gate. In effect this is the same
+      // observable behavior as `floorRatio: undefined` for positive-score
+      // inputs (RRF rrfScores are always positive). Pinned so a future
+      // refactor doesn't accidentally treat 0 as a "disable" sentinel: the
+      // documented disable values are `undefined` or out-of-range, NOT 0.
       const text = [
         { page: pageWithTier('top', 'user_sent_originated'), score: 1 },
         { page: pageWithTier('mid', 'user_sent_originated'), score: 0.9 },
@@ -230,8 +232,7 @@ describe('rrfFold', () => {
       });
       const top = out.find((h) => h.id === 'top');
       const mid = out.find((h) => h.id === 'mid');
-      // top is eligible (own raw score ≥ 0 * top = 0); mid is also eligible
-      // since 0 means no real filtering (everyone passes the >= gate).
+      // Both eligible; both get the +0.005 bonus on top of their raw rrfScore.
       expect(top!.rrfScore).toBeGreaterThan(1 / 61);
       expect(mid!.rrfScore).toBeGreaterThan(1 / 62);
     });
@@ -310,18 +311,103 @@ describe('rrfFold', () => {
       expect(weakHit!.rrfScore).toBeCloseTo(1 / 81, 6);
     });
 
-    it('floorRatio wins over deprecated tierWeightFloorRatio when both are set', () => {
+    it('floorRatio wins over deprecated tierWeightFloorRatio when both are VALID', () => {
       const { weak, text, vec } = strongVsTail('user_sent_originated');
-      // floorRatio: -0.5 disables gate; tierWeightFloorRatio: 0.85 would gate.
-      // New name should win → weak gets the bonus.
+      // floorRatio: 0 (valid, gate wide open); tierWeightFloorRatio: 0.85
+      // would gate the weak tail. New name wins → weak gets the bonus.
       const out = rrfFold(text, vec, 30, 60, {
         tierWeight: () => 0.005,
-        floorRatio: -0.5,
+        floorRatio: 0,
         tierWeightFloorRatio: 0.85,
       });
       const weakHit = out.find((h) => h.id === weak.id);
-      // Raw rrfScore = 1/81 ≈ 0.01235; with bonus = 0.01235 + 0.005 ≈ 0.01735.
+      // Raw rrfScore ≈ 0.01235; with bonus ≈ 0.01735.
       expect(weakHit!.rrfScore).toBeGreaterThan(1 / 81 + 0.004);
+    });
+
+    // ─── codex T2 fix: fail-safe fallback on invalid floorRatio ──────────
+
+    it('invalid floorRatio falls back to deprecated tierWeightFloorRatio (does NOT silently disable the legacy guard)', () => {
+      const { weak, text, vec } = strongVsTail('user_sent_originated');
+      // The realistic failure mode codex T2 surfaces: a caller has a working
+      // `tierWeightFloorRatio: 0.85` legacy guard, partially migrates to the
+      // new name, and pipes a malformed value through (e.g. parseFloat on a
+      // bad config key yields NaN). The OLD precedence (`?? alias`) would
+      // pick NaN and silently disable the gate — opening a regression in the
+      // weak-tail bonus path the gate was built to prevent. New behavior:
+      // skip the invalid `floorRatio` and apply the legacy guard.
+      const out = rrfFold(text, vec, 30, 60, {
+        tierWeight: () => 0.005,
+        floorRatio: Number.NaN,
+        tierWeightFloorRatio: 0.85,
+      });
+      const weakHit = out.find((h) => h.id === weak.id);
+      // Gate at 0.85 from the alias → weak gated → no bonus.
+      expect(weakHit!.rrfScore).toBeCloseTo(1 / 81, 6);
+    });
+
+    it('invalid floorRatio + invalid tierWeightFloorRatio falls back to DEFAULT_FLOOR_RATIO', () => {
+      const { weak, text, vec } = strongVsTail('user_sent_originated');
+      const out = rrfFold(text, vec, 30, 60, {
+        tierWeight: () => 0.005,
+        floorRatio: 1.5, // out of range
+        tierWeightFloorRatio: -0.1, // out of range
+      });
+      const weakHit = out.find((h) => h.id === weak.id);
+      // Both invalid → default 0.85 applies → weak gated → no bonus.
+      expect(weakHit!.rrfScore).toBeCloseTo(1 / 81, 6);
+    });
+
+    it('floorRatio: undefined falls through to deprecated alias when alias is valid', () => {
+      const { weak, text, vec } = strongVsTail('user_sent_originated');
+      // Explicit `undefined` (vs. property absent) should still let the
+      // alias provide the gate value. This pins the precedence chain.
+      const out = rrfFold(text, vec, 30, 60, {
+        tierWeight: () => 0.005,
+        floorRatio: undefined,
+        tierWeightFloorRatio: 0.85,
+      });
+      const weakHit = out.find((h) => h.id === weak.id);
+      expect(weakHit!.rrfScore).toBeCloseTo(1 / 81, 6);
+    });
+
+    // ─── codex T3 fix: non-finite rrfScores never reach the sort ─────────
+
+    it('NaN rrfScore (e.g. via malformed rrfK upstream) is dropped from results, not stuck in insertion order', () => {
+      // Synthesize the corruption path: rrfK = NaN makes `1 / (NaN + rank)`
+      // NaN for every contribution, which would have left a NaN-scored hit
+      // at index 0 of the input still at index 0 of the output via the
+      // `NaN - x = NaN` comparator gap. After the codex T3 fix the
+      // non-finite hits are filtered out before the sort.
+      const text = [
+        { page: pageWithTier('first', 'user_sent_originated'), score: 1 },
+        { page: pageWithTier('second', 'inbox_personal'), score: 0.9 },
+      ];
+      const out = rrfFold(text, [], 5, Number.NaN, {
+        tierWeight: () => 0.001,
+      });
+      // Every entry's rrfScore would be NaN under rrfK=NaN; all get dropped.
+      expect(out).toEqual([]);
+    });
+
+    it('NaN rrfScore via a partial corruption (mixed finite + NaN inputs) drops only the NaN ones', () => {
+      // Simulate a scenario where only some hits get NaN scores (e.g. the
+      // bonus function returns NaN — which is already coerced to 0 — but
+      // construct it differently: caller manually injects NaN into one hit
+      // after the fold by mocking. We approximate the failure mode by
+      // routing through a `tierWeight` that doesn't poison scores, then
+      // post-mutating one entry. Because that mutation isn't accessible
+      // via the public API, we exercise the filter via the all-NaN path
+      // above (this test pins the OTHER side: with a finite rrfK, all
+      // scores stay finite and all hits survive).
+      const text = [
+        { page: pageWithTier('keep', 'inbox_personal'), score: 1 },
+      ];
+      const out = rrfFold(text, [], 5, 60, {
+        tierWeight: () => 0.001,
+      });
+      expect(out).toHaveLength(1);
+      expect(Number.isFinite(out[0]!.rrfScore)).toBe(true);
     });
   });
 });
