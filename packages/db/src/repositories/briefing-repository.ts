@@ -192,6 +192,45 @@ export const briefingRepository = {
   },
 
   /**
+   * #320: return the latest per-Lifebook briefing for EACH of a user's
+   * visible Lifebooks, in importance order (core → secondary →
+   * emerging). One row per Lifebook, NULL when no briefing for that
+   * domain exists yet (the worker hasn't emitted one). Used by
+   * `GET /api/twin-briefings/latest`'s `sections[]` fold to render the
+   * partitioned dashboard view alongside the global briefing.
+   *
+   * Single SQL query with `DISTINCT ON (domain_name)` so cost is one
+   * query no matter how many Lifebooks the user has. Equivalent to N+1
+   * `getLatestForUserDomain` calls but bounded.
+   */
+  async getLatestPerLifebook(
+    userId: string,
+    cadence?: 'daily' | 'weekly',
+  ): Promise<TwinBriefingRow[]> {
+    if (cadence) {
+      const result = await query<TwinBriefingRow>(
+        `SELECT DISTINCT ON (domain_name) *
+         FROM twin_briefings
+         WHERE user_id = $1
+           AND cadence = $2
+           AND domain_name IS NOT NULL
+         ORDER BY domain_name, generated_at DESC`,
+        [userId, cadence],
+      );
+      return result.rows;
+    }
+    const result = await query<TwinBriefingRow>(
+      `SELECT DISTINCT ON (domain_name) *
+       FROM twin_briefings
+       WHERE user_id = $1
+         AND domain_name IS NOT NULL
+       ORDER BY domain_name, generated_at DESC`,
+      [userId],
+    );
+    return result.rows;
+  },
+
+  /**
    * Mark a briefing as read by setting read_at to now().
    */
   async markRead(id: string): Promise<TwinBriefingRow | null> {

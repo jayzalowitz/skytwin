@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { briefingRepository } from '@skytwin/db';
+import { briefingRepository, lifebookRepository } from '@skytwin/db';
 import { createLogger } from '@skytwin/core';
 
 const log = createLogger('api:twin-briefings');
@@ -28,7 +28,22 @@ export function createTwinBriefingsRouter(): Router {
 
   // ─────────────────────────────────────────────────────────────────────────
   // GET /latest?cadence=daily|weekly
-  // Returns the latest briefing for the authenticated user.
+  //
+  // Returns the latest GLOBAL briefing for the authenticated user, plus
+  // #320: a `sections[]` fold — one entry per visible Lifebook with its
+  // most-recent per-domain briefing. Sections are ordered by Lifebook
+  // importance (core → secondary → emerging), then by most-recent first
+  // within each tier. Lifebooks with no briefing yet are omitted (no
+  // empty-state at the section level; the dashboard renders the global
+  // briefing without that section).
+  //
+  // Response shape (backward-additive on the original):
+  //   { briefing: TwinBriefingRow | null,
+  //     sections: Array<{ lifebookId, domainName, importance, briefing }> }
+  //
+  // Two parallel queries + a join in JS — cheaper than per-Lifebook
+  // round-trips, and the per-call cost is bounded by the user's
+  // visible-Lifebook count (typically < 10).
   // ─────────────────────────────────────────────────────────────────────────
   router.get('/latest', async (req, res, next) => {
     try {
@@ -43,19 +58,41 @@ export function createTwinBriefingsRouter(): Router {
         ? rawCadence
         : undefined;
 
-      const briefing = await briefingRepository.getLatestForUser(userId, cadence);
-      if (!briefing) {
-        res.json({ briefing: null });
-        return;
-      }
+      const [briefing, perLifebookBriefings, visibleLifebooks] = await Promise.all([
+        briefingRepository.getLatestForUser(userId, cadence),
+        briefingRepository.getLatestPerLifebook(userId, cadence),
+        lifebookRepository.listVisible(userId),
+      ]);
 
-      // Ownership check
-      if (briefing.user_id !== userId) {
+      // Ownership check on the global briefing (per-Lifebook ones are
+      // already scoped by user_id at query time).
+      if (briefing && briefing.user_id !== userId) {
         res.status(403).json({ error: 'Forbidden' });
         return;
       }
 
-      res.json({ briefing });
+      // Join: walk visibleLifebooks in importance order; attach the
+      // matching per-domain briefing when one exists. Lifebooks
+      // without a briefing are omitted from sections[]. The
+      // listVisible repo method already returns rows in
+      // core → secondary → emerging order, then last_seen_at DESC.
+      const briefingByDomain = new Map(
+        perLifebookBriefings.map((b) => [b.domain_name as string, b]),
+      );
+      const sections = visibleLifebooks
+        .map((lb) => {
+          const lifebookBriefing = briefingByDomain.get(lb.domain_name);
+          if (!lifebookBriefing) return null;
+          return {
+            lifebookId: lb.id,
+            domainName: lb.domain_name,
+            importance: lb.importance,
+            briefing: lifebookBriefing,
+          };
+        })
+        .filter((s): s is NonNullable<typeof s> => s !== null);
+
+      res.json({ briefing: briefing ?? null, sections });
     } catch (err) {
       next(err);
     }

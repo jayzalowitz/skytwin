@@ -124,12 +124,26 @@ async function renderBriefingTab(userId, cadence) {
   try {
     const data = await fetchLatestTwinBriefing(userId, cadence);
     const briefing = data?.briefing;
+    // #320: per-Lifebook sections folded into the same response.
+    // Always an array — empty when no per-Lifebook briefings exist
+    // (new user, none have been generated yet).
+    const sections = Array.isArray(data?.sections) ? data.sections : [];
 
     const prosePl = document.createElement('div');
     prosePl.id = 'briefing-prose';
     tabContent.innerHTML = '';
     tabContent.appendChild(prosePl);
     renderProseSection(briefing);
+
+    // #320: per-Lifebook collapsible sections, rendered between the
+    // global prose and the history sidebar. Skipped entirely when
+    // sections[] is empty (no need to claim space for nothing).
+    if (sections.length > 0) {
+      const sectionsEl = document.createElement('div');
+      sectionsEl.id = 'briefing-lifebook-sections';
+      tabContent.appendChild(sectionsEl);
+      renderLifebookSections(sections, sectionsEl);
+    }
 
     // History sidebar
     const historyData = await listTwinBriefings(userId, { cadence, limit: 10 }).catch(() => ({ briefings: [] }));
@@ -196,6 +210,57 @@ export async function renderTwinBriefing(container) {
 
   // Load the default tab
   await renderBriefingTab(userId, _activeCadence);
+}
+
+/**
+ * #320: render the per-Lifebook briefings as collapsible cards under
+ * the global prose. Each card is a `<details>` element — native browser
+ * collapsing, zero JS state. The summary line shows the domain name +
+ * importance badge + age; the body shows the briefing prose.
+ *
+ * Cards are appended in the order `sections[]` arrives (which the API
+ * sorts by Lifebook importance: core → secondary → emerging, then
+ * last_seen_at DESC). The first 1 (core) section is open by default;
+ * the rest are collapsed so a user with many Lifebooks doesn't get a
+ * wall of text on load.
+ */
+function renderLifebookSections(sections, container) {
+  const importanceBadge = (imp) => {
+    const colors = { core: 'var(--success)', secondary: 'var(--text)', emerging: 'var(--text-muted)' };
+    const labels = { core: 'Core', secondary: 'Secondary', emerging: 'Emerging' };
+    const color = colors[imp] ?? 'var(--text-muted)';
+    return `<span style="display:inline-block;padding:1px 6px;border-radius:8px;font-size:0.7rem;font-weight:600;color:${color};border:1px solid ${color};margin-left:0.4rem;">${escapeHtml(labels[imp] ?? imp)}</span>`;
+  };
+
+  const cards = sections.map((section, idx) => {
+    const briefing = section.briefing;
+    const generated = briefing?.generated_at ? new Date(briefing.generated_at) : null;
+    const ageStr = generated ? formatTime(generated) : '';
+    const prose = briefing?.prose_markdown || '';
+    // First card is open by default — most users will look at it
+    // immediately, and pre-opening it avoids a "what's in here?" click.
+    // Subsequent cards stay collapsed.
+    const openAttr = idx === 0 ? ' open' : '';
+    return `
+      <details${openAttr} style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:0.5rem;">
+        <summary style="cursor:pointer;padding:0.6rem 0.8rem;font-size:0.9rem;display:flex;justify-content:space-between;align-items:center;gap:0.5rem;">
+          <span>
+            <strong>${escapeHtml(section.domainName)}</strong>
+            ${importanceBadge(section.importance)}
+          </span>
+          ${ageStr ? `<span style="font-size:0.75rem;color:var(--text-muted);">${escapeHtml(ageStr)}</span>` : ''}
+        </summary>
+        <div style="padding:0 0.8rem 0.8rem;white-space:pre-wrap;line-height:1.6;font-size:0.88rem;color:var(--text);">
+          ${prose ? escapeHtml(prose) : '<em class="muted">No briefing prose yet.</em>'}
+        </div>
+      </details>
+    `;
+  });
+
+  container.innerHTML = `
+    <h4 style="font-size:0.82rem;color:var(--text-dim);margin:1.25rem 0 0.5rem;">By Lifebook</h4>
+    ${cards.join('')}
+  `;
 }
 
 function formatTime(d) {

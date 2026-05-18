@@ -11,19 +11,29 @@ import type { Express } from 'express';
 
 // ── Mocks (vi.hoisted so factories run before vi.mock) ─────────────────────
 
-const { mockBriefingRepository } = vi.hoisted(() => ({
+const { mockBriefingRepository, mockLifebookRepository } = vi.hoisted(() => ({
   mockBriefingRepository: {
     create: vi.fn(),
     getLatestForUser: vi.fn(),
     getLatestForUserDomain: vi.fn(),
+    // #320: new method called by GET /latest's sections fold.
+    // Defaulting to an empty array keeps the pre-#320 tests passing
+    // without per-test setup (they care about the global briefing only).
+    getLatestPerLifebook: vi.fn().mockResolvedValue([]),
     listForUser: vi.fn(),
     listForUserDomain: vi.fn(),
     markRead: vi.fn(),
+  },
+  // #320: GET /latest also fetches visible Lifebooks. Empty default
+  // — pre-#320 tests don't care about sections.
+  mockLifebookRepository: {
+    listVisible: vi.fn().mockResolvedValue([]),
   },
 }));
 
 vi.mock('@skytwin/db', () => ({
   briefingRepository: mockBriefingRepository,
+  lifebookRepository: mockLifebookRepository,
 }));
 
 // ── Import after mocks ─────────────────────────────────────────────────────

@@ -1,5 +1,32 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.54.0] - 2026-05-18
+
+### Added
+
+- **Per-Lifebook briefing sections folded into `/api/twin-briefings/latest` (closes #320, decomposed from #193).** Response shape grew an additive `sections: Array<{ lifebookId, domainName, importance, briefing }>` field alongside the existing `briefing` field. Sections are one row per visible Lifebook that has a per-domain briefing, ordered by Lifebook importance (core → secondary → emerging, then last_seen_at DESC). Lifebooks without a matching per-domain briefing are omitted (no empty-section slots). Backend partitioning shipped earlier in #258; this PR is the API fold + web rendering.
+- **New repository method `briefingRepository.getLatestPerLifebook(userId, cadence?)`.** Single `DISTINCT ON (domain_name)` query — one round-trip regardless of Lifebook count. Equivalent to N+1 `getLatestForUserDomain` calls but bounded. Hard-filters `domain_name IS NOT NULL` so it can never accidentally fold a global briefing into the sections list (which would double-render the same row on the dashboard).
+- **Web rendering in `twin-briefing.js`.** Per-Lifebook sections render as collapsible `<details>` elements between the global prose section and the history sidebar. First card (typically the top-importance Lifebook) is open by default; rest collapse to avoid a wall of text on load. Each card surfaces the domain name + importance badge + age. Skipped entirely when `sections[]` is empty (new user, no per-Lifebook briefings yet).
+
+### Why this matters
+
+The backend partitioning landed in #258 — the worker emits per-Lifebook briefings as separate `twin_briefings` rows with `domain_name` set. But until now the dashboard only fetched the global briefing; the per-Lifebook rows were only reachable via the per-Lifebook detail page. Folding them into `/latest` gives the dashboard a single round-trip to render the full partitioned view, and the collapsible UI keeps the global briefing as the focal point with per-domain detail one click away.
+
+### Backward compatibility
+
+- Response shape is additive — the existing `briefing` field still appears with the same shape; existing consumers that read `data.briefing` continue to work unchanged.
+- `sections` is always an array (never undefined) — empty for users with no per-Lifebook briefings; no need for `Array.isArray` guards on the consumer side, though `twin-briefing.js` defensively checks anyway.
+- The `/lifebook/:domain/latest` endpoint is unchanged — still returns just `{ briefing }` for callers that need a single domain in isolation.
+
+### What's deferred (none — issue is fully closed)
+
+Mobile rendering is in the same pattern but lives under `#179` (mobile parity) since the mobile briefing surface is a different code path. The browser-side fold here is the canonical reference for the mobile port when it lands.
+
+### Tests
+
+- 5 new repository tests in `briefing-repository-per-lifebook.test.ts` pinning: DISTINCT ON + cadence threading + global-briefing exclusion + empty-result case.
+- 7 new route tests in `twin-briefings-sections-fold.test.ts` pinning: 400 on missing userId; empty-state shape; global-only path; importance-ordered sections with omit-when-no-briefing; hidden Lifebooks excluded (via listVisible contract); cadence query param threads to both queries.
+
 ## [0.6.53.0] - 2026-05-18
 
 ### Added
