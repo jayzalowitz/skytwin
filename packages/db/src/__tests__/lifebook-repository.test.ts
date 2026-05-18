@@ -66,7 +66,7 @@ describe('lifebookRepository.upsert — #321 override-respecting SET', () => {
 });
 
 describe('lifebookRepository.setImportanceOverride — #321', () => {
-  it('writes the override JSON + sets importance column immediately', async () => {
+  it('writes the override JSON via DB-side now() + sets importance column immediately', async () => {
     mockQuery.mockResolvedValue({
       rows: [{ id: 'lb-1', importance: 'core', metadata: { importanceOverride: {} } }],
       rowCount: 1,
@@ -76,31 +76,31 @@ describe('lifebookRepository.setImportanceOverride — #321', () => {
     const [sql, params] = mockQuery.mock.calls[0]!;
     expect(sql).toContain('UPDATE lifebooks');
     expect(sql).toContain('SET importance = $3');
-    expect(sql).toContain("jsonb_set(metadata, '{importanceOverride}', $4::jsonb, true)");
-    expect(params[0]).toBe('u-1');
-    expect(params[1]).toBe('Health');
-    expect(params[2]).toBe('core');
-    const override = JSON.parse(params[3] as string);
-    expect(override.value).toBe('core');
-    expect(override.decayDays).toBe(90);
-    expect(typeof override.setAt).toBe('string');
-    expect(() => new Date(override.setAt as string).toISOString()).not.toThrow();
+    // SET uses jsonb_build_object so the timestamp comes from DB now()
+    // (not the app server) — same clock as the upsert freshness CASE.
+    // Copilot caught the clock-skew issue when setAt was generated
+    // via new Date().toISOString() on the API node.
+    expect(sql).toContain('jsonb_build_object');
+    expect(sql).toContain("'value', $3::string");
+    expect(sql).toContain("'setAt', now()::string");
+    expect(sql).toContain("'decayDays', $4::int");
+    // Params: userId, domain, value, decayDays — NO JSON-stringified
+    // setAt (the SQL produces it).
+    expect(params).toEqual(['u-1', 'Health', 'core', 90]);
   });
 
   it('defaults decayDays to 90 when not provided', async () => {
     mockQuery.mockResolvedValue({ rows: [{ id: 'lb-1' }], rowCount: 1 });
     await lifebookRepository.setImportanceOverride('u-1', 'Health', 'secondary');
     const [, params] = mockQuery.mock.calls[0]!;
-    const override = JSON.parse(params[3] as string);
-    expect(override.decayDays).toBe(90);
+    expect(params[3]).toBe(90);
   });
 
   it('preserves decayDays = 0 as the "never auto-decay" sentinel', async () => {
     mockQuery.mockResolvedValue({ rows: [{ id: 'lb-1' }], rowCount: 1 });
     await lifebookRepository.setImportanceOverride('u-1', 'Health', 'emerging', 0);
     const [, params] = mockQuery.mock.calls[0]!;
-    const override = JSON.parse(params[3] as string);
-    expect(override.decayDays).toBe(0);
+    expect(params[3]).toBe(0);
   });
 
   it('returns null when no matching row exists (caller can 404)', async () => {

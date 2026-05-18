@@ -203,8 +203,30 @@ interface LifebookJson {
   } | null;
 }
 
+/**
+ * Same freshness check as `lifebookRepository.upsert`'s CASE: an
+ * override counts as "currently honored" only if `decayDays === 0`
+ * (never auto-decay) OR `setAt + decayDays` is in the future.
+ *
+ * Without this check `rowToJson` would surface stale overrides that
+ * the extractor no longer respects, and the UI would label such
+ * lifebooks as "set by you" while the importance had already
+ * decayed back to the extractor's pick. (Copilot caught it.)
+ */
+function isOverrideFresh(
+  override: { setAt: string; decayDays: number },
+  now: Date = new Date(),
+): boolean {
+  if (override.decayDays === 0) return true;
+  const setAt = new Date(override.setAt);
+  if (Number.isNaN(setAt.getTime())) return false;
+  const deadlineMs = setAt.getTime() + override.decayDays * 24 * 60 * 60 * 1000;
+  return now.getTime() < deadlineMs;
+}
+
 function rowToJson(r: import('@skytwin/db').LifebookRow): LifebookJson {
   const override = r.metadata?.importanceOverride;
+  const fresh = override && isOverrideFresh(override);
   return {
     id: r.id,
     domainName: r.domain_name,
@@ -215,7 +237,7 @@ function rowToJson(r: import('@skytwin/db').LifebookRow): LifebookJson {
     detectedAt: r.detected_at.toISOString(),
     lastSeenAt: r.last_seen_at.toISOString(),
     hidden: r.hidden_at !== null,
-    importanceOverride: override
+    importanceOverride: fresh
       ? {
           value: override.value,
           setAt: override.setAt,

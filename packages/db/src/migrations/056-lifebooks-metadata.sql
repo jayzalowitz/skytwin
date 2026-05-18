@@ -28,8 +28,13 @@
 --      fresh override exists. Implemented in SQL via CASE so the
 --      worker doesn't have to fetch-then-write (race-free).
 --   2. New `POST /api/lifebooks/:userId/:domainName/importance` route
---      writes the override + records an episode in mempalace so the
---      twin remembers ("user promoted Aging Parents on 2026-05-17").
+--      writes the override + sets the `importance` column immediately.
+--      DELETE on the same path clears the override.
+--      (Episode recording — "user promoted Aging Parents on
+--      2026-05-17" — was in the original #321 spec but is deferred
+--      to the UI-surface follow-up; the timestamp lives in
+--      `metadata.importanceOverride.setAt` so the recorder has a
+--      cheap source when it lands.)
 --
 -- NOT NULL DEFAULT '{}' — existing rows get an empty object; the override
 -- field is optional within the JSON.

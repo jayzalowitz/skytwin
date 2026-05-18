@@ -192,6 +192,78 @@ describe('POST /api/lifebooks/:userId/:domainName/importance — #321', () => {
   });
 });
 
+describe('rowToJson freshness filter — #321 stale-override suppression', () => {
+  it('surfaces a fresh override (within decayDays)', async () => {
+    mockSetImportanceOverride.mockResolvedValue(
+      fakeLifebookRow({
+        metadata: {
+          importanceOverride: {
+            value: 'core',
+            setAt: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString(),
+            decayDays: 90,
+          },
+        },
+      }),
+    );
+    const res = await request(
+      buildApp(),
+      'POST',
+      `/api/lifebooks/${USER_ID}/Health/importance`,
+      { value: 'core' },
+    );
+    const body = res.body as { lifebook: { importanceOverride: unknown | null } };
+    expect(body.lifebook.importanceOverride).not.toBeNull();
+  });
+
+  it('hides a stale override (setAt + decayDays already past — extractor would no longer respect it)', async () => {
+    mockSetImportanceOverride.mockResolvedValue(
+      fakeLifebookRow({
+        metadata: {
+          importanceOverride: {
+            value: 'core',
+            setAt: new Date(Date.now() - 200 * 24 * 60 * 60 * 1000).toISOString(),
+            decayDays: 90, // 200 > 90, expired
+          },
+        },
+      }),
+    );
+    const res = await request(
+      buildApp(),
+      'POST',
+      `/api/lifebooks/${USER_ID}/Health/importance`,
+      { value: 'core' },
+    );
+    const body = res.body as { lifebook: { importanceOverride: unknown | null } };
+    // Stale → null. UI labels lifebook as "auto-detected" rather than
+    // "set by you" — matches what the extractor will actually do on
+    // the next run.
+    expect(body.lifebook.importanceOverride).toBeNull();
+  });
+
+  it('treats decayDays = 0 as never-expires (always fresh)', async () => {
+    mockSetImportanceOverride.mockResolvedValue(
+      fakeLifebookRow({
+        metadata: {
+          importanceOverride: {
+            value: 'core',
+            setAt: new Date(Date.now() - 10000 * 24 * 60 * 60 * 1000).toISOString(),
+            decayDays: 0,
+          },
+        },
+      }),
+    );
+    const res = await request(
+      buildApp(),
+      'POST',
+      `/api/lifebooks/${USER_ID}/Health/importance`,
+      { value: 'core' },
+    );
+    const body = res.body as { lifebook: { importanceOverride: { decayDays: number } | null } };
+    expect(body.lifebook.importanceOverride).not.toBeNull();
+    expect(body.lifebook.importanceOverride!.decayDays).toBe(0);
+  });
+});
+
 describe('DELETE /api/lifebooks/:userId/:domainName/importance — #321', () => {
   it('strips the override and returns the updated lifebook', async () => {
     mockClearImportanceOverride.mockResolvedValue(
