@@ -424,6 +424,13 @@ export interface SpendRecordRow {
   actual_cost_cents: number | null;
   recorded_at: Date;
   reconciled_at: Date | null;
+  /**
+   * Optional registry source attribution (#323). Populated when the
+   * action came from a known registry entry (e.g. an MCP server's
+   * registry ID). NULL for rows where no registry source was passed,
+   * including all rows recorded before migration 054.
+   */
+  registry_id: string | null;
 }
 
 // ============================================================================
