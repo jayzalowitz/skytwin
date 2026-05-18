@@ -30,8 +30,8 @@ All notable changes to SkyTwin will be documented in this file.
 
 ### Tests
 
-- 17 new test cases in `packages/memory-gbrain-crdb-adapter/src/__tests__/rrf.test.ts`: `computeFloorThreshold` defensive guards (undefined / out-of-range / NaN / Infinity / empty / negative-top / all-NaN / mixed), floorRatio precedence over deprecated `tierWeightFloorRatio`, back-compat alias still respected, fail-safe fallback when `floorRatio` is invalid but the alias is valid, fall-through to `DEFAULT_FLOOR_RATIO` when both are invalid, sort-safety drop for NaN-scored hits, and the strong-vs-tail RRF construction that actually exercises the gate (RRF flatness means rank-1 vs rank-2 don't differ enough — you need rank-20+ in a single list to push under 0.85 × top).
-- All 135 RRF tests pass (was 116). All 100 `@skytwin/memory-gbrain` tests pass — the realistic-retrieval ablation still reports `mean R@5 1.000 pure-RRF / 0.929 tier-on`, unchanged by the rename and the codex review fixes.
+- 22 new test cases in `packages/memory-gbrain-crdb-adapter/src/__tests__/rrf.test.ts`: `computeFloorThreshold` defensive guards (undefined / out-of-range / NaN / Infinity / empty / negative-top / all-NaN / mixed / valid+positive / default constant), floorRatio precedence over deprecated `tierWeightFloorRatio`, back-compat alias still respected, fail-safe fallback when `floorRatio` is invalid but the alias is valid, fall-through to `DEFAULT_FLOOR_RATIO` when both are invalid, sort-safety drop for NaN-scored hits, and the strong-vs-tail RRF construction that actually exercises the gate (RRF flatness means rank-1 vs rank-2 don't differ enough — you need rank-20+ in a single list to push under 0.85 × top, a gap Copilot flagged on three of the post-/review tests).
+- All 135 RRF tests pass (was 116). All 100 `@skytwin/memory-gbrain` tests pass — the realistic-retrieval ablation still reports `mean R@5 1.000 pure-RRF / 0.929 tier-on`, unchanged by the rename and the codex/Copilot review fixes.
 
 ### Upstream feature triage (filed for follow-up)
 

@@ -237,50 +237,13 @@ describe('rrfFold', () => {
       expect(mid!.rrfScore).toBeGreaterThan(1 / 62);
     });
 
-    it('out-of-range floorRatio (negative) disables gate — bonus applies to all', () => {
-      const text = [
-        { page: pageWithTier('top', 'user_sent_originated'), score: 1 },
-        { page: pageWithTier('weak', 'user_sent_originated'), score: 0.1 },
-      ];
-      const out = rrfFold(text, [], 5, 60, {
-        tierWeight: () => 0.005,
-        floorRatio: -0.5,
-      });
-      const weak = out.find((h) => h.id === 'weak');
-      // -0.5 is out-of-range → gate disabled → weak gets the bonus too.
-      expect(weak!.rrfScore).toBeGreaterThan(1 / 62);
-    });
-
-    it('out-of-range floorRatio (>1) disables gate', () => {
-      const text = [
-        { page: pageWithTier('top', 'user_sent_originated'), score: 1 },
-        { page: pageWithTier('weak', 'user_sent_originated'), score: 0.1 },
-      ];
-      const out = rrfFold(text, [], 5, 60, {
-        tierWeight: () => 0.005,
-        floorRatio: 1.5,
-      });
-      const weak = out.find((h) => h.id === 'weak');
-      expect(weak!.rrfScore).toBeGreaterThan(1 / 62);
-    });
-
-    it('NaN floorRatio disables gate', () => {
-      const text = [
-        { page: pageWithTier('top', 'user_sent_originated'), score: 1 },
-        { page: pageWithTier('weak', 'user_sent_originated'), score: 0.1 },
-      ];
-      const out = rrfFold(text, [], 5, 60, {
-        tierWeight: () => 0.005,
-        floorRatio: NaN,
-      });
-      const weak = out.find((h) => h.id === 'weak');
-      expect(weak!.rrfScore).toBeGreaterThan(1 / 62);
-    });
-
     // Helper: build a text list whose RRF rank-1 (in both text+vector) is far
     // enough ahead of a tail hit that 0.85 actually gates the tail out. RRF
     // rank-1-in-both ≈ 2/(60+1) = 0.0328; a tail hit at text rank 20 only ≈
-    // 1/(60+20) = 0.0125 sits well below 0.85 * 0.0328 = 0.0279.
+    // 1/(60+20) = 0.0125 sits well below 0.85 * 0.0328 = 0.0279. Tests that
+    // claim to assert "the gate is disabled" MUST use this construction — a
+    // rank-1-vs-rank-2 setup doesn't distinguish "gate disabled" from
+    // "default gate applied" because both rank-2 hits clear the 0.85 floor.
     function strongVsTail(weakTier: string) {
       const strong = pageWithTier('strong-primary', 'inbox_personal');
       const tail = Array.from({ length: 19 }, (_, i) =>
@@ -295,6 +258,51 @@ describe('rrfFold', () => {
       const vec = [{ page: strong, score: 1 }];
       return { strong, weak, text, vec };
     }
+
+    // ─── Post-T2: invalid floorRatio falls back, doesn't blindly disable ──
+    //
+    // Pre-T2 (the gbrain-aligned pure semantic), invalid `floorRatio` →
+    // gate disabled. Post-T2 we made the resolver fail-safe instead — it
+    // walks the candidates, picks the first valid one, and only the
+    // explicit-disable path (no alias + DEFAULT_FLOOR_RATIO is the
+    // canonical fallback) leaves the gate active. These tests pin the
+    // new fall-through behavior using `strongVsTail` so the assertions
+    // actually distinguish "fell back to DEFAULT_FLOOR_RATIO" from
+    // "gate disabled" (rank-1-vs-rank-2 inputs can't, per Copilot).
+
+    it('out-of-range floorRatio (negative) + no alias → falls back to DEFAULT_FLOOR_RATIO (0.85)', () => {
+      const { weak, text, vec } = strongVsTail('user_sent_originated');
+      const out = rrfFold(text, vec, 30, 60, {
+        tierWeight: () => 0.005,
+        floorRatio: -0.5,
+      });
+      const weakHit = out.find((h) => h.id === weak.id);
+      // T2 fix: invalid -0.5 falls to default 0.85; weak (rank 21) is below
+      // the gate threshold (0.0279) at rrfScore ≈ 1/81 (0.01235) → no bonus.
+      // Without T2 the gate would be disabled, weak would be ≈ 1/81 + 0.005
+      // = 0.01735, and this assertion would fail.
+      expect(weakHit!.rrfScore).toBeCloseTo(1 / 81, 6);
+    });
+
+    it('out-of-range floorRatio (>1) + no alias → falls back to DEFAULT_FLOOR_RATIO (0.85)', () => {
+      const { weak, text, vec } = strongVsTail('user_sent_originated');
+      const out = rrfFold(text, vec, 30, 60, {
+        tierWeight: () => 0.005,
+        floorRatio: 1.5,
+      });
+      const weakHit = out.find((h) => h.id === weak.id);
+      expect(weakHit!.rrfScore).toBeCloseTo(1 / 81, 6);
+    });
+
+    it('NaN floorRatio + no alias → falls back to DEFAULT_FLOOR_RATIO (0.85)', () => {
+      const { weak, text, vec } = strongVsTail('user_sent_originated');
+      const out = rrfFold(text, vec, 30, 60, {
+        tierWeight: () => 0.005,
+        floorRatio: Number.NaN,
+      });
+      const weakHit = out.find((h) => h.id === weak.id);
+      expect(weakHit!.rrfScore).toBeCloseTo(1 / 81, 6);
+    });
 
     it('back-compat: tierWeightFloorRatio still respected when floorRatio absent', () => {
       const { weak, text, vec } = strongVsTail('user_sent_originated');
