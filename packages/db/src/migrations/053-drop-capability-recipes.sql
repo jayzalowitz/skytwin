@@ -13,6 +13,9 @@
 --   packages/db/src/migrations/027-capability-acquisition.sql   # table creation
 --   (no repository, no read site, no write site, no seed)
 --
--- IF EXISTS — safe to re-run. CockroachDB returns 42P01 if the table is
--- already gone; the migration runner swallows it as idempotent DDL.
+-- IF EXISTS — safe to re-run. CockroachDB short-circuits the DROP when
+-- the table is already gone; no SQLSTATE is raised, so the migration
+-- runner sees a successful no-op. (The runner's `isIdempotentError`
+-- handles "already exists" codes only — 42710 / 42P07 / 42701 — not
+-- "does not exist", so we rely on IF EXISTS, not on runner forgiveness.)
 DROP TABLE IF EXISTS capability_recipes;
