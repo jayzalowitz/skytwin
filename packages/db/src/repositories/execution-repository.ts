@@ -1,4 +1,4 @@
-import { query } from '../connection.js';
+import { query, withTransaction } from '../connection.js';
 import type { ExecutionEventRow, ExecutionPlanRow, ExecutionResultRow } from '../types.js';
 
 /**
@@ -43,20 +43,59 @@ export interface ExecutionPlanWithResult {
 export const executionRepository = {
   /**
    * Create a new execution plan.
+   *
+   * #324: also updates `decision_outcomes.execution_plan_id` for the
+   * matching `decision_id` in the same transaction. This closes the
+   * structural linkage gap that previously forced the rollback /
+   * approval-ratio queries in `capabilities.ts` to proxy via
+   * `capability_provenance_nodes`. If no outcome row exists yet
+   * (decision still being processed), the UPDATE no-ops — the
+   * outcome insert path doesn't need to be involved, since the
+   * approval-pending flow creates the outcome before the plan and
+   * the auto-execute flow creates them in order.
+   *
+   * Both operations share one CockroachDB transaction so either both
+   * succeed or both roll back — the FK is never stale.
    */
   async createPlan(input: CreateExecutionPlanInput): Promise<ExecutionPlanRow> {
-    const result = await query<ExecutionPlanRow>(
-      `INSERT INTO execution_plans (decision_id, action_id, status, steps)
-       VALUES ($1, $2, $3, $4)
-       RETURNING *`,
-      [
-        input.decisionId || null,
-        input.actionId || null,
-        input.status ?? 'pending',
-        JSON.stringify(input.steps ?? []),
-      ],
-    );
-    return result.rows[0]!;
+    return withTransaction(async (client) => {
+      const insertResult = await client.query<ExecutionPlanRow>(
+        `INSERT INTO execution_plans (decision_id, action_id, status, steps)
+         VALUES ($1, $2, $3, $4)
+         RETURNING *`,
+        [
+          input.decisionId || null,
+          input.actionId || null,
+          input.status ?? 'pending',
+          JSON.stringify(input.steps ?? []),
+        ],
+      );
+      const plan = insertResult.rows[0]!;
+
+      if (input.decisionId) {
+        // Link the matching outcome to this plan. "Latest plan wins" —
+        // every new plan overwrites the outcome's pointer to itself.
+        // This matches both:
+        //   - the migration 055 backfill, which picks the latest plan
+        //     (`ORDER BY created_at DESC`) for existing rows, and
+        //   - `executionRepository.getByDecisionId`'s
+        //     `ORDER BY created_at DESC LIMIT 1` read semantics.
+        // Historical plans for the same decision are still reachable
+        // via `SELECT * FROM execution_plans WHERE decision_id = ?` —
+        // the outcome's FK is the "current plan" pointer, not an
+        // immutable first-write record. (Copilot caught the prior
+        // `WHERE execution_plan_id IS NULL` guard as inconsistent
+        // with backfill + read paths.)
+        await client.query(
+          `UPDATE decision_outcomes
+             SET execution_plan_id = $1
+           WHERE decision_id = $2`,
+          [plan.id, input.decisionId],
+        );
+      }
+
+      return plan;
+    });
   },
 
   /**

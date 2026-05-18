@@ -405,30 +405,56 @@ export function createCapabilitiesRouter(): Router {
       const sinceDate = new Date(Date.now() - withinHours * 60 * 60 * 1000);
 
       // Query actions executed via this server in the recent window.
-      // We use capability_provenance_nodes as the linkage source (node_type='action',
-      // server_id=:id) because the action-to-execution-plan linkage isn't yet
-      // finalized in the DB schema.
-      // Tracked in #306 (catch-all for #189 deferred work): once the
-      // decision-action-execution linkage is finalized, this should join
-      // through decision_outcomes → execution_plans and resolve actual
-      // plan IDs for rollback via IronClawAdapter.rollback(planId).
+      // Provenance still owns the server↔action attribution; the #324
+      // FK gives us the execution_plan_id for each action via
+      // decision_outcomes (selected_action_id = provenance.ref_id).
+      // Returns real plan IDs in the response so callers / the eventual
+      // IronClawAdapter.rollback(planId) wiring have something concrete
+      // to act on — replaces the prior "stub recorded intent" behavior.
+      //
+      // SUBQUERY rather than LEFT JOIN — even though `selected_action_id`
+      // should be unique per decision in practice, there is no DB
+      // constraint enforcing it, and a malformed row (or future
+      // schema change) where the same candidate_actions.id ends up
+      // on two outcomes would have a LEFT JOIN duplicating the
+      // provenance row in the result set. Subquery + LIMIT 1 keeps
+      // one row per provenance node regardless. (Copilot caught the
+      // JOIN duplication risk.)
       const provenanceResult = await query<{
         id: string;
         ref_id: string;
         payload: unknown;
         occurred_at: Date;
+        execution_plan_id: string | null;
       }>(
-        `SELECT id, ref_id, payload, occurred_at
-         FROM capability_provenance_nodes
-         WHERE server_id = $1
-           AND node_type = 'action'
-           AND occurred_at >= $2
-           AND user_id = $3
-         ORDER BY occurred_at DESC`,
+        `SELECT pn.id, pn.ref_id, pn.payload, pn.occurred_at,
+                (SELECT doc.execution_plan_id
+                   FROM decision_outcomes doc
+                  WHERE doc.selected_action_id = pn.ref_id
+                  LIMIT 1) AS execution_plan_id
+         FROM capability_provenance_nodes pn
+         WHERE pn.server_id = $1
+           AND pn.node_type = 'action'
+           AND pn.occurred_at >= $2
+           AND pn.user_id = $3
+         ORDER BY pn.occurred_at DESC`,
         [id, sinceDate, userId],
       );
 
-      const undone: Array<{ actionId: string; result: 'rolled_back' | 'failed' }> = [];
+      // Result enum:
+      //   - 'pending_adapter_wiring' — FK resolved a real plan ID;
+      //     IronClawAdapter.rollback(planId) call is the next step
+      //     (separate follow-up, needs routing through executionRouter)
+      //   - 'no_plan_linkage' — FK lookup returned NULL; can't roll
+      //     back because we don't know which plan to target. Honest
+      //     reporting beats lying about rollback success. (Copilot
+      //     caught the prior inverted enum that returned
+      //     'rolled_back' in this no-linkage branch — never true.)
+      const undone: Array<{
+        actionId: string;
+        planId: string | null;
+        result: 'pending_adapter_wiring' | 'no_plan_linkage';
+      }> = [];
       const irreversible: Array<{ actionId: string; reason: string }> = [];
 
       for (const node of provenanceResult.rows) {
@@ -445,11 +471,11 @@ export function createCapabilitiesRouter(): Router {
           continue;
         }
 
-        // TODO: Call IronClawAdapter.rollback(planId) once the provenance
-        // node stores the execution plan ID directly. For now we record
-        // that the intent was received but cannot yet reach the adapter
-        // here. Tracked in #306.
-        undone.push({ actionId: node.ref_id, result: 'rolled_back' });
+        undone.push({
+          actionId: node.ref_id,
+          planId: node.execution_plan_id,
+          result: node.execution_plan_id ? 'pending_adapter_wiring' : 'no_plan_linkage',
+        });
       }
 
       res.json({ undone, irreversible });

@@ -297,7 +297,13 @@ describe('Capabilities API routes', () => {
       const server = makeMcpServer();
       mockMcpServerRepository.getById.mockResolvedValue(server);
 
-      // Mock: two provenance nodes — one reversible, one not
+      // Mock: two provenance nodes — one reversible, one not.
+      // #324: the route now also reads `execution_plan_id` via a
+      // subquery against decision_outcomes. The mock returns NULL
+      // here (no decision_outcomes row matches), so the reversible
+      // action reports `result: 'no_plan_linkage'` rather than the
+      // old stub `'rolled_back'`. Honest reporting: we can't roll
+      // back without a plan ID to target.
       mockQuery.mockResolvedValue({
         rows: [
           {
@@ -305,12 +311,14 @@ describe('Capabilities API routes', () => {
             ref_id: 'action-aaa',
             payload: { reversible: true },
             occurred_at: new Date(),
+            execution_plan_id: null,
           },
           {
             id: 'node-2',
             ref_id: 'action-bbb',
             payload: { reversible: false, irreversibleReason: 'Sent email' },
             occurred_at: new Date(),
+            execution_plan_id: null,
           },
         ],
         rowCount: 2,
@@ -326,15 +334,51 @@ describe('Capabilities API routes', () => {
 
       expect(res.status).toBe(200);
       const body = res.body as {
-        undone: Array<{ actionId: string; result: string }>;
+        undone: Array<{ actionId: string; planId: string | null; result: string }>;
         irreversible: Array<{ actionId: string; reason: string }>;
       };
       expect(body.undone).toHaveLength(1);
       expect(body.undone[0]!.actionId).toBe('action-aaa');
-      expect(body.undone[0]!.result).toBe('rolled_back');
+      expect(body.undone[0]!.planId).toBeNull();
+      expect(body.undone[0]!.result).toBe('no_plan_linkage');
       expect(body.irreversible).toHaveLength(1);
       expect(body.irreversible[0]!.actionId).toBe('action-bbb');
       expect(body.irreversible[0]!.reason).toBe('Sent email');
+    });
+
+    it('returns pending_adapter_wiring when the FK resolves a real plan id (#324)', async () => {
+      mockMcpServerRepository.getById.mockResolvedValue(makeMcpServer({ user_id: USER_ID }));
+
+      // Reversible action with a successfully resolved execution_plan_id —
+      // the new branch. Confirms the enum's happy-path value lands.
+      mockQuery.mockResolvedValue({
+        rows: [
+          {
+            id: 'node-3',
+            ref_id: 'action-ccc',
+            payload: { reversible: true },
+            occurred_at: new Date(),
+            execution_plan_id: 'plan-xyz',
+          },
+        ],
+        rowCount: 1,
+      });
+
+      const app = buildApp(USER_ID);
+      const res = await request(
+        app,
+        'POST',
+        `/api/capabilities/${SERVER_ID}/regret`,
+        { withinHours: 48 },
+      );
+
+      expect(res.status).toBe(200);
+      const body = res.body as {
+        undone: Array<{ actionId: string; planId: string | null; result: string }>;
+      };
+      expect(body.undone).toHaveLength(1);
+      expect(body.undone[0]!.planId).toBe('plan-xyz');
+      expect(body.undone[0]!.result).toBe('pending_adapter_wiring');
     });
 
     it('returns 403 when requester is not the owner', async () => {

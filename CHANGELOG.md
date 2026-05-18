@@ -1,5 +1,33 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.49.0] - 2026-05-18
+
+### Added
+
+- **Structural FK `decision_outcomes.execution_plan_id` (#324, partial).** Migration 055 adds the nullable column + partial index `WHERE execution_plan_id IS NOT NULL`, plus an idempotent backfill that joins `decision_outcomes ⋈ execution_plans` on `decision_id` (latest plan wins for the rare retry case, matching the existing `executionRepository.getByDecisionId` semantics). FK direction (`decision_outcomes → execution_plans`) chosen because outcomes are already 1:1 with decisions (UNIQUE constraint) and the approval path creates the outcome before the plan exists — NULL gracefully covers the approval-pending interval.
+- **All three execution-plan write paths populate the FK.** `executionRepository.createPlan` now runs the INSERT + UPDATE in one CockroachDB transaction, and the two direct inserts in `apps/api/src/routes/approvals.ts` (success path L454 + failure path L497) do the same atomic update. **"Latest plan wins"** semantics — every new plan overwrites the outcome's `execution_plan_id` to point at itself. This matches both the migration 055 backfill (which picks the latest plan per decision) and `executionRepository.getByDecisionId`'s `ORDER BY created_at DESC LIMIT 1` read semantics, so a retry-after-rejection plan correctly becomes the outcome's current pointer. Historical plans for the same decision are still reachable via `SELECT * FROM execution_plans WHERE decision_id = ?` — the outcome FK is the "current plan" pointer, not an immutable first-write record.
+- **Rollback stub upgraded to real plan-ID resolution (`POST /api/capabilities/:id/rollback-recent`).** Previously returned `{ result: 'rolled_back' }` as a literal stub even though no rollback ran. Now uses a subquery (not a LEFT JOIN — avoids duplicating provenance rows if `selected_action_id` ever isn't unique) to resolve the real `execution_plan_id` for each reversible action and returns it in the response shape `{ actionId, planId, result }`. `result` is `'pending_adapter_wiring'` when the FK lookup succeeds (actual `IronClawAdapter.rollback(planId)` call is the next step — needs routing through `executionRouter`) and `'no_plan_linkage'` when it doesn't (honest reporting beats lying about rollback success when we have no plan ID to target).
+
+### Why this matters
+
+The 4 stubbed sites in `capabilities.ts` and the duplicate stub in `apps/worker/src/jobs/promotion-eligibility-check.ts` were proxying through `capability_provenance_nodes` because the structural linkage didn't exist. Worse: provenance's `node_type='action'` rows aren't actually written anywhere in current code, so the queries returned empty result sets in real deployments. This PR adds the real linkage; future PRs can replace the stubbed queries with structural joins as they need to.
+
+### Scope explicitly NOT in this PR (issue #324 stays open)
+
+- **Wiring the actual `IronClawAdapter.rollback(planId)` call.** The rollback endpoint now reports plan IDs but doesn't dispatch the adapter call — that requires routing through `executionRouter` to pick the right adapter for each plan. Separate PR.
+- **Promotion-stats stubs (capabilities.ts L1222 + L1235, worker L68-86).** These need a `server_id` column on `execution_plans` (or a join through `candidate_actions.parameters` JSON) to resolve "approvals per server." Different schema change; filed for follow-up.
+- **Time-machine stub (capabilities.ts L464-540).** Returns "alternate decision pipeline not yet wired" — depends on a decision-pipeline rerun harness, not on this linkage.
+
+### Backward compatibility
+
+- Nullable column; existing rows backfilled from `execution_plans` joined on `decision_id`. Approval-pending and rejected-without-execution outcomes stay NULL — correct, no plan exists.
+- `executionRepository.createPlan` now wraps in a transaction. Same external behavior on the happy path; differs only in failure semantics (both INSERT + UPDATE succeed together or both roll back — strictly safer than the old non-atomic version).
+- Response shape of `POST /api/capabilities/:id/rollback-recent` changed: `undone[]` items now include `planId: string | null` and the `result` enum widened to include `'pending_adapter_wiring'`. No frontend consumers exist today (grep confirms zero callers in `apps/web/`, `apps/desktop/`, `apps/mobile/`).
+
+### Tests
+
+- 4 new unit tests in `execution-repository.test.ts` pinning: (1) createPlan links the matching outcome in the same transaction; (2) skips the UPDATE when no decisionId provided; (3) `WHERE execution_plan_id IS NULL` guard means retry plans cannot stomp the original outcome's link; (4) both statements share one transaction so failure rolls back consistently.
+
 ## [0.6.48.0] - 2026-05-18
 
 ### Added
