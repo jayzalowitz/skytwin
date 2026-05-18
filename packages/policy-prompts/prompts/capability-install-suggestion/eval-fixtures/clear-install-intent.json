@@ -1,0 +1,20 @@
+{
+  "inputs": {
+    "user_message": "Can you file a Linear issue for the staging crash I just hit?",
+    "assistant_reply": "I don't have access to Linear, so I can't file an issue directly. You'd want to connect a Linear integration to enable this.",
+    "installed_capabilities": "[{\"id\":\"gmail-mcp\",\"name\":\"Gmail\"},{\"id\":\"google-calendar-mcp\",\"name\":\"Google Calendar\"}]",
+    "available_capabilities": "[{\"id\":\"linear-mcp\",\"name\":\"Linear\",\"description\":\"Create and manage issues in Linear\"},{\"id\":\"@modelcontextprotocol/server-github\",\"name\":\"GitHub\",\"description\":\"Manage GitHub issues, PRs, and repositories\"},{\"id\":\"@modelcontextprotocol/server-slack\",\"name\":\"Slack\",\"description\":\"Send Slack messages and read channel history\"}]"
+  },
+  "expected": {
+    "intent_detected": true,
+    "suggestions": [
+      {
+        "id": "linear-mcp",
+        "name": "Linear",
+        "reason": "Connect Linear to file the staging-crash issue the user just asked about.",
+        "confidence": 0.95
+      }
+    ]
+  },
+  "notes": "Direct capability gap — user named the tool, assistant confirmed it's missing. High-confidence single suggestion. GitHub is NOT a suggestion because the user named Linear specifically."
+}

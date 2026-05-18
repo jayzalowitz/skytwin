@@ -1,5 +1,23 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.50.0] - 2026-05-18
+
+### Added
+
+- **`capability-install-suggestion` prompt + endpoint + browser wiring (closes #322).** New prompt at `packages/policy-prompts/prompts/capability-install-suggestion/v1.md` with schema + 3 eval fixtures (clear-install-intent, policy-refusal-not-capability-gap, already-have-tool). The prompt is the explicit MIRROR of `reverse-capability-intent`: that one picks from already-installed capabilities to route a known intent; this one picks from the UNINSTALLED registry to suggest what would unblock a refused user request. Two separate prompts is the right call — the existing `reverse-capability-intent` template, frontmatter, and all 3 of its fixtures explicitly assume "if no installed match, return empty" semantics, which is exactly the failure case `capability-install-suggestion` needs to invert.
+- **New endpoint `POST /api/assistant/install-suggestion`.** Takes `{ userMessage, assistantReply }`; returns `{ intentDetected, suggestions: [{ registryId, displayName, reason, confidence }], reason? }`. Resolves the user's installed-capability set (excluded from suggestions) + the full registry (the allowed candidate set), runs the prompt, applies a belt-and-suspenders filter to drop any installed-capability suggestion that leaked through, and translates snake_case prompt output → camelCase boundary response. Falls back to `{ intentDetected: false, reason: 'no_llm_configured' }` when the user has no AI provider configured OR when the prompt invocation throws — the browser uses this signal to fall back to its keyword heuristic.
+- **Browser wiring in `assistant.js`.** `checkReverseCapabilityFlow` now calls the LLM endpoint first. On `intentDetected: true` with confidence >= 0.5, renders the model's suggestions (each as a "Connect X" button with the prompt's `reason` as the tooltip). On `reason: 'no_llm_configured'` or fetch failure, falls back to the existing keyword + service-name-hint heuristic (`runHeuristicReverseCapability`) — demo flows still work without an provider. On `intentDetected: false` from the prompt (e.g. policy refusal, no clear capability gap), renders nothing and does NOT fall through to the heuristic, which would force a keyword match where the prompt explicitly said "none."
+- **Test coverage:** 7 new tests in `assistant-install-suggestion.test.ts` pin: 400s on missing inputs; no_llm_configured shape when no providers; LLM happy path with snake_case→camelCase translation; belt-and-suspenders filter for installed-capability leakage; deterministic-fallback path; fail-soft on `runPrompt` throw.
+
+### Why a new prompt instead of repurposing `reverse-capability-intent`
+
+The existing prompt's template body says "Installed capabilities: {{installed_capabilities}}" with the system message "which installed capabilities can fulfill it" and the constraint "Return empty candidate_capabilities array if no installed capability matches." All 3 of its eval fixtures verify the "empty result when nothing installed matches" behavior. The `capability-install-suggestion` use case needs the OPPOSITE — when nothing installed matches, suggest something to install. Repurposing would force rewriting the template, the constraints, AND all 3 fixtures; that's a rewrite wearing the costume of a refactor. A sibling prompt with its own fixtures keeps each prompt's intent + invariants self-evident and lets the existing `reverse-capability-intent` consumer (the capability-engine's clarification flow) stay untouched.
+
+### Backward compatibility
+
+- Heuristic fallback path is unchanged in behavior — the legacy keyword scan + 9-entry service-name hint table still runs when no LLM is configured or the fetch fails. Demo flows without an LLM provider continue to work.
+- TODO(#306) markers in `assistant.js` removed.
+
 ## [0.6.49.0] - 2026-05-18
 
 ### Added

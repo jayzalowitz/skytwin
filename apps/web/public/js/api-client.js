@@ -717,6 +717,22 @@ export function snoozeCapabilitySuggestion(id, userId, untilDays = 7) {
   });
 }
 
+/**
+ * #322: ask the server which uninstalled registry capability would unblock
+ * an assistant reply that exposed a capability gap. Returns
+ * `{ intentDetected, suggestions: [{registryId, displayName, reason, confidence}], reason? }`.
+ *
+ * When the user has no LLM configured, the server returns
+ * `{ intentDetected: false, suggestions: [], reason: 'no_llm_configured' }`
+ * — the caller should fall back to its keyword heuristic.
+ */
+export function requestInstallSuggestion(userId, userMessage, assistantReply) {
+  return fetchJSON(`${API}/assistant/install-suggestion?userId=${encodeURIComponent(userId)}`, {
+    method: 'POST',
+    body: JSON.stringify({ userMessage, assistantReply }),
+  });
+}
+
 export function searchCapabilityRegistry(userId, q = '', category = '') {
   const params = new URLSearchParams({ userId });
   if (q) params.set('q', q);

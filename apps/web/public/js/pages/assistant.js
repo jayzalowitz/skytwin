@@ -5,6 +5,7 @@ import {
   sendAssistantMessageStream,
   searchCapabilityRegistry,
   installCapability,
+  requestInstallSuggestion,
   escapeHtml,
   renderApiError,
   wireApiRetry,
@@ -344,20 +345,22 @@ function renderError(err) {
   });
 }
 
-// ── Reverse capability flow (issue #177) ─────────────────────────────────────
+// ── Reverse capability flow (issue #177, LLM path landed in #322) ───────────
 //
-// v1 heuristic-based detector: after the assistant responds, scan the reply
-// for unfulfillable-intent phrases. If found, search the registry for matching
-// capabilities and surface an inline "Connect X to enable this" affordance.
-//
-// TODO(#306): Replace the heuristic with `runPrompt('reverse-capability-intent', context)`.
-// The one-line swap-in: `const intent = await runPrompt('reverse-capability-intent', { userMessage, reply });`
-// then use intent.registryId directly instead of the keyword scan below.
-//
-// Demo flows that work with the heuristic:
-//   1. "create a Linear issue"   → no Linear installed → "Connect Linear"
-//   2. "search Notion for X"     → no Notion          → "Connect Notion"
-//   3. "check my GitHub PRs"     → no GitHub          → "Connect GitHub"
+// Two-tier flow:
+//   1. LLM path (preferred) — POST /api/assistant/install-suggestion runs
+//      the `capability-install-suggestion` prompt over the user's full
+//      uninstalled registry. Returns concrete `{ registryId, displayName,
+//      reason, confidence }[]` with model-judged suggestions and
+//      "this is a capability gap" vs "this is a policy refusal /
+//      not-a-tool-action" disambiguation built into the prompt.
+//   2. Heuristic fallback — when the server signals `no_llm_configured`
+//      (the user hasn't set up any AI provider), OR when the fetch
+//      itself fails, fall through to the keyword scan + service-name
+//      hint table below. Demo flows still work without an LLM:
+//        - "create a Linear issue"   → no Linear installed → "Connect Linear"
+//        - "search Notion for X"     → no Notion          → "Connect Notion"
+//        - "check my GitHub PRs"     → no GitHub          → "Connect GitHub"
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Phrases that indicate the assistant couldn't fulfill the request. */
@@ -424,47 +427,105 @@ function detectServiceHints(userMessage) {
  * @param {string} replyText    - the assistant's full reply text
  * @param {HTMLElement} container
  */
-async function checkReverseCapabilityFlow(userMessage, replyText, container) {
-  try {
-    if (!detectUnfulfillableReply(replyText)) return;
+/**
+ * Render the install-suggestion affordances into the assistant message
+ * region. Used by both the LLM path (one or more concrete suggestions
+ * with `reason` strings) and the heuristic fallback (registry IDs with
+ * just a display name). The lead-in copy adapts based on whether the
+ * caller provided per-suggestion reasons.
+ */
+function renderInstallAffordances(suggestions, container, leadIn) {
+  if (suggestions.length === 0) return;
+  const msgRegion = container.querySelector('[data-region="messages"]');
+  if (!msgRegion) return;
 
-    const hints = detectServiceHints(userMessage);
-    if (hints.length === 0) {
-      // Fall back to registry search with the user's message as query
-      // TODO(#306): replace with runPrompt('reverse-capability-intent', ...)
-      return;
-    }
+  const existing = msgRegion.querySelector('.reverse-capability-affordance');
+  if (existing) existing.remove();
 
-    const affordances = hints.map((h) => `
+  const buttons = suggestions
+    .map((s) => `
       <button class="btn btn-sm btn-outline"
               data-action="reverse-capability-install"
-              data-registry-id="${escapeHtml(h.registryId)}"
-              data-display-name="${escapeHtml(h.displayName)}"
+              data-registry-id="${escapeHtml(s.registryId)}"
+              data-display-name="${escapeHtml(s.displayName)}"
+              title="${s.reason ? escapeHtml(s.reason) : ''}"
               style="font-size: 0.82rem;">
-        Connect ${escapeHtml(h.displayName)}
+        Connect ${escapeHtml(s.displayName)}
       </button>
-    `).join('');
+    `)
+    .join('');
 
-    // Append the inline suggestion below the last assistant bubble
-    const msgRegion = container.querySelector('[data-region="messages"]');
-    if (!msgRegion) return;
+  const affordanceEl = document.createElement('div');
+  affordanceEl.className =
+    'reverse-capability-affordance assistant-bubble assistant-bubble-assistant';
+  affordanceEl.style.cssText =
+    'display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; padding: 0.6rem 1rem;';
+  affordanceEl.innerHTML = `
+    <span style="font-size: 0.82rem; color: var(--text-dim); flex-basis: 100%; margin-bottom: 0.25rem;">
+      ${escapeHtml(leadIn)}
+    </span>
+    ${buttons}
+  `;
+  msgRegion.appendChild(affordanceEl);
+  msgRegion.scrollTop = msgRegion.scrollHeight;
+}
 
-    const existing = msgRegion.querySelector('.reverse-capability-affordance');
-    if (existing) existing.remove();
+/**
+ * Heuristic fallback (legacy): keyword scan + service-name hint table.
+ * Used when the LLM endpoint signals `no_llm_configured` OR when the
+ * fetch itself fails. Same shape as the original v1 detector, lifted
+ * unchanged so demo flows keep working without an LLM provider.
+ */
+function runHeuristicReverseCapability(userMessage, replyText, container) {
+  if (!detectUnfulfillableReply(replyText)) return;
+  const hints = detectServiceHints(userMessage);
+  if (hints.length === 0) return;
+  renderInstallAffordances(
+    hints.map((h) => ({
+      registryId: h.registryId,
+      displayName: h.displayName,
+      reason: '',
+    })),
+    container,
+    'I can do this if you connect:',
+  );
+}
 
-    const affordanceEl = document.createElement('div');
-    affordanceEl.className = 'reverse-capability-affordance assistant-bubble assistant-bubble-assistant';
-    affordanceEl.style.cssText = 'display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; padding: 0.6rem 1rem;';
-    affordanceEl.innerHTML = `
-      <span style="font-size: 0.82rem; color: var(--text-dim); flex-basis: 100%; margin-bottom: 0.25rem;">
-        I can do this if you connect:
-      </span>
-      ${affordances}
-    `;
-    msgRegion.appendChild(affordanceEl);
-    msgRegion.scrollTop = msgRegion.scrollHeight;
+async function checkReverseCapabilityFlow(userMessage, replyText, container) {
+  const userId = localStorage.getItem(KEY_USER_ID) || _state.userId || '';
+  if (!userId) return;
+
+  try {
+    // #322: LLM path first. The server-side prompt has richer
+    // disambiguation (policy refusal vs capability gap vs already-have-
+    // tool) and picks from the full registry, not a 9-entry hardcoded
+    // hint table. Confidence-gated to >=0.5 so low-confidence guesses
+    // don't surface as "Connect X" buttons that lead nowhere useful.
+    const result = await requestInstallSuggestion(userId, userMessage, replyText);
+    if (result?.reason === 'no_llm_configured') {
+      runHeuristicReverseCapability(userMessage, replyText, container);
+      return;
+    }
+    if (!result?.intentDetected) {
+      // Honest "no capability gap here" answer from the prompt.
+      // Don't render anything — and don't fall through to the
+      // heuristic, which would force-render based on keyword match.
+      return;
+    }
+    const suggestions = (result.suggestions ?? [])
+      .filter((s) => s && typeof s.confidence === 'number' && s.confidence >= 0.5)
+      .slice(0, 3);
+    if (suggestions.length === 0) return;
+    renderInstallAffordances(suggestions, container, 'I can do this if you connect:');
   } catch {
-    // Reverse flow is best-effort — never surface errors from this path
+    // Fetch failed (offline, 5xx, network). Fall back to the
+    // heuristic — better to show keyword-match affordances than
+    // nothing at all when the user is mid-conversation.
+    try {
+      runHeuristicReverseCapability(userMessage, replyText, container);
+    } catch {
+      // Reverse flow is best-effort end-to-end — never surface errors.
+    }
   }
 }
 
