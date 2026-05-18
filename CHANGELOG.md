@@ -1,5 +1,42 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.52.0] - 2026-05-18
+
+### Changed
+
+- **Floor-ratio gate sync with gbrain v0.35.6.0 / PR #1129.** Our contribution to upstream gbrain (PR #1091) was closed in favor of a reworked shape that landed yesterday as #1129. The merged version kept the empirical motivation, the dense-embedder targeting, and the `0.85` starting value from our SkyTwin labeled-retrieval ablation, but the codex outside-voice review caught three defensive gaps in our original shape. This PR ports those fixes into our additive tier-weight implementation in `packages/memory-gbrain-crdb-adapter/src/rrf.ts` and aligns the option naming with upstream `SearchOpts.floorRatio` / `search.floor_ratio`.
+
+### What got hardened
+
+- **No-positive-signal inputs now disable the gate, not silently reject everything.** Our prior `topRawScore = 0` init meant if every entry's `rrfScore` was negative (rare but possible — already-bonused results re-folded, or scoring path that emits negatives), `threshold = 0` and every entry failed `r.score < 0`. Top itself would be gated out. New behavior: `computeFloorThreshold` returns `Number.NEGATIVE_INFINITY` for all-negative, all-NaN, or empty inputs — the gate disables, matching upstream `computeFloorThreshold` semantics.
+- **Out-of-range `floorRatio` values silently disable the gate.** NaN, Infinity, negative, or `> 1` now return `-Infinity` from the threshold helper. Defense in depth so a malformed config value never gates anything. The `floorRatio: 0` case stays legitimate (zero is a valid in-range value meaning "no real gate").
+- **NaN-score skip in the bonus loop.** `NaN < threshold` is `false` in JS, so a NaN-scored hit would slip past `hit.rrfScore < threshold` and then have a bonus added on top — poisoning the sort. Now an explicit `Number.isFinite(hit.rrfScore)` check skips the bonus stage for non-finite scores; they keep their non-finite value and sort to the end.
+
+### Option naming
+
+- `RrfFoldOptions.tierWeightFloorRatio` → `RrfFoldOptions.floorRatio` for naming parity with upstream `SearchOpts.floorRatio`. `tierWeightFloorRatio` is preserved as a deprecated alias; `floorRatio` wins when both are set. No call sites in this repo set it today, so the deprecated path exists purely to insulate any external consumer of `@skytwin/memory-gbrain-crdb-adapter`.
+- New exports from `@skytwin/memory-gbrain-crdb-adapter`: `computeFloorThreshold(entries, floorRatio)` and `DEFAULT_FLOOR_RATIO` (`0.85`). The helper mirrors gbrain's `computeFloorThreshold` shape so future cross-port refactors can use one mental model.
+
+### What's NOT in scope
+
+- **CLI shellout `--floor-ratio` pass-through.** `GbrainMemoryPort` still doesn't surface a per-call flag. Users who run an external gbrain CLI can `gbrain config set search.floor_ratio 0.85` globally; adding a per-call plumb requires deciding what option the `MemoryPort` contract should carry, and that's a separate API decision.
+- **Surfacing `floorRatio` on `SearchSemanticOptions`.** The default 0.85 stays the only knob most callers should ever need. Exposing it on the read API would invite tuning churn without an ablation surface to validate against. Deferred until a real consumer needs it.
+- **`MODE_BUNDLES.floor_ratio`** equivalent for SkyTwin. We don't have search modes; the gate is always on by default in the additive tier-weight path. The upstream mode bundles are an orthogonal concept.
+
+### Tests
+
+- 12 new test cases in `packages/memory-gbrain-crdb-adapter/src/__tests__/rrf.test.ts`: `computeFloorThreshold` defensive guards (undefined / out-of-range / NaN / Infinity / empty / negative-top / all-NaN / mixed), floorRatio precedence over deprecated `tierWeightFloorRatio`, back-compat alias still respected, and the strong-vs-tail RRF construction that actually exercises the gate (RRF flatness means rank-1 vs rank-2 don't differ enough — you need rank-20+ in a single list to push under 0.85 × top).
+- All 130 RRF tests pass (was 116). All 100 `@skytwin/memory-gbrain` tests pass — the realistic-retrieval ablation still reports `mean R@5 1.000 pure-RRF / 0.929 tier-on`, unchanged by the rename.
+
+### Upstream feature triage (filed for follow-up)
+
+Surveyed recent gbrain releases for adoption candidates. Punch list:
+
+- **#897 v0.33.2.0 search-lite (token budget + semantic query cache + intent weighting)** — pursue first. Token budget directly addresses Claude API token-limit pressure; ~2 days to port across embedded port + cache table behind a flag.
+- **#1008 v0.35.0.0 zerank-2 reranker** — pursue second. Slots cleanly between RRF fold and tier-weight bonus; ~1.5 days. zembed-1 embeddings are a sidegrade at our scale — skip.
+- **#996 v0.34.1.0 federated_read** — skip. One brain per user, inapplicable.
+- **#1131 v0.35.7.0 temporal trajectory + founder scorecard** — defer. Entity-time-series shape, not what our personal signals carry today.
+
 ## [0.6.51.0] - 2026-05-18
 
 ### Added

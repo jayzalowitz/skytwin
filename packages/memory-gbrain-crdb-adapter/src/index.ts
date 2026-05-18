@@ -31,7 +31,7 @@ export {
 } from './embedding.js';
 export type { EmbeddingProvider, OpenAiEmbeddingOptions } from './embedding.js';
 
-export { rrfFold } from './rrf.js';
+export { rrfFold, computeFloorThreshold, DEFAULT_FLOOR_RATIO } from './rrf.js';
 export type { TierWeightFn, RrfFoldOptions } from './rrf.js';
 
 export {
