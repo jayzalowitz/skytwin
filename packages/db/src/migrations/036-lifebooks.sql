@@ -22,6 +22,10 @@ CREATE TABLE IF NOT EXISTS lifebooks (
   detected_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   hidden_at TIMESTAMPTZ,
+  -- #321 importance-override ceremony. JSONB instead of a typed column
+  -- so future per-Lifebook state lands without another migration.
+  -- Added by migration 056.
+  metadata JSONB NOT NULL DEFAULT '{}',
   UNIQUE (user_id, domain_name)
 );
 

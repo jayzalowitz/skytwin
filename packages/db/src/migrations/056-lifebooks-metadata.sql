@@ -1,0 +1,36 @@
+-- 056-lifebooks-metadata.sql
+-- Add `metadata JSONB` to `lifebooks` for the #321 importance-override
+-- ceremony.
+--
+-- Background. The domain-extraction worker runs weekly and unconditionally
+-- overwrites `importance` from the LLM's pick. That works for the
+-- automatic case but ignores the user's own taste: "actually, Aging
+-- Parents is the most important thing right now, treat it as core."
+-- #321 adds a per-Lifebook manual override that the worker respects
+-- for a configurable window (default 90 days), after which the worker
+-- resumes computing importance automatically.
+--
+-- `metadata` is a generic JSONB column rather than a typed
+-- `importance_override` column so future per-Lifebook state can land
+-- here without another migration. Shape today:
+--
+--   metadata = {
+--     "importanceOverride"?: {
+--       "value": "core" | "secondary" | "emerging",
+--       "setAt": ISO8601 timestamp,
+--       "decayDays": number   // 90 by default; 0 = never decay until cleared
+--     }
+--   }
+--
+-- The override is consumed in two places (both shipped in this PR):
+--   1. `lifebookRepository.upsert` — when called by the extraction
+--      worker, the SET clause skips overwriting `importance` if a
+--      fresh override exists. Implemented in SQL via CASE so the
+--      worker doesn't have to fetch-then-write (race-free).
+--   2. New `POST /api/lifebooks/:userId/:domainName/importance` route
+--      writes the override + records an episode in mempalace so the
+--      twin remembers ("user promoted Aging Parents on 2026-05-17").
+--
+-- NOT NULL DEFAULT '{}' — existing rows get an empty object; the override
+-- field is optional within the JSON.
+ALTER TABLE lifebooks ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}';
