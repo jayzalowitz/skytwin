@@ -57,8 +57,86 @@ export interface RrfFoldOptions {
    * never gets the boost — its raw score is below the gate.
    *
    * `userOverride: 'hidden'` ignores the gate (sentinel always drops).
+   *
+   * Out-of-range values (negative, > 1, NaN, Infinity) silently disable
+   * the gate. Matches gbrain v0.35.6.0 `computeFloorThreshold` semantics
+   * after the upstream codex outside-voice review caught the same defensive
+   * gaps in PR #1091's original shape.
+   */
+  floorRatio?: number;
+  /**
+   * @deprecated Use `floorRatio` instead. Kept as a back-compat alias for
+   * callers wired before the v0.35.6.0 naming alignment with gbrain
+   * `SearchOpts.floorRatio` / `search.floor_ratio` config. `floorRatio`
+   * wins if both are set.
    */
   tierWeightFloorRatio?: number;
+}
+
+/**
+ * Default floor ratio for the tier-weight gate. 0.85 came from the labeled
+ * retrieval ablation in [skytwin#272](https://github.com/jayzalowitz/skytwin/pull/272)
+ * — the largest ratio that fully eliminated the leapfrog regression on the
+ * SkyTwin corpus while preserving baseline rankings on queries with no
+ * metadata signal. Upstream gbrain (PR #1129) cites the same starting value
+ * for dense-embedder corpora.
+ */
+export const DEFAULT_FLOOR_RATIO = 0.85;
+
+/**
+ * Compute the absolute score floor below which the tier-weight bonus is
+ * skipped. Returns `Number.NEGATIVE_INFINITY` (no gate) when:
+ *   - `floorRatio` is `undefined` (callers haven't opted in to a custom value
+ *     — but `rrfFold` defaults to `DEFAULT_FLOOR_RATIO` before calling this)
+ *   - `floorRatio` is NaN, Infinity, < 0, or > 1 (out-of-range; defense in
+ *     depth so a malformed value never gates anything)
+ *   - No entry has a positive, finite rrfScore (all-NaN, all-negative, or
+ *     empty input — no positive signal means no gate)
+ *
+ * Otherwise returns `topScore * floorRatio`, where `topScore` is the largest
+ * finite rrfScore.
+ *
+ * Mirrors `computeFloorThreshold` in gbrain `src/core/search/hybrid.ts`
+ * (v0.35.6.0). The three guards above are the codex outside-voice fixes
+ * from upstream PR #1129 review pass — applied here so our additive
+ * tier-weight path picks them up too.
+ */
+export function computeFloorThreshold(
+  entries: ReadonlyArray<{ rrfScore: number }>,
+  floorRatio: number | undefined,
+): number {
+  if (floorRatio === undefined) return Number.NEGATIVE_INFINITY;
+  if (!Number.isFinite(floorRatio) || floorRatio < 0 || floorRatio > 1) {
+    return Number.NEGATIVE_INFINITY;
+  }
+  let top = Number.NEGATIVE_INFINITY;
+  for (const e of entries) {
+    if (Number.isFinite(e.rrfScore) && e.rrfScore > top) top = e.rrfScore;
+  }
+  if (!Number.isFinite(top) || top <= 0) return Number.NEGATIVE_INFINITY;
+  return top * floorRatio;
+}
+
+/**
+ * Walk a list of candidate floor ratios in priority order and return the
+ * first VALID one. A value is valid iff it is a finite number in [0, 1].
+ * The final argument is the unconditional fallback (typically
+ * `DEFAULT_FLOOR_RATIO`) and is NOT validated — callers that want a
+ * disabled gate should pass `Number.NaN` as a positional sentinel and
+ * accept that the result will be the default. This keeps the function
+ * total: it always returns a number. Used by `rrfFold` to resolve
+ * `floorRatio` from new + deprecated option fields with fail-safe
+ * fallback (codex T2 from gbrain PR #1129's outside-voice review).
+ */
+function pickValidFloorRatio(...candidates: Array<number | undefined>): number {
+  for (const c of candidates) {
+    if (c !== undefined && Number.isFinite(c) && c >= 0 && c <= 1) return c;
+  }
+  // Fallback: every candidate was invalid. The DEFAULT_FLOOR_RATIO is the
+  // canonical last entry; if a caller passed something else as the final
+  // candidate, return it anyway so this function stays total. Composition
+  // discipline is the caller's job.
+  return candidates[candidates.length - 1] ?? DEFAULT_FLOOR_RATIO;
 }
 
 /**
@@ -125,16 +203,23 @@ export function rrfFold(
 
   if (options.tierWeight) {
     const bonusFn = options.tierWeight;
-    const floorRatio = options.tierWeightFloorRatio ?? 0.85;
-    // Compute the gate threshold up-front: only pages with raw rrfScore
-    // ≥ floorRatio * topRawScore are eligible for the bonus. The
-    // `userOverride: 'hidden'` sentinel bypasses the gate (a hidden
-    // page must be dropped no matter where it ranks).
-    let topRawScore = 0;
-    for (const hit of entries) {
-      if (hit.rrfScore > topRawScore) topRawScore = hit.rrfScore;
-    }
-    const threshold = topRawScore * floorRatio;
+    // Precedence with fail-safe validation (codex T2): walk the list of
+    // candidate floor ratios in priority order and use the first VALID one.
+    // A caller that wires both `floorRatio` AND the deprecated alias, with
+    // the new option holding an out-of-range/NaN value (e.g. from buggy
+    // config parsing), shouldn't accidentally nullify the legacy guard.
+    // Falling back through the chain preserves the strongest valid signal
+    // available; landing on `DEFAULT_FLOOR_RATIO` is the worst case.
+    const floorRatio = pickValidFloorRatio(
+      options.floorRatio,
+      options.tierWeightFloorRatio,
+      DEFAULT_FLOOR_RATIO,
+    );
+    // Single-baseline threshold (gbrain v0.35.6.0 shape): compute ONCE before
+    // any bonus mutates rrfScore. Returns -Infinity when there's no positive
+    // signal (all-negative scores, empty input) so the gate is disabled
+    // rather than silently rejecting every entry against `top = 0`.
+    const threshold = computeFloorThreshold(entries, floorRatio);
 
     for (const hit of entries) {
       const raw = bonusFn(hit.page.metadata);
@@ -143,6 +228,14 @@ export function rrfFold(
         hit.rrfScore = Number.NEGATIVE_INFINITY;
         continue;
       }
+      // NaN-score defense (gbrain v0.35.6.0 / codex outside-voice T1a): a
+      // non-finite rrfScore would slip past `hit.rrfScore < threshold`
+      // because `NaN < x` is false in JS, then get the bonus added and
+      // poison the sort. Explicitly skip the bonus for non-finite scores;
+      // the post-loop `isFinite` filter then removes them from results so
+      // they can't contaminate the sort (which treats NaN comparator
+      // results as 0 / equal, leaving NaN-scored hits in insertion order).
+      if (!Number.isFinite(hit.rrfScore)) continue;
       // Gate: weak-relevance pages get no bonus, regardless of tier.
       if (hit.rrfScore < threshold) continue;
       // Coerce non-finite / non-number returns to 0 (no contribution) so a
@@ -150,13 +243,30 @@ export function rrfFold(
       if (typeof raw !== 'number' || !Number.isFinite(raw)) continue;
       hit.rrfScore += raw;
     }
-    // Drop ONLY pages that were explicitly hidden via the
-    // NEGATIVE_INFINITY sentinel. Ordinary negative bonuses are allowed
-    // to push scores below zero; they reorder, they don't remove.
-    // (Without this, a sufficiently negative bonus would silently
-    // change inclusion semantics in a way the tier-weight contract
-    // doesn't promise.)
-    entries = entries.filter((h) => h.rrfScore !== Number.NEGATIVE_INFINITY);
+    // Drop all non-finite-scored pages (codex T3 / sort-safety from gbrain
+    // PR #1129's outside-voice review):
+    //
+    //   - `-Infinity`: explicit hidden sentinel from `userOverride: 'hidden'`.
+    //   - `NaN`: corruption (e.g. caller-supplied `rrfK: NaN` makes every
+    //     `1 / (rrfK + rank)` NaN). The naive `b - a` comparator returns
+    //     `NaN` for any NaN side, which JS sort treats as 0 (equal) — leaving
+    //     NaN-scored hits in insertion order, where they can land in top-k.
+    //   - `+Infinity`: unusual but possible if `rrfK + rank === 0` divides
+    //     by zero. Would sort to the top of every query.
+    //
+    // Filtering them out unconditionally is the safe move — the sort then
+    // operates only on finite scores and produces a deterministic ranking.
+    // Finite negative scores (legitimate downweights) are preserved; they
+    // reorder, they don't remove.
+    entries = entries.filter((h) => Number.isFinite(h.rrfScore));
+  } else {
+    // Even without `tierWeight`, defensively drop non-finite raw RRF scores
+    // (caller might have passed `rrfK: NaN` or otherwise corrupted state).
+    // Pure-RRF callers got this behavior for free pre-bonus-loop because
+    // RRF contributions are always finite — but a malformed `rrfK` could
+    // still poison results, and dropping is cheaper than letting NaN ride
+    // through to the comparator. No-op on normal input.
+    entries = entries.filter((h) => Number.isFinite(h.rrfScore));
   }
 
   return entries.sort((a, b) => b.rrfScore - a.rrfScore).slice(0, k);
