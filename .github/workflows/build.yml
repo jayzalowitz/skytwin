@@ -48,6 +48,7 @@ jobs:
               - 'apps/mobile/**'
               - 'pnpm-lock.yaml'
               - 'package.json'
+              - 'turbo.json'
               - '.github/workflows/build.yml'
 
   # ──────────────────────────────────────────────
