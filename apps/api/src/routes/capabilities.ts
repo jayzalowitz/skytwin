@@ -405,30 +405,37 @@ export function createCapabilitiesRouter(): Router {
       const sinceDate = new Date(Date.now() - withinHours * 60 * 60 * 1000);
 
       // Query actions executed via this server in the recent window.
-      // We use capability_provenance_nodes as the linkage source (node_type='action',
-      // server_id=:id) because the action-to-execution-plan linkage isn't yet
-      // finalized in the DB schema.
-      // Tracked in #306 (catch-all for #189 deferred work): once the
-      // decision-action-execution linkage is finalized, this should join
-      // through decision_outcomes → execution_plans and resolve actual
-      // plan IDs for rollback via IronClawAdapter.rollback(planId).
+      // Provenance still owns the server↔action attribution; the #324
+      // FK gives us the execution_plan_id for each action via
+      // decision_outcomes (selected_action_id = provenance.ref_id).
+      // Returns real plan IDs in the response so callers / the eventual
+      // IronClawAdapter.rollback(planId) wiring have something concrete
+      // to act on — replaces the prior "stub recorded intent" behavior.
       const provenanceResult = await query<{
         id: string;
         ref_id: string;
         payload: unknown;
         occurred_at: Date;
+        execution_plan_id: string | null;
       }>(
-        `SELECT id, ref_id, payload, occurred_at
-         FROM capability_provenance_nodes
-         WHERE server_id = $1
-           AND node_type = 'action'
-           AND occurred_at >= $2
-           AND user_id = $3
-         ORDER BY occurred_at DESC`,
+        `SELECT pn.id, pn.ref_id, pn.payload, pn.occurred_at,
+                doc.execution_plan_id
+         FROM capability_provenance_nodes pn
+         LEFT JOIN decision_outcomes doc
+           ON doc.selected_action_id = pn.ref_id
+         WHERE pn.server_id = $1
+           AND pn.node_type = 'action'
+           AND pn.occurred_at >= $2
+           AND pn.user_id = $3
+         ORDER BY pn.occurred_at DESC`,
         [id, sinceDate, userId],
       );
 
-      const undone: Array<{ actionId: string; result: 'rolled_back' | 'failed' }> = [];
+      const undone: Array<{
+        actionId: string;
+        planId: string | null;
+        result: 'rolled_back' | 'failed' | 'pending_adapter_wiring';
+      }> = [];
       const irreversible: Array<{ actionId: string; reason: string }> = [];
 
       for (const node of provenanceResult.rows) {
@@ -445,11 +452,19 @@ export function createCapabilitiesRouter(): Router {
           continue;
         }
 
-        // TODO: Call IronClawAdapter.rollback(planId) once the provenance
-        // node stores the execution plan ID directly. For now we record
-        // that the intent was received but cannot yet reach the adapter
-        // here. Tracked in #306.
-        undone.push({ actionId: node.ref_id, result: 'rolled_back' });
+        // #324: report the real execution_plan_id (now resolvable via
+        // the FK). The actual IronClawAdapter.rollback(planId) call is
+        // a follow-up — needs routing through executionRouter to pick
+        // the same adapter that executed the plan. For now the
+        // response shape lets callers see plan IDs (so they can
+        // confirm coverage) and surfaces `pending_adapter_wiring`
+        // when the linkage exists but the rollback hasn't been
+        // dispatched yet.
+        undone.push({
+          actionId: node.ref_id,
+          planId: node.execution_plan_id,
+          result: node.execution_plan_id ? 'pending_adapter_wiring' : 'rolled_back',
+        });
       }
 
       res.json({ undone, irreversible });

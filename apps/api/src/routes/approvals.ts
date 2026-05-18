@@ -477,6 +477,21 @@ export function createApprovalsRouter(): Router {
               ],
             );
 
+            // #324: link the decision's outcome to the plan we just
+            // created. Same-transaction guarantee: either both the
+            // plan + linkage land, or neither do. `WHERE
+            // execution_plan_id IS NULL` matches the executionRepository
+            // semantics — the FIRST plan for a decision wins the link.
+            // Retry-after-rejection cases (rare) would create a second
+            // plan; the original outcome's link stays put.
+            await client.query(
+              `UPDATE decision_outcomes
+                 SET execution_plan_id = $1
+               WHERE decision_id = $2
+                 AND execution_plan_id IS NULL`,
+              [plan.id, approval.decision_id],
+            );
+
             return plan;
           });
 
@@ -505,6 +520,18 @@ export function createApprovalsRouter(): Router {
                 `INSERT INTO execution_results (id, plan_id, success, outputs, error, rollback_available, completed_at)
                  VALUES (gen_random_uuid(), $1, false, '{}', $2, $3, now())`,
                 [plan.id, errMsg, candidateAction.reversible],
+              );
+              // #324: link even failed plans so the outcome's
+              // `execution_plan_id` is populated. The rollback site
+              // still reads `success` from `execution_results` before
+              // attempting rollback, so a failed plan link doesn't
+              // accidentally trigger rollback of nothing.
+              await client.query(
+                `UPDATE decision_outcomes
+                   SET execution_plan_id = $1
+                 WHERE decision_id = $2
+                   AND execution_plan_id IS NULL`,
+                [plan.id, approval.decision_id],
               );
               return plan;
             });

@@ -126,6 +126,16 @@ export interface DecisionOutcomeRow {
   explanation: string;
   confidence: number;
   created_at: Date;
+  /**
+   * Structural FK to the execution plan that this outcome produced
+   * (#324). NULL when the outcome is approval-pending (the plan
+   * doesn't exist yet) or when the action was rejected outright.
+   * Populated by `executionRepository.createPlan` after the plan row
+   * inserts. Migration 055 backfills existing rows from
+   * `execution_plans` joined on `decision_id` (latest plan wins for
+   * the rare retry case).
+   */
+  execution_plan_id: string | null;
 }
 
 // ============================================================================

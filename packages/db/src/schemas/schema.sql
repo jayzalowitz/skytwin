@@ -137,7 +137,13 @@ CREATE TABLE IF NOT EXISTS decision_outcomes (
   escalation_reason STRING,
   explanation STRING NOT NULL,
   confidence FLOAT NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- #324 structural linkage to the execution plan this outcome produced.
+  -- NULL until the plan inserts (approval-pending outcomes have no
+  -- plan yet); populated by executionRepository.createPlan in the
+  -- same logical step that creates the plan row.
+  execution_plan_id UUID REFERENCES execution_plans(id),
+  INDEX (execution_plan_id) WHERE execution_plan_id IS NOT NULL
 );
 
 -- ============================================================================
