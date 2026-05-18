@@ -1,5 +1,15 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.46.0] - 2026-05-17
+
+### Removed
+
+- **Dropped `capability_recipes` table (closes #325).** Migration 027 created the table as a v1 vehicle for the static JSON recipes shipped in #181, with a comment noting it would become prompt-driven via #189. That migration happened: `packages/policy-prompts/prompts/recipe-recommendation/` is the live source (prompt + schema + 3 eval fixtures), and the capability-engine routes through `runPrompt('recipe-recommendation', ...)`. Full source audit confirms zero remaining references to the table outside its creation migration — no repository, no read site, no write site, no seed. Migration 053 (`DROP TABLE IF EXISTS capability_recipes`) makes the schema reflect the live behavior. The note on migration 027 is updated to point at 053 so the history reads cleanly on databases stamped pre-053.
+
+### Why this matters
+
+Dead schema is a paper cut every time someone reads `pnpm db:schema` output or wonders whether to wire a new feature into the table. Removing it makes the prompt-driven recipe path the only path, and removes the "is this still used?" question for the next person who touches the capability-engine. Decomposed out of #306 (closed today as a catch-all superseded by its 4 children).
+
 ## [0.6.45.0] - 2026-05-17
 
 ### Changed

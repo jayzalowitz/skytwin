@@ -1,0 +1,18 @@
+-- 053-drop-capability-recipes.sql
+-- Drop the `capability_recipes` table (#325, decomposed from #306).
+--
+-- Background. Migration 027 created `capability_recipes` as a v1 vehicle
+-- for the static JSON recipes shipped in #181 ("Developer pack", etc.).
+-- The same migration noted that recipes would become prompt-driven via
+-- #189 — and they did: `packages/policy-prompts/prompts/recipe-recommendation/`
+-- ships the prompt + schema + eval fixtures, and the capability-engine
+-- now consults the prompt rather than reading from the table.
+--
+-- Full code audit confirms zero remaining references:
+--   $ grep -rn "capability_recipes\|capabilityRecipes" packages/ apps/
+--   packages/db/src/migrations/027-capability-acquisition.sql   # table creation
+--   (no repository, no read site, no write site, no seed)
+--
+-- IF EXISTS — safe to re-run. CockroachDB returns 42P01 if the table is
+-- already gone; the migration runner swallows it as idempotent DDL.
+DROP TABLE IF EXISTS capability_recipes;
