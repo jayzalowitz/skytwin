@@ -1,0 +1,14 @@
+{
+  "inputs": {
+    "user_message": "Send a quick email to mom asking when she lands",
+    "assistant_reply": "I don't have access to your email client to send that for you right now. You'd need to give me a way to send mail.",
+    "installed_capabilities": "[{\"id\":\"gmail-mcp\",\"name\":\"Gmail\"}]",
+    "available_capabilities": "[{\"id\":\"linear-mcp\",\"name\":\"Linear\",\"description\":\"Create and manage Linear issues\"},{\"id\":\"@modelcontextprotocol/server-slack\",\"name\":\"Slack\",\"description\":\"Send Slack messages\"}]"
+  },
+  "expected": {
+    "intent_detected": false,
+    "suggestions": [],
+    "reason": "already_have_tool"
+  },
+  "notes": "Gmail IS already installed — the assistant's refusal is likely a permissions / config issue, not a missing capability. Returning Slack as a suggestion to send an email to mom would be absurd. Recognize that the only fitting tool is already installed and surface that instead."
+}

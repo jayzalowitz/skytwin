@@ -22,6 +22,7 @@ import {
   approvalRepository,
   assistantRepository,
   emailLabelRepository,
+  mcpServerRepository,
   mempalaceRepository,
   userRepository,
   TwinRepositoryAdapter,
@@ -30,6 +31,8 @@ import {
   explanationRepositoryAdapter,
   policyRepositoryAdapter,
 } from '@skytwin/db';
+import { runPrompt } from '@skytwin/policy-prompts';
+import { RegistryClient } from '@skytwin/registry-client';
 import { createLogger } from '@skytwin/core';
 
 import { sseManager } from '../sse.js';
@@ -916,6 +919,204 @@ export function createAssistantRouter(): Router {
         return;
       }
       res.json({ deleted: true });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  /**
+   * POST /api/assistant/install-suggestion
+   *
+   * Issue #322. The mirror of `/api/capabilities/reverse-capability-intent`:
+   * given a user message + the assistant's reply that just refused to act
+   * because a tool isn't installed, suggest which UNINSTALLED registry
+   * capabilities would unblock the next attempt. The chat UI calls this
+   * after an assistant reply to render "Connect X" affordances inline.
+   *
+   * Body: { userMessage: string, assistantReply: string }
+   * Returns: { intentDetected: boolean, suggestions: Array<{
+   *   registryId: string, displayName: string, reason: string, confidence: number
+   * }>, reason?: string }
+   *
+   * Adaptive path: runs the `capability-install-suggestion` prompt with the
+   * user's installed-capability list (excluded from suggestions) plus the
+   * full registry (allowed candidate set).
+   * Deterministic fallback: `{ intentDetected: false, suggestions: [],
+   * reason: 'no_llm_configured' }` — the browser falls through to its
+   * existing keyword heuristic when the response signals no LLM.
+   */
+  router.post('/install-suggestion', async (req, res, next) => {
+    try {
+      const userId: string | undefined =
+        (req as unknown as { user?: { id?: string } }).user?.id ??
+        (req.query['userId'] as string | undefined);
+      if (!userId) {
+        res.status(400).json({ error: 'userId is required' });
+        return;
+      }
+
+      const body = req.body as
+        | { userMessage?: unknown; assistantReply?: unknown }
+        | undefined;
+      if (
+        typeof body?.userMessage !== 'string' ||
+        !body.userMessage.trim() ||
+        typeof body?.assistantReply !== 'string' ||
+        !body.assistantReply.trim()
+      ) {
+        res
+          .status(400)
+          .json({ error: 'userMessage and assistantReply must be non-empty strings' });
+        return;
+      }
+      // Cap input size — protect the prompt budget from a direct API
+      // client posting megabytes of text. Mirrors the 16KB cap that
+      // `validateAssistantMessage` enforces on the chat path.
+      // Copilot caught the unbounded version.
+      const MAX_INPUT_BYTES = 16 * 1024;
+      if (
+        Buffer.byteLength(body.userMessage, 'utf8') > MAX_INPUT_BYTES ||
+        Buffer.byteLength(body.assistantReply, 'utf8') > MAX_INPUT_BYTES
+      ) {
+        res.status(413).json({
+          error: `userMessage and assistantReply each must be <= ${MAX_INPUT_BYTES} bytes`,
+        });
+        return;
+      }
+
+      const llmClient = await buildLlmClientForUser(userId);
+      if (!llmClient) {
+        // No LLM configured — browser falls through to its heuristic.
+        res.json({
+          intentDetected: false,
+          suggestions: [],
+          reason: 'no_llm_configured',
+        });
+        return;
+      }
+
+      // Build the prompt inputs:
+      //   - installed_capabilities: user's CURRENTLY-INSTALLED MCP
+      //     servers — anything they could actually use right now. Excludes
+      //     status='uninstalled' / 'failed' / 'discovered' (never wired
+      //     up). Those are eligible for a re-suggest if the prompt
+      //     decides they fit. Copilot caught the prior all-rows filter
+      //     as excluding previously-uninstalled capabilities forever.
+      //   - available_capabilities: the curated registry (the allowed
+      //     candidate set the prompt picks from)
+      // RegistryClient is a tiny in-process JSON read — no I/O cost.
+      const registry = new RegistryClient();
+      const [allRows, registryEntries] = await Promise.all([
+        mcpServerRepository.listForUser(userId),
+        registry.getAll(),
+      ]);
+
+      // "Installed" for the purpose of the prompt = the user could
+      // actually invoke the tool right now. Anything paused/dormant
+      // counts (they configured it; pausing is reversible). Anything
+      // explicitly uninstalled / never installed / failed does NOT
+      // count — the user might want to re-try those.
+      const NON_INSTALLED_STATUSES = new Set(['uninstalled', 'failed', 'discovered']);
+      const installedRows = allRows.filter(
+        (row) => !NON_INSTALLED_STATUSES.has(row.status),
+      );
+      const installedRegistryIds = new Set(
+        installedRows
+          .map((row) => row.registry_id)
+          .filter((id): id is string => typeof id === 'string' && id.length > 0),
+      );
+
+      // Project to the minimum shape the prompt needs.
+      const installed = installedRows.map((row) => ({
+        id: row.registry_id ?? '',
+        name: row.display_name,
+      }));
+      const available = registryEntries
+        // Don't include already-installed in the available set — the
+        // prompt's constraints already say "don't suggest installed"
+        // but giving the LLM only the eligible set keeps it focused
+        // and reduces the chance it hallucinates a no-installed reason.
+        .filter((entry) => !installedRegistryIds.has(entry.id))
+        .map((entry) => ({
+          id: entry.id,
+          name: entry.displayName,
+          description: entry.description ?? '',
+        }));
+      // Build a lookup set of the registry-allowed IDs so the response
+      // can drop any suggestion id the model hallucinated or that came
+      // from a prompt-injection attempt. Copilot caught the original
+      // version as trusting any schema-valid id.
+      const allowedSuggestionIds = new Set(available.map((entry) => entry.id));
+
+      // Template expects {{installed_capabilities}}, {{available_capabilities}},
+      // {{user_message}}, {{assistant_reply}}.
+      try {
+        const result = await runPrompt<{
+          intent_detected: boolean;
+          suggestions: Array<{
+            id: string;
+            name: string;
+            reason: string;
+            confidence: number;
+          }>;
+          reason?: string;
+        }>({
+          promptName: 'capability-install-suggestion',
+          inputs: {
+            installed_capabilities: installed,
+            available_capabilities: available,
+            user_message: body.userMessage,
+            assistant_reply: body.assistantReply,
+          },
+          user: { userId },
+          llmClient,
+        });
+
+        if (result.fellBackToDeterministic) {
+          res.json({
+            intentDetected: false,
+            suggestions: [],
+            reason: 'no_llm_configured',
+          });
+          return;
+        }
+
+        const out = result.output;
+        // Translate snake_case → camelCase at the boundary. The browser
+        // contract uses camelCase (matches the existing assistant.js
+        // patterns); the prompt's schema is snake_case to match the
+        // other prompts in this package.
+        res.json({
+          intentDetected: out.intent_detected === true,
+          suggestions: out.suggestions
+            // Drop anything the LLM hallucinated or that doesn't match
+            // a real registry entry. Suggestions whose id isn't in
+            // `allowedSuggestionIds` (the uninstalled-registry candidate
+            // set) cannot lead to a working install — render only the
+            // ones the install flow will actually accept. Also drops
+            // already-installed leakage (those ids never make it into
+            // `allowedSuggestionIds`).
+            .filter((s) => allowedSuggestionIds.has(s.id))
+            .map((s) => ({
+              registryId: s.id,
+              displayName: s.name,
+              reason: s.reason,
+              confidence: s.confidence,
+            })),
+          ...(typeof out.reason === 'string' ? { reason: out.reason } : {}),
+        });
+      } catch (err) {
+        log.warn('capability-install-suggestion prompt failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        // Fail-soft to the no-suggestion branch; browser heuristic
+        // covers user-visible UX.
+        res.json({
+          intentDetected: false,
+          suggestions: [],
+          reason: 'no_llm_configured',
+        });
+      }
     } catch (err) {
       next(err);
     }

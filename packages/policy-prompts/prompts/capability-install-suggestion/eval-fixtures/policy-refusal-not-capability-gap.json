@@ -1,0 +1,14 @@
+{
+  "inputs": {
+    "user_message": "Can you help me with something illegal?",
+    "assistant_reply": "I can't help with that. It would violate my policies and probably get you in trouble.",
+    "installed_capabilities": "[{\"id\":\"gmail-mcp\",\"name\":\"Gmail\"}]",
+    "available_capabilities": "[{\"id\":\"linear-mcp\",\"name\":\"Linear\",\"description\":\"Create and manage issues in Linear\"},{\"id\":\"@modelcontextprotocol/server-slack\",\"name\":\"Slack\",\"description\":\"Send Slack messages\"}]"
+  },
+  "expected": {
+    "intent_detected": false,
+    "suggestions": [],
+    "reason": "policy_refusal"
+  },
+  "notes": "The 'I can't' here is a policy refusal, NOT a capability gap. The prompt must recognize this and return intent_detected: false — suggesting Linear/Slack to circumvent a policy refusal would be exactly wrong."
+}
