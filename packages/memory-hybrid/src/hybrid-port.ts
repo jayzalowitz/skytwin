@@ -6,6 +6,7 @@ import type {
   KnowledgeTriple,
   Episode,
   SemanticHit,
+  SearchSemanticOptions,
   GraphWalkSpec,
   KnowledgeNode,
   TimeRange,
@@ -172,9 +173,13 @@ export class HybridMemoryPort implements MemoryPort {
 
   // ── Read — route by capability ────────────────────────────────────
 
-  async searchSemantic(query: string, k: number): Promise<SemanticHit[]> {
+  async searchSemantic(
+    query: string,
+    k: number,
+    options?: SearchSemanticOptions,
+  ): Promise<SemanticHit[]> {
     const port = this.resolveReadPort('searchSemantic', 'semantic_search');
-    return port.searchSemantic(query, k);
+    return port.searchSemantic(query, k, options);
   }
 
   async walkGraph(spec: GraphWalkSpec): Promise<KnowledgeNode[]> {

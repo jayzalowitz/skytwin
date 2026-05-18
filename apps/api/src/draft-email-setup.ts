@@ -62,30 +62,12 @@ export function draftsEnabled(): boolean {
 /**
  * Authoring-tier values that mark "the user wrote this." A draft is
  * grounded in the user's own voice, so only their sent / replied corpus
- * counts — inbox tiers are noise.
+ * counts — inbox tiers are noise. Passed straight to `searchSemantic`
+ * as a SQL-pushed filter (#300) — the CRDB adapter narrows in the
+ * `WHERE metadata->>'authoringTier' = ANY($N)` clause of both the text
+ * and vector legs of the RRF fold, so we no longer over-fetch.
  */
-const USER_AUTHORED_TIERS = new Set(['user_sent_originated', 'user_sent_reply']);
-
-/**
- * Memory-port-backed implementation of the generator's
- * `AuthoredExamplesPort`. Filters semantic hits client-side to the
- * user-authored authoring tiers stamped on `brain_pages.metadata`.
- *
- * Limitation (sub-issue 2 of #283): the filter is client-side. The port
- * fetches `k * OVER_FETCH_FACTOR` hits and then narrows, which works fine
- * for typical k (≤ 10) but doesn't scale to high-k or noisy corpora.
- * Pushdown into the SQL hybrid-rank query is the follow-up.
- */
-const OVER_FETCH_FACTOR = 3;
-
-/**
- * Minimum number of hits to fetch even when `k` is tiny. If the caller
- * asks for k=1, fetching 3 hits and filtering to 1 user-authored result
- * is much more likely to find a match than fetching 1 hit and losing it
- * to a single inbox-tier collision. This is the floor `Math.max` should
- * have been guarding (Copilot caught the redundant-max).
- */
-const MIN_FETCH_FLOOR = 6;
+const USER_AUTHORED_TIERS: readonly string[] = ['user_sent_originated', 'user_sent_reply'];
 
 function buildAuthoredExamplesPort(userId: string): AuthoredExamplesPort {
   return {
@@ -94,18 +76,12 @@ function buildAuthoredExamplesPort(userId: string): AuthoredExamplesPort {
       k: number,
     ): Promise<Array<{ content: string; subject?: string }>> {
       const resolved = await getMemoryPortForUser(userId);
-      const overFetch = Math.max(k * OVER_FETCH_FACTOR, MIN_FETCH_FLOOR);
-      const hits = await resolved.port.searchSemantic(query, overFetch);
-      const authored = hits
-        .filter((hit) => {
-          const tier =
-            hit.metadata && typeof hit.metadata['authoringTier'] === 'string'
-              ? (hit.metadata['authoringTier'] as string)
-              : null;
-          return tier !== null && USER_AUTHORED_TIERS.has(tier);
-        })
-        .slice(0, k);
-      return authored.map((hit) => {
+      const hits = await resolved.port.searchSemantic(query, k, {
+        // `SearchSemanticOptions.authoringTier` accepts `readonly string[]`,
+        // so we pass the module-scope const tuple directly — no spread.
+        authoringTier: USER_AUTHORED_TIERS,
+      });
+      return hits.map((hit) => {
         const subject =
           hit.metadata && typeof hit.metadata['subject'] === 'string'
             ? (hit.metadata['subject'] as string)

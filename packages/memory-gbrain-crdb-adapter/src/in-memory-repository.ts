@@ -123,13 +123,34 @@ export class InMemoryBrainStore {
     });
   }
 
-  textSearch(userId: string, q: string, limit: number): ScoredHit[] {
+  /**
+   * #300: same authoring-tier filter as the CRDB textSearch. Applied
+   * inline during the per-page scan so the candidate pool is already
+   * filtered before sort+slice.
+   */
+  private pageMatchesTierFilter(
+    page: BrainPageRow,
+    authoringTier?: readonly string[],
+  ): boolean {
+    if (!authoringTier || authoringTier.length === 0) return true;
+    const tier = (page.metadata as Record<string, unknown>)?.['authoringTier'];
+    if (typeof tier !== 'string') return false;
+    return authoringTier.includes(tier);
+  }
+
+  textSearch(
+    userId: string,
+    q: string,
+    limit: number,
+    authoringTier?: readonly string[],
+  ): ScoredHit[] {
     const queryTokens = new Set(tokenise(q));
     if (queryTokens.size === 0) return [];
 
     const scored: ScoredHit[] = [];
     for (const page of this.pages.values()) {
       if (page.user_id !== userId) continue;
+      if (!this.pageMatchesTierFilter(page, authoringTier)) continue;
       const docTokens = tokenise(`${page.title} ${page.content}`);
       let overlap = 0;
       for (const t of docTokens) if (queryTokens.has(t)) overlap++;
@@ -143,10 +164,16 @@ export class InMemoryBrainStore {
     return scored.slice(0, limit);
   }
 
-  vectorSearch(userId: string, queryEmbedding: number[], limit: number): ScoredHit[] {
+  vectorSearch(
+    userId: string,
+    queryEmbedding: number[],
+    limit: number,
+    authoringTier?: readonly string[],
+  ): ScoredHit[] {
     const scored: ScoredHit[] = [];
     for (const page of this.pages.values()) {
       if (page.user_id !== userId) continue;
+      if (!this.pageMatchesTierFilter(page, authoringTier)) continue;
       const emb = page.embedding;
       if (!emb || emb.length !== queryEmbedding.length) continue;
       scored.push({ page, score: cosineSimilarity(queryEmbedding, emb) });
@@ -163,12 +190,21 @@ export class InMemoryBrainStore {
     candidatePoolSize?: number;
     rrfK?: number;
     tierWeight?: (metadata: unknown) => number;
+    /**
+     * #300: same authoring-tier filter as the CRDB hybridSearch.
+     * Empty array or absent → no filter (identical to pre-#300).
+     */
+    authoringTier?: readonly string[];
   }): RrfHit[] {
     const pool = opts.candidatePoolSize ?? Math.max(opts.k * 4, 40);
     const rrfK = opts.rrfK ?? 60;
-    const text = this.textSearch(opts.userId, opts.query, pool);
+    const tierFilter =
+      opts.authoringTier && opts.authoringTier.length > 0
+        ? opts.authoringTier
+        : undefined;
+    const text = this.textSearch(opts.userId, opts.query, pool, tierFilter);
     const vec = opts.queryEmbedding
-      ? this.vectorSearch(opts.userId, opts.queryEmbedding, pool)
+      ? this.vectorSearch(opts.userId, opts.queryEmbedding, pool, tierFilter)
       : [];
     return rrfFold(text, vec, opts.k, rrfK, {
       ...(opts.tierWeight ? { tierWeight: opts.tierWeight } : {}),

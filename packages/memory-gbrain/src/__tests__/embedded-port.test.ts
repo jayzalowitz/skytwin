@@ -243,6 +243,55 @@ describe('EmbeddedGbrainMemoryPort — searchSemantic', () => {
     const hits = await port.searchSemantic('Tuesday', 5);
     expect(hits[0]?.source).toBe('signal');
   });
+
+  // #300 — SQL-pushdown authoringTier filter threads through to the backend
+  it('passes options.authoringTier to the backend search', async () => {
+    const filteredStore = new InMemoryBrainStore();
+    const filteredPort = new EmbeddedGbrainMemoryPort({
+      userId: USER,
+      backend: 'memory',
+      store: filteredStore,
+      embedding: new HashEmbeddingProvider(64),
+    });
+
+    await filteredPort.recordSignal({
+      id: 'authored-1',
+      source: 'gmail',
+      type: 'email',
+      timestamp: new Date('2026-04-10'),
+      data: {
+        subject: 'replying to your proposal',
+        from: 'me@example.com',
+        authoringTier: 'user_sent_reply',
+      },
+    });
+    await filteredPort.recordSignal({
+      id: 'inboxed-1',
+      source: 'gmail',
+      type: 'email',
+      timestamp: new Date('2026-04-11'),
+      data: {
+        subject: 'proposal received',
+        from: 'them@example.com',
+        authoringTier: 'inbox_personal',
+      },
+    });
+
+    const all = await filteredPort.searchSemantic('proposal', 10);
+    expect(all.length).toBe(2);
+
+    const onlyAuthored = await filteredPort.searchSemantic('proposal', 10, {
+      authoringTier: ['user_sent_originated', 'user_sent_reply'],
+    });
+    expect(onlyAuthored).toHaveLength(1);
+    expect(onlyAuthored[0]!.content).toMatch(/replying/);
+  });
+
+  it('empty authoringTier array is treated as no-filter', async () => {
+    const all = await port.searchSemantic('Tuesday', 10);
+    const empty = await port.searchSemantic('Tuesday', 10, { authoringTier: [] });
+    expect(empty.length).toBe(all.length);
+  });
 });
 
 describe('EmbeddedGbrainMemoryPort — code-aware search', () => {

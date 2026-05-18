@@ -15,6 +15,7 @@ import type {
   MemoryPort,
   MemoryCapability,
   RawSignal,
+  SearchSemanticOptions,
   KnowledgeEntity,
   KnowledgeTriple,
   Episode,
@@ -174,7 +175,16 @@ export class MemPalaceMemoryPort implements MemoryPort {
    * TODO(#196): When @skytwin/mempalace adds embedding-based retrieval,
    * delegate here instead of the keyword search.
    */
-  async searchSemantic(query: string, k: number): Promise<SemanticHit[]> {
+  async searchSemantic(
+    query: string,
+    k: number,
+    // #300: signature parity with the MemoryPort interface. MemPalace
+    // adapter is empty-fallback today, so the filter is ignored — the
+    // caller doesn't get a worse result than the existing impl.
+    // Reserved for future support once mempalace adds metadata-keyed
+    // retrieval (TODO #196).
+    _options?: SearchSemanticOptions,
+  ): Promise<SemanticHit[]> {
     const terms = query.split(/\s+/).filter((t) => t.length > 2);
     // Stack.search needs a userId — we don't have one in the port interface.
     // Use a sentinel that the caller must have set up; fall back to empty.

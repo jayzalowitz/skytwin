@@ -88,6 +88,154 @@ describe('InMemoryBrainStore — pages', () => {
     expect(store.textSearch('u2', 'yours', 5)).toHaveLength(1);
   });
 
+  // #300 — SQL-pushdown authoringTier filter
+
+  it('textSearch authoringTier filter narrows to matching pages', () => {
+    store.insertPage({
+      userId: 'u1',
+      content: 'meeting tuesday',
+      source: 'note',
+      metadata: { authoringTier: 'user_sent_originated' },
+    });
+    store.insertPage({
+      userId: 'u1',
+      content: 'meeting wednesday',
+      source: 'note',
+      metadata: { authoringTier: 'inbox_personal' },
+    });
+    store.insertPage({
+      userId: 'u1',
+      content: 'meeting thursday',
+      source: 'note',
+      metadata: { authoringTier: 'user_sent_reply' },
+    });
+
+    const all = store.textSearch('u1', 'meeting', 10);
+    expect(all).toHaveLength(3);
+
+    const authored = store.textSearch('u1', 'meeting', 10, [
+      'user_sent_originated',
+      'user_sent_reply',
+    ]);
+    expect(authored).toHaveLength(2);
+    for (const hit of authored) {
+      const tier = (hit.page.metadata as Record<string, unknown>)['authoringTier'];
+      expect(tier).toMatch(/^user_sent_/);
+    }
+  });
+
+  it('textSearch empty authoringTier array is treated as no-filter', () => {
+    store.insertPage({
+      userId: 'u1',
+      content: 'meeting',
+      source: 'note',
+      metadata: { authoringTier: 'inbox_personal' },
+    });
+    const unfiltered = store.textSearch('u1', 'meeting', 10);
+    const emptyFilter = store.textSearch('u1', 'meeting', 10, []);
+    expect(emptyFilter).toHaveLength(unfiltered.length);
+  });
+
+  it('textSearch rejects pages whose metadata authoringTier is not a string', () => {
+    store.insertPage({
+      userId: 'u1',
+      content: 'meeting',
+      source: 'note',
+      metadata: { authoringTier: 42 },
+    });
+    store.insertPage({
+      userId: 'u1',
+      content: 'meeting',
+      source: 'note',
+      metadata: { authoringTier: 'user_sent_originated' },
+    });
+    const filtered = store.textSearch('u1', 'meeting', 10, ['user_sent_originated']);
+    expect(filtered).toHaveLength(1);
+    expect(
+      (filtered[0]!.page.metadata as Record<string, unknown>)['authoringTier'],
+    ).toBe('user_sent_originated');
+  });
+
+  it('vectorSearch authoringTier filter narrows the cosine pool', async () => {
+    const emb = new HashEmbeddingProvider();
+    const a = await emb.embed('schedule meeting');
+    const b = await emb.embed('schedule meeting tuesday');
+
+    store.insertPage({
+      userId: 'u1',
+      content: 'a',
+      source: 'note',
+      embedding: a,
+      embeddingModel: 'h',
+      metadata: { authoringTier: 'inbox_personal' },
+    });
+    store.insertPage({
+      userId: 'u1',
+      content: 'b',
+      source: 'note',
+      embedding: b,
+      embeddingModel: 'h',
+      metadata: { authoringTier: 'user_sent_reply' },
+    });
+
+    const q = await emb.embed('schedule meeting');
+    const filtered = store.vectorSearch('u1', q, 10, ['user_sent_reply']);
+    expect(filtered).toHaveLength(1);
+    expect(filtered[0]!.page.content).toBe('b');
+  });
+
+  it('hybridSearch authoringTier filter propagates to both legs', async () => {
+    const emb = new HashEmbeddingProvider();
+    const fooEmb = await emb.embed('foo');
+    const barEmb = await emb.embed('foo bar');
+
+    store.insertPage({
+      userId: 'u1',
+      content: 'foo authored',
+      source: 'note',
+      embedding: fooEmb,
+      embeddingModel: 'h',
+      metadata: { authoringTier: 'user_sent_originated' },
+    });
+    store.insertPage({
+      userId: 'u1',
+      content: 'foo bar inboxed',
+      source: 'note',
+      embedding: barEmb,
+      embeddingModel: 'h',
+      metadata: { authoringTier: 'inbox_personal' },
+    });
+
+    const q = await emb.embed('foo');
+    const all = store.hybridSearch({ userId: 'u1', query: 'foo', queryEmbedding: q, k: 5 });
+    expect(all.length).toBeGreaterThan(1);
+
+    const authored = store.hybridSearch({
+      userId: 'u1',
+      query: 'foo',
+      queryEmbedding: q,
+      k: 5,
+      authoringTier: ['user_sent_originated'],
+    });
+    expect(authored).toHaveLength(1);
+    expect(authored[0]!.page.content).toBe('foo authored');
+  });
+
+  it('pages with no metadata are dropped when an authoringTier filter is set', () => {
+    store.insertPage({ userId: 'u1', content: 'no metadata', source: 'note' });
+    store.insertPage({
+      userId: 'u1',
+      content: 'matches',
+      source: 'note',
+      metadata: { authoringTier: 'user_sent_originated' },
+    });
+    const filtered = store.textSearch('u1', 'matches no metadata', 10, [
+      'user_sent_originated',
+    ]);
+    expect(filtered).toHaveLength(1);
+    expect(filtered[0]!.page.content).toBe('matches');
+  });
+
   it('updatePageEmbedding sets vector + model', async () => {
     const row = store.insertPage({ userId: 'u1', content: 'x', source: 'note' });
     expect(row.embedding).toBeNull();
