@@ -10,6 +10,15 @@ export interface CreateSpendRecordInput {
   decisionId: string;
   estimatedCostCents: number;
   actualCostCents?: number;
+  /**
+   * Optional registry source attribution (#323). When provided, the
+   * spend is tagged with the registry ID so per-app monthly totals
+   * (`getMonthlyTotal(userId, appRegistryId)`) can attribute it. Pass
+   * `undefined` when the spend doesn't have a registry source — the
+   * column stays NULL and the row only contributes to user-global
+   * totals.
+   */
+  registryId?: string;
 }
 
 /**
@@ -21,8 +30,8 @@ export const spendRepository = {
    */
   async create(input: CreateSpendRecordInput): Promise<SpendRecordRow> {
     const result = await query<SpendRecordRow>(
-      `INSERT INTO spend_records (user_id, action_id, decision_id, estimated_cost_cents, actual_cost_cents)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO spend_records (user_id, action_id, decision_id, estimated_cost_cents, actual_cost_cents, registry_id)
+       VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING *`,
       [
         input.userId,
@@ -30,6 +39,7 @@ export const spendRepository = {
         input.decisionId,
         input.estimatedCostCents,
         input.actualCostCents ?? null,
+        input.registryId ?? null,
       ],
     );
     return result.rows[0]!;
@@ -52,21 +62,25 @@ export const spendRepository = {
 
   /**
    * Get total spend for a user in the current calendar month (UTC).
-   * When appRegistryId is provided, filters to spend records tagged with
-   * that registry id in the action metadata (best-effort; requires the
-   * decision pipeline to record registry_id on spend_records — tracked
-   * in #306). For now, returns user-total if no appRegistryId, or 0 if
-   * appRegistryId is provided (safe fallback — no false positives).
+   *
+   * When `appRegistryId` is provided (#323), filters to rows tagged
+   * with that registry id via the `registry_id` column added in
+   * migration 054. Rows recorded before that migration have
+   * `registry_id IS NULL` and are excluded from per-app totals — they
+   * only contribute when `appRegistryId` is omitted (user-global).
+   * Index `idx_spend_user_registry_time` covers this query path.
    */
   async getMonthlyTotal(userId: string, appRegistryId?: string): Promise<number> {
-    // Per-app monthly totals require action-level registry_id linkage that
-    // the schema doesn't yet have (deferred to #306). Return 0 for
-    // per-app queries so the monthly cap check is conservative (never
-    // falsely blocks). Return the calendar-month total for user-global queries.
-    if (appRegistryId) {
-      // TODO (#306): join through decision_outcomes → spend_records where
-      // the action's registry_id = appRegistryId once that column exists.
-      return 0;
+    if (appRegistryId !== undefined) {
+      const result = await query<{ total: string | null }>(
+        `SELECT SUM(COALESCE(actual_cost_cents, estimated_cost_cents)) AS total
+         FROM spend_records
+         WHERE user_id = $1
+           AND registry_id = $2
+           AND recorded_at >= date_trunc('month', now())`,
+        [userId, appRegistryId],
+      );
+      return parseInt(result.rows[0]?.total ?? '0', 10);
     }
 
     const result = await query<{ total: string | null }>(
@@ -121,8 +135,8 @@ export const spendRepository = {
 
       // Within the same transaction, insert the spend record
       const insertResult = await client.query<SpendRecordRow>(
-        `INSERT INTO spend_records (user_id, action_id, decision_id, estimated_cost_cents, actual_cost_cents)
-         VALUES ($1, $2, $3, $4, $5)
+        `INSERT INTO spend_records (user_id, action_id, decision_id, estimated_cost_cents, actual_cost_cents, registry_id)
+         VALUES ($1, $2, $3, $4, $5, $6)
          RETURNING *`,
         [
           input.userId,
@@ -130,6 +144,7 @@ export const spendRepository = {
           input.decisionId,
           input.estimatedCostCents,
           input.actualCostCents ?? null,
+          input.registryId ?? null,
         ],
       );
 

@@ -1,5 +1,25 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.48.0] - 2026-05-18
+
+### Added
+
+- **`registry_id` column on `spend_records` + real per-app monthly totals (closes #323).** Migration 054 adds a nullable `registry_id STRING` column plus a composite index `idx_spend_user_registry_time` on `(user_id, registry_id, recorded_at DESC)` that covers the per-app query path. `spendRepository.create` and `checkAndRecordSpend` now accept an optional `registryId` and write it through; the policy-engine `SpendRepositoryPort.checkAndRecordSpend` interface grew the same optional field so port consumers can pass it through transparently. `getMonthlyTotal(userId, appRegistryId)` previously returned 0 unconditionally for per-app queries (safe-fallback stub from #306); it now executes the real `WHERE user_id = $1 AND registry_id = $2 AND recorded_at >= date_trunc('month', now())` query.
+
+### Why this matters
+
+The per-app monthly cap path (`policy-engine.checkMonthlyLimit` → `SpendRepositoryPort.getMonthlyTotal(userId, appRegistryId)`) has been wired since #299 but couldn't ever fire — the repo always returned 0, so no per-app cap could ever be reached. With #323 the foundation is in place: any future spend-recording site that knows its registry source (e.g. an MCP-action spend pipeline) can pass `registryId` and the per-app cap starts attributing correctly. Existing call sites that don't pass `registryId` (cost-gate's draft-email LLM cost, today) write NULL and continue to roll into user-global totals only.
+
+### Backward compatibility
+
+- Nullable column; existing rows stay NULL. `getMonthlyTotal(userId)` (no second arg) behavior is unchanged — sums everything regardless of `registry_id`.
+- Cost-gate continues to call `checkAndRecordSpend` without a `registryId`, so per-day cap behavior is unchanged.
+- The `getMonthlyTotal(userId, appRegistryId)` form now returns a real number (was always 0). Any caller that depended on the 0-fallback to gate behavior would notice — but the 0-fallback was an explicit "never falsely blocks" safe stub, and the only consumer is the policy-engine monthly-cap check, which is now correct rather than over-permissive.
+
+### Tests
+
+- 7 new unit tests in `spend-repository.test.ts` pinning: create writes `registry_id` when provided, writes NULL otherwise; `getMonthlyTotal` filters by `registry_id = $2` only when `appRegistryId !== undefined` (empty string is a real filter, not a missing one); `checkAndRecordSpend` writes the registry_id in the atomic insert.
+
 ## [0.6.47.0] - 2026-05-18
 
 ### Added

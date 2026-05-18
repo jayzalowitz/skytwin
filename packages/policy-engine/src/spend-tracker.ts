@@ -115,7 +115,19 @@ export interface SpendRepositoryPort {
    * Optional: if not provided, falls back to non-atomic check.
    */
   checkAndRecordSpend?(
-    input: { userId: string; actionId: string; decisionId: string; estimatedCostCents: number },
+    input: {
+      userId: string;
+      actionId: string;
+      decisionId: string;
+      estimatedCostCents: number;
+      /**
+       * Optional registry source attribution (#323). Passed through to
+       * `spend_records.registry_id` so per-app monthly totals can
+       * attribute the spend. Omit when the call has no known registry
+       * source (e.g. raw LLM cost not tied to an MCP server).
+       */
+      registryId?: string;
+    },
     dailyLimitCents: number,
     windowHours?: number,
   ): Promise<{ allowed: boolean; currentTotal: number; record: unknown | null }>;
