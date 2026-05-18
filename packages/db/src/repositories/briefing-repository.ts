@@ -192,16 +192,17 @@ export const briefingRepository = {
   },
 
   /**
-   * #320: return the latest per-Lifebook briefing for EACH of a user's
-   * visible Lifebooks, in importance order (core → secondary →
-   * emerging). One row per Lifebook, NULL when no briefing for that
-   * domain exists yet (the worker hasn't emitted one). Used by
-   * `GET /api/twin-briefings/latest`'s `sections[]` fold to render the
-   * partitioned dashboard view alongside the global briefing.
+   * #320: return the latest per-domain briefing for each `domain_name`
+   * that has at least one `twin_briefings` row for this user. The
+   * rows are sorted by `domain_name` (the `DISTINCT ON` requires
+   * that as the first ORDER BY key); the API route does its own
+   * importance ordering + visibility filtering + omit-empty join
+   * against `lifebookRepository.listVisible`. This method is a
+   * pure-SQL primitive that doesn't know about Lifebooks at all.
    *
-   * Single SQL query with `DISTINCT ON (domain_name)` so cost is one
-   * query no matter how many Lifebooks the user has. Equivalent to N+1
-   * `getLatestForUserDomain` calls but bounded.
+   * Single SQL query with `DISTINCT ON (domain_name)` so cost is
+   * one round-trip no matter how many domains the user has.
+   * Equivalent to N+1 `getLatestForUserDomain` calls but bounded.
    */
   async getLatestPerLifebook(
     userId: string,

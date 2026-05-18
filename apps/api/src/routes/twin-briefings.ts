@@ -41,7 +41,7 @@ export function createTwinBriefingsRouter(): Router {
   //   { briefing: TwinBriefingRow | null,
   //     sections: Array<{ lifebookId, domainName, importance, briefing }> }
   //
-  // Two parallel queries + a join in JS — cheaper than per-Lifebook
+  // Three parallel queries + a join in JS — cheaper than per-Lifebook
   // round-trips, and the per-call cost is bounded by the user's
   // visible-Lifebook count (typically < 10).
   // ─────────────────────────────────────────────────────────────────────────

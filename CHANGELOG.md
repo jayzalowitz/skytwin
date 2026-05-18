@@ -25,7 +25,7 @@ Mobile rendering is in the same pattern but lives under `#179` (mobile parity) s
 ### Tests
 
 - 5 new repository tests in `briefing-repository-per-lifebook.test.ts` pinning: DISTINCT ON + cadence threading + global-briefing exclusion + empty-result case.
-- 7 new route tests in `twin-briefings-sections-fold.test.ts` pinning: 400 on missing userId; empty-state shape; global-only path; importance-ordered sections with omit-when-no-briefing; hidden Lifebooks excluded (via listVisible contract); cadence query param threads to both queries.
+- 6 new route tests in `twin-briefings-sections-fold.test.ts` pinning: 400 on missing userId; empty-state shape; global-only path; importance-ordered sections with omit-when-no-briefing; hidden Lifebooks excluded (via listVisible contract); cadence query param threads to both queries.
 
 ## [0.6.53.0] - 2026-05-18
 
