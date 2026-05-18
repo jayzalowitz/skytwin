@@ -204,10 +204,23 @@ export function createLifebooksRouter(): Router {
    * detail page with sections in the right order (e.g. timeline-first
    * for Health, decisions-first for projects).
    *
-   * Falls back to the deterministic generic-two-column layout when
-   * the user has no LLM configured, when the wing is sparse (< 5
-   * drawers / < 3 distinct source_types), or when the prompt errors —
-   * the deterministic shape always renders something useful.
+   * Response: `{ layout, source, histogram }` where `source` is the
+   * complete enum:
+   *   - `'llm'` — prompt ran and returned a layout
+   *   - `'no_signals'` — wing has 0 drawers; LLM skipped
+   *   - `'sparse_fallback'` — < 5 drawers OR < 3 distinct types;
+   *     LLM skipped to save token spend (the prompt's own constraint
+   *     says to return generic in this case)
+   *   - `'no_llm_configured'` — user has no AI providers enabled
+   *   - `'provider_lookup_failed'` — `getEnabledForUser` threw
+   *     (transient DB / network error); distinct from
+   *     `no_llm_configured` so the UI doesn't lie about the cause
+   *   - `'deterministic_fallback'` — `runPrompt` invoked but fell
+   *     back to its deterministic shape (no provider could complete)
+   *   - `'prompt_error'` — `runPrompt` threw; fail-soft response
+   * The browser also synthesizes `'fetch_error'` locally when the
+   * HTTP request itself fails — that value is never sent by this
+   * endpoint.
    *
    * 404 when the lifebook doesn't exist. Layout is computed per
    * request; if this gets hot, future cache: `layouts` table keyed
@@ -220,20 +233,15 @@ export function createLifebooksRouter(): Router {
         res.status(400).json({ error: 'Missing userId or domainName' });
         return;
       }
-      let decodedDomain: string;
-      try {
-        decodedDomain = decodeURIComponent(domainName);
-      } catch {
-        // Malformed percent-encoding (e.g. lone '%' in URL). Treat as
-        // a 400 instead of letting it bubble to a 500 — the user can
-        // see what's wrong and retry. Copilot caught this for
-        // /layout; same issue lurks on hide/unhide/importance but
-        // those use the same router pattern (decodeURIComponent in
-        // each branch); refactoring all paths is a separate cleanup.
-        res.status(400).json({ error: 'domainName has invalid percent-encoding' });
-        return;
-      }
-      const lifebook = await lifebookRepository.findByDomain(userId, decodedDomain);
+      // Express already URL-decodes req.params, so don't call
+      // decodeURIComponent again — that would double-decode and
+      // corrupt domain names containing literal '%' characters
+      // (e.g. `%25` → `%` from Express, then garbage from a second
+      // decode). Copilot caught this on the second-pass review.
+      // The other routes in this file (hide / unhide / importance)
+      // ALSO double-decode today; that's a pre-existing bug worth
+      // a separate sweep and is intentionally NOT touched here.
+      const lifebook = await lifebookRepository.findByDomain(userId, domainName);
       if (!lifebook) {
         res.status(404).json({ error: 'Lifebook not found' });
         return;

@@ -276,13 +276,6 @@ describe('GET /api/lifebooks/:userId/:domainName/layout — #319', () => {
     expect(body.source).toBe('deterministic_fallback');
   });
 
-  it('returns 400 (not 500) when domainName has invalid percent-encoding', async () => {
-    // No findByDomain call needed — the decode failure short-circuits.
-    const res = await request(buildApp(), 'GET', `/api/lifebooks/${USER_ID}/%ZZ/layout`);
-    expect(res.status).toBe(400);
-    expect(mockFindByDomain).not.toHaveBeenCalled();
-  });
-
   it('returns source=provider_lookup_failed (NOT no_llm_configured) when getEnabledForUser throws', async () => {
     // Distinguishes "user has no providers" from "DB blip during
     // provider lookup" — different source so the UI doesn't lie
