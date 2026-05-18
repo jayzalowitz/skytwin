@@ -276,6 +276,36 @@ describe('GET /api/lifebooks/:userId/:domainName/layout — #319', () => {
     expect(body.source).toBe('deterministic_fallback');
   });
 
+  it('returns 400 (not 500) when domainName has invalid percent-encoding', async () => {
+    // No findByDomain call needed — the decode failure short-circuits.
+    const res = await request(buildApp(), 'GET', `/api/lifebooks/${USER_ID}/%ZZ/layout`);
+    expect(res.status).toBe(400);
+    expect(mockFindByDomain).not.toHaveBeenCalled();
+  });
+
+  it('returns source=provider_lookup_failed (NOT no_llm_configured) when getEnabledForUser throws', async () => {
+    // Distinguishes "user has no providers" from "DB blip during
+    // provider lookup" — different source so the UI doesn't lie
+    // about why we're showing the generic layout.
+    mockFindByDomain.mockResolvedValue(fakeLifebook());
+    mockGetDrawers.mockResolvedValue([
+      fakeDrawer('a'),
+      fakeDrawer('b'),
+      fakeDrawer('c'),
+      fakeDrawer('a'),
+      fakeDrawer('b'),
+      fakeDrawer('c'),
+    ]);
+    mockGetEnabledProviders.mockRejectedValue(new Error('CRDB pool exhausted'));
+
+    const res = await request(buildApp(), 'GET', `/api/lifebooks/${USER_ID}/Health/layout`);
+    expect(res.status).toBe(200);
+    const body = res.body as { source: string; layout: { layoutId: string } };
+    expect(body.source).toBe('provider_lookup_failed');
+    expect(body.layout.layoutId).toBe('generic-two-column');
+    expect(mockRunPrompt).not.toHaveBeenCalled();
+  });
+
   it('returns generic layout with source=prompt_error when runPrompt throws (fail-soft)', async () => {
     mockFindByDomain.mockResolvedValue(fakeLifebook());
     mockGetDrawers.mockResolvedValue([

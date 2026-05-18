@@ -14,6 +14,37 @@ import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
 const log = createLogger('api:lifebooks');
 
 /**
+ * #319 generic fallback layout — the shape returned when the LLM is
+ * unavailable, the wing is sparse, the prompt errors, or any other
+ * non-happy path. Same shape is declared in THREE places that MUST
+ * stay in sync (Copilot caught the duplication risk):
+ *
+ *   1. Here (server route fallback).
+ *   2. `packages/policy-prompts/prompts/lifebook-layout/v1.md` —
+ *      `deterministic_fallback` field in frontmatter; serialised as
+ *      a JSON string because that's the field's contract.
+ *   3. `apps/web/public/js/pages/lifebook.js` — `GENERIC_LAYOUT`
+ *      const, used when the layout fetch itself fails (so the page
+ *      still has a renderable default offline).
+ *
+ * If you change the section ordering or titles here, update the
+ * other two. Tests in `lifebook-layout-route.test.ts` pin the
+ * server-side shape; the browser-side ships behind an integration
+ * test in the dashboard suite.
+ */
+const GENERIC_LAYOUT = {
+  layoutId: 'generic-two-column',
+  sections: [
+    { type: 'signals' as const, title: 'Recent Signals', order: 0 },
+    {
+      type: 'capabilities' as const,
+      title: 'Suggested Capabilities',
+      order: 1,
+    },
+  ],
+};
+
+/**
  * Routes for the Emergent Lifebooks surface (#193 Child 1).
  *
  *   GET    /api/lifebooks/:userId                              — list visible lifebooks
@@ -189,10 +220,20 @@ export function createLifebooksRouter(): Router {
         res.status(400).json({ error: 'Missing userId or domainName' });
         return;
       }
-      const lifebook = await lifebookRepository.findByDomain(
-        userId,
-        decodeURIComponent(domainName),
-      );
+      let decodedDomain: string;
+      try {
+        decodedDomain = decodeURIComponent(domainName);
+      } catch {
+        // Malformed percent-encoding (e.g. lone '%' in URL). Treat as
+        // a 400 instead of letting it bubble to a 500 — the user can
+        // see what's wrong and retry. Copilot caught this for
+        // /layout; same issue lurks on hide/unhide/importance but
+        // those use the same router pattern (decodeURIComponent in
+        // each branch); refactoring all paths is a separate cleanup.
+        res.status(400).json({ error: 'domainName has invalid percent-encoding' });
+        return;
+      }
+      const lifebook = await lifebookRepository.findByDomain(userId, decodedDomain);
       if (!lifebook) {
         res.status(404).json({ error: 'Lifebook not found' });
         return;
@@ -216,27 +257,12 @@ export function createLifebooksRouter(): Router {
       }
       const distinctTypes = Object.keys(histogram).length;
 
-      // Deterministic fallback shape — used when no LLM, sparse wing,
-      // or prompt error. The same shape ships in the prompt frontmatter
-      // so the LLM path's fallback matches this exact response.
-      const genericLayout = {
-        layoutId: 'generic-two-column',
-        sections: [
-          { type: 'signals' as const, title: 'Recent Signals', order: 0 },
-          {
-            type: 'capabilities' as const,
-            title: 'Suggested Capabilities',
-            order: 1,
-          },
-        ],
-      };
-
       // Sparse: skip the LLM entirely — the prompt's own constraint
       // says to return generic in this case, and not invoking it
       // saves the token spend.
       if (totalDrawers < 5 || distinctTypes < 3) {
         res.json({
-          layout: genericLayout,
+          layout: GENERIC_LAYOUT,
           source: totalDrawers === 0 ? 'no_signals' : 'sparse_fallback',
           histogram,
         });
@@ -244,7 +270,13 @@ export function createLifebooksRouter(): Router {
       }
 
       // Build an LlmClient from the user's enabled providers.
+      // Distinguish "no providers configured" (legitimate
+      // `no_llm_configured`) from "provider lookup failed" (transient
+      // error — different source so users + ops don't see a misleading
+      // "you have no AI provider" hint when the real issue is a DB
+      // blip). Copilot caught the previous collapse-both-to-one-source.
       let llmClient: LlmClient | null = null;
+      let providerLookupFailed = false;
       try {
         const rows = await aiProviderRepository.getEnabledForUser(userId);
         if (rows.length > 0) {
@@ -259,6 +291,7 @@ export function createLifebooksRouter(): Router {
           llmClient = new LlmClient(providers, userId);
         }
       } catch (err) {
+        providerLookupFailed = true;
         log.warn('failed to build LlmClient for layout prompt', {
           userId,
           domainName,
@@ -267,7 +300,11 @@ export function createLifebooksRouter(): Router {
       }
 
       if (!llmClient) {
-        res.json({ layout: genericLayout, source: 'no_llm_configured', histogram });
+        res.json({
+          layout: GENERIC_LAYOUT,
+          source: providerLookupFailed ? 'provider_lookup_failed' : 'no_llm_configured',
+          histogram,
+        });
         return;
       }
 
@@ -291,7 +328,7 @@ export function createLifebooksRouter(): Router {
         });
 
         if (result.fellBackToDeterministic) {
-          res.json({ layout: genericLayout, source: 'deterministic_fallback', histogram });
+          res.json({ layout: GENERIC_LAYOUT, source: 'deterministic_fallback', histogram });
           return;
         }
         res.json({ layout: result.output, source: 'llm', histogram });
@@ -301,7 +338,7 @@ export function createLifebooksRouter(): Router {
           domainName,
           error: err instanceof Error ? err.message : String(err),
         });
-        res.json({ layout: genericLayout, source: 'prompt_error', histogram });
+        res.json({ layout: GENERIC_LAYOUT, source: 'prompt_error', histogram });
       }
     } catch (err) {
       next(err);

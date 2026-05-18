@@ -148,6 +148,13 @@ export async function renderLifebook(container, _userIdFromArg) {
  * LLM is unavailable / the wing is sparse / the prompt errors. Lives
  * here too so a fetch failure on the client still has a renderable
  * default and the page never blanks out.
+ *
+ * MUST stay in sync with two other declarations of the same shape:
+ *   1. apps/api/src/routes/lifebooks.ts — `GENERIC_LAYOUT` const
+ *      (the server-side fallback the layout endpoint returns).
+ *   2. packages/policy-prompts/prompts/lifebook-layout/v1.md —
+ *      `deterministic_fallback` field in frontmatter.
+ * If you change section ordering or titles here, update both.
  */
 const GENERIC_LAYOUT = {
   layoutId: 'generic-two-column',
@@ -175,6 +182,8 @@ function renderLayoutSourceHint(source, layoutId) {
       ' · <span style="color:var(--text-muted);">generic layout (prompt fell back to deterministic)</span>',
     prompt_error:
       ' · <span style="color:var(--text-muted);">generic layout (prompt errored — see logs)</span>',
+    provider_lookup_failed:
+      ' · <span style="color:var(--text-muted);">generic layout (provider lookup failed — transient)</span>',
     fetch_error:
       ' · <span style="color:var(--text-muted);">generic layout (layout fetch failed)</span>',
   };
