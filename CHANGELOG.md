@@ -1,5 +1,23 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.55.0] - 2026-05-18
+
+### Changed
+
+- **CI build speed: turbo remote cache + path-filtered desktop/mobile jobs + native-toolchain caches.** Three changes to `.github/workflows/{build,evals,release}.yml`:
+  1. **Turbo remote cache via the GitHub Actions cache** (`dtinth/setup-github-actions-caching-for-turbo@v1`) on every job that runs `pnpm build`. The first job populates the cache; the 5+ subsequent jobs (desktop-mac/win/linux, mobile-android/ios, evals, release matrix) get `pnpm build` as cache hits across the entire monorepo. No Vercel account required — it routes turbo's HTTP cache protocol at the free Actions cache backend. Skipped on Windows desktop runners (action writes to `/tmp` which doesn't exist on Windows); macOS + Linux still benefit.
+  2. **Path-filtered desktop + mobile jobs on PRs.** New `changes` job uses `dorny/paths-filter@v3` to detect whether `apps/desktop/**`, `apps/mobile/**`, `packages/**`, or lockfiles changed. PRs that don't touch those paths skip the entire desktop/mobile matrix (5 jobs × ~native-toolchain-bootstrap minutes). Push events to `main` and tag pushes always run everything, so release artifact coverage is unchanged.
+  3. **Native toolchain caches:** electron-builder downloads (per-OS paths), Gradle (via `gradle/actions/setup-gradle@v4`), and CocoaPods (`Pods/`, `~/Library/Caches/CocoaPods`). These were re-downloaded on every run before — hundreds of MB per OS, per job.
+- Effect: cold-cache wall-clock unchanged. Warm-cache `pnpm build` drops from ~minutes to seconds on every job after the first. PRs that don't touch desktop/mobile skip ~5 jobs entirely. CI cost is $0 (public repo) but wall-clock is what we were burning.
+
+### Why this matters
+
+We're an open-source repo so Actions minutes are free, but wall-clock matters for iteration speed. Before this change, every PR rebuilt the entire TypeScript monorepo 6× (once per build/package job) and re-downloaded the electron toolchain on each desktop runner. The turbo remote cache turns 5 of those 6 `pnpm build`s into cache restores. The path filter skips the 5 desktop+mobile jobs entirely for PRs that don't touch those apps (most PRs).
+
+### Note on version
+
+Bumped to 0.6.55.0 (was 0.6.54.0 on the branch) after rebase — #335's per-Lifebook briefing sections took the 0.6.54.0 slot on main first.
+
 ## [0.6.54.0] - 2026-05-18
 
 ### Added

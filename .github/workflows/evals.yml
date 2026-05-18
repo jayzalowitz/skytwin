@@ -21,6 +21,8 @@ jobs:
           node-version: 20
           cache: pnpm
 
+      - uses: dtinth/setup-github-actions-caching-for-turbo@v1
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
