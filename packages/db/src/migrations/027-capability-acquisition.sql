@@ -164,8 +164,9 @@ CREATE TABLE IF NOT EXISTS fs_file_index (
 
 -- ============================================================================
 -- capability_recipes — curated bundles ("Developer pack", etc.)
--- Note: per architecture-philosophy, recipes will become prompt-driven (#189);
--- this table is a v1 vehicle for the static JSON recipes shipped in #181.
+-- Note: superseded by `packages/policy-prompts/prompts/recipe-recommendation/`
+-- and dropped in migration 053 (#325). Kept here so the migration history
+-- still applies cleanly on databases stamped pre-053.
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS capability_recipes (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
