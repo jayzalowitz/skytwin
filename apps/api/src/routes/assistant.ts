@@ -969,6 +969,20 @@ export function createAssistantRouter(): Router {
           .json({ error: 'userMessage and assistantReply must be non-empty strings' });
         return;
       }
+      // Cap input size — protect the prompt budget from a direct API
+      // client posting megabytes of text. Mirrors the 16KB cap that
+      // `validateAssistantMessage` enforces on the chat path.
+      // Copilot caught the unbounded version.
+      const MAX_INPUT_BYTES = 16 * 1024;
+      if (
+        Buffer.byteLength(body.userMessage, 'utf8') > MAX_INPUT_BYTES ||
+        Buffer.byteLength(body.assistantReply, 'utf8') > MAX_INPUT_BYTES
+      ) {
+        res.status(413).json({
+          error: `userMessage and assistantReply each must be <= ${MAX_INPUT_BYTES} bytes`,
+        });
+        return;
+      }
 
       const llmClient = await buildLlmClientForUser(userId);
       if (!llmClient) {
@@ -982,16 +996,35 @@ export function createAssistantRouter(): Router {
       }
 
       // Build the prompt inputs:
-      //   - installed_capabilities: user's enabled MCP servers (so the
-      //     prompt never recommends installing something they already have)
+      //   - installed_capabilities: user's CURRENTLY-INSTALLED MCP
+      //     servers — anything they could actually use right now. Excludes
+      //     status='uninstalled' / 'failed' / 'discovered' (never wired
+      //     up). Those are eligible for a re-suggest if the prompt
+      //     decides they fit. Copilot caught the prior all-rows filter
+      //     as excluding previously-uninstalled capabilities forever.
       //   - available_capabilities: the curated registry (the allowed
       //     candidate set the prompt picks from)
       // RegistryClient is a tiny in-process JSON read — no I/O cost.
       const registry = new RegistryClient();
-      const [installedRows, registryEntries] = await Promise.all([
+      const [allRows, registryEntries] = await Promise.all([
         mcpServerRepository.listForUser(userId),
         registry.getAll(),
       ]);
+
+      // "Installed" for the purpose of the prompt = the user could
+      // actually invoke the tool right now. Anything paused/dormant
+      // counts (they configured it; pausing is reversible). Anything
+      // explicitly uninstalled / never installed / failed does NOT
+      // count — the user might want to re-try those.
+      const NON_INSTALLED_STATUSES = new Set(['uninstalled', 'failed', 'discovered']);
+      const installedRows = allRows.filter(
+        (row) => !NON_INSTALLED_STATUSES.has(row.status),
+      );
+      const installedRegistryIds = new Set(
+        installedRows
+          .map((row) => row.registry_id)
+          .filter((id): id is string => typeof id === 'string' && id.length > 0),
+      );
 
       // Project to the minimum shape the prompt needs.
       const installed = installedRows.map((row) => ({
@@ -1003,12 +1036,17 @@ export function createAssistantRouter(): Router {
         // prompt's constraints already say "don't suggest installed"
         // but giving the LLM only the eligible set keeps it focused
         // and reduces the chance it hallucinates a no-installed reason.
-        .filter((entry) => !installedRows.some((row) => row.registry_id === entry.id))
+        .filter((entry) => !installedRegistryIds.has(entry.id))
         .map((entry) => ({
           id: entry.id,
           name: entry.displayName,
           description: entry.description ?? '',
         }));
+      // Build a lookup set of the registry-allowed IDs so the response
+      // can drop any suggestion id the model hallucinated or that came
+      // from a prompt-injection attempt. Copilot caught the original
+      // version as trusting any schema-valid id.
+      const allowedSuggestionIds = new Set(available.map((entry) => entry.id));
 
       // Template expects {{installed_capabilities}}, {{available_capabilities}},
       // {{user_message}}, {{assistant_reply}}.
@@ -1051,9 +1089,14 @@ export function createAssistantRouter(): Router {
         res.json({
           intentDetected: out.intent_detected === true,
           suggestions: out.suggestions
-            // Strict filter: the prompt should never suggest installed,
-            // but belt-and-suspenders — drop anything that snuck through.
-            .filter((s) => !installedRows.some((row) => row.registry_id === s.id))
+            // Drop anything the LLM hallucinated or that doesn't match
+            // a real registry entry. Suggestions whose id isn't in
+            // `allowedSuggestionIds` (the uninstalled-registry candidate
+            // set) cannot lead to a working install — render only the
+            // ones the install flow will actually accept. Also drops
+            // already-installed leakage (those ids never make it into
+            // `allowedSuggestionIds`).
+            .filter((s) => allowedSuggestionIds.has(s.id))
             .map((s) => ({
               registryId: s.id,
               displayName: s.name,

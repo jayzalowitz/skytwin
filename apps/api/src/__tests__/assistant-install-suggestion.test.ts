@@ -245,7 +245,7 @@ describe('POST /api/assistant/install-suggestion', () => {
       { provider: 'anthropic', api_key: 'k', model: 'claude-haiku-4-5', base_url: null },
     ]);
     mockMcpServerRepository.listForUser.mockResolvedValue([
-      { registry_id: 'linear-mcp', display_name: 'Linear' },
+      { registry_id: 'linear-mcp', display_name: 'Linear', status: 'active' },
     ]);
     // Simulate the LLM violating its constraint and suggesting an
     // already-installed capability. The route must drop it.
@@ -283,6 +283,105 @@ describe('POST /api/assistant/install-suggestion', () => {
     };
     expect(body.suggestions).toHaveLength(1);
     expect(body.suggestions[0]!.registryId).toBe('@modelcontextprotocol/server-github');
+  });
+
+  it('treats uninstalled / failed / discovered statuses as NOT installed (so they can be re-suggested)', async () => {
+    mockAiProviderRepository.getEnabledForUser.mockResolvedValue([
+      { provider: 'anthropic', api_key: 'k', model: 'claude-haiku-4-5', base_url: null },
+    ]);
+    // User has Linear listed in mcp_servers but with status='uninstalled' —
+    // they explicitly removed it. The endpoint should NOT count this as
+    // installed, so the prompt CAN suggest re-installing Linear.
+    mockMcpServerRepository.listForUser.mockResolvedValue([
+      { registry_id: 'linear-mcp', display_name: 'Linear', status: 'uninstalled' },
+      { registry_id: 'gmail-mcp', display_name: 'Gmail', status: 'failed' },
+      { registry_id: '@modelcontextprotocol/server-slack', display_name: 'Slack', status: 'paused' },
+    ]);
+    mockRunPrompt.mockResolvedValue({
+      output: {
+        intent_detected: true,
+        suggestions: [
+          {
+            id: 'linear-mcp',
+            name: 'Linear',
+            reason: 'Re-install Linear to file the issue.',
+            confidence: 0.9,
+          },
+        ],
+      },
+      fellBackToDeterministic: false,
+    });
+
+    const res = await request(
+      buildApp(),
+      'POST',
+      `/api/assistant/install-suggestion?userId=${USER_ID}`,
+      { userMessage: 'File a Linear issue', assistantReply: 'I cannot' },
+    );
+
+    expect(res.status).toBe(200);
+    const body = res.body as {
+      suggestions: Array<{ registryId: string }>;
+    };
+    // Linear's status='uninstalled' so it's NOT treated as installed,
+    // so the re-install suggestion lands.
+    expect(body.suggestions).toHaveLength(1);
+    expect(body.suggestions[0]!.registryId).toBe('linear-mcp');
+  });
+
+  it('drops hallucinated suggestion ids that do not appear in the registry', async () => {
+    mockAiProviderRepository.getEnabledForUser.mockResolvedValue([
+      { provider: 'anthropic', api_key: 'k', model: 'claude-haiku-4-5', base_url: null },
+    ]);
+    mockMcpServerRepository.listForUser.mockResolvedValue([]);
+    // LLM returns a mix: one real registry id, one hallucinated id that
+    // doesn't exist in the registry candidate set.
+    mockRunPrompt.mockResolvedValue({
+      output: {
+        intent_detected: true,
+        suggestions: [
+          {
+            id: 'linear-mcp',
+            name: 'Linear',
+            reason: 'file an issue',
+            confidence: 0.9,
+          },
+          {
+            id: 'nonexistent-fake-mcp',
+            name: 'Fake',
+            reason: 'this was hallucinated',
+            confidence: 0.95,
+          },
+        ],
+      },
+      fellBackToDeterministic: false,
+    });
+
+    const res = await request(
+      buildApp(),
+      'POST',
+      `/api/assistant/install-suggestion?userId=${USER_ID}`,
+      { userMessage: 'do a thing', assistantReply: 'I cannot' },
+    );
+
+    expect(res.status).toBe(200);
+    const body = res.body as {
+      suggestions: Array<{ registryId: string }>;
+    };
+    expect(body.suggestions).toHaveLength(1);
+    expect(body.suggestions[0]!.registryId).toBe('linear-mcp');
+  });
+
+  it('returns 413 when userMessage or assistantReply exceeds 16KB', async () => {
+    const giant = 'a'.repeat(16 * 1024 + 1);
+    const res = await request(
+      buildApp(),
+      'POST',
+      `/api/assistant/install-suggestion?userId=${USER_ID}`,
+      { userMessage: giant, assistantReply: 'ok' },
+    );
+    expect(res.status).toBe(413);
+    expect(mockRunPrompt).not.toHaveBeenCalled();
   });
 
   it('reports no_llm_configured when the prompt falls back to deterministic', async () => {
