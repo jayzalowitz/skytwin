@@ -120,12 +120,21 @@ export class CockroachManager {
     const dataDir = this.getDataDir();
     mkdirSync(dataDir, { recursive: true });
 
+    // Pin the CRDB log dir to userData/crdb-logs so the timeout error
+    // message in waitForReady() points at a real location. Without
+    // --log-dir, CRDB writes to a default that depends on platform and
+    // how the binary was invoked — fine for normal operation, confusing
+    // when something fails on first run.
+    const logDir = join(app.getPath('userData'), 'crdb-logs');
+    mkdirSync(logDir, { recursive: true });
+
     const args = [
       'start-single-node',
       '--insecure',
       `--listen-addr=${this.listenHost}:${this.sqlPort}`,
       `--http-addr=${this.listenHost}:${this.httpPort}`,
       `--store=${dataDir}`,
+      `--log-dir=${logDir}`,
     ];
 
     console.log('[crdb] Spawning', bin, args.join(' '));
@@ -236,7 +245,8 @@ export class CockroachManager {
     }
     throw new Error(
       `CockroachDB did not accept connections on ${this.listenHost}:${this.sqlPort} ` +
-      `within ${this.startTimeoutMs / 1000}s. Check logs in ${this.getDataDir()}/logs.`,
+      `within ${this.startTimeoutMs / 1000}s. Check logs in ` +
+      `${join(app.getPath('userData'), 'crdb-logs')}.`,
     );
   }
 
