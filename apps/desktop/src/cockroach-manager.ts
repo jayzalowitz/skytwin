@@ -170,13 +170,34 @@ export class CockroachManager {
     const proc = this.process;
     this.process = null;
 
-    // Try graceful drain via `cockroach quit` first — drains connections,
-    // flushes WAL, finishes pending replication. Falls through to SIGTERM
-    // if quit can't reach the node (e.g. it's already shutting down).
+    // Try graceful drain via `cockroach node drain` first — drains
+    // connections, flushes WAL, finishes pending replication. On
+    // success, CRDB exits on its own and the SIGTERM below becomes a
+    // no-op. Falls through to SIGTERM if drain can't reach the node
+    // (e.g. it's already shutting down).
     await this.gracefulQuit();
 
-    proc.kill('SIGTERM');
+    // If the drain already caused CRDB to exit, proc.kill('SIGTERM')
+    // throws ESRCH (no such process) and would propagate, turning a
+    // clean shutdown into an exception. proc.exitCode is the durable
+    // signal for that state (null until the process exits); proc.killed
+    // alone only flips after a signal we sent. The try/catch is the
+    // portable belt to that suspenders.
+    if (proc.exitCode === null) {
+      try {
+        proc.kill('SIGTERM');
+      } catch {
+        // already exited from the drain — proceed to the wait below.
+      }
+    }
     await new Promise<void>((resolve) => {
+      // Short-circuit if CRDB already exited (drain succeeded) — the
+      // first 'exit' handler at line ~160 already cleared this.process
+      // and the next .once('exit') would never fire.
+      if (proc.exitCode !== null) {
+        resolve();
+        return;
+      }
       const timer = setTimeout(() => {
         try {
           proc.kill('SIGKILL');

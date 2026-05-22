@@ -28,6 +28,34 @@ export interface DatabaseConfig {
  * bundled CRDB on the chosen port stayed empty — every downstream query
  * 500s and OAuth callbacks die on "column does not exist".
  */
+/**
+ * Translate libpq `sslmode=` values to node-postgres ssl config. Without
+ * an explicit handler for `require`/`verify-ca`/`verify-full`, the previous
+ * implementation returned `undefined` for everything except `disable` —
+ * which means a `DATABASE_URL=…?sslmode=require` would fall through to
+ * the `DATABASE_SSL` env var (default false) and connect over plaintext,
+ * silently downgrading the connection against a secure CRDB cluster.
+ *
+ *   disable       → false                            (no SSL)
+ *   allow / prefer → undefined (let node-postgres decide; mirrors libpq)
+ *   require       → { rejectUnauthorized: false }    (SSL, skip CA check —
+ *                                                     same shape as the
+ *                                                     legacy DATABASE_SSL=true)
+ *   verify-ca, verify-full → { rejectUnauthorized: true }
+ *
+ * Unknown values fall through to undefined so a typo doesn't silently
+ * downgrade — the env-var fallback path applies as before.
+ */
+function sslConfigForSslmode(sslmode: string | null): DatabaseConfig['ssl'] | undefined {
+  if (sslmode === null) return undefined;
+  if (sslmode === 'disable') return false;
+  if (sslmode === 'require') return { rejectUnauthorized: false };
+  if (sslmode === 'verify-ca' || sslmode === 'verify-full') {
+    return { rejectUnauthorized: true };
+  }
+  return undefined;
+}
+
 function parseDatabaseUrl(url: string): Partial<DatabaseConfig> | null {
   try {
     const u = new URL(url);
@@ -37,7 +65,7 @@ function parseDatabaseUrl(url: string): Partial<DatabaseConfig> | null {
       database: u.pathname.replace(/^\//, '') || 'skytwin',
       user: decodeURIComponent(u.username) || 'root',
       password: u.password ? decodeURIComponent(u.password) : undefined,
-      ssl: u.searchParams.get('sslmode') === 'disable' ? false : undefined,
+      ssl: sslConfigForSslmode(u.searchParams.get('sslmode')),
     };
   } catch {
     return null;

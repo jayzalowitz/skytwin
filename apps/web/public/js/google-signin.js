@@ -46,9 +46,14 @@ function generatePendingKey() {
  * @param {string|null} [opts.userId]   The existing user to connect. Required unless `newUser` is true.
  * @param {boolean} [opts.newUser]      Start the new-user (auto-create from verified email) flow.
  * @param {string|null} [opts.next]     Dashboard deep-link to land on post-callback (e.g. 'connect-gmail'). Server whitelists the value.
- * @param {(result: { connected: boolean, userId?: string, accountEmail?: string, scopes?: string[], nextHash?: string|null }) => void} [opts.onComplete]
+ * @param {(result: { connected: boolean, sessionToken?: string|null, userId?: string, accountEmail?: string, scopes?: string[], nextHash?: string|null }) => void} [opts.onComplete]
  *     Desktop only — called when polling resolves (existing-user or
- *     newUser flow). `{ connected: false }` on timeout.
+ *     newUser flow). `{ connected: false }` on timeout. For the newUser
+ *     pendingKey flow, `sessionToken` is the 7-day session minted by
+ *     `/api/oauth/google/pending/:key` — callers must store it under
+ *     `KEY_SESSION_TOKEN` so subsequent API calls authenticate. The
+ *     existing-user `pollUntilConnected` path doesn't set it (the
+ *     caller is already signed in via QR pairing or web redirect).
  * @returns {Promise<{ status: 'redirecting' | 'polling' | 'error', error?: string, code?: string, help?: string }>}
  */
 export async function startGoogleSignIn({ userId = null, newUser = false, next = null, onComplete } = {}) {

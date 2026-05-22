@@ -9,6 +9,14 @@
 # The desktop Electron process (service-manager.ts) spawns the embedded API and
 # worker as child processes and serves the embedded web dashboard from disk.
 #
+# Bash dependency note. This script is bash; the `prepackage` npm script in
+# apps/desktop/package.json invokes it via `bash scripts/build-single-binary.sh`.
+# On Windows GitHub Actions runners bash is available via Git for Windows (which
+# the runner image ships preinstalled) so CI works without extra setup. Local
+# Windows developers building a .exe must have Git Bash, WSL, or MSYS on PATH —
+# stock cmd.exe / PowerShell won't run this. A future port to Node would remove
+# this constraint but the CI matrix doesn't gate on it today.
+#
 # Usage:
 #   bash apps/desktop/scripts/build-single-binary.sh
 #
