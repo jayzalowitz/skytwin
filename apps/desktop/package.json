@@ -14,11 +14,12 @@
     "dev": "tsc && electron .",
     "build": "node -e \"console.log('Desktop build requires: pnpm --filter @skytwin/desktop package:[mac|win|linux]')\"",
     "test": "vitest run",
-    "package:mac": "tsc && electron-builder --mac",
-    "package:win": "tsc && electron-builder --win",
-    "package:linux": "tsc && electron-builder --linux",
-    "package:all": "tsc && electron-builder --mac --win --linux",
-    "package:signed": "tsc && npx ts-node scripts/sign-and-notarize.ts -- --mac --win --linux",
+    "prepackage": "bash scripts/build-single-binary.sh",
+    "package:mac": "tsc && pnpm run prepackage && electron-builder --mac",
+    "package:win": "tsc && pnpm run prepackage && electron-builder --win",
+    "package:linux": "tsc && pnpm run prepackage && electron-builder --linux",
+    "package:all": "tsc && pnpm run prepackage && electron-builder --mac --win --linux",
+    "package:signed": "tsc && pnpm run prepackage && npx ts-node scripts/sign-and-notarize.ts -- --mac --win --linux",
     "build:single-binary": "bash scripts/build-single-binary.sh"
   },
   "build": {
@@ -99,6 +100,13 @@
       {
         "from": "dist/embedded",
         "to": "embedded",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "dist/embedded/cockroach",
+        "to": "cockroach",
         "filter": [
           "**/*"
         ]

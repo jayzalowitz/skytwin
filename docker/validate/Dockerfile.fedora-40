@@ -1,0 +1,37 @@
+# Validation: Fedora 40, fresh system, runs install.sh end-to-end.
+# Same contract as the other two — different package manager (dnf) and a
+# noticeably-different default toolchain stack. install.sh shells out to
+# `apt-get` directly in one path; this image makes sure that path either
+# doesn't fire or fails gracefully on a dnf-only system.
+
+FROM fedora:40
+
+ENV LC_ALL=C.UTF-8 \
+    LANG=C.UTF-8
+
+# Fedora's base image already includes curl + ca-certificates + bash; we
+# add the rest. `iputils` for ping debugging from the validator script,
+# `procps-ng` for ps/kill on Fedora (the Linux baseline `procps` doesn't
+# exist there).
+RUN dnf install -y --setopt=install_weak_deps=False \
+        git \
+        sudo \
+        procps-ng \
+        lsof \
+        nc \
+        bash \
+    && dnf clean all
+
+RUN useradd --create-home --shell /bin/bash --uid 1000 skytwin \
+    && echo 'skytwin ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/skytwin \
+    && chmod 0440 /etc/sudoers.d/skytwin
+
+USER skytwin
+WORKDIR /home/skytwin
+
+COPY --chown=skytwin:skytwin run-validation.sh /opt/validate-skytwin
+USER root
+RUN chmod +x /opt/validate-skytwin
+USER skytwin
+
+ENTRYPOINT ["/opt/validate-skytwin"]

@@ -1,7 +1,8 @@
-import { dialog } from 'electron';
+import { app, dialog } from 'electron';
 import { execSync, execFile } from 'child_process';
 import { join } from 'path';
-import { readFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
+import { homedir } from 'os';
 
 interface DependencyCheck {
   name: string;
@@ -92,11 +93,45 @@ function checkCommand(command: string): boolean {
 }
 
 /**
+ * Locations where a bundled or user-installed CockroachDB binary may live.
+ * If any of these exists, the dependency is considered satisfied and the
+ * first-launch dialog skips it — CockroachManager will spawn it directly.
+ */
+function bundledCockroachLocations(): string[] {
+  const platformArch = `${process.platform}-${process.arch}`;
+  const binName = process.platform === 'win32' ? 'cockroach.exe' : 'cockroach';
+  const candidates: string[] = [];
+
+  // Packaged Electron bundle: under <resourcesPath>/cockroach/<platform-arch>/.
+  if (app.isPackaged) {
+    candidates.push(join(process.resourcesPath, 'cockroach', platformArch, binName));
+  }
+
+  // Dev fallback: installed by `bin/skytwin-db install`.
+  candidates.push(join(homedir(), '.local', 'share', 'skytwin', 'bin', binName));
+
+  return candidates;
+}
+
+function hasBundledCockroach(): boolean {
+  return bundledCockroachLocations().some((p) => existsSync(p));
+}
+
+/**
  * Checks all required dependencies. Returns list of missing ones.
+ *
+ * CockroachDB is considered satisfied if EITHER the binary is on PATH
+ * (legacy path, brew install / apt install) OR the desktop bundle ships
+ * its own at <resourcesPath>/cockroach/<platform-arch>/. Until v0.6.55 we
+ * only checked PATH, which forced every desktop user to install CRDB
+ * themselves — exactly the friction we set out to remove.
  */
 export function checkDependencies(): { name: string; installHint: string }[] {
   const missing: { name: string; installHint: string }[] = [];
   for (const dep of DEPENDENCIES) {
+    if (dep.name === 'CockroachDB' && hasBundledCockroach()) {
+      continue;
+    }
     if (!checkCommand(dep.command)) {
       missing.push({ name: dep.name, installHint: dep.installHint });
     }

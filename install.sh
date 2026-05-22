@@ -12,17 +12,25 @@
 #
 # What it does (and only what's missing — never reinstalls anything you have):
 #   1. Detects macOS / Linux / WSL.
-#   2. Installs Homebrew (mac), Node 20+, pnpm, Docker, Ollama. Skips any
-#      that are already on PATH.
-#   3. Clones jayzalowitz/skytwin into ~/skytwin (or pulls latest if it's
+#   2. Installs Homebrew (mac), Node 20+, pnpm. Skips any that are already
+#      on PATH.
+#   3. Fetches the official CockroachDB single-node binary (hash-verified)
+#      into ~/.local/share/skytwin/bin/cockroach. NO Docker required.
+#   4. Clones jayzalowitz/skytwin into ~/skytwin (or pulls latest if it's
 #      already there).
-#   4. Runs the project bootstrap (pnpm install, build, migrate, seed).
-#   5. Starts CockroachDB, the API, the dashboard, the worker, and the
-#      local LLM bridge.
-#   6. Opens http://localhost:3200 in your browser.
+#   5. Runs the project bootstrap (pnpm install, build, migrate, seed).
+#   6. Starts CockroachDB, the API, the dashboard, and the worker.
+#   7. Opens http://localhost:3200 in your browser.
 #
 # Re-running this script is safe — it pulls latest, restarts services, and
 # opens the dashboard.
+#
+# Opt-in env vars (advanced):
+#   SKYTWIN_USE_DOCKER=true     Use Docker for CRDB instead of the native
+#                               binary (CI / legacy workflows).
+#   SKYTWIN_WITH_OLLAMA=true    Also install Ollama + pull the gemma4
+#                               model (9.6GB). Embedded llama.cpp is the
+#                               default LLM and doesn't need this.
 
 set -euo pipefail
 
@@ -75,13 +83,30 @@ fi
 # ── Step 1: clone or update the repo ───────────────────────────────────
 
 step "Fetching the SkyTwin repo into $INSTALL_DIR"
+# Three states to handle:
+#   - $INSTALL_DIR doesn't exist → clone from $REPO_URL.
+#   - $INSTALL_DIR has a real .git directory → fetch + ff-only merge.
+#   - $INSTALL_DIR has source but no .git directory (Conductor worktree
+#     gitlinks, validation-harness untar, manual copy) → use as-is.
+# Conductor worktrees ship .git as a 75-byte gitlink file pointing into
+# a shared object store, so `[ -d $INSTALL_DIR/.git ]` returns false even
+# though the repo is fully present. The `-e` check + `ls -A` fallback
+# covers that and also handles a hand-extracted source tree.
 if [ -d "$INSTALL_DIR/.git" ]; then
   ok "Already cloned — pulling latest"
-  git -C "$INSTALL_DIR" fetch origin "$BRANCH" --quiet
-  # Use --ff-only so we never overwrite uncommitted local changes.
-  if ! git -C "$INSTALL_DIR" merge --ff-only "origin/$BRANCH" 2>/dev/null; then
-    warn "Local changes detected — keeping your version, skipping pull."
+  # Tolerate offline / sandboxed environments (validation containers, etc.)
+  # where `origin` may not be reachable. The on-disk version is then used
+  # as-is, which is exactly what the validation harness wants.
+  if git -C "$INSTALL_DIR" fetch origin "$BRANCH" --quiet 2>/dev/null; then
+    # Use --ff-only so we never overwrite uncommitted local changes.
+    if ! git -C "$INSTALL_DIR" merge --ff-only "origin/$BRANCH" 2>/dev/null; then
+      warn "Local changes detected — keeping your version, skipping pull."
+    fi
+  else
+    warn "Could not reach $REPO_URL — using the on-disk version as-is."
   fi
+elif [ -d "$INSTALL_DIR" ] && [ -n "$(ls -A "$INSTALL_DIR" 2>/dev/null)" ]; then
+  ok "Found existing source at $INSTALL_DIR (no .git directory) — using as-is"
 else
   git clone --branch "$BRANCH" --depth 1 "$REPO_URL" "$INSTALL_DIR"
   ok "Cloned"
@@ -101,54 +126,58 @@ fi
 # real failure, so we forward its exit code rather than burying it.
 ./bin/skytwin-install
 
-# ── Step 2.5: make sure the Docker daemon is actually reachable ────────
+# ── Step 2.5: Docker daemon (only when explicitly using Docker) ────────
 #
-# A fresh `brew install --cask docker` leaves Docker Desktop installed but
-# not running, which only surfaces later as a confusing CockroachDB startup
-# error. Catch it here with a clear message instead.
+# In the default (native CRDB) path we don't need Docker at all. Only run
+# this check when the user opted into Docker via SKYTWIN_USE_DOCKER=true,
+# because a fresh `brew install --cask docker` leaves Docker Desktop
+# installed but not running, which used to surface later as a confusing
+# CockroachDB startup error.
 
-step "Checking that Docker is running"
-if ! command -v docker >/dev/null 2>&1; then
-  warn "Docker isn't on PATH yet. If you just installed Docker Desktop, open it once and re-run this script."
-elif docker info >/dev/null 2>&1; then
-  ok "Docker daemon is running"
-else
-  warn "Docker is installed but the daemon isn't responding yet."
-  case "$OS" in
-    mac)
-      if [ -d "/Applications/Docker.app" ]; then
-        echo "  Starting Docker Desktop…"
-        open -a Docker || true
-        echo -n "  Waiting for Docker to come up "
-        for _ in $(seq 1 60); do
-          if docker info >/dev/null 2>&1; then echo ""; ok "Docker is ready"; break; fi
-          echo -n "."
-          sleep 1
-        done
-        if ! docker info >/dev/null 2>&1; then
-          echo ""
-          fail "Docker still isn't responding. Open Docker Desktop manually, wait for the whale icon to settle, then re-run this script."
+if [ "${SKYTWIN_USE_DOCKER:-false}" = "true" ]; then
+  step "Checking that Docker is running (SKYTWIN_USE_DOCKER=true)"
+  if ! command -v docker >/dev/null 2>&1; then
+    warn "Docker isn't on PATH yet. If you just installed Docker Desktop, open it once and re-run this script."
+  elif docker info >/dev/null 2>&1; then
+    ok "Docker daemon is running"
+  else
+    warn "Docker is installed but the daemon isn't responding yet."
+    case "$OS" in
+      mac)
+        if [ -d "/Applications/Docker.app" ]; then
+          echo "  Starting Docker Desktop…"
+          open -a Docker || true
+          echo -n "  Waiting for Docker to come up "
+          for _ in $(seq 1 60); do
+            if docker info >/dev/null 2>&1; then echo ""; ok "Docker is ready"; break; fi
+            echo -n "."
+            sleep 1
+          done
+          if ! docker info >/dev/null 2>&1; then
+            echo ""
+            fail "Docker still isn't responding. Open Docker Desktop manually, wait for the whale icon to settle, then re-run this script."
+          fi
+        else
+          fail "Docker Desktop isn't installed in /Applications. Install it from https://docker.com and re-run this script."
         fi
-      else
-        fail "Docker Desktop isn't installed in /Applications. Install it from https://docker.com and re-run this script."
-      fi
-      ;;
-    linux)
-      echo "  Trying: sudo systemctl start docker"
-      sudo systemctl start docker 2>/dev/null || true
-      sleep 2
-      if ! docker info >/dev/null 2>&1; then
-        fail "Docker daemon isn't running. Start it with: sudo systemctl start docker"
-      fi
-      ok "Docker is ready"
-      ;;
-    wsl)
-      fail "Docker isn't reachable from WSL. Open Docker Desktop on Windows and enable 'Use the WSL 2 based engine' + 'WSL integration' for this distro, then re-run."
-      ;;
-    *)
-      fail "Docker isn't running. Start it and re-run this script."
-      ;;
-  esac
+        ;;
+      linux)
+        echo "  Trying: sudo systemctl start docker"
+        sudo systemctl start docker 2>/dev/null || true
+        sleep 2
+        if ! docker info >/dev/null 2>&1; then
+          fail "Docker daemon isn't running. Start it with: sudo systemctl start docker"
+        fi
+        ok "Docker is ready"
+        ;;
+      wsl)
+        fail "Docker isn't reachable from WSL. Open Docker Desktop on Windows and enable 'Use the WSL 2 based engine' + 'WSL integration' for this distro, then re-run."
+        ;;
+      *)
+        fail "Docker isn't running. Start it and re-run this script."
+        ;;
+    esac
+  fi
 fi
 
 # ── Step 3: start everything ───────────────────────────────────────────
@@ -158,16 +187,25 @@ if [ ! -x bin/skytwin-dev ]; then
   fail "bin/skytwin-dev is missing — installation appears incomplete."
 fi
 
-# bin/skytwin-dev starts CockroachDB (Docker), API, worker, dashboard,
-# OpenClaw bridge, and supervises them with auto-restart. It logs to
+# bin/skytwin-dev starts CockroachDB (native binary by default), API,
+# worker, dashboard, and optionally the OpenClaw bridge if Ollama was
+# explicitly installed. It supervises them with auto-restart, logs to
 # /tmp/skytwin-*.log and writes pids to .skytwin-pids.
 #
 # We start it in the background so this script can poll the dashboard
-# and open it once it's up. Ollama is enabled because bin/skytwin-install
-# already pulled the gemma model — disabling it here would mean the user
-# downloaded 9.6GB for nothing and the OpenClaw bridge wouldn't start.
+# and open it once it's up. Ollama is opt-in (SKYTWIN_WITH_OLLAMA=true);
+# in the default install the OpenClaw bridge is skipped because the
+# embedded llama.cpp provider handles LLM calls without a 9.6GB model
+# download. Pass --use-docker through if the user opted into Docker.
 mkdir -p .logs
-nohup ./bin/skytwin-dev >.logs/skytwin-dev.log 2>&1 &
+DEV_ARGS=()
+if [ "${SKYTWIN_USE_DOCKER:-false}" = "true" ]; then
+  DEV_ARGS+=(--use-docker)
+fi
+if [ "${SKYTWIN_WITH_OLLAMA:-false}" != "true" ]; then
+  DEV_ARGS+=(--no-ollama)
+fi
+nohup ./bin/skytwin-dev "${DEV_ARGS[@]}" >.logs/skytwin-dev.log 2>&1 &
 DEV_PID=$!
 
 # On any exit (success, INT, TERM, dashboard timeout), make sure we
@@ -197,6 +235,20 @@ if ! curl -sf -o /dev/null "$DASHBOARD_URL"; then
   err "Dashboard didn't come online within 90s."
   echo "  Check the logs at:    .logs/skytwin-dev.log"
   echo "  Stop the services:    ./bin/skytwin-dev --stop"
+
+  # Surface the most useful diagnostic lines immediately so the user (or
+  # the validation harness) doesn't need to dig through five log files
+  # to find the cause. We tail each one separately so a missing log
+  # doesn't suppress the others.
+  for log in .logs/skytwin-dev.log /tmp/skytwin-api.log /tmp/skytwin-web.log /tmp/skytwin-worker.log; do
+    if [ -s "$log" ]; then
+      echo ""
+      echo "  --- $log (tail 30) ---"
+      tail -n 30 "$log" 2>/dev/null | sed 's/^/    /'
+    fi
+  done
+  echo ""
+
   cleanup_on_failure
   exit 1
 fi

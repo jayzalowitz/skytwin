@@ -1,0 +1,61 @@
+name: Install Validation
+
+# Runs install.sh end-to-end on fresh Ubuntu / Debian / Fedora containers.
+# Catches regressions in install.sh / bin/skytwin-install / bin/skytwin-dev /
+# bin/skytwin-db / and the @skytwin/db migrations themselves — anything that
+# would block a grandma-grade first-time install.
+#
+# Why not bake into build.yml: the build matrix already does typecheck + tests
+# in ~5 minutes. Adding three fresh-OS docker runs (~8-10 min each) bloats
+# every PR. We run install-validation as its own workflow, gated on changes to
+# the install pipeline so PRs that only touch unrelated code don't pay the
+# cost.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    paths:
+      - 'install.sh'
+      - 'bin/skytwin-install'
+      - 'bin/skytwin-dev'
+      - 'bin/skytwin-db'
+      - 'bin/validate-installs'
+      - 'docker/validate/**'
+      - 'packages/db/src/migrations/**'
+      - 'packages/db/src/schemas/**'
+      - 'apps/desktop/src/cockroach-manager.ts'
+      - 'apps/desktop/src/service-manager.ts'
+      - 'apps/desktop/src/first-launch.ts'
+      - '.github/workflows/install-validation.yml'
+  workflow_dispatch: {}
+
+concurrency:
+  group: install-validation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate ${{ matrix.distro }} install
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: [ubuntu, debian, fedora]
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Run install validation
+        run: ./bin/validate-installs ${{ matrix.distro }}
+
+      - name: Upload validation log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: validate-${{ matrix.distro }}-log
+          path: .logs/validate/*.log
+          retention-days: 7

@@ -140,7 +140,9 @@ Every path produces an explanation. Every outcome feeds back into the twin. The 
 curl -fsSL https://raw.githubusercontent.com/jayzalowitz/skytwin/main/install.sh | bash
 ```
 
-That's it. The installer detects your OS, installs anything missing (Homebrew on mac, Node 20+, pnpm, Docker, Ollama), clones the repo to `~/skytwin`, runs the bootstrap, starts the services, and opens the dashboard at `http://localhost:3200` once it's up. Re-running pulls latest and restarts.
+That's it. The installer detects your OS, installs anything missing (Homebrew on mac, Node 20+, pnpm), fetches the official CockroachDB single-node binary (hash-verified), clones the repo to `~/skytwin`, runs the bootstrap, starts the services, and opens the dashboard at `http://localhost:3200` once it's up. Re-running pulls latest and restarts.
+
+**No Docker required.** Before v0.6.56 the installer pulled Docker Desktop and ran CockroachDB inside a container — by far the heaviest dependency on the list, with its own EULA and a "open it once after install" gotcha. The default path now installs the CRDB binary directly into `~/.local/share/skytwin/bin/cockroach` and spawns it as a child process. Docker remains supported via `SKYTWIN_USE_DOCKER=true` for users who already have a Docker workflow.
 
 To stop later: `cd ~/skytwin && ./bin/skytwin-dev --stop`.
 
@@ -148,6 +150,17 @@ To stop later: `cd ~/skytwin && ./bin/skytwin-dev --stop`.
 1. The dashboard opens. Type any situation into "Ask your twin" — the agent reasons out loud and explains what it would do, with confidence and alternatives. No accounts connected yet, no signals required.
 2. Click **"Or explore with a sample profile first →"** to skip the OAuth setup entirely and poke at a fully populated example twin (decisions, learnings, approvals, the whole thing).
 3. When you're ready to wire up your own, the in-app walkthrough handles the Google API setup in about 5 minutes — paste your client ID, click "Save and connect now," and you're at Google's sign-in.
+
+### Advanced env vars
+
+The defaults give you a working SkyTwin without any LLM API keys or Docker. Power users can opt into:
+
+| Env var | Effect |
+|---------|--------|
+| `SKYTWIN_USE_DOCKER=true` | Run CockroachDB inside Docker instead of as a native binary. Useful for users who already have Docker and prefer container lifecycle. |
+| `SKYTWIN_WITH_OLLAMA=true` | Install Ollama + pull the gemma4 model (~9.6GB). The default install uses the embedded llama.cpp provider, which doesn't require this. |
+| `SKYTWIN_DISABLE_EMBEDDED=1` | Skip the embedded LLM provider in the API's provider chain. Pair with hosted-only keys (e.g. `ANTHROPIC_API_KEY`) for reproducible evaluation runs. |
+| `SKYTWIN_CRDB_VERSION` | Pin a non-default CockroachDB version. Refresh the hash tables in `bin/skytwin-db` and `apps/desktop/scripts/build-single-binary.sh` together. |
 
 ### Manual setup
 
@@ -157,14 +170,16 @@ If you'd rather drive each step yourself:
 
 - [Node.js](https://nodejs.org/) >= 20
 - [pnpm](https://pnpm.io/) >= 9
-- [Docker](https://www.docker.com/) (for CockroachDB)
+- That's it. CockroachDB is fetched as a native binary by `bin/skytwin-db install`. No Docker, no system DB install.
 
 ```bash
 git clone https://github.com/jayzalowitz/skytwin.git && cd skytwin
 pnpm install
 
-# Start the database
-docker-compose up -d cockroachdb
+# Fetch + start CockroachDB (native binary, hash-verified)
+./bin/skytwin-db install
+./bin/skytwin-db start
+./bin/skytwin-db ensure-db
 
 # Configure
 cp .env.example .env   # edit with your values
@@ -179,6 +194,23 @@ pnpm dev
 ```
 
 The API starts on `localhost:3100`, the web dashboard on `localhost:3200`.
+
+### Validating the install path
+
+Before shipping, regression-check the install end-to-end across a matrix
+of Linux distros:
+
+```bash
+./bin/validate-installs              # Ubuntu 22.04, Debian 12, Fedora 40
+./bin/validate-installs ubuntu       # one distro
+./bin/validate-installs --keep-on-fail ubuntu  # leave container alive on failure
+```
+
+Each run spawns a fresh OS container, untars a snapshot of the working
+tree, runs `install.sh` exactly the way a real user would, and asserts
+the dashboard responds at `localhost:3200`. macOS/Windows are exercised
+via the same `install.sh` and `bin/skytwin-db` codepaths but need a real
+machine to verify the platform-specific bits (Homebrew, NSIS, etc.).
 
 ### Running Tests
 

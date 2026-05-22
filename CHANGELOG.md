@@ -1,5 +1,43 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.56.0] - 2026-05-21
+
+### Changed
+
+- **CockroachDB now ships as a hash-verified native binary; Docker is no longer required.** The one-command installer (`curl … | bash`) used to install Docker Desktop just to run CockroachDB in a container — by far the heaviest dependency on the list, with its own EULA and a "open it once after install" gotcha. The default path now fetches the official CRDB release archive (sha256-verified against the published `.sha256sum` sidecar), unpacks it into `~/.local/share/skytwin/bin/cockroach`, and spawns it as a child process. `bin/skytwin-db {install,start,stop,status,ensure-db,reset}` is the new control surface. Docker remains supported as an opt-in via `SKYTWIN_USE_DOCKER=true` for CI and users who already have a Docker workflow.
+- **`bin/skytwin-dev` self-loads nvm.** Until now, `nohup ./bin/skytwin-dev` from `install.sh` (a non-interactive subshell) couldn't find `node` after a fresh nvm install because `.bashrc` doesn't fire in that context. Now the script sources `~/.nvm/nvm.sh` if `node` isn't on PATH. Same change for `corepack enable` + pnpm activation. Without this, the first-time install completed everything except actually starting the dashboard.
+- **Both `bin/skytwin-install` and `bin/skytwin-dev` pass `--concurrency=1` to `pnpm build`.** Sidesteps the known turbo race on `@skytwin/db`'s dist/.d.ts that CLAUDE.md already documents — fresh installs hit it every time. ~10s slower; deterministic.
+
+### Added
+
+- **Electron desktop app bundles CockroachDB.** `apps/desktop/scripts/build-single-binary.sh` downloads the per-platform CRDB release (darwin-arm64, darwin-amd64, linux-amd64, linux-arm64, windows-amd64) into `dist/embedded/cockroach/<platform-arch>/`, hash-verified. electron-builder's `extraResources` ships them. New `apps/desktop/src/cockroach-manager.ts` resolves the right binary per `process.platform`/`process.arch` at runtime, spawns single-node CRDB against `app.getPath('userData')/crdb-data`, waits for SQL readiness, ensures the `skytwin` database. `ServiceManager` starts it before API/worker; `first-launch.ts` no longer demands an external `cockroach` on PATH.
+- **Embedded llama.cpp is the default LLM fallback.** `apps/api/src/lib/llm-client-factory.ts` adds an `embedded` provider entry to the chain when BOTH the `llama-cli` binary AND a GGUF model are discoverable. Most dev machines have llama-cli on PATH via Homebrew but no model; the gate refuses to add a provider that would only throw `NotAvailableError`. Opt out via `SKYTWIN_DISABLE_EMBEDDED=1`.
+- **Docker-based install validation harness.** `bin/validate-installs [ubuntu|debian|fedora]` builds a snapshot tarball of the working tree (excluding `node_modules`, `dist`, `.turbo`, `*.tsbuildinfo`), mounts it into a fresh Ubuntu 22.04 / Debian 12 / Fedora 40 container, drives `install.sh` end-to-end, and asserts `localhost:3200` responds. Catches fresh-install regressions before they reach users.
+- **GitHub Actions workflow** (`.github/workflows/install-validation.yml`) runs the three-distro validation matrix on every PR that touches the install pipeline.
+
+### Fixed
+
+- **Migration 055 used `do` as a table alias, which is a CockroachDB v23.2+ reserved keyword.** Every fresh-install migration run failed at this statement with `error: at or near "do": syntax error`. Renamed to `outcomes`. Idempotent re-runs are a no-op because of `IF NOT EXISTS` on the column plus the `WHERE execution_plan_id IS NULL` backfill guard. Caught by the new validation harness — existing dev environments masked it because their Docker volumes already had the column.
+- **`bin/skytwin-db` detects orphaned listeners via the SQL port even when its own PID file is missing.** Without this, a script crash between `start` and PID-file-write left an unrecoverable `cockroach` process holding port 26257 that subsequent `start`s couldn't kick off and couldn't stop without manual `lsof | xargs kill`.
+- **Embedded provider gate also checks for an installed model**, not just the binary. Previous version added the provider whenever `which llama-cli` succeeded — which broke every `getLlmClientFromConfigFresh` test on dev machines that have llama-cli via Homebrew but no SkyTwin model.
+- **Snapshot tarball excludes `*.tsbuildinfo`.** Without this, tsc inside the validation container saw the host's incremental cache, decided "the build is up-to-date," and emitted `.js` + `.d.ts.map` but NOT `.d.ts` — silently breaking every downstream package that imports those types. Pure validation-harness bug, not a code bug, but it was masking a real install regression.
+
+### Why this matters
+
+The pre-v0.6.56 install needed Docker Desktop (~700MB, EULA, daemon-running gotcha) and Ollama + a 9.6GB gemma model just to run the default flow. A non-technical user couldn't get past that. The new default has two prerequisites — Node 20+ and pnpm — both installed automatically by `bin/skytwin-install`. The native CRDB binary is ~140MB, ships its own data dir, and survives reboots without any "open Docker once" step. The embedded LLM provider runs entirely on-device when present and silently no-ops when not.
+
+### Backward compatibility
+
+- `SKYTWIN_USE_DOCKER=true ./install.sh` reproduces the old Docker-based path. `bin/skytwin-dev --use-docker` does the same at runtime.
+- `SKYTWIN_WITH_OLLAMA=true ./install.sh` installs Ollama + pulls gemma4 for users who want the legacy LLM provider.
+- All existing env vars (`DATABASE_URL`, `ANTHROPIC_API_KEY`, etc.) still take precedence over the bundled defaults. Power users who hosted their own CRDB by setting `DATABASE_URL` keep working untouched.
+
+### Tests
+
+- 10 new tests in `apps/api/src/__tests__/llm-client-factory.test.ts` covering the embedded-runtime gate (binary-only, model-only, both, kill-switch, hosted-key combinations).
+- 5 new tests in `apps/desktop/src/__tests__/cockroach-manager.test.ts` covering path resolution, port overrides, connection string, and data dir.
+- Docker validation harness as a regression test for the install pipeline itself — replaces the manual "rebuild the world and see if it works" step that used to gate every release.
+
 ## [0.6.55.0] - 2026-05-18
 
 ### Changed

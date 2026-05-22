@@ -1,12 +1,14 @@
 import { fork, execSync, type ChildProcess } from 'child_process';
 import { join } from 'path';
 import { app } from 'electron';
+import { CockroachManager } from './cockroach-manager.js';
 
 export type ProcessState = 'running' | 'stopped' | 'starting' | 'error' | 'paused';
 
 export interface ServiceStatus {
   api: ProcessState;
   worker: ProcessState;
+  cockroach: ProcessState;
   overall: 'healthy' | 'degraded' | 'failed';
 }
 
@@ -31,6 +33,8 @@ const RESTART_DELAYS = [1000, 2000, 4000, 8000, 16000, 30000];
 export class ServiceManager {
   private api: ManagedProcess = { process: null, status: 'stopped', restartCount: 0, failureTimestamps: [], external: false };
   private worker: ManagedProcess = { process: null, status: 'stopped', restartCount: 0, failureTimestamps: [], external: false };
+  private cockroach = new CockroachManager();
+  private cockroachStatus: ProcessState = 'stopped';
   private onStatusChange: ((status: ServiceStatus) => void) | null = null;
   private healthCheckTimer: ReturnType<typeof setInterval> | null = null;
   private paused = false;
@@ -55,12 +59,16 @@ export class ServiceManager {
       API_PORT: '3100',
       WORKER_PORT: '3101',
       API_BASE_URL: 'http://localhost:3100',
-      DATABASE_URL: process.env['DATABASE_URL'] || 'postgresql://root@localhost:26257/skytwin?sslmode=disable',
+      // CockroachManager owns the wire format; if the user has set
+      // DATABASE_URL explicitly we honor it (e.g. pointing at a hosted
+      // CRDB for power users), otherwise we use the bundled instance.
+      DATABASE_URL: process.env['DATABASE_URL'] || this.cockroach.getConnectionString(),
     };
   }
 
   async startAll(): Promise<void> {
     this.paused = false;
+    await this.startCockroach();
     await this.startApi();
     const apiReady = await this.waitForApi(10000);
     if (apiReady) {
@@ -132,6 +140,19 @@ export class ServiceManager {
    * attach to whatever stranger happens to be answering on localhost:3100,
    * since that could be a wildly different version (or untrusted).
    */
+  private async startCockroach(): Promise<void> {
+    this.cockroachStatus = 'starting';
+    this.emitStatus();
+    try {
+      await this.cockroach.start();
+      this.cockroachStatus = 'running';
+    } catch (err) {
+      console.error('[crdb] Failed to start:', err);
+      this.cockroachStatus = 'error';
+    }
+    this.emitStatus();
+  }
+
   private async detectExternalApi(): Promise<boolean> {
     if (app.isPackaged) return false;
     const controller = new AbortController();
@@ -342,21 +363,37 @@ export class ServiceManager {
       this.healthCheckTimer = null;
     }
 
+    // Stop API/worker first so their open DB connections drain before we
+    // bring down CockroachDB — otherwise CRDB logs a flurry of "client
+    // disconnected" messages and the API logs "connection reset" on the
+    // last in-flight query, both of which are noise for the user.
     await Promise.all([
       this.stopProcess(this.api, 'api'),
       this.stopProcess(this.worker, 'worker'),
     ]);
+    try {
+      await this.cockroach.stop();
+      this.cockroachStatus = 'stopped';
+    } catch (err) {
+      console.error('[crdb] stop failed:', err);
+    }
     this.emitStatus();
   }
 
   getStatus(): ServiceStatus {
     const apiState = this.api.status;
     const workerState = this.worker.status;
+    const cockroachState = this.cockroachStatus;
 
     let overall: 'healthy' | 'degraded' | 'failed';
-    if (apiState === 'error' && workerState === 'error') {
+    // CRDB is foundational — if it's not up, API and worker can't function
+    // even if their processes are alive. Treat that as failed/degraded
+    // explicitly so the tray icon reflects reality.
+    if (cockroachState === 'error') {
       overall = 'failed';
-    } else if (apiState === 'error' || workerState === 'error') {
+    } else if (apiState === 'error' && workerState === 'error') {
+      overall = 'failed';
+    } else if (apiState === 'error' || workerState === 'error' || cockroachState !== 'running') {
       overall = 'degraded';
     } else if (apiState === 'running' && (workerState === 'running' || workerState === 'paused')) {
       overall = 'healthy';
@@ -364,7 +401,7 @@ export class ServiceManager {
       overall = 'degraded';
     }
 
-    return { api: apiState, worker: workerState, overall };
+    return { api: apiState, worker: workerState, cockroach: cockroachState, overall };
   }
 
   getUptime(): number {

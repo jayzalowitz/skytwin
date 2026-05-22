@@ -25,6 +25,9 @@ npm-debug.log*
 pnpm-debug.log*
 .expo/
 
+# Local dev-server / install-validation log + snapshot artifacts
+.logs/
+
 # IDE
 .idea/
 .vscode/
