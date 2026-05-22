@@ -35,8 +35,27 @@ The pre-v0.6.56 install needed Docker Desktop (~700MB, EULA, daemon-running gotc
 ### Tests
 
 - 10 new tests in `apps/api/src/__tests__/llm-client-factory.test.ts` covering the embedded-runtime gate (binary-only, model-only, both, kill-switch, hosted-key combinations).
-- 5 new tests in `apps/desktop/src/__tests__/cockroach-manager.test.ts` covering path resolution, port overrides, connection string, and data dir.
+- 6 new tests in `apps/desktop/src/__tests__/cockroach-manager.test.ts` covering path resolution, port overrides, connection string, data dir, and the 127.0.0.1-default bind.
 - Docker validation harness as a regression test for the install pipeline itself — replaces the manual "rebuild the world and see if it works" step that used to gate every release.
+
+### Fixed (post-/review)
+
+Findings from the in-PR `/review` pass and Copilot inline review on the
+initial commit (cf5eec5). Each landed as its own commit so the
+"what was the first cut, what did review catch" diff stays legible.
+
+- **Single-instance lock in Electron main (commit 9f81009).** Double-clicking the dock icon while the app was already running would race two `CockroachManager.start()` calls against the same data dir; loser hit CRDB's LOCK file with no UI feedback. Now `app.requestSingleInstanceLock()` rejects the second launch and surfaces the existing window.
+- **CRDB binds 127.0.0.1, not 'localhost' (commit 9f81009).** Avoids the IPv6-unspecified gotcha on systems whose `/etc/hosts` maps `localhost` to `::` — broadcasting the `--insecure` cluster to the LAN would have been remote root.
+- **Graceful drain via `cockroach node drain` + 30s SIGTERM timeout (commit 9f81009).** Previous 5s SIGKILL would have corrupted WAL mid-flush on every quit.
+- **`bin/skytwin-db` tmpdir cleanup via EXIT trap (commit 9f81009).** Every failed download / sha-mismatch / extract-failure used to leak ~70MB into `/tmp`.
+- **electron-builder extraResources per-platform filtering (commit 9f81009).** Old config shipped all five platforms' CRDB binaries (~700MB) inside every artifact. Each platform's installer now carries only its own binary.
+- **`bin/skytwin-db` honors `XDG_DATA_HOME` (commit 9f81009).** Falls back to `~/.local/share/skytwin` per spec when unset.
+- **`SKYTWIN_DB_BINARY_URL_BASE` allowlist (commit 9f81009).** Belt-and-suspenders against `file://` / `ftp://` / internal-SSRF overrides; SHA-256 verify is still the real defense.
+- **Per-service logs to `$ROOT/.logs/` instead of `/tmp/` (commit 9f81009).** systemd `PrivateTmp=yes` and `tmpfiles.d` cleanup were wiping the exact logs needed to debug a failed install attempt.
+- **`find -perm` BSD/macOS portability (commit 9f81009).** Old `-perm -u+x` was GNU-only; the BSD find on macOS silently emitted nothing and the install fell through to "Could not locate cockroach binary."
+- **CRDB `--log-dir` pinned to `userData/crdb-logs` (commit 9d87164 — Copilot).** The `waitForReady()` timeout error message said "Check logs in `<dataDir>/logs`" but CRDB was using its default location.
+- **`isReady()` → `isCrdbResponding()` real SQL probe + always ensure-db on the early-return path (commit e3c3951 — Copilot).** The old TCP-listener check would have accepted any process on port 26257, including non-CRDB tools; a partial first run that left CRDB running without `CREATE DATABASE` would have made the next launch silently start the API against a missing database. The new check runs `cockroach sql -e 'SELECT 1'`, and `start()` always calls `ensureDatabase()`.
+- **Docs sync — CONTRIBUTING.md + docs/cockroach-architecture.md + docs/technical-spec.md (commit bb25f9b).** Three docs still told contributors to run `docker-compose up -d cockroachdb`; all now lead with `bin/skytwin-db install && start && ensure-db` and treat Docker as a labeled opt-in subsection.
 
 ## [0.6.55.0] - 2026-05-18
 
