@@ -473,9 +473,17 @@ export function createOAuthRouter(): Router {
       // aren't met" — distinct from 503 (server-side config missing).
       if (includeGmail && skipped.some((s) => s.capability === 'gmail')) {
         res.status(412).json({
-          error: 'Gmail scopes require your own Google OAuth credentials.',
+          error: 'Gmail setup needs to finish before SkyTwin can read your inbox.',
           code: 'GMAIL_REQUIRES_BYO_CLIENT',
-          help: '/docs/connect-gmail',
+          // In-app wizard route. The dashboard SPA renders it at
+          // /#/connect-gmail (apps/web/public/js/pages/connect-gmail.js)
+          // and handles the back-half of the flow (paste credentials,
+          // re-trigger OAuth with ?include=gmail). The static external
+          // doc at https://jayzalowitz.github.io/skytwin/connect-gmail.html
+          // is the public-web mirror for users who hit this URL without
+          // the desktop app installed.
+          help: '#/connect-gmail',
+          docs: 'https://jayzalowitz.github.io/skytwin/connect-gmail.html',
           skipped,
         });
         return;

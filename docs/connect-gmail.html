@@ -35,10 +35,10 @@
   <div class="wrap">
     <nav><a href="index.html">← Back to SkyTwin</a></nav>
     <h1>Connect Gmail to SkyTwin</h1>
-    <p class="meta">5-minute setup. One-time. SkyTwin's inbox-triage features need this; calendar features work without it.</p>
+    <p class="meta">Five minutes, one time. This is how every SkyTwin user wires up Gmail today — the inbox triage, draft replies, content-aware classification all flow through credentials you create here.</p>
 
     <div class="callout">
-      <strong>Why this step exists.</strong> Google classifies Gmail's read/modify scopes as <em>restricted</em>, which means a public OAuth client (the one SkyTwin ships with for Calendar) can't use them until SkyTwin passes an annual third-party security assessment (≈$15k–$50k). To skip that gate at launch, SkyTwin lets you bring your own Google Cloud OAuth client. Your app is private to you, so Google doesn't require the assessment. Five minutes of clicking now → no waiting on verification, no third-party fees.
+      <strong>Why you're seeing this page.</strong> The body of every email is the most sensitive thing Google gates behind their <em>restricted</em> OAuth tier — a public app like SkyTwin can't request <code>gmail.readonly</code> without passing an annual third-party security assessment ($15k–$50k). Rather than wait for that, SkyTwin lets you bring your own Google Cloud OAuth client. <strong>Your client is private to you</strong>, so Google's restricted-scope rules don't apply — you can use Gmail through it immediately. The walkthrough below is the actual five-minute setup. Most of it is clicking through Google Cloud Console screens. The SkyTwin desktop app has the same wizard at <code>#/connect-gmail</code> if you prefer driving it from inside the dashboard.
     </div>
 
     <div class="step">

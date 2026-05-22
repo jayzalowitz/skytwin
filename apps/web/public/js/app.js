@@ -5,6 +5,7 @@ import { renderTwin } from './pages/twin.js';
 import { renderSettings } from './pages/settings.js';
 import { renderAudit } from './pages/audit.js';
 import { renderSetup } from './pages/setup.js';
+import { renderConnectGmail } from './pages/connect-gmail.js';
 import { renderAssistant } from './pages/assistant.js';
 import { renderOnboarding } from './pages/onboarding.js';
 import { renderCapabilities } from './pages/capabilities.js';
@@ -37,6 +38,7 @@ const routes = {
   '/settings': { title: 'Settings', render: renderSettings },
   '/audit': { title: 'Audit Trail', render: renderAudit },
   '/setup': { title: 'Connect', render: renderSetup },
+  '/connect-gmail': { title: 'Connect Gmail', render: renderConnectGmail },
   '/capabilities': { title: 'Capabilities', render: renderCapabilities },
   '/capabilities/audit': { title: 'Capability Audit Trail', render: renderCapabilitiesAudit },
   '/about-me': { title: 'About me', render: renderAboutMe },

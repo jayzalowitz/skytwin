@@ -25,10 +25,13 @@ SkyTwin ships with **two** OAuth code paths, both already implemented in `apps/a
 
 ### Tier 2 — Bring-your-own client (Gmail)
 
-- Documented at [`/connect-gmail.html`](https://jayzalowitz.github.io/skytwin/connect-gmail.html) — five-minute walkthrough.
-- User creates a Google Cloud OAuth client in their own GCP project; pastes client_id + client_secret into the SkyTwin Setup page.
-- The same OAuth flow then includes `gmail.readonly` and `gmail.modify` because the request goes through the user's own client, which is a private installed app and therefore exempt from Google's app-verification requirements (the assessment requirement applies to public OAuth clients, not to a developer using their own client).
-- Cost to the user: 5 minutes of clicking. Cost to SkyTwin: $0.
+**This is the launch Gmail experience**, not a fallback. SkyTwin's content-aware features — body summarisation, draft replies, classification by what the email *says* — all live behind Gmail's restricted scope tier. Until SkyTwin can fund the annual CASA assessment ($15k–$50k for tier 3, recurring) the cleanest way to unlock those features is for each user to plug in their own Google Cloud OAuth client. Their client is private to them, so Google's restricted-scope rules don't apply.
+
+- Documented at [`/connect-gmail.html`](https://jayzalowitz.github.io/skytwin/connect-gmail.html) — five-minute walkthrough on the public web.
+- In-app wizard at `#/connect-gmail` in the SkyTwin dashboard ([apps/web/public/js/pages/connect-gmail.js](https://github.com/jayzalowitz/skytwin/blob/main/apps/web/public/js/pages/connect-gmail.js)) — same five steps, with progress dots, per-step deep links into GCP Console, and a final paste-and-connect form that PUTs to `/api/credentials/google` then redirects through `/api/oauth/google/authorize?include=gmail`.
+- User creates a Google Cloud OAuth client (Web application type, `http://localhost:3100/api/oauth/google/callback` as the redirect) in their own GCP project; pastes client_id + client_secret.
+- `resolveRequestedScopes()` then includes `gmail.readonly` and `gmail.modify` because `source === 'user-supplied'`.
+- Cost to the user: ~5 minutes of clicking. Cost to SkyTwin: $0.
 
 ### How the gate is enforced in code
 
