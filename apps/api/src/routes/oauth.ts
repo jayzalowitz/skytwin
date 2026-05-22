@@ -185,49 +185,59 @@ function parseSignedState(state: string): ParsedState {
  * display name for auto-created users so they don't show up as raw UUIDs
  * in the dashboard.
  */
-const IDENTITY_SCOPES = ['openid', 'email', 'profile'];
+/**
+ * Source of the Google OAuth config currently in use. Drives the
+ * tier-gating below: only `userSupplied` configs can request the
+ * restricted Gmail scopes, because the bundled client is intentionally
+ * NOT submitted for Google's restricted-scope security assessment
+ * (that's a $15k–$50k annual third-party CASA audit we don't want to
+ * pay for at launch). The same OAuth code path serves both tiers.
+ */
+type GoogleConfigSource = 'user-supplied' | 'bundled' | 'unset';
 
-const GMAIL_SCOPES = [
-  'https://www.googleapis.com/auth/gmail.readonly',
-  'https://www.googleapis.com/auth/gmail.modify',
-];
-
-const CALENDAR_SCOPES = [
-  'https://www.googleapis.com/auth/calendar.readonly',
-  'https://www.googleapis.com/auth/calendar.events',
-];
+interface ResolvedGoogleConfig extends GoogleOAuthConfig {
+  source: GoogleConfigSource;
+}
 
 /**
  * Build the Google OAuth config. Three sources, in priority order:
- *   1. User-supplied credentials in the DB (Setup page) — wins.
+ *   1. User-supplied credentials in the DB (Setup page) — wins. These
+ *      come from a Google Cloud OAuth client the user created in their
+ *      own GCP project. Google does NOT require app verification for
+ *      a user's own OAuth client used only by themselves, so this is
+ *      how we light up Gmail (restricted-scope) without a SkyTwin-side
+ *      security assessment.
  *   2. Confidential-client env vars (`GOOGLE_CLIENT_ID`/`_SECRET`) —
- *      the old "operator wires it up at deploy" path.
- *   3. PKCE-only default client_id baked into the build via
- *      `SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID`. The desktop bundle ships
- *      this so end-users don't have to create their own Google Cloud
- *      OAuth app. Public client IDs are designed to be revealed; PKCE
- *      binds each auth code to a per-flow verifier so a stolen
- *      client_id alone redeems nothing.
+ *      the self-hosted/ops path. Operator-owned clients also count as
+ *      user-supplied for tier-gating purposes.
+ *   3. PKCE-only default client_id baked into the desktop bundle
+ *      (`SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID`). The SkyTwin team owns
+ *      this client; it is verified by Google for identity + calendar
+ *      scopes only, so the bundled flow CANNOT request Gmail.
  *
- * The returned `clientSecret` is the literal empty string in PKCE mode —
- * downstream code keys on `secret === ''` to choose the PKCE token-
- * exchange variant. Don't normalise it to undefined; the empty string is
+ * `clientSecret` is the literal empty string in PKCE mode — downstream
+ * code keys on `secret === ''` to choose the PKCE token-exchange
+ * variant. Don't normalise it to undefined; the empty string is
  * load-bearing.
  */
-async function resolveGoogleConfig(): Promise<GoogleOAuthConfig> {
+async function resolveGoogleConfig(): Promise<ResolvedGoogleConfig> {
   const config = loadConfig();
 
-  // Layer 1: env vars (typical for self-hosted ops).
+  // Layer 1: env vars (operator-supplied, self-hosted ops path).
   let clientId = config.googleClientId;
   let clientSecret = config.googleClientSecret;
   let redirectUri = config.googleRedirectUri;
+  let source: GoogleConfigSource = clientId ? 'user-supplied' : 'unset';
 
-  // Layer 2: DB-stored credentials from the Setup page take priority over
-  // env vars and over the bundled default. Falls through silently when
-  // the service_credentials table doesn't exist yet.
+  // Layer 2: DB-stored credentials from the Setup page take priority
+  // over env vars and over the bundled default. Falls through silently
+  // when the service_credentials table doesn't exist yet.
   try {
     const dbCreds = await serviceCredentialRepository.getAsMap('google');
-    if (dbCreds['client_id']) clientId = dbCreds['client_id'];
+    if (dbCreds['client_id']) {
+      clientId = dbCreds['client_id'];
+      source = 'user-supplied';
+    }
     if (dbCreds['client_secret']) clientSecret = dbCreds['client_secret'];
     if (dbCreds['redirect_uri'] && redirectUri === 'http://localhost:3100/api/oauth/google/callback') {
       redirectUri = dbCreds['redirect_uri'];
@@ -236,18 +246,85 @@ async function resolveGoogleConfig(): Promise<GoogleOAuthConfig> {
     // No service_credentials table yet — fall through.
   }
 
-  // Layer 3: PKCE-only default (desktop bundle). Used iff neither env vars
-  // nor DB supplied a clientId. We intentionally leave clientSecret as
-  // empty string so the rest of the flow auto-routes to PKCE.
+  // Layer 3: PKCE-only default (desktop bundle). Used iff neither env
+  // vars nor DB supplied a clientId. Marked source: 'bundled' so the
+  // /authorize handler can reject ?include=gmail requests until the
+  // user wires their own OAuth client via Setup.
   if (!clientId) {
     const bundled = process.env['SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID'] ?? '';
     if (bundled) {
       clientId = bundled;
       clientSecret = '';
+      source = 'bundled';
     }
   }
 
-  return { clientId, clientSecret, redirectUri };
+  return { clientId, clientSecret, redirectUri, source };
+}
+
+/**
+ * Scope tiers. The split exists for two reasons:
+ *
+ *   1. Google classifies Gmail's `readonly`/`modify` as **restricted**
+ *      scopes — requesting them in a published OAuth client means
+ *      passing the annual CASA Tier 2/3 security assessment ($15k–$50k,
+ *      4–8 weeks). Calendar's `readonly`/`events` are **sensitive** but
+ *      not restricted — just normal app review, no assessor fee.
+ *
+ *   2. Most users only need calendar + identity to get value from the
+ *      twin (scheduling, meeting suggestions). Forcing the Gmail
+ *      consent prompt on those users is unnecessary friction even when
+ *      we *do* have the bundled client verified for Gmail.
+ *
+ * Stage 1 (now): the bundled SkyTwin-team client is verified for
+ *   IDENTITY + CALENDAR. Users who want Gmail features paste their own
+ *   OAuth credentials into Setup; their own GCP project + their own
+ *   email as a test user → no app verification needed.
+ *
+ * Stage 2 (post-launch, when revenue funds the audit): submit the
+ *   bundled client through CASA. The code below stays the same — the
+ *   gate just turns into "always allow Gmail with bundled" once Google
+ *   updates the verification status. Document the rollout in
+ *   docs/google-verification.md.
+ */
+const IDENTITY_SCOPES_LIST = ['openid', 'email', 'profile'];
+
+const GMAIL_SCOPES_LIST = [
+  'https://www.googleapis.com/auth/gmail.readonly',
+  'https://www.googleapis.com/auth/gmail.modify',
+];
+
+const CALENDAR_SCOPES_LIST = [
+  'https://www.googleapis.com/auth/calendar.readonly',
+  'https://www.googleapis.com/auth/calendar.events',
+];
+
+/**
+ * Compute the scope set for an authorize request given the config
+ * source and the caller's opt-in flags. Returns the granted scope list
+ * AND a list of skipped capabilities the caller should surface to the
+ * UI (so the dashboard can show "Connect Gmail" as a follow-up CTA
+ * rather than silently lying about coverage).
+ */
+export function resolveRequestedScopes(opts: {
+  source: GoogleConfigSource;
+  includeGmail: boolean;
+}): { scopes: string[]; skipped: Array<{ capability: 'gmail'; reason: string }> } {
+  const scopes = [...IDENTITY_SCOPES_LIST, ...CALENDAR_SCOPES_LIST];
+  const skipped: Array<{ capability: 'gmail'; reason: string }> = [];
+
+  if (opts.includeGmail) {
+    if (opts.source === 'user-supplied') {
+      scopes.push(...GMAIL_SCOPES_LIST);
+    } else {
+      skipped.push({
+        capability: 'gmail',
+        reason: 'bundled-client-not-verified-for-restricted-scopes',
+      });
+    }
+  }
+
+  return { scopes, skipped };
 }
 
 /**
@@ -372,7 +449,37 @@ export function createOAuthRouter(): Router {
         });
         return;
       }
-      const scopes = [...IDENTITY_SCOPES, ...GMAIL_SCOPES, ...CALENDAR_SCOPES];
+      // ?include=gmail signals the caller wants Gmail scopes added.
+      // The default is now identity + calendar only — see the
+      // GMAIL_SCOPES_LIST comment for why. If the bundled client is in
+      // use, Gmail is silently dropped and `skipped` reports it so the
+      // dashboard can render a "Connect Gmail" CTA. The caller can
+      // still get Gmail today by pasting their own OAuth credentials
+      // into Setup; that's the `source === 'user-supplied'` path.
+      const includeGmail = req.query['include'] === 'gmail'
+        || req.query['scopes'] === 'gmail'
+        || req.query['gmail'] === 'true';
+
+      const { scopes, skipped } = resolveRequestedScopes({
+        source: googleConfig.source,
+        includeGmail,
+      });
+
+      // If the caller explicitly asked for Gmail but we couldn't grant
+      // it (bundled client mode), surface a 412 so the dashboard can
+      // route to the BYO setup walkthrough instead of silently
+      // pretending the scope was granted. 412 (Precondition Failed) is
+      // the right semantic: "your config preconditions for this scope
+      // aren't met" — distinct from 503 (server-side config missing).
+      if (includeGmail && skipped.some((s) => s.capability === 'gmail')) {
+        res.status(412).json({
+          error: 'Gmail scopes require your own Google OAuth credentials.',
+          code: 'GMAIL_REQUIRES_BYO_CLIENT',
+          help: '/docs/connect-gmail',
+          skipped,
+        });
+        return;
+      }
 
       const queryUserId =
         typeof req.query['userId'] === 'string' ? req.query['userId'] : undefined;
