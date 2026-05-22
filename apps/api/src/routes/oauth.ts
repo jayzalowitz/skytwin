@@ -1,7 +1,12 @@
 import { Router } from 'express';
 import { createHmac, timingSafeEqual } from 'crypto';
 import { loadConfig } from '@skytwin/config';
-import { oauthRepository, serviceCredentialRepository, userRepository } from '@skytwin/db';
+import {
+  oauthRepository,
+  oauthPkcePendingRepository,
+  serviceCredentialRepository,
+  userRepository,
+} from '@skytwin/db';
 import {
   generateAuthUrl,
   generatePkcePair,
@@ -111,21 +116,40 @@ async function fetchGoogleUserInfo(accessToken: string): Promise<GoogleUserInfo>
  * covers `<payload>.<expiresAtMs>`.
  *
  * Payload is the original pipe-delimited intent string:
- *   <userId>            associate token with this existing user
- *   <userId>|desktop    same, OAuth opened from Electron
- *   <userId>|new        adding another account to this user
- *   new                 no user yet — auto-create from verified email
+ *   <userId>                       associate token with this existing user
+ *   <userId>|desktop               same, OAuth opened from Electron
+ *   <userId>|new                   adding another account to this user
+ *   <userId>|next=connect-gmail    redirect to /#/connect-gmail post-callback
+ *   new                            no user yet — auto-create from verified email
  *   new|desktop
+ *   new|next=connect-gmail
  *
  * Without the signature, an attacker could mint their own Google
  * authorization code and call /google/callback with state=<victim-id>
  * to attach their account to someone else's user.
+ *
+ * The `next` tag is whitelisted server-side (see NEXT_HASH_ROUTES). It's
+ * NOT a free-form URL — that would be an open-redirect waiting to happen.
+ * Each entry maps to a fixed dashboard hash route. The onboarding wizard
+ * uses this to deep-link straight into the Gmail walkthrough instead of
+ * dropping the user on the dashboard CTA.
  */
 interface ParsedState {
   userId: string | null; // null = auto-create user from email
   desktop: boolean;
   newAccount: boolean;
+  /** Dashboard hash route to land on post-callback, or null for the default `#/`. */
+  nextHash: string | null;
 }
+
+/**
+ * Whitelist of allowed `next=` values and the dashboard hash route each
+ * maps to. Free-form redirect targets are NEVER accepted — that's an
+ * open-redirect vulnerability.
+ */
+export const NEXT_HASH_ROUTES: Record<string, string> = {
+  'connect-gmail': '#/connect-gmail',
+};
 
 function signStatePayload(payload: string, expiresAtMs: number): string {
   const mac = createHmac('sha256', STATE_SECRET)
@@ -171,13 +195,32 @@ function parseSignedState(state: string): ParsedState {
   }
 
   const head = payload.split('|')[0];
-  const tags = new Set(payload.split('|').slice(1));
+  const rawTags = payload.split('|').slice(1);
+  const tags = new Set(rawTags);
+  // Decode `next=<route>` tag. We re-validate against the whitelist on
+  // read so a state token issued before a route was retired can't suddenly
+  // redirect somewhere unexpected.
+  let nextHash: string | null = null;
+  for (const t of rawTags) {
+    if (t.startsWith('next=')) {
+      const candidate = t.slice('next='.length);
+      const mapped = NEXT_HASH_ROUTES[candidate];
+      if (mapped) nextHash = mapped;
+      break;
+    }
+  }
   return {
     userId: head === 'new' ? null : (head ?? null),
     desktop: tags.has('desktop'),
     newAccount: tags.has('new'),
+    nextHash,
   };
 }
+
+/** Test-only exports for the signed-state helpers. Not used in the route handler. */
+export const _signStatePayloadForTests = signStatePayload;
+export const _parseSignedStateForTests = parseSignedState;
+export const _stateTtlMsForTests = STATE_TTL_MS;
 
 /**
  * `openid` + `email` are required for the userinfo endpoint to return the
@@ -328,42 +371,31 @@ export function resolveRequestedScopes(opts: {
 }
 
 /**
- * Server-local store of pending PKCE verifiers, keyed by the signed
- * state token. The verifier MUST NOT travel through Google or the user's
- * browser — that's the whole reason PKCE exists. Server-side memory is
- * adequate for the OAuth-redirect timescale (~minutes); a process
- * restart mid-flow just makes the user retry.
+ * Pending PKCE verifiers live in `oauth_pkce_pending` (migration 058).
+ * DB-backed so a desktop restart between /authorize and /callback doesn't
+ * drop the verifier and 400 the user mid-flow. The verifier never leaves
+ * the server — that's the whole reason PKCE exists; storing it on the
+ * same CRDB the rest of SkyTwin uses adds no new infrastructure and gives
+ * the row a proper TTL.
  *
- * TTL matches STATE_TTL_MS. We sweep on every set to keep the map size
- * bounded even if callbacks never come back (closed browser tab, etc.).
+ * TTL matches STATE_TTL_MS. `remember()` is upsert (re-issued state wins)
+ * and `consume()` is a single DELETE...RETURNING so a replayed callback
+ * can't redeem the same code twice. We sweep expired rows on every
+ * remember() to keep the table bounded even if callbacks never come back
+ * (closed browser tab, etc.).
  */
 const PKCE_TTL_MS = 10 * 60 * 1000;
-const PKCE_MAX_ENTRIES = 1024;
-const pkceStore = new Map<string, { codeVerifier: string; expiresAt: number }>();
 
-function sweepPkceStore(now: number): void {
-  for (const [k, v] of pkceStore) {
-    if (v.expiresAt <= now) pkceStore.delete(k);
-  }
+async function rememberPkceVerifier(state: string, codeVerifier: string): Promise<void> {
+  const now = new Date();
+  // Best-effort sweep; never block the sign-in path if it fails.
+  oauthPkcePendingRepository.sweepExpired(now).catch(() => undefined);
+  const expiresAt = new Date(now.getTime() + PKCE_TTL_MS);
+  await oauthPkcePendingRepository.remember(state, codeVerifier, expiresAt);
 }
 
-function rememberPkceVerifier(state: string, codeVerifier: string): void {
-  const now = Date.now();
-  sweepPkceStore(now);
-  if (pkceStore.size >= PKCE_MAX_ENTRIES) {
-    // Drop oldest entry (Map preserves insertion order).
-    const oldest = pkceStore.keys().next().value;
-    if (oldest !== undefined) pkceStore.delete(oldest);
-  }
-  pkceStore.set(state, { codeVerifier, expiresAt: now + PKCE_TTL_MS });
-}
-
-function consumePkceVerifier(state: string): string | undefined {
-  const entry = pkceStore.get(state);
-  if (!entry) return undefined;
-  pkceStore.delete(state);
-  if (entry.expiresAt < Date.now()) return undefined;
-  return entry.codeVerifier;
+async function consumePkceVerifier(state: string): Promise<string | undefined> {
+  return oauthPkcePendingRepository.consume(state);
 }
 
 /**
@@ -441,11 +473,20 @@ export function createOAuthRouter(): Router {
       // dashboard can tell the user to finish Setup or ship a desktop
       // build with SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID baked in.
       if (!googleConfig.clientId) {
+        // Tag with a structured code so the dashboard can route to the
+        // connect-gmail wizard (the same five-step setup that backs BYO
+        // Gmail also works as the universal "supply your own OAuth client"
+        // flow). Without the code, the frontend can only show a generic
+        // 503 toast — which leaves the user staring at "something went
+        // wrong" with no idea how to fix it.
         res.status(503).json({
           error:
             'Google sign-in is not configured. ' +
-            'Open Setup and paste your OAuth client_id (and client_secret if you have one), ' +
+            "Open the Connect Gmail walkthrough — the same five-step flow sets up Google sign-in for this build, " +
             'or rebuild the desktop with SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID set.',
+          code: 'NO_GOOGLE_CLIENT_CONFIGURED',
+          help: '#/connect-gmail',
+          docs: 'https://jayzalowitz.github.io/skytwin/connect-gmail.html',
         });
         return;
       }
@@ -493,6 +534,15 @@ export function createOAuthRouter(): Router {
         typeof req.query['userId'] === 'string' ? req.query['userId'] : undefined;
       const newAccount = req.query['newAccount'] === 'true';
       const desktop = req.query['desktop'] === 'true';
+      // Optional dashboard-deep-link target after the OAuth round-trip.
+      // The query value is checked against the whitelist before the tag
+      // ever lands in state — an unknown value is silently dropped so we
+      // can't be coerced into redirecting to a route that doesn't exist
+      // (or worse, an attacker-controlled external URL).
+      const nextQuery = typeof req.query['next'] === 'string' ? req.query['next'] : undefined;
+      const nextTagValue = nextQuery && Object.prototype.hasOwnProperty.call(NEXT_HASH_ROUTES, nextQuery)
+        ? nextQuery
+        : undefined;
 
       let stateHead: string;
       if (newUser) {
@@ -509,6 +559,7 @@ export function createOAuthRouter(): Router {
       const tags: string[] = [];
       if (desktop) tags.push('desktop');
       if (newAccount) tags.push('new');
+      if (nextTagValue) tags.push(`next=${nextTagValue}`);
 
       const payload = [stateHead, ...tags].join('|');
       const state = signStatePayload(payload, Date.now() + STATE_TTL_MS);
@@ -520,7 +571,7 @@ export function createOAuthRouter(): Router {
       let codeChallenge: string | undefined;
       if (!googleConfig.clientSecret) {
         const pkce = generatePkcePair();
-        rememberPkceVerifier(state, pkce.codeVerifier);
+        await rememberPkceVerifier(state, pkce.codeVerifier);
         codeChallenge = pkce.codeChallenge;
       }
 
@@ -564,7 +615,7 @@ export function createOAuthRouter(): Router {
       const googleConfig = await resolveGoogleConfig();
       // Recover the PKCE verifier stashed at /authorize. Consume-on-read
       // so a replayed callback can't redeem the same code twice.
-      const codeVerifier = consumePkceVerifier(state);
+      const codeVerifier = await consumePkceVerifier(state);
       if (!googleConfig.clientSecret && !codeVerifier) {
         // In PKCE mode without a stored verifier we'd send an empty
         // code_verifier to Google and get a 400 "invalid_grant".
@@ -668,13 +719,23 @@ export function createOAuthRouter(): Router {
       // alive" celebration instead of a settings form. The dashboard parses
       // the top-level `?userId=` (user-switcher) and the hash query
       // `?connected=google&account=…` (for the celebration card).
+      //
+      // If the /authorize call requested a `next=` deep-link target, we
+      // route there instead of the dashboard root. The route was already
+      // whitelisted server-side (NEXT_HASH_ROUTES) and re-validated when
+      // parsing state, so the value here is one of a fixed set of hash
+      // routes we own — never a user-supplied URL.
       const webBase = process.env['WEB_BASE_URL'] ?? `http://localhost:${process.env['WEB_PORT'] ?? '3200'}`;
       const topLevel = new URLSearchParams({ userId }).toString();
       const hashQuery = new URLSearchParams({
         connected: 'google',
         account: accountEmail,
       }).toString();
-      res.redirect(`${webBase}/?${topLevel}#/?${hashQuery}`);
+      const hashRoute = parsed.nextHash ?? '#/';
+      // hashRoute always starts with '#/' so the URL shape is
+      //   …?userId=…#/connect-gmail?connected=google&account=…
+      // The dashboard hash router reads the bit before `?` as the route.
+      res.redirect(`${webBase}/?${topLevel}${hashRoute}?${hashQuery}`);
     } catch (error) {
       next(error);
     }

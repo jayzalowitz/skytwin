@@ -1,5 +1,19 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [Unreleased] — Tier 2 launch polish
+
+### Changed
+
+- **PKCE verifier store moved from in-process Map to CockroachDB.** `apps/api/src/routes/oauth.ts` was stashing the PKCE code-verifier in a server-local `Map<state, codeVerifier>` between `/google/authorize` and `/google/callback`. Adequate on a single long-running process, broken everywhere else: a desktop restart, a deploy, or even a dev hot-reload between consent and callback dropped the verifier and 400'd the user with "OAuth verifier expired or missing." New migration `058-oauth-pkce-pending.sql` adds an `oauth_pkce_pending(state PK, code_verifier, expires_at, created_at)` table backed by `packages/db/src/repositories/oauth-pkce-pending-repository.ts`. `remember()` is an upsert, `consume()` is a `DELETE...RETURNING` (a replayed callback can't redeem the same code twice — same replay-protection property the in-memory store had), and `sweepExpired()` fires from every remember-call so the table stays bounded even if browser tabs close mid-flow. 5 new tests in `packages/db/src/__tests__/oauth-pkce-pending-repository.test.ts`.
+
+- **OAuth `/authorize` accepts a whitelisted `next=` deep-link target.** Adds `?next=connect-gmail` (the only currently-allowed value, defined in `NEXT_HASH_ROUTES` server-side). The value is encoded into the HMAC-signed state payload as a `next=<route>` tag, decoded on callback, and used to compose the post-OAuth redirect URL. Unknown values are silently dropped at issue time and re-validated at parse time — neither path produces a free-form redirect, so this is NOT an open-redirect surface. 5 new tests in `apps/api/src/__tests__/oauth-next-route.test.ts` cover the round-trip, whitelist enforcement, and HMAC coverage of the `next` tag (tampering breaks signature verification).
+
+- **Onboarding wizard deep-links straight into the Gmail walkthrough after Google sign-in.** `apps/web/public/js/pages/onboarding.js`'s "Continue with Google" button now passes `next: 'connect-gmail'` through `startGoogleSignIn()`. After consent the user lands on `#/connect-gmail` with a "Calendar connected — now let's hook up Gmail" status banner (`renderGoogleConnectedBanner` in `apps/web/public/js/pages/connect-gmail.js`) above the five-step wizard, instead of dropping on the dashboard root and discovering the CTA card.
+
+- **Structured `code` from API errors plumbed through `ApiError`.** `apps/web/public/js/api-client.js` now reads `body.code`/`body.help`/`body.docs` off non-OK responses and attaches them to `ApiError`. Pages branch on `err.code` instead of substring-matching `err.message`. 503s with a code map to a new `kind: 'config-missing'` so they're treated as user-actionable, not as generic backend failures.
+
+- **Unset bundled `client_id` now bounces the user into the connect-gmail wizard.** `apps/api/src/routes/oauth.ts` tags its 503 response with `code: 'NO_GOOGLE_CLIENT_CONFIGURED'` + `help: '#/connect-gmail'`. The onboarding wizard detects this and redirects to the connect-gmail flow (same wizard backs both BYO Gmail and "this fork has no bundled OAuth client"). The connect-gmail wizard's final step now uses `?newUser=true` when no userId is in localStorage, so brand-new onboarding users complete the OAuth-client-setup walkthrough and get auto-created from the verified Google email on callback.
+
 ## [0.6.57.0] - 2026-05-22
 
 ### Fixed

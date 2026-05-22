@@ -109,7 +109,13 @@ async function handleOnboardingClick(e) {
       btn.textContent = 'Redirecting…';
       try {
         const { startGoogleSignIn } = await import('../google-signin.js');
-        const result = await startGoogleSignIn({ newUser: true });
+        // After Google consent, deep-link straight into the Gmail
+        // walkthrough. The bundled OAuth client only carries Calendar +
+        // identity scopes today; Gmail is gated behind the BYO setup at
+        // /#/connect-gmail and the user shouldn't have to discover the
+        // follow-up CTA on the dashboard themselves. The connect-gmail
+        // page no-ops gracefully if Gmail is already wired up.
+        const result = await startGoogleSignIn({ newUser: true, next: 'connect-gmail' });
         if (result.status === 'redirecting') return;
         if (result.status === 'polling') {
           // Desktop: OAuth opened in the system browser. There's no
@@ -123,6 +129,16 @@ async function handleOnboardingClick(e) {
           btn.disabled = false;
           btn.textContent = 'Continue with Google';
           showWizardError('Finish signing in with Google in the browser window that just opened, then return here and continue.');
+          return;
+        }
+        // status === 'error'. If the server tagged the failure as a
+        // missing-config code (NO_GOOGLE_CLIENT_CONFIGURED — this
+        // SkyTwin build has no bundled OAuth client), bounce the user
+        // straight into the connect-gmail wizard. That same five-step
+        // walkthrough sets up their OAuth client, which then lets the
+        // bundled flow work on retry.
+        if (result.code === 'NO_GOOGLE_CLIENT_CONFIGURED') {
+          window.location.hash = result.help || '#/connect-gmail';
           return;
         }
         throw new Error(result.error || 'No authorize URL returned');

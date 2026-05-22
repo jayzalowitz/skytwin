@@ -105,14 +105,14 @@ This is the single biggest user-experience change in the launch. From "compile t
 ### 2.1 Auto-update channel
 The electron-updater plumbing is wired and the YAML files come out of §1.5. Once a v0.6.58.0 release ships with a bug fix, every existing user should auto-update on next launch. Acceptance test: install v0.6.57.0 on a fresh box, leave it sit, tag v0.6.58.0, confirm the installed app self-updates within 24 hours (default poll cadence).
 
-### 2.2 PKCE verifier store in DB
-Currently `apps/api/src/routes/oauth.ts` keeps the PKCE verifier in a process-local `Map`. If the API process restarts mid-OAuth-flow (a deploy, a crash, the user closing and re-opening the desktop), the user gets a 400 "OAuth verifier expired" and has to restart sign-in. A DB-backed store with TTL on the existing CRDB instance fixes this without adding any new infrastructure. New table `oauth_pkce_pending(state PK, code_verifier, expires_at)`, sweep on each insert. ~50 lines + migration.
+### 2.2 PKCE verifier store in DB — **done (Unreleased)**
+Shipped: migration `058-oauth-pkce-pending.sql` + `packages/db/src/repositories/oauth-pkce-pending-repository.ts`. `apps/api/src/routes/oauth.ts` now uses the DB-backed store; a desktop restart between `/authorize` and `/callback` no longer drops the verifier. `consume()` is a single `DELETE...RETURNING` so the replay-protection property survives the move off the in-memory Map. 5 new tests.
 
-### 2.3 Onboarding flow auto-routes through `/#/connect-gmail`
-The `renderConnectGmailHero` card landed in §1.0; it surfaces post-sign-in. A follow-up is to make the onboarding wizard (`apps/web/public/js/pages/onboarding.js`) deep-link straight into `/#/connect-gmail` once Google sign-in completes — the user shouldn't have to know they need a follow-up CTA.
+### 2.3 Onboarding flow auto-routes through `/#/connect-gmail` — **done (Unreleased)**
+Shipped: `apps/api/src/routes/oauth.ts` accepts a whitelisted `?next=connect-gmail` parameter; the value is encoded into the HMAC-signed state and used to compose the post-OAuth redirect URL. `apps/web/public/js/pages/onboarding.js`'s "Continue with Google" button passes `next: 'connect-gmail'`. `apps/web/public/js/pages/connect-gmail.js` shows a "Calendar connected — now let's hook up Gmail" banner above the wizard when the user arrives via this deep-link. 5 new tests on the whitelist + HMAC coverage of the new tag.
 
-### 2.4 Better error story when bundled client_id is unset
-If a forked SkyTwin build ships with `BUNDLED_GOOGLE_CLIENT_ID = ''` and no `SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID` env, `/authorize` returns a 503 with a clear message. The dashboard could detect this and route to a one-time-setup card showing "this build needs a Google OAuth client_id — paste yours here or build with `SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID=...`."
+### 2.4 Better error story when bundled client_id is unset — **done (Unreleased)**
+Shipped: `apps/api/src/routes/oauth.ts` tags its no-client_id 503 with `code: 'NO_GOOGLE_CLIENT_CONFIGURED'` + `help: '#/connect-gmail'`. `apps/web/public/js/api-client.js` plumbs structured `code`/`help`/`docs` fields through `ApiError`; 503s with a code use a new `kind: 'config-missing'`. The onboarding wizard detects the code and routes the user into the connect-gmail wizard (same five-step flow handles both BYO Gmail and "this fork has no bundled client"). The connect-gmail wizard's final OAuth call now uses `?newUser=true` when no userId is in localStorage, so brand-new onboarding users finish the flow without needing a pre-existing account.
 
 ### 2.5 Telemetry-free crash reporting
 Sentry-style error reporting is at odds with the "nothing leaves your machine" privacy story, but **fully silent failures** are at odds with shipping a desktop app. The middle ground: an opt-in "send anonymized crash report" prompt that uploads a JSON payload with the exception, stack, and SkyTwin version (no user data) to a developer-controlled endpoint. Default off; if you opt in the prompt explains exactly what's sent.

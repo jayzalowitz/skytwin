@@ -609,6 +609,17 @@ export interface EntityCodeRow {
 }
 
 // ============================================================================
+// OAuth PKCE pending verifiers
+// ============================================================================
+
+export interface OauthPkcePendingRow {
+  state: string;
+  code_verifier: string;
+  expires_at: Date;
+  created_at: Date;
+}
+
+// ============================================================================
 // Service Credentials
 // ============================================================================
 

@@ -25,10 +25,11 @@ export function isDesktopApp() {
  * @param {object} opts
  * @param {string|null} [opts.userId]   The existing user to connect. Required unless `newUser` is true.
  * @param {boolean} [opts.newUser]      Start the new-user (auto-create from verified email) flow.
+ * @param {string|null} [opts.next]     Dashboard deep-link to land on post-callback (e.g. 'connect-gmail'). Server whitelists the value.
  * @param {(connected: boolean) => void} [opts.onComplete]  Desktop + existing-user only — called when polling sees the account land, or when polling times out (with `false`).
  * @returns {Promise<{ status: 'redirecting' | 'polling' | 'error', error?: string }>}
  */
-export async function startGoogleSignIn({ userId = null, newUser = false, onComplete } = {}) {
+export async function startGoogleSignIn({ userId = null, newUser = false, next = null, onComplete } = {}) {
   const desktop = isDesktopApp();
   if (!newUser && !userId) {
     return {
@@ -42,12 +43,17 @@ export async function startGoogleSignIn({ userId = null, newUser = false, onComp
     // handling (ApiError, friendlyMessage, offline detection) stays
     // consistent with the rest of the codebase.
     data = newUser
-      ? await getGoogleAuthUrl(null, { desktop, newUser: true })
-      : await getGoogleAuthUrl(userId, { desktop });
+      ? await getGoogleAuthUrl(null, { desktop, newUser: true, next })
+      : await getGoogleAuthUrl(userId, { desktop, next });
   } catch (err) {
+    // Surface the structured server code (e.g. NO_GOOGLE_CLIENT_CONFIGURED)
+    // so callers can route to the right setup card instead of just
+    // showing a generic error message.
     return {
       status: 'error',
       error: err?.friendlyMessage || err?.message || 'Could not start Google sign-in.',
+      code: err?.code || '',
+      help: err?.help || '',
     };
   }
   if (!data?.url) {

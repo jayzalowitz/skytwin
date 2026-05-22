@@ -42,13 +42,20 @@ function authHeaders() {
  * developers / log analysis (do NOT render to users by default).
  */
 export class ApiError extends Error {
-  constructor({ kind, friendlyMessage, serverMessage, status }) {
+  constructor({ kind, friendlyMessage, serverMessage, status, code, help, docs }) {
     super(friendlyMessage);
     this.name = 'ApiError';
     this.kind = kind;
     this.friendlyMessage = friendlyMessage;
     this.serverMessage = serverMessage ?? '';
     this.status = status ?? 0;
+    // Structured machine-readable error code from the server when the
+    // response body included one (e.g. NO_GOOGLE_CLIENT_CONFIGURED,
+    // GMAIL_REQUIRES_BYO_CLIENT). Pages branch on this to render a
+    // specific call-to-action card instead of a generic error toast.
+    this.code = code ?? '';
+    this.help = help ?? '';
+    this.docs = docs ?? '';
   }
 }
 
@@ -62,6 +69,12 @@ async function classifyHttpError(res) {
     body = await res.json();
   } catch { /* body wasn't JSON */ }
   const serverMessage = body?.error || body?.message || `HTTP ${res.status}`;
+  // Structured fields the API may attach (e.g. NO_GOOGLE_CLIENT_CONFIGURED,
+  // GMAIL_REQUIRES_BYO_CLIENT). Threaded through to ApiError so pages can
+  // branch on `err.code` without parsing serverMessage.
+  const code = typeof body?.code === 'string' ? body.code : '';
+  const help = typeof body?.help === 'string' ? body.help : '';
+  const docs = typeof body?.docs === 'string' ? body.docs : '';
 
   // Web dev server proxies /api/* to the API server. When the API is
   // down it returns 502 with body { error: 'API proxy error', details }.
@@ -72,6 +85,7 @@ async function classifyHttpError(res) {
       friendlyMessage: "Can't reach SkyTwin right now. We'll keep trying.",
       serverMessage,
       status: res.status,
+      code, help, docs,
     });
   }
 
@@ -81,6 +95,7 @@ async function classifyHttpError(res) {
       friendlyMessage: 'Your session expired. Sign in again to continue.',
       serverMessage,
       status: res.status,
+      code, help, docs,
     });
   }
 
@@ -90,26 +105,45 @@ async function classifyHttpError(res) {
       friendlyMessage: "We couldn't find that.",
       serverMessage,
       status: res.status,
+      code, help, docs,
     });
   }
 
-  if (res.status === 409 || res.status === 400) {
+  if (res.status === 409 || res.status === 400 || res.status === 412) {
     // 4xx validation/conflict messages from our own API are written to
     // be user-readable (e.g. "No AI provider configured"). Pass through.
+    // 412 (Precondition Failed) is what /authorize returns for
+    // GMAIL_REQUIRES_BYO_CLIENT — same shape, same routing.
     return new ApiError({
       kind: 'bad-request',
       friendlyMessage: serverMessage,
       serverMessage,
       status: res.status,
+      code, help, docs,
     });
   }
 
   if (res.status >= 500) {
+    // 503 with a structured `code` is treated as user-actionable, not as
+    // a generic backend failure: it usually means a config setting is
+    // missing (e.g. NO_GOOGLE_CLIENT_CONFIGURED) and the dashboard wants
+    // to route the user to the right Setup card rather than showing a
+    // "something went wrong" toast.
+    if (res.status === 503 && code) {
+      return new ApiError({
+        kind: 'config-missing',
+        friendlyMessage: serverMessage,
+        serverMessage,
+        status: res.status,
+        code, help, docs,
+      });
+    }
     return new ApiError({
       kind: 'server',
       friendlyMessage: "Something went wrong on our end. Please try again.",
       serverMessage,
       status: res.status,
+      code, help, docs,
     });
   }
 
@@ -118,6 +152,7 @@ async function classifyHttpError(res) {
     friendlyMessage: 'Something went wrong. Please try again.',
     serverMessage,
     status: res.status,
+    code, help, docs,
   });
 }
 
@@ -393,7 +428,7 @@ export function fetchBriefing(userId) {
   return fetchJSON(`${API}/v1/briefings/${encodeURIComponent(userId)}`);
 }
 
-export function getGoogleAuthUrl(userId, { desktop = false, newUser = false } = {}) {
+export function getGoogleAuthUrl(userId, { desktop = false, newUser = false, next = null } = {}) {
   // Fail fast on the client instead of sending `userId=null` and getting
   // back an opaque 400 "Missing userId" from the server.
   if (!newUser && !userId) {
@@ -403,6 +438,9 @@ export function getGoogleAuthUrl(userId, { desktop = false, newUser = false } = 
   if (newUser) params.set('newUser', 'true');
   else params.set('userId', userId);
   if (desktop) params.set('desktop', 'true');
+  // `next` deep-link target — server whitelists the value, so passing an
+  // unknown one is harmless (it gets dropped at the server side).
+  if (next) params.set('next', next);
   return fetchJSON(`${API}/oauth/google/authorize?${params.toString()}`);
 }
 

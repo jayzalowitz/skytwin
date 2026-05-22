@@ -297,18 +297,20 @@ async function submitCredentials() {
   // Trigger the OAuth flow with Gmail scopes. The /authorize endpoint
   // sees user-supplied credentials in the DB now (we just saved them)
   // so resolveRequestedScopes() includes gmail.readonly + gmail.modify.
+  //
+  // Two entry points land here:
+  //   (a) Existing user adding Gmail to their twin — has a userId in
+  //       localStorage; we associate the resulting tokens with that user.
+  //   (b) Brand-new user during onboarding who landed here from the
+  //       unset-client-id branch (NO_GOOGLE_CLIENT_CONFIGURED) — no
+  //       userId yet; use ?newUser=true so /callback auto-creates the
+  //       user from the verified Google email.
   const userId = localStorage.getItem(KEY_USER_ID);
-  if (!userId) {
-    if (errEl) {
-      errEl.textContent = 'No active user session. Sign in first, then come back to this wizard.';
-      errEl.style.display = 'block';
-    }
-    return;
-  }
+  const params = userId
+    ? `include=gmail&userId=${encodeURIComponent(userId)}`
+    : `include=gmail&newUser=true`;
   try {
-    const data = await fetchJSON(
-      `/api/oauth/google/authorize?include=gmail&userId=${encodeURIComponent(userId)}`,
-    );
+    const data = await fetchJSON(`/api/oauth/google/authorize?${params}`);
     if (data && typeof data.url === 'string') {
       clearWizardState();
       window.location.href = data.url;
@@ -364,16 +366,40 @@ export async function renderConnectGmail(container) {
     return;
   }
 
+  // ?connected=google — set by /api/oauth/google/callback when the user
+  // is deep-linked into this page from the onboarding wizard (or any
+  // /authorize call passing `next=connect-gmail`). Render an "OK, Google
+  // is connected, here's the next step" banner above the wizard so the
+  // user understands why they're seeing the five-step flow.
+  const justConnectedGoogle = params.get('connected') === 'google';
+  const justConnectedAccount = params.get('account') ?? '';
+
   const opts = current === 5 ? await loadSavedCreds() : {};
   const step = STEPS[current - 1];
   container.innerHTML = `
     <div class="cgm-wrap">
       ${renderHeader()}
+      ${justConnectedGoogle ? renderGoogleConnectedBanner(justConnectedAccount) : ''}
       ${renderProgressDots(current)}
       ${renderStep(step, opts)}
     </div>
   `;
   injectStyles();
+}
+
+function renderGoogleConnectedBanner(account) {
+  const accountLine = account
+    ? `<strong>${escapeHtml(account)}</strong> is now linked for Calendar.`
+    : `Your Google account is now linked for Calendar.`;
+  return `
+    <div class="cgm-banner" role="status">
+      <div class="cgm-banner-check">&#10003;</div>
+      <div class="cgm-banner-body">
+        <div class="cgm-banner-title">Calendar connected</div>
+        <div class="cgm-banner-text">${accountLine} Now let&rsquo;s hook up Gmail so SkyTwin can read and triage your inbox — this part takes about five minutes, once.</div>
+      </div>
+    </div>
+  `;
 }
 
 function renderHeader() {
@@ -418,6 +444,21 @@ function injectStyles() {
     .cgm-detail { padding-left: 1.5rem; line-height: 1.75; font-size: 0.95rem; }
     .cgm-detail li { margin-bottom: 0.5rem; }
     .cgm-detail code { background: var(--bg); padding: 0.1rem 0.35rem; border-radius: 3px; font-size: 0.88em; }
+    .cgm-banner {
+      display: flex; align-items: flex-start; gap: 0.75rem;
+      background: var(--success-bg, rgba(34,197,94,0.08));
+      border: 1px solid var(--success, #16a34a);
+      border-radius: var(--radius); padding: 0.85rem 1rem;
+      margin: 0 0 1.5rem; color: var(--text);
+    }
+    .cgm-banner-check {
+      width: 1.5rem; height: 1.5rem; border-radius: 50%;
+      background: var(--success, #16a34a); color: #fff;
+      display: inline-flex; align-items: center; justify-content: center;
+      font-weight: 700; flex-shrink: 0;
+    }
+    .cgm-banner-title { font-weight: 600; font-size: 0.95rem; margin-bottom: 0.15rem; }
+    .cgm-banner-text { font-size: 0.88rem; color: var(--text-muted); line-height: 1.5; }
   `;
   document.head.appendChild(style);
 }
