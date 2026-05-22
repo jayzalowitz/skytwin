@@ -3,7 +3,7 @@
  *
  * Invoked via:
  *   node ./dist/headless.js          (direct)
- *   pnpm --filter @skytwin/desktop headless   (via package.json script)
+ *   pnpm --filter skytwin-desktop headless   (via package.json script)
  *
  * This file intentionally has NO Electron imports. It starts the API and
  * worker as forked Node child processes (see spawnChild → child_process.fork

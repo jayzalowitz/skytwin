@@ -98,7 +98,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build TypeScript (desktop)
-        run: pnpm --filter @skytwin/desktop build
+        run: pnpm --filter skytwin-desktop build
 
       # macOS: inject Apple cert via CSC_LINK so electron-builder can sign.
       # The env vars are read by electron-builder directly; nothing to run here.
@@ -129,10 +129,10 @@ jobs:
           CSC_KEY_PASSWORD: ${{ matrix.os == 'macos-latest' && secrets.MAC_CERT_PASSWORD || secrets.WIN_CERT_PASSWORD }}
         run: |
           if [ "${{ matrix.os }}" = "macos-latest" ]; then
-            pnpm --filter @skytwin/desktop run package:mac -- --publish always
+            pnpm --filter skytwin-desktop run package:mac -- --publish always
           elif [ "${{ matrix.os }}" = "windows-latest" ]; then
-            pnpm --filter @skytwin/desktop run package:win -- --publish always
+            pnpm --filter skytwin-desktop run package:win -- --publish always
           else
-            pnpm --filter @skytwin/desktop run package:linux -- --publish always
+            pnpm --filter skytwin-desktop run package:linux -- --publish always
           fi
         shell: bash

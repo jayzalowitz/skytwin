@@ -1,5 +1,5 @@
 {
-  "name": "@skytwin/desktop",
+  "name": "skytwin-desktop",
   "version": "0.3.0",
   "description": "SkyTwin Desktop \u2014 Your personal AI assistant",
   "author": {
@@ -12,7 +12,7 @@
   "scripts": {
     "start": "electron .",
     "dev": "tsc && electron .",
-    "build": "node -e \"console.log('Desktop build requires: pnpm --filter @skytwin/desktop package:[mac|win|linux]')\"",
+    "build": "node -e \"console.log('Desktop build requires: pnpm --filter skytwin-desktop package:[mac|win|linux]')\"",
     "test": "vitest run",
     "prepackage": "bash scripts/build-single-binary.sh",
     "package:mac": "tsc && pnpm run prepackage && electron-builder --mac",
