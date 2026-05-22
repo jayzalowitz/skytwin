@@ -101,11 +101,15 @@ export class CockroachManager {
 
   /**
    * Start CockroachDB in single-node mode. Idempotent — returns
-   * immediately if the SQL port is already accepting connections.
+   * immediately if a CRDB SQL listener is responding on the configured
+   * port. Always calls ensureDatabase() afterwards so a partial first
+   * run that left CRDB running but missed the CREATE DATABASE step
+   * heals itself on the next launch.
    */
   async start(): Promise<void> {
-    if (await this.isReady()) {
+    if (await this.isCrdbResponding()) {
       console.log('[crdb] Already running on', `${this.listenHost}:${this.sqlPort}`);
+      await this.ensureDatabase();
       return;
     }
 
@@ -216,13 +220,14 @@ export class CockroachManager {
   }
 
   /**
-   * True if something is accepting TCP on the SQL port. Doesn't prove
-   * it's our process — but for the start path that's fine: if there's
-   * already a CRDB on 26257, spawning another against the same data dir
-   * would corrupt it, so we treat "port already bound" as "good enough,
-   * don't start a second one".
+   * Cheap "is something on the port?" check. Used to short-circuit the
+   * startup probe — but is NOT trusted as the only signal. A raw TCP
+   * listener could be anything (a port-collision with another tool, a
+   * malicious local process, a leftover from a previous test). When we
+   * see it bound we then run isCrdbResponding() to confirm it's actually
+   * our database before treating "running" as a success.
    */
-  private async isReady(): Promise<boolean> {
+  private async portListening(): Promise<boolean> {
     return new Promise((resolve) => {
       const socket = createConnection({ host: this.listenHost, port: this.sqlPort, timeout: 500 });
       socket.once('connect', () => {
@@ -237,14 +242,47 @@ export class CockroachManager {
     });
   }
 
+  /**
+   * Real CRDB readiness check: spawns `cockroach sql -e 'SELECT 1'` and
+   * accepts the listener only if SQL works AND the binary that's
+   * answering is the one we shipped. This protects against (a) a random
+   * non-CRDB process holding port 26257, and (b) treating a still-booting
+   * CRDB whose TCP listener is up but SQL listener isn't as "ready."
+   */
+  private async isCrdbResponding(): Promise<boolean> {
+    if (!(await this.portListening())) return false;
+    const bin = this.getBinaryPath();
+    if (!existsSync(bin)) return false;
+    return new Promise((resolve) => {
+      const proc = spawn(bin, [
+        'sql',
+        '--insecure',
+        '--host', `${this.listenHost}:${this.sqlPort}`,
+        '-e', 'SELECT 1',
+      ], { stdio: 'pipe' });
+      const timer = setTimeout(() => {
+        try { proc.kill('SIGKILL'); } catch { /* already dead */ }
+        resolve(false);
+      }, 2000);
+      proc.on('exit', (code) => {
+        clearTimeout(timer);
+        resolve(code === 0);
+      });
+      proc.on('error', () => {
+        clearTimeout(timer);
+        resolve(false);
+      });
+    });
+  }
+
   private async waitForReady(): Promise<void> {
     const deadline = Date.now() + this.startTimeoutMs;
     while (Date.now() < deadline) {
-      if (await this.isReady()) return;
+      if (await this.isCrdbResponding()) return;
       await new Promise((r) => setTimeout(r, 500));
     }
     throw new Error(
-      `CockroachDB did not accept connections on ${this.listenHost}:${this.sqlPort} ` +
+      `CockroachDB did not accept SQL connections on ${this.listenHost}:${this.sqlPort} ` +
       `within ${this.startTimeoutMs / 1000}s. Check logs in ` +
       `${join(app.getPath('userData'), 'crdb-logs')}.`,
     );
