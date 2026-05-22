@@ -17,16 +17,46 @@ export interface DatabaseConfig {
 
 /**
  * Default configuration for local CockroachDB development.
+ *
+ * The separate DATABASE_HOST/PORT/NAME env vars predate the desktop
+ * bundle which builds its connection string dynamically (CockroachManager
+ * picks a non-default port via SKYTWIN_DB_PORT). When DATABASE_URL is
+ * set, parse it and use it as the source of truth — otherwise fall back
+ * to the per-piece vars. Without this, the bundled desktop app would
+ * silently apply migrations to whatever happened to be on the default
+ * 26257 (the user's stray `docker compose` CRDB, for instance) while the
+ * bundled CRDB on the chosen port stayed empty — every downstream query
+ * 500s and OAuth callbacks die on "column does not exist".
  */
+function parseDatabaseUrl(url: string): Partial<DatabaseConfig> | null {
+  try {
+    const u = new URL(url);
+    return {
+      host: u.hostname,
+      port: u.port ? parseInt(u.port, 10) : 26257,
+      database: u.pathname.replace(/^\//, '') || 'skytwin',
+      user: decodeURIComponent(u.username) || 'root',
+      password: u.password ? decodeURIComponent(u.password) : undefined,
+      ssl: u.searchParams.get('sslmode') === 'disable' ? false : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+const FROM_URL = process.env['DATABASE_URL']
+  ? parseDatabaseUrl(process.env['DATABASE_URL'])
+  : null;
+
 const DEFAULT_CONFIG: DatabaseConfig = {
-  host: process.env['DATABASE_HOST'] ?? 'localhost',
-  port: parseInt(process.env['DATABASE_PORT'] ?? '26257', 10),
-  database: process.env['DATABASE_NAME'] ?? 'skytwin',
-  user: process.env['DATABASE_USER'] ?? 'root',
-  password: process.env['DATABASE_PASSWORD'] ?? undefined,
-  ssl: process.env['DATABASE_SSL'] === 'true'
+  host: FROM_URL?.host ?? process.env['DATABASE_HOST'] ?? 'localhost',
+  port: FROM_URL?.port ?? parseInt(process.env['DATABASE_PORT'] ?? '26257', 10),
+  database: FROM_URL?.database ?? process.env['DATABASE_NAME'] ?? 'skytwin',
+  user: FROM_URL?.user ?? process.env['DATABASE_USER'] ?? 'root',
+  password: FROM_URL?.password ?? process.env['DATABASE_PASSWORD'] ?? undefined,
+  ssl: FROM_URL?.ssl ?? (process.env['DATABASE_SSL'] === 'true'
     ? { rejectUnauthorized: false }
-    : false,
+    : false),
   max: parseInt(process.env['DATABASE_POOL_MAX'] ?? '20', 10),
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 5000,
@@ -40,17 +70,27 @@ let pool: Pool | null = null;
  */
 export function getPool(config?: Partial<DatabaseConfig>): Pool {
   if (!pool) {
-    const finalConfig = { ...DEFAULT_CONFIG, ...config };
+    // Recompute DATABASE_URL parse at each first call so a service-manager
+    // that injects env vars after the module was imported (in-process
+    // migrations on Electron main) still picks up the right host/port.
+    const fromUrl = process.env['DATABASE_URL']
+      ? parseDatabaseUrl(process.env['DATABASE_URL'])
+      : null;
+    const merged: DatabaseConfig = {
+      ...DEFAULT_CONFIG,
+      ...(fromUrl ?? {}),
+      ...config,
+    };
     pool = new Pool({
-      host: finalConfig.host,
-      port: finalConfig.port,
-      database: finalConfig.database,
-      user: finalConfig.user,
-      password: finalConfig.password,
-      ssl: finalConfig.ssl,
-      max: finalConfig.max,
-      idleTimeoutMillis: finalConfig.idleTimeoutMillis,
-      connectionTimeoutMillis: finalConfig.connectionTimeoutMillis,
+      host: merged.host,
+      port: merged.port,
+      database: merged.database,
+      user: merged.user,
+      password: merged.password,
+      ssl: merged.ssl,
+      max: merged.max,
+      idleTimeoutMillis: merged.idleTimeoutMillis,
+      connectionTimeoutMillis: merged.connectionTimeoutMillis,
     });
 
     pool.on('error', (err) => {

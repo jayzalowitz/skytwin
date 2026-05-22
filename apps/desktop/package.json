@@ -11,15 +11,15 @@
   "main": "dist/main.js",
   "scripts": {
     "start": "electron .",
-    "dev": "tsc && electron .",
+    "dev": "tsc &&electron .",
     "build": "node -e \"console.log('Desktop build requires: pnpm --filter @skytwin/desktop package:[mac|win|linux]')\"",
     "test": "vitest run",
     "prepackage": "bash scripts/build-single-binary.sh",
-    "package:mac": "tsc && pnpm run prepackage && electron-builder --mac",
-    "package:win": "tsc && pnpm run prepackage && electron-builder --win",
-    "package:linux": "tsc && pnpm run prepackage && electron-builder --linux",
-    "package:all": "tsc && pnpm run prepackage && electron-builder --mac --win --linux",
-    "package:signed": "tsc && pnpm run prepackage && npx ts-node scripts/sign-and-notarize.ts -- --mac --win --linux",
+    "package:mac": "tsc &&pnpm run prepackage && electron-builder --mac",
+    "package:win": "tsc &&pnpm run prepackage && electron-builder --win",
+    "package:linux": "tsc &&pnpm run prepackage && electron-builder --linux",
+    "package:all": "tsc &&pnpm run prepackage && electron-builder --mac --win --linux",
+    "package:signed": "tsc &&pnpm run prepackage && npx ts-node scripts/sign-and-notarize.ts -- --mac --win --linux",
     "build:single-binary": "bash scripts/build-single-binary.sh"
   },
   "build": {
@@ -109,33 +109,12 @@
     ],
     "extraResources": [
       {
-        "from": "../../packages",
-        "to": "packages",
-        "filter": [
-          "**/dist/**",
-          "**/package.json"
-        ]
-      },
-      {
-        "from": "../../apps/api/dist",
-        "to": "api"
-      },
-      {
-        "from": "../../apps/worker/dist",
-        "to": "worker"
-      },
-      {
-        "from": "../../apps/web/public",
-        "to": "web"
-      },
-      {
         "from": "dist/embedded",
         "to": "embedded",
         "filter": [
           "api/**/*",
           "worker/**/*",
           "web/**/*",
-          "packages/**/*",
           "bundle-manifest.json"
         ]
       }

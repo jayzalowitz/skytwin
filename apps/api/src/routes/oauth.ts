@@ -4,6 +4,7 @@ import { loadConfig } from '@skytwin/config';
 import { oauthRepository, serviceCredentialRepository, userRepository } from '@skytwin/db';
 import {
   generateAuthUrl,
+  generatePkcePair,
   exchangeCode,
   revokeToken,
 } from '@skytwin/connectors';
@@ -197,32 +198,95 @@ const CALENDAR_SCOPES = [
 ];
 
 /**
- * Build the Google OAuth config, preferring DB-stored credentials from
- * the Setup page over environment variables.
+ * Build the Google OAuth config. Three sources, in priority order:
+ *   1. User-supplied credentials in the DB (Setup page) — wins.
+ *   2. Confidential-client env vars (`GOOGLE_CLIENT_ID`/`_SECRET`) —
+ *      the old "operator wires it up at deploy" path.
+ *   3. PKCE-only default client_id baked into the build via
+ *      `SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID`. The desktop bundle ships
+ *      this so end-users don't have to create their own Google Cloud
+ *      OAuth app. Public client IDs are designed to be revealed; PKCE
+ *      binds each auth code to a per-flow verifier so a stolen
+ *      client_id alone redeems nothing.
+ *
+ * The returned `clientSecret` is the literal empty string in PKCE mode —
+ * downstream code keys on `secret === ''` to choose the PKCE token-
+ * exchange variant. Don't normalise it to undefined; the empty string is
+ * load-bearing.
  */
 async function resolveGoogleConfig(): Promise<GoogleOAuthConfig> {
   const config = loadConfig();
 
-  // Start with env-var values
+  // Layer 1: env vars (typical for self-hosted ops).
   let clientId = config.googleClientId;
   let clientSecret = config.googleClientSecret;
   let redirectUri = config.googleRedirectUri;
 
-  // If env vars are empty, check the DB (credentials set via Setup page)
-  if (!clientId || !clientSecret) {
-    try {
-      const dbCreds = await serviceCredentialRepository.getAsMap('google');
-      if (dbCreds['client_id'] && !clientId) clientId = dbCreds['client_id'];
-      if (dbCreds['client_secret'] && !clientSecret) clientSecret = dbCreds['client_secret'];
-      if (dbCreds['redirect_uri'] && redirectUri === 'http://localhost:3100/api/oauth/google/callback') {
-        redirectUri = dbCreds['redirect_uri'];
-      }
-    } catch {
-      // DB may not have the table yet — fall through to env-var values
+  // Layer 2: DB-stored credentials from the Setup page take priority over
+  // env vars and over the bundled default. Falls through silently when
+  // the service_credentials table doesn't exist yet.
+  try {
+    const dbCreds = await serviceCredentialRepository.getAsMap('google');
+    if (dbCreds['client_id']) clientId = dbCreds['client_id'];
+    if (dbCreds['client_secret']) clientSecret = dbCreds['client_secret'];
+    if (dbCreds['redirect_uri'] && redirectUri === 'http://localhost:3100/api/oauth/google/callback') {
+      redirectUri = dbCreds['redirect_uri'];
+    }
+  } catch {
+    // No service_credentials table yet — fall through.
+  }
+
+  // Layer 3: PKCE-only default (desktop bundle). Used iff neither env vars
+  // nor DB supplied a clientId. We intentionally leave clientSecret as
+  // empty string so the rest of the flow auto-routes to PKCE.
+  if (!clientId) {
+    const bundled = process.env['SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID'] ?? '';
+    if (bundled) {
+      clientId = bundled;
+      clientSecret = '';
     }
   }
 
   return { clientId, clientSecret, redirectUri };
+}
+
+/**
+ * Server-local store of pending PKCE verifiers, keyed by the signed
+ * state token. The verifier MUST NOT travel through Google or the user's
+ * browser — that's the whole reason PKCE exists. Server-side memory is
+ * adequate for the OAuth-redirect timescale (~minutes); a process
+ * restart mid-flow just makes the user retry.
+ *
+ * TTL matches STATE_TTL_MS. We sweep on every set to keep the map size
+ * bounded even if callbacks never come back (closed browser tab, etc.).
+ */
+const PKCE_TTL_MS = 10 * 60 * 1000;
+const PKCE_MAX_ENTRIES = 1024;
+const pkceStore = new Map<string, { codeVerifier: string; expiresAt: number }>();
+
+function sweepPkceStore(now: number): void {
+  for (const [k, v] of pkceStore) {
+    if (v.expiresAt <= now) pkceStore.delete(k);
+  }
+}
+
+function rememberPkceVerifier(state: string, codeVerifier: string): void {
+  const now = Date.now();
+  sweepPkceStore(now);
+  if (pkceStore.size >= PKCE_MAX_ENTRIES) {
+    // Drop oldest entry (Map preserves insertion order).
+    const oldest = pkceStore.keys().next().value;
+    if (oldest !== undefined) pkceStore.delete(oldest);
+  }
+  pkceStore.set(state, { codeVerifier, expiresAt: now + PKCE_TTL_MS });
+}
+
+function consumePkceVerifier(state: string): string | undefined {
+  const entry = pkceStore.get(state);
+  if (!entry) return undefined;
+  pkceStore.delete(state);
+  if (entry.expiresAt < Date.now()) return undefined;
+  return entry.codeVerifier;
 }
 
 /**
@@ -293,13 +357,18 @@ export function createOAuthRouter(): Router {
       }
 
       const googleConfig = await resolveGoogleConfig();
-      // Without configured Google credentials we'd happily build an auth URL
-      // with an empty client_id and Google would reject the user with an
-      // opaque "invalid_client" — surface a clean 503 so the dashboard can
-      // tell the user to finish Setup first.
-      if (!googleConfig.clientId || !googleConfig.clientSecret) {
+      // Without ANY configured client_id we can't build an auth URL —
+      // Google would reject the user with an opaque "invalid_client". A
+      // missing client_secret is OK now (PKCE handles installed-app
+      // flows); a missing client_id is fatal. Surface a clean 503 so the
+      // dashboard can tell the user to finish Setup or ship a desktop
+      // build with SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID baked in.
+      if (!googleConfig.clientId) {
         res.status(503).json({
-          error: 'Google credentials are not configured. Open Setup and add your OAuth client_id and client_secret.',
+          error:
+            'Google sign-in is not configured. ' +
+            'Open Setup and paste your OAuth client_id (and client_secret if you have one), ' +
+            'or rebuild the desktop with SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID set.',
         });
         return;
       }
@@ -328,7 +397,19 @@ export function createOAuthRouter(): Router {
 
       const payload = [stateHead, ...tags].join('|');
       const state = signStatePayload(payload, Date.now() + STATE_TTL_MS);
-      const url = generateAuthUrl(googleConfig, scopes, state);
+
+      // PKCE mode when no client_secret. Generate verifier+challenge,
+      // stash verifier server-side keyed on the signed state token, send
+      // only the challenge to Google. /callback retrieves the verifier
+      // by state.
+      let codeChallenge: string | undefined;
+      if (!googleConfig.clientSecret) {
+        const pkce = generatePkcePair();
+        rememberPkceVerifier(state, pkce.codeVerifier);
+        codeChallenge = pkce.codeChallenge;
+      }
+
+      const url = generateAuthUrl(googleConfig, scopes, state, codeChallenge);
       res.json({ url });
     } catch (error) {
       next(error);
@@ -366,7 +447,22 @@ export function createOAuthRouter(): Router {
       }
 
       const googleConfig = await resolveGoogleConfig();
-      const tokenSet = await exchangeCode(googleConfig, code);
+      // Recover the PKCE verifier stashed at /authorize. Consume-on-read
+      // so a replayed callback can't redeem the same code twice.
+      const codeVerifier = consumePkceVerifier(state);
+      if (!googleConfig.clientSecret && !codeVerifier) {
+        // In PKCE mode without a stored verifier we'd send an empty
+        // code_verifier to Google and get a 400 "invalid_grant".
+        // Surface a clear error pointing at the most likely cause: a
+        // stale browser tab where /authorize ran against a different
+        // process (Electron restart, etc.).
+        res.status(400).json({
+          error:
+            'OAuth verifier expired or missing. Re-start the sign-in flow from the dashboard.',
+        });
+        return;
+      }
+      const tokenSet = await exchangeCode(googleConfig, code, codeVerifier);
 
       // Resolve the verified Google identity so we can key the token row on
       // the actual account email (rather than guessing from state) and

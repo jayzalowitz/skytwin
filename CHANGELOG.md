@@ -1,5 +1,42 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.57.0] - 2026-05-22
+
+### Fixed
+
+- **`packages/db` was ignoring `DATABASE_URL`.** The connection pool used separate `DATABASE_HOST`/`DATABASE_PORT`/`DATABASE_NAME` env vars and silently defaulted to `localhost:26257/skytwin`. The new desktop bundle picks a non-default CRDB port (`SKYTWIN_DB_PORT`) and ships a `DATABASE_URL` to the spawned API — but every migration and every query was actually landing on whatever stray `docker compose` CRDB happened to be on the default port. The bundled CRDB stayed empty; every downstream query 500'd on "relation does not exist"; OAuth callbacks died on "column account_email does not exist." `getPool()` now parses `DATABASE_URL` first and uses its host/port/db/user/password as the source of truth, with the legacy env vars as fallback. Re-evaluates on first call so service-manager's in-process env injection (Electron main runs migrations directly) takes effect.
+- **Migration 023 (`decisions_user_signal_unique_idx`) failed on installs with historical duplicates AND referenced a future-migration column.** Split into two: 023 now only adds the `signal_id` column + backfill (always safe); a new 057 runs after the full schema is in place, dedupes the FK chain in dependency order (execution_events → execution_results → decision_outcomes.execution_plan_id NULL → execution_plans → feedback_events → explanation_records → approval_requests → decision_outcomes → candidate_actions → decisions), then creates the partial unique index. Idempotent on installs that never had dupes.
+- **Migration 046 used `crdb_internal.force_error()` which the v23.2 bundled CRDB locks behind `allow_unsafe_internals = true`.** Replaced with a portable `SELECT 1/0 WHERE NOT EXISTS (...)` — same loud-fail semantics (SQLSTATE 22012 is outside the runner's idempotency carve-out) without needing CRDB's debug surface enabled.
+- **Electron desktop now runs migrations in-process via the named `up()` export.** Earlier attempts to spawn a child node process for the migration script failed in three distinct ways: pnpm-deploy symlinks broke the `import.meta.url === pathToFileURL(argv[1]).href` CLI guard in 001-initial.ts; an `.mjs` shim bundled into `app.asar` wasn't readable from a child process (asar is an Electron-runtime overlay, not a real fs); an `--input-type=module -e <inline>` shim exited 0 silently. Electron's main process is node, has full asar awareness, resolves pnpm symlinks, and shares process.env — calling `up()` directly avoids every spawn quirk. Bypasses the CLI guard via `new Function('p', 'return import(p)')` (the TS compiler emits `require()` for `await import()` in CJS modules, which would refuse to load ESM targets).
+- **Desktop bundle now uses `pnpm deploy` for self-contained app dirs.** The previous `cp -R apps/api/node_modules` ran on pnpm-symlinked trees; electron-builder later tripped on dangling links into `.pnpm/`. A naive `cp -RL` blew the bundle up to ~14 GB because pnpm's content-addressable store dedupes heavily. `pnpm deploy --prod` produces a flat hoisted bundle (~45 MB per app) with a single self-referencing back-symlink that we strip post-deploy.
+- **Desktop bundle includes the web Express server, not just static assets.** `ServiceManager.startWeb()` now forks `apps/web` alongside API and worker. Previously the dashboard URL (`localhost:3200`) returned ECONNREFUSED on every packaged launch.
+- **Per-installation `SESSION_SECRET` auto-generated in Electron main.** Persisted at `<userData>/secrets/session-secret` with mode 0o600 so cookies signed with it survive across launches. The API's production-mode validator used to refuse to start without it.
+- **`USE_MOCK_IRONCLAW` defaults to true in the desktop bundle.** The previous `false` default required users to provide `IRONCLAW_WEBHOOK_SECRET` just to launch — pointless in an installed-app context where no IronClaw deployment exists.
+- **vitest no longer recurses into `apps/desktop/dist-electron/`.** `pnpm deploy` ships `src/` inside the .app, and vitest's default discovery would pick up every test file there (without their workspace mocks) and fail the whole suite.
+- **`apps/desktop/dist-electron/` is `.gitignore`d.** Was ending up in `git status --short` after every package run.
+- **`packages/db/package.json`'s `build` script copies `src/migrations/*.sql` and `src/schemas/*.sql` to `dist/`.** Without this, the bundled migrations had `.js` runners but zero SQL — every fresh install applied 0 statements per file and reported success.
+
+### Added
+
+- **Google OAuth PKCE flow for installed clients (`@skytwin/connectors`).** New `generatePkcePair()` (RFC 7636 §4, 32-byte URL-safe verifier + S256 challenge); `generateAuthUrl()` attaches `code_challenge`/`code_challenge_method=S256` when a challenge is supplied; `exchangeCode()` sends `code_verifier` (no `client_secret`) for public clients and `client_secret` (no verifier) for confidential clients; `refreshAccessToken()` omits `client_secret` from the refresh request when the client is PKCE-only. 11 new tests in `google-oauth-pkce.test.ts`.
+- **`apps/api/src/routes/oauth.ts` honors a `SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID` baked into the desktop bundle.** When neither DB-stored nor env-var credentials exist, falls through to the bundled default and runs in PKCE mode — end users never see the "create your own Google Cloud OAuth app and paste your client_id+secret" friction. Server-local PKCE verifier store (`Map<state, codeVerifier>`) keeps the verifier off the Google round-trip; consume-on-read so a replayed callback can't redeem the same code twice.
+- **`apps/desktop/src/service-manager.ts` injects the bundled Google client_id** into spawned API processes via env, with `process.env['SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID']` overriding the build-time constant. The constant is empty in this commit — a SkyTwin-team Verified OAuth client of type "Desktop app" should be registered and its `client_id` baked in (or passed at build time) before the first signed release.
+
+### Why this matters
+
+The pre-v0.6.57 desktop .dmg launched, opened the dashboard, then 500'd on the first Gmail sync because none of its 57 migrations had actually applied — they were all hitting the wrong CRDB. And even with a working DB, a non-technical user still hit a "create your own Google Cloud OAuth app" wall before they could sign in. v0.6.57 closes both: migrations land where they're supposed to, and the OAuth handshake works with just a single bundled (public) client_id.
+
+### Backward compatibility
+
+- Operator-supplied `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` env vars (and DB-stored credentials from the Setup page) still take precedence over the bundled default — existing self-hosted deployments are unchanged.
+- `DATABASE_URL` is now authoritative; the legacy `DATABASE_HOST`/`PORT`/`NAME` vars still work as fallbacks for deployments that set them.
+- Migration 023 split into 023 (column add) + 057 (dedupe + index). Installs that previously ran 023 successfully (the original index lives) get a no-op from 057's `CREATE UNIQUE INDEX IF NOT EXISTS`.
+
+### Tests
+
+- 11 new tests in `packages/connectors/src/__tests__/google-oauth-pkce.test.ts` covering PKCE pair generation, S256 challenge derivation, authorization URL parameter shape, token-exchange request body in both modes, and refresh-token request body in both modes.
+- All existing tests still pass (3,084 total across 20+ packages).
+
 ## [0.6.56.0] - 2026-05-21
 
 ### Changed

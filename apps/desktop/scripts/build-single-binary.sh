@@ -177,38 +177,67 @@ mkdir -p "${EMBEDDED_DIR}/worker"
 mkdir -p "${EMBEDDED_DIR}/web"
 
 # ---------------------------------------------------------------------------
-# Step 3: Copy compiled outputs into the embedded tree.
+# Step 3: Use `pnpm deploy` to produce self-contained API and worker
+# directories with hoisted node_modules (no pnpm symlinks dangling into
+# .pnpm/). Naive `cp -R` of `apps/*/node_modules` would preserve the
+# symlinks but not chase them, so electron-builder later fails with
+# "ENOENT … bonjour-service". Naive `cp -RL` follows every symlink and
+# produces ~14GB of duplicated transitive deps because pnpm's store is
+# heavily deduplicated.
 #
-# We copy dist/ (compiled JS) and node_modules/ (runtime deps) so the embedded
-# API and worker can be launched with plain `node dist/index.js` without any
-# additional install step inside the packaged app.
+# `pnpm deploy --filter <pkg> --prod <dir>` is the pnpm-native answer:
+# it walks the workspace dependency graph, copies dist + package.json +
+# every prod dependency into <dir>/node_modules as a flat hoisted tree.
+# Self-contained, electron-builder-friendly, and respects --prod so dev
+# deps don't ship.
 # ---------------------------------------------------------------------------
 
 echo ""
-echo "[build-single-binary] Copying API output..."
-cp -R "${MONOREPO_ROOT}/apps/api/dist/"        "${EMBEDDED_DIR}/api/dist/"
-cp    "${MONOREPO_ROOT}/apps/api/package.json"  "${EMBEDDED_DIR}/api/package.json"
-if [ -d "${MONOREPO_ROOT}/apps/api/node_modules" ]; then
-  cp -R "${MONOREPO_ROOT}/apps/api/node_modules/" "${EMBEDDED_DIR}/api/node_modules/"
-fi
+echo "[build-single-binary] Deploying API into embedded tree..."
+rm -rf "${EMBEDDED_DIR}/api"
+pnpm --filter @skytwin/api deploy --prod "${EMBEDDED_DIR}/api"
 
 echo ""
-echo "[build-single-binary] Copying worker output..."
-cp -R "${MONOREPO_ROOT}/apps/worker/dist/"        "${EMBEDDED_DIR}/worker/dist/"
-cp    "${MONOREPO_ROOT}/apps/worker/package.json"  "${EMBEDDED_DIR}/worker/package.json"
-if [ -d "${MONOREPO_ROOT}/apps/worker/node_modules" ]; then
-  cp -R "${MONOREPO_ROOT}/apps/worker/node_modules/" "${EMBEDDED_DIR}/worker/node_modules/"
-fi
+echo "[build-single-binary] Deploying worker into embedded tree..."
+rm -rf "${EMBEDDED_DIR}/worker"
+pnpm --filter @skytwin/worker deploy --prod "${EMBEDDED_DIR}/worker"
 
 echo ""
-echo "[build-single-binary] Copying web output..."
-if [ -d "${MONOREPO_ROOT}/apps/web/public" ]; then
-  cp -R "${MONOREPO_ROOT}/apps/web/public/" "${EMBEDDED_DIR}/web/"
-elif [ -d "${MONOREPO_ROOT}/apps/web/dist" ]; then
-  cp -R "${MONOREPO_ROOT}/apps/web/dist/" "${EMBEDDED_DIR}/web/"
-else
-  echo "[build-single-binary] WARNING: No built web output found at apps/web/public or apps/web/dist."
-fi
+echo "[build-single-binary] Deploying web into embedded tree..."
+rm -rf "${EMBEDDED_DIR}/web"
+pnpm --filter @skytwin/web deploy --prod "${EMBEDDED_DIR}/web"
+
+# Post-process the deploy output. `pnpm deploy` leaves a back-symlink at
+# <bundle>/node_modules/.pnpm/node_modules/@skytwin/<self-pkg> that points
+# 8 levels up at the source workspace (../../../../../../../../<pkg>).
+# Inside an .app's Resources/ tree, that target doesn't exist — and
+# electron-builder traverses every symlink and fails ENOENT. The real
+# package content is already inlined elsewhere in .pnpm/, so we can
+# safely delete these dangling self-references.
+#
+# These symlinks have one identifying feature: they live under
+# `.pnpm/node_modules/@skytwin/` and their target starts with `../../`.
+# Anything pointing OUTSIDE the deploy bundle is dangling.
+strip_dangling_self_symlinks() {
+  local deploy_dir="$1"
+  local stripped=0
+  while IFS= read -r symlink; do
+    target="$(readlink "$symlink")"
+    # If the target is purely relative `../`s ending in a single dir name,
+    # it's the self-reference pnpm-deploy leaves behind.
+    case "$target" in
+      ../../../../../../../../*) rm -f "$symlink"; stripped=$((stripped + 1)) ;;
+    esac
+  done < <(find "$deploy_dir/node_modules/.pnpm/node_modules/@skytwin" -maxdepth 1 -type l 2>/dev/null)
+  echo "  [post-deploy] stripped $stripped self-symlink(s) from $deploy_dir"
+}
+
+strip_dangling_self_symlinks "${EMBEDDED_DIR}/api"
+strip_dangling_self_symlinks "${EMBEDDED_DIR}/worker"
+strip_dangling_self_symlinks "${EMBEDDED_DIR}/web"
+
+# Web is now a full deployed Express app (see deploy above). Its static
+# assets ship inside the deployed tree via the package's `files` field.
 
 # ---------------------------------------------------------------------------
 # Step 4: Copy workspace package dist/ outputs.
@@ -218,17 +247,11 @@ fi
 # bundle without requiring the full node_modules symlink tree from pnpm.
 # ---------------------------------------------------------------------------
 
-echo ""
-echo "[build-single-binary] Copying workspace package dist outputs..."
-mkdir -p "${EMBEDDED_DIR}/packages"
-for pkg_dir in "${MONOREPO_ROOT}/packages"/*/; do
-  pkg_name="$(basename "${pkg_dir}")"
-  if [ -d "${pkg_dir}dist" ]; then
-    mkdir -p "${EMBEDDED_DIR}/packages/${pkg_name}"
-    cp -R "${pkg_dir}dist/"        "${EMBEDDED_DIR}/packages/${pkg_name}/dist/"
-    cp    "${pkg_dir}package.json" "${EMBEDDED_DIR}/packages/${pkg_name}/package.json" 2>/dev/null || true
-  fi
-done
+# Workspace packages are now bundled into api/node_modules and
+# worker/node_modules by `pnpm deploy`. The standalone
+# `${EMBEDDED_DIR}/packages` tree from previous versions is no longer
+# needed — runtime imports resolve via the hoisted node_modules under
+# api/ and worker/.
 
 # ---------------------------------------------------------------------------
 # Step 5: Write a manifest file so the Electron main process can verify the

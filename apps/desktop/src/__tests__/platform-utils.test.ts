@@ -556,13 +556,38 @@ describe('electron-builder config', () => {
     expect(desktop.entry.Categories).toContain('Utility');
   });
 
-  it('extraResources bundles api, worker, web, and packages', () => {
+  it('extraResources ships the embedded bundle (api, worker, web, packages) under one tree', () => {
+    // Since v0.6.56 we collapsed the four standalone copies into a single
+    // `embedded/` tree produced by `pnpm deploy`. The previous layout
+    // shipped each app's dist/ separately AND a pnpm-symlinked
+    // node_modules tree that crashed electron-builder on ENOENT during
+    // packaging (dangling symlinks into the source workspace). One
+    // hoisted bundle per app fixes the crash and shrinks the artifact.
     const resources = buildConfig.extraResources as Array<Record<string, unknown>>;
     const destinations = resources.map((r) => r.to);
-    expect(destinations).toContain('packages');
-    expect(destinations).toContain('api');
-    expect(destinations).toContain('worker');
-    expect(destinations).toContain('web');
+    expect(destinations).toContain('embedded');
+    // Per-platform `mac`/`win`/`linux` blocks add `cockroach/<platform-arch>/`
+    // extras; tested separately so this assertion stays platform-agnostic.
+    const filter = resources.find((r) => r.to === 'embedded')?.filter as string[];
+    expect(filter).toContain('api/**/*');
+    expect(filter).toContain('worker/**/*');
+    expect(filter).toContain('web/**/*');
+  });
+
+  it('per-platform extraResources ship only the matching cockroach binary', () => {
+    // Old layout shipped all 5 platforms (~700MB cockroach binaries) in
+    // every artifact. Per-platform filters keep each installer to its
+    // own arch's binary.
+    const mac = buildConfig.mac as { extraResources: Array<{ from: string; to: string }> };
+    const win = buildConfig.win as { extraResources: Array<{ from: string; to: string }> };
+    const linux = buildConfig.linux as { extraResources: Array<{ from: string; to: string }> };
+    expect(mac.extraResources.some((r) => r.from.includes('darwin-arm64'))).toBe(true);
+    expect(mac.extraResources.some((r) => r.from.includes('darwin-x64'))).toBe(true);
+    expect(mac.extraResources.every((r) => !r.from.includes('linux'))).toBe(true);
+    expect(mac.extraResources.every((r) => !r.from.includes('win32'))).toBe(true);
+    expect(win.extraResources.some((r) => r.from.includes('win32-x64'))).toBe(true);
+    expect(linux.extraResources.some((r) => r.from.includes('linux-x64'))).toBe(true);
+    expect(linux.extraResources.some((r) => r.from.includes('linux-arm64'))).toBe(true);
   });
 
   it('mac icon is .icns format', () => {

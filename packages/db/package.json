@@ -12,7 +12,7 @@
     }
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && bash -c 'mkdir -p dist/migrations dist/schemas && cp -f src/migrations/*.sql dist/migrations/ 2>/dev/null || true && cp -f src/schemas/*.sql dist/schemas/ 2>/dev/null || true'",
     "dev": "tsc --watch",
     "migrate": "tsx src/migrations/001-initial.ts",
     "seed": "tsx src/seeds/seed.ts",
