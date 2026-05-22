@@ -358,10 +358,10 @@ function renderWelcome() {
     </div>
 
     <div id="onb-tour-row" style="display:none;">
-      <div aria-hidden="true" style="display:flex;align-items:center;gap:0.5rem;margin:0.25rem 0 0.75rem;color:var(--text-muted);font-size:0.78rem;">
-        <span style="flex:1;height:1px;background:var(--border);"></span>
-        <span style="text-transform:uppercase;letter-spacing:0.08em;">or</span>
-        <span style="flex:1;height:1px;background:var(--border);"></span>
+      <div role="separator" aria-label="or" style="display:flex;align-items:center;gap:0.5rem;margin:0.25rem 0 0.75rem;color:var(--text-muted);font-size:0.78rem;">
+        <span aria-hidden="true" style="flex:1;height:1px;background:var(--border);"></span>
+        <span aria-hidden="true" style="text-transform:uppercase;letter-spacing:0.08em;">or</span>
+        <span aria-hidden="true" style="flex:1;height:1px;background:var(--border);"></span>
       </div>
       <button class="btn btn-outline btn-lg" style="text-align:left;display:flex;align-items:center;gap:0.75rem;width:100%;"
               data-action="onb-start-tour">
