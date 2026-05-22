@@ -6,11 +6,18 @@ Thanks for your interest in contributing to SkyTwin. This document covers everyt
 
 1. Fork and clone the repo
 2. Install dependencies: `pnpm install`
-3. Start CockroachDB: `docker-compose up -d cockroachdb`
+3. Fetch + start the local CockroachDB: `./bin/skytwin-db install && ./bin/skytwin-db start && ./bin/skytwin-db ensure-db`
 4. Copy env config: `cp .env.example .env`
 5. Run migrations: `pnpm db:migrate`
 6. Build: `pnpm build`
 7. Run tests: `pnpm test`
+
+`bin/skytwin-db` fetches a hash-verified CockroachDB binary into
+`~/.local/share/skytwin/bin/cockroach` and spawns it as a child process.
+No Docker required.
+
+To validate install regressions before opening a PR, run the multi-distro
+harness: `./bin/validate-installs` (or one of `ubuntu`/`debian`/`fedora`).
 
 ## Development Workflow
 
