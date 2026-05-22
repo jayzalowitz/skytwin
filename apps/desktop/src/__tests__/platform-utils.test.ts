@@ -556,22 +556,29 @@ describe('electron-builder config', () => {
     expect(desktop.entry.Categories).toContain('Utility');
   });
 
-  it('extraResources ships the embedded bundle (api, worker, web, packages) under one tree', () => {
-    // Since v0.6.56 we collapsed the four standalone copies into a single
-    // `embedded/` tree produced by `pnpm deploy`. The previous layout
-    // shipped each app's dist/ separately AND a pnpm-symlinked
-    // node_modules tree that crashed electron-builder on ENOENT during
-    // packaging (dangling symlinks into the source workspace). One
-    // hoisted bundle per app fixes the crash and shrinks the artifact.
+  it('extraResources ships the embedded bundle as a single apps.tar.gz', () => {
+    // Since the post-codex CI-perf landing on PR #350, the embedded
+    // api/worker/web trees ship as one tarball instead of ~10,000 loose
+    // pnpm-deploy files. The Windows CI cost of copying those loose
+    // files into win-unpacked + writing them through electron-builder's
+    // NSIS pipeline was the dominant bottleneck (1h+ on each run) and
+    // the freshly-written .nsis.7z was racing Defender RT-scan handles.
+    // build-single-binary.sh now produces dist/embedded/apps.tar.gz,
+    // service-manager extracts to <userData>/embedded/ on first launch.
     const resources = buildConfig.extraResources as Array<Record<string, unknown>>;
     const destinations = resources.map((r) => r.to);
     expect(destinations).toContain('embedded');
     // Per-platform `mac`/`win`/`linux` blocks add `cockroach/<platform-arch>/`
     // extras; tested separately so this assertion stays platform-agnostic.
     const filter = resources.find((r) => r.to === 'embedded')?.filter as string[];
-    expect(filter).toContain('api/**/*');
-    expect(filter).toContain('worker/**/*');
-    expect(filter).toContain('web/**/*');
+    expect(filter).toContain('apps.tar.gz');
+    expect(filter).toContain('bundle-manifest.json');
+    // Loose api/**/worker/**/web/** patterns should NOT be present — they
+    // were replaced by the tarball. A regression would mean we'd ship the
+    // tarball AND the loose tree, doubling the artifact size.
+    expect(filter).not.toContain('api/**/*');
+    expect(filter).not.toContain('worker/**/*');
+    expect(filter).not.toContain('web/**/*');
   });
 
   it('per-platform extraResources ship only the matching cockroach binary', () => {

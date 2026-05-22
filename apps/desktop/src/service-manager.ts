@@ -1,5 +1,5 @@
-import { fork, execSync, type ChildProcess } from 'child_process';
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'fs';
+import { fork, spawn, execSync, type ChildProcess } from 'child_process';
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { randomBytes } from 'crypto';
 import { join } from 'path';
 import { pathToFileURL } from 'url';
@@ -73,6 +73,98 @@ export class ServiceManager {
   }
 
   /**
+   * The embedded api/worker/web trees are no longer shipped as loose files
+   * under `<resources>/embedded/{api,worker,web}/`. Build-single-binary.sh
+   * packs them into a single `apps.tar.gz` so the .dmg/.exe/.AppImage
+   * carries one file instead of ~10,000 small ones (the file count was
+   * the primary Windows CI bottleneck — NTFS small-file writes during
+   * electron-builder's win-unpacked copy step + Defender RT-scan races
+   * on the resulting .nsis.7z, see PR #350 history).
+   *
+   * On first launch — or after a version bump — extract the tarball into
+   * `<userData>/embedded/` and write a `.version` marker so subsequent
+   * launches no-op. Tar is in System32 on Win10 1803+, /usr/bin on
+   * macOS/Linux. No additional bundled tooling.
+   *
+   * Returns the absolute path that callers should use in place of the
+   * old `join(getResourcePath(), 'embedded', ...)` constructions.
+   */
+  private extractedEmbeddedRoot: string | null = null;
+
+  private async ensureEmbeddedRoot(): Promise<string> {
+    if (this.extractedEmbeddedRoot) return this.extractedEmbeddedRoot;
+
+    if (!app.isPackaged) {
+      // Dev mode: embedded apps live in the workspace tree, never tarballed.
+      this.extractedEmbeddedRoot = join(this.getResourcePath(), 'embedded');
+      // In dev we don't actually use this path (startApi etc. use
+      // apps/api/dist directly), but cache something sensible.
+      return this.extractedEmbeddedRoot;
+    }
+
+    const extractedRoot = join(app.getPath('userData'), 'embedded');
+    const marker = join(extractedRoot, '.version');
+    const currentVersion = app.getVersion();
+
+    if (existsSync(marker)) {
+      try {
+        const installed = readFileSync(marker, 'utf-8').trim();
+        if (installed === currentVersion) {
+          // Up to date — sanity-check the api entry exists before declaring
+          // the cache hot (partial extractions from a prior crash would
+          // leave the marker present but the tree incomplete).
+          if (existsSync(join(extractedRoot, 'api', 'dist', 'index.js'))) {
+            this.extractedEmbeddedRoot = extractedRoot;
+            return extractedRoot;
+          }
+          console.warn('[extract] Marker matches but api/dist/index.js missing — re-extracting.');
+        } else {
+          console.log(`[extract] Version changed: ${installed} -> ${currentVersion}. Re-extracting.`);
+        }
+      } catch {
+        // Marker unreadable — fall through to re-extract.
+      }
+      // Stale or partial — wipe before re-extracting so leftover files
+      // from the prior version can't shadow the new bundle (e.g. an
+      // obsolete migration script still resolving at the old path).
+      try {
+        rmSync(extractedRoot, { recursive: true, force: true });
+      } catch (err) {
+        console.warn('[extract] Could not wipe stale extracted tree:', err);
+      }
+    }
+
+    const tarPath = join(process.resourcesPath, 'embedded', 'apps.tar.gz');
+    if (!existsSync(tarPath)) {
+      throw new Error(
+        `Embedded apps tarball missing at ${tarPath}. This means the bundle was assembled without running build-single-binary.sh, or the extraResources filter in apps/desktop/package.json no longer points at apps.tar.gz.`,
+      );
+    }
+
+    mkdirSync(extractedRoot, { recursive: true });
+
+    console.log(`[extract] Unpacking embedded apps from ${tarPath} -> ${extractedRoot}`);
+    const t0 = Date.now();
+    await new Promise<void>((resolve, reject) => {
+      // -x extract, -z gunzip, -f file, -C cd-into. System tar on all
+      // three platforms accepts this flag set (bsdtar on macOS/Windows,
+      // gnu tar on Linux). Stdio inherited so any extraction error shows
+      // up in the user-facing console / log.
+      const child = spawn('tar', ['-xzf', tarPath, '-C', extractedRoot], { stdio: 'inherit' });
+      child.on('error', reject);
+      child.on('exit', (code) => {
+        if (code === 0) resolve();
+        else reject(new Error(`tar exited with code ${code}`));
+      });
+    });
+    writeFileSync(marker, currentVersion);
+    console.log(`[extract] Done in ${Date.now() - t0}ms`);
+
+    this.extractedEmbeddedRoot = extractedRoot;
+    return extractedRoot;
+  }
+
+  /**
    * Read or generate a per-installation session secret. The API refuses to
    * start in production mode without `SESSION_SECRET`. We persist it to
    * `<userData>/secrets/session-secret` so the same value is reused across
@@ -137,8 +229,9 @@ export class ServiceManager {
    */
   private async runMigrations(): Promise<boolean> {
     const base = this.getResourcePath();
+    const embeddedRoot = await this.ensureEmbeddedRoot();
     const fallbackSymlink = app.isPackaged
-      ? join(base, 'embedded', 'api', 'node_modules', '@skytwin', 'db', 'dist', 'migrations', '001-initial.js')
+      ? join(embeddedRoot, 'api', 'node_modules', '@skytwin', 'db', 'dist', 'migrations', '001-initial.js')
       : join(base, 'packages', 'db', 'dist', 'migrations', '001-initial.js');
 
     // Resolve through any symlinks. `pnpm deploy` stitches packages via
@@ -205,6 +298,21 @@ export class ServiceManager {
 
   async startAll(): Promise<void> {
     this.paused = false;
+    // Extract the bundled embedded apps tarball before anything else so
+    // every downstream method (CockroachManager, runMigrations, startApi,
+    // startWeb, startWorker) sees a populated <userData>/embedded/ tree.
+    // No-op after the first launch except on version bumps.
+    if (app.isPackaged) {
+      try {
+        await this.ensureEmbeddedRoot();
+      } catch (err) {
+        console.error('[startup] Failed to extract embedded apps:', err);
+        // Re-throw so the splash/UI surfaces the error rather than
+        // entering a degraded state where API/worker silently fail to
+        // resolve their entry points.
+        throw err;
+      }
+    }
     await this.startCockroach();
     // Migrations must complete after CRDB is up but before API starts;
     // otherwise API hits "relation does not exist" on first query and
@@ -325,12 +433,15 @@ export class ServiceManager {
     this.api.external = false;
 
     const base = this.getResourcePath();
-    // Packaged path uses the pnpm-deployed self-contained bundle at
-    // <resources>/embedded/api/, which carries dist/ + its own
-    // node_modules. The standalone <resources>/api/ tree from prior
-    // versions had only dist/ and couldn't resolve `express` at runtime.
+    const embeddedRoot = await this.ensureEmbeddedRoot();
+    // Packaged path uses the pnpm-deployed self-contained bundle —
+    // since v0.6.58, extracted to <userData>/embedded/ on first launch
+    // from the bundled apps.tar.gz (see ensureEmbeddedRoot). The earlier
+    // standalone <resources>/api/ tree had only dist/ and couldn't
+    // resolve `express` at runtime; the deployed tree carries its own
+    // node_modules.
     const apiEntry = app.isPackaged
-      ? join(base, 'embedded', 'api', 'dist', 'index.js')
+      ? join(embeddedRoot, 'api', 'dist', 'index.js')
       : join(base, 'apps', 'api', 'dist', 'index.js');
 
     try {
@@ -385,8 +496,9 @@ export class ServiceManager {
     this.web.external = false;
 
     const base = this.getResourcePath();
+    const embeddedRoot = await this.ensureEmbeddedRoot();
     const webEntry = app.isPackaged
-      ? join(base, 'embedded', 'web', 'dist', 'index.js')
+      ? join(embeddedRoot, 'web', 'dist', 'index.js')
       : join(base, 'apps', 'web', 'dist', 'index.js');
 
     try {
@@ -444,9 +556,10 @@ export class ServiceManager {
     this.worker.external = false;
 
     const base = this.getResourcePath();
+    const embeddedRoot = await this.ensureEmbeddedRoot();
     // See apiEntry comment above — same reasoning for worker.
     const workerEntry = app.isPackaged
-      ? join(base, 'embedded', 'worker', 'dist', 'index.js')
+      ? join(embeddedRoot, 'worker', 'dist', 'index.js')
       : join(base, 'apps', 'worker', 'dist', 'index.js');
 
     try {

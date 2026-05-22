@@ -66,8 +66,10 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "SkyTwin"
+      "shortcutName": "SkyTwin",
+      "differentialPackage": false
     },
+    "compression": "normal",
     "linux": {
       "target": [
         "AppImage",
@@ -112,9 +114,7 @@
         "from": "dist/embedded",
         "to": "embedded",
         "filter": [
-          "api/**/*",
-          "worker/**/*",
-          "web/**/*",
+          "apps.tar.gz",
           "bundle-manifest.json"
         ]
       }

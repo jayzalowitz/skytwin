@@ -248,6 +248,43 @@ strip_dangling_self_symlinks "${EMBEDDED_DIR}/web"
 # assets ship inside the deployed tree via the package's `files` field.
 
 # ---------------------------------------------------------------------------
+# Step 3.5: Tarball the embedded apps so electron-builder ships ONE file
+# (`apps.tar.gz`) instead of ~10,000+ loose pnpm-deploy node_modules entries.
+#
+# Why this exists: the prior build copied dist/embedded/{api,worker,web}/ as
+# loose files via `extraResources`. On Windows the package step took
+# 1+ hour just on the file copy (NTFS small-file overhead is brutal on
+# pnpm-deploy output), and the .nsis.7z that fed makensis was so big it
+# was racing Defender RT-scan handles → mmap fail (see GH Actions logs on
+# this PR's earlier runs + electron-builder #6107).
+#
+# After tarball:
+#   - Package time (writes a single .tar.gz instead of N small files,
+#     fast on every filesystem).
+#   - First-launch extracts to <userData>/embedded/ in one tar pass
+#     (also fast — the extraction is sequential reads from a single
+#     archive, not random small-file writes from electron-builder).
+#   - Installer (.dmg / .exe / .AppImage) shrinks by the compression
+#     ratio of node_modules tarball, ~30-40%.
+#
+# -h dereferences symlinks during archive creation. pnpm-deploy's strip
+# above removed the dangling self-back-symlinks; -h covers any remaining
+# internal symlinks so the archive is portable across the build host /
+# install host symlink-policy gap (Windows in particular needs admin or
+# developer mode to materialize unix-style symlinks, which a typical
+# user has neither).
+# ---------------------------------------------------------------------------
+
+echo ""
+echo "[build-single-binary] Tarballing embedded apps into apps.tar.gz..."
+(
+  cd "${EMBEDDED_DIR}"
+  tar -czhf apps.tar.gz api worker web
+  rm -rf api worker web
+  ls -lh apps.tar.gz
+)
+
+# ---------------------------------------------------------------------------
 # Step 4: Copy workspace package dist/ outputs.
 #
 # The embedded API and worker import @skytwin/* packages by resolved path at
