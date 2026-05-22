@@ -29,19 +29,22 @@ const HEALTH_CHECK_INTERVAL_MS = 5000;
 const RESTART_DELAYS = [1000, 2000, 4000, 8000, 16000, 30000];
 
 /**
- * Verified Google OAuth `client_id` baked into the desktop bundle.
- * Populated at build time via `--define` or env at `tsc` invocation.
- * Empty string means "no default" — the user must paste their own in
- * Setup, the legacy self-host path. Public client IDs are designed to
- * be revealed; PKCE binds each auth code to a per-flow verifier the
- * API holds in memory.
+ * Google OAuth `client_id` baked into the desktop bundle.
  *
- * For a production desktop release we should publish a Verified OAuth
- * client of type "Desktop app" in the SkyTwin team's Google Cloud
- * project and replace the empty string below with its client_id (or
- * pass it via `SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID` at build time).
+ * Registered in the SkyTwin Google Cloud project (`skytwin-492700`) as
+ * an OAuth client of type "Desktop app", created 2026-05-22. PKCE
+ * binds each auth code to a per-flow verifier the API holds in memory;
+ * the public client_id alone redeems nothing. The token redirect
+ * lands on `http://127.0.0.1:NNNN/api/oauth/google/callback` and never
+ * traverses our infrastructure — tokens stay on the user's machine,
+ * encrypted by `credential-vault`.
+ *
+ * Override at build time via `SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID` env if
+ * shipping a forked SkyTwin build that should consent under a
+ * different brand.
  */
-const BUNDLED_GOOGLE_CLIENT_ID = '';
+const BUNDLED_GOOGLE_CLIENT_ID =
+  '594829999930-kpjopcs1pak0rp0omimuegr5ugcv5l8h.apps.googleusercontent.com';
 
 /**
  * Manages the API server and worker as child processes.
