@@ -57,6 +57,14 @@ export const oauthPendingSigninRepository = {
    * Consume-on-read. Returns null if the row doesn't exist or has expired
    * — the desktop wizard treats both the same way (keep polling, or time
    * out after its own 5-minute window).
+   *
+   * The DELETE's WHERE includes `expires_at >= $now` so an expired row
+   * is NOT deleted on read — `sweepExpired()` is the only path that
+   * removes expired rows, and it runs from /callback's `remember()`.
+   * Without this predicate, a poll that arrives 1ms past the TTL would
+   * destroy the row, and any subsequent legitimate poll from the same
+   * wizard (network jitter, tab discarded then restored) would 404 even
+   * though the OAuth round-trip succeeded.
    */
   async consume(
     pendingKey: string,
@@ -71,12 +79,12 @@ export const oauthPendingSigninRepository = {
     }>(
       `DELETE FROM oauth_pending_signin
         WHERE pending_key = $1
+          AND expires_at >= $2
        RETURNING user_id, account_email, scopes, next_hash, expires_at`,
-      [pendingKey],
+      [pendingKey, now],
     );
     const row = result.rows[0];
     if (!row) return null;
-    if (row.expires_at.getTime() < now.getTime()) return null;
     return {
       userId: row.user_id,
       accountEmail: row.account_email,

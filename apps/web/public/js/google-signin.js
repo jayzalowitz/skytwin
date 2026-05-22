@@ -170,8 +170,14 @@ function pollUntilPendingResolved(pendingKey, onComplete) {
       const result = await fetchPendingSignin(pendingKey);
       if (result && result.connected) {
         stop();
+        // The pending endpoint mints a session in-process and returns
+        // the token — the wizard becomes that user without ever having
+        // to call the unauthenticated `POST /api/sessions` shim. The
+        // pendingKey IS the credential; consume-on-read makes it
+        // one-shot.
         onComplete({
           connected: true,
+          sessionToken: typeof result.sessionToken === 'string' ? result.sessionToken : null,
           userId: result.userId,
           accountEmail: result.accountEmail,
           scopes: Array.isArray(result.scopes) ? result.scopes : [],

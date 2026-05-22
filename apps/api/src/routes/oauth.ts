@@ -1,13 +1,18 @@
 import { Router } from 'express';
-import { createHmac, timingSafeEqual } from 'crypto';
+import { createHmac, timingSafeEqual, randomUUID } from 'crypto';
+import { createLogger } from '@skytwin/core';
 import { loadConfig } from '@skytwin/config';
+
+const log = createLogger('api:oauth');
 import {
   oauthRepository,
   oauthPkcePendingRepository,
   oauthPendingSigninRepository,
   serviceCredentialRepository,
+  sessionRepository,
   userRepository,
 } from '@skytwin/db';
+import { hashToken } from '../middleware/session-auth.js';
 import {
   generateAuthUrl,
   generatePkcePair,
@@ -783,11 +788,22 @@ export function createOAuthRouter(): Router {
             nextHash: parsed.nextHash,
             expiresAt: new Date(Date.now() + PENDING_SIGNIN_TTL_MS),
           });
-        } catch {
+        } catch (err) {
           // Pending-signin is a best-effort UX bridge. If the write
-          // fails (table missing on a half-migrated deploy, etc.) the
-          // user still has a fully-functional token row from the line
-          // above; they just have to manually re-click in the wizard.
+          // fails (table missing on a half-migrated deploy, transient
+          // CRDB hiccup, etc.) the user still has a fully-functional
+          // token row from the saveTokenForAccount call above and a
+          // newly-created user — but the wizard's 5-min poll will
+          // time out with the confusing "we didn't see your Google
+          // sign-in" message even though OAuth succeeded. Log so the
+          // operator can correlate the wizard timeout with a real
+          // DB failure rather than chasing a phantom Google issue.
+          log.warn('Failed to write oauth_pending_signin row', {
+            userId,
+            accountEmail,
+            pendingKey: parsed.pendingKey,
+            error: err instanceof Error ? err.message : String(err),
+          });
         }
       }
 
@@ -834,16 +850,28 @@ export function createOAuthRouter(): Router {
    * browser, passes it to /authorize as `?pendingKey=…`, and polls
    * here until /callback writes the resulting userId.
    *
-   * Consume-on-read (DELETE...RETURNING): a leaked key can only be
-   * redeemed once. Response shape mirrors the OAuth /status endpoint
-   * so the existing fetchOAuthStatus path can fold this in cleanly.
+   * **Security model.** Possession of the pendingKey IS the
+   * authorization. The endpoint:
+   *   1. Does NOT just return the userId — that would chain with the
+   *      pre-existing `POST /api/sessions` (which accepts any userId
+   *      from a localhost caller) to make a leaked key worth a 7-day
+   *      session token. Instead, this endpoint mints the session
+   *      itself, returning a fresh token. The wizard stashes the
+   *      token; subsequent API calls flow through `Authorization:
+   *      Bearer …` exactly like the QR-paired mobile flow.
+   *   2. Is consume-on-read (DELETE...RETURNING + an explicit
+   *      expires_at >= NOW() predicate). A leaked key can only be
+   *      redeemed once; an expired key returns 404 deterministically.
+   *   3. Is per-IP rate-limited (same bucket as `?newUser=true`) to
+   *      keep brute-force / DoS attempts off the table.
    *
-   * 404 covers three cases the client treats identically (keep polling
+   * 404 covers four cases the client treats identically (keep polling
    * until the local timeout):
    *   - the row hasn't been written yet (consent still in progress)
    *   - the row has expired (user took >5 min)
    *   - the key was malformed (validated up-front; surfaced as 404 so
    *     this endpoint can't be used as a key-shape oracle)
+   *   - the key was already consumed by a previous request
    *
    * Public — no sessionAuth, by design — the desktop client has no
    * session yet for a new user. The key's unguessability IS the
@@ -851,8 +879,21 @@ export function createOAuthRouter(): Router {
    */
   router.get('/google/pending/:key', async (req, res, next) => {
     try {
+      const ip = req.ip ?? req.socket.remoteAddress ?? 'unknown';
+      const { allowed, resetAt } = checkNewUserRateLimit(ip, Date.now());
+      if (!allowed) {
+        res.set('Retry-After', String(Math.ceil((resetAt - Date.now()) / 1000)));
+        res.status(429).json({
+          error: 'Too many requests. Try again in a minute.',
+          resetAt: new Date(resetAt).toISOString(),
+        });
+        return;
+      }
+
       const { key } = req.params;
       if (!key || !isValidPendingKey(key)) {
+        // Same 404 shape as not-yet / expired / already-consumed so
+        // this endpoint isn't a key-shape oracle.
         res.status(404).json({ error: 'No pending sign-in.' });
         return;
       }
@@ -861,8 +902,25 @@ export function createOAuthRouter(): Router {
         res.status(404).json({ error: 'No pending sign-in.' });
         return;
       }
+
+      // Mint a session for the just-created user. Same shape and TTL
+      // as `POST /api/sessions` (QR pairing), but minted in-process so
+      // the userId can't be forged — it came from /callback's verified
+      // Google email round-trip via consume-on-read.
+      const rawToken = `${randomUUID()}-${randomUUID()}`;
+      const tokenHash = hashToken(rawToken);
+      const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+      await sessionRepository.create({
+        userId: result.userId,
+        tokenHash,
+        deviceName: 'Desktop',
+        expiresAt,
+      });
+
       res.json({
         connected: true,
+        sessionToken: rawToken,
+        sessionExpiresAt: expiresAt.toISOString(),
         userId: result.userId,
         accountEmail: result.accountEmail,
         scopes: result.scopes,

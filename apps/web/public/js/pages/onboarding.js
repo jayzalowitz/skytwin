@@ -29,7 +29,7 @@ import {
   fetchCapabilityDependencyGraph,
   escapeHtml,
 } from '../api-client.js';
-import { KEY_USER_ID, KEY_ONBOARDED, KEY_TOUR_MODE } from '../storage-keys.js';
+import { KEY_USER_ID, KEY_ONBOARDED, KEY_TOUR_MODE, KEY_SESSION_TOKEN } from '../storage-keys.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Module-level state (singleton — one wizard per browser tab)
@@ -127,6 +127,13 @@ async function handleOnboardingClick(e) {
           next: 'connect-gmail',
           onComplete: (completion) => {
             if (completion.connected && completion.userId) {
+              // The pending endpoint mints the session — store the
+              // token first so subsequent API calls authenticate.
+              // Without it, the dashboard would 401 the moment the
+              // wizard lands on the deep-link route.
+              if (completion.sessionToken) {
+                localStorage.setItem(KEY_SESSION_TOKEN, completion.sessionToken);
+              }
               localStorage.setItem(KEY_USER_ID, completion.userId);
               if (_wizardState) _wizardState.userId = completion.userId;
               window.location.hash = completion.nextHash || '#/connect-gmail';

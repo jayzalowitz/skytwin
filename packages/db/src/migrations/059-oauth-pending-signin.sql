@@ -17,11 +17,12 @@
 -- works because the userId is known in advance. For a brand-new user
 -- there's no userId until after /callback runs and creates the row.
 --
--- This table is the per-flow handoff: the client generates a
--- 128-bit pendingKey before opening the OAuth URL, threads it through
--- the HMAC-signed state, /callback writes the resulting userId here,
--- and the desktop wizard polls `GET /api/oauth/google/pending/:key`
--- (DELETE...RETURNING — consume-on-read) until the row appears.
+-- This table is the per-flow handoff: the client generates a UUIDv4
+-- pendingKey (122 random bits — 6 nibbles are version/variant) before
+-- opening the OAuth URL, threads it through the HMAC-signed state,
+-- /callback writes the resulting userId here, and the desktop wizard
+-- polls `GET /api/oauth/google/pending/:key` (DELETE...RETURNING —
+-- consume-on-read) until the row appears.
 --
 -- Schema notes.
 --   pending_key   Client-generated random opaque token (crypto.randomUUID

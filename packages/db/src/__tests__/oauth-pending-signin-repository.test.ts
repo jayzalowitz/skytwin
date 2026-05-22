@@ -72,12 +72,19 @@ describe('oauthPendingSigninRepository', () => {
         scopes: ['openid', 'email'],
         nextHash: '#/connect-gmail',
       });
-      const [sql] = mockQuery.mock.calls[0]!;
+      const [sql, params] = mockQuery.mock.calls[0]!;
       // DELETE...RETURNING is the replay-protection contract: the row
       // is gone after the first read, so a leaked key can only be
       // redeemed once.
       expect(sql).toMatch(/DELETE FROM oauth_pending_signin/);
       expect(sql).toMatch(/RETURNING /);
+      // The expires_at predicate is critical: without it, a poll
+      // arriving 1ms past TTL would destroy the row even though the
+      // OAuth round-trip succeeded, and any retry from the legitimate
+      // wizard would 404. The predicate ensures expired rows survive
+      // for sweepExpired() to handle.
+      expect(sql).toMatch(/AND expires_at >= \$2/);
+      expect(params).toEqual(['key-1', now]);
     });
 
     it('returns null when the row does not exist', async () => {
@@ -86,22 +93,14 @@ describe('oauthPendingSigninRepository', () => {
       expect(result).toBeNull();
     });
 
-    it('returns null when the row is expired (defence-in-depth)', async () => {
-      mockQuery.mockResolvedValue({
-        rows: [
-          {
-            user_id: 'user-xyz',
-            account_email: 'foo@example.com',
-            scopes: [],
-            next_hash: null,
-            expires_at: new Date('2026-05-22T00:00:00Z'),
-          },
-        ],
-        rowCount: 1,
-      });
+    it('returns null when the row is expired (filtered by the SQL predicate)', async () => {
+      // The DELETE's `expires_at >= $now` predicate makes the DB
+      // simply not match expired rows — so a real CRDB returns 0
+      // rows here. We mock the DB's behaviour: rows:[] for a query
+      // that would have matched on key but failed the expiry check.
+      // The row stays in the table; sweepExpired() reclaims it.
+      mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
 
-      // The sweep runs best-effort; consume() must reject an expired
-      // row on its own so a stale handoff can't quietly resurface.
       const now = new Date('2026-05-22T00:30:00Z');
       const result = await oauthPendingSigninRepository.consume('key-1', now);
       expect(result).toBeNull();
