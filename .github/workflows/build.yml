@@ -6,6 +6,11 @@ on:
     tags: ['v*']
   pull_request:
     branches: [main]
+  # Allow manual runs for cases where the path filter would otherwise
+  # skip the desktop/mobile jobs (e.g. a docs-only push to a feature
+  # branch when we still want to confirm the desktop bundle builds
+  # against the cumulative branch state).
+  workflow_dispatch: {}
 
 # Cancel in-progress runs for the same branch/PR
 concurrency:
