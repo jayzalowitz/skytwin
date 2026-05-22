@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { createHmac, timingSafeEqual, randomUUID } from 'crypto';
 import { createLogger } from '@skytwin/core';
 import { loadConfig } from '@skytwin/config';
+import { withTransaction } from '@skytwin/db';
 
 const log = createLogger('api:oauth');
 import {
@@ -9,7 +10,6 @@ import {
   oauthPkcePendingRepository,
   oauthPendingSigninRepository,
   serviceCredentialRepository,
-  sessionRepository,
   userRepository,
 } from '@skytwin/db';
 import { hashToken } from '../middleware/session-auth.js';
@@ -41,6 +41,17 @@ const STATE_VERSION = 'v2';
 export const NEW_USER_RATE_LIMIT_MAX = 5;
 export const NEW_USER_RATE_LIMIT_WINDOW_MS = 60 * 1000;
 /**
+ * Limit for the pendingKey poll endpoint. The client polls every 2s for
+ * up to 5 minutes (= 150 hits/flow); a legit user hitting it from one IP
+ * can therefore burn ~30 requests/minute, plus a few from /authorize and
+ * /status calls. The cap is loose to keep the poll loop alive while still
+ * making brute force / DoS expensive — the UUIDv4 shape gate is the
+ * real defence against enumeration, and the random 122 bits put brute
+ * force well past line rate anyway.
+ */
+export const PENDING_POLL_RATE_LIMIT_MAX = 120;
+export const PENDING_POLL_RATE_LIMIT_WINDOW_MS = 60 * 1000;
+/**
  * Bucket cap. Without this the Map grows once per unique attacker IP and
  * never shrinks — a real source of slow memory growth in long-running
  * processes. When we hit the cap we sweep expired buckets first, then drop
@@ -49,42 +60,82 @@ export const NEW_USER_RATE_LIMIT_WINDOW_MS = 60 * 1000;
  */
 export const NEW_USER_RATE_LIMIT_MAX_BUCKETS = 5_000;
 const newUserRateBuckets = new Map<string, { count: number; resetAt: number }>();
+const pendingPollRateBuckets = new Map<string, { count: number; resetAt: number }>();
 
-function evictExpiredBuckets(now: number): void {
-  for (const [ip, bucket] of newUserRateBuckets) {
-    if (bucket.resetAt <= now) newUserRateBuckets.delete(ip);
+function evictExpiredBuckets(
+  buckets: Map<string, { count: number; resetAt: number }>,
+  now: number,
+): void {
+  for (const [ip, bucket] of buckets) {
+    if (bucket.resetAt <= now) buckets.delete(ip);
   }
 }
 
-export function checkNewUserRateLimit(
+function checkBucket(
+  buckets: Map<string, { count: number; resetAt: number }>,
   ip: string,
-  now: number = Date.now(),
+  now: number,
+  max: number,
+  windowMs: number,
 ): { allowed: boolean; resetAt: number } {
-  let bucket = newUserRateBuckets.get(ip);
+  let bucket = buckets.get(ip);
   if (!bucket || bucket.resetAt <= now) {
     // Pre-emptively evict when at the cap so the Map can't grow without
     // bound across many distinct IPs (the leak class motivating this).
-    if (newUserRateBuckets.size >= NEW_USER_RATE_LIMIT_MAX_BUCKETS) {
-      evictExpiredBuckets(now);
-      while (newUserRateBuckets.size >= NEW_USER_RATE_LIMIT_MAX_BUCKETS) {
-        const oldest = newUserRateBuckets.keys().next().value;
+    if (buckets.size >= NEW_USER_RATE_LIMIT_MAX_BUCKETS) {
+      evictExpiredBuckets(buckets, now);
+      while (buckets.size >= NEW_USER_RATE_LIMIT_MAX_BUCKETS) {
+        const oldest = buckets.keys().next().value;
         if (oldest === undefined) break;
-        newUserRateBuckets.delete(oldest);
+        buckets.delete(oldest);
       }
     }
-    bucket = { count: 0, resetAt: now + NEW_USER_RATE_LIMIT_WINDOW_MS };
-    newUserRateBuckets.set(ip, bucket);
+    bucket = { count: 0, resetAt: now + windowMs };
+    buckets.set(ip, bucket);
   }
-  if (bucket.count >= NEW_USER_RATE_LIMIT_MAX) {
+  if (bucket.count >= max) {
     return { allowed: false, resetAt: bucket.resetAt };
   }
   bucket.count += 1;
   return { allowed: true, resetAt: bucket.resetAt };
 }
 
+export function checkNewUserRateLimit(
+  ip: string,
+  now: number = Date.now(),
+): { allowed: boolean; resetAt: number } {
+  return checkBucket(
+    newUserRateBuckets,
+    ip,
+    now,
+    NEW_USER_RATE_LIMIT_MAX,
+    NEW_USER_RATE_LIMIT_WINDOW_MS,
+  );
+}
+
+/**
+ * Separate bucket from /authorize so the pendingKey poll loop (30 hits
+ * per minute, 5 minutes per flow) can't starve itself by sharing the
+ * ?newUser=true bucket's tight 5/minute limit. A poll-friendly 120/min
+ * leaves comfortable headroom for jitter and retries.
+ */
+export function checkPendingPollRateLimit(
+  ip: string,
+  now: number = Date.now(),
+): { allowed: boolean; resetAt: number } {
+  return checkBucket(
+    pendingPollRateBuckets,
+    ip,
+    now,
+    PENDING_POLL_RATE_LIMIT_MAX,
+    PENDING_POLL_RATE_LIMIT_WINDOW_MS,
+  );
+}
+
 /** Test helper — clears all rate-limit buckets between cases. */
 export function _resetNewUserRateLimitForTests(): void {
   newUserRateBuckets.clear();
+  pendingPollRateBuckets.clear();
 }
 
 /** Test/observability helper: current bucket count. */
@@ -798,10 +849,15 @@ export function createOAuthRouter(): Router {
           // sign-in" message even though OAuth succeeded. Log so the
           // operator can correlate the wizard timeout with a real
           // DB failure rather than chasing a phantom Google issue.
+          // Truncate the key — even though it's 5-min-lived, logs may
+          // ship to long-term aggregators (Datadog/Loki) and we don't
+          // want a 5-minute secret landing in a 30-day index. 8 hex
+          // chars (32 bits) are enough to correlate the wizard timeout
+          // with the failed write at-a-glance; not enough to redeem.
           log.warn('Failed to write oauth_pending_signin row', {
             userId,
             accountEmail,
-            pendingKey: parsed.pendingKey,
+            pendingKeyPrefix: `${parsed.pendingKey.slice(0, 8)}…`,
             error: err instanceof Error ? err.message : String(err),
           });
         }
@@ -880,7 +936,12 @@ export function createOAuthRouter(): Router {
   router.get('/google/pending/:key', async (req, res, next) => {
     try {
       const ip = req.ip ?? req.socket.remoteAddress ?? 'unknown';
-      const { allowed, resetAt } = checkNewUserRateLimit(ip, Date.now());
+      // Use the dedicated pending-poll bucket — sharing the
+      // ?newUser=true bucket's tight 5/minute cap would 429 the
+      // legitimate poll loop after ~10 seconds (30 polls/min from
+      // the client), re-introducing the very grandma-blocker this
+      // endpoint exists to solve.
+      const { allowed, resetAt } = checkPendingPollRateLimit(ip, Date.now());
       if (!allowed) {
         res.set('Retry-After', String(Math.ceil((resetAt - Date.now()) / 1000)));
         res.status(429).json({
@@ -897,34 +958,66 @@ export function createOAuthRouter(): Router {
         res.status(404).json({ error: 'No pending sign-in.' });
         return;
       }
-      const result = await oauthPendingSigninRepository.consume(key);
-      if (!result) {
-        res.status(404).json({ error: 'No pending sign-in.' });
-        return;
-      }
 
-      // Mint a session for the just-created user. Same shape and TTL
-      // as `POST /api/sessions` (QR pairing), but minted in-process so
-      // the userId can't be forged — it came from /callback's verified
-      // Google email round-trip via consume-on-read.
+      // Atomically consume the pending row AND mint the session in
+      // one transaction. Without this, a session.create() failure
+      // after consume() would leave the user stranded — no session,
+      // no recoverable pending row. The transaction rolls back the
+      // DELETE on any downstream error so the user can retry.
       const rawToken = `${randomUUID()}-${randomUUID()}`;
       const tokenHash = hashToken(rawToken);
       const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-      await sessionRepository.create({
-        userId: result.userId,
-        tokenHash,
-        deviceName: 'Desktop',
-        expiresAt,
+
+      const handoff = await withTransaction(async (client) => {
+        const now = new Date();
+        // Same shape as oauthPendingSigninRepository.consume — duplicated
+        // here so it can share the transaction client.
+        const consumeResult = await client.query<{
+          user_id: string;
+          account_email: string;
+          scopes: unknown;
+          next_hash: string | null;
+          expires_at: Date;
+        }>(
+          `DELETE FROM oauth_pending_signin
+            WHERE pending_key = $1
+              AND expires_at >= $2
+           RETURNING user_id, account_email, scopes, next_hash, expires_at`,
+          [key, now],
+        );
+        const row = consumeResult.rows[0];
+        if (!row) return null;
+
+        // Same shape as sessionRepository.create — duplicated here for
+        // the same reason. If this INSERT throws, the transaction rolls
+        // back and the pending row stays put for a retry.
+        await client.query(
+          `INSERT INTO sessions (user_id, token_hash, device_name, expires_at)
+           VALUES ($1, $2, $3, $4)`,
+          [row.user_id, tokenHash, 'Desktop', expiresAt],
+        );
+
+        return {
+          userId: row.user_id,
+          accountEmail: row.account_email,
+          scopes: Array.isArray(row.scopes) ? (row.scopes as string[]) : [],
+          nextHash: row.next_hash,
+        };
       });
+
+      if (!handoff) {
+        res.status(404).json({ error: 'No pending sign-in.' });
+        return;
+      }
 
       res.json({
         connected: true,
         sessionToken: rawToken,
         sessionExpiresAt: expiresAt.toISOString(),
-        userId: result.userId,
-        accountEmail: result.accountEmail,
-        scopes: result.scopes,
-        nextHash: result.nextHash,
+        userId: handoff.userId,
+        accountEmail: handoff.accountEmail,
+        scopes: handoff.scopes,
+        nextHash: handoff.nextHash,
       });
     } catch (error) {
       next(error);
