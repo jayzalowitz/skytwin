@@ -240,7 +240,7 @@ if ! curl -sf -o /dev/null "$DASHBOARD_URL"; then
   # the validation harness) doesn't need to dig through five log files
   # to find the cause. We tail each one separately so a missing log
   # doesn't suppress the others.
-  for log in .logs/skytwin-dev.log /tmp/skytwin-api.log /tmp/skytwin-web.log /tmp/skytwin-worker.log; do
+  for log in .logs/skytwin-dev.log .logs/skytwin-api.log .logs/skytwin-web.log .logs/skytwin-worker.log; do
     if [ -s "$log" ]; then
       echo ""
       echo "  --- $log (tail 30) ---"

@@ -47,8 +47,14 @@ interface CockroachManagerOptions {
 
 const DEFAULT_SQL_PORT = 26257;
 const DEFAULT_HTTP_PORT = 26258;
-const DEFAULT_LISTEN_HOST = 'localhost';
+// 127.0.0.1 instead of 'localhost' so we never accidentally bind IPv6 :: on
+// systems whose /etc/hosts maps localhost to the unspecified address. CRDB
+// runs --insecure here; broadcasting that to the LAN would be remote root.
+const DEFAULT_LISTEN_HOST = '127.0.0.1';
 const DEFAULT_START_TIMEOUT_MS = 60_000;
+// CRDB's drain can take 30s+ under load (WAL flush, replication completion).
+// 5s SIGKILL would corrupt mid-flush.
+const GRACEFUL_STOP_TIMEOUT_MS = 30_000;
 
 export class CockroachManager {
   private process: ChildProcess | null = null;
@@ -151,6 +157,11 @@ export class CockroachManager {
     const proc = this.process;
     this.process = null;
 
+    // Try graceful drain via `cockroach quit` first — drains connections,
+    // flushes WAL, finishes pending replication. Falls through to SIGTERM
+    // if quit can't reach the node (e.g. it's already shutting down).
+    await this.gracefulQuit();
+
     proc.kill('SIGTERM');
     await new Promise<void>((resolve) => {
       const timer = setTimeout(() => {
@@ -160,8 +171,35 @@ export class CockroachManager {
           // already dead
         }
         resolve();
-      }, 5000);
+      }, GRACEFUL_STOP_TIMEOUT_MS);
       proc.once('exit', () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+  }
+
+  private async gracefulQuit(): Promise<void> {
+    const bin = this.getBinaryPath();
+    if (!existsSync(bin)) return;
+    await new Promise<void>((resolve) => {
+      const quit = spawn(bin, [
+        'node',
+        'drain',
+        '--insecure',
+        '--host', `${this.listenHost}:${this.sqlPort}`,
+        '--drain-wait', '10s',
+      ], { stdio: 'pipe' });
+      // 15s budget for drain — beyond that, SIGTERM will pick up.
+      const timer = setTimeout(() => {
+        try { quit.kill('SIGKILL'); } catch { /* already dead */ }
+        resolve();
+      }, 15_000);
+      quit.on('exit', () => {
+        clearTimeout(timer);
+        resolve();
+      });
+      quit.on('error', () => {
         clearTimeout(timer);
         resolve();
       });

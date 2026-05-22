@@ -34,13 +34,32 @@
         "zip"
       ],
       "category": "public.app-category.productivity",
-      "icon": "assets/icon.icns"
+      "icon": "assets/icon.icns",
+      "extraResources": [
+        {
+          "from": "dist/embedded/cockroach/darwin-arm64",
+          "to": "cockroach/darwin-arm64",
+          "filter": ["**/*"]
+        },
+        {
+          "from": "dist/embedded/cockroach/darwin-x64",
+          "to": "cockroach/darwin-x64",
+          "filter": ["**/*"]
+        }
+      ]
     },
     "win": {
       "target": [
         "nsis"
       ],
-      "icon": "assets/icon.ico"
+      "icon": "assets/icon.ico",
+      "extraResources": [
+        {
+          "from": "dist/embedded/cockroach/win32-x64",
+          "to": "cockroach/win32-x64",
+          "filter": ["**/*"]
+        }
+      ]
     },
     "nsis": {
       "oneClick": false,
@@ -63,7 +82,19 @@
           "Comment": "Your personal AI assistant",
           "Categories": "Utility;Office;"
         }
-      }
+      },
+      "extraResources": [
+        {
+          "from": "dist/embedded/cockroach/linux-x64",
+          "to": "cockroach/linux-x64",
+          "filter": ["**/*"]
+        },
+        {
+          "from": "dist/embedded/cockroach/linux-arm64",
+          "to": "cockroach/linux-arm64",
+          "filter": ["**/*"]
+        }
+      ]
     },
     "publish": {
       "provider": "github",
@@ -101,14 +132,11 @@
         "from": "dist/embedded",
         "to": "embedded",
         "filter": [
-          "**/*"
-        ]
-      },
-      {
-        "from": "dist/embedded/cockroach",
-        "to": "cockroach",
-        "filter": [
-          "**/*"
+          "api/**/*",
+          "worker/**/*",
+          "web/**/*",
+          "packages/**/*",
+          "bundle-manifest.json"
         ]
       }
     ]

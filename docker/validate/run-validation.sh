@@ -60,7 +60,9 @@ if [ "$ok" -ne 1 ]; then
   echo "--- skytwin-dev log (tail 60) ---"
   tail -n 60 "$REPO_DIR/.logs/skytwin-dev.log" 2>/dev/null || echo "(no log)"
   echo "--- api log (tail 40) ---"
-  tail -n 40 /tmp/skytwin-api.log 2>/dev/null || echo "(no log)"
+  tail -n 40 "$REPO_DIR/.logs/skytwin-api.log" 2>/dev/null || echo "(no log)"
+  echo "--- web log (tail 20) ---"
+  tail -n 20 "$REPO_DIR/.logs/skytwin-web.log" 2>/dev/null || echo "(no log)"
   exit 1
 fi
 

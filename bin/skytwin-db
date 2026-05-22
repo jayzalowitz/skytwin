@@ -44,14 +44,30 @@ set -euo pipefail
 # ── Config ───────────────────────────────────────────────────────────────
 
 CRDB_VERSION="${SKYTWIN_CRDB_VERSION:-23.2.30}"
-DB_PREFIX="${SKYTWIN_DB_PREFIX:-$HOME/.local/share/skytwin}"
+# Honor XDG_DATA_HOME per the spec; fall back to ~/.local/share. On macOS
+# users can override to ~/Library/Application Support/skytwin if they
+# want; we don't auto-pick that because Time Machine then snapshots the
+# CRDB store on every change (multi-GB write amplification).
+DB_PREFIX="${SKYTWIN_DB_PREFIX:-${XDG_DATA_HOME:-$HOME/.local/share}/skytwin}"
 DB_PORT="${SKYTWIN_DB_PORT:-26257}"
 # Note: CockroachDB's default admin UI port is 8080, which collides with
 # every other dev tool on the planet. We pick 26258 (the SQL port + 1) so
 # co-existing services aren't disturbed.
 DB_HTTP_PORT="${SKYTWIN_DB_HTTP_PORT:-26258}"
-DB_LISTEN_HOST="${SKYTWIN_DB_LISTEN_HOST:-localhost}"
+# 127.0.0.1 not 'localhost': avoids the IPv6-unspecified gotcha on systems
+# whose /etc/hosts maps localhost to :: — broadcasting --insecure CRDB to
+# the LAN would be remote root.
+DB_LISTEN_HOST="${SKYTWIN_DB_LISTEN_HOST:-127.0.0.1}"
 URL_BASE="${SKYTWIN_DB_BINARY_URL_BASE:-https://binaries.cockroachdb.com}"
+# Validate the override: anything that isn't an https URL pointing at a
+# normal-looking hostname is rejected. The SHA-256 check downstream is
+# the real defense, but this stops obvious foot-guns
+# (file:// for LFI attempts, ftp:// for slow downloads, internal hostnames
+# that turn into SSRF probes inside corporate networks).
+case "$URL_BASE" in
+  https://[A-Za-z0-9]*) : ;;
+  *) err "SKYTWIN_DB_BINARY_URL_BASE must be an https:// URL — got: $URL_BASE"; exit 1 ;;
+esac
 
 BIN_DIR="$DB_PREFIX/bin"
 DATA_DIR="$DB_PREFIX/crdb-data"
@@ -63,7 +79,7 @@ mkdir -p "$BIN_DIR" "$LOG_DIR"
 
 # ── Colors ───────────────────────────────────────────────────────────────
 
-if [ -t 1 ]; then
+if [ -t 1 ] || [ -t 2 ]; then
   RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 else
   RED=''; GREEN=''; YELLOW=''; BLUE=''; NC=''
@@ -175,11 +191,17 @@ cmd_install() {
 
   step "Downloading CockroachDB v${CRDB_VERSION} for $platform"
   tmpdir="$(mktemp -d)"
-  # Clean up the temp dir on function exit. We don't use a trap because the
-  # only path that needs cleanup is this function — and a trap with a
-  # function-local variable misbehaves under `set -u` when the function
-  # returns cleanly.
-  cleanup_tmp() { rm -rf "$tmpdir"; }
+  # EXIT trap so the tmpdir is cleaned up on every exit path — happy
+  # path AND every `exit N` from the failure branches below. Without
+  # this, a failed download or sha-mismatch (which grandma WILL hit on
+  # flaky networks) leaks ~70MB into /tmp per attempt; macOS doesn't
+  # auto-clean per-user temp dirs across reboots so it adds up fast.
+  cleanup_tmp() {
+    if [ -n "${tmpdir:-}" ] && [ -d "$tmpdir" ]; then
+      rm -rf "$tmpdir"
+    fi
+  }
+  trap cleanup_tmp EXIT
 
   archive="$tmpdir/cockroach.archive"
   if ! curl -fsSL --connect-timeout 30 --max-time 600 -o "$archive" "$url"; then
@@ -209,8 +231,12 @@ cmd_install() {
     tar -xzf "$archive" -C "$tmpdir"
   fi
 
+  # Locate the cockroach binary. We accept any file named `cockroach` or
+  # `cockroach.exe` and rely on chmod +x below to mark it executable —
+  # `-perm -u+x` would be GNU-only (BSD find on macOS rejects it as a
+  # syntax error and silently emits nothing through the pipe).
   local extracted
-  extracted="$(find "$tmpdir" -maxdepth 2 -type f -name 'cockroach*' \( -perm -u+x -o -name '*.exe' \) | head -1)"
+  extracted="$(find "$tmpdir" -maxdepth 3 -type f \( -name 'cockroach' -o -name 'cockroach.exe' \) | head -1)"
   if [ -z "$extracted" ]; then
     err "Could not locate cockroach binary in extracted archive."
     exit 1
@@ -218,7 +244,8 @@ cmd_install() {
 
   mv "$extracted" "$COCKROACH_BIN"
   chmod +x "$COCKROACH_BIN"
-  cleanup_tmp
+  # trap will clean up on EXIT; we leave it armed so any later command
+  # in this function that exits non-zero still wipes the tmpdir.
   ok "Installed $COCKROACH_BIN"
 }
 

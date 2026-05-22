@@ -19,14 +19,24 @@ describe('CockroachManager', () => {
   it('honors SKYTWIN_DB_PORT for the connection string', () => {
     process.env['SKYTWIN_DB_PORT'] = '29257';
     const mgr = new CockroachManager();
+    // Default listen host is 127.0.0.1 (not 'localhost') so we never
+    // accidentally bind IPv6 :: on systems whose /etc/hosts maps
+    // localhost to the unspecified address — that would expose the
+    // --insecure CRDB to the LAN.
     expect(mgr.getConnectionString()).toBe(
-      'postgresql://root@localhost:29257/skytwin?sslmode=disable',
+      'postgresql://root@127.0.0.1:29257/skytwin?sslmode=disable',
     );
   });
 
   it('defaults to port 26257 when no env override', () => {
     const mgr = new CockroachManager();
     expect(mgr.getConnectionString()).toContain(':26257/');
+  });
+
+  it('binds 127.0.0.1 by default, not localhost', () => {
+    const mgr = new CockroachManager();
+    expect(mgr.getConnectionString()).toContain('@127.0.0.1:');
+    expect(mgr.getConnectionString()).not.toContain('@localhost:');
   });
 
   it('resolves a per-platform binary path under userData in dev (unpackaged)', () => {
