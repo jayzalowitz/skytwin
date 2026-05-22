@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SkyTwin — A digital twin that learns what you'd want and does it</title>
+  <meta name="description" content="SkyTwin is an open-source personal assistant that builds a structured model of your preferences and acts on your behalf — with safety constraints, explanations, and progressive trust. Runs entirely on your machine.">
+  <link rel="canonical" href="https://jayzalowitz.github.io/skytwin/">
+  <style>
+    :root {
+      --bg: #0b0b10;
+      --fg: #e8e8ee;
+      --muted: #9b9bab;
+      --card: #16161e;
+      --border: #2a2a36;
+      --accent: #7c5cff;
+      --accent-hover: #9d83ff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, sans-serif;
+      background: var(--bg);
+      color: var(--fg);
+      line-height: 1.6;
+    }
+    .wrap { max-width: 880px; margin: 0 auto; padding: 3rem 1.5rem 4rem; }
+    header { padding-bottom: 2.5rem; border-bottom: 1px solid var(--border); margin-bottom: 2.5rem; }
+    h1 { font-size: 2.4rem; margin: 0 0 0.75rem; letter-spacing: -0.02em; }
+    h2 { font-size: 1.4rem; margin: 2.5rem 0 1rem; letter-spacing: -0.01em; }
+    h3 { font-size: 1.1rem; margin: 1.5rem 0 0.5rem; }
+    p, li { font-size: 1.05rem; color: var(--fg); }
+    .tagline { color: var(--muted); font-size: 1.15rem; margin: 0 0 1.5rem; }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { color: var(--accent-hover); text-decoration: underline; }
+    .btn {
+      display: inline-block;
+      padding: 0.7rem 1.4rem;
+      background: var(--accent);
+      color: #fff !important;
+      border-radius: 0.5rem;
+      font-weight: 600;
+      margin: 0.25rem 0.5rem 0.25rem 0;
+    }
+    .btn:hover { background: var(--accent-hover); text-decoration: none; }
+    .btn.outline { background: transparent; border: 1px solid var(--border); color: var(--fg) !important; }
+    .btn.outline:hover { background: var(--card); }
+    .feature-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 1.5rem 0; }
+    .feature {
+      background: var(--card); padding: 1.2rem; border-radius: 0.6rem;
+      border: 1px solid var(--border);
+    }
+    .feature h3 { margin-top: 0; }
+    .feature p { color: var(--muted); margin: 0.5rem 0 0; font-size: 0.95rem; }
+    .scopes-table {
+      width: 100%; border-collapse: collapse; margin: 1rem 0;
+      background: var(--card); border-radius: 0.6rem; overflow: hidden;
+    }
+    .scopes-table th, .scopes-table td {
+      padding: 0.75rem 1rem; text-align: left; border-bottom: 1px solid var(--border);
+      font-size: 0.95rem;
+    }
+    .scopes-table th { background: rgba(124,92,255,0.1); font-weight: 600; }
+    .scopes-table tr:last-child td { border-bottom: none; }
+    .scopes-table code { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace; font-size: 0.85rem; }
+    footer { margin-top: 4rem; padding-top: 2rem; border-top: 1px solid var(--border); color: var(--muted); font-size: 0.9rem; }
+    footer a { color: var(--muted); }
+    @media (max-width: 640px) { .feature-grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>SkyTwin</h1>
+      <p class="tagline">A digital twin that learns what you'd want — and does it. Open source, runs locally, never sends your data anywhere.</p>
+      <p>
+        <a href="https://github.com/jayzalowitz/skytwin" class="btn">View on GitHub</a>
+        <a href="privacy.html" class="btn outline">Privacy policy</a>
+        <a href="terms.html" class="btn outline">Terms of service</a>
+      </p>
+    </header>
+
+    <h2>What SkyTwin does</h2>
+    <p>SkyTwin is a personal-automation desktop app that builds a structured model of your preferences and decision patterns — a digital twin — then uses that model to act on your behalf. When it's confident, it just handles things. When it's not, it asks the right question instead of the wrong one.</p>
+
+    <div class="feature-grid">
+      <div class="feature">
+        <h3>Watches your inbox</h3>
+        <p>Reads incoming Gmail to classify and prioritize, learns which newsletters you archive, drafts replies in your style.</p>
+      </div>
+      <div class="feature">
+        <h3>Manages your calendar</h3>
+        <p>Spots conflicts, schedules meetings, declines auto-invites you'd ignore, surfaces ones you'd want.</p>
+      </div>
+      <div class="feature">
+        <h3>Explains every action</h3>
+        <p>Every automated decision produces an explanation record: what evidence was used, what preferences applied, how to correct it.</p>
+      </div>
+      <div class="feature">
+        <h3>Stays local</h3>
+        <p>CockroachDB embedded in the desktop app. Your decisions, your data, your machine. Nothing sent to our servers.</p>
+      </div>
+    </div>
+
+    <h2>Google account access — what we use and why</h2>
+    <p>SkyTwin asks for the minimum Google API scopes needed to actually be useful as a personal assistant. Each scope below ties to a specific user-facing feature in the app. The OAuth flow lands on <code>http://127.0.0.1</code> — your access token is delivered directly to the SkyTwin desktop process and stored encrypted on disk. It never traverses skytwin.dev or any other server we control.</p>
+
+    <table class="scopes-table">
+      <thead>
+        <tr><th>Scope</th><th>What it enables</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>gmail.readonly</code></td>
+          <td>Read inbox to classify incoming mail, learn which threads you act on vs. ignore, and surface the few that need your attention. Without this, SkyTwin can't observe email at all.</td>
+        </tr>
+        <tr>
+          <td><code>gmail.modify</code></td>
+          <td>Apply labels and archive newsletters you've taught SkyTwin to archive. Required for the auto-archive feature; never sends or deletes mail.</td>
+        </tr>
+        <tr>
+          <td><code>calendar.readonly</code></td>
+          <td>Read your calendar to spot conflicts, find time, and learn your scheduling preferences.</td>
+        </tr>
+        <tr>
+          <td><code>calendar.events</code></td>
+          <td>Create, modify, and decline calendar invites with your approval (or auto-handle for events that match patterns you've taught SkyTwin).</td>
+        </tr>
+        <tr>
+          <td><code>openid</code>, <code>email</code>, <code>profile</code></td>
+          <td>Confirm your Google identity so we can associate the right account with the right twin profile in your local database.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>Open source &amp; transparent</h2>
+    <p>SkyTwin is Apache 2.0 licensed. Every line of the agent that reads your mail, every line of the OAuth flow, every line of the policy engine that decides what auto-runs vs. asks first — all on <a href="https://github.com/jayzalowitz/skytwin">GitHub</a>. The CHANGELOG documents every behavior change. The architecture docs explain how decisions get made.</p>
+    <ul>
+      <li><a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/safety-model.md">Safety model</a> — threat model, trust tiers, defense layers</li>
+      <li><a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/technical-spec.md">Technical spec</a> — architecture, data flow, schema</li>
+      <li><a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/product-spec.md">Product spec</a> — what we will and won't ship, and why</li>
+      <li><a href="privacy.html">Privacy policy</a> — how we handle Google user data</li>
+    </ul>
+
+    <h2>Install</h2>
+    <p>One-command on macOS / Linux / WSL:</p>
+    <pre style="background: var(--card); padding: 1rem; border-radius: 0.5rem; overflow-x: auto; border: 1px solid var(--border);"><code>curl -fsSL https://raw.githubusercontent.com/jayzalowitz/skytwin/main/install.sh | bash</code></pre>
+    <p>Or grab the desktop installer (<code>.dmg</code> / <code>.exe</code> / <code>.AppImage</code>) from <a href="https://github.com/jayzalowitz/skytwin/releases">GitHub Releases</a>.</p>
+
+    <footer>
+      <p>SkyTwin is an open-source personal automation project by <a href="https://github.com/jayzalowitz">Jay Zalowitz</a>. Source code is licensed under Apache 2.0.</p>
+      <p>Questions, security disclosures, or feedback: open an issue on <a href="https://github.com/jayzalowitz/skytwin/issues">GitHub</a>.</p>
+      <p>Last updated: 2026-05-22.</p>
+    </footer>
+  </div>
+</body>
+</html>
