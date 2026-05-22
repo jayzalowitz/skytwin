@@ -138,6 +138,11 @@ async function handleOnboardingClick(e) {
         // walkthrough sets up their OAuth client, which then lets the
         // bundled flow work on retry.
         if (result.code === 'NO_GOOGLE_CLIENT_CONFIGURED') {
+          // Re-enable the button before the hashchange so a router that
+          // synchronously re-renders the wizard doesn't leave it stuck
+          // on "Redirecting…".
+          btn.disabled = false;
+          btn.textContent = 'Continue with Google';
           window.location.hash = result.help || '#/connect-gmail';
           return;
         }

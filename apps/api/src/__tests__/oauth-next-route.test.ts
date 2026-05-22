@@ -70,6 +70,21 @@ describe('OAuth post-callback next= routing', () => {
     expect(parsed.nextHash).toBeNull();
   });
 
+  it('rejects Object.prototype property names so they cannot leak through bracket lookup', () => {
+    // `NEXT_HASH_ROUTES[candidate]` without a hasOwnProperty guard would
+    // return `Object.prototype.constructor` (a function) for
+    // `candidate === 'constructor'` — that would slip past a truthy
+    // check and end up stringified into the redirect URL. The parser
+    // must use hasOwnProperty so only own-properties of the whitelist
+    // can match.
+    for (const protoKey of ['constructor', '__proto__', 'toString', 'hasOwnProperty']) {
+      const expiresAt = Date.now() + _stateTtlMsForTests;
+      const state = _signStatePayloadForTests(`user-1|next=${protoKey}`, expiresAt);
+      const parsed = _parseSignedStateForTests(state);
+      expect(parsed.nextHash).toBeNull();
+    }
+  });
+
   it('flipping a bit in the state breaks signature verification', () => {
     // Sanity check that the `next` tag is inside the HMAC-covered payload,
     // not appended post-sign. If it weren't, an attacker could rewrite

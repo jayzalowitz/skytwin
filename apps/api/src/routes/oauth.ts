@@ -199,13 +199,16 @@ function parseSignedState(state: string): ParsedState {
   const tags = new Set(rawTags);
   // Decode `next=<route>` tag. We re-validate against the whitelist on
   // read so a state token issued before a route was retired can't suddenly
-  // redirect somewhere unexpected.
+  // redirect somewhere unexpected. hasOwnProperty.call() (not bracket
+  // lookup) so a value like `constructor` or `__proto__` can't reach the
+  // inherited Object property and slip past the truthy check.
   let nextHash: string | null = null;
   for (const t of rawTags) {
     if (t.startsWith('next=')) {
       const candidate = t.slice('next='.length);
-      const mapped = NEXT_HASH_ROUTES[candidate];
-      if (mapped) nextHash = mapped;
+      if (Object.prototype.hasOwnProperty.call(NEXT_HASH_ROUTES, candidate)) {
+        nextHash = NEXT_HASH_ROUTES[candidate] ?? null;
+      }
       break;
     }
   }
@@ -383,6 +386,12 @@ export function resolveRequestedScopes(opts: {
  * can't redeem the same code twice. We sweep expired rows on every
  * remember() to keep the table bounded even if callbacks never come back
  * (closed browser tab, etc.).
+ *
+ * Operator note: this requires migration 058 to have run before the API
+ * starts serving traffic. Falling back to an in-memory Map would defeat
+ * the cross-restart guarantee that's the whole point of the move; if the
+ * table is missing, /authorize returns 500 like any other unbootstrapped
+ * DB call — which is consistent with the rest of the system.
  */
 const PKCE_TTL_MS = 10 * 60 * 1000;
 
