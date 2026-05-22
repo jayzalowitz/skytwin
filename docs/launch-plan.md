@@ -117,8 +117,10 @@ Shipped: `apps/api/src/routes/oauth.ts` tags its no-client_id 503 with `code: 'N
 ### 2.5 Telemetry-free crash reporting
 Sentry-style error reporting is at odds with the "nothing leaves your machine" privacy story, but **fully silent failures** are at odds with shipping a desktop app. The middle ground: an opt-in "send anonymized crash report" prompt that uploads a JSON payload with the exception, stack, and SkyTwin version (no user data) to a developer-controlled endpoint. Default off; if you opt in the prompt explains exactly what's sent.
 
-### 2.6 Demo / sample-profile mode polish
-Tour mode exists (`KEY_TOUR_MODE` in localStorage) but the path through it is rough. A polished version: from the install splash, the user sees "Try with a sample profile (no sign-in)" alongside "Sign in with Google." Sample mode loads a deterministic seed of fake decisions, approvals, learnings so the user can poke at the dashboard surface area before connecting their own accounts. Today's tour mode partially does this; needs design.
+### 2.6 Demo / sample-profile mode polish — **partial (Unreleased)**
+Welcome-screen CTA is now a real `btn-outline btn-lg` card with an "or" divider above it instead of a tiny gray footer link (`apps/web/public/js/pages/onboarding.js` renderWelcome) — the alternative-path framing is now explicit and discoverable. The seed payload (Alex Thompson — twin profile + preferences + ~10 decisions across multiple domains + approvals + feedback events) is already rich enough to demo every dashboard surface; no seed changes were needed in this round.
+
+Still rough and worth a separate design pass once first-week feedback lands: the in-dashboard tour banner is functional but generic ("Click around freely, then start your own when you're ready"), there's no "first 30 seconds" pointer steering users to the most interesting card, and the exit-tour flow is a single-click hard reset with no confirmation (acceptable because the tour data is fake — listed here so a future polish round doesn't re-discover it as an open question).
 
 ---
 

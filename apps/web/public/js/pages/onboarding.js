@@ -357,21 +357,31 @@ function renderWelcome() {
       </button>
     </div>
 
-    <div id="onb-tour-row" style="text-align:center;display:none;">
-      <button class="btn-link" data-action="onb-start-tour"
-              style="font-size:0.82rem;color:var(--text-muted);background:none;border:none;cursor:pointer;padding:0;">
-        Explore with a sample profile instead →
+    <div id="onb-tour-row" style="display:none;">
+      <div aria-hidden="true" style="display:flex;align-items:center;gap:0.5rem;margin:0.25rem 0 0.75rem;color:var(--text-muted);font-size:0.78rem;">
+        <span style="flex:1;height:1px;background:var(--border);"></span>
+        <span style="text-transform:uppercase;letter-spacing:0.08em;">or</span>
+        <span style="flex:1;height:1px;background:var(--border);"></span>
+      </div>
+      <button class="btn btn-outline btn-lg" style="text-align:left;display:flex;align-items:center;gap:0.75rem;width:100%;"
+              data-action="onb-start-tour">
+        <span style="font-size:1.2rem;" aria-hidden="true">🧭</span>
+        <div>
+          <div style="font-weight:600;">Try with a sample profile</div>
+          <div style="font-size:0.78rem;opacity:0.8;">See a fully populated twin in action — no sign-in needed.</div>
+        </div>
       </button>
     </div>
   `);
 
-  // Show the tour link only when the demo seed is available
+  // Show the tour CTA only when the demo seed is available.
+  // The CTA + its divider sit inside #onb-tour-row so they appear/hide together.
   fetchDemoInfo().then((info) => {
     if (info?.available) {
       const row = document.getElementById('onb-tour-row');
       if (row) row.style.display = 'block';
     }
-  }).catch(() => { /* tour link stays hidden */ });
+  }).catch(() => { /* tour CTA stays hidden */ });
 }
 
 // ── Email choice ──────────────────────────────────────────────────────────────
