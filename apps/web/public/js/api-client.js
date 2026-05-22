@@ -428,7 +428,7 @@ export function fetchBriefing(userId) {
   return fetchJSON(`${API}/v1/briefings/${encodeURIComponent(userId)}`);
 }
 
-export function getGoogleAuthUrl(userId, { desktop = false, newUser = false, next = null, pendingKey = null } = {}) {
+export function getGoogleAuthUrl(userId, { desktop = false, newUser = false, next = null, pendingKey = null, include = null } = {}) {
   // Fail fast on the client instead of sending `userId=null` and getting
   // back an opaque 400 "Missing userId" from the server.
   if (!newUser && !userId) {
@@ -445,6 +445,12 @@ export function getGoogleAuthUrl(userId, { desktop = false, newUser = false, nex
   // shape before threading it through signed state. Lets the desktop
   // newUser wizard poll for the just-created userId.
   if (pendingKey) params.set('pendingKey', pendingKey);
+  // Optional scope-tier opt-in. Today the only accepted value is 'gmail',
+  // which adds gmail.readonly + gmail.modify to the requested scope list
+  // when (and only when) the caller has user-supplied OAuth credentials.
+  // The bundled SkyTwin-team client rejects ?include=gmail with HTTP 412
+  // and code GMAIL_REQUIRES_BYO_CLIENT — by design.
+  if (include) params.set('include', include);
   return fetchJSON(`${API}/oauth/google/authorize?${params.toString()}`);
 }
 

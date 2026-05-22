@@ -27,6 +27,10 @@ import { escapeHtml, fetchJSON } from '../api-client.js';
 
 const KEY_USER_ID = 'skytwin_userId';
 const KEY_WIZARD_STEP = 'skytwin_connect_gmail_step';
+// Mirrors storage-keys.js; declared locally to match the existing file's
+// convention (no storage-keys.js import here). Used after the Electron
+// desktop pendingKey poll mints a session for newUser BYO-Gmail flows.
+const KEY_SESSION_TOKEN = 'skytwin_session_token';
 
 const STEPS = [
   {
@@ -275,6 +279,19 @@ async function submitCredentials() {
   }
   if (errEl) errEl.style.display = 'none';
 
+  // KNOWN LIMITATION (codex P2): PUT /api/credentials/google sits behind
+  // sessionAuth + requireOwnership (see apps/api/src/index.ts:230). The
+  // localhost dev-bypass covers it when SKYTWIN_DEV_AUTH_BYPASS=true OR
+  // NODE_ENV=development. In a production self-hosted install where the
+  // operator unset the bundled OAuth client (NO_GOOGLE_CLIENT_CONFIGURED),
+  // the no-userId bootstrap user arriving here has no session, so this
+  // PUT returns 401. Workarounds for that scenario: (a) set
+  // SKYTWIN_DEV_AUTH_BYPASS=true on the install if it's running on
+  // localhost-only, or (b) seed an initial admin user before the first
+  // bootstrap connect-gmail walk-through. A proper fix (one-time
+  // bootstrap token or "no users yet → allow first PUT" guard) is its
+  // own scoped change — tracked in launch-plan §2.6. The default launch
+  // path keeps the bundled client_id and never reaches this branch.
   try {
     await fetchJSON('/api/credentials/google', {
       method: 'PUT',
@@ -303,20 +320,50 @@ async function submitCredentials() {
   //       localStorage; we associate the resulting tokens with that user.
   //   (b) Brand-new user during onboarding who landed here from the
   //       unset-client-id branch (NO_GOOGLE_CLIENT_CONFIGURED) — no
-  //       userId yet; use ?newUser=true so /callback auto-creates the
+  //       userId yet; use newUser:true so /callback auto-creates the
   //       user from the verified Google email.
+  //
+  // Route through startGoogleSignIn (not a direct window.location.href
+  // assignment) so the Electron desktop bundle opens Google's consent
+  // page in the system browser via openExternal + polls the pendingKey
+  // handoff. A renderer-side navigation to accounts.google.com is
+  // blocked by Google as a "disallowed_useragent" (embedded UA) and
+  // strands the user.
   const userId = localStorage.getItem(KEY_USER_ID);
-  const params = userId
-    ? `include=gmail&userId=${encodeURIComponent(userId)}`
-    : `include=gmail&newUser=true`;
   try {
-    const data = await fetchJSON(`/api/oauth/google/authorize?${params}`);
-    if (data && typeof data.url === 'string') {
+    const { startGoogleSignIn } = await import('../google-signin.js');
+    const result = await startGoogleSignIn({
+      userId: userId || null,
+      newUser: !userId,
+      include: 'gmail',
+      onComplete: (completion) => {
+        // Desktop only — system-browser callback can't navigate the
+        // renderer back. The poll fires here when /callback resolves.
+        if (completion.connected && completion.userId) {
+          if (completion.sessionToken) {
+            localStorage.setItem(KEY_SESSION_TOKEN, completion.sessionToken);
+          }
+          localStorage.setItem(KEY_USER_ID, completion.userId);
+          clearWizardState();
+          // Land on the dashboard root — the connect-gmail wizard is
+          // done. Dashboard renders the "Just connected" celebration.
+          window.location.hash = '#/';
+        }
+        // Timeout case is a no-op here; the user can rerun the wizard.
+      },
+    });
+    if (result.status === 'redirecting' || result.status === 'polling') {
+      // Web: startGoogleSignIn just assigned window.location.href.
+      // Desktop: openExternal already fired and the poll is running.
+      // Either way, the wizard's job is done.
       clearWizardState();
-      window.location.href = data.url;
       return;
     }
-    throw new Error('OAuth endpoint did not return a redirect URL.');
+    // status === 'error'
+    if (errEl) {
+      errEl.textContent = `Saved your credentials, but starting the OAuth flow failed: ${result.error || 'no error message'}`;
+      errEl.style.display = 'block';
+    }
   } catch (err) {
     if (errEl) {
       errEl.textContent = `Saved your credentials, but starting the OAuth flow failed: ${err instanceof Error ? err.message : String(err)}`;

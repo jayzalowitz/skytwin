@@ -46,6 +46,7 @@ function generatePendingKey() {
  * @param {string|null} [opts.userId]   The existing user to connect. Required unless `newUser` is true.
  * @param {boolean} [opts.newUser]      Start the new-user (auto-create from verified email) flow.
  * @param {string|null} [opts.next]     Dashboard deep-link to land on post-callback (e.g. 'connect-gmail'). Server whitelists the value.
+ * @param {string|null} [opts.include]  Scope-tier opt-in (currently only 'gmail'). When set, the connect-gmail wizard's BYO OAuth path can request the restricted Gmail scopes on the user's own client.
  * @param {(result: { connected: boolean, sessionToken?: string|null, userId?: string, accountEmail?: string, scopes?: string[], nextHash?: string|null }) => void} [opts.onComplete]
  *     Desktop only — called when polling resolves (existing-user or
  *     newUser flow). `{ connected: false }` on timeout. For the newUser
@@ -56,7 +57,7 @@ function generatePendingKey() {
  *     caller is already signed in via QR pairing or web redirect).
  * @returns {Promise<{ status: 'redirecting' | 'polling' | 'error', error?: string, code?: string, help?: string }>}
  */
-export async function startGoogleSignIn({ userId = null, newUser = false, next = null, onComplete } = {}) {
+export async function startGoogleSignIn({ userId = null, newUser = false, next = null, include = null, onComplete } = {}) {
   const desktop = isDesktopApp();
   if (!newUser && !userId) {
     return {
@@ -76,8 +77,8 @@ export async function startGoogleSignIn({ userId = null, newUser = false, next =
     // handling (ApiError, friendlyMessage, offline detection) stays
     // consistent with the rest of the codebase.
     data = newUser
-      ? await getGoogleAuthUrl(null, { desktop, newUser: true, next, pendingKey })
-      : await getGoogleAuthUrl(userId, { desktop, next });
+      ? await getGoogleAuthUrl(null, { desktop, newUser: true, next, pendingKey, include })
+      : await getGoogleAuthUrl(userId, { desktop, next, include });
   } catch (err) {
     // Surface the structured server code (e.g. NO_GOOGLE_CLIENT_CONFIGURED)
     // so callers can route to the right setup card instead of just

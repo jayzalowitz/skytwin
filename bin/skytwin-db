@@ -280,8 +280,22 @@ owner_pid_on_port() {
   fi
 }
 
+is_crdb_responding() {
+  # Confirm the SQL listener actually speaks the CRDB protocol. A bare
+  # port-listening check returns true for any process that happens to be
+  # bound on $DB_PORT (an unrelated postgres, a leftover docker container,
+  # an apt-installed cockroach from a different config). If we treated
+  # that as "CRDB is running" and short-circuited cmd_start, the user's
+  # CRDB would never actually launch and migrations would silently target
+  # the wrong listener. Run a no-op statement against the port to verify
+  # CRDB ownership before treating port-bound as "already running".
+  [ -x "$COCKROACH_BIN" ] || return 1
+  "$COCKROACH_BIN" sql --insecure --host "${DB_LISTEN_HOST}:${DB_PORT}" -e 'SELECT 1' >/dev/null 2>&1
+}
+
 is_running() {
-  # Primary signal: PID file + live process.
+  # Primary signal: PID file + live process. Trust this without probing
+  # the port — if we wrote the PID file, the listener is ours.
   if [ -f "$PID_FILE" ]; then
     local pid
     pid="$(cat "$PID_FILE" 2>/dev/null)"
@@ -289,8 +303,12 @@ is_running() {
       return 0
     fi
   fi
-  # Fallback: port is bound but PID file is missing/stale.
-  if port_listening; then
+  # Fallback: PID file is missing/stale but the port is bound. Verify it's
+  # actually CRDB (not a stray process on $DB_PORT) before reporting
+  # "already running" — otherwise cmd_start's start-or-skip branch falls
+  # through to "skip" and the user is stuck pointing migrations at the
+  # wrong listener.
+  if port_listening && is_crdb_responding; then
     return 0
   fi
   return 1

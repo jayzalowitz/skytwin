@@ -135,7 +135,19 @@ async function handleOnboardingClick(e) {
                 localStorage.setItem(KEY_SESSION_TOKEN, completion.sessionToken);
               }
               localStorage.setItem(KEY_USER_ID, completion.userId);
+              // Mark onboarding complete + tear down the wizard overlay so
+              // the dashboard underneath becomes the active surface. Without
+              // these three lines the modal stays mounted on top of the
+              // deep-link route, the user can't reach the page they were
+              // sent to, and a reload re-opens first-run onboarding because
+              // KEY_ONBOARDED is unset. Mirrors the tour-mode path (see
+              // 'onb-start-tour' case below) which does the same dance.
+              localStorage.setItem(KEY_ONBOARDED, 'true');
               if (_wizardState) _wizardState.userId = completion.userId;
+              if (typeof window.skyTwinSetUserId === 'function') {
+                window.skyTwinSetUserId(completion.userId);
+              }
+              hideWizard();
               window.location.hash = completion.nextHash || '#/connect-gmail';
               return;
             }

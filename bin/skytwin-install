@@ -311,6 +311,17 @@ setup_project() {
     "$ROOT/bin/skytwin-db" ensure-db 2>&1 | tail -1
   fi
 
+  # Make migrations + seed target the CRDB instance we just started, not
+  # whatever happens to be on localhost:26257 (the @skytwin/db connection
+  # default). Required when the user set SKYTWIN_DB_PORT to dodge a
+  # collision, or when SKYTWIN_DB_LISTEN_HOST resolves differently from
+  # `localhost` (e.g. localhost → ::1 vs the 127.0.0.1 listener on some
+  # distros). bin/skytwin-db respects the same env vars; we build the URL
+  # from the same source of truth.
+  local _db_host="${SKYTWIN_DB_LISTEN_HOST:-127.0.0.1}"
+  local _db_port="${SKYTWIN_DB_PORT:-26257}"
+  export DATABASE_URL="postgresql://root@${_db_host}:${_db_port}/skytwin?sslmode=disable"
+
   echo -e "  Running migrations..."
   pnpm db:migrate 2>&1 | tail -3
 
