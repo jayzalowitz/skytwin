@@ -428,7 +428,7 @@ export function fetchBriefing(userId) {
   return fetchJSON(`${API}/v1/briefings/${encodeURIComponent(userId)}`);
 }
 
-export function getGoogleAuthUrl(userId, { desktop = false, newUser = false, next = null } = {}) {
+export function getGoogleAuthUrl(userId, { desktop = false, newUser = false, next = null, pendingKey = null } = {}) {
   // Fail fast on the client instead of sending `userId=null` and getting
   // back an opaque 400 "Missing userId" from the server.
   if (!newUser && !userId) {
@@ -441,7 +441,20 @@ export function getGoogleAuthUrl(userId, { desktop = false, newUser = false, nex
   // `next` deep-link target — server whitelists the value, so passing an
   // unknown one is harmless (it gets dropped at the server side).
   if (next) params.set('next', next);
+  // `pendingKey` — UUIDv4 generated client-side. Server re-validates the
+  // shape before threading it through signed state. Lets the desktop
+  // newUser wizard poll for the just-created userId.
+  if (pendingKey) params.set('pendingKey', pendingKey);
   return fetchJSON(`${API}/oauth/google/authorize?${params.toString()}`);
+}
+
+/**
+ * Poll the pending-signin handoff. Returns the just-resolved
+ * userId/accountEmail/scopes/nextHash if /callback has written a row
+ * for this key, or throws ApiError(kind:'not-found') if not yet.
+ */
+export function fetchPendingSignin(pendingKey) {
+  return fetchJSON(`${API}/oauth/google/pending/${encodeURIComponent(pendingKey)}`);
 }
 
 export function disconnectProvider(provider, userId) {

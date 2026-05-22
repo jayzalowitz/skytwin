@@ -57,6 +57,7 @@ export type {
   IronClawToolRow,
   AIProviderSettingsRow,
   OauthPkcePendingRow,
+  OauthPendingSigninRow,
 } from './types.js';
 
 // Repositories
@@ -81,7 +82,18 @@ export type {
   CreateFeedbackInput,
 } from './repositories/index.js';
 
-export { oauthRepository, oauthPkcePendingRepository, approvalRepository, patternRepository, executionRepository } from './repositories/index.js';
+export {
+  oauthRepository,
+  oauthPkcePendingRepository,
+  oauthPendingSigninRepository,
+  approvalRepository,
+  patternRepository,
+  executionRepository,
+} from './repositories/index.js';
+export type {
+  RememberPendingSigninInput,
+  ConsumedPendingSignin,
+} from './repositories/index.js';
 export type {
   CreateExecutionPlanInput,
   CreateExecutionResultInput,

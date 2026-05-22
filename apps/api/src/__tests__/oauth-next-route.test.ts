@@ -4,6 +4,7 @@ import {
   _signStatePayloadForTests,
   _parseSignedStateForTests,
   _stateTtlMsForTests,
+  isValidPendingKey,
 } from '../routes/oauth.js';
 
 /**
@@ -83,6 +84,55 @@ describe('OAuth post-callback next= routing', () => {
       const parsed = _parseSignedStateForTests(state);
       expect(parsed.nextHash).toBeNull();
     }
+  });
+
+  describe('isValidPendingKey (UUIDv4 shape gate)', () => {
+    it('accepts a real crypto.randomUUID output', () => {
+      // Sample crypto.randomUUID() output — lowercase hex, version 4, variant 8|9|a|b.
+      expect(isValidPendingKey('550e8400-e29b-41d4-a716-446655440000')).toBe(true);
+      expect(isValidPendingKey('f47ac10b-58cc-4372-a567-0e02b2c3d479')).toBe(true);
+    });
+
+    it('rejects non-v4 versions, wrong variants, uppercase, and shape-mismatches', () => {
+      // Wrong version nibble (1 instead of 4)
+      expect(isValidPendingKey('550e8400-e29b-11d4-a716-446655440000')).toBe(false);
+      // Wrong variant nibble (c instead of 8|9|a|b)
+      expect(isValidPendingKey('550e8400-e29b-41d4-c716-446655440000')).toBe(false);
+      // Uppercase (we standardise on lowercase to make grep/log analysis sane)
+      expect(isValidPendingKey('550E8400-E29B-41D4-A716-446655440000')).toBe(false);
+      // Empty / short / no dashes
+      expect(isValidPendingKey('')).toBe(false);
+      expect(isValidPendingKey('not-a-uuid')).toBe(false);
+      expect(isValidPendingKey('550e8400e29b41d4a716446655440000')).toBe(false);
+      // SQL injection attempt
+      expect(isValidPendingKey("'; DROP TABLE users; --")).toBe(false);
+      // Path traversal attempt
+      expect(isValidPendingKey('../../../etc/passwd')).toBe(false);
+    });
+  });
+
+  it('state round-trip with key=<uuid> decodes the pendingKey', () => {
+    const expiresAt = Date.now() + _stateTtlMsForTests;
+    const uuid = '550e8400-e29b-41d4-a716-446655440000';
+    const state = _signStatePayloadForTests(`new|desktop|key=${uuid}`, expiresAt);
+
+    const parsed = _parseSignedStateForTests(state);
+
+    expect(parsed.userId).toBeNull();
+    expect(parsed.desktop).toBe(true);
+    expect(parsed.pendingKey).toBe(uuid);
+  });
+
+  it('state round-trip with a malformed key= tag drops pendingKey to null', () => {
+    // The /authorize handler validates UUID shape up-front, but
+    // parseSignedState re-validates so a tampered or rolled-back state
+    // can't write a non-UUID into oauth_pending_signin.
+    const expiresAt = Date.now() + _stateTtlMsForTests;
+    const state = _signStatePayloadForTests('new|desktop|key=not-a-uuid', expiresAt);
+
+    const parsed = _parseSignedStateForTests(state);
+
+    expect(parsed.pendingKey).toBeNull();
   });
 
   it('flipping a bit in the state breaks signature verification', () => {

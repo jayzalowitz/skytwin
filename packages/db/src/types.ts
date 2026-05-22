@@ -620,6 +620,20 @@ export interface OauthPkcePendingRow {
 }
 
 // ============================================================================
+// OAuth pending sign-in completion (desktop newUser flow bridge)
+// ============================================================================
+
+export interface OauthPendingSigninRow {
+  pending_key: string;
+  user_id: string;
+  account_email: string;
+  scopes: string[];
+  next_hash: string | null;
+  expires_at: Date;
+  created_at: Date;
+}
+
+// ============================================================================
 // Service Credentials
 // ============================================================================
 

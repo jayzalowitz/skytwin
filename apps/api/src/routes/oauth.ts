@@ -4,6 +4,7 @@ import { loadConfig } from '@skytwin/config';
 import {
   oauthRepository,
   oauthPkcePendingRepository,
+  oauthPendingSigninRepository,
   serviceCredentialRepository,
   userRepository,
 } from '@skytwin/db';
@@ -140,6 +141,17 @@ interface ParsedState {
   newAccount: boolean;
   /** Dashboard hash route to land on post-callback, or null for the default `#/`. */
   nextHash: string | null;
+  /**
+   * Client-generated pollable handoff key for desktop new-user flows.
+   * `/callback` writes the resulting userId + scopes to
+   * `oauth_pending_signin` keyed by this value so the desktop wizard
+   * can poll `GET /api/oauth/google/pending/:key` and auto-advance.
+   *
+   * Format is validated up-front (UUID4) so an attacker can't smuggle a
+   * shaped string that misroutes the polling endpoint. Null for any
+   * non-desktop flow.
+   */
+  pendingKey: string | null;
 }
 
 /**
@@ -150,6 +162,19 @@ interface ParsedState {
 export const NEXT_HASH_ROUTES: Record<string, string> = {
   'connect-gmail': '#/connect-gmail',
 };
+
+/**
+ * Conservative UUIDv4 shape check — 8-4-4-4-12 lowercase hex with the
+ * version (4) + variant (8|9|a|b) nibbles pinned. We do NOT need
+ * cryptographic-grade validation here; the goal is to reject strings
+ * that contain SQL metacharacters, path traversal, or other shapes
+ * before they hit the state payload. crypto.randomUUID() emits this
+ * exact shape; anything else is bad input.
+ */
+const UUID_V4_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+export function isValidPendingKey(value: string): boolean {
+  return UUID_V4_RE.test(value);
+}
 
 function signStatePayload(payload: string, expiresAtMs: number): string {
   const mac = createHmac('sha256', STATE_SECRET)
@@ -203,13 +228,23 @@ function parseSignedState(state: string): ParsedState {
   // lookup) so a value like `constructor` or `__proto__` can't reach the
   // inherited Object property and slip past the truthy check.
   let nextHash: string | null = null;
+  // Decode `key=<uuid>` tag — the pendingKey for the desktop newUser
+  // poll handoff. UUID-shape re-validated on read so a tampered tag
+  // can't write a non-UUID value into `oauth_pending_signin` (the
+  // table column is TEXT for portability; the constraint lives in
+  // application code).
+  let pendingKey: string | null = null;
   for (const t of rawTags) {
     if (t.startsWith('next=')) {
       const candidate = t.slice('next='.length);
       if (Object.prototype.hasOwnProperty.call(NEXT_HASH_ROUTES, candidate)) {
         nextHash = NEXT_HASH_ROUTES[candidate] ?? null;
       }
-      break;
+    } else if (t.startsWith('key=')) {
+      const candidate = t.slice('key='.length);
+      if (isValidPendingKey(candidate)) {
+        pendingKey = candidate;
+      }
     }
   }
   return {
@@ -217,6 +252,7 @@ function parseSignedState(state: string): ParsedState {
     desktop: tags.has('desktop'),
     newAccount: tags.has('new'),
     nextHash,
+    pendingKey,
   };
 }
 
@@ -394,6 +430,13 @@ export function resolveRequestedScopes(opts: {
  * DB call — which is consistent with the rest of the system.
  */
 const PKCE_TTL_MS = 10 * 60 * 1000;
+/**
+ * TTL for the pending-signin handoff row. The desktop wizard polls at
+ * ~2s cadence with its own 5-minute deadline (see google-signin.js
+ * pollUntilNewUserCompleted); five minutes here matches that and gives
+ * the user time to actually click "Allow" on Google's consent screen.
+ */
+const PENDING_SIGNIN_TTL_MS = 5 * 60 * 1000;
 
 async function rememberPkceVerifier(state: string, codeVerifier: string): Promise<void> {
   const now = new Date();
@@ -414,28 +457,28 @@ export function createOAuthRouter(): Router {
   const router = Router();
 
   // All OAuth management endpoints require an authenticated user except:
-  //   - /google/callback        public (browser redirect from Google)
-  //   - /google/authorize?newUser=true   public (sign-in-with-Google)
+  //   - /google/callback                  public (browser redirect from Google)
+  //   - /google/authorize?newUser=true    public (sign-in-with-Google)
+  //   - /google/pending/:key              public (desktop newUser poll)
   // For the new-user flow there's no session yet, so requiring sessionAuth
-  // would 401 before the user could even start consenting.
+  // would 401 before the user could even start consenting. The pending-key
+  // endpoint is gated by the unguessable random key — see the route's
+  // comment block.
+  const isPublicOAuthPath = (req: { path: string; query: Record<string, unknown> }): boolean => {
+    if (req.path === '/google/callback') return true;
+    if (req.path === '/google/authorize' && req.query['newUser'] === 'true') return true;
+    if (req.path.startsWith('/google/pending/')) return true;
+    return false;
+  };
   router.use((req, res, next) => {
-    if (req.path === '/google/callback') {
+    if (isPublicOAuthPath(req as { path: string; query: Record<string, unknown> })) {
       next();
       return;
     }
-    if (req.path === '/google/authorize' && req.query['newUser'] === 'true') {
-      next();
-      return;
-    }
-
     void sessionAuth(req, res, next);
   });
   router.use((req, res, next) => {
-    if (req.path === '/google/callback') {
-      next();
-      return;
-    }
-    if (req.path === '/google/authorize' && req.query['newUser'] === 'true') {
+    if (isPublicOAuthPath(req as { path: string; query: Record<string, unknown> })) {
       next();
       return;
     }
@@ -552,6 +595,13 @@ export function createOAuthRouter(): Router {
       const nextTagValue = nextQuery && Object.prototype.hasOwnProperty.call(NEXT_HASH_ROUTES, nextQuery)
         ? nextQuery
         : undefined;
+      // Pollable handoff key for desktop new-user flows. Validated to
+      // UUIDv4 shape up-front; anything else is dropped silently so a
+      // malformed query param can't poison state.
+      const pendingKeyQuery = typeof req.query['pendingKey'] === 'string' ? req.query['pendingKey'] : undefined;
+      const pendingKey = pendingKeyQuery && isValidPendingKey(pendingKeyQuery)
+        ? pendingKeyQuery
+        : undefined;
 
       let stateHead: string;
       if (newUser) {
@@ -569,6 +619,7 @@ export function createOAuthRouter(): Router {
       if (desktop) tags.push('desktop');
       if (newAccount) tags.push('new');
       if (nextTagValue) tags.push(`next=${nextTagValue}`);
+      if (pendingKey) tags.push(`key=${pendingKey}`);
 
       const payload = [stateHead, ...tags].join('|');
       const state = signStatePayload(payload, Date.now() + STATE_TTL_MS);
@@ -715,6 +766,31 @@ export function createOAuthRouter(): Router {
         scopes: tokenSet.scopes,
       });
 
+      // If the desktop client supplied a pendingKey (per-flow handoff
+      // token), record the completion so the wizard can poll for it.
+      // The system browser will show the static "close this tab" HTML
+      // below; the Electron app, which has no other way to learn about
+      // the user that /callback just created, polls
+      // GET /api/oauth/google/pending/:key.
+      if (parsed.pendingKey) {
+        try {
+          await oauthPendingSigninRepository.sweepExpired(new Date());
+          await oauthPendingSigninRepository.remember({
+            pendingKey: parsed.pendingKey,
+            userId,
+            accountEmail,
+            scopes: Array.isArray(tokenSet.scopes) ? tokenSet.scopes : [],
+            nextHash: parsed.nextHash,
+            expiresAt: new Date(Date.now() + PENDING_SIGNIN_TTL_MS),
+          });
+        } catch {
+          // Pending-signin is a best-effort UX bridge. If the write
+          // fails (table missing on a half-migrated deploy, etc.) the
+          // user still has a fully-functional token row from the line
+          // above; they just have to manually re-click in the wizard.
+        }
+      }
+
       if (parsed.desktop) {
         res.send(`<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>SkyTwin</title>
@@ -745,6 +821,53 @@ export function createOAuthRouter(): Router {
       //   …?userId=…#/connect-gmail?connected=google&account=…
       // The dashboard hash router reads the bit before `?` as the route.
       res.redirect(`${webBase}/?${topLevel}${hashRoute}?${hashQuery}`);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /**
+   * GET /api/oauth/google/pending/:key
+   *
+   * Pollable handoff endpoint for the desktop new-user flow. The
+   * Electron wizard generates a UUIDv4 before opening the system
+   * browser, passes it to /authorize as `?pendingKey=…`, and polls
+   * here until /callback writes the resulting userId.
+   *
+   * Consume-on-read (DELETE...RETURNING): a leaked key can only be
+   * redeemed once. Response shape mirrors the OAuth /status endpoint
+   * so the existing fetchOAuthStatus path can fold this in cleanly.
+   *
+   * 404 covers three cases the client treats identically (keep polling
+   * until the local timeout):
+   *   - the row hasn't been written yet (consent still in progress)
+   *   - the row has expired (user took >5 min)
+   *   - the key was malformed (validated up-front; surfaced as 404 so
+   *     this endpoint can't be used as a key-shape oracle)
+   *
+   * Public — no sessionAuth, by design — the desktop client has no
+   * session yet for a new user. The key's unguessability IS the
+   * authorization.
+   */
+  router.get('/google/pending/:key', async (req, res, next) => {
+    try {
+      const { key } = req.params;
+      if (!key || !isValidPendingKey(key)) {
+        res.status(404).json({ error: 'No pending sign-in.' });
+        return;
+      }
+      const result = await oauthPendingSigninRepository.consume(key);
+      if (!result) {
+        res.status(404).json({ error: 'No pending sign-in.' });
+        return;
+      }
+      res.json({
+        connected: true,
+        userId: result.userId,
+        accountEmail: result.accountEmail,
+        scopes: result.scopes,
+        nextHash: result.nextHash,
+      });
     } catch (error) {
       next(error);
     }

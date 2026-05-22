@@ -115,20 +115,44 @@ async function handleOnboardingClick(e) {
         // /#/connect-gmail and the user shouldn't have to discover the
         // follow-up CTA on the dashboard themselves. The connect-gmail
         // page no-ops gracefully if Gmail is already wired up.
-        const result = await startGoogleSignIn({ newUser: true, next: 'connect-gmail' });
+        //
+        // Desktop newUser flow: startGoogleSignIn generates a UUIDv4
+        // pendingKey, threads it through state, and polls for the
+        // resulting userId once /callback writes the handoff row.
+        // onComplete fires when the poll resolves — we set the userId
+        // in localStorage and drop the user on the deep-link route
+        // exactly as the web redirect would have.
+        const result = await startGoogleSignIn({
+          newUser: true,
+          next: 'connect-gmail',
+          onComplete: (completion) => {
+            if (completion.connected && completion.userId) {
+              localStorage.setItem(KEY_USER_ID, completion.userId);
+              if (_wizardState) _wizardState.userId = completion.userId;
+              window.location.hash = completion.nextHash || '#/connect-gmail';
+              return;
+            }
+            // Timeout (5 min) — let the user retry rather than sitting
+            // on a frozen button. The pending row has either expired
+            // or the user closed the browser tab without consenting.
+            const retryBtn = document.querySelector('[data-action="onb-email-google"]');
+            if (retryBtn instanceof HTMLButtonElement) {
+              retryBtn.disabled = false;
+              retryBtn.textContent = 'Continue with Google';
+            }
+            showWizardError("We didn't see your Google sign-in come through. Try again, or use email below.");
+          },
+        });
         if (result.status === 'redirecting') return;
         if (result.status === 'polling') {
-          // Desktop: OAuth opened in the system browser. There's no
-          // userId yet for a new user, so we can't poll for completion
-          // here — re-enable the button instead of leaving it frozen
-          // on "Redirecting…" with no way forward.
-          // TODO(desktop-onboarding): auto-advance the wizard after a
-          // desktop new-user sign-in. Needs a userId-less completion
-          // signal (e.g. poll a short-lived pairing token) — the web
-          // flow advances via redirect, desktop currently does not.
-          btn.disabled = false;
-          btn.textContent = 'Continue with Google';
-          showWizardError('Finish signing in with Google in the browser window that just opened, then return here and continue.');
+          // Desktop: OAuth opened in the system browser; pendingKey
+          // poll is running in the background and will fire
+          // onComplete above when /callback writes the handoff row.
+          // The button stays disabled with "Waiting for Google…" as
+          // the active status — the wizard auto-advances when the
+          // poll resolves.
+          btn.textContent = 'Waiting for Google…';
+          hideWizardError();
           return;
         }
         // status === 'error'. If the server tagged the failure as a

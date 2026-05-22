@@ -14,6 +14,8 @@ All notable changes to SkyTwin will be documented in this file.
 
 - **Unset bundled `client_id` now bounces the user into the connect-gmail wizard.** `apps/api/src/routes/oauth.ts` tags its 503 response with `code: 'NO_GOOGLE_CLIENT_CONFIGURED'` + `help: '#/connect-gmail'`. The onboarding wizard detects this and redirects to the connect-gmail flow (same wizard backs both BYO Gmail and "this fork has no bundled OAuth client"). The connect-gmail wizard's final step now uses `?newUser=true` when no userId is in localStorage, so brand-new onboarding users complete the OAuth-client-setup walkthrough and get auto-created from the verified Google email on callback.
 
+- **Desktop new-user OAuth now auto-advances the wizard** instead of stranding the user on "Continue with Google" with no signal that consent succeeded. The system-browser callback can't IPC back to the Electron app, so the wizard generates a UUIDv4 `pendingKey` client-side (`crypto.randomUUID()`); `/authorize` validates the shape and threads it through HMAC-signed state; `/callback` writes the resulting `userId` + `accountEmail` + `scopes` + `nextHash` to a new `oauth_pending_signin` table (migration 059) keyed by the pendingKey; the wizard polls `GET /api/oauth/google/pending/:key` (consume-on-read, mirrors the existing pollUntilConnected pattern) and auto-advances to `#/connect-gmail` when the row appears. Closes the previous TODO that admitted "the web flow advances via redirect, desktop currently does not." 6 new tests for the repository, 4 new tests for the UUID validator + `key=` state encoding (including a SQL-injection-shape rejection test). The pending endpoint is public — the unguessable random key IS the authorization.
+
 ## [0.6.57.0] - 2026-05-22
 
 ### Fixed
