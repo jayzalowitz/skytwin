@@ -485,6 +485,53 @@ export function renderConnectGoogleHero({ googleConnected, googleSystemConfigure
   `;
 }
 
+/**
+ * Follow-up CTA for users who completed the bundled-client sign-in
+ * (Calendar + identity granted) but haven't yet wired Gmail through
+ * their own OAuth credentials.
+ *
+ * Why this exists as its own card and not as a tab in Settings:
+ *   The dashboard is the first thing users see post-sign-in. SkyTwin's
+ *   marquee features — content-aware inbox triage, draft replies,
+ *   body summarisation — all require Gmail's restricted scopes, which
+ *   the bundled client can't grant (see docs/google-verification.md).
+ *   The user needs to be told this immediately, not 15 minutes later
+ *   when they wonder why no emails are showing up. The wizard at
+ *   /#/connect-gmail is the entire fix; this card is just the visible
+ *   nudge that gets them there.
+ *
+ * Returns the empty string in three cases that all mean "no nudge
+ * needed": tour mode (user is exploring sample data); Gmail is already
+ * connected (one of the scopes includes gmail.); or Google itself
+ * isn't connected yet (in which case the renderConnectGoogleHero card
+ * above takes priority).
+ */
+export function renderConnectGmailHero({ googleConnected, googleScopes }) {
+  if (!googleConnected) return '';
+  const scopes = Array.isArray(googleScopes) ? googleScopes : [];
+  const gmailConnected = scopes.some((s) => typeof s === 'string' && s.includes('gmail'));
+  if (gmailConnected) return '';
+
+  return `
+    <div class="card" style="border-left: 3px solid var(--primary); background: linear-gradient(135deg, var(--bg-card) 0%, var(--bg) 100%);">
+      <div class="card-header">
+        <span class="card-title">Calendar connected — now hook up Gmail</span>
+      </div>
+      <div class="card-subtitle" style="margin-bottom: 1rem;">
+        SkyTwin's inbox triage, draft replies, and content summarisation
+        all need Gmail body access. That's a Google-restricted OAuth scope
+        we can't grant from the bundled client yet — so we walk you
+        through pasting in your own Google Cloud OAuth credentials
+        instead. Five minutes, one time, totally free.
+      </div>
+      <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+        <a class="btn btn-primary" href="#/connect-gmail">Connect Gmail (5 min) →</a>
+        <a class="btn btn-outline" href="https://jayzalowitz.github.io/skytwin/connect-gmail.html" target="_blank" rel="noopener">Why is this step needed?</a>
+      </div>
+    </div>
+  `;
+}
+
 export async function handleConnectGoogleFromDashboard(userId) {
   try {
     const { startGoogleSignIn } = await import('../google-signin.js');
