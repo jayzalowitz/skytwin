@@ -56,9 +56,16 @@ CREATE INDEX IF NOT EXISTS idx_decision_outcomes_execution_plan
 -- decision never produced a plan (approval-pending today, rejected
 -- decisions) stay NULL — that's correct.
 --
--- DISTINCT ON (do.id) ensures one source plan per outcome even when
--- the join produces multiple plan rows.
-UPDATE decision_outcomes do
+-- DISTINCT ON (outcomes.id) ensures one source plan per outcome even
+-- when the join produces multiple plan rows.
+--
+-- The alias is `outcomes` (not `do`) because `do` is a reserved keyword
+-- in CockroachDB v23.2+ and rejects with a 42601 lexer error. Fresh
+-- installs on any recent CRDB failed at this migration until the
+-- rename. Re-running against an already-migrated DB is a no-op because
+-- of the IF NOT EXISTS on the column and the WHERE execution_plan_id
+-- IS NULL guard on the backfill.
+UPDATE decision_outcomes outcomes
 SET execution_plan_id = src.plan_id
 FROM (
   SELECT DISTINCT ON (do_inner.id)
@@ -69,5 +76,5 @@ FROM (
   WHERE do_inner.execution_plan_id IS NULL
   ORDER BY do_inner.id, ep.created_at DESC
 ) src
-WHERE do.id = src.outcome_id
-  AND do.execution_plan_id IS NULL;
+WHERE outcomes.id = src.outcome_id
+  AND outcomes.execution_plan_id IS NULL;

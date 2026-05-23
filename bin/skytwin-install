@@ -10,14 +10,22 @@ set -euo pipefail
 # What it installs (only if missing):
 #   - Node.js >= 20 (via nvm, to avoid conflicting with system node)
 #   - pnpm 9.x (via corepack)
-#   - Docker Desktop (or Docker Engine on Linux)
-#   - Ollama (optional, for local LLM reasoning)
-#   - CockroachDB database (via Docker, not a system install)
+#   - CockroachDB as a self-contained binary (no Docker required)
+#   - Ollama (optional, only when SKYTWIN_WITH_OLLAMA=true)
+#
+# Docker is NOT installed by default anymore.
+#   Before v0.6.56 we shipped CockroachDB inside a Docker container, which
+#   meant a grandma-grade install required Docker Desktop (heavy install, EULA,
+#   "open Docker once" gotcha, no clean way to auto-start across reboots).
+#   We now fetch the official CockroachDB single-binary release (hash-verified
+#   against the published sha256sum) and spawn it as a child process. Docker is
+#   still supported for users who set SKYTWIN_USE_DOCKER=true — useful for CI
+#   and for users who want the cluster lifecycle Docker offers.
 #
 # Safe behaviors:
 #   - Checks before installing — never reinstalls what you already have
 #   - Uses nvm for Node so it doesn't touch /usr/local/bin/node
-#   - CockroachDB runs in Docker — no system-level database install
+#   - CockroachDB is a single hash-verified binary in $HOME/.local/share/skytwin
 #   - Ollama installs to its own directory, no conflicts
 #   - All port bindings are configurable via .env
 
@@ -127,15 +135,45 @@ install_pnpm() {
   fi
 }
 
-# ── Docker ─────────────────────────────────────────────────────────
+# ── CockroachDB (native binary) ──────────────────────────────────────
+#
+# Default path. Fetches the published CockroachDB binary for this
+# platform, verifies the sha256, and installs it under
+# $HOME/.local/share/skytwin/bin/cockroach. No Docker, no system install,
+# no port conflicts with anything else on the machine.
+
+install_cockroach_native() {
+  if [ -x "${SKYTWIN_DB_PREFIX:-$HOME/.local/share/skytwin}/bin/cockroach" ]; then
+    skip "CockroachDB" "$("${SKYTWIN_DB_PREFIX:-$HOME/.local/share/skytwin}/bin/cockroach" version --build-tag 2>/dev/null || echo installed)"
+    return
+  fi
+
+  echo -e "${YELLOW}Installing CockroachDB (native binary)...${NC}"
+  if "$ROOT/bin/skytwin-db" install; then
+    ok "CockroachDB (native binary, hash-verified)"
+  else
+    fail "CockroachDB" "see $ROOT/bin/skytwin-db install"
+  fi
+}
+
+# ── Docker (legacy / opt-in only) ────────────────────────────────────
+#
+# Only attempts to install Docker when SKYTWIN_USE_DOCKER=true. The
+# default path is native CockroachDB — Docker Desktop is the single
+# biggest grandma-blocker (size, license, "open it once after install"
+# gotcha) and is no longer required.
 
 install_docker() {
+  if [ "${SKYTWIN_USE_DOCKER:-false}" != "true" ]; then
+    return
+  fi
+
   if command -v docker &>/dev/null; then
     skip "Docker" "$(docker --version)"
     return
   fi
 
-  echo -e "${YELLOW}Installing Docker...${NC}"
+  echo -e "${YELLOW}Installing Docker (SKYTWIN_USE_DOCKER=true)...${NC}"
   case "$OS" in
     mac)
       if command -v brew &>/dev/null; then
@@ -166,15 +204,24 @@ install_docker() {
   esac
 }
 
-# ── Ollama ─────────────────────────────────────────────────────────
+# ── Ollama (opt-in only) ─────────────────────────────────────────────
+#
+# Ollama plus the gemma model is a 9.6GB download — too heavy to install
+# during a grandma-grade first-run. SkyTwin's embedded-llm provider
+# (llama.cpp + a small quantised model) is the default; users who
+# explicitly want Ollama can set SKYTWIN_WITH_OLLAMA=true.
 
 install_ollama() {
+  if [ "${SKYTWIN_WITH_OLLAMA:-false}" != "true" ]; then
+    return
+  fi
+
   if command -v ollama &>/dev/null; then
     skip "Ollama" "$(ollama -v 2>/dev/null || echo 'installed')"
     return
   fi
 
-  echo -e "${YELLOW}Installing Ollama (optional, for local LLM reasoning)...${NC}"
+  echo -e "${YELLOW}Installing Ollama (SKYTWIN_WITH_OLLAMA=true)...${NC}"
   case "$OS" in
     mac)
       if command -v brew &>/dev/null; then
@@ -194,9 +241,10 @@ install_ollama() {
   esac
 }
 
-# ── Pull Ollama model ──────────────────────────────────────────────
+# ── Pull Ollama model (opt-in only) ──────────────────────────────────
 
 pull_ollama_model() {
+  if [ "${SKYTWIN_WITH_OLLAMA:-false}" != "true" ]; then return; fi
   if ! command -v ollama &>/dev/null; then return; fi
 
   if ollama list 2>/dev/null | grep -q "gemma4"; then
@@ -227,13 +275,27 @@ setup_project() {
   echo -e "  Installing node dependencies..."
   pnpm install 2>&1 | tail -2
 
-  # Build
+  # Build. --concurrency=1 avoids the known turbo race on @skytwin/db's
+  # dist/.d.ts when multiple workers stomp on each other's output. CI is
+  # fine with the default; fresh-install on a clean machine is not. The
+  # ~10s penalty is worth the determinism. (See CLAUDE.md: "Build gotcha:
+  # turbo parallel race on @skytwin/db dist".)
+  #
+  # If the build fails, surface the full output — turbo's default
+  # truncation hides the TS error and just shows "exited (2)", which is
+  # the wrong tradeoff for fresh installs where the user has no way to
+  # diagnose the failure without it.
   echo -e "  Building packages..."
-  pnpm build 2>&1 | tail -3
+  if ! pnpm build --concurrency=1 2>&1 | tail -20; then
+    echo -e "  ${RED}Build failed — see lines above for the TypeScript error.${NC}"
+    exit 1
+  fi
 
-  # Start CockroachDB + migrate + seed
-  if command -v docker &>/dev/null; then
-    echo -e "  Starting CockroachDB..."
+  # Start CockroachDB + migrate + seed.
+  # Prefer the native binary path; fall back to Docker only when the user
+  # explicitly opted in via SKYTWIN_USE_DOCKER=true.
+  if [ "${SKYTWIN_USE_DOCKER:-false}" = "true" ] && command -v docker &>/dev/null; then
+    echo -e "  Starting CockroachDB (Docker, SKYTWIN_USE_DOCKER=true)..."
     docker compose up -d cockroachdb 2>&1 | tail -2
 
     # Wait for CRDB
@@ -243,13 +305,28 @@ setup_project() {
     done
 
     docker exec skytwin-cockroachdb cockroach sql --insecure -e "CREATE DATABASE IF NOT EXISTS skytwin;" 2>/dev/null || true
-
-    echo -e "  Running migrations..."
-    pnpm db:migrate 2>&1 | tail -3
-
-    echo -e "  Seeding database..."
-    pnpm db:seed 2>&1 | tail -5
+  else
+    echo -e "  Starting CockroachDB (native binary)..."
+    "$ROOT/bin/skytwin-db" start 2>&1 | tail -3
+    "$ROOT/bin/skytwin-db" ensure-db 2>&1 | tail -1
   fi
+
+  # Make migrations + seed target the CRDB instance we just started, not
+  # whatever happens to be on localhost:26257 (the @skytwin/db connection
+  # default). Required when the user set SKYTWIN_DB_PORT to dodge a
+  # collision, or when SKYTWIN_DB_LISTEN_HOST resolves differently from
+  # `localhost` (e.g. localhost → ::1 vs the 127.0.0.1 listener on some
+  # distros). bin/skytwin-db respects the same env vars; we build the URL
+  # from the same source of truth.
+  local _db_host="${SKYTWIN_DB_LISTEN_HOST:-127.0.0.1}"
+  local _db_port="${SKYTWIN_DB_PORT:-26257}"
+  export DATABASE_URL="postgresql://root@${_db_host}:${_db_port}/skytwin?sslmode=disable"
+
+  echo -e "  Running migrations..."
+  pnpm db:migrate 2>&1 | tail -3
+
+  echo -e "  Seeding database..."
+  pnpm db:seed 2>&1 | tail -5
 
   echo -e "  ${GREEN}Project setup complete${NC}"
 }
@@ -259,6 +336,7 @@ setup_project() {
 install_homebrew
 install_node
 install_pnpm
+install_cockroach_native
 install_docker
 install_ollama
 pull_ollama_model

@@ -215,6 +215,25 @@ function forwardPendingDxtPathIfReady(): void {
   pendingDxtPath = null;
 }
 
+// Single-instance lock. Without this, a second launch (double-click in the
+// dock, login-item + manual click, etc.) would race CockroachManager.start()
+// against the running instance — both see "port not bound yet," both spawn
+// `cockroach start-single-node --store=<userData>/crdb-data`, the loser hits
+// CRDB's data-dir LOCK file with a cryptic error, and from the user's POV
+// nothing happens. Reject the second instance early and surface the existing
+// window instead.
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (mainWindow !== null && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  });
+}
+
 // App lifecycle
 app.whenReady().then(startApp);
 

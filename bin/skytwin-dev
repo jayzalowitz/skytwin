@@ -4,12 +4,21 @@ set -euo pipefail
 # skytwin-dev — one-liner to start all SkyTwin services for development
 #
 # Usage:
-#   ./bin/skytwin-dev           # start everything
+#   ./bin/skytwin-dev               # start everything (native CRDB)
+#   ./bin/skytwin-dev --use-docker  # use Docker for CRDB (legacy)
 #   ./bin/skytwin-dev --no-ollama   # skip OpenClaw bridge / Ollama
-#   ./bin/skytwin-dev --stop    # tear everything down
+#   ./bin/skytwin-dev --stop        # tear everything down
 #
-# Starts: CockroachDB (Docker), API, Web, Worker, OpenClaw Bridge (Ollama)
+# Starts: CockroachDB, API, Web, Worker, optionally OpenClaw Bridge (Ollama)
 # Ports:  3100 (API), 3200 (Web), 3101 (Worker), 3456 (OpenClaw), 26257 (CRDB)
+#
+# CockroachDB sourcing:
+#   - Default (native): spawns the hash-verified cockroach binary
+#     installed by `bin/skytwin-db install` under
+#     $HOME/.local/share/skytwin/bin/cockroach. No Docker required.
+#   - --use-docker / SKYTWIN_USE_DOCKER=true: starts the CRDB container
+#     defined in docker-compose.yml. Kept for CI and users who already
+#     have a Docker workflow.
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -22,10 +31,12 @@ NC='\033[0m'
 
 PIDFILE="$ROOT/.skytwin-pids"
 SKIP_OLLAMA=false
+USE_DOCKER="${SKYTWIN_USE_DOCKER:-false}"
 
 for arg in "$@"; do
   case "$arg" in
     --no-ollama) SKIP_OLLAMA=true ;;
+    --use-docker) USE_DOCKER=true ;;
     --stop)
       echo -e "${YELLOW}Stopping SkyTwin services...${NC}"
       if [ -f "$PIDFILE" ]; then
@@ -36,14 +47,19 @@ for arg in "$@"; do
         done < "$PIDFILE"
         rm -f "$PIDFILE"
       fi
-      docker compose stop cockroachdb 2>/dev/null && echo -e "  ${RED}Stopped${NC} CockroachDB" || true
+      # Stop whichever CRDB we own. Native first (it's the default and
+      # cheap to no-op when nothing's running); then Docker if it was
+      # previously started.
+      "$ROOT/bin/skytwin-db" stop 2>/dev/null | tail -1 || true
+      docker compose stop cockroachdb 2>/dev/null && echo -e "  ${RED}Stopped${NC} CockroachDB (docker)" || true
       echo -e "${GREEN}All services stopped.${NC}"
       exit 0
       ;;
     --help|-h)
-      echo "Usage: ./bin/skytwin-dev [--no-ollama] [--stop]"
+      echo "Usage: ./bin/skytwin-dev [--no-ollama] [--use-docker] [--stop]"
       echo ""
       echo "  --no-ollama   Skip OpenClaw bridge (no Ollama required)"
+      echo "  --use-docker  Use Docker for CockroachDB instead of the native binary"
       echo "  --stop        Stop all running SkyTwin services"
       exit 0
       ;;
@@ -69,6 +85,19 @@ fi
 # 1. Check prerequisites
 echo -e "${YELLOW}Checking prerequisites...${NC}"
 
+# When bin/skytwin-install installed node via nvm, the resulting `node`
+# only lives on PATH after `nvm.sh` is sourced. Interactive shells do that
+# via .bashrc; a non-interactive subshell spawned by `nohup` (which is how
+# install.sh starts this script) does NOT inherit nvm. Self-load it here
+# so the script works regardless of how it's invoked.
+if ! command -v node &>/dev/null; then
+  if [ -s "${HOME}/.nvm/nvm.sh" ]; then
+    # shellcheck disable=SC1091
+    export NVM_DIR="${HOME}/.nvm"
+    . "$NVM_DIR/nvm.sh"
+  fi
+fi
+
 if ! command -v node &>/dev/null; then
   echo -e "  ${RED}Node.js not found.${NC} Run: ./bin/skytwin-install"
   exit 1
@@ -82,16 +111,27 @@ fi
 echo -e "  ${GREEN}Node.js${NC} $(node -v)"
 
 if ! command -v pnpm &>/dev/null; then
+  # corepack ships with modern Node — the install script enabled it but
+  # only the parent shell saw the result. Re-enable so this subshell has
+  # `pnpm` on PATH.
+  if command -v corepack &>/dev/null; then
+    corepack enable 2>/dev/null || true
+    corepack prepare pnpm@9.1.0 --activate 2>/dev/null || true
+  fi
+fi
+if ! command -v pnpm &>/dev/null; then
   echo -e "  ${RED}pnpm not found.${NC} Run: corepack enable && corepack prepare pnpm@9.1.0 --activate"
   exit 1
 fi
 echo -e "  ${GREEN}pnpm${NC} $(pnpm -v)"
 
-if ! command -v docker &>/dev/null; then
-  echo -e "  ${RED}Docker not found.${NC} Run: ./bin/skytwin-install"
-  exit 1
+if [ "$USE_DOCKER" = "true" ]; then
+  if ! command -v docker &>/dev/null; then
+    echo -e "  ${RED}Docker not found.${NC} Run: SKYTWIN_USE_DOCKER=true ./bin/skytwin-install"
+    exit 1
+  fi
+  echo -e "  ${GREEN}Docker${NC} available"
 fi
-echo -e "  ${GREEN}Docker${NC} available"
 
 if [ "$SKIP_OLLAMA" = false ] && ! command -v ollama &>/dev/null; then
   echo -e "  ${YELLOW}Ollama not found${NC} — will skip OpenClaw bridge. Pass --no-ollama to suppress."
@@ -106,26 +146,32 @@ echo ""
 
 # 2. Start CockroachDB
 echo -e "${YELLOW}Starting CockroachDB...${NC}"
-if curl -sf http://localhost:26257/ &>/dev/null || curl -sf http://localhost:8080/health &>/dev/null; then
-  echo -e "  ${GREEN}Already running${NC} on port 26257"
-else
-  docker compose up -d cockroachdb 2>&1 | tail -2
-  echo -n "  Waiting for health"
-  for i in $(seq 1 30); do
-    if curl -sf http://localhost:8080/health &>/dev/null; then
-      echo -e " ${GREEN}ready${NC}"
-      break
-    fi
-    echo -n "."
-    sleep 1
-  done
-fi
+if [ "$USE_DOCKER" = "true" ]; then
+  if curl -sf http://localhost:26257/ &>/dev/null || curl -sf http://localhost:8080/health &>/dev/null; then
+    echo -e "  ${GREEN}Already running${NC} on port 26257"
+  else
+    docker compose up -d cockroachdb 2>&1 | tail -2
+    echo -n "  Waiting for health"
+    for i in $(seq 1 30); do
+      if curl -sf http://localhost:8080/health &>/dev/null; then
+        echo -e " ${GREEN}ready${NC}"
+        break
+      fi
+      echo -n "."
+      sleep 1
+    done
+  fi
 
-# 3. Create database if needed
-echo -e "${YELLOW}Ensuring database exists...${NC}"
-docker exec skytwin-cockroachdb cockroach sql --insecure -e "CREATE DATABASE IF NOT EXISTS skytwin;" 2>/dev/null \
-  && echo -e "  ${GREEN}Database 'skytwin' ready${NC}" \
-  || echo -e "  ${YELLOW}Could not verify database (may already exist)${NC}"
+  # Create database if needed
+  echo -e "${YELLOW}Ensuring database exists...${NC}"
+  docker exec skytwin-cockroachdb cockroach sql --insecure -e "CREATE DATABASE IF NOT EXISTS skytwin;" 2>/dev/null \
+    && echo -e "  ${GREEN}Database 'skytwin' ready${NC}" \
+    || echo -e "  ${YELLOW}Could not verify database (may already exist)${NC}"
+else
+  # Native binary path. Idempotent — already-running is fine.
+  "$ROOT/bin/skytwin-db" start 2>&1 | sed 's/^/  /'
+  "$ROOT/bin/skytwin-db" ensure-db 2>&1 | sed 's/^/  /'
+fi
 
 # 4. Install deps + build + migrate + seed (if needed)
 if [ ! -d "node_modules" ]; then
@@ -134,13 +180,28 @@ if [ ! -d "node_modules" ]; then
 fi
 
 echo -e "${YELLOW}Building...${NC}"
-pnpm build 2>&1 | tail -3
+# --concurrency=1 sidesteps the @skytwin/db turbo-race documented in
+# CLAUDE.md. Fresh-install scenarios (skytwin-dev's first run after a
+# clean checkout) hit it consistently; CI doesn't because its dist trees
+# arrive pre-built. Cheap insurance for ~10s.
+pnpm build --concurrency=1 2>&1 | tail -3
 
 echo -e "${YELLOW}Running migrations...${NC}"
 pnpm db:migrate 2>&1 | tail -3
 
-# Seed only if no users exist
-USER_COUNT=$(docker exec skytwin-cockroachdb cockroach sql --insecure -e "SELECT count(*) FROM skytwin.users;" --format=csv 2>/dev/null | tail -1 || echo "0")
+# Seed only if no users exist. Native CRDB listens on 127.0.0.1 (not
+# 'localhost') so we never accidentally bind IPv6 :: — match that here
+# so the seed-skip check connects to the right endpoint.
+USER_COUNT="0"
+if [ "$USE_DOCKER" = "true" ]; then
+  USER_COUNT=$(docker exec skytwin-cockroachdb cockroach sql --insecure -e "SELECT count(*) FROM skytwin.users;" --format=csv 2>/dev/null | tail -1 || echo "0")
+else
+  COCKROACH_BIN="${SKYTWIN_DB_PREFIX:-${XDG_DATA_HOME:-$HOME/.local/share}/skytwin}/bin/cockroach"
+  CRDB_HOST="${SKYTWIN_DB_LISTEN_HOST:-127.0.0.1}"
+  if [ -x "$COCKROACH_BIN" ]; then
+    USER_COUNT=$("$COCKROACH_BIN" sql --insecure --host "${CRDB_HOST}:${SKYTWIN_DB_PORT:-26257}" -d skytwin -e "SELECT count(*) FROM users;" --format=csv 2>/dev/null | tail -1 || echo "0")
+  fi
+fi
 if [ "$USER_COUNT" = "0" ] || [ "$USER_COUNT" = "count" ]; then
   echo -e "${YELLOW}Seeding database...${NC}"
   pnpm db:seed 2>&1 | tail -5
@@ -154,7 +215,7 @@ rm -f "$PIDFILE"
 echo -e "${YELLOW}Starting services...${NC}"
 
 # .env defaults
-export DATABASE_URL="${DATABASE_URL:-postgresql://root@localhost:26257/skytwin?sslmode=disable}"
+export DATABASE_URL="${DATABASE_URL:-postgresql://root@127.0.0.1:26257/skytwin?sslmode=disable}"
 export NODE_ENV="${NODE_ENV:-development}"
 export API_PORT="${API_PORT:-3100}"
 export OPENCLAW_API_URL="${OPENCLAW_API_URL:-http://localhost:3456}"
@@ -197,8 +258,14 @@ supervised_run() {
   echo "$pid"
 }
 
+# Service logs go under $ROOT/.logs/ so they survive reboots and stay
+# next to the project. /tmp on systemd-managed distros may be ephemeral
+# (PrivateTmp=yes) or tmpfiles.d-swept, which loses exactly the logs the
+# user needs to diagnose a failed install. .logs/ is gitignored.
+mkdir -p "$ROOT/.logs"
+
 # API
-API_PID=$(supervised_run api /tmp/skytwin-api.log node apps/api/dist/index.js)
+API_PID=$(supervised_run api "$ROOT/.logs/skytwin-api.log" node apps/api/dist/index.js)
 echo -e "  ${GREEN}API${NC}            http://localhost:${API_PORT}  (PID $API_PID)"
 
 # Wait for API
@@ -208,11 +275,11 @@ for i in $(seq 1 15); do
 done
 
 # Web
-WEB_PID=$(supervised_run web /tmp/skytwin-web.log node apps/web/dist/index.js)
+WEB_PID=$(supervised_run web "$ROOT/.logs/skytwin-web.log" node apps/web/dist/index.js)
 echo -e "  ${GREEN}Web Dashboard${NC}  http://localhost:3200  (PID $WEB_PID)"
 
 # Worker
-WORKER_PID=$(supervised_run worker /tmp/skytwin-worker.log node apps/worker/dist/index.js)
+WORKER_PID=$(supervised_run worker "$ROOT/.logs/skytwin-worker.log" node apps/worker/dist/index.js)
 echo -e "  ${GREEN}Worker${NC}         port 3101  (PID $WORKER_PID)"
 
 # OpenClaw Bridge (if Ollama available)
@@ -223,14 +290,14 @@ if [ "$SKIP_OLLAMA" = false ]; then
     ollama pull gemma4:latest 2>&1 | tail -2
   fi
 
-  BRIDGE_PID=$(BRIDGE_PORT=3456 supervised_run openclaw-bridge /tmp/skytwin-openclaw.log node apps/openclaw-bridge/server.mjs)
+  BRIDGE_PID=$(BRIDGE_PORT=3456 supervised_run openclaw-bridge "$ROOT/.logs/skytwin-openclaw.log" node apps/openclaw-bridge/server.mjs)
   echo -e "  ${GREEN}OpenClaw Bridge${NC} http://localhost:3456  (PID $BRIDGE_PID)  [gemma4]"
 fi
 
 echo ""
 echo -e "${GREEN}=== SkyTwin is running ===${NC}"
 echo -e "  Open ${BLUE}http://localhost:3200${NC} in your browser"
-echo -e "  Logs: /tmp/skytwin-{api,web,worker,openclaw}.log"
+echo -e "  Logs: $ROOT/.logs/skytwin-{api,web,worker,openclaw}.log"
 echo -e "  Stop: ${YELLOW}./bin/skytwin-dev --stop${NC}"
 echo -e "  Processes auto-restart on crash (max ${MAX_RESTARTS} times)"
 echo ""

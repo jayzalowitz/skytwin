@@ -61,12 +61,15 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_approval_requests_decision_id_unique
 -- every insert. The guard verifies the index exists AND is unique AND is
 -- keyed on decision_id as its first column (not merely that some index of
 -- that name exists -- CREATE ... IF NOT EXISTS would skip past a stale or
--- non-unique namesake). force_error raises SQLSTATE UE001, which the runner
--- cannot swallow, so the migration fails where it should.
-SELECT crdb_internal.force_error(
-  'UE001',
-  'migration 046: a unique index on approval_requests(decision_id) is not in place. Residual duplicates likely blocked the index build. Re-run with signal ingestion stopped.'
-)
+-- non-unique namesake).
+--
+-- We used to call `crdb_internal.force_error` here, but the v23.2 bundled
+-- CRDB locks crdb_internal behind `allow_unsafe_internals = true`. A
+-- division-by-zero is the portable equivalent: any SQL engine raises
+-- division_by_zero (SQLSTATE 22012) on `SELECT 1/0`, and 22012 isn't in
+-- the migration runner's idempotency carve-out, so the migration fails
+-- loudly the way it should.
+SELECT 1 / 0 AS migration_046_assertion
 WHERE NOT EXISTS (
   SELECT 1 FROM [SHOW INDEXES FROM approval_requests]
   WHERE index_name = 'idx_approval_requests_decision_id_unique'

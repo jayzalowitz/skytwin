@@ -1,5 +1,5 @@
 {
-  "name": "@skytwin/desktop",
+  "name": "skytwin-desktop",
   "version": "0.3.0",
   "description": "SkyTwin Desktop \u2014 Your personal AI assistant",
   "author": {
@@ -12,13 +12,14 @@
   "scripts": {
     "start": "electron .",
     "dev": "tsc && electron .",
-    "build": "node -e \"console.log('Desktop build requires: pnpm --filter @skytwin/desktop package:[mac|win|linux]')\"",
+    "build": "node -e \"console.log('Desktop build requires: pnpm --filter skytwin-desktop package:[mac|win|linux]')\"",
     "test": "vitest run",
-    "package:mac": "tsc && electron-builder --mac",
-    "package:win": "tsc && electron-builder --win",
-    "package:linux": "tsc && electron-builder --linux",
-    "package:all": "tsc && electron-builder --mac --win --linux",
-    "package:signed": "tsc && npx ts-node scripts/sign-and-notarize.ts -- --mac --win --linux",
+    "prepackage": "bash scripts/build-single-binary.sh",
+    "package:mac": "tsc && pnpm run prepackage && electron-builder --mac",
+    "package:win": "tsc && pnpm run prepackage && electron-builder --win",
+    "package:linux": "tsc && pnpm run prepackage && electron-builder --linux",
+    "package:all": "tsc && pnpm run prepackage && electron-builder --mac --win --linux",
+    "package:signed": "tsc && pnpm run prepackage && npx ts-node scripts/sign-and-notarize.ts -- --mac --win --linux",
     "build:single-binary": "bash scripts/build-single-binary.sh"
   },
   "build": {
@@ -33,21 +34,42 @@
         "zip"
       ],
       "category": "public.app-category.productivity",
-      "icon": "assets/icon.icns"
+      "icon": "assets/icon.icns",
+      "extraResources": [
+        {
+          "from": "dist/embedded/cockroach/darwin-arm64",
+          "to": "cockroach/darwin-arm64",
+          "filter": ["**/*"]
+        },
+        {
+          "from": "dist/embedded/cockroach/darwin-x64",
+          "to": "cockroach/darwin-x64",
+          "filter": ["**/*"]
+        }
+      ]
     },
     "win": {
       "target": [
         "nsis"
       ],
-      "icon": "assets/icon.ico"
+      "icon": "assets/icon.ico",
+      "extraResources": [
+        {
+          "from": "dist/embedded/cockroach/win32-x64",
+          "to": "cockroach/win32-x64",
+          "filter": ["**/*"]
+        }
+      ]
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "SkyTwin"
+      "shortcutName": "SkyTwin",
+      "differentialPackage": false
     },
+    "compression": "normal",
     "linux": {
       "target": [
         "AppImage",
@@ -62,7 +84,19 @@
           "Comment": "Your personal AI assistant",
           "Categories": "Utility;Office;"
         }
-      }
+      },
+      "extraResources": [
+        {
+          "from": "dist/embedded/cockroach/linux-x64",
+          "to": "cockroach/linux-x64",
+          "filter": ["**/*"]
+        },
+        {
+          "from": "dist/embedded/cockroach/linux-arm64",
+          "to": "cockroach/linux-arm64",
+          "filter": ["**/*"]
+        }
+      ]
     },
     "publish": {
       "provider": "github",
@@ -77,30 +111,11 @@
     ],
     "extraResources": [
       {
-        "from": "../../packages",
-        "to": "packages",
-        "filter": [
-          "**/dist/**",
-          "**/package.json"
-        ]
-      },
-      {
-        "from": "../../apps/api/dist",
-        "to": "api"
-      },
-      {
-        "from": "../../apps/worker/dist",
-        "to": "worker"
-      },
-      {
-        "from": "../../apps/web/public",
-        "to": "web"
-      },
-      {
         "from": "dist/embedded",
         "to": "embedded",
         "filter": [
-          "**/*"
+          "apps.tar.gz",
+          "bundle-manifest.json"
         ]
       }
     ]

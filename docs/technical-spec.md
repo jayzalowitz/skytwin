@@ -538,7 +538,9 @@ pnpm --filter @skytwin/evals run evals
 
 - Node.js >= 20 (recommend using `nvm` or `fnm`)
 - pnpm >= 9 (`corepack enable && corepack prepare pnpm@9.1.0 --activate`)
-- Docker and Docker Compose (for CockroachDB)
+- That's it. CockroachDB is fetched as a native binary by
+  `./bin/skytwin-db install` (default path since v0.6.56). Set
+  `SKYTWIN_USE_DOCKER=true` to opt into the legacy Docker Compose setup.
 
 ### Getting Started
 
@@ -546,11 +548,14 @@ pnpm --filter @skytwin/evals run evals
 # 1. Install dependencies
 pnpm install
 
-# 2. Start CockroachDB
-docker-compose up -d cockroachdb
+# 2. Start CockroachDB (native binary, hash-verified, no Docker)
+./bin/skytwin-db install
+./bin/skytwin-db start
+./bin/skytwin-db ensure-db
+# Or for the legacy Docker path: SKYTWIN_USE_DOCKER=true docker-compose up -d cockroachdb
 
-# 3. Wait for CockroachDB to be healthy
-docker-compose exec cockroachdb cockroach sql --insecure -e "SELECT 1"
+# 3. Verify SQL is responding
+~/.local/share/skytwin/bin/cockroach sql --insecure --host 127.0.0.1:26257 -e "SELECT 1"
 
 # 4. Configure environment
 cp .env.example .env
@@ -570,7 +575,10 @@ pnpm dev
 
 ### CockroachDB Admin UI
 
-CockroachDB's built-in admin UI is available at `http://localhost:8080` when running locally. Useful for:
+CockroachDB's built-in admin UI is available at `http://127.0.0.1:26258`
+when running via the native binary (we use 26258 instead of CRDB's
+default 8080 because port 8080 collides with practically every other dev
+tool). The legacy Docker path retains the upstream default `8080`. Useful for:
 - Monitoring query performance
 - Viewing table schemas
 - Checking cluster health
@@ -595,7 +603,7 @@ See `.env.example` for all available configuration:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DATABASE_URL` | `postgresql://root@localhost:26257/skytwin?sslmode=disable` | CockroachDB connection string |
+| `DATABASE_URL` | `postgresql://root@127.0.0.1:26257/skytwin?sslmode=disable` | CockroachDB connection string. 127.0.0.1 (not `localhost`) so we never accidentally bind IPv6 :: in --insecure mode. |
 | `IRONCLAW_API_URL` | `http://localhost:8080` | IronClaw API endpoint |
 | `API_PORT` | `3000` | API server port |
 | `NODE_ENV` | `development` | Environment (development, test, production) |

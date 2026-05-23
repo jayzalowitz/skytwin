@@ -23,6 +23,7 @@ import {
   renderTourBanner,
   renderJustConnectedCelebration,
   renderConnectGoogleHero,
+  renderConnectGmailHero,
   renderUnmetCredentials,
   renderSkillGaps,
   // Label helpers used inside the recent-activity / learnings templates.
@@ -465,6 +466,7 @@ export async function renderDashboard(container, userId) {
     ${sinceLastVisit && !tourMode ? renderSinceLastVisit(sinceLastVisit) : ''}
     ${showBrainPrompt ? renderBrainPrompt() : ''}
     ${tourMode ? '' : renderConnectGoogleHero({ googleConnected, googleSystemConfigured, userId })}
+    ${tourMode ? '' : renderConnectGmailHero({ googleConnected, googleScopes: googleOAuth.status === 'fulfilled' ? (googleOAuth.value?.scopes ?? []) : [] })}
     ${renderAskTwinWidget({ userId, tourMode })}
     ${showBriefing ? renderBriefingCard({ items: briefingItems, createdAt: briefing.createdAt }) : ''}
     ${renderTwinBriefingWidget(_twinBriefing)}

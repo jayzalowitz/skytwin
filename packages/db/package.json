@@ -12,7 +12,7 @@
     }
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node scripts/copy-sql.cjs",
     "dev": "tsc --watch",
     "migrate": "tsx src/migrations/001-initial.ts",
     "seed": "tsx src/seeds/seed.ts",

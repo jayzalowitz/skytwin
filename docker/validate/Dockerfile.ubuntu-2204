@@ -1,0 +1,56 @@
+# Validation: Ubuntu 22.04 LTS, fresh system, runs install.sh end-to-end.
+#
+# Why this exists: install.sh has to work for a non-technical user on a
+# stock OS — we can't validate that by hand every release. This container
+# starts from `ubuntu:22.04` with nothing but curl + git + ca-certs, then
+# runs install.sh exactly the way a real user would. If the dashboard
+# doesn't come up, the build fails.
+#
+# Not validating: macOS / Windows. Those need a real OS install with
+# Docker Desktop / WSL respectively — out of scope for a Docker harness.
+# Mac/Win paths are exercised by the same install.sh and the same
+# `bin/skytwin-db` script, so a green Ubuntu run is strong evidence the
+# install logic itself is sound; the platform-specific bits (brew, nvm
+# on macOS, Docker Desktop driver, etc.) still need a real machine pass.
+
+FROM ubuntu:22.04
+
+# Avoid apt prompts during build. PIP_BREAK_SYSTEM_PACKAGES isn't relevant
+# here — install.sh never touches pip — but locales sometimes do affect
+# Node's setlocale calls so we set en_US.UTF-8.
+ENV DEBIAN_FRONTEND=noninteractive \
+    LC_ALL=C.UTF-8 \
+    LANG=C.UTF-8
+
+# Minimum baseline. Anything else (Node, pnpm, cockroach) must be installed
+# by install.sh — that's the contract we're validating.
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
+        ca-certificates \
+        curl \
+        git \
+        sudo \
+        procps \
+        lsof \
+        netcat-openbsd \
+        bash \
+    && rm -rf /var/lib/apt/lists/*
+
+# Non-root user. install.sh assumes a real user account — running as root
+# would mask permission bugs and is unrepresentative of grandma's machine.
+RUN useradd --create-home --shell /bin/bash --uid 1000 skytwin \
+    && echo 'skytwin ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/skytwin \
+    && chmod 0440 /etc/sudoers.d/skytwin
+
+USER skytwin
+WORKDIR /home/skytwin
+
+# Copy the validator script directly into the image. It runs first,
+# unpacks the source tarball mounted at /tmp/skytwin-source.tar by
+# bin/validate-installs, and then drives install.sh. The build context
+# is docker/validate/ (not the repo root) so this filename is bare.
+COPY --chown=skytwin:skytwin run-validation.sh /opt/validate-skytwin
+USER root
+RUN chmod +x /opt/validate-skytwin
+USER skytwin
+
+ENTRYPOINT ["/opt/validate-skytwin"]

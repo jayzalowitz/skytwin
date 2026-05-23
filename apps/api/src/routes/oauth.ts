@@ -1,9 +1,21 @@
 import { Router } from 'express';
-import { createHmac, timingSafeEqual } from 'crypto';
+import { createHmac, timingSafeEqual, randomUUID } from 'crypto';
+import { createLogger } from '@skytwin/core';
 import { loadConfig } from '@skytwin/config';
-import { oauthRepository, serviceCredentialRepository, userRepository } from '@skytwin/db';
+import { withTransaction } from '@skytwin/db';
+
+const log = createLogger('api:oauth');
+import {
+  oauthRepository,
+  oauthPkcePendingRepository,
+  oauthPendingSigninRepository,
+  serviceCredentialRepository,
+  userRepository,
+} from '@skytwin/db';
+import { hashToken } from '../middleware/session-auth.js';
 import {
   generateAuthUrl,
+  generatePkcePair,
   exchangeCode,
   revokeToken,
 } from '@skytwin/connectors';
@@ -29,6 +41,17 @@ const STATE_VERSION = 'v2';
 export const NEW_USER_RATE_LIMIT_MAX = 5;
 export const NEW_USER_RATE_LIMIT_WINDOW_MS = 60 * 1000;
 /**
+ * Limit for the pendingKey poll endpoint. The client polls every 2s for
+ * up to 5 minutes (= 150 hits/flow); a legit user hitting it from one IP
+ * can therefore burn ~30 requests/minute, plus a few from /authorize and
+ * /status calls. The cap is loose to keep the poll loop alive while still
+ * making brute force / DoS expensive — the UUIDv4 shape gate is the
+ * real defence against enumeration, and the random 122 bits put brute
+ * force well past line rate anyway.
+ */
+export const PENDING_POLL_RATE_LIMIT_MAX = 120;
+export const PENDING_POLL_RATE_LIMIT_WINDOW_MS = 60 * 1000;
+/**
  * Bucket cap. Without this the Map grows once per unique attacker IP and
  * never shrinks — a real source of slow memory growth in long-running
  * processes. When we hit the cap we sweep expired buckets first, then drop
@@ -37,42 +60,82 @@ export const NEW_USER_RATE_LIMIT_WINDOW_MS = 60 * 1000;
  */
 export const NEW_USER_RATE_LIMIT_MAX_BUCKETS = 5_000;
 const newUserRateBuckets = new Map<string, { count: number; resetAt: number }>();
+const pendingPollRateBuckets = new Map<string, { count: number; resetAt: number }>();
 
-function evictExpiredBuckets(now: number): void {
-  for (const [ip, bucket] of newUserRateBuckets) {
-    if (bucket.resetAt <= now) newUserRateBuckets.delete(ip);
+function evictExpiredBuckets(
+  buckets: Map<string, { count: number; resetAt: number }>,
+  now: number,
+): void {
+  for (const [ip, bucket] of buckets) {
+    if (bucket.resetAt <= now) buckets.delete(ip);
   }
 }
 
-export function checkNewUserRateLimit(
+function checkBucket(
+  buckets: Map<string, { count: number; resetAt: number }>,
   ip: string,
-  now: number = Date.now(),
+  now: number,
+  max: number,
+  windowMs: number,
 ): { allowed: boolean; resetAt: number } {
-  let bucket = newUserRateBuckets.get(ip);
+  let bucket = buckets.get(ip);
   if (!bucket || bucket.resetAt <= now) {
     // Pre-emptively evict when at the cap so the Map can't grow without
     // bound across many distinct IPs (the leak class motivating this).
-    if (newUserRateBuckets.size >= NEW_USER_RATE_LIMIT_MAX_BUCKETS) {
-      evictExpiredBuckets(now);
-      while (newUserRateBuckets.size >= NEW_USER_RATE_LIMIT_MAX_BUCKETS) {
-        const oldest = newUserRateBuckets.keys().next().value;
+    if (buckets.size >= NEW_USER_RATE_LIMIT_MAX_BUCKETS) {
+      evictExpiredBuckets(buckets, now);
+      while (buckets.size >= NEW_USER_RATE_LIMIT_MAX_BUCKETS) {
+        const oldest = buckets.keys().next().value;
         if (oldest === undefined) break;
-        newUserRateBuckets.delete(oldest);
+        buckets.delete(oldest);
       }
     }
-    bucket = { count: 0, resetAt: now + NEW_USER_RATE_LIMIT_WINDOW_MS };
-    newUserRateBuckets.set(ip, bucket);
+    bucket = { count: 0, resetAt: now + windowMs };
+    buckets.set(ip, bucket);
   }
-  if (bucket.count >= NEW_USER_RATE_LIMIT_MAX) {
+  if (bucket.count >= max) {
     return { allowed: false, resetAt: bucket.resetAt };
   }
   bucket.count += 1;
   return { allowed: true, resetAt: bucket.resetAt };
 }
 
+export function checkNewUserRateLimit(
+  ip: string,
+  now: number = Date.now(),
+): { allowed: boolean; resetAt: number } {
+  return checkBucket(
+    newUserRateBuckets,
+    ip,
+    now,
+    NEW_USER_RATE_LIMIT_MAX,
+    NEW_USER_RATE_LIMIT_WINDOW_MS,
+  );
+}
+
+/**
+ * Separate bucket from /authorize so the pendingKey poll loop (30 hits
+ * per minute, 5 minutes per flow) can't starve itself by sharing the
+ * ?newUser=true bucket's tight 5/minute limit. A poll-friendly 120/min
+ * leaves comfortable headroom for jitter and retries.
+ */
+export function checkPendingPollRateLimit(
+  ip: string,
+  now: number = Date.now(),
+): { allowed: boolean; resetAt: number } {
+  return checkBucket(
+    pendingPollRateBuckets,
+    ip,
+    now,
+    PENDING_POLL_RATE_LIMIT_MAX,
+    PENDING_POLL_RATE_LIMIT_WINDOW_MS,
+  );
+}
+
 /** Test helper — clears all rate-limit buckets between cases. */
 export function _resetNewUserRateLimitForTests(): void {
   newUserRateBuckets.clear();
+  pendingPollRateBuckets.clear();
 }
 
 /** Test/observability helper: current bucket count. */
@@ -110,20 +173,63 @@ async function fetchGoogleUserInfo(accessToken: string): Promise<GoogleUserInfo>
  * covers `<payload>.<expiresAtMs>`.
  *
  * Payload is the original pipe-delimited intent string:
- *   <userId>            associate token with this existing user
- *   <userId>|desktop    same, OAuth opened from Electron
- *   <userId>|new        adding another account to this user
- *   new                 no user yet — auto-create from verified email
+ *   <userId>                       associate token with this existing user
+ *   <userId>|desktop               same, OAuth opened from Electron
+ *   <userId>|new                   adding another account to this user
+ *   <userId>|next=connect-gmail    redirect to /#/connect-gmail post-callback
+ *   new                            no user yet — auto-create from verified email
  *   new|desktop
+ *   new|next=connect-gmail
  *
  * Without the signature, an attacker could mint their own Google
  * authorization code and call /google/callback with state=<victim-id>
  * to attach their account to someone else's user.
+ *
+ * The `next` tag is whitelisted server-side (see NEXT_HASH_ROUTES). It's
+ * NOT a free-form URL — that would be an open-redirect waiting to happen.
+ * Each entry maps to a fixed dashboard hash route. The onboarding wizard
+ * uses this to deep-link straight into the Gmail walkthrough instead of
+ * dropping the user on the dashboard CTA.
  */
 interface ParsedState {
   userId: string | null; // null = auto-create user from email
   desktop: boolean;
   newAccount: boolean;
+  /** Dashboard hash route to land on post-callback, or null for the default `#/`. */
+  nextHash: string | null;
+  /**
+   * Client-generated pollable handoff key for desktop new-user flows.
+   * `/callback` writes the resulting userId + scopes to
+   * `oauth_pending_signin` keyed by this value so the desktop wizard
+   * can poll `GET /api/oauth/google/pending/:key` and auto-advance.
+   *
+   * Format is validated up-front (UUID4) so an attacker can't smuggle a
+   * shaped string that misroutes the polling endpoint. Null for any
+   * non-desktop flow.
+   */
+  pendingKey: string | null;
+}
+
+/**
+ * Whitelist of allowed `next=` values and the dashboard hash route each
+ * maps to. Free-form redirect targets are NEVER accepted — that's an
+ * open-redirect vulnerability.
+ */
+export const NEXT_HASH_ROUTES: Record<string, string> = {
+  'connect-gmail': '#/connect-gmail',
+};
+
+/**
+ * Conservative UUIDv4 shape check — 8-4-4-4-12 lowercase hex with the
+ * version (4) + variant (8|9|a|b) nibbles pinned. We do NOT need
+ * cryptographic-grade validation here; the goal is to reject strings
+ * that contain SQL metacharacters, path traversal, or other shapes
+ * before they hit the state payload. crypto.randomUUID() emits this
+ * exact shape; anything else is bad input.
+ */
+const UUID_V4_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+export function isValidPendingKey(value: string): boolean {
+  return UUID_V4_RE.test(value);
 }
 
 function signStatePayload(payload: string, expiresAtMs: number): string {
@@ -170,13 +276,46 @@ function parseSignedState(state: string): ParsedState {
   }
 
   const head = payload.split('|')[0];
-  const tags = new Set(payload.split('|').slice(1));
+  const rawTags = payload.split('|').slice(1);
+  const tags = new Set(rawTags);
+  // Decode `next=<route>` tag. We re-validate against the whitelist on
+  // read so a state token issued before a route was retired can't suddenly
+  // redirect somewhere unexpected. hasOwnProperty.call() (not bracket
+  // lookup) so a value like `constructor` or `__proto__` can't reach the
+  // inherited Object property and slip past the truthy check.
+  let nextHash: string | null = null;
+  // Decode `key=<uuid>` tag — the pendingKey for the desktop newUser
+  // poll handoff. UUID-shape re-validated on read so a tampered tag
+  // can't write a non-UUID value into `oauth_pending_signin` (the
+  // table column is TEXT for portability; the constraint lives in
+  // application code).
+  let pendingKey: string | null = null;
+  for (const t of rawTags) {
+    if (t.startsWith('next=')) {
+      const candidate = t.slice('next='.length);
+      if (Object.prototype.hasOwnProperty.call(NEXT_HASH_ROUTES, candidate)) {
+        nextHash = NEXT_HASH_ROUTES[candidate] ?? null;
+      }
+    } else if (t.startsWith('key=')) {
+      const candidate = t.slice('key='.length);
+      if (isValidPendingKey(candidate)) {
+        pendingKey = candidate;
+      }
+    }
+  }
   return {
     userId: head === 'new' ? null : (head ?? null),
     desktop: tags.has('desktop'),
     newAccount: tags.has('new'),
+    nextHash,
+    pendingKey,
   };
 }
+
+/** Test-only exports for the signed-state helpers. Not used in the route handler. */
+export const _signStatePayloadForTests = signStatePayload;
+export const _parseSignedStateForTests = parseSignedState;
+export const _stateTtlMsForTests = STATE_TTL_MS;
 
 /**
  * `openid` + `email` are required for the userinfo endpoint to return the
@@ -184,45 +323,187 @@ function parseSignedState(state: string): ParsedState {
  * display name for auto-created users so they don't show up as raw UUIDs
  * in the dashboard.
  */
-const IDENTITY_SCOPES = ['openid', 'email', 'profile'];
+/**
+ * Source of the Google OAuth config currently in use. Drives the
+ * tier-gating below: only `userSupplied` configs can request the
+ * restricted Gmail scopes, because the bundled client is intentionally
+ * NOT submitted for Google's restricted-scope security assessment
+ * (that's a $15k–$50k annual third-party CASA audit we don't want to
+ * pay for at launch). The same OAuth code path serves both tiers.
+ */
+type GoogleConfigSource = 'user-supplied' | 'bundled' | 'unset';
 
-const GMAIL_SCOPES = [
+interface ResolvedGoogleConfig extends GoogleOAuthConfig {
+  source: GoogleConfigSource;
+}
+
+/**
+ * Build the Google OAuth config. Three sources, in priority order:
+ *   1. User-supplied credentials in the DB (Setup page) — wins. These
+ *      come from a Google Cloud OAuth client the user created in their
+ *      own GCP project. Google does NOT require app verification for
+ *      a user's own OAuth client used only by themselves, so this is
+ *      how we light up Gmail (restricted-scope) without a SkyTwin-side
+ *      security assessment.
+ *   2. Confidential-client env vars (`GOOGLE_CLIENT_ID`/`_SECRET`) —
+ *      the self-hosted/ops path. Operator-owned clients also count as
+ *      user-supplied for tier-gating purposes.
+ *   3. PKCE-only default client_id baked into the desktop bundle
+ *      (`SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID`). The SkyTwin team owns
+ *      this client; it is verified by Google for identity + calendar
+ *      scopes only, so the bundled flow CANNOT request Gmail.
+ *
+ * `clientSecret` is the literal empty string in PKCE mode — downstream
+ * code keys on `secret === ''` to choose the PKCE token-exchange
+ * variant. Don't normalise it to undefined; the empty string is
+ * load-bearing.
+ */
+async function resolveGoogleConfig(): Promise<ResolvedGoogleConfig> {
+  const config = loadConfig();
+
+  // Layer 1: env vars (operator-supplied, self-hosted ops path).
+  let clientId = config.googleClientId;
+  let clientSecret = config.googleClientSecret;
+  let redirectUri = config.googleRedirectUri;
+  let source: GoogleConfigSource = clientId ? 'user-supplied' : 'unset';
+
+  // Layer 2: DB-stored credentials from the Setup page take priority
+  // over env vars and over the bundled default. Falls through silently
+  // when the service_credentials table doesn't exist yet.
+  try {
+    const dbCreds = await serviceCredentialRepository.getAsMap('google');
+    if (dbCreds['client_id']) {
+      clientId = dbCreds['client_id'];
+      source = 'user-supplied';
+    }
+    if (dbCreds['client_secret']) clientSecret = dbCreds['client_secret'];
+    if (dbCreds['redirect_uri'] && redirectUri === 'http://localhost:3100/api/oauth/google/callback') {
+      redirectUri = dbCreds['redirect_uri'];
+    }
+  } catch {
+    // No service_credentials table yet — fall through.
+  }
+
+  // Layer 3: PKCE-only default (desktop bundle). Used iff neither env
+  // vars nor DB supplied a clientId. Marked source: 'bundled' so the
+  // /authorize handler can reject ?include=gmail requests until the
+  // user wires their own OAuth client via Setup.
+  if (!clientId) {
+    const bundled = process.env['SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID'] ?? '';
+    if (bundled) {
+      clientId = bundled;
+      clientSecret = '';
+      source = 'bundled';
+    }
+  }
+
+  return { clientId, clientSecret, redirectUri, source };
+}
+
+/**
+ * Scope tiers. The split exists for two reasons:
+ *
+ *   1. Google classifies Gmail's `readonly`/`modify` as **restricted**
+ *      scopes — requesting them in a published OAuth client means
+ *      passing the annual CASA Tier 2/3 security assessment ($15k–$50k,
+ *      4–8 weeks). Calendar's `readonly`/`events` are **sensitive** but
+ *      not restricted — just normal app review, no assessor fee.
+ *
+ *   2. Most users only need calendar + identity to get value from the
+ *      twin (scheduling, meeting suggestions). Forcing the Gmail
+ *      consent prompt on those users is unnecessary friction even when
+ *      we *do* have the bundled client verified for Gmail.
+ *
+ * Stage 1 (now): the bundled SkyTwin-team client is verified for
+ *   IDENTITY + CALENDAR. Users who want Gmail features paste their own
+ *   OAuth credentials into Setup; their own GCP project + their own
+ *   email as a test user → no app verification needed.
+ *
+ * Stage 2 (post-launch, when revenue funds the audit): submit the
+ *   bundled client through CASA. The code below stays the same — the
+ *   gate just turns into "always allow Gmail with bundled" once Google
+ *   updates the verification status. Document the rollout in
+ *   docs/google-verification.md.
+ */
+const IDENTITY_SCOPES_LIST = ['openid', 'email', 'profile'];
+
+const GMAIL_SCOPES_LIST = [
   'https://www.googleapis.com/auth/gmail.readonly',
   'https://www.googleapis.com/auth/gmail.modify',
 ];
 
-const CALENDAR_SCOPES = [
+const CALENDAR_SCOPES_LIST = [
   'https://www.googleapis.com/auth/calendar.readonly',
   'https://www.googleapis.com/auth/calendar.events',
 ];
 
 /**
- * Build the Google OAuth config, preferring DB-stored credentials from
- * the Setup page over environment variables.
+ * Compute the scope set for an authorize request given the config
+ * source and the caller's opt-in flags. Returns the granted scope list
+ * AND a list of skipped capabilities the caller should surface to the
+ * UI (so the dashboard can show "Connect Gmail" as a follow-up CTA
+ * rather than silently lying about coverage).
  */
-async function resolveGoogleConfig(): Promise<GoogleOAuthConfig> {
-  const config = loadConfig();
+export function resolveRequestedScopes(opts: {
+  source: GoogleConfigSource;
+  includeGmail: boolean;
+}): { scopes: string[]; skipped: Array<{ capability: 'gmail'; reason: string }> } {
+  const scopes = [...IDENTITY_SCOPES_LIST, ...CALENDAR_SCOPES_LIST];
+  const skipped: Array<{ capability: 'gmail'; reason: string }> = [];
 
-  // Start with env-var values
-  let clientId = config.googleClientId;
-  let clientSecret = config.googleClientSecret;
-  let redirectUri = config.googleRedirectUri;
-
-  // If env vars are empty, check the DB (credentials set via Setup page)
-  if (!clientId || !clientSecret) {
-    try {
-      const dbCreds = await serviceCredentialRepository.getAsMap('google');
-      if (dbCreds['client_id'] && !clientId) clientId = dbCreds['client_id'];
-      if (dbCreds['client_secret'] && !clientSecret) clientSecret = dbCreds['client_secret'];
-      if (dbCreds['redirect_uri'] && redirectUri === 'http://localhost:3100/api/oauth/google/callback') {
-        redirectUri = dbCreds['redirect_uri'];
-      }
-    } catch {
-      // DB may not have the table yet — fall through to env-var values
+  if (opts.includeGmail) {
+    if (opts.source === 'user-supplied') {
+      scopes.push(...GMAIL_SCOPES_LIST);
+    } else {
+      skipped.push({
+        capability: 'gmail',
+        reason: 'bundled-client-not-verified-for-restricted-scopes',
+      });
     }
   }
 
-  return { clientId, clientSecret, redirectUri };
+  return { scopes, skipped };
+}
+
+/**
+ * Pending PKCE verifiers live in `oauth_pkce_pending` (migration 058).
+ * DB-backed so a desktop restart between /authorize and /callback doesn't
+ * drop the verifier and 400 the user mid-flow. The verifier never leaves
+ * the server — that's the whole reason PKCE exists; storing it on the
+ * same CRDB the rest of SkyTwin uses adds no new infrastructure and gives
+ * the row a proper TTL.
+ *
+ * TTL matches STATE_TTL_MS. `remember()` is upsert (re-issued state wins)
+ * and `consume()` is a single DELETE...RETURNING so a replayed callback
+ * can't redeem the same code twice. We sweep expired rows on every
+ * remember() to keep the table bounded even if callbacks never come back
+ * (closed browser tab, etc.).
+ *
+ * Operator note: this requires migration 058 to have run before the API
+ * starts serving traffic. Falling back to an in-memory Map would defeat
+ * the cross-restart guarantee that's the whole point of the move; if the
+ * table is missing, /authorize returns 500 like any other unbootstrapped
+ * DB call — which is consistent with the rest of the system.
+ */
+const PKCE_TTL_MS = 10 * 60 * 1000;
+/**
+ * TTL for the pending-signin handoff row. The desktop wizard polls at
+ * ~2s cadence with its own 5-minute deadline (see google-signin.js
+ * pollUntilNewUserCompleted); five minutes here matches that and gives
+ * the user time to actually click "Allow" on Google's consent screen.
+ */
+const PENDING_SIGNIN_TTL_MS = 5 * 60 * 1000;
+
+async function rememberPkceVerifier(state: string, codeVerifier: string): Promise<void> {
+  const now = new Date();
+  // Best-effort sweep; never block the sign-in path if it fails.
+  oauthPkcePendingRepository.sweepExpired(now).catch(() => undefined);
+  const expiresAt = new Date(now.getTime() + PKCE_TTL_MS);
+  await oauthPkcePendingRepository.remember(state, codeVerifier, expiresAt);
+}
+
+async function consumePkceVerifier(state: string): Promise<string | undefined> {
+  return oauthPkcePendingRepository.consume(state);
 }
 
 /**
@@ -232,28 +513,28 @@ export function createOAuthRouter(): Router {
   const router = Router();
 
   // All OAuth management endpoints require an authenticated user except:
-  //   - /google/callback        public (browser redirect from Google)
-  //   - /google/authorize?newUser=true   public (sign-in-with-Google)
+  //   - /google/callback                  public (browser redirect from Google)
+  //   - /google/authorize?newUser=true    public (sign-in-with-Google)
+  //   - /google/pending/:key              public (desktop newUser poll)
   // For the new-user flow there's no session yet, so requiring sessionAuth
-  // would 401 before the user could even start consenting.
+  // would 401 before the user could even start consenting. The pending-key
+  // endpoint is gated by the unguessable random key — see the route's
+  // comment block.
+  const isPublicOAuthPath = (req: { path: string; query: Record<string, unknown> }): boolean => {
+    if (req.path === '/google/callback') return true;
+    if (req.path === '/google/authorize' && req.query['newUser'] === 'true') return true;
+    if (req.path.startsWith('/google/pending/')) return true;
+    return false;
+  };
   router.use((req, res, next) => {
-    if (req.path === '/google/callback') {
+    if (isPublicOAuthPath(req as { path: string; query: Record<string, unknown> })) {
       next();
       return;
     }
-    if (req.path === '/google/authorize' && req.query['newUser'] === 'true') {
-      next();
-      return;
-    }
-
     void sessionAuth(req, res, next);
   });
   router.use((req, res, next) => {
-    if (req.path === '/google/callback') {
-      next();
-      return;
-    }
-    if (req.path === '/google/authorize' && req.query['newUser'] === 'true') {
+    if (isPublicOAuthPath(req as { path: string; query: Record<string, unknown> })) {
       next();
       return;
     }
@@ -293,22 +574,90 @@ export function createOAuthRouter(): Router {
       }
 
       const googleConfig = await resolveGoogleConfig();
-      // Without configured Google credentials we'd happily build an auth URL
-      // with an empty client_id and Google would reject the user with an
-      // opaque "invalid_client" — surface a clean 503 so the dashboard can
-      // tell the user to finish Setup first.
-      if (!googleConfig.clientId || !googleConfig.clientSecret) {
+      // Without ANY configured client_id we can't build an auth URL —
+      // Google would reject the user with an opaque "invalid_client". A
+      // missing client_secret is OK now (PKCE handles installed-app
+      // flows); a missing client_id is fatal. Surface a clean 503 so the
+      // dashboard can tell the user to finish Setup or ship a desktop
+      // build with SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID baked in.
+      if (!googleConfig.clientId) {
+        // Tag with a structured code so the dashboard can route to the
+        // connect-gmail wizard (the same five-step setup that backs BYO
+        // Gmail also works as the universal "supply your own OAuth client"
+        // flow). Without the code, the frontend can only show a generic
+        // 503 toast — which leaves the user staring at "something went
+        // wrong" with no idea how to fix it.
         res.status(503).json({
-          error: 'Google credentials are not configured. Open Setup and add your OAuth client_id and client_secret.',
+          error:
+            'Google sign-in is not configured. ' +
+            "Open the Connect Gmail walkthrough — the same five-step flow sets up Google sign-in for this build, " +
+            'or rebuild the desktop with SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID set.',
+          code: 'NO_GOOGLE_CLIENT_CONFIGURED',
+          help: '#/connect-gmail',
+          docs: 'https://jayzalowitz.github.io/skytwin/connect-gmail.html',
         });
         return;
       }
-      const scopes = [...IDENTITY_SCOPES, ...GMAIL_SCOPES, ...CALENDAR_SCOPES];
+      // ?include=gmail signals the caller wants Gmail scopes added.
+      // The default is now identity + calendar only — see the
+      // GMAIL_SCOPES_LIST comment for why. If the bundled client is in
+      // use, Gmail is silently dropped and `skipped` reports it so the
+      // dashboard can render a "Connect Gmail" CTA. The caller can
+      // still get Gmail today by pasting their own OAuth credentials
+      // into Setup; that's the `source === 'user-supplied'` path.
+      const includeGmail = req.query['include'] === 'gmail'
+        || req.query['scopes'] === 'gmail'
+        || req.query['gmail'] === 'true';
+
+      const { scopes, skipped } = resolveRequestedScopes({
+        source: googleConfig.source,
+        includeGmail,
+      });
+
+      // If the caller explicitly asked for Gmail but we couldn't grant
+      // it (bundled client mode), surface a 412 so the dashboard can
+      // route to the BYO setup walkthrough instead of silently
+      // pretending the scope was granted. 412 (Precondition Failed) is
+      // the right semantic: "your config preconditions for this scope
+      // aren't met" — distinct from 503 (server-side config missing).
+      if (includeGmail && skipped.some((s) => s.capability === 'gmail')) {
+        res.status(412).json({
+          error: 'Gmail setup needs to finish before SkyTwin can read your inbox.',
+          code: 'GMAIL_REQUIRES_BYO_CLIENT',
+          // In-app wizard route. The dashboard SPA renders it at
+          // /#/connect-gmail (apps/web/public/js/pages/connect-gmail.js)
+          // and handles the back-half of the flow (paste credentials,
+          // re-trigger OAuth with ?include=gmail). The static external
+          // doc at https://jayzalowitz.github.io/skytwin/connect-gmail.html
+          // is the public-web mirror for users who hit this URL without
+          // the desktop app installed.
+          help: '#/connect-gmail',
+          docs: 'https://jayzalowitz.github.io/skytwin/connect-gmail.html',
+          skipped,
+        });
+        return;
+      }
 
       const queryUserId =
         typeof req.query['userId'] === 'string' ? req.query['userId'] : undefined;
       const newAccount = req.query['newAccount'] === 'true';
       const desktop = req.query['desktop'] === 'true';
+      // Optional dashboard-deep-link target after the OAuth round-trip.
+      // The query value is checked against the whitelist before the tag
+      // ever lands in state — an unknown value is silently dropped so we
+      // can't be coerced into redirecting to a route that doesn't exist
+      // (or worse, an attacker-controlled external URL).
+      const nextQuery = typeof req.query['next'] === 'string' ? req.query['next'] : undefined;
+      const nextTagValue = nextQuery && Object.prototype.hasOwnProperty.call(NEXT_HASH_ROUTES, nextQuery)
+        ? nextQuery
+        : undefined;
+      // Pollable handoff key for desktop new-user flows. Validated to
+      // UUIDv4 shape up-front; anything else is dropped silently so a
+      // malformed query param can't poison state.
+      const pendingKeyQuery = typeof req.query['pendingKey'] === 'string' ? req.query['pendingKey'] : undefined;
+      const pendingKey = pendingKeyQuery && isValidPendingKey(pendingKeyQuery)
+        ? pendingKeyQuery
+        : undefined;
 
       let stateHead: string;
       if (newUser) {
@@ -325,10 +674,24 @@ export function createOAuthRouter(): Router {
       const tags: string[] = [];
       if (desktop) tags.push('desktop');
       if (newAccount) tags.push('new');
+      if (nextTagValue) tags.push(`next=${nextTagValue}`);
+      if (pendingKey) tags.push(`key=${pendingKey}`);
 
       const payload = [stateHead, ...tags].join('|');
       const state = signStatePayload(payload, Date.now() + STATE_TTL_MS);
-      const url = generateAuthUrl(googleConfig, scopes, state);
+
+      // PKCE mode when no client_secret. Generate verifier+challenge,
+      // stash verifier server-side keyed on the signed state token, send
+      // only the challenge to Google. /callback retrieves the verifier
+      // by state.
+      let codeChallenge: string | undefined;
+      if (!googleConfig.clientSecret) {
+        const pkce = generatePkcePair();
+        await rememberPkceVerifier(state, pkce.codeVerifier);
+        codeChallenge = pkce.codeChallenge;
+      }
+
+      const url = generateAuthUrl(googleConfig, scopes, state, codeChallenge);
       res.json({ url });
     } catch (error) {
       next(error);
@@ -366,7 +729,22 @@ export function createOAuthRouter(): Router {
       }
 
       const googleConfig = await resolveGoogleConfig();
-      const tokenSet = await exchangeCode(googleConfig, code);
+      // Recover the PKCE verifier stashed at /authorize. Consume-on-read
+      // so a replayed callback can't redeem the same code twice.
+      const codeVerifier = await consumePkceVerifier(state);
+      if (!googleConfig.clientSecret && !codeVerifier) {
+        // In PKCE mode without a stored verifier we'd send an empty
+        // code_verifier to Google and get a 400 "invalid_grant".
+        // Surface a clear error pointing at the most likely cause: a
+        // stale browser tab where /authorize ran against a different
+        // process (Electron restart, etc.).
+        res.status(400).json({
+          error:
+            'OAuth verifier expired or missing. Re-start the sign-in flow from the dashboard.',
+        });
+        return;
+      }
+      const tokenSet = await exchangeCode(googleConfig, code, codeVerifier);
 
       // Resolve the verified Google identity so we can key the token row on
       // the actual account email (rather than guessing from state) and
@@ -444,6 +822,47 @@ export function createOAuthRouter(): Router {
         scopes: tokenSet.scopes,
       });
 
+      // If the desktop client supplied a pendingKey (per-flow handoff
+      // token), record the completion so the wizard can poll for it.
+      // The system browser will show the static "close this tab" HTML
+      // below; the Electron app, which has no other way to learn about
+      // the user that /callback just created, polls
+      // GET /api/oauth/google/pending/:key.
+      if (parsed.pendingKey) {
+        try {
+          await oauthPendingSigninRepository.sweepExpired(new Date());
+          await oauthPendingSigninRepository.remember({
+            pendingKey: parsed.pendingKey,
+            userId,
+            accountEmail,
+            scopes: Array.isArray(tokenSet.scopes) ? tokenSet.scopes : [],
+            nextHash: parsed.nextHash,
+            expiresAt: new Date(Date.now() + PENDING_SIGNIN_TTL_MS),
+          });
+        } catch (err) {
+          // Pending-signin is a best-effort UX bridge. If the write
+          // fails (table missing on a half-migrated deploy, transient
+          // CRDB hiccup, etc.) the user still has a fully-functional
+          // token row from the saveTokenForAccount call above and a
+          // newly-created user — but the wizard's 5-min poll will
+          // time out with the confusing "we didn't see your Google
+          // sign-in" message even though OAuth succeeded. Log so the
+          // operator can correlate the wizard timeout with a real
+          // DB failure rather than chasing a phantom Google issue.
+          // Truncate the key — even though it's 5-min-lived, logs may
+          // ship to long-term aggregators (Datadog/Loki) and we don't
+          // want a 5-minute secret landing in a 30-day index. 8 hex
+          // chars (32 bits) are enough to correlate the wizard timeout
+          // with the failed write at-a-glance; not enough to redeem.
+          log.warn('Failed to write oauth_pending_signin row', {
+            userId,
+            accountEmail,
+            pendingKeyPrefix: `${parsed.pendingKey.slice(0, 8)}…`,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+
       if (parsed.desktop) {
         res.send(`<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>SkyTwin</title>
@@ -457,13 +876,149 @@ export function createOAuthRouter(): Router {
       // alive" celebration instead of a settings form. The dashboard parses
       // the top-level `?userId=` (user-switcher) and the hash query
       // `?connected=google&account=…` (for the celebration card).
+      //
+      // If the /authorize call requested a `next=` deep-link target, we
+      // route there instead of the dashboard root. The route was already
+      // whitelisted server-side (NEXT_HASH_ROUTES) and re-validated when
+      // parsing state, so the value here is one of a fixed set of hash
+      // routes we own — never a user-supplied URL.
       const webBase = process.env['WEB_BASE_URL'] ?? `http://localhost:${process.env['WEB_PORT'] ?? '3200'}`;
       const topLevel = new URLSearchParams({ userId }).toString();
       const hashQuery = new URLSearchParams({
         connected: 'google',
         account: accountEmail,
       }).toString();
-      res.redirect(`${webBase}/?${topLevel}#/?${hashQuery}`);
+      const hashRoute = parsed.nextHash ?? '#/';
+      // hashRoute always starts with '#/' so the URL shape is
+      //   …?userId=…#/connect-gmail?connected=google&account=…
+      // The dashboard hash router reads the bit before `?` as the route.
+      res.redirect(`${webBase}/?${topLevel}${hashRoute}?${hashQuery}`);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /**
+   * GET /api/oauth/google/pending/:key
+   *
+   * Pollable handoff endpoint for the desktop new-user flow. The
+   * Electron wizard generates a UUIDv4 before opening the system
+   * browser, passes it to /authorize as `?pendingKey=…`, and polls
+   * here until /callback writes the resulting userId.
+   *
+   * **Security model.** Possession of the pendingKey IS the
+   * authorization. The endpoint:
+   *   1. Does NOT just return the userId — that would chain with the
+   *      pre-existing `POST /api/sessions` (which accepts any userId
+   *      from a localhost caller) to make a leaked key worth a 7-day
+   *      session token. Instead, this endpoint mints the session
+   *      itself, returning a fresh token. The wizard stashes the
+   *      token; subsequent API calls flow through `Authorization:
+   *      Bearer …` exactly like the QR-paired mobile flow.
+   *   2. Is consume-on-read (DELETE...RETURNING + an explicit
+   *      expires_at >= NOW() predicate). A leaked key can only be
+   *      redeemed once; an expired key returns 404 deterministically.
+   *   3. Is per-IP rate-limited (same bucket as `?newUser=true`) to
+   *      keep brute-force / DoS attempts off the table.
+   *
+   * 404 covers four cases the client treats identically (keep polling
+   * until the local timeout):
+   *   - the row hasn't been written yet (consent still in progress)
+   *   - the row has expired (user took >5 min)
+   *   - the key was malformed (validated up-front; surfaced as 404 so
+   *     this endpoint can't be used as a key-shape oracle)
+   *   - the key was already consumed by a previous request
+   *
+   * Public — no sessionAuth, by design — the desktop client has no
+   * session yet for a new user. The key's unguessability IS the
+   * authorization.
+   */
+  router.get('/google/pending/:key', async (req, res, next) => {
+    try {
+      const ip = req.ip ?? req.socket.remoteAddress ?? 'unknown';
+      // Use the dedicated pending-poll bucket — sharing the
+      // ?newUser=true bucket's tight 5/minute cap would 429 the
+      // legitimate poll loop after ~10 seconds (30 polls/min from
+      // the client), re-introducing the very grandma-blocker this
+      // endpoint exists to solve.
+      const { allowed, resetAt } = checkPendingPollRateLimit(ip, Date.now());
+      if (!allowed) {
+        res.set('Retry-After', String(Math.ceil((resetAt - Date.now()) / 1000)));
+        res.status(429).json({
+          error: 'Too many requests. Try again in a minute.',
+          resetAt: new Date(resetAt).toISOString(),
+        });
+        return;
+      }
+
+      const { key } = req.params;
+      if (!key || !isValidPendingKey(key)) {
+        // Same 404 shape as not-yet / expired / already-consumed so
+        // this endpoint isn't a key-shape oracle.
+        res.status(404).json({ error: 'No pending sign-in.' });
+        return;
+      }
+
+      // Atomically consume the pending row AND mint the session in
+      // one transaction. Without this, a session.create() failure
+      // after consume() would leave the user stranded — no session,
+      // no recoverable pending row. The transaction rolls back the
+      // DELETE on any downstream error so the user can retry.
+      const rawToken = `${randomUUID()}-${randomUUID()}`;
+      const tokenHash = hashToken(rawToken);
+      const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+
+      const handoff = await withTransaction(async (client) => {
+        const now = new Date();
+        // Same shape as oauthPendingSigninRepository.consume — duplicated
+        // here so it can share the transaction client.
+        const consumeResult = await client.query<{
+          user_id: string;
+          account_email: string;
+          scopes: unknown;
+          next_hash: string | null;
+          expires_at: Date;
+        }>(
+          `DELETE FROM oauth_pending_signin
+            WHERE pending_key = $1
+              AND expires_at >= $2
+           RETURNING user_id, account_email, scopes, next_hash, expires_at`,
+          [key, now],
+        );
+        const row = consumeResult.rows[0];
+        if (!row) return null;
+
+        // Same shape as sessionRepository.create — duplicated here for
+        // the same reason. If this INSERT throws, the transaction rolls
+        // back and the pending row stays put for a retry.
+        await client.query(
+          `INSERT INTO sessions (user_id, token_hash, device_name, expires_at)
+           VALUES ($1, $2, $3, $4)`,
+          [row.user_id, tokenHash, 'Desktop', expiresAt],
+        );
+
+        return {
+          userId: row.user_id,
+          accountEmail: row.account_email,
+          scopes: Array.isArray(row.scopes) ? (row.scopes as string[]) : [],
+          nextHash: row.next_hash,
+        };
+      });
+
+      if (!handoff) {
+        res.status(404).json({ error: 'No pending sign-in.' });
+        return;
+      }
+
+      res.json({
+        connected: true,
+        sessionToken: rawToken,
+        sessionExpiresAt: expiresAt.toISOString(),
+        userId: handoff.userId,
+        accountEmail: handoff.accountEmail,
+        scopes: handoff.scopes,
+        nextHash: handoff.nextHash,
+      });
     } catch (error) {
       next(error);
     }

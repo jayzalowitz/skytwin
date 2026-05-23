@@ -29,7 +29,7 @@ import {
   fetchCapabilityDependencyGraph,
   escapeHtml,
 } from '../api-client.js';
-import { KEY_USER_ID, KEY_ONBOARDED, KEY_TOUR_MODE } from '../storage-keys.js';
+import { KEY_USER_ID, KEY_ONBOARDED, KEY_TOUR_MODE, KEY_SESSION_TOKEN } from '../storage-keys.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Module-level state (singleton — one wizard per browser tab)
@@ -109,20 +109,84 @@ async function handleOnboardingClick(e) {
       btn.textContent = 'Redirecting…';
       try {
         const { startGoogleSignIn } = await import('../google-signin.js');
-        const result = await startGoogleSignIn({ newUser: true });
+        // After Google consent, deep-link straight into the Gmail
+        // walkthrough. The bundled OAuth client only carries Calendar +
+        // identity scopes today; Gmail is gated behind the BYO setup at
+        // /#/connect-gmail and the user shouldn't have to discover the
+        // follow-up CTA on the dashboard themselves. The connect-gmail
+        // page no-ops gracefully if Gmail is already wired up.
+        //
+        // Desktop newUser flow: startGoogleSignIn generates a UUIDv4
+        // pendingKey, threads it through state, and polls for the
+        // resulting userId once /callback writes the handoff row.
+        // onComplete fires when the poll resolves — we set the userId
+        // in localStorage and drop the user on the deep-link route
+        // exactly as the web redirect would have.
+        const result = await startGoogleSignIn({
+          newUser: true,
+          next: 'connect-gmail',
+          onComplete: (completion) => {
+            if (completion.connected && completion.userId) {
+              // The pending endpoint mints the session — store the
+              // token first so subsequent API calls authenticate.
+              // Without it, the dashboard would 401 the moment the
+              // wizard lands on the deep-link route.
+              if (completion.sessionToken) {
+                localStorage.setItem(KEY_SESSION_TOKEN, completion.sessionToken);
+              }
+              localStorage.setItem(KEY_USER_ID, completion.userId);
+              // Mark onboarding complete + tear down the wizard overlay so
+              // the dashboard underneath becomes the active surface. Without
+              // these three lines the modal stays mounted on top of the
+              // deep-link route, the user can't reach the page they were
+              // sent to, and a reload re-opens first-run onboarding because
+              // KEY_ONBOARDED is unset. Mirrors the tour-mode path (see
+              // 'onb-start-tour' case below) which does the same dance.
+              localStorage.setItem(KEY_ONBOARDED, 'true');
+              if (_wizardState) _wizardState.userId = completion.userId;
+              if (typeof window.skyTwinSetUserId === 'function') {
+                window.skyTwinSetUserId(completion.userId);
+              }
+              hideWizard();
+              window.location.hash = completion.nextHash || '#/connect-gmail';
+              return;
+            }
+            // Timeout (5 min) — let the user retry rather than sitting
+            // on a frozen button. The pending row has either expired
+            // or the user closed the browser tab without consenting.
+            const retryBtn = document.querySelector('[data-action="onb-email-google"]');
+            if (retryBtn instanceof HTMLButtonElement) {
+              retryBtn.disabled = false;
+              retryBtn.textContent = 'Continue with Google';
+            }
+            showWizardError("We didn't see your Google sign-in come through. Try again, or use email below.");
+          },
+        });
         if (result.status === 'redirecting') return;
         if (result.status === 'polling') {
-          // Desktop: OAuth opened in the system browser. There's no
-          // userId yet for a new user, so we can't poll for completion
-          // here — re-enable the button instead of leaving it frozen
-          // on "Redirecting…" with no way forward.
-          // TODO(desktop-onboarding): auto-advance the wizard after a
-          // desktop new-user sign-in. Needs a userId-less completion
-          // signal (e.g. poll a short-lived pairing token) — the web
-          // flow advances via redirect, desktop currently does not.
+          // Desktop: OAuth opened in the system browser; pendingKey
+          // poll is running in the background and will fire
+          // onComplete above when /callback writes the handoff row.
+          // The button stays disabled with "Waiting for Google…" as
+          // the active status — the wizard auto-advances when the
+          // poll resolves.
+          btn.textContent = 'Waiting for Google…';
+          hideWizardError();
+          return;
+        }
+        // status === 'error'. If the server tagged the failure as a
+        // missing-config code (NO_GOOGLE_CLIENT_CONFIGURED — this
+        // SkyTwin build has no bundled OAuth client), bounce the user
+        // straight into the connect-gmail wizard. That same five-step
+        // walkthrough sets up their OAuth client, which then lets the
+        // bundled flow work on retry.
+        if (result.code === 'NO_GOOGLE_CLIENT_CONFIGURED') {
+          // Re-enable the button before the hashchange so a router that
+          // synchronously re-renders the wizard doesn't leave it stuck
+          // on "Redirecting…".
           btn.disabled = false;
           btn.textContent = 'Continue with Google';
-          showWizardError('Finish signing in with Google in the browser window that just opened, then return here and continue.');
+          window.location.hash = result.help || '#/connect-gmail';
           return;
         }
         throw new Error(result.error || 'No authorize URL returned');
@@ -305,21 +369,31 @@ function renderWelcome() {
       </button>
     </div>
 
-    <div id="onb-tour-row" style="text-align:center;display:none;">
-      <button class="btn-link" data-action="onb-start-tour"
-              style="font-size:0.82rem;color:var(--text-muted);background:none;border:none;cursor:pointer;padding:0;">
-        Explore with a sample profile instead →
+    <div id="onb-tour-row" style="display:none;">
+      <div role="separator" aria-label="or" style="display:flex;align-items:center;gap:0.5rem;margin:0.25rem 0 0.75rem;color:var(--text-muted);font-size:0.78rem;">
+        <span aria-hidden="true" style="flex:1;height:1px;background:var(--border);"></span>
+        <span aria-hidden="true" style="text-transform:uppercase;letter-spacing:0.08em;">or</span>
+        <span aria-hidden="true" style="flex:1;height:1px;background:var(--border);"></span>
+      </div>
+      <button class="btn btn-outline btn-lg" style="text-align:left;display:flex;align-items:center;gap:0.75rem;width:100%;"
+              data-action="onb-start-tour">
+        <span style="font-size:1.2rem;" aria-hidden="true">🧭</span>
+        <div>
+          <div style="font-weight:600;">Try with a sample profile</div>
+          <div style="font-size:0.78rem;opacity:0.8;">See a fully populated twin in action — no sign-in needed.</div>
+        </div>
       </button>
     </div>
   `);
 
-  // Show the tour link only when the demo seed is available
+  // Show the tour CTA only when the demo seed is available.
+  // The CTA + its divider sit inside #onb-tour-row so they appear/hide together.
   fetchDemoInfo().then((info) => {
     if (info?.available) {
       const row = document.getElementById('onb-tour-row');
       if (row) row.style.display = 'block';
     }
-  }).catch(() => { /* tour link stays hidden */ });
+  }).catch(() => { /* tour CTA stays hidden */ });
 }
 
 // ── Email choice ──────────────────────────────────────────────────────────────

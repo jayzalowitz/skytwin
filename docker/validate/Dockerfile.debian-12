@@ -1,0 +1,36 @@
+# Validation: Debian 12 (bookworm), fresh system, runs install.sh end-to-end.
+# Mirrors Dockerfile.ubuntu-2204 — same contract, different base image.
+# We test Debian separately because Debian's apt repos and default
+# package set differ enough from Ubuntu's that "works on Ubuntu" doesn't
+# necessarily mean "works on Debian".
+
+FROM debian:12
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    LC_ALL=C.UTF-8 \
+    LANG=C.UTF-8
+
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
+        ca-certificates \
+        curl \
+        git \
+        sudo \
+        procps \
+        lsof \
+        netcat-openbsd \
+        bash \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN useradd --create-home --shell /bin/bash --uid 1000 skytwin \
+    && echo 'skytwin ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/skytwin \
+    && chmod 0440 /etc/sudoers.d/skytwin
+
+USER skytwin
+WORKDIR /home/skytwin
+
+COPY --chown=skytwin:skytwin run-validation.sh /opt/validate-skytwin
+USER root
+RUN chmod +x /opt/validate-skytwin
+USER skytwin
+
+ENTRYPOINT ["/opt/validate-skytwin"]

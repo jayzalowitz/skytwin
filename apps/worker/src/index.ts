@@ -269,7 +269,10 @@ async function resolveGoogleConfig(): Promise<GoogleOAuthConfig | null> {
   let clientSecret = config.googleClientSecret;
   let redirectUri = config.googleRedirectUri;
 
-  if (!clientId || !clientSecret) {
+  // Layer 1: env/DB credentials (confidential web-server deployments).
+  // clientSecret may be empty here — that's fine; we accept the PKCE-only
+  // shape below.
+  if (!clientId) {
     try {
       const dbCreds = await serviceCredentialRepository.getAsMap('google');
       clientId = clientId || dbCreds['client_id'] || '';
@@ -284,8 +287,24 @@ async function resolveGoogleConfig(): Promise<GoogleOAuthConfig | null> {
     }
   }
 
-  if (!clientId || !clientSecret) {
-    log.warn('Google OAuth tokens exist, but Google client credentials are not configured; skipping Google connectors');
+  // Layer 2: bundled PKCE-only fallback (desktop installer default). Mirrors
+  // apps/api/src/routes/oauth.ts:resolveGoogleConfig() so the worker can
+  // refresh tokens minted by the bundled-client OAuth flow. PKCE refresh
+  // omits client_secret entirely (verified in packages/connectors/src/oauth/
+  // google-oauth.ts:refreshAccessToken — empty clientSecret is the PKCE
+  // signal). Without this fallback, the grandma-grade default install
+  // signs the user in (API has the bundled id) but the worker can't read
+  // their inbox/calendar — tokens exist, nothing processes them.
+  if (!clientId) {
+    const bundled = process.env['SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID'] ?? '';
+    if (bundled) {
+      clientId = bundled;
+      clientSecret = '';
+    }
+  }
+
+  if (!clientId) {
+    log.warn('Google OAuth tokens exist, but no Google client ID is configured (env/DB/bundle all empty); skipping Google connectors');
     return null;
   }
 

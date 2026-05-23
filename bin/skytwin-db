@@ -1,0 +1,486 @@
+#!/usr/bin/env bash
+#
+# skytwin-db — manage a local CockroachDB instance without requiring Docker.
+#
+# Why this exists:
+#   Until v0.6.55 the only supported way to run CRDB for SkyTwin was
+#   "docker compose up cockroachdb". For a non-technical user, that means
+#   installing Docker Desktop, signing the license, leaving it running, and
+#   re-opening it after every reboot. Docker Desktop is the single biggest
+#   install blocker for grandma — it's bigger than every other dependency
+#   combined and has its own gotchas on every platform.
+#
+#   CockroachDB ships a self-contained binary for every platform we care
+#   about. This script fetches that binary (hash-verified against the
+#   published sha256sum), installs it to a user-writable directory, and
+#   spawns it as a plain child process. No daemon, no system install, no
+#   Docker.
+#
+# Subcommands:
+#   skytwin-db install        Download + hash-verify CRDB binary.
+#   skytwin-db start          Start single-node CRDB on localhost:26257.
+#   skytwin-db stop           Gracefully stop the running node.
+#   skytwin-db status         Print state (running? port? data dir size).
+#   skytwin-db ensure-db      Create the "skytwin" database if missing.
+#   skytwin-db reset          Stop + wipe data dir + reinstall (dangerous).
+#
+# Environment overrides:
+#   SKYTWIN_CRDB_VERSION       Pinned version (default: 23.2.13)
+#   SKYTWIN_DB_PREFIX          Install prefix (default: ~/.local/share/skytwin)
+#   SKYTWIN_DB_PORT            SQL port (default: 26257)
+#   SKYTWIN_DB_HTTP_PORT       Admin UI port (default: 26258 — non-conflicting)
+#   SKYTWIN_DB_LISTEN_HOST     Listen host (default: localhost)
+#   SKYTWIN_DB_BINARY_URL_BASE Override CDN (default: https://binaries.cockroachdb.com)
+#
+# Exit codes:
+#   0  success
+#   1  generic failure
+#   2  unsupported platform
+#   3  hash verification failed (supply-chain safety: never run a binary we
+#      didn't verify)
+
+set -euo pipefail
+
+# ── Config ───────────────────────────────────────────────────────────────
+
+CRDB_VERSION="${SKYTWIN_CRDB_VERSION:-23.2.30}"
+# Honor XDG_DATA_HOME per the spec; fall back to ~/.local/share. On macOS
+# users can override to ~/Library/Application Support/skytwin if they
+# want; we don't auto-pick that because Time Machine then snapshots the
+# CRDB store on every change (multi-GB write amplification).
+DB_PREFIX="${SKYTWIN_DB_PREFIX:-${XDG_DATA_HOME:-$HOME/.local/share}/skytwin}"
+DB_PORT="${SKYTWIN_DB_PORT:-26257}"
+# Note: CockroachDB's default admin UI port is 8080, which collides with
+# every other dev tool on the planet. We pick 26258 (the SQL port + 1) so
+# co-existing services aren't disturbed.
+DB_HTTP_PORT="${SKYTWIN_DB_HTTP_PORT:-26258}"
+# 127.0.0.1 not 'localhost': avoids the IPv6-unspecified gotcha on systems
+# whose /etc/hosts maps localhost to :: — broadcasting --insecure CRDB to
+# the LAN would be remote root.
+DB_LISTEN_HOST="${SKYTWIN_DB_LISTEN_HOST:-127.0.0.1}"
+URL_BASE="${SKYTWIN_DB_BINARY_URL_BASE:-https://binaries.cockroachdb.com}"
+# Validate the override: anything that isn't an https URL pointing at a
+# normal-looking hostname is rejected. The SHA-256 check downstream is
+# the real defense, but this stops obvious foot-guns
+# (file:// for LFI attempts, ftp:// for slow downloads, internal hostnames
+# that turn into SSRF probes inside corporate networks).
+case "$URL_BASE" in
+  https://[A-Za-z0-9]*) : ;;
+  *) err "SKYTWIN_DB_BINARY_URL_BASE must be an https:// URL — got: $URL_BASE"; exit 1 ;;
+esac
+
+BIN_DIR="$DB_PREFIX/bin"
+DATA_DIR="$DB_PREFIX/crdb-data"
+LOG_DIR="$DB_PREFIX/logs"
+PID_FILE="$DB_PREFIX/cockroach.pid"
+COCKROACH_BIN="$BIN_DIR/cockroach"
+
+mkdir -p "$BIN_DIR" "$LOG_DIR"
+
+# ── Colors ───────────────────────────────────────────────────────────────
+
+if [ -t 1 ] || [ -t 2 ]; then
+  RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
+else
+  RED=''; GREEN=''; YELLOW=''; BLUE=''; NC=''
+fi
+
+step() { echo -e "${BLUE}==>${NC} $*"; }
+ok()   { echo -e "  ${GREEN}✓${NC} $*"; }
+warn() { echo -e "  ${YELLOW}!${NC} $*"; }
+err()  { echo -e "  ${RED}✗${NC} $*" >&2; }
+
+# ── Platform detection ───────────────────────────────────────────────────
+
+detect_platform() {
+  local os arch
+  case "$(uname -s)" in
+    Darwin) os="darwin" ;;
+    Linux)  os="linux" ;;
+    MINGW*|MSYS*|CYGWIN*) os="windows" ;;
+    *) err "Unsupported OS: $(uname -s)"; exit 2 ;;
+  esac
+
+  case "$(uname -m)" in
+    arm64|aarch64) arch="arm64" ;;
+    x86_64|amd64)  arch="amd64" ;;
+    *) err "Unsupported architecture: $(uname -m)"; exit 2 ;;
+  esac
+
+  echo "${os}-${arch}"
+}
+
+# ── Pinned binary catalogue ──────────────────────────────────────────────
+#
+# Hashes are the published sha256sums fetched from
+# https://binaries.cockroachdb.com/cockroach-vX.Y.Z.<platform>.tgz.sha256sum
+# at the time CRDB_VERSION was pinned. If you bump CRDB_VERSION, you MUST
+# refresh these hashes — the install path refuses to extract a binary
+# whose hash doesn't match.
+
+binary_url() {
+  local platform="$1"
+  case "$platform" in
+    darwin-arm64) echo "$URL_BASE/cockroach-v${CRDB_VERSION}.darwin-11.0-arm64.tgz" ;;
+    darwin-amd64) echo "$URL_BASE/cockroach-v${CRDB_VERSION}.darwin-10.9-amd64.tgz" ;;
+    linux-amd64)  echo "$URL_BASE/cockroach-v${CRDB_VERSION}.linux-amd64.tgz" ;;
+    linux-arm64)  echo "$URL_BASE/cockroach-v${CRDB_VERSION}.linux-arm64.tgz" ;;
+    windows-amd64) echo "$URL_BASE/cockroach-v${CRDB_VERSION}.windows-6.2-amd64.zip" ;;
+    *) err "No binary for $platform"; exit 2 ;;
+  esac
+}
+
+binary_sha256() {
+  local platform="$1"
+  # Hashes match the matching .sha256sum sidecar on
+  # https://binaries.cockroachdb.com/. When bumping CRDB_VERSION you MUST
+  # refresh every row — the installer refuses to extract an archive whose
+  # hash doesn't match.
+  case "$CRDB_VERSION" in
+    23.2.30)
+      # Pinned 2026-05-21. Aligns with docker-compose's "latest-v23.2" at the
+      # time. Older 23.2.x patches hit a partial-index bug in the SkyTwin
+      # initial migration (cannot-create-partial-index-on-non-public-column).
+      case "$platform" in
+        darwin-arm64)  echo "83203c19fde34a718fee121afc1810c11b7e22ccad6fd060fc99f77d690036c2" ;;
+        darwin-amd64)  echo "d4ffbfb51bfbf751b412c5abbcefa3d0bcc1a28ea80eefe73cea53eb491e8345" ;;
+        linux-amd64)   echo "de0feb06aac76c530710fbd2c5cdb8c274b05b598c4257ce5bc5f3b6c4302251" ;;
+        linux-arm64)   echo "196936e94587a145c1326a8b0fe9a048475cca8e3d8ad60a70c7728c8b402474" ;;
+        windows-amd64) echo "4ac0441885dcb2260130b90aba4d638b303ad0ccb8dddc2581d50477e764effa" ;;
+        *) err "No hash for $platform on v$CRDB_VERSION"; exit 2 ;;
+      esac
+      ;;
+    *)
+      err "No hash table for CRDB v$CRDB_VERSION — refresh hashes in $0 before bumping."
+      exit 2
+      ;;
+  esac
+}
+
+# ── sha256 calculation (cross-platform) ──────────────────────────────────
+
+sha256_of() {
+  local file="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$file" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$file" | awk '{print $1}'
+  else
+    err "Neither sha256sum nor shasum found — cannot verify binary."
+    exit 1
+  fi
+}
+
+# ── Subcommands ──────────────────────────────────────────────────────────
+
+cmd_install() {
+  if [ -x "$COCKROACH_BIN" ]; then
+    local current_version
+    current_version="$("$COCKROACH_BIN" version --build-tag 2>/dev/null || echo unknown)"
+    if [ "$current_version" = "v${CRDB_VERSION}" ]; then
+      ok "CockroachDB v${CRDB_VERSION} already installed at $COCKROACH_BIN"
+      return 0
+    fi
+    warn "CockroachDB $current_version present, expected v${CRDB_VERSION} — reinstalling."
+  fi
+
+  local platform url expected_sha tmpdir archive
+  platform="$(detect_platform)"
+  url="$(binary_url "$platform")"
+  expected_sha="$(binary_sha256 "$platform")"
+
+  step "Downloading CockroachDB v${CRDB_VERSION} for $platform"
+  tmpdir="$(mktemp -d)"
+  # EXIT trap so the tmpdir is cleaned up on every exit path — happy
+  # path AND every `exit N` from the failure branches below. Without
+  # this, a failed download or sha-mismatch (which grandma WILL hit on
+  # flaky networks) leaks ~70MB into /tmp per attempt; macOS doesn't
+  # auto-clean per-user temp dirs across reboots so it adds up fast.
+  cleanup_tmp() {
+    if [ -n "${tmpdir:-}" ] && [ -d "$tmpdir" ]; then
+      rm -rf "$tmpdir"
+    fi
+  }
+  trap cleanup_tmp EXIT
+
+  archive="$tmpdir/cockroach.archive"
+  if ! curl -fsSL --connect-timeout 30 --max-time 600 -o "$archive" "$url"; then
+    err "Download failed: $url"
+    exit 1
+  fi
+
+  local actual_sha
+  actual_sha="$(sha256_of "$archive")"
+  if [ "$actual_sha" != "$expected_sha" ]; then
+    err "SHA-256 mismatch for $url"
+    err "  expected: $expected_sha"
+    err "  actual:   $actual_sha"
+    err "Refusing to install an unverified binary. Refresh hashes in $0 or check for tampering."
+    exit 3
+  fi
+  ok "Hash verified ($actual_sha)"
+
+  step "Extracting"
+  if [[ "$url" == *.zip ]]; then
+    if ! command -v unzip >/dev/null 2>&1; then
+      err "unzip is required to extract Windows archive."
+      exit 1
+    fi
+    unzip -q -d "$tmpdir" "$archive"
+  else
+    tar -xzf "$archive" -C "$tmpdir"
+  fi
+
+  # Locate the cockroach binary. We accept any file named `cockroach` or
+  # `cockroach.exe` and rely on chmod +x below to mark it executable —
+  # `-perm -u+x` would be GNU-only (BSD find on macOS rejects it as a
+  # syntax error and silently emits nothing through the pipe).
+  local extracted
+  extracted="$(find "$tmpdir" -maxdepth 3 -type f \( -name 'cockroach' -o -name 'cockroach.exe' \) | head -1)"
+  if [ -z "$extracted" ]; then
+    err "Could not locate cockroach binary in extracted archive."
+    exit 1
+  fi
+
+  mv "$extracted" "$COCKROACH_BIN"
+  chmod +x "$COCKROACH_BIN"
+  # trap will clean up on EXIT; we leave it armed so any later command
+  # in this function that exits non-zero still wipes the tmpdir.
+  ok "Installed $COCKROACH_BIN"
+}
+
+port_listening() {
+  # Returns 0 if the SQL port is accepting connections, regardless of who
+  # owns it. Don't trust a stale PID file or assume our PID alone is
+  # canonical — anyone (a previous orphan, an unrelated CRDB, a port
+  # collision) could be on this port, and starting a second instance
+  # against the same data dir is corrupting.
+  if command -v nc >/dev/null 2>&1; then
+    nc -z "$DB_LISTEN_HOST" "$DB_PORT" >/dev/null 2>&1
+  elif command -v lsof >/dev/null 2>&1; then
+    lsof -i ":$DB_PORT" -sTCP:LISTEN >/dev/null 2>&1
+  elif command -v ss >/dev/null 2>&1; then
+    ss -lnt "sport = :$DB_PORT" 2>/dev/null | grep -q ":$DB_PORT"
+  else
+    # No probe available — fall back to attempting a 1-statement query.
+    "$COCKROACH_BIN" sql --insecure --host "${DB_LISTEN_HOST}:${DB_PORT}" -e 'SELECT 1' >/dev/null 2>&1
+  fi
+}
+
+owner_pid_on_port() {
+  # Best-effort: find the PID listening on $DB_PORT. Used as a fallback
+  # when the PID file is missing but the port is bound (e.g. the previous
+  # run was killed before it could write the file).
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -t -i ":$DB_PORT" -sTCP:LISTEN 2>/dev/null | head -1
+  elif command -v ss >/dev/null 2>&1; then
+    ss -lntp "sport = :$DB_PORT" 2>/dev/null | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2
+  else
+    echo ""
+  fi
+}
+
+is_crdb_responding() {
+  # Confirm the SQL listener actually speaks the CRDB protocol. A bare
+  # port-listening check returns true for any process that happens to be
+  # bound on $DB_PORT (an unrelated postgres, a leftover docker container,
+  # an apt-installed cockroach from a different config). If we treated
+  # that as "CRDB is running" and short-circuited cmd_start, the user's
+  # CRDB would never actually launch and migrations would silently target
+  # the wrong listener. Run a no-op statement against the port to verify
+  # CRDB ownership before treating port-bound as "already running".
+  [ -x "$COCKROACH_BIN" ] || return 1
+  "$COCKROACH_BIN" sql --insecure --host "${DB_LISTEN_HOST}:${DB_PORT}" -e 'SELECT 1' >/dev/null 2>&1
+}
+
+is_running() {
+  # Primary signal: PID file + live process. Trust this without probing
+  # the port — if we wrote the PID file, the listener is ours.
+  if [ -f "$PID_FILE" ]; then
+    local pid
+    pid="$(cat "$PID_FILE" 2>/dev/null)"
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      return 0
+    fi
+  fi
+  # Fallback: PID file is missing/stale but the port is bound. Verify it's
+  # actually CRDB (not a stray process on $DB_PORT) before reporting
+  # "already running" — otherwise cmd_start's start-or-skip branch falls
+  # through to "skip" and the user is stuck pointing migrations at the
+  # wrong listener.
+  if port_listening && is_crdb_responding; then
+    return 0
+  fi
+  return 1
+}
+
+cmd_start() {
+  if is_running; then
+    local pid_display="unknown"
+    if [ -f "$PID_FILE" ]; then
+      pid_display="$(cat "$PID_FILE" 2>/dev/null)"
+    else
+      pid_display="$(owner_pid_on_port || echo unknown)"
+    fi
+    ok "CockroachDB already running (PID $pid_display) on ${DB_LISTEN_HOST}:${DB_PORT}"
+    return 0
+  fi
+
+  # Defensive: if the port is bound but is_running missed it (e.g. owned
+  # by a non-CRDB process), bail loudly so we don't corrupt the data dir.
+  if port_listening; then
+    err "Port $DB_PORT is in use but not by our CockroachDB instance."
+    err "Free it or set SKYTWIN_DB_PORT to a different value."
+    exit 1
+  fi
+
+  if [ ! -x "$COCKROACH_BIN" ]; then
+    step "CockroachDB not installed — installing first"
+    cmd_install
+  fi
+
+  mkdir -p "$DATA_DIR"
+
+  step "Starting CockroachDB single-node on ${DB_LISTEN_HOST}:${DB_PORT}"
+  # --background flag makes cockroach daemonize cleanly; we still capture
+  # the PID it writes so we can stop it deterministically.
+  if "$COCKROACH_BIN" start-single-node \
+      --insecure \
+      --listen-addr="${DB_LISTEN_HOST}:${DB_PORT}" \
+      --http-addr="${DB_LISTEN_HOST}:${DB_HTTP_PORT}" \
+      --store="$DATA_DIR" \
+      --log-dir="$LOG_DIR" \
+      --pid-file="$PID_FILE" \
+      --background \
+      >>"$LOG_DIR/cockroach.out" 2>>"$LOG_DIR/cockroach.err"; then
+    :
+  else
+    err "CockroachDB failed to start. See $LOG_DIR/cockroach.{out,err}"
+    exit 1
+  fi
+
+  # Wait for SQL port to accept connections. CRDB --background returns
+  # before the SQL listener is ready on slow machines.
+  echo -n "  Waiting for SQL port "
+  for _ in $(seq 1 60); do
+    if "$COCKROACH_BIN" sql --insecure --host "${DB_LISTEN_HOST}:${DB_PORT}" -e 'SELECT 1' >/dev/null 2>&1; then
+      echo ""
+      ok "CockroachDB is ready on ${DB_LISTEN_HOST}:${DB_PORT}"
+      return 0
+    fi
+    echo -n "."
+    sleep 1
+  done
+  echo ""
+  err "CockroachDB didn't accept SQL within 60s. Check $LOG_DIR/cockroach.err"
+  exit 1
+}
+
+cmd_stop() {
+  if ! is_running; then
+    ok "CockroachDB not running"
+    return 0
+  fi
+
+  local pid=""
+  if [ -f "$PID_FILE" ]; then
+    pid="$(cat "$PID_FILE" 2>/dev/null)"
+  fi
+  if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
+    # Stale or missing PID file but port is bound — find the actual owner
+    # rather than refuse to stop. Safer than leaving an orphan listener
+    # that blocks every subsequent start.
+    pid="$(owner_pid_on_port)"
+    if [ -z "$pid" ]; then
+      warn "CockroachDB is listening on $DB_PORT but no PID file and no probe available."
+      warn "Kill it manually: lsof -ti :$DB_PORT | xargs kill"
+      return 1
+    fi
+    warn "PID file missing — found listener at PID $pid"
+  fi
+  step "Stopping CockroachDB (PID $pid)"
+  if kill -TERM "$pid" 2>/dev/null; then
+    for _ in $(seq 1 20); do
+      if ! kill -0 "$pid" 2>/dev/null; then
+        rm -f "$PID_FILE"
+        ok "Stopped"
+        return 0
+      fi
+      sleep 0.5
+    done
+    warn "Graceful stop timed out — sending SIGKILL"
+    kill -KILL "$pid" 2>/dev/null || true
+  fi
+  rm -f "$PID_FILE"
+  ok "Stopped"
+}
+
+cmd_status() {
+  if is_running; then
+    local pid size
+    pid="$(cat "$PID_FILE")"
+    size="$(du -sh "$DATA_DIR" 2>/dev/null | awk '{print $1}' || echo '?')"
+    echo "running"
+    echo "  pid:        $pid"
+    echo "  sql:        ${DB_LISTEN_HOST}:${DB_PORT}"
+    echo "  admin:      http://${DB_LISTEN_HOST}:${DB_HTTP_PORT}"
+    echo "  data:       $DATA_DIR ($size)"
+    echo "  logs:       $LOG_DIR"
+    return 0
+  fi
+  echo "stopped"
+  return 1
+}
+
+cmd_ensure_db() {
+  if ! is_running; then
+    cmd_start
+  fi
+  "$COCKROACH_BIN" sql --insecure --host "${DB_LISTEN_HOST}:${DB_PORT}" \
+    -e 'CREATE DATABASE IF NOT EXISTS skytwin;' >/dev/null
+  ok "Database 'skytwin' ready"
+}
+
+cmd_reset() {
+  warn "This deletes ALL local CockroachDB data at $DATA_DIR. Continue? (y/N)"
+  read -r answer
+  if [ "$answer" != "y" ] && [ "$answer" != "Y" ]; then
+    echo "Aborted."
+    exit 0
+  fi
+  cmd_stop || true
+  rm -rf "$DATA_DIR"
+  ok "Data dir wiped"
+}
+
+# ── Dispatch ─────────────────────────────────────────────────────────────
+
+usage() {
+  cat <<EOF
+Usage: skytwin-db <command>
+
+Commands:
+  install     Download + hash-verify CRDB binary into $BIN_DIR
+  start       Start single-node CRDB on ${DB_LISTEN_HOST}:${DB_PORT}
+  stop        Gracefully stop the running node
+  status      Show running state and data dir size
+  ensure-db   Create the "skytwin" database (starts CRDB if needed)
+  reset       Stop + wipe data dir (asks first)
+
+Env overrides:
+  SKYTWIN_CRDB_VERSION    pinned version (current: $CRDB_VERSION)
+  SKYTWIN_DB_PREFIX       install prefix (current: $DB_PREFIX)
+  SKYTWIN_DB_PORT         SQL port (current: $DB_PORT)
+EOF
+}
+
+case "${1:-}" in
+  install)    cmd_install ;;
+  start)      cmd_start ;;
+  stop)       cmd_stop ;;
+  status)     cmd_status ;;
+  ensure-db)  cmd_ensure_db ;;
+  reset)      cmd_reset ;;
+  ""|-h|--help) usage ;;
+  *) err "Unknown command: $1"; usage; exit 1 ;;
+esac

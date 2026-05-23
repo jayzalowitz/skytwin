@@ -21,6 +21,14 @@ export { feedbackRepository } from './feedback-repository.js';
 export type { CreateFeedbackInput } from './feedback-repository.js';
 
 export { oauthRepository } from './oauth-repository.js';
+export { oauthPkcePendingRepository } from './oauth-pkce-pending-repository.js';
+export {
+  oauthPendingSigninRepository,
+} from './oauth-pending-signin-repository.js';
+export type {
+  RememberPendingSigninInput,
+  ConsumedPendingSignin,
+} from './oauth-pending-signin-repository.js';
 export { approvalRepository } from './approval-repository.js';
 export { patternRepository } from './pattern-repository.js';
 

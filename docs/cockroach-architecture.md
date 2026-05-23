@@ -532,9 +532,35 @@ Indexes should be reviewed quarterly against actual query patterns. CockroachDB'
 
 ## Local Development with Single-Node CockroachDB
 
-### Docker Compose Setup
+### Native binary (default since v0.6.56)
 
-The `docker-compose.yml` runs a single-node CockroachDB instance:
+The default install fetches a hash-verified CockroachDB binary into
+`~/.local/share/skytwin/bin/cockroach` (or `$XDG_DATA_HOME/skytwin/bin/`)
+and spawns it as a child process. No Docker required.
+
+```bash
+# Fetch + start + create the skytwin database
+./bin/skytwin-db install
+./bin/skytwin-db start
+./bin/skytwin-db ensure-db
+
+# Inspect status
+./bin/skytwin-db status
+
+# Verify it's accepting SQL
+~/.local/share/skytwin/bin/cockroach sql --insecure --host 127.0.0.1:26257 -e "SELECT 1"
+
+# Admin UI (note: NOT port 8080 — that collides with everything; we use 26258)
+open http://127.0.0.1:26258
+```
+
+The data directory is `~/.local/share/skytwin/crdb-data/`. Stop with
+`./bin/skytwin-db stop`. Wipe with `./bin/skytwin-db reset`.
+
+### Docker Compose (legacy / opt-in)
+
+`SKYTWIN_USE_DOCKER=true` runs the same single-node setup inside Docker
+via `docker-compose.yml`:
 
 ```yaml
 cockroachdb:
@@ -542,24 +568,17 @@ cockroachdb:
   command: start-single-node --insecure
   ports:
     - "26257:26257"  # SQL port
-    - "8080:8080"    # Admin UI
+    - "8080:8080"    # Admin UI (Docker path retains the upstream default)
 ```
-
-### Starting CockroachDB
 
 ```bash
-# Start CockroachDB
-docker-compose up -d cockroachdb
-
-# Verify it's running
-docker-compose exec cockroachdb cockroach sql --insecure -e "SELECT 1"
-
-# Access the SQL shell
-docker-compose exec cockroachdb cockroach sql --insecure -d skytwin
-
-# Access the Admin UI
-open http://localhost:8080
+SKYTWIN_USE_DOCKER=true ./install.sh
+# or, for an existing checkout:
+./bin/skytwin-dev --use-docker
 ```
+
+Useful for CI, sandboxed environments where binaries can't be installed,
+and users who already have a Docker workflow.
 
 ### Creating the Database
 

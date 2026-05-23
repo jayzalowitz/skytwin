@@ -1,0 +1,226 @@
+#!/usr/bin/env bash
+#
+# validate-installs — drive install.sh end-to-end inside fresh Docker
+# containers for Ubuntu / Debian / Fedora, then assert the dashboard
+# responds. Used to catch fresh-install regressions before they reach
+# users.
+#
+# Usage:
+#   ./bin/validate-installs                     # run all distros
+#   ./bin/validate-installs ubuntu              # run a single distro
+#   ./bin/validate-installs --no-build ubuntu   # reuse cached image
+#   ./bin/validate-installs --keep-on-fail      # keep failed containers
+#
+# What it does NOT test:
+#   - macOS or Windows installs. Both require a real OS install or a VM.
+#     The Linux paths are the heaviest shared codepath; a green run there
+#     is strong evidence the install logic is sound, but you should still
+#     dogfood on a real Mac/Windows box for each release.
+#   - The Electron desktop bundle. That's covered by
+#     apps/desktop/scripts/build-single-binary.sh + a manual launch test.
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+
+if [ -t 1 ]; then
+  RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
+else
+  RED=''; GREEN=''; YELLOW=''; BLUE=''; NC=''
+fi
+
+DISTROS=(ubuntu debian fedora)
+DISTRO_TAGS=()
+DOCKERFILES=()
+
+# Index aligned with DISTROS — keeps the matrix declarative.
+TAG_ubuntu="skytwin-validate:ubuntu-2204"
+DOCKERFILE_ubuntu="docker/validate/Dockerfile.ubuntu-2204"
+TAG_debian="skytwin-validate:debian-12"
+DOCKERFILE_debian="docker/validate/Dockerfile.debian-12"
+TAG_fedora="skytwin-validate:fedora-40"
+DOCKERFILE_fedora="docker/validate/Dockerfile.fedora-40"
+
+BUILD=true
+KEEP_ON_FAIL=false
+SELECTED=()
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --no-build)     BUILD=false; shift ;;
+    --keep-on-fail) KEEP_ON_FAIL=true; shift ;;
+    --help|-h)
+      sed -n '/^# Usage:/,/^# What it does NOT test:/p' "$0"
+      exit 0
+      ;;
+    ubuntu|debian|fedora) SELECTED+=("$1"); shift ;;
+    *) echo "Unknown argument: $1" >&2; exit 1 ;;
+  esac
+done
+
+if [ ${#SELECTED[@]} -eq 0 ]; then
+  SELECTED=("${DISTROS[@]}")
+fi
+
+if ! command -v docker >/dev/null 2>&1; then
+  echo -e "${RED}docker is required.${NC} Install Docker first." >&2
+  exit 1
+fi
+
+if ! docker info >/dev/null 2>&1; then
+  echo -e "${RED}Docker daemon is not responding.${NC} Start Docker Desktop or 'systemctl start docker'." >&2
+  exit 1
+fi
+
+LOG_DIR="$ROOT/.logs/validate"
+mkdir -p "$LOG_DIR"
+TS="$(date +%Y%m%d-%H%M%S)"
+
+# Build a snapshot tarball of the working tree. Two reasons we don't just
+# bind-mount the repo:
+#   1. The container's pnpm install / pnpm build would write architecture-
+#      specific node_modules into the host repo, clobbering the dev
+#      machine's already-installed deps.
+#   2. macOS bind-mounts are slow (gVisor / VirtioFS layers) and the
+#      validation does a lot of small-file I/O.
+# The snapshot:
+#   - Includes .git (install.sh's "already cloned" path needs it).
+#   - Excludes node_modules / dist / .logs / .turbo to keep size and
+#     prove the container path can rebuild from scratch.
+
+SNAPSHOT_TAR="$LOG_DIR/repo-${TS}.tar"
+echo -e "${YELLOW}Building snapshot tarball${NC} → $SNAPSHOT_TAR"
+# tar exclusions match .dockerignore intent. Note: GNU tar uses --exclude,
+# BSD tar (default on macOS) understands the same flag. The trailing
+# ./node_modules / ./dist patterns also match the per-package nested
+# variants because tar matches against the archive path.
+#
+# COPYFILE_DISABLE=1 stops BSD tar from emitting macOS resource forks /
+# xattr PAX headers ("LIBARCHIVE.xattr.com.apple.provenance"), which GNU
+# tar inside the Linux container would otherwise spam thousands of
+# "Ignoring unknown extended header keyword" warnings about.
+# Critical: also exclude tsconfig.tsbuildinfo files. They are tsc's
+# incremental cache; when present they make tsc skip emitting .d.ts on a
+# fresh container (it thinks the dist is already up-to-date) — even
+# though we excluded dist/ itself. Without this, every `pnpm build` in
+# the container produces .js + .d.ts.map but NO .d.ts, breaking every
+# downstream package that imports those types.
+COPYFILE_DISABLE=1 tar --no-xattrs --no-mac-metadata \
+    --exclude='./node_modules' \
+    --exclude='*/node_modules' \
+    --exclude='./dist' \
+    --exclude='**/dist' \
+    --exclude='./.turbo' \
+    --exclude='**/.turbo' \
+    --exclude='./.logs' \
+    --exclude='./apps/desktop/dist-electron' \
+    --exclude='./apps/mobile/.expo' \
+    --exclude='./.skytwin-pids' \
+    --exclude='*.tsbuildinfo' \
+    --exclude='**/*.tsbuildinfo' \
+    -cf "$SNAPSHOT_TAR" -C "$ROOT" . 2>/dev/null || \
+COPYFILE_DISABLE=1 tar \
+    --exclude='./node_modules' \
+    --exclude='*/node_modules' \
+    --exclude='./dist' \
+    --exclude='**/dist' \
+    --exclude='./.turbo' \
+    --exclude='**/.turbo' \
+    --exclude='./.logs' \
+    --exclude='./apps/desktop/dist-electron' \
+    --exclude='./apps/mobile/.expo' \
+    --exclude='./.skytwin-pids' \
+    --exclude='*.tsbuildinfo' \
+    --exclude='**/*.tsbuildinfo' \
+    -cf "$SNAPSHOT_TAR" -C "$ROOT" .
+echo "  Snapshot size: $(du -h "$SNAPSHOT_TAR" | awk '{print $1}')"
+
+declare -a RESULTS_NAME=()
+declare -a RESULTS_STATUS=()
+declare -a RESULTS_LOG=()
+
+for distro in "${SELECTED[@]}"; do
+  tag_var="TAG_${distro}"
+  df_var="DOCKERFILE_${distro}"
+  tag="${!tag_var}"
+  dockerfile="${!df_var}"
+
+  echo -e "\n${BLUE}==> ${distro} validation${NC}"
+
+  if [ "$BUILD" = "true" ]; then
+    echo "  Building $tag from $dockerfile"
+    # Build context is docker/validate/ — a tiny directory with just the
+    # three Dockerfiles + run-validation.sh. Setting the context to the
+    # whole monorepo would make every build upload ~700MB to BuildKit
+    # (even with .dockerignore exclusions, the initial directory walk is
+    # slow on macOS Docker Desktop). The Dockerfile only COPYs the
+    # validator script, which lives inside this same directory.
+    if ! docker build --tag "$tag" --file "$dockerfile" docker/validate; then
+      echo -e "  ${RED}docker build failed${NC} for $distro"
+      RESULTS_NAME+=("$distro"); RESULTS_STATUS+=("BUILD-FAIL"); RESULTS_LOG+=("")
+      continue
+    fi
+  fi
+
+  log_file="$LOG_DIR/${distro}-${TS}.log"
+  container_name="skytwin-validate-${distro}-${TS}"
+
+  # Mount the snapshot tarball read-only at /tmp/skytwin-source.tar. The
+  # validator script untars it into $HOME/skytwin and runs install.sh from
+  # there — fully isolated from the host filesystem. No --network host:
+  # the validator probes localhost inside the container, which works in
+  # default bridge mode.
+
+  # macOS Bash 3.2 treats an empty `"${arr[@]}"` as unset under `set -u`,
+  # which trips up the rm/keep flag indirection. Spell the two cases out.
+  set +e
+  if [ "$KEEP_ON_FAIL" = "false" ]; then
+    docker run \
+      --rm \
+      --name "$container_name" \
+      --volume "$SNAPSHOT_TAR:/tmp/skytwin-source.tar:ro" \
+      --env "HOME=/home/skytwin" \
+      "$tag" 2>&1 | tee "$log_file"
+    exit_code=${PIPESTATUS[0]}
+  else
+    docker run \
+      --name "$container_name" \
+      --volume "$SNAPSHOT_TAR:/tmp/skytwin-source.tar:ro" \
+      --env "HOME=/home/skytwin" \
+      "$tag" 2>&1 | tee "$log_file"
+    exit_code=${PIPESTATUS[0]}
+  fi
+  set -e
+
+  if [ "$exit_code" -eq 0 ]; then
+    echo -e "  ${GREEN}PASS${NC} — see $log_file"
+    RESULTS_NAME+=("$distro"); RESULTS_STATUS+=("PASS"); RESULTS_LOG+=("$log_file")
+  else
+    echo -e "  ${RED}FAIL${NC} (exit $exit_code) — see $log_file"
+    RESULTS_NAME+=("$distro"); RESULTS_STATUS+=("FAIL"); RESULTS_LOG+=("$log_file")
+  fi
+done
+
+# Snapshot tarball was a build artifact; release it unless the user asked
+# to keep failing containers (they may want to docker exec back in and
+# see the source).
+if [ "$KEEP_ON_FAIL" = "false" ]; then
+  rm -f "$SNAPSHOT_TAR"
+fi
+
+echo ""
+echo -e "${BLUE}=== Validation summary (${TS}) ===${NC}"
+fail_count=0
+for i in "${!RESULTS_NAME[@]}"; do
+  status="${RESULTS_STATUS[$i]}"
+  case "$status" in
+    PASS) color="${GREEN}" ;;
+    *)    color="${RED}"; fail_count=$((fail_count + 1)) ;;
+  esac
+  printf "  %-10s ${color}%-12s${NC} %s\n" "${RESULTS_NAME[$i]}" "$status" "${RESULTS_LOG[$i]}"
+done
+
+if [ "$fail_count" -gt 0 ]; then
+  exit 1
+fi

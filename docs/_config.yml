@@ -1,0 +1,39 @@
+# Jekyll config for GitHub Pages.
+#
+# We host static HTML directly (docs/index.html, docs/privacy.html,
+# docs/terms.html) rather than letting Jekyll process the existing
+# *.md technical docs into web pages — those are written for GitHub
+# rendering (table-of-contents links to repo paths, "see the file at
+# packages/.../foo.ts" style cross-refs) and rendering them as a site
+# would produce broken navigation. Adding *.md to `exclude` keeps
+# Jekyll from emitting them.
+#
+# Why GitHub Pages: Google OAuth verification requires a homepage on
+# a verified domain that links to a privacy policy on the same domain
+# (https://support.google.com/cloud/answer/13464321). github.io
+# subdomains are automatically verified by Google; we avoid the
+# Search Console DNS-token dance entirely.
+
+title: SkyTwin
+description: A digital twin that learns what you'd want — and does it. Open source, runs locally.
+url: https://jayzalowitz.github.io
+baseurl: /skytwin
+
+# Don't process the technical-spec / safety-model / etc. markdown
+# files as web pages — they're for reading on GitHub.
+exclude:
+  - architecture-philosophy.md
+  - cockroach-architecture.md
+  - decision-engine.md
+  - dxt-transfer.md
+  - evals.md
+  - ironclaw-integration.md
+  - memory-swap.md
+  - product-spec.md
+  - safety-model.md
+  - technical-spec.md
+  - twin-mcp-protocol.md
+  - screenshots/
+
+# Don't try to install plugins; we're serving plain HTML.
+plugins: []

@@ -6,6 +6,11 @@ on:
     tags: ['v*']
   pull_request:
     branches: [main]
+  # Allow manual runs for cases where the path filter would otherwise
+  # skip the desktop/mobile jobs (e.g. a docs-only push to a feature
+  # branch when we still want to confirm the desktop bundle builds
+  # against the cumulative branch state).
+  workflow_dispatch: {}
 
 # Cancel in-progress runs for the same branch/PR
 concurrency:
@@ -93,21 +98,23 @@ jobs:
 
       - uses: dtinth/setup-github-actions-caching-for-turbo@v1
 
-      - name: Cache electron-builder downloads
+      - name: Cache electron-builder + CRDB downloads
         uses: actions/cache@v4
         with:
           path: |
             ~/Library/Caches/electron
             ~/Library/Caches/electron-builder
-          key: ${{ runner.os }}-electron-${{ hashFiles('apps/desktop/package.json', 'pnpm-lock.yaml') }}
+            ~/.cache/skytwin/crdb-binaries
+          key: ${{ runner.os }}-electron-crdb-${{ hashFiles('apps/desktop/package.json', 'apps/desktop/scripts/build-single-binary.sh', 'pnpm-lock.yaml') }}
           restore-keys: |
+            ${{ runner.os }}-electron-crdb-
             ${{ runner.os }}-electron-
 
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
 
       - name: Package macOS desktop app
-        run: pnpm --filter @skytwin/desktop package:mac
+        run: pnpm --filter skytwin-desktop package:mac
         env:
           # Skip code signing for CI builds (not notarized)
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
@@ -146,21 +153,45 @@ jobs:
       # (ENOENT on D:\tmp\turbogha.log). Electron-builder packaging dominates
       # wall-clock here; missing the TS-compile cache is negligible.
 
-      - name: Cache electron-builder downloads
+      - name: Cache electron-builder + CRDB downloads
         uses: actions/cache@v4
         with:
           path: |
             ~/AppData/Local/electron/Cache
             ~/AppData/Local/electron-builder/Cache
-          key: ${{ runner.os }}-electron-${{ hashFiles('apps/desktop/package.json', 'pnpm-lock.yaml') }}
+            ~/.cache/skytwin/crdb-binaries
+          key: ${{ runner.os }}-electron-crdb-${{ hashFiles('apps/desktop/package.json', 'apps/desktop/scripts/build-single-binary.sh', 'pnpm-lock.yaml') }}
           restore-keys: |
+            ${{ runner.os }}-electron-crdb-
             ${{ runner.os }}-electron-
 
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
 
+      # Exclude the electron-builder workspace from Windows Defender
+      # real-time scanning. NSIS's makensis is a 32-bit process that
+      # mmaps the intermediate `.nsis.7z` archive into its address space;
+      # when Defender opens the freshly-written .7z for a real-time scan
+      # before mmap fires, makensis gets a sharing-violation error that
+      # surfaces as `File: failed creating mmap of ...nsis.7z`. Two prior
+      # runs failed at the same makensis step with identical errors,
+      # neither caused by anything in the code — both were Defender
+      # racing the .7z write. Adding the workspace + electron-builder
+      # cache as ExclusionPaths is the documented electron-builder
+      # workaround (issue #6107) and only affects this Windows runner.
+      # We exclude paths instead of disabling Defender wholesale so the
+      # cockroach.exe signtool step (which IS scanned by Defender) keeps
+      # its safety net.
+      - name: Exclude electron-builder workspace from Defender
+        shell: powershell
+        run: |
+          Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE" -ErrorAction SilentlyContinue
+          Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\electron-builder\Cache" -ErrorAction SilentlyContinue
+          Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\electron\Cache" -ErrorAction SilentlyContinue
+          Write-Host "Defender exclusions added for build workspace + electron-builder caches."
+
       - name: Package Windows desktop app
-        run: pnpm --filter @skytwin/desktop package:win
+        run: pnpm --filter skytwin-desktop package:win
 
       - name: Upload Windows installer
         uses: actions/upload-artifact@v7
@@ -186,21 +217,23 @@ jobs:
 
       - uses: dtinth/setup-github-actions-caching-for-turbo@v1
 
-      - name: Cache electron-builder downloads
+      - name: Cache electron-builder + CRDB downloads
         uses: actions/cache@v4
         with:
           path: |
             ~/.cache/electron
             ~/.cache/electron-builder
-          key: ${{ runner.os }}-electron-${{ hashFiles('apps/desktop/package.json', 'pnpm-lock.yaml') }}
+            ~/.cache/skytwin/crdb-binaries
+          key: ${{ runner.os }}-electron-crdb-${{ hashFiles('apps/desktop/package.json', 'apps/desktop/scripts/build-single-binary.sh', 'pnpm-lock.yaml') }}
           restore-keys: |
+            ${{ runner.os }}-electron-crdb-
             ${{ runner.os }}-electron-
 
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
 
       - name: Package Linux desktop app
-        run: pnpm --filter @skytwin/desktop package:linux
+        run: pnpm --filter skytwin-desktop package:linux
         continue-on-error: true
 
       - name: Upload Linux AppImage

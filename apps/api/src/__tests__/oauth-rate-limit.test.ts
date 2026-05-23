@@ -1,9 +1,11 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   checkNewUserRateLimit,
+  checkPendingPollRateLimit,
   NEW_USER_RATE_LIMIT_MAX,
   NEW_USER_RATE_LIMIT_MAX_BUCKETS,
   NEW_USER_RATE_LIMIT_WINDOW_MS,
+  PENDING_POLL_RATE_LIMIT_MAX,
   _resetNewUserRateLimitForTests,
   _newUserRateLimitBucketCountForTests,
 } from '../routes/oauth.js';
@@ -87,5 +89,48 @@ describe('checkNewUserRateLimit', () => {
     expect(_newUserRateLimitBucketCountForTests()).toBeLessThanOrEqual(
       NEW_USER_RATE_LIMIT_MAX_BUCKETS,
     );
+  });
+});
+
+describe('checkPendingPollRateLimit', () => {
+  beforeEach(() => {
+    _resetNewUserRateLimitForTests();
+  });
+
+  it('allows the full poll loop (30 hits/min) without 429ing the legit wizard', () => {
+    // The Electron wizard polls every 2s for 5 minutes — that's 30
+    // requests/minute. If this bucket capped at NEW_USER_RATE_LIMIT_MAX
+    // (=5) the wizard would 429 after ~10 seconds and look "stuck".
+    // PENDING_POLL_RATE_LIMIT_MAX must be at least 30; we ship 120 for
+    // comfortable headroom on jitter + retries.
+    const now = 9_000_000;
+    expect(PENDING_POLL_RATE_LIMIT_MAX).toBeGreaterThanOrEqual(30);
+    for (let i = 0; i < 30; i++) {
+      const r = checkPendingPollRateLimit('192.0.2.1', now + i * 2_000);
+      expect(r.allowed).toBe(true);
+    }
+  });
+
+  it('uses a SEPARATE bucket from the newUser path so authorize+poll cant cross-starve', () => {
+    // Earlier code shared the bucket; a single ?newUser=true hit would
+    // consume one of the 5 slots and a few poll hits would knock the
+    // wizard offline. Distinct buckets mean filling one has no effect
+    // on the other.
+    const now = 11_000_000;
+    for (let i = 0; i < NEW_USER_RATE_LIMIT_MAX; i++) {
+      checkNewUserRateLimit('198.51.100.1', now);
+    }
+    expect(checkNewUserRateLimit('198.51.100.1', now).allowed).toBe(false);
+    // Same IP — pending bucket is untouched.
+    expect(checkPendingPollRateLimit('198.51.100.1', now).allowed).toBe(true);
+  });
+
+  it('rejects beyond PENDING_POLL_RATE_LIMIT_MAX', () => {
+    const now = 13_000_000;
+    for (let i = 0; i < PENDING_POLL_RATE_LIMIT_MAX; i++) {
+      checkPendingPollRateLimit('203.0.113.1', now);
+    }
+    const blocked = checkPendingPollRateLimit('203.0.113.1', now);
+    expect(blocked.allowed).toBe(false);
   });
 });

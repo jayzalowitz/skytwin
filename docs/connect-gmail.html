@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Connect Gmail to SkyTwin — 5-minute setup</title>
+  <meta name="description" content="How to enable Gmail features in SkyTwin: a five-minute walkthrough to create your own Google Cloud OAuth client so SkyTwin can read and label your inbox.">
+  <link rel="canonical" href="https://jayzalowitz.github.io/skytwin/connect-gmail.html">
+  <style>
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0b0b10; color: #e8e8ee; line-height: 1.65; }
+    .wrap { max-width: 760px; margin: 0 auto; padding: 3rem 1.5rem 4rem; }
+    h1 { font-size: 2rem; margin: 0 0 0.5rem; letter-spacing: -0.02em; }
+    h2 { font-size: 1.25rem; margin: 2rem 0 0.5rem; }
+    .meta { color: #9b9bab; font-size: 0.95rem; margin: 0 0 2rem; }
+    a { color: #7c5cff; }
+    a:hover { color: #9d83ff; }
+    nav a { color: #9b9bab; font-size: 0.9rem; }
+    ol { padding-left: 1.5rem; }
+    li { margin-bottom: 0.75rem; }
+    code { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace; background: #16161e; padding: 0.1rem 0.4rem; border-radius: 0.3rem; font-size: 0.92em; }
+    .callout {
+      background: rgba(124,92,255,0.1); border-left: 4px solid #7c5cff;
+      padding: 1rem 1.25rem; border-radius: 0.4rem; margin: 1.5rem 0;
+    }
+    .warn { background: rgba(255,180,80,0.1); border-left-color: #ffb450; }
+    .step {
+      background: #16161e; border: 1px solid #2a2a36;
+      padding: 1.2rem 1.5rem; border-radius: 0.6rem; margin: 1rem 0;
+    }
+    .step h2 { margin-top: 0; }
+    footer { margin-top: 3rem; padding-top: 1.5rem; border-top: 1px solid #2a2a36; color: #9b9bab; font-size: 0.9rem; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <nav><a href="index.html">← Back to SkyTwin</a></nav>
+    <h1>Connect Gmail to SkyTwin</h1>
+    <p class="meta">Five minutes, one time. This is how every SkyTwin user wires up Gmail today — the inbox triage, draft replies, content-aware classification all flow through credentials you create here.</p>
+
+    <div class="callout">
+      <strong>Why you're seeing this page.</strong> The body of every email is the most sensitive thing Google gates behind their <em>restricted</em> OAuth tier — a public app like SkyTwin can't request <code>gmail.readonly</code> without passing an annual third-party security assessment ($15k–$50k). Rather than wait for that, SkyTwin lets you bring your own Google Cloud OAuth client. <strong>Your client is private to you</strong>, so Google's restricted-scope rules don't apply — you can use Gmail through it immediately. The walkthrough below is the actual five-minute setup. Most of it is clicking through Google Cloud Console screens. The SkyTwin desktop app has the same wizard at <code>#/connect-gmail</code> if you prefer driving it from inside the dashboard.
+    </div>
+
+    <div class="step">
+      <h2>1. Create a Google Cloud project</h2>
+      <ol>
+        <li>Open <a href="https://console.cloud.google.com/projectcreate" target="_blank" rel="noreferrer">console.cloud.google.com/projectcreate</a>.</li>
+        <li>Project name: anything you'll recognise — <code>my-skytwin</code> works.</li>
+        <li>Leave organisation as "No organisation." Click <strong>Create</strong>.</li>
+      </ol>
+    </div>
+
+    <div class="step">
+      <h2>2. Enable the Gmail API</h2>
+      <ol>
+        <li>Open <a href="https://console.cloud.google.com/apis/library/gmail.googleapis.com" target="_blank" rel="noreferrer">console.cloud.google.com/apis/library/gmail.googleapis.com</a>.</li>
+        <li>Make sure your new project is selected at the top.</li>
+        <li>Click <strong>Enable</strong>. (Repeat for Calendar if you want everything in one client: <a href="https://console.cloud.google.com/apis/library/calendar-json.googleapis.com" target="_blank" rel="noreferrer">Calendar API</a>.)</li>
+      </ol>
+    </div>
+
+    <div class="step">
+      <h2>3. Configure the OAuth consent screen</h2>
+      <ol>
+        <li>Open <a href="https://console.cloud.google.com/auth/branding" target="_blank" rel="noreferrer">console.cloud.google.com/auth/branding</a>.</li>
+        <li>Choose <strong>External</strong> user type, click Create.</li>
+        <li>App name: <code>my-skytwin</code> (or anything). Support email: your Gmail. Developer email: your Gmail. Click Save and Continue through the rest of the wizard. Skip the optional scope list and the logo — you don't need them for personal use.</li>
+        <li>On the Test users step, add your own Gmail address. Click Save and Continue.</li>
+      </ol>
+      <p>The project stays in "Testing" mode forever — that's fine. Testing-mode OAuth clients work indefinitely for users on the test-user list (up to 100). Since you're the only user, you'll never hit the cap.</p>
+    </div>
+
+    <div class="step">
+      <h2>4. Create the OAuth client</h2>
+      <ol>
+        <li>Open <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noreferrer">console.cloud.google.com/apis/credentials</a>.</li>
+        <li>Click <strong>Create Credentials → OAuth client ID</strong>.</li>
+        <li>Application type: <strong>Web application</strong>. (Yes, Web — even though SkyTwin is a desktop app. The OAuth flow lands on <code>http://127.0.0.1</code>, which Google's "Web application" type permits and which gives us a client_secret we need for the Gmail token-exchange. Don't pick "Desktop app" here — that type wires up an out-of-band redirect SkyTwin doesn't speak.)</li>
+        <li>Name: <code>SkyTwin client</code>.</li>
+        <li>Authorized redirect URIs: add <code>http://localhost:3100/api/oauth/google/callback</code> and <code>http://127.0.0.1:3100/api/oauth/google/callback</code>. (Two entries because some browsers normalise differently.)</li>
+        <li>Click Create. Copy the <strong>Client ID</strong> and <strong>Client secret</strong> from the dialog.</li>
+      </ol>
+    </div>
+
+    <div class="step">
+      <h2>5. Paste into SkyTwin</h2>
+      <ol>
+        <li>Open the SkyTwin desktop app.</li>
+        <li>Go to <strong>Setup → Google account credentials</strong>.</li>
+        <li>Paste the Client ID and Client secret. Click Save.</li>
+        <li>Click <strong>Connect Gmail</strong>. The OAuth consent screen will open — choose your account, click "Continue" through the warning (because the app is "Testing" mode, Google shows a "Google hasn't verified this app" warning for your own client → click Advanced → Go to my-skytwin → Continue).</li>
+        <li>Done. SkyTwin can now read and label your inbox.</li>
+      </ol>
+    </div>
+
+    <div class="callout warn">
+      <strong>What can go wrong:</strong>
+      <ul>
+        <li><strong>"Access blocked: this app is in testing mode"</strong> — you forgot to add yourself as a test user in step 3. Go back to <a href="https://console.cloud.google.com/auth/audience" target="_blank" rel="noreferrer">Audience</a> and add your email.</li>
+        <li><strong>"redirect_uri_mismatch"</strong> — the SkyTwin desktop is binding to a different port than 3100. Edit the OAuth client in <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noreferrer">Credentials</a> and add the actual port SkyTwin is using.</li>
+        <li><strong>"invalid_scope"</strong> — the Gmail API isn't enabled on your project. Go back to step 2.</li>
+      </ul>
+    </div>
+
+    <h2>What about Calendar?</h2>
+    <p>Calendar works <em>without</em> this setup using the SkyTwin-bundled OAuth client. If you also want Calendar to flow through your own OAuth client (so all Google access uses one set of credentials you control), enable the Calendar API in step 2 and SkyTwin will pick that up automatically — the same Setup page covers both.</p>
+
+    <h2>When does this stop being necessary?</h2>
+    <p>When SkyTwin's bundled OAuth client passes Google's <a href="https://support.google.com/cloud/answer/9110914" target="_blank" rel="noreferrer">restricted-scope security assessment</a>. That's an annual ~$15k–$50k third-party audit; we'll fund it once SkyTwin's usage justifies the cost. Tracking issue: <a href="https://github.com/jayzalowitz/skytwin/issues" target="_blank" rel="noreferrer">github.com/jayzalowitz/skytwin/issues</a> (search for "restricted-scope verification").</p>
+
+    <footer>
+      <p>Last updated: 2026-05-22.</p>
+      <p>Source for this page: <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/connect-gmail.html">docs/connect-gmail.html</a> in the SkyTwin repository.</p>
+    </footer>
+  </div>
+</body>
+</html>

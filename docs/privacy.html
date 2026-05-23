@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SkyTwin — Privacy Policy</title>
+  <meta name="description" content="SkyTwin's privacy policy: how Google user data is accessed, used, and stored. SkyTwin runs locally — no user data is sent to our servers.">
+  <link rel="canonical" href="https://jayzalowitz.github.io/skytwin/privacy.html">
+  <style>
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0b0b10; color: #e8e8ee; line-height: 1.65; }
+    .wrap { max-width: 760px; margin: 0 auto; padding: 3rem 1.5rem 4rem; }
+    h1 { font-size: 2.2rem; margin: 0 0 1rem; letter-spacing: -0.02em; }
+    h2 { font-size: 1.3rem; margin: 2rem 0 0.75rem; letter-spacing: -0.01em; }
+    h3 { font-size: 1.05rem; margin: 1.25rem 0 0.5rem; }
+    p, li { font-size: 1.05rem; }
+    .meta { color: #9b9bab; font-size: 0.95rem; margin: 0 0 2rem; }
+    a { color: #7c5cff; }
+    a:hover { color: #9d83ff; }
+    nav a { color: #9b9bab; font-size: 0.9rem; }
+    code { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace; background: #16161e; padding: 0.1rem 0.4rem; border-radius: 0.3rem; font-size: 0.92em; }
+    .callout {
+      background: rgba(124,92,255,0.1); border-left: 4px solid #7c5cff;
+      padding: 1rem 1.25rem; border-radius: 0.4rem; margin: 1.5rem 0;
+    }
+    footer { margin-top: 3rem; padding-top: 1.5rem; border-top: 1px solid #2a2a36; color: #9b9bab; font-size: 0.9rem; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <nav><a href="index.html">← Back to SkyTwin</a></nav>
+    <h1>Privacy Policy</h1>
+    <p class="meta">Effective: 2026-05-22. SkyTwin is an open-source personal automation project. This policy describes how the SkyTwin desktop app handles Google user data accessed via Google API scopes.</p>
+
+    <div class="callout">
+      <strong>Summary:</strong> SkyTwin runs entirely on your computer. Your Google data (emails, calendar events, profile information) never leaves your machine. We do not operate servers that hold your user data; the SkyTwin developers cannot access it.
+    </div>
+
+    <h2>Who we are</h2>
+    <p>SkyTwin is developed by Jay Zalowitz, an independent open-source contributor. Source code, including the entirety of the data-handling implementation, lives at <a href="https://github.com/jayzalowitz/skytwin">github.com/jayzalowitz/skytwin</a> under the Apache 2.0 license. There is no SkyTwin Inc., no cloud product, and no centralized data store. Contact: open an issue at <a href="https://github.com/jayzalowitz/skytwin/issues">github.com/jayzalowitz/skytwin/issues</a>.</p>
+
+    <h2>What Google user data we access</h2>
+    <p>When you connect your Google account in the SkyTwin desktop app, the app requests the following OAuth scopes:</p>
+    <ul>
+      <li><code>openid</code> + <code>email</code> + <code>profile</code> — to identify which Google account is connecting, used as the primary key for the local twin profile.</li>
+      <li><code>https://www.googleapis.com/auth/gmail.readonly</code> — to read incoming mail metadata and body content so SkyTwin can interpret signals (a newsletter just arrived; a friend asked for a meeting; a calendar invite needs response).</li>
+      <li><code>https://www.googleapis.com/auth/gmail.modify</code> — to apply labels and archive mail that you have taught SkyTwin to archive automatically. SkyTwin never <em>sends</em> mail on your behalf and never <em>deletes</em> mail.</li>
+      <li><code>https://www.googleapis.com/auth/calendar.readonly</code> — to read your calendar so SkyTwin can spot conflicts, suggest times, and learn your scheduling preferences.</li>
+      <li><code>https://www.googleapis.com/auth/calendar.events</code> — to create, modify, and respond to calendar invites with your approval, or automatically for events that match patterns you have explicitly taught the twin.</li>
+    </ul>
+
+    <h2>How we use Google user data</h2>
+    <p>SkyTwin uses Google user data exclusively to provide the user-facing personal-assistant features visible in the SkyTwin desktop app. Specifically:</p>
+    <ul>
+      <li><strong>Inbox triage</strong> — classify mail by sender, content, and urgency; surface the few items that need your attention; auto-archive ones you have taught the app to ignore.</li>
+      <li><strong>Calendar management</strong> — detect conflicts; auto-respond to invites that match your stated preferences; suggest scheduling actions.</li>
+      <li><strong>Preference learning</strong> — observe your actions (archive, reply, decline, accept) and update the typed twin profile stored locally. The twin profile is what makes future predictions about what you would want.</li>
+    </ul>
+    <p>SkyTwin does not use Google user data for advertising, model training across users, lending decisions, or any purpose other than the personal-assistant features described above.</p>
+
+    <h2>How we store and protect your data</h2>
+    <p>All data accessed via Google APIs — both raw API responses and any derived signals, decisions, preferences, and twin profile records — is stored exclusively in a CockroachDB database that runs locally on the device where SkyTwin is installed. The database files live in your operating-system-standard application data directory:</p>
+    <ul>
+      <li>macOS: <code>~/Library/Application Support/SkyTwin/crdb-data/</code></li>
+      <li>Windows: <code>%LOCALAPPDATA%\SkyTwin\crdb-data\</code></li>
+      <li>Linux: <code>~/.local/share/SkyTwin/crdb-data/</code></li>
+    </ul>
+    <p>OAuth refresh tokens and any other sensitive credentials are encrypted at rest using AES-256-GCM with per-user keys derived via scrypt; the implementation lives in the <code>@skytwin/credential-vault</code> package on GitHub.</p>
+    <p>No telemetry, no analytics, no error reporting service sends Google user data, derived data, or identifying information to skytwin.dev, the SkyTwin developers, Google Cloud, or any other server.</p>
+
+    <h2>Data sharing &amp; transfers</h2>
+    <p>SkyTwin does not transfer Google user data to any third party. The only network connections the app makes with your Google data are:</p>
+    <ol>
+      <li>Direct API calls from the SkyTwin desktop process to Google API servers (e.g. <code>gmail.googleapis.com</code>, <code>calendar.googleapis.com</code>) to fetch the data you authorized.</li>
+      <li>Optional outbound calls to LLM providers (OpenAI, Anthropic, Google AI) <em>only if</em> you have configured one of those in Setup — the prompts may contain your data, in which case that provider's terms apply. The default install uses the embedded <code>llama.cpp</code> runtime and makes no outbound LLM calls.</li>
+    </ol>
+    <p>We do not sell user data. We cannot sell user data — we do not possess it.</p>
+
+    <h2>Human access to Google user data</h2>
+    <p>The SkyTwin development team has no operational mechanism to read your Google user data. The data lives on your device, encrypted credentials included. The only humans who can read it are:</p>
+    <ul>
+      <li>You, by opening the SkyTwin dashboard or directly querying your local CockroachDB instance.</li>
+      <li>Anyone with administrator access to your computer, subject to your operating system's standard access controls.</li>
+    </ul>
+
+    <h2>Limited Use compliance</h2>
+    <p>SkyTwin's use of information received from Google APIs adheres to the <a href="https://developers.google.com/terms/api-services-user-data-policy#additional_requirements_for_specific_api_scopes">Google API Services User Data Policy</a>, including the Limited Use requirements. Specifically:</p>
+    <ul>
+      <li>Use is limited to providing or improving user-facing features prominent in SkyTwin's interface (mail triage, calendar management, the twin dashboard).</li>
+      <li>Data is not transferred to others except as needed to provide those user-facing features or to comply with applicable law.</li>
+      <li>Data is not used for advertising, including retargeting or personalized advertising.</li>
+      <li>No humans read the data except where strictly necessary for security or law-compliance purposes, and only with appropriate authorization.</li>
+    </ul>
+
+    <h2>Your controls</h2>
+    <ul>
+      <li><strong>Revoke at any time</strong> — go to <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a> and remove SkyTwin's access. SkyTwin will lose the ability to read your Gmail or Calendar immediately.</li>
+      <li><strong>Delete local data</strong> — quitting the app and deleting the data directory (see locations above) removes all stored Google user data and derived twin records.</li>
+      <li><strong>Pause the twin</strong> — the SkyTwin desktop has a "Pause" control that stops all signal ingestion and decision processing without revoking OAuth access.</li>
+    </ul>
+
+    <h2>Children</h2>
+    <p>SkyTwin is not designed for or directed at children under 13. We do not knowingly collect data from children.</p>
+
+    <h2>Changes to this policy</h2>
+    <p>Material changes will be announced in the project CHANGELOG on GitHub (<a href="https://github.com/jayzalowitz/skytwin/blob/main/CHANGELOG.md">CHANGELOG.md</a>) and reflected here. This page is versioned in git alongside the source code; previous revisions are available in the repository history.</p>
+
+    <h2>Contact</h2>
+    <p>Privacy questions, security disclosures, or data-handling concerns: open an issue at <a href="https://github.com/jayzalowitz/skytwin/issues">github.com/jayzalowitz/skytwin/issues</a> or, for security-sensitive matters, follow the disclosure process described in <a href="https://github.com/jayzalowitz/skytwin/blob/main/SECURITY.md">SECURITY.md</a>.</p>
+
+    <footer>
+      <p>Last updated: 2026-05-22.</p>
+      <p>Source for this page: <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/privacy.html">docs/privacy.html</a> in the SkyTwin repository.</p>
+    </footer>
+  </div>
+</body>
+</html>

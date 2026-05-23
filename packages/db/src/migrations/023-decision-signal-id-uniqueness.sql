@@ -22,8 +22,17 @@ UPDATE decisions
  WHERE signal_id IS NULL
    AND raw_event ? 'signalId';
 
--- Partial unique index — NULL signal_ids stay free. Matches the
--- (user_id, signal_id) tuple the repository checks before inserting.
-CREATE UNIQUE INDEX IF NOT EXISTS decisions_user_signal_unique_idx
-    ON decisions (user_id, signal_id)
- WHERE signal_id IS NOT NULL;
+-- Adding the column + backfilling are pure-additive operations that
+-- compose with any existing data shape, so they stay in this migration.
+-- The duplicate-dedupe and the partial UNIQUE INDEX have moved to
+-- migration 057-dedupe-decisions-and-unique-index.sql so they can run
+-- AFTER the full schema is in place — earlier attempts here failed
+-- because the FK chain we'd need to walk for dedupe references columns
+-- (e.g. decision_outcomes.execution_plan_id from migration 055) that
+-- don't exist yet at migration 023's apply time.
+--
+-- Net effect for fresh installs: 023 adds signal_id, 024–056 build the
+-- rest of the schema, 057 dedupes any historical dupes and creates the
+-- unique index. Net effect for existing installs that already had the
+-- index applied (CI, prod): 057's CREATE UNIQUE INDEX IF NOT EXISTS is
+-- a no-op.
