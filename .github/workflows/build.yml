@@ -114,7 +114,14 @@ jobs:
       - run: pnpm build
 
       - name: Package macOS desktop app
-        run: pnpm --filter skytwin-desktop package:mac
+        # `--publish never` is critical: this workflow is the
+        # PR/main validation gate, not the release pipeline. When a
+        # release tag (e.g. v0.6.57.0) lands on main, electron-builder's
+        # default auto-publish heuristic would otherwise try to upload to
+        # GitHub Releases without the GH_TOKEN this workflow doesn't
+        # set, failing the whole macOS job. release.yml is the
+        # exclusive publish path; build.yml just validates packageability.
+        run: pnpm --filter skytwin-desktop run package:mac -- --publish never
         env:
           # Skip code signing for CI builds (not notarized)
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
@@ -191,7 +198,8 @@ jobs:
           Write-Host "Defender exclusions added for build workspace + electron-builder caches."
 
       - name: Package Windows desktop app
-        run: pnpm --filter skytwin-desktop package:win
+        # See macOS comment re: --publish never; same reasoning here.
+        run: pnpm --filter skytwin-desktop run package:win -- --publish never
 
       - name: Upload Windows installer
         uses: actions/upload-artifact@v7
@@ -233,7 +241,8 @@ jobs:
       - run: pnpm build
 
       - name: Package Linux desktop app
-        run: pnpm --filter skytwin-desktop package:linux
+        # See macOS comment re: --publish never; same reasoning here.
+        run: pnpm --filter skytwin-desktop run package:linux -- --publish never
         continue-on-error: true
 
       - name: Upload Linux AppImage

@@ -50,9 +50,12 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9
+      # pnpm/action-setup@v5 reads the `packageManager` field from
+      # package.json instead of taking a `version:` input. The earlier
+      # `@v4 + version: 9` shape failed every release job at setup with
+      # `ERR_PNPM_BAD_PM_VERSION: Multiple versions of pnpm specified`
+      # because v4 saw both inputs. Aligned with build.yml's v5 usage.
+      - uses: pnpm/action-setup@v5
 
       - uses: actions/setup-node@v6
         with:
@@ -64,35 +67,60 @@ jobs:
       - uses: dtinth/setup-github-actions-caching-for-turbo@v1
         if: matrix.os != 'windows-latest'
 
-      - name: Cache electron-builder downloads (macOS)
+      # CRDB binary cache + Defender-exclusion parity with build.yml so the
+      # release path doesn't re-discover the same Windows mmap + slow-copy
+      # bottlenecks the CI loop already solved. Same cache key shape as
+      # build.yml so warm caches from PR runs prime release runs and vice
+      # versa.
+      - name: Cache electron-builder + CRDB downloads (macOS)
         if: matrix.os == 'macos-latest'
         uses: actions/cache@v4
         with:
           path: |
             ~/Library/Caches/electron
             ~/Library/Caches/electron-builder
-          key: ${{ runner.os }}-electron-${{ hashFiles('apps/desktop/package.json', 'pnpm-lock.yaml') }}
-          restore-keys: ${{ runner.os }}-electron-
+            ~/.cache/skytwin/crdb-binaries
+          key: ${{ runner.os }}-electron-crdb-${{ hashFiles('apps/desktop/package.json', 'apps/desktop/scripts/build-single-binary.sh', 'pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-electron-crdb-
+            ${{ runner.os }}-electron-
 
-      - name: Cache electron-builder downloads (Linux)
+      - name: Cache electron-builder + CRDB downloads (Linux)
         if: matrix.os == 'ubuntu-latest'
         uses: actions/cache@v4
         with:
           path: |
             ~/.cache/electron
             ~/.cache/electron-builder
-          key: ${{ runner.os }}-electron-${{ hashFiles('apps/desktop/package.json', 'pnpm-lock.yaml') }}
-          restore-keys: ${{ runner.os }}-electron-
+            ~/.cache/skytwin/crdb-binaries
+          key: ${{ runner.os }}-electron-crdb-${{ hashFiles('apps/desktop/package.json', 'apps/desktop/scripts/build-single-binary.sh', 'pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-electron-crdb-
+            ${{ runner.os }}-electron-
 
-      - name: Cache electron-builder downloads (Windows)
+      - name: Cache electron-builder + CRDB downloads (Windows)
         if: matrix.os == 'windows-latest'
         uses: actions/cache@v4
         with:
           path: |
             ~/AppData/Local/electron/Cache
             ~/AppData/Local/electron-builder/Cache
-          key: ${{ runner.os }}-electron-${{ hashFiles('apps/desktop/package.json', 'pnpm-lock.yaml') }}
-          restore-keys: ${{ runner.os }}-electron-
+            ~/.cache/skytwin/crdb-binaries
+          key: ${{ runner.os }}-electron-crdb-${{ hashFiles('apps/desktop/package.json', 'apps/desktop/scripts/build-single-binary.sh', 'pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-electron-crdb-
+            ${{ runner.os }}-electron-
+
+      # Mirror the Defender exclusion from build.yml so the release Windows
+      # job doesn't hit the same makensis mmap race PR #350 fought through.
+      - name: Exclude electron-builder workspace from Defender (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: powershell
+        run: |
+          Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE" -ErrorAction SilentlyContinue
+          Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\electron-builder\Cache" -ErrorAction SilentlyContinue
+          Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\electron\Cache" -ErrorAction SilentlyContinue
+          Write-Host "Defender exclusions added for build workspace + electron-builder caches."
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
