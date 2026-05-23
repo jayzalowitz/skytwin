@@ -413,11 +413,52 @@ jobs:
           path: apps/mobile/SkyTwin-iOS-simulator.zip
           if-no-files-found: warn
 
-  # NOTE: A `release:` job used to live here that fired on tag push and
-  # uploaded artifacts via softprops/action-gh-release. That raced with
-  # release.yml's electron-builder publish (both fire on v*.*.* tag, both
-  # try to upload to the same GitHub Release). release.yml is the canonical
-  # publisher — it has the code-signing env wiring (CSC_LINK, APPLE_ID,
-  # etc.) that build.yml never had. The legacy release job was deleted in
-  # the CI-release-fix PR; build.yml stays as validation-only now, no
-  # publishing path.
+  # ──────────────────────────────────────────────
+  # Release — attach all artifacts to GitHub Release on tag push
+  # ──────────────────────────────────────────────
+  #
+  # History: this job was deleted in PR #352 to avoid double-publishing
+  # against release.yml's electron-builder Github publisher. release.yml
+  # then failed FIVE consecutive release attempts (pnpm setup, workspace
+  # build, --publish arg forwarding, CSC empty-string, ...). Each fix
+  # surfaced the next bug because release.yml was never tested
+  # end-to-end. Reverting: this simpler softprops-based path downloads
+  # the artifacts the desktop-mac/win/linux jobs already produce
+  # successfully (build.yml's matrix is well-exercised) and creates a
+  # draft GitHub Release. release.yml was deleted entirely in the same
+  # PR — build.yml is now the only publisher.
+  release:
+    name: Create GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - desktop-mac
+      - desktop-windows
+      - desktop-linux
+      - mobile-android
+      - mobile-ios
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: find artifacts -type f | sort
+
+      - name: Create release
+        uses: softprops/action-gh-release@v3
+        with:
+          draft: true
+          generate_release_notes: true
+          files: |
+            artifacts/SkyTwin-macOS-dmg/*
+            artifacts/SkyTwin-macOS-zip/*
+            artifacts/SkyTwin-Windows-installer/*
+            artifacts/SkyTwin-Linux-AppImage/*
+            artifacts/SkyTwin-Linux-deb/*
+            artifacts/SkyTwin-Linux-rpm/*
+            artifacts/SkyTwin-Android-apk/*
+            artifacts/SkyTwin-iOS-simulator/*
