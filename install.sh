@@ -92,7 +92,14 @@ step "Fetching the SkyTwin repo into $INSTALL_DIR"
 # a shared object store, so `[ -d $INSTALL_DIR/.git ]` returns false even
 # though the repo is fully present. The `-e` check + `ls -A` fallback
 # covers that and also handles a hand-extracted source tree.
-if [ -d "$INSTALL_DIR/.git" ]; then
+if [ -e "$INSTALL_DIR/.git" ]; then
+  # `-e` (not `-d`) so Conductor worktrees and any other gitlink-based
+  # setup match here. In a worktree, `.git` is a 75-byte file pointing
+  # at the shared object store, not a directory; `git -C` follows the
+  # gitlink transparently so the fetch+merge below works either way.
+  # The header comment above promised this behaviour; the previous `-d`
+  # check silently fell through to the "no .git directory" branch and
+  # skipped fetch+merge.
   ok "Already cloned — pulling latest"
   # Tolerate offline / sandboxed environments (validation containers, etc.)
   # where `origin` may not be reachable. The on-disk version is then used

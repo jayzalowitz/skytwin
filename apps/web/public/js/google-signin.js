@@ -26,6 +26,17 @@ function generatePendingKey() {
   }
   // Polyfill: 16 random bytes, set the version (4) + variant nibbles
   // per RFC 4122 §4.4, format as 8-4-4-4-12 hex.
+  if (typeof crypto === 'undefined' || typeof crypto.getRandomValues !== 'function') {
+    // Both crypto.randomUUID and crypto.getRandomValues are missing.
+    // Throwing a typed error beats the previous behaviour (silent
+    // ReferenceError from the unchecked crypto.getRandomValues call
+    // below) — the desktop new-user OAuth flow can't safely synthesise
+    // a pendingKey from Math.random (predictable across browser
+    // sessions), so the right move is to surface the missing-primitive
+    // case explicitly so the caller can fall back to the existing-user
+    // path or display a "browser too old" error.
+    throw new Error('Web Crypto API unavailable: cannot generate desktop pendingKey. Use a current browser or the existing-user sign-in path.');
+  }
   const bytes = new Uint8Array(16);
   crypto.getRandomValues(bytes);
   bytes[6] = (bytes[6] & 0x0f) | 0x40;

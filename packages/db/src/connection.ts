@@ -43,17 +43,29 @@ export interface DatabaseConfig {
  *                                                     legacy DATABASE_SSL=true)
  *   verify-ca, verify-full → { rejectUnauthorized: true }
  *
- * Unknown values fall through to undefined so a typo doesn't silently
- * downgrade — the env-var fallback path applies as before.
+ * Unknown values throw a typed error rather than falling through to the
+ * `DATABASE_SSL` fallback. The previous behaviour returned `undefined` on
+ * a typo (e.g. `sslmode=requier`) which then hit the env-var path; with
+ * `DATABASE_SSL` unset (the default), the connection silently downgraded
+ * to plaintext against a secure CRDB cluster. A startup-time throw forces
+ * the operator to fix the misspelling rather than ship a covert plaintext
+ * link. Module-load callers see the error via getPool() the first time
+ * they request a connection.
  */
 function sslConfigForSslmode(sslmode: string | null): DatabaseConfig['ssl'] | undefined {
   if (sslmode === null) return undefined;
   if (sslmode === 'disable') return false;
+  if (sslmode === 'allow' || sslmode === 'prefer') return undefined;
   if (sslmode === 'require') return { rejectUnauthorized: false };
   if (sslmode === 'verify-ca' || sslmode === 'verify-full') {
     return { rejectUnauthorized: true };
   }
-  return undefined;
+  throw new Error(
+    `DATABASE_URL sslmode=${JSON.stringify(sslmode)} is not a recognized libpq value. ` +
+    `Use one of: disable, allow, prefer, require, verify-ca, verify-full. ` +
+    `An unrecognized value would otherwise fall through to the DATABASE_SSL env var (default false) ` +
+    `and silently downgrade the connection to plaintext.`,
+  );
 }
 
 function parseDatabaseUrl(url: string): Partial<DatabaseConfig> | null {

@@ -51,6 +51,12 @@ export const oauthPendingSigninRepository = {
         input.expiresAt,
       ],
     );
+    // Best-effort sweep. The header docstring promises this, and without
+    // it the table grows monotonically as users abandon mid-flight OAuth
+    // (close the consent tab, kill the wizard, hit the 5-min poll
+    // timeout). Sweep failures are swallowed because the primary write
+    // already succeeded — cleanup is housekeeping.
+    this.sweepExpired().catch(() => { /* sweep is housekeeping; primary write succeeded */ });
   },
 
   /**
