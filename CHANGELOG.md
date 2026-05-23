@@ -42,6 +42,8 @@ All notable changes to SkyTwin will be documented in this file.
 
 - **`nsis.differentialPackage` set to `false` + `compression: "normal"` pinned explicitly.** `differentialPackage: true` (electron-builder default) generates a `.blockmap` file for `electron-updater` delta downloads — useful when shipping incremental updates over a CDN, useless until §1.5 (release tag + auto-update channel) ships. Disabling it skips a slow post-NSIS step. `compression` defaults to `"normal"` already; pinning it makes the choice explicit so a future electron-builder version that silently bumps to `"maximum"` (LZMA-max, much slower) doesn't regress build time without anyone noticing.
 
+- **CRDB binaries cached in CI + downloads parallelized.** `.github/workflows/build.yml`'s three desktop jobs now include `~/.cache/skytwin/crdb-binaries` in their `actions/cache@v4` `path` list — the five-platform CRDB binary set (~700MB) had been re-downloaded on every desktop build because the cache only covered electron / electron-builder dirs. The cache key now also hashes `apps/desktop/scripts/build-single-binary.sh` so a `SKYTWIN_CRDB_VERSION` bump invalidates correctly. Inside the script, the `for entry in CRDB_TARGETS; bundle_crdb_binary "$entry"; done` sequential loop is replaced with backgrounded calls + `wait $pid` reap, so even on a cold cache the five downloads happen in parallel (~5-10s end-to-end vs ~25-50s sequential). Each `bundle_crdb_binary` call uses local-scoped variables, a per-platform dest dir, and a URL-specific cache file, so racing them is safe. Failed background jobs surface via an explicit `crdb_failed` flag — `set -e` alone doesn't trip on backgrounded function failures.
+
 ## [0.6.57.0] - 2026-05-22
 
 ### Fixed

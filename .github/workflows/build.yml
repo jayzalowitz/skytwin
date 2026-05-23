@@ -98,14 +98,16 @@ jobs:
 
       - uses: dtinth/setup-github-actions-caching-for-turbo@v1
 
-      - name: Cache electron-builder downloads
+      - name: Cache electron-builder + CRDB downloads
         uses: actions/cache@v4
         with:
           path: |
             ~/Library/Caches/electron
             ~/Library/Caches/electron-builder
-          key: ${{ runner.os }}-electron-${{ hashFiles('apps/desktop/package.json', 'pnpm-lock.yaml') }}
+            ~/.cache/skytwin/crdb-binaries
+          key: ${{ runner.os }}-electron-crdb-${{ hashFiles('apps/desktop/package.json', 'apps/desktop/scripts/build-single-binary.sh', 'pnpm-lock.yaml') }}
           restore-keys: |
+            ${{ runner.os }}-electron-crdb-
             ${{ runner.os }}-electron-
 
       - run: pnpm install --frozen-lockfile
@@ -151,14 +153,16 @@ jobs:
       # (ENOENT on D:\tmp\turbogha.log). Electron-builder packaging dominates
       # wall-clock here; missing the TS-compile cache is negligible.
 
-      - name: Cache electron-builder downloads
+      - name: Cache electron-builder + CRDB downloads
         uses: actions/cache@v4
         with:
           path: |
             ~/AppData/Local/electron/Cache
             ~/AppData/Local/electron-builder/Cache
-          key: ${{ runner.os }}-electron-${{ hashFiles('apps/desktop/package.json', 'pnpm-lock.yaml') }}
+            ~/.cache/skytwin/crdb-binaries
+          key: ${{ runner.os }}-electron-crdb-${{ hashFiles('apps/desktop/package.json', 'apps/desktop/scripts/build-single-binary.sh', 'pnpm-lock.yaml') }}
           restore-keys: |
+            ${{ runner.os }}-electron-crdb-
             ${{ runner.os }}-electron-
 
       - run: pnpm install --frozen-lockfile
@@ -213,14 +217,16 @@ jobs:
 
       - uses: dtinth/setup-github-actions-caching-for-turbo@v1
 
-      - name: Cache electron-builder downloads
+      - name: Cache electron-builder + CRDB downloads
         uses: actions/cache@v4
         with:
           path: |
             ~/.cache/electron
             ~/.cache/electron-builder
-          key: ${{ runner.os }}-electron-${{ hashFiles('apps/desktop/package.json', 'pnpm-lock.yaml') }}
+            ~/.cache/skytwin/crdb-binaries
+          key: ${{ runner.os }}-electron-crdb-${{ hashFiles('apps/desktop/package.json', 'apps/desktop/scripts/build-single-binary.sh', 'pnpm-lock.yaml') }}
           restore-keys: |
+            ${{ runner.os }}-electron-crdb-
             ${{ runner.os }}-electron-
 
       - run: pnpm install --frozen-lockfile

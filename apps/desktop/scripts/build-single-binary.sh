@@ -154,9 +154,30 @@ bundle_crdb_binary() {
 
 echo ""
 echo "[build-single-binary] Bundling CockroachDB v${CRDB_VERSION} for ${#CRDB_TARGETS[@]} platforms..."
+# Parallelize the five platform downloads. Each call is independent
+# (different URL, different sha, different cache file, different dest
+# dir) so racing them is safe. On a cold cache this is ~5-10s end-to-end
+# instead of ~25-50s sequential. On a warm cache (CI cache hit) every
+# call short-circuits at the "already bundled, skipping" early return
+# in bundle_crdb_binary, so parallelism is a no-op there. `wait $pid`
+# in a loop both reaps the children and propagates any non-zero exit
+# code back through the explicit `crdb_failed` check — `set -e` alone
+# would not trip on a backgrounded function failure.
+crdb_pids=()
 for entry in "${CRDB_TARGETS[@]}"; do
-  bundle_crdb_binary "${entry}"
+  bundle_crdb_binary "${entry}" &
+  crdb_pids+=($!)
 done
+crdb_failed=0
+for pid in "${crdb_pids[@]}"; do
+  if ! wait "$pid"; then
+    crdb_failed=1
+  fi
+done
+if [ "$crdb_failed" = "1" ]; then
+  echo "[build-single-binary] ERROR: one or more CRDB binary downloads failed (see above)." >&2
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # Step 1: Build each app that will be embedded.
