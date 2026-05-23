@@ -54,9 +54,15 @@ export const oauthPendingSigninRepository = {
     // Best-effort sweep. The header docstring promises this, and without
     // it the table grows monotonically as users abandon mid-flight OAuth
     // (close the consent tab, kill the wizard, hit the 5-min poll
-    // timeout). Sweep failures are swallowed because the primary write
-    // already succeeded — cleanup is housekeeping.
-    this.sweepExpired().catch(() => { /* sweep is housekeeping; primary write succeeded */ });
+    // timeout). Sweep failures are logged (not swallowed) so operators
+    // can see if the table is growing because cleanup is broken — empty
+    // catch was the original sin. Called by explicit reference instead
+    // of `this` so a future destructuring caller (`const { remember } = repo`)
+    // doesn't TypeError on `this.sweepExpired`.
+    oauthPendingSigninRepository.sweepExpired().catch((err) => {
+      // eslint-disable-next-line no-console
+      console.warn('[oauth-pending-signin] sweepExpired failed (housekeeping, primary write succeeded):', err);
+    });
   },
 
   /**

@@ -830,7 +830,10 @@ export function createOAuthRouter(): Router {
       // GET /api/oauth/google/pending/:key.
       if (parsed.pendingKey) {
         try {
-          await oauthPendingSigninRepository.sweepExpired(new Date());
+          // remember() now fires a best-effort sweepExpired internally;
+          // the explicit caller-side sweep that used to live here was
+          // removed to avoid double-sweeping (was consuming two pool
+          // connections per OAuth callback under burst).
           await oauthPendingSigninRepository.remember({
             pendingKey: parsed.pendingKey,
             userId,

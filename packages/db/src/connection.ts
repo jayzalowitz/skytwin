@@ -69,24 +69,47 @@ function sslConfigForSslmode(sslmode: string | null): DatabaseConfig['ssl'] | un
 }
 
 function parseDatabaseUrl(url: string): Partial<DatabaseConfig> | null {
+  // Two failure modes to keep separate:
+  //   - URL itself is malformed (`new URL` throws): the whole DATABASE_URL is
+  //     unusable. Return null so the caller falls back to DATABASE_HOST/PORT
+  //     env vars — that's the legacy contract.
+  //   - URL parses but `sslmode` is misspelled (e.g. `sslmode=requier`):
+  //     sslConfigForSslmode throws a typed error. We DELIBERATELY do NOT
+  //     catch this — it must propagate so the operator sees the misspelling
+  //     at startup instead of silently downgrading to plaintext via the
+  //     `DATABASE_SSL=false` env-var fallback. An earlier version of this
+  //     function wrapped both calls in one try/catch and swallowed the
+  //     sslmode throw, which defeated the whole point.
+  let u: URL;
   try {
-    const u = new URL(url);
-    return {
-      host: u.hostname,
-      port: u.port ? parseInt(u.port, 10) : 26257,
-      database: u.pathname.replace(/^\//, '') || 'skytwin',
-      user: decodeURIComponent(u.username) || 'root',
-      password: u.password ? decodeURIComponent(u.password) : undefined,
-      ssl: sslConfigForSslmode(u.searchParams.get('sslmode')),
-    };
+    u = new URL(url);
   } catch {
     return null;
   }
+  return {
+    host: u.hostname,
+    port: u.port ? parseInt(u.port, 10) : 26257,
+    database: u.pathname.replace(/^\//, '') || 'skytwin',
+    user: decodeURIComponent(u.username) || 'root',
+    password: u.password ? decodeURIComponent(u.password) : undefined,
+    ssl: sslConfigForSslmode(u.searchParams.get('sslmode')),
+  };
 }
 
-const FROM_URL = process.env['DATABASE_URL']
-  ? parseDatabaseUrl(process.env['DATABASE_URL'])
-  : null;
+// Wrapped so an invalid sslmode at module load doesn't cascade-crash every
+// consumer of @skytwin/db at import time (test files, migration scripts,
+// type-checker tooling). DEFAULT_CONFIG below falls back to DATABASE_HOST/
+// PORT/NAME env vars when FROM_URL is null. The throw is deferred to
+// getPool() — which re-parses fresh — so an actively-connecting caller
+// surfaces the bad sslmode loudly, while passive importers don't.
+const FROM_URL = (() => {
+  if (!process.env['DATABASE_URL']) return null;
+  try {
+    return parseDatabaseUrl(process.env['DATABASE_URL']);
+  } catch {
+    return null;
+  }
+})();
 
 const DEFAULT_CONFIG: DatabaseConfig = {
   host: FROM_URL?.host ?? process.env['DATABASE_HOST'] ?? 'localhost',
@@ -113,6 +136,10 @@ export function getPool(config?: Partial<DatabaseConfig>): Pool {
     // Recompute DATABASE_URL parse at each first call so a service-manager
     // that injects env vars after the module was imported (in-process
     // migrations on Electron main) still picks up the right host/port.
+    // Unlike the module-load parse, this one is NOT wrapped — an invalid
+    // sslmode here SHOULD crash the caller because they're actively asking
+    // for a connection. This is the deferred-throw the module-load wrap
+    // promises.
     const fromUrl = process.env['DATABASE_URL']
       ? parseDatabaseUrl(process.env['DATABASE_URL'])
       : null;
