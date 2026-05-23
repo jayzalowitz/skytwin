@@ -125,8 +125,18 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build TypeScript (desktop)
-        run: pnpm --filter skytwin-desktop build
+      # Build the FULL workspace, not just skytwin-desktop. The desktop
+      # build's `tsc && prepackage` chain transitively requires every
+      # @skytwin/* workspace dep to be compiled first (api imports
+      # llm-client/db/shared-types/credential-vault/decision-engine/etc.,
+      # worker too). `pnpm --filter skytwin-desktop build` only invokes
+      # desktop's own placeholder build script (a no-op echo) and skips
+      # the deps — the prepackage `pnpm --filter @skytwin/api build` then
+      # fails with TS2307 "Cannot find module '@skytwin/*'". build.yml
+      # uses bare `pnpm build` (line 78, 114, 176, 241) for the same
+      # reason; release.yml had drifted.
+      - name: Build all workspace packages
+        run: pnpm build
 
       # macOS: inject Apple cert via CSC_LINK so electron-builder can sign.
       # The env vars are read by electron-builder directly; nothing to run here.
