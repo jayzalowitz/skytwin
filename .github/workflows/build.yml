@@ -121,7 +121,7 @@ jobs:
         # GitHub Releases without the GH_TOKEN this workflow doesn't
         # set, failing the whole macOS job. release.yml is the
         # exclusive publish path; build.yml just validates packageability.
-        run: pnpm --filter skytwin-desktop run package:mac -- --publish never
+        run: pnpm --filter skytwin-desktop run package:mac --publish never
         env:
           # Skip code signing for CI builds (not notarized)
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
@@ -199,7 +199,7 @@ jobs:
 
       - name: Package Windows desktop app
         # See macOS comment re: --publish never; same reasoning here.
-        run: pnpm --filter skytwin-desktop run package:win -- --publish never
+        run: pnpm --filter skytwin-desktop run package:win --publish never
 
       - name: Upload Windows installer
         uses: actions/upload-artifact@v7
@@ -242,7 +242,7 @@ jobs:
 
       - name: Package Linux desktop app
         # See macOS comment re: --publish never; same reasoning here.
-        run: pnpm --filter skytwin-desktop run package:linux -- --publish never
+        run: pnpm --filter skytwin-desktop run package:linux --publish never
         continue-on-error: true
 
       - name: Upload Linux AppImage
