@@ -162,9 +162,18 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          # Code-signing cert (each runner only has one platform's secret set)
+          # Code-signing cert (each runner only has one platform's secret set).
+          # When the secret is unset, the expression evaluates to '' (empty
+          # string), NOT undefined. electron-builder then interprets an
+          # empty CSC_LINK as a relative path-to-cert that resolves to the
+          # CWD — and crashes with `⨯ <cwd> not a file` before it even
+          # starts packaging. Pair CSC_LINK with CSC_IDENTITY_AUTO_DISCOVERY
+          # so an empty CSC_LINK falls through cleanly to "skip signing"
+          # rather than "look for a cert at CWD." When the secrets ARE set,
+          # CSC_LINK takes precedence and auto-discovery is moot.
           CSC_LINK: ${{ matrix.os == 'macos-latest' && secrets.MAC_CERT_P12_BASE64 || secrets.WIN_CERT_PFX_BASE64 }}
           CSC_KEY_PASSWORD: ${{ matrix.os == 'macos-latest' && secrets.MAC_CERT_PASSWORD || secrets.WIN_CERT_PASSWORD }}
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ (matrix.os == 'macos-latest' && secrets.MAC_CERT_P12_BASE64 != '') || (matrix.os == 'windows-latest' && secrets.WIN_CERT_PFX_BASE64 != '') }}
         # Note: NO `--` separator before --publish always. pnpm forwards
         # `--` literally into the script's underlying shell command, so
         # `... run package:mac -- --publish always` ends up as
