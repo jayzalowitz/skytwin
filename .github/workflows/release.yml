@@ -165,12 +165,22 @@ jobs:
           # Code-signing cert (each runner only has one platform's secret set)
           CSC_LINK: ${{ matrix.os == 'macos-latest' && secrets.MAC_CERT_P12_BASE64 || secrets.WIN_CERT_PFX_BASE64 }}
           CSC_KEY_PASSWORD: ${{ matrix.os == 'macos-latest' && secrets.MAC_CERT_PASSWORD || secrets.WIN_CERT_PASSWORD }}
+        # Note: NO `--` separator before --publish always. pnpm forwards
+        # `--` literally into the script's underlying shell command, so
+        # `... run package:mac -- --publish always` ends up as
+        # `electron-builder --mac -- --publish always`, where the `--`
+        # tells electron-builder "end of options," and the post-`--`
+        # `--publish always` is then treated as a positional path arg.
+        # electron-builder then errors `apps/desktop not a file` because
+        # it's looking for a file at that pseudo-path. The v0.6.58.0 retry
+        # tag hit this on all three platforms — fix is to pass the args
+        # without the separator (pnpm 7+ forwards flag-args natively).
         run: |
           if [ "${{ matrix.os }}" = "macos-latest" ]; then
-            pnpm --filter skytwin-desktop run package:mac -- --publish always
+            pnpm --filter skytwin-desktop run package:mac --publish always
           elif [ "${{ matrix.os }}" = "windows-latest" ]; then
-            pnpm --filter skytwin-desktop run package:win -- --publish always
+            pnpm --filter skytwin-desktop run package:win --publish always
           else
-            pnpm --filter skytwin-desktop run package:linux -- --publish always
+            pnpm --filter skytwin-desktop run package:linux --publish always
           fi
         shell: bash
