@@ -188,8 +188,8 @@ importers:
         specifier: ~56.0.13
         version: 56.0.13(expo@56.0.4(@babel/core@7.29.7)(@expo/dom-webview@55.0.5)(react-native@0.85.2(@babel/core@7.29.7)(@types/react@19.2.15)(react@19.2.6))(react@19.2.6)(typescript@6.0.3))(react-native@0.85.2(@babel/core@7.29.7)(@types/react@19.2.15)(react@19.2.6))(react@19.2.6)(typescript@6.0.3)
       expo-secure-store:
-        specifier: ~55.0.13
-        version: 55.0.13(expo@56.0.4(@babel/core@7.29.7)(@expo/dom-webview@55.0.5)(react-native@0.85.2(@babel/core@7.29.7)(@types/react@19.2.15)(react@19.2.6))(react@19.2.6)(typescript@6.0.3))
+        specifier: ~56.0.4
+        version: 56.0.4(expo@56.0.4(@babel/core@7.29.7)(@expo/dom-webview@55.0.5)(react-native@0.85.2(@babel/core@7.29.7)(@types/react@19.2.15)(react@19.2.6))(react@19.2.6)(typescript@6.0.3))
       expo-status-bar:
         specifier: ~55.0.6
         version: 55.0.6(react-native@0.85.2(@babel/core@7.29.7)(@types/react@19.2.15)(react@19.2.6))(react@19.2.6)
@@ -3348,8 +3348,8 @@ packages:
       react: '*'
       react-native: '*'
 
-  expo-secure-store@55.0.13:
-    resolution: {integrity: sha512-I6r0JNO1Fd4o0Gu7Ixiic7s89lqgdUHq17uBH9y1f/AntoyKn71TdtYJH82RgfsBbu5qNVzrwImmvlANyOlITQ==}
+  expo-secure-store@56.0.4:
+    resolution: {integrity: sha512-hjEi/gmpdFFJ9lYbdp3k3p/WchV7Gi0Qt8jt/m/0WJadqQrskafHAlDxbZkII1cN3Yd7zp9Lvkeq3UfGhSwirQ==}
     peerDependencies:
       expo: '*'
 
@@ -8580,7 +8580,7 @@ snapshots:
       - supports-color
       - typescript
 
-  expo-secure-store@55.0.13(expo@56.0.4(@babel/core@7.29.7)(@expo/dom-webview@55.0.5)(react-native@0.85.2(@babel/core@7.29.7)(@types/react@19.2.15)(react@19.2.6))(react@19.2.6)(typescript@6.0.3)):
+  expo-secure-store@56.0.4(expo@56.0.4(@babel/core@7.29.7)(@expo/dom-webview@55.0.5)(react-native@0.85.2(@babel/core@7.29.7)(@types/react@19.2.15)(react@19.2.6))(react@19.2.6)(typescript@6.0.3)):
     dependencies:
       expo: 56.0.4(@babel/core@7.29.7)(@expo/dom-webview@55.0.5)(react-native@0.85.2(@babel/core@7.29.7)(@types/react@19.2.15)(react@19.2.6))(react@19.2.6)(typescript@6.0.3)
 
