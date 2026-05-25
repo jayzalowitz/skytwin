@@ -88,12 +88,12 @@ vi.mock('@skytwin/db', () => ({
     saveCandidates: mockSaveCandidates,
     getOutcome: mockGetOutcome,
     // Auto-execute path looks up the persisted RiskAssessment by action
-    // id when outcome.riskAssessment is absent. Return a baseline LOW
-    // assessment so the test outcomes (which don't carry riskAssessment
-    // on their mock evaluate result) don't trigger the #371 fail-closed
-    // escalation path. Individual tests can override.
-    getRiskAssessment: vi.fn().mockResolvedValue({
-      actionId: 'action-1',
+    // id when outcome.riskAssessment is absent. Echo the requested id
+    // back as assessment.actionId so the execution-router's
+    // actionId-match invariant cannot be silently bypassed in tests
+    // (Copilot review on PR #417). Individual tests can override.
+    getRiskAssessment: vi.fn().mockImplementation(async (actionId: string) => ({
+      actionId,
       overallTier: 'low',
       dimensions: {
         reversibility: { tier: 'low', score: 0.2, reasoning: 'test' },
@@ -105,7 +105,7 @@ vi.mock('@skytwin/db', () => ({
       },
       reasoning: 'test assessment',
       assessedAt: new Date(),
-    }),
+    })),
   },
   explanationRepositoryAdapter: { getByDecisionId: vi.fn().mockResolvedValue(null) },
   policyRepositoryAdapter: {},

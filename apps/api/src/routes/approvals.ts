@@ -256,6 +256,47 @@ export function createApprovalsRouter(): Router {
       // 'proceed' (valid second confirmation) — both fall through to the
       // normal approve/reject flow below.
 
+      // Pre-flight: on an APPROVE, confirm the persisted RiskAssessment
+      // exists for this candidate BEFORE we mutate any state (#371,
+      // Copilot review on PR #417). Pre-fix this check ran after
+      // approvalRepository.respond() + feedback + memory writes — a
+      // missing assessment left an "approved" row with no execution and
+      // no way to retry. Now we look at the stored candidate_action,
+      // peel the id, look up the assessment, and 409 early if it's
+      // missing. Reject path skips this check entirely (no execution).
+      let preflightRiskAssessment: Awaited<
+        ReturnType<typeof decisionRepositoryAdapter.getRiskAssessment>
+      > = null;
+      let preflightCandidateId: string | null = null;
+      if (body.action === 'approve') {
+        const preStoredAction = (existing.candidate_action ?? {}) as Record<string, unknown>;
+        const preStoredId = preStoredAction['id'];
+        preflightCandidateId =
+          typeof preStoredId === 'string' && isValidUuid(preStoredId)
+            ? preStoredId
+            : null;
+        preflightRiskAssessment = preflightCandidateId
+          ? await decisionRepositoryAdapter.getRiskAssessment(preflightCandidateId)
+          : null;
+        if (!preflightRiskAssessment) {
+          log.warn('Approve blocked at preflight: no persisted risk assessment for candidate', {
+            decisionId: existing.decision_id,
+            candidateId: preflightCandidateId,
+            approvalId: existing.id,
+            userId: body.userId,
+          });
+          res.status(409).json({
+            error: 'risk_assessment_missing',
+            message:
+              'This approval cannot be executed: the original risk assessment is not on file. ' +
+              'Re-trigger the decision to regenerate it. The approval row is unchanged so you can retry.',
+            approvalId: existing.id,
+            requestId,
+          });
+          return;
+        }
+      }
+
       // Atomically update only if still pending (prevents double-execution)
       const approval = await approvalRepository.respond(requestId, body.action, body.userId, body.reason);
       if (!approval) {
@@ -433,36 +474,17 @@ export function createApprovalsRouter(): Router {
           candidateAction.parameters['accessToken'] = tokenRow.access_token;
         }
 
-        // Look up the RiskAssessment the decision-maker actually
-        // computed for this candidate (#371). Pre-fix, this constructed
-        // a synthetic hardcoded-LOW assessment on every dimension under
-        // the assumption "user clicked approve = LOW risk." That is
-        // wrong: a user can approve a HIGH-tier financial-impact action,
-        // and the risk dimensions don't move because a human clicked
-        // once. The execution router's adapter-selection then picks a
-        // less-guarded adapter than the decision-maker intended.
-        //
-        // Fail closed: if the assessment is missing (legacy approval row
-        // pre-#371, or the candidate was synthesised with a non-UUID id),
-        // refuse execution rather than fabricating one.
-        const riskAssessment = originalCandidateId
-          ? await decisionRepositoryAdapter.getRiskAssessment(originalCandidateId)
-          : null;
-        if (!riskAssessment) {
-          log.warn('Approve execution blocked: no persisted risk assessment for candidate', {
-            decisionId: approval.decision_id,
-            candidateId: originalCandidateId,
-            approvalId: approval.id,
-            userId: body.userId,
-          });
-          res.status(409).json({
-            error: 'risk_assessment_missing',
-            message: 'This approval cannot be executed: the original risk assessment is not on file. Re-trigger the decision to regenerate it.',
-            approvalId: approval.id,
-            requestId,
-          });
-          return;
-        }
+        // Use the RiskAssessment we already verified at preflight (#371,
+        // Copilot review on PR #417). The preflight ran BEFORE
+        // approvalRepository.respond() so by the time we get here on the
+        // approve path, preflightRiskAssessment is guaranteed non-null.
+        // Pre-fix this constructed a synthetic LOW-on-every-dimension
+        // assessment under the "user clicked approve = LOW risk"
+        // fallacy — wrong, because a user can approve a HIGH-tier
+        // financial-impact action and the risk dimensions don't move.
+        // Non-null assertion is safe because the early 409 already
+        // returned for the null case before any state mutation.
+        const riskAssessment = preflightRiskAssessment!;
 
         try {
           const executionRouter = await getRouter();

@@ -56,11 +56,13 @@ vi.mock('@skytwin/db', () => ({
   approvalRepository: fakeApprovalRepo,
   decisionRepository: fakeDecisionRepo,
   // approvals.ts now looks up the persisted RiskAssessment by candidate
-  // id before executing (#371). Return a baseline LOW assessment so the
-  // approval path proceeds in tests that don't care about risk routing.
+  // id before executing (#371). The mock echoes the requested id back as
+  // assessment.actionId so the execution-router's actionId-match
+  // invariant cannot be silently bypassed in tests (Copilot review on
+  // PR #417).
   decisionRepositoryAdapter: {
-    getRiskAssessment: vi.fn().mockResolvedValue({
-      actionId: 'test',
+    getRiskAssessment: vi.fn().mockImplementation(async (actionId: string) => ({
+      actionId,
       overallTier: 'low',
       dimensions: {
         reversibility: { tier: 'low', score: 0.2, reasoning: 'test' },
@@ -72,7 +74,7 @@ vi.mock('@skytwin/db', () => ({
       },
       reasoning: 'test assessment',
       assessedAt: new Date(),
-    }),
+    })),
   },
   feedbackRepository: fakeFeedbackRepo,
   mempalaceRepository: fakeMempalaceRepo,
