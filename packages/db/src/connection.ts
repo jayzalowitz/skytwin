@@ -12,7 +12,20 @@ export interface DatabaseConfig {
   ssl?: boolean | { rejectUnauthorized: boolean };
   max?: number;
   idleTimeoutMillis?: number;
+  /**
+   * Maximum time to wait when establishing a new TCP connection to the
+   * DB server. In node-postgres pg-pool, this ALSO governs the wait for
+   * a free connection from a saturated pool — without it, the 21st
+   * concurrent acquire on a `max: 20` pool hangs forever (#378).
+   */
   connectionTimeoutMillis?: number;
+  /**
+   * Explicit acquire-from-pool timeout (#378). Supported in pg-pool ≥
+   * v3.6. On versions that don't recognize this key, the value is
+   * silently ignored and `connectionTimeoutMillis` is the effective
+   * bound — both are set so the behavior is identical either way.
+   */
+  acquireTimeoutMillis?: number;
 }
 
 /**
@@ -123,6 +136,13 @@ const DEFAULT_CONFIG: DatabaseConfig = {
   max: parseInt(process.env['DATABASE_POOL_MAX'] ?? '20', 10),
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 5000,
+  // The 21st concurrent acquire on a saturated max=20 pool now fails
+  // within ~5s with a clear timeout error instead of hanging forever.
+  // Pre-fix, the pool had no acquire bound and a long-running query
+  // (or a 20-connection deadlock) silently froze every subsequent
+  // request — health endpoints reported 200, the SSE pill said
+  // "Listening", and every actual user operation hung. See #378.
+  acquireTimeoutMillis: 5000,
 };
 
 let pool: Pool | null = null;
