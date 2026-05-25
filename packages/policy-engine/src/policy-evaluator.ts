@@ -196,6 +196,18 @@ export class PolicyEvaluator {
     action: CandidateAction,
     settings: AutonomySettings,
   ): boolean {
+    // `costZeroIntent: 'unknown'` (LLM-generated candidates, #372) means
+    // the cost is genuinely not yet known — the LLM does not get to
+    // declare its own price. Refuse the cap check so the action escalates
+    // to the human rather than being silently auto-approved on a default
+    // zero. Once a downstream cost-estimation step lands at the execution
+    // router (#372 Fix 3, follow-up), this branch can be lifted for
+    // candidates whose cost has been re-estimated.
+    if (action.costZeroIntent === 'unknown') {
+      return false;
+    }
+    // Verified zero (rule-based generators, DirectExecutionAdapter reads,
+    // legacy callers with undefined intent) fast-paths cleanly.
     if (action.estimatedCostCents <= 0) {
       return true;
     }

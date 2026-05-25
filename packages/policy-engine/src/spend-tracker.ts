@@ -223,7 +223,16 @@ export class SpendTracker {
       };
     }
 
-    // Zero-cost actions always pass
+    // Zero-cost actions always pass — *provided the caller actually
+    // knows the cost is zero*. SpendTracker doesn't see the originating
+    // CandidateAction.costZeroIntent flag, so the gating for LLM-
+    // generated zero ("the LLM said it costs nothing, but we never
+    // verified") happens in `PolicyEvaluator.checkSpendLimit` upstream
+    // of this call (#372). By the time a zero reaches checkDailyCap,
+    // it is either a verified-zero rule-based action or it was already
+    // rejected by checkSpendLimit. Leaving the fast-path here means a
+    // direct caller of checkDailyCap that wants the same guard must
+    // gate on costZeroIntent themselves before invoking it.
     if (proposedCostCents === 0) {
       return {
         allowed: true,

@@ -111,6 +111,53 @@ describe('PolicyEvaluator', () => {
       const result = evaluator.checkSpendLimit(action, settings);
       expect(result).toBe(true);
     });
+
+    it('should REJECT zero-cost actions tagged costZeroIntent="unknown" (#372)', () => {
+      // LLM-generated candidates emit estimatedCostCents=0 with
+      // costZeroIntent='unknown' because the LLM does not get to
+      // declare its own price. Pre-#372 the zero-cost fast-path
+      // auto-approved every LLM candidate; the cap was silently
+      // bypassed. Now the policy engine refuses the fast-path so
+      // the candidate escalates.
+      const repo = createMockPolicyRepository();
+      const evaluator = new PolicyEvaluator(repo as never);
+      const action = createAction({
+        estimatedCostCents: 0,
+        costZeroIntent: 'unknown',
+      });
+      const settings = createAutonomySettings({ maxSpendPerActionCents: 5000 });
+
+      const result = evaluator.checkSpendLimit(action, settings);
+      expect(result).toBe(false);
+    });
+
+    it('should fast-path zero-cost actions tagged costZeroIntent="verified_zero"', () => {
+      const repo = createMockPolicyRepository();
+      const evaluator = new PolicyEvaluator(repo as never);
+      const action = createAction({
+        estimatedCostCents: 0,
+        costZeroIntent: 'verified_zero',
+      });
+      const settings = createAutonomySettings({ maxSpendPerActionCents: 0 });
+
+      const result = evaluator.checkSpendLimit(action, settings);
+      expect(result).toBe(true);
+    });
+
+    it('should fast-path zero-cost actions with undefined costZeroIntent (legacy compat)', () => {
+      // Pre-#372 rule-based generators (decision-maker.ts, sender-aware,
+      // draft-email) emit naked `estimatedCostCents: 0` with no intent
+      // tag. They are genuinely free; backward compatibility means
+      // undefined intent fast-paths cleanly.
+      const repo = createMockPolicyRepository();
+      const evaluator = new PolicyEvaluator(repo as never);
+      const action = createAction({ estimatedCostCents: 0 });
+      delete (action as { costZeroIntent?: unknown }).costZeroIntent;
+      const settings = createAutonomySettings({ maxSpendPerActionCents: 0 });
+
+      const result = evaluator.checkSpendLimit(action, settings);
+      expect(result).toBe(true);
+    });
   });
 
   describe('Irreversibility checks', () => {

@@ -61,6 +61,24 @@ export interface CandidateAction {
   domain: string;
   parameters: Record<string, unknown>;
   estimatedCostCents: number;
+  /**
+   * Tags whether `estimatedCostCents = 0` represents a genuinely free
+   * action (a read-only DirectExecutionAdapter op, a no-cost local
+   * routine) or a not-yet-known cost that just defaulted to zero (#372).
+   *
+   *   `'verified_zero'` — caller has confirmed the action carries no
+   *     LLM / API spend (or it costs the embedded local LLM nothing).
+   *     The policy engine's zero-cost fast-path is allowed to fire.
+   *   `'unknown'`       — caller does NOT know the cost yet (LLM-generated
+   *     candidate; the LLM doesn't get to declare its own price). The
+   *     fast-path MUST NOT fire — the action escalates or is gated by the
+   *     downstream cost estimate.
+   *   `undefined`       — legacy / pre-#372 callers. Treated as
+   *     `'verified_zero'` for backward compatibility so existing
+   *     rule-based generators that emit naked zero keep their semantics.
+   *     New code paths should set this field explicitly.
+   */
+  costZeroIntent?: 'verified_zero' | 'unknown';
   reversible: boolean;
   confidence: ConfidenceLevel;
   reasoning: string;
