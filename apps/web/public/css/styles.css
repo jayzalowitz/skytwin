@@ -102,6 +102,11 @@ body {
 
 .status-dot.connected { background: var(--success); }
 .status-dot.disconnected { background: var(--danger); }
+/* Idle: no signed-in user yet. Grey, distinguishable from red (offline)
+ * and green (connected). Paired with the "Sign in to start" text in
+ * app.js — and the connection banner stays hidden, so the chrome
+ * doesn't lie about an absent-user state being an offline one (#365). */
+.status-dot.idle { background: var(--text-muted); }
 
 /* Connection banner — UX review #12 (P1).
  *
@@ -602,12 +607,16 @@ textarea.form-input { resize: vertical; min-height: 60px; }
   left: 0;
   width: 100%;
   height: 100%;
-  /* UX review #15 — pre-fix the sidebar/page bled through at .85 alpha
-   * (the sidebar has its own glass effect so it's still visible at
-   * .85). Bumped to .92 + a small blur so the user's eye stays on the
-   * modal. The blur is a no-op in browsers without backdrop-filter
-   * support — overlay still darkens via the rgba background. */
-  background: rgba(0,0,0,.92);
+  /* Backdrop is intentionally translucent (not opaque) so the chrome
+   * behind the modal remains WCAG AA readable (#362, #366). The opaque
+   * .onboarding-card on top makes the modal the visual focus; the
+   * chrome dim is a tertiary signal, not the modal's only mechanism.
+   * Tuned to .60 alpha so var(--text) on var(--bg) stays above 4.5:1
+   * effective contrast through the overlay — previously .92 forced
+   * sidebar text under 2:1, well below WCAG AA. The blur is a no-op in
+   * browsers without backdrop-filter support; the overlay still dims
+   * via the rgba background. */
+  background: rgba(0,0,0,.60);
   backdrop-filter: blur(4px);
   -webkit-backdrop-filter: blur(4px);
   z-index: 1000;
@@ -618,6 +627,7 @@ textarea.form-input { resize: vertical; min-height: 60px; }
 }
 
 .onboarding-card {
+  position: relative;
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -626,6 +636,41 @@ textarea.form-input { resize: vertical; min-height: 60px; }
   padding: 2.5rem;
   max-height: calc(100vh - 2rem);
   overflow-y: auto;
+}
+
+/* "X" close affordance in the top-right of the modal card (#362 Fix 1).
+ * Absolute-positioned inside the card; the card was made `position:
+ * relative` above so this anchors against the card edges, not the page.
+ * Mirrors common modal conventions (Radix, Tailwind UI). */
+.onb-close-x {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.6rem;
+  width: 2rem;
+  height: 2rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.5rem;
+  line-height: 1;
+  color: var(--text-muted);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.onb-close-x:hover { color: var(--text); background: var(--bg-hover, rgba(255,255,255,0.06)); }
+.onb-close-x:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Placeholder shown in #page-content when the user has not signed in
+ * (modal dismissed or sample-mode-not-yet-clicked). The chrome around
+ * it is fully navigable; this is the page-body fallback so the SPA
+ * doesn't look broken behind the modal (#362 Fix 2). */
+.signin-placeholder {
+  padding: 3rem 1.5rem;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.95rem;
 }
 
 .onboarding-step { font-size: 0.75rem; color: var(--text-dim); margin-bottom: 0.5rem; }

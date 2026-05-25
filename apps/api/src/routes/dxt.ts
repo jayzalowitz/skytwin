@@ -22,7 +22,7 @@ import type { DxtArtifactInput, DxtJsonPayload } from '@skytwin/dxt';
 
 const log = createLogger('api:dxt');
 
-const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+import { UUID_REGEX } from '../middleware/validate-uuid.js';
 
 /**
  * Production middleware (`session-auth`) sets `req.authenticatedUserId`. In the

@@ -22,7 +22,7 @@ import {
 
 const log = createLogger('api:memory-config');
 
-const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+import { UUID_REGEX } from '../middleware/validate-uuid.js';
 
 /**
  * Routes for inspecting + configuring the memory backend (issue #197 AC #6/#7/#8).

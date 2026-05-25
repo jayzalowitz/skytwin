@@ -12,6 +12,7 @@ import {
   policyRepositoryAdapter,
 } from '@skytwin/db';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
+import { bindUserIdParamValidator } from '../middleware/validate-uuid.js';
 
 /**
  * No-op decision repository for the prediction endpoint.
@@ -113,6 +114,7 @@ function parseTrustTier(dbTier: string): TrustTier {
  */
 export function createAskRouter(): Router {
   const router = Router();
+  bindUserIdParamValidator(router);
   bindUserIdParamOwnership(router);
 
   // Real TwinService + PolicyEvaluator for accurate reads.

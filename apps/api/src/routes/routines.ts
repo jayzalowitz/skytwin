@@ -5,6 +5,7 @@ import { PolicyEvaluator } from '@skytwin/policy-engine';
 import { userRepository, policyRepositoryAdapter } from '@skytwin/db';
 import { getIronClawEnhancedAdapter } from '../execution-setup.js';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
+import { bindUserIdParamValidator } from '../middleware/validate-uuid.js';
 
 // Cron expression: 5 or 6 space-separated fields, each containing digits, *, /, -, or ,
 const CRON_REGEX = /^[0-9*/,-]+( [0-9*/,-]+){4,5}$/;
@@ -12,6 +13,7 @@ const MAX_CRON_LENGTH = 128;
 
 export function createRoutinesRouter(): Router {
   const router = Router();
+  bindUserIdParamValidator(router);
   bindUserIdParamOwnership(router);
   const policyEvaluator = new PolicyEvaluator(policyRepositoryAdapter);
 

@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { briefingRepository, lifebookRepository } from '@skytwin/db';
 import { createLogger } from '@skytwin/core';
+import { UUID_REGEX } from '../middleware/validate-uuid.js';
 
 const log = createLogger('api:twin-briefings');
 
@@ -18,8 +19,6 @@ const log = createLogger('api:twin-briefings');
  */
 export function createTwinBriefingsRouter(): Router {
   const router = Router();
-
-  const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
   function getUserId(req: import('express').Request): string | undefined {
     return (req as unknown as { user?: { id?: string } }).user?.id

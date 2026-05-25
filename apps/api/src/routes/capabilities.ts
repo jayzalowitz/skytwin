@@ -20,7 +20,7 @@ void _SSE_CAP_PROMO;
 
 const log = createLogger('api:capabilities');
 
-const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+import { UUID_REGEX } from '../middleware/validate-uuid.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PII redaction helper — shared by audit (#183), provenance-graph (#184), and

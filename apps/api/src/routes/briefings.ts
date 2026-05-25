@@ -5,6 +5,7 @@ import {
   userRepository,
 } from '@skytwin/db';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
+import { bindUserIdParamValidator } from '../middleware/validate-uuid.js';
 
 /**
  * Create the briefings router.
@@ -14,6 +15,7 @@ import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
  */
 export function createBriefingsRouter(): Router {
   const router = Router();
+  bindUserIdParamValidator(router);
   bindUserIdParamOwnership(router);
 
   /**

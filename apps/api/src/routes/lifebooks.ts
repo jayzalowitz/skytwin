@@ -10,6 +10,7 @@ import type { AIProviderName } from '@skytwin/shared-types';
 import { runPrompt } from '@skytwin/policy-prompts';
 import { createLogger } from '@skytwin/core';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
+import { bindUserIdParamValidator } from '../middleware/validate-uuid.js';
 
 const log = createLogger('api:lifebooks');
 
@@ -63,6 +64,7 @@ const GENERIC_LAYOUT = {
  */
 export function createLifebooksRouter(): Router {
   const router = Router();
+  bindUserIdParamValidator(router);
   bindUserIdParamOwnership(router);
 
   router.get('/:userId', async (req, res, next) => {

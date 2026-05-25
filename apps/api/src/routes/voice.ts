@@ -7,6 +7,7 @@ import {
 } from '@skytwin/embedded-llm';
 import { createLogger } from '@skytwin/core';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
+import { bindUserIdParamValidator } from '../middleware/validate-uuid.js';
 
 const log = createLogger('api:voice');
 
@@ -57,6 +58,7 @@ const MAX_TTS_TEXT_LENGTH = 8000; // Mirror PiperTtsBackend's internal ceiling.
 
 export function createVoiceRouter(): Router {
   const router = Router();
+  bindUserIdParamValidator(router);
   bindUserIdParamOwnership(router);
 
   router.get('/capabilities/:userId', async (_req, res, next) => {

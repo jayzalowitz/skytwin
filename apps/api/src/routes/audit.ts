@@ -5,6 +5,7 @@ import {
   preferenceHistoryRepository,
 } from '@skytwin/db';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
+import { bindUserIdParamValidator } from '../middleware/validate-uuid.js';
 
 interface AuditEntry {
   id: string;
@@ -22,6 +23,7 @@ interface AuditEntry {
  */
 export function createAuditRouter(): Router {
   const router = Router();
+  bindUserIdParamValidator(router);
   bindUserIdParamOwnership(router);
 
   /**

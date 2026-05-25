@@ -11,6 +11,7 @@ import {
   isValidPairingCode,
 } from '../federation/crypto.js';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
+import { bindUserIdParamValidator } from '../middleware/validate-uuid.js';
 
 const log = createLogger('api:federation');
 
@@ -44,6 +45,7 @@ const PAIRING_CODE_TTL_SECONDS = 600; // 10 minutes — same window the user see
  */
 export function createFederationRouter(): Router {
   const router = Router();
+  bindUserIdParamValidator(router);
   bindUserIdParamOwnership(router);
 
   /**

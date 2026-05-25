@@ -1,12 +1,14 @@
 import { Router } from 'express';
 import { decisionRepository, explanationRepository } from '@skytwin/db';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
+import { bindUserIdParamValidator } from '../middleware/validate-uuid.js';
 
 /**
  * Create the decisions query router.
  */
 export function createDecisionsRouter(): Router {
   const router = Router();
+  bindUserIdParamValidator(router);
   bindUserIdParamOwnership(router);
 
   /**

@@ -130,24 +130,24 @@ describe('PUT /api/settings/:userId/ironclaw-channel', () => {
 
   it('updates channel successfully', async () => {
     mockUserRepository.updateIronClawChannel.mockResolvedValue({
-      id: 'user-1',
+      id: 'aaaaaaaa-bbbb-cccc-dddd-000000000001',
       ironclaw_channel: 'telegram',
     });
 
-    const res = await request(app, 'PUT', '/api/settings/user-1/ironclaw-channel', {
+    const res = await request(app, 'PUT', '/api/settings/aaaaaaaa-bbbb-cccc-dddd-000000000001/ironclaw-channel', {
       ironclawChannel: 'telegram',
     });
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
-      userId: 'user-1',
+      userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000001',
       ironclawChannel: 'telegram',
     });
-    expect(mockUserRepository.updateIronClawChannel).toHaveBeenCalledWith('user-1', 'telegram');
+    expect(mockUserRepository.updateIronClawChannel).toHaveBeenCalledWith('aaaaaaaa-bbbb-cccc-dddd-000000000001', 'telegram');
   });
 
   it('returns 400 for empty ironclawChannel', async () => {
-    const res = await request(app, 'PUT', '/api/settings/user-1/ironclaw-channel', {
+    const res = await request(app, 'PUT', '/api/settings/aaaaaaaa-bbbb-cccc-dddd-000000000001/ironclaw-channel', {
       ironclawChannel: '',
     });
 
@@ -158,7 +158,7 @@ describe('PUT /api/settings/:userId/ironclaw-channel', () => {
   });
 
   it('returns 400 for missing ironclawChannel', async () => {
-    const res = await request(app, 'PUT', '/api/settings/user-1/ironclaw-channel', {});
+    const res = await request(app, 'PUT', '/api/settings/aaaaaaaa-bbbb-cccc-dddd-000000000001/ironclaw-channel', {});
 
     expect(res.status).toBe(400);
     const body = res.body as { error: string };
@@ -172,7 +172,7 @@ describe('PUT /api/settings/:userId/ironclaw-channel', () => {
     for (const channel of invalidChannels) {
       vi.clearAllMocks();
 
-      const res = await request(app, 'PUT', '/api/settings/user-1/ironclaw-channel', {
+      const res = await request(app, 'PUT', '/api/settings/aaaaaaaa-bbbb-cccc-dddd-000000000001/ironclaw-channel', {
         ironclawChannel: channel,
       });
 
@@ -186,7 +186,7 @@ describe('PUT /api/settings/:userId/ironclaw-channel', () => {
   it('returns 400 for channel over 64 chars', async () => {
     const longChannel = 'a'.repeat(65);
 
-    const res = await request(app, 'PUT', '/api/settings/user-1/ironclaw-channel', {
+    const res = await request(app, 'PUT', '/api/settings/aaaaaaaa-bbbb-cccc-dddd-000000000001/ironclaw-channel', {
       ironclawChannel: longChannel,
     });
 
@@ -199,7 +199,7 @@ describe('PUT /api/settings/:userId/ironclaw-channel', () => {
   it('returns 404 when user not found', async () => {
     mockUserRepository.updateIronClawChannel.mockResolvedValue(null);
 
-    const res = await request(app, 'PUT', '/api/settings/nonexistent-user/ironclaw-channel', {
+    const res = await request(app, 'PUT', '/api/settings/aaaaaaaa-bbbb-cccc-dddd-000000000099/ironclaw-channel', {
       ironclawChannel: 'telegram',
     });
 
@@ -215,20 +215,20 @@ describe('PUT /api/settings/:userId/ironclaw-channel', () => {
       vi.clearAllMocks();
 
       mockUserRepository.updateIronClawChannel.mockResolvedValue({
-        id: 'user-1',
+        id: 'aaaaaaaa-bbbb-cccc-dddd-000000000001',
         ironclaw_channel: channel,
       });
 
-      const res = await request(app, 'PUT', '/api/settings/user-1/ironclaw-channel', {
+      const res = await request(app, 'PUT', '/api/settings/aaaaaaaa-bbbb-cccc-dddd-000000000001/ironclaw-channel', {
         ironclawChannel: channel,
       });
 
       expect(res.status).toBe(200);
       expect(res.body).toEqual({
-        userId: 'user-1',
+        userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000001',
         ironclawChannel: channel,
       });
-      expect(mockUserRepository.updateIronClawChannel).toHaveBeenCalledWith('user-1', channel);
+      expect(mockUserRepository.updateIronClawChannel).toHaveBeenCalledWith('aaaaaaaa-bbbb-cccc-dddd-000000000001', channel);
     }
   });
 });
