@@ -113,17 +113,22 @@ function deterministicPromotion(
   // exists). Callers that omit the field (older code paths, tests
   // without the audit table) skip the floor for backward compatibility
   // — production callers should always populate it.
+  // Use Number.isFinite so a malformed trust_tier_audit row (clock
+  // skew, mis-parsed timestamp yielding NaN/Infinity) cannot bypass
+  // the floor — `typeof NaN === 'number'` would have let the check
+  // through, and the reasoning string would have shown literal "NaN".
+  // Clamp negatives to zero so the reasoning never shows a negative
+  // hours-remaining if a caller passes a slightly-future timestamp.
   if (
-    typeof stats.hoursInCurrentTier === 'number' &&
-    stats.hoursInCurrentTier < threshold.minDurationInTierHours
+    Number.isFinite(stats.hoursInCurrentTier) &&
+    (stats.hoursInCurrentTier as number) < threshold.minDurationInTierHours
   ) {
-    const hoursRemaining = Math.ceil(
-      threshold.minDurationInTierHours - stats.hoursInCurrentTier,
-    );
+    const hours = Math.max(0, stats.hoursInCurrentTier as number);
+    const hoursRemaining = Math.ceil(threshold.minDurationInTierHours - hours);
     return {
       shouldPromote: false,
       reasoning:
-        `Time-in-tier floor not met: have ${stats.hoursInCurrentTier.toFixed(1)}h at ` +
+        `Time-in-tier floor not met: have ${hours.toFixed(1)}h at ` +
         `${currentTier}, need ${threshold.minDurationInTierHours}h before promotion ` +
         `(roughly ${hoursRemaining}h to go).`,
       confidence: 1,
@@ -138,8 +143,8 @@ function deterministicPromotion(
       `(threshold: ${threshold.consecutiveApprovals}) and ` +
       `${(stats.approvalRatio * 100).toFixed(1)}% approval ratio ` +
       `(threshold: ${(threshold.minApprovalRatio * 100).toFixed(1)}%)` +
-      (typeof stats.hoursInCurrentTier === 'number'
-        ? ` after ${stats.hoursInCurrentTier.toFixed(1)}h at ${currentTier} ` +
+      (Number.isFinite(stats.hoursInCurrentTier)
+        ? ` after ${Math.max(0, stats.hoursInCurrentTier as number).toFixed(1)}h at ${currentTier} ` +
           `(time-in-tier floor: ${threshold.minDurationInTierHours}h).`
         : '.'),
     confidence: 1,

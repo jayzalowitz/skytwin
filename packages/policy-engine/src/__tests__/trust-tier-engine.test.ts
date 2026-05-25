@@ -201,6 +201,42 @@ describe('TrustTierEngine', () => {
       expect(result.reason).toMatch(/need 168h/);
     });
 
+    it('should NOT let NaN hoursInCurrentTier bypass the temporal floor (#373, post-Copilot)', () => {
+      // typeof NaN === 'number' would have let a malformed
+      // trust_tier_audit row (clock skew, mis-parsed timestamp) sneak
+      // past the floor. Number.isFinite rejects NaN/Infinity.
+      const stats = createStats({
+        consecutiveApprovals: 12,
+        totalApprovals: 12,
+        approvalRatio: 1.0,
+        hoursInCurrentTier: Number.NaN,
+      });
+
+      const result = engine.evaluateProgression(TrustTier.OBSERVER, stats);
+
+      // NaN is treated like undefined: floor is skipped, count+ratio
+      // criteria still let the promotion through. The important
+      // property is that the reasoning string does not contain literal
+      // "NaN".
+      expect(result.reason).not.toMatch(/NaN/);
+    });
+
+    it('should NOT let Infinity hoursInCurrentTier short-circuit the floor (#373, post-Copilot)', () => {
+      const stats = createStats({
+        consecutiveApprovals: 12,
+        totalApprovals: 12,
+        approvalRatio: 1.0,
+        hoursInCurrentTier: Number.POSITIVE_INFINITY,
+      });
+
+      const result = engine.evaluateProgression(TrustTier.OBSERVER, stats);
+
+      // Infinity is also non-finite — same treatment as NaN: skip the
+      // floor, fall through to count+ratio, no literal "Infinity" in
+      // the reasoning string.
+      expect(result.reason).not.toMatch(/Infinity/);
+    });
+
     it('should skip the temporal floor when hoursInCurrentTier is undefined (legacy compat)', () => {
       // Older callers (and unit tests above) omit the field. They
       // continue to be evaluated on count + ratio alone so the change
