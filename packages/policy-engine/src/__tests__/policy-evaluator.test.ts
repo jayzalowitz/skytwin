@@ -158,6 +158,36 @@ describe('PolicyEvaluator', () => {
       const result = evaluator.checkSpendLimit(action, settings);
       expect(result).toBe(true);
     });
+
+    it('evaluate() ESCALATES (not denies) a costZeroIntent="unknown" candidate (#372)', async () => {
+      // Pre-Copilot-fix the policy engine treated a failed spend check
+      // as a hard deny. The Copilot review on PR #418 flagged that
+      // semantically an LLM candidate with cost-unknown should be
+      // escalated to human approval — denial silently drops the
+      // candidate and the user never sees it. Evaluate() now special-
+      // cases costZeroIntent='unknown' to allowed+requiresApproval
+      // BEFORE the spend-limit check runs.
+      const repo = createMockPolicyRepository();
+      const evaluator = new PolicyEvaluator(repo as never);
+      const action = createAction({
+        estimatedCostCents: 0,
+        costZeroIntent: 'unknown',
+      });
+      const settings = createAutonomySettings({ maxSpendPerActionCents: 5000 });
+      const riskAssessment = createRiskAssessment(RiskTier.LOW);
+
+      const decision = await evaluator.evaluate(
+        action,
+        [],
+        TrustTier.MODERATE_AUTONOMY,
+        riskAssessment,
+        settings,
+      );
+
+      expect(decision.allowed).toBe(true);
+      expect(decision.requiresApproval).toBe(true);
+      expect(decision.reason).toMatch(/no verified cost estimate/i);
+    });
   });
 
   describe('Irreversibility checks', () => {

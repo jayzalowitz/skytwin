@@ -100,6 +100,20 @@ export class PolicyEvaluator {
       if (settingsDecision && !settingsDecision.allowed) {
         return settingsDecision;
       }
+      // Propagate an `allowed: true, requiresApproval: true` verdict
+      // (cost-unknown LLM candidate per #372; pre-existing
+      // irreversibility branch in checkAutonomySettings) forward into
+      // the final merged decision. Without this, the escalation
+      // requested by checkAutonomySettings was silently dropped — only
+      // the `!allowed` deny path early-returned, and the requiresApproval
+      // flag never reached the bottom `requiresApproval ||
+      // tierDecision?.requiresApproval` merge.
+      if (settingsDecision && settingsDecision.requiresApproval) {
+        requiresApproval = true;
+        approvalReason = approvalReason
+          ? approvalReason
+          : (settingsDecision.reason ?? 'Approval required by autonomy settings.');
+      }
     }
 
     // Check quiet hours — escalate auto-execute to approval (not blocking urgent escalations)
@@ -433,7 +447,26 @@ export class PolicyEvaluator {
       };
     }
 
-    // Check spend limits
+    // Cost-unknown branch (#372): an LLM-generated candidate with
+    // costZeroIntent='unknown' must NOT be denied outright — the LLM
+    // didn't get to declare its own price, so we don't know whether
+    // executing would breach the cap. Escalate to human approval rather
+    // than silently dropping the candidate. (Pre-fix this fell through
+    // the zero-cost fast-path and auto-approved; the dumb default-zero
+    // was treated as "free.") Once the execution router gains the
+    // cost-estimation step (#372 Fix 3 follow-up), this branch can be
+    // lifted for candidates whose cost has been re-estimated.
+    if (action.costZeroIntent === 'unknown') {
+      return {
+        allowed: true,
+        requiresApproval: true,
+        reason:
+          'LLM-generated candidate has no verified cost estimate yet. ' +
+          'Requires human approval until cost is verified.',
+      };
+    }
+
+    // Check spend limits (real, knowable cost case).
     if (!this.checkSpendLimit(action, settings)) {
       return {
         allowed: false,

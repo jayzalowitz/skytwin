@@ -77,6 +77,15 @@ export interface CandidateAction {
    *     `'verified_zero'` for backward compatibility so existing
    *     rule-based generators that emit naked zero keep their semantics.
    *     New code paths should set this field explicitly.
+   *
+   * **Persistence note:** this flag must round-trip wherever
+   * `CandidateAction` is stored or transported. The
+   * `candidate_actions` JSONB column (saveCandidates) currently stores
+   * fields explicitly — any new serializer or deserializer must include
+   * `costZeroIntent` or a reloaded zero-cost candidate will be treated
+   * as legacy `verified_zero` and re-open the bypass. The route-layer
+   * approval payload in `events.ts` already passes `estimatedCostCents`;
+   * serializers should additionally pass `costZeroIntent` whenever set.
    */
   costZeroIntent?: 'verified_zero' | 'unknown';
   reversible: boolean;

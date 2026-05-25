@@ -227,12 +227,13 @@ export class SpendTracker {
     // knows the cost is zero*. SpendTracker doesn't see the originating
     // CandidateAction.costZeroIntent flag, so the gating for LLM-
     // generated zero ("the LLM said it costs nothing, but we never
-    // verified") happens in `PolicyEvaluator.checkSpendLimit` upstream
-    // of this call (#372). By the time a zero reaches checkDailyCap,
-    // it is either a verified-zero rule-based action or it was already
-    // rejected by checkSpendLimit. Leaving the fast-path here means a
-    // direct caller of checkDailyCap that wants the same guard must
-    // gate on costZeroIntent themselves before invoking it.
+    // verified") happens upstream in `PolicyEvaluator` — the
+    // `costZeroIntent === 'unknown'` branch escalates to approval before
+    // either `checkSpendLimit` or this `checkDailyLimit` runs (#372).
+    // By the time a zero reaches `checkDailyLimit`, it is either a
+    // verified-zero rule-based action or it was already escalated
+    // upstream. Direct callers of `checkDailyLimit` must gate on
+    // costZeroIntent themselves before invoking it.
     if (proposedCostCents === 0) {
       return {
         allowed: true,
