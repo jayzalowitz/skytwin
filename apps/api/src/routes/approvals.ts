@@ -6,6 +6,7 @@ import {
 import {
   approvalRepository,
   decisionRepository,
+  decisionRepositoryAdapter,
   feedbackRepository,
   mempalaceRepository,
   oauthRepository,
@@ -17,8 +18,9 @@ import {
 } from '@skytwin/db';
 import { TwinService } from '@skytwin/twin-model';
 import { PolicyEvaluator } from '@skytwin/policy-engine';
-import type { FeedbackEvent, CandidateAction, RiskAssessment, DimensionAssessment } from '@skytwin/shared-types';
-import { ConfidenceLevel, RiskTier, RiskDimension, TrustTier } from '@skytwin/shared-types';
+import type { FeedbackEvent, CandidateAction } from '@skytwin/shared-types';
+import { ConfidenceLevel, TrustTier } from '@skytwin/shared-types';
+import { isValidUserId as isValidUuid } from '../middleware/validate-uuid.js';
 import { getExecutionRouter } from '../execution-setup.js';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
 import { bindUserIdParamValidator } from '../middleware/validate-uuid.js';
@@ -254,6 +256,47 @@ export function createApprovalsRouter(): Router {
       // 'proceed' (valid second confirmation) — both fall through to the
       // normal approve/reject flow below.
 
+      // Pre-flight: on an APPROVE, confirm the persisted RiskAssessment
+      // exists for this candidate BEFORE we mutate any state (#371,
+      // Copilot review on PR #417). Pre-fix this check ran after
+      // approvalRepository.respond() + feedback + memory writes — a
+      // missing assessment left an "approved" row with no execution and
+      // no way to retry. Now we look at the stored candidate_action,
+      // peel the id, look up the assessment, and 409 early if it's
+      // missing. Reject path skips this check entirely (no execution).
+      let preflightRiskAssessment: Awaited<
+        ReturnType<typeof decisionRepositoryAdapter.getRiskAssessment>
+      > = null;
+      let preflightCandidateId: string | null = null;
+      if (body.action === 'approve') {
+        const preStoredAction = (existing.candidate_action ?? {}) as Record<string, unknown>;
+        const preStoredId = preStoredAction['id'];
+        preflightCandidateId =
+          typeof preStoredId === 'string' && isValidUuid(preStoredId)
+            ? preStoredId
+            : null;
+        preflightRiskAssessment = preflightCandidateId
+          ? await decisionRepositoryAdapter.getRiskAssessment(preflightCandidateId)
+          : null;
+        if (!preflightRiskAssessment) {
+          log.warn('Approve blocked at preflight: no persisted risk assessment for candidate', {
+            decisionId: existing.decision_id,
+            candidateId: preflightCandidateId,
+            approvalId: existing.id,
+            userId: body.userId,
+          });
+          res.status(409).json({
+            error: 'risk_assessment_missing',
+            message:
+              'This approval cannot be executed: the original risk assessment is not on file. ' +
+              'Re-trigger the decision to regenerate it. The approval row is unchanged so you can retry.',
+            approvalId: existing.id,
+            requestId,
+          });
+          return;
+        }
+      }
+
       // Atomically update only if still pending (prevents double-execution)
       const approval = await approvalRepository.respond(requestId, body.action, body.userId, body.reason);
       if (!approval) {
@@ -366,8 +409,21 @@ export function createApprovalsRouter(): Router {
       let executionResult: { status: string; planId?: string; adapterUsed?: unknown; error?: string } | null = null;
       if (body.action === 'approve') {
         const storedAction = approval.candidate_action as Record<string, unknown>;
+        // Preserve the original candidate id so the persisted
+        // RiskAssessment lookup below can find the assessment the
+        // decision-maker actually computed for THIS candidate (#371).
+        // Pre-fix, this generated a fresh UUID and the lookup always
+        // missed, forcing the synthetic LOW assessment fabrication that
+        // is the bug. Fall back to a fresh UUID only if the stored id
+        // is missing or non-UUID (e.g. legacy rows from before this
+        // PR or in-memory candidate ids like "cand_123_archive" that
+        // never persisted an assessment).
+        const storedId = storedAction['id'];
+        const originalCandidateId = typeof storedId === 'string' && isValidUuid(storedId)
+          ? storedId
+          : null;
         const candidateAction: CandidateAction = {
-          id: crypto.randomUUID(),
+          id: originalCandidateId ?? crypto.randomUUID(),
           decisionId: approval.decision_id,
           actionType: (storedAction['actionType'] as string) ?? 'unknown',
           description: (storedAction['description'] as string) ?? '',
@@ -418,22 +474,17 @@ export function createApprovalsRouter(): Router {
           candidateAction.parameters['accessToken'] = tokenRow.access_token;
         }
 
-        // Build risk assessment for routing (user-approved = lower risk, but real assessment)
-        const approvedDim: DimensionAssessment = { tier: RiskTier.LOW, score: 0.2, reasoning: 'User-approved action' };
-        const riskAssessment: RiskAssessment = {
-          actionId: candidateAction.id,
-          overallTier: RiskTier.LOW,
-          dimensions: {
-            [RiskDimension.REVERSIBILITY]: approvedDim,
-            [RiskDimension.FINANCIAL_IMPACT]: approvedDim,
-            [RiskDimension.LEGAL_SENSITIVITY]: approvedDim,
-            [RiskDimension.PRIVACY_SENSITIVITY]: approvedDim,
-            [RiskDimension.RELATIONSHIP_SENSITIVITY]: approvedDim,
-            [RiskDimension.OPERATIONAL_RISK]: approvedDim,
-          },
-          reasoning: 'Action was explicitly approved by user, policy checks passed',
-          assessedAt: new Date(),
-        };
+        // Use the RiskAssessment we already verified at preflight (#371,
+        // Copilot review on PR #417). The preflight ran BEFORE
+        // approvalRepository.respond() so by the time we get here on the
+        // approve path, preflightRiskAssessment is guaranteed non-null.
+        // Pre-fix this constructed a synthetic LOW-on-every-dimension
+        // assessment under the "user clicked approve = LOW risk"
+        // fallacy — wrong, because a user can approve a HIGH-tier
+        // financial-impact action and the risk dimensions don't move.
+        // Non-null assertion is safe because the early 409 already
+        // returned for the null case before any state mutation.
+        const riskAssessment = preflightRiskAssessment!;
 
         try {
           const executionRouter = await getRouter();

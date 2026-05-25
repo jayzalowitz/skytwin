@@ -21,7 +21,7 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
-    "pg": "^8.11.3",
+    "pg": "^8.21.0",
     "@skytwin/shared-types": "workspace:*",
     "@skytwin/config": "workspace:*",
     "@skytwin/decision-engine": "workspace:*",
