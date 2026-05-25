@@ -78,6 +78,18 @@ jobs:
       - run: pnpm build
       - run: pnpm test
 
+      # Guardrail (#380): block any push that hardcodes a literal
+      # version into the README badge URL. The badge is a dynamic
+      # shields.io URL that reads package.json on every render; any
+      # `badge/version-0.X.Y` literal would re-introduce the 35-release
+      # staleness this issue closed. grep returns 0 (match) → exit 1.
+      - name: README badge must stay dynamic (#380)
+        run: |
+          if grep -E "/badge/version-[0-9]" README.md; then
+            echo "::error file=README.md::README version badge appears to be hardcoded. Use the dynamic shields.io URL (img.shields.io/github/package-json/v/...) so it never goes stale."
+            exit 1
+          fi
+
   # ──────────────────────────────────────────────
   # Desktop — one job per OS, uploads installer artifacts
   # ──────────────────────────────────────────────
