@@ -223,7 +223,17 @@ export class SpendTracker {
       };
     }
 
-    // Zero-cost actions always pass
+    // Zero-cost actions always pass — *provided the caller actually
+    // knows the cost is zero*. SpendTracker doesn't see the originating
+    // CandidateAction.costZeroIntent flag, so the gating for LLM-
+    // generated zero ("the LLM said it costs nothing, but we never
+    // verified") happens upstream in `PolicyEvaluator` — the
+    // `costZeroIntent === 'unknown'` branch escalates to approval before
+    // either `checkSpendLimit` or this `checkDailyLimit` runs (#372).
+    // By the time a zero reaches `checkDailyLimit`, it is either a
+    // verified-zero rule-based action or it was already escalated
+    // upstream. Direct callers of `checkDailyLimit` must gate on
+    // costZeroIntent themselves before invoking it.
     if (proposedCostCents === 0) {
       return {
         allowed: true,
