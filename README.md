@@ -148,8 +148,9 @@ To stop later: `cd ~/skytwin && ./bin/skytwin-dev --stop`.
 
 **The first 60 seconds:**
 1. The dashboard opens. Type any situation into "Ask your twin" — the agent reasons out loud and explains what it would do, with confidence and alternatives. No accounts connected yet, no signals required.
-2. Click **"Try with a sample profile"** on the welcome screen to skip the OAuth setup entirely and poke at a fully populated example twin (decisions, learnings, approvals, the whole thing). The CTA shows up as an outlined alternative below the three sign-in paths whenever the seeded demo user is available.
-3. When you're ready to wire up your own, the in-app walkthrough handles the Google API setup in about 5 minutes — paste your client ID, click "Save and connect now," and you're at Google's sign-in.
+2. Click **"Try with a sample profile"** on the welcome screen to skip the OAuth setup entirely and poke at a fully populated example twin (decisions, learnings, approvals, the whole thing). The button is enabled whenever the seeded demo user is loaded — and tells you exactly what to run (`pnpm db:seed`) when it isn't, instead of silently disappearing.
+3. Want to look around first? Press **Esc**, click the **×** in the modal corner, or hit **Skip for now** — the dashboard chrome stays navigable behind the modal, and a "Sign in" button on the placeholder gets you back into the wizard whenever you're ready.
+4. When you're ready to wire up your own, the in-app walkthrough handles the Google API setup in about 5 minutes — paste your client ID, click "Save and connect now," and you're at Google's sign-in.
 
 ### Advanced env vars
 
