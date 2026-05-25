@@ -29,7 +29,7 @@
     "tweetnacl": "^1.0.3"
   },
   "devDependencies": {
-    "tsx": "^4.7.0",
+    "tsx": "^4.22.3",
     "typescript": "^6.0.3",
     "vitest": "^1.3.0"
   }
