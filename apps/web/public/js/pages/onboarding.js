@@ -1105,7 +1105,22 @@ async function finishWizard(userId, choice, recipeSlug) {
 function hideWizard() {
   const overlay = document.getElementById('onboarding-overlay');
   if (overlay) overlay.style.display = 'none';
-  localStorage.setItem(KEY_ONBOARDED, 'true');
+  // Preserve any existing marker — the tour-mode handler writes
+  // `KEY_ONBOARDED='sample'` immediately before calling hideWizard(),
+  // and a blanket overwrite to 'true' here would clobber that marker
+  // before the chrome banner work (P2 follow-up) ever sees it. Only
+  // promote the "never onboarded" null state to 'true' here.
+  if (!localStorage.getItem(KEY_ONBOARDED)) {
+    localStorage.setItem(KEY_ONBOARDED, 'true');
+  }
+  // Tear down the document-level Esc listener that showOnboarding()
+  // installed (lives in app.js, exposed via window). Without this the
+  // listener leaks past every wizard-complete path that doesn't go
+  // through the X / Skip / Esc dismiss flow (e.g. the OAuth completion
+  // and the "Continue to dashboard" button).
+  if (typeof window.skyTwinTeardownOnboardingEsc === 'function') {
+    window.skyTwinTeardownOnboardingEsc();
+  }
   if (typeof _onCompleteCallback === 'function') {
     _onCompleteCallback(getCurrentUserId());
   }

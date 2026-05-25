@@ -18,6 +18,7 @@ import { renderTwinServerTokens } from './pages/twin-server-tokens.js';
 import { renderDxtImports } from './pages/dxt-imports.js';
 import { renderProvenanceGraph } from './pages/provenance-graph.js';
 import { renderMemorySettings } from './pages/memory-settings.js';
+import { renderLifebook } from './pages/lifebook.js';
 import { renderGlobalPauseButton } from './components/global-pause-button.js';
 import { fetchPendingApprovals, fetchHealth, fetchUser, listUsers, escapeHtml, isApiKnownOffline, fetchJSON } from './api-client.js';
 import { initTheme } from './theme-switcher.js';
@@ -96,6 +97,20 @@ function dismissOnboardingAsSkipped() {
 }
 
 window.skyTwinDismissOnboarding = dismissOnboardingAsSkipped;
+
+/**
+ * Tear down the modal's Esc listener WITHOUT touching localStorage or
+ * mounting any other side-effects. Used by the wizard's internal
+ * `hideWizard()` (onboarding.js) so completion paths that don't go
+ * through the dismiss UX (OAuth callback, "Continue to dashboard"
+ * button) still drop the document-level keydown listener.
+ */
+window.skyTwinTeardownOnboardingEsc = () => {
+  if (_onboardingEscHandler) {
+    document.removeEventListener('keydown', _onboardingEscHandler);
+    _onboardingEscHandler = null;
+  }
+};
 
 /**
  * Show the onboarding overlay.
@@ -395,6 +410,19 @@ document.addEventListener('click', (e) => {
   updateConnectionStatus();
 });
 
+// Sign-in re-open from the no-user placeholder. Clears the 'skipped'
+// marker so the modal is allowed to mount again, then explicitly shows
+// it. Without this, an Esc/X/Skip dismiss on the first visit would
+// permanently lock the user out of the only sign-in surface (no path
+// back, since the modal is gated on KEY_ONBOARDED being null).
+document.addEventListener('click', (e) => {
+  const target = e.target instanceof Element ? e.target.closest('[data-action="signin-reopen"]') : null;
+  if (!target) return;
+  e.preventDefault();
+  localStorage.removeItem(KEY_ONBOARDED);
+  showOnboarding();
+});
+
 // Drive the activity flash off the events the API already broadcasts.
 window.addEventListener('sse:decision:step', () => flashTwinActivity('Working on it…'));
 window.addEventListener('sse:decision:executed', () => flashTwinActivity('Just handled something'));
@@ -456,10 +484,19 @@ function navigate() {
   const container = document.getElementById('page-content');
 
   if (!currentUserId) {
-    // No user yet — surface the modal and show a clear placeholder behind
-    // it so the chrome (heading, nav) reflects intent and the user can
-    // see they need to sign in.
-    container.innerHTML = '<div class="signin-placeholder">Sign in to see your decisions.</div>';
+    // No user yet — surface the modal (only if the user hasn't already
+    // dismissed it this session) and show a clickable placeholder behind
+    // it so a dismissed user has a way back into the sign-in flow.
+    // Without this re-open path, pressing Esc/X/Skip on the first visit
+    // would permanently lock the user out of the only sign-in surface.
+    container.innerHTML = `
+      <div class="signin-placeholder">
+        <p style="margin:0 0 1rem 0;">Sign in to see your decisions.</p>
+        <button class="btn btn-primary" data-action="signin-reopen" type="button">
+          Sign in
+        </button>
+      </div>
+    `;
     updateConnectionStatus();
     if (needsOnboarding()) {
       showOnboarding();
@@ -485,7 +522,13 @@ function navigate() {
 export function setUserId(id) {
   currentUserId = id;
   localStorage.setItem(KEY_USER_ID, id);
-  localStorage.setItem(KEY_ONBOARDED, 'true');
+  // Preserve 'sample' marker so tour-mode users stay distinguishable
+  // for the P2 chrome banner work. Same invariant as hideWizard in
+  // onboarding.js — only promote the never-onboarded null state here.
+  const existing = localStorage.getItem(KEY_ONBOARDED);
+  if (existing !== 'sample') {
+    localStorage.setItem(KEY_ONBOARDED, 'true');
+  }
   try { disconnectSSE(); } catch { /* noop */ }
   connectSSE(id);
   navigate();
