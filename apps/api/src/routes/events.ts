@@ -43,6 +43,7 @@ import { processGroceryReorder } from '../workflows/grocery-reorder.js';
 import { processTravelDecision } from '../workflows/travel-decision.js';
 import { getExecutionRouter } from '../execution-setup.js';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
+import { bindUserIdParamValidator } from '../middleware/validate-uuid.js';
 import { sseManager } from '../sse.js';
 import { validateEventIngest } from '../validators/event-ingest.js';
 import { getMemoryPortForUser } from '../memory-setup.js';
@@ -100,6 +101,7 @@ async function buildLlmClientForUser(userId: string): Promise<LlmClient | null> 
 
 export function createEventsRouter(): Router {
   const router = Router();
+  bindUserIdParamValidator(router);
   bindUserIdParamOwnership(router);
 
   /**

@@ -70,7 +70,7 @@ async function buildLlmClientForUser(userId: string): Promise<LlmClient | null> 
  * UUID validator for path params. The `requireOwnership` middleware already
  * gates `?userId=…`; this is the per-route check on `:threadId`.
  */
-const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+import { UUID_REGEX } from '../middleware/validate-uuid.js';
 
 /**
  * Routes for the conversational assistant. Issue #135 phase 1 — sync chat

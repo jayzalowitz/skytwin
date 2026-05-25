@@ -78,7 +78,7 @@ describe('GET /promotion-offers/:userId', () => {
     mockPromotionOffersRepository.listPendingWithServerName.mockResolvedValue([
       {
         id: 'o-1',
-        user_id: 'u-1',
+        user_id: 'aaaaaaaa-bbbb-cccc-dddd-000000000002',
         server_id: 's-1',
         server_name: 'Linear',
         current_tier: 'observer',
@@ -92,7 +92,7 @@ describe('GET /promotion-offers/:userId', () => {
       },
     ]);
     const app = makeApp();
-    const { status, body } = await request(app, 'GET', '/promotion-offers/u-1');
+    const { status, body } = await request(app, 'GET', '/promotion-offers/aaaaaaaa-bbbb-cccc-dddd-000000000002');
     expect(status).toBe(200);
     const offers = body['offers'] as Array<Record<string, unknown>>;
     expect(offers).toHaveLength(1);
@@ -114,7 +114,7 @@ describe('POST /promotion-offers/:offerId/respond', () => {
   it('rejects an invalid response value', async () => {
     const app = makeApp();
     const { status, body } = await request(app, 'POST', '/promotion-offers/o-1/respond', {
-      userId: 'u-1',
+      userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000002',
       response: 'unknown-thing',
     });
     expect(status).toBe(400);
@@ -125,7 +125,7 @@ describe('POST /promotion-offers/:offerId/respond', () => {
     mockPromotionOffersRepository.findById.mockResolvedValue(null);
     const app = makeApp();
     const { status } = await request(app, 'POST', '/promotion-offers/o-missing/respond', {
-      userId: 'u-1',
+      userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000002',
       response: 'accepted',
     });
     expect(status).toBe(404);
@@ -139,7 +139,7 @@ describe('POST /promotion-offers/:offerId/respond', () => {
     });
     const app = makeApp();
     const { status } = await request(app, 'POST', '/promotion-offers/o-1/respond', {
-      userId: 'u-1',
+      userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000002',
       response: 'accepted',
     });
     expect(status).toBe(403);
@@ -148,13 +148,13 @@ describe('POST /promotion-offers/:offerId/respond', () => {
   it('409 when the offer was already responded to (non-accept path uses findById guard)', async () => {
     mockPromotionOffersRepository.findById.mockResolvedValue({
       id: 'o-1',
-      user_id: 'u-1',
+      user_id: 'aaaaaaaa-bbbb-cccc-dddd-000000000002',
       responded_at: new Date('2026-05-17T00:00:00Z'),
       response: 'rejected',
     });
     const app = makeApp();
     const { status, body } = await request(app, 'POST', '/promotion-offers/o-1/respond', {
-      userId: 'u-1',
+      userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000002',
       response: 'rejected',
     });
     expect(status).toBe(409);
@@ -164,7 +164,7 @@ describe('POST /promotion-offers/:offerId/respond', () => {
   it('on accept: defers to acceptAtomic (single transaction guards offer state + server tier + tier bump)', async () => {
     mockPromotionOffersRepository.findById.mockResolvedValue({
       id: 'o-1',
-      user_id: 'u-1',
+      user_id: 'aaaaaaaa-bbbb-cccc-dddd-000000000002',
       server_id: 's-1',
       current_tier: 'observer',
       proposed_tier: 'suggest',
@@ -179,7 +179,7 @@ describe('POST /promotion-offers/:offerId/respond', () => {
     });
     const app = makeApp();
     const { status, body } = await request(app, 'POST', '/promotion-offers/o-1/respond', {
-      userId: 'u-1',
+      userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000002',
       response: 'accepted',
     });
     expect(status).toBe(200);
@@ -195,7 +195,7 @@ describe('POST /promotion-offers/:offerId/respond', () => {
   it('on accept with stale snapshot: acceptAtomic returns staleSnapshot → 409 (cleanup happens inside acceptAtomic)', async () => {
     mockPromotionOffersRepository.findById.mockResolvedValue({
       id: 'o-1',
-      user_id: 'u-1',
+      user_id: 'aaaaaaaa-bbbb-cccc-dddd-000000000002',
       server_id: 's-1',
       current_tier: 'observer',
       proposed_tier: 'suggest',
@@ -210,7 +210,7 @@ describe('POST /promotion-offers/:offerId/respond', () => {
     });
     const app = makeApp();
     const { status, body } = await request(app, 'POST', '/promotion-offers/o-1/respond', {
-      userId: 'u-1',
+      userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000002',
       response: 'accepted',
     });
     expect(status).toBe(409);
@@ -223,7 +223,7 @@ describe('POST /promotion-offers/:offerId/respond', () => {
   it('on accept with concurrent already-responded: acceptAtomic returns alreadyResponded → 409', async () => {
     mockPromotionOffersRepository.findById.mockResolvedValue({
       id: 'o-1',
-      user_id: 'u-1',
+      user_id: 'aaaaaaaa-bbbb-cccc-dddd-000000000002',
       server_id: 's-1',
       current_tier: 'observer',
       proposed_tier: 'suggest',
@@ -238,7 +238,7 @@ describe('POST /promotion-offers/:offerId/respond', () => {
     });
     const app = makeApp();
     const { status, body } = await request(app, 'POST', '/promotion-offers/o-1/respond', {
-      userId: 'u-1',
+      userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000002',
       response: 'accepted',
     });
     expect(status).toBe(409);
@@ -248,7 +248,7 @@ describe('POST /promotion-offers/:offerId/respond', () => {
   it('on accept with server missing: acceptAtomic returns serverMissing → 409', async () => {
     mockPromotionOffersRepository.findById.mockResolvedValue({
       id: 'o-1',
-      user_id: 'u-1',
+      user_id: 'aaaaaaaa-bbbb-cccc-dddd-000000000002',
       server_id: 's-1',
       current_tier: 'observer',
       proposed_tier: 'suggest',
@@ -263,7 +263,7 @@ describe('POST /promotion-offers/:offerId/respond', () => {
     });
     const app = makeApp();
     const { status, body } = await request(app, 'POST', '/promotion-offers/o-1/respond', {
-      userId: 'u-1',
+      userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000002',
       response: 'accepted',
     });
     expect(status).toBe(409);
@@ -273,7 +273,7 @@ describe('POST /promotion-offers/:offerId/respond', () => {
   it('on rejected/dismissed: marks responded without invoking acceptAtomic', async () => {
     mockPromotionOffersRepository.findById.mockResolvedValue({
       id: 'o-1',
-      user_id: 'u-1',
+      user_id: 'aaaaaaaa-bbbb-cccc-dddd-000000000002',
       server_id: 's-1',
       current_tier: 'observer',
       proposed_tier: 'suggest',
@@ -285,7 +285,7 @@ describe('POST /promotion-offers/:offerId/respond', () => {
     });
     const app = makeApp();
     const { status, body } = await request(app, 'POST', '/promotion-offers/o-1/respond', {
-      userId: 'u-1',
+      userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000002',
       response: 'rejected',
     });
     expect(status).toBe(200);
@@ -303,7 +303,7 @@ describe('sweepPromotionOffersOnce', () => {
     mockPromotionOffersRepository.listOfferedSince.mockResolvedValue([
       {
         id: 'o-1',
-        user_id: 'u-1',
+        user_id: 'aaaaaaaa-bbbb-cccc-dddd-000000000002',
         server_id: 's-1',
         server_name: 'Linear',
         current_tier: 'observer',
@@ -320,7 +320,7 @@ describe('sweepPromotionOffersOnce', () => {
     expect(count).toBe(1);
     expect(mockSseEmit).toHaveBeenCalledTimes(1);
     const [userId, event, payload] = mockSseEmit.mock.calls[0]!;
-    expect(userId).toBe('u-1');
+    expect(userId).toBe('aaaaaaaa-bbbb-cccc-dddd-000000000002');
     expect(event).toBe('capability:promotion-offered');
     expect((payload as Record<string, unknown>)['offerId']).toBe('o-1');
     expect((payload as Record<string, unknown>)['serverName']).toBe('Linear');

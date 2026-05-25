@@ -10,6 +10,7 @@ import {
   bindUserIdParamOwnership,
   requireOwnership,
 } from '../middleware/require-ownership.js';
+import { bindUserIdParamValidator } from '../middleware/validate-uuid.js';
 import {
   cancelDownload,
   pauseDownload,
@@ -70,6 +71,7 @@ async function loadOwnedDownload(
  */
 export function createEmbeddedLlmRouter(): Router {
   const router = Router();
+  bindUserIdParamValidator(router);
   bindUserIdParamOwnership(router);
 
   // ── Catalog (AC#5) ────────────────────────────────────────────

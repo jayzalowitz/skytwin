@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { recoveryCodeRepository, vacationModeRepository } from '@skytwin/db';
 import { createLogger } from '@skytwin/core';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
+import { bindUserIdParamValidator } from '../middleware/validate-uuid.js';
 
 const log = createLogger('api:crisis-modes');
 
@@ -23,6 +24,7 @@ const VACATION_MAX_DAYS = 90;
  */
 export function createCrisisModesRouter(): Router {
   const router = Router();
+  bindUserIdParamValidator(router);
   bindUserIdParamOwnership(router);
 
   // ── Recovery codes ─────────────────────────────────────────────

@@ -21,6 +21,7 @@ import type { FeedbackEvent, CandidateAction, RiskAssessment, DimensionAssessmen
 import { ConfidenceLevel, RiskTier, RiskDimension, TrustTier } from '@skytwin/shared-types';
 import { getExecutionRouter } from '../execution-setup.js';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
+import { bindUserIdParamValidator } from '../middleware/validate-uuid.js';
 import { sseManager } from '../sse.js';
 import { createLogger } from '@skytwin/core';
 import { getMemoryPortForUser } from '../memory-setup.js';
@@ -33,6 +34,7 @@ const log = createLogger('api:approvals');
  */
 export function createApprovalsRouter(): Router {
   const router = Router();
+  bindUserIdParamValidator(router);
   bindUserIdParamOwnership(router);
   const twinService = new TwinService(new TwinRepositoryAdapter(), new PatternRepositoryAdapter());
   const policyEvaluator = new PolicyEvaluator(policyRepositoryAdapter);

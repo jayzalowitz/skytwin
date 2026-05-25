@@ -52,10 +52,50 @@ const routes = {
 
 /**
  * Check if onboarding is needed.
+ *
+ * KEY_ONBOARDED state machine (see #362):
+ *   null / absent  → never onboarded; show modal
+ *   'true'         → completed full wizard
+ *   'skipped'      → dismissed via Esc / X / Skip link
+ *   'sample'       → entered via "Try with a sample profile"
+ * Any non-null value means "no modal" — the user has made a choice.
  */
 function needsOnboarding() {
   return !localStorage.getItem(KEY_ONBOARDED);
 }
+
+/**
+ * Hide the onboarding overlay and tear down its Esc handler.
+ *
+ * Exposed at module scope so the dismiss paths (Esc / X / Skip) and the
+ * completion paths inside the wizard share one teardown. Callers that
+ * want to record a particular dismiss reason should write KEY_ONBOARDED
+ * BEFORE calling this — hideOnboarding does not touch localStorage.
+ */
+function hideOnboarding() {
+  const overlay = document.getElementById('onboarding-overlay');
+  if (overlay) overlay.style.display = 'none';
+  if (_onboardingEscHandler) {
+    document.removeEventListener('keydown', _onboardingEscHandler);
+    _onboardingEscHandler = null;
+  }
+  updateConnectionStatus();
+}
+
+let _onboardingEscHandler = null;
+
+/**
+ * Dismiss the modal as "skipped" — user pressed Esc, the X button, or
+ * the "Skip for now" link. Records the dismiss reason in localStorage so
+ * the modal does not re-mount on reload, then re-renders the chrome.
+ */
+function dismissOnboardingAsSkipped() {
+  localStorage.setItem(KEY_ONBOARDED, 'skipped');
+  hideOnboarding();
+  navigate();
+}
+
+window.skyTwinDismissOnboarding = dismissOnboardingAsSkipped;
 
 /**
  * Show the onboarding overlay.
@@ -63,13 +103,32 @@ function needsOnboarding() {
 function showOnboarding() {
   const overlay = document.getElementById('onboarding-overlay');
   overlay.style.display = 'flex';
+
+  // Esc-to-dismiss. Wired once per show, torn down by hideOnboarding so
+  // the listener doesn't leak across modal lifecycles. Singleton-guarded
+  // via the module-level handle.
+  if (!_onboardingEscHandler) {
+    _onboardingEscHandler = (e) => {
+      if (e.key !== 'Escape') return;
+      if (overlay.style.display === 'none') return;
+      e.preventDefault();
+      dismissOnboardingAsSkipped();
+    };
+    document.addEventListener('keydown', _onboardingEscHandler);
+  }
+
   renderOnboarding(
     document.getElementById('onboarding-content'),
     (userId) => {
       currentUserId = userId;
       localStorage.setItem(KEY_USER_ID, userId);
-      localStorage.setItem(KEY_ONBOARDED, 'true');
-      overlay.style.display = 'none';
+      // Don't overwrite a 'sample' marker the tour-mode click handler
+      // wrote — the chrome banner work (P2 follow-up) keys off it.
+      const existing = localStorage.getItem(KEY_ONBOARDED);
+      if (existing !== 'sample') {
+        localStorage.setItem(KEY_ONBOARDED, 'true');
+      }
+      hideOnboarding();
       navigate();
     },
   );
@@ -283,6 +342,11 @@ async function updateConnectionStatus() {
       banner.hidden = !isOffline;
       if (isOffline && bannerText) bannerText.textContent = text;
     }
+    // The idle state means "no user is signed in" — it's neither offline
+    // NOR a recovery from offline. Don't touch _wasOffline so the
+    // sign-in → connected transition can't accidentally fire the
+    // "Back online" toast.
+    if (dotClass === 'idle') return;
     // Edge-trigger a toast when we transition from offline → online so
     // the user gets explicit confirmation that their next action will
     // work. Skip the very first connect (no prior state to recover
@@ -293,6 +357,13 @@ async function updateConnectionStatus() {
     }
     _wasOffline = isOfflineNow;
   };
+
+  // No userId means "waiting for sign-in", not "offline" (#365).
+  // Render an idle grey dot and suppress the Reconnecting banner.
+  if (!currentUserId) {
+    renderState('idle', 'Sign in to start');
+    return;
+  }
 
   if (_twinActivityText) {
     renderState('connected', _twinActivityText);
@@ -332,13 +403,14 @@ window.addEventListener('sse:twin:updated', () => flashTwinActivity('Learned som
 
 /**
  * Navigate to the current hash route.
+ *
+ * Chrome (page heading, sidebar highlights, connection status) is
+ * always updated first so the URL → heading binding holds even when
+ * the user hasn't signed in (#362, #364). The page-content render is
+ * gated on `currentUserId`: with no user, the modal shows over a
+ * placeholder; the navigation around the modal still works.
  */
 function navigate() {
-  if (!currentUserId) {
-    showOnboarding();
-    return;
-  }
-
   // Strip query suffix (e.g. "/?connected=google") so post-OAuth lands on
   // the dashboard route while preserving the params for that page to read.
   const hashRaw = window.location.hash.slice(1) || '/';
@@ -363,9 +435,13 @@ function navigate() {
   }
   route = route || routes['/'];
 
+  // Chrome updates — run unconditionally so the URL → heading binding
+  // holds for unauthenticated visits too.
   document.getElementById('page-title').textContent = route.title;
-  // Show friendly name instead of UUID, and make the badge a switcher.
-  renderUserBadge();
+  if (currentUserId) {
+    // Show friendly name instead of UUID, and make the badge a switcher.
+    renderUserBadge();
+  }
 
   // Update active nav link (sidebar + bottom nav)
   document.querySelectorAll('.nav-link, .bottom-nav-link').forEach(link => {
@@ -378,6 +454,19 @@ function navigate() {
   });
 
   const container = document.getElementById('page-content');
+
+  if (!currentUserId) {
+    // No user yet — surface the modal and show a clear placeholder behind
+    // it so the chrome (heading, nav) reflects intent and the user can
+    // see they need to sign in.
+    container.innerHTML = '<div class="signin-placeholder">Sign in to see your decisions.</div>';
+    updateConnectionStatus();
+    if (needsOnboarding()) {
+      showOnboarding();
+    }
+    return;
+  }
+
   container.innerHTML = '<div class="loading">Loading...</div>';
 
   route.render(container, currentUserId).catch(err => {
@@ -607,8 +696,11 @@ window.addEventListener('DOMContentLoaded', () => {
  * against the server before committing to it.
  */
 async function bootWithVerifiedUser() {
-  if (needsOnboarding() || !currentUserId) {
-    showOnboarding();
+  if (!currentUserId) {
+    // navigate() handles both the modal-mount-on-first-visit and the
+    // "skipped"/'sample' state where the chrome should render without
+    // re-mounting the modal.
+    navigate();
     return;
   }
   // Verify against the server with `fetchJSON` directly, NOT `fetchUser`

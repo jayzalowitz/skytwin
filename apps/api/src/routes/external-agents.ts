@@ -6,7 +6,7 @@ import { createLogger } from '@skytwin/core';
 
 const log = createLogger('api:external-agents');
 
-const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+import { UUID_REGEX } from '../middleware/validate-uuid.js';
 const VALID_SCOPES = new Set(['read', 'propose', 'subscribe']);
 
 function getUserId(req: Request): string | undefined {

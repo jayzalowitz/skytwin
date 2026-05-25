@@ -133,7 +133,7 @@ describe('Routines API routes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
 
-    mockUserRepository.findById.mockResolvedValue({ id: 'user-1', trust_tier: 'autopilot' });
+    mockUserRepository.findById.mockResolvedValue({ id: 'aaaaaaaa-bbbb-cccc-dddd-000000000001', trust_tier: 'autopilot' });
     mockPolicyRepositoryAdapter.getAllPolicies.mockResolvedValue([]);
     mockPolicyEvaluator.evaluate.mockResolvedValue({ allowed: true });
     mockGetIronClawEnhancedAdapter.mockResolvedValue(mockAdapter);
@@ -154,24 +154,24 @@ describe('Routines API routes', () => {
   describe('POST /', () => {
     it('creates a routine successfully', async () => {
       const res = await request(app, 'POST', '/api/routines', {
-        userId: 'user-1',
+        userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000001',
         schedule: '0 9 * * *',
         plan: validPlan,
       });
 
       expect(res.status).toBe(201);
       const body = res.body as { userId: string; schedule: string; routineId: string };
-      expect(body.userId).toBe('user-1');
+      expect(body.userId).toBe('aaaaaaaa-bbbb-cccc-dddd-000000000001');
       expect(body.schedule).toBe('0 9 * * *');
       expect(body.routineId).toBe('routine-1');
       expect(mockAdapter.createRoutine).toHaveBeenCalledWith(
-        'user-1',
+        'aaaaaaaa-bbbb-cccc-dddd-000000000001',
         '0 9 * * *',
         {
           ...validPlan,
           action: {
             ...validPlan.action,
-            parameters: { userId: 'user-1' },
+            parameters: { userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000001' },
           },
         },
       );
@@ -187,14 +187,14 @@ describe('Routines API routes', () => {
 
       // Missing schedule
       const res2 = await request(app, 'POST', '/api/routines', {
-        userId: 'user-1',
+        userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000001',
         plan: validPlan,
       });
       expect(res2.status).toBe(400);
 
       // Missing plan
       const res3 = await request(app, 'POST', '/api/routines', {
-        userId: 'user-1',
+        userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000001',
         schedule: '0 9 * * *',
       });
       expect(res3.status).toBe(400);
@@ -202,7 +202,7 @@ describe('Routines API routes', () => {
 
     it('returns 400 for invalid cron schedule', async () => {
       const res = await request(app, 'POST', '/api/routines', {
-        userId: 'user-1',
+        userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000001',
         schedule: 'not-a-cron',
         plan: validPlan,
       });
@@ -214,7 +214,7 @@ describe('Routines API routes', () => {
 
     it('returns 400 for missing plan.action.actionType', async () => {
       const res = await request(app, 'POST', '/api/routines', {
-        userId: 'user-1',
+        userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000001',
         schedule: '0 9 * * *',
         plan: { action: {} },
       });
@@ -245,7 +245,7 @@ describe('Routines API routes', () => {
       });
 
       const res = await request(app, 'POST', '/api/routines', {
-        userId: 'user-1',
+        userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000001',
         schedule: '0 9 * * *',
         plan: validPlan,
       });
@@ -260,7 +260,7 @@ describe('Routines API routes', () => {
       mockGetIronClawEnhancedAdapter.mockResolvedValue(null);
 
       const res = await request(app, 'POST', '/api/routines', {
-        userId: 'user-1',
+        userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000001',
         schedule: '0 9 * * *',
         plan: validPlan,
       });
@@ -276,7 +276,7 @@ describe('Routines API routes', () => {
   // =========================================================================
   describe('GET /:userId', () => {
     it('lists routines successfully', async () => {
-      const res = await request(app, 'GET', '/api/routines/user-1');
+      const res = await request(app, 'GET', '/api/routines/aaaaaaaa-bbbb-cccc-dddd-000000000001');
 
       expect(res.status).toBe(200);
       const body = res.body as {
@@ -284,16 +284,16 @@ describe('Routines API routes', () => {
         routines: Array<{ id: string; schedule: string }>;
         available: boolean;
       };
-      expect(body.userId).toBe('user-1');
+      expect(body.userId).toBe('aaaaaaaa-bbbb-cccc-dddd-000000000001');
       expect(body.routines).toHaveLength(2);
       expect(body.available).toBe(true);
-      expect(mockAdapter.listRoutines).toHaveBeenCalledWith('user-1');
+      expect(mockAdapter.listRoutines).toHaveBeenCalledWith('aaaaaaaa-bbbb-cccc-dddd-000000000001');
     });
 
     it('returns available: false when adapter unavailable', async () => {
       mockGetIronClawEnhancedAdapter.mockResolvedValue(null);
 
-      const res = await request(app, 'GET', '/api/routines/user-1');
+      const res = await request(app, 'GET', '/api/routines/aaaaaaaa-bbbb-cccc-dddd-000000000001');
 
       expect(res.status).toBe(200);
       const body = res.body as {
@@ -301,7 +301,7 @@ describe('Routines API routes', () => {
         routines: unknown[];
         available: boolean;
       };
-      expect(body.userId).toBe('user-1');
+      expect(body.userId).toBe('aaaaaaaa-bbbb-cccc-dddd-000000000001');
       expect(body.routines).toHaveLength(0);
       expect(body.available).toBe(false);
     });
@@ -313,7 +313,7 @@ describe('Routines API routes', () => {
   describe('DELETE /:routineId', () => {
     it('deletes owned routine successfully', async () => {
       const res = await request(app, 'DELETE', '/api/routines/routine-1', {
-        userId: 'user-1',
+        userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000001',
       });
 
       expect(res.status).toBe(200);
@@ -337,7 +337,7 @@ describe('Routines API routes', () => {
       ]);
 
       const res = await request(app, 'DELETE', '/api/routines/routine-1', {
-        userId: 'user-1',
+        userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000001',
       });
 
       expect(res.status).toBe(403);
@@ -349,7 +349,7 @@ describe('Routines API routes', () => {
       mockGetIronClawEnhancedAdapter.mockResolvedValue(null);
 
       const res = await request(app, 'DELETE', '/api/routines/routine-1', {
-        userId: 'user-1',
+        userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000001',
       });
 
       expect(res.status).toBe(503);

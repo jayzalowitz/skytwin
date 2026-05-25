@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { policyRepository } from '@skytwin/db';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
+import { bindUserIdParamValidator } from '../middleware/validate-uuid.js';
 
 /**
  * Create the policy CRUD router.
@@ -9,6 +10,7 @@ import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
  */
 export function createPoliciesRouter(): Router {
   const router = Router();
+  bindUserIdParamValidator(router);
   bindUserIdParamOwnership(router);
 
   /**

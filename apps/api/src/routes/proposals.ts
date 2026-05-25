@@ -4,12 +4,14 @@ import { TwinRepositoryAdapter, PatternRepositoryAdapter, proposalRepository } f
 import type { PreferenceProposalRow } from '@skytwin/db';
 import type { ConfidenceLevel } from '@skytwin/shared-types';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
+import { bindUserIdParamValidator } from '../middleware/validate-uuid.js';
 
 /**
  * Create the preference proposals router.
  */
 export function createProposalsRouter(): Router {
   const router = Router();
+  bindUserIdParamValidator(router);
   bindUserIdParamOwnership(router);
   const twinRepo = new TwinRepositoryAdapter();
   const patternRepo = new PatternRepositoryAdapter();

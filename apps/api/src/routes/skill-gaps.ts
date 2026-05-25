@@ -3,6 +3,7 @@ import type { SkillGap } from '@skytwin/shared-types';
 import { skillGapRepository } from '@skytwin/db';
 import type { SkillGapRow } from '@skytwin/db';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
+import { bindUserIdParamValidator } from '../middleware/validate-uuid.js';
 
 /**
  * Map a DB row to the SkillGap domain type.
@@ -27,6 +28,7 @@ function toSkillGap(row: SkillGapRow): SkillGap {
  */
 export function createSkillGapsRouter(): Router {
   const router = Router();
+  bindUserIdParamValidator(router);
   bindUserIdParamOwnership(router);
 
   /**

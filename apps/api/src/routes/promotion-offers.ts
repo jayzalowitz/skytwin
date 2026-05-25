@@ -24,6 +24,7 @@ import {
 } from '@skytwin/db';
 import type { TrustTier } from '@skytwin/shared-types';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
+import { bindUserIdParamValidator } from '../middleware/validate-uuid.js';
 import { sseManager, SSE_CAPABILITY_PROMOTION_OFFERED } from '../sse.js';
 
 const log = createLogger('api:promotion-offers');
@@ -64,6 +65,7 @@ function rowToDTO(
 
 export function createPromotionOffersRouter(): Router {
   const router = Router();
+  bindUserIdParamValidator(router);
   bindUserIdParamOwnership(router);
 
   /**

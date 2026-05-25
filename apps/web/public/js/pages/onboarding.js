@@ -285,6 +285,13 @@ async function handleOnboardingClick(e) {
       hideWizard();
       break;
 
+    // ── Modal dismiss (Esc / X / Skip) ──────────────────────────────────────
+    case 'onb-dismiss-modal':
+      if (typeof window.skyTwinDismissOnboarding === 'function') {
+        window.skyTwinDismissOnboarding();
+      }
+      break;
+
     // ── Tour mode ───────────────────────────────────────────────────────────
     case 'onb-start-tour': {
       try {
@@ -292,14 +299,27 @@ async function handleOnboardingClick(e) {
         if (info?.available && info?.userId) {
           localStorage.setItem(KEY_TOUR_MODE, '1');
           localStorage.setItem(KEY_USER_ID, info.userId);
-          localStorage.setItem(KEY_ONBOARDED, 'true');
+          // 'sample' (not 'true') so the chrome can tell sample-mode
+          // users apart from completed-onboarding users for the
+          // P2 "Sample profile mode" banner work. needsOnboarding()
+          // treats any non-null value as "no modal".
+          localStorage.setItem(KEY_ONBOARDED, 'sample');
           hideWizard();
           if (typeof window.skyTwinSetUserId === 'function') {
             window.skyTwinSetUserId(info.userId);
           }
+          // Land on a populated route so the sample profile is visible
+          // immediately. setUserId() above calls navigate() against the
+          // current hash; redirecting after means the next navigate()
+          // (fired by hashchange) renders #/decisions.
+          window.location.hash = '#/decisions';
+        } else {
+          showWizardError(
+            'Sample profile is not loaded on this server. Run pnpm db:seed to enable it.',
+          );
         }
       } catch {
-        showWizardError('Tour profile not available.');
+        showWizardError('Sample profile not available.');
       }
       break;
     }
@@ -332,6 +352,9 @@ function hideWizardError() {
 
 function renderWelcome() {
   renderContent(`
+    <button class="onb-close-x" data-action="onb-dismiss-modal" type="button"
+            aria-label="Dismiss onboarding">×</button>
+
     <div id="onb-wizard-error" style="color:var(--danger);font-size:0.85rem;margin-bottom:0.75rem;display:none;"></div>
 
     <div class="onboarding-title" style="font-size:1.4rem;font-weight:700;margin-bottom:0.5rem;">
@@ -369,31 +392,58 @@ function renderWelcome() {
       </button>
     </div>
 
-    <div id="onb-tour-row" style="display:none;">
-      <div role="separator" aria-label="or" style="display:flex;align-items:center;gap:0.5rem;margin:0.25rem 0 0.75rem;color:var(--text-muted);font-size:0.78rem;">
-        <span aria-hidden="true" style="flex:1;height:1px;background:var(--border);"></span>
-        <span aria-hidden="true" style="text-transform:uppercase;letter-spacing:0.08em;">or</span>
-        <span aria-hidden="true" style="flex:1;height:1px;background:var(--border);"></span>
-      </div>
-      <button class="btn btn-outline btn-lg" style="text-align:left;display:flex;align-items:center;gap:0.75rem;width:100%;"
-              data-action="onb-start-tour">
+    <div role="separator" aria-label="or" style="display:flex;align-items:center;gap:0.5rem;margin:0.25rem 0 0.75rem;color:var(--text-muted);font-size:0.78rem;">
+      <span aria-hidden="true" style="flex:1;height:1px;background:var(--border);"></span>
+      <span aria-hidden="true" style="text-transform:uppercase;letter-spacing:0.08em;">or</span>
+      <span aria-hidden="true" style="flex:1;height:1px;background:var(--border);"></span>
+    </div>
+
+    <div id="onb-tour-row">
+      <button id="onb-tour-button" class="btn btn-outline btn-lg" disabled
+              style="text-align:left;display:flex;align-items:center;gap:0.75rem;width:100%;"
+              data-action="onb-start-tour"
+              title="Sample profile not seeded — run pnpm db:seed">
         <span style="font-size:1.2rem;" aria-hidden="true">🧭</span>
         <div>
           <div style="font-weight:600;">Try with a sample profile</div>
-          <div style="font-size:0.78rem;opacity:0.8;">See a fully populated twin in action — no sign-in needed.</div>
+          <div id="onb-tour-subtext" style="font-size:0.78rem;opacity:0.7;">Checking sample profile…</div>
         </div>
+      </button>
+    </div>
+
+    <div style="margin-top:1rem;text-align:center;">
+      <button class="btn-link" data-action="onb-dismiss-modal" type="button"
+              style="font-size:0.82rem;color:var(--text-muted);background:none;border:none;cursor:pointer;padding:0;">
+        Skip for now
       </button>
     </div>
   `);
 
-  // Show the tour CTA only when the demo seed is available.
-  // The CTA + its divider sit inside #onb-tour-row so they appear/hide together.
-  fetchDemoInfo().then((info) => {
-    if (info?.available) {
-      const row = document.getElementById('onb-tour-row');
-      if (row) row.style.display = 'block';
+  // Tour CTA is rendered disabled with "Checking…" copy; resolved state
+  // depends on the demo seed being present. When available: enable +
+  // promo copy. When absent or the request fails: keep disabled with a
+  // helpful "not loaded" message so the user knows the button exists
+  // and what to do about it (#363 Fix 1).
+  const updateTourButton = (available) => {
+    const btn = document.getElementById('onb-tour-button');
+    const sub = document.getElementById('onb-tour-subtext');
+    if (!btn || !sub) return;
+    if (available) {
+      btn.disabled = false;
+      btn.removeAttribute('title');
+      sub.textContent = 'See a fully populated twin in action — no sign-in needed.';
+      sub.style.opacity = '0.8';
+    } else {
+      btn.disabled = true;
+      btn.setAttribute('title', 'Sample profile not seeded — run pnpm db:seed');
+      sub.textContent = 'Demo profile not loaded on this server.';
+      sub.style.opacity = '0.6';
     }
-  }).catch(() => { /* tour CTA stays hidden */ });
+  };
+
+  fetchDemoInfo()
+    .then((info) => updateTourButton(!!info?.available))
+    .catch(() => updateTourButton(false));
 }
 
 // ── Email choice ──────────────────────────────────────────────────────────────

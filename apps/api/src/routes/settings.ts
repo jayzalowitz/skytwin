@@ -10,6 +10,7 @@ import { TrustTier } from '@skytwin/shared-types';
 import { LlmClient, validateBaseUrlWithDns } from '@skytwin/llm-client';
 import type { ProviderEntry } from '@skytwin/llm-client';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
+import { bindUserIdParamValidator } from '../middleware/validate-uuid.js';
 
 const VALID_IRONCLAW_CHANNEL = /^[a-zA-Z0-9_.:-]{1,64}$/;
 
@@ -18,6 +19,7 @@ const VALID_IRONCLAW_CHANNEL = /^[a-zA-Z0-9_.:-]{1,64}$/;
  */
 export function createSettingsRouter(): Router {
   const router = Router();
+  bindUserIdParamValidator(router);
   bindUserIdParamOwnership(router);
 
   /**

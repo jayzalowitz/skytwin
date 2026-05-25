@@ -4,12 +4,14 @@ import { TwinService } from '@skytwin/twin-model';
 import { TwinRepositoryAdapter, PatternRepositoryAdapter, feedbackRepository, userRepository } from '@skytwin/db';
 import { ConfidenceLevel, PROMOTION_THRESHOLDS } from '@skytwin/shared-types';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
+import { bindUserIdParamValidator } from '../middleware/validate-uuid.js';
 
 /**
  * Create the twin management router.
  */
 export function createTwinRouter(): Router {
   const router = Router();
+  bindUserIdParamValidator(router);
   bindUserIdParamOwnership(router);
   const twinService = new TwinService(new TwinRepositoryAdapter(), new PatternRepositoryAdapter());
 

@@ -253,17 +253,25 @@ app.use('/api/embedded-llm', sessionAuth, createEmbeddedLlmRouter()); // catalog
 app.use('/api/promotion-offers', sessionAuth, createPromotionOffersRouter());
 
 // Error handling middleware
+//
+// Defense-in-depth for the SQL-leak class of bugs (#367): even with the
+// route-layer UUID validator catching malformed `:userId` segments before
+// they reach pg, any future code path that lands a bad string in a pg
+// query must not leak the driver's "could not parse … as type uuid"
+// message — or any other internal — to the client. Full detail goes to
+// server-side logs; the response always carries a safe generic message,
+// regardless of NODE_ENV (pre-fix, dev mode leaked `err.message`).
 app.use(
   (
-    err: Error,
+    err: Error & { code?: unknown },
     _req: express.Request,
     res: express.Response,
     _next: express.NextFunction,
   ) => {
     log.error('Unhandled error', { message: err.message, stack: err.stack });
     res.status(500).json({
-      error: 'Internal server error',
-      message: config.nodeEnv === 'development' ? err.message : undefined,
+      error: 'internal_error',
+      message: 'Something went wrong on our end.',
     });
   },
 );
