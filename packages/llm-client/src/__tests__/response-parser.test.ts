@@ -160,7 +160,7 @@ describe('parseCandidateResponse', () => {
     expect(result[0]!.id).toBeTruthy();
   });
 
-  it('forces estimatedCostCents to 0 and reversible to false (safety invariant)', () => {
+  it('forces estimatedCostCents to 0, tags costZeroIntent as unknown, and reversible to false (safety invariant, #372)', () => {
     const text = JSON.stringify([
       {
         actionType: 'buy_something',
@@ -172,6 +172,11 @@ describe('parseCandidateResponse', () => {
     const result = parseCandidateResponse(text, decisionId);
     expect(result).toHaveLength(1);
     expect(result[0]!.estimatedCostCents).toBe(0);
+    // LLM cost is not the LLM's call. The 'unknown' tag stops the
+    // policy-engine zero-cost fast-path from auto-approving this
+    // (#372). Pre-fix this was missing and a $9999 candidate emerged
+    // from the parser indistinguishable from a free DirectExecution op.
+    expect(result[0]!.costZeroIntent).toBe('unknown');
     expect(result[0]!.reversible).toBe(false);
   });
 

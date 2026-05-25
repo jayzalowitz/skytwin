@@ -107,9 +107,15 @@ function validateCandidate(
     ? item['parameters'] as Record<string, unknown>
     : {};
   // Safety invariant: LLM must not control spend limits or reversibility.
-  // estimatedCostCents defaults to 0 (deterministic cost lookup happens downstream).
+  // Tag the cost as `'unknown'` so the policy-engine zero-cost fast-path
+  // refuses to short-circuit on the default-zero (#372). Pre-fix, the
+  // hardcoded 0 plus `policy-evaluator.checkSpendLimit`'s `<= 0` fast-path
+  // made LLM-generated candidates indistinguishable from genuinely-free
+  // ops, silently bypassing both the per-action cap and the daily-cap.
+  // The fast-path now requires `costZeroIntent !== 'unknown'` to fire.
   // reversible defaults to false (safe default — the scoring/policy layer can upgrade).
   const estimatedCostCents = 0;
+  const costZeroIntent = 'unknown' as const;
   const reversible = false;
 
   let confidence = ConfidenceLevel.MODERATE;
@@ -127,6 +133,7 @@ function validateCandidate(
     domain,
     parameters,
     estimatedCostCents,
+    costZeroIntent,
     reversible,
     confidence,
     reasoning,
