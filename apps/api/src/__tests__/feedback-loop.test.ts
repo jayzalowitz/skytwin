@@ -55,6 +55,27 @@ const {
 vi.mock('@skytwin/db', () => ({
   approvalRepository: fakeApprovalRepo,
   decisionRepository: fakeDecisionRepo,
+  // approvals.ts now looks up the persisted RiskAssessment by candidate
+  // id before executing (#371). The mock echoes the requested id back as
+  // assessment.actionId so the execution-router's actionId-match
+  // invariant cannot be silently bypassed in tests (Copilot review on
+  // PR #417).
+  decisionRepositoryAdapter: {
+    getRiskAssessment: vi.fn().mockImplementation(async (actionId: string) => ({
+      actionId,
+      overallTier: 'low',
+      dimensions: {
+        reversibility: { tier: 'low', score: 0.2, reasoning: 'test' },
+        financial_impact: { tier: 'low', score: 0.2, reasoning: 'test' },
+        legal_sensitivity: { tier: 'low', score: 0.2, reasoning: 'test' },
+        privacy_sensitivity: { tier: 'low', score: 0.2, reasoning: 'test' },
+        relationship_sensitivity: { tier: 'low', score: 0.2, reasoning: 'test' },
+        operational_risk: { tier: 'low', score: 0.2, reasoning: 'test' },
+      },
+      reasoning: 'test assessment',
+      assessedAt: new Date(),
+    })),
+  },
   feedbackRepository: fakeFeedbackRepo,
   mempalaceRepository: fakeMempalaceRepo,
   oauthRepository: fakeOauthRepo,
@@ -172,14 +193,14 @@ beforeEach(() => {
     id: 'app-1',
     user_id: USER_ID,
     decision_id: 'dec-1',
-    candidate_action: { actionType: 'archive_email', description: 'Archive', domain: 'email', parameters: {}, reversible: true },
+    candidate_action: { id: 'aaaaaaaa-bbbb-cccc-dddd-000000000abc', actionType: 'archive_email', description: 'Archive', domain: 'email', parameters: {}, reversible: true },
     status: 'pending',
   });
   fakeApprovalRepo.respond.mockResolvedValue({
     id: 'app-1',
     user_id: USER_ID,
     decision_id: 'dec-1',
-    candidate_action: { actionType: 'archive_email', description: 'Archive', domain: 'email', parameters: {}, reversible: true },
+    candidate_action: { id: 'aaaaaaaa-bbbb-cccc-dddd-000000000abc', actionType: 'archive_email', description: 'Archive', domain: 'email', parameters: {}, reversible: true },
     status: 'approved',
     responded_at: new Date(),
   });
@@ -225,7 +246,7 @@ describe('feedback loop — approval records an episode for memory boost', () =>
       id: 'app-1',
       user_id: USER_ID,
       decision_id: 'dec-1',
-      candidate_action: { actionType: 'archive_email', description: 'Archive', domain: 'email', parameters: {}, reversible: true },
+      candidate_action: { id: 'aaaaaaaa-bbbb-cccc-dddd-000000000abc', actionType: 'archive_email', description: 'Archive', domain: 'email', parameters: {}, reversible: true },
       status: 'rejected',
       responded_at: new Date(),
     });

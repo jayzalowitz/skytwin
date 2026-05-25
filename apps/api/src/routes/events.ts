@@ -28,8 +28,8 @@ import {
   explanationRepositoryAdapter,
   policyRepositoryAdapter,
 } from '@skytwin/db';
-import type { DecisionContext, ExecutionEvent, RiskAssessment, DimensionAssessment, EpisodicMemory } from '@skytwin/shared-types';
-import { SituationType, TrustTier, RiskTier, RiskDimension } from '@skytwin/shared-types';
+import type { DecisionContext, ExecutionEvent, RiskAssessment, EpisodicMemory } from '@skytwin/shared-types';
+import { SituationType, TrustTier } from '@skytwin/shared-types';
 import type { AIProviderName } from '@skytwin/shared-types';
 import { LlmClient } from '@skytwin/llm-client';
 import type { ProviderEntry } from '@skytwin/llm-client';
@@ -533,6 +533,12 @@ export function createEventsRouter(): Router {
           userId,
           decisionId: decision.id,
           candidateAction: {
+            // Persist the original candidate id so the approve handler can
+            // look up the decision-maker's stored RiskAssessment by that
+            // id (#371). Previously the approve path generated a fresh
+            // UUID and lost the linkage, forcing it to fabricate a LOW
+            // assessment in place of the one the decision-maker computed.
+            id: outcome.selectedAction.id,
             actionType: outcome.selectedAction.actionType,
             description: outcome.selectedAction.description,
             domain: outcome.selectedAction.domain,
@@ -557,23 +563,55 @@ export function createEventsRouter(): Router {
           outcome.selectedAction.parameters['accessToken'] = tokenRow.access_token;
         }
 
-        // Build risk assessment for routing
-        const tier = explanation.riskTier as RiskTier ?? RiskTier.LOW;
-        const defaultDim: DimensionAssessment = { tier, score: 0.5, reasoning: outcome.reasoning };
-        const riskAssessment: RiskAssessment = {
-          actionId: outcome.selectedAction.id,
-          overallTier: tier,
-          dimensions: {
-            [RiskDimension.REVERSIBILITY]: defaultDim,
-            [RiskDimension.FINANCIAL_IMPACT]: defaultDim,
-            [RiskDimension.LEGAL_SENSITIVITY]: defaultDim,
-            [RiskDimension.PRIVACY_SENSITIVITY]: defaultDim,
-            [RiskDimension.RELATIONSHIP_SENSITIVITY]: defaultDim,
-            [RiskDimension.OPERATIONAL_RISK]: defaultDim,
-          },
-          reasoning: outcome.reasoning,
-          assessedAt: new Date(),
-        };
+        // Risk assessment for routing must be the one the decision-maker
+        // actually computed (#371) — never a fresh synthetic one derived
+        // from `explanation.riskTier`. The flat enum collapses every
+        // dimension into a single tier and a candidate the decision-maker
+        // assessed as HIGH on financial impact would have leaked through
+        // routed as LOW. The decision-maker attached the selected
+        // candidate's per-dimension assessment to `outcome.riskAssessment`
+        // at packages/decision-engine/src/decision-maker.ts:263. Fall back
+        // to the persisted-by-actionId record only if the in-memory field
+        // is absent (defensive — shouldn't happen on the autoExecute path
+        // since selectedAction implies a non-null assessment). If neither
+        // is available, escalate to manual approval inside the if-null
+        // branch below — never run with a fabricated LOW assessment.
+        const riskAssessment: RiskAssessment | null = outcome.riskAssessment
+          ?? await decisionRepositoryAdapter.getRiskAssessment(
+            outcome.selectedAction.id,
+          );
+
+        if (!riskAssessment) {
+          log.warn('Auto-execute blocked: no persisted risk assessment for selected action — escalating to approval (#371)', {
+            decisionId: decision.id,
+            actionId: outcome.selectedAction.id,
+          });
+          const {
+            accessToken: _omitTokenEsc,
+            rawData: _omitRawDataEsc,
+            ...visibleParametersEsc
+          } = (outcome.selectedAction.parameters ?? {}) as Record<string, unknown>;
+          const escalationResult = await approvalRepository.create({
+            userId,
+            decisionId: decision.id,
+            candidateAction: {
+              id: outcome.selectedAction.id,
+              actionType: outcome.selectedAction.actionType,
+              description: outcome.selectedAction.description,
+              domain: outcome.selectedAction.domain,
+              parameters: visibleParametersEsc,
+              estimatedCostCents: outcome.selectedAction.estimatedCostCents,
+              reversible: outcome.selectedAction.reversible,
+              confidence: outcome.selectedAction.confidence,
+              reasoning: outcome.selectedAction.reasoning,
+            },
+            reason: 'Auto-execute path could not verify a persisted risk assessment for this candidate. Escalated to manual approval to fail closed (#371).',
+            urgency: decision.urgency,
+            confirmationLevel: 'single',
+          });
+          approvalRequest = escalationResult.row;
+          approvalNewlyCreated = escalationResult.created;
+        } else {
 
         // Persist the DB execution plan before routing so streaming events can
         // reference it via execution_events.plan_id.
@@ -675,6 +713,7 @@ export function createEventsRouter(): Router {
           status: terminalStatus,
           eventType: terminalEvent?.eventType,
         });
+        } // end if (riskAssessment) — escalation branch above handles null
       }
 
       // Emit `approval:new` ONLY when this call actually inserted a row.
