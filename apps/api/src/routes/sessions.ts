@@ -4,6 +4,10 @@ import { sessionRepository } from '@skytwin/db';
 import { hashToken } from '../middleware/session-auth.js';
 import { sessionAuth } from '../middleware/session-auth.js';
 import { requireOwnership } from '../middleware/require-ownership.js';
+import {
+  issuePairingToken,
+  consumePairingToken,
+} from '../pairing-token-store.js';
 
 const SESSION_DURATION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
@@ -17,8 +21,16 @@ export function createSessionsRouter(): Router {
   /**
    * POST /api/sessions
    *
-   * Create a new session token for mobile pairing.
-   * Returns a QR payload (URL with embedded token).
+   * Mint a SHORT-LIVED pairing token + return the QR URL the mobile
+   * client should scan (#385). Pre-fix this route minted a 7-day
+   * session token and embedded it directly in the QR — a screenshot
+   * granted indefinite pairing and multiple devices could redeem
+   * in parallel. Now: the QR carries a 5-minute pairing token that
+   * the mobile client exchanges for a real session via
+   * `POST /api/sessions/pair/consume`. Same response shape so
+   * existing Settings UI code keeps working — the `token` field is
+   * the pairing token, `qrUrl` uses `pairToken=` in the query string
+   * to signal the new semantics, and `expiresAt` is now 5 minutes.
    */
   router.post('/', async (req, res, next) => {
     try {
@@ -28,28 +40,83 @@ export function createSessionsRouter(): Router {
         return;
       }
 
-      // Generate a URL-safe token with 128+ bits of entropy
-      const rawToken = `${randomUUID()}-${randomUUID()}`;
-      const tokenHash = hashToken(rawToken);
-      const expiresAt = new Date(Date.now() + SESSION_DURATION_MS);
-
-      const session = await sessionRepository.create({
-        userId: body.userId,
-        tokenHash,
-        deviceName: body.deviceName ?? 'Phone',
-        expiresAt,
-      });
+      const deviceName = body.deviceName ?? 'Phone';
+      const { token, expiresAt } = issuePairingToken(body.userId, deviceName);
 
       // Build the QR URL — point to the web app (not the API) so the mobile
-      // browser loads the SPA which stores the token and redirects to the dashboard.
+      // browser loads the SPA which calls /sessions/pair/consume and stores
+      // the resulting session token. The legacy `token=` param is gone;
+      // mobile entry code now branches on `pairToken=`.
       const webPort = parseInt(process.env['WEB_PORT'] ?? '3200', 10);
-      const qrUrl = `http://skytwin.local:${webPort}/mobile?token=${encodeURIComponent(rawToken)}&userId=${encodeURIComponent(body.userId)}`;
+      const qrUrl = `http://skytwin.local:${webPort}/mobile?pairToken=${encodeURIComponent(token)}&userId=${encodeURIComponent(body.userId)}`;
+
+      res.status(201).json({
+        token,
+        qrUrl,
+        expiresAt: expiresAt.toISOString(),
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /**
+   * POST /api/sessions/pair/consume
+   *
+   * Exchange a pairing token (from a freshly-scanned QR) for a real
+   * session token (#385). Single-use: the same pairing token cannot
+   * be redeemed twice. Expired tokens return 410; already-used tokens
+   * return 409; unknown / never-issued tokens return 404.
+   *
+   * Unauthenticated by design — the pairing token IS the
+   * authorisation, exactly like the legacy `/api/sessions` `token=`
+   * URL flow. Possession of a valid (non-expired, non-used) pairing
+   * token proves the holder was either issued it or holds the QR
+   * within the 5-minute window.
+   */
+  router.post('/pair/consume', async (req, res, next) => {
+    try {
+      const body = req.body as { pairToken?: string; deviceName?: string };
+      if (!body.pairToken) {
+        res.status(400).json({ error: 'Missing pairToken' });
+        return;
+      }
+
+      const result = consumePairingToken(body.pairToken);
+      if (result.kind === 'expired') {
+        res.status(410).json({ error: 'code_expired', message: 'This pairing code has expired. Generate a new one.' });
+        return;
+      }
+      if (result.kind === 'already-used') {
+        res.status(409).json({ error: 'code_already_used', message: 'This pairing code has already been used.' });
+        return;
+      }
+      if (result.kind === 'unknown') {
+        res.status(404).json({ error: 'code_not_found', message: 'Pairing code is unknown.' });
+        return;
+      }
+
+      // Mint the real session token. Device name from consume body
+      // overrides the issue-time default if the mobile client supplied
+      // its own (lets a tablet identify itself as "iPad" rather than
+      // inheriting the "Phone" default the Settings page sends).
+      const sessionToken = `${randomUUID()}-${randomUUID()}`;
+      const tokenHash = hashToken(sessionToken);
+      const sessionExpiresAt = new Date(Date.now() + SESSION_DURATION_MS);
+      const deviceName = (body.deviceName?.trim() || result.deviceName).slice(0, 64);
+
+      const session = await sessionRepository.create({
+        userId: result.userId,
+        tokenHash,
+        deviceName,
+        expiresAt: sessionExpiresAt,
+      });
 
       res.status(201).json({
         sessionId: session.id,
-        token: rawToken,
-        qrUrl,
-        expiresAt: expiresAt.toISOString(),
+        token: sessionToken,
+        userId: result.userId,
+        expiresAt: sessionExpiresAt.toISOString(),
       });
     } catch (error) {
       next(error);

@@ -869,10 +869,56 @@ window.addEventListener('DOMContentLoaded', () => {
     renderGlobalPauseButton(mount);
   }
 
-  // Handle mobile QR pairing entry (/mobile?token=...&userId=...)
+  // Handle mobile QR pairing entry. Two URL shapes:
+  //   /mobile?pairToken=...&userId=...  ← new flow (#385). The pairToken
+  //     is a SHORT-LIVED (5min) single-use credential we exchange for
+  //     a real session via POST /api/sessions/pair/consume.
+  //   /mobile?token=...&userId=...      ← legacy flow (pre-#385). The
+  //     token IS the session. Kept for any in-flight QRs minted by an
+  //     older API version during a rolling deploy; safe to remove after
+  //     a deploy cycle has passed.
   const urlParams = new URLSearchParams(window.location.search);
+  const pairToken = urlParams.get('pairToken');
   const mobileToken = urlParams.get('token');
   const mobileUserId = urlParams.get('userId');
+
+  if (pairToken) {
+    try {
+      const res = await fetch('/api/sessions/pair/consume', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pairToken }),
+      });
+      if (!res.ok) {
+        const detail = await res.json().catch(() => ({}));
+        // Strip the param either way — leaving a failed pairToken in
+        // the URL would make a reload re-attempt and fail with
+        // already-used or expired on the second try, masking the
+        // original error.
+        window.history.replaceState({}, '', '/');
+        if (typeof showToast === 'function') {
+          showToast(detail.message || 'Pairing code is no longer valid. Please generate a new one.', { kind: 'error' });
+        }
+        bootWithVerifiedUser();
+        return;
+      }
+      const payload = await res.json();
+      localStorage.setItem(KEY_SESSION_TOKEN, payload.token);
+      localStorage.setItem(KEY_USER_ID, payload.userId);
+      localStorage.setItem(KEY_ONBOARDED, 'true');
+      currentUserId = payload.userId;
+      window.history.replaceState({}, '', '/');
+      navigate();
+    } catch (err) {
+      window.history.replaceState({}, '', '/');
+      if (typeof showToast === 'function') {
+        showToast(`Couldn't redeem pairing code: ${err?.message || 'unknown error'}`, { kind: 'error' });
+      }
+      bootWithVerifiedUser();
+    }
+    return;
+  }
+
   if (mobileToken && mobileUserId) {
     localStorage.setItem(KEY_SESSION_TOKEN, mobileToken);
     localStorage.setItem(KEY_USER_ID, mobileUserId);
