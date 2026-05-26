@@ -131,7 +131,13 @@ describe('buildProviderChain — ordering (#375)', () => {
     expect(names).toEqual(['embedded', 'ollama', 'anthropic', 'openai', 'google']);
   });
 
-  it('opt-in cloud-first: SKYTWIN_LLM_PRIORITY=cloud-first restores legacy hosted-providers-first order', () => {
+  it('opt-in cloud-first: SKYTWIN_LLM_PRIORITY=cloud-first puts cloud bucket before local bucket', () => {
+    // Each bucket keeps its OWN canonical sub-order — cloud is always
+    // anthropic → openai → google, local is always embedded → ollama,
+    // regardless of the priority flag. This is NOT a bit-for-bit
+    // restoration of the pre-#375 legacy chain (legacy had ollama
+    // before embedded); the local sub-order is the same one used in
+    // local-first mode for consistency.
     const env: Record<string, string | undefined> = {
       SKYTWIN_LLM_PRIORITY: 'cloud-first',
       ANTHROPIC_API_KEY: 'a',

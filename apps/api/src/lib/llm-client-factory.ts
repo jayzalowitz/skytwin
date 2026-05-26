@@ -7,7 +7,8 @@
  * the adaptive layer must handle null by falling back to its deterministic
  * path.
  *
- * Provider priority (#375):
+ * Provider priority (#375 — applies to the SINGLETON FACTORY ONLY;
+ * see scope note below):
  *
  *   Default — LOCAL-FIRST: EMBEDDED → OLLAMA → ANTHROPIC → OPENAI → GOOGLE.
  *     This matches the "your data stays local" promise from the privacy
@@ -16,11 +17,13 @@
  *     (open circuit breaker, unsupported capability, etc.) AND the user
  *     has configured a cloud API key. Cloud is consent, not a default.
  *
- *   Opt-in — CLOUD-FIRST: ANTHROPIC → OPENAI → GOOGLE → OLLAMA → EMBEDDED.
- *     Set `SKYTWIN_LLM_PRIORITY=cloud-first` to restore the legacy order
- *     where the highest-quality hosted provider goes first. Documented
- *     in privacy.md as the "I understand my data is sent to <provider>
- *     on every decision" consent gate.
+ *   Opt-in — CLOUD-FIRST: ANTHROPIC → OPENAI → GOOGLE → EMBEDDED → OLLAMA.
+ *     Set `SKYTWIN_LLM_PRIORITY=cloud-first` to put cloud providers
+ *     ahead of local providers. Each bucket keeps its own canonical
+ *     sub-order — the cloud bucket is always anthropic → openai →
+ *     google, the local bucket is always embedded → ollama, regardless
+ *     of the priority flag. Documented in privacy.html as the
+ *     explicit consent gate.
  *
  * Hosted providers are included when their API key is set. Ollama is
  * included when OLLAMA_BASE_URL is non-empty. The `embedded` provider
@@ -29,9 +32,17 @@
  * model is discoverable — that's the path grandma uses without ever
  * signing up for an API key.
  *
- * The per-user cloud-toggle UI surface (Settings page + first-run
- * wizard step) is tracked as #375 follow-up. This PR ships the safer
- * default + opt-in path so the privacy policy can stop lying today.
+ * SCOPE OF THIS REORDER (#375 partial):
+ *   - `getLlmClientFromConfig()` (this module): YES, affected.
+ *   - Callers that read `aiProviderRepository.getEnabledForUser` and
+ *     construct their own LlmClient instance (events.ts decision
+ *     pipeline, assistant.ts, lifebooks.ts, draft-email-setup.ts): NOT
+ *     affected. Those paths order providers by the per-user
+ *     `ai_provider_settings.priority` column.
+ *   - The user-facing per-user toggle UI that would unify both
+ *     ordering paths is tracked as a #375 follow-up. This PR fixes
+ *     the env-driven singleton, which is what `capabilities.ts`
+ *     and similar callers use.
  */
 
 import { existsSync, readdirSync } from 'node:fs';
