@@ -57,6 +57,25 @@
     </div>
   </nav>
 
+  <!-- Kill-switch banner (#379). Rendered as a fixed sibling of the
+       sidebar + main so the position:fixed CSS can pin it to the very
+       top of the viewport. Body class `has-autonomy-banner` pushes
+       both the sidebar (also position:fixed) and main down by the
+       banner's height. Cannot be dismissed — the point of a panic
+       button is that it stays visible until resolved. Visibility
+       controlled by app.js's updateAutonomyBanner() against
+       /api/users/:userId/autonomy-state. Operator-set env var and
+       per-user toggle each render their own line. -->
+  <div id="autonomy-banner" class="autonomy-banner" hidden role="status" aria-live="polite">
+    <div class="autonomy-banner-lines">
+      <div id="autonomy-banner-operator" class="autonomy-banner-line" hidden></div>
+      <div id="autonomy-banner-user" class="autonomy-banner-line" hidden></div>
+    </div>
+    <button id="autonomy-banner-resume" class="autonomy-banner-resume" type="button"
+            data-action="autonomy-resume" hidden>
+      Resume
+    </button>
+  </div>
   <main class="content" id="content">
     <div class="page-header">
       <h2 id="page-title">Dashboard</h2>

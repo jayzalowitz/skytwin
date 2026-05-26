@@ -310,6 +310,25 @@ export async function renderSettings(container, userId) {
       </div>
     </div>
 
+    <div class="card" style="border-left: 3px solid var(--danger, #c0392b);" id="autonomy-pause-card">
+      <div class="card-header">
+        <span class="card-title">Pause auto-execution</span>
+      </div>
+      <div class="card-subtitle" style="margin-bottom: 0.75rem;">
+        Panic button (#379). When on, every action your twin would take is routed to the
+        approvals queue for you to review manually — even at the highest autonomy tier.
+        Different from the standby card below (which demotes your trust tier and lets
+        actions still flow under "ask first" rules).
+      </div>
+      <div id="autonomy-pause-state" style="margin-bottom: 0.75rem; font-size: 0.9rem; color: var(--text-muted);">
+        Loading current state…
+      </div>
+      <button class="btn btn-outline btn-sm" data-action="autonomy-pause-toggle" id="autonomy-pause-toggle"
+              type="button" disabled>
+        …
+      </button>
+    </div>
+
     <div class="card" style="border-left: 3px solid var(--warning, #e6a700);">
       <div class="card-header">
         <span class="card-title">${currentTier === 'observer' ? 'Your twin is on standby' : 'Put your twin on standby'}</span>
@@ -320,7 +339,7 @@ export async function renderSettings(container, userId) {
           : 'Need a break? This pauses every automatic action — your twin keeps watching but won\'t do anything until you turn it back on. Your accounts stay linked.'}
       </div>
       ${currentTier !== 'observer' ? `
-        <button class="btn btn-outline btn-sm" data-action="pause-twin">Pause everything</button>
+        <button class="btn btn-outline btn-sm" data-action="pause-twin">Pause everything (demote to observer)</button>
       ` : ''}
     </div>
 
@@ -519,6 +538,14 @@ export async function renderSettings(container, userId) {
   if (reducedMotionSel instanceof HTMLSelectElement) reducedMotionSel.value = getReducedMotion();
   const voiceFirstCb = document.getElementById('a11y-voice-first');
   if (voiceFirstCb instanceof HTMLInputElement) voiceFirstCb.checked = isVoiceFirstEnabled();
+
+  // Hydrate the kill-switch card (#379) from /api/users/:userId/autonomy-state.
+  // The card renders a "Loading…" stub during initial render; this swap
+  // populates the real state. Fired here so re-renders after a toggle
+  // also pick up the latest state without manual orchestration.
+  if (typeof window._refreshAutonomyPauseUi === 'function') {
+    window._refreshAutonomyPauseUi(userId);
+  }
 }
 
 function renderFederationPeerList(peers) {
@@ -793,6 +820,12 @@ function ensureSettingsListener() {
       case 'pause-twin':
         window.pauseTwin(uid);
         return;
+      case 'autonomy-pause-toggle':
+        // #379 — true kill switch (separate from `pause-twin` which
+        // demotes trust tier). Reads current state from the dataset
+        // so the same handler covers both pause and resume.
+        window.toggleAutonomyPause?.(uid);
+        return;
       case 'save-spend-limits':
         window.saveSpendLimits(uid);
         return;
@@ -997,6 +1030,94 @@ window.pauseTwin = async function(userId) {
     );
   }
 };
+
+/**
+ * Kill-switch toggle (#379) — flips the per-user `paused` flag on
+ * `autonomy_settings`. Reads current state from the button's dataset
+ * so the same handler covers both pause→resume and resume→pause.
+ * Confirmation prompts on both transitions: a misclick that re-arms
+ * auto-execution is the worst kind of mistake here.
+ */
+window.toggleAutonomyPause = async function(userId) {
+  const btn = document.getElementById('autonomy-pause-toggle');
+  if (!btn) return;
+  const currentlyPaused = btn.dataset['paused'] === 'true';
+  const target = !currentlyPaused;
+  const msg = target
+    ? 'Pause your twin? Every action will be routed to the approvals queue for you to review manually.'
+    : 'Resume auto-execution? Your twin will start acting on signals again.';
+  if (!window.confirm(msg)) return;
+  let reason;
+  if (target) {
+    reason = window.prompt('Optional: why are you pausing? (stored on your user record; leave blank to skip)', '') || undefined;
+  }
+  btn.disabled = true;
+  btn.textContent = target ? 'Pausing…' : 'Resuming…';
+  try {
+    const res = await fetch(
+      `/api/users/${encodeURIComponent(userId)}/autonomy-pause`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paused: target, reason }),
+      },
+    );
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    // Refresh the on-page state + the chrome banner together.
+    await refreshAutonomyPauseUi(userId);
+    if (typeof window.updateAutonomyBanner === 'function') {
+      window.updateAutonomyBanner();
+    }
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = currentlyPaused ? 'Resume auto-execution' : 'Pause auto-execution';
+    document.getElementById('page-content')?.insertAdjacentHTML(
+      'afterbegin',
+      `<div class="error-banner">Couldn't update pause state: ${escapeHtml(err?.message ?? 'unknown error')}</div>`,
+    );
+  }
+};
+
+async function refreshAutonomyPauseUi(userId) {
+  const stateEl = document.getElementById('autonomy-pause-state');
+  const btn = document.getElementById('autonomy-pause-toggle');
+  if (!stateEl || !btn) return;
+  try {
+    const res = await fetch(`/api/users/${encodeURIComponent(userId)}/autonomy-state`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const state = await res.json();
+    const operator = Boolean(state.globalPause);
+    const user = Boolean(state.userPause);
+    const parts = [];
+    if (operator) parts.push('Operator pause is active (env var); only the operator can clear it.');
+    if (user) {
+      const at = state.pausedAt ? ` (since ${new Date(state.pausedAt).toLocaleString()})` : '';
+      const why = state.pausedReason ? ` — "${state.pausedReason}"` : '';
+      parts.push(`Your toggle: PAUSED${at}${why}.`);
+    } else {
+      parts.push('Your toggle: ACTIVE. Your twin can act on signals per your trust tier.');
+    }
+    stateEl.textContent = parts.join(' ');
+    btn.disabled = operator; // Operator pause overrides; user toggle is moot until lifted.
+    btn.dataset['paused'] = user ? 'true' : 'false';
+    btn.textContent = operator
+      ? 'Operator pause active (can\'t override here)'
+      : user
+        ? 'Resume auto-execution'
+        : 'Pause auto-execution';
+  } catch {
+    stateEl.textContent = 'Couldn\'t load pause state.';
+    btn.disabled = true;
+    btn.textContent = '—';
+  }
+}
+
+// Trigger the state load when the Settings page mounts. Hooks into the
+// existing render path so refresh-on-navigate works without touching
+// the main settings flow.
+if (typeof window !== 'undefined') {
+  window._refreshAutonomyPauseUi = refreshAutonomyPauseUi;
+}
 
 window.saveSpendLimits = async function(userId) {
   try {

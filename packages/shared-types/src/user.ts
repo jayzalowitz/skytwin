@@ -58,4 +58,19 @@ export interface AutonomySettings {
    * autonomy; the global caps above are always the upper bound.
    */
   perAppOverrides?: Record<string, PerAppOverride>;
+  /**
+   * Per-user "pause auto-execution" panic toggle (#379). When `true`,
+   * `PolicyEvaluator.evaluate` escalates every candidate action to
+   * `requiresApproval: true` regardless of trust tier, autonomy
+   * settings, or policy rules — the action still lands in the
+   * Approvals queue so the user can review + approve manually, but
+   * nothing auto-executes. Separate from the operator-controlled
+   * `SKYTWIN_AUTO_EXECUTE_DISABLED` env var (read by PolicyEvaluator
+   * at construction time); either flag triggers the escalation.
+   */
+  paused?: boolean;
+  /** ISO timestamp recorded when the pause was set. */
+  pausedAt?: string;
+  /** Optional free-text reason captured at pause time. */
+  pausedReason?: string;
 }

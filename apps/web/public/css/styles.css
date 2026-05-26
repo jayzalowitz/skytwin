@@ -116,6 +116,60 @@ body {
  * the system will recover on its own, the banner just acknowledges
  * the wait. Click "Retry now" to skip the next backoff window.
  */
+/* Kill-switch / auto-execution-paused banner (#379).
+ *
+ * Sticky to the top, red, NOT dismissible — point of a panic button is
+ * that it stays visible until the user resolves it. Rendered above the
+ * sidebar's chrome via fixed positioning so it can't be hidden behind a
+ * modal or the page header. Two-line layout (operator + user) so both
+ * pause sources can show simultaneously and either can be cleared
+ * independently. */
+.autonomy-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 9999;
+  background: var(--danger, #c0392b);
+  color: white;
+  padding: 0.6rem 1.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  font-size: 0.9rem;
+  font-weight: 500;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+.autonomy-banner[hidden] { display: none; }
+.autonomy-banner-lines { display: flex; flex-direction: column; gap: 0.15rem; flex: 1; }
+.autonomy-banner-line[hidden] { display: none; }
+.autonomy-banner-resume {
+  background: white;
+  color: var(--danger, #c0392b);
+  border: 0;
+  padding: 0.35rem 0.9rem;
+  font-weight: 600;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.autonomy-banner-resume:hover { background: var(--bg-card, #f0f0f0); }
+.autonomy-banner-resume[hidden] { display: none; }
+/* When the banner is visible, push the sidebar + main content down so
+ * nothing slides behind it. Body padding-top alone wasn't enough —
+ * the sidebar is `position: fixed; top: 0` (see `.sidebar` rule) so
+ * a banner above main covered the sidebar header. Pushing the sidebar
+ * down with `top: 2.5rem` keeps both layers in sync (Copilot review
+ * on PR #421). Sidebar's full-height fill correspondingly shrinks via
+ * `height: calc(100vh - 2.5rem)` so the bottom nav still fits.
+ *
+ * Caveat: the 2.5rem assumes a single-line banner. Two-line banners
+ * (operator + user) will overflow into chrome on narrow screens; a
+ * future iteration should drive a `--autonomy-banner-height` CSS var
+ * from `banner.offsetHeight` and reference it in both rules. */
+body.has-autonomy-banner { padding-top: 2.5rem; }
+body.has-autonomy-banner .sidebar { top: 2.5rem; height: calc(100vh - 2.5rem); }
+
 .connection-banner {
   display: flex;
   align-items: center;

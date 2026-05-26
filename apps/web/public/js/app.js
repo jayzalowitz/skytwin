@@ -270,6 +270,99 @@ let _lastTitlePendingCount = null;
  * title, so a user with the tab in the background sees there's something
  * waiting on them without having to switch.
  */
+/**
+ * Kill-switch / auto-execution-paused banner (#379).
+ *
+ * Polls `/api/users/:userId/autonomy-state` and renders a sticky
+ * red banner across every page when EITHER the operator
+ * `SKYTWIN_AUTO_EXECUTE_DISABLED` env var OR the per-user
+ * `autonomy_settings.paused` flag is set. Two independent lines so
+ * both pause sources can show simultaneously; the Resume button only
+ * appears for the per-user line (the operator pause can only be
+ * cleared by unsetting the env var on the API process).
+ *
+ * Best-effort: if the endpoint 401s / 404s / errors, the banner stays
+ * hidden — failing closed here would force a banner on every
+ * unauthenticated page, which is itself confusing UX. The endpoint is
+ * cheap enough to poll on every navigate() + every 30s.
+ */
+async function updateAutonomyBanner() {
+  const banner = document.getElementById('autonomy-banner');
+  const opLine = document.getElementById('autonomy-banner-operator');
+  const userLine = document.getElementById('autonomy-banner-user');
+  const resumeBtn = document.getElementById('autonomy-banner-resume');
+  if (!banner || !opLine || !userLine || !resumeBtn) return;
+
+  if (!currentUserId) {
+    banner.hidden = true;
+    document.body.classList.remove('has-autonomy-banner');
+    return;
+  }
+
+  let state;
+  try {
+    state = await fetchJSON(`/api/users/${encodeURIComponent(currentUserId)}/autonomy-state`);
+  } catch {
+    // Don't surface a banner on a failed fetch — that would create a
+    // false "we're paused" signal for unauthenticated visits and
+    // confuse users who land mid-session-expiry.
+    banner.hidden = true;
+    document.body.classList.remove('has-autonomy-banner');
+    return;
+  }
+
+  const showOp = Boolean(state?.globalPause);
+  const showUser = Boolean(state?.userPause);
+  const anyActive = showOp || showUser;
+
+  opLine.hidden = !showOp;
+  opLine.textContent = showOp
+    ? 'Auto-execution paused by operator. Actions require manual approval until the operator restores normal mode.'
+    : '';
+
+  userLine.hidden = !showUser;
+  userLine.textContent = showUser
+    ? 'Auto-execution paused. Your twin will not act on signals until you resume.'
+    : '';
+
+  // Resume only clears the per-user lever — the operator env var
+  // requires a process restart and can't be flipped from the web UI.
+  resumeBtn.hidden = !showUser;
+
+  banner.hidden = !anyActive;
+  document.body.classList.toggle('has-autonomy-banner', anyActive);
+}
+
+// Singleton click delegator for the banner Resume button. Gated on
+// data-action so it can't fire on unrelated clicks, and confirms
+// before flipping the state so a misclick doesn't silently re-arm
+// auto-execution.
+document.addEventListener('click', async (e) => {
+  const target = e.target instanceof Element ? e.target.closest('[data-action="autonomy-resume"]') : null;
+  if (!target) return;
+  e.preventDefault();
+  if (!currentUserId) return;
+  const confirmed = window.confirm(
+    'Your twin will start acting on signals again. Continue?',
+  );
+  if (!confirmed) return;
+  try {
+    await fetchJSON(`/api/users/${encodeURIComponent(currentUserId)}/autonomy-pause`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paused: false }),
+    });
+    showToast('Auto-execution resumed. Your twin is acting on signals again.', { kind: 'success' });
+  } catch (err) {
+    showToast(
+      `Couldn't resume: ${err instanceof Error ? err.message : 'unknown error'}`,
+      { kind: 'error' },
+    );
+  } finally {
+    updateAutonomyBanner();
+  }
+});
+
 async function updateApprovalBadge() {
   if (!currentUserId) return;
   try {
@@ -513,6 +606,10 @@ function navigate() {
   // Update sidebar state
   updateApprovalBadge();
   updateConnectionStatus();
+  // Refresh the kill-switch banner on every route change so a flip
+  // made on the Settings page reflects across the whole app within a
+  // single navigation rather than waiting for the 30s poll.
+  updateAutonomyBanner();
 
   // Theme switcher used to live in the page header (UX review #7) where
   // it looked like a breadcrumb. Now mounted by the Settings page in a
@@ -781,6 +878,11 @@ async function bootWithVerifiedUser() {
 // Make setUserId available globally for settings page
 window.skyTwinSetUserId = setUserId;
 
+// Expose the autonomy-banner refresher so Settings can re-fetch
+// /autonomy-state immediately after a toggle flip (#379). Without
+// this the banner would lag one navigation behind.
+window.updateAutonomyBanner = updateAutonomyBanner;
+
 // Approval-badge fallback poll. SSE pushes sse:approval:new + :resolved
 // in real time, so we only need this when the live channel is down. Five
 // minutes when SSE is healthy is a cheap reconciliation backstop; ten
@@ -800,6 +902,17 @@ setInterval(() => {
   window._skytwinLastBadgePoll = Date.now();
   updateApprovalBadge();
 }, 10000);
+
+// Kill-switch banner background refresh (#379). The operator env var
+// can be flipped at any time on the API process (process restart);
+// without a poll the user would only see the banner update on the
+// next navigate(). 30s strikes a balance between freshness and
+// /autonomy-state load. Backed off when the API is known offline.
+setInterval(() => {
+  if (!currentUserId) return;
+  if (isApiKnownOffline()) return;
+  updateAutonomyBanner();
+}, 30_000);
 
 // ── SSE-driven live updates ─────────────────────────────
 

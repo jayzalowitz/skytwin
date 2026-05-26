@@ -48,7 +48,44 @@ export interface PolicyDecision {
  * requires approval, or is blocked.
  */
 export class PolicyEvaluator {
-  constructor(private readonly repository: PolicyRepositoryPort) {}
+  /**
+   * Operator-controlled kill switch (#379). Read ONCE at construction
+   * time from `SKYTWIN_AUTO_EXECUTE_DISABLED=true`. When true, every
+   * `evaluate()` call escalates to `requiresApproval: true` regardless
+   * of trust tier, autonomy settings, or per-policy rules — the action
+   * still lands in the Approvals queue so the user can review +
+   * approve, but nothing auto-executes. Independent of the per-user
+   * `autonomySettings.paused` lever; either flips the escalation.
+   *
+   * Override at construction time for tests (so the env-var read isn't
+   * a hidden dependency of the unit suite).
+   */
+  private readonly globallyPaused: boolean;
+
+  constructor(
+    private readonly repository: PolicyRepositoryPort,
+    options: { globallyPaused?: boolean } = {},
+  ) {
+    this.globallyPaused = options.globallyPaused
+      ?? process.env['SKYTWIN_AUTO_EXECUTE_DISABLED'] === 'true';
+  }
+
+  /**
+   * Whether the operator-level kill switch was engaged at construction
+   * time. Exposed for callers that hold a PolicyEvaluator instance and
+   * want the cached snapshot rather than re-reading the env var.
+   *
+   * The `/api/users/:userId/autonomy-state` endpoint reads
+   * `process.env['SKYTWIN_AUTO_EXECUTE_DISABLED']` directly today (the
+   * route doesn't have a PolicyEvaluator handle). Both code paths
+   * agree by construction — the evaluator snapshots the env var once,
+   * the route reads it live. If a future refactor wires the route to
+   * use this accessor instead, the snapshot becomes the single source
+   * of truth across the process for the lifetime of the evaluator.
+   */
+  isGloballyPaused(): boolean {
+    return this.globallyPaused;
+  }
 
   /**
    * Evaluate a candidate action against all applicable policies and the
@@ -61,6 +98,24 @@ export class PolicyEvaluator {
     riskAssessment?: RiskAssessment,
     autonomySettings?: AutonomySettings,
   ): Promise<PolicyDecision> {
+    // Kill-switch state (#379). Captured up front but APPLIED at the
+    // very end so it ONLY escalates actions that would otherwise have
+    // been allowed — never overrides a deny verdict (spend-cap
+    // exceeded, domain blocked, policy deny, untrusted-tier deny) and
+    // never strips the injection-guard `confirmationLevel` for
+    // extreme-severity actions. Pre-Copilot, this was an early-return
+    // ahead of every other check, which turned every deny into an
+    // approval (Copilot review on PR #421) and dropped the
+    // dual-confirmation guard. Operator pause wins the reason string
+    // when both are set so the chrome banner reflects who paused.
+    const userPaused = Boolean(autonomySettings?.paused);
+    const killSwitchActive = this.globallyPaused || userPaused;
+    const killSwitchReason = killSwitchActive
+      ? (this.globallyPaused
+          ? 'Auto-execution disabled by operator (SKYTWIN_AUTO_EXECUTE_DISABLED). Actions require manual approval until the operator restores normal mode.'
+          : 'Auto-execution paused by user. Resume from Settings to let your twin act on signals again.')
+      : '';
+
     // Merge built-in policies with user/provided policies
     const allPolicies = [...DEFAULT_POLICIES, ...policies]
       .filter((p) => p.enabled)
@@ -122,19 +177,27 @@ export class PolicyEvaluator {
       if (quietDecision) {
         return {
           ...quietDecision,
-          // Preserve both non-negotiable escalations through the quiet-hours
-          // early return: the injection-guard confirmation level, and the
-          // trust tier's own approval requirement (observer/suggest). The
-          // tier requirement must outlive every early return that can still
-          // return `allowed: true` — observer reaches this path now that it
-          // is allow-with-approval rather than a hard deny.
+          // Preserve every non-negotiable escalation through the
+          // quiet-hours early return: the injection-guard confirmation
+          // level, the trust tier's own approval requirement
+          // (observer/suggest), and the kill-switch pause (#379).
+          // Each must outlive every early return that can still
+          // return `allowed: true` — observer reaches this path now
+          // that it is allow-with-approval rather than a hard deny,
+          // and a paused user must not silently bypass via quiet
+          // hours either.
           requiresApproval:
             quietDecision.requiresApproval ||
-            Boolean(tierDecision?.requiresApproval),
+            Boolean(tierDecision?.requiresApproval) ||
+            killSwitchActive,
           ...(confirmationLevel ? { confirmationLevel } : {}),
-          reason: approvalReason
-            ? `${quietDecision.reason} ${approvalReason}`
-            : quietDecision.reason,
+          // Operator/user pause reason wins when both fire — same
+          // priority as the end-of-function merge below.
+          reason: killSwitchActive
+            ? killSwitchReason
+            : (approvalReason
+                ? `${quietDecision.reason} ${approvalReason}`
+                : quietDecision.reason),
         };
       }
     }
@@ -160,11 +223,28 @@ export class PolicyEvaluator {
       }
     }
 
-    if (requiresApproval || (tierDecision && tierDecision.requiresApproval)) {
+    // Kill-switch is applied here, AFTER every deny path has had a
+    // chance to short-circuit (#379, post-Copilot). Only escalates
+    // would-have-been-allowed actions; never overrides a deny verdict.
+    // Operator pause reason wins. Confirmation level from the
+    // injection guard is preserved either way.
+    if (
+      requiresApproval ||
+      (tierDecision && tierDecision.requiresApproval) ||
+      killSwitchActive
+    ) {
+      // Reason priority when multiple sources agree on requiresApproval:
+      //   1. Operator/user pause (most visible, most important to surface)
+      //   2. Injection-guard / autonomy-settings / policy approval reason
+      //   3. Trust-tier requirement
+      //   4. Generic fallback
+      const reason = killSwitchActive
+        ? killSwitchReason
+        : (approvalReason || tierDecision?.reason || 'Approval required by policy.');
       return {
         allowed: true,
         requiresApproval: true,
-        reason: approvalReason || tierDecision?.reason || 'Approval required by policy.',
+        reason,
         ...(confirmationLevel ? { confirmationLevel } : {}),
       };
     }
