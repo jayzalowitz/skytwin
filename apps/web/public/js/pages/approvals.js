@@ -3,6 +3,7 @@ import { renderTrustProgress } from '../components/progress-bar.js';
 import { renderDraftEmailCard, readDraftEditedBody } from '../components/draft-card.js';
 import { KEY_TOUR_MODE, firstApprovalIntroSeenKey } from '../storage-keys.js';
 import { showToast } from '../toast.js';
+import { formatMoney } from '../format.js';
 
 const PENDING_PAGE_SIZE = 10;
 
@@ -526,7 +527,7 @@ function renderActionDetails(action) {
   const meta = [];
   if (action.reversible === true) meta.push('↩ Can be undone');
   if (action.reversible === false) meta.push('⚠ Cannot be undone');
-  if (action.estimatedCostCents > 0) meta.push(`💲 $${(action.estimatedCostCents / 100).toFixed(2)}`);
+  if (action.estimatedCostCents > 0) meta.push(`💲 ${formatMoney(action.estimatedCostCents)}`);
   if (action.domain) meta.push(`📂 ${escapeHtml(action.domain)}`);
 
   // Twin's reasoning for choosing this action
@@ -559,7 +560,7 @@ function describeExecutionStep(action) {
     accept_invite: () => `Accept the calendar invite${p.title ? ` "${e(p.title)}"` : ''}${p.date ? ` on ${e(p.date)}` : ''} via Google Calendar API.`,
     decline_invite: () => `Decline the calendar invite${p.title ? ` "${e(p.title)}"` : ''}${p.reason ? ` (reason: ${e(p.reason)})` : ''} via Google Calendar API.`,
     propose_alternative: () => `Suggest an alternative time${p.proposedTime ? ` (${e(p.proposedTime)})` : ''} for ${e(p.title || 'the meeting')} via Google Calendar API.`,
-    renew_subscription: () => `Process renewal for ${e(p.service || 'subscription')}${p.amount ? ` at $${(p.amount / 100).toFixed(2)}` : ''}.`,
+    renew_subscription: () => `Process renewal for ${e(p.service || 'subscription')}${p.amount ? ` at ${formatMoney(p.amount)}` : ''}.`,
     cancel_subscription: () => `Cancel subscription for ${e(p.service || 'the service')}${p.effectiveDate ? ` effective ${e(p.effectiveDate)}` : ''}.`,
     snooze_reminder: () => `Snooze this reminder${p.until ? ` until ${e(p.until)}` : ` for ${e(p.duration || '1 hour')}`}.`,
     place_order: () => `Place order${p.item ? ` for "${e(p.item)}"` : ''}${p.quantity ? ` (qty: ${e(p.quantity)})` : ''}.`,
@@ -596,7 +597,7 @@ function describeAction(action) {
     accept_invite: 'Accept this calendar invite',
     decline_invite: 'Decline this calendar invite',
     propose_alternative: 'Suggest a different time',
-    renew_subscription: `Renew subscription ($${((action.estimatedCostCents || 0) / 100).toFixed(2)})`,
+    renew_subscription: `Renew subscription (${formatMoney(action.estimatedCostCents || 0)})`,
     cancel_subscription: 'Cancel this subscription',
     snooze_reminder: 'Snooze this reminder',
     place_order: 'Place this order',
@@ -649,7 +650,7 @@ function renderHistoryDetails(a) {
   const meta = [];
   if (action.reversible === true) meta.push('↩ Reversible');
   if (action.reversible === false) meta.push('⚠ Irreversible');
-  if (action.estimatedCostCents > 0) meta.push(`$${(action.estimatedCostCents / 100).toFixed(2)}`);
+  if (action.estimatedCostCents > 0) meta.push(formatMoney(action.estimatedCostCents));
   if (action.domain) meta.push(escapeHtml(action.domain));
 
   const statusNote = a.status === 'approved' ? 'Executed via worker' :

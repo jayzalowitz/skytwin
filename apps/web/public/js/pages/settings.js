@@ -8,6 +8,7 @@ import {
 } from '../a11y.js';
 import { showSavedToast, showErrorToast } from '../toast.js';
 import { KEY_USER_ID, KEY_ONBOARDED, KEY_SESSION_TOKEN } from '../storage-keys.js';
+import { formatMoney } from '../format.js';
 
 const TIERS = [
   { value: 'observer', name: 'Just watch', desc: 'Your assistant watches but never does anything. Good for seeing what it would do.' },
@@ -388,7 +389,7 @@ export async function renderSettings(container, userId) {
               <div>
                 <span style="font-weight: 600;">${escapeHtml(p.domain)}</span>
                 <span style="color: var(--text-muted); margin-left: 0.5rem;">${escapeHtml(p.trustTier)}</span>
-                ${p.maxSpendPerActionCents != null ? `<span style="color: var(--text-muted); margin-left: 0.5rem;">(max $${(p.maxSpendPerActionCents / 100).toFixed(2)}/action)</span>` : ''}
+                ${p.maxSpendPerActionCents != null ? `<span style="color: var(--text-muted); margin-left: 0.5rem;">(max ${escapeHtml(formatMoney(p.maxSpendPerActionCents))}/action)</span>` : ''}
               </div>
               <button class="btn btn-outline btn-sm" data-action="remove-domain-policy" data-domain="${escapeHtml(p.domain)}">Remove</button>
             </div>
