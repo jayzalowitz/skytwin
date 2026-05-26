@@ -56,14 +56,21 @@ const PROMOTION_TIER_INFO = {
 function renderPromotionCriteriaSection(currentTier) {
   const info = PROMOTION_TIER_INFO[currentTier];
   if (!info) {
-    // moderate_autonomy / high_autonomy — no automatic promotion path
+    // No automatic promotion ladder past this point. Two distinct
+    // cases here — surface them separately so we're not telling a
+    // high_autonomy user about a "next jump" they're already past.
+    const body = currentTier === 'high_autonomy'
+      ? `You're already on <strong>Full autopilot</strong> — the highest tier.
+         There's no higher level to move up to. If you'd rather scale back,
+         pick a lower tier above and hit Save.`
+      : `You're at <strong>Handle most things</strong>. The next jump to
+         <strong>Full autopilot</strong> isn't automatic — you have to
+         opt in from the tier selector above when you're ready.`;
     return `
       <details class="promotion-criteria" style="margin-top: 1rem; padding: 0.75rem 1rem; background: var(--bg); border-radius: 6px; border: 1px solid var(--border);">
         <summary style="cursor: pointer; font-size: 0.85rem; color: var(--text-muted);">What does it take to move up?</summary>
         <div style="margin-top: 0.6rem; font-size: 0.85rem; line-height: 1.55; color: var(--text);">
-          You're already at one of the higher tiers. The next jump to
-          <strong>Full autopilot</strong> isn't automatic — you have to
-          opt in from Settings if/when you want it.
+          ${body}
         </div>
       </details>
     `;

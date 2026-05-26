@@ -18,8 +18,7 @@ import { PROMOTION_THRESHOLDS, TrustTier } from '@skytwin/shared-types';
 describe('PROMOTION_THRESHOLDS — shape lock (#396)', () => {
   it('observer → suggest: 10 approvals, ≥0.8 ratio, ≥24h', () => {
     const t = PROMOTION_THRESHOLDS[TrustTier.OBSERVER];
-    expect(t).toBeDefined();
-    if (!t) return;
+    if (!t) throw new Error('PROMOTION_THRESHOLDS entry missing — table drifted out of shape');
     expect(t.consecutiveApprovals).toBe(10);
     expect(t.minApprovalRatio).toBe(0.8);
     expect(t.minDurationInTierHours).toBe(24);
@@ -28,8 +27,7 @@ describe('PROMOTION_THRESHOLDS — shape lock (#396)', () => {
 
   it('suggest → low_autonomy: 20 approvals, ≥0.85 ratio, ≥72h', () => {
     const t = PROMOTION_THRESHOLDS[TrustTier.SUGGEST];
-    expect(t).toBeDefined();
-    if (!t) return;
+    if (!t) throw new Error('PROMOTION_THRESHOLDS entry missing — table drifted out of shape');
     expect(t.consecutiveApprovals).toBe(20);
     expect(t.minApprovalRatio).toBe(0.85);
     expect(t.minDurationInTierHours).toBe(72);
@@ -38,8 +36,7 @@ describe('PROMOTION_THRESHOLDS — shape lock (#396)', () => {
 
   it('low_autonomy → moderate_autonomy: 50 approvals, ≥0.9 ratio, ≥168h', () => {
     const t = PROMOTION_THRESHOLDS[TrustTier.LOW_AUTONOMY];
-    expect(t).toBeDefined();
-    if (!t) return;
+    if (!t) throw new Error('PROMOTION_THRESHOLDS entry missing — table drifted out of shape');
     expect(t.consecutiveApprovals).toBe(50);
     expect(t.minApprovalRatio).toBe(0.9);
     expect(t.minDurationInTierHours).toBe(168);
