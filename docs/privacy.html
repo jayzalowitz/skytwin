@@ -72,6 +72,9 @@
     <ol>
       <li>Direct API calls from the SkyTwin desktop process to Google API servers (e.g. <code>gmail.googleapis.com</code>, <code>calendar.googleapis.com</code>) to fetch the data you authorized.</li>
       <li>Optional outbound calls to LLM providers (OpenAI, Anthropic, Google AI) <em>only if</em> you have configured one of those in Setup — the prompts may contain your data, in which case that provider's terms apply. The default install uses the embedded <code>llama.cpp</code> runtime and makes no outbound LLM calls.</li>
+      <li>
+        <strong>Provider order is local-first by default (#375).</strong> When you configure both a local provider (embedded <code>llama.cpp</code> or Ollama) <em>and</em> a cloud provider (Anthropic / OpenAI / Google), the local provider is called first on every decision and the cloud provider is only invoked as fallback when the local chain fails. This matches the "your data stays local" promise: a cloud key in your env never silently escalates to cloud-as-primary. Power users on hardware that can't run a local model can opt back into the legacy cloud-first ordering by setting <code>SKYTWIN_LLM_PRIORITY=cloud-first</code> on the API process — that's an explicit consent gate, and the env var is the audit trail. The per-user toggle UI (Settings → AI provider) is tracked as a follow-up to the same issue; until it ships, the env-var route is the only way to change ordering.
+      </li>
     </ol>
     <p>We do not sell user data. We cannot sell user data — we do not possess it.</p>
 
