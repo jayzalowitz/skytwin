@@ -72,6 +72,11 @@
     <ol>
       <li>Direct API calls from the SkyTwin desktop process to Google API servers (e.g. <code>gmail.googleapis.com</code>, <code>calendar.googleapis.com</code>) to fetch the data you authorized.</li>
       <li>Optional outbound calls to LLM providers (OpenAI, Anthropic, Google AI) <em>only if</em> you have configured one of those in Setup — the prompts may contain your data, in which case that provider's terms apply. The default install uses the embedded <code>llama.cpp</code> runtime and makes no outbound LLM calls.</li>
+      <li>
+        <strong>Provider order is local-first by default for the env-driven factory (#375 — partial).</strong> The shared LLM client constructed from environment variables (used today by capability suggestions and any future caller that goes through <code>getLlmClientFromConfig</code>) now orders local providers (embedded <code>llama.cpp</code>, Ollama) ahead of cloud providers (Anthropic, OpenAI, Google) by default. A cloud key in your env no longer silently escalates that path to cloud-as-primary. Set <code>SKYTWIN_LLM_PRIORITY=cloud-first</code> on the API process to put cloud providers ahead of local — that's an explicit consent gate and the env var is the audit trail.
+        <br><br>
+        <strong>Scope note:</strong> the decision-ingest path (the one that actually sends your email / calendar prompts to an LLM) constructs its provider chain from the per-user <code>ai_provider_settings</code> table, ordered by the per-row <code>priority</code> column. That path is NOT changed by this update; the user-facing toggle UI that unifies both ordering paths is tracked as a follow-up to the same issue. Until that ships, configure <code>ai_provider_settings.priority</code> via Settings to control your decision-pipeline ordering.
+      </li>
     </ol>
     <p>We do not sell user data. We cannot sell user data — we do not possess it.</p>
 
