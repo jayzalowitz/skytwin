@@ -8,7 +8,7 @@ import { bindUserIdParamValidator } from '../middleware/validate-uuid.js';
  * can render a "Gmail disconnected — Reconnect" banner when a user's
  * refresh token has been revoked at the OAuth provider or otherwise
  * permanently invalidated. The worker writes the underlying state on
- * every poll outcome — see apps/worker/src/index.ts:pollUserConnectors.
+ * every poll outcome — see `pollUser` in apps/worker/src/index.ts.
  */
 export function createConnectorsRouter(): Router {
   const router = Router();

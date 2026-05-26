@@ -33,6 +33,7 @@ import { runTierBackfillJob } from './jobs/tier-backfill.js';
 import { runRelationshipTierBackfillBatch } from './jobs/relationship-tier-scheduler.js';
 import { runBriefingGeneratorJob } from './jobs/briefing-generator.js';
 import { runPromotionEligibilityCheckJob } from './jobs/promotion-eligibility-check.js';
+import { extractErrorCode } from './oauth-error-code.js';
 
 const config = loadConfig();
 const log = createLogger('worker');
@@ -131,21 +132,6 @@ const signalDeduper = new SignalDeduper({
     });
   },
 });
-
-/**
- * Pluck the Google `error` field out of an OAuthRefreshError message
- * (e.g. `"invalid_grant"`, `"unauthorized_client"`) so the dashboard
- * banner can render conditional copy ("revoked" vs "client misconfig").
- * Returns null when the message has no recognisable code so the
- * caller can default to a safe fallback.
- *
- * The OAuthRefreshError message format is `"OAuth refresh failed: <code>
- * <description?>"` — see packages/connectors/src/oauth/google-oauth.ts.
- */
-function extractErrorCode(message: string): string | null {
-  const match = message.match(/refresh failed:\s*([a-z_]+)/i);
-  return match?.[1] ?? null;
-}
 
 function getCircuitBreaker(userId: string): CircuitBreaker {
   let breaker = userCircuitBreakers.get(userId);

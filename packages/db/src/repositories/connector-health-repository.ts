@@ -48,19 +48,22 @@ export const connectorHealthRepository = {
     lastSuccessAt?: Date | null;
     lastFailureAt?: Date | null;
   }): Promise<void> {
-    const now = new Date();
+    // updated_at is set via DB-side now() (not application time) so
+    // multi-node deployments don't get clock-skewed timestamps in the
+    // same row history. Matches the repository convention used by the
+    // rest of the codebase.
     await query(
       `INSERT INTO connector_health (
          user_id, connector_name, status, error_code,
          last_success_at, last_failure_at, updated_at
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       VALUES ($1, $2, $3, $4, $5, $6, now())
        ON CONFLICT (user_id, connector_name) DO UPDATE SET
          status = EXCLUDED.status,
          error_code = EXCLUDED.error_code,
          last_success_at = COALESCE(EXCLUDED.last_success_at, connector_health.last_success_at),
          last_failure_at = COALESCE(EXCLUDED.last_failure_at, connector_health.last_failure_at),
-         updated_at = EXCLUDED.updated_at`,
+         updated_at = now()`,
       [
         input.userId,
         input.connectorName,
@@ -68,7 +71,6 @@ export const connectorHealthRepository = {
         input.errorCode ?? null,
         input.lastSuccessAt ?? null,
         input.lastFailureAt ?? null,
-        now,
       ],
     );
   },

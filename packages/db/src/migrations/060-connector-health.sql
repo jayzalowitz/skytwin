@@ -25,7 +25,7 @@
 CREATE TABLE IF NOT EXISTS connector_health (
     user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     connector_name  STRING NOT NULL,
-    status          STRING NOT NULL,
+    status          STRING NOT NULL CHECK (status IN ('connected', 'needs_reauth', 'disabled')),
     error_code      STRING,
     last_success_at TIMESTAMPTZ,
     last_failure_at TIMESTAMPTZ,
