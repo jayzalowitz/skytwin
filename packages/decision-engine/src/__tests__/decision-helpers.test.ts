@@ -11,7 +11,7 @@
 import { describe, it, expect } from 'vitest';
 import { getAssessmentForAction } from '../decision-helpers.js';
 import type { DecisionOutcome, RiskAssessment } from '@skytwin/shared-types';
-import { ConfidenceLevel, RiskTier, RiskDimension } from '@skytwin/shared-types';
+import { RiskTier, RiskDimension } from '@skytwin/shared-types';
 
 function mkAssessment(actionId: string, tier: RiskTier = RiskTier.LOW): RiskAssessment {
   const dim = { tier, score: 0.5, reasoning: 'test' };
