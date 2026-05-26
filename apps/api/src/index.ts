@@ -178,11 +178,20 @@ app.get('/api/health/live', (req, res) => {
 
 // Readiness: process is ready to serve traffic (dependencies available)
 app.get('/api/health/ready', async (_req, res) => {
-  const { healthCheck } = await import('@skytwin/db');
+  const { healthCheck, getPoolStats } = await import('@skytwin/db');
   const dbHealth = await healthCheck();
+  const poolStats = getPoolStats();
+
+  // Pool saturation is the canary signal for "the pool is exhausted —
+  // every subsequent acquire is queued, every queued caller is hung."
+  // Reporting it via /ready lets an operator (or a future canary) see
+  // 18/20 connections saturated before queue depth becomes a customer
+  // call. waitingCount > 0 means at least one caller is queued. (#378)
+  const poolSaturated = (poolStats?.waitingCount ?? 0) > 0;
 
   const checks: Record<string, string> = {
     database: dbHealth.healthy ? 'ok' : 'unavailable',
+    pool: poolSaturated ? 'saturated' : 'ok',
   };
   const allOk = Object.values(checks).every((v) => v === 'ok');
 
@@ -193,6 +202,7 @@ app.get('/api/health/ready', async (_req, res) => {
     uptime: process.uptime(),
     checks,
     dbLatencyMs: dbHealth.latencyMs,
+    pool: poolStats ?? { totalCount: 0, idleCount: 0, waitingCount: 0 },
   });
 });
 
@@ -276,23 +286,68 @@ app.use(
   },
 );
 
-// Start server
+// Start server with a DB probe + 30s hang detector (#378).
+//
+// Pre-fix, the API bound the port immediately and only discovered an
+// unreachable CRDB on the first user request — by then the orchestrator
+// was already routing traffic to a dead process. Now we mirror the
+// worker's pattern (apps/worker/src/index.ts startup-failure handling):
+// arm a 30s setTimeout that exits non-zero with a diagnostic message,
+// run a `SELECT 1` round-trip against the pool, and only then bind the
+// port. If CRDB is unreachable or the pool is misconfigured, the
+// orchestrator sees a non-zero exit instead of a "healthy on /live but
+// every real request hangs" zombie. The hang detector also catches
+// migration-loop hangs or any unexpected blocking await between here
+// and `listen()`.
 const port = config.apiPort;
-const server = app.listen(port, () => {
-  log.info(`SkyTwin API server listening on port ${port}`);
-  log.info(`Environment: ${config.nodeEnv}`);
-  log.info(`Health check: http://localhost:${port}/api/health`);
-  if (config.nodeEnv !== 'production') {
-    startMdnsAdvertisement(port);
+let server: ReturnType<typeof app.listen>;
+
+const STARTUP_HANG_MS = 30_000;
+const startupHangTimer = setTimeout(() => {
+  log.error(
+    `API startup hung past ${STARTUP_HANG_MS}ms. CRDB may be unreachable, the pool may be misconfigured, or a migration may be stuck. Exiting so the orchestrator can restart.`,
+  );
+  process.exit(1);
+}, STARTUP_HANG_MS);
+startupHangTimer.unref();
+
+(async () => {
+  try {
+    const { healthCheck } = await import('@skytwin/db');
+    const dbHealth = await healthCheck();
+    if (!dbHealth.healthy) {
+      log.error(
+        `CRDB readiness probe failed at startup (${dbHealth.error ?? 'unknown error'}). Refusing to bind the port — the orchestrator will see a non-zero exit instead of routing traffic to a dead process.`,
+      );
+      clearTimeout(startupHangTimer);
+      process.exit(1);
+    }
+    log.info(`CRDB readiness probe ok (${dbHealth.latencyMs}ms). Binding port…`);
+  } catch (err) {
+    log.error(
+      `CRDB readiness probe threw at startup: ${err instanceof Error ? err.message : String(err)}. Refusing to bind the port.`,
+    );
+    clearTimeout(startupHangTimer);
+    process.exit(1);
   }
-  // #310: kick off the promotion-offers SSE sweeper. Watches
-  // `promotion_offers` for newly-inserted rows and emits
-  // `capability:promotion-offered` to live dashboard connections.
-  // Polling is the source of truth; this is a UX optimization for
-  // already-connected tabs. The sweeper's interval is unref'd so
-  // the process can exit cleanly.
-  startPromotionOffersSweeper();
-});
+
+  server = app.listen(port, () => {
+    clearTimeout(startupHangTimer);
+    log.info(`SkyTwin API server listening on port ${port}`);
+    log.info(`Environment: ${config.nodeEnv}`);
+    log.info(`Health check: http://localhost:${port}/api/health`);
+    if (config.nodeEnv !== 'production') {
+      startMdnsAdvertisement(port);
+    }
+    // #310: kick off the promotion-offers SSE sweeper. Watches
+    // `promotion_offers` for newly-inserted rows and emits
+    // `capability:promotion-offered` to live dashboard connections.
+    // Polling is the source of truth; this is a UX optimization for
+    // already-connected tabs. The sweeper's interval is unref'd so
+    // the process can exit cleanly.
+    startPromotionOffersSweeper();
+  });
+})();
 
 // In-process metrics rollup (gated by METRICS_ROLLUP_ENABLED).
 //
@@ -336,6 +391,18 @@ function handleShutdown(signal: string): void {
     process.exit(1);
   }, 25_000);
   forceTimer.unref();
+  // SIGTERM/SIGINT can arrive before the async startup() completes, in
+  // which case `server` is undefined and there's no HTTP listener to
+  // close. Close the pool directly and exit.
+  if (!server) {
+    log.info('Shutdown signal received before HTTP server bound — closing pool and exiting');
+    closePool()
+      .catch((err) => log.warn('Error closing database pool', {
+        error: err instanceof Error ? err.message : String(err),
+      }))
+      .finally(() => process.exit(0));
+    return;
+  }
   server.close(async () => {
     log.info('HTTP server closed');
     try {
