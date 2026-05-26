@@ -4,11 +4,14 @@ This is the walkthrough we use to show someone what SkyTwin does for the first
 time. Aim for five minutes end-to-end. Hand it to a friend with a phone in
 their other hand and read along.
 
-> **Screenshots:** `docs/img/demo/` is intentionally empty in this revision —
-> the text walkthrough is independently runnable against a fresh dev install,
-> and the screenshots are tracked as a follow-up so they get captured against
-> the actual UI rather than an early-mockup that's already drifted. If you're
-> recording the launch video, this file is the script.
+> **Screenshots:** the live-UI captures the launch will use are tracked as
+> a follow-up to this PR. The repo's existing demo stills live under
+> [`docs/screenshots/`](./screenshots/) (`dashboard.png`, `approvals.png`,
+> `decisions.png`, `onboarding.png`, `settings.png`) — those are the
+> baseline; a fresh capture run against the post-Tier-2-polish UI is what
+> the launch video needs. The text walkthrough below is independently
+> runnable against a fresh dev install. If you're recording the launch
+> video, this file is the script.
 
 ---
 
@@ -38,9 +41,11 @@ start.
 
 **Two paths from here:**
 
-- **"Try with a sample profile"** — gives you a pre-loaded user named Alex
-  with 5 sample decisions, 2 connected services, and a populated activity
-  log. No OAuth, no signal-ingestion wait. This is the demo path.
+- **"Try with a sample profile"** — gives you a pre-loaded user (Alex)
+  with a handful of sample decisions across several domains and a
+  populated activity log (the seed in `packages/db/src/seeds/` inserts
+  around 8 decisions today; the exact count moves as we tune the demo
+  data). No OAuth, no signal-ingestion wait. This is the demo path.
 - **"Continue with Google"** — real Gmail + Calendar OAuth. Use this if
   you want to see the live pipeline against your own data.
 
@@ -92,9 +97,13 @@ screenshot in the repo today). Approve the scopes, watch the wizard
 auto-advance, and you're back on the dashboard with the connection-status
 dot turning green in the sidebar.
 
-The dashboard at this point shows "Listening — Gmail connected" instead of
-"Idle." First signal will appear within the next polling cycle (typically
-2–3 minutes from a fresh inbox; immediately if there's already unread mail).
+The sidebar connection dot in `apps/web/public/js/app.js` flips from the
+idle grey state to a green dot with "Listening" text once SSE comes up
+(falls back to "Connected" if only HTTP works, "Reconnecting…" / "Offline"
+on disconnect). First signal lands within the next polling cycle —
+typically 2–3 minutes from a fresh inbox; immediately if there's already
+unread mail. The connector-health banner in the chrome surfaces any
+per-connector failures the moment the worker observes them (#377).
 
 ---
 
@@ -161,9 +170,10 @@ Click **Settings** in the sidebar. Three cards worth pointing out:
   `packages/shared-types/src/policy.ts` exactly; the engine and the
   copy can't drift, locked by `promotion-thresholds-shape.test.ts`.)
 - **"Spending guardrails"** — per-action and daily caps in dollars.
-  Default is $10/action, $50/day. Hard limits at the policy engine —
-  anything above the cap escalates to manual approval no matter the
-  trust tier.
+  Defaults from `apps/web/public/js/pages/settings.js` are **$100 per
+  action** and **$500 per day** (10000 and 50000 cents respectively).
+  Hard limits at the policy engine — anything above the cap escalates
+  to manual approval no matter the trust tier.
 - **"Delete everything about me"** — at the bottom, with a red border.
   Two-stage confirm (window prompt asks the user to type DELETE), then
   the right-to-erasure flow purges every row in one transaction.
