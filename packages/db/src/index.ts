@@ -91,8 +91,14 @@ export {
   executionRepository,
   connectorHealthRepository,
   userPurgeRepository,
+  accessLogRepository,
 } from './repositories/index.js';
-export type { ConnectorHealthRow, PurgeUserResult } from './repositories/index.js';
+export type {
+  ConnectorHealthRow,
+  PurgeUserResult,
+  AccessLogRow,
+  RecordAccessInput,
+} from './repositories/index.js';
 export type {
   RememberPendingSigninInput,
   ConsumedPendingSignin,
