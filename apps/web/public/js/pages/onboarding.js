@@ -144,9 +144,21 @@ async function handleOnboardingClick(e) {
     case 'onboarding-restart':
       clearOnboardingState();
       if (_wizardState) {
+        // Reset every wizard-accumulated field so the welcome screen
+        // doesn't render under stale state. Mirror the shape of the
+        // initial allocation in `renderOnboarding` — adding a field
+        // there means adding a reset here.
         _wizardState.recipeSlug = null;
         _wizardState.history = [];
+        _wizardState.recommendedRegistryIds = [];
+        _wizardState.rationale = '';
+        _wizardState.firstRunChoice = undefined;
       }
+      // Also drop the deterministic-path scratch state held in module
+      // scope so a "Start over" from anywhere in the about-me flow
+      // doesn't replay prior answers.
+      _detAnswers = {};
+      _detStep = 0;
       await transitionTo('welcome');
       break;
 
@@ -1184,6 +1196,15 @@ function hideWizard() {
   if (!localStorage.getItem(KEY_ONBOARDED)) {
     localStorage.setItem(KEY_ONBOARDED, 'true');
   }
+  // Drop the resume token whenever the wizard goes away (#390 Copilot).
+  // hideWizard() is the chokepoint for every "wizard is done" path —
+  // OAuth completion, tour-mode start, X/Skip dismiss, finishWizard
+  // (which already clears explicitly but harmless to double-clear),
+  // and the install-complete "Continue to dashboard" button. Without
+  // this, a hideWizard() that didn't route through finishWizard()
+  // left a stale resume token behind that would re-prompt on the next
+  // first-run visit.
+  clearOnboardingState();
   // Tear down the document-level Esc listener that showOnboarding()
   // installed (lives in app.js, exposed via window). Without this the
   // listener leaks past every wizard-complete path that doesn't go
@@ -1201,10 +1222,25 @@ function hideWizard() {
 // State machine transitions
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Screens that are safely resumable on next visit. `installing` is a
+ * spinner-only screen mid-side-effect; `complete` is post-finish.
+ * Persisting either would resume the user onto a meaningless render
+ * with no source state behind it, so we skip the save (#390 Copilot).
+ */
+const NON_RESUMABLE_SCREENS = new Set(['installing', 'complete']);
+
 async function transitionTo(screen) {
   if (!_wizardState) return;
   _wizardState.screen = screen;
-  saveOnboardingState();
+  if (NON_RESUMABLE_SCREENS.has(screen)) {
+    // We're past the point a resume can recover from; the saved state
+    // for an earlier screen stays in place until finishWizard() or
+    // hideWizard() clears it. Don't overwrite with a non-resumable
+    // screen name.
+  } else {
+    saveOnboardingState();
+  }
 
   switch (screen) {
     case 'welcome':
