@@ -84,6 +84,15 @@ export class ProactiveEvaluator {
           ...response.alternativeActions,
         ],
         riskAssessment: null,
+        // Synthetic outcomes from the proactive evaluator don't have
+        // per-candidate assessments (the whatWouldIDo response is a
+        // synthesis, not a full decision-engine run). Both
+        // `riskAssessment` and `allRiskAssessments` are intentionally
+        // left empty. `getAssessmentForAction` will return null for
+        // every id on these outcomes — its legacy fallback to
+        // `outcome.riskAssessment` is also null here, so the helper
+        // gives a single null path for both kinds of miss.
+        allRiskAssessments: [],
         autoExecute: response.wouldAutoExecute,
         requiresApproval: !response.wouldAutoExecute,
         reasoning: response.reasoning,
