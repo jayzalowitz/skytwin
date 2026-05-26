@@ -3,9 +3,9 @@
  *
  * Backed by `GET /api/activity/:userId?hours=24` (see
  * `apps/api/src/routes/activity.ts`). The endpoint returns
- * newest-first events; this page renders them as a single
- * chronological list with kind/domain pills and a drill-down link
- * to the ExplanationRecord on decision rows.
+ * newest-first events; this page preserves that reverse-chronological
+ * order and renders each row with a kind/domain pill plus a drill-
+ * down link to the ExplanationRecord on decision + feedback rows.
  *
  * Time-range filter lives in the URL hash (`#/activity?hours=24`)
  * so a back-button or bookmarked link round-trips the user's
@@ -64,12 +64,16 @@ function formatRelative(iso) {
   const then = Date.parse(iso);
   if (!Number.isFinite(then)) return '';
   const diffMs = Math.max(0, now - then);
-  const diffMin = Math.round(diffMs / 60_000);
+  // Floor (not round) every unit conversion so we never display a
+  // time that hasn't actually elapsed yet. Math.round would render
+  // "1h ago" at the 31-minute mark, which contradicts the timestamp
+  // a user can verify themselves by clicking through to the source.
+  const diffMin = Math.floor(diffMs / 60_000);
   if (diffMin < 1) return 'just now';
   if (diffMin < 60) return `${diffMin}m ago`;
-  const diffHr = Math.round(diffMin / 60);
+  const diffHr = Math.floor(diffMin / 60);
   if (diffHr < 24) return `${diffHr}h ago`;
-  const diffDays = Math.round(diffHr / 24);
+  const diffDays = Math.floor(diffHr / 24);
   return `${diffDays}d ago`;
 }
 
@@ -97,8 +101,15 @@ function ensureActivityListener() {
 }
 
 function renderRangeChips(currentHours) {
+  // Toggle-button group rather than tabs: each chip is a button with
+  // `aria-pressed`, the container is grouped semantically via
+  // `role="group"` + an `aria-label`. We deliberately don't use
+  // `role="tablist"` here — that contract requires `role="tab"`
+  // children with `aria-selected` and arrow-key navigation managed
+  // by the page, neither of which we implement (these are plain
+  // toggle buttons that re-route via the hash).
   return `
-    <div class="activity-range" role="tablist" style="display: flex; gap: 0.4rem; flex-wrap: wrap; margin-bottom: 1rem;">
+    <div class="activity-range" role="group" aria-label="Activity time range" style="display: flex; gap: 0.4rem; flex-wrap: wrap; margin-bottom: 1rem;">
       ${RANGES.map((r) => {
         const active = r.value === currentHours;
         return `
