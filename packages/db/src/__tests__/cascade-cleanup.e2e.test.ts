@@ -53,7 +53,7 @@ describe.skipIf(!E2E)('E2E: FK cascade cleanup (#413)', () => {
 
   it('every FK that references users(id) has ON DELETE CASCADE', async () => {
     // information_schema.referential_constraints joined to key_column_usage
-    // surfaces the delete_rule + the column that referencee — exactly the
+    // surfaces the delete_rule + the referencing column — exactly the
     // shape we need to find non-cascading FKs to users(id).
     const result = await pool.query<RcRow>(
       `

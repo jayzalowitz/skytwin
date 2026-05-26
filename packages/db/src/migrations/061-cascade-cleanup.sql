@@ -9,11 +9,15 @@
 -- a one-time DDL backfill — there's no application-layer workaround that
 -- actually removes the user's footprint.
 --
--- The 7 tables that already had ON DELETE CASCADE
--- (ai_provider_settings, lifebooks, recovery_codes, model_downloads,
--- and a handful of newer ones — connector_health from #377 being the
--- most recent) are skipped here; their FK already cascades and re-running
--- this migration would be a duplicate.
+-- Tables that already had ON DELETE CASCADE on their user_id FK at the
+-- point of creation (ai_provider_settings, lifebooks, recovery_codes,
+-- model_downloads, connector_health, plus the MCP-host /
+-- capability-acquisition tables added from migration 027 onward) are
+-- skipped here; their FK already cascades and re-running this migration
+-- against them would be a no-op. The targets below are the exhaustive
+-- list of inline-NO-CASCADE FKs to users(id) found via
+-- `grep -rn "REFERENCES users(id)" packages/db/src/{migrations,schemas}/
+--  | grep -v "ON DELETE CASCADE"` on the pre-fix tree.
 --
 -- Naming: CockroachDB auto-generates FK constraint names in the form
 -- `<table>_<column>_fkey` when the constraint is declared inline in the
