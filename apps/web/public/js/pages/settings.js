@@ -1049,7 +1049,11 @@ window.toggleAutonomyPause = async function(userId) {
   if (!window.confirm(msg)) return;
   let reason;
   if (target) {
+<<<<<<< HEAD
     reason = window.prompt('Optional: why are you pausing? (saved with the audit log; leave blank to skip)', '') || undefined;
+=======
+    reason = window.prompt('Optional: why are you pausing? (stored on your user record; leave blank to skip)', '') || undefined;
+>>>>>>> origin/main
   }
   btn.disabled = true;
   btn.textContent = target ? 'Pausing…' : 'Resuming…';

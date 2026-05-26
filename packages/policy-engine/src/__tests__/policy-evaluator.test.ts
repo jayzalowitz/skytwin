@@ -167,6 +167,31 @@ describe('PolicyEvaluator', () => {
       expect(new PolicyEvaluator(repo as never, { globallyPaused: true }).isGloballyPaused()).toBe(true);
       expect(new PolicyEvaluator(repo as never, { globallyPaused: false }).isGloballyPaused()).toBe(false);
     });
+
+    it('kill switch does NOT override a deny — domain blocklist still wins (#379, post-Copilot)', async () => {
+      // Pre-Copilot the early-return at the top of evaluate() turned
+      // every action — including ones that would have been DENIED for
+      // domain-blocked, spend-cap-exceeded, etc. — into approved-with-
+      // confirmation. Denies are strictly stricter than approvals;
+      // never relax them. The kill switch now only escalates would-
+      // have-been-allowed actions; denies short-circuit first.
+      const repo = createMockPolicyRepository();
+      const evaluator = new PolicyEvaluator(repo as never, { globallyPaused: true });
+      const action = createAction({ domain: 'gambling' });
+      const settings = createAutonomySettings({ blockedDomains: ['gambling'] });
+
+      const decision = await evaluator.evaluate(
+        action,
+        [],
+        TrustTier.MODERATE_AUTONOMY,
+        createRiskAssessment(RiskTier.LOW),
+        settings,
+      );
+
+      expect(decision.allowed).toBe(false);
+      expect(decision.requiresApproval).toBe(false);
+      expect(decision.reason).toMatch(/domain/i);
+    });
   });
 
   describe('Spend limit enforcement', () => {
