@@ -45,9 +45,11 @@ interface ActivityEvent {
   /** Domain / source for client-side faceting. Optional. */
   domain?: string | null;
   /**
-   * Decision id (when kind is 'decision' OR when a feedback /
-   * signal links to one) so the future UI can drill into the
-   * ExplanationRecord without re-fetching anything else.
+   * Decision id, populated on `decision` and `feedback` events
+   * (feedback rows carry a `decision_id` FK; decision events use
+   * their own id). NEVER populated on `signal` events — `SignalRow`
+   * has no decision link today. The future UI uses this to drill
+   * into the ExplanationRecord without an extra fetch.
    */
   decisionId?: string | null;
 }
@@ -86,32 +88,51 @@ export function createActivityRouter(): Router {
         feedbackRepository.findByUser(userId, { limit }),
       ]);
 
-      const events: ActivityEvent[] = [];
+      // Pre-compute timestamp ms once per row — the merge sort and the
+      // lookback filter would otherwise call Date.parse(e.at) on every
+      // comparison (O(n log n) parses on a hot path with potentially
+      // 100s of signals).
+      const sinceMs = since.getTime();
+      type TimedEvent = ActivityEvent & { _ts: number };
+      const events: TimedEvent[] = [];
 
+      // signalRepository.getRecent has no SQL-side LIMIT today (#391
+      // follow-up could add one). For a heavy user with a wide window
+      // that means up to N rows in memory — cap defensively at `limit`
+      // before merge, sorted by timestamp DESC so we keep the freshest
+      // and drop the tail. Same defence applied to decisions / feedback
+      // for symmetry even though their repos already accept a limit.
       if (signals.status === 'fulfilled') {
-        for (const s of signals.value) {
+        const rows = signals.value
+          .filter((s) => s.timestamp.getTime() >= sinceMs)
+          .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
+          .slice(0, limit);
+        for (const s of rows) {
           events.push({
             id: `sig:${s.id}`,
             kind: 'signal',
             at: s.timestamp.toISOString(),
             summary: `${s.source}/${s.type}`,
             domain: s.domain ?? null,
+            _ts: s.timestamp.getTime(),
           });
         }
       }
 
       if (decisions.status === 'fulfilled') {
         for (const d of decisions.value) {
+          const ts = (d.created_at ?? since).getTime();
           events.push({
             id: `dec:${d.id}`,
             kind: 'decision',
-            at: (d.created_at ?? since).toISOString(),
+            at: new Date(ts).toISOString(),
             // DecisionRow has no `summary` column — synthesise one from
             // situation_type + domain. The future UI can fetch the
             // ExplanationRecord via decisionId for the rich copy.
             summary: `${d.situation_type ?? 'decision'} (${d.domain ?? 'unknown'})`,
             domain: d.domain ?? null,
             decisionId: d.id,
+            _ts: ts,
           });
         }
       }
@@ -121,24 +142,27 @@ export function createActivityRouter(): Router {
           // Feedback rows don't carry a domain; the linked decision does,
           // but joining here would be N+1. The client can resolve the
           // domain via the linked decisionId if it needs to facet.
+          const ts = (f.created_at ?? since).getTime();
           events.push({
             id: `fb:${f.id}`,
             kind: 'feedback',
-            at: (f.created_at ?? since).toISOString(),
+            at: new Date(ts).toISOString(),
             summary: `${f.type} (decision ${String(f.decision_id ?? '').slice(0, 8) || 'unknown'})`,
             decisionId: (f.decision_id as string | null) ?? null,
+            _ts: ts,
           });
         }
       }
 
-      // Filter to the lookback window in case decision/feedback
-      // repos returned older rows (their findByUser doesn't bound on
-      // time by default).
-      const sinceMs = since.getTime();
-      const inWindow = events.filter((e) => Date.parse(e.at) >= sinceMs);
-      // Newest first.
-      inWindow.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
-      const trimmed = inWindow.slice(0, limit);
+      // Filter to the lookback window (decision/feedback repos don't
+      // bound on time by default) then sort newest-first using the
+      // pre-computed _ts so we never re-parse.
+      const inWindow = events.filter((e) => e._ts >= sinceMs);
+      inWindow.sort((a, b) => b._ts - a._ts);
+      const trimmed = inWindow.slice(0, limit).map(({ _ts, ...rest }) => {
+        void _ts; // strip the internal field from the wire payload
+        return rest;
+      });
 
       res.json({
         events: trimmed,
