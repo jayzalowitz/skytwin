@@ -84,6 +84,12 @@ export class ProactiveEvaluator {
           ...response.alternativeActions,
         ],
         riskAssessment: null,
+        // Synthetic outcomes from the proactive evaluator don't have
+        // per-candidate assessments (the whatWouldIDo response is a
+        // synthesis, not a full decision-engine run). Leave the list
+        // empty; consumers must handle the empty case (no assessment
+        // available — return null from getAssessmentForAction).
+        allRiskAssessments: [],
         autoExecute: response.wouldAutoExecute,
         requiresApproval: !response.wouldAutoExecute,
         reasoning: response.reasoning,

@@ -173,6 +173,7 @@ export class DecisionMaker {
         selectedAction: null,
         allCandidates: [],
         riskAssessment: null,
+        allRiskAssessments: [],
         autoExecute: false,
         requiresApproval: true,
         reasoning: 'No candidate actions could be generated. Escalating to user.',
@@ -261,6 +262,15 @@ export class DecisionMaker {
       selectedAction,
       allCandidates: candidates,
       riskAssessment: selectedAssessment,
+      // #412 — carry every candidate's assessment on the outcome
+      // (not just the selected one) so consumers that need a
+      // specific candidate's risk can look it up by id without an
+      // extra DB round-trip. The assessments map is already keyed by
+      // candidate.id from step 4 — flatten it in the same iteration
+      // order as `allCandidates` so the two arrays correlate.
+      allRiskAssessments: candidates
+        .map((c) => assessments.get(c.id))
+        .filter((a): a is RiskAssessment => a !== undefined),
       autoExecute,
       requiresApproval: selectedAction ? requiresApproval : true,
       reasoning,

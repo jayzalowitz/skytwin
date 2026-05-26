@@ -135,7 +135,41 @@ export interface DecisionOutcome {
   decisionId: string;
   selectedAction: CandidateAction | null;
   allCandidates: CandidateAction[];
+  /**
+   * Convenience pointer to the SELECTED candidate's assessment.
+   * Equals `allRiskAssessments.find(a => a.actionId === selectedAction.id)`.
+   *
+   * Pre-#412 this was the only field carrying assessments on the
+   * outcome, which created a divergence hazard: any code path that
+   * re-selected a candidate post-decision (manual override from the
+   * approval queue, a future "swap candidate" UX, a bug) would leave
+   * `riskAssessment` stale relative to `selectedAction`. The
+   * execution-router backstop at `execution-router.ts:65-83` catches
+   * the resulting `action.id !== riskAssessment.actionId` mismatch,
+   * but only after a wrong-tier adapter was already picked.
+   *
+   * Consumers that care about a SPECIFIC candidate's risk (anything
+   * other than the selected one) MUST look it up by id via
+   * `allRiskAssessments` or `getAssessmentForAction(outcome, id)`.
+   */
   riskAssessment: RiskAssessment | null;
+  /**
+   * Every candidate's assessment (#412). Source of truth for the
+   * in-memory outcome. Equivalent to per-row reads of
+   * `candidate_actions.risk_assessment` JSONB — the DB already
+   * persists per-candidate; this field stops the in-memory layer
+   * from losing that completeness.
+   *
+   * Optional for backward compatibility — pre-#412 outcomes (test
+   * fixtures, legacy producers, the proactive evaluator's synthetic
+   * outcomes) won't have it set. Consumers that need a specific
+   * candidate's risk MUST handle the empty/undefined case (call
+   * `getAssessmentForAction(outcome, id)`, which returns null when
+   * the list is missing — and the caller should fall back to a DB
+   * read via `decisionRepositoryAdapter.getRiskAssessment(id)`). The
+   * decision-maker always populates this on real evaluations.
+   */
+  allRiskAssessments?: RiskAssessment[];
   autoExecute: boolean;
   requiresApproval: boolean;
   reasoning: string;
