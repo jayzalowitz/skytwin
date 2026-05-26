@@ -15,8 +15,24 @@
 
 export interface AutoUpdateConfig {
   enabled: boolean;
-  /** Update feed URL. Defaults to SKYTWIN_UPDATE_URL env var or the .local placeholder. */
-  feedURL: string;
+  /**
+   * Override the update feed URL the way `electron-updater`'s
+   * `autoUpdater.setFeedURL(...)` does. When `null` (the default
+   * post-#370) the publisher block in `apps/desktop/package.json` —
+   * `provider: github`, `owner: jayzalowitz`, `repo: skytwin` —
+   * takes effect; electron-updater pulls release metadata from
+   * GitHub Releases without any extra config. Set this to a
+   * non-empty string (via `SKYTWIN_UPDATE_URL`) only when you're
+   * self-hosting your own update server and want to override the
+   * GitHub publisher.
+   *
+   * Pre-#370, this field defaulted to `https://updates.skytwin.local/`
+   * — a non-existent domain — and was never plumbed into
+   * `electron-updater` anyway, so the field was decorative AND the
+   * placeholder it carried would have been actively wrong if it
+   * had been wired up.
+   */
+  feedURL: string | null;
   channel: 'stable' | 'beta';
   /** How often to poll for updates. Default: 6 hours (21_600_000 ms). */
   checkIntervalMs: number;
@@ -51,9 +67,9 @@ export class NoopUpdateBackend implements UpdateBackend {
  * installed silently the next time the user quits — no mid-session surprise.
  */
 export class ElectronUpdaterBackend implements UpdateBackend {
-  private readonly opts: { channel: 'stable' | 'beta' };
+  private readonly opts: { channel: 'stable' | 'beta'; feedURL?: string | null };
 
-  constructor(opts: { channel: 'stable' | 'beta' } = { channel: 'stable' }) {
+  constructor(opts: { channel: 'stable' | 'beta'; feedURL?: string | null } = { channel: 'stable' }) {
     this.opts = opts;
   }
 
@@ -68,6 +84,17 @@ export class ElectronUpdaterBackend implements UpdateBackend {
     autoUpdater.channel = this.opts.channel;
     autoUpdater.autoDownload = true;
     autoUpdater.autoInstallOnAppQuit = true;
+
+    // #370: only call setFeedURL when the caller actually supplied an
+    // override. The default path leaves autoUpdater alone so the
+    // publisher config from apps/desktop/package.json (provider: github,
+    // owner: jayzalowitz, repo: skytwin) takes effect — that's the
+    // launch path. Self-hosters who want to point at their own update
+    // server set SKYTWIN_UPDATE_URL on the desktop process; that value
+    // flows through to here and overrides the GitHub publisher.
+    if (this.opts.feedURL && this.opts.feedURL.length > 0) {
+      autoUpdater.setFeedURL({ provider: 'generic', url: this.opts.feedURL });
+    }
 
     try {
       const result = await autoUpdater.checkForUpdates();
@@ -87,7 +114,7 @@ export class ElectronUpdaterBackend implements UpdateBackend {
  * so unit tests, headless.ts, and any non-Electron Node context get a safe,
  * network-free default.
  */
-export function defaultBackend(opts?: { channel: 'stable' | 'beta' }): UpdateBackend {
+export function defaultBackend(opts?: { channel: 'stable' | 'beta'; feedURL?: string | null }): UpdateBackend {
   if (
     typeof process !== 'undefined' &&
     (process.versions as Record<string, string | undefined>)['electron']
@@ -100,18 +127,27 @@ export function defaultBackend(opts?: { channel: 'stable' | 'beta' }): UpdateBac
 const DEFAULT_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1_000; // 6 hours
 
 /**
- * Returns the effective auto-update feed URL.
+ * Returns the configured auto-update feed-URL override, or `null` when
+ * none is set. The `null` default is what lets electron-updater fall
+ * back to the GitHub Releases publisher block in
+ * `apps/desktop/package.json`.
  *
  * Priority order:
- *   1. Explicit config value (if non-empty)
- *   2. SKYTWIN_UPDATE_URL environment variable
- *   3. Fallback placeholder (no real domain — intentional)
+ *   1. Explicit `configURL` argument (non-empty string)
+ *   2. `SKYTWIN_UPDATE_URL` environment variable (non-empty string)
+ *   3. `null` — no override; package.json publisher takes effect
+ *
+ * Pre-#370 the third branch returned `'https://updates.skytwin.local/'`
+ * — a non-existent placeholder domain that would have caused DNS
+ * failures on every poll if it had ever been plumbed through (it
+ * wasn't). The placeholder is gone; the null fallback is the
+ * documented "use the publisher config" signal.
  */
-export function resolveFeedURL(configURL?: string): string {
+export function resolveFeedURL(configURL?: string): string | null {
   if (configURL && configURL.length > 0) return configURL;
   const envURL = process.env['SKYTWIN_UPDATE_URL'];
   if (envURL && envURL.length > 0) return envURL;
-  return 'https://updates.skytwin.local/';
+  return null;
 }
 
 /** Builds a default AutoUpdateConfig from environment variables. */
@@ -137,7 +173,14 @@ export class AutoUpdateController {
    */
   constructor(config: AutoUpdateConfig, backend?: UpdateBackend) {
     this.config = config;
-    this.backend = backend ?? defaultBackend({ channel: config.channel });
+    // Propagate feedURL into the backend so the override (when set)
+    // actually reaches electron-updater. Pre-#370 the config field was
+    // decorative; now it's load-bearing for self-hosters who set
+    // SKYTWIN_UPDATE_URL.
+    this.backend = backend ?? defaultBackend({
+      channel: config.channel,
+      feedURL: config.feedURL,
+    });
   }
 
   /**
