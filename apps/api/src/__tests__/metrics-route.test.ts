@@ -21,10 +21,16 @@ vi.mock('@skytwin/db', () => ({
 // surface that locks the route's wire output, so we want the actual
 // rendering path exercised end-to-end.
 
+/**
+ * Mirrors the production handler in `apps/api/src/index.ts` exactly.
+ * If the real route gains a new series, add it here too — otherwise
+ * a regression that silently drops one of the production series
+ * wouldn't fail this test (the Copilot-flagged drift on first cut
+ * had the test missing heap_total and rss). Keep this list in
+ * lockstep with the route until/unless we factor the handler into
+ * a shared module both can import.
+ */
 async function loadApp(): Promise<Express> {
-  // Inline the same handler shape as apps/api/src/index.ts so we
-  // test the wire-format contract without booting the full server
-  // (which pulls in CRDB, the worker bridge, OAuth, etc.).
   const { formatPrometheus, PROMETHEUS_CONTENT_TYPE } = await import(
     '@skytwin/observability'
   );
@@ -48,22 +54,36 @@ async function loadApp(): Promise<Express> {
       {
         name: 'skytwin_db_pool_waiting',
         type: 'gauge',
-        help: 'Callers queued waiting',
+        help: 'Callers queued waiting for a pg pool connection (#378 canary signal)',
         samples: [{ value: pool?.waitingCount ?? 0 }],
       },
       {
         name: 'skytwin_process_uptime',
         type: 'gauge',
         unit: 'seconds',
-        help: 'Process uptime',
+        help: 'Process uptime since boot',
         samples: [{ value: process.uptime() }],
       },
       {
         name: 'skytwin_process_heap_used',
         type: 'gauge',
         unit: 'bytes',
-        help: 'V8 heap bytes in use',
+        help: 'V8 heap bytes currently in use',
         samples: [{ value: heap.heapUsed }],
+      },
+      {
+        name: 'skytwin_process_heap_total',
+        type: 'gauge',
+        unit: 'bytes',
+        help: 'V8 heap bytes allocated',
+        samples: [{ value: heap.heapTotal }],
+      },
+      {
+        name: 'skytwin_process_rss',
+        type: 'gauge',
+        unit: 'bytes',
+        help: 'Resident set size of the API process',
+        samples: [{ value: heap.rss }],
       },
     ]);
     res.setHeader('Content-Type', PROMETHEUS_CONTENT_TYPE);
@@ -169,5 +189,26 @@ describe('GET /metrics', () => {
     const { body, status } = await request(app, '/metrics');
     expect(status).toBe(200);
     expect(body).toContain('skytwin_db_pool_total 0');
+  });
+
+  it('exposes every series the production route documents in operations.md', async () => {
+    // Lock the full series list so a future drop or rename surfaces
+    // here AND in operations.md / the Grafana dashboard. Pair this
+    // test with the test-handler's series list above — they MUST
+    // match the prod route in apps/api/src/index.ts.
+    const expected = [
+      'skytwin_db_pool_total',
+      'skytwin_db_pool_idle',
+      'skytwin_db_pool_waiting',
+      'skytwin_process_uptime_seconds',
+      'skytwin_process_heap_used_bytes',
+      'skytwin_process_heap_total_bytes',
+      'skytwin_process_rss_bytes',
+    ];
+    const app = await loadApp();
+    const { body } = await request(app, '/metrics');
+    for (const series of expected) {
+      expect(body, `missing series "${series}"`).toContain(`# TYPE ${series} gauge`);
+    }
   });
 });

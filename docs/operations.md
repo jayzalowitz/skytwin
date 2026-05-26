@@ -39,8 +39,8 @@ Circuit-breaker state per provider, decision rate, signal ingress
 rate, and worker poll latency live in the worker process (not the
 API). Adding them requires either an IPC bridge from worker to API,
 or a separate worker `/metrics` endpoint plus dual scrape config.
-Both are tracked as a follow-up — issue your operator-toolchain
-needs there determine the path.
+Both are tracked as a follow-up — the path your operator toolchain
+needs will determine which approach lands first.
 
 ### Prometheus scrape config
 
