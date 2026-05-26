@@ -156,10 +156,19 @@ body {
 .autonomy-banner-resume:hover { background: var(--bg-card, #f0f0f0); }
 .autonomy-banner-resume[hidden] { display: none; }
 /* When the banner is visible, push the sidebar + main content down so
- * nothing slides behind it. Body padding-top is the simplest fix that
- * doesn't require touching layout for every chrome element. The class
- * is toggled by app.js when the banner shows/hides. */
+ * nothing slides behind it. Body padding-top alone wasn't enough —
+ * the sidebar is `position: fixed; top: 0` (see `.sidebar` rule) so
+ * a banner above main covered the sidebar header. Pushing the sidebar
+ * down with `top: 2.5rem` keeps both layers in sync (Copilot review
+ * on PR #421). Sidebar's full-height fill correspondingly shrinks via
+ * `height: calc(100vh - 2.5rem)` so the bottom nav still fits.
+ *
+ * Caveat: the 2.5rem assumes a single-line banner. Two-line banners
+ * (operator + user) will overflow into chrome on narrow screens; a
+ * future iteration should drive a `--autonomy-banner-height` CSS var
+ * from `banner.offsetHeight` and reference it in both rules. */
 body.has-autonomy-banner { padding-top: 2.5rem; }
+body.has-autonomy-banner .sidebar { top: 2.5rem; height: calc(100vh - 2.5rem); }
 
 .connection-banner {
   display: flex;
