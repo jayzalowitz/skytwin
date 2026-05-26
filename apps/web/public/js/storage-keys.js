@@ -24,6 +24,18 @@ export const KEY_SESSION_TOKEN = 'skytwin_session_token';
 
 export const KEY_TOUR_MODE = 'skytwin_tour_mode';
 
+/**
+ * Onboarding wizard step persistence (#390). Stores the most
+ * recently rendered `_wizardState.screen` plus a small subset of
+ * the wizard's accumulated fields so a tab-close mid-flow can
+ * resume from the same screen on next load. Cleared on wizard
+ * completion (and on a user-initiated "Start over"). Versioned so
+ * future schema changes can bump the version + ignore stale
+ * payloads gracefully.
+ */
+export const KEY_ONBOARDING_STATE = 'skytwin_onboarding_state';
+export const ONBOARDING_STATE_VERSION = 1;
+
 // ── Notification opt-in ───────────────────────────────────────────────
 
 /** Set to '1' once we've asked permission, so we don't re-prompt. */

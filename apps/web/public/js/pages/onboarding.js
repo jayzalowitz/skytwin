@@ -29,7 +29,53 @@ import {
   fetchCapabilityDependencyGraph,
   escapeHtml,
 } from '../api-client.js';
-import { KEY_USER_ID, KEY_ONBOARDED, KEY_TOUR_MODE, KEY_SESSION_TOKEN } from '../storage-keys.js';
+import {
+  KEY_USER_ID,
+  KEY_ONBOARDED,
+  KEY_TOUR_MODE,
+  KEY_SESSION_TOKEN,
+  KEY_ONBOARDING_STATE,
+  ONBOARDING_STATE_VERSION,
+} from '../storage-keys.js';
+
+/**
+ * Persist the in-flight wizard state to localStorage (#390). Called
+ * on every `transitionTo` so a tab-close mid-wizard can resume from
+ * the same screen on next load. Stores only what's needed to re-enter
+ * — the screen name, the LLM-provider flag, and the picked recipe.
+ * Conversational answers and the dependency graph are NOT persisted;
+ * the resume drops the user back at the screen, not mid-question.
+ */
+function saveOnboardingState() {
+  if (!_wizardState) return;
+  try {
+    localStorage.setItem(
+      KEY_ONBOARDING_STATE,
+      JSON.stringify({
+        v: ONBOARDING_STATE_VERSION,
+        screen: _wizardState.screen,
+        hasLlmProvider: _wizardState.hasLlmProvider,
+        recipeSlug: _wizardState.recipeSlug,
+        savedAt: new Date().toISOString(),
+      }),
+    );
+  } catch { /* private mode etc. */ }
+}
+
+function loadOnboardingState() {
+  try {
+    const raw = localStorage.getItem(KEY_ONBOARDING_STATE);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || parsed.v !== ONBOARDING_STATE_VERSION) return null;
+    if (typeof parsed.screen !== 'string') return null;
+    return parsed;
+  } catch { return null; }
+}
+
+function clearOnboardingState() {
+  try { localStorage.removeItem(KEY_ONBOARDING_STATE); } catch { /* noop */ }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Module-level state (singleton — one wizard per browser tab)
@@ -83,6 +129,27 @@ async function handleOnboardingClick(e) {
   const userId = getCurrentUserId();
 
   switch (action) {
+    // ── Resume gate (#390) ──────────────────────────────────────────────────
+    case 'onboarding-resume': {
+      const screen = target.dataset.screen;
+      if (screen && _wizardState) {
+        await transitionTo(screen);
+      } else {
+        // Lost state somehow — fall back to a clean start.
+        clearOnboardingState();
+        await transitionTo('welcome');
+      }
+      break;
+    }
+    case 'onboarding-restart':
+      clearOnboardingState();
+      if (_wizardState) {
+        _wizardState.recipeSlug = null;
+        _wizardState.history = [];
+      }
+      await transitionTo('welcome');
+      break;
+
     // ── Welcome screen ──────────────────────────────────────────────────────
     case 'onb-choose-email':
       recordFirstRunChoice('email');
@@ -1096,6 +1163,10 @@ async function finishWizard(userId, choice, recipeSlug) {
   }
   localStorage.setItem(KEY_ONBOARDED, 'true');
   if (userId) localStorage.setItem(KEY_USER_ID, userId);
+  // Wizard completed cleanly — drop the resume token (#390) so the
+  // next first-run visit (e.g. after a delete-my-data flow) starts
+  // at screen 1, not at whatever screen this user happened to end on.
+  clearOnboardingState();
   hideWizard();
   if (typeof _onCompleteCallback === 'function') {
     _onCompleteCallback(userId);
@@ -1133,6 +1204,7 @@ function hideWizard() {
 async function transitionTo(screen) {
   if (!_wizardState) return;
   _wizardState.screen = screen;
+  saveOnboardingState();
 
   switch (screen) {
     case 'welcome':
@@ -1201,6 +1273,7 @@ export async function renderOnboarding(container, onComplete) {
       _wizardState.hasLlmProvider = state.hasLlmProvider ?? false;
       // If they've already completed onboarding, close the wizard
       if (!state.isFirstRun) {
+        clearOnboardingState();
         hideWizard();
         return;
       }
@@ -1210,5 +1283,53 @@ export async function renderOnboarding(container, onComplete) {
     }
   }
 
+  // Resume path (#390). A tab-close mid-wizard leaves a
+  // KEY_ONBOARDING_STATE payload behind; rather than dropping the
+  // user back at screen 1 every time, show a "Resume where you left
+  // off?" gate. Welcome screen is the only one we treat as
+  // "not worth resuming" — if they only saw the welcome card, jump
+  // straight back to it.
+  const saved = loadOnboardingState();
+  if (saved && saved.screen && saved.screen !== 'welcome') {
+    if (typeof saved.hasLlmProvider === 'boolean') {
+      _wizardState.hasLlmProvider = saved.hasLlmProvider;
+    }
+    if (typeof saved.recipeSlug === 'string') {
+      _wizardState.recipeSlug = saved.recipeSlug;
+    }
+    renderResumePrompt(saved.screen, saved.savedAt);
+    return;
+  }
+
   transitionTo('welcome');
+}
+
+/**
+ * Resume gate shown on next visit when a prior wizard run was
+ * interrupted mid-flow (#390). Two paths: Resume → transitionTo the
+ * saved screen; Start over → clear the saved state and go back to
+ * the welcome screen. Click delegation lives in `ensureWizardListener`.
+ */
+function renderResumePrompt(savedScreen, savedAt) {
+  const friendlyScreen = ({
+    email_choice: 'Choose your email setup',
+    computer_choice: 'Choose your sign-in path',
+    idle_miner_poll: 'Scanning for apps',
+    about_me_choice: 'About-you questions',
+    recipe_preview: 'Confirm what to install',
+    installing: 'Installing your starter kit',
+  })[savedScreen] || 'Onboarding';
+  const when = savedAt
+    ? ` (last seen ${escapeHtml(new Date(savedAt).toLocaleString())})`
+    : '';
+  renderContent(`
+    <div class="onboarding-title" style="font-size:1.3rem;font-weight:700;margin-bottom:0.5rem;">Pick up where you left off?</div>
+    <div class="onboarding-desc" style="margin-bottom:1rem;">
+      Looks like you stopped at <strong>${escapeHtml(friendlyScreen)}</strong>${when}. Want to resume, or start over?
+    </div>
+    <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+      <button class="btn btn-primary" data-action="onboarding-resume" data-screen="${escapeHtml(savedScreen)}">Resume</button>
+      <button class="btn btn-outline" data-action="onboarding-restart">Start over</button>
+    </div>
+  `);
 }
