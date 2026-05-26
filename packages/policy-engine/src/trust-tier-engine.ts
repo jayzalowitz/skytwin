@@ -105,6 +105,36 @@ function deterministicPromotion(
     };
   }
 
+  // Temporal floor (#373) — "consistent feedback over time." Twenty
+  // approvals in twenty minutes is not the same evidence as twenty
+  // approvals in two weeks; the count alone never demonstrated
+  // calibration. `hoursInCurrentTier` comes from the latest
+  // `trust_tier_audit` row (or user creation time when no audit row
+  // exists). Callers that omit the field (older code paths, tests
+  // without the audit table) skip the floor for backward compatibility
+  // — production callers should always populate it.
+  // Use Number.isFinite so a malformed trust_tier_audit row (clock
+  // skew, mis-parsed timestamp yielding NaN/Infinity) cannot bypass
+  // the floor — `typeof NaN === 'number'` would have let the check
+  // through, and the reasoning string would have shown literal "NaN".
+  // Clamp negatives to zero so the reasoning never shows a negative
+  // hours-remaining if a caller passes a slightly-future timestamp.
+  if (
+    Number.isFinite(stats.hoursInCurrentTier) &&
+    (stats.hoursInCurrentTier as number) < threshold.minDurationInTierHours
+  ) {
+    const hours = Math.max(0, stats.hoursInCurrentTier as number);
+    const hoursRemaining = Math.ceil(threshold.minDurationInTierHours - hours);
+    return {
+      shouldPromote: false,
+      reasoning:
+        `Time-in-tier floor not met: have ${hours.toFixed(1)}h at ` +
+        `${currentTier}, need ${threshold.minDurationInTierHours}h before promotion ` +
+        `(roughly ${hoursRemaining}h to go).`,
+      confidence: 1,
+    };
+  }
+
   return {
     shouldPromote: true,
     toTier: threshold.nextTier,
@@ -112,7 +142,11 @@ function deterministicPromotion(
       `Eligible for promotion: ${stats.consecutiveApprovals} consecutive approvals ` +
       `(threshold: ${threshold.consecutiveApprovals}) and ` +
       `${(stats.approvalRatio * 100).toFixed(1)}% approval ratio ` +
-      `(threshold: ${(threshold.minApprovalRatio * 100).toFixed(1)}%).`,
+      `(threshold: ${(threshold.minApprovalRatio * 100).toFixed(1)}%)` +
+      (Number.isFinite(stats.hoursInCurrentTier)
+        ? ` after ${Math.max(0, stats.hoursInCurrentTier as number).toFixed(1)}h at ${currentTier} ` +
+          `(time-in-tier floor: ${threshold.minDurationInTierHours}h).`
+        : '.'),
     confidence: 1,
   };
 }

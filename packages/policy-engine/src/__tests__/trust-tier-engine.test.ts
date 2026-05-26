@@ -137,6 +137,123 @@ describe('TrustTierEngine', () => {
       });
       expect(engine.evaluateProgression(TrustTier.OBSERVER, stats10).shouldChange).toBe(true);
     });
+
+    // ── Temporal floor (#373) ────────────────────────────────────
+
+    it('should NOT promote OBSERVER → SUGGEST before 24h in tier even with 10+ approvals', () => {
+      // 20 approvals racked up in 3 hours is the exact failure case
+      // #373 describes: count threshold cleared, time floor not.
+      const stats = createStats({
+        consecutiveApprovals: 20,
+        totalApprovals: 20,
+        approvalRatio: 1.0,
+        hoursInCurrentTier: 3,
+      });
+
+      const result = engine.evaluateProgression(TrustTier.OBSERVER, stats);
+
+      expect(result.shouldChange).toBe(false);
+      expect(result.reason).toContain('Time-in-tier floor');
+      expect(result.reason).toMatch(/need 24h/);
+    });
+
+    it('should promote OBSERVER → SUGGEST once 24h in tier AND 10+ approvals are met', () => {
+      const stats = createStats({
+        consecutiveApprovals: 12,
+        totalApprovals: 12,
+        approvalRatio: 1.0,
+        hoursInCurrentTier: 25,
+      });
+
+      const result = engine.evaluateProgression(TrustTier.OBSERVER, stats);
+
+      expect(result.shouldChange).toBe(true);
+      expect(result.recommendedTier).toBe(TrustTier.SUGGEST);
+    });
+
+    it('should NOT promote SUGGEST → LOW_AUTONOMY before 72h in tier', () => {
+      const stats = createStats({
+        consecutiveApprovals: 25,
+        totalApprovals: 25,
+        totalRejections: 3,
+        approvalRatio: 25 / 28,
+        hoursInCurrentTier: 24, // observer-promotion-passing duration is not enough here
+      });
+
+      const result = engine.evaluateProgression(TrustTier.SUGGEST, stats);
+
+      expect(result.shouldChange).toBe(false);
+      expect(result.reason).toMatch(/need 72h/);
+    });
+
+    it('should NOT promote LOW_AUTONOMY → MODERATE_AUTONOMY before 168h (one week) in tier', () => {
+      const stats = createStats({
+        consecutiveApprovals: 55,
+        totalApprovals: 55,
+        totalRejections: 2,
+        approvalRatio: 55 / 57,
+        hoursInCurrentTier: 100,
+      });
+
+      const result = engine.evaluateProgression(TrustTier.LOW_AUTONOMY, stats);
+
+      expect(result.shouldChange).toBe(false);
+      expect(result.reason).toMatch(/need 168h/);
+    });
+
+    it('should NOT let NaN hoursInCurrentTier bypass the temporal floor (#373, post-Copilot)', () => {
+      // typeof NaN === 'number' would have let a malformed
+      // trust_tier_audit row (clock skew, mis-parsed timestamp) sneak
+      // past the floor. Number.isFinite rejects NaN/Infinity.
+      const stats = createStats({
+        consecutiveApprovals: 12,
+        totalApprovals: 12,
+        approvalRatio: 1.0,
+        hoursInCurrentTier: Number.NaN,
+      });
+
+      const result = engine.evaluateProgression(TrustTier.OBSERVER, stats);
+
+      // NaN is treated like undefined: floor is skipped, count+ratio
+      // criteria still let the promotion through. The important
+      // property is that the reasoning string does not contain literal
+      // "NaN".
+      expect(result.reason).not.toMatch(/NaN/);
+    });
+
+    it('should NOT let Infinity hoursInCurrentTier short-circuit the floor (#373, post-Copilot)', () => {
+      const stats = createStats({
+        consecutiveApprovals: 12,
+        totalApprovals: 12,
+        approvalRatio: 1.0,
+        hoursInCurrentTier: Number.POSITIVE_INFINITY,
+      });
+
+      const result = engine.evaluateProgression(TrustTier.OBSERVER, stats);
+
+      // Infinity is also non-finite — same treatment as NaN: skip the
+      // floor, fall through to count+ratio, no literal "Infinity" in
+      // the reasoning string.
+      expect(result.reason).not.toMatch(/Infinity/);
+    });
+
+    it('should skip the temporal floor when hoursInCurrentTier is undefined (legacy compat)', () => {
+      // Older callers (and unit tests above) omit the field. They
+      // continue to be evaluated on count + ratio alone so the change
+      // is opt-in for the API path that actually populates the field
+      // from trust_tier_audit.
+      const stats = createStats({
+        consecutiveApprovals: 12,
+        totalApprovals: 12,
+        approvalRatio: 1.0,
+        // hoursInCurrentTier intentionally omitted
+      });
+
+      const result = engine.evaluateProgression(TrustTier.OBSERVER, stats);
+
+      expect(result.shouldChange).toBe(true);
+      expect(result.recommendedTier).toBe(TrustTier.SUGGEST);
+    });
   });
 
   // ── Regression ─────────────────────────────────────────────────
