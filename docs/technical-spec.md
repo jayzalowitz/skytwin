@@ -285,91 +285,114 @@ Apps:
 
 ## API Endpoints
 
-### Decision API
+> **Note:** routes verified against `apps/api/src/index.ts` post-Tier-2-polish. Most live under `/api/...` (no `/v1/` prefix); the `/api/v1/...` namespace is reserved today for the Ask, Briefings, and Skill-Gaps routers that pre-dated the API consolidation. New routes go under `/api/...` unless they explicitly version a public contract.
+
+### Decision + Events + Approvals API (`apps/api/src/routes/{decisions,events,approvals}.ts`)
 
 ```
-POST   /api/v1/events                    # Submit a new event for processing
-GET    /api/v1/decisions/:id             # Get a decision and its outcome
-GET    /api/v1/decisions?userId=&status= # List decisions with filters
-POST   /api/v1/decisions/:id/approve     # Approve a pending decision
-POST   /api/v1/decisions/:id/reject      # Reject a pending decision
-POST   /api/v1/decisions/:id/edit        # Approve with modifications
-POST   /api/v1/decisions/:id/undo        # Undo an executed decision
+GET    /api/decisions/:userId                      # List decisions for a user
+GET    /api/decisions/:decisionId/explanation      # Get the ExplanationRecord
+
+POST   /api/events/ingest                          # Worker submits a signal for processing
+GET    /api/events/stream/:userId                  # SSE stream for live updates
+
+GET    /api/approvals/:userId/pending              # Pending approvals waiting on the user
+GET    /api/approvals/:userId/history              # Recently-resolved approvals
+POST   /api/approvals/:requestId/respond           # Approve / reject / dual-confirm
 ```
 
-### User API
+### User API (`apps/api/src/routes/users.ts`)
 
 ```
-GET    /api/v1/users/:id                 # Get user profile
-PUT    /api/v1/users/:id/settings        # Update autonomy settings
-GET    /api/v1/users/:id/trust-tier      # Get current trust tier
+GET    /api/users                                  # List users visible to caller
+POST   /api/users                                  # Create a user
+GET    /api/users/:userId                          # Get one user
+PUT    /api/users/:userId/trust-tier               # Set trust tier
+PUT    /api/users/:userId/domains                  # Set enabled domains
+POST   /api/users/:userId/seed-preferences         # Bulk-seed preferences
+PUT    /api/users/:userId/autonomy-pause           # Per-user pause (#379)
+GET    /api/users/:userId/autonomy-state           # Operator + per-user pause state (#379)
+DELETE /api/users/:userId?confirm=delete-my-data   # Right to erasure (#376)
 ```
 
-### Twin API
+### Twin API (`apps/api/src/routes/twin.ts`)
 
 ```
-GET    /api/v1/twin/:userId              # Get current twin profile
-GET    /api/v1/twin/:userId/history      # Get twin version history
-GET    /api/v1/twin/:userId/preferences  # Get preferences with evidence
-PUT    /api/v1/twin/:userId/preferences  # Explicitly set a preference
-DELETE /api/v1/twin/:userId/preferences/:id  # Delete a learned preference
+GET    /api/twin/:userId                           # Get twin profile (preferences, inferences, version)
+GET    /api/twin/export/:userId                    # Export twin profile snapshot
+PUT    /api/twin/:userId/preferences               # Explicitly set a preference
+GET    /api/twin/:userId/progress                  # Trust-tier progress + thresholds (#373/#396)
+GET    /api/twin/:userId/learned                   # Inferred patterns the twin has learned
+DELETE /api/twin/:userId/insights                  # Remove or correct a single (domain, key) preference
+                                                   #   body: { domain, key, newValue? }
 ```
 
-### Policy API
+### Policy API (`apps/api/src/routes/policies.ts`)
 
 ```
-GET    /api/v1/policies/:userId          # Get user's active policies
-PUT    /api/v1/policies/:userId/domain/:domain  # Update domain policy
-```
-
-### Explanation API
-
-```
-GET    /api/v1/explanations/:decisionId  # Get explanation for a decision
-GET    /api/v1/explanations?userId=      # List recent explanations
+GET    /api/policies/:userId                       # List active policies
+POST   /api/policies/:userId                       # Create policy
+PUT    /api/policies/:userId/:policyId             # Update policy
+DELETE /api/policies/:userId/:policyId             # Delete policy
 ```
 
 ### Ask API (Twin Query)
 
 ```
-POST   /api/v1/twin/:userId/ask          # Predict what the twin would do (read-only)
+POST   /api/v1/twin/ask/:userId                    # Predict what the twin would do (read-only)
 ```
 
 ### Briefing API
 
 ```
-GET    /api/v1/briefings/:userId         # Get latest morning briefing
-PUT    /api/v1/briefings/:userId/preferences  # Update briefing schedule
+GET    /api/v1/briefings/:userId                   # Get latest morning briefing
+PUT    /api/v1/briefings/:userId/preferences       # Update briefing schedule
 ```
 
-### Proposal API (Preference Archaeology)
+### Activity API (#391)
 
 ```
-GET    /api/v1/preferences/:userId/proposals  # List pending proposals
-POST   /api/v1/preferences/:userId/proposals/:id/respond  # Accept or reject
+GET    /api/activity/:userId?hours=24&limit=200    # Unified signal/decision/feedback timeline
+```
+
+### Sessions + Pairing API (#385)
+
+```
+POST   /api/sessions                               # Mint a 5-minute pairing token
+POST   /api/sessions/pair/consume                  # Exchange pairing token for a 7-day session
+GET    /api/sessions/:userId                       # List the user's active sessions
+DELETE /api/sessions/:sessionId                    # Revoke a session
+```
+
+### Connector Health API (#377)
+
+```
+GET    /api/connectors/:userId/status              # Per-connector health + anyNeedsReauth flag
 ```
 
 ### Skill Gaps API
 
 ```
-GET    /api/v1/skill-gaps                # List unhandled action types
-GET    /api/v1/skill-gaps/:userId        # List skill gaps for a specific user
+GET    /api/v1/skill-gaps                          # List unhandled action types
+GET    /api/v1/skill-gaps/:userId                  # List skill gaps for a specific user
 ```
 
 ### Settings API
 
 ```
-GET    /api/v1/settings/:userId          # Get all user settings
-PUT    /api/v1/settings/:userId/autonomy # Update autonomy settings
-PUT    /api/v1/settings/:userId/domains/:domain  # Update domain-specific autonomy
-POST   /api/v1/settings/:userId/escalation-triggers  # Configure escalation triggers
+GET    /api/settings/:userId                       # Get all user settings
+PUT    /api/settings/:userId/autonomy              # Update autonomy / spend caps
+PUT    /api/settings/:userId/domains/:domain       # Per-domain autonomy
+POST   /api/settings/:userId/escalation-triggers   # Configure escalation triggers
 ```
 
 ### Health and Operations
 
 ```
-GET    /health                           # Health check (includes DB)
-GET    /api/v1/stats/:userId             # Decision statistics
+GET    /api/health                                 # Legacy human-readable summary
+GET    /api/health/live                            # Liveness probe (process up)
+GET    /api/health/ready                           # Readiness (DB + pool stats, returns 503 on saturation; #378)
+GET    /metrics                                    # Prometheus exposition (#392)
 ```
 
 ## Worker Architecture
