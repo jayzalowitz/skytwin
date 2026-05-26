@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { userRepository } from '@skytwin/db';
+import { userRepository, userPurgeRepository } from '@skytwin/db';
 import { TwinService } from '@skytwin/twin-model';
 import { TwinRepositoryAdapter, PatternRepositoryAdapter } from '@skytwin/db';
 import { ConfidenceLevel } from '@skytwin/shared-types';
@@ -364,6 +364,68 @@ export function createUsersRouter(): Router {
       }
 
       res.json({ seeded: validPrefs.length });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /**
+   * DELETE /api/users/:userId (#376)
+   *
+   * Right-to-erasure / "delete my account" endpoint. Wipes every row
+   * belonging to the user in a single CRDB serializable transaction
+   * via `userPurgeRepository.purgeUser` — twin profile, decision
+   * history, memory pages, knowledge triples, episodic memories,
+   * preferences, OAuth tokens, spend records, sessions, every
+   * cascade-bearing user_id FK from migration 061 (#413), plus the
+   * chained children that FK to those tables via non-user-id columns
+   * (`candidate_actions.decision_id`, `execution_plans.decision_id`,
+   * `twin_profile_versions.profile_id`, etc.). Failure anywhere
+   * rolls the whole thing back — no partial-delete state.
+   *
+   * The caller's own session middleware (`sessionAuth +
+   * requireOwnership` from `router.use('/:userId', ...)` above) gates
+   * this to the user themselves — a session token for user A cannot
+   * delete user B. After the delete the caller's own session row is
+   * also gone (cascades via `sessions.user_id`), so the response is
+   * the last useful thing they'll get from this server until they
+   * sign up again.
+   *
+   * Requires `?confirm=delete-my-data` on the query string. The
+   * dashboard's Settings page wires this when the user clicks
+   * through the confirmation modal. The check is defensive — a
+   * forgotten DELETE in a test that hits the wrong env shouldn't
+   * blow away the row by accident.
+   */
+  router.delete('/:userId', async (req, res, next) => {
+    try {
+      const { userId } = req.params;
+      if (req.query['confirm'] !== 'delete-my-data') {
+        res.status(400).json({
+          error: 'confirmation_required',
+          message:
+            'Pass ?confirm=delete-my-data to confirm a permanent purge of every row belonging to this user.',
+        });
+        return;
+      }
+
+      const result = await userPurgeRepository.purgeUser(userId);
+
+      if (!result.userExisted) {
+        res.status(404).json({
+          error: 'user_not_found',
+          message: 'No user with that id existed at delete time.',
+          counts: result.counts,
+        });
+        return;
+      }
+
+      res.json({
+        deleted: true,
+        userId,
+        counts: result.counts,
+        totalRows: result.total,
+      });
     } catch (error) {
       next(error);
     }

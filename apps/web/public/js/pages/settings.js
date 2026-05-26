@@ -573,6 +573,19 @@ export async function renderSettings(container, userId) {
       </div>
       <button class="btn btn-outline" data-action="sign-out">Sign out</button>
     </div>
+
+    <div class="card" id="delete-data-card" style="margin-top: 1.5rem; border-left: 3px solid var(--danger, #d92020);">
+      <div class="card-header">
+        <span class="card-title">Delete everything about me</span>
+      </div>
+      <div class="card-subtitle" style="margin-bottom: 0.75rem; line-height: 1.55;">
+        Wipes your twin profile, every decision, every memory page, every preference, OAuth tokens, sessions, spend records — the whole footprint, in one transaction. Can't be undone. Your connected services (Gmail, Calendar) keep working at the provider level; SkyTwin just stops seeing them and forgets what it learned.
+      </div>
+      <button class="btn btn-outline btn-sm" data-action="delete-my-data" style="color: var(--danger, #d92020); border-color: var(--danger, #d92020);">
+        Delete my data
+      </button>
+      <div id="delete-data-status" style="margin-top: 0.6rem; font-size: 0.82rem; color: var(--text-muted);"></div>
+    </div>
   `;
 
   ensureSettingsListener();
@@ -940,6 +953,9 @@ function ensureSettingsListener() {
       case 'sign-out':
         window.signOut();
         return;
+      case 'delete-my-data':
+        deleteMyData(uid, el);
+        return;
       case 'federation-pair-start':
         window.federationPairStart?.(uid);
         return;
@@ -1161,6 +1177,62 @@ window.toggleAutonomyPause = async function(userId) {
     );
   }
 };
+
+/**
+ * Right-to-erasure flow (#376). Two-stage confirm so a misclick can't
+ * destroy a real user's data: window.confirm → window.prompt("type
+ * DELETE"), then the API call. After a successful response, every
+ * localStorage key the dashboard owns is cleared and the page reloads
+ * — the user's session row is also gone (cascades via sessions.user_id)
+ * so the next request would 401 anyway.
+ */
+async function deleteMyData(userId, btn) {
+  const ok1 = window.confirm(
+    'This will permanently delete every row SkyTwin holds about you — twin profile, decisions, memory pages, preferences, OAuth tokens, sessions, spend records. Cannot be undone. Continue?',
+  );
+  if (!ok1) return;
+  const phrase = window.prompt(
+    'Type DELETE (all caps) to confirm. This cannot be undone.',
+    '',
+  );
+  if (phrase !== 'DELETE') {
+    showErrorToast('Cancelled — you did not type DELETE.');
+    return;
+  }
+
+  const status = document.getElementById('delete-data-status');
+  if (btn) btn.setAttribute('disabled', 'disabled');
+  if (status) status.textContent = 'Purging your data…';
+
+  try {
+    const res = await fetch(
+      `/api/users/${encodeURIComponent(userId)}?confirm=delete-my-data`,
+      { method: 'DELETE' },
+    );
+    if (!res.ok) {
+      let detail = `HTTP ${res.status}`;
+      try { detail = (await res.json())?.message || detail; } catch { /* leave default */ }
+      throw new Error(detail);
+    }
+    const body = await res.json();
+    const totalRows = body?.totalRows ?? 0;
+    if (status) {
+      status.textContent =
+        `Done — removed ${totalRows} row${totalRows === 1 ? '' : 's'} ` +
+        'across your account. Reloading to a fresh sign-in…';
+    }
+    // Clear every localStorage key we own — the user's session and
+    // KEY_ONBOARDED would otherwise hint at a state that no longer
+    // exists in the DB.
+    try { localStorage.clear(); } catch { /* private mode */ }
+    setTimeout(() => { window.location.href = '/'; }, 1500);
+  } catch (err) {
+    if (btn) btn.removeAttribute('disabled');
+    const msg = err instanceof Error ? err.message : 'Unknown error';
+    if (status) status.textContent = `Couldn't delete: ${msg}`;
+    showErrorToast(`Couldn't delete: ${msg}`);
+  }
+}
 
 async function refreshAutonomyPauseUi(userId) {
   const stateEl = document.getElementById('autonomy-pause-state');

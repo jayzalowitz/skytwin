@@ -90,8 +90,9 @@ export {
   patternRepository,
   executionRepository,
   connectorHealthRepository,
+  userPurgeRepository,
 } from './repositories/index.js';
-export type { ConnectorHealthRow } from './repositories/index.js';
+export type { ConnectorHealthRow, PurgeUserResult } from './repositories/index.js';
 export type {
   RememberPendingSigninInput,
   ConsumedPendingSignin,
