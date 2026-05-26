@@ -126,6 +126,40 @@ async function handleZeroTrustToggle(serverId, userId, enable, btn) {
   }
 }
 
+/**
+ * Single-skeleton placeholder (#394). Renders three visible
+ * section stubs so the page structure is on-screen the instant the
+ * user lands here — no flash of "Loading capability…" followed by a
+ * full multi-card snap. Each section is replaced by the real card
+ * once the corresponding fetch resolves (or its empty-state copy
+ * if the fetch fails for skills / policy, which are best-effort).
+ *
+ * Animation is the standard `.skeleton-pulse` shimmer the rest of
+ * the dashboard uses; falls back to plain grey blocks if the CSS
+ * class isn't defined (e.g. in jsdom tests). Heights match the
+ * real cards' min-content shape so the swap doesn't reflow.
+ */
+function renderCapabilityDetailSkeleton() {
+  const block = (h) =>
+    `<div class="skeleton-block skeleton-pulse" style="background: var(--bg); border-radius: 4px; height: ${h}; margin: 0.35rem 0;" aria-hidden="true"></div>`;
+  const card = (titleStub) => `
+    <div class="card" aria-busy="true">
+      <div class="card-header">
+        <span class="card-title" style="color: var(--text-muted); font-size: 0.9rem;">${titleStub}</span>
+      </div>
+      ${block('0.95rem')}
+      ${block('0.8rem')}
+    </div>
+  `;
+  return `
+    <div class="capability-detail-skeleton" style="display: flex; flex-direction: column; gap: 1.25rem;" data-state="loading">
+      ${card('Loading capability…')}
+      ${card('Skills')}
+      ${card('Spending guardrails')}
+    </div>
+  `;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Main render entry point
 // Called from app.js route dispatch as renderCapabilityDetail(container, userId, serverId)
@@ -134,20 +168,24 @@ export async function renderCapabilityDetail(container, userId, serverId) {
   _currentDetailServerId = serverId || '';
   ensureCapabilityDetailListener();
 
-  container.innerHTML = '<div class="loading">Loading capability…</div>';
+  // Single skeleton (#394) — three visible section placeholders so the
+  // user sees the page structure immediately instead of one blank
+  // "Loading capability…" line that then snaps into a fully-painted
+  // multi-card layout. Each section gets replaced as its fetch
+  // resolves; structurally the page never reflows from "1 line" to
+  // "8 cards".
+  container.innerHTML = renderCapabilityDetailSkeleton();
 
-  let server;
-  let skills = [];
-  let policies = null;
+  // Kick off all three fetches in parallel so end-to-end latency is
+  // max(server, skills, policy) instead of the sum.
+  const [serverResult, skillsResult, policyResult] = await Promise.allSettled([
+    fetchJSON(`${API}/capabilities/${encodeURIComponent(serverId)}?userId=${encodeURIComponent(userId)}`),
+    fetchJSON(`${API}/capabilities/${encodeURIComponent(serverId)}/skills?userId=${encodeURIComponent(userId)}`),
+    fetchJSON(`${API}/capabilities/${encodeURIComponent(serverId)}/policy?userId=${encodeURIComponent(userId)}`),
+  ]);
 
-  try {
-    // Fetch the server record
-    const serverRes = await fetchJSON(
-      `${API}/capabilities/${encodeURIComponent(serverId)}?userId=${encodeURIComponent(userId)}`,
-    );
-    server = serverRes.server ?? serverRes;
-  } catch (err) {
-    container.innerHTML = renderApiError(err, {
+  if (serverResult.status === 'rejected') {
+    container.innerHTML = renderApiError(serverResult.reason, {
       context: "Couldn't load this capability.",
       retry: () => renderCapabilityDetail(container, userId, serverId),
     });
@@ -155,20 +193,14 @@ export async function renderCapabilityDetail(container, userId, serverId) {
     return;
   }
 
-  // Best-effort: fetch skills and policy settings — don't block render if unavailable
-  try {
-    const skillsRes = await fetchJSON(
-      `${API}/capabilities/${encodeURIComponent(serverId)}/skills?userId=${encodeURIComponent(userId)}`,
-    );
-    skills = skillsRes.skills ?? [];
-  } catch { /* non-critical */ }
-
-  try {
-    const policyRes = await fetchJSON(
-      `${API}/capabilities/${encodeURIComponent(serverId)}/policy?userId=${encodeURIComponent(userId)}`,
-    );
-    policies = policyRes.policy ?? policyRes ?? null;
-  } catch { /* non-critical */ }
+  const serverPayload = serverResult.value;
+  let server = serverPayload.server ?? serverPayload;
+  // Skills + policy are best-effort — a 500 here shouldn't fail the
+  // whole page render, the skeleton sections collapse to their
+  // empty-state strings.
+  const skills = skillsResult.status === 'fulfilled' ? (skillsResult.value.skills ?? []) : [];
+  const policyPayload = policyResult.status === 'fulfilled' ? policyResult.value : null;
+  const policies = policyPayload ? (policyPayload.policy ?? policyPayload ?? null) : null;
 
   const statusBadgeClass = server.status === 'active' ? 'badge-success'
     : server.status === 'dormant' || server.status === 'paused' ? 'badge-warning'
