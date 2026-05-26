@@ -23,3 +23,13 @@ export type {
   SparklinePoint,
   McpServerMetricsRepository,
 } from './types.js';
+
+export {
+  formatPrometheus,
+  PROMETHEUS_CONTENT_TYPE,
+} from './prometheus.js';
+export type {
+  PromMetric,
+  PromMetricType,
+  PromSample,
+} from './prometheus.js';

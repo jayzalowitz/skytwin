@@ -217,6 +217,90 @@ app.get('/api/health', (_req, res) => {
   });
 });
 
+/**
+ * Prometheus scrape endpoint (#392).
+ *
+ * Exposes the metrics a self-hosting operator most needs to alert on:
+ *   - pg pool stats: total / idle / waiting connections (saturated
+ *     pool was the root cause of #378's "API hung forever" bug)
+ *   - process uptime + Node.js heap stats (basic process health)
+ *
+ * Circuit-breaker state per provider, decision rate, signal ingress
+ * rate, and worker poll latency are deliberately deferred to a
+ * follow-up: those live in the worker process and shared-collector
+ * surfaces and require either an IPC bridge or a multi-process
+ * scrape strategy (e.g. PushGateway). Shipping pool + process now
+ * gives operators something to alert on today.
+ *
+ * Read-only, unauthenticated by design — Prometheus scrapers don't
+ * carry sessions. Self-hosters who want auth can put the API behind
+ * a reverse proxy that filters `/metrics` (Caddy, nginx, etc.).
+ * The payload contains zero per-user data — purely process-wide
+ * aggregates — so there's nothing to leak.
+ */
+app.get('/metrics', async (_req, res, next) => {
+  try {
+    const { getPoolStats } = await import('@skytwin/db');
+    const { formatPrometheus, PROMETHEUS_CONTENT_TYPE } = await import(
+      '@skytwin/observability'
+    );
+    const pool = getPoolStats();
+    const heap = process.memoryUsage();
+    const body = formatPrometheus([
+      {
+        name: 'skytwin_db_pool_total',
+        type: 'gauge',
+        help: 'Total connections in the pg pool',
+        samples: [{ value: pool?.totalCount ?? 0 }],
+      },
+      {
+        name: 'skytwin_db_pool_idle',
+        type: 'gauge',
+        help: 'Idle connections in the pg pool',
+        samples: [{ value: pool?.idleCount ?? 0 }],
+      },
+      {
+        name: 'skytwin_db_pool_waiting',
+        type: 'gauge',
+        help: 'Callers queued waiting for a pg pool connection (#378 canary signal)',
+        samples: [{ value: pool?.waitingCount ?? 0 }],
+      },
+      {
+        name: 'skytwin_process_uptime',
+        type: 'gauge',
+        unit: 'seconds',
+        help: 'Process uptime since boot',
+        samples: [{ value: process.uptime() }],
+      },
+      {
+        name: 'skytwin_process_heap_used',
+        type: 'gauge',
+        unit: 'bytes',
+        help: 'V8 heap bytes currently in use',
+        samples: [{ value: heap.heapUsed }],
+      },
+      {
+        name: 'skytwin_process_heap_total',
+        type: 'gauge',
+        unit: 'bytes',
+        help: 'V8 heap bytes allocated',
+        samples: [{ value: heap.heapTotal }],
+      },
+      {
+        name: 'skytwin_process_rss',
+        type: 'gauge',
+        unit: 'bytes',
+        help: 'Resident set size of the API process',
+        samples: [{ value: heap.rss }],
+      },
+    ]);
+    res.setHeader('Content-Type', PROMETHEUS_CONTENT_TYPE);
+    res.status(200).send(body);
+  } catch (err) {
+    next(err);
+  }
+});
+
 // Routes
 // Protected routes
 app.use('/api/events', sessionAuth, requireOwnership, createEventsRouter());
