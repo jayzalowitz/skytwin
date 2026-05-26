@@ -4,6 +4,7 @@ import type {
   DimensionAssessment,
 } from '@skytwin/shared-types';
 import { RiskDimension, RiskTier } from '@skytwin/shared-types';
+import { formatMoney } from '@skytwin/core';
 
 /**
  * The RiskAssessor evaluates candidate actions across all risk dimensions
@@ -101,7 +102,7 @@ export class RiskAssessor {
       return {
         tier: RiskTier.LOW,
         score: 0.2,
-        reasoning: `Minor financial impact: $${(costCents / 100).toFixed(2)}.`,
+        reasoning: `Minor financial impact: ${formatMoney(costCents)}.`,
       };
     }
 
@@ -109,7 +110,7 @@ export class RiskAssessor {
       return {
         tier: RiskTier.MODERATE,
         score: 0.5,
-        reasoning: `Moderate financial impact: $${(costCents / 100).toFixed(2)}.`,
+        reasoning: `Moderate financial impact: ${formatMoney(costCents)}.`,
       };
     }
 
@@ -117,14 +118,14 @@ export class RiskAssessor {
       return {
         tier: RiskTier.HIGH,
         score: 0.8,
-        reasoning: `Significant financial impact: $${(costCents / 100).toFixed(2)}.`,
+        reasoning: `Significant financial impact: ${formatMoney(costCents)}.`,
       };
     }
 
     return {
       tier: RiskTier.CRITICAL,
       score: 1.0,
-      reasoning: `Major financial impact: $${(costCents / 100).toFixed(2)}. This requires careful review.`,
+      reasoning: `Major financial impact: ${formatMoney(costCents)}. This requires careful review.`,
     };
   }
 

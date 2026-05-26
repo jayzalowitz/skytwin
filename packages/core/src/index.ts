@@ -23,6 +23,8 @@ export {
 
 export { normalizeSenderAddress } from './email-normalize.js';
 
+export { formatMoney, type FormatMoneyOptions } from './format-money.js';
+
 /**
  * Generate a new UUID.
  */

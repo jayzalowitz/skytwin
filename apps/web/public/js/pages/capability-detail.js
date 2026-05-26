@@ -16,6 +16,7 @@ const SUCCESS_RATE_WARN_THRESHOLD = 0.9;
 const LATENCY_P95_WARN_MS = 2000;
 import { showToast } from '../toast.js';
 import { KEY_USER_ID } from '../storage-keys.js';
+import { formatMoney } from '../format.js';
 
 const API = '/api';
 
@@ -446,14 +447,12 @@ async function loadMonthlyCostMeter(serverId, userId, server) {
       .filter(b => new Date(b.bucket_started_at) >= monthStart)
       .reduce((sum, b) => sum + (b.spend_cents || 0), 0);
 
-    const spentDollars = (spentCents / 100).toFixed(2);
-    const capDollars = (perMonthCap / 100).toFixed(2);
     const pct = perMonthCap > 0 ? Math.min(100, Math.round((spentCents / perMonthCap) * 100)) : 0;
     const barColor = pct >= 90 ? 'var(--danger)' : pct >= 70 ? 'var(--warning)' : 'var(--success)';
 
     el.innerHTML = `
       <div style="font-size: 0.9rem; margin-bottom: 0.5rem;">
-        $${escapeHtml(spentDollars)} of $${escapeHtml(capDollars)} used this month
+        ${escapeHtml(formatMoney(spentCents))} of ${escapeHtml(formatMoney(perMonthCap))} used this month
         <span style="font-size: 0.8rem; color: var(--text-muted);">(${pct}%)</span>
       </div>
       <div style="background: var(--border); border-radius: 9999px; height: 8px; overflow: hidden;">

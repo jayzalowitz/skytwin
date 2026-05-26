@@ -17,6 +17,7 @@
  *     view — pending approvals always edit-in-place.
  */
 import { escapeHtml } from '../api-client.js';
+import { formatMoney } from '../format.js';
 
 function confidenceCopy(level) {
   const v = String(level || '').toLowerCase();
@@ -102,7 +103,7 @@ export function renderDraftEmailCard(a, action) {
         <div style="margin-top: 0.4rem; padding: 0.5rem 0.7rem; border-left: 2px solid var(--border); display: flex; flex-direction: column; gap: 0.35rem; color: var(--text-dim);">
           <div><strong>Examples used:</strong> ${escapeHtml(String(examplesUsed ?? 0))}</div>
           ${action.reasoning ? `<div><strong>Why this draft:</strong> ${escapeHtml(action.reasoning)}</div>` : ''}
-          ${action.estimatedCostCents != null ? `<div><strong>Estimated cost:</strong> $${(Number(action.estimatedCostCents) / 100).toFixed(2)}</div>` : ''}
+          ${action.estimatedCostCents != null ? `<div><strong>Estimated cost:</strong> ${escapeHtml(formatMoney(Number(action.estimatedCostCents)))}</div>` : ''}
         </div>
       </details>
       <div class="approval-actions" style="margin-top: 0.7rem; display: flex; gap: 0.5rem; align-items: center;">
