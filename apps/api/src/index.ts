@@ -23,6 +23,7 @@ import { createAuditRouter } from './routes/audit.js';
 import { sessionAuth } from './middleware/session-auth.js';
 import { requireOwnership } from './middleware/require-ownership.js';
 import { createPoliciesRouter } from './routes/policies.js';
+import { createActivityRouter } from './routes/activity.js';
 import { createMempalaceRouter } from './routes/mempalace.js';
 import { createMemoryConfigRouter } from './routes/memory-config.js';
 import { createAssistantRouter } from './routes/assistant.js';
@@ -306,6 +307,7 @@ app.get('/metrics', async (_req, res, next) => {
 app.use('/api/events', sessionAuth, requireOwnership, createEventsRouter());
 app.use('/api/twin', sessionAuth, requireOwnership, createTwinRouter());
 app.use('/api/decisions', sessionAuth, requireOwnership, createDecisionsRouter());
+app.use('/api/activity', sessionAuth, requireOwnership, createActivityRouter());
 app.use('/api/approvals', sessionAuth, requireOwnership, createApprovalsRouter());
 app.use('/api/feedback', sessionAuth, requireOwnership, createFeedbackRouter());
 app.use('/api/oauth', createOAuthRouter()); // manages its own public callback
