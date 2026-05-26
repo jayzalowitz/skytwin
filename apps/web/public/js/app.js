@@ -363,6 +363,80 @@ document.addEventListener('click', async (e) => {
   }
 });
 
+/**
+ * Connector re-auth banner (#377). Surfaces a "Reconnect" banner when
+ * any connector's health row says `needs_reauth` — typically because
+ * the user revoked SkyTwin's access at the provider (Google Account →
+ * Security → Third-party apps → Remove SkyTwin) or the refresh token
+ * aged out. Pre-fix the dashboard rendered as if everything was fine
+ * even when the worker had stopped processing signals for days. This
+ * banner is the user-facing signal the worker's circuit-breaker
+ * already had internally.
+ *
+ * Polls `/api/connectors/:userId/status` on every `navigate()` + every
+ * 60s. Single CTA — clicking jumps to the connect-gmail wizard (the
+ * only connector this PR wires up); future connectors can branch the
+ * CTA based on which row is needs_reauth. Banner can't be dismissed:
+ * the worker has stopped doing work for this user and they need to
+ * fix it.
+ */
+async function updateConnectorsBanner() {
+  const banner = document.getElementById('connectors-banner');
+  const textEl = document.getElementById('connectors-banner-text');
+  if (!banner || !textEl) return;
+
+  if (!currentUserId) {
+    banner.hidden = true;
+    document.body.classList.remove('has-connectors-banner');
+    return;
+  }
+
+  let state;
+  try {
+    state = await fetchJSON(`/api/connectors/${encodeURIComponent(currentUserId)}/status`);
+  } catch {
+    // Same posture as the autonomy banner — a failed fetch is not a
+    // signal to scare the user. Stay silent.
+    banner.hidden = true;
+    document.body.classList.remove('has-connectors-banner');
+    return;
+  }
+
+  if (!state?.anyNeedsReauth) {
+    banner.hidden = true;
+    document.body.classList.remove('has-connectors-banner');
+    return;
+  }
+
+  // First needs_reauth connector wins the CTA. Multi-connector failure
+  // would surface as one banner at a time; reconnecting one and
+  // refreshing reveals the next.
+  const broken = Object.entries(state.connectors ?? {})
+    .find(([, c]) => c?.status === 'needs_reauth');
+  const name = broken?.[0] ?? 'a connector';
+  const code = broken?.[1]?.errorCode;
+  const codeNote = code === 'invalid_grant'
+    ? ' (access was revoked or expired)'
+    : code
+      ? ` (${code})`
+      : '';
+  textEl.textContent =
+    `${name.charAt(0).toUpperCase()}${name.slice(1)} disconnected${codeNote}. Your twin has stopped processing ${name} signals. Reconnect to resume.`;
+  banner.hidden = false;
+  document.body.classList.add('has-connectors-banner');
+}
+
+// Singleton click handler for the Reconnect button. Hard-wired to the
+// connect-gmail wizard (only connector this PR covers). Future
+// connectors should read the broken connector name off the banner
+// dataset and branch to the appropriate route.
+document.addEventListener('click', (e) => {
+  const target = e.target instanceof Element ? e.target.closest('[data-action="connectors-reconnect"]') : null;
+  if (!target) return;
+  e.preventDefault();
+  window.location.hash = '#/connect-gmail';
+});
+
 async function updateApprovalBadge() {
   if (!currentUserId) return;
   try {
@@ -610,6 +684,10 @@ function navigate() {
   // made on the Settings page reflects across the whole app within a
   // single navigation rather than waiting for the 30s poll.
   updateAutonomyBanner();
+  // Same for the connector re-auth banner (#377) — refresh on
+  // navigate so a successful re-auth click that lands on the
+  // dashboard makes the banner disappear without waiting on the poll.
+  updateConnectorsBanner();
 
   // Theme switcher used to live in the page header (UX review #7) where
   // it looked like a breadcrumb. Now mounted by the Settings page in a
@@ -913,6 +991,17 @@ setInterval(() => {
   if (isApiKnownOffline()) return;
   updateAutonomyBanner();
 }, 30_000);
+
+// Connector re-auth banner background refresh (#377). The worker
+// polls every minute and updates connector_health on every outcome,
+// so a 60s dashboard poll matches the slowest-case detection time
+// for a freshly-revoked token. Backed off when the API is known
+// offline.
+setInterval(() => {
+  if (!currentUserId) return;
+  if (isApiKnownOffline()) return;
+  updateConnectorsBanner();
+}, 60_000);
 
 // ── SSE-driven live updates ─────────────────────────────
 

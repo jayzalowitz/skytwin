@@ -12,6 +12,7 @@ import {
 } from '@skytwin/connectors';
 import {
   connectorCursorRepository,
+  connectorHealthRepository,
   emailLabelRepository,
   forwardedSignalsRepository,
   oauthRepository,
@@ -32,6 +33,7 @@ import { runTierBackfillJob } from './jobs/tier-backfill.js';
 import { runRelationshipTierBackfillBatch } from './jobs/relationship-tier-scheduler.js';
 import { runBriefingGeneratorJob } from './jobs/briefing-generator.js';
 import { runPromotionEligibilityCheckJob } from './jobs/promotion-eligibility-check.js';
+import { extractErrorCode } from './oauth-error-code.js';
 
 const config = loadConfig();
 const log = createLogger('worker');
@@ -221,6 +223,11 @@ async function pollUser(userConnectors: UserConnectors): Promise<void> {
   let hadFailure = false;
 
   for (const connector of userConnectors.connectors) {
+    // Per-connector flag so the heal at the bottom of this iteration
+    // reflects THIS connector's outcome, not the loop-wide state. A
+    // failing Gmail must not block the success heal for a working
+    // Calendar (#377).
+    let thisConnectorFailed = false;
     try {
       const signals = await connector.poll();
       for (const signal of signals) {
@@ -232,12 +239,33 @@ async function pollUser(userConnectors: UserConnectors): Promise<void> {
       }
     } catch (error) {
       hadFailure = true;
+      thisConnectorFailed = true;
 
       if (error instanceof OAuthRefreshError && error.permanent) {
         log.error(`Permanent OAuth failure for user ${userConnectors.userId} on ${connector.name} — user must re-authorize`, {
           error: error.message,
           statusCode: error.statusCode,
         });
+        // Record the needs-reauth state so the dashboard banner can
+        // surface it (#377). Best-effort: a DB write failure here
+        // must not break the existing circuit-breaker logic — the
+        // worker continues either way; the log line is still the
+        // operator's audit trail.
+        try {
+          await connectorHealthRepository.upsert({
+            userId: userConnectors.userId,
+            connectorName: connector.name,
+            status: 'needs_reauth',
+            errorCode: extractErrorCode(error.message) ?? 'invalid_grant',
+            lastFailureAt: new Date(),
+          });
+        } catch (writeErr) {
+          log.warn('connector_health upsert failed (needs_reauth) — continuing', {
+            userId: userConnectors.userId,
+            connector: connector.name,
+            error: writeErr instanceof Error ? writeErr.message : String(writeErr),
+          });
+        }
         // Force-open circuit immediately — no point retrying a revoked token.
         // Stop once breaker transitions to open to avoid extending backoff.
         for (let i = 0; i < 3 && breaker.canExecute(); i++) {
@@ -249,6 +277,28 @@ async function pollUser(userConnectors: UserConnectors): Promise<void> {
       log.error(`Error polling ${connector.name} for user ${userConnectors.userId}`, {
         error: error instanceof Error ? error.message : String(error),
       });
+    }
+
+    // Per-connector success heals the row (#377). Keyed on
+    // thisConnectorFailed (not the loop-wide hadFailure) so a working
+    // Calendar isn't stuck in 'needs_reauth' because Gmail failed in
+    // the same cycle.
+    if (!thisConnectorFailed) {
+      try {
+        await connectorHealthRepository.upsert({
+          userId: userConnectors.userId,
+          connectorName: connector.name,
+          status: 'connected',
+          errorCode: null,
+          lastSuccessAt: new Date(),
+        });
+      } catch (writeErr) {
+        log.warn('connector_health upsert failed (connected) — continuing', {
+          userId: userConnectors.userId,
+          connector: connector.name,
+          error: writeErr instanceof Error ? writeErr.message : String(writeErr),
+        });
+      }
     }
   }
 

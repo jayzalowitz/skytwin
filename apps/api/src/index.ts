@@ -40,6 +40,7 @@ import { createDxtRouter } from './routes/dxt.js';
 import { createFederationRouter } from './routes/federation.js';
 import { createVoiceRouter } from './routes/voice.js';
 import { createCrisisModesRouter } from './routes/crisis-modes.js';
+import { createConnectorsRouter } from './routes/connectors.js';
 import { createEmbeddedLlmRouter } from './routes/embedded-llm.js';
 import {
   createPromotionOffersRouter,
@@ -256,6 +257,7 @@ app.use('/api/federation', sessionAuth, createFederationRouter()); // userId-par
 // by Copilot on PR #255.
 app.use('/api/voice', sessionAuth, requireOwnership, createVoiceRouter());
 app.use('/api/crisis-modes', sessionAuth, createCrisisModesRouter()); // userId-param ownership in-router
+app.use('/api/connectors', sessionAuth, createConnectorsRouter()); // #377 — per-user OAuth re-auth surface
 app.use('/api/embedded-llm', sessionAuth, createEmbeddedLlmRouter()); // catalog endpoints; no userId in path
 // #310: promotion-offer durable surface. GET takes :userId in the path
 // (require-ownership enforces); POST takes offerId in the path with
