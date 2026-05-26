@@ -409,3 +409,9 @@ Found a vulnerability? See [SECURITY.md](./SECURITY.md) for responsible disclosu
 ## License
 
 [Apache License 2.0](./LICENSE) — use it, modify it, build on it.
+
+## How this stays alive
+
+**Free and open source forever for personal use.** Future Team and Hosted tiers are planned for organizations that need shared policies, audit logs, or managed infrastructure. Personal features will never be paywalled.
+
+No prices today — we're not ready to commit numbers, and overpromising on a backlog you haven't shipped is the easiest trust to lose. The shape of the future, not the price list.
