@@ -18,7 +18,10 @@ import {
 function makeConfig(overrides: Partial<AutoUpdateConfig> = {}): AutoUpdateConfig {
   return {
     enabled: true,
-    feedURL: 'https://updates.skytwin.local/',
+    // Post-#370 default: null → no override → package.json GitHub
+    // publisher takes effect. Tests that exercise the self-hosted
+    // override path explicitly set a string via `overrides`.
+    feedURL: null,
     channel: 'stable',
     checkIntervalMs: 100, // short interval so timer tests don't take forever
     ...overrides,
@@ -83,17 +86,19 @@ describe('resolveFeedURL', () => {
     expect(url).toBe('https://env.example.com/updates/');
   });
 
-  it('falls back to the .local placeholder when neither is set', () => {
+  it('returns null when neither config nor env var is set (#370: package.json publisher takes over)', () => {
+    // Pre-#370 this branch returned the `.local` placeholder. Now it
+    // returns null, which signals "leave electron-updater alone" so the
+    // GitHub Releases publisher block in apps/desktop/package.json
+    // takes effect.
     delete process.env['SKYTWIN_UPDATE_URL'];
-    const url = resolveFeedURL('');
-    expect(url).toBe('https://updates.skytwin.local/');
+    expect(resolveFeedURL('')).toBeNull();
+    expect(resolveFeedURL()).toBeNull();
   });
 
-  it('does not contain any real production domain in the placeholder', () => {
-    delete process.env['SKYTWIN_UPDATE_URL'];
-    const url = resolveFeedURL();
-    // The placeholder is .local — not a real internet domain.
-    expect(url).toMatch(/\.local\//);
+  it('treats an empty SKYTWIN_UPDATE_URL the same as unset (no override → null)', () => {
+    process.env['SKYTWIN_UPDATE_URL'] = '';
+    expect(resolveFeedURL('')).toBeNull();
   });
 });
 
@@ -266,12 +271,21 @@ describe('defaultAutoUpdateConfig', () => {
     expect(cfg.checkIntervalMs).toBe(6 * 60 * 60 * 1_000);
   });
 
-  it('feedURL defaults to the .local placeholder when env var is unset', () => {
+  it('feedURL defaults to null when env var is unset (#370: lets package.json publisher take effect)', () => {
     const saved = process.env['SKYTWIN_UPDATE_URL'];
     delete process.env['SKYTWIN_UPDATE_URL'];
     const cfg = defaultAutoUpdateConfig();
-    expect(cfg.feedURL).toMatch(/\.local\//);
+    expect(cfg.feedURL).toBeNull();
     if (saved !== undefined) process.env['SKYTWIN_UPDATE_URL'] = saved;
+  });
+
+  it('feedURL picks up SKYTWIN_UPDATE_URL when set (self-host override path)', () => {
+    const saved = process.env['SKYTWIN_UPDATE_URL'];
+    process.env['SKYTWIN_UPDATE_URL'] = 'https://updates.self-host.example.com/';
+    const cfg = defaultAutoUpdateConfig();
+    expect(cfg.feedURL).toBe('https://updates.self-host.example.com/');
+    if (saved === undefined) delete process.env['SKYTWIN_UPDATE_URL'];
+    else process.env['SKYTWIN_UPDATE_URL'] = saved;
   });
 });
 
