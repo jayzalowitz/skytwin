@@ -453,14 +453,37 @@ function renderWelcome() {
           <div style="font-size:0.78rem;opacity:0.8;">Link Gmail so your twin can see your inbox from day one.</div>
         </div>
       </button>
-      <button class="btn btn-outline btn-lg" style="text-align:left;display:flex;align-items:center;gap:0.75rem;"
-              data-action="onb-choose-computer">
+      <!-- #389: the "learn from your computer" path goes through
+           computer_choice → recipe_preview but never actually enables
+           the idle miner (the runtime hook in apps/desktop/src/
+           idle-bridge.ts is dead code today, tracked by #382). Until
+           the wiring lands, this button is disabled with a "Coming
+           soon" badge so a user who clicks it doesn't complete
+           onboarding with zero signals enabled and wonder why
+           nothing's happening. Option (b) per the issue.
+           NOTE: interactive content (the #389 link) lives in a sibling
+           paragraph below — nesting an <a> inside a <button> is invalid
+           HTML and a disabled button blocks pointer events on the
+           link anyway. -->
+      <button class="btn btn-outline btn-lg"
+              style="text-align:left;display:flex;align-items:center;gap:0.75rem;opacity:0.55;cursor:not-allowed;"
+              type="button"
+              disabled
+              aria-disabled="true"
+              aria-describedby="onb-computer-coming-soon"
+              title="Computer-learning is not yet wired up — coming soon.">
         <span style="font-size:1.2rem;">💻</span>
         <div>
-          <div style="font-weight:600;">Let SkyTwin learn from your computer</div>
-          <div style="font-size:0.78rem;opacity:0.8;">Run a background observer to discover which apps you use.</div>
+          <div style="font-weight:600;">
+            Let SkyTwin learn from your computer
+            <span class="badge badge-muted" style="font-size:0.65rem;margin-left:0.4rem;vertical-align:middle;">Coming soon</span>
+          </div>
+          <div style="font-size:0.78rem;opacity:0.8;">A background observer that learns which apps you use. We're still wiring up the runtime side.</div>
         </div>
       </button>
+      <p id="onb-computer-coming-soon" style="margin:-0.4rem 0 0;padding:0 0.25rem;font-size:0.72rem;color:var(--text-muted);">
+        Track status on <a href="https://github.com/jayzalowitz/skytwin/issues/389" target="_blank" rel="noopener">issue #389</a>.
+      </p>
       <button class="btn btn-outline btn-lg" style="text-align:left;display:flex;align-items:center;gap:0.75rem;"
               data-action="onb-choose-about-me">
         <span style="font-size:1.2rem;">💬</span>
