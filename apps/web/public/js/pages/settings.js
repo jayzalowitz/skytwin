@@ -18,6 +18,88 @@ const TIERS = [
   { value: 'high_autonomy', name: 'Full autopilot', desc: 'Handles everything within your rules. Only stops for important decisions or spending limits.' },
 ];
 
+/**
+ * Mirrors `PROMOTION_THRESHOLDS` from
+ * `packages/shared-types/src/policy.ts` (#396). The settings UI renders
+ * the "What does it take to move up?" copy from these values so users
+ * see the same numbers the policy engine actually gates on. Tests in
+ * `packages/policy-engine/src/__tests__/promotion-thresholds-shape.test.ts`
+ * assert this table stays aligned with the source-of-truth constant.
+ *
+ * `moderate_autonomy` and `high_autonomy` have no automatic promotion
+ * — the latter requires explicit opt-in.
+ */
+const PROMOTION_TIER_INFO = {
+  observer: {
+    nextTier: 'suggest',
+    nextTierName: 'Ask me first',
+    consecutiveApprovals: 10,
+    minApprovalRatio: 0.8,
+    minDurationInTierHours: 24,
+  },
+  suggest: {
+    nextTier: 'low_autonomy',
+    nextTierName: 'Handle small stuff',
+    consecutiveApprovals: 20,
+    minApprovalRatio: 0.85,
+    minDurationInTierHours: 72,
+  },
+  low_autonomy: {
+    nextTier: 'moderate_autonomy',
+    nextTierName: 'Handle most things',
+    consecutiveApprovals: 50,
+    minApprovalRatio: 0.9,
+    minDurationInTierHours: 168,
+  },
+};
+
+function renderPromotionCriteriaSection(currentTier) {
+  const info = PROMOTION_TIER_INFO[currentTier];
+  if (!info) {
+    // No automatic promotion ladder past this point. Two distinct
+    // cases here — surface them separately so we're not telling a
+    // high_autonomy user about a "next jump" they're already past.
+    const body = currentTier === 'high_autonomy'
+      ? `You're already on <strong>Full autopilot</strong> — the highest tier.
+         There's no higher level to move up to. If you'd rather scale back,
+         pick a lower tier above and hit Save.`
+      : `You're at <strong>Handle most things</strong>. The next jump to
+         <strong>Full autopilot</strong> isn't automatic — you have to
+         opt in from the tier selector above when you're ready.`;
+    return `
+      <details class="promotion-criteria" style="margin-top: 1rem; padding: 0.75rem 1rem; background: var(--bg); border-radius: 6px; border: 1px solid var(--border);">
+        <summary style="cursor: pointer; font-size: 0.85rem; color: var(--text-muted);">What does it take to move up?</summary>
+        <div style="margin-top: 0.6rem; font-size: 0.85rem; line-height: 1.55; color: var(--text);">
+          ${body}
+        </div>
+      </details>
+    `;
+  }
+  const hours = info.minDurationInTierHours;
+  const friendlyDuration = hours >= 168
+    ? `${Math.round(hours / 24)} days`
+    : hours >= 24
+      ? `${Math.round(hours / 24)} day${hours === 24 ? '' : 's'}`
+      : `${hours} hours`;
+  const ratioPct = Math.round(info.minApprovalRatio * 100);
+  return `
+    <details class="promotion-criteria" style="margin-top: 1rem; padding: 0.75rem 1rem; background: var(--bg); border-radius: 6px; border: 1px solid var(--border);">
+      <summary style="cursor: pointer; font-size: 0.85rem; color: var(--text-muted);">What does it take to move up to <strong>${escapeHtml(info.nextTierName)}</strong>?</summary>
+      <div style="margin-top: 0.6rem; font-size: 0.85rem; line-height: 1.65; color: var(--text);">
+        Three things need to line up before your twin is offered the next tier:
+        <ul style="margin: 0.4rem 0 0 1.1rem; padding: 0;">
+          <li><strong>${info.consecutiveApprovals} approvals in a row</strong> — one rejection resets the streak.</li>
+          <li><strong>At least ${ratioPct}% of decisions approved</strong> overall.</li>
+          <li><strong>At least ${escapeHtml(friendlyDuration)} in your current tier</strong> — calibration takes time, not just clicks.</li>
+        </ul>
+        <div style="margin-top: 0.5rem; color: var(--text-muted); font-size: 0.78rem;">
+          See <code>PROMOTION_THRESHOLDS</code> in <code>packages/shared-types/src/policy.ts</code> for the source-of-truth values the policy engine uses.
+        </div>
+      </div>
+    </details>
+  `;
+}
+
 export async function renderSettings(container, userId) {
   let user = null;
   let googleStatus = null;
@@ -99,6 +181,7 @@ export async function renderSettings(container, userId) {
         `).join('')}
       </div>
       <button class="btn btn-primary" style="margin-top: 1rem;" id="save-tier-btn" data-action="save-tier">Save</button>
+      ${renderPromotionCriteriaSection(currentTier)}
     </div>
 
     <!-- Theme card (UX review #7). Theme switcher used to live in the
