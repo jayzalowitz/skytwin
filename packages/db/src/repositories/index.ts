@@ -26,6 +26,8 @@ export { connectorHealthRepository } from './connector-health-repository.js';
 export type { ConnectorHealthRow } from './connector-health-repository.js';
 export { userPurgeRepository } from './user-purge-repository.js';
 export type { PurgeUserResult } from './user-purge-repository.js';
+export { accessLogRepository } from './access-log-repository.js';
+export type { AccessLogRow, RecordAccessInput } from './access-log-repository.js';
 export {
   oauthPendingSigninRepository,
 } from './oauth-pending-signin-repository.js';

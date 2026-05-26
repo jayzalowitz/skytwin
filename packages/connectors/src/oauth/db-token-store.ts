@@ -142,8 +142,26 @@ export interface KeyCacheLike {
  *   4. Encrypted but vault locked → throw "credentials unavailable".
  *   5. No token at all → return null.
  */
+/**
+ * Audit-log sink (#393). Fire-and-forget — the implementation MUST
+ * NOT throw and SHOULD NOT block the credential-vault read path. A
+ * failure here is a logging miss; it must never deny a legitimate
+ * token decrypt. The worker wires this to `accessLogRepository.record`
+ * from `@skytwin/db` at composition time; tests stub it.
+ */
+export interface AuditLogPort {
+  recordAccess(input: {
+    userId: string;
+    actor: string;
+    action: string;
+    resourceType: string;
+    resourceId?: string | null;
+  }): void | Promise<void>;
+}
+
 export class DbTokenStore implements OAuthTokenStore {
   private keyCache: KeyCacheLike | null = null;
+  private auditLog: AuditLogPort | null = null;
 
   constructor(
     private readonly repo: OAuthRepositoryLike,
@@ -158,6 +176,21 @@ export class DbTokenStore implements OAuthTokenStore {
   setKeyCache(cache: KeyCacheLike): void {
     this.keyCache = cache;
   }
+
+  /**
+   * Attach an audit-log sink. Every successful credential-vault
+   * decryption (Case 1 below) emits an `action: 'decrypt_oauth_token'`
+   * row through this sink with `actor` supplied by the caller (worker
+   * vs. api vs. test). The plaintext-fallback paths (Cases 2-3) do
+   * NOT emit — those tokens are stored in cleartext and decryption
+   * isn't a privilege action. See #393.
+   */
+  setAuditLog(port: AuditLogPort, actor: string): void {
+    this.auditLog = port;
+    this.auditLogActor = actor;
+  }
+
+  private auditLogActor = 'unknown';
 
   async getToken(userId: string, provider: string): Promise<OAuthTokenSet | null> {
     const row = await this.repo.getToken(userId, provider);
@@ -176,6 +209,37 @@ export class DbTokenStore implements OAuthTokenStore {
 
       const accessToken = decrypt({ ciphertext: atCipher, iv: atIv, tag: atTag }, key);
       const refreshToken = decrypt({ ciphertext: rtCipher, iv: rtIv, tag: rtTag }, key);
+
+      // Audit-log the decryption (#393). Fire-and-forget; a logging
+      // failure must not deny a legitimate token decrypt. The audit
+      // port is optional — environments without an audit sink (e.g.
+      // unit tests) keep the existing behaviour exactly.
+      if (this.auditLog) {
+        try {
+          const maybePromise = this.auditLog.recordAccess({
+            userId,
+            actor: this.auditLogActor,
+            action: 'decrypt_oauth_token',
+            resourceType: 'oauth_token',
+            resourceId: row.id ?? null,
+          });
+          if (maybePromise && typeof (maybePromise as Promise<void>).catch === 'function') {
+            (maybePromise as Promise<void>).catch((err: unknown) => {
+              log.warn('Audit-log recordAccess failed', {
+                userId,
+                provider,
+                error: err instanceof Error ? err.message : String(err),
+              });
+            });
+          }
+        } catch (err) {
+          log.warn('Audit-log recordAccess threw synchronously', {
+            userId,
+            provider,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
 
       return {
         accessToken,

@@ -19,6 +19,7 @@ import {
   approvalRepository,
   ironClawToolRepository,
   serviceCredentialRepository,
+  accessLogRepository,
 } from '@skytwin/db';
 import { withRetry, RetryableHttpError, CircuitBreaker, createLogger } from '@skytwin/core';
 import { KeyCache } from '@skytwin/credential-vault';
@@ -439,6 +440,14 @@ async function discoverUsers(): Promise<UserConnectors[]> {
         if (googleConfig) {
           const tokenStore = new DbTokenStore(oauthRepository, googleConfig);
           tokenStore.setKeyCache(workerKeyCache);
+          // Audit-log every credential-vault decryption (#393). The
+          // sink writes to access_log with actor='worker'; failures
+          // are swallowed and logged at the call site so a CRDB blip
+          // doesn't block legitimate OAuth refreshes.
+          tokenStore.setAuditLog(
+            { recordAccess: (input) => accessLogRepository.record(input) },
+            'worker',
+          );
           connectors.push(new GmailConnector(userId, tokenStore, gmailCursorStore, gmailLabelObserver));
           connectors.push(new GoogleCalendarConnector(userId, tokenStore, gmailCursorStore));
         }
