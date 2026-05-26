@@ -137,6 +137,32 @@ When the system determines it cannot auto-execute (due to risk, confidence, poli
 
 The user can approve, reject, edit, or let the request expire.
 
+### Layer 7: Global pause + per-user pause (#379)
+
+Two coordinated panic-button levers. Both route a candidate action that would otherwise have auto-executed to `requiresApproval: true` regardless of trust tier, autonomy settings, or per-policy verdicts:
+
+- **Operator kill switch:** `SKYTWIN_AUTO_EXECUTE_DISABLED=true` on the API/worker process. Read once at `PolicyEvaluator` construction. Self-hosters / oncall use this to silence the system without redeploying. Can only be cleared by unsetting the env var.
+- **Per-user pause:** `autonomy_settings.paused = true` (set via `PUT /api/users/:userId/autonomy-pause`). Same effect, scoped to one user, clearable from the chrome banner's "Resume" button.
+
+Implementation detail (post-Copilot #421 review): `PolicyEvaluator.evaluate()` captures pause state at the top of the method but **applies it at the END** so it doesn't override deny verdicts from the domain blocklist, spend-limit check, policy deny, or injection-guard confirmation level. The semantic is "escalate to manual approval," not a hard short-circuit ahead of every other layer — a denied action stays denied; an otherwise-allowed action gets routed to the Approvals queue. Actions never auto-execute while pause is active. A sticky red banner reads from `GET /api/users/:userId/autonomy-state` on every navigation + every 30s so a user in pause-mode can't forget they're paused.
+
+The per-user pause complements but does NOT replace the "demote to observer" tier control — pause is a true execution gate; the observer-tier demotion is the trust-tier control. Different levers; both available; user picks the right one for the situation.
+
+### Layer 8: Right to erasure (#376)
+
+Every user can wipe their entire footprint from Settings → "Delete everything about me." Two-stage confirm (window.confirm → window.prompt "type DELETE"), then `DELETE /api/users/:userId?confirm=delete-my-data` runs the full purge inside a single CRDB serializable transaction via `userPurgeRepository.purgeUser`:
+
+- Leaves of the dependency graph go first (execution_results, execution_events, execution_plans, explanation_records, decision_outcomes, candidate_actions, twin_profile_versions, knowledge_triples)
+- Then the final `DELETE FROM users` cascades through the 32 user_id FKs from migration 061 (#413) and collapses the rest of the footprint — twin profile, decisions, memory pages, knowledge entities, episodic memories, preferences, OAuth tokens, sessions, spend records, etc. — in one statement
+
+Either the whole delete completes or the transaction rolls back; there is no partial-delete state. Cascade behaviour is exercised end-to-end by `cascade-cleanup.e2e.test.ts`. The endpoint is gated by the existing `sessionAuth + requireOwnership` middleware so user A cannot delete user B.
+
+### Layer 9: Access audit log (#393)
+
+Every successful credential-vault decryption writes a row to the `access_log` table (`migration 062-access-log.sql`): `(user_id, actor, action='decrypt_oauth_token', resource_type='oauth_token', resource_id, request_id, occurred_at)`. Append-only, indexed on `(user_id, occurred_at DESC)`, cascades on user purge via the same convention from layer 8.
+
+The audit log is **fire-and-forget**: a logging failure NEVER blocks or denies a legitimate decrypt, it gets caught and warn-logged at the call site. The "your access log" Settings page that surfaces the user's own audit history + further instrumented call sites (sensitive API reads) are tracked as #393 follow-ups; this layer ships with the worker-decryption surface (the highest-value forensic seam) instrumented today.
+
 ## Trust Tier Progression
 
 Trust is earned, not assumed. Progression is domain-specific: high trust in email triage doesn't grant high trust in financial decisions.
@@ -150,25 +176,29 @@ Trust is earned, not assumed. Progression is domain-specific: high trust in emai
 - Duration: Until the user explicitly promotes, or earns promotion (10 consecutive approvals + ≥80% ratio)
 - Mechanically near-identical to SUGGEST today (both are allow-with-approval, neither auto-executes); the OBSERVER/SUGGEST split is currently nominal and the tier ladder is due for a rethink
 
-Promotion criteria below match `PROMOTION_THRESHOLDS` in `@skytwin/shared-types` (`packages/shared-types/src/policy.ts`). The engine gates on `consecutiveApprovals` (resets on any rejection) AND `minApprovalRatio` (cumulative). Both must clear.
+Promotion criteria below match `PROMOTION_THRESHOLDS` in `@skytwin/shared-types` (`packages/shared-types/src/policy.ts`) and are locked against drift by `packages/policy-engine/src/__tests__/promotion-thresholds-shape.test.ts`. The engine gates on **three** conditions:
+
+1. `consecutiveApprovals` (resets on any rejection) — **always enforced**
+2. `minApprovalRatio` (cumulative) — **always enforced**
+3. `minDurationInTierHours` — time-in-tier floor (#373). Twenty approvals in twenty minutes proves the user clicked through quickly, not that they calibrated the twin. The floor stops single-session ladder-climbing and closes a DB-tampering vector where an attacker bumping `consecutive_approvals` could leapfrog tiers without behavioural evidence. **Enforcement caveat:** the engine + threshold schema landed in #373, but the production callers that build `ApprovalStats` (`/api/twin/:userId/progress`, the promotion-eligibility job) do NOT yet populate `hoursInCurrentTier`, so the floor is enforced only when callers opt in. Wiring those callers to read `trust_tier_audit` is tracked as a #373 follow-up; until then, production retains the legacy count + ratio behaviour and only the engine-level checks (e.g. dev workflows and tests that build `ApprovalStats` themselves) actually gate on the floor.
 
 **SUGGEST**
 - System generates candidate actions and presents them to the user
 - All actions require explicit approval
 - Purpose: Let the user see the system's judgment and correct it
-- Promotion criteria: 10 consecutive approvals AND ≥80% cumulative approval ratio
+- Promotion criteria: 10 consecutive approvals AND ≥80% cumulative approval ratio AND ≥24h in current tier
 
 **LOW_AUTONOMY**
 - System can auto-execute low-risk, reversible actions in allowed domains
 - Moderate-risk and irreversible actions still require approval
 - Purpose: Handle routine, low-stakes operations autonomously
-- Promotion criteria: 20 consecutive approvals AND ≥85% cumulative approval ratio
+- Promotion criteria: 20 consecutive approvals AND ≥85% cumulative approval ratio AND ≥72h in current tier
 
 **MODERATE_AUTONOMY**
 - System can auto-execute moderate-risk actions in allowed domains
 - High-risk and irreversible actions still require approval (unless explicitly allowed)
 - Purpose: Handle most operational decisions with occasional escalation
-- Promotion criteria: 50 consecutive approvals AND ≥90% cumulative approval ratio
+- Promotion criteria: 50 consecutive approvals AND ≥90% cumulative approval ratio AND ≥168h (7 days) in current tier
 
 **HIGH_AUTONOMY**
 - System can auto-execute most actions except critical-risk
