@@ -86,13 +86,21 @@ Each candidate must be a JSON object with these exact fields:
 - description: string (human-readable description)
 - domain: string (same as situation domain)
 - parameters: object (action-specific parameters)
-- estimatedCostCents: number (0 if free)
-- reversible: boolean (can this action be undone?)
 - confidence: one of [${confidenceLevels}]
 - reasoning: string (why this action fits)
 
+Cost and reversibility are determined by the policy engine, not by you.
 Respond with ONLY a JSON array of candidates (no markdown, no explanation):
 [{ ... }, { ... }]`);
+    // Safety invariant: estimatedCostCents and reversible are deliberately
+    // NOT listed above. The response-parser hardcodes both to safe defaults
+    // (see packages/llm-client/src/response-parser.ts:109-114). Pre-#411
+    // the prompt asked the LLM for those fields anyway, which (a) burned
+    // tokens on output the parser threw away and (b) created a future
+    // foot-gun: a maintainer who wired the LLM values through to "honor"
+    // the prompt would silently re-open the spend-cap bypass closed by
+    // #372. Keep the prompt and parser aligned — the LLM does not get to
+    // declare cost or reversibility.
 
     return sections.join('\n\n');
   },
