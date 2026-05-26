@@ -285,19 +285,21 @@ Apps:
 
 ## API Endpoints
 
-### Decision API
-
-```
-POST   /api/v1/events                    # Submit a new event for processing
-GET    /api/v1/decisions/:id             # Get a decision and its outcome
-GET    /api/v1/decisions?userId=&status= # List decisions with filters
-POST   /api/v1/decisions/:id/approve     # Approve a pending decision
-POST   /api/v1/decisions/:id/reject      # Reject a pending decision
-POST   /api/v1/decisions/:id/edit        # Approve with modifications
-POST   /api/v1/decisions/:id/undo        # Undo an executed decision
-```
-
 > **Note:** routes verified against `apps/api/src/index.ts` post-Tier-2-polish. Most live under `/api/...` (no `/v1/` prefix); the `/api/v1/...` namespace is reserved today for the Ask, Briefings, and Skill-Gaps routers that pre-dated the API consolidation. New routes go under `/api/...` unless they explicitly version a public contract.
+
+### Decision + Events + Approvals API (`apps/api/src/routes/{decisions,events,approvals}.ts`)
+
+```
+GET    /api/decisions/:userId                      # List decisions for a user
+GET    /api/decisions/:decisionId/explanation      # Get the ExplanationRecord
+
+POST   /api/events/ingest                          # Worker submits a signal for processing
+GET    /api/events/stream/:userId                  # SSE stream for live updates
+
+GET    /api/approvals/:userId/pending              # Pending approvals waiting on the user
+GET    /api/approvals/:userId/history              # Recently-resolved approvals
+POST   /api/approvals/:requestId/respond           # Approve / reject / dual-confirm
+```
 
 ### User API (`apps/api/src/routes/users.ts`)
 
@@ -309,16 +311,20 @@ PUT    /api/users/:userId/trust-tier               # Set trust tier
 PUT    /api/users/:userId/domains                  # Set enabled domains
 POST   /api/users/:userId/seed-preferences         # Bulk-seed preferences
 PUT    /api/users/:userId/autonomy-pause           # Per-user pause (#379)
+GET    /api/users/:userId/autonomy-state           # Operator + per-user pause state (#379)
 DELETE /api/users/:userId?confirm=delete-my-data   # Right to erasure (#376)
 ```
 
 ### Twin API (`apps/api/src/routes/twin.ts`)
 
 ```
-GET    /api/twin/:userId/profile                   # Get twin profile (with confidence + version)
+GET    /api/twin/:userId                           # Get twin profile (preferences, inferences, version)
+GET    /api/twin/export/:userId                    # Export twin profile snapshot
+PUT    /api/twin/:userId/preferences               # Explicitly set a preference
 GET    /api/twin/:userId/progress                  # Trust-tier progress + thresholds (#373/#396)
-GET    /api/twin/:userId/autonomy-state            # Per-user pause + operator-pause state (#379)
-DELETE /api/twin/:userId/insights                  # Reset learned patterns
+GET    /api/twin/:userId/learned                   # Inferred patterns the twin has learned
+DELETE /api/twin/:userId/insights                  # Remove or correct a single (domain, key) preference
+                                                   #   body: { domain, key, newValue? }
 ```
 
 ### Policy API (`apps/api/src/routes/policies.ts`)
@@ -333,7 +339,7 @@ DELETE /api/policies/:userId/:policyId             # Delete policy
 ### Ask API (Twin Query)
 
 ```
-POST   /api/v1/twin/:userId/ask                    # Predict what the twin would do (read-only)
+POST   /api/v1/twin/ask/:userId                    # Predict what the twin would do (read-only)
 ```
 
 ### Briefing API
