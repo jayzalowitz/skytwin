@@ -81,6 +81,94 @@ function createAutonomySettings(
 // ── Tests ─────────────────────────────────────────────────────────
 
 describe('PolicyEvaluator', () => {
+  describe('Kill switch (#379)', () => {
+    it('escalates every action when globallyPaused (operator env var)', async () => {
+      const repo = createMockPolicyRepository();
+      const evaluator = new PolicyEvaluator(repo as never, { globallyPaused: true });
+      const action = createAction();
+      const riskAssessment = createRiskAssessment(RiskTier.NEGLIGIBLE);
+      const settings = createAutonomySettings();
+
+      const decision = await evaluator.evaluate(
+        action,
+        [],
+        TrustTier.HIGH_AUTONOMY, // even max trust escalates when operator paused
+        riskAssessment,
+        settings,
+      );
+
+      expect(decision.allowed).toBe(true);
+      expect(decision.requiresApproval).toBe(true);
+      expect(decision.reason).toMatch(/operator/i);
+      expect(decision.reason).toMatch(/SKYTWIN_AUTO_EXECUTE_DISABLED/);
+    });
+
+    it('escalates every action when per-user paused (autonomySettings.paused)', async () => {
+      const repo = createMockPolicyRepository();
+      const evaluator = new PolicyEvaluator(repo as never);
+      const action = createAction();
+      const riskAssessment = createRiskAssessment(RiskTier.NEGLIGIBLE);
+      const settings = createAutonomySettings({ paused: true });
+
+      const decision = await evaluator.evaluate(
+        action,
+        [],
+        TrustTier.HIGH_AUTONOMY,
+        riskAssessment,
+        settings,
+      );
+
+      expect(decision.allowed).toBe(true);
+      expect(decision.requiresApproval).toBe(true);
+      expect(decision.reason).toMatch(/paused by user/i);
+    });
+
+    it('operator pause reason wins when both flags are set', async () => {
+      const repo = createMockPolicyRepository();
+      const evaluator = new PolicyEvaluator(repo as never, { globallyPaused: true });
+      const action = createAction();
+      const settings = createAutonomySettings({ paused: true });
+
+      const decision = await evaluator.evaluate(
+        action,
+        [],
+        TrustTier.HIGH_AUTONOMY,
+        createRiskAssessment(RiskTier.NEGLIGIBLE),
+        settings,
+      );
+
+      expect(decision.requiresApproval).toBe(true);
+      // Operator wins: reason should reference the env var, not the user toggle.
+      expect(decision.reason).toMatch(/operator/i);
+      expect(decision.reason).not.toMatch(/paused by user/i);
+    });
+
+    it('does NOT escalate when neither pause flag is set (regression check)', async () => {
+      const repo = createMockPolicyRepository();
+      const evaluator = new PolicyEvaluator(repo as never, { globallyPaused: false });
+      const action = createAction();
+      const settings = createAutonomySettings({ paused: false });
+
+      const decision = await evaluator.evaluate(
+        action,
+        [],
+        TrustTier.HIGH_AUTONOMY,
+        createRiskAssessment(RiskTier.NEGLIGIBLE),
+        settings,
+      );
+
+      // High trust + no policies + low risk → should auto-execute.
+      expect(decision.allowed).toBe(true);
+      expect(decision.requiresApproval).toBe(false);
+    });
+
+    it('isGloballyPaused reports the construction-time state', () => {
+      const repo = createMockPolicyRepository();
+      expect(new PolicyEvaluator(repo as never, { globallyPaused: true }).isGloballyPaused()).toBe(true);
+      expect(new PolicyEvaluator(repo as never, { globallyPaused: false }).isGloballyPaused()).toBe(false);
+    });
+  });
+
   describe('Spend limit enforcement', () => {
     it('should allow actions within spend limit', () => {
       const repo = createMockPolicyRepository();

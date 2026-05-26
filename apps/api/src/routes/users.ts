@@ -226,6 +226,96 @@ export function createUsersRouter(): Router {
   });
 
   /**
+   * PUT /api/users/:userId/autonomy-pause (#379)
+   *
+   * Per-user kill switch. Setting `paused: true` writes
+   * `autonomy_settings.paused = true` on the user row; the next decision
+   * for this user escalates to manual approval regardless of trust tier.
+   * Setting `paused: false` clears it. Independent of the
+   * `SKYTWIN_AUTO_EXECUTE_DISABLED` operator env var — either flag
+   * triggers escalation in `PolicyEvaluator`.
+   */
+  router.put('/:userId/autonomy-pause', async (req, res, next) => {
+    try {
+      const { userId } = req.params;
+      const body = req.body as { paused?: boolean; reason?: string };
+      if (typeof body.paused !== 'boolean') {
+        res.status(400).json({ error: '`paused` must be a boolean.' });
+        return;
+      }
+
+      let user = await userRepository.findById(userId);
+      if (!user) user = await userRepository.findByEmail(userId);
+      if (!user) {
+        res.status(404).json({ error: 'User not found.' });
+        return;
+      }
+
+      const existing =
+        typeof user.autonomy_settings === 'string'
+          ? JSON.parse(user.autonomy_settings)
+          : user.autonomy_settings ?? {};
+
+      // Spread merges in so we don't blow away spend caps / domains /
+      // perAppOverrides / quietHours / etc. that live in the same JSONB.
+      const updated: Record<string, unknown> = {
+        ...existing,
+        paused: body.paused,
+      };
+      if (body.paused) {
+        updated['pausedAt'] = new Date().toISOString();
+        if (typeof body.reason === 'string' && body.reason.trim()) {
+          updated['pausedReason'] = body.reason.trim().slice(0, 500);
+        } else {
+          delete updated['pausedReason'];
+        }
+      } else {
+        delete updated['pausedAt'];
+        delete updated['pausedReason'];
+      }
+
+      const result = await userRepository.updateAutonomySettings(user.id, updated);
+      res.json({ user: result });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /**
+   * GET /api/users/:userId/autonomy-state (#379)
+   *
+   * Combined pause state for the dashboard's chrome banner. Reports
+   * both the operator-set env var (`SKYTWIN_AUTO_EXECUTE_DISABLED`) and
+   * the per-user `autonomy_settings.paused` flag so the banner can
+   * render the right copy and the right resume affordance.
+   */
+  router.get('/:userId/autonomy-state', async (req, res, next) => {
+    try {
+      const { userId } = req.params;
+      let user = await userRepository.findById(userId);
+      if (!user) user = await userRepository.findByEmail(userId);
+      if (!user) {
+        res.status(404).json({ error: 'User not found.' });
+        return;
+      }
+
+      const settings =
+        typeof user.autonomy_settings === 'string'
+          ? JSON.parse(user.autonomy_settings)
+          : user.autonomy_settings ?? {};
+
+      res.json({
+        globalPause: process.env['SKYTWIN_AUTO_EXECUTE_DISABLED'] === 'true',
+        userPause: Boolean(settings?.paused),
+        pausedAt: settings?.pausedAt ?? null,
+        pausedReason: settings?.pausedReason ?? null,
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /**
    * POST /api/users/:userId/seed-preferences
    *
    * Accept an array of {domain, key, value} and create Preference records

@@ -57,6 +57,22 @@
     </div>
   </nav>
 
+  <!-- Kill-switch banner (#379). Always rendered first inside <main> so
+       it sits above the page header, sticks to the top via CSS, and
+       cannot be dismissed. Visibility controlled by app.js's
+       updateAutonomyBanner() against /api/users/:userId/autonomy-state.
+       Operator-set env var and per-user toggle each render their own
+       line so the banner can communicate who set the pause. -->
+  <div id="autonomy-banner" class="autonomy-banner" hidden role="status" aria-live="polite">
+    <div class="autonomy-banner-lines">
+      <div id="autonomy-banner-operator" class="autonomy-banner-line" hidden></div>
+      <div id="autonomy-banner-user" class="autonomy-banner-line" hidden></div>
+    </div>
+    <button id="autonomy-banner-resume" class="autonomy-banner-resume" type="button"
+            data-action="autonomy-resume" hidden>
+      Resume
+    </button>
+  </div>
   <main class="content" id="content">
     <div class="page-header">
       <h2 id="page-title">Dashboard</h2>

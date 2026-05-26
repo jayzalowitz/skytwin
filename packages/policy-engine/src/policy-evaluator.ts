@@ -48,7 +48,36 @@ export interface PolicyDecision {
  * requires approval, or is blocked.
  */
 export class PolicyEvaluator {
-  constructor(private readonly repository: PolicyRepositoryPort) {}
+  /**
+   * Operator-controlled kill switch (#379). Read ONCE at construction
+   * time from `SKYTWIN_AUTO_EXECUTE_DISABLED=true`. When true, every
+   * `evaluate()` call escalates to `requiresApproval: true` regardless
+   * of trust tier, autonomy settings, or per-policy rules — the action
+   * still lands in the Approvals queue so the user can review +
+   * approve, but nothing auto-executes. Independent of the per-user
+   * `autonomySettings.paused` lever; either flips the escalation.
+   *
+   * Override at construction time for tests (so the env-var read isn't
+   * a hidden dependency of the unit suite).
+   */
+  private readonly globallyPaused: boolean;
+
+  constructor(
+    private readonly repository: PolicyRepositoryPort,
+    options: { globallyPaused?: boolean } = {},
+  ) {
+    this.globallyPaused = options.globallyPaused
+      ?? process.env['SKYTWIN_AUTO_EXECUTE_DISABLED'] === 'true';
+  }
+
+  /**
+   * Whether the operator-level kill switch is currently engaged. Used
+   * by the `/api/users/:userId/autonomy-state` endpoint to surface the
+   * operator-paused state to the dashboard banner.
+   */
+  isGloballyPaused(): boolean {
+    return this.globallyPaused;
+  }
 
   /**
    * Evaluate a candidate action against all applicable policies and the
@@ -61,6 +90,25 @@ export class PolicyEvaluator {
     riskAssessment?: RiskAssessment,
     autonomySettings?: AutonomySettings,
   ): Promise<PolicyDecision> {
+    // Kill-switch escalation (#379) — runs AHEAD of every other check.
+    // Sits ahead of the trust-tier gate and the injection guard so no
+    // downstream allow path can bypass it. Uses `allowed: true,
+    // requiresApproval: true` rather than a deny — the action is still
+    // valid; the user can review + approve it manually. Operator state
+    // takes precedence in the reason string when both are set so the
+    // banner copy reflects who set the pause.
+    const userPaused = Boolean(autonomySettings?.paused);
+    if (this.globallyPaused || userPaused) {
+      const reason = this.globallyPaused
+        ? 'Auto-execution disabled by operator (SKYTWIN_AUTO_EXECUTE_DISABLED). Actions require manual approval until the operator restores normal mode.'
+        : 'Auto-execution paused by user. Resume from Settings to let your twin act on signals again.';
+      return {
+        allowed: true,
+        requiresApproval: true,
+        reason,
+      };
+    }
+
     // Merge built-in policies with user/provided policies
     const allPolicies = [...DEFAULT_POLICIES, ...policies]
       .filter((p) => p.enabled)
