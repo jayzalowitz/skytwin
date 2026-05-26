@@ -137,7 +137,14 @@ export interface DecisionOutcome {
   allCandidates: CandidateAction[];
   /**
    * Convenience pointer to the SELECTED candidate's assessment.
-   * Equals `allRiskAssessments.find(a => a.actionId === selectedAction.id)`.
+   *
+   * When `selectedAction` is non-null AND `allRiskAssessments` is
+   * populated AND the selected candidate's id appears in that list,
+   * this equals `allRiskAssessments.find(a => a.actionId ===
+   * selectedAction.id)`. When any of those conditions doesn't hold —
+   * no candidate could be selected, the producer pre-dates #412, the
+   * selected candidate's assessment was somehow dropped — the field
+   * is `null`.
    *
    * Pre-#412 this was the only field carrying assessments on the
    * outcome, which created a divergence hazard: any code path that

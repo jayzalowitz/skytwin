@@ -266,8 +266,11 @@ export class DecisionMaker {
       // (not just the selected one) so consumers that need a
       // specific candidate's risk can look it up by id without an
       // extra DB round-trip. The assessments map is already keyed by
-      // candidate.id from step 4 — flatten it in the same iteration
-      // order as `allCandidates` so the two arrays correlate.
+      // candidate.id from step 4 — flatten it walking `allCandidates`
+      // so we get a deterministic order. Missing assessments are
+      // dropped: consumers MUST use `getAssessmentForAction(outcome,
+      // id)` (an id-keyed lookup), not an index-correlated read
+      // against `allCandidates`.
       allRiskAssessments: candidates
         .map((c) => assessments.get(c.id))
         .filter((a): a is RiskAssessment => a !== undefined),
