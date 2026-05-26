@@ -156,6 +156,18 @@ export interface AuditLogPort {
     action: string;
     resourceType: string;
     resourceId?: string | null;
+    /**
+     * Optional correlation id to thread audit rows back to the
+     * originating request — HTTP `X-Request-Id` when the action came
+     * in via the API, the worker's per-cycle id when it came from a
+     * poll. Stored in `access_log.request_id`. Today the DbTokenStore
+     * decrypt path doesn't carry one (worker decrypts happen on a
+     * timer, not in response to a request), but the port surface is
+     * uniform with `accessLogRepository.record` so a future
+     * request-scoped caller can pass it through without a wider type
+     * change.
+     */
+    requestId?: string | null;
   }): void | Promise<void>;
 }
 

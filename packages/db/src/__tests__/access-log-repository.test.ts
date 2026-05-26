@@ -98,4 +98,25 @@ describe('accessLogRepository.findByUser', () => {
     await accessLogRepository.findByUser(USER_ID, { limit: 100_000 });
     expect(mockQuery.mock.calls[2]![0]).toContain('LIMIT 1000');
   });
+
+  it('sanitises non-integer / NaN / negative limits before SQL interpolation', async () => {
+    mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
+
+    // Fractional input → floored, NEVER emits "LIMIT 50.5".
+    await accessLogRepository.findByUser(USER_ID, { limit: 50.5 });
+    expect(mockQuery.mock.calls[0]![0]).toContain('LIMIT 50');
+    expect(mockQuery.mock.calls[0]![0]).not.toContain('LIMIT 50.5');
+
+    // NaN → falls through to default (100), NEVER emits "LIMIT NaN".
+    await accessLogRepository.findByUser(USER_ID, { limit: Number.NaN });
+    expect(mockQuery.mock.calls[1]![0]).toContain('LIMIT 100');
+
+    // Negative → clamped up to 1.
+    await accessLogRepository.findByUser(USER_ID, { limit: -10 });
+    expect(mockQuery.mock.calls[2]![0]).toContain('LIMIT 1');
+
+    // Infinity → clamped down to 1000.
+    await accessLogRepository.findByUser(USER_ID, { limit: Number.POSITIVE_INFINITY });
+    expect(mockQuery.mock.calls[3]![0]).toContain('LIMIT 1000');
+  });
 });
