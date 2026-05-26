@@ -73,6 +73,18 @@
       Resume
     </button>
   </div>
+  <!-- Connector re-auth banner (#377). Same shape as the kill-switch
+       banner but visually amber instead of red — re-auth is a user
+       housekeeping task, not a panic state. app.js's
+       updateConnectorsBanner() polls /api/connectors/:userId/status and
+       surfaces a single per-connector "Reconnect" CTA. -->
+  <div id="connectors-banner" class="connectors-banner" hidden role="status" aria-live="polite">
+    <div id="connectors-banner-text" class="connectors-banner-text"></div>
+    <button id="connectors-banner-reconnect" class="connectors-banner-reconnect"
+            type="button" data-action="connectors-reconnect">
+      Reconnect
+    </button>
+  </div>
   <main class="content" id="content">
     <div class="page-header">
       <h2 id="page-title">Dashboard</h2>

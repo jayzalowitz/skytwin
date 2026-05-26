@@ -89,7 +89,9 @@ export {
   approvalRepository,
   patternRepository,
   executionRepository,
+  connectorHealthRepository,
 } from './repositories/index.js';
+export type { ConnectorHealthRow } from './repositories/index.js';
 export type {
   RememberPendingSigninInput,
   ConsumedPendingSignin,

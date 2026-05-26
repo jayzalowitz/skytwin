@@ -161,6 +161,43 @@ body {
  * is toggled by app.js when the banner shows/hides. */
 body.has-autonomy-banner { padding-top: 2.5rem; }
 
+/* Connector re-auth banner (#377). Sticky, amber (not red — this is a
+ * housekeeping prompt, not a panic state), one CTA. Sits below the
+ * kill-switch banner if both fire simultaneously. */
+.connectors-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 9998; /* one below the kill-switch banner */
+  background: var(--warning, #e6a700);
+  color: #1a1d23;
+  padding: 0.6rem 1.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  font-size: 0.9rem;
+  font-weight: 500;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+.connectors-banner[hidden] { display: none; }
+.connectors-banner-text { flex: 1; }
+.connectors-banner-reconnect {
+  background: #1a1d23;
+  color: white;
+  border: 0;
+  padding: 0.35rem 0.9rem;
+  font-weight: 600;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.connectors-banner-reconnect:hover { background: #2a2d33; }
+/* When both banners are visible, stack them — kill-switch top, connectors below. */
+body.has-connectors-banner { padding-top: 2.5rem; }
+body.has-autonomy-banner.has-connectors-banner { padding-top: 5rem; }
+body.has-autonomy-banner.has-connectors-banner .connectors-banner { top: 2.5rem; }
+
 .connection-banner {
   display: flex;
   align-items: center;
