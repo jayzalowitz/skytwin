@@ -41,6 +41,18 @@ export interface ApprovalStats {
   hasCriticalUndo: boolean;
   /** approvals / (approvals + rejections), 0-1 */
   approvalRatio: number;
+  /**
+   * Hours the user has been at their current trust tier, derived from
+   * the latest `trust_tier_audit` row (or user creation time if no
+   * audit row exists). Used to enforce the temporal floor on tier
+   * promotion (#373) — "consistent feedback over time" means the count
+   * threshold and the time floor BOTH have to clear before promotion.
+   *
+   * Optional for backward compatibility — callers that omit it disable
+   * the temporal floor (older code paths or tests where the audit table
+   * isn't reachable). Production callers should always populate it.
+   */
+  hoursInCurrentTier?: number;
 }
 
 /**
@@ -74,6 +86,16 @@ export interface TierEvaluation {
 export interface PromotionThreshold {
   consecutiveApprovals: number;
   minApprovalRatio: number;
+  /**
+   * Minimum hours the user must have spent in the current tier before
+   * promotion eligibility, independent of the approval count (#373).
+   * "Consistent feedback over time" — twenty approvals in two weeks
+   * demonstrates calibration; twenty approvals in twenty minutes
+   * demonstrates that the user clicked through quickly. The time floor
+   * is the second half of the criterion the original threshold table
+   * named but never enforced.
+   */
+  minDurationInTierHours: number;
   nextTier: TrustTier;
 }
 
@@ -81,16 +103,19 @@ export const PROMOTION_THRESHOLDS: Record<string, PromotionThreshold> = {
   [TrustTier.OBSERVER]: {
     consecutiveApprovals: 10,
     minApprovalRatio: 0.8,
+    minDurationInTierHours: 24,
     nextTier: TrustTier.SUGGEST,
   },
   [TrustTier.SUGGEST]: {
     consecutiveApprovals: 20,
     minApprovalRatio: 0.85,
+    minDurationInTierHours: 72,
     nextTier: TrustTier.LOW_AUTONOMY,
   },
   [TrustTier.LOW_AUTONOMY]: {
     consecutiveApprovals: 50,
     minApprovalRatio: 0.9,
+    minDurationInTierHours: 168,
     nextTier: TrustTier.MODERATE_AUTONOMY,
   },
 };
