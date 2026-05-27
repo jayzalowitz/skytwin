@@ -15,50 +15,94 @@
       justify-content: center;
       min-height: 100vh;
       flex-direction: column;
+      padding: 0 2rem;
     }
     .logo {
       font-size: 2.5rem;
       font-weight: 700;
       color: #6366f1;
-      margin-bottom: 1rem;
+      margin-bottom: 0.5rem;
     }
     .tagline {
       font-size: 1rem;
       color: #8b8fa3;
       margin-bottom: 2rem;
     }
-    .spinner {
-      width: 40px;
-      height: 40px;
-      border: 3px solid #2a2e3d;
-      border-top: 3px solid #6366f1;
-      border-radius: 50%;
-      animation: spin 0.8s linear infinite;
-      margin-bottom: 1.5rem;
+
+    /* The bar replaces the old spinner. While extraction is running the
+       fill grows; if no progress events ever arrive (degenerate tarball
+       / counter failed) the bar stays at 0% and the indeterminate
+       shimmer animation conveys that something is still happening. */
+    .progress-track {
+      width: 280px;
+      height: 6px;
+      background: #2a2e3d;
+      border-radius: 3px;
+      overflow: hidden;
+      margin-bottom: 1rem;
+      position: relative;
     }
-    @keyframes spin {
-      to { transform: rotate(360deg); }
+    .progress-fill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #6366f1, #818cf8);
+      border-radius: 3px;
+      transition: width 0.3s ease-out;
     }
+    /* Indeterminate shimmer overlay — only visible when the bar is
+       still at 0% (i.e. no progress events have arrived yet). */
+    .progress-track[data-progress="0"]::after {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; bottom: 0;
+      width: 30%;
+      background: linear-gradient(90deg, transparent, rgba(99, 102, 241, 0.4), transparent);
+      animation: shimmer 1.5s linear infinite;
+    }
+    @keyframes shimmer {
+      0% { transform: translateX(-100%); }
+      100% { transform: translateX(450%); }
+    }
+
     .status {
       font-size: 0.85rem;
-      color: #5a5e72;
+      color: #b0b4c5;
+      min-height: 1.2em;
+      text-align: center;
     }
-    .dots::after {
-      content: '';
-      animation: dots 1.5s infinite;
-    }
-    @keyframes dots {
-      0%, 20% { content: ''; }
-      40% { content: '.'; }
-      60% { content: '..'; }
-      80%, 100% { content: '...'; }
+    .status.ready {
+      color: #6ee7b7;
     }
   </style>
 </head>
 <body>
   <div class="logo">SkyTwin</div>
   <div class="tagline">Your personal AI assistant</div>
-  <div class="spinner"></div>
-  <div class="status">Starting up<span class="dots"></span></div>
+  <div class="progress-track" id="track" data-progress="0">
+    <div class="progress-fill" id="fill"></div>
+  </div>
+  <div class="status" id="status">Starting up…</div>
+  <script>
+    // Called from the Electron main process via webContents.executeJavaScript
+    // whenever a new extraction progress event arrives (#383). See
+    // service-manager.ts (emitExtractProgress) + main.ts (the handler
+    // installed via setExtractProgressHandler). The function is on
+    // `window` so executeJavaScript can find it as a global.
+    window.setExtractionProgress = function (percent, label) {
+      const fill = document.getElementById('fill');
+      const track = document.getElementById('track');
+      const status = document.getElementById('status');
+      if (!fill || !status || !track) return;
+      const clamped = Math.max(0, Math.min(100, Math.round(Number(percent) || 0)));
+      fill.style.width = clamped + '%';
+      track.setAttribute('data-progress', String(clamped));
+      status.textContent = String(label || '');
+      if (clamped >= 100) {
+        status.classList.add('ready');
+      } else {
+        status.classList.remove('ready');
+      }
+    };
+  </script>
 </body>
 </html>

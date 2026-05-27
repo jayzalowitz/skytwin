@@ -125,6 +125,25 @@ async function startApp(): Promise<void> {
   // Set up tray
   tray = createTray(mainWindow, serviceManager);
 
+  // Wire first-launch extraction progress (#383) so the splash shows
+  // a real progress bar instead of a spinner. The splash's
+  // window.setExtractionProgress(percent, label) is defined in
+  // splash.html; we drive it via executeJavaScript so the splash
+  // doesn't need its own preload script.
+  serviceManager.setExtractProgressHandler((progress) => {
+    const splash = splashWindow;
+    if (!splash || splash.isDestroyed() || splash.webContents.isDestroyed()) return;
+    // Single-quote-safe JSON encoding of the label, then call into
+    // the splash's renderer. JSON.stringify gives a valid JS literal
+    // for any UTF-8 string (escapes embedded quotes and newlines).
+    const labelJs = JSON.stringify(progress.label);
+    splash.webContents
+      .executeJavaScript(
+        `window.setExtractionProgress && window.setExtractionProgress(${progress.percent}, ${labelJs})`,
+      )
+      .catch(() => { /* splash may have closed mid-update — ignore */ });
+  });
+
   // Start services
   try {
     await serviceManager.startAll();
