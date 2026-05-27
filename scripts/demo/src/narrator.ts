@@ -27,9 +27,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_API_BASE = process.env['SKYTWIN_API_BASE'] ?? 'http://localhost:3100';
 /**
  * Recorder needs a userId to call /api/voice/synthesize — the
- * endpoint is per-user. Default uses the sample-profile userId; the
- * recorder overrides via `--user-id` if you want to record under
- * your real account.
+ * endpoint is per-user. Default uses the sample-profile userId.
+ * Override by exporting `SKYTWIN_DEMO_USER_ID=<your-uuid>` or by
+ * passing `{ userId }` into `synthesizeAll` directly. There's no
+ * CLI flag — this is a small env-driven tool by design.
  */
 const DEFAULT_USER_ID = process.env['SKYTWIN_DEMO_USER_ID'] ?? 'demo-user';
 
@@ -105,7 +106,12 @@ export async function synthesizeAll(opts: {
   const out: NarrationFile[] = [];
   for (const step of opts.timeline.steps) {
     const key = cacheKey(opts.timeline.voice, step.narration);
-    const wavPath = join(opts.cacheDir, `${step.id}-${key}.wav`);
+    // Cache key is `<sha>.wav` — hash-only — so renaming a step in
+    // timeline.json doesn't force a re-synthesis when the narration
+    // text is unchanged. The step.id only shows up in log output, not
+    // the cache filename, to preserve the "(voice, text)" cache
+    // contract.
+    const wavPath = join(opts.cacheDir, `${key}.wav`);
     if (existsSync(wavPath)) {
       const buf = readFileSync(wavPath);
       out.push({ stepId: step.id, wavPath, bytes: buf.length, fromCache: true });

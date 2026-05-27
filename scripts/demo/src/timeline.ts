@@ -92,6 +92,7 @@ export function parseTimeline(raw: unknown): Timeline {
     throw new Error('timeline.json: steps must be a non-empty array');
   }
   const steps: TimelineStep[] = [];
+  const seenIds = new Set<string>();
   for (let i = 0; i < o['steps'].length; i++) {
     const step = o['steps'][i];
     if (typeof step !== 'object' || step === null) {
@@ -101,6 +102,13 @@ export function parseTimeline(raw: unknown): Timeline {
     if (typeof s['id'] !== 'string' || s['id'].length === 0) {
       throw new Error(`timeline.json: step[${i}].id must be a non-empty string`);
     }
+    // Step ids key the narration-cache filenames and the
+    // `stepStartTimes` lookup; a duplicate would silently clobber an
+    // earlier entry and slide the narration off the cue clock.
+    if (seenIds.has(s['id'])) {
+      throw new Error(`timeline.json: duplicate step id "${s['id']}" at step[${i}]`);
+    }
+    seenIds.add(s['id']);
     if (
       typeof s['durationSeconds'] !== 'number' ||
       s['durationSeconds'] <= 0 ||

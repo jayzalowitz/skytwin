@@ -133,15 +133,44 @@ async function captureLoop(opts: {
   framesDir: string;
   fps: number;
   durationSeconds: number;
+  /**
+   * Global frame index to start writing at. Each step's loop appends
+   * to the shared frames/ directory; if every step started at 0 the
+   * later steps would overwrite the earlier ones and assemble() would
+   * trip its undercount guard.
+   */
+  startIndex: number;
+  /**
+   * Optional second termination condition. The loop also stops once
+   * the wall-clock duration elapses, but if `untilActionsDone`
+   * resolves later than that, we keep capturing so the on-screen
+   * state Playwright is still mutating doesn't fall off the video.
+   * (Without this, a slow selector that takes 9s inside a 6s step
+   * would leave a 3s hole at the end of that segment.)
+   */
+  untilActionsDone?: Promise<void>;
 }): Promise<number> {
   const intervalMs = Math.round(1000 / opts.fps);
-  const totalFrames = Math.round(opts.durationSeconds * opts.fps);
+  const minDurationMs = opts.durationSeconds * 1000;
+  const startedAt = Date.now();
+  let actionsResolved = false;
+  if (opts.untilActionsDone) {
+    // Flag flips on both resolve and reject — on reject the loop
+    // still needs to terminate; the caller re-awaits the promise
+    // post-loop so the error surfaces there. Attach a noop .catch to
+    // keep this from being flagged as an unhandled rejection.
+    opts.untilActionsDone.finally(() => { actionsResolved = true; }).catch(() => {});
+  } else {
+    actionsResolved = true;
+  }
+
   let captured = 0;
-  for (let i = 0; i < totalFrames; i++) {
-    const start = Date.now();
+  while (true) {
+    const tickStart = Date.now();
+    const idx = opts.startIndex + captured;
     try {
       await opts.page.screenshot({
-        path: join(opts.framesDir, frameFilename(captured)),
+        path: join(opts.framesDir, frameFilename(idx)),
         type: 'png',
         fullPage: false,
       });
@@ -150,10 +179,11 @@ async function captureLoop(opts: {
       // If the page is mid-navigation the screenshot can briefly
       // fail. We swallow it — the next tick recovers — but log it so
       // a string of failures is at least visible.
-      log(`screenshot at frame ${captured} failed (continuing)`);
+      log(`screenshot at frame ${idx} failed (continuing)`);
     }
-    const elapsed = Date.now() - start;
-    const sleep = intervalMs - elapsed;
+    const elapsedTotal = Date.now() - startedAt;
+    if (elapsedTotal >= minDurationMs && actionsResolved) break;
+    const sleep = intervalMs - (Date.now() - tickStart);
     if (sleep > 0) await new Promise((r) => setTimeout(r, sleep));
   }
   return captured;
@@ -179,17 +209,18 @@ async function runRecording(timeline: Timeline): Promise<void> {
       // even if Playwright/Chromium bumps a minor in CI.
       userAgent: 'SkyTwin-DemoRecorder/0.1 (Playwright/Chromium)',
     });
-    // Pre-seed localStorage so the wizard's "Try with a sample
-    // profile" choice is one click instead of a full multi-step
-    // dance. The keys mirror what `onb-start-tour` writes on click
-    // (see apps/web/public/js/pages/onboarding.js).
+    // Pre-seed the userId so the wizard recognises a returning user
+    // and skips the first-run flow. We intentionally only set
+    // `skytwin_userId` — the dashboard route reads that, recognises
+    // the sample user, and renders the sample-profile chrome without
+    // needing additional flags. If the onboarding flow changes to
+    // require more localStorage state to short-circuit, add the keys
+    // here (the `onb-start-tour` handler in
+    // apps/web/public/js/pages/onboarding.js is the source of truth).
     await context.addInitScript(
       ({ uid }) => {
         try {
           localStorage.setItem('skytwin_userId', uid);
-          // Tour mode lets the chrome render the sample-profile copy
-          // variant; KEY_ONBOARDED='sample' takes the user out of
-          // the first-run-wizard branch on every subsequent boot.
         } catch { /* private mode */ }
       },
       { uid: sampleUserId },
@@ -201,13 +232,18 @@ async function runRecording(timeline: Timeline): Promise<void> {
     for (const step of timeline.steps) {
       log(`  · ${step.id} (${step.durationSeconds}s)`);
       const actionPromise = runStepActions(page, step);
-      const captureFrames = captureLoop({
+      const framesThisStep = await captureLoop({
         page,
         framesDir: FRAMES_DIR,
         fps: timeline.fps,
         durationSeconds: step.durationSeconds,
+        startIndex: captured,
+        untilActionsDone: actionPromise,
       });
-      const [, framesThisStep] = await Promise.all([actionPromise, captureFrames]);
+      // Surface any error the action chain threw — the capture loop
+      // intentionally outlives a slow action, but a thrown action
+      // (failed selector, navigation timeout) should still bubble.
+      await actionPromise;
       captured += framesThisStep;
     }
     log(`Captured ${captured} frames into ${FRAMES_DIR}`);

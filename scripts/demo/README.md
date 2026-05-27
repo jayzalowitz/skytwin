@@ -77,9 +77,15 @@ machine-readable view of that document and should stay in sync.
 ```sh
 pnpm record           # full pipeline: screenshots → narration → mp4
 pnpm narrate          # synthesise narration only (smoke-test Piper, find copy bugs early)
-pnpm exec tsx src/assemble.ts  # re-mux without re-screenshotting (rare; you'd call assemble() yourself)
+pnpm assemble         # re-mux out/frames + out/narration-cache → out/demo.mp4 (no Playwright, no Piper)
 pnpm build            # `tsc --noEmit` typecheck
 ```
+
+`pnpm assemble` is the fast iteration loop when you're tweaking
+ffmpeg flags or the filter graph — it skips the screenshot pass
+(typically the longest part of a full record run) and trusts the
+cache. Requires `pnpm record` to have run at least once so
+`out/frames/` and `out/narration-cache/` exist.
 
 ## Environment knobs
 

@@ -21,11 +21,12 @@
  */
 
 import { spawn } from 'node:child_process';
-import { existsSync, readdirSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, readdirSync, statSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { Timeline } from './timeline.js';
 import type { NarrationFile } from './narrator.js';
-import { stepStartTimes, totalDuration } from './timeline.js';
+import { loadTimeline, stepStartTimes, totalDuration } from './timeline.js';
 
 export interface AssembleOpts {
   timeline: Timeline;
@@ -137,4 +138,80 @@ export async function assemble(opts: AssembleOpts): Promise<void> {
     '-shortest',
     opts.outputPath,
   ]);
+}
+
+/**
+ * CLI entrypoint: `pnpm assemble` (or `tsx src/assemble.ts`).
+ *
+ * Re-muxes the existing frames + narration cache into demo.mp4
+ * without re-screenshotting or re-synthesising. Useful after
+ * tweaking the ffmpeg flags or the filter graph — full pipeline
+ * runs (`pnpm record`) take much longer because they re-walk every
+ * step in Playwright.
+ *
+ * Reads from the conventional layout the recorder writes:
+ *   out/frames/frame-NNNNNN.png
+ *   out/narration-cache/<sha>.wav
+ * Writes to:
+ *   out/demo.mp4
+ *
+ * Fails loud if either source dir is missing — the recorder must
+ * have run at least once.
+ */
+async function cliMain(): Promise<void> {
+  const pkgRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+  const framesDir = resolve(pkgRoot, 'out', 'frames');
+  const narrationDir = resolve(pkgRoot, 'out', 'narration-cache');
+  const outputPath = resolve(pkgRoot, 'out', 'demo.mp4');
+
+  if (!existsSync(framesDir)) {
+    throw new Error(
+      `No frames at ${framesDir}. Run \`pnpm record\` at least once before` +
+      ` calling assemble standalone.`,
+    );
+  }
+  if (!existsSync(narrationDir)) {
+    throw new Error(
+      `No narration cache at ${narrationDir}. Run \`pnpm narrate\` or` +
+      ` \`pnpm record\` first.`,
+    );
+  }
+
+  const timeline = loadTimeline();
+  // Resolve each step's WAV by re-deriving the same hash-only key the
+  // narrator wrote. Anything missing is an error — the narration
+  // step must have run.
+  const { createHash } = await import('node:crypto');
+  const { join } = await import('node:path');
+  const narration: NarrationFile[] = timeline.steps.map((step) => {
+    const key = createHash('sha256')
+      .update(`${timeline.voice}::${step.narration}`, 'utf-8')
+      .digest('hex')
+      .slice(0, 32);
+    const wavPath = join(narrationDir, `${key}.wav`);
+    if (!existsSync(wavPath)) {
+      throw new Error(
+        `Missing narration WAV for step "${step.id}" at ${wavPath}.` +
+        ` Run \`pnpm narrate\` to regenerate the cache.`,
+      );
+    }
+    return {
+      stepId: step.id,
+      wavPath,
+      bytes: statSync(wavPath).size,
+      fromCache: true,
+    };
+  });
+
+  await assemble({ timeline, framesDir, narration, outputPath });
+  // eslint-disable-next-line no-console
+  console.log(`Re-muxed: ${outputPath}`);
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  cliMain().catch((err) => {
+    // eslint-disable-next-line no-console
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  });
 }

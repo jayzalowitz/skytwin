@@ -1,6 +1,5 @@
 {
-  "$schema": "./timeline.schema.json",
-  "comment": "Cue points for the deterministic demo recorder (#414). Mirrors the 7-step walkthrough in docs/demo.md. Each step has a target duration, a list of UI actions Playwright performs against the running web app, and a narration line that Piper TTS turns into a WAV. The recorder advances by wall-clock seconds — Playwright actions inside a step are non-blocking relative to the cue clock; if they finish faster than `durationSeconds`, the recorder pads with extra screenshots so the narration stays in sync.",
+  "comment": "Cue points for the deterministic demo recorder (#414). Mirrors the 7-step walkthrough in docs/demo.md. Each step has a target duration, a list of UI actions Playwright performs against the running web app, and a narration line that Piper TTS turns into a WAV. The recorder advances by wall-clock seconds — Playwright actions inside a step are non-blocking relative to the cue clock; if they finish faster than `durationSeconds`, the recorder pads with extra screenshots so the narration stays in sync. Validation lives in `src/timeline.ts` (parseTimeline) — that's the schema, not a separate JSON Schema file.",
   "fps": 1,
   "viewport": { "width": 1280, "height": 800 },
   "voice": "en_US-amy-low",
