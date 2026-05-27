@@ -1,17 +1,20 @@
 /**
  * First-close-toast state machine (#381 P2.1).
  *
- * On macOS clicking the close button hides the window rather than
- * quitting — the app keeps running in the tray so it can act on
- * signals. Users who don't read tutorial copy reach for ⌘W, see
+ * Closing the desktop window hides it to the tray (macOS menu bar
+ * / Windows + Linux system tray) rather than quitting — the app
+ * keeps running so it can act on signals. The close handler in
+ * main.ts is unconditional across platforms; the platform-specific
+ * vocabulary ("menu bar" vs. "system tray") lives in the renderer
+ * where we can branch on `window.skytwinDesktop.platform`.
+ *
+ * Users who don't read tutorial copy reach for ⌘W / Alt+F4, see
  * the window vanish, and assume the app is dead. Meanwhile we're
  * still polling Gmail and burning battery.
  *
  * Fix: the first time the user closes the window in a given
- * session, push a toast through the desktop→renderer bridge:
- *
- *     "SkyTwin keeps running so it can act on signals.
- *      Quit fully from the menu bar icon."
+ * session, push a toast through the desktop→renderer bridge with
+ * platform-appropriate wording.
  *
  * Subsequent closes in the same session don't re-trigger — the
  * user got the message; nagging is rude. Across sessions we DO

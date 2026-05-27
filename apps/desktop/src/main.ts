@@ -75,11 +75,22 @@ function createMainWindow(): BrowserWindow {
   // Close button hides to tray rather than quitting — the app keeps
   // running so it can act on signals. First-time close fires a toast
   // explaining this so the user doesn't think the app died.
+  //
+  // Destroyed-webContents guard runs BEFORE the state-machine check
+  // so we don't flip "shown=true" on a dispatch that never happens —
+  // otherwise a race during shutdown would burn the one-shot for the
+  // session and the toast would never appear.
   win.on('close', (event) => {
     if (!win.isQuitting) {
       event.preventDefault();
-      if (shouldShowFirstCloseToast(firstCloseToastState) && !win.webContents.isDestroyed()) {
-        win.webContents.send('show-first-close-toast');
+      if (!win.webContents.isDestroyed() && shouldShowFirstCloseToast(firstCloseToastState)) {
+        try {
+          win.webContents.send('show-first-close-toast');
+        } catch {
+          // send() can throw if the renderer crashed between the
+          // isDestroyed check and now. Swallow — losing the toast
+          // is preferable to crashing the main process during close.
+        }
       }
       win.hide();
     }
