@@ -36,7 +36,10 @@
     "desktop:build:win": "pnpm build && pnpm --filter skytwin-desktop package:win",
     "desktop:build:linux": "pnpm build && pnpm --filter skytwin-desktop package:linux",
     "desktop:build:all": "pnpm build && pnpm --filter skytwin-desktop package:all",
-    "test:e2e": "./bin/skytwin-e2e-test"
+    "test:e2e": "./bin/skytwin-e2e-test",
+    "demo:record": "cd scripts/demo && pnpm record",
+    "demo:narrate": "cd scripts/demo && pnpm narrate",
+    "demo:install": "cd scripts/demo && pnpm install --ignore-workspace && pnpm exec playwright install chromium"
   },
   "devDependencies": {
     "@types/node": "^25.6.0",

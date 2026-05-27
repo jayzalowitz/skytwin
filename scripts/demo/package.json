@@ -1,0 +1,21 @@
+{
+  "name": "@skytwin/demo-recorder",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Deterministic demo-video recorder (#414). Playwright + Piper TTS + ffmpeg, every dep local-first.",
+  "type": "module",
+  "scripts": {
+    "record": "tsx src/record.ts",
+    "narrate": "tsx src/narrator.ts",
+    "assemble": "tsx src/assemble.ts",
+    "build": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@playwright/test": "^1.49.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.0",
+    "@types/node": "^22.10.0"
+  }
+}

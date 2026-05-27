@@ -1,0 +1,4 @@
+# Recorder outputs — regenerated on every run, never checked in.
+out/
+node_modules/
+dist/

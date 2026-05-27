@@ -77,6 +77,11 @@ async function request(
 
 const USER_ID = 'aaaaaaaa-bbbb-cccc-dddd-000000000044';
 
+// Factory defaults are relative to Date.now() so the tests don't rot
+// once the calendar passes the absolute date a test was written on —
+// the route's default lookback is 24h, so any factory default older
+// than that would silently drop out of the response and turn an
+// assertion like "decision event present" into a false negative.
 function mkSignal(over: Partial<{
   id: string;
   source: string;
@@ -91,7 +96,7 @@ function mkSignal(over: Partial<{
     type: over.type ?? 'inbound_email',
     domain: over.domain ?? 'email',
     data: {},
-    timestamp: over.timestamp ?? new Date('2026-05-26T01:00:00Z'),
+    timestamp: over.timestamp ?? new Date(Date.now() - 60 * 60 * 1000),
   };
 }
 
@@ -106,7 +111,7 @@ function mkDecision(over: Partial<{ id: string; domain: string; situation_type: 
     urgency: 'medium',
     metadata: {},
     signal_id: null,
-    created_at: over.created_at ?? new Date('2026-05-26T01:30:00Z'),
+    created_at: over.created_at ?? new Date(Date.now() - 30 * 60 * 1000),
   };
 }
 
@@ -116,7 +121,7 @@ function mkFeedback(over: Partial<{ id: string; type: string; decision_id: strin
     user_id: USER_ID,
     type: over.type ?? 'approve',
     decision_id: over.decision_id ?? 'dec-1',
-    created_at: over.created_at ?? new Date('2026-05-26T01:45:00Z'),
+    created_at: over.created_at ?? new Date(Date.now() - 15 * 60 * 1000),
   };
 }
 
