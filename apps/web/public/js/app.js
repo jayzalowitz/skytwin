@@ -834,6 +834,23 @@ function wireDxtDropAndOpen() {
       }
     });
   }
+
+  // First window-close in this session fires a toast explaining that
+  // the app keeps running in the tray (#381). Main process sends the
+  // event exactly once per launch; subsequent closes are silent.
+  // Wording branches on platform — "menu bar" reads as macOS jargon
+  // on Windows/Linux where the affordance is the system tray.
+  if (window.skytwinDesktop?.onFirstCloseToast) {
+    const platform = window.skytwinDesktop.platform;
+    const trayName = platform === 'darwin' ? 'menu bar icon' : 'system tray icon';
+    window.skytwinDesktop.onFirstCloseToast(() => {
+      showToast(
+        `SkyTwin keeps running in the background so it can act on signals. ` +
+        `Quit fully from the ${trayName}.`,
+        { kind: 'info', durationMs: 8000 },
+      );
+    });
+  }
 }
 
 window.addEventListener('DOMContentLoaded', () => {

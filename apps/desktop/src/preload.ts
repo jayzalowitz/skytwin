@@ -73,4 +73,18 @@ contextBridge.exposeInMainWorld('skytwinDesktop', {
     ipcRenderer.on('dxt-file-opened', wrapped);
     return () => ipcRenderer.off('dxt-file-opened', wrapped);
   },
+
+  /**
+   * Subscribe to the "first window close in this session" event (#381).
+   * The main process fires this exactly once per launch, the first
+   * time the user closes the window — the renderer responds by
+   * showing a toast explaining that the app keeps running in the
+   * tray. Returns an unsubscribe function for symmetry; in practice
+   * the listener lives for the lifetime of the app.
+   */
+  onFirstCloseToast: (listener: () => void): (() => void) => {
+    const wrapped = () => listener();
+    ipcRenderer.on('show-first-close-toast', wrapped);
+    return () => ipcRenderer.off('show-first-close-toast', wrapped);
+  },
 });

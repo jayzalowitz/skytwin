@@ -7,6 +7,11 @@ import { getSavedBounds, trackWindowState } from './window-state.js';
 import { checkDependencies, showDependencyDialog } from './first-launch.js';
 import { AutoUpdateController, defaultAutoUpdateConfig } from './auto-update.js';
 import { IdleBridge, type IdleState, type IdleStateReason } from './idle-bridge.js';
+import {
+  createFirstCloseToastState,
+  shouldShowFirstCloseToast,
+  type FirstCloseToastState,
+} from './first-close-toast.js';
 
 const serviceManager = new ServiceManager();
 let mainWindow: BrowserWindow | null = null;
@@ -14,6 +19,7 @@ let splashWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let updateController: AutoUpdateController | null = null;
 let idleBridge: IdleBridge | null = null;
+const firstCloseToastState: FirstCloseToastState = createFirstCloseToastState();
 
 declare module 'electron' {
   interface BrowserWindow {
@@ -66,10 +72,26 @@ function createMainWindow(): BrowserWindow {
   // Load the web dashboard
   win.loadURL('http://localhost:3200');
 
-  // On macOS, clicking the close button minimizes to tray
+  // Close button hides to tray rather than quitting — the app keeps
+  // running so it can act on signals. First-time close fires a toast
+  // explaining this so the user doesn't think the app died.
+  //
+  // Destroyed-webContents guard runs BEFORE the state-machine check
+  // so we don't flip "shown=true" on a dispatch that never happens —
+  // otherwise a race during shutdown would burn the one-shot for the
+  // session and the toast would never appear.
   win.on('close', (event) => {
     if (!win.isQuitting) {
       event.preventDefault();
+      if (!win.webContents.isDestroyed() && shouldShowFirstCloseToast(firstCloseToastState)) {
+        try {
+          win.webContents.send('show-first-close-toast');
+        } catch {
+          // send() can throw if the renderer crashed between the
+          // isDestroyed check and now. Swallow — losing the toast
+          // is preferable to crashing the main process during close.
+        }
+      }
       win.hide();
     }
   });
