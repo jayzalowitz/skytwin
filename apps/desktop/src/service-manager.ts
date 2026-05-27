@@ -5,6 +5,11 @@ import { join } from 'path';
 import { pathToFileURL } from 'url';
 import { app } from 'electron';
 import { CockroachManager } from './cockroach-manager.js';
+import {
+  extractionDone,
+  extractionProgress,
+  type ExtractionProgress,
+} from './extraction-progress.js';
 
 export type ProcessState = 'running' | 'stopped' | 'starting' | 'error' | 'paused';
 
@@ -51,6 +56,28 @@ const BUNDLED_GOOGLE_CLIENT_ID =
  * Health monitoring every 5s, restart with exponential backoff,
  * 5 failures in 5 minutes marks as failed.
  */
+/**
+ * Spawn `tar -tzf <path>` and count the newlines in its stdout.
+ * Resolves with the entry count, rejects on a non-zero exit. Used by
+ * the extraction-progress denominator (#383); see `ensureEmbeddedRoot`.
+ */
+function countTarFiles(tarPath: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('tar', ['-tzf', tarPath], { stdio: ['ignore', 'pipe', 'inherit'] });
+    let count = 0;
+    child.stdout?.on('data', (chunk: Buffer) => {
+      for (const byte of chunk) {
+        if (byte === 0x0a) count++;
+      }
+    });
+    child.on('error', reject);
+    child.on('exit', (code) => {
+      if (code === 0) resolve(count);
+      else reject(new Error(`tar -tzf exited with code ${code}`));
+    });
+  });
+}
+
 export class ServiceManager {
   private api: ManagedProcess = { process: null, status: 'stopped', restartCount: 0, failureTimestamps: [], external: false };
   private worker: ManagedProcess = { process: null, status: 'stopped', restartCount: 0, failureTimestamps: [], external: false };
@@ -58,11 +85,33 @@ export class ServiceManager {
   private cockroach = new CockroachManager();
   private cockroachStatus: ProcessState = 'stopped';
   private onStatusChange: ((status: ServiceStatus) => void) | null = null;
+  private onExtractProgress: ((progress: ExtractionProgress) => void) | null = null;
   private healthCheckTimer: ReturnType<typeof setInterval> | null = null;
   private paused = false;
 
   setStatusHandler(handler: (status: ServiceStatus) => void): void {
     this.onStatusChange = handler;
+  }
+
+  /**
+   * Register a handler for first-launch tar-extraction progress (#383).
+   * Called many times during the unpack (one event per ~50 files) plus a
+   * final "Ready!" event once tar exits. Main process forwards each event
+   * to the splash window so the user sees a progress bar instead of an
+   * uninformative spinner.
+   */
+  setExtractProgressHandler(handler: (progress: ExtractionProgress) => void): void {
+    this.onExtractProgress = handler;
+  }
+
+  private emitExtractProgress(progress: ExtractionProgress): void {
+    if (this.onExtractProgress) {
+      try {
+        this.onExtractProgress(progress);
+      } catch (err) {
+        console.warn('[extract] progress handler threw', err);
+      }
+    }
   }
 
   private getResourcePath(): string {
@@ -145,18 +194,56 @@ export class ServiceManager {
 
     console.log(`[extract] Unpacking embedded apps from ${tarPath} -> ${extractedRoot}`);
     const t0 = Date.now();
+
+    // Pre-count the entries in the tarball so the progress bar has a
+    // real denominator. `tar -tzf` lists without extracting; one line
+    // per archive member. Fast — ~500ms for a 45MB tarball — and only
+    // runs on first launch + version bumps, so the cost is well below
+    // the cold-load budget. If counting fails for any reason we fall
+    // back to a "spinner-style" indeterminate UI by passing totalFiles=0.
+    let totalFiles = 0;
+    try {
+      totalFiles = await countTarFiles(tarPath);
+    } catch (err) {
+      console.warn('[extract] file-count probe failed; progress will be indeterminate', err);
+    }
+    this.emitExtractProgress(extractionProgress(0, totalFiles));
+
     await new Promise<void>((resolve, reject) => {
-      // -x extract, -z gunzip, -f file, -C cd-into. System tar on all
-      // three platforms accepts this flag set (bsdtar on macOS/Windows,
-      // gnu tar on Linux). Stdio inherited so any extraction error shows
-      // up in the user-facing console / log.
-      const child = spawn('tar', ['-xzf', tarPath, '-C', extractedRoot], { stdio: 'inherit' });
+      // -x extract, -z gunzip, -v verbose (one line per member, which
+      // is how we count progress), -f file, -C cd-into. System tar on
+      // all three platforms accepts this flag set (bsdtar on
+      // macOS/Windows, gnu tar on Linux). stderr inherited so any
+      // extraction error still surfaces in the user-facing console.
+      const child = spawn(
+        'tar',
+        ['-xzvf', tarPath, '-C', extractedRoot],
+        { stdio: ['ignore', 'pipe', 'inherit'] },
+      );
+      let filesExtracted = 0;
+      let lastEmittedPercent = -1;
+      child.stdout?.on('data', (chunk: Buffer) => {
+        // Each newline = one extracted member. Counting newlines (not
+        // splitting + filtering empties) is the cheapest path and is
+        // accurate for tar's line-buffered verbose output.
+        for (const byte of chunk) {
+          if (byte === 0x0a) filesExtracted++;
+        }
+        const progress = extractionProgress(filesExtracted, totalFiles);
+        // Throttle to "percent changed" so a 10k-file tarball doesn't
+        // fire 10k IPCs — we only need ~100 ticks max for the UI.
+        if (progress.percent !== lastEmittedPercent) {
+          lastEmittedPercent = progress.percent;
+          this.emitExtractProgress(progress);
+        }
+      });
       child.on('error', reject);
       child.on('exit', (code) => {
         if (code === 0) resolve();
         else reject(new Error(`tar exited with code ${code}`));
       });
     });
+    this.emitExtractProgress(extractionDone());
     writeFileSync(marker, currentVersion);
     console.log(`[extract] Done in ${Date.now() - t0}ms`);
 
