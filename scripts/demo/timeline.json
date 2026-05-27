@@ -1,0 +1,70 @@
+{
+  "$schema": "./timeline.schema.json",
+  "comment": "Cue points for the deterministic demo recorder (#414). Mirrors the 7-step walkthrough in docs/demo.md. Each step has a target duration, a list of UI actions Playwright performs against the running web app, and a narration line that Piper TTS turns into a WAV. The recorder advances by wall-clock seconds — Playwright actions inside a step are non-blocking relative to the cue clock; if they finish faster than `durationSeconds`, the recorder pads with extra screenshots so the narration stays in sync.",
+  "fps": 1,
+  "viewport": { "width": 1280, "height": 800 },
+  "voice": "en_US-amy-low",
+  "steps": [
+    {
+      "id": "cold-load",
+      "durationSeconds": 6,
+      "narration": "SkyTwin is the personal assistant that asks before it acts. This is what you see the moment you open it.",
+      "actions": [
+        { "kind": "goto", "url": "/" },
+        { "kind": "waitForSelector", "selector": "#onboarding-overlay" }
+      ]
+    },
+    {
+      "id": "sample-profile",
+      "durationSeconds": 6,
+      "narration": "Click `Try with a sample profile` and you land on a pre-populated dashboard — no Gmail OAuth, no waiting for the first signal.",
+      "actions": [
+        { "kind": "click", "selector": "[data-action='onb-start-tour']" },
+        { "kind": "waitForUrl", "pattern": "#/decisions" }
+      ]
+    },
+    {
+      "id": "decisions-view",
+      "durationSeconds": 8,
+      "narration": "Every decision shows what the twin would do, the evidence it weighed, and the reasoning. No black box, no `we think you should...`.",
+      "actions": [
+        { "kind": "screenshot-hold" }
+      ]
+    },
+    {
+      "id": "approve-decision",
+      "durationSeconds": 8,
+      "narration": "Tap Yes, do it. The twin logs the approval and the action runs on the next worker cycle. The buttons read in your voice, not in product-speak.",
+      "actions": [
+        { "kind": "goto", "url": "#/approvals" },
+        { "kind": "waitForSelector", "selector": "[data-action='approval']" }
+      ]
+    },
+    {
+      "id": "reject-and-teach",
+      "durationSeconds": 8,
+      "narration": "When you reject one and tell it why, that note becomes evidence. The twin profile updates. The next similar signal lands closer to what you actually want.",
+      "actions": [
+        { "kind": "screenshot-hold" }
+      ]
+    },
+    {
+      "id": "settings-tour",
+      "durationSeconds": 10,
+      "narration": "Settings is where the trust controls live: tier selector with explicit promotion criteria, dollar-amount spend caps, and at the bottom — delete everything about me, one click.",
+      "actions": [
+        { "kind": "goto", "url": "#/settings" },
+        { "kind": "waitForSelector", "selector": "#delete-data-card" },
+        { "kind": "scroll-to", "selector": "#delete-data-card" }
+      ]
+    },
+    {
+      "id": "pause-button",
+      "durationSeconds": 6,
+      "narration": "And if you ever need to stop everything, the pause button is on every page. Your data stays. The twin just stops acting.",
+      "actions": [
+        { "kind": "scroll-to", "selector": "[data-action='autonomy-pause-toggle']" }
+      ]
+    }
+  ]
+}
