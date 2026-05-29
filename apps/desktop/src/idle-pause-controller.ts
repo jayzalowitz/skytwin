@@ -51,28 +51,57 @@ export class IdlePauseController {
    */
   private autoPausedByIdle = false;
 
+  /**
+   * Serializes all pause/resume work. `ServiceManager.pause()` can take
+   * several seconds to wait for the worker to exit; if an `active`
+   * transition (or a setting change) arrives during that wait, an
+   * un-serialized `resume()` could start a fresh worker while the old
+   * worker's exit handler is still in flight, leaving the manager's
+   * `worker.process` cleared and the new worker orphaned. We chain each
+   * operation onto this promise so the state decision AND the async
+   * side-effect run atomically with respect to one another. The chain
+   * never rejects — a thrown side-effect is swallowed into the link so
+   * one failure can't wedge every subsequent transition.
+   */
+  private queue: Promise<unknown> = Promise.resolve();
+
   constructor(private readonly deps: IdlePauseDeps) {}
 
-  async onIdleStateChange(next: 'idle' | 'active'): Promise<IdlePauseAction> {
-    if (!this.deps.getEnabled()) return 'noop';
+  private enqueue<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.queue.then(fn, fn);
+    // Keep the tail alive even if `fn` throws, so the next enqueue still
+    // chains after this one completes rather than off a rejected promise.
+    this.queue = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
 
-    if (next === 'idle') {
-      if (this.deps.isCurrentlyPaused()) return 'noop';
-      this.autoPausedByIdle = true;
-      await this.deps.pauseServices();
-      return 'pause';
-    }
-    // next === 'active'
-    if (!this.autoPausedByIdle) return 'noop';
-    this.autoPausedByIdle = false;
-    await this.deps.resumeServices();
-    return 'resume';
+  onIdleStateChange(next: 'idle' | 'active'): Promise<IdlePauseAction> {
+    return this.enqueue(async () => {
+      if (!this.deps.getEnabled()) return 'noop' as const;
+
+      if (next === 'idle') {
+        if (this.deps.isCurrentlyPaused()) return 'noop' as const;
+        this.autoPausedByIdle = true;
+        await this.deps.pauseServices();
+        return 'pause' as const;
+      }
+      // next === 'active'
+      if (!this.autoPausedByIdle) return 'noop' as const;
+      this.autoPausedByIdle = false;
+      await this.deps.resumeServices();
+      return 'resume' as const;
+    });
   }
 
   /**
    * Inform the controller that the user manually flipped the pause
    * state via the tray menu / kill switch. We clear the auto-paused
    * flag so the next active transition doesn't override the user.
+   * Synchronous flag-clear; the actual pause/resume the user triggered
+   * is owned by ServiceManager, not this controller.
    */
   onManualPauseChange(): void {
     this.autoPausedByIdle = false;
@@ -81,15 +110,18 @@ export class IdlePauseController {
   /**
    * If the user disables the setting while we're auto-paused, resume
    * the services immediately — otherwise the preference change
-   * appears to do nothing until the next idle/active edge.
+   * appears to do nothing until the next idle/active edge. Serialized
+   * through the same queue so it can't race an in-flight pause.
    */
-  async onEnabledChanged(enabled: boolean): Promise<IdlePauseAction> {
-    if (!enabled && this.autoPausedByIdle) {
-      this.autoPausedByIdle = false;
-      await this.deps.resumeServices();
-      return 'resume';
-    }
-    return 'noop';
+  onEnabledChanged(enabled: boolean): Promise<IdlePauseAction> {
+    return this.enqueue(async () => {
+      if (!enabled && this.autoPausedByIdle) {
+        this.autoPausedByIdle = false;
+        await this.deps.resumeServices();
+        return 'resume' as const;
+      }
+      return 'noop' as const;
+    });
   }
 
   /** Exposed for tests + debug UI. */

@@ -109,6 +109,62 @@ describe('IdlePauseController', () => {
     expect(controller.isAutoPausedByIdle()).toBe(false);
   });
 
+  it('serializes a slow pause against an immediately-following resume', async () => {
+    // pauseServices takes a tick to resolve; fire idle then active
+    // back-to-back without awaiting the first. The resume must not
+    // start until the pause has fully settled.
+    const order: string[] = [];
+    let releasePause: (() => void) | null = null;
+    const slowDeps = {
+      getEnabled: () => true,
+      isCurrentlyPaused: () => false,
+      pauseServices: vi.fn(async () => {
+        order.push('pause-start');
+        await new Promise<void>((res) => { releasePause = res; });
+        order.push('pause-end');
+      }),
+      resumeServices: vi.fn(async () => {
+        order.push('resume-start');
+        order.push('resume-end');
+      }),
+    };
+    const c = new IdlePauseController(slowDeps);
+
+    const p1 = c.onIdleStateChange('idle');
+    const p2 = c.onIdleStateChange('active');
+    // Let the queued microtasks start. The first link (pause) begins
+    // and parks on its unresolved promise; the second (resume) must
+    // still be waiting behind it.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(order).toEqual(['pause-start']);
+    releasePause?.();
+    await Promise.all([p1, p2]);
+    // Resume ran strictly after pause finished.
+    expect(order).toEqual(['pause-start', 'pause-end', 'resume-start', 'resume-end']);
+  });
+
+  it('a thrown side-effect does not wedge subsequent transitions', async () => {
+    let shouldThrow = true;
+    const flakyDeps = {
+      getEnabled: () => true,
+      isCurrentlyPaused: () => false,
+      pauseServices: vi.fn(async () => {
+        if (shouldThrow) { shouldThrow = false; throw new Error('boom'); }
+      }),
+      resumeServices: vi.fn(async () => { /* ok */ }),
+    };
+    const c = new IdlePauseController(flakyDeps);
+    // First idle throws inside pauseServices — enqueue rejects but the
+    // chain tail recovers.
+    await expect(c.onIdleStateChange('idle')).rejects.toThrow('boom');
+    // The autoPaused flag was set before the throw; an active event
+    // should still be processed (chain not wedged) and resume.
+    const action = await c.onIdleStateChange('active');
+    expect(action).toBe('resume');
+    expect(flakyDeps.resumeServices).toHaveBeenCalledOnce();
+  });
+
   it('after manual resume + still idle, next idle->idle is a noop (no double pause)', async () => {
     await controller.onIdleStateChange('idle');
     // User manually resumes (which clears the auto flag) but stays away.
