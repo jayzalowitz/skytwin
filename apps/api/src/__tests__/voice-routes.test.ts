@@ -264,3 +264,133 @@ describe('POST /api/voice/synthesize (#187 AC#4)', () => {
     expect(body['error']).toMatch(/too long/);
   });
 });
+
+describe('POST /api/voice/upload/* — resumable chunked upload (#386)', () => {
+  function withWhisper(transcript = 'chunked transcript'): void {
+    mockCreatePort.mockResolvedValue({
+      capabilities: { available: true, supportedFormats: ['wav'] },
+      transcribe: mockTranscribe,
+    });
+    mockTranscribe.mockResolvedValue(transcript);
+  }
+
+  // Realistic chunks: the client slices ONE valid base64 string (the way
+  // voice-chunker.chunkBase64 does), so reassembly reproduces that exact
+  // string. Slicing into N equal-ish pieces — NOT base64-encoding N
+  // separate payloads (which would leave interior `=` padding that the
+  // whole-payload validator correctly rejects).
+  function sliceBase64(full: string, n: number): string[] {
+    const size = Math.ceil(full.length / n);
+    const out: string[] = [];
+    for (let i = 0; i < n; i++) out.push(full.slice(i * size, (i + 1) * size));
+    return out;
+  }
+
+  it('open → upload chunks 0,1,2 → finalize transcribes the reassembled audio', async () => {
+    withWhisper('full memo');
+    const app = buildApp();
+
+    const fullB64 = Buffer.from('the quick brown fox jumps over thirteen lazy dogs').toString('base64');
+    const parts = sliceBase64(fullB64, 3);
+    const open = await req(app, 'POST', '/api/voice/upload/session', {
+      userId: USER_ID,
+      totalChunks: 3,
+      language: 'en',
+    });
+    expect(open.status).toBe(200);
+    const sessionId = open.body['sessionId'] as string;
+    expect(sessionId).toBeTruthy();
+
+    for (let i = 0; i < parts.length; i++) {
+      const ack = await req(app, 'POST', '/api/voice/upload/chunk', {
+        userId: USER_ID,
+        sessionId,
+        index: i,
+        chunkBase64: parts[i],
+      });
+      expect(ack.status).toBe(200);
+      expect(ack.body['received']).toBe(i + 1);
+    }
+
+    const fin = await req(app, 'POST', '/api/voice/upload/finalize', {
+      userId: USER_ID,
+      sessionId,
+    });
+    expect(fin.status).toBe(200);
+    expect(fin.body['transcript']).toBe('full memo');
+    // Reassembly reproduces the original base64 → original bytes exactly.
+    const expected = Buffer.from(fullB64, 'base64');
+    expect(mockTranscribe).toHaveBeenCalledWith(
+      expect.any(Buffer),
+      { language: 'en' },
+    );
+    const passed = mockTranscribe.mock.calls[0]![0] as Buffer;
+    expect(passed.equals(expected)).toBe(true);
+  });
+
+  it('resumes after a dropped chunk: upload 0,1 → (gap) → upload 2 → finalize', async () => {
+    withWhisper();
+    const app = buildApp();
+    const parts = sliceBase64(Buffer.from('resume after the dropped middle chunk').toString('base64'), 3);
+    const sessionId = (
+      await req(app, 'POST', '/api/voice/upload/session', { userId: USER_ID, totalChunks: 3 })
+    ).body['sessionId'] as string;
+
+    await req(app, 'POST', '/api/voice/upload/chunk', { userId: USER_ID, sessionId, index: 0, chunkBase64: parts[0] });
+    await req(app, 'POST', '/api/voice/upload/chunk', { userId: USER_ID, sessionId, index: 1, chunkBase64: parts[1] });
+
+    // Premature finalize → 409 with the missing chunk listed.
+    const early = await req(app, 'POST', '/api/voice/upload/finalize', { userId: USER_ID, sessionId });
+    expect(early.status).toBe(409);
+    expect(early.body['missing']).toEqual([2]);
+
+    // Client re-sends only the missing chunk, then finalizes.
+    await req(app, 'POST', '/api/voice/upload/chunk', { userId: USER_ID, sessionId, index: 2, chunkBase64: parts[2] });
+    const fin = await req(app, 'POST', '/api/voice/upload/finalize', { userId: USER_ID, sessionId });
+    expect(fin.status).toBe(200);
+  });
+
+  it('cancel drops the session so a later chunk 404s', async () => {
+    withWhisper();
+    const app = buildApp();
+    const sessionId = (
+      await req(app, 'POST', '/api/voice/upload/session', { userId: USER_ID, totalChunks: 2 })
+    ).body['sessionId'] as string;
+
+    const cancel = await req(app, 'POST', '/api/voice/upload/cancel', { userId: USER_ID, sessionId });
+    expect(cancel.status).toBe(200);
+    expect(cancel.body['cancelled']).toBe(true);
+
+    const late = await req(app, 'POST', '/api/voice/upload/chunk', {
+      userId: USER_ID,
+      sessionId,
+      index: 0,
+      chunkBase64: Buffer.from('x').toString('base64'),
+    });
+    expect(late.status).toBe(404);
+  });
+
+  it('rejects a bad totalChunks at session open', async () => {
+    const open = await req(buildApp(), 'POST', '/api/voice/upload/session', {
+      userId: USER_ID,
+      totalChunks: 0,
+    });
+    expect(open.status).toBe(400);
+  });
+
+  it('rejects finalize when reassembly produces invalid base64 (interior padding)', async () => {
+    // Each slice independently passes the per-chunk base64 regex, but the
+    // concatenation has an interior `=` — Node would silently truncate on
+    // decode, so finalize must 400 rather than transcribe garbage.
+    withWhisper();
+    const app = buildApp();
+    const sessionId = (
+      await req(app, 'POST', '/api/voice/upload/session', { userId: USER_ID, totalChunks: 2 })
+    ).body['sessionId'] as string;
+    await req(app, 'POST', '/api/voice/upload/chunk', { userId: USER_ID, sessionId, index: 0, chunkBase64: 'YWxwaGE=' });
+    await req(app, 'POST', '/api/voice/upload/chunk', { userId: USER_ID, sessionId, index: 1, chunkBase64: 'YmV0YQ==' });
+    const fin = await req(app, 'POST', '/api/voice/upload/finalize', { userId: USER_ID, sessionId });
+    expect(fin.status).toBe(400);
+    expect(mockTranscribe).not.toHaveBeenCalled();
+  });
+});
