@@ -151,6 +151,13 @@ export function connectSSE(
         return;
       }
 
+      // The fetch may have resolved AFTER a disconnect() — the abort
+      // signal races the response. If we've been stopped, bail without
+      // reporting a connected state or touching the reader. (reduce-
+      // ConnectionState would also keep us terminal, but we still must
+      // not start reading the body.)
+      if (stopped) return;
+
       setState('open');
       reconnectAttempt = 0;
 

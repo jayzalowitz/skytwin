@@ -64,10 +64,14 @@ export function reduceConnectionState(
   current: SSEConnectionState,
   event: 'open' | 'drop' | 'stop',
 ): SSEConnectionState {
+  // `disconnected` is TERMINAL — once the consumer has stopped (unmount /
+  // explicit disconnect), no later event may flip the UI back. A
+  // late-arriving `open` from an in-flight fetch that resolved after
+  // abort must NOT re-report "connected". Check this before anything else.
+  if (current === 'disconnected') return 'disconnected';
   if (event === 'stop') return 'disconnected';
   if (event === 'open') return 'connected';
   // event === 'drop'
-  if (current === 'disconnected') return 'disconnected'; // already stopped — stay
   // A drop before we ever connected stays "connecting" (don't flash the
   // banner on a slow first connect); a drop after connected → reconnecting.
   return current === 'connecting' ? 'connecting' : 'reconnecting';

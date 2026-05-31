@@ -60,6 +60,12 @@ describe('reduceConnectionState', () => {
     expect(reduceConnectionState('disconnected', 'drop')).toBe('disconnected');
   });
 
+  it('open after stop stays disconnected (terminal — no UI re-flip on a late fetch)', () => {
+    // A fetch that resolves after disconnect()/unmount must not flip the
+    // UI back to connected. `disconnected` is terminal for ALL events.
+    expect(reduceConnectionState('disconnected', 'open')).toBe('disconnected');
+  });
+
   it('models a full disconnect → reconnect cycle', () => {
     let s: SSEConnectionState = 'connecting';
     s = reduceConnectionState(s, 'open'); // connected
