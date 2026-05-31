@@ -12,6 +12,8 @@ import {
   shouldShowFirstCloseToast,
   type FirstCloseToastState,
 } from './first-close-toast.js';
+import { IdlePauseController } from './idle-pause-controller.js';
+import { getIdlePauseEnabled, setIdlePauseEnabled } from './desktop-preferences.js';
 
 const serviceManager = new ServiceManager();
 let mainWindow: BrowserWindow | null = null;
@@ -20,6 +22,12 @@ let tray: Tray | null = null;
 let updateController: AutoUpdateController | null = null;
 let idleBridge: IdleBridge | null = null;
 const firstCloseToastState: FirstCloseToastState = createFirstCloseToastState();
+const idlePauseController = new IdlePauseController({
+  getEnabled: () => getIdlePauseEnabled(),
+  isCurrentlyPaused: () => serviceManager.isPaused(),
+  pauseServices: () => serviceManager.pause(),
+  resumeServices: () => serviceManager.resume(),
+});
 
 declare module 'electron' {
   interface BrowserWindow {
@@ -188,6 +196,15 @@ function handleIdleStateChange(state: IdleState, reason: IdleStateReason): void 
   if (mainWindow !== null && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('idle-state-changed', { state, reason });
   }
+  // Hand the transition to the idle-pause controller. It decides
+  // whether to pause / resume the worker based on the user's
+  // "pause when idle" preference and whether the user has already
+  // manually paused (#382). Fire-and-forget — pause/resume are
+  // sequenced by the controller; surfacing errors here would mean
+  // a renderer toast for a background concern.
+  void idlePauseController.onIdleStateChange(state).catch((err) => {
+    console.warn('[idle-pause] action failed', err);
+  });
 }
 
 async function waitForWeb(timeoutMs: number): Promise<boolean> {
@@ -222,12 +239,31 @@ ipcMain.handle('open-external', async (_event, url: string) => {
   }
 });
 ipcMain.handle('pause-twin', async () => {
+  // User-initiated pause — clear the controller's auto-paused flag so
+  // a subsequent "active" event doesn't auto-resume the user's choice.
+  idlePauseController.onManualPauseChange();
   await serviceManager.pause();
   return serviceManager.getStatus();
 });
 ipcMain.handle('resume-twin', async () => {
+  // Same idea on the resume side: this is the user reasserting they
+  // want the twin running. If they then sit idle, the next idle event
+  // (or the next poll tick from idle-bridge) will re-evaluate cleanly.
+  idlePauseController.onManualPauseChange();
   await serviceManager.resume();
   return serviceManager.getStatus();
+});
+
+ipcMain.handle('get-idle-pause-enabled', () => getIdlePauseEnabled());
+ipcMain.handle('set-idle-pause-enabled', async (_event, enabled: boolean) => {
+  const value = enabled === true;
+  setIdlePauseEnabled(value);
+  // If the user just turned the setting off while we're auto-paused,
+  // resume immediately so the toggle has an observable effect.
+  await idlePauseController.onEnabledChanged(value).catch((err) => {
+    console.warn('[idle-pause] onEnabledChanged failed', err);
+  });
+  return value;
 });
 
 ipcMain.handle('read-dxt-file', async (_event, filePath: string) => {

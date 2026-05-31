@@ -302,6 +302,16 @@ export async function renderSettings(container, userId) {
           <span class="toggle-slider"></span>
         </label>
       </div>
+      <div style="display: flex; align-items: center; justify-content: space-between; padding: 0.75rem; background: var(--bg); border-radius: var(--radius-sm); margin-top: 0.5rem;">
+        <div>
+          <div style="font-weight: 500;">Pause background work when idle</div>
+          <div style="font-size: 0.85rem; color: var(--text-muted);">Stop polling Gmail and generating decisions after 5 minutes of inactivity. Resumes automatically when you come back.</div>
+        </div>
+        <label class="toggle-switch">
+          <input type="checkbox" id="idle-pause-toggle" data-action="toggle-idle-pause">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
     </div>
     ` : ''}
 
@@ -612,6 +622,16 @@ export async function renderSettings(container, userId) {
     window.skytwinDesktop.getLaunchAtLogin()
       .then((enabled) => { launchToggle.checked = !!enabled; })
       .catch(() => { /* leave unchecked */ });
+  }
+
+  // Same pattern for the idle-pause toggle (#382). Defaults to ON in
+  // the desktop store; we still defer the visible default to the
+  // round-trip so a multi-window race can't desync the UI.
+  const idlePauseToggle = document.getElementById('idle-pause-toggle');
+  if (idlePauseToggle instanceof HTMLInputElement && window.skytwinDesktop?.getIdlePauseEnabled) {
+    window.skytwinDesktop.getIdlePauseEnabled()
+      .then((enabled) => { idlePauseToggle.checked = !!enabled; })
+      .catch(() => { idlePauseToggle.checked = true; });
   }
 
   // Federation: render the peer list. Fetched fresh per render so a
@@ -973,6 +993,18 @@ function ensureSettingsListener() {
         const enabled = checkbox.checked;
         window.skytwinDesktop?.setLaunchAtLogin?.(enabled)
           .then(() => showSavedToast(enabled ? 'Will start at login' : 'Won\'t start at login'))
+          .catch((err) => {
+            checkbox.checked = !enabled;
+            showErrorToast(`Couldn\'t save: ${err?.message || 'unknown error'}`);
+          });
+        return;
+      }
+      case 'toggle-idle-pause': {
+        const checkbox = el;
+        if (!(checkbox instanceof HTMLInputElement)) return;
+        const enabled = checkbox.checked;
+        window.skytwinDesktop?.setIdlePauseEnabled?.(enabled)
+          .then(() => showSavedToast(enabled ? 'Will pause when idle' : 'Always running'))
           .catch((err) => {
             checkbox.checked = !enabled;
             showErrorToast(`Couldn\'t save: ${err?.message || 'unknown error'}`);

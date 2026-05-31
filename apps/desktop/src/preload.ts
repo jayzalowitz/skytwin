@@ -25,6 +25,17 @@ contextBridge.exposeInMainWorld('skytwinDesktop', {
   pauseTwin: () => ipcRenderer.invoke('pause-twin'),
   resumeTwin: () => ipcRenderer.invoke('resume-twin'),
 
+  /**
+   * "Pause background work when idle" preference (#382).
+   * Default ON. Setter returns the persisted value, so callers can
+   * round-trip-confirm and resync UI if the underlying store had a
+   * different value (e.g. another window already toggled it).
+   */
+  getIdlePauseEnabled: () =>
+    ipcRenderer.invoke('get-idle-pause-enabled') as Promise<boolean>,
+  setIdlePauseEnabled: (enabled: boolean) =>
+    ipcRenderer.invoke('set-idle-pause-enabled', enabled) as Promise<boolean>,
+
   /** Open a URL in the system default browser (used for OAuth) */
   openExternal: (url: string) => ipcRenderer.invoke('open-external', url),
 
