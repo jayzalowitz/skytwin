@@ -31,7 +31,18 @@ const RISK_COLORS: Record<string, string> = {
  * Shows pending approval requests with pull-to-refresh and real-time
  * updates via SSE. Supports swipe-to-approve and swipe-to-reject.
  */
-export function ApprovalsScreen(): React.JSX.Element {
+interface ApprovalsScreenProps {
+  /** When set (notification deep-link, #387), scroll this approval into
+   * view + expand it once the list has loaded. */
+  focusApprovalId?: string | null;
+  /** Called after the focus has been applied so the parent can clear it. */
+  onFocusHandled?: () => void;
+}
+
+export function ApprovalsScreen({
+  focusApprovalId = null,
+  onFocusHandled,
+}: ApprovalsScreenProps = {}): React.JSX.Element {
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -47,6 +58,7 @@ export function ApprovalsScreen(): React.JSX.Element {
   const clientRef = useRef<SkyTwinApiClient | null>(null);
   const userIdRef = useRef<string>('');
   const sseRef = useRef<{ disconnect: () => void; reconnectNow: () => void } | null>(null);
+  const listRef = useRef<FlatList<ApprovalRequest> | null>(null);
 
   const fetchApprovals = useCallback(async () => {
     const client = clientRef.current;
@@ -120,10 +132,19 @@ export function ApprovalsScreen(): React.JSX.Element {
         const data = event.data as Record<string, unknown>;
         const reason = (data['reason'] as string) ?? 'New approval request';
         const urgency = (data['urgency'] as string) ?? 'normal';
+        // Pass the approval id so the notification carries a deep link
+        // (#387) — without it the tap can't route to this specific
+        // approval. The SSE payload uses `id`; `requestId`/`approvalId`
+        // are tolerated as fallbacks across event shapes.
+        const approvalId =
+          (data['id'] as string | undefined) ??
+          (data['requestId'] as string | undefined) ??
+          (data['approvalId'] as string | undefined);
         scheduleApprovalNotification(
           'SkyTwin Approval Needed',
           reason,
           urgency === 'urgent' || urgency === 'critical',
+          approvalId,
         );
       } else if (event.type === 'approval-expired' || event.type === 'approval:resolved') {
         fetchApprovals();
@@ -181,6 +202,27 @@ export function ApprovalsScreen(): React.JSX.Element {
       sseRef.current?.disconnect();
     };
   }, [fetchApprovals, handleSSEEvent]);
+
+  // Notification deep-link (#387): when a focusApprovalId arrives and the
+  // matching approval is in the loaded list, expand it + scroll it into
+  // view, then tell the parent the focus was consumed. If the approval
+  // isn't present (already resolved, or not yet fetched) we still clear
+  // the focus so a later unrelated render doesn't re-trigger.
+  useEffect(() => {
+    if (!focusApprovalId || loading) return;
+    const index = approvals.findIndex((a) => a.id === focusApprovalId);
+    if (index >= 0) {
+      setExpandedId(focusApprovalId);
+      // scrollToIndex can throw if the item isn't measured yet; guard
+      // with a viewable fallback via onScrollToIndexFailed on the list.
+      try {
+        listRef.current?.scrollToIndex({ index, animated: true, viewPosition: 0 });
+      } catch {
+        /* list not ready — the expand alone still surfaces it near top */
+      }
+    }
+    onFocusHandled?.();
+  }, [focusApprovalId, loading, approvals, onFocusHandled]);
 
   const timeAgo = (dateStr: string): string => {
     const diff = Date.now() - new Date(dateStr).getTime();
@@ -295,9 +337,31 @@ export function ApprovalsScreen(): React.JSX.Element {
       ) : null}
 
       <FlatList
+        ref={listRef}
         data={approvals}
         keyExtractor={(item) => item.id}
         renderItem={renderApprovalCard}
+        onScrollToIndexFailed={(info) => {
+          // The target row isn't measured yet (long list, deep-link before
+          // layout). Jump to an estimated offset using the average item
+          // length, give the list a beat to render the rows around the
+          // target, then retry the exact scrollToIndex. This actually
+          // brings a far-down item into view rather than just resetting
+          // to the top.
+          const offset = info.averageItemLength * info.index;
+          listRef.current?.scrollToOffset({ offset, animated: false });
+          setTimeout(() => {
+            try {
+              listRef.current?.scrollToIndex({
+                index: info.index,
+                animated: true,
+                viewPosition: 0,
+              });
+            } catch {
+              /* still not measurable — leave the user at the estimate */
+            }
+          }, 100);
+        }}
         contentContainerStyle={approvals.length === 0 ? styles.emptyContainer : styles.listContent}
         refreshControl={
           <RefreshControl
