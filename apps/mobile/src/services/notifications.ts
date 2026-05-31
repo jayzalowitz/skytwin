@@ -1,5 +1,6 @@
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
+import { approvalDeepLink } from './deep-link';
 
 /**
  * Notification channel identifiers.
@@ -74,17 +75,31 @@ export async function registerForPushNotifications(): Promise<boolean> {
  *
  * Uses the "Urgent Approvals" channel for high-urgency items, and
  * the standard "Approvals" channel otherwise.
+ *
+ * When `approvalId` is supplied the notification carries a
+ * `skytwin://approvals/<id>` deep link in its `data` payload (#387), so
+ * a tap can route straight to that approval instead of the tab root.
+ * The id is stored both as a structured field and inside the deep-link
+ * URL so the response handler can recover it whether it reads `data.url`
+ * or `data.approvalId`.
  */
 export async function scheduleApprovalNotification(
   title: string,
   body: string,
   urgent: boolean = false,
+  approvalId?: string,
 ): Promise<void> {
+  const data: Record<string, string> = {};
+  if (approvalId) {
+    data['approvalId'] = approvalId;
+    data['url'] = approvalDeepLink(approvalId);
+  }
   await Notifications.scheduleNotificationAsync({
     content: {
       title,
       body,
       sound: 'default',
+      data,
       priority: urgent
         ? Notifications.AndroidNotificationPriority.MAX
         : Notifications.AndroidNotificationPriority.HIGH,
@@ -95,6 +110,7 @@ export async function scheduleApprovalNotification(
     trigger: null, // Show immediately
   });
 }
+
 
 /**
  * Show a silent update notification.

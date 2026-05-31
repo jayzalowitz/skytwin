@@ -3,6 +3,7 @@
     "name": "SkyTwin",
     "slug": "skytwin-mobile",
     "version": "0.4.0",
+    "scheme": "skytwin",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",

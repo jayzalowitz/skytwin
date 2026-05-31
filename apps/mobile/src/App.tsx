@@ -4,8 +4,10 @@ import { NavigationContainer, DefaultTheme } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import * as Notifications from 'expo-notifications';
 import { getSession } from './services/session-store';
 import { registerForPushNotifications } from './services/notifications';
+import { deepLinkFromNotificationData } from './services/deep-link';
 import { hasSeenWelcome } from './services/welcome-store';
 import { PairingScreen } from './screens/PairingScreen';
 import { WelcomeScreen } from './screens/WelcomeScreen';
@@ -46,8 +48,23 @@ const SkyTwinTheme = {
 // Tab type now includes Capabilities and Briefing.
 type MainTab = 'approvals' | 'briefing' | 'capabilities' | 'voice' | 'dashboard' | 'settings';
 
-function MainWithTabs({ onDisconnect }: { onDisconnect: () => void }): React.JSX.Element {
+function MainWithTabs({
+  onDisconnect,
+  focusApprovalId,
+  onApprovalFocusHandled,
+}: {
+  onDisconnect: () => void;
+  focusApprovalId: string | null;
+  onApprovalFocusHandled: () => void;
+}): React.JSX.Element {
   const [activeTab, setActiveTab] = useState<MainTab>('approvals');
+
+  // A deep-linked approval (notification tap) forces the Approvals tab
+  // to the foreground (#387). The id is then handed to ApprovalsScreen,
+  // which scrolls it into view + expands it.
+  useEffect(() => {
+    if (focusApprovalId) setActiveTab('approvals');
+  }, [focusApprovalId]);
   // When a capability row is tapped we push a detail "sub-page" within the
   // Capabilities tab without leaving the tab bar or introducing a nested
   // navigator. This keeps the nav stack simple for v1.
@@ -68,7 +85,12 @@ function MainWithTabs({ onDisconnect }: { onDisconnect: () => void }): React.JSX
   const renderContent = (): React.JSX.Element => {
     switch (activeTab) {
       case 'approvals':
-        return <ApprovalsScreen />;
+        return (
+          <ApprovalsScreen
+            focusApprovalId={focusApprovalId}
+            onFocusHandled={onApprovalFocusHandled}
+          />
+        );
       case 'briefing':
         return <BriefingScreen onOpenApprovals={handleOpenApprovals} />;
       case 'capabilities':
@@ -169,6 +191,16 @@ export default function App(): React.JSX.Element {
   const [initializing, setInitializing] = useState(true);
   const [hasSession, setHasSession] = useState(false);
   const [welcomeSeen, setWelcomeSeen] = useState(true);
+  // Set when a notification deep-links to a specific approval (#387).
+  // Consumed by ApprovalsScreen, then cleared via onApprovalFocusHandled.
+  const [focusApprovalId, setFocusApprovalId] = useState<string | null>(null);
+
+  const routeNotification = useCallback((data: unknown) => {
+    const target = deepLinkFromNotificationData(data);
+    if (target?.route === 'approval-detail') {
+      setFocusApprovalId(target.id);
+    }
+  }, []);
 
   useEffect(() => {
     const init = async (): Promise<void> => {
@@ -184,6 +216,18 @@ export default function App(): React.JSX.Element {
         registerForPushNotifications().catch((err: unknown) => {
           console.warn('[app] Failed to register notifications:', err);
         });
+
+        // Cold start: the app was launched by tapping a notification.
+        // getLastNotificationResponseAsync returns that tap so we can
+        // deep-link even though no live listener was mounted yet.
+        try {
+          const last = await Notifications.getLastNotificationResponseAsync();
+          if (last) {
+            routeNotification(last.notification.request.content.data);
+          }
+        } catch (err: unknown) {
+          console.warn('[app] Failed to read launch notification:', err);
+        }
       } catch (err: unknown) {
         console.warn('[app] Initialization error:', err);
         setHasSession(false);
@@ -193,7 +237,15 @@ export default function App(): React.JSX.Element {
     };
 
     init();
-  }, []);
+  }, [routeNotification]);
+
+  // Warm path: a notification tapped while the app is already running.
+  useEffect(() => {
+    const sub = Notifications.addNotificationResponseReceivedListener((response) => {
+      routeNotification(response.notification.request.content.data);
+    });
+    return () => sub.remove();
+  }, [routeNotification]);
 
   const handlePaired = useCallback(() => {
     setHasSession(true);
@@ -231,7 +283,13 @@ export default function App(): React.JSX.Element {
   } else if (!welcomeSeen) {
     content = <WelcomeScreen onDone={handleWelcomeDone} />;
   } else {
-    content = <MainWithTabs onDisconnect={handleDisconnect} />;
+    content = (
+      <MainWithTabs
+        onDisconnect={handleDisconnect}
+        focusApprovalId={focusApprovalId}
+        onApprovalFocusHandled={() => setFocusApprovalId(null)}
+      />
+    );
   }
 
   return (
