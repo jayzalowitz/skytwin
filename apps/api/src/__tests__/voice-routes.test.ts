@@ -264,3 +264,104 @@ describe('POST /api/voice/synthesize (#187 AC#4)', () => {
     expect(body['error']).toMatch(/too long/);
   });
 });
+
+describe('POST /api/voice/upload/* — resumable chunked upload (#386)', () => {
+  function withWhisper(transcript = 'chunked transcript'): void {
+    mockCreatePort.mockResolvedValue({
+      capabilities: { available: true, supportedFormats: ['wav'] },
+      transcribe: mockTranscribe,
+    });
+    mockTranscribe.mockResolvedValue(transcript);
+  }
+
+  it('open → upload chunks 0,1,2 → finalize transcribes the reassembled audio', async () => {
+    withWhisper('full memo');
+    const app = buildApp();
+
+    const parts = ['alpha', 'beta', 'gamma'].map((s) => Buffer.from(s).toString('base64'));
+    const open = await req(app, 'POST', '/api/voice/upload/session', {
+      userId: USER_ID,
+      totalChunks: 3,
+      language: 'en',
+    });
+    expect(open.status).toBe(200);
+    const sessionId = open.body['sessionId'] as string;
+    expect(sessionId).toBeTruthy();
+
+    for (let i = 0; i < parts.length; i++) {
+      const ack = await req(app, 'POST', '/api/voice/upload/chunk', {
+        userId: USER_ID,
+        sessionId,
+        index: i,
+        chunkBase64: parts[i],
+      });
+      expect(ack.status).toBe(200);
+      expect(ack.body['received']).toBe(i + 1);
+    }
+
+    const fin = await req(app, 'POST', '/api/voice/upload/finalize', {
+      userId: USER_ID,
+      sessionId,
+    });
+    expect(fin.status).toBe(200);
+    expect(fin.body['transcript']).toBe('full memo');
+    // The reassembled buffer is the concatenated decode.
+    const expected = Buffer.from(parts.join(''), 'base64');
+    expect(mockTranscribe).toHaveBeenCalledWith(
+      expect.any(Buffer),
+      { language: 'en' },
+    );
+    const passed = mockTranscribe.mock.calls[0]![0] as Buffer;
+    expect(passed.equals(expected)).toBe(true);
+  });
+
+  it('resumes after a dropped chunk: upload 0,1 → (gap) → upload 2 → finalize', async () => {
+    withWhisper();
+    const app = buildApp();
+    const parts = ['one', 'two', 'three'].map((s) => Buffer.from(s).toString('base64'));
+    const sessionId = (
+      await req(app, 'POST', '/api/voice/upload/session', { userId: USER_ID, totalChunks: 3 })
+    ).body['sessionId'] as string;
+
+    await req(app, 'POST', '/api/voice/upload/chunk', { userId: USER_ID, sessionId, index: 0, chunkBase64: parts[0] });
+    await req(app, 'POST', '/api/voice/upload/chunk', { userId: USER_ID, sessionId, index: 1, chunkBase64: parts[1] });
+
+    // Premature finalize → 409 with the missing chunk listed.
+    const early = await req(app, 'POST', '/api/voice/upload/finalize', { userId: USER_ID, sessionId });
+    expect(early.status).toBe(409);
+    expect(early.body['missing']).toEqual([2]);
+
+    // Client re-sends only the missing chunk, then finalizes.
+    await req(app, 'POST', '/api/voice/upload/chunk', { userId: USER_ID, sessionId, index: 2, chunkBase64: parts[2] });
+    const fin = await req(app, 'POST', '/api/voice/upload/finalize', { userId: USER_ID, sessionId });
+    expect(fin.status).toBe(200);
+  });
+
+  it('cancel drops the session so a later chunk 404s', async () => {
+    withWhisper();
+    const app = buildApp();
+    const sessionId = (
+      await req(app, 'POST', '/api/voice/upload/session', { userId: USER_ID, totalChunks: 2 })
+    ).body['sessionId'] as string;
+
+    const cancel = await req(app, 'POST', '/api/voice/upload/cancel', { userId: USER_ID, sessionId });
+    expect(cancel.status).toBe(200);
+    expect(cancel.body['cancelled']).toBe(true);
+
+    const late = await req(app, 'POST', '/api/voice/upload/chunk', {
+      userId: USER_ID,
+      sessionId,
+      index: 0,
+      chunkBase64: Buffer.from('x').toString('base64'),
+    });
+    expect(late.status).toBe(404);
+  });
+
+  it('rejects a bad totalChunks at session open', async () => {
+    const open = await req(buildApp(), 'POST', '/api/voice/upload/session', {
+      userId: USER_ID,
+      totalChunks: 0,
+    });
+    expect(open.status).toBe(400);
+  });
+});

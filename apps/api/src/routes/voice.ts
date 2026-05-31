@@ -8,6 +8,7 @@ import {
 import { createLogger } from '@skytwin/core';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
 import { bindUserIdParamValidator } from '../middleware/validate-uuid.js';
+import { UploadSessionStore } from '../lib/upload-session.js';
 
 const log = createLogger('api:voice');
 
@@ -56,10 +57,56 @@ export function _resetVoicePortCache(): void {
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024; // 25MB, ~10 minutes of WAV
 const MAX_TTS_TEXT_LENGTH = 8000; // Mirror PiperTtsBackend's internal ceiling.
 
-export function createVoiceRouter(): Router {
+// One shared session store per router instance backs the resumable
+// chunked-upload endpoints (#386). In-memory + TTL-swept; ephemeral by
+// design (see upload-session.ts). Exposed via the factory's options so
+// tests can inject a clock.
+export function createVoiceRouter(
+  opts: { uploadStore?: UploadSessionStore } = {},
+): Router {
   const router = Router();
   bindUserIdParamValidator(router);
   bindUserIdParamOwnership(router);
+
+  const uploadStore = opts.uploadStore ?? new UploadSessionStore();
+
+  /**
+   * Shared transcription tail used by both the single-shot
+   * `/transcribe` and the chunked `/upload/finalize` paths. Takes an
+   * already-validated base64 string, decodes, runs whisper, returns the
+   * transcript JSON or writes the appropriate error status.
+   */
+  async function runTranscription(
+    res: import('express').Response,
+    userId: string,
+    audioBase64: string,
+    language: unknown,
+  ): Promise<void> {
+    if (audioBase64.length > Math.ceil((MAX_AUDIO_BYTES * 4) / 3)) {
+      res.status(413).json({ error: 'audio too large (max 25MB)' });
+      return;
+    }
+    const audio = Buffer.from(audioBase64, 'base64');
+    if (audio.length === 0) {
+      res.status(400).json({ error: 'audio decoded to zero bytes' });
+      return;
+    }
+    const port = await getSttPort();
+    if (!port.capabilities.available) {
+      res.status(503).json({
+        error: 'whisper-cli not available on this server',
+        hint: 'install whisper.cpp and a ggml model, or set SKYTWIN_WHISPER_BIN + SKYTWIN_WHISPER_MODEL',
+      });
+      return;
+    }
+    const transcribeOpts: { language?: string } = {};
+    if (typeof language === 'string' && language.length > 0) {
+      transcribeOpts.language = language;
+    }
+    const transcript = await port.transcribe(audio, transcribeOpts);
+    log.info('Transcribed audio', { userId, bytes: audio.length, chars: transcript.length });
+    res.json({ transcript, durationBytes: audio.length });
+  }
 
   router.get('/capabilities/:userId', async (_req, res, next) => {
     try {
@@ -102,36 +149,127 @@ export function createVoiceRouter(): Router {
         res.status(400).json({ error: 'audioBase64 must be valid base64' });
         return;
       }
-      if (audioBase64.length > Math.ceil(MAX_AUDIO_BYTES * 4 / 3)) {
-        res.status(413).json({ error: 'audio too large (max 25MB)' });
-        return;
-      }
-      const audio = Buffer.from(audioBase64, 'base64');
-      if (audio.length === 0) {
-        res.status(400).json({ error: 'audio decoded to zero bytes' });
-        return;
-      }
+      await runTranscription(res, userId, audioBase64, language);
+    } catch (err) {
+      next(err);
+    }
+  });
 
-      const port = await getSttPort();
-      if (!port.capabilities.available) {
-        res.status(503).json({
-          error: 'whisper-cli not available on this server',
-          hint: 'install whisper.cpp and a ggml model, or set SKYTWIN_WHISPER_BIN + SKYTWIN_WHISPER_MODEL',
-        });
+  // ---- Resumable chunked upload (#386) ----
+  //
+  // For flaky-cellular clients: open a session, push base64 chunks in
+  // any order (retrying individual chunks on drop), then finalize to
+  // transcribe. The single-shot /transcribe above stays for small
+  // clips + backward compatibility.
+
+  router.post('/upload/session', (req, res, next) => {
+    try {
+      const body = req.body as Record<string, unknown>;
+      const userId = body['userId'];
+      const totalChunks = body['totalChunks'];
+      const language = body['language'];
+      if (typeof userId !== 'string' || userId.length === 0) {
+        res.status(400).json({ error: 'userId required' });
         return;
       }
-
-      const opts: { language?: string } = {};
-      if (typeof language === 'string' && language.length > 0) {
-        opts.language = language;
+      if (typeof totalChunks !== 'number') {
+        res.status(400).json({ error: 'totalChunks (number) required' });
+        return;
       }
-      const transcript = await port.transcribe(audio, opts);
-      log.info('Transcribed audio', {
+      const meta: { userId: string; totalChunks: number; language?: string } = {
         userId,
-        bytes: audio.length,
-        chars: transcript.length,
-      });
-      res.json({ transcript, durationBytes: audio.length });
+        totalChunks,
+      };
+      if (typeof language === 'string' && language.length > 0) meta.language = language;
+      const result = uploadStore.open(meta);
+      if (!result.ok) {
+        res.status(400).json({ error: result.message });
+        return;
+      }
+      res.json({ sessionId: result.sessionId });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.post('/upload/chunk', (req, res, next) => {
+    try {
+      const body = req.body as Record<string, unknown>;
+      const userId = body['userId'];
+      const sessionId = body['sessionId'];
+      const index = body['index'];
+      const chunkBase64 = body['chunkBase64'];
+      if (typeof userId !== 'string' || userId.length === 0) {
+        res.status(400).json({ error: 'userId required' });
+        return;
+      }
+      if (typeof sessionId !== 'string' || sessionId.length === 0) {
+        res.status(400).json({ error: 'sessionId required' });
+        return;
+      }
+      if (typeof index !== 'number') {
+        res.status(400).json({ error: 'index (number) required' });
+        return;
+      }
+      if (typeof chunkBase64 !== 'string') {
+        res.status(400).json({ error: 'chunkBase64 required' });
+        return;
+      }
+      const result = uploadStore.addChunk(sessionId, userId, index, chunkBase64);
+      if (!result.ok) {
+        // no_session ⇒ 404 (likely TTL-expired); the rest are 400.
+        res.status(result.code === 'no_session' ? 404 : 400).json({ error: result.message });
+        return;
+      }
+      res.json(result.ack);
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.post('/upload/finalize', async (req, res, next) => {
+    try {
+      const body = req.body as Record<string, unknown>;
+      const userId = body['userId'];
+      const sessionId = body['sessionId'];
+      if (typeof userId !== 'string' || userId.length === 0) {
+        res.status(400).json({ error: 'userId required' });
+        return;
+      }
+      if (typeof sessionId !== 'string' || sessionId.length === 0) {
+        res.status(400).json({ error: 'sessionId required' });
+        return;
+      }
+      const result = uploadStore.finalize(sessionId, userId);
+      if (!result.ok) {
+        if (result.code === 'incomplete') {
+          res.status(409).json({ error: result.message, missing: result.missing });
+          return;
+        }
+        res.status(404).json({ error: result.message });
+        return;
+      }
+      await runTranscription(res, userId, result.base64, result.meta.language);
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.post('/upload/cancel', (req, res, next) => {
+    try {
+      const body = req.body as Record<string, unknown>;
+      const userId = body['userId'];
+      const sessionId = body['sessionId'];
+      if (typeof userId !== 'string' || userId.length === 0) {
+        res.status(400).json({ error: 'userId required' });
+        return;
+      }
+      if (typeof sessionId !== 'string' || sessionId.length === 0) {
+        res.status(400).json({ error: 'sessionId required' });
+        return;
+      }
+      const cancelled = uploadStore.cancel(sessionId, userId);
+      res.json({ cancelled });
     } catch (err) {
       next(err);
     }

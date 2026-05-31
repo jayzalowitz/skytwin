@@ -277,6 +277,60 @@ export class SkyTwinApiClient {
     return this.request<TranscribeResponse>('POST', '/api/voice/transcribe', body, 60_000);
   }
 
+  // -- Resumable chunked voice upload (#386) --
+
+  /** Open an upload session; returns the server-minted sessionId. */
+  async voiceUploadSession(
+    userId: string,
+    totalChunks: number,
+    language?: string,
+  ): Promise<ApiResult<{ sessionId: string }>> {
+    const body: Record<string, unknown> = { userId, totalChunks };
+    if (language !== undefined && language.length > 0) body['language'] = language;
+    return this.request<{ sessionId: string }>('POST', '/api/voice/upload/session', body, 30_000);
+  }
+
+  /** Upload a single chunk; returns the server's ack (received/total/missing). */
+  async voiceUploadChunk(
+    userId: string,
+    sessionId: string,
+    index: number,
+    chunkBase64: string,
+  ): Promise<ApiResult<{ received: number; total: number; missing: number[] }>> {
+    return this.request<{ received: number; total: number; missing: number[] }>(
+      'POST',
+      '/api/voice/upload/chunk',
+      { userId, sessionId, index, chunkBase64 },
+      30_000,
+    );
+  }
+
+  /** Finalize: server reassembles + transcribes. */
+  async voiceUploadFinalize(
+    userId: string,
+    sessionId: string,
+  ): Promise<ApiResult<TranscribeResponse>> {
+    return this.request<TranscribeResponse>(
+      'POST',
+      '/api/voice/upload/finalize',
+      { userId, sessionId },
+      60_000,
+    );
+  }
+
+  /** Cancel an in-flight session (best-effort; server drops the chunks). */
+  async voiceUploadCancel(
+    userId: string,
+    sessionId: string,
+  ): Promise<ApiResult<{ cancelled: boolean }>> {
+    return this.request<{ cancelled: boolean }>(
+      'POST',
+      '/api/voice/upload/cancel',
+      { userId, sessionId },
+      15_000,
+    );
+  }
+
   // -- Internal helpers --
 
   private headers(): Record<string, string> {
