@@ -13,7 +13,7 @@ import {
   Modal,
 } from 'react-native';
 import { SkyTwinApiClient, type ApprovalRequest } from '../services/api-client';
-import { connectSSE, type SSEEvent } from '../services/sse-client';
+import { connectSSE, type SSEEvent, type SSEConnectionState } from '../services/sse-client';
 import { scheduleApprovalNotification } from '../services/notifications';
 import { getSession } from '../services/session-store';
 
@@ -36,6 +36,7 @@ export function ApprovalsScreen(): React.JSX.Element {
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [connected, setConnected] = useState(false);
+  const [connectionState, setConnectionState] = useState<SSEConnectionState>('connecting');
   const [error, setError] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [rejectModalVisible, setRejectModalVisible] = useState(false);
@@ -45,7 +46,7 @@ export function ApprovalsScreen(): React.JSX.Element {
 
   const clientRef = useRef<SkyTwinApiClient | null>(null);
   const userIdRef = useRef<string>('');
-  const sseRef = useRef<{ disconnect: () => void } | null>(null);
+  const sseRef = useRef<{ disconnect: () => void; reconnectNow: () => void } | null>(null);
 
   const fetchApprovals = useCallback(async () => {
     const client = clientRef.current;
@@ -63,6 +64,10 @@ export function ApprovalsScreen(): React.JSX.Element {
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
+    // Pull-to-refresh also forces an immediate SSE reconnect (resetting
+    // the backoff) so a user staring at the "Reconnecting…" banner can
+    // skip the remaining wait instead of watching it count down (#388).
+    sseRef.current?.reconnectNow();
     await fetchApprovals();
     setRefreshing(false);
   }, [fetchApprovals]);
@@ -162,6 +167,9 @@ export function ApprovalsScreen(): React.JSX.Element {
         handleSSEEvent,
         (isConnected) => {
           if (mounted) setConnected(isConnected);
+        },
+        (sseState) => {
+          if (mounted) setConnectionState(sseState);
         },
       );
     };
@@ -263,6 +271,13 @@ export function ApprovalsScreen(): React.JSX.Element {
           {connected ? 'Connected' : 'Disconnected'}
         </Text>
       </View>
+
+      {connectionState === 'reconnecting' ? (
+        <View style={styles.reconnectBanner}>
+          <Text style={styles.reconnectText}>Reconnecting…</Text>
+          <Text style={styles.reconnectHint}>Pull down to retry now</Text>
+        </View>
+      ) : null}
 
       {error ? (
         <View style={styles.errorBanner}>
@@ -469,6 +484,23 @@ const styles = StyleSheet.create({
   progressText: {
     color: '#d7ecff',
     fontSize: 13,
+  },
+  reconnectBanner: {
+    backgroundColor: '#3a2f1a',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  reconnectText: {
+    color: '#f5c451',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  reconnectHint: {
+    color: '#c9a24b',
+    fontSize: 12,
   },
   retryText: {
     color: '#4a90d9',
