@@ -49,6 +49,13 @@ describe('parseSkytwinUrl', () => {
     expect(parseSkytwinUrl('skytwin://')).toBeNull();
   });
 
+  it('returns null for extra path segments beyond the id', () => {
+    // Only approvals and approvals/<id> are valid — a third segment is
+    // malformed and must not be silently routed as approval-detail.
+    expect(parseSkytwinUrl('skytwin://approvals/abc/extra')).toBeNull();
+    expect(parseSkytwinUrl('skytwin://approvals/abc/extra/more')).toBeNull();
+  });
+
   it('returns null for a whitespace-only id', () => {
     expect(parseSkytwinUrl('skytwin://approvals/%20')).toBeNull();
   });

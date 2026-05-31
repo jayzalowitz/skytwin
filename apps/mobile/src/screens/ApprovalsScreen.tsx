@@ -132,10 +132,19 @@ export function ApprovalsScreen({
         const data = event.data as Record<string, unknown>;
         const reason = (data['reason'] as string) ?? 'New approval request';
         const urgency = (data['urgency'] as string) ?? 'normal';
+        // Pass the approval id so the notification carries a deep link
+        // (#387) — without it the tap can't route to this specific
+        // approval. The SSE payload uses `id`; `requestId`/`approvalId`
+        // are tolerated as fallbacks across event shapes.
+        const approvalId =
+          (data['id'] as string | undefined) ??
+          (data['requestId'] as string | undefined) ??
+          (data['approvalId'] as string | undefined);
         scheduleApprovalNotification(
           'SkyTwin Approval Needed',
           reason,
           urgency === 'urgent' || urgency === 'critical',
+          approvalId,
         );
       } else if (event.type === 'approval-expired' || event.type === 'approval:resolved') {
         fetchApprovals();
@@ -332,11 +341,26 @@ export function ApprovalsScreen({
         data={approvals}
         keyExtractor={(item) => item.id}
         renderItem={renderApprovalCard}
-        onScrollToIndexFailed={() => {
+        onScrollToIndexFailed={(info) => {
           // The target row isn't measured yet (long list, deep-link before
-          // layout). Expanding it already pulls it near the top; a best-
-          // effort scrollToOffset(0) keeps the user oriented.
-          listRef.current?.scrollToOffset({ offset: 0, animated: true });
+          // layout). Jump to an estimated offset using the average item
+          // length, give the list a beat to render the rows around the
+          // target, then retry the exact scrollToIndex. This actually
+          // brings a far-down item into view rather than just resetting
+          // to the top.
+          const offset = info.averageItemLength * info.index;
+          listRef.current?.scrollToOffset({ offset, animated: false });
+          setTimeout(() => {
+            try {
+              listRef.current?.scrollToIndex({
+                index: info.index,
+                animated: true,
+                viewPosition: 0,
+              });
+            } catch {
+              /* still not measurable — leave the user at the estimate */
+            }
+          }, 100);
         }}
         contentContainerStyle={approvals.length === 0 ? styles.emptyContainer : styles.listContent}
         refreshControl={

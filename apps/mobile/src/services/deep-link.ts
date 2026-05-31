@@ -53,8 +53,14 @@ export function parseSkytwinUrl(raw: unknown): DeepLinkTarget | null {
     return { route: 'approvals' };
   }
 
-  // `skytwin://approvals/<id>` — decode the id (it may be URL-encoded),
-  // reject an empty / whitespace-only decode.
+  // Only `skytwin://approvals/<id>` is valid — extra path segments
+  // (`skytwin://approvals/<id>/extra`) are malformed and must NOT be
+  // silently treated as an approval-detail link. Reject rather than
+  // navigate somewhere the URL didn't actually ask for.
+  if (rest.length > 1) return null;
+
+  // Decode the id (it may be URL-encoded); reject an empty /
+  // whitespace-only decode.
   let id: string;
   try {
     id = decodeURIComponent(rest[0]!);
