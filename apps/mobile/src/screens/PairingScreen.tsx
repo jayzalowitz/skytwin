@@ -12,8 +12,15 @@ import {
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { discoverSkyTwin, buildBaseUrl } from '../services/discovery';
+import {
+  classifyTimeout,
+  troubleshootingMessage,
+  normalizeManualAddress,
+  type DiscoveryFailureCause,
+} from '../services/discovery-diagnostics';
 import { SkyTwinApiClient } from '../services/api-client';
 import { saveSession } from '../services/session-store';
+import { rememberManualHost, getRememberedManualHost } from '../services/paired-host-store';
 
 interface PairingScreenProps {
   onPaired: () => void;
@@ -23,7 +30,7 @@ type PairingState =
   | { phase: 'scan' }
   | { phase: 'discovering'; token: string; userId: string; host: string | null }
   | { phase: 'found'; token: string; userId: string; baseUrl: string }
-  | { phase: 'error'; message: string; token?: string; userId?: string }
+  | { phase: 'error'; message: string; cause?: DiscoveryFailureCause; token?: string; userId?: string }
   | { phase: 'manual' };
 
 /**
@@ -38,6 +45,10 @@ export function PairingScreen({ onPaired }: PairingScreenProps): React.JSX.Eleme
   const [manualIp, setManualIp] = useState('');
   const [connecting, setConnecting] = useState(false);
   const scannedRef = useRef(false);
+  // Credentials from the most recent QR scan, kept so the manual-IP
+  // fallback can COMPLETE pairing (not just probe) when mDNS fails on a
+  // multicast-blocked network (#384).
+  const scannedCredsRef = useRef<{ token: string; userId: string } | null>(null);
 
   // Reset scan lock when returning to scan phase
   useEffect(() => {
@@ -45,6 +56,16 @@ export function PairingScreen({ onPaired }: PairingScreenProps): React.JSX.Eleme
       scannedRef.current = false;
     }
   }, [state.phase]);
+
+  // Pre-fill the manual field with the last address that worked, so a
+  // returning user on the same office network doesn't re-type their IP.
+  useEffect(() => {
+    if (state.phase === 'manual' && manualIp.length === 0) {
+      getRememberedManualHost()
+        .then((host) => { if (host) setManualIp(host); })
+        .catch(() => { /* best-effort pre-fill */ });
+    }
+  }, [state.phase, manualIp.length]);
 
   const parseQrUrl = useCallback(
     (url: string): { token: string; userId: string; host: string } | null => {
@@ -76,6 +97,10 @@ export function PairingScreen({ onPaired }: PairingScreenProps): React.JSX.Eleme
         return;
       }
 
+      // Remember the scanned creds so the manual fallback can finish
+      // pairing if mDNS / the QR host both fail.
+      scannedCredsRef.current = { token: parsed.token, userId: parsed.userId };
+
       setState({
         phase: 'discovering',
         token: parsed.token,
@@ -83,13 +108,14 @@ export function PairingScreen({ onPaired }: PairingScreenProps): React.JSX.Eleme
         host: parsed.host,
       });
 
-      // Try mDNS discovery first
+      // Try mDNS discovery first.
       const discovered = await discoverSkyTwin(5000, false);
+      const servicesFound = discovered !== null;
       const baseUrl = discovered
         ? buildBaseUrl(discovered)
         : `http://${parsed.host}`;
 
-      // Verify the API is reachable
+      // Verify the API is reachable.
       const client = new SkyTwinApiClient(baseUrl, parsed.token, 5000);
       const healthResult = await client.getServiceStatus();
 
@@ -101,9 +127,17 @@ export function PairingScreen({ onPaired }: PairingScreenProps): React.JSX.Eleme
           baseUrl,
         });
       } else {
+        // Classify WHY so the error screen can point the user at the
+        // right fix (manual IP for blocked multicast vs. firewall).
+        const cause = classifyTimeout({
+          servicesFound,
+          connectAttempted: true,
+          connectFailed: true,
+        });
         setState({
           phase: 'error',
-          message: `SkyTwin not reachable at ${baseUrl}. Make sure your phone and computer are on the same network.`,
+          message: troubleshootingMessage(cause),
+          cause,
           token: parsed.token,
           userId: parsed.userId,
         });
@@ -128,50 +162,59 @@ export function PairingScreen({ onPaired }: PairingScreenProps): React.JSX.Eleme
   }, [state, onPaired]);
 
   const handleManualConnect = useCallback(async () => {
-    if (!manualIp.trim()) {
-      Alert.alert('Enter an address', 'Please enter your computer\'s IP address or hostname.');
+    const baseUrl = normalizeManualAddress(manualIp);
+    if (baseUrl === null) {
+      Alert.alert(
+        'Enter a valid address',
+        "Enter your computer's IP address (e.g. 192.168.1.42), optionally with a port (192.168.1.42:3100).",
+      );
       return;
     }
 
-    // Accept bare IP, IP:port, or full URL
-    let baseUrl: string;
-    const trimmed = manualIp.trim();
-    if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
-      baseUrl = trimmed.replace(/\/+$/, '');
-    } else if (trimmed.includes(':')) {
-      baseUrl = `http://${trimmed}`;
-    } else {
-      baseUrl = `http://${trimmed}:3100`;
-    }
-
     setConnecting(true);
-    setState({
-      phase: 'discovering',
-      token: '',
-      userId: '',
-      host: null,
-    });
 
-    const client = new SkyTwinApiClient(baseUrl, '', 5000);
+    const creds = scannedCredsRef.current;
+    // Use the scanned token for the health probe when we have it — the
+    // API's status endpoint is auth-gated, so an empty token would 401
+    // even against a reachable server.
+    const client = new SkyTwinApiClient(baseUrl, creds?.token ?? '', 5000);
     const healthResult = await client.getServiceStatus();
 
-    if (healthResult.success) {
-      // Manual connection requires creating a session via the API.
-      // For now, prompt the user to use QR pairing instead.
-      Alert.alert(
-        'SkyTwin Found',
-        `Found SkyTwin at ${baseUrl}. To complete pairing, scan the QR code from your desktop app.`,
-      );
-      setState({ phase: 'scan' });
-    } else {
+    if (!healthResult.success) {
+      setConnecting(false);
       setState({
         phase: 'error',
         message: `Could not reach SkyTwin at ${baseUrl}. Check the address and make sure SkyTwin is running.`,
+        cause: 'unknown',
+        ...(creds ? { token: creds.token, userId: creds.userId } : {}),
       });
+      return;
+    }
+
+    // Reachable. If we have scanned creds, COMPLETE pairing here and
+    // remember the address for next time. If not (user came straight to
+    // manual without scanning), fall back to asking them to scan.
+    if (creds) {
+      try {
+        await saveSession(creds.token, baseUrl, creds.userId);
+        await rememberManualHost(manualIp.trim()).catch(() => undefined);
+        setConnecting(false);
+        onPaired();
+        return;
+      } catch (err: unknown) {
+        setConnecting(false);
+        Alert.alert('Connection Error', err instanceof Error ? err.message : 'Failed to save session');
+        return;
+      }
     }
 
     setConnecting(false);
-  }, [manualIp]);
+    Alert.alert(
+      'SkyTwin Found',
+      `Found SkyTwin at ${baseUrl}. To complete pairing, scan the QR code from your desktop app.`,
+    );
+    setState({ phase: 'scan' });
+  }, [manualIp, onPaired]);
 
   const handleRetry = useCallback(() => {
     setState({ phase: 'scan' });
@@ -274,6 +317,9 @@ export function PairingScreen({ onPaired }: PairingScreenProps): React.JSX.Eleme
 
   // Error phase
   if (state.phase === 'error') {
+    // The 'no-mdns' cause is the office-WiFi case — make "Enter address
+    // manually" the PRIMARY action there, since retrying mDNS won't help.
+    const manualIsPrimary = state.cause === 'no-mdns' || state.cause === 'mdns-but-no-connect';
     return (
       <View style={styles.container}>
         <View style={styles.errorIcon}>
@@ -281,15 +327,31 @@ export function PairingScreen({ onPaired }: PairingScreenProps): React.JSX.Eleme
         </View>
         <Text style={styles.title}>SkyTwin not found on your network</Text>
         <Text style={styles.subtitle}>{state.message}</Text>
-        <TouchableOpacity style={styles.primaryButton} onPress={handleRetry}>
-          <Text style={styles.primaryButtonText}>Try Again</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={styles.secondaryButton}
-          onPress={() => setState({ phase: 'manual' })}
-        >
-          <Text style={styles.secondaryButtonText}>Enter address manually</Text>
-        </TouchableOpacity>
+        {manualIsPrimary ? (
+          <>
+            <TouchableOpacity
+              style={styles.primaryButton}
+              onPress={() => setState({ phase: 'manual' })}
+            >
+              <Text style={styles.primaryButtonText}>Enter address manually</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.secondaryButton} onPress={handleRetry}>
+              <Text style={styles.secondaryButtonText}>Try scanning again</Text>
+            </TouchableOpacity>
+          </>
+        ) : (
+          <>
+            <TouchableOpacity style={styles.primaryButton} onPress={handleRetry}>
+              <Text style={styles.primaryButtonText}>Try Again</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.secondaryButton}
+              onPress={() => setState({ phase: 'manual' })}
+            >
+              <Text style={styles.secondaryButtonText}>Enter address manually</Text>
+            </TouchableOpacity>
+          </>
+        )}
       </View>
     );
   }
@@ -324,7 +386,7 @@ export function PairingScreen({ onPaired }: PairingScreenProps): React.JSX.Eleme
         {connecting ? (
           <ActivityIndicator color="#fff" />
         ) : (
-          <Text style={styles.primaryButtonText}>Check Connection</Text>
+          <Text style={styles.primaryButtonText}>Connect</Text>
         )}
       </TouchableOpacity>
       <TouchableOpacity style={styles.secondaryButton} onPress={handleRetry}>
