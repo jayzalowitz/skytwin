@@ -82,6 +82,16 @@ export function createVoiceRouter(
     audioBase64: string,
     language: unknown,
   ): Promise<void> {
+    // Validate the WHOLE reassembled payload, not just per-chunk. A
+    // non-final chunk could legitimately pass per-slice validation while
+    // ending in `=` padding; once concatenated, Node's base64 decoder
+    // silently truncates everything after an interior `=`. The single-
+    // shot /transcribe path already validates before calling here; the
+    // chunked /upload/finalize path relies on this check.
+    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(audioBase64) || audioBase64.length % 4 !== 0) {
+      res.status(400).json({ error: 'reassembled audio is not valid base64' });
+      return;
+    }
     if (audioBase64.length > Math.ceil((MAX_AUDIO_BYTES * 4) / 3)) {
       res.status(413).json({ error: 'audio too large (max 25MB)' });
       return;

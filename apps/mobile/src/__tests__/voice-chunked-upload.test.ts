@@ -155,6 +155,28 @@ describe('transcribeRecordingChunked', () => {
     expect(calls.cancel).toBe(1);
   });
 
+  it('notices cancellation during a chunk backoff (not just before a chunk)', async () => {
+    mockBase64.mockResolvedValue('abcdefghij');
+    const { client, calls } = makeFakeClient({ failChunkForever: 1 });
+    let cancelled = false;
+    // Flip cancel during the first backoff sleep.
+    const sleep = async (): Promise<void> => { cancelled = true; };
+
+    const result = await transcribeRecordingChunked(client, 'user-1', 'file://x', {
+      chunkChars: 4,
+      sleep,
+      isCancelled: () => cancelled,
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toMatch(/cancelled/i);
+    // chunk 0 ok, chunk 1 fails once → backoff flips cancel → abort before
+    // a second attempt. So exactly 2 chunk calls, no finalize.
+    expect(calls.chunk).toBe(2);
+    expect(calls.finalize).toBe(0);
+    expect(calls.cancel).toBe(1);
+  });
+
   it('surfaces a no-audio error without opening a session', async () => {
     mockBase64.mockResolvedValue('');
     const { client, calls } = makeFakeClient();

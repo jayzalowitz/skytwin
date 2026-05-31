@@ -213,6 +213,14 @@ export async function transcribeRecordingChunked(
       }
       emit(uploaded, true);
       await sleep(Math.min(1000 * 2 ** (attempt - 1), 8000));
+      // Re-check cancellation AFTER the backoff — otherwise a user who
+      // cancels while a failed chunk is mid-backoff would wait the full
+      // delay and burn one more retry before the next loop's pre-chunk
+      // check notices.
+      if (options.isCancelled?.()) {
+        await client.voiceUploadCancel(userId, sessionId).catch(() => undefined);
+        return { ok: false, code: 'network', message: 'Upload cancelled.' };
+      }
     }
   }
 

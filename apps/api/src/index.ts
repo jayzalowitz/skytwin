@@ -167,6 +167,14 @@ if (trustProxyHops > 0) {
 }
 
 // Middleware
+//
+// Voice routes carry audio payloads — the single-shot /transcribe sends
+// up to 25MB of base64, and the chunked /upload/chunk path (#386) sends
+// ~256KB base64 per request. Both exceed Express' default 100KB JSON
+// limit, so a voice-scoped parser with a higher ceiling runs BEFORE the
+// global parser; once it parses a /api/voice body, the global one sees
+// req._body and skips it. Non-voice routes keep the tight 100KB default.
+app.use('/api/voice', express.json({ limit: '30mb' }));
 app.use(express.json());
 
 // Health checks (before auth — must be reachable without a session)
