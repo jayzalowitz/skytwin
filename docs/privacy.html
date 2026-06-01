@@ -32,7 +32,7 @@
     <p class="meta">Effective: 2026-05-22. SkyTwin is an open-source personal automation project. This policy describes how the SkyTwin desktop app handles Google user data accessed via Google API scopes.</p>
 
     <div class="callout">
-      <strong>Summary:</strong> SkyTwin runs entirely on your computer. Your Google data (emails, calendar events, profile information) never leaves your machine. We do not operate servers that hold your user data; the SkyTwin developers cannot access it.
+      <strong>Summary:</strong> SkyTwin runs entirely on your computer. By default — using the built-in on-device language model — your Google data (emails, calendar events, profile information) never leaves your machine. We do not operate servers that hold your user data; the SkyTwin developers cannot access it. The one exception is opt-in: if <em>you</em> enable a cloud AI provider (Anthropic, OpenAI, or Google AI) in Settings for sharper reasoning, the content of each decision SkyTwin reasons about is sent to that provider for processing — see <a href="#ai-providers">AI providers</a> below. Nothing is shared with a cloud provider unless you turn it on.
     </div>
 
     <h2>Who we are</h2>
@@ -67,7 +67,7 @@
     <p>OAuth refresh tokens and any other sensitive credentials are encrypted at rest using AES-256-GCM with per-user keys derived via scrypt; the implementation lives in the <code>@skytwin/credential-vault</code> package on GitHub.</p>
     <p>No telemetry, no analytics, no error reporting service sends Google user data, derived data, or identifying information to skytwin.dev, the SkyTwin developers, Google Cloud, or any other server.</p>
 
-    <h2>Data sharing &amp; transfers</h2>
+    <h2 id="ai-providers">Data sharing &amp; transfers</h2>
     <p>SkyTwin does not transfer Google user data to any third party. The only network connections the app makes with your Google data are:</p>
     <ol>
       <li>Direct API calls from the SkyTwin desktop process to Google API servers (e.g. <code>gmail.googleapis.com</code>, <code>calendar.googleapis.com</code>) to fetch the data you authorized.</li>
