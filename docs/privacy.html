@@ -68,7 +68,7 @@
     <p>No telemetry, no analytics, no error reporting service sends Google user data, derived data, or identifying information to skytwin.dev, the SkyTwin developers, Google Cloud, or any other server.</p>
 
     <h2 id="ai-providers">Data sharing &amp; transfers</h2>
-    <p>SkyTwin does not transfer Google user data to any third party. The only network connections the app makes with your Google data are:</p>
+    <p>SkyTwin does not transfer Google user data to any third party for the developers' benefit — there is no analytics, advertising, model-training, or data-broker pipeline, and no SkyTwin-operated server ever receives it. The only network connections the app makes with your Google data are the ones below; note that item&nbsp;2 (an optional, opt-in cloud AI provider <em>you</em> enable) is the single case where decision content is sent to a third party, and only then:</p>
     <ol>
       <li>Direct API calls from the SkyTwin desktop process to Google API servers (e.g. <code>gmail.googleapis.com</code>, <code>calendar.googleapis.com</code>) to fetch the data you authorized.</li>
       <li>Optional outbound calls to LLM providers (OpenAI, Anthropic, Google AI) <em>only if</em> you have configured one of those in Setup — the prompts may contain your data, in which case that provider's terms apply. The default install uses the embedded <code>llama.cpp</code> runtime and makes no outbound LLM calls.</li>
