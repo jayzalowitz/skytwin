@@ -12,8 +12,8 @@
     "lint": "node -e \"console.log('Mobile lint not configured')\""
   },
   "dependencies": {
-    "@babel/runtime": "^7.24.0",
-    "@react-navigation/native": "^7.2.4",
+    "@babel/runtime": "^7.29.7",
+    "@react-navigation/native": "^7.2.5",
     "@react-navigation/native-stack": "^7.16.0",
     "expo": "~56.0.4",
     "expo-asset": "~55.0.17",
@@ -27,7 +27,7 @@
     "react": "19.2.6",
     "react-native": "0.85.3",
     "react-native-safe-area-context": "5.7.0",
-    "react-native-screens": "~4.25.0",
+    "react-native-screens": "~4.25.2",
     "react-native-zeroconf": "^0.14.0"
   },
   "devDependencies": {
