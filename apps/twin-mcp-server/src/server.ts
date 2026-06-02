@@ -114,7 +114,7 @@ function buildMcpServer(tokenCtx: ExternalAgentToken): McpServer {
         action: z
           .object({
             type: z.string().describe('Action type identifier.'),
-            parameters: z.record(z.unknown()).describe('Action parameters.'),
+            parameters: z.record(z.string(), z.unknown()).describe('Action parameters.'),
             reasoning: z.string().describe('Why this action is being proposed.'),
           })
           .describe('The action to propose.'),
