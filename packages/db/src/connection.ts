@@ -19,13 +19,6 @@ export interface DatabaseConfig {
    * concurrent acquire on a `max: 20` pool hangs forever (#378).
    */
   connectionTimeoutMillis?: number;
-  /**
-   * Explicit acquire-from-pool timeout (#378). Supported in pg-pool ≥
-   * v3.6. On versions that don't recognize this key, the value is
-   * silently ignored and `connectionTimeoutMillis` is the effective
-   * bound — both are set so the behavior is identical either way.
-   */
-  acquireTimeoutMillis?: number;
 }
 
 /**
@@ -135,14 +128,16 @@ const DEFAULT_CONFIG: DatabaseConfig = {
     : false),
   max: parseInt(process.env['DATABASE_POOL_MAX'] ?? '20', 10),
   idleTimeoutMillis: 30000,
+  // pg-pool uses connectionTimeoutMillis as BOTH the new-connection
+  // establishment bound AND the wait for a free slot on a saturated
+  // pool (see pg-pool index.js: when _isFull(), the pending-queue
+  // waiter is armed with this same timeout). So the 21st concurrent
+  // acquire on a max=20 pool now fails within ~5s with a clear timeout
+  // error instead of hanging forever. Pre-#378 the pool had no bound at
+  // all and a long-running query (or a 20-connection deadlock) silently
+  // froze every subsequent request — health endpoints reported 200, the
+  // SSE pill said "Listening", and every actual user operation hung.
   connectionTimeoutMillis: 5000,
-  // The 21st concurrent acquire on a saturated max=20 pool now fails
-  // within ~5s with a clear timeout error instead of hanging forever.
-  // Pre-fix, the pool had no acquire bound and a long-running query
-  // (or a 20-connection deadlock) silently froze every subsequent
-  // request — health endpoints reported 200, the SSE pill said
-  // "Listening", and every actual user operation hung. See #378.
-  acquireTimeoutMillis: 5000,
 };
 
 let pool: Pool | null = null;
