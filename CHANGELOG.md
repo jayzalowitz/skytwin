@@ -2,6 +2,10 @@ All notable changes to SkyTwin will be documented in this file.
 
 ## [0.6.58.0] - 2026-05-23
 
+### Documentation
+
+- **README leads with downloads.** `## Quick Start` now opens with a "Download and install (no terminal)" section pointing at [the latest release](https://github.com/jayzalowitz/skytwin/releases/latest), a per-OS installer table (`.dmg` / `.exe` / `.AppImage` / `.deb` / `.rpm`), and the unsigned-build first-launch bypass (right-click → Open on macOS, More info → Run anyway on Windows). The `curl … | bash` one-command install moved down to "Build from source." Added a download badge linking to `/releases/latest`; removed the stale hardcoded "2985 tests passing" badge. v0.6.58.0 is the first build published with installer artifacts attached — the release pipeline that produces them was fixed across PRs #352–#356.
+
 ### Fixed (CI release pipeline + post-#350 Copilot review)
 
 - **`release.yml` pnpm-setup conflict.** All three release-matrix jobs (mac/win/linux) were failing at `pnpm/action-setup@v4 with version: 9` because v4 also reads the `packageManager` field from `package.json`, and seeing both inputs raises `ERR_PNPM_BAD_PM_VERSION`. Upgraded to `@v5` (matches `build.yml`'s usage — reads only the `packageManager` field). The v0.6.57.0 tag couldn't ship artifacts because of this; v0.6.58.0 + a tag re-push is the path to a working GitHub Release.

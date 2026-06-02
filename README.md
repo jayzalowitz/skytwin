@@ -7,7 +7,7 @@
 <a href="https://github.com/jayzalowitz/skytwin/actions/workflows/build.yml"><img src="https://github.com/jayzalowitz/skytwin/actions/workflows/build.yml/badge.svg" alt="Build"></a>
 <a href="https://github.com/jayzalowitz/skytwin/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"></a>
 <img src="https://img.shields.io/github/package-json/v/jayzalowitz/skytwin?color=brightgreen&label=version" alt="Version">
-<img src="https://img.shields.io/badge/tests-2985%20passing-brightgreen.svg" alt="Tests">
+<a href="https://github.com/jayzalowitz/skytwin/releases/latest"><img src="https://img.shields.io/github/v/release/jayzalowitz/skytwin?label=download&color=blue" alt="Download latest release"></a>
 <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux%20%7C%20iOS%20%7C%20Android-lightgrey.svg" alt="Platform">
 
 </div>
@@ -134,13 +134,31 @@ Every path produces an explanation. Every outcome feeds back into the twin. The 
 
 ## Quick Start
 
-### One-command install (macOS, Linux, WSL)
+### Download and install (no terminal)
+
+**[⬇ Download the latest release →](https://github.com/jayzalowitz/skytwin/releases/latest)**
+
+Grab the installer for your OS, double-click, and you're in. No terminal, no Docker, no Ollama, no `.env`. CockroachDB ships inside the bundle as a hash-verified native binary and an embedded llama.cpp model is the default LLM — nothing else to install.
+
+| OS | Installer on the release page |
+|----|-------------------------------|
+| **macOS** (Apple Silicon) | `SkyTwin-…-arm64.dmg` |
+| **Windows** | `SkyTwin.Setup.….exe` |
+| **Linux** | `SkyTwin-….AppImage`, `.deb`, or `.rpm` |
+
+> **⚠ Unsigned builds (for now).** Code-signing certs (Apple Developer + Windows EV) are a pending launch step, so your OS warns on first launch:
+> - **macOS:** right-click the app → **Open** → **Open** (clears Gatekeeper once).
+> - **Windows:** SmartScreen → **More info** → **Run anyway**.
+>
+> Signing lands before the public launch; until then this is the expected first-run experience.
+
+### Build from source (one-command, macOS / Linux / WSL)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/jayzalowitz/skytwin/main/install.sh | bash
 ```
 
-That's it. The installer detects your OS, installs anything missing (Homebrew on mac, Node 20+, pnpm), fetches the official CockroachDB single-node binary (hash-verified), clones the repo to `~/skytwin`, runs the bootstrap, starts the services, and opens the dashboard at `http://localhost:3200` once it's up. Re-running pulls latest and restarts.
+The installer detects your OS, installs anything missing (Homebrew on mac, Node 20+, pnpm), fetches the official CockroachDB single-node binary (hash-verified), clones the repo to `~/skytwin`, runs the bootstrap, starts the services, and opens the dashboard at `http://localhost:3200` once it's up. Re-running pulls latest and restarts.
 
 **No Docker required.** Before v0.6.56 the installer pulled Docker Desktop and ran CockroachDB inside a container — by far the heaviest dependency on the list, with its own EULA and a "open it once after install" gotcha. The default path now installs the CRDB binary directly into `~/.local/share/skytwin/bin/cockroach` and spawns it as a child process. Docker remains supported via `SKYTWIN_USE_DOCKER=true` for users who already have a Docker workflow.
 
