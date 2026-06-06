@@ -81,6 +81,15 @@ export {
   type DigestTopicItem,
   type BuildDigestOptions,
 } from './digest.js';
+export {
+  extractEntities,
+  resolveEntities,
+  linkEntitiesAcrossSignals,
+  ORG_MERGE_FLOOR,
+  type EntityKind,
+  type ExtractedEntity,
+  type ResolvedEntity,
+} from './entity-linking.js';
 
 export { isTrivialAutoEmail } from './cost-gate.js';
 export type {
