@@ -59,6 +59,13 @@ export {
   type ClusterOptions,
   type ClusterStrategy,
 } from './topic-clusterer.js';
+export {
+  computeCoverage,
+  type SourceCoverage,
+  type CapabilityStatus,
+  type ConnectedAccountInfo,
+  type CoverageCapability,
+} from './source-coverage.js';
 
 export { isTrivialAutoEmail } from './cost-gate.js';
 export type {
