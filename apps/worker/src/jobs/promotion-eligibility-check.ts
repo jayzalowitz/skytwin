@@ -1,5 +1,10 @@
 import { createLogger } from '@skytwin/core';
-import { mcpServerRepository, promotionOffersRepository, query } from '@skytwin/db';
+import {
+  mcpServerRepository,
+  promotionOffersRepository,
+  trustTierAuditRepository,
+  query,
+} from '@skytwin/db';
 import { TrustTierEngine } from '@skytwin/policy-engine';
 import { PROMOTION_THRESHOLDS } from '@skytwin/shared-types';
 import type { TrustTier } from '@skytwin/shared-types';
@@ -99,6 +104,14 @@ export async function runPromotionEligibilityCheckJob(): Promise<PromotionEligib
       // block and never incremented this counter.
       evaluated++;
 
+      // Soak floor (spec 10 Part C, #483): populate hoursInCurrentTier so the
+      // engine actually enforces minDurationInTierHours. Previously omitted, so
+      // a user could be offered observer->suggest within one session. Measured
+      // from the last tier change or account creation (fail-safe 0 = blocked).
+      const hoursInCurrentTier = await trustTierAuditRepository.hoursInCurrentTier(
+        server.user_id,
+      );
+
       const evaluation = engine.evaluateProgression(currentTier, {
         totalApprovals: approvedActions,
         totalRejections: totalActions - approvedActions,
@@ -107,6 +120,7 @@ export async function runPromotionEligibilityCheckJob(): Promise<PromotionEligib
         recentRejections: 0,
         hasCriticalUndo: false,
         approvalRatio,
+        hoursInCurrentTier,
       });
 
       if (evaluation.shouldChange && evaluation.recommendedTier) {

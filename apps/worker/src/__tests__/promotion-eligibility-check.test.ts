@@ -3,10 +3,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const mockListActive = vi.fn();
 const mockCreateIfPending = vi.fn();
 const mockQuery = vi.fn();
+// Soak-floor source (spec 10 Part C): default to a value comfortably past the
+// observer floor (24h) so existing promotion-eligibility cases behave as before;
+// individual tests can override to assert the floor blocks early promotion.
+const mockHoursInCurrentTier = vi.fn().mockResolvedValue(72);
 
 vi.mock('@skytwin/db', () => ({
   mcpServerRepository: { listActive: mockListActive },
   promotionOffersRepository: { createIfPending: mockCreateIfPending },
+  trustTierAuditRepository: { hoursInCurrentTier: mockHoursInCurrentTier },
   query: mockQuery,
 }));
 
@@ -87,6 +92,23 @@ describe('runPromotionEligibilityCheckJob (#310)', () => {
       decisionsObservedCount: 20,
       approvedCount: 18,
     });
+  });
+
+  it('passes hoursInCurrentTier from the audit repo into the engine (soak-floor wiring, spec 10 Part C)', async () => {
+    mockListActive.mockResolvedValue([makeServer()]);
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{ total: '20', approved: '18' }] })
+      .mockResolvedValueOnce({ rows: Array(10).fill({ payload: { approved: true } }) });
+    mockHoursInCurrentTier.mockResolvedValueOnce(5); // below the 24h observer floor
+    mockEvaluateProgression.mockReturnValue({ shouldChange: false, currentTier: 'observer', reason: 'soak' });
+
+    await runPromotionEligibilityCheckJob();
+
+    expect(mockHoursInCurrentTier).toHaveBeenCalledWith('u-1');
+    expect(mockEvaluateProgression).toHaveBeenCalledWith(
+      'observer',
+      expect.objectContaining({ hoursInCurrentTier: 5 }),
+    );
   });
 
   it('counts alreadyPending when createIfPending returns null (idempotency)', async () => {
