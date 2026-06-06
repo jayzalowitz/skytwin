@@ -4,6 +4,35 @@ import type { SituationStrategy } from './strategies/situation-strategy.js';
 import { extractDeadline } from './deadline-extractor.js';
 
 /**
+ * Inbound account-security markers (spec 06). Matched case-insensitively as
+ * substrings of subject/body. Deliberately specific phrases (not bare "breach"
+ * / "exposed") to limit false positives on ordinary mail. A severity hint for
+ * triage, NOT a trust boundary — provenance stays untrusted regardless.
+ */
+const SECURITY_ALERT_MARKERS: readonly string[] = [
+  'data breach',
+  'security breach',
+  'security alert',
+  'suspicious sign-in',
+  'suspicious signin',
+  'suspicious login',
+  'new sign-in',
+  'new device',
+  'unusual activity',
+  'unusual sign-in',
+  'verify your identity',
+  'verify your account',
+  'account will be deleted',
+  'account has been compromised',
+  'compromised',
+  'dark web',
+  'was exposed',
+  'detected a login',
+  'detected a sign-in',
+  'password was',
+];
+
+/**
  * The SituationInterpreter examines raw events from signal connectors and
  * creates typed DecisionObjects. It classifies the situation type, determines
  * urgency, and extracts a structured representation of the decision at hand.
@@ -130,6 +159,16 @@ export class SituationInterpreter {
     const subject = String(rawEvent['subject'] ?? '').toLowerCase();
     const category = String(rawEvent['category'] ?? '').toLowerCase();
     const body = String(rawEvent['body'] ?? '').toLowerCase();
+
+    // Security alert (spec 06) — evaluated FIRST so a breach alert about a
+    // financial provider classifies as SECURITY_ALERT, not FINANCE_OPERATION,
+    // and a "verify your account" never falls through to plain EMAIL_TRIAGE.
+    // Inbound + untrusted; the candidate generator forces escalate-only.
+    if (
+      SECURITY_ALERT_MARKERS.some((m) => subject.includes(m) || body.includes(m))
+    ) {
+      return SituationType.SECURITY_ALERT;
+    }
 
     // Email triage
     if (
@@ -365,6 +404,7 @@ export class SituationInterpreter {
       [SituationType.SOCIAL_MEDIA]: 'social',
       [SituationType.DOCUMENT_MANAGEMENT]: 'documents',
       [SituationType.HEALTH_WELLNESS]: 'health',
+      [SituationType.SECURITY_ALERT]: 'security',
       [SituationType.GENERIC]: String(rawEvent['source'] ?? 'unknown'),
     };
 
@@ -415,6 +455,7 @@ export class SituationInterpreter {
       [SituationType.SOCIAL_MEDIA]: 'low',
       [SituationType.DOCUMENT_MANAGEMENT]: 'low',
       [SituationType.HEALTH_WELLNESS]: 'medium',
+      [SituationType.SECURITY_ALERT]: 'high',
       [SituationType.GENERIC]: 'low',
     };
 
@@ -524,6 +565,11 @@ export class SituationInterpreter {
         const typeStr = healthType ? `${String(healthType)}` : 'Health event';
         const providerStr = provider ? ` with ${String(provider)}` : '';
         return `${typeStr}${providerStr} needs attention.`;
+      }
+
+      case SituationType.SECURITY_ALERT: {
+        const what = subject ? `: "${String(subject)}"` : '';
+        return `Security alert needs review${what}. Open the provider directly; do not trust links in the message.`;
       }
 
       case SituationType.GENERIC:
