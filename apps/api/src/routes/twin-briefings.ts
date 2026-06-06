@@ -91,7 +91,20 @@ export function createTwinBriefingsRouter(): Router {
         })
         .filter((s): s is NonNullable<typeof s> => s !== null);
 
-      res.json({ briefing: briefing ?? null, sections });
+      // Spec 08/01: expose the structured digest payload (todos/topics) when
+      // present so the UI can render the two-bucket source-aware view. Nullable
+      // and additive — old briefings (no structured_payload) return null and the
+      // UI falls back to the prose render. Forward-compatible: when the
+      // structured_payload column + generator write land, it flows through here.
+      const briefingWithStructured = briefing
+        ? {
+            ...briefing,
+            structured:
+              (briefing as { structured_payload?: unknown }).structured_payload ?? null,
+          }
+        : null;
+
+      res.json({ briefing: briefingWithStructured, sections });
     } catch (err) {
       next(err);
     }

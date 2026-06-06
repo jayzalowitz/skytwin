@@ -1236,3 +1236,40 @@ textarea.form-input { resize: vertical; min-height: 60px; }
 @media (prefers-reduced-motion: reduce) {
   .skeleton-pulse { animation: none; opacity: 0.55; }
 }
+
+/* ── Digest (spec 08, #481): two-bucket source-aware cited view ───────────── */
+.digest { margin-bottom: 1.25rem; }
+.digest-heading {
+  font-size: 0.95rem; font-weight: 600; margin: 1rem 0 0.5rem;
+  color: var(--text); border-bottom: 1px solid var(--border); padding-bottom: 0.25rem;
+}
+.digest-todos { list-style: none; padding: 0; margin: 0 0 0.5rem; }
+.digest-todo, .digest-topic-item {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 0.4rem;
+  padding: 0.4rem 0; border-bottom: 1px solid var(--border-soft, var(--border));
+}
+.digest-todo-text { font-weight: 500; }
+.digest-deadline {
+  font-size: 0.72rem; color: var(--warning, #b45309);
+  background: var(--warning-soft, rgba(180,83,9,0.1)); padding: 0.1rem 0.4rem; border-radius: var(--radius-sm);
+}
+.digest-topic { margin-bottom: 0.75rem; }
+.digest-topic-title { font-size: 0.85rem; font-weight: 600; color: var(--text-muted); margin: 0.5rem 0 0.25rem; }
+.digest-topic ul { list-style: none; padding: 0; margin: 0; }
+/* Source chip — text label, not icon-only (a11y). */
+.source-chip {
+  font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.03em;
+  padding: 0.1rem 0.4rem; border-radius: var(--radius-sm);
+  background: var(--bg-soft, rgba(127,127,127,0.12)); color: var(--text-muted);
+  border: 1px solid var(--border);
+}
+.source-chip-email { background: var(--info-soft, rgba(37,99,235,0.12)); }
+.source-chip-calendar { background: var(--success-soft, rgba(22,163,74,0.12)); }
+.source-chip-voice { background: var(--accent-soft, rgba(147,51,234,0.12)); }
+/* Citation chip — in-app link, never an external URL. */
+.citation-chip {
+  font-size: 0.68rem; padding: 0.1rem 0.45rem; border-radius: var(--radius-sm);
+  background: transparent; color: var(--primary, #2563eb);
+  border: 1px dashed var(--border); cursor: pointer;
+}
+.citation-chip:hover { background: var(--bg-soft, rgba(127,127,127,0.1)); }

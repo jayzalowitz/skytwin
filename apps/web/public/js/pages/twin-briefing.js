@@ -58,6 +58,11 @@ function handleBriefingClick(e) {
   } else if (action === 'briefing-history-item') {
     const id = target.dataset.briefingId;
     if (id) handleShowHistoryItem(id, userId);
+  } else if (action === 'open-signal') {
+    // Citation chip → in-app signal/decision detail (spec 08). Never an
+    // external URL. Routes to the decisions page filtered to the signal ref.
+    const ref = target.dataset.signalRef;
+    if (ref) window.location.hash = `#/decisions?signal=${encodeURIComponent(ref)}`;
   }
 }
 
@@ -81,6 +86,89 @@ async function handleShowHistoryItem(briefingId, userId) {
   renderProseSection(target);
 }
 
+// Source-type → accessible label for the digest source chip (spec 08, #481).
+// Text labels (not icon-only) for a11y; unknown types fall back to a neutral chip.
+const SOURCE_CHIP_LABELS = {
+  email: 'email',
+  gmail: 'email',
+  calendar: 'calendar',
+  google_calendar: 'calendar',
+  filesystem: 'file',
+  file: 'file',
+  voice: 'voice',
+  app: 'app',
+};
+
+function sourceChip(sourceType) {
+  const label = SOURCE_CHIP_LABELS[sourceType] || 'source';
+  return `<span class="source-chip source-chip-${escapeHtml(label)}">${escapeHtml(label)}</span>`;
+}
+
+function citationChips(signalRefs) {
+  if (!Array.isArray(signalRefs) || signalRefs.length === 0) return '';
+  // Each chip links to the in-app signal/decision detail — NEVER a raw external
+  // URL (spec 06 / safety invariant #8). data-action delegated, no inline handler.
+  return signalRefs
+    .map(
+      (ref) =>
+        `<button type="button" class="citation-chip" data-action="open-signal" data-signal-ref="${escapeHtml(
+          String(ref),
+        )}" aria-label="source: ${escapeHtml(String(ref))}">source</button>`,
+    )
+    .join(' ');
+}
+
+/**
+ * Render the structured digest (spec 01/08): To-dos bucket above Topics, each row
+ * source-aware + cited. Returns '' when there's no structured payload (caller
+ * falls back to prose — back-compat for old briefings).
+ */
+function renderDigestSection(structured) {
+  if (!structured || (!structured.todos?.length && !structured.topics?.length)) return '';
+
+  const todos = (structured.todos || [])
+    .map(
+      (t) => `
+      <li class="digest-todo">
+        ${sourceChip(t.sourceType)}
+        <span class="digest-todo-text">${escapeHtml(t.text || '')}</span>
+        ${t.deadline ? `<span class="digest-deadline">${escapeHtml(String(t.deadline))}</span>` : ''}
+        ${citationChips(t.signalRefs)}
+      </li>`,
+    )
+    .join('');
+
+  const topics = (structured.topics || [])
+    .map(
+      (group) => `
+      <div class="digest-topic">
+        <h4 class="digest-topic-title">${escapeHtml(group.title || group.domain || 'Topic')}</h4>
+        <ul>
+          ${(group.items || [])
+            .map(
+              (it) => `
+            <li class="digest-topic-item">
+              ${sourceChip(it.sourceType)}
+              <span>${escapeHtml(it.text || '')}</span>
+              ${citationChips(it.signalRefs)}
+            </li>`,
+            )
+            .join('')}
+        </ul>
+      </div>`,
+    )
+    .join('');
+
+  return `
+    <section class="digest" aria-label="Digest">
+      <h3 class="digest-heading">To-dos</h3>
+      ${todos ? `<ul class="digest-todos">${todos}</ul>` : '<p class="muted">Nothing needs you right now.</p>'}
+      <h3 class="digest-heading">Topics to catch up on</h3>
+      ${topics || '<p class="muted">No topics today.</p>'}
+    </section>
+  `;
+}
+
 function renderProseSection(briefing) {
   const el = document.getElementById('briefing-prose');
   if (!el) return;
@@ -88,6 +176,9 @@ function renderProseSection(briefing) {
   const prose = briefing ? briefing.prose_markdown || '' : '';
   const generated = briefing ? new Date(briefing.generated_at) : null;
   const isRead = !!briefing?.read_at;
+  // Spec 08: render the structured two-bucket digest when present; the prose
+  // block stays as a fallback / long-form view.
+  const digestHtml = renderDigestSection(briefing?.structured);
 
   el.innerHTML = `
     <div class="briefing-meta" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; font-size: 0.82rem; color: var(--text-dim);">
@@ -104,6 +195,7 @@ function renderProseSection(briefing) {
               style="font-size: 0.78rem;">Mark as read</button>`
         : ''}
     </div>
+    ${digestHtml}
     <div class="briefing-prose-content" style="white-space: pre-wrap; line-height: 1.7;">
       ${prose ? escapeHtml(prose) : '<em class="muted">No briefing content yet.</em>'}
     </div>
