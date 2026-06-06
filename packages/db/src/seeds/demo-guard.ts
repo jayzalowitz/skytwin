@@ -34,16 +34,19 @@ export const DEMO_USER_ID = 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d';
 
 /** Local DB targets the fixture may run against without an override. */
 export function isLocalDbTarget(target: string | undefined): boolean {
-  const t = (target ?? '').trim().toLowerCase();
+  const t = (target ?? '').trim();
   if (t === '') return true; // unset → local dev default
-  return (
-    t.includes('localhost') ||
-    t.includes('127.0.0.1') ||
-    t.includes('::1') ||
-    t.includes('@localhost') ||
-    t.startsWith('postgresql://localhost') ||
-    t.startsWith('postgres://localhost')
-  );
+  const LOCAL = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
+  // Exact HOST match, not substring (review #8): 'localhost-fake.evil.com' and
+  // 'evil.com?host=localhost' and '127.0.0.1.evil.com' must NOT read as local.
+  try {
+    const u = new URL(t);
+    return LOCAL.has(u.hostname.toLowerCase());
+  } catch {
+    // Bare host (no scheme) — match the first host token exactly.
+    const host = (t.toLowerCase().split(/[:/?]/)[0] ?? '').trim();
+    return LOCAL.has(host);
+  }
 }
 
 /**

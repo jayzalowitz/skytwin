@@ -346,6 +346,11 @@ async function generateBriefingProse(
       // `{{#if domain}}` block scopes the prose accordingly.
       const result = await runPrompt<{ briefing: string; highlight_count?: number }>({
         promptName: 'briefing-prose',
+        // Pinned to v1 (prose-only) until the generator consumes v2's structured
+        // todos/topics (spec 01/08 integration). Without the pin, loadPrompt
+        // auto-selects v2, which would request + discard the structured arrays
+        // (wasted tokens) — review #6b.
+        version: 1,
         inputs: {
           date: new Date().toISOString().slice(0, 10),
           events,

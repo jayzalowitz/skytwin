@@ -59,6 +59,12 @@ describe('isLocalDbTarget', () => {
     expect(isLocalDbTarget('postgresql://db.example.com/skytwin')).toBe(false);
     expect(isLocalDbTarget('10.0.0.5')).toBe(false);
   });
+
+  it('is not fooled by hosts that merely CONTAIN localhost/127.0.0.1 (review #8)', () => {
+    expect(isLocalDbTarget('postgresql://user:pass@localhost-fake.evil.com/db')).toBe(false);
+    expect(isLocalDbTarget('postgresql://evil.com/db?host=localhost')).toBe(false);
+    expect(isLocalDbTarget('postgresql://127.0.0.1.evil.com/db')).toBe(false);
+  });
 });
 
 describe('assertDemoUser — identity isolation (GATE 3)', () => {

@@ -44,8 +44,16 @@ const COMMIT_RE =
 const NEGATE_RE = /\b(i\s+would|i\s?['’]?d\b|if\s+i|i\s+wo\s?n['’]?t|i\s+ca\s?n['’]?t|i\s+cannot)\b/i;
 
 // Rough temporal-phrase detector for the deadline hint (not resolution).
-const DEADLINE_HINT_RE =
-  /\b(today|tonight|tomorrow|this\s+(?:week|morning|afternoon|evening|month)|next\s+\w+|by\s+\w+(?:\s+\d{1,2})?|in\s+\d+\s+\w+|within\s+\d+\s+\w+|on\s+\w+(?:\s+\d{1,2})?|\d{1,2}\/\d{1,2})\b/i;
+// `by`/`on` are restricted to day/month/date followers so "by Bob"/"on Alice"
+// don't read as deadlines (review #7).
+const _DOW_MON =
+  '(?:mon|tues|wednes|thurs|fri|satur|sun)day|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*|tomorrow|tonight';
+const DEADLINE_HINT_RE = new RegExp(
+  `\\b(today|tonight|tomorrow|this\\s+(?:week|morning|afternoon|evening|month)|next\\s+\\w+|` +
+    `by\\s+(?:${_DOW_MON}|the\\s+\\d{1,2}|\\d{1,2})|on\\s+(?:${_DOW_MON}|the\\s+\\d{1,2}|\\d{1,2})|` +
+    `in\\s+\\d+\\s+\\w+|within\\s+\\d+\\s+\\w+|\\d{1,2}\\/\\d{1,2})\\b`,
+  'i',
+);
 
 function splitSentences(text: string): string[] {
   return text
@@ -71,23 +79,28 @@ function ruleExtract(input: SignalText): Commitment[] {
   const seen = new Set<string>();
   for (const sentence of splitSentences(input.body)) {
     if (sentence.endsWith('?')) continue; // questions aren't commitments
-    if (NEGATE_RE.test(sentence)) continue; // hypothetical / negated
-    const modal = sentence.match(COMMIT_RE);
-    if (!modal) continue;
+    // Split into clauses so a negation in ONE clause ("...if I have time...")
+    // doesn't suppress a genuine commitment in another clause of the same
+    // sentence (review #6).
+    for (const clause of sentence.split(/\s*(?:[,;]|\band\b)\s*/i)) {
+      if (NEGATE_RE.test(clause)) continue; // hypothetical / negated clause
+      const modal = clause.match(COMMIT_RE);
+      if (!modal) continue;
 
-    const text = normalizeImperative(sentence, modal);
-    const key = text.toLowerCase();
-    if (!text || seen.has(key)) continue; // dedup restated commitments
-    seen.add(key);
+      const text = normalizeImperative(clause, modal);
+      const key = text.toLowerCase();
+      if (!text || seen.has(key)) continue; // dedup restated commitments
+      seen.add(key);
 
-    const hintMatch = sentence.match(DEADLINE_HINT_RE);
-    out.push({
-      text,
-      rawSpan: sentence,
-      deadlineHint: hintMatch ? hintMatch[0] : null,
-      committedTo: input.participants,
-      confidence: 0.7,
-    });
+      const hintMatch = clause.match(DEADLINE_HINT_RE);
+      out.push({
+        text,
+        rawSpan: clause.trim(),
+        deadlineHint: hintMatch ? hintMatch[0] : null,
+        committedTo: input.participants,
+        confidence: 0.7,
+      });
+    }
   }
   return out;
 }

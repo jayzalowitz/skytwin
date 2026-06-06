@@ -60,6 +60,15 @@ describe('buildDigest (spec 01)', () => {
     expect(d.todos[0]).toMatchObject({ ref: 'x', sourceType: 'voice', deadline: '2026-03-05' });
   });
 
+  it('emits signalRefs[] for citation chips (review #4: UI + v2 prompt expect an array)', () => {
+    const d = buildDigest([
+      item({ ref: 'a', actionRequired: true }),
+      item({ ref: 'b', domain: 'work' }),
+    ], { knownDomains: ['work'] });
+    expect(d.todos[0]!.signalRefs).toEqual(['a']);
+    expect(d.topics[0]!.items[0]!.signalRefs).toEqual(['b']);
+  });
+
   it('groups topics by domain', () => {
     const d = buildDigest(
       [item({ ref: 'a', domain: 'finance' }), item({ ref: 'b', domain: 'finance' }), item({ ref: 'c', domain: 'work' })],

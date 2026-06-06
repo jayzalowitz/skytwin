@@ -83,4 +83,16 @@ describe('extractCommitments (spec 02)', () => {
     const c = extractCommitments(authored("I'll send the report. I will send the report."));
     expect(c).toHaveLength(1);
   });
+
+  it('keeps a real commitment that shares a sentence with a negated clause (review #6)', () => {
+    const c = extractCommitments(
+      authored("I'll send the report, and if I have time I'll also review the deck."),
+    );
+    expect(c.map((x) => x.text)).toContain('Send the report');
+  });
+
+  it('does not treat "by <person>" as a deadline hint (review #7)', () => {
+    expect(extractCommitments(authored("I'll be reviewed by Bob."))[0]?.deadlineHint ?? null).toBeNull();
+    expect(extractCommitments(authored("I'll finish by Friday."))[0]!.deadlineHint).toMatch(/friday/i);
+  });
 });

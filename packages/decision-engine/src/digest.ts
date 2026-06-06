@@ -39,12 +39,15 @@ export interface DigestTodo {
   text: string;
   sourceType?: string;
   deadline?: string | null;
+  /** Citation refs for the UI chips (review #4: UI + v2 prompt expect signalRefs[]). */
+  signalRefs: string[];
 }
 
 export interface DigestTopicItem {
   ref: string;
   text: string;
   sourceType?: string;
+  signalRefs: string[];
 }
 
 export interface DigestTopic {
@@ -87,7 +90,13 @@ export function buildDigest(items: DigestItem[], opts: BuildDigestOptions = {}):
     .filter((i) => i.actionRequired)
     .sort((a, b) => URGENCY_RANK[a.urgency ?? 'low'] - URGENCY_RANK[b.urgency ?? 'low'])
     .slice(0, maxTodos)
-    .map((i) => ({ ref: i.ref, text: i.text, sourceType: i.sourceType, deadline: i.deadline ?? null }));
+    .map((i) => ({
+      ref: i.ref,
+      text: i.text,
+      sourceType: i.sourceType,
+      deadline: i.deadline ?? null,
+      signalRefs: [i.ref],
+    }));
 
   // Topics: everything else, clustered by domain.
   const fyi = visible.filter((i) => !i.actionRequired);
@@ -101,7 +110,7 @@ export function buildDigest(items: DigestItem[], opts: BuildDigestOptions = {}):
     title: c.title,
     items: c.signalRefs.map((ref) => {
       const it = byRef.get(ref);
-      return { ref, text: it?.text ?? '', sourceType: it?.sourceType };
+      return { ref, text: it?.text ?? '', sourceType: it?.sourceType, signalRefs: [ref] };
     }),
   }));
 

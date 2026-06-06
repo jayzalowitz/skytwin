@@ -143,7 +143,15 @@ export function createUsersRouter(): Router {
       // an empty twin profile + conservative autonomy settings. Idempotent and
       // best-effort — getOrCreateProfile lazily backstops if this is skipped,
       // so a provisioning hiccup never blocks user creation. (spec 10 Part A)
-      await provisionNewUser(user.id);
+      try {
+        await provisionNewUser(user.id);
+      } catch (provisionErr) {
+        // Genuinely best-effort (review): the user row already exists, and
+        // getOrCreateProfile lazily backstops the profile later — so a
+        // provisioning hiccup must NOT turn into a 500 (which, on client retry,
+        // would then hit "email already exists"). Swallow and continue.
+        console.warn('[users] provisionNewUser failed (non-blocking):', provisionErr);
+      }
 
       res.status(201).json({ user, created: true });
     } catch (error) {

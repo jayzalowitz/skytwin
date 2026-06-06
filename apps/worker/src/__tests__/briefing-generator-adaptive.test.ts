@@ -10,11 +10,16 @@ const {
   mockBriefingRepository,
   mockAppSuggestionRepository,
   mockMcpServerRepository,
+  mockUserRepository,
   mockQuery,
 } = vi.hoisted(() => ({
   mockBriefingRepository: { create: vi.fn() },
   mockAppSuggestionRepository: { getPendingForUser: vi.fn() },
   mockMcpServerRepository: { listForUser: vi.fn() },
+  // spec 12: briefing-generator reads the user's locale before runPrompt. Without
+  // this the call threw and the generator silently fell back to the templated
+  // path, leaving the LLM-prose path untested (review #13).
+  mockUserRepository: { getLocale: vi.fn().mockResolvedValue({ language: null, timezone: null }) },
   mockQuery: vi.fn().mockResolvedValue({ rows: [] }),
 }));
 
@@ -22,6 +27,7 @@ vi.mock('@skytwin/db', () => ({
   briefingRepository: mockBriefingRepository,
   appSuggestionRepository: mockAppSuggestionRepository,
   mcpServerRepository: mockMcpServerRepository,
+  userRepository: mockUserRepository,
   query: mockQuery,
 }));
 

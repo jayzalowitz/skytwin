@@ -10,26 +10,31 @@ import { extractDeadline } from './deadline-extractor.js';
  * triage, NOT a trust boundary — provenance stays untrusted regardless.
  */
 const SECURITY_ALERT_MARKERS: readonly string[] = [
+  // Curated to specific multi-word phrases (review #3): bare 'new device',
+  // 'compromised', 'password was', 'detected a login', 'was exposed' over-matched
+  // shipping notices, articles, and benign "welcome back" mail. These require
+  // account/sign-in context so they don't fire on ordinary content.
   'data breach',
   'security breach',
   'security alert',
   'suspicious sign-in',
   'suspicious signin',
   'suspicious login',
-  'new sign-in',
-  'new device',
+  'sign-in from a new device',
+  'log in from a new device',
+  'login from a new device',
+  'new device was detected',
+  'new sign-in to your account',
+  'unrecognized device',
   'unusual activity',
-  'unusual sign-in',
   'verify your identity',
   'verify your account',
   'account will be deleted',
   'account has been compromised',
-  'compromised',
+  'password was exposed',
+  'exposed in a data breach',
+  'exposed on the dark web',
   'dark web',
-  'was exposed',
-  'detected a login',
-  'detected a sign-in',
-  'password was',
 ];
 
 /**
@@ -69,10 +74,36 @@ export class SituationInterpreter {
       ? await this.strategy.interpret(rawEvent)
       : this.interpretRuleBased(rawEvent);
 
+    // Defense-in-depth (review safety #2): the security-marker check must hold
+    // even when an LLM strategy did the classification. If markers match, force
+    // SECURITY_ALERT so the escalate-only candidate path applies regardless of
+    // which path classified. (The rule path already returns SECURITY_ALERT.)
+    if (
+      decision.situationType !== SituationType.SECURITY_ALERT &&
+      this.matchesSecurityMarkers(rawEvent)
+    ) {
+      decision.situationType = SituationType.SECURITY_ALERT;
+      decision.domain = 'security';
+      if (decision.urgency === 'low' || decision.urgency === 'medium') {
+        decision.urgency = 'high';
+      }
+    }
+
     if (!decision.provenance) {
       decision.provenance = this.deriveProvenance(rawEvent);
     }
     return decision;
+  }
+
+  /** True when the event's subject/body match an inbound security-alert marker. */
+  private matchesSecurityMarkers(rawEvent: Record<string, unknown>): boolean {
+    const data =
+      typeof rawEvent['data'] === 'object' && rawEvent['data'] !== null
+        ? (rawEvent['data'] as Record<string, unknown>)
+        : {};
+    const subject = String(rawEvent['subject'] ?? data['subject'] ?? '').toLowerCase();
+    const body = String(rawEvent['body'] ?? data['body'] ?? data['snippet'] ?? '').toLowerCase();
+    return SECURITY_ALERT_MARKERS.some((m) => subject.includes(m) || body.includes(m));
   }
 
   /**
@@ -100,7 +131,11 @@ export class SituationInterpreter {
       body,
       occurredAt: Number.isNaN(occurredAt.getTime()) ? new Date() : occurredAt,
     });
-    if (found) {
+    // Only stamp a deadline still in the FUTURE relative to now (review #1): the
+    // extractor rejects past-relative-to-occurredAt, but a "respond in 2 days"
+    // from a 5-day-old email is already past now and would read as `critical` in
+    // assessUrgency (which measures from Date.now()).
+    if (found && found.deadline.getTime() > Date.now()) {
       rawEvent['deadline'] = found.deadline.toISOString();
       rawEvent['deadlinePhrase'] = found.rawPhrase;
     }
@@ -434,10 +469,14 @@ export class SituationInterpreter {
       const hoursUntilDeadline =
         (deadlineDate.getTime() - Date.now()) / (1000 * 60 * 60);
 
-      if (hoursUntilDeadline < 1) return 'critical';
-      if (hoursUntilDeadline < 4) return 'high';
-      if (hoursUntilDeadline < 24) return 'medium';
-      return 'low';
+      // Stale (negative) deadlines fall through to the per-type default rather
+      // than reading as `critical` (review #1). Far-out deadlines (>=24h) also
+      // fall through — a deadline must never DOWNGRADE a type's default urgency
+      // (review #2); previously this returned 'low' and de-prioritized e.g.
+      // calendar invites whose body mentioned a far date.
+      if (hoursUntilDeadline >= 0 && hoursUntilDeadline < 1) return 'critical';
+      if (hoursUntilDeadline >= 0 && hoursUntilDeadline < 4) return 'high';
+      if (hoursUntilDeadline >= 0 && hoursUntilDeadline < 24) return 'medium';
     }
 
     // Default urgency by situation type

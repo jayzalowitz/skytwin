@@ -28,6 +28,8 @@ export interface ExtractedEntity {
 export interface ResolvedEntity {
   entityId: string;
   kind: EntityKind;
+  /** Full normalized key — used for matching (NOT the truncated slug). */
+  normalized: string;
   surfaces: string[];
   signalRefs: string[];
   confidence: number;
@@ -117,18 +119,28 @@ export function resolveEntities(
       const id = `person:${e.normalized}`;
       const existing = resolved.find((r) => r.entityId === id);
       if (existing) add(existing, e);
-      else resolved.push({ entityId: id, kind: 'person', surfaces: [e.surface], signalRefs: [e.signalRef], confidence: e.confidence });
+      else
+        resolved.push({
+          entityId: id,
+          kind: 'person',
+          normalized: e.normalized,
+          surfaces: [e.surface],
+          signalRefs: [e.signalRef],
+          confidence: e.confidence,
+        });
       continue;
     }
 
     // org: exact normalized, else fuzzy >= floor against same-kind, else mint.
-    const exact = resolved.find((r) => r.kind === 'org' && r.entityId === `org:${slug(e.normalized)}`);
+    // Compare against the FULL normalized string, not the truncated entityId
+    // slug, so long org names don't degrade the overlap score (review #10).
+    const exact = resolved.find((r) => r.kind === 'org' && r.normalized === e.normalized);
     if (exact) {
       add(exact, e);
       continue;
     }
     const fuzzy = resolved.find(
-      (r) => r.kind === 'org' && jaccard(tokens(r.entityId.replace(/^org:/, '').replace(/-/g, ' ')), tokens(e.normalized)) >= floor,
+      (r) => r.kind === 'org' && jaccard(tokens(r.normalized), tokens(e.normalized)) >= floor,
     );
     if (fuzzy) {
       add(fuzzy, e);
@@ -138,6 +150,7 @@ export function resolveEntities(
     resolved.push({
       entityId: `org:${slug(e.normalized)}`,
       kind: 'org',
+      normalized: e.normalized,
       surfaces: [e.surface],
       signalRefs: [e.signalRef],
       confidence: e.confidence,
