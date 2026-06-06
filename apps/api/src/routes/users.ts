@@ -16,9 +16,35 @@ const VALID_DOMAINS = [
 /**
  * Create the users management router.
  */
+/**
+ * Conservative autonomy defaults for a brand-new user (spec 10 Part A).
+ *
+ * Deliberately NO spend caps: the built-in `NO_SPEND_WITHOUT_LIMIT` policy
+ * blocks all spend until the user configures a budget, so omitting caps is the
+ * safe default (escalate, never silently auto-spend). The dashboard surfaces
+ * "set a budget to enable spend". Domain allow/block lists start empty.
+ */
+const DEFAULT_AUTONOMY_SETTINGS: Record<string, unknown> = {
+  allowedDomains: [],
+  blockedDomains: [],
+};
+
 export function createUsersRouter(): Router {
   const router = Router();
   const twinService = new TwinService(new TwinRepositoryAdapter(), new PatternRepositoryAdapter());
+
+  /**
+   * Provision the zero-content default state every real user starts from:
+   * an empty twin profile (eagerly, not lazily) + conservative autonomy
+   * settings. Idempotent (getOrCreateProfile no-ops if a profile exists) and
+   * only invoked on the genuinely-new-user path, so it never clobbers a
+   * configured user. Best-effort: getOrCreateProfile lazily backstops the
+   * profile elsewhere, so this is belt-and-suspenders, not a hard dependency.
+   */
+  async function provisionNewUser(userId: string): Promise<void> {
+    await twinService.getOrCreateProfile(userId);
+    await userRepository.updateAutonomySettings(userId, DEFAULT_AUTONOMY_SETTINGS);
+  }
 
   // Everything under /:userId is user-scoped and must be authenticated.
   router.use('/:userId', sessionAuth, requireOwnership);
@@ -99,15 +125,25 @@ export function createUsersRouter(): Router {
         return;
       }
 
-      // Trust tier is always 'suggest' for new users — must be earned, not declared.
-      // Callers cannot self-escalate via the creation endpoint.
-      const trustTier = 'suggest';
+      // Trust tier is always 'observer' for new users — must be earned, not declared
+      // (spec 10, LOCKED 2026-06-06). Matches the DB column default and CLAUDE.md;
+      // resolves the prior 3-way conflict where this line forced 'suggest'. Users
+      // climb observer -> suggest via the transparent, consensual promotion engine
+      // (10 consecutive approvals at >=80%, user-accepted). Callers cannot
+      // self-escalate via the creation endpoint.
+      const trustTier = 'observer';
 
       const user = await userRepository.create({
         email,
         name,
         trustTier,
       });
+
+      // Provision the zero-content default state every real user starts from:
+      // an empty twin profile + conservative autonomy settings. Idempotent and
+      // best-effort — getOrCreateProfile lazily backstops if this is skipped,
+      // so a provisioning hiccup never blocks user creation. (spec 10 Part A)
+      await provisionNewUser(user.id);
 
       res.status(201).json({ user, created: true });
     } catch (error) {
