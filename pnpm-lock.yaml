@@ -477,6 +477,9 @@ importers:
 
   packages/decision-engine:
     dependencies:
+      '@skytwin/connectors':
+        specifier: workspace:*
+        version: link:../connectors
       '@skytwin/core':
         specifier: workspace:*
         version: link:../core

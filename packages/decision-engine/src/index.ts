@@ -28,6 +28,21 @@ export type {
   AuthoredExamplesPort,
   DraftEmailCandidateGeneratorOptions,
 } from './strategies/draft-email-candidate.js';
+// Multi-source normalization (spec 07): the channel-agnostic accessor + matrix
+// that make commitment/deadline/security/clustering/entity capabilities
+// source-agnostic.
+export {
+  toSignalText,
+  isAuthoredByUser,
+  type SignalText,
+} from './signal-text.js';
+export {
+  CAPABILITY_SOURCE_MATRIX,
+  capabilityCoversSource,
+  sourcesForCapability,
+  type Capability,
+} from './capability-source-matrix.js';
+
 export { isTrivialAutoEmail } from './cost-gate.js';
 export type {
   CostGatePort,

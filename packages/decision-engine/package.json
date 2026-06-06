@@ -22,7 +22,8 @@
     "@skytwin/core": "workspace:*",
     "@skytwin/twin-model": "workspace:*",
     "@skytwin/policy-engine": "workspace:*",
-    "@skytwin/llm-client": "workspace:*"
+    "@skytwin/llm-client": "workspace:*",
+    "@skytwin/connectors": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^6.0.3",
