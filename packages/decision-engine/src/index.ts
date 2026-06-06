@@ -71,6 +71,7 @@ export {
   filterVisible,
   type SignalVisibilityMeta,
 } from './visibility-filter.js';
+export { resolveLanguage, resolveTimezone, isNonEnglish } from './locale.js';
 
 export { isTrivialAutoEmail } from './cost-gate.js';
 export type {

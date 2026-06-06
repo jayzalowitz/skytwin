@@ -126,6 +126,18 @@ export const userRepository = {
   },
 
   /**
+   * Read a user's language + timezone (spec 12, #486). Returns nulls when
+   * unset; callers resolve safe fallbacks via resolveLanguage/resolveTimezone.
+   */
+  async getLocale(id: string): Promise<{ language: string | null; timezone: string | null }> {
+    const result = await query<{ language: string | null; timezone: string | null }>(
+      `SELECT language, timezone FROM users WHERE id = $1`,
+      [id],
+    );
+    return result.rows[0] ?? { language: null, timezone: null };
+  },
+
+  /**
    * Update a user's trust tier.
    */
   async updateTrustTier(
