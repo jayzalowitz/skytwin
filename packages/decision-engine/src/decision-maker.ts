@@ -19,6 +19,7 @@ import {
 } from '@skytwin/shared-types';
 import type { TwinService } from '@skytwin/twin-model';
 import type { PolicyEvaluator } from '@skytwin/policy-engine';
+import { applyScopeGate } from '@skytwin/policy-engine';
 import { normalizeSenderAddress } from '@skytwin/core';
 import { RiskAssessor } from './risk-assessor.js';
 import type { CandidateGenerator } from './strategies/candidate-strategy.js';
@@ -408,7 +409,21 @@ export class DecisionMaker {
   generateCandidates(
     decision: DecisionObject,
     profile: TwinProfile,
-    extras?: { senderLabelHints?: SenderLabelHint[] },
+    extras?: { senderLabelHints?: SenderLabelHint[]; grantedScopes?: string[] },
+  ): CandidateAction[] {
+    const candidates = this.dispatchCandidates(decision, profile, extras);
+    // Scope gate (spec 11, #485): never propose a write the user didn't grant.
+    // When grantedScopes is supplied, downgrade scoped-write candidates lacking
+    // the scope to a human-review "grant access" item. Fail-safe NOT granted.
+    return extras?.grantedScopes
+      ? applyScopeGate(candidates, extras.grantedScopes)
+      : candidates;
+  }
+
+  private dispatchCandidates(
+    decision: DecisionObject,
+    profile: TwinProfile,
+    extras?: { senderLabelHints?: SenderLabelHint[]; grantedScopes?: string[] },
   ): CandidateAction[] {
     switch (decision.situationType) {
       case SituationType.EMAIL_TRIAGE:

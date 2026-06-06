@@ -66,6 +66,11 @@ export {
   type ConnectedAccountInfo,
   type CoverageCapability,
 } from './source-coverage.js';
+export {
+  isHidden,
+  filterVisible,
+  type SignalVisibilityMeta,
+} from './visibility-filter.js';
 
 export { isTrivialAutoEmail } from './cost-gate.js';
 export type {

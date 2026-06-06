@@ -15,6 +15,12 @@ export {
 export { TrustTierEngine } from './trust-tier-engine.js';
 export { ApprovalRouter, type ApprovalRepositoryPort } from './approval-router.js';
 export {
+  requiredWriteScope,
+  hasWriteScope,
+  applyScopeGate,
+  type ScopeRequirement,
+} from './scope-gate.js';
+export {
   SpendTracker,
   resolveEffectiveCaps,
   type SpendRepositoryPort,
