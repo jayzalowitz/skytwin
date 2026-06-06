@@ -52,6 +52,13 @@ export {
   type Commitment,
   type CommitmentStrategy,
 } from './commitment-extractor.js';
+export {
+  clusterSignals,
+  type ClusterSignal,
+  type TopicCluster,
+  type ClusterOptions,
+  type ClusterStrategy,
+} from './topic-clusterer.js';
 
 export { isTrivialAutoEmail } from './cost-gate.js';
 export type {
