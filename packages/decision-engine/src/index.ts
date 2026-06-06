@@ -47,6 +47,11 @@ export {
   type DeadlineSource,
   type ExtractedDeadline,
 } from './deadline-extractor.js';
+export {
+  extractCommitments,
+  type Commitment,
+  type CommitmentStrategy,
+} from './commitment-extractor.js';
 
 export { isTrivialAutoEmail } from './cost-gate.js';
 export type {
