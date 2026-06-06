@@ -42,6 +42,11 @@ export {
   sourcesForCapability,
   type Capability,
 } from './capability-source-matrix.js';
+export {
+  extractDeadline,
+  type DeadlineSource,
+  type ExtractedDeadline,
+} from './deadline-extractor.js';
 
 export { isTrivialAutoEmail } from './cost-gate.js';
 export type {

@@ -1,6 +1,7 @@
 import type { DecisionObject } from '@skytwin/shared-types';
 import { SituationType, resolveActionProvenance } from '@skytwin/shared-types';
 import type { SituationStrategy } from './strategies/situation-strategy.js';
+import { extractDeadline } from './deadline-extractor.js';
 
 /**
  * The SituationInterpreter examines raw events from signal connectors and
@@ -29,6 +30,12 @@ export class SituationInterpreter {
    * but setting it explicitly keeps the audit trail honest.
    */
   async interpret(rawEvent: Record<string, unknown>): Promise<DecisionObject> {
+    // Spec 03: stamp a content-derived deadline (if the connector didn't supply
+    // one) BEFORE either path runs, so the rule-based assessUrgency and any LLM
+    // strategy both see it. Mutates rawEvent in place — only sets `deadline`
+    // when absent, so connector-provided deadlines win.
+    this.enrichDeadline(rawEvent);
+
     const decision = this.strategy
       ? await this.strategy.interpret(rawEvent)
       : this.interpretRuleBased(rawEvent);
@@ -37,6 +44,37 @@ export class SituationInterpreter {
       decision.provenance = this.deriveProvenance(rawEvent);
     }
     return decision;
+  }
+
+  /**
+   * Extract a deadline from the event's free text and stamp `rawEvent.deadline`
+   * (ISO) plus `rawEvent.deadlinePhrase` for the explanation, when no structured
+   * deadline is already present. No-op if the connector supplied one. (spec 03)
+   */
+  private enrichDeadline(rawEvent: Record<string, unknown>): void {
+    if (rawEvent['deadline'] || rawEvent['dueDate'] || rawEvent['expiresAt']) return;
+    const data =
+      typeof rawEvent['data'] === 'object' && rawEvent['data'] !== null
+        ? (rawEvent['data'] as Record<string, unknown>)
+        : {};
+    const title = String(
+      rawEvent['subject'] ?? rawEvent['title'] ?? data['subject'] ?? data['title'] ?? '',
+    );
+    const body = String(
+      rawEvent['body'] ?? data['body'] ?? data['snippet'] ?? data['description'] ?? '',
+    );
+    if (!title && !body) return;
+    const tsRaw = rawEvent['timestamp'] ?? data['timestamp'] ?? rawEvent['receivedAt'];
+    const occurredAt = tsRaw ? new Date(String(tsRaw)) : new Date();
+    const found = extractDeadline({
+      title,
+      body,
+      occurredAt: Number.isNaN(occurredAt.getTime()) ? new Date() : occurredAt,
+    });
+    if (found) {
+      rawEvent['deadline'] = found.deadline.toISOString();
+      rawEvent['deadlinePhrase'] = found.rawPhrase;
+    }
   }
 
   /**

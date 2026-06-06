@@ -23,7 +23,8 @@
     "@skytwin/twin-model": "workspace:*",
     "@skytwin/policy-engine": "workspace:*",
     "@skytwin/llm-client": "workspace:*",
-    "@skytwin/connectors": "workspace:*"
+    "@skytwin/connectors": "workspace:*",
+    "chrono-node": "^2.7.7"
   },
   "devDependencies": {
     "typescript": "^6.0.3",
