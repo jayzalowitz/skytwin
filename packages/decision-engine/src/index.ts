@@ -72,6 +72,15 @@ export {
   type SignalVisibilityMeta,
 } from './visibility-filter.js';
 export { resolveLanguage, resolveTimezone, isNonEnglish } from './locale.js';
+export {
+  buildDigest,
+  type Digest,
+  type DigestItem,
+  type DigestTodo,
+  type DigestTopic,
+  type DigestTopicItem,
+  type BuildDigestOptions,
+} from './digest.js';
 
 export { isTrivialAutoEmail } from './cost-gate.js';
 export type {
