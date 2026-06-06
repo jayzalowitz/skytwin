@@ -16,6 +16,7 @@
     "dev": "tsc --watch",
     "migrate": "tsx src/migrations/001-initial.ts",
     "seed": "tsx src/seeds/seed.ts",
+    "demo:fixture": "tsx src/seeds/demo-fixture.ts",
     "generate": "tsc --declaration --emitDeclarationOnly",
     "test": "vitest run",
     "lint": "tsc --noEmit"

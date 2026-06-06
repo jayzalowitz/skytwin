@@ -12,6 +12,18 @@ export type { DatabaseConfig } from './connection.js';
 // demo fixture (spec 09) and any re-runnable seed path.
 export { seedUpsert, buildUpsertSql, type UpsertSpec, type Queryable } from './seeds/upsert.js';
 
+// Launch demo-fixture safety guard (spec 09 invariant #0) — never runs for a
+// real or new user.
+export {
+  assertDemoSafe,
+  assertDemoUser,
+  isLocalDbTarget,
+  REQUIRED_OVERRIDE_TOKEN,
+  DEMO_USER_ID,
+  type DemoGuardEnv,
+  type DemoGuardResult,
+} from './seeds/demo-guard.js';
+
 // Row types
 export type {
   OAuthTokenRowWithEncrypted,
