@@ -196,9 +196,21 @@ function renderProseSection(briefing) {
         : ''}
     </div>
     ${digestHtml}
-    <div class="briefing-prose-content" style="white-space: pre-wrap; line-height: 1.7;">
-      ${prose ? escapeHtml(prose) : '<em class="muted">No briefing content yet.</em>'}
-    </div>
+    ${
+      digestHtml
+        ? // When the structured digest renders, the prose is redundant — tuck it
+          // under a disclosure as the long-form view (design-review: avoid
+          // showing the same briefing twice).
+          `<details class="briefing-prose-details">
+             <summary class="muted">Full briefing</summary>
+             <div class="briefing-prose-content" style="white-space: pre-wrap; line-height: 1.7;">
+               ${prose ? escapeHtml(prose) : '<em class="muted">No briefing content yet.</em>'}
+             </div>
+           </details>`
+        : `<div class="briefing-prose-content" style="white-space: pre-wrap; line-height: 1.7;">
+             ${prose ? escapeHtml(prose) : '<em class="muted">No briefing content yet.</em>'}
+           </div>`
+    }
   `;
 }
 

@@ -1273,3 +1273,11 @@ textarea.form-input { resize: vertical; min-height: 60px; }
   border: 1px dashed var(--border); cursor: pointer;
 }
 .citation-chip:hover { background: var(--bg-soft, rgba(127,127,127,0.1)); }
+
+/* Digest: long-form prose tucked under a disclosure when the structured view renders. */
+.briefing-prose-details { margin-top: 1rem; }
+.briefing-prose-details > summary {
+  cursor: pointer; font-size: 0.82rem; padding: 0.3rem 0;
+  list-style: revert;
+}
+.briefing-prose-details[open] > summary { margin-bottom: 0.5rem; }
