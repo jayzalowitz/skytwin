@@ -305,6 +305,9 @@ function renderProseSection(briefing) {
   const prose = briefing ? briefing.prose_markdown || '' : '';
   const generated = briefing ? new Date(briefing.generated_at) : null;
   const isRead = !!briefing?.read_at;
+  // The live-computed digest (no stored row) carries the sentinel id 'live';
+  // read-state controls only apply to a persisted briefing.
+  const isPersisted = !!briefing && briefing.id !== 'live';
   // Spec 08: render the structured two-bucket digest when present; the prose
   // block stays as a fallback / long-form view.
   const digestHtml = renderDigestSection(briefing?.structured);
@@ -313,11 +316,11 @@ function renderProseSection(briefing) {
     <div class="briefing-meta" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; font-size: 0.82rem; color: var(--text-dim);">
       <span>
         ${generated ? `Generated ${formatTime(generated)}` : ''}
-        ${!isRead && briefing
+        ${!isRead && isPersisted
           ? `<span class="badge badge-info briefing-unread-badge" data-briefing-id="${escapeHtml(briefing.id)}" style="margin-left: 0.5rem;">New</span>`
           : ''}
       </span>
-      ${!isRead && briefing
+      ${!isRead && isPersisted
         ? `<button class="btn btn-sm btn-outline"
               data-action="mark-briefing-read"
               data-briefing-id="${escapeHtml(briefing.id)}"
