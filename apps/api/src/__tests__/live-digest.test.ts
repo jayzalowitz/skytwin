@@ -65,8 +65,10 @@ describe('buildLiveDigest', () => {
     expect(todo.detail?.sourceRefs[0]).toContain('no-reply@accounts.example');
     expect(todo.detail?.sourceRefs[0]).not.toMatch(/^email:\s*[0-9a-f]{8}$/);
     expect(todo.detail?.urgencyReason).toMatch(/security alert/i);
-    expect(todo.detail?.provenanceLabel).toMatch(/untrusted/i); // safety #8 fail-safe
-    expect(todo.detail?.whyNotAutoExecuted.join(' ')).toMatch(/untrusted/i);
+    // Plain-language provenance (no scary "untrusted" jargon), still fail-safe.
+    expect(todo.detail?.provenanceLabel).toBe('From someone else');
+    expect(todo.detail?.whyNotAutoExecuted.join(' ')).toMatch(/someone else/i);
+    expect(todo.detail?.whyNotAutoExecuted.join(' ')).not.toMatch(/untrusted/i);
     // Actionable, not system labels: the real snippet + a recommended step.
     expect(todo.body).toBe('A sign-in from a new device.');
     expect(todo.detail?.suggestedAction).toMatch(/security settings/i);

@@ -47,32 +47,34 @@ export interface DigestItemDetail {
   suggestedAction: string | null;
 }
 
-// Provenance → human label. Unknown / absent fails safe to the untrusted wording
-// (mirrors the provenance fail-safe — never imply trust we can't prove).
+// Provenance → plain-English label a non-technical person understands. The
+// fail-safe still resolves to "someone else" (never imply you wrote something
+// we can't prove you did), but without the alarming "untrusted" wording — the
+// caution lives in the "why I'm asking you" line, not a scary origin label.
 const PROVENANCE_LABELS: Record<string, string> = {
   user_originated: 'From you',
-  trusted_context: 'From your twin',
-  untrusted_external: 'Inbound — untrusted',
+  trusted_context: 'From your assistant',
+  untrusted_external: 'From someone else',
 };
 
 export function provenanceLabel(p: ActionProvenance | undefined): string {
-  return (p && PROVENANCE_LABELS[p]) || 'Inbound — untrusted';
+  return (p && PROVENANCE_LABELS[p]) || 'From someone else';
 }
 
 /** Map a single machine block code to a human reason. */
 function humanizeBlockReason(code: string): string {
-  const [kind, detail] = code.split(':');
+  const [kind] = code.split(':');
   switch (kind) {
     case 'missing_write_scope':
-      return `No permission granted to do this for you${detail ? ` (needs ${detail})` : ''}`;
+      return "I don't have permission to do this for you yet";
     case 'trust_tier':
-      return `Your trust level (${detail ?? 'low'}) asks me to check first`;
+      return "You've asked me to check with you before I act";
     case 'policy':
-      return `Held by a safety policy${detail ? `: ${detail}` : ''}`;
+      return 'A safety rule is holding this for review';
     case 'untrusted_origin':
-      return 'From untrusted content — needs your confirmation';
+      return 'It came from someone else, so I want your OK first';
     case 'spend_limit':
-      return 'Would exceed your spend limit';
+      return 'It would cost more than your limit';
     default:
       return code;
   }

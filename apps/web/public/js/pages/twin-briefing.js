@@ -141,7 +141,7 @@ function renderCite(signalRefs) {
 // Provenance dot: filled (neutral) = from you, hollow = inbound. Never accent-colored.
 function provDot(detail) {
   const you = detail && /from you/i.test(detail.provenanceLabel || '');
-  return `<span class="digest-prov ${you ? 'you' : 'inbound'}" title="${you ? 'from you' : 'inbound'}"></span>`;
+  return `<span class="digest-prov ${you ? 'you' : 'inbound'}" title="${you ? 'you wrote this' : 'someone else sent this'}"></span>`;
 }
 
 // Power view (spec 14): persisted, defaults OFF (clean view is the default).
@@ -155,16 +155,20 @@ function detailToggle(detail) {
 }
 function detailPanel(detail) {
   if (!detail) return '';
-  // The actionable "suggested" step is shown in the row itself; this power-view
-  // panel is the trust/technical metadata behind the decision.
-  const rows = [`<div><span class="dd-k">origin</span> ${escapeHtml(detail.provenanceLabel || '')}</div>`];
-  if (typeof detail.confidencePct === 'number') rows.push(`<div><span class="dd-k">confidence</span> ${detail.confidencePct}%</div>`);
-  if (detail.urgencyReason) rows.push(`<div><span class="dd-k">urgency</span> ${escapeHtml(detail.urgencyReason)}</div>`);
-  if (Array.isArray(detail.whyNotAutoExecuted) && detail.whyNotAutoExecuted.length)
-    rows.push(`<div><span class="dd-k">not auto-run</span> ${detail.whyNotAutoExecuted.map((r) => escapeHtml(String(r))).join('; ')}</div>`);
+  // Plain-language "why" behind the item, for anyone who wants it. The
+  // actionable step is already in the row. Labels read like a person would
+  // ask, not like the system names things internally.
+  const rows = [];
   if (Array.isArray(detail.sourceRefs) && detail.sourceRefs.length)
-    rows.push(`<div><span class="dd-k">refs</span> <code>${detail.sourceRefs.map((r) => escapeHtml(String(r))).join(', ')}</code></div>`);
-  if (detail.explanation) rows.push(`<div><span class="dd-k">why</span> ${escapeHtml(detail.explanation)}</div>`);
+    rows.push(`<div><span class="dd-k">where it's from</span> ${escapeHtml(detail.sourceRefs.join(', '))}</div>`);
+  if (detail.provenanceLabel)
+    rows.push(`<div><span class="dd-k">written by</span> ${escapeHtml(detail.provenanceLabel.replace(/^From /, ''))}</div>`);
+  if (typeof detail.confidencePct === 'number')
+    rows.push(`<div><span class="dd-k">how sure I am</span> ${detail.confidencePct}%</div>`);
+  if (detail.urgencyReason)
+    rows.push(`<div><span class="dd-k">why now</span> ${escapeHtml(detail.urgencyReason)}</div>`);
+  if (Array.isArray(detail.whyNotAutoExecuted) && detail.whyNotAutoExecuted.length)
+    rows.push(`<div><span class="dd-k">why I'm asking you</span> ${detail.whyNotAutoExecuted.map((r) => escapeHtml(String(r))).join('; ')}</div>`);
   return `<div class="digest-detail">${rows.join('')}</div>`;
 }
 

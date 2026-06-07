@@ -2,14 +2,14 @@ import { describe, it, expect } from 'vitest';
 import { buildDigestItemDetail, provenanceLabel } from '../digest-detail.js';
 
 describe('provenanceLabel (spec 14)', () => {
-  it('maps known provenance to human labels', () => {
+  it('maps known provenance to plain-language labels', () => {
     expect(provenanceLabel('user_originated')).toBe('From you');
-    expect(provenanceLabel('trusted_context')).toBe('From your twin');
-    expect(provenanceLabel('untrusted_external')).toBe('Inbound — untrusted');
+    expect(provenanceLabel('trusted_context')).toBe('From your assistant');
+    expect(provenanceLabel('untrusted_external')).toBe('From someone else');
   });
-  it('fails safe to the untrusted wording for unknown/absent', () => {
-    expect(provenanceLabel(undefined)).toBe('Inbound — untrusted');
-    expect(provenanceLabel('weird' as never)).toBe('Inbound — untrusted');
+  it('fails safe to "someone else" for unknown/absent (never imply you wrote it)', () => {
+    expect(provenanceLabel(undefined)).toBe('From someone else');
+    expect(provenanceLabel('weird' as never)).toBe('From someone else');
   });
 });
 
@@ -36,8 +36,10 @@ describe('buildDigestItemDetail (spec 14)', () => {
       blockedReasons: ['missing_write_scope:gmail.send', 'trust_tier:observer'],
       sourceRefs: [],
     });
-    expect(d.whyNotAutoExecuted[0]).toMatch(/No permission granted.*gmail\.send/);
-    expect(d.whyNotAutoExecuted[1]).toMatch(/trust level \(observer\)/);
+    expect(d.whyNotAutoExecuted[0]).toMatch(/don't have permission/i);
+    expect(d.whyNotAutoExecuted[1]).toMatch(/check with you before/i);
+    // No internal jargon leaks to the user.
+    expect(d.whyNotAutoExecuted.join(' ')).not.toMatch(/trust_tier|observer|scope/i);
   });
 
   it('gives a generic review reason when approval is required without specific codes', () => {

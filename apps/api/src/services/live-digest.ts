@@ -155,14 +155,23 @@ export function suggestedActionFor(row: {
   }
 }
 
-/** First non-empty string field from a signal's data payload. */
+/** The actual sender of a signal (email from / event organizer), if any. */
 function senderRef(data: Record<string, unknown>): string | null {
-  for (const key of ['from', 'organizer', 'fileName', 'path']) {
+  for (const key of ['from', 'organizer']) {
     const v = data[key];
     if (typeof v === 'string' && v.trim()) return v.trim();
   }
   return null;
 }
+
+/** Friendly "where it's from" when there's no concrete sender. */
+const SOURCE_FRIENDLY: Record<string, string> = {
+  email: 'your inbox',
+  calendar: 'your calendar',
+  file: 'your files',
+  voice: 'a voice note',
+  app: 'an app',
+};
 
 /**
  * A decision belongs in the TO-DO bucket (needs you) when the engine escalated
@@ -276,7 +285,7 @@ export async function buildLiveDigest(userId: string): Promise<LiveDigest | null
         suggestedAction: suggestedActionFor(r) ?? undefined,
         requiresApproval: actionRequired,
         blockedReasons,
-        sourceRefs: [sender ? `${sourceType}: ${sender}` : sourceType],
+        sourceRefs: [sender ?? SOURCE_FRIENDLY[sourceType] ?? sourceType],
       }),
     );
 
