@@ -323,7 +323,7 @@ export function createTwinRouter(): Router {
   return router;
 }
 
-function describePreference(domain: string, key: string, value: unknown): string | null {
+export function describePreference(domain: string, key: string, value: unknown): string | null {
   const domainLabels: Record<string, string> = {
     email: 'Email',
     calendar: 'Calendar',
@@ -369,8 +369,41 @@ function describePreference(domain: string, key: string, value: unknown): string
     // like a config file ("find_travel_deals = i love travel deals").
     return `${domainLabel}: ${value.trim()}`;
   }
+  if (typeof value === 'number') {
+    return `${domainLabel}: ${humanKey} — ${value}`;
+  }
   if (value !== null && value !== undefined) {
-    return `${domainLabel}: ${humanKey} — ${String(value)}`;
+    // Objects/arrays: render a compact, human-readable summary instead of the
+    // useless "[object Object]" that String() produces on a structured value.
+    const rendered = renderStructuredPrefValue(value);
+    return rendered ? `${domainLabel}: ${humanKey} — ${rendered}` : null;
   }
   return null;
+}
+
+/**
+ * Turn a structured preference value (array or object) into a short,
+ * human-readable string. Never returns "[object Object]".
+ */
+function renderStructuredPrefValue(value: unknown): string {
+  if (Array.isArray(value)) {
+    return value
+      .map((v) => (v !== null && typeof v === 'object' ? JSON.stringify(v) : String(v)))
+      .filter((s) => s.length > 0)
+      .join(', ');
+  }
+  if (value !== null && typeof value === 'object') {
+    const parts: string[] = [];
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (v === null || v === undefined) continue;
+      const vs = Array.isArray(v)
+        ? v.join(', ')
+        : typeof v === 'object'
+          ? JSON.stringify(v)
+          : String(v);
+      if (vs.length > 0) parts.push(`${k.replace(/_/g, ' ')}: ${vs}`);
+    }
+    return parts.join('; ');
+  }
+  return String(value);
 }
