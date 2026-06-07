@@ -26,6 +26,8 @@ import type { SourceCoverage } from './source-coverage.js';
 export interface DigestItem {
   ref: string;
   text: string;
+  /** One-line preview of what the signal actually says (snippet / body). */
+  body?: string;
   /** True when the decision pipeline escalated this to the user (a to-do). */
   actionRequired: boolean;
   domain: string | null;
@@ -39,6 +41,8 @@ export interface DigestItem {
 export interface DigestTodo {
   ref: string;
   text: string;
+  /** One-line preview of what the signal actually says (snippet / body). */
+  body?: string;
   sourceType?: string;
   deadline?: string | null;
   /** Citation refs for the UI chips (review #4: UI + v2 prompt expect signalRefs[]). */
@@ -50,6 +54,8 @@ export interface DigestTodo {
 export interface DigestTopicItem {
   ref: string;
   text: string;
+  /** One-line preview of what the signal actually says (snippet / body). */
+  body?: string;
   sourceType?: string;
   signalRefs: string[];
   detail?: DigestItemDetail;
@@ -100,6 +106,7 @@ export function buildDigest(items: DigestItem[], opts: BuildDigestOptions = {}):
     .map((i) => ({
       ref: i.ref,
       text: i.text,
+      body: i.body,
       sourceType: i.sourceType,
       deadline: i.deadline ?? null,
       signalRefs: [i.ref],
@@ -117,7 +124,7 @@ export function buildDigest(items: DigestItem[], opts: BuildDigestOptions = {}):
     title: c.title,
     items: c.signalRefs.map((ref) => {
       const it = byRef.get(ref);
-      return { ref, text: it?.text ?? '', sourceType: it?.sourceType, signalRefs: [ref] };
+      return { ref, text: it?.text ?? '', body: it?.body, sourceType: it?.sourceType, signalRefs: [ref] };
     }),
   }));
 

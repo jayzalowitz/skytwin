@@ -40,6 +40,8 @@ interface DecisionDigestRow {
   auto_executed: boolean | null;
   escalation_reason: string | null;
   confidence: number | null;
+  selected_action_desc: string | null;
+  selected_action_type: string | null;
 }
 
 interface AccountRow {
@@ -102,6 +104,28 @@ export function urgencyReasonFor(row: {
   }
 }
 
+/**
+ * The twin's recommended next step for an item — the actual action the user
+ * (or twin) would take, not a system label. Prefers the pipeline's selected
+ * candidate-action description; falls back to a sensible default for the
+ * situations that are escalate-only by nature.
+ */
+export function suggestedActionFor(row: {
+  selected_action_desc: string | null;
+  situation_type: string;
+}): string | null {
+  const desc = row.selected_action_desc?.trim();
+  if (desc) return desc;
+  switch (row.situation_type) {
+    case 'security_alert':
+      return 'Open your account security settings and confirm this sign-in';
+    case 'calendar_invite':
+      return 'Reply to the invite — accept, decline, or propose a new time';
+    default:
+      return null;
+  }
+}
+
 /** First non-empty string field from a signal's data payload. */
 function senderRef(data: Record<string, unknown>): string | null {
   for (const key of ['from', 'organizer', 'fileName', 'path']) {
@@ -143,9 +167,12 @@ export async function buildLiveDigest(userId: string): Promise<LiveDigest | null
             d.raw_event,
             (d.interpreted_situation->>'summary') AS summary,
             d.domain, d.urgency, d.situation_type, d.created_at,
-            o.requires_approval, o.auto_executed, o.escalation_reason, o.confidence
+            o.requires_approval, o.auto_executed, o.escalation_reason, o.confidence,
+            sel.description AS selected_action_desc,
+            sel.action_type AS selected_action_type
      FROM decisions d
      LEFT JOIN decision_outcomes o ON o.decision_id = d.id
+     LEFT JOIN candidate_actions sel ON sel.id = o.selected_action_id
      WHERE d.user_id = $1
      ORDER BY d.created_at DESC
      LIMIT $2`,
@@ -181,6 +208,16 @@ export async function buildLiveDigest(userId: string): Promise<LiveDigest | null
       signalText.body.trim() ||
       r.summary ||
       `${r.situation_type.replace(/_/g, ' ')} needs review`;
+    // The real content (what it actually says) — only when distinct from the
+    // title, so we don't echo the same line twice. Capped to keep the digest
+    // scannable.
+    const bodyText = signalText.body.trim();
+    const body =
+      bodyText && bodyText !== text
+        ? bodyText.length > 200
+          ? `${bodyText.slice(0, 199)}…`
+          : bodyText
+        : undefined;
 
     const actionRequired = needsYou(r);
     const urgency = normalizeUrgency(r.urgency);
@@ -207,6 +244,7 @@ export async function buildLiveDigest(userId: string): Promise<LiveDigest | null
         confidence: typeof r.confidence === 'number' ? r.confidence : undefined,
         domain: r.domain,
         urgencyReason: urgencyReasonFor(r),
+        suggestedAction: suggestedActionFor(r) ?? undefined,
         requiresApproval: actionRequired,
         blockedReasons,
         sourceRefs: [sender ? `${sourceType}: ${sender}` : sourceType],
@@ -216,6 +254,7 @@ export async function buildLiveDigest(userId: string): Promise<LiveDigest | null
     return {
       ref: r.id,
       text,
+      body,
       actionRequired,
       domain: r.domain,
       sourceType,

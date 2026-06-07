@@ -32,6 +32,8 @@ function decisionRow(over: Record<string, unknown> = {}) {
     auto_executed: false,
     escalation_reason: 'untrusted_origin',
     confidence: 0.8,
+    selected_action_desc: null,
+    selected_action_type: null,
     ...over,
   };
 }
@@ -65,6 +67,39 @@ describe('buildLiveDigest', () => {
     expect(todo.detail?.urgencyReason).toMatch(/security alert/i);
     expect(todo.detail?.provenanceLabel).toMatch(/untrusted/i); // safety #8 fail-safe
     expect(todo.detail?.whyNotAutoExecuted.join(' ')).toMatch(/untrusted/i);
+    // Actionable, not system labels: the real snippet + a recommended step.
+    expect(todo.body).toBe('A sign-in from a new device.');
+    expect(todo.detail?.suggestedAction).toMatch(/security settings/i);
+  });
+
+  it('uses the pipeline-selected action as the suggested next step', async () => {
+    mockQuery
+      .mockResolvedValueOnce({
+        rows: [
+          decisionRow({
+            situation_type: 'calendar_invite',
+            domain: 'calendar',
+            urgency: 'medium',
+            requires_approval: false,
+            escalation_reason: null,
+            selected_action_desc: 'Accept this calendar invitation.',
+            selected_action_type: 'accept_invite',
+            raw_event: {
+              source: 'google_calendar',
+              type: 'event',
+              data: { title: 'Acme kickoff', description: 'Project kickoff with Acme.' },
+            },
+          }),
+        ],
+      })
+      .mockResolvedValueOnce({ rows: [] });
+
+    const d = await buildLiveDigest('u1');
+    // calendar_invite is a to-do (needs RSVP)
+    const todo = d!.todos[0]!;
+    expect(todo.text).toBe('Acme kickoff');
+    expect(todo.body).toBe('Project kickoff with Acme.');
+    expect(todo.detail?.suggestedAction).toBe('Accept this calendar invitation.');
   });
 
   it('puts routine inbound items in topics, not to-dos', async () => {

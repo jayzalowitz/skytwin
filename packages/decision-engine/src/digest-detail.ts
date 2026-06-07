@@ -28,6 +28,12 @@ export interface DigestItemDetailInput {
    * deadline) can surface it instead of a generic placeholder.
    */
   urgencyReason?: string;
+  /**
+   * The action the twin recommends — the user's actual next step ("Accept
+   * this calendar invitation", "Review the sign-in in your account settings").
+   * Actionable, not a system label.
+   */
+  suggestedAction?: string;
 }
 
 export interface DigestItemDetail {
@@ -37,6 +43,8 @@ export interface DigestItemDetail {
   sourceRefs: string[];
   whyNotAutoExecuted: string[];
   explanation: string | null;
+  /** The twin's recommended next step (actionable), if known. */
+  suggestedAction: string | null;
 }
 
 // Provenance → human label. Unknown / absent fails safe to the untrusted wording
@@ -96,5 +104,6 @@ export function buildDigestItemDetail(input: DigestItemDetailInput): DigestItemD
     sourceRefs: input.sourceRefs,
     whyNotAutoExecuted,
     explanation: input.explanation ?? null,
+    suggestedAction: input.suggestedAction?.trim() || null,
   };
 }

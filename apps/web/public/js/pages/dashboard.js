@@ -209,6 +209,8 @@ function renderDashboardDigest(s, briefing) {
           ${t.deadline ? `<span class="digest-deadline">${escapeHtml(String(t.deadline))}</span>` : ''}
           ${sourceChip(t.sourceType)}
         </div>
+        ${t.body ? `<div class="digest-body">${escapeHtml(t.body)}</div>` : ''}
+        ${t.detail?.suggestedAction ? `<div class="digest-suggested">→ ${escapeHtml(t.detail.suggestedAction)}</div>` : ''}
       </div>
     </li>`).join('');
 

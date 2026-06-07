@@ -1321,6 +1321,16 @@ textarea.form-input { resize: vertical; min-height: 60px; }
 .digest-detail .dd-k { min-width: 6rem; color: var(--text-dim); text-transform: uppercase;
   font-size: 0.62rem; letter-spacing: .04em; }
 .digest-detail code { font-family: var(--font-data); font-size: 0.72rem; }
+/* The actionable "suggested next step" leads the detail panel — slightly
+   brighter than the trust metadata around it. */
+.digest-detail .dd-suggested { color: var(--text); }
+.digest-detail .dd-suggested .dd-k { color: var(--iris); }
+/* One-line preview of what the signal actually says, under the title. */
+.digest-body { font-size: 0.8rem; color: var(--text-muted); line-height: 1.45;
+  margin-top: 0.15rem; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical; }
+/* Home digest: the recommended next step, action-toned (iris). */
+.digest-suggested { font-size: 0.78rem; color: var(--iris); margin-top: 0.2rem; font-weight: 500; }
 .digest-detail-toggle { font-size: 0.7rem; background: none; border: none; color: var(--iris);
   cursor: pointer; padding: 0; margin-left: 0.4rem; }
 .digest-todo.detail-open .digest-detail, .digest-topic-item.detail-open .digest-detail,

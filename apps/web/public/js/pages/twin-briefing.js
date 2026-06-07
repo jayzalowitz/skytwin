@@ -155,7 +155,10 @@ function detailToggle(detail) {
 }
 function detailPanel(detail) {
   if (!detail) return '';
-  const rows = [`<div><span class="dd-k">origin</span> ${escapeHtml(detail.provenanceLabel || '')}</div>`];
+  // Lead with the actionable next step; the trust metadata follows.
+  const rows = [];
+  if (detail.suggestedAction) rows.push(`<div class="dd-suggested"><span class="dd-k">suggested</span> ${escapeHtml(detail.suggestedAction)}</div>`);
+  rows.push(`<div><span class="dd-k">origin</span> ${escapeHtml(detail.provenanceLabel || '')}</div>`);
   if (typeof detail.confidencePct === 'number') rows.push(`<div><span class="dd-k">confidence</span> ${detail.confidencePct}%</div>`);
   if (detail.urgencyReason) rows.push(`<div><span class="dd-k">urgency</span> ${escapeHtml(detail.urgencyReason)}</div>`);
   if (Array.isArray(detail.whyNotAutoExecuted) && detail.whyNotAutoExecuted.length)
@@ -201,6 +204,7 @@ function renderTodoRow(t) {
           ${renderCite(t.signalRefs)}
           ${detailToggle(t.detail)}
         </div>
+        ${t.body ? `<div class="digest-body">${escapeHtml(t.body)}</div>` : ''}
         ${isSec ? `<div class="digest-todo-hint">Open your provider directly — don't trust links in the message.</div>` : ''}
         ${detailPanel(t.detail)}
       </div>
@@ -214,6 +218,7 @@ function renderTopicItem(it) {
       ${provDot(it.detail)}
       <div class="digest-todo-body">
         <div>${escapeHtml(it.text || '')} ${renderSource(it.sourceType)} ${renderCite(it.signalRefs)} ${detailToggle(it.detail)}</div>
+        ${it.body ? `<div class="digest-body">${escapeHtml(it.body)}</div>` : ''}
         ${detailPanel(it.detail)}
       </div>
     </li>`;
