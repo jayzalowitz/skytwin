@@ -72,7 +72,7 @@ describe('buildLiveDigest', () => {
     expect(todo.detail?.suggestedAction).toMatch(/security settings/i);
   });
 
-  it('uses the pipeline-selected action as the suggested next step', async () => {
+  it('derives a clean suggested step from the selected action TYPE', async () => {
     mockQuery
       .mockResolvedValueOnce({
         rows: [
@@ -82,6 +82,7 @@ describe('buildLiveDigest', () => {
             urgency: 'medium',
             requires_approval: false,
             escalation_reason: null,
+            // The engine's raw description is internal-y; we map the TYPE.
             selected_action_desc: 'Accept this calendar invitation.',
             selected_action_type: 'accept_invite',
             raw_event: {
@@ -99,7 +100,32 @@ describe('buildLiveDigest', () => {
     const todo = d!.todos[0]!;
     expect(todo.text).toBe('Acme kickoff');
     expect(todo.body).toBe('Project kickoff with Acme.');
-    expect(todo.detail?.suggestedAction).toBe('Accept this calendar invitation.');
+    expect(todo.detail?.suggestedAction).toMatch(/accept the invite/i);
+  });
+
+  it('cleans the engine\'s internal action text into a user-facing step', async () => {
+    mockQuery
+      .mockResolvedValueOnce({
+        rows: [
+          decisionRow({
+            situation_type: 'generic',
+            domain: 'general',
+            urgency: 'low',
+            requires_approval: false,
+            escalation_reason: null,
+            // Raw rule-based text that should NOT leak to the user.
+            selected_action_desc: 'Escalate to user: Decision needed regarding: transcript.',
+            selected_action_type: 'escalate_to_user',
+            raw_event: { source: 'voice', type: 'note', data: { transcript: 'Call Acme Monday.' } },
+          }),
+        ],
+      })
+      .mockResolvedValueOnce({ rows: [] });
+
+    const d = await buildLiveDigest('u1');
+    const item = d!.topics.flatMap((t) => t.items)[0];
+    expect(item?.detail?.suggestedAction).not.toMatch(/escalate to user|decision needed regarding/i);
+    expect(item?.detail?.suggestedAction).toMatch(/take a look/i);
   });
 
   it('puts routine inbound items in topics, not to-dos', async () => {

@@ -105,24 +105,53 @@ export function urgencyReasonFor(row: {
 }
 
 /**
- * The twin's recommended next step for an item — the actual action the user
- * (or twin) would take, not a system label. Prefers the pipeline's selected
- * candidate-action description; falls back to a sensible default for the
- * situations that are escalate-only by nature.
+ * The twin's recommended next step for an item — phrased for the user, not the
+ * system. Driven by the pipeline's selected action TYPE (structured and
+ * reliable) mapped to a plain-English instruction, so every item gets a clean
+ * suggestion instead of the engine's raw internal text ("Apply appropriate
+ * labels to this email", "Escalate to user: Decision needed regarding: …").
  */
+const ACTION_SUGGESTIONS: Record<string, string> = {
+  accept_invite: 'Accept the invite, or decline / propose another time.',
+  tentative_accept: 'Tentatively accept, or decide later.',
+  decline_invite: 'Decline this invite.',
+  respond_to_event: 'Reply to the invite — accept, decline, or propose a time.',
+  archive_email: "Nothing needed — I'll archive it.",
+  label_email: "Nothing needed — I'll file it for you.",
+  draft_email: 'Review the draft reply I prepared.',
+  send_email: 'Review and send when you’re ready.',
+  acknowledge: 'Just an update — no reply needed.',
+  dismiss: 'Dismiss it once you’ve seen it.',
+  organize_file: "I'll file it where it belongs.",
+  summarize_document: 'Open it, or ask me for a summary.',
+  share_document: 'Share it with the right people.',
+  create_note: 'Saved as a note — open it when you need it.',
+  escalate_to_user: 'Take a look and tell me what to do.',
+};
+
 export function suggestedActionFor(row: {
-  selected_action_desc: string | null;
+  selected_action_type: string | null;
   situation_type: string;
 }): string | null {
-  const desc = row.selected_action_desc?.trim();
-  if (desc) return desc;
+  // Security alerts get a specific, safe instruction regardless of the engine's
+  // generic escalate action.
+  if (row.situation_type === 'security_alert') {
+    return "Open your account's security settings and confirm this sign-in — don't use links in the message.";
+  }
+  const byType = row.selected_action_type
+    ? ACTION_SUGGESTIONS[row.selected_action_type]
+    : undefined;
+  if (byType) return byType;
+  // No selected action: fall back on the situation.
   switch (row.situation_type) {
-    case 'security_alert':
-      return 'Open your account security settings and confirm this sign-in';
     case 'calendar_invite':
-      return 'Reply to the invite — accept, decline, or propose a new time';
+      return 'Reply to the invite — accept, decline, or propose a time.';
+    case 'calendar_update':
+      return 'Just an update — no reply needed.';
+    case 'document_management':
+      return "I'll file it; open it if you want to review.";
     default:
-      return null;
+      return 'Take a look and decide what to do.';
   }
 }
 
