@@ -66,18 +66,22 @@ export function createDecisionsRouter(): Router {
         decisions.map((d) => d.id),
       );
       const outcomeMap = new Map(
-        outcomes.map((o) => [o.decision_id, o.auto_executed]),
+        outcomes.map((o) => [o.decision_id, o]),
       );
 
       res.json({
-        decisions: decisions.map((d) => ({
-          id: d.id,
-          situationType: d.situation_type,
-          domain: d.domain,
-          urgency: d.urgency,
-          autoExecuted: outcomeMap.has(d.id) ? outcomeMap.get(d.id) : null,
-          createdAt: d.created_at,
-        })),
+        decisions: decisions.map((d) => {
+          const outcome = outcomeMap.get(d.id);
+          return {
+            id: d.id,
+            situationType: d.situation_type,
+            domain: d.domain,
+            urgency: d.urgency,
+            autoExecuted: outcome ? outcome.auto_executed : null,
+            requiresApproval: outcome ? outcome.requires_approval === true : false,
+            createdAt: d.created_at,
+          };
+        }),
         total,
         limit,
         offset,
