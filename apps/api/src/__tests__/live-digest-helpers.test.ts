@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { needsYou, sourceLabel } from '../services/live-digest.js';
+import { needsYou, sourceLabel, normalizeUrgency, urgencyReasonFor } from '../services/live-digest.js';
 
 /**
  * The to-do/FYI split (spec 01) and source labels (spec 07) that drive the
@@ -55,5 +55,39 @@ describe('sourceLabel', () => {
   it('falls back to the raw source, or "app" when empty', () => {
     expect(sourceLabel('slack')).toBe('slack');
     expect(sourceLabel('')).toBe('app');
+  });
+});
+
+describe('normalizeUrgency', () => {
+  it("maps the DB default 'normal' to 'medium', not 'low'", () => {
+    expect(normalizeUrgency('normal')).toBe('medium');
+  });
+
+  it('passes through valid union values', () => {
+    expect(normalizeUrgency('low')).toBe('low');
+    expect(normalizeUrgency('medium')).toBe('medium');
+    expect(normalizeUrgency('high')).toBe('high');
+    expect(normalizeUrgency('critical')).toBe('critical');
+  });
+
+  it('falls back to low for null/unknown values', () => {
+    expect(normalizeUrgency(null)).toBe('low');
+    expect(normalizeUrgency('whatever')).toBe('low');
+  });
+});
+
+describe('urgencyReasonFor', () => {
+  it('gives the real driver for escalate-only / RSVP situations', () => {
+    expect(urgencyReasonFor({ situation_type: 'security_alert', urgency: 'high' })).toMatch(/security alert/i);
+    expect(urgencyReasonFor({ situation_type: 'calendar_invite', urgency: 'medium' })).toMatch(/rsvp/i);
+  });
+
+  it('describes the urgency level for other situations', () => {
+    expect(urgencyReasonFor({ situation_type: 'email_triage', urgency: 'critical' })).toMatch(/critical/i);
+    expect(urgencyReasonFor({ situation_type: 'email_triage', urgency: 'low' })).toMatch(/routine/i);
+  });
+
+  it('never returns the generic "Default for" placeholder', () => {
+    expect(urgencyReasonFor({ situation_type: 'email_triage', urgency: 'normal' })).not.toMatch(/default for/i);
   });
 });

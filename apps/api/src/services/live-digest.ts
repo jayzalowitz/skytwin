@@ -25,6 +25,9 @@ import {
   type Digest,
 } from '@skytwin/decision-engine';
 
+/** Most-recent decisions scanned to assemble one digest (perf + relevance bound). */
+const RECENT_DECISIONS_WINDOW = 30;
+
 interface DecisionDigestRow {
   id: string;
   raw_event: unknown;
@@ -36,6 +39,7 @@ interface DecisionDigestRow {
   requires_approval: boolean | null;
   auto_executed: boolean | null;
   escalation_reason: string | null;
+  confidence: number | null;
 }
 
 interface AccountRow {
@@ -63,6 +67,49 @@ export function sourceLabel(source: string): string {
 }
 
 const VALID_URGENCY = new Set(['low', 'medium', 'high', 'critical']);
+
+/**
+ * Normalize a stored urgency to the DigestItem union. The decisions table
+ * defaults urgency to 'normal' (decisionRepository.create), which isn't in the
+ * union — map it to 'medium' rather than silently demoting it to 'low'.
+ */
+export function normalizeUrgency(u: string | null): NonNullable<DigestItem['urgency']> {
+  if (u === 'normal') return 'medium';
+  return (u && VALID_URGENCY.has(u) ? u : 'low') as NonNullable<DigestItem['urgency']>;
+}
+
+/**
+ * A human "why this urgency" line for the power view — the real driver, not a
+ * generic "Default for <domain>" placeholder.
+ */
+export function urgencyReasonFor(row: {
+  situation_type: string;
+  urgency: string | null;
+}): string {
+  if (row.situation_type === 'security_alert') {
+    return 'Security alert — always sent to you, never auto-handled';
+  }
+  if (row.situation_type === 'calendar_invite') return 'New invite — awaiting your RSVP';
+  switch (normalizeUrgency(row.urgency)) {
+    case 'critical':
+      return 'Critical — flagged for immediate attention';
+    case 'high':
+      return 'High urgency';
+    case 'medium':
+      return 'Normal priority';
+    default:
+      return 'Routine — no deadline detected';
+  }
+}
+
+/** First non-empty string field from a signal's data payload. */
+function senderRef(data: Record<string, unknown>): string | null {
+  for (const key of ['from', 'organizer', 'fileName', 'path']) {
+    const v = data[key];
+    if (typeof v === 'string' && v.trim()) return v.trim();
+  }
+  return null;
+}
 
 /**
  * A decision belongs in the TO-DO bucket (needs you) when the engine escalated
@@ -96,13 +143,13 @@ export async function buildLiveDigest(userId: string): Promise<LiveDigest | null
             d.raw_event,
             (d.interpreted_situation->>'summary') AS summary,
             d.domain, d.urgency, d.situation_type, d.created_at,
-            o.requires_approval, o.auto_executed, o.escalation_reason
+            o.requires_approval, o.auto_executed, o.escalation_reason, o.confidence
      FROM decisions d
      LEFT JOIN decision_outcomes o ON o.decision_id = d.id
      WHERE d.user_id = $1
      ORDER BY d.created_at DESC
-     LIMIT 30`,
-    [userId],
+     LIMIT $2`,
+    [userId, RECENT_DECISIONS_WINDOW],
   );
   if (decisions.rows.length === 0) return null;
 
@@ -118,14 +165,15 @@ export async function buildLiveDigest(userId: string): Promise<LiveDigest | null
       type?: unknown;
       data?: unknown;
     };
+    const data: Record<string, unknown> =
+      raw.data && typeof raw.data === 'object'
+        ? (raw.data as Record<string, unknown>)
+        : {};
     const signalText = toSignalText({
       id: r.id,
       source: typeof raw.source === 'string' ? raw.source : 'unknown',
       type: typeof raw.type === 'string' ? raw.type : 'unknown',
-      data:
-        raw.data && typeof raw.data === 'object'
-          ? (raw.data as Record<string, unknown>)
-          : {},
+      data,
       timestamp: r.created_at instanceof Date ? r.created_at : new Date(r.created_at),
     });
     const text =
@@ -135,25 +183,33 @@ export async function buildLiveDigest(userId: string): Promise<LiveDigest | null
       `${r.situation_type.replace(/_/g, ' ')} needs review`;
 
     const actionRequired = needsYou(r);
-    const urgency = (r.urgency && VALID_URGENCY.has(r.urgency)
-      ? r.urgency
-      : 'low') as DigestItem['urgency'];
-    const blockedReasons = actionRequired
-      ? [r.escalation_reason ?? 'trust_tier:observer']
-      : [];
+    const urgency = normalizeUrgency(r.urgency);
+    // Honest "why not auto-run": the engine's real escalation reason if it has
+    // one, else the trust-tier gate ONLY when it genuinely required approval.
+    // A to-do that's escalate-only by nature (security/RSVP) but wasn't
+    // approval-gated gets no fabricated reason ("Set aside for your review").
+    const blockedReasons = r.escalation_reason
+      ? [r.escalation_reason]
+      : r.requires_approval === true
+        ? ['trust_tier:observer']
+        : [];
 
     const sourceType = sourceLabel(signalText.source);
+    // Meaningful source ref: who/what it came from (sender, organizer, file),
+    // not an opaque internal id slice.
+    const sender = senderRef(data);
     detailByRef.set(
       r.id,
       buildDigestItemDetail({
         // Inbound/ingested content the user did not author is untrusted-origin
         // (safety #8); user-authored signals (spec 07) are trusted context.
         provenance: signalText.authoredByUser ? 'user_originated' : 'untrusted_external',
+        confidence: typeof r.confidence === 'number' ? r.confidence : undefined,
         domain: r.domain,
+        urgencyReason: urgencyReasonFor(r),
         requiresApproval: actionRequired,
         blockedReasons,
-        explanation: r.summary,
-        sourceRefs: [`${sourceType}:${r.id.slice(0, 8)}`],
+        sourceRefs: [sender ? `${sourceType}: ${sender}` : sourceType],
       }),
     );
 
@@ -181,7 +237,7 @@ export async function buildLiveDigest(userId: string): Promise<LiveDigest | null
   );
 
   const handledCount = decisions.rows.filter((r) => r.auto_executed === true).length;
-  const digest = buildDigest(items, { maxTodos: 7 });
+  const digest = buildDigest(items); // maxTodos defaults to 7
 
   // Attach power-view detail (spec 14) to each surfaced todo/topic item by ref.
   for (const todo of digest.todos) {

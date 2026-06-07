@@ -38,6 +38,10 @@ vi.mock('@skytwin/db', () => ({
   lifebookRepository: {
     listVisible: mockListVisible,
   },
+  // buildLiveDigest (twin-briefings /latest) queries decisions; an empty
+  // result makes it return null so these tests exercise the prose/sections
+  // path without the live digest.
+  query: vi.fn().mockResolvedValue({ rows: [] }),
 }));
 
 import { createTwinBriefingsRouter } from '../routes/twin-briefings.js';

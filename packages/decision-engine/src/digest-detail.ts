@@ -21,6 +21,13 @@ export interface DigestItemDetailInput {
   /** Machine block codes, e.g. 'missing_write_scope:gmail.send', 'trust_tier:observer'. */
   blockedReasons?: string[];
   explanation?: string | null;
+  /**
+   * Explicit "why this urgency" string. When provided it overrides the
+   * computed default (deadline phrase / "Default for <domain>"), so callers
+   * that know the real urgency driver (a security alert, an RSVP, a stated
+   * deadline) can surface it instead of a generic placeholder.
+   */
+  urgencyReason?: string;
 }
 
 export interface DigestItemDetail {
@@ -69,9 +76,11 @@ export function buildDigestItemDetail(input: DigestItemDetailInput): DigestItemD
       ? Math.round(Math.max(0, Math.min(1, input.confidence)) * 100)
       : null;
 
-  const urgencyReason = input.deadlinePhrase
-    ? `Deadline: "${input.deadlinePhrase}"`
-    : `Default for ${input.domain ?? 'this kind of item'}`;
+  const urgencyReason =
+    input.urgencyReason?.trim() ||
+    (input.deadlinePhrase
+      ? `Deadline: "${input.deadlinePhrase}"`
+      : `Default for ${input.domain ?? 'this kind of item'}`);
 
   const whyNotAutoExecuted =
     input.requiresApproval && input.blockedReasons && input.blockedReasons.length > 0
