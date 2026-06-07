@@ -853,7 +853,7 @@ function wireDxtDropAndOpen() {
   }
 }
 
-window.addEventListener('DOMContentLoaded', () => {
+window.addEventListener('DOMContentLoaded', async () => {
   // Apply saved a11y preferences (text scale, reduced motion, voice-first)
   // before any render so users with prefs don't see a flash of base UI.
   initA11y();
