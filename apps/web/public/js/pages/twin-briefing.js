@@ -63,6 +63,18 @@ function handleBriefingClick(e) {
     // external URL. Routes to the decisions page filtered to the signal ref.
     const ref = target.dataset.signalRef;
     if (ref) window.location.hash = `#/decisions?signal=${encodeURIComponent(ref)}`;
+  } else if (action === 'toggle-power-view') {
+    // Spec 14: flip the persisted power-view preference and re-render the tab.
+    try {
+      localStorage.setItem(POWER_VIEW_KEY, isPowerView() ? '0' : '1');
+    } catch {
+      /* localStorage unavailable — non-fatal */
+    }
+    renderBriefingTab(userId, _activeCadence);
+  } else if (action === 'toggle-item-detail') {
+    // Spec 14: per-item inline detail expand (no re-render).
+    const item = target.closest('.digest-item');
+    if (item) item.classList.toggle('detail-open');
   }
 }
 
@@ -118,22 +130,94 @@ function citationChips(signalRefs) {
     .join(' ');
 }
 
+// Power view (spec 14): one digest, two depths. Persisted client-side so a power
+// user keeps technical depth on by default. Discoverable via the header toggle —
+// NOT buried in settings. Defaults OFF so the clean view stays default.
+const POWER_VIEW_KEY = 'skytwin.digest.powerView';
+function isPowerView() {
+  try {
+    return localStorage.getItem(POWER_VIEW_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+// Inline technical-depth panel for a row (spec 14). `detail` is the server-built
+// DigestItemDetail (buildDigestItemDetail); absent → no expander.
+function renderItemDetail(detail) {
+  if (!detail) return '';
+  const rows = [];
+  rows.push(`<div><span class="dd-k">origin</span> ${escapeHtml(detail.provenanceLabel || '')}</div>`);
+  if (typeof detail.confidencePct === 'number') {
+    rows.push(`<div><span class="dd-k">confidence</span> ${detail.confidencePct}%</div>`);
+  }
+  if (detail.urgencyReason) {
+    rows.push(`<div><span class="dd-k">urgency</span> ${escapeHtml(detail.urgencyReason)}</div>`);
+  }
+  if (Array.isArray(detail.whyNotAutoExecuted) && detail.whyNotAutoExecuted.length) {
+    rows.push(
+      `<div><span class="dd-k">not auto-run</span> ${detail.whyNotAutoExecuted
+        .map((r) => escapeHtml(String(r)))
+        .join('; ')}</div>`,
+    );
+  }
+  if (Array.isArray(detail.sourceRefs) && detail.sourceRefs.length) {
+    rows.push(
+      `<div><span class="dd-k">refs</span> <code>${detail.sourceRefs
+        .map((r) => escapeHtml(String(r)))
+        .join(', ')}</code></div>`,
+    );
+  }
+  if (detail.explanation) {
+    rows.push(`<div><span class="dd-k">why</span> ${escapeHtml(detail.explanation)}</div>`);
+  }
+  return `
+    <button type="button" class="digest-detail-toggle" data-action="toggle-item-detail">Details</button>
+    <div class="digest-detail">${rows.join('')}</div>`;
+}
+
+// Coverage panel (spec 13 data) — shown in power view: what the twin can/can't see
+// and how to unlock more. Also doubles as cold-start guidance.
+function renderCoveragePanel(coverage) {
+  if (!coverage) return '';
+  const status = (coverage.capabilityStatus || [])
+    .map(
+      (c) =>
+        `<li><span class="cov-${escapeHtml(c.status)}">${escapeHtml(c.status)}</span> ${escapeHtml(
+          c.capability,
+        )}${
+          c.status !== 'available' && c.unlockedBy?.length
+            ? ` <span class="muted">— connect ${escapeHtml(c.unlockedBy.join(', '))}</span>`
+            : ''
+        }</li>`,
+    )
+    .join('');
+  return `
+    <div class="digest-coverage">
+      <h4 class="digest-topic-title">What I can see</h4>
+      <ul class="digest-coverage-list">${status}</ul>
+    </div>`;
+}
+
 /**
- * Render the structured digest (spec 01/08): To-dos bucket above Topics, each row
- * source-aware + cited. Returns '' when there's no structured payload (caller
- * falls back to prose — back-compat for old briefings).
+ * Render the structured digest (spec 01/08 + power view spec 14): To-dos above
+ * Topics, source-aware + cited; power view adds inline per-item technical detail
+ * and the coverage panel. Returns '' when there's no structured payload (caller
+ * falls back to prose).
  */
 function renderDigestSection(structured) {
   if (!structured || (!structured.todos?.length && !structured.topics?.length)) return '';
+  const powerOn = isPowerView();
 
   const todos = (structured.todos || [])
     .map(
       (t) => `
-      <li class="digest-todo">
+      <li class="digest-item digest-todo">
         ${sourceChip(t.sourceType)}
         <span class="digest-todo-text">${escapeHtml(t.text || '')}</span>
         ${t.deadline ? `<span class="digest-deadline">${escapeHtml(String(t.deadline))}</span>` : ''}
         ${citationChips(t.signalRefs)}
+        ${renderItemDetail(t.detail)}
       </li>`,
     )
     .join('');
@@ -147,10 +231,11 @@ function renderDigestSection(structured) {
           ${(group.items || [])
             .map(
               (it) => `
-            <li class="digest-topic-item">
+            <li class="digest-item digest-topic-item">
               ${sourceChip(it.sourceType)}
               <span>${escapeHtml(it.text || '')}</span>
               ${citationChips(it.signalRefs)}
+              ${renderItemDetail(it.detail)}
             </li>`,
             )
             .join('')}
@@ -160,11 +245,18 @@ function renderDigestSection(structured) {
     .join('');
 
   return `
-    <section class="digest" aria-label="Digest">
+    <section class="digest ${powerOn ? 'digest--power' : ''}" aria-label="Digest">
+      <div class="digest-toolbar">
+        <button type="button" class="btn btn-sm btn-outline" data-action="toggle-power-view"
+          aria-pressed="${powerOn ? 'true' : 'false'}">
+          ${powerOn ? 'Power view: on' : 'Power view'}
+        </button>
+      </div>
       <h3 class="digest-heading">To-dos</h3>
       ${todos ? `<ul class="digest-todos">${todos}</ul>` : '<p class="muted">Nothing needs you right now.</p>'}
       <h3 class="digest-heading">Topics to catch up on</h3>
       ${topics || '<p class="muted">No topics today.</p>'}
+      ${powerOn ? renderCoveragePanel(structured.coverage) : ''}
     </section>
   `;
 }

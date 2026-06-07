@@ -1281,3 +1281,32 @@ textarea.form-input { resize: vertical; min-height: 60px; }
   list-style: revert;
 }
 .briefing-prose-details[open] > summary { margin-bottom: 0.5rem; }
+
+/* ── Power view (spec 14): inline technical depth, discoverable not buried ──── */
+.digest-toolbar { display: flex; justify-content: flex-end; margin-bottom: 0.5rem; }
+.digest-detail-toggle {
+  font-size: 0.68rem; background: none; border: none; color: var(--primary, #2563eb);
+  cursor: pointer; padding: 0; margin-left: 0.25rem;
+}
+.digest-detail {
+  display: none; width: 100%; margin: 0.3rem 0 0.2rem; padding: 0.4rem 0.6rem;
+  background: var(--bg-soft, rgba(127,127,127,0.08)); border-radius: var(--radius-sm);
+  font-size: 0.74rem; color: var(--text-muted);
+}
+.digest-detail > div { padding: 0.1rem 0; }
+.digest-detail .dd-k {
+  display: inline-block; min-width: 6rem; color: var(--text-dim);
+  text-transform: uppercase; font-size: 0.62rem; letter-spacing: 0.03em;
+}
+.digest-detail code { font-size: 0.72rem; }
+/* Show detail when the row is toggled open OR power view is on. */
+.digest-item.detail-open .digest-detail,
+.digest--power .digest-detail { display: block; }
+/* In power view everything is expanded, so hide the per-row toggles. */
+.digest--power .digest-detail-toggle { display: none; }
+.digest-coverage { margin-top: 1rem; border-top: 1px solid var(--border); padding-top: 0.75rem; }
+.digest-coverage-list { list-style: none; padding: 0; margin: 0; font-size: 0.78rem; }
+.digest-coverage-list li { padding: 0.15rem 0; }
+.cov-available { color: var(--success, #16a34a); font-weight: 600; }
+.cov-partial { color: var(--warning, #b45309); font-weight: 600; }
+.cov-unavailable { color: var(--text-dim); font-weight: 600; }

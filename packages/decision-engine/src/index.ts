@@ -90,6 +90,12 @@ export {
   type ExtractedEntity,
   type ResolvedEntity,
 } from './entity-linking.js';
+export {
+  buildDigestItemDetail,
+  provenanceLabel,
+  type DigestItemDetail,
+  type DigestItemDetailInput,
+} from './digest-detail.js';
 
 export { isTrivialAutoEmail } from './cost-gate.js';
 export type {

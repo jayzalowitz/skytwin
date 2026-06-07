@@ -20,6 +20,8 @@
 
 import { clusterSignals } from './topic-clusterer.js';
 import { filterVisible, type SignalVisibilityMeta } from './visibility-filter.js';
+import type { DigestItemDetail } from './digest-detail.js';
+import type { SourceCoverage } from './source-coverage.js';
 
 export interface DigestItem {
   ref: string;
@@ -41,6 +43,8 @@ export interface DigestTodo {
   deadline?: string | null;
   /** Citation refs for the UI chips (review #4: UI + v2 prompt expect signalRefs[]). */
   signalRefs: string[];
+  /** Power-view technical depth (spec 14); the generator builds it via buildDigestItemDetail. */
+  detail?: DigestItemDetail;
 }
 
 export interface DigestTopicItem {
@@ -48,6 +52,7 @@ export interface DigestTopicItem {
   text: string;
   sourceType?: string;
   signalRefs: string[];
+  detail?: DigestItemDetail;
 }
 
 export interface DigestTopic {
@@ -59,6 +64,8 @@ export interface DigestTopic {
 export interface Digest {
   todos: DigestTodo[];
   topics: DigestTopic[];
+  /** Source coverage for the power-view panel (spec 13/14). Optional. */
+  coverage?: SourceCoverage;
 }
 
 export interface BuildDigestOptions {
