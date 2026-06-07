@@ -201,7 +201,7 @@ function renderDashboardDigest(s, briefing) {
   };
 
   const todoRows = todos.map((t) => `
-    <li class="digest-todo${t.kind === 'security' ? ' is-security' : ''}">
+    <li class="digest-todo">
       ${provDot(t.detail)}
       <div class="digest-todo-body">
         <div>
@@ -545,8 +545,8 @@ export async function renderDashboard(container, userId) {
     ${sinceLastVisit && !tourMode ? renderSinceLastVisit(sinceLastVisit) : ''}
     ${showBrainPrompt ? renderBrainPrompt() : ''}
     ${renderTwinBriefingWidget(_twinBriefing)}
-    ${tourMode || hasAnyData ? '' : renderConnectGoogleHero({ googleConnected, googleSystemConfigured, userId })}
-    ${tourMode || hasAnyData ? '' : renderConnectGmailHero({ googleConnected, googleScopes: googleOAuth.status === 'fulfilled' ? (googleOAuth.value?.scopes ?? []) : [] })}
+    ${tourMode ? '' : renderConnectGoogleHero({ googleConnected, googleSystemConfigured, userId })}
+    ${tourMode ? '' : renderConnectGmailHero({ googleConnected, googleScopes: googleOAuth.status === 'fulfilled' ? (googleOAuth.value?.scopes ?? []) : [] })}
     ${renderAskTwinWidget({ userId, tourMode })}
     ${showBriefing ? renderBriefingCard({ items: briefingItems, createdAt: briefing.createdAt }) : ''}
     ${renderLifebooksCard(lifebooks)}
