@@ -73,8 +73,24 @@ function handleBriefingClick(e) {
     renderBriefingTab(userId, _activeCadence);
   } else if (action === 'toggle-item-detail') {
     // Spec 14: per-item inline detail expand (no re-render).
-    const item = target.closest('.digest-item');
+    const item = target.closest('.digest-todo, .digest-topic-item');
     if (item) item.classList.toggle('detail-open');
+  } else if (action === 'toggle-check') {
+    // Mark a to-do done (visual). Persistence rides with the act layer.
+    target.classList.toggle('is-on');
+    const row = target.closest('.digest-todo');
+    if (row) row.classList.toggle('is-done');
+  } else if (action === 'row-action') {
+    // Inline action zone (DESIGN.md). The act layer (draft/snooze/verify) wires
+    // these to real execution; until then, route or acknowledge honestly.
+    const act = target.dataset.act;
+    if (act === 'grant') {
+      window.location.hash = '#/settings';
+    } else {
+      showToast(`"${act}" runs through the act layer — wiring lands with that work.`, { kind: 'info', durationMs: 2600 });
+    }
+  } else if (action === 'connect-source') {
+    window.location.hash = '#/settings';
   }
 }
 
@@ -98,163 +114,184 @@ async function handleShowHistoryItem(briefingId, userId) {
   renderProseSection(target);
 }
 
-// Source-type → accessible label for the digest source chip (spec 08, #481).
-// Text labels (not icon-only) for a11y; unknown types fall back to a neutral chip.
-const SOURCE_CHIP_LABELS = {
-  email: 'email',
-  gmail: 'email',
-  calendar: 'calendar',
-  google_calendar: 'calendar',
-  filesystem: 'file',
-  file: 'file',
-  voice: 'voice',
-  app: 'app',
+// ── Digest render (DESIGN.md) ───────────────────────────────────────────────
+// Calm command center: iris accent = "needs you / act"; action zone (to-dos) vs
+// awareness zone (topics); source as a small neutral mark (not a chip), one
+// citation affordance, provenance as a dot, power-view depth on demand.
+
+const SOURCE_LABELS = {
+  email: 'email', gmail: 'email', calendar: 'calendar', google_calendar: 'calendar',
+  filesystem: 'file', file: 'file', voice: 'voice', app: 'app',
 };
-
-function sourceChip(sourceType) {
-  const label = SOURCE_CHIP_LABELS[sourceType] || 'source';
-  return `<span class="source-chip source-chip-${escapeHtml(label)}">${escapeHtml(label)}</span>`;
+function renderSource(sourceType) {
+  const label = SOURCE_LABELS[sourceType];
+  return label ? `<span class="digest-source">${escapeHtml(label)}</span>` : '';
 }
 
-function citationChips(signalRefs) {
+// One quiet citation affordance per row → opens the in-app signal/decision detail.
+// NEVER a raw external URL (safety #8).
+function renderCite(signalRefs) {
   if (!Array.isArray(signalRefs) || signalRefs.length === 0) return '';
-  // Each chip links to the in-app signal/decision detail — NEVER a raw external
-  // URL (spec 06 / safety invariant #8). data-action delegated, no inline handler.
-  return signalRefs
-    .map(
-      (ref) =>
-        `<button type="button" class="citation-chip" data-action="open-signal" data-signal-ref="${escapeHtml(
-          String(ref),
-        )}" aria-label="source: ${escapeHtml(String(ref))}">source</button>`,
-    )
-    .join(' ');
+  const n = signalRefs.length;
+  return `<button type="button" class="digest-cite" data-action="open-signal" data-signal-ref="${escapeHtml(
+    String(signalRefs[0]),
+  )}" aria-label="view ${n} source${n > 1 ? 's' : ''}">·${n} source${n > 1 ? 's' : ''}</button>`;
 }
 
-// Power view (spec 14): one digest, two depths. Persisted client-side so a power
-// user keeps technical depth on by default. Discoverable via the header toggle —
-// NOT buried in settings. Defaults OFF so the clean view stays default.
+// Provenance dot: filled (neutral) = from you, hollow = inbound. Never accent-colored.
+function provDot(detail) {
+  const you = detail && /from you/i.test(detail.provenanceLabel || '');
+  return `<span class="digest-prov ${you ? 'you' : 'inbound'}" title="${you ? 'from you' : 'inbound'}"></span>`;
+}
+
+// Power view (spec 14): persisted, defaults OFF (clean view is the default).
 const POWER_VIEW_KEY = 'skytwin.digest.powerView';
 function isPowerView() {
-  try {
-    return localStorage.getItem(POWER_VIEW_KEY) === '1';
-  } catch {
-    return false;
-  }
+  try { return localStorage.getItem(POWER_VIEW_KEY) === '1'; } catch { return false; }
 }
 
-// Inline technical-depth panel for a row (spec 14). `detail` is the server-built
-// DigestItemDetail (buildDigestItemDetail); absent → no expander.
-function renderItemDetail(detail) {
+function detailToggle(detail) {
+  return detail ? `<button type="button" class="digest-detail-toggle" data-action="toggle-item-detail">Details</button>` : '';
+}
+function detailPanel(detail) {
   if (!detail) return '';
-  const rows = [];
-  rows.push(`<div><span class="dd-k">origin</span> ${escapeHtml(detail.provenanceLabel || '')}</div>`);
-  if (typeof detail.confidencePct === 'number') {
-    rows.push(`<div><span class="dd-k">confidence</span> ${detail.confidencePct}%</div>`);
-  }
-  if (detail.urgencyReason) {
-    rows.push(`<div><span class="dd-k">urgency</span> ${escapeHtml(detail.urgencyReason)}</div>`);
-  }
-  if (Array.isArray(detail.whyNotAutoExecuted) && detail.whyNotAutoExecuted.length) {
-    rows.push(
-      `<div><span class="dd-k">not auto-run</span> ${detail.whyNotAutoExecuted
-        .map((r) => escapeHtml(String(r)))
-        .join('; ')}</div>`,
-    );
-  }
-  if (Array.isArray(detail.sourceRefs) && detail.sourceRefs.length) {
-    rows.push(
-      `<div><span class="dd-k">refs</span> <code>${detail.sourceRefs
-        .map((r) => escapeHtml(String(r)))
-        .join(', ')}</code></div>`,
-    );
-  }
-  if (detail.explanation) {
-    rows.push(`<div><span class="dd-k">why</span> ${escapeHtml(detail.explanation)}</div>`);
-  }
-  return `
-    <button type="button" class="digest-detail-toggle" data-action="toggle-item-detail">Details</button>
-    <div class="digest-detail">${rows.join('')}</div>`;
+  const rows = [`<div><span class="dd-k">origin</span> ${escapeHtml(detail.provenanceLabel || '')}</div>`];
+  if (typeof detail.confidencePct === 'number') rows.push(`<div><span class="dd-k">confidence</span> ${detail.confidencePct}%</div>`);
+  if (detail.urgencyReason) rows.push(`<div><span class="dd-k">urgency</span> ${escapeHtml(detail.urgencyReason)}</div>`);
+  if (Array.isArray(detail.whyNotAutoExecuted) && detail.whyNotAutoExecuted.length)
+    rows.push(`<div><span class="dd-k">not auto-run</span> ${detail.whyNotAutoExecuted.map((r) => escapeHtml(String(r))).join('; ')}</div>`);
+  if (Array.isArray(detail.sourceRefs) && detail.sourceRefs.length)
+    rows.push(`<div><span class="dd-k">refs</span> <code>${detail.sourceRefs.map((r) => escapeHtml(String(r))).join(', ')}</code></div>`);
+  if (detail.explanation) rows.push(`<div><span class="dd-k">why</span> ${escapeHtml(detail.explanation)}</div>`);
+  return `<div class="digest-detail">${rows.join('')}</div>`;
 }
 
-// Coverage panel (spec 13 data) — shown in power view: what the twin can/can't see
-// and how to unlock more. Also doubles as cold-start guidance.
+// Inline action zone (the "it can act" thesis). Primary actions come from the
+// payload (item.actions) when the act layer is wired; security + scope-blocked
+// states derive from what we know today; Snooze is the universal default.
+function renderActions(t) {
+  const d = t.detail;
+  const scopeBlocked = d && Array.isArray(d.whyNotAutoExecuted) && d.whyNotAutoExecuted.some((r) => /permission|scope/i.test(r));
+  const acts = [];
+  if (t.kind === 'security') {
+    acts.push(`<button class="digest-act primary" data-action="row-action" data-act="verify">Verify in app</button>`);
+  } else {
+    if (Array.isArray(t.actions)) {
+      for (const a of t.actions) acts.push(`<button class="digest-act primary" data-action="row-action" data-act="${escapeHtml(a.id || '')}">${escapeHtml(a.label || '')}</button>`);
+    } else if (scopeBlocked) {
+      acts.push(`<button class="digest-act grant" data-action="row-action" data-act="grant">Grant access</button>`);
+    }
+    acts.push(`<button class="digest-act" data-action="row-action" data-act="snooze">Snooze</button>`);
+  }
+  return `<div class="digest-actions">${acts.join('')}</div>`;
+}
+
+function renderTodoRow(t) {
+  const isSec = t.kind === 'security';
+  const open = isPowerView() ? '' : '';
+  return `
+    <li class="digest-todo${isSec ? ' is-security' : ''}${open}">
+      ${isSec ? '' : `<button type="button" class="digest-check" data-action="toggle-check" aria-label="mark done"></button>`}
+      ${provDot(t.detail)}
+      <div class="digest-todo-body">
+        <div>
+          <span class="digest-todo-text">${escapeHtml(t.text || '')}</span>
+          ${t.deadline ? `<span class="digest-deadline">${escapeHtml(String(t.deadline))}</span>` : ''}
+          ${renderSource(t.sourceType)}
+          ${renderCite(t.signalRefs)}
+          ${detailToggle(t.detail)}
+        </div>
+        ${isSec ? `<div class="digest-todo-hint">Open your provider directly — don't trust links in the message.</div>` : ''}
+        ${detailPanel(t.detail)}
+      </div>
+      ${renderActions(t)}
+    </li>`;
+}
+
+function renderTopicItem(it) {
+  return `
+    <li class="digest-topic-item">
+      ${provDot(it.detail)}
+      <div class="digest-todo-body">
+        <div>${escapeHtml(it.text || '')} ${renderSource(it.sourceType)} ${renderCite(it.signalRefs)} ${detailToggle(it.detail)}</div>
+        ${detailPanel(it.detail)}
+      </div>
+    </li>`;
+}
+
 function renderCoveragePanel(coverage) {
-  if (!coverage) return '';
-  const status = (coverage.capabilityStatus || [])
+  if (!coverage || !Array.isArray(coverage.capabilityStatus)) return '';
+  const status = coverage.capabilityStatus
     .map(
       (c) =>
-        `<li><span class="cov-${escapeHtml(c.status)}">${escapeHtml(c.status)}</span> ${escapeHtml(
-          c.capability,
-        )}${
+        `<li><span class="cov-dot cov-${escapeHtml(c.status)}"></span>${escapeHtml(c.capability)}${
           c.status !== 'available' && c.unlockedBy?.length
             ? ` <span class="muted">— connect ${escapeHtml(c.unlockedBy.join(', '))}</span>`
             : ''
         }</li>`,
     )
     .join('');
+  return `<div class="digest-coverage"><h4 class="digest-topic-title">What I can see</h4><ul class="digest-coverage-list">${status}</ul></div>`;
+}
+
+// Cold-start: zero connectors → the PRIMARY surface, not a buried panel (DESIGN.md).
+function renderColdStart(coverage) {
+  const sources = ['Gmail', 'Calendar', 'Files'];
   return `
-    <div class="digest-coverage">
-      <h4 class="digest-topic-title">What I can see</h4>
-      <ul class="digest-coverage-list">${status}</ul>
+    <div class="digest-state">
+      <p class="digest-voice">Connect a source and I'll start your briefing.</p>
+      <p class="sub">I read your signals, surface what needs you, and handle the rest under your rules.</p>
+      <div class="digest-coldstart-sources">
+        ${sources.map((s) => `<button class="digest-act primary" data-action="connect-source" data-source="${escapeHtml(s)}">Connect ${escapeHtml(s)}</button>`).join('')}
+      </div>
     </div>`;
 }
 
 /**
- * Render the structured digest (spec 01/08 + power view spec 14): To-dos above
- * Topics, source-aware + cited; power view adds inline per-item technical detail
- * and the coverage panel. Returns '' when there's no structured payload (caller
- * falls back to prose).
+ * Render the structured digest (DESIGN.md). Returns '' when there's no structured
+ * payload (caller falls back to prose). Handles cold-start + empty-quiet states.
  */
 function renderDigestSection(structured) {
-  if (!structured || (!structured.todos?.length && !structured.topics?.length)) return '';
+  if (!structured) return '';
+  if (structured.coverage?.coldStart) return renderColdStart(structured.coverage);
+
+  const todoList = structured.todos || [];
+  const topicList = structured.topics || [];
+  if (!todoList.length && !topicList.length) {
+    return `<section class="digest"><p class="digest-voice">You're all caught up.</p><p class="muted">Nothing needs you right now.</p></section>`;
+  }
   const powerOn = isPowerView();
 
-  const todos = (structured.todos || [])
-    .map(
-      (t) => `
-      <li class="digest-item digest-todo">
-        ${sourceChip(t.sourceType)}
-        <span class="digest-todo-text">${escapeHtml(t.text || '')}</span>
-        ${t.deadline ? `<span class="digest-deadline">${escapeHtml(String(t.deadline))}</span>` : ''}
-        ${citationChips(t.signalRefs)}
-        ${renderItemDetail(t.detail)}
-      </li>`,
-    )
-    .join('');
+  // Value line: the twin earned its keep.
+  const needYou = todoList.length;
+  const catchUp = topicList.reduce((n, g) => n + (g.items?.length || 0), 0);
+  const handled = typeof structured.handledCount === 'number' ? structured.handledCount : null;
+  const valueLine = `
+    <p class="digest-value">
+      ${handled !== null ? `<span class="done">✓ ${handled} handled on my own</span><span class="sep"></span>` : ''}
+      <span><b>${needYou}</b> need you</span><span class="sep"></span>
+      <span><b>${catchUp}</b> to catch up on</span>
+    </p>`;
 
-  const topics = (structured.topics || [])
+  const todos = todoList.map(renderTodoRow).join('');
+  const topics = topicList
     .map(
-      (group) => `
-      <div class="digest-topic">
-        <h4 class="digest-topic-title">${escapeHtml(group.title || group.domain || 'Topic')}</h4>
-        <ul>
-          ${(group.items || [])
-            .map(
-              (it) => `
-            <li class="digest-item digest-topic-item">
-              ${sourceChip(it.sourceType)}
-              <span>${escapeHtml(it.text || '')}</span>
-              ${citationChips(it.signalRefs)}
-              ${renderItemDetail(it.detail)}
-            </li>`,
-            )
-            .join('')}
-        </ul>
-      </div>`,
+      (g) => `<div class="digest-topic"><h4 class="digest-topic-title">${escapeHtml(g.title || g.domain || 'Topic')}</h4><ul>${(g.items || []).map(renderTopicItem).join('')}</ul></div>`,
     )
     .join('');
 
   return `
     <section class="digest ${powerOn ? 'digest--power' : ''}" aria-label="Digest">
       <div class="digest-toolbar">
-        <button type="button" class="btn btn-sm btn-outline" data-action="toggle-power-view"
-          aria-pressed="${powerOn ? 'true' : 'false'}">
+        <button type="button" class="digest-power-toggle" data-action="toggle-power-view" aria-pressed="${powerOn ? 'true' : 'false'}">
           ${powerOn ? 'Power view: on' : 'Power view'}
         </button>
       </div>
-      <h3 class="digest-heading">To-dos</h3>
+      <p class="digest-voice">${needYou === 1 ? 'One thing needs you.' : `${needYou} things need you.`}</p>
+      ${valueLine}
+      <div class="digest-heading">To-dos <span class="count">· ${needYou}</span></div>
       ${todos ? `<ul class="digest-todos">${todos}</ul>` : '<p class="muted">Nothing needs you right now.</p>'}
-      <h3 class="digest-heading">Topics to catch up on</h3>
+      <div class="digest-heading">Topics to catch up on <span class="count">· ${catchUp}</span></div>
       ${topics || '<p class="muted">No topics today.</p>'}
       ${powerOn ? renderCoveragePanel(structured.coverage) : ''}
     </section>
@@ -315,7 +352,12 @@ async function renderBriefingTab(userId, cadence) {
     t.classList.toggle('is-active', t.dataset.cadence === cadence);
   });
 
-  tabContent.innerHTML = `<p class="muted">Loading…</p>`;
+  // Loading skeleton (DESIGN.md gap state) instead of bare "Loading…".
+  tabContent.innerHTML = `
+    <div class="digest-skel" aria-busy="true" aria-label="Loading briefing">
+      <div class="sk voice"></div>
+      <div class="sk row"></div><div class="sk row"></div><div class="sk row"></div>
+    </div>`;
 
   try {
     const data = await fetchLatestTwinBriefing(userId, cadence);
