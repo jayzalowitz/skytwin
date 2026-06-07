@@ -83,7 +83,7 @@ describe('urgencyReasonFor', () => {
   });
 
   it('describes the urgency level for other situations', () => {
-    expect(urgencyReasonFor({ situation_type: 'email_triage', urgency: 'critical' })).toMatch(/critical/i);
+    expect(urgencyReasonFor({ situation_type: 'email_triage', urgency: 'critical' })).toMatch(/urgent/i);
     expect(urgencyReasonFor({ situation_type: 'email_triage', urgency: 'low' })).toMatch(/routine/i);
   });
 
