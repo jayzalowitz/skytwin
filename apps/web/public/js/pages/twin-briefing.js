@@ -153,23 +153,36 @@ function isPowerView() {
 function detailToggle(detail) {
   return detail ? `<button type="button" class="digest-detail-toggle" data-action="toggle-item-detail">Details</button>` : '';
 }
+// Qualitative word for a confidence %, so the number has a human meaning.
+function sureWord(p) {
+  if (p >= 85) return 'very sure';
+  if (p >= 65) return 'fairly sure';
+  if (p >= 40) return 'somewhat sure';
+  return 'not very sure';
+}
+
 function detailPanel(detail) {
   if (!detail) return '';
-  // Plain-language "why" behind the item, for anyone who wants it. The
-  // actionable step is already in the row. Labels read like a person would
-  // ask, not like the system names things internally.
+  // Every row must earn its place — concrete facts that help the user decide.
+  // The actionable step is already in the row above this panel.
   const rows = [];
   if (Array.isArray(detail.sourceRefs) && detail.sourceRefs.length)
     rows.push(`<div><span class="dd-k">where it's from</span> ${escapeHtml(detail.sourceRefs.join(', '))}</div>`);
-  if (detail.provenanceLabel)
-    rows.push(`<div><span class="dd-k">written by</span> ${escapeHtml(detail.provenanceLabel.replace(/^From /, ''))}</div>`);
-  if (typeof detail.confidencePct === 'number')
-    rows.push(`<div><span class="dd-k">how sure I am</span> ${detail.confidencePct}%</div>`);
+  if (detail.occurredAt) {
+    const when = formatTime(new Date(detail.occurredAt));
+    if (when) rows.push(`<div><span class="dd-k">when</span> ${escapeHtml(when)}</div>`);
+  }
   if (detail.urgencyReason)
     rows.push(`<div><span class="dd-k">why now</span> ${escapeHtml(detail.urgencyReason)}</div>`);
+  if (typeof detail.confidencePct === 'number')
+    rows.push(`<div><span class="dd-k">how sure I am</span> ${escapeHtml(sureWord(detail.confidencePct))} (${detail.confidencePct}%)</div>`);
   if (Array.isArray(detail.whyNotAutoExecuted) && detail.whyNotAutoExecuted.length)
     rows.push(`<div><span class="dd-k">why I'm asking you</span> ${detail.whyNotAutoExecuted.map((r) => escapeHtml(String(r))).join('; ')}</div>`);
-  return `<div class="digest-detail">${rows.join('')}</div>`;
+  // "Written by" only when YOU wrote it (notable). For inbound items the sender
+  // already shows it came from someone else — no redundant row.
+  if (detail.provenanceLabel && /from you/i.test(detail.provenanceLabel))
+    rows.push(`<div><span class="dd-k">written by</span> you</div>`);
+  return rows.length ? `<div class="digest-detail">${rows.join('')}</div>` : '';
 }
 
 // Inline action zone (the "it can act" thesis). Primary actions come from the
@@ -440,8 +453,8 @@ export async function renderTwinBriefing(container) {
   container.innerHTML = `
     <section class="twin-briefing-page">
       <header style="margin-bottom: 1.5rem;">
-        <h1>Twin Briefing</h1>
-        <p class="subtle">Your twin's periodic summary of what it's been up to.</p>
+        <h1>Your briefing</h1>
+        <p class="subtle">What I've handled, and what needs you.</p>
       </header>
 
       <div class="briefing-tabs" style="display: flex; gap: 0.5rem; margin-bottom: 1rem;">

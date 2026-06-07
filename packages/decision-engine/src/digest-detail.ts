@@ -34,6 +34,8 @@ export interface DigestItemDetailInput {
    * Actionable, not a system label.
    */
   suggestedAction?: string;
+  /** When the underlying signal arrived (ISO string), for a "when" line. */
+  occurredAt?: string;
 }
 
 export interface DigestItemDetail {
@@ -45,6 +47,8 @@ export interface DigestItemDetail {
   explanation: string | null;
   /** The twin's recommended next step (actionable), if known. */
   suggestedAction: string | null;
+  /** When the underlying signal arrived (ISO string), if known. */
+  occurredAt: string | null;
 }
 
 // Provenance → plain-English label a non-technical person understands. The
@@ -107,5 +111,6 @@ export function buildDigestItemDetail(input: DigestItemDetailInput): DigestItemD
     whyNotAutoExecuted,
     explanation: input.explanation ?? null,
     suggestedAction: input.suggestedAction?.trim() || null,
+    occurredAt: input.occurredAt ?? null,
   };
 }

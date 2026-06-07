@@ -94,13 +94,13 @@ export function urgencyReasonFor(row: {
   if (row.situation_type === 'calendar_invite') return 'New invite — awaiting your RSVP';
   switch (normalizeUrgency(row.urgency)) {
     case 'critical':
-      return 'Critical — flagged for immediate attention';
+      return 'Urgent — needs your attention now';
     case 'high':
-      return 'High urgency';
+      return 'Time-sensitive — worth a look soon';
     case 'medium':
-      return 'Normal priority';
+      return 'Not time-sensitive — just so you’re aware';
     default:
-      return 'Routine — no deadline detected';
+      return 'Routine — nothing time-sensitive, just keeping you in the loop';
   }
 }
 
@@ -283,6 +283,12 @@ export async function buildLiveDigest(userId: string): Promise<LiveDigest | null
         domain: r.domain,
         urgencyReason: urgencyReasonFor(r),
         suggestedAction: suggestedActionFor(r) ?? undefined,
+        occurredAt:
+          r.created_at instanceof Date
+            ? r.created_at.toISOString()
+            : r.created_at
+              ? String(r.created_at)
+              : undefined,
         requiresApproval: actionRequired,
         blockedReasons,
         sourceRefs: [sender ?? SOURCE_FRIENDLY[sourceType] ?? sourceType],
