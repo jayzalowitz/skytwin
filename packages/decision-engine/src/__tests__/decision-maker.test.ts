@@ -110,6 +110,37 @@ function createContext(
 describe('DecisionMaker', () => {
   let decisionMaker: DecisionMaker;
 
+  describe('risk-assessment persistence ordering (regression: risk_assessment_missing)', () => {
+    it('persists candidate rows BEFORE their risk assessments so the UPDATE lands', async () => {
+      const twinService = createMockTwinService({ preferences: [] });
+      const policyEvaluator = createMockPolicyEvaluator({ allowed: true, requiresApproval: true });
+      const decisionRepo = createMockDecisionRepository();
+      const dm = new DecisionMaker(
+        twinService as never,
+        policyEvaluator as never,
+        decisionRepo as never,
+      );
+
+      await dm.evaluate(createContext(TrustTier.OBSERVER));
+
+      // A candidate was generated, assessed, and persisted.
+      expect(decisionRepo.saveCandidates).toHaveBeenCalled();
+      expect(decisionRepo.saveRiskAssessment).toHaveBeenCalled();
+
+      // saveRiskAssessment runs `UPDATE candidate_actions ... WHERE id = ?`, so
+      // the rows must already exist. If saveRiskAssessment runs first, the
+      // UPDATE no-ops, the full assessment (overallTier/dimensions) is lost,
+      // only the thin placeholder survives, and the approve-time preflight
+      // fails with risk_assessment_missing — blocking the entire
+      // approve→execute path. Lock the order.
+      const candidatesOrder = decisionRepo.saveCandidates.mock.invocationCallOrder[0];
+      const firstRiskOrder = Math.min(
+        ...decisionRepo.saveRiskAssessment.mock.invocationCallOrder,
+      );
+      expect(candidatesOrder).toBeLessThan(firstRiskOrder);
+    });
+  });
+
   describe('Low-risk action on trusted user', () => {
     it('should auto-execute a low-risk action for a trusted user', async () => {
       const twinService = createMockTwinService({

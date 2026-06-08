@@ -184,6 +184,15 @@ export class DecisionMaker {
       return outcome;
     }
 
+    // Persist the candidate rows BEFORE assessing/saving their risk.
+    // saveRiskAssessment UPDATEs candidate_actions by id, so the rows must
+    // already exist — otherwise the UPDATE no-ops, the full RiskAssessment
+    // (overallTier/dimensions) is lost, and only the thin placeholder
+    // saveCandidates writes survives. That left the approve-time preflight
+    // unable to find a parseable assessment → risk_assessment_missing → the
+    // entire approve→execute path was blocked.
+    await this.decisionRepository.saveCandidates(candidates);
+
     // Step 4: Assess risk for each candidate
     const assessments = new Map<string, RiskAssessment>();
     for (const candidate of candidates) {
@@ -287,7 +296,8 @@ export class DecisionMaker {
         : {}),
     };
 
-    await this.decisionRepository.saveCandidates(candidates);
+    // (candidates were persisted earlier, before risk assessment, so the
+    // saveRiskAssessment UPDATEs above could land on existing rows.)
     await this.decisionRepository.saveOutcome(outcome);
 
     return outcome;
