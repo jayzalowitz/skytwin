@@ -122,7 +122,7 @@
   },
   "dependencies": {
     "electron-store": "^11.0.2",
-    "electron-updater": "^6.6.0"
+    "electron-updater": "^6.8.9"
   },
   "devDependencies": {
     "electron": "^42.2.0",
