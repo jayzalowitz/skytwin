@@ -438,9 +438,16 @@ function renderDynamicIntegrations(integrations, credLookup) {
 
 function buildSyncLookup(ironclawSync) {
   const lookup = {};
-  for (const row of ironclawSync?.credentials ?? []) {
-    if (!lookup[row.service]) lookup[row.service] = [];
-    lookup[row.service].push(row);
+  // IronClaw credential-sync only applies when a real, reachable IronClaw is
+  // configured. When it's unreachable (the common case: no IronClaw, the local
+  // mock, or a remote that's down) syncing is impossible — surface nothing
+  // rather than a misleading "Not fully synced to IronClaw" + a "Sync to
+  // IronClaw" button that can only fail with a connection error.
+  if (ironclawSync?.reachable) {
+    for (const row of ironclawSync.credentials ?? []) {
+      if (!lookup[row.service]) lookup[row.service] = [];
+      lookup[row.service].push(row);
+    }
   }
   _syncLookup = lookup;
   return lookup;
