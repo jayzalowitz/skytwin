@@ -130,8 +130,18 @@ function unpackEncrypted(packed: Buffer): { iv: Buffer; tag: Buffer; ciphertext:
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function getUserId(req: Request): string | undefined {
-  const asAny = req as unknown as { user?: { id?: string } };
-  return asAny.user?.id;
+  const asAny = req as unknown as {
+    user?: { id?: string };
+    query?: { userId?: string };
+    body?: { userId?: string };
+  };
+  // Session identity first (production); fall back to the explicit userId the
+  // client passes (the codebase's dev convention, e.g. twin-briefings) so the
+  // vault works under the localhost dev-auth bypass. Ownership is still gated
+  // by requireOwnership when a real session is present.
+  return asAny.user?.id
+    ?? (typeof asAny.query?.userId === 'string' ? asAny.query.userId : undefined)
+    ?? (typeof asAny.body?.userId === 'string' ? asAny.body.userId : undefined);
 }
 
 // ── Router ────────────────────────────────────────────────────────────────────

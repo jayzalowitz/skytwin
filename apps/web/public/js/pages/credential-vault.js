@@ -52,7 +52,7 @@ function ensureCredentialVaultListener() {
       try {
         await fetchJSON(`/api/credential-vault/init`, {
           method: 'POST',
-          body: JSON.stringify({ passphrase }),
+          body: JSON.stringify({ passphrase, userId }),
         });
         showToast('Vault initialized and unlocked');
         const container = document.getElementById('page-content');
@@ -83,6 +83,7 @@ function ensureCredentialVaultListener() {
           body: JSON.stringify({
             currentPassphrase: current,
             newPassphrase: next,
+            userId,
           }),
         });
         showToast(
@@ -105,7 +106,7 @@ function ensureCredentialVaultListener() {
 
     if (action === 'vault-lock') {
       try {
-        await fetchJSON(`/api/credential-vault/lock`, { method: 'POST' });
+        await fetchJSON(`/api/credential-vault/lock`, { method: 'POST', body: JSON.stringify({ userId }) });
         showToast('Vault locked');
         const container = document.getElementById('page-content');
         if (container) await renderCredentialVault(container, userId);
@@ -124,7 +125,7 @@ function ensureCredentialVaultListener() {
       try {
         await fetchJSON(`/api/credential-vault/unlock`, {
           method: 'POST',
-          body: JSON.stringify({ passphrase }),
+          body: JSON.stringify({ passphrase, userId }),
         });
         showToast('Vault unlocked');
         const container = document.getElementById('page-content');
