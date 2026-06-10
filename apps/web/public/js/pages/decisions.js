@@ -13,6 +13,8 @@ let _decisionsListenerWired = false;
 export async function renderDecisions(container, userId) {
   currentUserId = userId;
   ensureDecisionsListener();
+  const routeParams = new URLSearchParams((window.location.hash || '').split('?')[1] || '');
+  const signalId = routeParams.get('signalId') || routeParams.get('signal') || '';
 
   container.innerHTML = `
     <div class="decisions-page">
@@ -89,6 +91,7 @@ export async function renderDecisions(container, userId) {
       if (from) params.from = from;
       if (to) params.to = to;
       if (search) params.search = search;
+      if (signalId) params.signalId = signalId;
 
       const result = await fetchDecisions(userId, params);
       const decisions = result.decisions ?? [];
@@ -97,7 +100,7 @@ export async function renderDecisions(container, userId) {
         `${result.total} decision${result.total !== 1 ? 's' : ''} found`;
 
       if (decisions.length === 0) {
-        const hasFilters = !!(domain || from || to || search);
+        const hasFilters = !!(domain || from || to || search || signalId);
         listEl.innerHTML = hasFilters
           ? `
             <div class="empty-state">

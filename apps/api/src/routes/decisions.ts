@@ -31,6 +31,7 @@ export function createDecisionsRouter(): Router {
       const to = req.query['to'] ? new Date(req.query['to'] as string) : undefined;
       const situationType = req.query['situationType'] as string | undefined;
       const search = req.query['search'] as string | undefined;
+      const signalId = (req.query['signalId'] ?? req.query['signal']) as string | undefined;
 
       let decisions = await decisionRepository.findByUser(userId, {
         domain,
@@ -38,6 +39,7 @@ export function createDecisionsRouter(): Router {
         offset: search || situationType ? 0 : offset,
         from,
         to,
+        signalId,
       });
 
       // Server-side filter: situation type

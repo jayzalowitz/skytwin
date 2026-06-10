@@ -179,6 +179,12 @@ export const decisionRepository = {
       paramIndex++;
     }
 
+    if (opts.signalId) {
+      conditions.push(`signal_id = $${paramIndex}`);
+      values.push(opts.signalId);
+      paramIndex++;
+    }
+
     if (opts.from) {
       conditions.push(`created_at >= $${paramIndex}`);
       values.push(opts.from);

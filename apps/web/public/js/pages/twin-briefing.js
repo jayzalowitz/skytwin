@@ -62,7 +62,7 @@ function handleBriefingClick(e) {
     // Citation chip → in-app signal/decision detail (spec 08). Never an
     // external URL. Routes to the decisions page filtered to the signal ref.
     const ref = target.dataset.signalRef;
-    if (ref) window.location.hash = `#/decisions?signal=${encodeURIComponent(ref)}`;
+    if (ref) window.location.hash = `#/decisions?signalId=${encodeURIComponent(ref)}`;
   } else if (action === 'toggle-power-view') {
     // Spec 14: flip the persisted power-view preference and re-render the tab.
     try {

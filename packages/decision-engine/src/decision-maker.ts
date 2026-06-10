@@ -147,8 +147,14 @@ export class DecisionMaker {
 
     // Step 3: Generate candidate actions (LLM strategy or built-in rules)
     const candidates = this.candidateGenerator
-      ? await this.candidateGenerator.generate(context.decision, profile, enrichedContext)
-      : this.generateCandidates(context.decision, profile, { senderLabelHints });
+      ? applyScopeGate(
+          await this.candidateGenerator.generate(context.decision, profile, enrichedContext),
+          context.grantedScopes ?? [],
+        )
+      : this.generateCandidates(context.decision, profile, {
+          senderLabelHints,
+          grantedScopes: context.grantedScopes,
+        });
 
     // Stamp provenance onto every candidate from the originating decision so
     // the policy engine's injection guard can gate without re-deriving where
@@ -423,11 +429,9 @@ export class DecisionMaker {
   ): CandidateAction[] {
     const candidates = this.dispatchCandidates(decision, profile, extras);
     // Scope gate (spec 11, #485): never propose a write the user didn't grant.
-    // When grantedScopes is supplied, downgrade scoped-write candidates lacking
-    // the scope to a human-review "grant access" item. Fail-safe NOT granted.
-    return extras?.grantedScopes
-      ? applyScopeGate(candidates, extras.grantedScopes)
-      : candidates;
+    // Missing scopes are an empty grant set, so scoped writes fail safe to a
+    // human-review "grant access" item.
+    return applyScopeGate(candidates, extras?.grantedScopes ?? []);
   }
 
   private dispatchCandidates(

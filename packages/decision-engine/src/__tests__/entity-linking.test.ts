@@ -72,6 +72,31 @@ describe('resolveEntities — orgs (conservative merge, spec 05 AC3)', () => {
     // floor 0.9 → "acme global" vs "acme systems" share only "acme" → below → split
     expect(resolveEntities(ents, 0.9).filter((r) => r.kind === 'org')).toHaveLength(2);
   });
+
+  it('keeps entity IDs distinct when long org names share the slug prefix', () => {
+    const prefix = 'northwind international procurement operations';
+    const ents = [
+      {
+        kind: 'org' as const,
+        surface: `${prefix} Alpha LLC`,
+        normalized: `${prefix} alpha`,
+        signalRef: 's1',
+        confidence: 0.8,
+      },
+      {
+        kind: 'org' as const,
+        surface: `${prefix} Beta LLC`,
+        normalized: `${prefix} beta`,
+        signalRef: 's2',
+        confidence: 0.8,
+      },
+    ];
+
+    const orgs = resolveEntities(ents, 1).filter((r) => r.kind === 'org');
+
+    expect(orgs).toHaveLength(2);
+    expect(new Set(orgs.map((r) => r.entityId)).size).toBe(2);
+  });
 });
 
 describe('linkEntitiesAcrossSignals — "everything touching X"', () => {

@@ -13,6 +13,7 @@
  * (`getSignalsForEntity`) is the remaining integration seam (spec 05 §5).
  */
 
+import { createHash } from 'node:crypto';
 import type { SignalText } from './signal-text.js';
 
 export type EntityKind = 'person' | 'org';
@@ -69,7 +70,7 @@ function jaccard(a: Set<string>, b: Set<string>): number {
 
 /** Extract person (emails) + org (suffix-tagged) entities from a signal. */
 export function extractEntities(signal: SignalText): ExtractedEntity[] {
-  const ref = `${signal.source}:${signal.title}`; // caller may override via signalRef
+  const ref = `${signal.source}:${signal.title}`;
   const text = `${signal.title}\n${signal.body}`;
   const out: ExtractedEntity[] = [];
 
@@ -95,6 +96,14 @@ function slug(s: string): string {
   return s.replace(/\s+/g, '-').slice(0, 40) || 'x';
 }
 
+function stableHash(s: string): string {
+  return createHash('sha256').update(s).digest('hex').slice(0, 12);
+}
+
+function orgEntityId(normalized: string): string {
+  return `org:${slug(normalized)}:${stableHash(normalized)}`;
+}
+
 /**
  * Resolve extracted mentions to stable entities. People merge on exact
  * (normalized) email; orgs merge on exact normalized string OR token-overlap
@@ -106,7 +115,6 @@ export function resolveEntities(
   floor: number = ORG_MERGE_FLOOR,
 ): ResolvedEntity[] {
   const resolved: ResolvedEntity[] = [];
-  let mintCounter = 0;
 
   const add = (target: ResolvedEntity, e: ExtractedEntity) => {
     if (!target.surfaces.includes(e.surface)) target.surfaces.push(e.surface);
@@ -146,9 +154,8 @@ export function resolveEntities(
       add(fuzzy, e);
       continue;
     }
-    mintCounter++;
     resolved.push({
-      entityId: `org:${slug(e.normalized)}`,
+      entityId: orgEntityId(e.normalized),
       kind: 'org',
       normalized: e.normalized,
       surfaces: [e.surface],

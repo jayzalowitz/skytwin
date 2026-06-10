@@ -33,7 +33,7 @@ export function requiredWriteScope(actionType: string): ScopeRequirement | null 
   }
   // Invite RSVP actions are calendar writes too (review #5) — they don't contain
   // the literal "event"/"calendar" but they mutate the calendar via the API.
-  if (/(accept|decline|tentative)_invite|propose_alternative|^rsvp|respond_to_event/.test(a)) {
+  if (/(accept|decline|tentative)_invite|tentative_accept|propose_alternative|^rsvp|respond_to_event/.test(a)) {
     return { scope: 'calendar.events', provider: 'google_calendar' };
   }
   return null;

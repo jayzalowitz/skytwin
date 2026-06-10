@@ -24,6 +24,7 @@ describe('requiredWriteScope (spec 11)', () => {
     expect(requiredWriteScope('send_reply')?.scope).toBe('gmail.send');
     expect(requiredWriteScope('create_calendar_event')?.scope).toBe('calendar.events');
     expect(requiredWriteScope('calendar_update')?.scope).toBe('calendar.events');
+    expect(requiredWriteScope('tentative_accept')?.scope).toBe('calendar.events');
   });
   it('returns null for non-scoped actions', () => {
     expect(requiredWriteScope('create_note')).toBeNull();

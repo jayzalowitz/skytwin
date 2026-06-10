@@ -491,6 +491,7 @@ export interface DateRangeOptions {
 
 export interface UserQueryOptions extends PaginationOptions, DateRangeOptions {
   domain?: string;
+  signalId?: string;
 }
 
 // ============================================================================
