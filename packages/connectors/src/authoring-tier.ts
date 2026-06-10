@@ -17,6 +17,14 @@
 export type AuthoringTier =
   | 'user_sent_originated'
   | 'user_sent_reply'
+  // Non-email authored/received tiers (#251 channel-agnostic extension, spec 07).
+  // `authored_originated` = the user created this doc/event/voice note;
+  // `received_shared` = someone shared it with the user. These let downstream
+  // capabilities (e.g. commitment extraction) treat self-authored non-email
+  // content the same as `user_sent_*` mail. Mapped via `isAuthoredByUser` in
+  // `@skytwin/decision-engine` (signal-text.ts).
+  | 'authored_originated'
+  | 'received_shared'
   | 'inbox_personal'
   | 'inbox_broadcast'
   | 'inbox_newsletter'

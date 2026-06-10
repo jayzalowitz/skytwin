@@ -31,6 +31,7 @@ export function createDecisionsRouter(): Router {
       const to = req.query['to'] ? new Date(req.query['to'] as string) : undefined;
       const situationType = req.query['situationType'] as string | undefined;
       const search = req.query['search'] as string | undefined;
+      const signalId = (req.query['signalId'] ?? req.query['signal']) as string | undefined;
 
       let decisions = await decisionRepository.findByUser(userId, {
         domain,
@@ -38,6 +39,7 @@ export function createDecisionsRouter(): Router {
         offset: search || situationType ? 0 : offset,
         from,
         to,
+        signalId,
       });
 
       // Server-side filter: situation type
@@ -66,18 +68,22 @@ export function createDecisionsRouter(): Router {
         decisions.map((d) => d.id),
       );
       const outcomeMap = new Map(
-        outcomes.map((o) => [o.decision_id, o.auto_executed]),
+        outcomes.map((o) => [o.decision_id, o]),
       );
 
       res.json({
-        decisions: decisions.map((d) => ({
-          id: d.id,
-          situationType: d.situation_type,
-          domain: d.domain,
-          urgency: d.urgency,
-          autoExecuted: outcomeMap.has(d.id) ? outcomeMap.get(d.id) : null,
-          createdAt: d.created_at,
-        })),
+        decisions: decisions.map((d) => {
+          const outcome = outcomeMap.get(d.id);
+          return {
+            id: d.id,
+            situationType: d.situation_type,
+            domain: d.domain,
+            urgency: d.urgency,
+            autoExecuted: outcome ? outcome.auto_executed : null,
+            requiresApproval: outcome ? outcome.requires_approval === true : false,
+            createdAt: d.created_at,
+          };
+        }),
         total,
         limit,
         offset,

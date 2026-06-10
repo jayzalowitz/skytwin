@@ -19,6 +19,7 @@ import {
 } from '@skytwin/shared-types';
 import type { TwinService } from '@skytwin/twin-model';
 import type { PolicyEvaluator } from '@skytwin/policy-engine';
+import { applyScopeGate } from '@skytwin/policy-engine';
 import { normalizeSenderAddress } from '@skytwin/core';
 import { RiskAssessor } from './risk-assessor.js';
 import type { CandidateGenerator } from './strategies/candidate-strategy.js';
@@ -146,8 +147,14 @@ export class DecisionMaker {
 
     // Step 3: Generate candidate actions (LLM strategy or built-in rules)
     const candidates = this.candidateGenerator
-      ? await this.candidateGenerator.generate(context.decision, profile, enrichedContext)
-      : this.generateCandidates(context.decision, profile, { senderLabelHints });
+      ? applyScopeGate(
+          await this.candidateGenerator.generate(context.decision, profile, enrichedContext),
+          context.grantedScopes ?? [],
+        )
+      : this.generateCandidates(context.decision, profile, {
+          senderLabelHints,
+          grantedScopes: context.grantedScopes,
+        });
 
     // Stamp provenance onto every candidate from the originating decision so
     // the policy engine's injection guard can gate without re-deriving where
@@ -182,6 +189,15 @@ export class DecisionMaker {
       await this.decisionRepository.saveOutcome(outcome);
       return outcome;
     }
+
+    // Persist the candidate rows BEFORE assessing/saving their risk.
+    // saveRiskAssessment UPDATEs candidate_actions by id, so the rows must
+    // already exist — otherwise the UPDATE no-ops, the full RiskAssessment
+    // (overallTier/dimensions) is lost, and only the thin placeholder
+    // saveCandidates writes survives. That left the approve-time preflight
+    // unable to find a parseable assessment → risk_assessment_missing → the
+    // entire approve→execute path was blocked.
+    await this.decisionRepository.saveCandidates(candidates);
 
     // Step 4: Assess risk for each candidate
     const assessments = new Map<string, RiskAssessment>();
@@ -286,7 +302,8 @@ export class DecisionMaker {
         : {}),
     };
 
-    await this.decisionRepository.saveCandidates(candidates);
+    // (candidates were persisted earlier, before risk assessment, so the
+    // saveRiskAssessment UPDATEs above could land on existing rows.)
     await this.decisionRepository.saveOutcome(outcome);
 
     return outcome;
@@ -408,7 +425,19 @@ export class DecisionMaker {
   generateCandidates(
     decision: DecisionObject,
     profile: TwinProfile,
-    extras?: { senderLabelHints?: SenderLabelHint[] },
+    extras?: { senderLabelHints?: SenderLabelHint[]; grantedScopes?: string[] },
+  ): CandidateAction[] {
+    const candidates = this.dispatchCandidates(decision, profile, extras);
+    // Scope gate (spec 11, #485): never propose a write the user didn't grant.
+    // Missing scopes are an empty grant set, so scoped writes fail safe to a
+    // human-review "grant access" item.
+    return applyScopeGate(candidates, extras?.grantedScopes ?? []);
+  }
+
+  private dispatchCandidates(
+    decision: DecisionObject,
+    profile: TwinProfile,
+    extras?: { senderLabelHints?: SenderLabelHint[]; grantedScopes?: string[] },
   ): CandidateAction[] {
     switch (decision.situationType) {
       case SituationType.EMAIL_TRIAGE:
@@ -437,10 +466,46 @@ export class DecisionMaker {
         return this.generateDocumentCandidates(decision, profile);
       case SituationType.HEALTH_WELLNESS:
         return this.generateHealthCandidates(decision, profile);
+      case SituationType.SECURITY_ALERT:
+        return this.generateSecurityAlertCandidates(decision);
       case SituationType.GENERIC:
       default:
         return this.generateGenericCandidates(decision, profile);
     }
+  }
+
+  /**
+   * Escalate-only candidates for an inbound security alert (spec 06, #479).
+   *
+   * Safety invariant #8: a SECURITY_ALERT is inbound, untrusted, and a phishing
+   * surface. The ONLY candidate is a human-review escalation that tells the user
+   * to open the provider directly — NEVER an auto-executable action, and NEVER a
+   * URL drawn from the (untrusted) message body. Parameters are deliberately
+   * link-free.
+   */
+  private generateSecurityAlertCandidates(decision: DecisionObject): CandidateAction[] {
+    return [
+      {
+        id: crypto.randomUUID(),
+        decisionId: decision.id,
+        actionType: 'escalate_to_user',
+        description:
+          "Review this security alert in the provider's official app or website. " +
+          'Do not click links in the message.',
+        domain: decision.domain,
+        parameters: {
+          summary: decision.summary,
+          urgency: decision.urgency,
+          safeAction: 'open_provider_directly',
+        },
+        estimatedCostCents: 0,
+        reversible: true,
+        confidence: ConfidenceLevel.HIGH,
+        reasoning:
+          'Security alerts are inbound and untrusted (phishing surface). Surfaced ' +
+          'for human review only — never auto-executed, never via links in the message.',
+      },
+    ];
   }
 
   /**

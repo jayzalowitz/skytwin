@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+#
+# skytwin-test-execution-stack — safe, repeatable end-to-end test of the
+# execution stack (events ingest → decision → policy/spend/risk gate → approval
+# → execution router → adapter → result + feedback), with ZERO real-world side
+# effects.
+#
+# Two independent safety layers guarantee nothing real is ever touched:
+#   1. ISOLATED, TOKENLESS test user — the Direct adapter's Gmail/Calendar
+#      handlers call resolveAccessToken() FIRST and throw before any network
+#      fetch, so a user with no OAuth token physically cannot reach Google.
+#   2. USE_MOCK_IRONCLAW=true — execution routes to the simulated IronClaw
+#      adapter (no HTTP at all).
+#
+# It spins up its own mock-mode API on a test port (default 3120), so it never
+# touches a running demo/prod API. Re-runnable: it resets the test user's
+# decision tree on each run.
+#
+# Usage:
+#   bin/skytwin-test-execution-stack
+#   API_PORT=3130 DATABASE_URL=postgres://… bin/skytwin-test-execution-stack
+#
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+API_PORT="${API_PORT:-3120}"
+API="http://localhost:${API_PORT}/api"
+DBURL="${DATABASE_URL:-postgresql://root@127.0.0.1:26257/skytwin?sslmode=disable}"
+U="dddddddd-0000-4000-8000-000000000001"   # reserved isolated test user
+LOG="$(mktemp -t skytwin-exec-test-XXXX.log)"
+psql_q() { psql "$DBURL" -At -c "$1" 2>/dev/null | grep -iv '^time:'; }
+fail() { echo "FAIL: $1" >&2; exit 1; }
+
+echo "[1/6] reset isolated tokenless test user (no OAuth token => cannot reach Google)"
+psql "$DBURL" -q >/dev/null 2>&1 <<SQL
+DELETE FROM execution_results WHERE plan_id IN (SELECT id FROM execution_plans WHERE decision_id IN (SELECT id FROM decisions WHERE user_id='$U'));
+DELETE FROM execution_plans   WHERE decision_id IN (SELECT id FROM decisions WHERE user_id='$U');
+DELETE FROM approval_requests WHERE user_id='$U';
+DELETE FROM decision_outcomes WHERE decision_id IN (SELECT id FROM decisions WHERE user_id='$U');
+DELETE FROM candidate_actions WHERE decision_id IN (SELECT id FROM decisions WHERE user_id='$U');
+DELETE FROM decisions WHERE user_id='$U';
+DELETE FROM oauth_tokens WHERE user_id='$U';
+INSERT INTO users (id, email, name, trust_tier, is_demo) VALUES ('$U','exec-test@local.test','Exec Test','observer',false)
+  ON CONFLICT (id) DO UPDATE SET trust_tier='observer';
+INSERT INTO twin_profiles (user_id, version) VALUES ('$U', 1) ON CONFLICT (user_id) DO NOTHING;
+SQL
+[ "$(psql_q "SELECT count(*) FROM oauth_tokens WHERE user_id='$U'")" = "0" ] || fail "test user must be tokenless"
+
+echo "[2/6] start mock-adapter API on :$API_PORT (USE_MOCK_IRONCLAW=true)"
+SKYTWIN_DEV_AUTH_BYPASS=true NODE_ENV=development USE_MOCK_IRONCLAW=true API_PORT="$API_PORT" \
+  DATABASE_URL="$DBURL" node apps/api/dist/index.js >"$LOG" 2>&1 &
+API_PID=$!
+trap 'kill "$API_PID" 2>/dev/null; rm -f "$LOG"' EXIT
+for _ in $(seq 1 20); do
+  [ "$(curl -s -o /dev/null -w '%{http_code}' "$API/health" 2>/dev/null)" = "200" ] && break; sleep 0.5
+done
+grep -q "Registered Mock IronClaw adapter" "$LOG" || fail "mock adapter not registered (see $LOG)"
+
+echo "[3/6] ingest a FAKE email (synthetic, untrusted origin)"
+curl -s -X POST "$API/events/ingest" -H 'content-type: application/json' -d '{
+  "userId":"'"$U"'","source":"gmail","type":"message",
+  "data":{"subject":"FAKE TEST — execution-stack harness","snippet":"Synthetic. Not a real email.","from":"harness@fake.test","id":"FAKE_HARNESS_MSG","authoringTier":"inbox_automated"}
+}' -o /dev/null -w '' || fail "ingest failed"
+sleep 1
+
+echo "[4/6] find the pending approval the pipeline created"
+AID="$(curl -s "$API/approvals/$U/pending" | python3 -c 'import sys,json;a=json.load(sys.stdin).get("approvals",[]);print(a[0]["id"] if a else "")')"
+[ -n "$AID" ] || fail "no approval created (pipeline did not escalate)"
+
+echo "[5/6] approve -> gate + execution router + (mock) adapter"
+RESP="$(curl -s -X POST "$API/approvals/$AID/respond" -H 'content-type: application/json' -d '{"action":"approve","userId":"'"$U"'"}')"
+echo "$RESP" | python3 -c 'import sys,json;d=json.load(sys.stdin);e=d.get("execution") or {};print("    execution:",e.get("status"),"via",e.get("adapterUsed"))' \
+  || fail "approve did not execute (response: $RESP)"
+
+echo "[6/6] verify the stack executed and recorded a result"
+# Assert a result ROW exists (router → adapter → persisted result), not that it
+# succeeded: the mock IronClaw adapter simulates a ~5% failure rate by design,
+# so a recorded result (success OR simulated failure) is the proof the whole
+# chain ran to completion. Also confirm the approval reached a terminal state.
+N="$(psql_q "SELECT count(*) FROM execution_plans ep JOIN execution_results er ON er.plan_id=ep.id WHERE ep.decision_id IN (SELECT id FROM decisions WHERE user_id='$U')")"
+[ "${N:-0}" -ge 1 ] || fail "execution ran but no execution_result was recorded"
+SUCC="$(psql_q "SELECT er.success FROM execution_plans ep JOIN execution_results er ON er.plan_id=ep.id WHERE ep.decision_id IN (SELECT id FROM decisions WHERE user_id='$U') ORDER BY er.completed_at DESC LIMIT 1")"
+ST="$(psql_q "SELECT status FROM approval_requests WHERE id='$AID'")"
+echo "    approval=$ST  execution_result.success=$SUCC  (success=t completed; success=f = mock's simulated failure path — both prove the stack ran)"
+[ "$ST" = "approved" ] || fail "approval did not reach 'approved' (got: '$ST')"
+
+echo "PASS — execution stack ran end-to-end via the mock adapter; no real side effects."

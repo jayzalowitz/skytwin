@@ -108,7 +108,40 @@ function createContext(
 // ── Tests ─────────────────────────────────────────────────────────
 
 describe('DecisionMaker', () => {
+  const CALENDAR_WRITE_SCOPES = ['https://www.googleapis.com/auth/calendar.events'];
+
   let decisionMaker: DecisionMaker;
+
+  describe('risk-assessment persistence ordering (regression: risk_assessment_missing)', () => {
+    it('persists candidate rows BEFORE their risk assessments so the UPDATE lands', async () => {
+      const twinService = createMockTwinService({ preferences: [] });
+      const policyEvaluator = createMockPolicyEvaluator({ allowed: true, requiresApproval: true });
+      const decisionRepo = createMockDecisionRepository();
+      const dm = new DecisionMaker(
+        twinService as never,
+        policyEvaluator as never,
+        decisionRepo as never,
+      );
+
+      await dm.evaluate(createContext(TrustTier.OBSERVER));
+
+      // A candidate was generated, assessed, and persisted.
+      expect(decisionRepo.saveCandidates).toHaveBeenCalled();
+      expect(decisionRepo.saveRiskAssessment).toHaveBeenCalled();
+
+      // saveRiskAssessment runs `UPDATE candidate_actions ... WHERE id = ?`, so
+      // the rows must already exist. If saveRiskAssessment runs first, the
+      // UPDATE no-ops, the full assessment (overallTier/dimensions) is lost,
+      // only the thin placeholder survives, and the approve-time preflight
+      // fails with risk_assessment_missing — blocking the entire
+      // approve→execute path. Lock the order.
+      const candidatesOrder = decisionRepo.saveCandidates.mock.invocationCallOrder[0];
+      const firstRiskOrder = Math.min(
+        ...decisionRepo.saveRiskAssessment.mock.invocationCallOrder,
+      );
+      expect(candidatesOrder).toBeLessThan(firstRiskOrder);
+    });
+  });
 
   describe('Low-risk action on trusted user', () => {
     it('should auto-execute a low-risk action for a trusted user', async () => {
@@ -346,7 +379,9 @@ describe('DecisionMaker', () => {
         interpretedAt: new Date(),
       };
 
-      const candidates = dm.generateCandidates(decision, emptyProfile);
+      const candidates = dm.generateCandidates(decision, emptyProfile, {
+        grantedScopes: CALENDAR_WRITE_SCOPES,
+      });
 
       expect(candidates.length).toBe(3);
       const actionTypes = candidates.map((c) => c.actionType);
@@ -371,7 +406,9 @@ describe('DecisionMaker', () => {
         interpretedAt: new Date(),
       };
 
-      const candidates = dm.generateCandidates(decision, emptyProfile);
+      const candidates = dm.generateCandidates(decision, emptyProfile, {
+        grantedScopes: CALENDAR_WRITE_SCOPES,
+      });
 
       expect(candidates.length).toBe(3);
       const actionTypes = candidates.map((c) => c.actionType);
@@ -381,6 +418,29 @@ describe('DecisionMaker', () => {
       for (const c of candidates) {
         expect(c.domain).toBe('calendar');
       }
+    });
+
+    it('downgrades scoped calendar writes when granted scopes are missing', () => {
+      const dm = makeDecisionMaker();
+      const decision: DecisionObject = {
+        id: 'dec_inv_no_scope',
+        situationType: SituationType.CALENDAR_INVITE,
+        domain: 'calendar',
+        urgency: 'medium',
+        summary: 'New invite: Weekly sync',
+        rawData: { eventId: 'evt_no_scope' },
+        interpretedAt: new Date(),
+      };
+
+      const candidates = dm.generateCandidates(decision, emptyProfile);
+
+      expect(candidates.length).toBe(3);
+      expect(candidates.every((c) => c.actionType === 'escalate_to_user')).toBe(true);
+      expect(candidates.map((c) => c.parameters['originalActionType']).sort()).toEqual([
+        'accept_invite',
+        'decline_invite',
+        'tentative_accept',
+      ]);
     });
 
     it('CALENDAR_UPDATE should generate acknowledge and dismiss candidates', () => {
@@ -733,6 +793,7 @@ describe('DecisionMaker', () => {
         interpretedAt: new Date(),
       };
       const context = createContext(TrustTier.HIGH_AUTONOMY, decision);
+      context.grantedScopes = CALENDAR_WRITE_SCOPES;
       context.traits = [makeTrait('quick_responder')];
 
       const outcome = await dm.evaluate(context);
@@ -755,6 +816,7 @@ describe('DecisionMaker', () => {
         interpretedAt: new Date(),
       };
       const context = createContext(TrustTier.HIGH_AUTONOMY, decision);
+      context.grantedScopes = CALENDAR_WRITE_SCOPES;
       context.traits = [makeTrait('delegation_averse')];
 
       const outcome = await dm.evaluate(context);
@@ -789,6 +851,7 @@ describe('DecisionMaker', () => {
         interpretedAt: new Date(),
       };
       const context = createContext(TrustTier.HIGH_AUTONOMY, decision);
+      context.grantedScopes = CALENDAR_WRITE_SCOPES;
       context.traits = [makeTrait('privacy_conscious')];
 
       const outcome = await dm.evaluate(context);
@@ -1038,13 +1101,14 @@ describe('DecisionMaker', () => {
         TrustTier.HIGH_AUTONOMY,
       );
 
-      // Calendar domain should produce calendar candidates (accept, decline, propose)
+      // With no granted scopes in the hypothetical query, scoped writes fail safe
+      // to a grant-access escalation instead of pretending calendar writes are allowed.
       const allActions = [
         response.predictedAction,
         ...response.alternativeActions,
       ].filter(Boolean);
       const actionTypes = allActions.map((a) => a!.actionType);
-      expect(actionTypes).toContain('accept_invite');
+      expect(actionTypes).toContain('escalate_to_user');
     });
 
     it('should infer GENERIC for unknown domain', async () => {

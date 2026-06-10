@@ -82,4 +82,26 @@ export const trustTierAuditRepository = {
     );
     return parseInt(result.rows[0]?.count ?? '0', 10);
   },
+
+  /**
+   * Hours the user has spent in their current tier — measured from the most
+   * recent tier change, or from account creation when they've never changed
+   * tier (e.g. a new user still at the initial `observer` tier). Feeds the
+   * promotion soak-floor (spec 10 Part C, #483): without it the daily
+   * promotion-eligibility job omits `hoursInCurrentTier`, so the engine skips
+   * the `minDurationInTierHours` floor entirely (documented gap,
+   * docs/safety-model.md). Fail-safe: returns 0 when the time can't be
+   * determined, which keeps a promotion BLOCKED rather than granted early.
+   */
+  async hoursInCurrentTier(userId: string): Promise<number> {
+    const result = await query<{ hours: string | null }>(
+      `SELECT EXTRACT(EPOCH FROM (now() - COALESCE(
+          (SELECT created_at FROM trust_tier_audit WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1),
+          (SELECT created_at FROM users WHERE id = $1)
+        ))) / 3600.0 AS hours`,
+      [userId],
+    );
+    const hours = result.rows[0]?.hours;
+    return hours == null ? 0 : Math.max(0, parseFloat(hours));
+  },
 };

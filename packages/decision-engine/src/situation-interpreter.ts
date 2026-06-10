@@ -1,6 +1,41 @@
 import type { DecisionObject } from '@skytwin/shared-types';
 import { SituationType, resolveActionProvenance } from '@skytwin/shared-types';
 import type { SituationStrategy } from './strategies/situation-strategy.js';
+import { extractDeadline } from './deadline-extractor.js';
+
+/**
+ * Inbound account-security markers (spec 06). Matched case-insensitively as
+ * substrings of subject/body. Deliberately specific phrases (not bare "breach"
+ * / "exposed") to limit false positives on ordinary mail. A severity hint for
+ * triage, NOT a trust boundary — provenance stays untrusted regardless.
+ */
+const SECURITY_ALERT_MARKERS: readonly string[] = [
+  // Curated to specific multi-word phrases (review #3): bare 'new device',
+  // 'compromised', 'password was', 'detected a login', 'was exposed' over-matched
+  // shipping notices, articles, and benign "welcome back" mail. These require
+  // account/sign-in context so they don't fire on ordinary content.
+  'data breach',
+  'security breach',
+  'security alert',
+  'suspicious sign-in',
+  'suspicious signin',
+  'suspicious login',
+  'sign-in from a new device',
+  'log in from a new device',
+  'login from a new device',
+  'new device was detected',
+  'new sign-in to your account',
+  'unrecognized device',
+  'unusual activity',
+  'verify your identity',
+  'verify your account',
+  'account will be deleted',
+  'account has been compromised',
+  'password was exposed',
+  'exposed in a data breach',
+  'exposed on the dark web',
+  'dark web',
+];
 
 /**
  * The SituationInterpreter examines raw events from signal connectors and
@@ -29,14 +64,81 @@ export class SituationInterpreter {
    * but setting it explicitly keeps the audit trail honest.
    */
   async interpret(rawEvent: Record<string, unknown>): Promise<DecisionObject> {
+    // Spec 03: stamp a content-derived deadline (if the connector didn't supply
+    // one) BEFORE either path runs, so the rule-based assessUrgency and any LLM
+    // strategy both see it. Mutates rawEvent in place — only sets `deadline`
+    // when absent, so connector-provided deadlines win.
+    this.enrichDeadline(rawEvent);
+
     const decision = this.strategy
       ? await this.strategy.interpret(rawEvent)
       : this.interpretRuleBased(rawEvent);
+
+    // Defense-in-depth (review safety #2): the security-marker check must hold
+    // even when an LLM strategy did the classification. If markers match, force
+    // SECURITY_ALERT so the escalate-only candidate path applies regardless of
+    // which path classified. (The rule path already returns SECURITY_ALERT.)
+    if (
+      decision.situationType !== SituationType.SECURITY_ALERT &&
+      this.matchesSecurityMarkers(rawEvent)
+    ) {
+      decision.situationType = SituationType.SECURITY_ALERT;
+      decision.domain = 'security';
+      if (decision.urgency === 'low' || decision.urgency === 'medium') {
+        decision.urgency = 'high';
+      }
+    }
 
     if (!decision.provenance) {
       decision.provenance = this.deriveProvenance(rawEvent);
     }
     return decision;
+  }
+
+  /** True when the event's subject/body match an inbound security-alert marker. */
+  private matchesSecurityMarkers(rawEvent: Record<string, unknown>): boolean {
+    const data =
+      typeof rawEvent['data'] === 'object' && rawEvent['data'] !== null
+        ? (rawEvent['data'] as Record<string, unknown>)
+        : {};
+    const subject = String(rawEvent['subject'] ?? data['subject'] ?? '').toLowerCase();
+    const body = String(rawEvent['body'] ?? data['body'] ?? data['snippet'] ?? '').toLowerCase();
+    return SECURITY_ALERT_MARKERS.some((m) => subject.includes(m) || body.includes(m));
+  }
+
+  /**
+   * Extract a deadline from the event's free text and stamp `rawEvent.deadline`
+   * (ISO) plus `rawEvent.deadlinePhrase` for the explanation, when no structured
+   * deadline is already present. No-op if the connector supplied one. (spec 03)
+   */
+  private enrichDeadline(rawEvent: Record<string, unknown>): void {
+    if (rawEvent['deadline'] || rawEvent['dueDate'] || rawEvent['expiresAt']) return;
+    const data =
+      typeof rawEvent['data'] === 'object' && rawEvent['data'] !== null
+        ? (rawEvent['data'] as Record<string, unknown>)
+        : {};
+    const title = String(
+      rawEvent['subject'] ?? rawEvent['title'] ?? data['subject'] ?? data['title'] ?? '',
+    );
+    const body = String(
+      rawEvent['body'] ?? data['body'] ?? data['snippet'] ?? data['description'] ?? '',
+    );
+    if (!title && !body) return;
+    const tsRaw = rawEvent['timestamp'] ?? data['timestamp'] ?? rawEvent['receivedAt'];
+    const occurredAt = tsRaw ? new Date(String(tsRaw)) : new Date();
+    const found = extractDeadline({
+      title,
+      body,
+      occurredAt: Number.isNaN(occurredAt.getTime()) ? new Date() : occurredAt,
+    });
+    // Only stamp a deadline still in the FUTURE relative to now (review #1): the
+    // extractor rejects past-relative-to-occurredAt, but a "respond in 2 days"
+    // from a 5-day-old email is already past now and would read as `critical` in
+    // assessUrgency (which measures from Date.now()).
+    if (found && found.deadline.getTime() > Date.now()) {
+      rawEvent['deadline'] = found.deadline.toISOString();
+      rawEvent['deadlinePhrase'] = found.rawPhrase;
+    }
   }
 
   /**
@@ -92,6 +194,16 @@ export class SituationInterpreter {
     const subject = String(rawEvent['subject'] ?? '').toLowerCase();
     const category = String(rawEvent['category'] ?? '').toLowerCase();
     const body = String(rawEvent['body'] ?? '').toLowerCase();
+
+    // Security alert (spec 06) — evaluated FIRST so a breach alert about a
+    // financial provider classifies as SECURITY_ALERT, not FINANCE_OPERATION,
+    // and a "verify your account" never falls through to plain EMAIL_TRIAGE.
+    // Inbound + untrusted; the candidate generator forces escalate-only.
+    if (
+      SECURITY_ALERT_MARKERS.some((m) => subject.includes(m) || body.includes(m))
+    ) {
+      return SituationType.SECURITY_ALERT;
+    }
 
     // Email triage
     if (
@@ -327,6 +439,7 @@ export class SituationInterpreter {
       [SituationType.SOCIAL_MEDIA]: 'social',
       [SituationType.DOCUMENT_MANAGEMENT]: 'documents',
       [SituationType.HEALTH_WELLNESS]: 'health',
+      [SituationType.SECURITY_ALERT]: 'security',
       [SituationType.GENERIC]: String(rawEvent['source'] ?? 'unknown'),
     };
 
@@ -356,10 +469,14 @@ export class SituationInterpreter {
       const hoursUntilDeadline =
         (deadlineDate.getTime() - Date.now()) / (1000 * 60 * 60);
 
-      if (hoursUntilDeadline < 1) return 'critical';
-      if (hoursUntilDeadline < 4) return 'high';
-      if (hoursUntilDeadline < 24) return 'medium';
-      return 'low';
+      // Stale (negative) deadlines fall through to the per-type default rather
+      // than reading as `critical` (review #1). Far-out deadlines (>=24h) also
+      // fall through — a deadline must never DOWNGRADE a type's default urgency
+      // (review #2); previously this returned 'low' and de-prioritized e.g.
+      // calendar invites whose body mentioned a far date.
+      if (hoursUntilDeadline >= 0 && hoursUntilDeadline < 1) return 'critical';
+      if (hoursUntilDeadline >= 0 && hoursUntilDeadline < 4) return 'high';
+      if (hoursUntilDeadline >= 0 && hoursUntilDeadline < 24) return 'medium';
     }
 
     // Default urgency by situation type
@@ -377,6 +494,7 @@ export class SituationInterpreter {
       [SituationType.SOCIAL_MEDIA]: 'low',
       [SituationType.DOCUMENT_MANAGEMENT]: 'low',
       [SituationType.HEALTH_WELLNESS]: 'medium',
+      [SituationType.SECURITY_ALERT]: 'high',
       [SituationType.GENERIC]: 'low',
     };
 
@@ -486,6 +604,11 @@ export class SituationInterpreter {
         const typeStr = healthType ? `${String(healthType)}` : 'Health event';
         const providerStr = provider ? ` with ${String(provider)}` : '';
         return `${typeStr}${providerStr} needs attention.`;
+      }
+
+      case SituationType.SECURITY_ALERT: {
+        const what = subject ? `: "${String(subject)}"` : '';
+        return `Security alert needs review${what}. Open the provider directly; do not trust links in the message.`;
       }
 
       case SituationType.GENERIC:

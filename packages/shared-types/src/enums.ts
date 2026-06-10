@@ -59,6 +59,9 @@ export enum SituationType {
   SOCIAL_MEDIA = 'social_media',
   DOCUMENT_MANAGEMENT = 'document_management',
   HEALTH_WELLNESS = 'health_wellness',
+  // Inbound account-security alert (breach/exposure, new-device, account
+  // deletion). Escalate-only — untrusted + phishing surface (spec 06, #479).
+  SECURITY_ALERT = 'security_alert',
   GENERIC = 'generic',
 }
 

@@ -270,3 +270,12 @@ Key routing rules:
 - Deploy trigger: none (merge to main only)
 - Deploy status: none
 - Health check: none
+
+## Design System
+Always read `DESIGN.md` before making any visual or UI decision. Font choices,
+color tokens (iris `#7C72E8` is the single accent and means "needs you / act"),
+spacing, the action-vs-awareness hierarchy, and the per-element state catalog all
+live there. Do not deviate without explicit user approval. In `/qa` and
+`/design-review`, flag any UI that doesn't match `DESIGN.md` — especially the
+"every state" rule (cold-start, scope-blocked, loading, error, prose-fallback must
+all be designed, not happy-path only).

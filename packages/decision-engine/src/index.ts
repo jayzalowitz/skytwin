@@ -28,6 +28,75 @@ export type {
   AuthoredExamplesPort,
   DraftEmailCandidateGeneratorOptions,
 } from './strategies/draft-email-candidate.js';
+// Multi-source normalization (spec 07): the channel-agnostic accessor + matrix
+// that make commitment/deadline/security/clustering/entity capabilities
+// source-agnostic.
+export {
+  toSignalText,
+  isAuthoredByUser,
+  type SignalText,
+} from './signal-text.js';
+export {
+  CAPABILITY_SOURCE_MATRIX,
+  capabilityCoversSource,
+  sourcesForCapability,
+  type Capability,
+} from './capability-source-matrix.js';
+export {
+  extractDeadline,
+  type DeadlineSource,
+  type ExtractedDeadline,
+} from './deadline-extractor.js';
+export {
+  extractCommitments,
+  type Commitment,
+  type CommitmentStrategy,
+} from './commitment-extractor.js';
+export {
+  clusterSignals,
+  type ClusterSignal,
+  type TopicCluster,
+  type ClusterOptions,
+  type ClusterStrategy,
+} from './topic-clusterer.js';
+export {
+  computeCoverage,
+  type SourceCoverage,
+  type CapabilityStatus,
+  type ConnectedAccountInfo,
+  type CoverageCapability,
+} from './source-coverage.js';
+export {
+  isHidden,
+  filterVisible,
+  type SignalVisibilityMeta,
+} from './visibility-filter.js';
+export { resolveLanguage, resolveTimezone, isNonEnglish } from './locale.js';
+export {
+  buildDigest,
+  type Digest,
+  type DigestItem,
+  type DigestTodo,
+  type DigestTopic,
+  type DigestTopicItem,
+  type BuildDigestOptions,
+} from './digest.js';
+export {
+  extractEntities,
+  resolveEntities,
+  linkEntitiesAcrossSignals,
+  ORG_MERGE_FLOOR,
+  type EntityKind,
+  type ExtractedEntity,
+  type ResolvedEntity,
+} from './entity-linking.js';
+export {
+  buildDigestItemDetail,
+  provenanceLabel,
+  type DigestItemDetail,
+  type DigestItemDetailInput,
+} from './digest-detail.js';
+
 export { isTrivialAutoEmail } from './cost-gate.js';
 export type {
   CostGatePort,

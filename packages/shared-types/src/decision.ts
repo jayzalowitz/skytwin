@@ -48,6 +48,8 @@ export interface DecisionContext {
   episodicMemories?: import('./mempalace.js').EpisodicMemory[];
   /** Wake-up context (L0+L1) from the memory palace */
   wakeUpContext?: import('./mempalace.js').WakeUpContext;
+  /** OAuth/API scopes the user has granted for the source account. Missing means no write scopes. */
+  grantedScopes?: string[];
 }
 
 /**

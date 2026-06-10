@@ -149,6 +149,14 @@ export class PolicyEvaluator {
     let confirmationLevel: ConfirmationLevel | undefined = guard.confirmationLevel;
     let approvalReason = guard.reason ?? '';
 
+    if (
+      action.actionType === 'escalate_to_user' &&
+      action.parameters['reason'] === 'missing_write_scope'
+    ) {
+      requiresApproval = true;
+      approvalReason = approvalReason || 'Write access is missing; user approval is required to grant access.';
+    }
+
     // Check autonomy settings if provided
     if (autonomySettings) {
       const settingsDecision = this.checkAutonomySettings(action, autonomySettings, riskAssessment);

@@ -535,5 +535,33 @@ describe('PolicyEvaluator', () => {
       expect(result.allowed).toBe(true);
       expect(result.requiresApproval).toBe(false);
     });
+
+    it('requires approval for missing-write-scope escalations even when risk is negligible', async () => {
+      const repo = createMockPolicyRepository();
+      const evaluator = new PolicyEvaluator(repo as never);
+
+      const action = createAction({
+        actionType: 'escalate_to_user',
+        parameters: {
+          reason: 'missing_write_scope',
+          requiredScope: 'gmail.send',
+          originalActionType: 'send_reply',
+        },
+        estimatedCostCents: 0,
+        reversible: true,
+      });
+      const riskAssessment = createRiskAssessment(RiskTier.NEGLIGIBLE);
+
+      const result = await evaluator.evaluate(
+        action,
+        [],
+        TrustTier.HIGH_AUTONOMY,
+        riskAssessment,
+      );
+
+      expect(result.allowed).toBe(true);
+      expect(result.requiresApproval).toBe(true);
+      expect(result.reason).toContain('Write access is missing');
+    });
   });
 });

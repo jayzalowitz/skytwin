@@ -179,6 +179,12 @@ export const decisionRepository = {
       paramIndex++;
     }
 
+    if (opts.signalId) {
+      conditions.push(`signal_id = $${paramIndex}`);
+      values.push(opts.signalId);
+      paramIndex++;
+    }
+
     if (opts.from) {
       conditions.push(`created_at >= $${paramIndex}`);
       values.push(opts.from);
@@ -350,10 +356,10 @@ export const decisionRepository = {
   /**
    * Batch-fetch outcomes for multiple decisions in a single query.
    */
-  async getOutcomesForDecisions(decisionIds: string[]): Promise<Pick<DecisionOutcomeRow, 'decision_id' | 'auto_executed'>[]> {
+  async getOutcomesForDecisions(decisionIds: string[]): Promise<Pick<DecisionOutcomeRow, 'decision_id' | 'auto_executed' | 'requires_approval'>[]> {
     if (decisionIds.length === 0) return [];
-    const result = await query<Pick<DecisionOutcomeRow, 'decision_id' | 'auto_executed'>>(
-      'SELECT decision_id, auto_executed FROM decision_outcomes WHERE decision_id = ANY($1)',
+    const result = await query<Pick<DecisionOutcomeRow, 'decision_id' | 'auto_executed' | 'requires_approval'>>(
+      'SELECT decision_id, auto_executed, requires_approval FROM decision_outcomes WHERE decision_id = ANY($1)',
       [decisionIds],
     );
     return result.rows;

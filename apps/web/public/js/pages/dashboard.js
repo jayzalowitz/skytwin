@@ -167,18 +167,99 @@ export function invalidateDashboardCache(keyPrefix) {
   }
 }
 
+// Source-type → short label (mirror of the briefing page's SOURCE_LABELS).
+const DASH_SOURCE_LABELS = {
+  email: 'email', gmail: 'email', calendar: 'calendar', google_calendar: 'calendar',
+  filesystem: 'file', file: 'file', voice: 'voice', app: 'app',
+};
+
+/**
+ * Home digest hero (spec 01/08) — the to-do/FYI parity surface, the most
+ * important thing on the page (DESIGN.md: action zone first). This is a
+ * READ-ONLY, compact render: the fully interactive digest (snooze, power view,
+ * citations) lives on #/briefing, whose click handlers are hash-gated to that
+ * route, so Home links out to it rather than duplicating dead buttons.
+ *
+ * @param {object} s - the `structured` digest payload { todos, topics, handledCount }
+ * @param {object} briefing - the briefing envelope (for read state)
+ */
+function renderDashboardDigest(s, briefing) {
+  const todos = Array.isArray(s.todos) ? s.todos : [];
+  const topicCount = (Array.isArray(s.topics) ? s.topics : [])
+    .reduce((n, g) => n + (Array.isArray(g.items) ? g.items.length : 0), 0);
+  const handled = typeof s.handledCount === 'number' ? s.handledCount : null;
+  const need = todos.length;
+  const isUnread = !briefing.read_at;
+
+  const provDot = (detail) => {
+    const you = detail && /from you/i.test(detail.provenanceLabel || '');
+    return `<span class="digest-prov ${you ? 'you' : 'inbound'}" title="${you ? 'from you' : 'inbound'}"></span>`;
+  };
+  const sourceChip = (st) => {
+    const label = DASH_SOURCE_LABELS[st];
+    return label ? `<span class="digest-source">${escapeHtml(label)}</span>` : '';
+  };
+
+  const todoRows = todos.map((t) => `
+    <li class="digest-todo">
+      ${provDot(t.detail)}
+      <div class="digest-todo-body">
+        <div>
+          <span class="digest-todo-text">${escapeHtml(t.text || '')}</span>
+          ${t.deadline ? `<span class="digest-deadline">${escapeHtml(String(t.deadline))}</span>` : ''}
+          ${sourceChip(t.sourceType)}
+        </div>
+        ${t.body ? `<div class="digest-body">${escapeHtml(t.body)}</div>` : ''}
+        ${t.detail?.suggestedAction ? `<div class="digest-suggested">→ ${escapeHtml(t.detail.suggestedAction)}</div>` : ''}
+      </div>
+    </li>`).join('');
+
+  const voice = need === 0
+    ? "You're all caught up."
+    : need === 1 ? 'One thing needs you.' : `${need} things need you.`;
+
+  return `
+    <div class="card" style="border-left: 3px solid var(--accent);">
+      <div class="card-header">
+        <span class="card-title">
+          Your briefing
+          ${isUnread ? '<span class="badge badge-info" style="margin-left:0.35rem; font-size:0.7rem;">New</span>' : ''}
+        </span>
+        <a href="#/briefing" style="font-size: 0.78rem; color: var(--text-muted);">Open →</a>
+      </div>
+      <p class="digest-voice" style="font-size: 1.25rem; margin: 0.2rem 0 0.5rem;">${voice}</p>
+      <p class="digest-value">
+        ${handled !== null ? `<span class="done">✓ ${handled} handled on my own</span><span class="sep"></span>` : ''}
+        <span><b>${need}</b> need you</span><span class="sep"></span>
+        <span><b>${topicCount}</b> to catch up on</span>
+      </p>
+      ${need ? `<div class="digest-heading">To-dos <span class="count">· ${need}</span></div>
+        <ul class="digest-todos">${todoRows}</ul>` : ''}
+      <a href="#/briefing" class="btn btn-outline btn-sm" style="font-size: 0.8rem; margin-top: 0.75rem;">
+        Read full briefing →
+      </a>
+    </div>`;
+}
+
 /**
  * Twin Briefing widget for the dashboard (issue #177).
- * Shows the headline (first paragraph) of the latest daily twin briefing,
- * with a link to the full #/briefing page.
  *
- * Only renders when a briefing exists and has prose content.
- * Lightweight addition — does not refactor existing dashboard sections.
+ * Prefers the structured digest (spec 01/08) — the to-do/FYI parity surface —
+ * and falls back to the prose headline for legacy briefings that only carry
+ * prose. Returns '' when there is neither (new user; connect heroes show).
  *
  * @param {object|null} briefing - TwinBriefingRow from /api/twin-briefings/latest
  */
 function renderTwinBriefingWidget(briefing) {
-  if (!briefing || !briefing.prose_markdown) return '';
+  if (!briefing) return '';
+
+  // Structured digest takes priority — it is the product's primary surface.
+  const s = briefing.structured;
+  if (s && ((Array.isArray(s.todos) && s.todos.length) || (Array.isArray(s.topics) && s.topics.length))) {
+    return renderDashboardDigest(s, briefing);
+  }
+
+  if (!briefing.prose_markdown) return '';
 
   // Extract the first non-empty, non-heading paragraph as the headline.
   const lines = briefing.prose_markdown.split('\n');
@@ -465,11 +546,11 @@ export async function renderDashboard(container, userId) {
     ${renderJustConnectedCelebration({ justConnectedProvider, justConnectedAccount, recentDecisionsCount: recentDecisions.length, learnedCount: learn?.totalPreferences ?? 0 })}
     ${sinceLastVisit && !tourMode ? renderSinceLastVisit(sinceLastVisit) : ''}
     ${showBrainPrompt ? renderBrainPrompt() : ''}
+    ${renderTwinBriefingWidget(_twinBriefing)}
     ${tourMode ? '' : renderConnectGoogleHero({ googleConnected, googleSystemConfigured, userId })}
     ${tourMode ? '' : renderConnectGmailHero({ googleConnected, googleScopes: googleOAuth.status === 'fulfilled' ? (googleOAuth.value?.scopes ?? []) : [] })}
     ${renderAskTwinWidget({ userId, tourMode })}
     ${showBriefing ? renderBriefingCard({ items: briefingItems, createdAt: briefing.createdAt }) : ''}
-    ${renderTwinBriefingWidget(_twinBriefing)}
     ${renderLifebooksCard(lifebooks)}
     ${pending > 0 ? `<div class="card" style="border-left: 3px solid var(--warning); cursor: pointer;" data-action="goto" data-hash="#/approvals">
       <span style="font-weight: 600;">You have ${pending} pending approval${pending > 1 ? 's' : ''}</span>

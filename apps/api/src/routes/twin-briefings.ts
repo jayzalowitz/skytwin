@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { briefingRepository, lifebookRepository } from '@skytwin/db';
 import { createLogger } from '@skytwin/core';
 import { UUID_REGEX } from '../middleware/validate-uuid.js';
+import { buildLiveDigest } from '../services/live-digest.js';
 
 const log = createLogger('api:twin-briefings');
 
@@ -91,7 +92,43 @@ export function createTwinBriefingsRouter(): Router {
         })
         .filter((s): s is NonNullable<typeof s> => s !== null);
 
-      res.json({ briefing: briefing ?? null, sections });
+      // Spec 08/01: expose the structured digest payload (todos/topics) so the
+      // UI can render the two-bucket source-aware view. Resolution order:
+      //   1. a stored structured_payload (forward-compatible, set by the
+      //      worker's generator once that seam lands), else
+      //   2. a digest computed live from the user's recent decisions, so the
+      //      page renders real parity today.
+      // The live build is best-effort — any failure degrades to the prose
+      // render rather than 500ing the briefing endpoint.
+      const stored = (briefing as { structured_payload?: unknown } | null)
+        ?.structured_payload;
+      const liveDigest = stored
+        ? null
+        : await buildLiveDigest(userId).catch((e) => {
+            log.warn('live digest build failed', { userId, error: String(e) });
+            return null;
+          });
+      const structured = stored ?? liveDigest;
+
+      let briefingWithStructured: unknown = null;
+      if (briefing) {
+        briefingWithStructured = { ...briefing, structured: structured ?? null };
+      } else if (liveDigest && (liveDigest.todos.length || liveDigest.topics.length)) {
+        // No stored briefing row yet, but we can render live parity from
+        // decisions. Synthesize a minimal briefing envelope carrying the
+        // structured digest; prose is null so the UI renders the digest only.
+        briefingWithStructured = {
+          id: 'live',
+          user_id: userId,
+          cadence: cadence ?? 'daily',
+          prose_markdown: null,
+          generated_at: new Date().toISOString(),
+          read_at: null,
+          structured: liveDigest,
+        };
+      }
+
+      res.json({ briefing: briefingWithStructured, sections });
     } catch (err) {
       next(err);
     }

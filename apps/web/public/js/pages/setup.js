@@ -274,9 +274,9 @@ export async function renderSetup(container, _userId) {
 
         <div style="margin-bottom: 1.25rem;">
           <div style="font-weight: 600; font-size: 0.9rem; margin-bottom: 0.5rem;">Live status</div>
-          ${renderAdapterStatus('Sandboxed execution server (IronClaw)', ironclaw, 'Highest trust — actions are sandboxed, audited, and reversible. Auto-detects on localhost:4000.')}
+          ${renderAdapterStatus('Sandboxed execution server (IronClaw)', ironclaw, 'Highest trust — actions are sandboxed, audited, and reversible. Auto-detects on localhost:4000.', true)}
           ${renderAdapterStatus('Built-in handlers', direct, 'Native handlers for email, calendar, finance, and more. Always available.')}
-          ${renderAdapterStatus('Local-AI execution (OpenClaw)', openclaw, 'Community engine that uses a local LLM for broader skills. Optional.')}
+          ${renderAdapterStatus('Local-AI execution (OpenClaw)', openclaw, 'Community engine that uses a local LLM for broader skills. Optional.', true)}
           <div style="margin-top: 0.5rem; font-size: 0.8rem; color: var(--text-muted);">
             Your twin automatically picks the most trusted engine that's available and falls back if one is down.
           </div>
@@ -438,9 +438,16 @@ function renderDynamicIntegrations(integrations, credLookup) {
 
 function buildSyncLookup(ironclawSync) {
   const lookup = {};
-  for (const row of ironclawSync?.credentials ?? []) {
-    if (!lookup[row.service]) lookup[row.service] = [];
-    lookup[row.service].push(row);
+  // IronClaw credential-sync only applies when a real, reachable IronClaw is
+  // configured. When it's unreachable (the common case: no IronClaw, the local
+  // mock, or a remote that's down) syncing is impossible — surface nothing
+  // rather than a misleading "Not fully synced to IronClaw" + a "Sync to
+  // IronClaw" button that can only fail with a connection error.
+  if (ironclawSync?.reachable) {
+    for (const row of ironclawSync.credentials ?? []) {
+      if (!lookup[row.service]) lookup[row.service] = [];
+      lookup[row.service].push(row);
+    }
   }
   _syncLookup = lookup;
   return lookup;
@@ -465,7 +472,7 @@ function renderIronClawSyncSummary(service, syncLookup) {
   `;
 }
 
-function renderAdapterStatus(name, adapter, description) {
+function renderAdapterStatus(name, adapter, description, optional = false) {
   const dot = adapter.registered && adapter.healthy
     ? '<span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--success); margin-right: 0.5rem;"></span>'
     : adapter.registered
@@ -476,7 +483,11 @@ function renderAdapterStatus(name, adapter, description) {
     ? '<span style="color: var(--success); font-size: 0.8rem;">Running</span>'
     : adapter.registered
       ? '<span style="color: var(--warning, #e6a700); font-size: 0.8rem;">Registered but unreachable</span>'
-      : '<span style="color: var(--text-muted); font-size: 0.8rem;">Not detected</span>';
+      // An optional adapter that simply isn't set up is not a failure — say so
+      // plainly instead of "Not detected" (which reads like something's wrong).
+      : optional
+        ? '<span style="color: var(--text-muted); font-size: 0.8rem;">Optional — not connected</span>'
+        : '<span style="color: var(--text-muted); font-size: 0.8rem;">Not detected</span>';
 
   const urlText = adapter.url && adapter.url !== 'local'
     ? `<span style="color: var(--text-muted); font-size: 0.75rem; margin-left: 0.5rem;">${escapeHtml(adapter.url)}</span>`

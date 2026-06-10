@@ -8,6 +8,22 @@
 export { getPool, query, withTransaction, healthCheck, closePool, getPoolStats } from './connection.js';
 export type { DatabaseConfig } from './connection.js';
 
+// Idempotent seed/provision helper (spec 10 Part B) — shared by the launch
+// demo fixture (spec 09) and any re-runnable seed path.
+export { seedUpsert, buildUpsertSql, type UpsertSpec, type Queryable } from './seeds/upsert.js';
+
+// Launch demo-fixture safety guard (spec 09 invariant #0) — never runs for a
+// real or new user.
+export {
+  assertDemoSafe,
+  assertDemoUser,
+  isLocalDbTarget,
+  REQUIRED_OVERRIDE_TOKEN,
+  DEMO_USER_ID,
+  type DemoGuardEnv,
+  type DemoGuardResult,
+} from './seeds/demo-guard.js';
+
 // Row types
 export type {
   OAuthTokenRowWithEncrypted,

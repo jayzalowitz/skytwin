@@ -232,6 +232,8 @@ class InMemoryLabelInferencePort implements LabelInferencePort {
 // ── Fake user: Bob Patel, founder/CEO at Series A startup ─────────────────
 
 const BOB_USER_ID = 'bob-patel-uuid-fixture-aaaabbbb';
+const GMAIL_SEND_SCOPE = 'https://www.googleapis.com/auth/gmail.send';
+const CALENDAR_EVENTS_SCOPE = 'https://www.googleapis.com/auth/calendar.events';
 
 function buildBobPreferences(): Preference[] {
   const now = new Date();
@@ -618,6 +620,7 @@ describe('full E2E — fake user driven through DecisionMaker', () => {
   it('board email → escalates to approval, never auto-execute', async () => {
     const decision = buildInbox().find((d) => d.id === 'd-board-001')!;
     const ctx = await buildContext(harness, decision, TrustTier.HIGH_AUTONOMY);
+    ctx.grantedScopes = [GMAIL_SEND_SCOPE];
     const outcome = await harness.decisionMaker.evaluate(ctx);
 
     // Even at HIGH_AUTONOMY a send_reply on a board thread is irreversible →
@@ -638,6 +641,7 @@ describe('full E2E — fake user driven through DecisionMaker', () => {
   it('CFO email requiring response → reply is irreversible → policy gates', async () => {
     const decision = buildInbox().find((d) => d.id === 'd-cfo-001')!;
     const ctx = await buildContext(harness, decision, TrustTier.MODERATE_AUTONOMY);
+    ctx.grantedScopes = [GMAIL_SEND_SCOPE];
     const outcome = await harness.decisionMaker.evaluate(ctx);
 
     // The reply candidate should exist (requiresResponse=true triggers it)
@@ -655,6 +659,7 @@ describe('full E2E — fake user driven through DecisionMaker', () => {
   it('calendar invite → produces accept/decline/propose-alternative candidates', async () => {
     const decision = buildInbox().find((d) => d.id === 'd-cal-001')!;
     const ctx = await buildContext(harness, decision, TrustTier.MODERATE_AUTONOMY);
+    ctx.grantedScopes = [CALENDAR_EVENTS_SCOPE];
     const outcome = await harness.decisionMaker.evaluate(ctx);
 
     const types = outcome.allCandidates.map((c) => c.actionType);

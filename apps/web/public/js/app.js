@@ -45,7 +45,7 @@ const routes = {
   '/capabilities': { title: 'Capabilities', render: renderCapabilities },
   '/capabilities/audit': { title: 'Capability Audit Trail', render: renderCapabilitiesAudit },
   '/about-me': { title: 'About me', render: renderAboutMe },
-  '/briefing': { title: 'Twin Briefing', render: renderTwinBriefing },
+  '/briefing': { title: 'Briefing', render: renderTwinBriefing },
   '/twin-server-tokens': { title: 'MCP Agent Tokens', render: renderTwinServerTokens },
   '/provenance': { title: 'Provenance Graph', render: renderProvenanceGraph },
   '/credential-vault': { title: 'Credential Vault', render: renderCredentialVault },
@@ -853,7 +853,7 @@ function wireDxtDropAndOpen() {
   }
 }
 
-window.addEventListener('DOMContentLoaded', () => {
+window.addEventListener('DOMContentLoaded', async () => {
   // Apply saved a11y preferences (text scale, reduced motion, voice-first)
   // before any render so users with prefs don't see a flash of base UI.
   initA11y();

@@ -1,5 +1,5 @@
 import { createLogger } from '@skytwin/core';
-import { briefingRepository, appSuggestionRepository, lifebookRepository, mcpServerRepository, query } from '@skytwin/db';
+import { briefingRepository, appSuggestionRepository, lifebookRepository, mcpServerRepository, userRepository, query } from '@skytwin/db';
 import { runPrompt } from '@skytwin/policy-prompts';
 import type { LlmClient } from '@skytwin/llm-client';
 
@@ -335,15 +335,26 @@ async function generateBriefingProse(
         reason: s.reason_summary ?? '',
       }));
 
+      // Briefing prose locale from the user's profile (spec 12, #486), no longer
+      // hardcoded 'en'. Falls back to 'en' when unset.
+      const userLocale = await userRepository.getLocale(userId);
+      const briefingLanguage =
+        userLocale.language && userLocale.language.trim() ? userLocale.language.trim() : 'en';
+
       // Output type matches the prompt's documented schema: { briefing: string }.
       // `domain` is set only for per-Lifebook briefings — the template's
       // `{{#if domain}}` block scopes the prose accordingly.
       const result = await runPrompt<{ briefing: string; highlight_count?: number }>({
         promptName: 'briefing-prose',
+        // Pinned to v1 (prose-only) until the generator consumes v2's structured
+        // todos/topics (spec 01/08 integration). Without the pin, loadPrompt
+        // auto-selects v2, which would request + discard the structured arrays
+        // (wasted tokens) — review #6b.
+        version: 1,
         inputs: {
           date: new Date().toISOString().slice(0, 10),
           events,
-          language: 'en',
+          language: briefingLanguage,
           pending_tasks: pendingTasks,
           risk_profile: '',
           domain: scope?.domainName ?? '',
