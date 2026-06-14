@@ -43,7 +43,7 @@ The remaining launch blockers are **not code**:
 | 7 | Approve/reject without confusion | ✅ microcopy intact (Just watch / Ask me first / Handle small stuff / …) |
 | 8 | Find a "pause everything" button | ✅ global **Pause everything** + Settings **Pause auto-execution** (#379) |
 | 9 | Find a "delete my data" button | ✅ Settings → **Download** + **Delete my data** (#376) |
-| 10 | Receive auto-updates | 🟡 code half shipped (#370/#453); manifest generation + signed-build e2e remain (gated on #368) |
+| 10 | Receive auto-updates | 🟡 code half shipped (#370, in PR #453); electron-updater manifest generation + signed-build e2e remain (gated on #368) |
 
 ## The one code-side launch task
 
@@ -97,7 +97,7 @@ Verdict legend: ✅ shipped · 🟡 partial · ⬜ not started · ⛔ external (
 | [#361](https://github.com/jayzalowitz/skytwin/issues/361) | 🟡 partial | — | yes | Epic D: #374 + #375(b) remain |
 | [#368](https://github.com/jayzalowitz/skytwin/issues/368) | ⛔ external | **YES** | — | Code-signing certs + notarization (external) |
 | [#369](https://github.com/jayzalowitz/skytwin/issues/369) | 🟡 partial | **YES** | partly | EAS config + CI rewrite (code) · real icons + store accounts (external) |
-| [#370](https://github.com/jayzalowitz/skytwin/issues/370) | 🟡 partial | **YES** | yes | release.yml manifest gen + curl-latest CI + release-procedure doc; e2e gated on signing |
+| [#370](https://github.com/jayzalowitz/skytwin/issues/370) | 🟡 partial | **YES** | yes | electron-updater manifest gen from build.yml's release/package steps + curl-latest CI + release-procedure doc; e2e gated on signing |
 | [#374](https://github.com/jayzalowitz/skytwin/issues/374) | ⬜ not started | **YES** | yes | Encrypt ~14 sensitive tables at rest — **needs key-mgmt decision (#401)** |
 | [#375](https://github.com/jayzalowitz/skytwin/issues/375) | 🟡 partial | — | yes | Only in-prompt PII redactor (b) — explicitly deferred to v0.8 |
 | [#386](https://github.com/jayzalowitz/skytwin/issues/386) | 🟡 partial | — | yes | Wire chunked-upload backbone into `VoiceScreen.tsx` |
@@ -131,9 +131,9 @@ Verdict legend: ✅ shipped · 🟡 partial · ⬜ not started · ⛔ external (
 
 ## Recommended next actions (ordered)
 
-1. **Procurement (start now — long lead time):** enroll Apple Developer + buy Windows EV cert (#368/#359); the release workflow already injects them via secrets. Submit Google OAuth verification (#351) — multi-week.
+1. **Procurement (start now — long lead time):** enroll Apple Developer + buy Windows EV cert (#368/#359). The certs alone aren't enough — `build.yml` currently skips signing (`CSC_IDENTITY_AUTO_DISCOVERY: 'false'`), so someone must also wire the cert secrets into its `package:*` steps (see launch-plan §1.3). Submit Google OAuth verification (#351) — multi-week.
 2. **Make the #374 ↔ #401 key-management decision**, then implement memory/preference encryption in a reviewed PR. Top engineering pre-launch item.
 3. **Commission mobile icon/splash assets** (#409), then land the EAS config + CI rewrite (#369, code).
-4. **Finish #370's code half:** generate electron-updater manifests in `release.yml` + add a curl-latest CI check + `docs/release-procedure.md`. (Pipeline-sensitive — verify on a release dry-run.)
+4. **Finish #370's code half:** generate electron-updater manifests (`latest*.yml`) from `build.yml`'s `release`/`package:*` steps + add a curl-latest CI check + `docs/release-procedure.md`. (Pipeline-sensitive — verify on a release dry-run.)
 5. **Close the Inbox-Intelligence epic (#484):** wire #485/#475/#478 into the live digest (extractors already built + tested).
 6. **Batch-merge the 9 clean dependabot PRs**; investigate #469.
