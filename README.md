@@ -234,7 +234,7 @@ machine to verify the platform-specific bits (Homebrew, NSIS, etc.).
 ### Running Tests
 
 ```bash
-pnpm test   # ~2,985 tests across 36 workspace packages
+pnpm test   # 3,800+ tests across 307 test files in 29 packages + 7 apps
 ```
 
 ## Architecture
@@ -294,7 +294,7 @@ packages/
 | Build | Turborepo |
 | Desktop | Electron + electron-builder |
 | Mobile | React Native + Expo |
-| Testing | Vitest (1,436 tests) |
+| Testing | Vitest (3,800+ tests) |
 | CI/CD | GitHub Actions |
 | Execution | [IronClaw](https://github.com/nearai/ironclaw/), OpenClaw (via local bridge), and a Direct fallback — trust-ranked with automatic failover |
 
@@ -387,10 +387,12 @@ Trust is **domain-specific**. You might be at `moderate_autonomy` for email but 
 | [IronClaw Integration](./docs/ironclaw-integration.md) | Execution adapter, HMAC auth, failure handling |
 | [CockroachDB Architecture](./docs/cockroach-architecture.md) | Schema design (18+ tables), query patterns, versioning |
 | [Evals](./docs/evals.md) | Evaluation harness, scenario simulation, calibration metrics |
+| [Launch Plan](./docs/launch-plan.md) | Procurement + sequencing to public download links |
+| [Launch-Readiness Report](./docs/launch-readiness-report.md) | Current launch-blocker status: what's code-done vs. external |
 
 ## Project Status
 
-SkyTwin is in **Tier 1 launch polish** (see [`docs/launch-plan.md`](./docs/launch-plan.md)) — Tier 0 (bundled installer, in-app OAuth setup, Gmail wizard) shipped; Tier 1 (cold-load demo, signed binaries, mobile cut, safety + privacy debt) is the active pre-launch sprint tracked under epic [#357](https://github.com/jayzalowitz/skytwin/issues/357). The current shipped version is in the badge above and in [`CHANGELOG.md`](./CHANGELOG.md). Core decision pipeline, twin model, policy engine, and swappable memory layer are functional; Gmail and Google Calendar connectors run with real OAuth; desktop builds ship for all three platforms; the mobile app pairs via QR code and captures voice. v0.5.0.0 brought the one-command installer and a non-technical-user UX overhaul; the v0.6 series added the embedded local LLM (#187), tier-aware memory retrieval (#251), per-Lifebook surfaces (#193), the voice loop (mobile capture + Piper TTS), and Epic A's cold-load demo unblocker (#358).
+SkyTwin is in **Tier 1 launch polish** (see [`docs/launch-plan.md`](./docs/launch-plan.md)) — Tier 0 (bundled installer, in-app OAuth setup, Gmail wizard) shipped; Tier 1 (cold-load demo, signed binaries, mobile cut, safety + privacy debt) is the active pre-launch sprint tracked under epic [#357](https://github.com/jayzalowitz/skytwin/issues/357). As of the 2026-06-14 audit ([`docs/launch-readiness-report.md`](./docs/launch-readiness-report.md)) the product is **launch-ready on the engineering side** — every code-writable launch criterion has shipped and the full suite (3,800+ tests) is green. The remaining blockers are external: code-signing certs (#368/#359), Google OAuth verification (#351), and mobile store assets + accounts (#369). The current shipped version is in the badge above and in [`CHANGELOG.md`](./CHANGELOG.md). Core decision pipeline, twin model, policy engine, and swappable memory layer are functional; Gmail and Google Calendar connectors run with real OAuth; desktop builds ship for all three platforms; the mobile app pairs via QR code and captures voice. v0.5.0.0 brought the one-command installer and a non-technical-user UX overhaul; the v0.6 series added the embedded local LLM (#187), tier-aware memory retrieval (#251), per-Lifebook surfaces (#193), the voice loop (mobile capture + Piper TTS), Epic A's cold-load demo unblocker (#358), and the Inbox-Intelligence briefing — a source-cited daily/weekly digest that splits to-dos from FYIs (#484).
 
 **Free and open-source forever for personal use.** Team and hosted tiers are planned for organizations that need shared policies, audit logs, or managed infrastructure — see [`docs/launch-plan.md`](./docs/launch-plan.md) for the split.
 
@@ -398,6 +400,7 @@ SkyTwin is in **Tier 1 launch polish** (see [`docs/launch-plan.md`](./docs/launc
 - One-command install (`curl | bash`) on macOS, Linux, and WSL — installs every dependency, clones the repo, starts the services, opens the dashboard
 - "Ask your twin" widget on the dashboard — type any situation, get a predicted action with reasoning and confidence, no accounts required
 - Tour mode with a fully populated sample profile so you can poke at decisions, learnings, and approvals before connecting your own accounts
+- Inbox-Intelligence briefing — a daily/weekly digest that splits **to-dos (act)** from **topics (FYI)**, cites the source signal behind every item, and offers a "Power view" toggle for the technical detail behind each call
 - Full decision pipeline: signal → interpret → decide → policy check → execute/escalate → explain → learn
 - LLM-powered decisions via configurable provider chain (Claude, GPT, Gemini, Ollama) with automatic fallback to built-in rules
 - Twin model with versioned profiles, confidence scoring, and preference learning
@@ -409,7 +412,7 @@ SkyTwin is in **Tier 1 launch polish** (see [`docs/launch-plan.md`](./docs/launc
 - Embedded local LLM stack: llama.cpp text, whisper.cpp STT, Piper TTS (`/api/voice/transcribe` and `/api/voice/synthesize`) — runs entirely on-device when binaries + models are present
 - SSRF-safe URL validation for all LLM provider endpoints, with DNS rebinding protection
 - Dynamic adapter discovery for third-party execution plugins
-- 1,436 tests with CI/CD on GitHub Actions
+- 3,800+ tests with CI/CD on GitHub Actions
 
 **What's next:**
 - More connectors (Slack, Notion, bank feeds)

@@ -9,8 +9,9 @@ Thanks for your interest in contributing to SkyTwin. This document covers everyt
 3. Fetch + start the local CockroachDB: `./bin/skytwin-db install && ./bin/skytwin-db start && ./bin/skytwin-db ensure-db`
 4. Copy env config: `cp .env.example .env`
 5. Run migrations: `pnpm db:migrate`
-6. Build: `pnpm build`
-7. Run tests: `pnpm test`
+6. Seed the demo profile (so "Try with a sample profile" / tour mode works): `pnpm db:seed`
+7. Build: `pnpm build`
+8. Run tests: `pnpm test`
 
 `bin/skytwin-db` fetches a hash-verified CockroachDB binary into
 `~/.local/share/skytwin/bin/cockroach` and spawns it as a child process.

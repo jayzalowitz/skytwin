@@ -126,13 +126,14 @@ jobs:
       - run: pnpm build
 
       - name: Package macOS desktop app
-        # `--publish never` is critical: this workflow is the
-        # PR/main validation gate, not the release pipeline. When a
-        # release tag (e.g. v0.6.57.0) lands on main, electron-builder's
-        # default auto-publish heuristic would otherwise try to upload to
-        # GitHub Releases without the GH_TOKEN this workflow doesn't
-        # set, failing the whole macOS job. release.yml is the
-        # exclusive publish path; build.yml just validates packageability.
+        # `--publish never` is critical: the per-package step must NOT
+        # auto-publish. electron-builder's default heuristic would otherwise
+        # try to upload to GitHub Releases without a GH_TOKEN on this step,
+        # failing the whole macOS job. Publishing is handled separately by
+        # the `release` job at the bottom of this file (softprops, tag-only,
+        # draft) — these matrix jobs only validate packageability and hand
+        # their artifacts to that job. (History: the old release.yml was
+        # deleted in #356; build.yml is now the only publisher.)
         run: pnpm --filter skytwin-desktop run package:mac --publish never
         env:
           # Skip code signing for CI builds (not notarized)
