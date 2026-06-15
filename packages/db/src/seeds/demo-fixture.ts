@@ -12,6 +12,7 @@
  *   pnpm demo:fixture --i-understand-this-writes-demo-data   # allow non-local DB
  */
 
+import { pathToFileURL } from 'node:url';
 import { getPool, withTransaction, closePool } from '../connection.js';
 import { seedUpsert } from './upsert.js';
 import {
@@ -21,6 +22,7 @@ import {
   type DemoGuardEnv,
 } from './demo-guard.js';
 import { DEMO_SIGNALS } from './demo-fixtures/signals.js';
+import { triggerDemoBriefing } from './demo-briefing.js';
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
@@ -103,9 +105,18 @@ async function main(): Promise<void> {
   }
 
   if (ingested === DEMO_SIGNALS.length) {
+    // Force a daily briefing for the demo user so the digest is populated
+    // immediately (no 24h cron wait). Best-effort: if the worker job can't be
+    // loaded/run, fall back to guidance rather than aborting the fixture.
+    const briefing = await triggerDemoBriefing({ userId: DEMO_USER_ID });
+    const briefingLine = briefing.ok
+      ? '  daily briefing generated — /api/twin-briefings/latest is populated.\n'
+      : `  briefing not generated (${briefing.reason}).\n` +
+        '    Run the worker (./bin/skytwin-dev) and re-run, or wait for its cycle.\n';
     console.log(
       `[demo:fixture] done — demo user provisioned, ${ingested} synthetic signals ingested.\n` +
-        'Trigger the worker briefing (or wait for its cycle), then screenshot:\n' +
+        briefingLine +
+        'Then screenshot:\n' +
         '  • /briefing — to-dos vs topics, source chips, citations\n' +
         '  • dashboard — trust-tier progress, recent activity\n' +
         '  • mobile BriefingScreen',
@@ -120,7 +131,11 @@ async function main(): Promise<void> {
   await closePool();
 }
 
-main().catch((err) => {
-  console.error('[demo:fixture] failed:', err);
-  process.exit(1);
-});
+// Entry guard: only run as a CLI (pnpm demo:fixture), never on import. Tests
+// import this module to exercise triggerDemoBriefing without running main().
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((err) => {
+    console.error('[demo:fixture] failed:', err);
+    process.exit(1);
+  });
+}
