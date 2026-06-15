@@ -38,8 +38,9 @@ describe('redactPromptPii (#375)', () => {
 
   it('returns empty / nullish input unchanged', () => {
     expect(redactPromptPii('')).toBe('');
-    // @ts-expect-error — defensive: callers may pass through undefined
+    // The nullish overload accepts undefined/null without @ts-expect-error.
     expect(redactPromptPii(undefined)).toBe(undefined);
+    expect(redactPromptPii(null)).toBe(null);
   });
 
   it('handles addresses with subdomains and plus-addressing', () => {

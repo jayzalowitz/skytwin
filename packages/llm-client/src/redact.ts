@@ -42,8 +42,15 @@ const EMAIL_RE = /[A-Za-z0-9._%+\-]{1,64}@[A-Za-z0-9.\-]{1,255}\.[A-Za-z]{2,24}/
 /**
  * Mask email addresses in `text`. Returns the input unchanged when it's
  * empty/nullish. Safe to call more than once (idempotent).
+ *
+ * Overloaded so the type contract matches the runtime behavior: a `string`
+ * always yields a `string` (the common path), while a nullish input is passed
+ * straight back (the defensive guard) — callers don't need `@ts-expect-error`
+ * to exercise it.
  */
-export function redactPromptPii(text: string): string {
+export function redactPromptPii(text: string): string;
+export function redactPromptPii(text: string | null | undefined): string | null | undefined;
+export function redactPromptPii(text: string | null | undefined): string | null | undefined {
   if (!text) return text;
   return text.replace(EMAIL_RE, '[redacted:email]');
 }

@@ -5,14 +5,13 @@ import { redactPromptPii } from './redact.js';
 /**
  * Options shared by the prompt builders.
  *
- * `redactPii` (default `true`, #375) masks high-precision identifiers — email
- * addresses and long digit runs — in the user-derived parts of the prompt (the
- * raw signal dump and episodic-memory summaries) before they're sent to the
- * provider chain, which may be a cloud LLM. Pass `redactPii: false` only for a
- * fully-local provider where third-party exposure isn't a concern; masking
- * never touches prose, so leaving it on costs the decision path nothing (an
- * action's recipient is resolved from the structured signal record, not parsed
- * from the prompt).
+ * `redactPii` (default `true`, #375) masks email addresses in the user-derived
+ * parts of the prompt (the raw signal dump and episodic-memory summaries)
+ * before they're sent to the provider chain, which may be a cloud LLM. Pass
+ * `redactPii: false` only for a fully-local provider where third-party exposure
+ * isn't a concern; masking never touches prose, so leaving it on costs the
+ * decision path nothing (an action's recipient is resolved from the structured
+ * signal record, not parsed from the prompt).
  */
 export interface BuildPromptOptions {
   redactPii?: boolean;
@@ -93,8 +92,8 @@ ${formatTraits(context.traits)}`);
     }
 
     // Episodic memories (past similar decisions). These are user memory — the
-    // summaries can quote addresses/numbers from prior signals — so redact
-    // before they reach a cloud provider (#375).
+    // summaries can quote email addresses from prior signals — so redact before
+    // they reach a cloud provider (#375).
     if (context.episodicMemories && context.episodicMemories.length > 0) {
       sections.push(`## Past Similar Decisions
 ${maybeRedact(formatEpisodes(context.episodicMemories.slice(0, 5)), opts)}`);
