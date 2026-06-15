@@ -42,6 +42,7 @@ import { processSubscriptionRenewal } from '../workflows/subscription-renewal.js
 import { processGroceryReorder } from '../workflows/grocery-reorder.js';
 import { processTravelDecision } from '../workflows/travel-decision.js';
 import { getExecutionRouter } from '../execution-setup.js';
+import { recordMcpActionSpend } from '../mcp-action-spend.js';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
 import { bindUserIdParamValidator } from '../middleware/validate-uuid.js';
 import { sseManager } from '../sse.js';
@@ -704,6 +705,20 @@ export function createEventsRouter(): Router {
           planId: savedPlan.id,
           adapterUsed: terminalPayload['adapter_used'] ?? 'unknown',
         };
+
+        // Record post-execution spend tagged with the action's registry
+        // source (#323 AC#3). Only on success — a failed execution
+        // shouldn't charge the user's per-app budget. Best-effort: the
+        // helper swallows its own errors so a ledger write can't break
+        // the auto-execute response. The spend cap was already enforced
+        // upstream by the policy engine before this action ran.
+        if (terminalStatus === 'completed') {
+          await recordMcpActionSpend({
+            userId,
+            decisionId: decision.id,
+            action: outcome.selectedAction,
+          });
+        }
 
         // Notify via SSE
         sseManager.emit(userId, 'decision:executed', {
