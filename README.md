@@ -389,6 +389,7 @@ Trust is **domain-specific**. You might be at `moderate_autonomy` for email but 
 | [Evals](./docs/evals.md) | Evaluation harness, scenario simulation, calibration metrics |
 | [Launch Plan](./docs/launch-plan.md) | Procurement + sequencing to public download links |
 | [Launch-Readiness Report](./docs/launch-readiness-report.md) | Current launch-blocker status: what's code-done vs. external |
+| [Release Procedure](./docs/release-procedure.md) | How to cut a release (tag → build.yml → draft → publish) + the signing/auto-update gaps |
 
 ## Project Status
 
