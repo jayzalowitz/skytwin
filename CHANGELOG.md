@@ -18,6 +18,10 @@ All notable changes to SkyTwin will be documented in this file.
 
 ## [Unreleased] — Tier 2 launch polish
 
+### Security (redact email addresses from LLM prompts — #375, decision pipeline)
+
+- **The decision pipeline no longer ships contacts' email addresses to a cloud LLM.** `PromptBuilder.buildCandidatePrompt` / `buildSituationPrompt` dumped the raw signal (`decision.rawData` / the raw event) and episodic-memory summaries straight into the prompt — for inbound email that's the sender + recipient addresses, and for memory it's whatever a prior signal quoted. When the provider chain resolves to Anthropic / OpenAI / Google, all of that left the machine. New pure `redactPromptPii()` (`packages/llm-client/src/redact.ts`) masks email addresses to `[redacted:email]`, and both prompt builders apply it by default (opt out per-call with `{ redactPii: false }` for a fully-local provider). Masking is safe for the decision path: an action's recipient is resolved from the structured signal record, never parsed from the prompt, so the model only loses an identifier it didn't need to reason about the content (dates, deadlines, prose are untouched — the redactor is email-only on purpose, since a digit-run matcher would eat ISO dates). Scope note: number/name redaction and the interactive assistant's memory-context block are deliberate follow-ups (numbers need date-aware exclusions; the assistant answers the user's questions about *their own* data, where blanket masking would break legitimate "what's X's email" answers — that path needs provider-trust gating, not a blunt redactor). Tests: the `redactPromptPii` unit (emails single/multiple/embedded-JSON/subdomain/plus-addressing, prose+dates+numbers untouched, idempotence, bare `a@b` ignored) + prompt-builder redaction-by-default and `redactPii: false` passthrough for both builders.
+
 ### Added (desktop auto-update — user-facing layer, #370 follow-up)
 
 - **The desktop app now tells you when an update is downloading and lets you install it.** `apps/desktop/src/auto-update.ts` already polled GitHub Releases and silently auto-downloaded on the next quit; this adds the half a user can see and act on:

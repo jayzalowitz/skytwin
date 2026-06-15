@@ -11,3 +11,4 @@ export type {
 } from './types.js';
 export { toMessages, splitSystemAndConversation } from './messages.js';
 export { estimateLlmCostCents, isZeroCostProvider } from './cost.js';
+export { redactPromptPii } from './redact.js';

@@ -1,5 +1,27 @@
 import type { DecisionContext, DecisionObject, Preference, BehavioralPattern, CrossDomainTrait, EpisodicMemory } from '@skytwin/shared-types';
 import { SituationType, ConfidenceLevel } from '@skytwin/shared-types';
+import { redactPromptPii } from './redact.js';
+
+/**
+ * Options shared by the prompt builders.
+ *
+ * `redactPii` (default `true`, #375) masks high-precision identifiers — email
+ * addresses and long digit runs — in the user-derived parts of the prompt (the
+ * raw signal dump and episodic-memory summaries) before they're sent to the
+ * provider chain, which may be a cloud LLM. Pass `redactPii: false` only for a
+ * fully-local provider where third-party exposure isn't a concern; masking
+ * never touches prose, so leaving it on costs the decision path nothing (an
+ * action's recipient is resolved from the structured signal record, not parsed
+ * from the prompt).
+ */
+export interface BuildPromptOptions {
+  redactPii?: boolean;
+}
+
+/** Apply PII redaction to a prompt fragment unless explicitly disabled. */
+function maybeRedact(text: string, opts?: BuildPromptOptions): string {
+  return opts?.redactPii === false ? text : redactPromptPii(text);
+}
 
 /**
  * Builds structured prompts for the LLM to interpret situations
@@ -9,7 +31,7 @@ export const PromptBuilder = {
   /**
    * Build a prompt for situation interpretation (event classification).
    */
-  buildSituationPrompt(rawEvent: Record<string, unknown>): string {
+  buildSituationPrompt(rawEvent: Record<string, unknown>, opts?: BuildPromptOptions): string {
     const situationTypes = Object.values(SituationType).join(', ');
 
     return `You are SkyTwin, a personal AI assistant that classifies incoming events.
@@ -17,7 +39,7 @@ export const PromptBuilder = {
 Given the following raw event, classify it into a structured decision object.
 
 ## Raw Event
-${JSON.stringify(rawEvent, null, 2)}
+${maybeRedact(JSON.stringify(rawEvent, null, 2), opts)}
 
 ## Valid Situation Types
 ${situationTypes}
@@ -38,18 +60,19 @@ Respond with ONLY a JSON object (no markdown, no explanation) with these exact f
   /**
    * Build a prompt for candidate action generation.
    */
-  buildCandidatePrompt(decision: DecisionObject, context: DecisionContext): string {
+  buildCandidatePrompt(decision: DecisionObject, context: DecisionContext, opts?: BuildPromptOptions): string {
     const sections: string[] = [];
 
     sections.push(`You are SkyTwin, a personal AI assistant generating possible actions for a user.`);
 
-    // Situation
+    // Situation. The raw data carries inbound email headers (sender/recipient
+    // addresses) — redact PII before it reaches a cloud provider (#375).
     sections.push(`## Situation
 Type: ${decision.situationType}
 Domain: ${decision.domain}
 Urgency: ${decision.urgency}
 Summary: ${decision.summary}
-Raw data: ${JSON.stringify(decision.rawData, null, 2)}`);
+Raw data: ${maybeRedact(JSON.stringify(decision.rawData, null, 2), opts)}`);
 
     // User preferences
     if (context.relevantPreferences.length > 0) {
@@ -69,10 +92,12 @@ ${formatPatterns(context.patterns)}`);
 ${formatTraits(context.traits)}`);
     }
 
-    // Episodic memories (past similar decisions)
+    // Episodic memories (past similar decisions). These are user memory — the
+    // summaries can quote addresses/numbers from prior signals — so redact
+    // before they reach a cloud provider (#375).
     if (context.episodicMemories && context.episodicMemories.length > 0) {
       sections.push(`## Past Similar Decisions
-${formatEpisodes(context.episodicMemories.slice(0, 5))}`);
+${maybeRedact(formatEpisodes(context.episodicMemories.slice(0, 5)), opts)}`);
     }
 
     // Confidence levels for reference
