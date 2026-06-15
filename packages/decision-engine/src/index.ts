@@ -71,7 +71,9 @@ export {
 } from './source-coverage.js';
 export {
   isHidden,
+  isPinned,
   filterVisible,
+  sortPinnedFirst,
   type SignalVisibilityMeta,
 } from './visibility-filter.js';
 export { resolveLanguage, resolveTimezone, isNonEnglish } from './locale.js';

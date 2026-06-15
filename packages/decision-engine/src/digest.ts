@@ -19,7 +19,12 @@
  */
 
 import { clusterSignals } from './topic-clusterer.js';
-import { filterVisible, type SignalVisibilityMeta } from './visibility-filter.js';
+import {
+  filterVisible,
+  isPinned,
+  sortPinnedFirst,
+  type SignalVisibilityMeta,
+} from './visibility-filter.js';
 import type { DigestItemDetail } from './digest-detail.js';
 import type { SourceCoverage } from './source-coverage.js';
 
@@ -89,19 +94,29 @@ const URGENCY_RANK: Record<NonNullable<DigestItem['urgency']>, number> = {
 
 /**
  * Partition digest items into the to-do and topic buckets. Hidden items are
- * dropped first (spec 11). To-dos are urgency-ordered and capped; topics are
- * domain clusters (spec 04). No item appears in both buckets.
+ * dropped first (spec 11/#485); pinned items (#270) are surfaced ahead of
+ * unpinned ones of the same kind. To-dos are urgency-ordered and capped; topics
+ * are domain clusters (spec 04). No item appears in both buckets.
  */
 export function buildDigest(items: DigestItem[], opts: BuildDigestOptions = {}): Digest {
   const maxTodos = opts.maxTodos ?? 7;
 
-  // spec 11: never surface content the user hid.
+  // spec 11 / #485: never surface content the user hid.
   const visible = filterVisible(items, (i) => i.meta ?? null);
 
-  // To-dos: action-required, urgency-ordered, capped.
+  // To-dos: action-required. Pinned items (#270) lead, then urgency order. The
+  // capped slice runs AFTER pinned-first ordering so a pin can rescue an item
+  // from being truncated off the end of a long to-do list.
   const todos: DigestTodo[] = visible
     .filter((i) => i.actionRequired)
-    .sort((a, b) => URGENCY_RANK[a.urgency ?? 'low'] - URGENCY_RANK[b.urgency ?? 'low'])
+    // Pinned-first is the primary key; urgency is the tiebreaker within each
+    // group. Array.prototype.sort is stable in every supported runtime, so
+    // equal-key items keep their input order.
+    .sort((a, b) => {
+      const pinDelta = Number(isPinned(b.meta ?? null)) - Number(isPinned(a.meta ?? null));
+      if (pinDelta !== 0) return pinDelta;
+      return URGENCY_RANK[a.urgency ?? 'low'] - URGENCY_RANK[b.urgency ?? 'low'];
+    })
     .slice(0, maxTodos)
     .map((i) => ({
       ref: i.ref,
@@ -112,7 +127,8 @@ export function buildDigest(items: DigestItem[], opts: BuildDigestOptions = {}):
       signalRefs: [i.ref],
     }));
 
-  // Topics: everything else, clustered by domain.
+  // Topics: everything else, clustered by domain. Pinned FYI items lead within
+  // their cluster so a pinned-but-routine item isn't buried.
   const fyi = visible.filter((i) => !i.actionRequired);
   const byRef = new Map(fyi.map((i) => [i.ref, i]));
   const clusters = clusterSignals(
@@ -122,7 +138,7 @@ export function buildDigest(items: DigestItem[], opts: BuildDigestOptions = {}):
   const topics: DigestTopic[] = clusters.map((c) => ({
     domain: c.domain,
     title: c.title,
-    items: c.signalRefs.map((ref) => {
+    items: sortPinnedFirst(c.signalRefs, (ref) => byRef.get(ref)?.meta ?? null).map((ref) => {
       const it = byRef.get(ref);
       return { ref, text: it?.text ?? '', body: it?.body, sourceType: it?.sourceType, signalRefs: [ref] };
     }),
