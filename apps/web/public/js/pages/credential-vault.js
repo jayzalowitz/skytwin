@@ -18,6 +18,96 @@ import { fetchJSON, escapeHtml } from '../api-client.js';
 import { showToast } from '../toast.js';
 import { KEY_USER_ID } from '../storage-keys.js';
 
+// ─── Desktop OS-keychain passphrase bridge (#401) ────────────────────────────
+// On the desktop app, `window.skytwinDesktop` exposes a passphrase store backed
+// by the OS keychain (Electron safeStorage). In pure-web mode these are all
+// no-ops, so the page falls back to the per-session passphrase prompt with no
+// behavioral change.
+
+function desktopBridge() {
+  return (typeof window !== 'undefined' && window.skytwinDesktop?.isDesktop)
+    ? window.skytwinDesktop
+    : null;
+}
+
+/** Whether "remember on this device" is available (desktop + OS keychain). */
+async function rememberSupported() {
+  const bridge = desktopBridge();
+  if (!bridge?.vaultPassphraseSupported) return false;
+  try {
+    return await bridge.vaultPassphraseSupported();
+  } catch {
+    return false;
+  }
+}
+
+/** Persist the passphrase in the OS keychain. Returns true on success. */
+async function rememberPassphrase(userId, passphrase) {
+  const bridge = desktopBridge();
+  if (!bridge?.vaultPassphraseRemember) return false;
+  try {
+    const result = await bridge.vaultPassphraseRemember(userId, passphrase);
+    return result?.ok === true;
+  } catch {
+    return false;
+  }
+}
+
+/** Read the remembered passphrase for this user, or null if none/unsupported. */
+async function getRememberedPassphrase(userId) {
+  const bridge = desktopBridge();
+  if (!bridge?.vaultPassphraseGet) return null;
+  try {
+    const result = await bridge.vaultPassphraseGet(userId);
+    return result?.ok === true ? result.passphrase : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Whether a remembered passphrase exists for this user. */
+async function hasRememberedPassphrase(userId) {
+  const bridge = desktopBridge();
+  if (!bridge?.vaultPassphraseHas) return false;
+  try {
+    return await bridge.vaultPassphraseHas(userId);
+  } catch {
+    return false;
+  }
+}
+
+/** Forget the remembered passphrase. */
+async function forgetPassphrase(userId) {
+  const bridge = desktopBridge();
+  if (!bridge?.vaultPassphraseForget) return;
+  try {
+    await bridge.vaultPassphraseForget(userId);
+  } catch {
+    // best-effort
+  }
+}
+
+/**
+ * After a successful init/unlock, offer to remember the passphrase on this
+ * device. Only prompts on desktop where the OS keychain is available and a
+ * passphrase isn't already remembered (AC: "First unlock → Remember on this
+ * device?"; "If no, current behavior unchanged").
+ */
+async function maybeOfferRemember(userId, passphrase) {
+  if (!userId || !passphrase) return;
+  if (!(await rememberSupported())) return;
+  if (await hasRememberedPassphrase(userId)) return;
+  const yes = window.confirm(
+    'Remember this passphrase on this device?\n\n'
+    + 'It will be stored in your operating system keychain (encrypted) so the '
+    + 'vault unlocks automatically next time you open SkyTwin on this computer. '
+    + 'It is never uploaded and only works on this device.',
+  );
+  if (!yes) return;
+  const ok = await rememberPassphrase(userId, passphrase);
+  showToast(ok ? 'Passphrase remembered on this device' : 'Could not save to the OS keychain', ok ? 'success' : 'error');
+}
+
 // ─── Singleton delegator ───────────────────────────────────────────────────
 
 let _credentialVaultListenerWired = false;
@@ -55,6 +145,7 @@ function ensureCredentialVaultListener() {
           body: JSON.stringify({ passphrase, userId }),
         });
         showToast('Vault initialized and unlocked');
+        await maybeOfferRemember(userId, passphrase);
         const container = document.getElementById('page-content');
         if (container) await renderCredentialVault(container, userId);
       } catch (err) {
@@ -128,11 +219,25 @@ function ensureCredentialVaultListener() {
           body: JSON.stringify({ passphrase, userId }),
         });
         showToast('Vault unlocked');
+        await maybeOfferRemember(userId, passphrase);
         const container = document.getElementById('page-content');
         if (container) await renderCredentialVault(container, userId);
       } catch (err) {
         showToast(err.friendlyMessage ?? 'Failed to unlock vault', 'error');
       }
+      return;
+    }
+
+    if (action === 'vault-forget-passphrase') {
+      const ok = window.confirm(
+        'Forget the passphrase saved on this device?\n\n'
+        + 'You will need to type it again next time you unlock the vault.',
+      );
+      if (!ok) return;
+      await forgetPassphrase(userId);
+      showToast('Removed the remembered passphrase from this device');
+      const container = document.getElementById('page-content');
+      if (container) await renderCredentialVault(container, userId);
       return;
     }
   });
@@ -160,9 +265,32 @@ export async function renderCredentialVault(container, userId) {
   }
 
   const initialized = status?.initialized ?? false;
-  const unlocked = status?.unlocked ?? false;
+  let unlocked = status?.unlocked ?? false;
   const keyVersion = status?.keyVersion ?? null;
   const lastRotated = status?.lastRotated ?? null;
+
+  // Desktop auto-unlock (#401): if the vault is initialized + locked and the
+  // user opted to remember the passphrase on this device, decrypt it from the
+  // OS keychain and unlock silently. A corrupt/wrong remembered passphrase
+  // falls through to the manual unlock form below — no behavior change.
+  const remembered = await hasRememberedPassphrase(userId);
+  if (initialized && !unlocked && remembered) {
+    const passphrase = await getRememberedPassphrase(userId);
+    if (passphrase) {
+      try {
+        await fetchJSON(`/api/credential-vault/unlock`, {
+          method: 'POST',
+          body: JSON.stringify({ passphrase, userId }),
+        });
+        unlocked = true;
+        showToast('Vault unlocked from this device');
+      } catch {
+        // Remembered passphrase no longer valid (e.g. rotated elsewhere).
+        // Drop it so we stop auto-retrying, and fall back to the prompt.
+        await forgetPassphrase(userId);
+      }
+    }
+  }
 
   const statusBadge = initialized
     ? `<span style="color:var(--success);font-weight:600;">Initialized</span>`
@@ -257,6 +385,15 @@ export async function renderCredentialVault(container, userId) {
     </div>
   ` : '';
 
+  // Re-check after the auto-unlock attempt above (which forgets a stale entry).
+  const rememberedNow = initialized ? await hasRememberedPassphrase(userId) : false;
+  const rememberSection = rememberedNow ? `
+    <div style="margin-top:0.5rem;display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap;">
+      <span style="color:var(--muted)">Passphrase remembered on this device (stored in the OS keychain).</span>
+      <button class="btn btn-outline btn-sm" data-action="vault-forget-passphrase">Forget on this device</button>
+    </div>
+  ` : '';
+
   container.innerHTML = `
     <div class="card">
       <div class="card-header">
@@ -272,6 +409,7 @@ export async function renderCredentialVault(container, userId) {
         ${lastRotatedDisplay}
       </div>
       ${lockSection}
+      ${rememberSection}
     </div>
     ${initSection}
     ${unlockSection}

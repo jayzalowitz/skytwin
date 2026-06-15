@@ -50,6 +50,33 @@ contextBridge.exposeInMainWorld('skytwinDesktop', {
   openExternal: (url: string) => ipcRenderer.invoke('open-external', url),
 
   /**
+   * Credential-vault passphrase "remember on this device" (#401).
+   *
+   * The passphrase is encrypted by the OS keychain (Electron safeStorage) in
+   * the main process before it ever touches disk — plaintext crosses this
+   * bridge only on the way in (remember) and out (get), never to storage.
+   *
+   * `vaultPassphraseSupported()` is false on environments without an OS secret
+   * store (e.g. headless Linux with no Secret Service); the renderer hides the
+   * "Remember on this device?" prompt and keeps the per-session behavior.
+   */
+  vaultPassphraseSupported: () =>
+    ipcRenderer.invoke('vault-passphrase-supported') as Promise<boolean>,
+  vaultPassphraseRemember: (userId: string, passphrase: string) =>
+    ipcRenderer.invoke('vault-passphrase-remember', userId, passphrase) as Promise<
+      { ok: true } | { ok: false; reason: 'unsupported' | 'empty_passphrase' }
+    >,
+  vaultPassphraseGet: (userId: string) =>
+    ipcRenderer.invoke('vault-passphrase-get', userId) as Promise<
+      | { ok: true; passphrase: string }
+      | { ok: false; reason: 'unsupported' | 'not_found' | 'corrupt' }
+    >,
+  vaultPassphraseHas: (userId: string) =>
+    ipcRenderer.invoke('vault-passphrase-has', userId) as Promise<boolean>,
+  vaultPassphraseForget: (userId: string) =>
+    ipcRenderer.invoke('vault-passphrase-forget', userId) as Promise<void>,
+
+  /**
    * Subscribe to idle state changes from the OS-level powerMonitor.
    * Returns an unsubscribe function. The renderer can use this to fire
    * proactive scans when the user goes idle, or to pause expensive work
