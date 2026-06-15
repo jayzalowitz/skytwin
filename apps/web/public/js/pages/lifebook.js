@@ -3,6 +3,8 @@ import {
   fetchLifebookBriefing,
   fetchLifebookLayout,
   hideLifebook,
+  setLifebookImportance,
+  clearLifebookImportance,
   escapeHtml,
 } from '../api-client.js';
 import { showSavedToast, showErrorToast } from '../toast.js';
@@ -20,6 +22,11 @@ import { KEY_USER_ID } from '../storage-keys.js';
  */
 
 let _lifebookListenerWired = false;
+// The most-recently-rendered container, captured so the singleton
+// delegated handler can re-render in place after a mutation (importance
+// change) without the handler closing over a stale container from an
+// earlier render.
+let _lifebookContainer = null;
 
 function getCurrentUserId() {
   return localStorage.getItem(KEY_USER_ID) || '';
@@ -40,23 +47,80 @@ export function parseLifebookRoute() {
   }
 }
 
+const IMPORTANCE_ORDER = ['emerging', 'secondary', 'core'];
+const IMPORTANCE_LABELS = { core: 'Core', secondary: 'Secondary', emerging: 'Emerging' };
+
 function importanceBadge(importance) {
   const colors = {
     core: 'var(--success)',
     secondary: 'var(--text)',
     emerging: 'var(--text-muted)',
   };
-  const label = {
-    core: 'Core',
-    secondary: 'Secondary',
-    emerging: 'Emerging',
-  }[importance] ?? importance;
+  const label = IMPORTANCE_LABELS[importance] ?? importance;
   const color = colors[importance] ?? 'var(--text-muted)';
   return `<span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:0.75rem;font-weight:600;color:${color};border:1px solid ${color};">${escapeHtml(label)}</span>`;
 }
 
+/**
+ * #321 promote/demote ceremony — the user-facing control for telling
+ * the twin "treat this Lifebook as more / less important than the
+ * weekly extractor decided." Renders three tier buttons (Emerging →
+ * Secondary → Core); the current tier is the disabled/active one, the
+ * others promote or demote. When a manual override is in effect we
+ * surface a "set by you" line + a Clear button that hands importance
+ * back to the extractor.
+ *
+ * No inline handlers — every control is a `data-action` button that the
+ * hash-gated singleton delegator (`ensureLifebookListener`) dispatches.
+ * The domain is carried on `data-domain` and the target tier on
+ * `data-importance` so the handler reads the current user id at click
+ * time (per CLAUDE.md "Frontend Event Handling").
+ */
+export function renderImportanceControl(lb) {
+  const current = lb.importance;
+  const override = lb.importanceOverride; // { value, setAt, decayDays } | null
+  const buttons = IMPORTANCE_ORDER.map((tier) => {
+    const isCurrent = tier === current;
+    const cls = isCurrent ? 'btn btn-primary btn-sm' : 'btn btn-outline btn-sm';
+    const disabledAttr = isCurrent ? ' aria-pressed="true" disabled' : '';
+    return `<button type="button" class="${cls}" data-action="set-importance" data-domain="${escapeHtml(lb.domainName)}" data-importance="${escapeHtml(tier)}"${disabledAttr}>${escapeHtml(IMPORTANCE_LABELS[tier])}</button>`;
+  }).join('');
+
+  const overrideLine = override
+    ? `<div class="card-subtitle" style="margin-top:0.5rem;display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap;">
+         <span style="color:var(--accent, #7C72E8);">Set by you${override.decayDays === 0 ? ' (stays until you clear it)' : ` · resets ${formatOverrideExpiry(override)}`}.</span>
+         <button type="button" class="btn btn-outline btn-sm" data-action="clear-importance" data-domain="${escapeHtml(lb.domainName)}">Let the twin decide</button>
+       </div>`
+    : `<div class="card-subtitle" style="margin-top:0.5rem;">Auto-detected by your weekly review. Promote or demote to tell the twin what matters right now.</div>`;
+
+  return `
+    <div class="card">
+      <div class="card-header"><span class="card-title">How important is this right now?</span></div>
+      <div style="display:flex;gap:0.4rem;flex-wrap:wrap;margin-top:0.5rem;">${buttons}</div>
+      ${overrideLine}
+    </div>
+  `;
+}
+
+/**
+ * Format the date an override decays back to the extractor's pick:
+ * `setAt + decayDays`. Defensive — bad input falls back to a vague
+ * "soon" rather than rendering `Invalid Date`.
+ */
+export function formatOverrideExpiry(override) {
+  try {
+    const setAt = new Date(override.setAt);
+    if (Number.isNaN(setAt.getTime())) return 'soon';
+    const expiry = new Date(setAt.getTime() + override.decayDays * 24 * 60 * 60 * 1000);
+    return expiry.toLocaleDateString();
+  } catch {
+    return 'soon';
+  }
+}
+
 export async function renderLifebook(container, _userIdFromArg) {
   ensureLifebookListener();
+  _lifebookContainer = container;
   const userId = getCurrentUserId();
   const domainName = parseLifebookRoute();
   if (!userId || !domainName) {
@@ -116,6 +180,8 @@ export async function renderLifebook(container, _userIdFromArg) {
         ${renderLayoutSourceHint(layoutSource, layout?.layoutId)}
       </div>
     </div>
+
+    ${renderImportanceControl(lb)}
 
     ${renderLifebookBriefingCard(briefing, lb.domainName)}
 
@@ -371,20 +437,82 @@ function ensureLifebookListener() {
   if (_lifebookListenerWired || typeof document === 'undefined') return;
   _lifebookListenerWired = true;
   document.addEventListener('click', async (e) => {
+    // Hash-gated singleton (per CLAUDE.md): the SPA reuses one
+    // #page-content container across routes, so gate on the hash, not
+    // on DOM containment, and wire exactly once on `document`.
     if ((window.location.hash || '').split('?')[0].indexOf('#/lifebook/') !== 0) return;
     const target = e.target instanceof Element ? e.target : null;
     if (!target) return;
-    const btn = target.closest('[data-action="hide-lifebook"]');
-    if (!btn) return;
-    const domain = btn.getAttribute('data-domain');
-    if (!domain) return;
-    if (!confirm(`Hide ${domain} from dashboards? Your memories stay; only the surface visibility changes.`)) return;
-    try {
-      await hideLifebook(getCurrentUserId(), domain);
-      showSavedToast(`${domain} hidden`);
-      window.location.hash = '#/';
-    } catch (err) {
-      showErrorToast(`Couldn't hide: ${err?.message ?? 'unknown error'}`);
+
+    const hideBtn = target.closest('[data-action="hide-lifebook"]');
+    if (hideBtn) {
+      const domain = hideBtn.getAttribute('data-domain');
+      if (!domain) return;
+      if (!confirm(`Hide ${domain} from dashboards? Your memories stay; only the surface visibility changes.`)) return;
+      try {
+        await hideLifebook(getCurrentUserId(), domain);
+        showSavedToast(`${domain} hidden`);
+        window.location.hash = '#/';
+      } catch (err) {
+        showErrorToast(`Couldn't hide: ${err?.message ?? 'unknown error'}`);
+      }
+      return;
+    }
+
+    // #321 promote/demote.
+    const setBtn = target.closest('[data-action="set-importance"]');
+    if (setBtn) {
+      if (setBtn.hasAttribute('disabled')) return; // current tier — no-op
+      const domain = setBtn.getAttribute('data-domain');
+      const value = setBtn.getAttribute('data-importance');
+      if (!domain || !value) return;
+      await applyImportanceChange(setBtn, () =>
+        setLifebookImportance(getCurrentUserId(), domain, value),
+        `${domain} set to ${IMPORTANCE_LABELS[value] ?? value}`,
+      );
+      return;
+    }
+
+    // #321 clear override — hand importance back to the extractor.
+    const clearBtn = target.closest('[data-action="clear-importance"]');
+    if (clearBtn) {
+      const domain = clearBtn.getAttribute('data-domain');
+      if (!domain) return;
+      await applyImportanceChange(clearBtn, () =>
+        clearLifebookImportance(getCurrentUserId(), domain),
+        `${domain} importance handed back to your twin`,
+      );
+      return;
     }
   });
+}
+
+/**
+ * Shared apply-and-rerender helper for the #321 promote/demote/clear
+ * buttons. Disables the clicked button while the request is in flight
+ * (so a double-click can't fire two overlapping writes), shows a toast,
+ * and re-renders the detail page in place so the badge + "set by you"
+ * line reflect the new state. Errors surface via the toast and the
+ * page is re-rendered to restore the pre-click control state.
+ */
+async function applyImportanceChange(btn, apiCall, successMessage) {
+  const wasDisabled = btn.hasAttribute('disabled');
+  btn.setAttribute('disabled', 'true');
+  try {
+    await apiCall();
+    showSavedToast(successMessage);
+  } catch (err) {
+    showErrorToast(`Couldn't update importance: ${err?.friendlyMessage ?? err?.message ?? 'unknown error'}`);
+  } finally {
+    if (!wasDisabled) btn.removeAttribute('disabled');
+    // Re-render in place so the active tier + override line update.
+    // _lifebookContainer is set on every renderLifebook call.
+    if (_lifebookContainer) {
+      try {
+        await renderLifebook(_lifebookContainer);
+      } catch {
+        /* re-render is best-effort; the toast already reported success/failure */
+      }
+    }
+  }
 }

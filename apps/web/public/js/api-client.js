@@ -1016,6 +1016,37 @@ export function unhideLifebook(userId, domainName) {
 }
 
 /**
+ * #321: set a user importance override for a Lifebook (promote/demote).
+ * `value` is one of 'core' | 'secondary' | 'emerging'. Optional
+ * `decayDays` controls how long the override wins over the extractor's
+ * automatic pick (server default 90; pass 0 for "never auto-decay").
+ * Returns `{ lifebook }` with `importanceOverride` populated so the
+ * caller can re-render the "set by you" state. The server also records
+ * the override as an episode in memory (best-effort) so the twin
+ * remembers it.
+ */
+export function setLifebookImportance(userId, domainName, value, decayDays) {
+  const body = { value };
+  if (typeof decayDays === 'number') body.decayDays = decayDays;
+  return fetchJSON(
+    `${API}/lifebooks/${encodeURIComponent(userId)}/${encodeURIComponent(domainName)}/importance`,
+    { method: 'POST', body: JSON.stringify(body) },
+  );
+}
+
+/**
+ * #321: clear a user importance override so the weekly extractor
+ * resumes computing importance for this Lifebook. Idempotent. Returns
+ * `{ lifebook }` with `importanceOverride: null`.
+ */
+export function clearLifebookImportance(userId, domainName) {
+  return fetchJSON(
+    `${API}/lifebooks/${encodeURIComponent(userId)}/${encodeURIComponent(domainName)}/importance`,
+    { method: 'DELETE' },
+  );
+}
+
+/**
  * #193 follow-up: fetch the latest per-Lifebook briefing for one
  * domain. Returns `{ briefing: TwinBriefingRow | null }` — null when
  * no per-domain briefing exists yet (the worker hasn't emitted one,

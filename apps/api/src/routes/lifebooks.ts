@@ -4,16 +4,107 @@ import {
   lifebookRepository,
   mempalaceRepository,
 } from '@skytwin/db';
+import type { LifebookImportance } from '@skytwin/db';
 import { LlmClient } from '@skytwin/llm-client';
 import type { ProviderEntry } from '@skytwin/llm-client';
 import type { AIProviderName } from '@skytwin/shared-types';
-import type { LifebookImportance } from '@skytwin/db';
 import { runPrompt } from '@skytwin/policy-prompts';
 import { createLogger } from '@skytwin/core';
+import { getMemoryPortForUser } from '../memory-setup.js';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
 import { bindUserIdParamValidator } from '../middleware/validate-uuid.js';
 
 const log = createLogger('api:lifebooks');
+
+const IMPORTANCE_LABEL: Record<LifebookImportance, string> = {
+  core: 'Core',
+  secondary: 'Secondary',
+  emerging: 'Emerging',
+};
+
+/**
+ * #321 AC: "Override is recorded as an episode in memory so the twin can
+ * reference it." Records a promote/demote (or a clear) as an episodic
+ * memory so a later decision/extraction can pull back "the user said
+ * Aging Parents is Core as of 2026-05-17" via the episodic-memory
+ * retrieval path.
+ *
+ * Best-effort by design — mirrors the approval-episode recorder in
+ * `approvals.ts`. A memory-layer hiccup must never fail the user-facing
+ * importance write that already committed. Writes to BOTH the legacy
+ * `episodic_memories` table (so the decision-engine's episodic boost
+ * sees it) AND the pluggable memory port (so the gbrain semantic index
+ * covers it), each swallowing its own error.
+ *
+ * `action` is the verb the user took. `previous` is the importance the
+ * Lifebook had BEFORE the change (read off the returned row's
+ * pre-change value by the caller), so the summary reads naturally and a
+ * promote vs demote can be told apart on retrieval.
+ */
+async function recordImportanceOverrideEpisode(params: {
+  userId: string;
+  domainName: string;
+  action: 'set' | 'clear';
+  value: LifebookImportance | null;
+  decayDays?: number;
+  wingId: string | null;
+}): Promise<void> {
+  const { userId, domainName, action, value, decayDays, wingId } = params;
+  const summary =
+    action === 'clear'
+      ? `User cleared the manual importance override for the "${domainName}" Lifebook — the weekly extractor will recompute its importance on the next run.`
+      : `User set the "${domainName}" Lifebook importance to ${IMPORTANCE_LABEL[value as LifebookImportance]}${
+          decayDays === 0 ? ' (no auto-decay)' : decayDays ? ` (decays after ${decayDays} days)` : ''
+        }.`;
+
+  try {
+    const episodeRow = await mempalaceRepository.createEpisode({
+      userId,
+      situationSummary: summary,
+      domain: domainName,
+      situationType: 'lifebook_importance_override',
+      contextSnapshot: { activePreferences: [], activePatterns: [] },
+      actionTaken: action === 'clear' ? 'clear_importance_override' : 'set_importance_override',
+      feedbackType: 'edit',
+      // A manual override is a strong, deliberate signal. High utility so
+      // the episodic boost weights it heavily when a similar situation
+      // (extraction of this same domain) recurs.
+      utilityScore: 0.9,
+    });
+
+    try {
+      const resolved = await getMemoryPortForUser(userId);
+      await resolved.port.recordEpisode({
+        id: episodeRow.id,
+        userId,
+        wing: wingId ?? domainName,
+        summary,
+        startedAt: new Date(),
+        endedAt: new Date(),
+        metadata: {
+          kind: 'lifebook_importance_override',
+          domainName,
+          action,
+          value,
+          ...(decayDays !== undefined ? { decayDays } : {}),
+        },
+      });
+    } catch (portErr) {
+      log.warn('memory port recordEpisode failed for importance override (legacy table updated regardless)', {
+        userId,
+        domainName,
+        error: portErr instanceof Error ? portErr.message : String(portErr),
+      });
+    }
+  } catch (err) {
+    log.warn('failed to record importance-override episode', {
+      userId,
+      domainName,
+      action,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
 
 /**
  * #319 generic fallback layout — the shape returned when the LLM is
@@ -249,9 +340,10 @@ export function createLifebooksRouter(): Router {
         typeof body.decayDays === 'number' && Number.isFinite(body.decayDays) && body.decayDays >= 0
           ? Math.floor(body.decayDays)
           : 90;
+      const decodedDomain = decodeURIComponent(domainName);
       const updated = await lifebookRepository.setImportanceOverride(
         userId,
-        decodeURIComponent(domainName),
+        decodedDomain,
         body.value,
         decayDays,
       );
@@ -259,6 +351,18 @@ export function createLifebooksRouter(): Router {
         res.status(404).json({ error: 'Lifebook not found' });
         return;
       }
+      // #321 AC: record the override as an episode so the twin can
+      // reference it. Best-effort — already-awaited so a slow memory
+      // layer doesn't leave the response hanging open, but a failure is
+      // swallowed inside the recorder and never gates the 200.
+      await recordImportanceOverrideEpisode({
+        userId,
+        domainName: updated.domain_name,
+        action: 'set',
+        value: body.value,
+        decayDays,
+        wingId: updated.wing_id,
+      });
       res.json({ lifebook: rowToJson(updated) });
     } catch (err) {
       next(err);
@@ -445,6 +549,15 @@ export function createLifebooksRouter(): Router {
         res.status(404).json({ error: 'Lifebook not found' });
         return;
       }
+      // #321 AC: record the clear as an episode too — the twin should
+      // know the user reverted to letting the extractor decide.
+      await recordImportanceOverrideEpisode({
+        userId,
+        domainName: updated.domain_name,
+        action: 'clear',
+        value: null,
+        wingId: updated.wing_id,
+      });
       res.json({ lifebook: rowToJson(updated) });
     } catch (err) {
       next(err);
