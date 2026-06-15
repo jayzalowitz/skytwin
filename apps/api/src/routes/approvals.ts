@@ -22,6 +22,7 @@ import type { FeedbackEvent, CandidateAction } from '@skytwin/shared-types';
 import { ConfidenceLevel, TrustTier } from '@skytwin/shared-types';
 import { isValidUserId as isValidUuid } from '../middleware/validate-uuid.js';
 import { getExecutionRouter } from '../execution-setup.js';
+import { recordMcpActionSpend } from '../mcp-action-spend.js';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
 import { bindUserIdParamValidator } from '../middleware/validate-uuid.js';
 import { sseManager } from '../sse.js';
@@ -561,6 +562,20 @@ export function createApprovalsRouter(): Router {
             planId: savedPlan.id,
             adapterUsed: result.output?.['adapter_used'] ?? 'unknown',
           };
+
+          // Record post-execution spend tagged with the action's
+          // registry source (#323 AC#3). Only on success — a failed
+          // approved execution shouldn't charge the per-app budget.
+          // Best-effort: the helper swallows its own errors so a ledger
+          // write can't break the approval response. The spend cap was
+          // re-checked by the policy evaluation above before execution.
+          if (result.status === 'completed') {
+            await recordMcpActionSpend({
+              userId: body.userId,
+              decisionId: approval.decision_id,
+              action: candidateAction,
+            });
+          }
         } catch (execError) {
           // Execution failed after approval was recorded. Log the failure and persist
           // a failed plan so the approval isn't silently orphaned with no execution record.
