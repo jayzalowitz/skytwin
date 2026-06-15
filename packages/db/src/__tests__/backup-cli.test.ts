@@ -35,6 +35,8 @@ function makeBackupData(): BackupData {
       trust_tier: 'observer',
       autonomy_settings: {},
       ironclaw_channel: null,
+      language: null,
+      timezone: null,
       created_at: new Date('2026-01-01T00:00:00Z'),
       updated_at: new Date('2026-01-01T00:00:00Z'),
     },
