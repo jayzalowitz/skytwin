@@ -13,7 +13,13 @@ import {
   type FirstCloseToastState,
 } from './first-close-toast.js';
 import { IdlePauseController } from './idle-pause-controller.js';
-import { getIdlePauseEnabled, setIdlePauseEnabled } from './desktop-preferences.js';
+import {
+  getIdlePauseEnabled,
+  setIdlePauseEnabled,
+  getCrashReportsEnabled,
+  setCrashReportsEnabled,
+} from './desktop-preferences.js';
+import { reportCrash } from './crash-reporter.js';
 
 const serviceManager = new ServiceManager();
 let mainWindow: BrowserWindow | null = null;
@@ -266,6 +272,13 @@ ipcMain.handle('set-idle-pause-enabled', async (_event, enabled: boolean) => {
   return value;
 });
 
+ipcMain.handle('get-crash-reports-enabled', () => getCrashReportsEnabled());
+ipcMain.handle('set-crash-reports-enabled', (_event, enabled: boolean) => {
+  const value = enabled === true;
+  setCrashReportsEnabled(value);
+  return value;
+});
+
 ipcMain.handle('read-dxt-file', async (_event, filePath: string) => {
   if (typeof filePath !== 'string' || filePath === '') {
     throw new Error('filePath required');
@@ -310,6 +323,48 @@ if (!app.requestSingleInstanceLock()) {
     }
   });
 }
+
+/**
+ * Install process-level crash handlers (#399). They re-check the opt-in
+ * preference on every crash (not just at install time) so toggling the
+ * setting takes effect without a relaunch, and `reportCrash` gates the
+ * send on it a second time. We log the crash regardless of the setting —
+ * the toggle controls only whether a report leaves the machine.
+ */
+function installCrashHandlers(): void {
+  const buildContext = (
+    kind: 'uncaughtException' | 'unhandledRejection',
+  ) => ({
+    appVersion: app.getVersion(),
+    platform: process.platform,
+    arch: process.arch,
+    kind,
+  });
+
+  process.on('uncaughtException', (err) => {
+    console.error('[crash] uncaughtException', err);
+    void reportCrash({
+      enabled: getCrashReportsEnabled(),
+      thrown: err,
+      context: buildContext('uncaughtException'),
+    }).catch(() => {
+      /* reporting must never throw out of the crash handler */
+    });
+  });
+
+  process.on('unhandledRejection', (reason) => {
+    console.error('[crash] unhandledRejection', reason);
+    void reportCrash({
+      enabled: getCrashReportsEnabled(),
+      thrown: reason,
+      context: buildContext('unhandledRejection'),
+    }).catch(() => {
+      /* reporting must never throw out of the crash handler */
+    });
+  });
+}
+
+installCrashHandlers();
 
 // App lifecycle
 app.whenReady().then(startApp);

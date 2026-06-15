@@ -7,14 +7,20 @@
  * even loads, and we want the kill-switch / idle-pause state to
  * persist across reinstalls of the bundled web app).
  *
- * Today: just the "pause when idle" toggle (#382 default ON). New
- * desktop-only prefs land here as the platform grows.
+ * Today:
+ *  - "pause when idle" toggle (#382, default ON).
+ *  - "send anonymous crash reports" toggle (#399, default OFF — opt-in,
+ *    to honor the privacy promise; nothing leaves the machine unless the
+ *    user explicitly turns this on).
+ *
+ * New desktop-only prefs land here as the platform grows.
  */
 
 import Store from 'electron-store';
 
 interface DesktopPrefsShape {
   idlePauseEnabled: boolean;
+  crashReportsEnabled: boolean;
 }
 
 // Mirrors the type-narrowing pattern in window-state.ts — Conf's ESM
@@ -29,6 +35,8 @@ const store = new Store<DesktopPrefsShape>({
   name: 'skytwin-desktop-prefs',
   defaults: {
     idlePauseEnabled: true,
+    // Default OFF — opt-in only. See crash-reporter.ts.
+    crashReportsEnabled: false,
   },
 }) as unknown as PrefsStore;
 
@@ -38,4 +46,16 @@ export function getIdlePauseEnabled(): boolean {
 
 export function setIdlePauseEnabled(value: boolean): void {
   store.set('idlePauseEnabled', value === true);
+}
+
+/**
+ * Whether the user has opted in to anonymous crash reporting (#399).
+ * Default OFF. The crash reporter checks this before sending anything.
+ */
+export function getCrashReportsEnabled(): boolean {
+  return store.get('crashReportsEnabled');
+}
+
+export function setCrashReportsEnabled(value: boolean): void {
+  store.set('crashReportsEnabled', value === true);
 }
