@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="SkyTwin">
+  <!-- Full-bleed background so the platform mask never clips into empty space. -->
+  <rect width="512" height="512" fill="#7C72E8"/>
+  <!-- Glyph kept inside the central ~60% safe zone so circular/squircle masks don't crop it. -->
+  <text x="256" y="330" font-family="-apple-system,system-ui,Segoe UI,Roboto,sans-serif" font-size="220" font-weight="700" text-anchor="middle" fill="#ffffff">S</text>
+</svg>

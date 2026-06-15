@@ -273,6 +273,47 @@ body.has-autonomy-banner.has-connectors-banner .connectors-banner { top: 2.5rem;
   outline-offset: 2px;
 }
 
+/* Offline badge (#403, PWA). Distinct from the connection-banner: that
+ * banner means "the API is unreachable while you're online"; this badge
+ * means "the device has no network at all". Pinned bottom-center so it's
+ * visible on every route without colliding with the bottom-right toast
+ * stack or the bottom-nav. Driven by sw-register.js off navigator.onLine. */
+.offline-badge {
+  position: fixed;
+  left: 50%;
+  bottom: 1rem;
+  transform: translateX(-50%);
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  max-width: min(92vw, 34rem);
+  padding: 0.55rem 0.95rem;
+  background: var(--bg-card, #16171d);
+  border: 1px solid rgba(230, 167, 0, 0.4);
+  border-radius: 10px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.3);
+  font-size: 0.82rem;
+  color: var(--text, #e6e7eb);
+}
+.offline-badge[hidden] { display: none; }
+/* Lift above the mobile bottom-nav + safe area so it never overlaps it. */
+@media (max-width: 768px) {
+  .offline-badge { bottom: calc(4.25rem + env(safe-area-inset-bottom, 0px)); }
+}
+.offline-badge-dot {
+  flex: 0 0 auto;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--warning, #e6a700);
+  animation: connection-banner-pulse 1.6s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .offline-badge-dot { animation: none; opacity: 0.9; }
+}
+.offline-badge-text { line-height: 1.35; }
+
 /* Toast notification stack — UX review #10 follow-up.
  *
  * Bottom-right placement keeps toasts out of the page-content scroll

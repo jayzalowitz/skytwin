@@ -9,8 +9,32 @@ const API_BASE = process.env['API_BASE_URL'] ?? 'http://localhost:3100';
 const app = express();
 app.use(express.json());
 
-// Serve static files
-app.use(express.static(path.join(__dirname, '../public')));
+const PUBLIC_DIR = path.join(__dirname, '../public');
+
+// PWA (#403): the service worker must be served with no-cache so a new
+// deploy's sw.js is picked up on the next visit (browsers byte-compare it),
+// and with `Service-Worker-Allowed: /` so a worker fetched from /sw.js can
+// claim the whole-origin scope the SPA needs. Registered BEFORE the static
+// middleware so these headers always win.
+app.get('/sw.js', (_req, res) => {
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.setHeader('Service-Worker-Allowed', '/');
+  res.type('application/javascript');
+  res.sendFile(path.join(PUBLIC_DIR, 'sw.js'));
+});
+
+// Serve static files. `.webmanifest` isn't in Express's default MIME table,
+// so register it explicitly; otherwise the manifest is served as
+// application/octet-stream and some browsers refuse to parse it.
+app.use(
+  express.static(PUBLIC_DIR, {
+    setHeaders: (res, filePath) => {
+      if (filePath.endsWith('.webmanifest')) {
+        res.setHeader('Content-Type', 'application/manifest+json');
+      }
+    },
+  }),
+);
 
 // API proxy to avoid CORS issues — forwards /api/* to the API server
 app.all('/api/*splat', async (req, res) => {

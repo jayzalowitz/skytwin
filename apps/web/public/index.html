@@ -4,6 +4,16 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>SkyTwin — Your Personal AI Assistant</title>
+  <!-- PWA (#403): installable + offline app shell. theme_color matches the
+       iris accent (DESIGN.md). apple-* tags give iOS Safari standalone +
+       home-screen icon support, which it doesn't take from the manifest. -->
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="theme-color" content="#7C72E8">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="SkyTwin">
+  <link rel="apple-touch-icon" href="/icons/icon.svg">
   <!-- Design system fonts (DESIGN.md): Fraunces = twin voice, Geist = UI, Geist Mono = data/refs -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -151,6 +161,13 @@
     </ul>
   </nav>
 
+  <!-- PWA bootstrap (#403): register the service worker + wire the offline
+       indicator. Loaded as its own tiny module so offline UX works even if
+       the main app bundle is slow or fails to load. -->
+  <script type="module">
+    import { initPwa } from '/js/pwa/sw-register.js';
+    initPwa();
+  </script>
   <script type="module" src="/js/app.js"></script>
 </body>
 </html>
