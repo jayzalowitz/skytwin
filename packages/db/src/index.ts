@@ -282,3 +282,23 @@ export {
 // Schema metadata
 export { TABLE_NAMES, SCHEMA_PATH } from './schemas/index.js';
 export type { TableName } from './schemas/index.js';
+
+// Backup / restore (#400) — encrypted user-data export + fresh-install restore.
+// Powers the `skytwin-backup` CLI (src/bin/backup-cli.ts).
+export {
+  collectBackup,
+  restoreBackup,
+  validateBackupData,
+  BACKUP_SCHEMA_VERSION,
+  encodeArchive,
+  decodeArchive,
+  MIN_ARCHIVE_PASSPHRASE_LENGTH,
+} from './backup/index.js';
+export type {
+  BackupData,
+  DecisionBundle,
+  CollectBackupResult,
+  RestoreBackupResult,
+  RestoreSummary,
+  DecodeArchiveResult,
+} from './backup/index.js';
