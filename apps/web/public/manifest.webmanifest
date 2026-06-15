@@ -1,0 +1,27 @@
+{
+  "name": "SkyTwin — Your Personal AI Assistant",
+  "short_name": "SkyTwin",
+  "description": "Review decisions, approve actions, and manage your digital twin — installable, with an offline app shell.",
+  "id": "/",
+  "start_url": "/?source=pwa",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0E0F13",
+  "theme_color": "#7C72E8",
+  "categories": ["productivity", "utilities"],
+  "icons": [
+    {
+      "src": "/icons/icon.svg",
+      "type": "image/svg+xml",
+      "sizes": "any",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-maskable.svg",
+      "type": "image/svg+xml",
+      "sizes": "any",
+      "purpose": "maskable"
+    }
+  ]
+}

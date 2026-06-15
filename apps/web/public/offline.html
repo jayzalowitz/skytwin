@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#7C72E8">
+  <title>SkyTwin — Offline</title>
+  <style>
+    /* Self-contained so this page renders even if cached CSS is missing.
+       Mirrors the dark default (#0E0F13 bg, iris #7C72E8 accent). */
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: #0E0F13;
+      color: #E6E7EB;
+      font-family: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
+    }
+    .wrap {
+      min-height: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 2rem;
+      box-sizing: border-box;
+    }
+    .mark {
+      width: 64px;
+      height: 64px;
+      border-radius: 50%;
+      background: #7C72E8;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 2rem;
+      font-weight: 700;
+      color: #fff;
+      margin-bottom: 1.25rem;
+    }
+    h1 { font-size: 1.35rem; margin: 0 0 0.5rem; }
+    p { color: #9A9CA6; max-width: 28rem; line-height: 1.5; margin: 0 0 1.5rem; }
+    a.btn {
+      display: inline-block;
+      padding: 0.6rem 1.2rem;
+      border: 1px solid #7C72E8;
+      border-radius: 8px;
+      color: #7C72E8;
+      text-decoration: none;
+      font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="mark" aria-hidden="true">S</div>
+    <h1>You're offline</h1>
+    <p>
+      SkyTwin couldn't load fresh data. Your last-loaded view is still
+      available, and any changes you make will sync automatically once
+      you're back online.
+    </p>
+    <a class="btn" href="/">Try again</a>
+  </div>
+</body>
+</html>
