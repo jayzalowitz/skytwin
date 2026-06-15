@@ -176,7 +176,10 @@ export { lifebookRepository } from './repositories/index.js';
 export type {
   LifebookRow,
   LifebookImportance,
+  LifebookMetadata,
   UpsertLifebookInput,
+  AddManualLifebookInput,
+  AddManualLifebookResult,
 } from './repositories/index.js';
 
 export {

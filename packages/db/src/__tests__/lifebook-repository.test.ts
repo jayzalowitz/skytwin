@@ -1,10 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mockQuery = vi.fn();
+const mockCreateWing = vi.fn();
 
 vi.mock('../connection.js', () => ({
   query: (...args: unknown[]) => mockQuery(...args),
   withTransaction: vi.fn(),
+}));
+
+vi.mock('../repositories/mempalace-repository.js', () => ({
+  mempalaceRepository: {
+    createWing: (...args: unknown[]) => mockCreateWing(...args),
+  },
 }));
 
 const { lifebookRepository } = await import('../repositories/lifebook-repository.js');
@@ -139,5 +146,123 @@ describe('lifebookRepository.clearImportanceOverride — #321', () => {
     await expect(
       lifebookRepository.clearImportanceOverride('u-1', 'Health'),
     ).resolves.not.toBeNull();
+  });
+});
+
+describe('lifebookRepository.addManual — #193 AC#8 (manual create)', () => {
+  it('creates the wing immediately and inserts a manuallyAdded lifebook (created: true)', async () => {
+    mockCreateWing.mockResolvedValue({ id: 'wing-new', name: 'Volunteering' });
+    // First query is the existence pre-check → no rows → created.
+    mockQuery
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            id: 'lb-new',
+            user_id: 'u-1',
+            domain_name: 'Volunteering',
+            importance: 'emerging',
+            wing_id: 'wing-new',
+            hidden_at: null,
+            metadata: { manuallyAdded: true },
+          },
+        ],
+        rowCount: 1,
+      });
+
+    const result = await lifebookRepository.addManual({
+      userId: 'u-1',
+      domainName: 'Volunteering',
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error('expected success');
+    expect(result.created).toBe(true);
+    expect(result.lifebook.wing_id).toBe('wing-new');
+
+    // Wing is created with the domain name + domains array.
+    expect(mockCreateWing).toHaveBeenCalledWith({
+      userId: 'u-1',
+      name: 'Volunteering',
+      description: 'Memories related to Volunteering',
+      domains: ['Volunteering'],
+    });
+
+    // INSERT carries the manuallyAdded stamp + defaults importance to emerging.
+    const insertCall = mockQuery.mock.calls[1]!;
+    const [sql, params] = insertCall;
+    expect(sql).toContain('INSERT INTO lifebooks');
+    expect(sql).toContain('"manuallyAdded": true');
+    expect(params).toEqual(['u-1', 'Volunteering', 'emerging', 'wing-new']);
+  });
+
+  it('re-surfaces an existing (hidden) domain instead of erroring — clears hidden_at, created: false', async () => {
+    mockCreateWing.mockResolvedValue({ id: 'wing-existing', name: 'Kayaking' });
+    // Pre-check finds an existing row → created: false.
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{ id: 'lb-existing' }], rowCount: 1 })
+      .mockResolvedValueOnce({
+        rows: [{ id: 'lb-existing', importance: 'core', hidden_at: null, metadata: { manuallyAdded: true } }],
+        rowCount: 1,
+      });
+
+    const result = await lifebookRepository.addManual({
+      userId: 'u-1',
+      domainName: 'Kayaking',
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error('expected success');
+    expect(result.created).toBe(false);
+
+    // The ON CONFLICT branch clears hidden_at (the one allowed unhide path)
+    // and OR-merges the manuallyAdded flag without demoting importance.
+    const [sql] = mockQuery.mock.calls[1]!;
+    expect(sql).toContain('ON CONFLICT (user_id, domain_name) DO UPDATE SET');
+    expect(sql).toContain('hidden_at = NULL');
+    expect(sql).toContain(`metadata = lifebooks.metadata || '{"manuallyAdded": true}'::jsonb`);
+    // importance is NOT in the UPDATE SET — re-add must not demote.
+    expect(sql).not.toMatch(/DO UPDATE SET[\s\S]*importance =/);
+  });
+
+  it('honors a caller-supplied importance on create', async () => {
+    mockCreateWing.mockResolvedValue({ id: 'wing-x', name: 'Caregiving' });
+    mockQuery
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+      .mockResolvedValueOnce({ rows: [{ id: 'lb-x', importance: 'core' }], rowCount: 1 });
+
+    await lifebookRepository.addManual({
+      userId: 'u-1',
+      domainName: 'Caregiving',
+      importance: 'core',
+    });
+
+    const [, params] = mockQuery.mock.calls[1]!;
+    expect(params[2]).toBe('core');
+  });
+
+  it('trims the domain name before creating the wing + row', async () => {
+    mockCreateWing.mockResolvedValue({ id: 'wing-t', name: 'Travel' });
+    mockQuery
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+      .mockResolvedValueOnce({ rows: [{ id: 'lb-t' }], rowCount: 1 });
+
+    await lifebookRepository.addManual({ userId: 'u-1', domainName: '  Travel  ' });
+
+    expect(mockCreateWing).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'Travel', domains: ['Travel'] }),
+    );
+    const [, params] = mockQuery.mock.calls[1]!;
+    expect(params[1]).toBe('Travel');
+  });
+
+  it('returns invalid_domain_name and never touches the DB for an empty/whitespace name', async () => {
+    const result = await lifebookRepository.addManual({ userId: 'u-1', domainName: '   ' });
+    expect(result.success).toBe(false);
+    if (result.success) throw new Error('expected failure');
+    expect(result.error).toBe('invalid_domain_name');
+    // No wing, no query — fail before any side effect.
+    expect(mockCreateWing).not.toHaveBeenCalled();
+    expect(mockQuery).not.toHaveBeenCalled();
   });
 });

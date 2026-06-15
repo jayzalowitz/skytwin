@@ -7,6 +7,7 @@ import {
 import { LlmClient } from '@skytwin/llm-client';
 import type { ProviderEntry } from '@skytwin/llm-client';
 import type { AIProviderName } from '@skytwin/shared-types';
+import type { LifebookImportance } from '@skytwin/db';
 import { runPrompt } from '@skytwin/policy-prompts';
 import { createLogger } from '@skytwin/core';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
@@ -49,6 +50,7 @@ const GENERIC_LAYOUT = {
  * Routes for the Emergent Lifebooks surface (#193 Child 1).
  *
  *   GET    /api/lifebooks/:userId                              — list visible lifebooks
+ *   POST   /api/lifebooks/:userId                              — add a domain manually (#193 AC#8)
  *   GET    /api/lifebooks/:userId/all                          — list all (including hidden)
  *   GET    /api/lifebooks/:userId/:domainName                  — single lifebook + wing summary
  *   GET    /api/lifebooks/:userId/:domainName/layout           — adaptive layout (#319)
@@ -57,10 +59,10 @@ const GENERIC_LAYOUT = {
  *   POST   /api/lifebooks/:userId/:domainName/importance       — set override (#321)
  *   DELETE /api/lifebooks/:userId/:domainName/importance       — clear override (#321)
  *
- * The worker is the only writer of lifebook *content*; this router
- * adjusts visibility + user-set importance overrides. Domain detection
- * itself is intentionally not user-driven — it emerges from the user's
- * actual memory each weekly run.
+ * The weekly extractor is the primary writer of lifebook *content*; this
+ * router adjusts visibility + user-set importance overrides AND supports
+ * one user-driven creation path (#193 AC#8: "track 'Volunteering'") that
+ * seeds a wing immediately and informs the next extraction run.
  */
 export function createLifebooksRouter(): Router {
   const router = Router();
@@ -76,6 +78,73 @@ export function createLifebooksRouter(): Router {
       }
       const rows = await lifebookRepository.listVisible(userId);
       res.json({ lifebooks: rows.map(rowToJson) });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  /**
+   * #193 AC#8: POST /:userId — add a domain manually ("track
+   * 'Volunteering'"). Creates the MemPalace wing immediately and seeds a
+   * lifebook row stamped `manuallyAdded`. Re-adding an existing domain
+   * re-surfaces it (clears hidden_at) rather than erroring.
+   *
+   * Body: { domainName: string, importance?: 'core'|'secondary'|'emerging' }
+   *   - `domainName` required, non-empty after trim, length-capped.
+   *   - `importance` optional; defaults to 'emerging' (no signal history
+   *     yet). Only applied on first create — re-adds don't demote.
+   *
+   * 201 on create, 200 on re-surface. 400 on invalid input.
+   */
+  router.post('/:userId', async (req, res, next) => {
+    try {
+      const { userId } = req.params;
+      if (!userId) {
+        res.status(400).json({ error: 'Missing userId parameter' });
+        return;
+      }
+      const body = req.body as { domainName?: unknown; importance?: unknown } | undefined;
+      const rawName = body?.domainName;
+      if (typeof rawName !== 'string' || rawName.trim().length === 0) {
+        res.status(400).json({ error: 'domainName must be a non-empty string' });
+        return;
+      }
+      // Cap to a sane wing-name length so a manual add can't write an
+      // oversized name into memory_wings.
+      if (rawName.trim().length > 120) {
+        res.status(400).json({ error: 'domainName must be 120 characters or fewer' });
+        return;
+      }
+      let importance: LifebookImportance | undefined;
+      if (body?.importance !== undefined) {
+        if (
+          body.importance !== 'core' &&
+          body.importance !== 'secondary' &&
+          body.importance !== 'emerging'
+        ) {
+          res.status(400).json({
+            error: "importance must be one of 'core' | 'secondary' | 'emerging'",
+          });
+          return;
+        }
+        importance = body.importance;
+      }
+
+      const result = await lifebookRepository.addManual({
+        userId,
+        domainName: rawName,
+        importance,
+      });
+      if (!result.success) {
+        // Repo-level guard mirrors the route guard; reachable only if the
+        // name was whitespace that survived the typeof check above.
+        res.status(400).json({ error: 'domainName must be a non-empty string' });
+        return;
+      }
+      res.status(result.created ? 201 : 200).json({
+        lifebook: rowToJson(result.lifebook),
+        created: result.created,
+      });
     } catch (err) {
       next(err);
     }
@@ -405,6 +474,11 @@ interface LifebookJson {
     setAt: string;
     decayDays: number;
   } | null;
+  /**
+   * #193 AC#8: true when the user added this domain manually rather than
+   * the extractor detecting it. UI labels it "added by you".
+   */
+  manuallyAdded: boolean;
 }
 
 /**
@@ -448,5 +522,6 @@ function rowToJson(r: import('@skytwin/db').LifebookRow): LifebookJson {
           decayDays: override.decayDays,
         }
       : null,
+    manuallyAdded: r.metadata?.manuallyAdded === true,
   };
 }
