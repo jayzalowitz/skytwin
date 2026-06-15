@@ -12,8 +12,6 @@
   },
   "dependencies": {
     "@skytwin/capability-engine": "workspace:*",
-    "@skytwin/mcp-host": "workspace:*",
-    "@skytwin/observability": "workspace:*",
     "@skytwin/config": "workspace:*",
     "@skytwin/connectors": "workspace:*",
     "@skytwin/core": "workspace:*",
@@ -21,7 +19,9 @@
     "@skytwin/db": "workspace:*",
     "@skytwin/ironclaw-adapter": "workspace:*",
     "@skytwin/llm-client": "workspace:*",
+    "@skytwin/mcp-host": "workspace:*",
     "@skytwin/memory-gbrain-crdb-adapter": "workspace:*",
+    "@skytwin/observability": "workspace:*",
     "@skytwin/policy-engine": "workspace:*",
     "@skytwin/policy-prompts": "workspace:*",
     "@skytwin/registry-client": "workspace:*",
@@ -29,7 +29,7 @@
     "tweetnacl": "^1.0.3"
   },
   "devDependencies": {
-    "tsx": "^4.22.3",
+    "tsx": "^4.22.4",
     "typescript": "^6.0.3",
     "vitest": "^1.3.0"
   }

@@ -18,6 +18,10 @@ All notable changes to SkyTwin will be documented in this file.
 
 ## [Unreleased] — Tier 2 launch polish
 
+### Changed (dependency bumps — batched rebase of the open dependabot PRs)
+
+- **Batched the 10 open dependabot bumps onto current `main` in one lockfile regeneration** (they had all gone stale/conflicting after the 27-PR launch-readiness merge wave; rebasing each individually would have re-conflicted on `pnpm-lock.yaml` serially). Landed: `electron-updater` 6.8.3→6.8.9, `electron` 42.2.0→42.3.3, `electron-builder` 26.8.1→26.15.3 (desktop); `expo` 56.0.8→56.0.12, `@react-navigation/native-stack` 7.16.0→7.17.1, `react` 19.2.7 + `@types/react` ~19.2.16 (mobile); `bonjour-service` 1.3.0→1.4.0 (api); `@types/node` →25.9.3, `tsx` →4.22.4 (workspace-wide dev-deps); `eslint` 10.4.x→10.5.0 (in-range; lints clean). Full `pnpm build` (35/35) + `pnpm lint` (61/61) green; the only local test misses are the `integration-live` suites that need a running API+DB (they pass in CI). Supersedes dependabot PRs #469–#494.
+
 ### Added (locale/timezone faithfulness — connector profile sync, #486)
 
 - **Google profile sync now populates `users.language` + `users.timezone`, and commitment extraction routes by locale.** The locale/timezone *foundation* (migration `063`, the `decision-engine/src/locale.ts` helpers `resolveLanguage`/`resolveTimezone`/`isNonEnglish`, the briefing `{{language}}` wiring, and `userRepository.getLocale`) landed with the Inbox-Intelligence epic but nothing actually wrote those columns. This PR closes that gap:
