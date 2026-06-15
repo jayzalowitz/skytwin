@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { RiskTier, ConfidenceLevel, RiskDimension } from '@skytwin/shared-types';
 import type {
   CandidateAction,
@@ -432,6 +432,80 @@ describe('ExecutionRouter', () => {
           // noop
         }
       })()).rejects.toThrow(/does not match/);
+    });
+  });
+
+  // ── #324: rollback routing ──────────────────────────────────────────
+  describe('rollback', () => {
+    it('dispatches to the adapter that executed the plan (happy path)', async () => {
+      const ironclaw = createMockAdapter('ironclaw');
+      const openclaw = createMockAdapter('openclaw', OPENCLAW_SKILLS);
+      const ironclawSpy = vi.spyOn(ironclaw, 'rollback');
+      const openclawSpy = vi.spyOn(openclaw, 'rollback');
+      registry.register('ironclaw', ironclaw, IRONCLAW_TRUST_PROFILE);
+      registry.register('openclaw', openclaw, OPENCLAW_TRUST_PROFILE, OPENCLAW_SKILLS);
+
+      const out = await router.rollback('plan-1', 'ironclaw');
+
+      expect(out.result.success).toBe(true);
+      expect(out.adapterUsed).toBe('ironclaw');
+      expect(out.noAdapter).toBe(false);
+      // Routed to the recorded adapter only — never the other registered one.
+      expect(ironclawSpy).toHaveBeenCalledWith('plan-1');
+      expect(openclawSpy).not.toHaveBeenCalled();
+    });
+
+    it('returns noAdapter when the recorded adapter is no longer registered', async () => {
+      // ironclaw executed the plan but was since uninstalled — must NOT fall
+      // back to a different adapter and ask it to roll back a plan it never ran.
+      const direct = createMockAdapter('direct');
+      const directSpy = vi.spyOn(direct, 'rollback');
+      registry.register('direct', direct, DIRECT_TRUST_PROFILE);
+
+      const out = await router.rollback('plan-1', 'ironclaw');
+
+      expect(out.noAdapter).toBe(true);
+      expect(out.result.success).toBe(false);
+      expect(out.adapterUsed).toBe('ironclaw');
+      expect(directSpy).not.toHaveBeenCalled();
+    });
+
+    it('returns noAdapter (fail-safe) when no adapter name was recorded', async () => {
+      registry.register('ironclaw', createMockAdapter('ironclaw'), IRONCLAW_TRUST_PROFILE);
+
+      const out = await router.rollback('plan-1', null);
+
+      expect(out.noAdapter).toBe(true);
+      expect(out.result.success).toBe(false);
+      expect(out.adapterUsed).toBeNull();
+    });
+
+    it('surfaces an adapter-thrown error as a failed (not noAdapter) result', async () => {
+      const ironclaw = createMockAdapter('ironclaw');
+      vi.spyOn(ironclaw, 'rollback').mockRejectedValue(new Error('boom'));
+      registry.register('ironclaw', ironclaw, IRONCLAW_TRUST_PROFILE);
+
+      const out = await router.rollback('plan-1', 'ironclaw');
+
+      expect(out.noAdapter).toBe(false);
+      expect(out.result.success).toBe(false);
+      expect(out.result.message).toContain('boom');
+      expect(out.adapterUsed).toBe('ironclaw');
+    });
+
+    it('reports the adapter\'s own failure (e.g. no rollback steps) verbatim', async () => {
+      const ironclaw = createMockAdapter('ironclaw');
+      vi.spyOn(ironclaw, 'rollback').mockResolvedValue({
+        success: false,
+        message: 'This action is not reversible. No rollback steps were defined.',
+      });
+      registry.register('ironclaw', ironclaw, IRONCLAW_TRUST_PROFILE);
+
+      const out = await router.rollback('plan-1', 'ironclaw');
+
+      expect(out.noAdapter).toBe(false);
+      expect(out.result.success).toBe(false);
+      expect(out.result.message).toContain('not reversible');
     });
   });
 });

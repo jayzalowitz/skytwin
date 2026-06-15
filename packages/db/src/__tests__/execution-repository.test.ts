@@ -1,13 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mockClientQuery = vi.fn();
+const mockQuery = vi.fn();
 const mockWithTransaction = vi.fn(
   async (cb: (client: { query: typeof mockClientQuery }) => Promise<unknown>) =>
     cb({ query: mockClientQuery }),
 );
 
 vi.mock('../connection.js', () => ({
-  query: vi.fn(),
+  query: (...args: unknown[]) => mockQuery(...args),
   withTransaction: (cb: (client: { query: typeof mockClientQuery }) => Promise<unknown>) =>
     mockWithTransaction(cb),
 }));
@@ -102,5 +103,77 @@ describe('executionRepository.createPlan — #324 outcome linkage', () => {
     // Single withTransaction call wraps both statements
     expect(mockWithTransaction).toHaveBeenCalledTimes(1);
     expect(mockClientQuery).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('executionRepository.getRollbackTargetsByServer — #324 rollback join', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('resolves plan id + adapter from the provenance→outcome→result join', async () => {
+    const occurredAt = new Date('2026-06-14T00:00:00Z');
+    mockQuery.mockResolvedValueOnce({
+      rows: [
+        {
+          ref_id: 'action-1',
+          payload: { reversible: true },
+          occurred_at: occurredAt,
+          execution_plan_id: 'plan-1',
+          adapter_used: 'ironclaw',
+        },
+      ],
+      rowCount: 1,
+    });
+
+    const since = new Date('2026-06-13T00:00:00Z');
+    const targets = await executionRepository.getRollbackTargetsByServer({
+      serverId: 'server-1',
+      userId: 'user-1',
+      since,
+    });
+
+    // The join query is parameterized with [serverId, since, userId] in order.
+    const [sql, params] = mockQuery.mock.calls[0]!;
+    expect(sql).toContain('capability_provenance_nodes');
+    expect(sql).toContain('decision_outcomes');
+    expect(sql).toContain("outputs->>'adapter_used'");
+    expect(params).toEqual(['server-1', since, 'user-1']);
+
+    expect(targets).toEqual([
+      {
+        actionId: 'action-1',
+        payload: { reversible: true },
+        occurredAt,
+        executionPlanId: 'plan-1',
+        adapterUsed: 'ironclaw',
+      },
+    ]);
+  });
+
+  it('passes through NULL plan id + adapter (no decision_outcomes / result linkage)', async () => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [
+        {
+          ref_id: 'action-2',
+          payload: { reversible: false, irreversibleReason: 'sent' },
+          occurred_at: new Date(),
+          execution_plan_id: null,
+          adapter_used: null,
+        },
+      ],
+      rowCount: 1,
+    });
+
+    const targets = await executionRepository.getRollbackTargetsByServer({
+      serverId: 'server-1',
+      userId: 'user-1',
+      since: new Date(),
+    });
+
+    expect(targets).toHaveLength(1);
+    expect(targets[0]!.executionPlanId).toBeNull();
+    expect(targets[0]!.adapterUsed).toBeNull();
+    expect(targets[0]!.payload).toEqual({ reversible: false, irreversibleReason: 'sent' });
   });
 });
