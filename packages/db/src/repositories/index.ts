@@ -44,6 +44,7 @@ export type {
   CreateExecutionResultInput,
   CreateExecutionEventInput,
   ExecutionPlanWithResult,
+  RollbackTarget,
 } from './execution-repository.js';
 
 export { signalRepository } from './signal-repository.js';

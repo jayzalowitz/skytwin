@@ -4,6 +4,7 @@ import type {
   ExecutionPlan,
   RiskAssessment,
   ExecutionResult,
+  RollbackResult,
   RoutingDecision,
   SkillGap,
 } from '@skytwin/shared-types';
@@ -23,6 +24,23 @@ import { logSkillGap } from './skill-gap-logger.js';
  */
 export interface ExecutionContext {
   approved?: boolean;
+}
+
+/**
+ * Outcome of routing a rollback request through the registry.
+ *
+ * `result` is the adapter's own `RollbackResult`. `adapterUsed` records which
+ * registered adapter actually serviced the rollback so callers can persist it
+ * alongside the rollback audit record. `noAdapter` is the typed failure mode
+ * (Code Style: typed result objects for expected failures) — set when no
+ * registered adapter could service the rollback, rather than throwing for the
+ * recoverable "this server is no longer installed" case.
+ */
+export interface RollbackRoutingResult {
+  result: RollbackResult;
+  adapterUsed: string | null;
+  /** True when no registered adapter could handle the rollback. */
+  noAdapter: boolean;
 }
 
 /**
@@ -289,6 +307,81 @@ export class ExecutionRouter {
       action.decisionId,
     );
     throw new NoAdapterError(gap);
+  }
+
+  /**
+   * Roll back a previously executed plan by routing to the adapter that ran it.
+   *
+   * Rollback is fundamentally different from execution routing: it must target
+   * the SAME adapter that executed the plan, because each adapter keeps its own
+   * in-memory plan store keyed by `planId` (see the mock/real IronClaw adapters
+   * and OpenClawAdapter). Re-running the trust-ranked selection from
+   * `executeWithRouting` would pick whichever adapter ranks highest today, not
+   * the one that actually performed the action — so we resolve the adapter by
+   * the `adapterUsed` name persisted at execution time (`execution_results`
+   * `outputs.adapter_used`).
+   *
+   * Resolution order:
+   *   1. If `adapterUsed` names a registered adapter, dispatch to it.
+   *   2. If `adapterUsed` is unknown/unregistered (e.g. the capability was
+   *      uninstalled, or older rows that predate adapter_used persistence),
+   *      return `noAdapter: true` — we will NOT guess a different adapter and
+   *      ask it to roll back a plan it never executed. Lying about which
+   *      adapter can undo the work is worse than honest "no adapter".
+   *
+   * This never throws for the expected "adapter gone" case; it returns a typed
+   * result object (Code Style). It only surfaces adapter-thrown errors as a
+   * failed `RollbackResult`.
+   */
+  async rollback(
+    planId: string,
+    adapterUsed: string | null | undefined,
+  ): Promise<RollbackRoutingResult> {
+    // Only an adapter that actually executed the plan can roll it back, and the
+    // only reliable record of that is the persisted adapter name. An absent or
+    // unrecognized name fails safe — never fall back to a different adapter.
+    if (!adapterUsed) {
+      return {
+        result: {
+          success: false,
+          message:
+            'Cannot roll back: no adapter was recorded for this plan. The ' +
+            'executing adapter is unknown, so no rollback target can be resolved.',
+        },
+        adapterUsed: null,
+        noAdapter: true,
+      };
+    }
+
+    const entry = this.registry.get(adapterUsed);
+    if (!entry) {
+      return {
+        result: {
+          success: false,
+          message:
+            `Cannot roll back: adapter "${adapterUsed}" that executed this plan ` +
+            `is no longer registered (the capability may have been uninstalled).`,
+        },
+        adapterUsed,
+        noAdapter: true,
+      };
+    }
+
+    try {
+      const result = await entry.adapter.rollback(planId);
+      return { result, adapterUsed, noAdapter: false };
+    } catch (err) {
+      // Adapter threw mid-rollback — surface as a failed (not "no adapter")
+      // result so the caller reports the failure honestly rather than a stub.
+      return {
+        result: {
+          success: false,
+          message: `Rollback via adapter "${adapterUsed}" threw: ${err instanceof Error ? err.message : String(err)}`,
+        },
+        adapterUsed,
+        noAdapter: false,
+      };
+    }
   }
 
   /**

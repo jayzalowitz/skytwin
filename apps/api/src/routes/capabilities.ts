@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { mcpServerRepository, appSuggestionRepository, provenanceRepository, mcpServerMetricsRepository, mcpServerChangelogRepository, query } from '@skytwin/db';
+import { mcpServerRepository, appSuggestionRepository, provenanceRepository, mcpServerMetricsRepository, mcpServerChangelogRepository, executionRepository, query } from '@skytwin/db';
 import type { McpServerRow } from '@skytwin/db';
 import type { Request } from 'express';
 import { createLogger } from '@skytwin/core';
@@ -9,6 +9,7 @@ import type { TrustTier } from '@skytwin/shared-types';
 import { PROMOTION_THRESHOLDS } from '@skytwin/shared-types';
 import { runPrompt } from '@skytwin/policy-prompts';
 import { getLlmClientFromConfig } from '../lib/llm-client-factory.js';
+import { getExecutionRouter } from '../execution-setup.js';
 // SSE event constants — imported for re-export and for use in callers that
 // wire the promotion ceremony (e.g. promotion-eligibility-check.ts).
 // sseManager and SSE_CAPABILITY_PROMOTION_OFFERED are imported here so they
@@ -404,66 +405,61 @@ export function createCapabilitiesRouter(): Router {
 
       const sinceDate = new Date(Date.now() - withinHours * 60 * 60 * 1000);
 
-      // Query actions executed via this server in the recent window.
-      // Provenance still owns the server↔action attribution; the #324
-      // FK gives us the execution_plan_id for each action via
-      // decision_outcomes (selected_action_id = provenance.ref_id).
-      // Returns real plan IDs in the response so callers / the eventual
-      // IronClawAdapter.rollback(planId) wiring have something concrete
-      // to act on — replaces the prior "stub recorded intent" behavior.
-      //
-      // SUBQUERY rather than LEFT JOIN — even though `selected_action_id`
-      // should be unique per decision in practice, there is no DB
-      // constraint enforcing it, and a malformed row (or future
-      // schema change) where the same candidate_actions.id ends up
-      // on two outcomes would have a LEFT JOIN duplicating the
-      // provenance row in the result set. Subquery + LIMIT 1 keeps
-      // one row per provenance node regardless. (Copilot caught the
-      // JOIN duplication risk.)
-      const provenanceResult = await query<{
-        id: string;
-        ref_id: string;
-        payload: unknown;
-        occurred_at: Date;
-        execution_plan_id: string | null;
-      }>(
-        `SELECT pn.id, pn.ref_id, pn.payload, pn.occurred_at,
-                (SELECT doc.execution_plan_id
-                   FROM decision_outcomes doc
-                  WHERE doc.selected_action_id = pn.ref_id
-                  LIMIT 1) AS execution_plan_id
-         FROM capability_provenance_nodes pn
-         WHERE pn.server_id = $1
-           AND pn.node_type = 'action'
-           AND pn.occurred_at >= $2
-           AND pn.user_id = $3
-         ORDER BY pn.occurred_at DESC`,
-        [id, sinceDate, userId],
-      );
+      // Resolve rollback targets via the #324 join repo method:
+      // capability_provenance_nodes (server↔action attribution) →
+      // decision_outcomes.execution_plan_id (the #324 FK) → the real plan ID,
+      // plus the adapter that executed it (execution_results.adapter_used) so
+      // rollback routes back to the SAME adapter. The duplication-safe LIMIT-1
+      // subquery + lateral join live in the repo method now (was an inline
+      // query here before #324's adapter wiring landed).
+      const targets = await executionRepository.getRollbackTargetsByServer({
+        serverId: id,
+        userId,
+        since: sinceDate,
+      });
 
       // Result enum:
-      //   - 'pending_adapter_wiring' — FK resolved a real plan ID;
-      //     IronClawAdapter.rollback(planId) call is the next step
-      //     (separate follow-up, needs routing through executionRouter)
-      //   - 'no_plan_linkage' — FK lookup returned NULL; can't roll
-      //     back because we don't know which plan to target. Honest
-      //     reporting beats lying about rollback success. (Copilot
-      //     caught the prior inverted enum that returned
-      //     'rolled_back' in this no-linkage branch — never true.)
+      //   - 'rolled_back'      — adapter.rollback(planId) succeeded.
+      //   - 'rollback_failed'  — the adapter ran but reported failure (e.g.
+      //                          the plan had no rollback steps, or the
+      //                          executing adapter is no longer registered).
+      //   - 'no_plan_linkage'  — the #324 FK lookup returned NULL; no plan to
+      //                          target, so nothing to dispatch. Honest
+      //                          reporting beats claiming a rollback happened.
       const undone: Array<{
         actionId: string;
         planId: string | null;
-        result: 'pending_adapter_wiring' | 'no_plan_linkage';
+        adapterUsed: string | null;
+        result: 'rolled_back' | 'rollback_failed' | 'no_plan_linkage';
+        message?: string;
       }> = [];
       const irreversible: Array<{ actionId: string; reason: string }> = [];
 
-      for (const node of provenanceResult.rows) {
-        const payload = node.payload as Record<string, unknown> | null;
+      // Resolve the execution router once for the whole batch. If it can't be
+      // constructed (no adapters configured), treat every reversible action as
+      // a rollback failure rather than throwing the whole request — the user
+      // still gets an honest per-action report.
+      let router: Awaited<ReturnType<typeof getExecutionRouter>> | null = null;
+      let routerError: string | null = null;
+      const hasReversibleTarget = targets.some(
+        (t) => (t.payload?.['reversible'] === true) && t.executionPlanId,
+      );
+      if (hasReversibleTarget) {
+        try {
+          router = await getExecutionRouter();
+        } catch (err) {
+          routerError = err instanceof Error ? err.message : String(err);
+          log.warn('Execution router unavailable for regret rollback', { serverId: id, error: routerError });
+        }
+      }
+
+      for (const target of targets) {
+        const payload = target.payload;
         const reversible = payload?.['reversible'] === true;
 
         if (!reversible) {
           irreversible.push({
-            actionId: node.ref_id,
+            actionId: target.actionId,
             reason: typeof payload?.['irreversibleReason'] === 'string'
               ? payload['irreversibleReason']
               : 'Action was marked irreversible at execution time',
@@ -471,11 +467,70 @@ export function createCapabilitiesRouter(): Router {
           continue;
         }
 
+        if (!target.executionPlanId) {
+          undone.push({
+            actionId: target.actionId,
+            planId: null,
+            adapterUsed: null,
+            result: 'no_plan_linkage',
+          });
+          continue;
+        }
+
+        // Dispatch the rollback through the execution router, targeting the
+        // adapter that executed the plan (#324).
+        if (!router) {
+          undone.push({
+            actionId: target.actionId,
+            planId: target.executionPlanId,
+            adapterUsed: target.adapterUsed,
+            result: 'rollback_failed',
+            message: routerError
+              ? `Execution router unavailable: ${routerError}`
+              : 'Execution router unavailable',
+          });
+          continue;
+        }
+
+        const rollback = await router.rollback(target.executionPlanId, target.adapterUsed);
+
         undone.push({
-          actionId: node.ref_id,
-          planId: node.execution_plan_id,
-          result: node.execution_plan_id ? 'pending_adapter_wiring' : 'no_plan_linkage',
+          actionId: target.actionId,
+          planId: target.executionPlanId,
+          adapterUsed: rollback.adapterUsed,
+          result: rollback.result.success ? 'rolled_back' : 'rollback_failed',
+          message: rollback.result.message,
         });
+
+        // Audit trail (Safety Invariant #2): record every rollback attempt as
+        // a provenance node so the reversal is explainable. A rollback is the
+        // user reversing an action — recorded under the existing 'feedback'
+        // node type (no schema change) with a descriptive payload.
+        try {
+          await writeProvenanceNode({
+            userId,
+            nodeType: 'feedback',
+            refTable: 'execution_plans',
+            refId: target.executionPlanId,
+            serverId: id,
+            payload: {
+              kind: 'rollback',
+              actionId: target.actionId,
+              adapterUsed: rollback.adapterUsed,
+              success: rollback.result.success,
+              message: rollback.result.message,
+              withinHours,
+            },
+          });
+        } catch (auditErr) {
+          // Audit write failure must not mask a successful rollback — log and
+          // continue. The rollback result is still reported to the caller.
+          log.warn('Failed to write rollback provenance node', {
+            serverId: id,
+            planId: target.executionPlanId,
+            error: auditErr instanceof Error ? auditErr.message : String(auditErr),
+          });
+        }
       }
 
       res.json({ undone, irreversible });

@@ -38,6 +38,29 @@ export interface ExecutionPlanWithResult {
 }
 
 /**
+ * One rollback candidate resolved for a capability server's recent actions.
+ *
+ * #324: this is the materialized output of the
+ * `capability_provenance_nodes → decision_outcomes → execution_plans →
+ * execution_results` join the `regret` endpoint needs. `executionPlanId` is the
+ * real plan ID `IronClawAdapter.rollback(planId)` acts on (NULL when no outcome
+ * links to a plan yet); `adapterUsed` is the adapter that executed the plan
+ * (read from `execution_results.outputs.adapter_used`) so rollback can route
+ * back to the SAME adapter that performed the action.
+ */
+export interface RollbackTarget {
+  /** The provenance node's `ref_id` — the candidate action id. */
+  actionId: string;
+  /** Raw provenance payload (carries `reversible` + `irreversibleReason`). */
+  payload: Record<string, unknown> | null;
+  occurredAt: Date;
+  /** Real execution plan id resolved via the #324 FK, or NULL if unlinked. */
+  executionPlanId: string | null;
+  /** Adapter that executed the plan, or NULL if not recorded / no result. */
+  adapterUsed: string | null;
+}
+
+/**
  * Repository for execution plan and result operations.
  */
 export const executionRepository = {
@@ -161,6 +184,67 @@ export const executionRepository = {
       plan,
       result: resultResult.rows[0] ?? null,
     };
+  },
+
+  /**
+   * Resolve rollback targets for a capability server's recent actions (#324).
+   *
+   * Walks `capability_provenance_nodes` (the server↔action attribution) and,
+   * for each `action` node, resolves the real execution plan via the #324
+   * `decision_outcomes.execution_plan_id` FK plus the adapter that executed it
+   * via `execution_results.outputs->>'adapter_used'`. The `regret` endpoint
+   * uses this to dispatch `IronClawAdapter.rollback(planId)` through the
+   * execution router, targeting the SAME adapter that ran the action.
+   *
+   * SUBQUERY (not LEFT JOIN) for `execution_plan_id`: `selected_action_id`
+   * should be unique per outcome but there is no DB constraint enforcing it, so
+   * a LEFT JOIN could duplicate the provenance row. `LIMIT 1` keeps one row per
+   * provenance node regardless. The adapter lookup is similarly a scalar
+   * subquery against the latest result for the resolved plan.
+   */
+  async getRollbackTargetsByServer(input: {
+    serverId: string;
+    userId: string;
+    since: Date;
+  }): Promise<RollbackTarget[]> {
+    const result = await query<{
+      ref_id: string;
+      payload: Record<string, unknown> | null;
+      occurred_at: Date;
+      execution_plan_id: string | null;
+      adapter_used: string | null;
+    }>(
+      `SELECT pn.ref_id,
+              pn.payload,
+              pn.occurred_at,
+              link.execution_plan_id,
+              (SELECT er.outputs->>'adapter_used'
+                 FROM execution_results er
+                WHERE er.plan_id = link.execution_plan_id
+                ORDER BY er.completed_at DESC
+                LIMIT 1) AS adapter_used
+         FROM capability_provenance_nodes pn
+         LEFT JOIN LATERAL (
+                SELECT doc.execution_plan_id
+                  FROM decision_outcomes doc
+                 WHERE doc.selected_action_id = pn.ref_id
+                 LIMIT 1
+              ) link ON true
+        WHERE pn.server_id = $1
+          AND pn.node_type = 'action'
+          AND pn.occurred_at >= $2
+          AND pn.user_id = $3
+        ORDER BY pn.occurred_at DESC`,
+      [input.serverId, input.since, input.userId],
+    );
+
+    return result.rows.map((row) => ({
+      actionId: row.ref_id,
+      payload: row.payload,
+      occurredAt: row.occurred_at,
+      executionPlanId: row.execution_plan_id,
+      adapterUsed: row.adapter_used,
+    }));
   },
 
   /**

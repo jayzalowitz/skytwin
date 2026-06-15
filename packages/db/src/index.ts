@@ -136,6 +136,7 @@ export type {
   CreateExecutionResultInput,
   CreateExecutionEventInput,
   ExecutionPlanWithResult,
+  RollbackTarget,
 } from './repositories/index.js';
 
 export { signalRepository, proposalRepository, skillGapRepository, proactiveScanRepository } from './repositories/index.js';
