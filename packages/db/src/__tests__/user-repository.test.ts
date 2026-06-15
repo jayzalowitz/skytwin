@@ -268,6 +268,63 @@ describe('userRepository', () => {
   });
 
   // -----------------------------------------------------------------------
+  // updateLocale (#486)
+  // -----------------------------------------------------------------------
+
+  describe('updateLocale', () => {
+    it('writes both language and timezone when provided', async () => {
+      const row = fakeUserRow();
+      mockQuery.mockResolvedValue({ rows: [row], rowCount: 1 });
+
+      const result = await userRepository.updateLocale('u-001', {
+        language: 'ja',
+        timezone: 'Asia/Tokyo',
+      });
+
+      expect(result).toEqual(row);
+      const [sql, params] = mockQuery.mock.calls[0]!;
+      expect(sql).toContain('UPDATE users SET');
+      expect(sql).toContain('language = $1');
+      expect(sql).toContain('timezone = $2');
+      expect(sql).toContain('updated_at = now()');
+      expect(sql).toContain('WHERE id = $3');
+      expect(sql).toContain('RETURNING *');
+      expect(params).toEqual(['ja', 'Asia/Tokyo', 'u-001']);
+    });
+
+    it('writes only the provided field (partial sync does not clobber the other)', async () => {
+      const row = fakeUserRow();
+      mockQuery.mockResolvedValue({ rows: [row], rowCount: 1 });
+
+      await userRepository.updateLocale('u-001', { language: 'fr' });
+
+      const [sql, params] = mockQuery.mock.calls[0]!;
+      expect(sql).toContain('language = $1');
+      expect(sql).not.toContain('timezone =');
+      expect(sql).toContain('WHERE id = $2');
+      expect(params).toEqual(['fr', 'u-001']);
+    });
+
+    it('falls back to a findById read when nothing is provided', async () => {
+      const row = fakeUserRow();
+      mockQuery.mockResolvedValue({ rows: [row], rowCount: 1 });
+
+      const result = await userRepository.updateLocale('u-001', {});
+
+      expect(result).toEqual(row);
+      const [sql] = mockQuery.mock.calls[0]!;
+      expect(sql).toContain('SELECT * FROM users WHERE id = $1');
+    });
+
+    it('returns null when no row matches', async () => {
+      mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
+
+      const result = await userRepository.updateLocale('ghost', { timezone: 'UTC' });
+      expect(result).toBeNull();
+    });
+  });
+
+  // -----------------------------------------------------------------------
   // delete
   // -----------------------------------------------------------------------
 

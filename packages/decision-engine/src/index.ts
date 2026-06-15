@@ -49,8 +49,11 @@ export {
 } from './deadline-extractor.js';
 export {
   extractCommitments,
+  extractCommitmentsLocaleAware,
   type Commitment,
   type CommitmentStrategy,
+  type CommitmentExtraction,
+  type ExtractCommitmentsOptions,
 } from './commitment-extractor.js';
 export {
   clusterSignals,

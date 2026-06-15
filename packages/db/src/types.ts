@@ -14,6 +14,10 @@ export interface UserRow {
   trust_tier: string;
   autonomy_settings: Record<string, unknown>;
   ironclaw_channel: string | null;
+  /** BCP-47-ish language tag from the connector identity (#486). Null until synced. */
+  language: string | null;
+  /** IANA timezone from the primary calendar (#486). Null until synced. */
+  timezone: string | null;
   created_at: Date;
   updated_at: Date;
 }
