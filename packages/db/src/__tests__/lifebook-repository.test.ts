@@ -117,6 +117,37 @@ describe('lifebookRepository.setImportanceOverride — #321', () => {
   });
 });
 
+describe('lifebookRepository.editSampleSignal — #319 inline fact-edit', () => {
+  it('updates the targeted array element via jsonb_set with an index-bounds guard', async () => {
+    mockQuery.mockResolvedValue({
+      rows: [{ id: 'lb-1', sample_signals: ['fixed', 'b'] }],
+      rowCount: 1,
+    });
+    const result = await lifebookRepository.editSampleSignal('u-1', 'Health', 0, 'fixed');
+    expect(result).toBeTruthy();
+    const [sql, params] = mockQuery.mock.calls[0]!;
+    // jsonb_set targets ARRAY[index] and replaces it with the corrected
+    // text. The WHERE clause bounds-checks the index IN SQL so a stale
+    // out-of-range index updates nothing (race-safe vs the extractor).
+    expect(sql).toContain('UPDATE lifebooks');
+    expect(sql).toContain('jsonb_set');
+    expect(sql).toContain('ARRAY[$3::int::string]');
+    expect(sql).toContain('to_jsonb($4::string)');
+    expect(sql).toContain('$3::int >= 0');
+    expect(sql).toContain('$3::int < jsonb_array_length(sample_signals)');
+    expect(params).toEqual(['u-1', 'Health', 0, 'fixed']);
+  });
+
+  it('returns null when no row matches — covers both missing lifebook AND out-of-range index', async () => {
+    // The SQL bounds-check means an out-of-range index produces zero
+    // updated rows, indistinguishable here from a missing lifebook; the
+    // route layer disambiguates via a prior findByDomain.
+    mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
+    const result = await lifebookRepository.editSampleSignal('u-1', 'Health', 99, 'x');
+    expect(result).toBeNull();
+  });
+});
+
 describe('lifebookRepository.clearImportanceOverride — #321', () => {
   it('strips the importanceOverride key from metadata via JSONB minus operator', async () => {
     mockQuery.mockResolvedValue({
