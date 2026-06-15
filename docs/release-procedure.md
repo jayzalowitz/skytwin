@@ -26,9 +26,9 @@ That's the mechanical flow. Read the rest before the **first** public release �
 
 `build.yml` triggers on `push: tags: ['v*']`. The relevant jobs:
 
-1. **`test`** + **`changes`** + **eval suite** — gate the build.
+1. **`test`** + **`changes`** — gate the build (the desktop/mobile jobs `needs: [test, changes]`). The eval suite is a **separate** workflow (`.github/workflows/evals.yml`) and does **not** run on `v*` tag pushes, so don't assume evals ran as part of cutting a release.
 2. **`desktop-mac` / `desktop-windows` / `desktop-linux`** — `pnpm --filter skytwin-desktop run package:<os> --publish never`. `--publish never` is deliberate: these jobs only *build + validate* packageability and upload the artifacts; they do not publish (see the comments in `build.yml`).
-3. **`mobile-android` / `mobile-ios`** — APK + unsimulator build.
+3. **`mobile-android` / `mobile-ios`** — Android `.apk` + an unsigned iOS simulator `.app` zip.
 4. **`release`** (`needs:` all five build jobs) — downloads every artifact and runs `softprops/action-gh-release@v3` with **`draft: true`** + `generate_release_notes: true`, attaching: `.dmg`, `.zip` (mac), `.exe` (Windows NSIS), `.AppImage` / `.deb` / `.rpm` (Linux), `.apk` (Android), and the iOS simulator zip.
 
 The release is created as a **draft**. Nothing is public until a human opens the draft in GitHub Releases and clicks **Publish**.
@@ -73,7 +73,7 @@ After publishing the draft:
 curl -fsSLI https://github.com/jayzalowitz/skytwin/releases/latest >/dev/null && echo "latest release reachable"
 ```
 
-Then a clean-machine smoke test: download the `.dmg` / `.exe` on a box that has never seen SkyTwin, install, and confirm it reaches a populated dashboard (sample-profile path) within 60s. Once signing + auto-update manifests land (gaps 1 + 2), also verify the unsigned-warning is gone and that installing release N then tagging N+1 self-updates within the 24h poll window.
+Then a clean-machine smoke test: download the `.dmg` / `.exe` on a box that has never seen SkyTwin, install, and confirm it reaches a populated dashboard (sample-profile path) within 60s. Once signing + auto-update manifests land (gaps 1 + 2), also verify the unsigned-warning is gone and that installing release N then tagging N+1 self-updates within the ~6-hour poll window (the `auto-update.ts` `DEFAULT_CHECK_INTERVAL_MS` default).
 
 ---
 
