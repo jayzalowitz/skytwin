@@ -9,6 +9,7 @@ import {
   type SafeStoragePort,
 } from './passphrase-vault.js';
 import { createTray } from './tray.js';
+import { applyAppMenu } from './app-menu.js';
 import { getSavedBounds, trackWindowState } from './window-state.js';
 import { checkDependencies, showDependencyDialog } from './first-launch.js';
 import { AutoUpdateController, defaultAutoUpdateConfig } from './auto-update.js';
@@ -133,6 +134,32 @@ function createMainWindow(): BrowserWindow {
   return win;
 }
 
+/**
+ * (Re)install the native application menu. Called once after the main window
+ * is created and again after pause/resume so the "Pause / Resume Twin" label
+ * stays in sync with the worker's actual state.
+ */
+function refreshAppMenu(): void {
+  if (mainWindow === null || mainWindow.isDestroyed()) return;
+  applyAppMenu(
+    mainWindow,
+    { isPaused: serviceManager.isPaused() },
+    {
+      onPauseResume: async () => {
+        // Mirror the tray + IPC behavior: a menu-driven pause/resume is a
+        // manual user choice, so clear the idle-pause auto-flag.
+        idlePauseController.onManualPauseChange();
+        if (serviceManager.isPaused()) {
+          await serviceManager.resume();
+        } else {
+          await serviceManager.pause();
+        }
+        refreshAppMenu();
+      },
+    },
+  );
+}
+
 async function runFirstLaunchChecks(): Promise<boolean> {
   const missing = checkDependencies();
   if (missing.length > 0) {
@@ -158,6 +185,10 @@ async function startApp(): Promise<void> {
 
   // Set up tray
   tray = createTray(mainWindow, serviceManager);
+
+  // Install the native application menu bar (File / Edit / View / Window /
+  // Help + SkyTwin actions). Re-installed on pause/resume to flip the label.
+  refreshAppMenu();
 
   // Wire first-launch extraction progress (#383) so the splash shows
   // a real progress bar instead of a spinner. The splash's
@@ -269,6 +300,9 @@ ipcMain.handle('pause-twin', async () => {
   // a subsequent "active" event doesn't auto-resume the user's choice.
   idlePauseController.onManualPauseChange();
   await serviceManager.pause();
+  // Keep the menu-bar "Pause / Resume Twin" label in sync with a pause
+  // initiated from the dashboard UI.
+  refreshAppMenu();
   return serviceManager.getStatus();
 });
 ipcMain.handle('resume-twin', async () => {
@@ -277,6 +311,7 @@ ipcMain.handle('resume-twin', async () => {
   // (or the next poll tick from idle-bridge) will re-evaluate cleanly.
   idlePauseController.onManualPauseChange();
   await serviceManager.resume();
+  refreshAppMenu();
   return serviceManager.getStatus();
 });
 
