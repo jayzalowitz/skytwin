@@ -81,6 +81,8 @@ git push origin v0.6.57.0
 
 The `release` job in `.github/workflows/build.yml` takes over: the `desktop-mac` / `desktop-windows` / `desktop-linux` matrix jobs build in parallel, and the `release` job (softprops, tag-only) attaches the .dmg, .zip, .exe, .AppImage, .deb, .rpm, and Android .apk to a **draft** GitHub Release. Two caveats from the 2026-06-14 audit: (1) the artifacts are **unsigned** until signing is wired per §1.3; (2) the release is created as a **draft** (publish it manually) and the electron-updater `latest*.yml` auto-update manifests are **not** generated yet — that's the remaining code half of #370.
 
+The full, step-by-step runbook (including these gaps and the clean-machine verification) lives in [`release-procedure.md`](./release-procedure.md).
+
 ### 1.6 README rewrite: lead with download
 **Dependency:** §1.5. **Owner:** SkyTwin team. **Time:** 30 minutes.
 
