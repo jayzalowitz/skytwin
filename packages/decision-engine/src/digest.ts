@@ -27,6 +27,7 @@ import {
 } from './visibility-filter.js';
 import type { DigestItemDetail } from './digest-detail.js';
 import type { SourceCoverage } from './source-coverage.js';
+import type { ResolvedEntity } from './entity-linking.js';
 
 export interface DigestItem {
   ref: string;
@@ -83,6 +84,15 @@ export interface BuildDigestOptions {
   knownDomains?: string[];
   maxTodos?: number;
   maxClusters?: number;
+  /**
+   * Resolved cross-signal entities (spec 05, #478). When supplied, FYI topic
+   * items that share a primary entity are collapsed into ONE topic item with
+   * the other mentions attached as additional citations (`signalRefs[]`),
+   * instead of repeating the same matter across multiple domain clusters.
+   * Omit (or pass `[]`) to keep the un-collapsed spec-04 behavior — the
+   * `ENTITY_LINKING=off` rollback path passes nothing here.
+   */
+  entityLinks?: ResolvedEntity[];
 }
 
 const URGENCY_RANK: Record<NonNullable<DigestItem['urgency']>, number> = {
@@ -91,6 +101,41 @@ const URGENCY_RANK: Record<NonNullable<DigestItem['urgency']>, number> = {
   medium: 2,
   low: 3,
 };
+
+/**
+ * Build a `signalRef -> primary entityId` map from resolved entities so the
+ * digest can collapse signals that share one matter. A signal's PRIMARY entity
+ * is the entity (touching >= 2 signals) with the most citations that the signal
+ * is linked to — ties broken by `entityId` for determinism. Only multi-signal
+ * entities are considered: a singleton entity can never cause a collapse, so it
+ * is never a "primary" for collapse purposes. People rank ahead of orgs at an
+ * equal citation count — a person key (email) is a strong, exact match, while
+ * an org key is fuzzy and the issue treats a false org merge as the worst case.
+ */
+function primaryEntityByRef(entities: ResolvedEntity[]): Map<string, string> {
+  // Candidate entities: only those linking 2+ distinct signals can collapse.
+  const linking = entities.filter((e) => new Set(e.signalRefs).size >= 2);
+
+  // Rank: more citations first; person before org on a tie; entityId last for
+  // a total, deterministic order.
+  const kindRank = (kind: ResolvedEntity['kind']): number => (kind === 'person' ? 0 : 1);
+  const ranked = [...linking].sort((a, b) => {
+    const byCount = new Set(b.signalRefs).size - new Set(a.signalRefs).size;
+    if (byCount !== 0) return byCount;
+    const byKind = kindRank(a.kind) - kindRank(b.kind);
+    if (byKind !== 0) return byKind;
+    return a.entityId < b.entityId ? -1 : a.entityId > b.entityId ? 1 : 0;
+  });
+
+  const byRef = new Map<string, string>();
+  for (const e of ranked) {
+    for (const ref of e.signalRefs) {
+      // First (highest-ranked) entity to claim a ref wins it as the primary.
+      if (!byRef.has(ref)) byRef.set(ref, e.entityId);
+    }
+  }
+  return byRef;
+}
 
 /**
  * Partition digest items into the to-do and topic buckets. Hidden items are
@@ -135,14 +180,54 @@ export function buildDigest(items: DigestItem[], opts: BuildDigestOptions = {}):
     fyi.map((i) => ({ ref: i.ref, domain: i.domain, subject: i.text })),
     { knownDomains: opts.knownDomains, maxClusters: opts.maxClusters },
   );
-  const topics: DigestTopic[] = clusters.map((c) => ({
-    domain: c.domain,
-    title: c.title,
-    items: sortPinnedFirst(c.signalRefs, (ref) => byRef.get(ref)?.meta ?? null).map((ref) => {
+  // Entity collapse (spec 05, #478 AC5): a matter (a single primary entity)
+  // spanning multiple FYI signals — possibly across DIFFERENT clusters —
+  // renders ONCE with every mention as a citation, not repeated per cluster.
+  // The first occurrence (clusters are confidence-ordered) is the canonical
+  // line; later mentions fold their refs into it. EXCEPTION (#485): a PINNED
+  // item is never collapsed away — the user pinned that signal, so it always
+  // stands on its own line.
+  const primaryByRef = primaryEntityByRef(opts.entityLinks ?? []);
+  // entityId -> the canonical topic item that owns this matter. A later
+  // mention (in this or any subsequent cluster) attaches to it as a citation.
+  const canonicalItemForEntity = new Map<string, DigestTopicItem>();
+
+  const topics: DigestTopic[] = [];
+  for (const c of clusters) {
+    const clusterItems: DigestTopicItem[] = [];
+    // Pinned FYI items lead within their cluster (#485) — iterate pinned-first
+    // so a pinned-but-routine item isn't buried, and (being first) it becomes
+    // the canonical owner of its matter rather than being folded into another.
+    for (const ref of sortPinnedFirst(c.signalRefs, (r) => byRef.get(r)?.meta ?? null)) {
       const it = byRef.get(ref);
-      return { ref, text: it?.text ?? '', body: it?.body, sourceType: it?.sourceType, signalRefs: [ref] };
-    }),
-  }));
+      const pinned = isPinned(it?.meta ?? null);
+      const entityId = primaryByRef.get(ref);
+      // A pinned signal is never collapsed into another matter's line; it
+      // always renders. (It can still OWN a matter — later non-pinned mentions
+      // fold into it — because pinned items are iterated first above.)
+      if (entityId !== undefined && !pinned) {
+        const canonical = canonicalItemForEntity.get(entityId);
+        if (canonical) {
+          // This matter already has a canonical line (possibly in an earlier
+          // cluster). Attach this signal as a citation (de-duped) and skip it.
+          if (!canonical.signalRefs.includes(ref)) canonical.signalRefs.push(ref);
+          continue;
+        }
+      }
+      const item: DigestTopicItem = {
+        ref,
+        text: it?.text ?? '',
+        body: it?.body,
+        sourceType: it?.sourceType,
+        signalRefs: [ref],
+      };
+      if (entityId !== undefined) canonicalItemForEntity.set(entityId, item);
+      clusterItems.push(item);
+    }
+    // A cluster can end up empty if every one of its signals collapsed into a
+    // canonical line living in an earlier cluster. Drop the empty husk.
+    if (clusterItems.length > 0) topics.push({ domain: c.domain, title: c.title, items: clusterItems });
+  }
 
   return { todos, topics };
 }
