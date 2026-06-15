@@ -956,6 +956,25 @@ export function fetchLifebook(userId, domainName) {
 }
 
 /**
+ * #193 AC#8: add a domain manually ("track 'Volunteering'"). The server
+ * creates the MemPalace wing immediately and seeds a `manuallyAdded`
+ * lifebook row. Re-adding an existing (possibly hidden) domain
+ * re-surfaces it instead of erroring.
+ *
+ * Returns `{ lifebook, created }` — `created` is true for a brand-new
+ * domain, false when an existing one was re-surfaced. `importance` is
+ * optional; the server defaults a fresh domain to `'emerging'`.
+ */
+export function addLifebook(userId, domainName, importance) {
+  const body = importance ? { domainName, importance } : { domainName };
+  return fetchJSON(`${API}/lifebooks/${encodeURIComponent(userId)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+/**
  * #319: fetch the adaptive layout for a Lifebook detail page. Returns
  * `{ layout: { layoutId, sections: [{type, title, order}] }, source, histogram }`.
  *
