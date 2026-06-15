@@ -55,6 +55,8 @@ The system exposes private information or accesses data it shouldn't.
 
 **Why it matters:** Privacy violations can't be undone. Once information is exposed, it's exposed.
 
+**Mitigation — LLM prompt redaction (#375):** the decision pipeline reasons over inbound signals (email, calendar) using an LLM that may be a cloud provider. Before a prompt is assembled, the user-derived parts — the raw signal dump and episodic-memory summaries — pass through `redactPromptPii` (`packages/llm-client/src/redact.ts`), which masks email addresses to `[redacted:email]`. This is on by default in `PromptBuilder` (`buildCandidatePrompt` / `buildSituationPrompt`), so a contact's address never leaves the machine to a third-party model just because the twin reasoned about their message. It's safe because an action's recipient is resolved from the structured signal record, not parsed from the prompt. (Scope today: email addresses only; number/name masking and the interactive assistant's memory block are tracked follow-ups on #375.)
+
 ### 4. Social Damage
 
 The system says something to someone that damages a relationship.
