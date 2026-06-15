@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { needsYou, sourceLabel, normalizeUrgency, urgencyReasonFor } from '../services/live-digest.js';
+import { needsYou, sourceLabel, normalizeUrgency, urgencyReasonFor, bareAddress } from '../services/live-digest.js';
 
 /**
  * The to-do/FYI split (spec 01) and source labels (spec 07) that drive the
@@ -89,5 +89,21 @@ describe('urgencyReasonFor', () => {
 
   it('never returns the generic "Default for" placeholder', () => {
     expect(urgencyReasonFor({ situation_type: 'email_triage', urgency: 'normal' })).not.toMatch(/default for/i);
+  });
+});
+
+describe('bareAddress (pin/hide join key, #270/#485)', () => {
+  it('extracts the bare address from a "Name <addr>" header', () => {
+    expect(bareAddress('Acme Billing <Billing@Acme.com>')).toBe('billing@acme.com');
+  });
+
+  it('lowercases a plain address (matches the write-time normalization)', () => {
+    expect(bareAddress('No-Reply@Example.COM')).toBe('no-reply@example.com');
+  });
+
+  it('returns null for empty / nullish input (no override applied)', () => {
+    expect(bareAddress(null)).toBeNull();
+    expect(bareAddress(undefined)).toBeNull();
+    expect(bareAddress('   ')).toBeNull();
   });
 });

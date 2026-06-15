@@ -26,6 +26,7 @@ import {
   type DigestItem,
   type Digest,
   type SignalText,
+  type SignalVisibilityMeta,
 } from '@skytwin/decision-engine';
 
 /** Most-recent decisions scanned to assemble one digest (perf + relevance bound). */
@@ -176,6 +177,70 @@ function senderRef(data: Record<string, unknown>): string | null {
   return null;
 }
 
+/**
+ * Normalize a raw sender ref ("Name <a@b>" or "a@b") to the bare, lowercased
+ * address used as the join key against `brain_pages.metadata.fromAddress`. This
+ * MUST match the write-time normalization in
+ * `@skytwin/memory-gbrain`'s embedded port (angle-bracket extraction + lower),
+ * or the pin/hide override won't line up with the digest item.
+ */
+export function bareAddress(raw: string | null | undefined): string | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const angle = trimmed.match(/<([^>]+)>/);
+  const bare = (angle?.[1] ? angle[1].trim() : trimmed).toLowerCase();
+  return bare.length > 0 ? bare : null;
+}
+
+interface SenderOverrideRow {
+  from_address: string;
+  user_override: string;
+}
+
+/**
+ * Per-sender pin/hide overrides (#270) keyed by the bare `fromAddress`, read
+ * from the canonical `brain_pages.metadata` store the pin/hide controls write
+ * to. When a sender has BOTH 'hidden' and 'pinned' pages (e.g. a bulk-hide
+ * after an individual pin), 'hidden' wins — fail safe toward not surfacing
+ * content the user asked to hide.
+ *
+ * Returns an empty map (not an error) on a missing/empty brain — the digest
+ * simply applies no overrides, identical to pre-#485 behavior.
+ */
+async function fetchSenderOverrides(userId: string): Promise<Map<string, SignalVisibilityMeta>> {
+  const map = new Map<string, SignalVisibilityMeta>();
+  let rows: { rows: SenderOverrideRow[] };
+  try {
+    rows = await query<SenderOverrideRow>(
+      `SELECT lower(metadata->>'fromAddress') AS from_address,
+              metadata->>'userOverride'       AS user_override
+         FROM brain_pages
+        WHERE user_id = $1
+          AND metadata->>'fromAddress' IS NOT NULL
+          AND metadata->>'userOverride' IN ('hidden', 'pinned')`,
+      [userId],
+    );
+  } catch {
+    // brain_pages may not exist on a mempalace-only deployment, or the brain
+    // may be transiently unavailable. Degrade to no overrides so the digest
+    // still renders rather than erroring the whole briefing (resilience
+    // intent of #485). The memory retrieval layer independently applies its
+    // own hide gate at search time, so this is a second filter, not the only
+    // one — failing it open does not surface content the search layer hid.
+    return map;
+  }
+  for (const r of rows.rows) {
+    if (!r.from_address) continue;
+    const existing = map.get(r.from_address);
+    // 'hidden' is the dominant signal — once a sender is hidden, a later
+    // 'pinned' row for the same sender must not un-hide it.
+    if (existing?.userOverride === 'hidden') continue;
+    map.set(r.from_address, { userOverride: r.user_override });
+  }
+  return map;
+}
+
 /** Friendly "where it's from" when there's no concrete sender. */
 const SOURCE_FRIENDLY: Record<string, string> = {
   email: 'your inbox',
@@ -316,6 +381,12 @@ export async function buildLiveDigest(userId: string): Promise<LiveDigest | null
   );
   if (decisions.rows.length === 0) return null;
 
+  // Per-sender pin/hide overrides (#270/#485) from the canonical
+  // brain_pages.metadata store. Read alongside the decisions so buildDigest's
+  // filterVisible can drop hidden senders and surface pinned ones. A brain
+  // that's empty (no gbrain pages yet) yields an empty map → no overrides.
+  const senderOverrides = await fetchSenderOverrides(userId);
+
   // Power-view detail (spec 14) is attached to each todo/topic by ref AFTER
   // buildDigest (the generator's job — buildDigest itself leaves it unset).
   const detailByRef = new Map<string, ReturnType<typeof buildDigestItemDetail>>();
@@ -379,6 +450,13 @@ export async function buildLiveDigest(userId: string): Promise<LiveDigest | null
         : r.created_at
           ? String(r.created_at)
           : undefined;
+    // Resolve the sender's pin/hide override (#270/#485) so buildDigest's
+    // filterVisible drops hidden senders and surfaces pinned ones. No sender
+    // (e.g. a voice note or file) or no override → undefined (no effect).
+    const senderKey = bareAddress(sender);
+    const meta: SignalVisibilityMeta | undefined = senderKey
+      ? senderOverrides.get(senderKey)
+      : undefined;
     detailByRef.set(
       r.id,
       buildDigestItemDetail({
@@ -404,6 +482,7 @@ export async function buildLiveDigest(userId: string): Promise<LiveDigest | null
       domain: r.domain,
       sourceType,
       urgency,
+      ...(meta ? { meta } : {}),
     };
 
     // #475 / spec 02: surface the user's OWN stated commitments from authored

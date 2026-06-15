@@ -49,6 +49,7 @@ describe('buildLiveDigest', () => {
   it('maps a security decision to a to-do with meaningful power-view detail', async () => {
     mockQuery
       .mockResolvedValueOnce({ rows: [decisionRow()] }) // decisions+outcomes
+      .mockResolvedValueOnce({ rows: [] }) // brain_pages pin/hide overrides
       .mockResolvedValueOnce({ rows: [] }); // connected_accounts
 
     const d = await buildLiveDigest('u1');
@@ -95,7 +96,8 @@ describe('buildLiveDigest', () => {
           }),
         ],
       })
-      .mockResolvedValueOnce({ rows: [] });
+      .mockResolvedValueOnce({ rows: [] }) // brain_pages overrides
+      .mockResolvedValueOnce({ rows: [] }); // connected_accounts
 
     const d = await buildLiveDigest('u1');
     // calendar_invite is a to-do (needs RSVP)
@@ -122,7 +124,8 @@ describe('buildLiveDigest', () => {
           }),
         ],
       })
-      .mockResolvedValueOnce({ rows: [] });
+      .mockResolvedValueOnce({ rows: [] }) // brain_pages overrides
+      .mockResolvedValueOnce({ rows: [] }); // connected_accounts
 
     const d = await buildLiveDigest('u1');
     const item = d!.topics.flatMap((t) => t.items)[0];
@@ -149,7 +152,8 @@ describe('buildLiveDigest', () => {
           }),
         ],
       })
-      .mockResolvedValueOnce({ rows: [] });
+      .mockResolvedValueOnce({ rows: [] }) // brain_pages overrides
+      .mockResolvedValueOnce({ rows: [] }); // connected_accounts
 
     const d = await buildLiveDigest('u1');
     expect(d!.todos).toHaveLength(0);
@@ -173,7 +177,8 @@ describe('buildLiveDigest', () => {
           }),
         ],
       })
-      .mockResolvedValueOnce({ rows: [] });
+      .mockResolvedValueOnce({ rows: [] }) // brain_pages overrides
+      .mockResolvedValueOnce({ rows: [] }); // connected_accounts
 
     const d = await buildLiveDigest('u1');
     const item = d!.topics.flatMap((t) => t.items)[0];
@@ -197,7 +202,8 @@ describe('buildLiveDigest', () => {
           }),
         ],
       })
-      .mockResolvedValueOnce({ rows: [] });
+      .mockResolvedValueOnce({ rows: [] }) // brain_pages overrides
+      .mockResolvedValueOnce({ rows: [] }); // connected_accounts
 
     const d = await buildLiveDigest('u1');
     const item = d!.topics.flatMap((t) => t.items)[0];
@@ -242,7 +248,8 @@ describe('buildLiveDigest', () => {
           ),
         ],
       })
-      .mockResolvedValueOnce({ rows: [] });
+      .mockResolvedValueOnce({ rows: [] }) // brain_pages pin/hide overrides (#485)
+      .mockResolvedValueOnce({ rows: [] }); // connected_accounts
 
     const d = await buildLiveDigest('u1');
     expect(d).not.toBeNull();
@@ -284,7 +291,8 @@ describe('buildLiveDigest', () => {
           }),
         ],
       })
-      .mockResolvedValueOnce({ rows: [] });
+      .mockResolvedValueOnce({ rows: [] }) // brain_pages pin/hide overrides (#485)
+      .mockResolvedValueOnce({ rows: [] }); // connected_accounts
 
     const d = await buildLiveDigest('u1');
     // No commitment to-do; the inbound email is a routine FYI topic.
@@ -300,7 +308,8 @@ describe('buildLiveDigest', () => {
           ),
         ],
       })
-      .mockResolvedValueOnce({ rows: [] });
+      .mockResolvedValueOnce({ rows: [] }) // brain_pages pin/hide overrides (#485)
+      .mockResolvedValueOnce({ rows: [] }); // connected_accounts
 
     const d = await buildLiveDigest('u1');
     expect(d!.todos).toHaveLength(1);
@@ -315,7 +324,8 @@ describe('buildLiveDigest', () => {
         .mockResolvedValueOnce({
           rows: [authoredEmailRow("I'll send over the draft tomorrow.")],
         })
-        .mockResolvedValueOnce({ rows: [] });
+        .mockResolvedValueOnce({ rows: [] }) // brain_pages pin/hide overrides (#485)
+        .mockResolvedValueOnce({ rows: [] }); // connected_accounts
 
       const d = await buildLiveDigest('u1');
       expect(d!.todos).toHaveLength(0);
@@ -334,9 +344,103 @@ describe('buildLiveDigest', () => {
           decisionRow({ id: 'c', auto_executed: null, requires_approval: false, situation_type: 'email_triage', urgency: 'low', escalation_reason: null }),
         ],
       })
-      .mockResolvedValueOnce({ rows: [] });
+      .mockResolvedValueOnce({ rows: [] }) // brain_pages overrides
+      .mockResolvedValueOnce({ rows: [] }); // connected_accounts
 
     const d = await buildLiveDigest('u1');
     expect(d!.handledCount).toBe(1);
+  });
+
+  it('drops a hidden sender end-to-end (#270/#485): hidden item never surfaces', async () => {
+    mockQuery
+      .mockResolvedValueOnce({
+        rows: [
+          // Visible routine item from one sender.
+          decisionRow({
+            id: 'visible',
+            situation_type: 'email_triage',
+            urgency: 'low',
+            requires_approval: false,
+            escalation_reason: null,
+            raw_event: { source: 'gmail', type: 'message', data: { subject: 'Keep me', from: 'ok@x.example' } },
+          }),
+          // Item from a sender the user hid (bulk-hide stamped userOverride=hidden
+          // on brain_pages keyed by fromAddress).
+          decisionRow({
+            id: 'hidden',
+            situation_type: 'email_triage',
+            urgency: 'high', // would normally be a to-do
+            requires_approval: false,
+            escalation_reason: null,
+            raw_event: { source: 'gmail', type: 'message', data: { subject: 'Hide me', from: 'Spammy <SPAM@x.example>' } },
+          }),
+        ],
+      })
+      // brain_pages overrides: the hidden sender (normalized, lowercased).
+      .mockResolvedValueOnce({
+        rows: [{ from_address: 'spam@x.example', user_override: 'hidden' }],
+      })
+      .mockResolvedValueOnce({ rows: [] }); // connected_accounts
+
+    const d = await buildLiveDigest('u1');
+    const allRefs = [
+      ...d!.todos.map((t) => t.ref),
+      ...d!.topics.flatMap((t) => t.items.map((i) => i.ref)),
+    ];
+    expect(allRefs).toContain('visible');
+    expect(allRefs).not.toContain('hidden');
+  });
+
+  it('passes through items when the brain has no overrides (pre-#485 parity)', async () => {
+    mockQuery
+      .mockResolvedValueOnce({
+        rows: [
+          decisionRow({
+            id: 'keep',
+            situation_type: 'email_triage',
+            urgency: 'low',
+            requires_approval: false,
+            escalation_reason: null,
+            raw_event: { source: 'gmail', type: 'message', data: { subject: 'Normal', from: 'a@x.example' } },
+          }),
+        ],
+      })
+      .mockResolvedValueOnce({ rows: [] }) // brain_pages overrides — empty
+      .mockResolvedValueOnce({ rows: [] }); // connected_accounts
+
+    const d = await buildLiveDigest('u1');
+    const allRefs = [
+      ...d!.todos.map((t) => t.ref),
+      ...d!.topics.flatMap((t) => t.items.map((i) => i.ref)),
+    ];
+    expect(allRefs).toContain('keep');
+  });
+
+  it('degrades to no overrides when the brain_pages query fails (resilience)', async () => {
+    mockQuery
+      .mockResolvedValueOnce({
+        rows: [
+          decisionRow({
+            id: 'still-here',
+            situation_type: 'email_triage',
+            urgency: 'low',
+            requires_approval: false,
+            escalation_reason: null,
+            raw_event: { source: 'gmail', type: 'message', data: { subject: 'Hi', from: 'a@x.example' } },
+          }),
+        ],
+      })
+      // brain_pages overrides query throws (e.g. table absent on a
+      // mempalace-only deploy) — must not error the whole digest.
+      .mockRejectedValueOnce(new Error('relation "brain_pages" does not exist'))
+      .mockResolvedValueOnce({ rows: [] }); // connected_accounts
+
+    const d = await buildLiveDigest('u1');
+    expect(d).not.toBeNull();
+    const allRefs = [
+      ...d!.todos.map((t) => t.ref),
+      ...d!.topics.flatMap((t) => t.items.map((i) => i.ref)),
+    ];
+    expect(allRefs).toContain('still-here');
   });
 });
