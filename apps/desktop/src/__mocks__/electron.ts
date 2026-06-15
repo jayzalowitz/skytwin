@@ -30,6 +30,7 @@ const Tray = vi.fn().mockImplementation(() => ({
 // Menu stub
 const Menu = {
   buildFromTemplate: vi.fn((template: unknown[]) => ({ template })),
+  setApplicationMenu: vi.fn(),
 };
 
 // dialog stub
