@@ -156,6 +156,15 @@ function refreshAppMenu(): void {
         }
         refreshAppMenu();
       },
+      // "Check for Updates…" runs an immediate check when an update controller
+      // exists (packaged builds). The onStatus listener wired in startApp()
+      // turns the result into a renderer banner; here we just trigger the poll.
+      // Omitted handling in dev builds (no controller) is a safe no-op via `?.`.
+      onCheckForUpdates: updateController
+        ? () => {
+            void updateController?.checkNow();
+          }
+        : undefined,
     },
   );
 }
@@ -237,8 +246,18 @@ async function startApp(): Promise<void> {
   // during local development where the version may lag the published channel.
   if (app.isPackaged) {
     updateController = new AutoUpdateController(defaultAutoUpdateConfig());
-    updateController.schedulePeriodicChecks();
-    console.info('[auto-update] Periodic update checks scheduled.');
+    // Forward every status change (poll results + electron-updater push events:
+    // available → downloading(%) → ready-to-install / error) to the renderer so
+    // the dashboard can show a download-progress + "Restart to update" banner.
+    updateController.onStatus((status) => {
+      if (mainWindow !== null && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+        mainWindow.webContents.send('update-status', status);
+      }
+    });
+    // start() subscribes to backend events, schedules the 6h poll, and fires an
+    // immediate check.
+    updateController.start();
+    console.info('[auto-update] Auto-update started (periodic checks + event stream).');
   }
 
   idleBridge = new IdleBridge({
@@ -281,6 +300,20 @@ async function waitForWeb(timeoutMs: number): Promise<boolean> {
 // IPC handlers
 ipcMain.handle('get-service-status', () => serviceManager.getStatus());
 ipcMain.handle('get-version', () => app.getVersion());
+
+// Auto-update: the renderer banner triggers a manual check and (once a payload
+// is downloaded) a restart-to-install. Both no-op safely when no controller
+// exists (dev builds) — `update-check` reports the disabled status, and
+// `update-install` reports it couldn't install.
+ipcMain.handle('update-check', async () => {
+  if (!updateController) return { status: 'no-update' };
+  return updateController.checkNow();
+});
+ipcMain.handle('update-status', () => updateController?.getLatestStatus() ?? { status: 'no-update' });
+ipcMain.handle('update-install', () => {
+  if (!updateController) return false;
+  return updateController.installNow();
+});
 ipcMain.handle('get-launch-at-login', () => {
   const settings = app.getLoginItemSettings();
   return settings.openAtLogin;

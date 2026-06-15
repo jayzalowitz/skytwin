@@ -21,6 +21,7 @@ import { renderProvenanceGraph } from './pages/provenance-graph.js';
 import { renderMemorySettings } from './pages/memory-settings.js';
 import { renderLifebook } from './pages/lifebook.js';
 import { renderGlobalPauseButton } from './components/global-pause-button.js';
+import { wireDesktopUpdateBanner } from './components/desktop-update-banner.js';
 import { fetchPendingApprovals, fetchHealth, fetchUser, listUsers, escapeHtml, isApiKnownOffline, fetchJSON } from './api-client.js';
 import { initTheme } from './theme-switcher.js';
 import { initA11y } from './a11y.js';
@@ -851,6 +852,11 @@ function wireDxtDropAndOpen() {
       );
     });
   }
+
+  // Auto-update banner (#370 follow-up). Subscribes to the desktop's update
+  // lifecycle and shows a bottom banner: downloading(%) → "Restart to update".
+  // No-ops in the browser/PWA where the bridge is absent.
+  wireDesktopUpdateBanner();
 }
 
 window.addEventListener('DOMContentLoaded', async () => {

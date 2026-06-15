@@ -6,9 +6,11 @@ import {
   defaultBackend,
   defaultAutoUpdateConfig,
   resolveFeedURL,
+  updateStatusFromEvent,
   type AutoUpdateConfig,
   type UpdateBackend,
   type UpdateCheckResult,
+  type UpdateStatusListener,
 } from '../auto-update.js';
 
 // ---------------------------------------------------------------------------
@@ -33,6 +35,10 @@ class StubBackend implements UpdateBackend {
   public callCount = 0;
   public nextResult: UpdateCheckResult = { status: 'no-update' };
   public shouldThrow = false;
+  /** Captured listener from subscribe(); call emit() to push events through it. */
+  public subscribeCount = 0;
+  public installCount = 0;
+  private pushListener: UpdateStatusListener | null = null;
 
   async checkForUpdates(): Promise<UpdateCheckResult> {
     this.callCount++;
@@ -40,6 +46,20 @@ class StubBackend implements UpdateBackend {
       throw new Error('network error');
     }
     return this.nextResult;
+  }
+
+  subscribe(onStatus: UpdateStatusListener): void {
+    this.subscribeCount++;
+    this.pushListener = onStatus;
+  }
+
+  /** Simulate a backend push event (download-progress, ready-to-install, …). */
+  emit(result: UpdateCheckResult): void {
+    this.pushListener?.(result);
+  }
+
+  quitAndInstall(): void {
+    this.installCount++;
   }
 }
 
@@ -356,5 +376,177 @@ describe('AutoUpdateController — omitted backend uses defaultBackend()', () =>
     const controller = new AutoUpdateController(makeConfig(), new NoopUpdateBackend());
     const result = await controller.checkNow();
     expect(result.status).toBe('no-update');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// updateStatusFromEvent — pure event → status mapping (no Electron needed)
+// ---------------------------------------------------------------------------
+
+describe('updateStatusFromEvent', () => {
+  it('maps update-available to { available, version }', () => {
+    expect(updateStatusFromEvent('update-available', { version: '1.2.3' })).toEqual({
+      status: 'available',
+      version: '1.2.3',
+    });
+  });
+
+  it('maps download-progress to { downloading, downloadPercent } (rounded + clamped)', () => {
+    expect(updateStatusFromEvent('download-progress', { percent: 42.7 })).toEqual({
+      status: 'downloading',
+      downloadPercent: 43,
+    });
+    // Clamp out-of-range or missing values into 0–100.
+    expect(updateStatusFromEvent('download-progress', { percent: -5 }).downloadPercent).toBe(0);
+    expect(updateStatusFromEvent('download-progress', { percent: 250 }).downloadPercent).toBe(100);
+    expect(updateStatusFromEvent('download-progress', {}).downloadPercent).toBe(0);
+  });
+
+  it('maps update-downloaded to { ready-to-install, version }', () => {
+    expect(updateStatusFromEvent('update-downloaded', { version: '1.2.3' })).toEqual({
+      status: 'ready-to-install',
+      version: '1.2.3',
+    });
+  });
+
+  it('maps error to { error, message } with a fallback message', () => {
+    expect(updateStatusFromEvent('error', { message: 'boom' })).toEqual({
+      status: 'error',
+      error: 'boom',
+    });
+    expect(updateStatusFromEvent('error', {}).error).toBe('update failed');
+  });
+
+  it('maps checking / not-available to no-update', () => {
+    expect(updateStatusFromEvent('checking-for-update').status).toBe('no-update');
+    expect(updateStatusFromEvent('update-not-available').status).toBe('no-update');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AutoUpdateController — status stream (onStatus) + backend push events
+// ---------------------------------------------------------------------------
+
+describe('AutoUpdateController — onStatus stream', () => {
+  it('notifies listeners on every checkNow() result', async () => {
+    const backend = new StubBackend();
+    backend.nextResult = { status: 'available', version: '2.0.0' };
+    const controller = new AutoUpdateController(makeConfig(), backend);
+    const seen: UpdateCheckResult[] = [];
+    controller.onStatus((r) => seen.push(r));
+
+    await controller.checkNow();
+
+    expect(seen).toEqual([{ status: 'available', version: '2.0.0' }]);
+  });
+
+  it('forwards backend push events (download progress → ready-to-install) after start()', () => {
+    const backend = new StubBackend();
+    const controller = new AutoUpdateController(makeConfig(), backend);
+    const seen: UpdateCheckResult[] = [];
+    controller.onStatus((r) => seen.push(r));
+
+    controller.start();
+    backend.emit({ status: 'downloading', downloadPercent: 50 });
+    backend.emit({ status: 'ready-to-install', version: '2.0.0' });
+
+    // start() subscribes to the backend and the pushed events reach the listener.
+    expect(backend.subscribeCount).toBe(1);
+    expect(seen).toContainEqual({ status: 'downloading', downloadPercent: 50 });
+    expect(seen).toContainEqual({ status: 'ready-to-install', version: '2.0.0' });
+    // getLatestStatus reflects the most recent push, not just the last poll.
+    expect(controller.getLatestStatus()).toEqual({ status: 'ready-to-install', version: '2.0.0' });
+  });
+
+  it('unsubscribe() stops further notifications', async () => {
+    const backend = new StubBackend();
+    const controller = new AutoUpdateController(makeConfig(), backend);
+    const seen: UpdateCheckResult[] = [];
+    const off = controller.onStatus((r) => seen.push(r));
+
+    await controller.checkNow();
+    off();
+    await controller.checkNow();
+
+    expect(seen).toHaveLength(1);
+  });
+
+  it('a throwing listener does not break the update loop or other listeners', async () => {
+    const backend = new StubBackend();
+    const controller = new AutoUpdateController(makeConfig(), backend);
+    const seen: UpdateCheckResult[] = [];
+    controller.onStatus(() => {
+      throw new Error('renderer bridge gone');
+    });
+    controller.onStatus((r) => seen.push(r));
+
+    await expect(controller.checkNow()).resolves.toBeDefined();
+    expect(seen).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AutoUpdateController — start() + installNow()
+// ---------------------------------------------------------------------------
+
+describe('AutoUpdateController — start()', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it('subscribes once, schedules periodic checks, and fires an immediate check', async () => {
+    const backend = new StubBackend();
+    const controller = new AutoUpdateController(makeConfig(), backend);
+
+    controller.start();
+    await vi.advanceTimersByTimeAsync(0); // flush the immediate checkNow()
+
+    expect(backend.subscribeCount).toBe(1);
+    expect(controller.isScheduled()).toBe(true);
+    expect(backend.callCount).toBe(1);
+    controller.cancelScheduledChecks();
+  });
+
+  it('is idempotent — calling start() twice does not double-subscribe', async () => {
+    const backend = new StubBackend();
+    const controller = new AutoUpdateController(makeConfig(), backend);
+
+    controller.start();
+    controller.start();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(backend.subscribeCount).toBe(1);
+    controller.cancelScheduledChecks();
+  });
+
+  it('disabled controller does not subscribe or schedule', () => {
+    const backend = new StubBackend();
+    const controller = new AutoUpdateController(makeConfig({ enabled: false }), backend);
+
+    controller.start();
+
+    expect(backend.subscribeCount).toBe(0);
+    expect(controller.isScheduled()).toBe(false);
+  });
+});
+
+describe('AutoUpdateController — installNow()', () => {
+  it('delegates to the backend quitAndInstall and returns true', () => {
+    const backend = new StubBackend();
+    const controller = new AutoUpdateController(makeConfig(), backend);
+
+    const ok = controller.installNow();
+
+    expect(ok).toBe(true);
+    expect(backend.installCount).toBe(1);
+  });
+
+  it('returns false when the backend cannot install (dev/unsigned build)', () => {
+    // A backend with no quitAndInstall method — installNow must report it can't.
+    const backend: UpdateBackend = {
+      checkForUpdates: async () => ({ status: 'no-update' }),
+    };
+    const controller = new AutoUpdateController(makeConfig(), backend);
+
+    expect(controller.installNow()).toBe(false);
   });
 });

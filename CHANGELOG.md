@@ -18,6 +18,14 @@ All notable changes to SkyTwin will be documented in this file.
 
 ## [Unreleased] — Tier 2 launch polish
 
+### Added (desktop auto-update — user-facing layer, #370 follow-up)
+
+- **The desktop app now tells you when an update is downloading and lets you install it.** `apps/desktop/src/auto-update.ts` already polled GitHub Releases and silently auto-downloaded on the next quit; this adds the half a user can see and act on:
+  - **Live status stream.** `ElectronUpdaterBackend` now subscribes to electron-updater's lifecycle events (`update-available` → `download-progress` → `update-downloaded` / `error`) and normalizes each through a pure `updateStatusFromEvent()` mapper. `AutoUpdateController.start()` wires that subscription, schedules the 6-hour poll, and fires an immediate check; `onStatus()` fans every status change out to listeners (a throwing listener can't break the update loop), and `installNow()` applies a downloaded update (returns `false` on a dev/unsigned build that can't self-install).
+  - **Renderer banner (`apps/web/public/js/components/desktop-update-banner.js`).** A single bottom-center banner — deliberately NOT a top banner, so it never fights the autonomy/connector banners' page-reflow — updates in place across the lifecycle: a quiet "Downloading an update…" with a percent progress bar, then "Update ready to install" with a **Restart to update** accent CTA (DESIGN.md: accent = "needs you / act"). Plain-language copy, no internal jargon. A routine background-poll failure is suppressed (no 6-hour nag); an error only surfaces when a download was actually in flight.
+  - **Manual check.** A "Check for Updates…" menu item (macOS app menu per HIG; Help menu on Windows/Linux) triggers an on-demand poll via the new `update-check` / `update-install` IPC handlers and the `skytwinDesktop.{checkForUpdates,getUpdateStatus,installUpdate,onUpdateStatus}` preload bridge.
+  - Tests: controller event-forwarding / unsubscribe / throwing-listener isolation / `start()` idempotence / `installNow()` delegation (20 new), the pure `updateStatusFromEvent` mapping, the menu placement (app menu vs Help), and the banner view-model + HTML builder (visibility, percent clamping, error-suppression, XSS-escaping, `data-action` not inline onclick).
+
 ### Added (locale/timezone faithfulness — connector profile sync, #486)
 
 - **Google profile sync now populates `users.language` + `users.timezone`, and commitment extraction routes by locale.** The locale/timezone *foundation* (migration `063`, the `decision-engine/src/locale.ts` helpers `resolveLanguage`/`resolveTimezone`/`isNonEnglish`, the briefing `{{language}}` wiring, and `userRepository.getLocale`) landed with the Inbox-Intelligence epic but nothing actually wrote those columns. This PR closes that gap:
