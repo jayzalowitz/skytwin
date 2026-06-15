@@ -18,6 +18,7 @@ import {
   generatePkcePair,
   exchangeCode,
   revokeToken,
+  fetchGoogleProfileSync,
 } from '@skytwin/connectors';
 import type { GoogleOAuthConfig } from '@skytwin/connectors';
 import { sessionAuth } from '../middleware/session-auth.js';
@@ -821,6 +822,42 @@ export function createOAuthRouter(): Router {
         expiresAt: tokenSet.expiresAt,
         scopes: tokenSet.scopes,
       });
+
+      // Profile sync (#486): capture the user's language (Google locale) and
+      // timezone (primary calendar) so the briefing prose is in their language
+      // and relative deadlines resolve against their clock. Best-effort — a
+      // failed sync must never block sign-in, so we never throw out of here.
+      // We never silently guess a timezone: when it falls back to UTC we log a
+      // warning so the operator can see the gap.
+      try {
+        const profile = await fetchGoogleProfileSync(tokenSet.accessToken);
+        // Only write the non-defaulted fields so a partial sync (e.g. calendar
+        // scope not granted) doesn't overwrite a real value with a placeholder.
+        const localeUpdate: { language?: string; timezone?: string } = {};
+        if (!profile.languageDefaulted) localeUpdate.language = profile.language;
+        if (!profile.timezoneDefaulted) localeUpdate.timezone = profile.timezone;
+        if (localeUpdate.language !== undefined || localeUpdate.timezone !== undefined) {
+          await userRepository.updateLocale(userId, localeUpdate);
+        }
+        if (profile.timezoneDefaulted) {
+          log.warn('Google profile sync: no primary-calendar timezone; left unset (resolves to UTC)', {
+            userId,
+            accountEmail,
+          });
+        }
+        if (profile.languageDefaulted) {
+          log.warn('Google profile sync: no profile locale; left unset (resolves to en)', {
+            userId,
+            accountEmail,
+          });
+        }
+      } catch (err) {
+        log.warn('Google profile sync failed; language/timezone left unset', {
+          userId,
+          accountEmail,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
 
       // If the desktop client supplied a pendingKey (per-flow handoff
       // token), record the completion so the wizard can poll for it.

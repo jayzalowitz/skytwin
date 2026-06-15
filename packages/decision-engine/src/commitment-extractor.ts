@@ -18,6 +18,7 @@
 
 import type { SignalText } from './signal-text.js';
 import { capabilityCoversSource } from './capability-source-matrix.js';
+import { isNonEnglish } from './locale.js';
 
 export interface Commitment {
   /** Normalized imperative ("Send the draft tomorrow"). */
@@ -35,6 +36,37 @@ export interface Commitment {
 export interface CommitmentStrategy {
   extract(input: SignalText): Commitment[];
 }
+
+/**
+ * Locale-aware extraction result (#spec 12, #486). The English keyword/regex
+ * fallback is honestly *one locale's* fallback — when it runs on non-English
+ * content and no multilingual (LLM) strategy is available, the result carries a
+ * `degraded: 'locale'` marker and the caller logs it, so a near-empty result is
+ * visibly "we ran English rules on non-English text," NOT a false "no
+ * commitments." The LLM strategy handles other locales natively, so a result
+ * produced by a strategy is never marked degraded.
+ */
+export interface CommitmentExtraction {
+  commitments: Commitment[];
+  /** Set when the deterministic fallback ran on a locale it does not support. */
+  degraded?: 'locale';
+}
+
+/** Options for the locale-aware extractor entry point. */
+export interface ExtractCommitmentsOptions {
+  /** Multilingual path. When present, it owns the locale and is never degraded. */
+  strategy?: CommitmentStrategy;
+  /**
+   * Effective content/user language (BCP-47-ish, e.g. 'es', 'ja'). Drives the
+   * LLM-vs-rule routing decision. Absent/empty is treated as English.
+   */
+  locale?: string | null;
+  /** Sink for the degraded-coverage note (defaults to console.warn). */
+  log?: (message: string, meta: Record<string, unknown>) => void;
+}
+
+/** The single locale whose rules the deterministic fallback actually encodes. */
+const SUPPORTED_RULE_LOCALE = 'en';
 
 // First-person future-modal openers that signal a commitment.
 const COMMIT_RE =
@@ -108,6 +140,9 @@ function ruleExtract(input: SignalText): Commitment[] {
 /**
  * Extract commitments from a (normalized) signal. Returns [] for content the
  * user didn't author or sources the matrix doesn't allowlist for commitments.
+ *
+ * Locale-unaware shim kept for existing callers. New code should prefer
+ * `extractCommitmentsLocaleAware`, which carries the `degraded` marker.
  */
 export function extractCommitments(
   input: SignalText,
@@ -116,4 +151,50 @@ export function extractCommitments(
   if (!input.authoredByUser) return [];
   if (!capabilityCoversSource('commitments', input.source)) return [];
   return strategy ? strategy.extract(input) : ruleExtract(input);
+}
+
+/**
+ * Locale-aware commitment extraction (#spec 12, #486).
+ *
+ * Routing:
+ *   - A `strategy` (LLM) is the multilingual path: it owns the locale and the
+ *     result is NEVER marked degraded.
+ *   - Only the deterministic English fallback is available AND the locale is
+ *     non-English → run the fallback but mark `degraded: 'locale'` and log,
+ *     instead of silently returning `[]` as if there were no commitments.
+ *   - English (or unknown) locale on the fallback → the normal, un-degraded
+ *     English path (no regression for the existing population).
+ *
+ * Gating/authorship are identical to `extractCommitments` (safety #8): a
+ * non-English marker is never an excuse to read commitments from content the
+ * user didn't author.
+ */
+export function extractCommitmentsLocaleAware(
+  input: SignalText,
+  opts: ExtractCommitmentsOptions = {},
+): CommitmentExtraction {
+  if (!input.authoredByUser) return { commitments: [] };
+  if (!capabilityCoversSource('commitments', input.source)) return { commitments: [] };
+
+  // LLM strategy present → multilingual path, never degraded.
+  if (opts.strategy) {
+    return { commitments: opts.strategy.extract(input) };
+  }
+
+  const commitments = ruleExtract(input);
+
+  // Deterministic fallback on a locale it doesn't support → surface the gap.
+  if (isNonEnglish(opts.locale)) {
+    const log = opts.log ?? ((m, meta) => console.warn(m, meta));
+    log('commitment-extractor: degraded (English rules on non-English content)', {
+      degraded: 'locale',
+      locale: opts.locale ?? null,
+      supportedRuleLocale: SUPPORTED_RULE_LOCALE,
+      source: input.source,
+      found: commitments.length,
+    });
+    return { commitments, degraded: 'locale' };
+  }
+
+  return { commitments };
 }

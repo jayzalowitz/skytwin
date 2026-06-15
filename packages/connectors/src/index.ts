@@ -39,6 +39,10 @@ export {
   OAuthRefreshError,
 } from './oauth/google-oauth.js';
 export type { GoogleOAuthConfig, PkcePair } from './oauth/google-oauth.js';
+
+// Profile sync — capture per-user language + timezone from the Google identity (#486).
+export { fetchGoogleProfileSync } from './google-profile-sync.js';
+export type { GoogleProfileSyncResult, FetchLike } from './google-profile-sync.js';
 export type { OAuthTokenStore } from './oauth/token-store.js';
 export { DbTokenStore } from './oauth/db-token-store.js';
 export type { AuditLogPort } from './oauth/db-token-store.js';

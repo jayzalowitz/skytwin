@@ -138,6 +138,47 @@ export const userRepository = {
   },
 
   /**
+   * Write a user's language + timezone, captured from the connector identity on
+   * profile sync (spec 12, #486). Only the fields actually provided are written
+   * — a partial sync (e.g. calendar scope granted but userinfo unreadable) must
+   * not clobber a previously-captured value with a placeholder. Both omitted is
+   * a no-op read-back so callers get a consistent return shape.
+   */
+  async updateLocale(
+    id: string,
+    input: { language?: string; timezone?: string },
+  ): Promise<UserRow | null> {
+    const setClauses: string[] = [];
+    const values: unknown[] = [];
+    let paramIndex = 1;
+
+    if (input.language !== undefined) {
+      setClauses.push(`language = $${paramIndex}`);
+      values.push(input.language);
+      paramIndex++;
+    }
+
+    if (input.timezone !== undefined) {
+      setClauses.push(`timezone = $${paramIndex}`);
+      values.push(input.timezone);
+      paramIndex++;
+    }
+
+    if (setClauses.length === 0) {
+      return this.findById(id);
+    }
+
+    setClauses.push(`updated_at = now()`);
+    values.push(id);
+
+    const result = await query<UserRow>(
+      `UPDATE users SET ${setClauses.join(', ')} WHERE id = $${paramIndex} RETURNING *`,
+      values,
+    );
+    return result.rows[0] ?? null;
+  },
+
+  /**
    * Update a user's trust tier.
    */
   async updateTrustTier(
