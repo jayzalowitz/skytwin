@@ -29,7 +29,7 @@ That's the mechanical flow. Read the rest before the **first** public release �
 1. **`test`** + **`changes`** — gate the build (the desktop/mobile jobs `needs: [test, changes]`). The eval suite is a **separate** workflow (`.github/workflows/evals.yml`) and does **not** run on `v*` tag pushes, so don't assume evals ran as part of cutting a release.
 2. **`desktop-mac` / `desktop-windows` / `desktop-linux`** — `pnpm --filter skytwin-desktop run package:<os> --publish never`. `--publish never` is deliberate: these jobs only *build + validate* packageability and upload the artifacts; they do not publish (see the comments in `build.yml`).
 3. **`mobile-android` / `mobile-ios`** — Android `.apk` + an unsigned iOS simulator `.app` zip.
-4. **`release`** (`needs:` all five build jobs) — downloads every artifact and runs `softprops/action-gh-release@v3` with **`draft: true`** + `generate_release_notes: true`, attaching: `.dmg`, `.zip` (mac), `.exe` (Windows NSIS), `.AppImage` / `.deb` / `.rpm` (Linux), `.apk` (Android), and the iOS simulator zip.
+4. **`release`** (`needs:` all five build jobs) — first verifies the GitHub Releases endpoint is reachable (`curl -f https://github.com/<repo>/releases/latest`, fails the job on non-2xx — #370 AC#2), then downloads every artifact and runs `softprops/action-gh-release@v3` with **`draft: true`** + `generate_release_notes: true`, attaching: `.dmg`, `.zip` (mac), `.exe` (Windows NSIS), `.AppImage` / `.deb` / `.rpm` (Linux), `.apk` (Android), the iOS simulator zip, **and the electron-updater manifests `latest-mac.yml` / `latest.yml` / `latest-linux.yml`** (#370).
 
 The release is created as a **draft**. Nothing is public until a human opens the draft in GitHub Releases and clicks **Publish**.
 
@@ -48,9 +48,9 @@ The desktop package jobs set `CSC_IDENTITY_AUTO_DISCOVERY: 'false'` and skip sig
 
 Until then, macOS Gatekeeper / Windows SmartScreen warn on first launch (the README documents the right-click→Open / More-info→Run-anyway bypass).
 
-### 2. Auto-update manifests are NOT generated (#370)
+### 2. Auto-update manifests now ship — but the path is live only after signing (#370)
 
-`electron-updater` is wired client-side (`apps/desktop/src/auto-update.ts`), but the `release` job uploads only installer artifacts — not the `latest-mac.yml` / `latest.yml` / `latest-linux.yml` manifests electron-updater polls. Until the package/release steps emit + attach those manifests, installed apps cannot discover updates. Generating them is the remaining code half of #370.
+`electron-updater` is wired client-side (`apps/desktop/src/auto-update.ts`), and the `release` job **now attaches the `latest-mac.yml` / `latest.yml` / `latest-linux.yml` manifests** electron-updater polls (the remaining code half of #370 — electron-builder generates them under `--publish never`, and the three desktop jobs collect them as artifacts). So an installed app *can* discover the next version. The catch: electron-updater verifies the downloaded update's signature and **refuses an unsigned payload** (fails safe). Until code signing lands (gap 1 / #368 / #359), the self-update path discovers the update but can't install it. The manifests shipping early is harmless — verify with `gh release view <tag> --json assets` that all three `latest*.yml` are attached.
 
 ### 3. Google OAuth verification (#351)
 
