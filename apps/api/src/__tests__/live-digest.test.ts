@@ -204,6 +204,127 @@ describe('buildLiveDigest', () => {
     expect(item?.detail?.provenanceLabel).toMatch(/from you/i);
   });
 
+  // --- #475: commitment extraction wired into the live digest ---
+
+  /** A decision built from a user-authored sent email carrying commitments. */
+  function authoredEmailRow(body: string, over: Record<string, unknown> = {}) {
+    return decisionRow({
+      // The sent email itself is a routine FYI decision — the commitment is the
+      // to-do, not the email-triage decision.
+      situation_type: 'email_triage',
+      domain: 'work',
+      urgency: 'low',
+      requires_approval: false,
+      auto_executed: true,
+      escalation_reason: null,
+      confidence: 0.9,
+      raw_event: {
+        source: 'gmail',
+        type: 'message',
+        data: {
+          subject: 'Re: kickoff',
+          to: 'client@acme.example',
+          from: 'me@example.com',
+          body,
+          authoringTier: 'user_sent_reply',
+        },
+      },
+      ...over,
+    });
+  }
+
+  it('surfaces user-authored commitments as to-dos with from-you provenance and a citation', async () => {
+    mockQuery
+      .mockResolvedValueOnce({
+        rows: [
+          authoredEmailRow(
+            "I'll send over the draft tomorrow. I can reach out to the vendor this week.",
+          ),
+        ],
+      })
+      .mockResolvedValueOnce({ rows: [] });
+
+    const d = await buildLiveDigest('u1');
+    expect(d).not.toBeNull();
+    // Two distinct commitments → two commitment to-dos (AC #1). The parent
+    // email-triage decision is a routine FYI, so it isn't a to-do itself.
+    expect(d!.todos).toHaveLength(2);
+
+    const texts = d!.todos.map((t) => t.text);
+    expect(texts).toContain('Send over the draft tomorrow');
+    expect(texts.some((t) => /reach out to the vendor/i.test(t))).toBe(true);
+
+    const first = d!.todos[0]!;
+    // Provenance is from-you (highest trust) and the explanation cites the
+    // user's own sentence (safety invariant #2).
+    expect(first.detail?.provenanceLabel).toMatch(/from you/i);
+    expect(first.detail?.explanation).toMatch(/from what you wrote/i);
+    expect(first.body && first.body.length).toBeGreaterThan(0); // rawSpan citation
+    expect(first.sourceType).toBe('email');
+    // Deadline hint travels through (AC #7).
+    expect(d!.todos.some((t) => t.deadline === 'tomorrow')).toBe(true);
+  });
+
+  it('does NOT extract commitments from inbound (non-authored) content (gating, AC #2)', async () => {
+    mockQuery
+      .mockResolvedValueOnce({
+        rows: [
+          authoredEmailRow("I'll send over the draft tomorrow.", {
+            raw_event: {
+              source: 'gmail',
+              type: 'message',
+              data: {
+                subject: 'Re: kickoff',
+                from: 'client@acme.example',
+                // identical phrasing but INBOUND — must not become a to-do
+                body: "I'll send over the draft tomorrow.",
+                authoringTier: 'inbox_personal',
+              },
+            },
+          }),
+        ],
+      })
+      .mockResolvedValueOnce({ rows: [] });
+
+    const d = await buildLiveDigest('u1');
+    // No commitment to-do; the inbound email is a routine FYI topic.
+    expect(d!.todos).toHaveLength(0);
+  });
+
+  it('collapses a commitment restated in the same body to one to-do (AC #4)', async () => {
+    mockQuery
+      .mockResolvedValueOnce({
+        rows: [
+          authoredEmailRow(
+            "I'll send over the draft tomorrow. Just to confirm, I'll send over the draft tomorrow.",
+          ),
+        ],
+      })
+      .mockResolvedValueOnce({ rows: [] });
+
+    const d = await buildLiveDigest('u1');
+    expect(d!.todos).toHaveLength(1);
+    expect(d!.todos[0]!.text).toBe('Send over the draft tomorrow');
+  });
+
+  it('does not emit commitment to-dos when COMMITMENT_EXTRACTION=off (rollback flag)', async () => {
+    const prev = process.env.COMMITMENT_EXTRACTION;
+    process.env.COMMITMENT_EXTRACTION = 'off';
+    try {
+      mockQuery
+        .mockResolvedValueOnce({
+          rows: [authoredEmailRow("I'll send over the draft tomorrow.")],
+        })
+        .mockResolvedValueOnce({ rows: [] });
+
+      const d = await buildLiveDigest('u1');
+      expect(d!.todos).toHaveLength(0);
+    } finally {
+      if (prev === undefined) delete process.env.COMMITMENT_EXTRACTION;
+      else process.env.COMMITMENT_EXTRACTION = prev;
+    }
+  });
+
   it('counts only auto_executed decisions in handledCount', async () => {
     mockQuery
       .mockResolvedValueOnce({

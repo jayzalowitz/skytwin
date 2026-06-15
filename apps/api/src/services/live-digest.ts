@@ -20,13 +20,25 @@ import {
   buildDigest,
   buildDigestItemDetail,
   computeCoverage,
+  extractCommitments,
   toSignalText,
+  type Commitment,
   type DigestItem,
   type Digest,
+  type SignalText,
 } from '@skytwin/decision-engine';
 
 /** Most-recent decisions scanned to assemble one digest (perf + relevance bound). */
 const RECENT_DECISIONS_WINDOW = 30;
+
+/**
+ * Commitment extraction (#475 / spec 02) is on by default. The issue's rollback
+ * plan is `COMMITMENT_EXTRACTION=off`: when set, no commitment to-dos are emitted
+ * and the extractor is never invoked (it is pure and side-effect-free otherwise).
+ */
+function commitmentExtractionEnabled(): boolean {
+  return process.env.COMMITMENT_EXTRACTION !== 'off';
+}
 
 interface DecisionDigestRow {
   id: string;
@@ -196,6 +208,92 @@ export interface LiveDigest extends Digest {
 }
 
 /**
+ * Result of folding one decision's user-authored signal into commitment to-dos.
+ * `items` are extra DigestItems (one per distinct commitment); `details` carry
+ * their power-view detail keyed by the synthetic item ref.
+ */
+interface CommitmentFold {
+  items: DigestItem[];
+  details: Map<string, ReturnType<typeof buildDigestItemDetail>>;
+}
+
+/**
+ * Turn the commitments the user stated in one authored signal into to-do items.
+ *
+ * Safety: extractCommitments already gates on `authoredByUser` AND the capability
+ * matrix (commitments run on authored mail/calendar/voice only — never inbound
+ * content, safety invariant #8). Each emitted to-do is `user_originated`
+ * provenance and carries an explanation citing the user's own sentence
+ * (`rawSpan`), satisfying invariant #2.
+ *
+ * Refs are synthesized as `${decisionId}#commit-${n}` so they're unique and
+ * never collide with the decision's own digest item. Dedup across the same
+ * authored content is keyed on `(decisionId, normalized commitment text)`.
+ */
+function commitmentTodosFor(
+  decisionId: string,
+  signalText: SignalText,
+  occurredAtIso: string | undefined,
+  domain: string | null,
+): CommitmentFold {
+  const items: DigestItem[] = [];
+  const details = new Map<string, ReturnType<typeof buildDigestItemDetail>>();
+  if (!signalText.authoredByUser) return { items, details };
+
+  let commitments: Commitment[];
+  try {
+    commitments = extractCommitments(signalText);
+  } catch {
+    return { items, details }; // never let extraction break the digest
+  }
+
+  const seen = new Set<string>();
+  let n = 0;
+  for (const c of commitments) {
+    const text = c.text.trim();
+    if (!text) continue;
+    const dedupeKey = text.toLowerCase();
+    if (seen.has(dedupeKey)) continue; // restated commitment → one to-do (AC #4)
+    seen.add(dedupeKey);
+
+    const ref = `${decisionId}#commit-${n++}`;
+    const sourceType = sourceLabel(signalText.source);
+    // Citation: the user's verbatim sentence is the evidence for this to-do.
+    const rawSpan = c.rawSpan.trim();
+    items.push({
+      ref,
+      text,
+      body: rawSpan || undefined,
+      actionRequired: true, // a self-imposed commitment is something you owe
+      domain,
+      sourceType,
+      deadline: c.deadlineHint,
+      urgency: 'medium',
+    });
+    details.set(
+      ref,
+      buildDigestItemDetail({
+        // The user authored this — it is the highest-trust provenance.
+        provenance: 'user_originated',
+        confidence: c.confidence,
+        deadlinePhrase: c.deadlineHint,
+        domain,
+        urgencyReason: 'You said you’d do this — surfacing it so it doesn’t slip.',
+        suggestedAction: 'Follow through, or tell me to drop it.',
+        occurredAt: occurredAtIso,
+        sourceRefs:
+          c.committedTo.length > 0
+            ? c.committedTo
+            : [SOURCE_FRIENDLY[sourceType] ?? sourceType],
+        // Explanation cites the user's own words (safety invariant #2).
+        explanation: rawSpan ? `From what you wrote: “${rawSpan}”` : null,
+      }),
+    );
+  }
+  return { items, details };
+}
+
+/**
  * Build the structured digest for a user from their recent decisions. Returns
  * null when the user has no decisions (caller falls back to prose / empty).
  */
@@ -222,7 +320,9 @@ export async function buildLiveDigest(userId: string): Promise<LiveDigest | null
   // buildDigest (the generator's job — buildDigest itself leaves it unset).
   const detailByRef = new Map<string, ReturnType<typeof buildDigestItemDetail>>();
 
-  const items: DigestItem[] = decisions.rows.map((r) => {
+  const commitmentsOn = commitmentExtractionEnabled();
+
+  const items: DigestItem[] = decisions.rows.flatMap((r) => {
     // Reconstruct the RawSignal the decision was made from and read its text
     // through the spec-07 accessor (source-agnostic title/body/source).
     const raw = (r.raw_event ?? {}) as {
@@ -273,6 +373,12 @@ export async function buildLiveDigest(userId: string): Promise<LiveDigest | null
     // Meaningful source ref: who/what it came from (sender, organizer, file),
     // not an opaque internal id slice.
     const sender = senderRef(data);
+    const occurredAtIso =
+      r.created_at instanceof Date
+        ? r.created_at.toISOString()
+        : r.created_at
+          ? String(r.created_at)
+          : undefined;
     detailByRef.set(
       r.id,
       buildDigestItemDetail({
@@ -283,19 +389,14 @@ export async function buildLiveDigest(userId: string): Promise<LiveDigest | null
         domain: r.domain,
         urgencyReason: urgencyReasonFor(r),
         suggestedAction: suggestedActionFor(r) ?? undefined,
-        occurredAt:
-          r.created_at instanceof Date
-            ? r.created_at.toISOString()
-            : r.created_at
-              ? String(r.created_at)
-              : undefined,
+        occurredAt: occurredAtIso,
         requiresApproval: actionRequired,
         blockedReasons,
         sourceRefs: [sender ?? SOURCE_FRIENDLY[sourceType] ?? sourceType],
       }),
     );
 
-    return {
+    const decisionItem: DigestItem = {
       ref: r.id,
       text,
       body,
@@ -304,6 +405,15 @@ export async function buildLiveDigest(userId: string): Promise<LiveDigest | null
       sourceType,
       urgency,
     };
+
+    // #475 / spec 02: surface the user's OWN stated commitments from authored
+    // content (sent mail, calendar descriptions, voice notes) as to-dos. The
+    // extractor itself enforces the authored-only security boundary; we only
+    // skip the call entirely when the rollback flag is set.
+    if (!commitmentsOn) return [decisionItem];
+    const fold = commitmentTodosFor(r.id, signalText, occurredAtIso, r.domain);
+    for (const [ref, detail] of fold.details) detailByRef.set(ref, detail);
+    return [decisionItem, ...fold.items];
   });
 
   // Coverage for the power-view panel, from the user's connected accounts.
