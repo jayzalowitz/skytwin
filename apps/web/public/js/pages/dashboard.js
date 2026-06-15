@@ -1,5 +1,6 @@
 import { fetchHealth, fetchDecisions, fetchAccuracy, fetchConfidence, fetchLearning, fetchPendingApprovals, fetchSkillGaps, fetchTrustProgress, fetchLearned, fetchUnmetCredentials, fetchOAuthStatus, fetchCredentialsStatus, fetchBriefing, fetchLatestTwinBriefing, fetchLifebooks, fetchSettings, escapeHtml } from '../api-client.js';
 import { renderTrustProgress } from '../components/progress-bar.js';
+import { renderTierLadderIntro } from '../components/tier-ladder-intro.js';
 import {
   KEY_USER_ID,
   KEY_TOUR_MODE,
@@ -559,6 +560,8 @@ export async function renderDashboard(container, userId) {
     ${pending > 0 ? renderNotificationOptIn() : ''}
 
     ${renderUnmetCredentials(unmetCreds)}
+
+    ${prog && !tourMode ? renderTierLadderIntro({ userId, currentTier: prog.currentTier }) : ''}
 
     ${prog ? renderTrustProgress(prog) : ''}
 

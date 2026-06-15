@@ -17,6 +17,7 @@
  */
 
 import { askTwin, escapeHtml } from '../api-client.js';
+import { dismissTierLadderIntro } from '../components/tier-ladder-intro.js';
 import {
   KEY_USER_ID,
   KEY_ONBOARDED,
@@ -629,6 +630,9 @@ export function initDashboardGlobals() {
     } else if (action === 'connect-google') {
       const uid = el.getAttribute('data-user-id');
       if (uid) handleConnectGoogleFromDashboard(uid);
+    } else if (action === 'dismiss-tier-ladder-intro') {
+      const key = el.getAttribute('data-key');
+      if (key) dismissTierLadderIntro(key);
     }
   });
 

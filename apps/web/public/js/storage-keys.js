@@ -65,6 +65,17 @@ export function firstApprovalIntroSeenKey(userId) {
   return `skytwin_first_approval_intro_seen_${userId}`;
 }
 
+/**
+ * One-time flag for the tier-ladder INTRODUCTION card (#483 Part C, AC 3c).
+ * A cold-start `observer` user lands on a trust progress bar they were never
+ * introduced to; this gates a brief, dismissable "what observer means + how
+ * the climb works" card so it shows exactly once per browser and never again
+ * after dismissal.
+ */
+export function tierLadderIntroSeenKey(userId) {
+  return `skytwin_tier_ladder_intro_seen_${userId}`;
+}
+
 /** One-time celebration toast for crossing into the next trust tier. */
 export function tierCelebratedKey(userId, tier) {
   return `skytwin_tier_celebrated_${userId}_${tier}`;
