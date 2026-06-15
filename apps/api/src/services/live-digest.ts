@@ -21,13 +21,25 @@ import {
   buildDigestItemDetail,
   computeCoverage,
   extractCommitments,
+  linkEntitiesAcrossSignals,
   toSignalText,
   type Commitment,
   type DigestItem,
   type Digest,
+  type ResolvedEntity,
   type SignalText,
   type SignalVisibilityMeta,
 } from '@skytwin/decision-engine';
+
+/**
+ * Cross-signal entity linking (spec 05, #478) collapse switch. Default ON;
+ * `ENTITY_LINKING=off` is the rollback path from the issue's rollback plan —
+ * with it off, no entities are extracted and the digest keeps the un-collapsed
+ * spec-04 clustering (possible cross-cluster repetition of one matter).
+ */
+export function entityLinkingEnabled(): boolean {
+  return process.env['ENTITY_LINKING'] !== 'off';
+}
 
 /** Most-recent decisions scanned to assemble one digest (perf + relevance bound). */
 const RECENT_DECISIONS_WINDOW = 30;
@@ -392,7 +404,12 @@ export async function buildLiveDigest(userId: string): Promise<LiveDigest | null
   const detailByRef = new Map<string, ReturnType<typeof buildDigestItemDetail>>();
 
   const commitmentsOn = commitmentExtractionEnabled();
+  // Per-signal text kept by ref so cross-signal entity linking (#478) can run
+  // over the same SignalText the digest text is read from — no re-parse.
+  const signalTextByRef = new Map<string, SignalText>();
 
+  // flatMap (not map): a decision can yield its own item PLUS any commitment
+  // to-dos extracted from its authored content (#475).
   const items: DigestItem[] = decisions.rows.flatMap((r) => {
     // Reconstruct the RawSignal the decision was made from and read its text
     // through the spec-07 accessor (source-agnostic title/body/source).
@@ -412,6 +429,7 @@ export async function buildLiveDigest(userId: string): Promise<LiveDigest | null
       data,
       timestamp: r.created_at instanceof Date ? r.created_at : new Date(r.created_at),
     });
+    signalTextByRef.set(r.id, signalText);
     const text =
       signalText.title.trim() ||
       signalText.body.trim() ||
@@ -509,7 +527,18 @@ export async function buildLiveDigest(userId: string): Promise<LiveDigest | null
   );
 
   const handledCount = decisions.rows.filter((r) => r.auto_executed === true).length;
-  const digest = buildDigest(items); // maxTodos defaults to 7
+
+  // Cross-signal entity linking (spec 05, #478): resolve people/orgs that recur
+  // across this window's signals so buildDigest can collapse one matter that
+  // would otherwise repeat across clusters into a single line with multiple
+  // citations. Gated by ENTITY_LINKING (default on; `off` = rollback to the
+  // un-collapsed spec-04 behavior).
+  const entityLinks: ResolvedEntity[] = entityLinkingEnabled()
+    ? linkEntitiesAcrossSignals(
+        [...signalTextByRef.entries()].map(([ref, signal]) => ({ ref, signal })),
+      )
+    : [];
+  const digest = buildDigest(items, { entityLinks }); // maxTodos defaults to 7
 
   // Attach power-view detail (spec 14) to each surfaced todo/topic item by ref.
   for (const todo of digest.todos) {

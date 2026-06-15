@@ -1,5 +1,12 @@
-import { describe, it, expect } from 'vitest';
-import { needsYou, sourceLabel, normalizeUrgency, urgencyReasonFor, bareAddress } from '../services/live-digest.js';
+import { describe, it, expect, afterEach } from 'vitest';
+import {
+  needsYou,
+  sourceLabel,
+  normalizeUrgency,
+  urgencyReasonFor,
+  bareAddress,
+  entityLinkingEnabled,
+} from '../services/live-digest.js';
 
 /**
  * The to-do/FYI split (spec 01) and source labels (spec 07) that drive the
@@ -105,5 +112,28 @@ describe('bareAddress (pin/hide join key, #270/#485)', () => {
     expect(bareAddress(null)).toBeNull();
     expect(bareAddress(undefined)).toBeNull();
     expect(bareAddress('   ')).toBeNull();
+  });
+});
+
+describe('entityLinkingEnabled (spec 05, #478 rollback switch)', () => {
+  afterEach(() => {
+    delete process.env['ENTITY_LINKING'];
+  });
+
+  it('is ON by default (env unset)', () => {
+    delete process.env['ENTITY_LINKING'];
+    expect(entityLinkingEnabled()).toBe(true);
+  });
+
+  it('is OFF only for the exact rollback value "off"', () => {
+    process.env['ENTITY_LINKING'] = 'off';
+    expect(entityLinkingEnabled()).toBe(false);
+  });
+
+  it('stays ON for any other value (fail toward the shipped behavior)', () => {
+    process.env['ENTITY_LINKING'] = 'on';
+    expect(entityLinkingEnabled()).toBe(true);
+    process.env['ENTITY_LINKING'] = '';
+    expect(entityLinkingEnabled()).toBe(true);
   });
 });
