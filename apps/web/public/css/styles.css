@@ -1,23 +1,31 @@
 :root {
-  --bg: #0f1117;
-  --bg-card: #1a1d27;
-  --bg-hover: #242836;
-  --bg-input: #13151d;
-  --text: #e1e4ea;
-  --text-muted: #8b8fa3;
-  --text-dim: #5a5e72;
-  --border: #2a2e3d;
-  --accent: #6c7bff;
-  --accent-hover: #8b97ff;
-  --accent-soft: rgba(108,123,255,.12);
-  --success: #34d399;
-  --success-soft: rgba(52,211,153,.12);
-  --warning: #fbbf24;
-  --warning-soft: rgba(251,191,36,.12);
-  --danger: #f87171;
-  --danger-soft: rgba(248,113,113,.12);
-  --info: #60a5fa;
-  --info-soft: rgba(96,165,250,.12);
+  /* Design tokens aligned to DESIGN.md (the single source of truth). Names stay
+     stable so existing CSS keeps working; only values are refined — iris #7C72E8
+     is now THE one accent across the whole app (was #6c7bff), the base is the
+     cool-neutral DESIGN.md palette, and the body font is Geist (DESIGN.md
+     blacklists system-ui as a body face). "Derive, do not redesign." */
+  --bg: #0E0F13;
+  --bg-card: #16181F;        /* DESIGN.md --surface */
+  --bg-hover: #1D2029;       /* DESIGN.md --elevated */
+  --bg-input: #12141A;
+  --text: #ECEDF1;
+  --text-muted: #9CA0AE;
+  --text-dim: #5E6374;
+  --border: #272B38;
+  --border-strong: #363B4C;  /* DESIGN.md focus ring / hover border */
+  --accent: #7C72E8;         /* iris — THE accent: needs-you / act */
+  --accent-hover: #9A92F2;
+  --accent-soft: rgba(124,114,232,.16);
+  --success: #46C08A;        /* DESIGN.md --safe: handled / available */
+  --success-soft: rgba(70,192,138,.13);
+  --warning: #E7B14C;        /* partial coverage only */
+  --warning-soft: rgba(231,177,76,.13);
+  --danger: #F26D5B;         /* security + destructive only */
+  --danger-soft: rgba(242,109,91,.13);
+  /* Info maps to the iris accent — DESIGN.md keeps ONE accent hue; "new/info"
+     is a mild needs-attention signal, so it shares the accent, not a 2nd blue. */
+  --info: #7C72E8;
+  --info-soft: rgba(124,114,232,.13);
   --sidebar-width: 240px;
   --radius: 8px;
   --radius-sm: 6px;
@@ -26,7 +34,9 @@
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  /* Geist is the design face (DESIGN.md). OS fonts are failure-only fallbacks;
+     Roboto/system-ui are omitted — DESIGN.md blacklists them as body faces. */
+  font-family: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   background: var(--bg);
   color: var(--text);
   display: flex;
@@ -331,10 +341,10 @@ body.has-autonomy-banner.has-connectors-banner .connectors-banner { top: 2.5rem;
   .skytoast.skytoast-leaving { transform: none; opacity: 0; }
 }
 
-.skytoast-success { border-left-color: var(--success, #10b981); }
-.skytoast-info    { border-left-color: var(--accent, #6366f1); }
-.skytoast-warning { border-left-color: var(--warning, #e6a700); }
-.skytoast-danger  { border-left-color: var(--danger, #ef4444); }
+.skytoast-success { border-left-color: var(--success, #46C08A); }
+.skytoast-info    { border-left-color: var(--accent, #7C72E8); }
+.skytoast-warning { border-left-color: var(--warning, #E7B14C); }
+.skytoast-danger  { border-left-color: var(--danger, #F26D5B); }
 
 .skytoast-content {
   flex: 1;
@@ -365,7 +375,7 @@ body.has-autonomy-banner.has-connectors-banner .connectors-banner { top: 2.5rem;
  * reads as actionable distinct from the close X. */
 .skytoast-action {
   background: transparent;
-  color: var(--accent, #6366f1);
+  color: var(--accent, #7C72E8);
   border: 1px solid currentColor;
   border-radius: 999px;
   padding: 0.15rem 0.6rem;
@@ -1241,10 +1251,12 @@ textarea.form-input { resize: vertical; min-height: 60px; }
    Calm command center. Iris is the SINGLE accent = "needs you / act".
    Action zone (to-dos) vs awareness zone (topics). Every state designed. */
 :root {
-  --iris: #7C72E8; --iris-hover: #9A92F2; --iris-soft: rgba(124,114,232,.16);
-  --safe: #46C08A;
+  /* Iris + safe now alias the global accent/success (which carry the DESIGN.md
+     values) so there is ONE source of truth — change --accent once, not twice. */
+  --iris: var(--accent); --iris-hover: var(--accent-hover); --iris-soft: var(--accent-soft);
+  --safe: var(--success);
   --font-voice: 'Fraunces', Georgia, serif;
-  --font-ui: 'Geist', system-ui, sans-serif;
+  --font-ui: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --font-data: 'Geist Mono', ui-monospace, monospace;
 }
 .digest { max-width: 680px; font-family: var(--font-ui); margin-bottom: 1.25rem; }

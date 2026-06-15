@@ -257,11 +257,11 @@
 }
 .assistant-suggestion-chip:hover {
   background: var(--bg-hover, rgba(255, 255, 255, 0.08));
-  border-color: var(--accent, #6366f1);
+  border-color: var(--accent, #7C72E8);
   transform: translateY(-1px);
 }
 .assistant-suggestion-chip:focus-visible {
-  outline: 2px solid var(--accent, #6366f1);
+  outline: 2px solid var(--accent, #7C72E8);
   outline-offset: 2px;
 }
 @media (prefers-reduced-motion: reduce) {

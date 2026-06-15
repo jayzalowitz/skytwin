@@ -122,50 +122,56 @@ body,
    QUIET CONFIDENCE — minimal, generous whitespace, thin bars
    ================================================================ */
 
-/* Quiet Confidence Dark */
+/* Quiet Confidence Dark — the new-user launch default. Palette = DESIGN.md
+   (the source of truth): cool-neutral base, the single iris accent (#7C72E8)
+   = "needs you / act", muted status hues. DESIGN.md's "Calm command center /
+   restraint" aesthetic IS Quiet Confidence, so this theme embodies it. */
 [data-variant="quiet-confidence"][data-mode="dark"] {
-  --bg: #09090b;
-  --bg-card: #0f0f12;
-  --bg-hover: #18181b;
-  --bg-input: #111114;
-  --text: #fafafa;
-  --text-muted: #a1a1aa;
-  --text-dim: #52525b;
-  --border: #1c1c20;
-  --accent: #6366f1;
-  --accent-hover: #818cf8;
-  --accent-soft: rgba(99,102,241,.06);
-  --success: #22c55e;
-  --success-soft: rgba(34,197,94,.06);
-  --warning: #eab308;
-  --warning-soft: rgba(234,179,8,.06);
-  --danger: #ef4444;
-  --danger-soft: rgba(239,68,68,.06);
-  --info: #6366f1;
-  --info-soft: rgba(99,102,241,.06);
+  --bg: #0E0F13;
+  --bg-card: #16181F;
+  --bg-hover: #1D2029;
+  --bg-input: #12141A;
+  --text: #ECEDF1;
+  --text-muted: #9CA0AE;
+  --text-dim: #5E6374;
+  --border: #272B38;
+  --border-strong: #363B4C;
+  --accent: #7C72E8;
+  --accent-hover: #9A92F2;
+  --accent-soft: rgba(124,114,232,.16);
+  --success: #46C08A;
+  --success-soft: rgba(70,192,138,.13);
+  --warning: #E7B14C;
+  --warning-soft: rgba(231,177,76,.13);
+  --danger: #F26D5B;
+  --danger-soft: rgba(242,109,91,.13);
+  --info: #7C72E8;
+  --info-soft: rgba(124,114,232,.13);
 }
 
-/* Quiet Confidence Light */
+/* Quiet Confidence Light — DESIGN.md light: invert surfaces, keep the SAME iris
+   accent, fills at ~10% alpha. Status hues stay darker for contrast on white. */
 [data-variant="quiet-confidence"][data-mode="light"] {
-  --bg: #fafafa;
+  --bg: #FAFAFB;
   --bg-card: #ffffff;
   --bg-hover: #f4f4f5;
   --bg-input: #ededef;
-  --text: #18181b;
+  --text: #1A1B20;
   --text-muted: #52525b;
-  --text-dim: #a1a1aa;
+  --text-dim: #9CA0AE;
   --border: #e4e4e7;
-  --accent: #4f46e5;
-  --accent-hover: #6366f1;
-  --accent-soft: rgba(79,70,229,.05);
-  --success: #16a34a;
-  --success-soft: rgba(22,163,74,.05);
-  --warning: #ca8a04;
-  --warning-soft: rgba(202,138,4,.05);
-  --danger: #dc2626;
-  --danger-soft: rgba(220,38,38,.05);
-  --info: #4f46e5;
-  --info-soft: rgba(79,70,229,.05);
+  --border-strong: #cfd2da;
+  --accent: #7C72E8;
+  --accent-hover: #6A60D8;
+  --accent-soft: rgba(124,114,232,.10);
+  --success: #2E9E6B;
+  --success-soft: rgba(46,158,107,.10);
+  --warning: #B5832E;
+  --warning-soft: rgba(181,131,46,.10);
+  --danger: #D6503F;
+  --danger-soft: rgba(214,80,63,.10);
+  --info: #7C72E8;
+  --info-soft: rgba(124,114,232,.10);
 }
 
 /* Quiet Confidence variant styles */
@@ -485,8 +491,8 @@ body,
 .theme-swatch.swatch-mc-dark { background: #0a0c10; }
 .theme-swatch.swatch-mc-dark::after { content: ''; position: absolute; bottom: 0; left: 0; right: 0; height: 3px; background: #4a90ff; }
 
-.theme-swatch.swatch-qc-dark { background: #09090b; }
-.theme-swatch.swatch-qc-dark::after { content: ''; position: absolute; bottom: 0; left: 0; right: 0; height: 2px; background: #6366f1; }
+.theme-swatch.swatch-qc-dark { background: #0E0F13; }
+.theme-swatch.swatch-qc-dark::after { content: ''; position: absolute; bottom: 0; left: 0; right: 0; height: 2px; background: #7C72E8; }
 
 .theme-swatch.swatch-wg-dark { background: #0c0a14; }
 .theme-swatch.swatch-wg-dark::after { content: ''; position: absolute; bottom: 0; left: 0; right: 0; height: 3px; background: linear-gradient(90deg, #a78bfa, #2dd4bf); }
@@ -646,7 +652,7 @@ select:focus-visible,
 textarea:focus-visible,
 [role="button"]:focus-visible,
 [data-action]:focus-visible {
-  outline: 2px solid var(--accent, #6366f1);
+  outline: 2px solid var(--accent, #7C72E8);
   outline-offset: 2px;
   border-radius: var(--radius-sm, 4px);
 }
@@ -662,7 +668,7 @@ textarea:focus-visible,
   left: 0;
   z-index: 10000;
   padding: 0.75rem 1rem;
-  background: var(--accent, #6366f1);
+  background: var(--accent, #7C72E8);
   color: #ffffff;
   text-decoration: none;
   border-radius: 0 0 4px 0;
