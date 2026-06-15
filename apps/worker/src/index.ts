@@ -20,6 +20,7 @@ import {
   ironClawToolRepository,
   serviceCredentialRepository,
   accessLogRepository,
+  workerDeadLetterRepository,
 } from '@skytwin/db';
 import { withRetry, RetryableHttpError, CircuitBreaker, createLogger } from '@skytwin/core';
 import { KeyCache } from '@skytwin/credential-vault';
@@ -35,9 +36,20 @@ import { runRelationshipTierBackfillBatch } from './jobs/relationship-tier-sched
 import { runBriefingGeneratorJob } from './jobs/briefing-generator.js';
 import { runPromotionEligibilityCheckJob } from './jobs/promotion-eligibility-check.js';
 import { extractErrorCode } from './oauth-error-code.js';
+import { DeadLetterTracker } from './dead-letter.js';
 
 const config = loadConfig();
 const log = createLogger('worker');
+
+/**
+ * Dead-letter tracker for the global background jobs (#407). A job that
+ * fails on `maxRetries` consecutive cycles is routed to `worker_dead_letter`
+ * for operator inspection/replay instead of logging a warning forever.
+ */
+const deadLetterTracker = new DeadLetterTracker();
+
+/** Resolved dead-letter rows are GC'd after 30 days (#407). */
+const DEAD_LETTER_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 /** Per-user circuit breakers to skip users with persistent failures. */
 const userCircuitBreakers = new Map<string, CircuitBreaker>();
@@ -641,20 +653,19 @@ async function main(): Promise<void> {
     pollCount++;
 
     // Drain in-memory metrics buffer to DB at most once per minute (#183).
+    // Wrapped in the dead-letter tracker (#407): a metrics-rollup that fails
+    // on every cycle (e.g. CRDB unreachable) is now routed to the DLQ after
+    // the retry budget instead of crashing the loop on an unhandled throw.
     const nowMs = Date.now();
     if (nowMs - lastMetricsRollupAt >= METRICS_ROLLUP_INTERVAL_MS) {
-      await runMetricsRollupJob();
+      await deadLetterTracker.run('metrics-rollup', () => runMetricsRollupJob());
       lastMetricsRollupAt = nowMs;
     }
 
     // Sweep MCP server changelogs weekly (#184 AC#2).
     // Individual server errors are caught inside the job — never propagate here.
     if (nowMs - lastChangelogPollAt >= CHANGELOG_POLL_INTERVAL_MS) {
-      await runChangelogPollJob().catch((err) => {
-        log.warn('Changelog poll job failed', {
-          error: err instanceof Error ? err.message : String(err),
-        });
-      });
+      await deadLetterTracker.run('changelog-poll', () => runChangelogPollJob());
       lastChangelogPollAt = nowMs;
     }
 
@@ -662,21 +673,13 @@ async function main(): Promise<void> {
     // LlmClient is available — extraction is LLM-dependent. Per-user errors
     // are absorbed inside the job.
     if (nowMs - lastDomainExtractionAt >= DOMAIN_EXTRACTION_INTERVAL_MS) {
-      await runDomainExtractionJob().catch((err) => {
-        log.warn('Domain extraction job failed', {
-          error: err instanceof Error ? err.message : String(err),
-        });
-      });
+      await deadLetterTracker.run('domain-extraction', () => runDomainExtractionJob());
       lastDomainExtractionAt = nowMs;
     }
 
     // Push federation deltas to active peers hourly (#194 Child 1).
     if (nowMs - lastFederationSyncAt >= FEDERATION_SYNC_INTERVAL_MS) {
-      await runFederationSyncJob().catch((err) => {
-        log.warn('Federation sync job failed', {
-          error: err instanceof Error ? err.message : String(err),
-        });
-      });
+      await deadLetterTracker.run('federation-sync', () => runFederationSyncJob());
       lastFederationSyncAt = nowMs;
     }
 
@@ -685,22 +688,14 @@ async function main(): Promise<void> {
     // this catches them up. SELECT FOR UPDATE SKIP LOCKED makes it safe
     // under multiple worker instances.
     if (nowMs - lastEmbeddingBackfillAt >= EMBEDDING_BACKFILL_INTERVAL_MS) {
-      await runEmbeddingBackfillJob().catch((err) => {
-        log.warn('Embedding backfill job failed', {
-          error: err instanceof Error ? err.message : String(err),
-        });
-      });
+      await deadLetterTracker.run('embedding-backfill', () => runEmbeddingBackfillJob());
       lastEmbeddingBackfillAt = nowMs;
     }
 
     // Backfill authoringTier on pre-Layer-1 pages (#251 follow-up).
     // Hourly; converges to no-op once the corpus is fully tagged.
     if (nowMs - lastTierBackfillAt >= TIER_BACKFILL_INTERVAL_MS) {
-      await runTierBackfillJob().catch((err) => {
-        log.warn('Tier backfill job failed', {
-          error: err instanceof Error ? err.message : String(err),
-        });
-      });
+      await deadLetterTracker.run('tier-backfill', () => runTierBackfillJob());
       lastTierBackfillAt = nowMs;
     }
 
@@ -732,6 +727,8 @@ async function main(): Promise<void> {
             users: userIds.length,
             ...batchSummary,
           });
+          // #407: success clears the failure streak.
+          void deadLetterTracker.recordOutcome('relationship-tier-backfill', null);
         })
         .catch((err) => {
           // Scheduler-level failure (per-user errors are caught inside
@@ -741,6 +738,9 @@ async function main(): Promise<void> {
             error: err instanceof Error ? err.message : String(err),
           });
           lastRelationshipTierBackfillAt = previousLastAt;
+          // #407: feed the failure streak so a persistently broken batch
+          // lands in the DLQ after the retry budget.
+          void deadLetterTracker.recordOutcome('relationship-tier-backfill', err);
         })
         .finally(() => {
           relationshipTierBackfillInFlight = false;
@@ -764,11 +764,17 @@ async function main(): Promise<void> {
       const previousLastAt = lastBriefingDailyAt;
       lastBriefingDailyAt = nowMs;
       void runBriefingGeneratorJob({ cadence: 'daily' })
+        .then(() => {
+          void deadLetterTracker.recordOutcome('briefing-generator-daily', null);
+        })
         .catch((err) => {
           log.warn('Daily briefing generator failed', {
             error: err instanceof Error ? err.message : String(err),
           });
           lastBriefingDailyAt = previousLastAt;
+          void deadLetterTracker.recordOutcome('briefing-generator-daily', err, {
+            cadence: 'daily',
+          });
         })
         .finally(() => {
           briefingDailyInFlight = false;
@@ -783,11 +789,17 @@ async function main(): Promise<void> {
       const previousLastAt = lastBriefingWeeklyAt;
       lastBriefingWeeklyAt = nowMs;
       void runBriefingGeneratorJob({ cadence: 'weekly' })
+        .then(() => {
+          void deadLetterTracker.recordOutcome('briefing-generator-weekly', null);
+        })
         .catch((err) => {
           log.warn('Weekly briefing generator failed', {
             error: err instanceof Error ? err.message : String(err),
           });
           lastBriefingWeeklyAt = previousLastAt;
+          void deadLetterTracker.recordOutcome('briefing-generator-weekly', err, {
+            cadence: 'weekly',
+          });
         })
         .finally(() => {
           briefingWeeklyInFlight = false;
@@ -811,12 +823,14 @@ async function main(): Promise<void> {
           if (summary.offered > 0 || summary.alreadyPending > 0) {
             log.info('Promotion eligibility tick complete', { ...summary });
           }
+          void deadLetterTracker.recordOutcome('promotion-eligibility-check', null);
         })
         .catch((err) => {
           log.warn('Promotion eligibility check failed', {
             error: err instanceof Error ? err.message : String(err),
           });
           lastPromotionEligibilityAt = previousLastAt;
+          void deadLetterTracker.recordOutcome('promotion-eligibility-check', err);
         })
         .finally(() => {
           promotionEligibilityInFlight = false;
@@ -850,6 +864,23 @@ async function main(): Promise<void> {
             error instanceof Error ? error.message : error,
           );
         }
+      }
+
+      // #407: purge resolved (replayed/discarded) dead-letter rows older
+      // than 30 days so the table doesn't grow unbounded. Pending rows are
+      // never purged — they're the operator's actionable queue. Best-effort:
+      // a failure here must not block the poll loop.
+      try {
+        const purged = await workerDeadLetterRepository.purgeResolvedOlderThan(
+          DEAD_LETTER_RETENTION_MS,
+        );
+        if (purged > 0) {
+          log.info(`Purged ${purged} resolved worker_dead_letter row(s)`);
+        }
+      } catch (error) {
+        log.warn('worker_dead_letter purge failed — continuing', {
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     }
 

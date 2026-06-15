@@ -24,6 +24,12 @@ export { oauthRepository } from './oauth-repository.js';
 export { oauthPkcePendingRepository } from './oauth-pkce-pending-repository.js';
 export { connectorHealthRepository } from './connector-health-repository.js';
 export type { ConnectorHealthRow } from './connector-health-repository.js';
+export { workerDeadLetterRepository } from './worker-dead-letter-repository.js';
+export type {
+  WorkerDeadLetterRow,
+  WorkerDeadLetterStatus,
+  RecordDeadLetterInput,
+} from './worker-dead-letter-repository.js';
 export { userPurgeRepository } from './user-purge-repository.js';
 export type { PurgeUserResult } from './user-purge-repository.js';
 export { accessLogRepository } from './access-log-repository.js';

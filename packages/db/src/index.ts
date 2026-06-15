@@ -118,11 +118,15 @@ export {
   patternRepository,
   executionRepository,
   connectorHealthRepository,
+  workerDeadLetterRepository,
   userPurgeRepository,
   accessLogRepository,
 } from './repositories/index.js';
 export type {
   ConnectorHealthRow,
+  WorkerDeadLetterRow,
+  WorkerDeadLetterStatus,
+  RecordDeadLetterInput,
   PurgeUserResult,
   AccessLogRow,
   RecordAccessInput,

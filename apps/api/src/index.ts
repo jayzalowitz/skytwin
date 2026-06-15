@@ -43,6 +43,7 @@ import { createFederationRouter } from './routes/federation.js';
 import { createVoiceRouter } from './routes/voice.js';
 import { createCrisisModesRouter } from './routes/crisis-modes.js';
 import { createConnectorsRouter } from './routes/connectors.js';
+import { createAdminDlqRouter } from './routes/admin-dlq.js';
 import { createEmbeddedLlmRouter } from './routes/embedded-llm.js';
 import {
   createPromotionOffersRouter,
@@ -353,6 +354,7 @@ app.use('/api/federation', sessionAuth, requestContext, createFederationRouter()
 app.use('/api/voice', sessionAuth, requireOwnership, requestContext, createVoiceRouter());
 app.use('/api/crisis-modes', sessionAuth, requestContext, createCrisisModesRouter()); // userId-param ownership in-router
 app.use('/api/connectors', sessionAuth, requestContext, createConnectorsRouter()); // #377 — per-user OAuth re-auth surface
+app.use('/api/admin', sessionAuth, requestContext, createAdminDlqRouter()); // #407 — worker dead-letter queue (operator-only; rows are process-global)
 app.use('/api/embedded-llm', sessionAuth, requestContext, createEmbeddedLlmRouter()); // catalog endpoints; no userId in path
 // #310: promotion-offer durable surface. GET takes :userId in the path
 // (require-ownership enforces); POST takes offerId in the path with
