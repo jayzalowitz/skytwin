@@ -339,14 +339,17 @@ export class AutoUpdateController {
   }
 
   /**
-   * Apply a downloaded update now (quit + relaunch into the installer). Only
-   * meaningful when `getLatestStatus().status === 'ready-to-install'`; the
-   * backend no-ops otherwise. Returns false when the backend can't install
-   * (e.g. the noop backend in a dev/unsigned build) so callers can keep the
-   * "restart to update" affordance honest.
+   * Apply a downloaded update now (quit + relaunch into the installer). Returns
+   * false — and does NOT call the backend — unless a payload is actually
+   * downloaded (`getLatestStatus().status === 'ready-to-install'`) AND the
+   * backend can install (the noop backend in a dev/unsigned build can't). This
+   * matches the documented `installUpdate()` preload contract: a caller that
+   * gets `false` knows nothing was installed and can keep the "restart to
+   * update" affordance honest, rather than reporting a phantom success.
    */
   installNow(): boolean {
     if (typeof this.backend.quitAndInstall !== 'function') return false;
+    if (this.latestStatus.status !== 'ready-to-install') return false;
     this.backend.quitAndInstall();
     return true;
   }

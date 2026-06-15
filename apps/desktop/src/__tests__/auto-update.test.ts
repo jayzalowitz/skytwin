@@ -530,9 +530,11 @@ describe('AutoUpdateController — start()', () => {
 });
 
 describe('AutoUpdateController — installNow()', () => {
-  it('delegates to the backend quitAndInstall and returns true', () => {
+  it('installs and returns true once an update is downloaded (ready-to-install)', async () => {
     const backend = new StubBackend();
+    backend.nextResult = { status: 'ready-to-install', version: '1.0.0' };
     const controller = new AutoUpdateController(makeConfig(), backend);
+    await controller.checkNow(); // latestStatus → ready-to-install
 
     const ok = controller.installNow();
 
@@ -540,12 +542,24 @@ describe('AutoUpdateController — installNow()', () => {
     expect(backend.installCount).toBe(1);
   });
 
-  it('returns false when the backend cannot install (dev/unsigned build)', () => {
-    // A backend with no quitAndInstall method — installNow must report it can't.
+  it('returns false WITHOUT installing when no payload is downloaded yet', () => {
+    // latestStatus defaults to no-update — installing now would be a phantom
+    // success that violates the installUpdate() preload contract.
+    const backend = new StubBackend();
+    const controller = new AutoUpdateController(makeConfig(), backend);
+
+    expect(controller.installNow()).toBe(false);
+    expect(backend.installCount).toBe(0);
+  });
+
+  it('returns false when the backend cannot install (dev/unsigned build)', async () => {
+    // An update is ready, but the backend has no quitAndInstall method —
+    // installNow must still report it can't (the method-existence guard).
     const backend: UpdateBackend = {
-      checkForUpdates: async () => ({ status: 'no-update' }),
+      checkForUpdates: async () => ({ status: 'ready-to-install', version: '1.0.0' }),
     };
     const controller = new AutoUpdateController(makeConfig(), backend);
+    await controller.checkNow(); // latestStatus → ready-to-install
 
     expect(controller.installNow()).toBe(false);
   });
