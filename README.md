@@ -70,11 +70,11 @@ Every path produces an explanation. Every outcome feeds back into the twin. The 
 <tr>
 <td width="50%">
 <p align="center"><strong>Onboarding</strong></p>
-<img src="docs/screenshots/onboarding.png" alt="Onboarding — pick the domains you want help with">
+<img src="docs/screenshots/onboarding.png" alt="Onboarding — connect Gmail, tell your twin about yourself, or explore a sample profile">
 </td>
 <td width="50%">
 <p align="center"><strong>Dashboard</strong></p>
-<img src="docs/screenshots/dashboard.png" alt="Dashboard — twin confidence, learnings, and recent activity">
+<img src="docs/screenshots/dashboard.png" alt="Dashboard — your daily briefing: what needs you, what the twin handled, and recent activity">
 </td>
 </tr>
 <tr>
@@ -103,6 +103,8 @@ Every path produces an explanation. Every outcome feeds back into the twin. The 
 <img src="docs/screenshots/twin.png" alt="My Learnings — preferences, inferences, and corrections your twin has learned">
 </td>
 <td width="50%">
+<p align="center"><strong>Daily Briefing</strong></p>
+<img src="docs/screenshots/briefing.png" alt="Daily briefing — a source-cited digest that splits to-dos (act) from topics (FYI), with a Power view for the reasoning behind each call">
 </td>
 </tr>
 </table>
