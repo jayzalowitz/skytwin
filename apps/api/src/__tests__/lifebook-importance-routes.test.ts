@@ -9,9 +9,18 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import express from 'express';
 import type { Express } from 'express';
 
-const { mockSetImportanceOverride, mockClearImportanceOverride } = vi.hoisted(() => ({
+const {
+  mockSetImportanceOverride,
+  mockClearImportanceOverride,
+  mockCreateEpisode,
+  mockRecordEpisode,
+  mockGetMemoryPortForUser,
+} = vi.hoisted(() => ({
   mockSetImportanceOverride: vi.fn(),
   mockClearImportanceOverride: vi.fn(),
+  mockCreateEpisode: vi.fn(),
+  mockRecordEpisode: vi.fn(),
+  mockGetMemoryPortForUser: vi.fn(),
 }));
 
 vi.mock('@skytwin/db', () => ({
@@ -27,7 +36,12 @@ vi.mock('@skytwin/db', () => ({
   mempalaceRepository: {
     getRooms: vi.fn(),
     getDrawers: vi.fn(),
+    createEpisode: mockCreateEpisode,
   },
+}));
+
+vi.mock('../memory-setup.js', () => ({
+  getMemoryPortForUser: mockGetMemoryPortForUser,
 }));
 
 vi.mock('../middleware/require-ownership.js', () => ({
@@ -96,6 +110,13 @@ function fakeLifebookRow(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Default happy-path episode recording so set/clear routes don't 500
+  // on the best-effort recorder. Individual tests override as needed.
+  mockCreateEpisode.mockResolvedValue({ id: 'episode-1' });
+  mockRecordEpisode.mockResolvedValue(undefined);
+  mockGetMemoryPortForUser.mockResolvedValue({
+    port: { recordEpisode: mockRecordEpisode },
+  });
 });
 
 describe('POST /api/lifebooks/:userId/:domainName/importance — #321', () => {
@@ -189,6 +210,66 @@ describe('POST /api/lifebooks/:userId/:domainName/importance — #321', () => {
       { value: 'core' },
     );
     expect(res.status).toBe(404);
+    // No row → no episode recorded.
+    expect(mockCreateEpisode).not.toHaveBeenCalled();
+  });
+
+  it('records the override as an episode in memory (#321 AC)', async () => {
+    mockSetImportanceOverride.mockResolvedValue(fakeLifebookRow({ wing_id: 'wing-9' }));
+    const res = await request(
+      buildApp(),
+      'POST',
+      `/api/lifebooks/${USER_ID}/Health/importance`,
+      { value: 'core', decayDays: 90 },
+    );
+    expect(res.status).toBe(200);
+    // Legacy episodic_memories write — domain-tagged, edit feedback.
+    expect(mockCreateEpisode).toHaveBeenCalledTimes(1);
+    const ep = mockCreateEpisode.mock.calls[0][0];
+    expect(ep.userId).toBe(USER_ID);
+    expect(ep.domain).toBe('Health');
+    expect(ep.situationType).toBe('lifebook_importance_override');
+    expect(ep.feedbackType).toBe('edit');
+    expect(ep.situationSummary).toContain('Core');
+    // Pluggable memory port also gets the episode.
+    expect(mockRecordEpisode).toHaveBeenCalledTimes(1);
+    const portEp = mockRecordEpisode.mock.calls[0][0];
+    expect(portEp.id).toBe('episode-1');
+    expect(portEp.wing).toBe('wing-9');
+    expect(portEp.metadata).toMatchObject({
+      kind: 'lifebook_importance_override',
+      action: 'set',
+      value: 'core',
+      decayDays: 90,
+    });
+  });
+
+  it('still returns 200 when episode recording throws (best-effort, never gates the write)', async () => {
+    mockSetImportanceOverride.mockResolvedValue(fakeLifebookRow());
+    mockCreateEpisode.mockRejectedValue(new Error('memory layer down'));
+    const res = await request(
+      buildApp(),
+      'POST',
+      `/api/lifebooks/${USER_ID}/Health/importance`,
+      { value: 'secondary' },
+    );
+    expect(res.status).toBe(200);
+    const body = res.body as { lifebook: { domainName: string } };
+    expect(body.lifebook.domainName).toBe('Health');
+  });
+
+  it('still returns 200 when the memory-port recordEpisode throws (legacy table write already succeeded)', async () => {
+    mockSetImportanceOverride.mockResolvedValue(fakeLifebookRow());
+    mockRecordEpisode.mockRejectedValue(new Error('port unavailable'));
+    const res = await request(
+      buildApp(),
+      'POST',
+      `/api/lifebooks/${USER_ID}/Health/importance`,
+      { value: 'emerging' },
+    );
+    expect(res.status).toBe(200);
+    // Legacy write still attempted even though the port failed.
+    expect(mockCreateEpisode).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -291,5 +372,25 @@ describe('DELETE /api/lifebooks/:userId/:domainName/importance — #321', () => 
       `/api/lifebooks/${USER_ID}/NoSuchDomain/importance`,
     );
     expect(res.status).toBe(404);
+    expect(mockCreateEpisode).not.toHaveBeenCalled();
+  });
+
+  it('records a "cleared" episode so the twin knows the user reverted (#321 AC)', async () => {
+    mockClearImportanceOverride.mockResolvedValue(fakeLifebookRow({ metadata: {} }));
+    const res = await request(
+      buildApp(),
+      'DELETE',
+      `/api/lifebooks/${USER_ID}/Health/importance`,
+    );
+    expect(res.status).toBe(200);
+    expect(mockCreateEpisode).toHaveBeenCalledTimes(1);
+    const ep = mockCreateEpisode.mock.calls[0][0];
+    expect(ep.actionTaken).toBe('clear_importance_override');
+    expect(ep.situationSummary).toContain('cleared');
+    expect(mockRecordEpisode).toHaveBeenCalledTimes(1);
+    expect(mockRecordEpisode.mock.calls[0][0].metadata).toMatchObject({
+      action: 'clear',
+      value: null,
+    });
   });
 });
