@@ -66,6 +66,14 @@ const shell = {
   openExternal: vi.fn(() => Promise.resolve()),
 };
 
+// safeStorage stub — round-trips with a reversible (NOT secure) transform so
+// tests that exercise the passphrase-vault wiring don't need a real keychain.
+const safeStorage = {
+  isEncryptionAvailable: vi.fn(() => true),
+  encryptString: vi.fn((plaintext: string) => Buffer.from(plaintext, 'utf8')),
+  decryptString: vi.fn((ciphertext: Buffer) => ciphertext.toString('utf8')),
+};
+
 export {
   nativeImage,
   Tray,
@@ -75,4 +83,5 @@ export {
   BrowserWindow,
   ipcMain,
   shell,
+  safeStorage,
 };

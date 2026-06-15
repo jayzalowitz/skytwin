@@ -1,7 +1,13 @@
-import { app, BrowserWindow, ipcMain, powerMonitor, shell, type Tray } from 'electron';
+import { app, BrowserWindow, ipcMain, powerMonitor, safeStorage, shell, type Tray } from 'electron';
+import Store from 'electron-store';
 import { promises as fs } from 'fs';
 import { join } from 'path';
 import { ServiceManager } from './service-manager.js';
+import {
+  PassphraseVault,
+  type PassphraseKeyValueStore,
+  type SafeStoragePort,
+} from './passphrase-vault.js';
 import { createTray } from './tray.js';
 import { getSavedBounds, trackWindowState } from './window-state.js';
 import { checkDependencies, showDependencyDialog } from './first-launch.js';
@@ -22,6 +28,20 @@ import {
 import { reportCrash } from './crash-reporter.js';
 
 const serviceManager = new ServiceManager();
+
+// OS-keychain-backed "remember my vault passphrase on this device" store (#401).
+// Persists the safeStorage-encrypted passphrase ciphertext in the OS userData
+// dir; only decryptable on this machine + user account. See passphrase-vault.ts.
+// Cast through the structural ports for the same reason desktop-preferences.ts
+// does — electron-store's ESM Conf inheritance doesn't survive `module: commonjs`.
+const passphraseStore = new Store<Record<string, string>>({
+  name: 'skytwin-passphrase-vault',
+}) as unknown as PassphraseKeyValueStore;
+const passphraseVault = new PassphraseVault(
+  safeStorage as unknown as SafeStoragePort,
+  passphraseStore,
+);
+
 let mainWindow: BrowserWindow | null = null;
 let splashWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -289,6 +309,40 @@ ipcMain.handle('read-dxt-file', async (_event, filePath: string) => {
   }
   const data = await fs.readFile(filePath);
   return { name: filePath.split(/[\\/]/).pop() ?? 'artifact.dxt', base64: data.toString('base64') };
+});
+
+// ── Credential-vault passphrase remember-on-device (#401) ────────────────────
+// Lets the renderer optionally cache the vault passphrase in the OS keychain so
+// a relaunch can auto-unlock. Plaintext never crosses the bridge to disk — the
+// main process encrypts via safeStorage before persisting. Unsupported
+// environments degrade gracefully (the renderer hides the prompt and keeps the
+// per-session passphrase behavior).
+ipcMain.handle('vault-passphrase-supported', () => passphraseVault.isSupported());
+
+ipcMain.handle('vault-passphrase-remember', (_event, userId: string, passphrase: string) => {
+  if (typeof userId !== 'string' || userId === '') {
+    return { ok: false, reason: 'empty_passphrase' as const };
+  }
+  if (typeof passphrase !== 'string') {
+    return { ok: false, reason: 'empty_passphrase' as const };
+  }
+  return passphraseVault.remember(userId, passphrase);
+});
+
+ipcMain.handle('vault-passphrase-get', (_event, userId: string) => {
+  if (typeof userId !== 'string' || userId === '') {
+    return { ok: false, reason: 'not_found' as const };
+  }
+  return passphraseVault.getRemembered(userId);
+});
+
+ipcMain.handle('vault-passphrase-has', (_event, userId: string) => {
+  if (typeof userId !== 'string' || userId === '') return false;
+  return passphraseVault.has(userId);
+});
+
+ipcMain.handle('vault-passphrase-forget', (_event, userId: string) => {
+  if (typeof userId === 'string' && userId !== '') passphraseVault.forget(userId);
 });
 
 app.on('open-file', (event, filePath) => {
