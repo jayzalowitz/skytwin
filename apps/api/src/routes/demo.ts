@@ -11,7 +11,7 @@ import type {
   DemoInfoResponse,
   DemoPreviewResponse,
 } from '@skytwin/shared-types';
-import { TrustTier } from '@skytwin/shared-types';
+import { TrustTier, DEMO_RECIPES } from '@skytwin/shared-types';
 import { DecisionMaker } from '@skytwin/decision-engine';
 import type { DecisionRepositoryPort } from '@skytwin/decision-engine';
 import { TwinService } from '@skytwin/twin-model';
@@ -133,6 +133,24 @@ export function createDemoRouter(): Router {
     } catch (error) {
       next(error);
     }
+  });
+
+  /**
+   * GET /api/demo/recipes
+   *
+   * Public, unauthenticated, no rate limit — returns the canned demo recipe
+   * library (#405). These are static, fictional sample situations the tour
+   * UI offers so a visitor can see the twin reason across SkyTwin's headline
+   * workflows (newsletter triage, calendar-conflict resolution, subscription
+   * renewal, meeting prep, expense categorization, recurring-task handling).
+   *
+   * No LLM cost, no DB read, no user data — just the frozen catalog from
+   * shared-types — so it doesn't need the preview route's rate-limit guards.
+   * Each recipe's `situation` is what the dashboard's "Try this on your real
+   * data" button submits to the (guarded) prediction path.
+   */
+  router.get('/recipes', (_req, res) => {
+    res.json({ recipes: DEMO_RECIPES });
   });
 
   // Read-only prediction infra. Same shape as the protected /v1/twin/ask

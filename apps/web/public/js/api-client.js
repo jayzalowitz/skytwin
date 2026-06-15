@@ -417,6 +417,12 @@ export function previewDemoDecision(situation) {
   });
 }
 
+// Canned demo recipe library (#405). Public, read-only, no rate limit —
+// the source of truth is DEMO_RECIPES in @skytwin/shared-types.
+export function fetchDemoRecipes() {
+  return fetchJSON(`${API}/v1/demo/recipes`);
+}
+
 export function askTwin(userId, situation, opts = {}) {
   return fetchJSON(`${API}/v1/twin/ask/${encodeURIComponent(userId)}`, {
     method: 'POST',

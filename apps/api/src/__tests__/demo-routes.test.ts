@@ -150,6 +150,42 @@ describe('demo routes', () => {
     });
   });
 
+  // ── /recipes ───────────────────────────────────────────────────────
+
+  describe('GET /recipes', () => {
+    it('returns the canned recipe library (>=6 recipes, #405)', async () => {
+      const res = await request(buildApp(), 'GET', '/api/v1/demo/recipes');
+      expect(res.status).toBe(200);
+      const body = res.body as { recipes: Array<{ slug: string; situation: string }> };
+      expect(Array.isArray(body.recipes)).toBe(true);
+      expect(body.recipes.length).toBeGreaterThanOrEqual(6);
+    });
+
+    it('covers the six named launch workflows', async () => {
+      const res = await request(buildApp(), 'GET', '/api/v1/demo/recipes');
+      const body = res.body as { recipes: Array<{ slug: string }> };
+      const slugs = body.recipes.map((r) => r.slug);
+      for (const required of [
+        'newsletter-triage',
+        'calendar-conflict-resolution',
+        'subscription-renewal-review',
+        'meeting-prep',
+        'expense-report-categorization',
+        'recurring-task-auto-handling',
+      ]) {
+        expect(slugs).toContain(required);
+      }
+    });
+
+    it('is reachable without a seeded demo user (static, no DB read)', async () => {
+      // findById must never be consulted for the recipe library.
+      mockUserRepository.findById.mockResolvedValue(null);
+      const res = await request(buildApp(), 'GET', '/api/v1/demo/recipes');
+      expect(res.status).toBe(200);
+      expect(mockUserRepository.findById).not.toHaveBeenCalled();
+    });
+  });
+
   // ── /preview ───────────────────────────────────────────────────────
 
   describe('POST /preview', () => {

@@ -16,7 +16,7 @@
  * post-render side effects); this file owns presentation.
  */
 
-import { askTwin, escapeHtml } from '../api-client.js';
+import { askTwin, escapeHtml, fetchDemoRecipes } from '../api-client.js';
 import { dismissTierLadderIntro } from '../components/tier-ladder-intro.js';
 import {
   KEY_USER_ID,
@@ -371,6 +371,119 @@ export function renderAskResult(r) {
   `;
 }
 
+// ── Demo recipe library (#405) ─────────────────────────────────────────
+//
+// A library of canned sample-decision recipes — newsletter triage, calendar
+// conflict resolution, subscription renewal, meeting prep, expense
+// categorization, recurring-task handling — surfaced as cards on the
+// dashboard so a visitor can feel the twin reason across SkyTwin's headline
+// workflows. Each card carries a "Try this on your real data" button that
+// drops the recipe's situation prompt into the Ask Your Twin box above and
+// runs it against the user's own twin (read-only prediction — nothing
+// executes). The recipes themselves are the frozen DEMO_RECIPES catalog in
+// @skytwin/shared-types, fetched via /api/v1/demo/recipes so there's a
+// single source of truth.
+
+// Domain → icon glyph for the recipe card, reusing the dashboard's vocabulary.
+function recipeDomainIcon(domain) {
+  const icons = {
+    email: 'E',
+    calendar: 'C',
+    subscriptions: 'R',
+    finance: '$',
+    task_management: 'T',
+  };
+  return icons[domain] || '?';
+}
+
+/**
+ * Render the recipe library card from an array of recipes. Pure — returns an
+ * HTML string. When `recipes` is empty (fetch failed or returned nothing) it
+ * returns the empty string so the dashboard simply omits the section rather
+ * than showing a broken skeleton.
+ */
+export function renderRecipeLibrary(recipes) {
+  if (!Array.isArray(recipes) || recipes.length === 0) return '';
+
+  const cards = recipes.map((r) => {
+    const slug = escapeHtml(r.slug || '');
+    const title = escapeHtml(r.title || 'Sample decision');
+    const desc = escapeHtml(r.description || '');
+    // The situation is what the button submits — escape it for the
+    // data-attribute (HTML-attribute context). The handler reads it back
+    // via getAttribute, which decodes entities, so the twin gets the
+    // original plain text.
+    const situation = escapeHtml(r.situation || '');
+    const icon = recipeDomainIcon(r.domain);
+    return `
+      <div class="insight-card" style="align-items: stretch;">
+        <div class="insight-icon" style="background: var(--accent-soft); color: var(--accent);">${icon}</div>
+        <div class="insight-content" style="min-width: 0;">
+          <div class="insight-title">${title}</div>
+          <div class="insight-desc">${desc}</div>
+          <button
+            class="btn btn-outline btn-sm"
+            style="margin-top: 0.5rem;"
+            data-action="try-recipe"
+            data-recipe="${slug}"
+            data-situation="${situation}"
+          >Try this on your real data</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  return `
+    <div class="card" id="recipe-library" style="border-left: 3px solid var(--primary);">
+      <div class="card-header">
+        <span class="card-title">Sample decisions to try</span>
+        <span class="badge badge-info" style="font-size: 0.7rem;">no setup required</span>
+      </div>
+      <div class="card-subtitle" style="margin-bottom: 0.75rem;">
+        Here are a few situations SkyTwin handles all the time. Tap "Try this on your real data"
+        and I'll reason through it the way I would for you — what I'd do, why, and how confident I am.
+        Nothing actually happens; it's a preview.
+      </div>
+      ${cards}
+    </div>
+  `;
+}
+
+/**
+ * Fetch the recipe library and drop it into a placeholder element by id.
+ * Best-effort: a failed fetch leaves the placeholder empty (the card simply
+ * doesn't appear). Called post-render from dashboard.js so the synchronous
+ * render path doesn't block on the network.
+ */
+export async function hydrateRecipeLibrary(placeholderId) {
+  const el = document.getElementById(placeholderId);
+  if (!el) return;
+  try {
+    const resp = await fetchDemoRecipes();
+    const recipes = (resp && Array.isArray(resp.recipes)) ? resp.recipes : [];
+    el.innerHTML = renderRecipeLibrary(recipes);
+  } catch {
+    // Leave the placeholder empty — the library is a nice-to-have, not a
+    // blocker, and we never want a transient API hiccup to break the page.
+    el.innerHTML = '';
+  }
+}
+
+/**
+ * Run a recipe: drop its situation into the Ask Your Twin box and submit.
+ * Shared by the click delegator. Falls back to scrolling the box into view
+ * if it isn't on the page (defensive — the widget always ships together).
+ */
+export function handleTryRecipe(userId, situation) {
+  if (!situation) return;
+  const input = document.getElementById('ask-twin-input');
+  if (input) {
+    input.value = situation;
+    input.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+  handleAskTwin(userId);
+}
+
 export function renderTourBanner() {
   return `
     <div class="card" style="border-left: 3px solid var(--warning, #e6a700); background: linear-gradient(135deg, var(--bg-card) 0%, var(--bg) 100%);">
@@ -625,6 +738,14 @@ export function initDashboardGlobals() {
     } else if (action === 'ask-twin') {
       const uid = el.getAttribute('data-user-id');
       if (uid) handleAskTwin(uid);
+    } else if (action === 'try-recipe') {
+      // The recipe button doesn't carry the userId; read it from the
+      // Ask Your Twin box, which is the surface the prediction runs through
+      // and is always present on the dashboard alongside the library.
+      const situation = el.getAttribute('data-situation');
+      const askInput = document.getElementById('ask-twin-input');
+      const uid = askInput?.getAttribute('data-user-id');
+      if (uid && situation) handleTryRecipe(uid, situation);
     } else if (action === 'exit-tour') {
       skyTwinExitTour();
     } else if (action === 'connect-google') {
