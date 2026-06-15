@@ -216,8 +216,8 @@ export function renderApiError(err, options = {}) {
   const accentVar = kind === 'offline'
     ? 'var(--text-muted, var(--text))'
     : kind === 'auth'
-    ? 'var(--accent, #6366f1)'
-    : 'var(--danger, #ef4444)';
+    ? 'var(--accent, #7C72E8)'
+    : 'var(--danger, #F26D5B)';
   const heading = kind === 'offline'
     ? "Can't reach SkyTwin right now"
     : kind === 'auth'

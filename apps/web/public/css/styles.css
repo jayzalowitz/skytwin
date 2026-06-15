@@ -337,10 +337,10 @@ body.has-autonomy-banner.has-connectors-banner .connectors-banner { top: 2.5rem;
   .skytoast.skytoast-leaving { transform: none; opacity: 0; }
 }
 
-.skytoast-success { border-left-color: var(--success, #10b981); }
-.skytoast-info    { border-left-color: var(--accent, #6366f1); }
-.skytoast-warning { border-left-color: var(--warning, #e6a700); }
-.skytoast-danger  { border-left-color: var(--danger, #ef4444); }
+.skytoast-success { border-left-color: var(--success, #46C08A); }
+.skytoast-info    { border-left-color: var(--accent, #7C72E8); }
+.skytoast-warning { border-left-color: var(--warning, #E7B14C); }
+.skytoast-danger  { border-left-color: var(--danger, #F26D5B); }
 
 .skytoast-content {
   flex: 1;
@@ -371,7 +371,7 @@ body.has-autonomy-banner.has-connectors-banner .connectors-banner { top: 2.5rem;
  * reads as actionable distinct from the close X. */
 .skytoast-action {
   background: transparent;
-  color: var(--accent, #6366f1);
+  color: var(--accent, #7C72E8);
   border: 1px solid currentColor;
   border-radius: 999px;
   padding: 0.15rem 0.6rem;
