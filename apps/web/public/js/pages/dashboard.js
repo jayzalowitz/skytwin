@@ -21,6 +21,7 @@ import {
   renderSinceLastVisit,
   renderEmptyDashboardPreview,
   renderAskTwinWidget,
+  hydrateRecipeLibrary,
   renderTourBanner,
   renderJustConnectedCelebration,
   renderConnectGoogleHero,
@@ -551,6 +552,7 @@ export async function renderDashboard(container, userId) {
     ${tourMode ? '' : renderConnectGoogleHero({ googleConnected, googleSystemConfigured, userId })}
     ${tourMode ? '' : renderConnectGmailHero({ googleConnected, googleScopes: googleOAuth.status === 'fulfilled' ? (googleOAuth.value?.scopes ?? []) : [] })}
     ${renderAskTwinWidget({ userId, tourMode })}
+    <div id="recipe-library-slot"></div>
     ${showBriefing ? renderBriefingCard({ items: briefingItems, createdAt: briefing.createdAt }) : ''}
     ${renderLifebooksCard(lifebooks)}
     ${pending > 0 ? `<div class="card" style="border-left: 3px solid var(--warning); cursor: pointer;" data-action="goto" data-hash="#/approvals">
@@ -690,6 +692,11 @@ export async function renderDashboard(container, userId) {
     </div>
     `}
   `;
+
+  // Demo recipe library (#405): fetch the canned sample-decision recipes
+  // and fill the placeholder. Best-effort — a failed fetch leaves the slot
+  // empty rather than blocking the synchronous render above.
+  hydrateRecipeLibrary('recipe-library-slot').catch(() => { /* nice-to-have */ });
 
   // First-decision celebration: a one-time "look — your twin just acted!"
   // moment, fired the first time decisions transition from 0 to >0 for this

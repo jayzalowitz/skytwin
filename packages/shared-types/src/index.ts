@@ -146,6 +146,12 @@ export type {
 } from './demo.js';
 
 export type {
+  DemoRecipe,
+  DemoRecipeDomain,
+} from './demo-recipes.js';
+export { DEMO_RECIPES, findDemoRecipe } from './demo-recipes.js';
+
+export type {
   FsScanRoot,
   RawSignal,
 } from './capability-acquisition.js';
