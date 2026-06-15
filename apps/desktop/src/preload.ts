@@ -135,4 +135,50 @@ contextBridge.exposeInMainWorld('skytwinDesktop', {
     ipcRenderer.on('show-first-close-toast', wrapped);
     return () => ipcRenderer.off('show-first-close-toast', wrapped);
   },
+
+  /**
+   * Auto-update surface (#370 follow-up). The renderer shows a banner that
+   * reflects the update lifecycle and lets the user install on demand.
+   *
+   * - `checkForUpdates()` triggers an immediate poll (the same as the
+   *   "Check for Updates…" menu item).
+   * - `getUpdateStatus()` reads the latest known status (for a fresh page load
+   *   that missed earlier push events).
+   * - `installUpdate()` quits + relaunches into a downloaded update. Resolves
+   *   `false` when nothing is installable (dev/unsigned build, or no payload
+   *   downloaded yet).
+   * - `onUpdateStatus(listener)` subscribes to the live status stream
+   *   (available → downloading(%) → ready-to-install / error). Returns an
+   *   unsubscribe function.
+   */
+  checkForUpdates: () =>
+    ipcRenderer.invoke('update-check') as Promise<{
+      status: string;
+      version?: string;
+      downloadPercent?: number;
+      error?: string;
+    }>,
+  getUpdateStatus: () =>
+    ipcRenderer.invoke('get-update-status') as Promise<{
+      status: string;
+      version?: string;
+      downloadPercent?: number;
+      error?: string;
+    }>,
+  installUpdate: () => ipcRenderer.invoke('update-install') as Promise<boolean>,
+  onUpdateStatus: (
+    listener: (payload: {
+      status: string;
+      version?: string;
+      downloadPercent?: number;
+      error?: string;
+    }) => void,
+  ): (() => void) => {
+    const wrapped = (
+      _e: Electron.IpcRendererEvent,
+      payload: { status: string; version?: string; downloadPercent?: number; error?: string },
+    ) => listener(payload);
+    ipcRenderer.on('update-status', wrapped);
+    return () => ipcRenderer.off('update-status', wrapped);
+  },
 });

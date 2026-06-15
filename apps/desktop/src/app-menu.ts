@@ -27,6 +27,7 @@ export type AppMenuAction =
   | 'open-dashboard'
   | 'latest-briefing'
   | 'pause-resume'
+  | 'check-for-updates'
   | 'open-documentation'
   | 'report-issue'
   | 'reload'
@@ -99,6 +100,9 @@ export function buildAppMenuTemplate(options: AppMenuOptions): AppMenuItem[] {
       label: 'SkyTwin',
       submenu: [
         { role: 'about' },
+        // macOS HIG places "Check for Updates…" in the app menu, right under
+        // About. Non-mac platforms get it in the Help menu (added below).
+        { label: 'Check for Updates…', action: 'check-for-updates' },
         sep,
         { label: 'Preferences…', action: 'show-preferences', accelerator: 'Cmd+,' },
         sep,
@@ -163,14 +167,17 @@ export function buildAppMenuTemplate(options: AppMenuOptions): AppMenuItem[] {
     ],
   });
 
-  // Help menu — Documentation + Report Issue on every platform.
-  template.push({
-    label: 'Help',
-    submenu: [
-      { label: 'Documentation', action: 'open-documentation' },
-      { label: 'Report Issue', action: 'report-issue' },
-    ],
-  });
+  // Help menu — Documentation + Report Issue on every platform. On non-mac
+  // platforms it also carries "Check for Updates…" (macOS keeps that in the
+  // app menu per HIG, added above).
+  const helpSubmenu: AppMenuItem[] = [
+    { label: 'Documentation', action: 'open-documentation' },
+    { label: 'Report Issue', action: 'report-issue' },
+  ];
+  if (!isMac) {
+    helpSubmenu.push(sep, { label: 'Check for Updates…', action: 'check-for-updates' });
+  }
+  template.push({ label: 'Help', submenu: helpSubmenu });
 
   return template;
 }
@@ -181,6 +188,7 @@ export interface AppMenuHandlers {
   'open-dashboard': () => void;
   'latest-briefing': () => void;
   'pause-resume': () => void;
+  'check-for-updates': () => void;
   'open-documentation': () => void;
   'report-issue': () => void;
   'reload': () => void;
@@ -233,6 +241,8 @@ export function applyAppMenu(
   callbacks: {
     onShowPreferences?: () => void;
     onPauseResume: () => void;
+    /** Trigger a manual update check. Omitted in dev builds (no controller). */
+    onCheckForUpdates?: () => void;
   },
 ): void {
   function navigate(hash: string): void {
@@ -258,6 +268,7 @@ export function applyAppMenu(
     'open-dashboard': () => navigate('#/'),
     'latest-briefing': () => navigate('#/briefing'),
     'pause-resume': () => callbacks.onPauseResume(),
+    'check-for-updates': () => callbacks.onCheckForUpdates?.(),
     'open-documentation': () => {
       void shell.openExternal(DOCUMENTATION_URL);
     },

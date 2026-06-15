@@ -43,7 +43,7 @@ The remaining launch blockers are **not code**:
 | 7 | Approve/reject without confusion | ✅ microcopy intact (Just watch / Ask me first / Handle small stuff / …) |
 | 8 | Find a "pause everything" button | ✅ global **Pause everything** + Settings **Pause auto-execution** (#379) |
 | 9 | Find a "delete my data" button | ✅ Settings → **Download** + **Delete my data** (#376) |
-| 10 | Receive auto-updates | 🟡 code half shipped (#370, in PR #453); electron-updater manifest generation + signed-build e2e remain (gated on #368) |
+| 10 | Receive auto-updates | 🟡 code complete — manifests ship (#370) + the user-facing layer (in-app update banner + "Check for Updates…" menu) landed; only signed-build e2e remains (gated on #368) |
 
 ## The one code-side launch task
 
@@ -97,7 +97,7 @@ Verdict legend: ✅ shipped · 🟡 partial · ⬜ not started · ⛔ external (
 | [#361](https://github.com/jayzalowitz/skytwin/issues/361) | 🟡 partial | — | yes | Epic D: #374 + #375(b) remain |
 | [#368](https://github.com/jayzalowitz/skytwin/issues/368) | ⛔ external | **YES** | — | Code-signing certs + notarization (external) |
 | [#369](https://github.com/jayzalowitz/skytwin/issues/369) | 🟡 partial | **YES** | partly | EAS config + CI rewrite (code) · real icons + store accounts (external) |
-| [#370](https://github.com/jayzalowitz/skytwin/issues/370) | 🟡 partial | **YES** | yes | electron-updater manifest gen from build.yml's release/package steps + curl-latest CI (runbook now in docs/release-procedure.md); e2e gated on signing |
+| [#370](https://github.com/jayzalowitz/skytwin/issues/370) | 🟡 code complete | **YES** | yes | manifest gen + curl-latest CI shipped (runbook in docs/release-procedure.md); user-facing update banner + "Check for Updates…" menu shipped; only signed-build e2e remains (gated on #368) |
 | [#374](https://github.com/jayzalowitz/skytwin/issues/374) | ⬜ not started | **YES** | yes | Encrypt ~14 sensitive tables at rest — **needs key-mgmt decision (#401)** |
 | [#375](https://github.com/jayzalowitz/skytwin/issues/375) | 🟡 partial | — | yes | Only in-prompt PII redactor (b) — explicitly deferred to v0.8 |
 | [#386](https://github.com/jayzalowitz/skytwin/issues/386) | 🟡 partial | — | yes | Wire chunked-upload backbone into `VoiceScreen.tsx` |

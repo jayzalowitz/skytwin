@@ -120,7 +120,7 @@ CI is unaffected (clean dist on every run).
 | `api` | HTTP API server exposing decision endpoints, user management, and webhooks. Includes liveness/readiness health checks and mDNS service advertisement. |
 | `web` | Web dashboard for reviewing decisions, managing preferences, and configuring policies. |
 | `worker` | Background job processor for async decision execution and feedback processing. Includes startup hang detection and graceful shutdown. |
-| `desktop` | Electron desktop app with electron-builder. Cross-platform builds for macOS (.dmg), Windows (.exe), and Linux (.AppImage/.deb). |
+| `desktop` | Electron desktop app with electron-builder. Cross-platform builds for macOS (.dmg), Windows (.exe), and Linux (.AppImage/.deb). In-app auto-update via electron-updater (`auto-update.ts`): background poll + an update banner (downloading → "Restart to update") and a "Check for Updates…" menu item. |
 | `mobile` | React Native mobile app (Expo SDK 55). QR code pairing, mDNS API discovery, SSE real-time streaming, push notifications, and voice capture (`VoiceScreen` records via `expo-audio`, base64-encodes via `expo-file-system`, and ships to the paired desktop's `/api/voice/transcribe` for on-device whisper.cpp transcription). |
 | `openclaw-bridge` | Lightweight bridge server connecting SkyTwin's OpenClaw adapter to a local Ollama instance for LLM reasoning. |
 | `twin-mcp-server` | MCP server exposing the twin's read-only surface (decisions, learnings, recent activity) to external MCP clients. |

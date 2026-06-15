@@ -170,6 +170,19 @@ describe('buildAppMenuTemplate — SkyTwin actions', () => {
     const item = findAction(buildAppMenuTemplate({ ...macDev, isPaused: true }), 'pause-resume')!;
     expect(item.label).toBe('Resume Twin');
   });
+
+  it('exposes "Check for Updates…" — in the app menu on macOS, the Help menu elsewhere', () => {
+    // macOS HIG: under the app menu. Verify it's present and NOT duplicated in Help.
+    const macTemplate = buildAppMenuTemplate(macDev);
+    const macUpdate = findAction(macTemplate, 'check-for-updates');
+    expect(macUpdate?.label).toBe('Check for Updates…');
+    const macHelp = menuByLabel(macTemplate, 'Help')!;
+    expect(findAction(macHelp.submenu!, 'check-for-updates')).toBeUndefined();
+
+    // Windows/Linux: in the Help menu (no app menu exists there).
+    const winHelp = menuByLabel(buildAppMenuTemplate(winDev), 'Help')!;
+    expect(findAction(winHelp.submenu!, 'check-for-updates')?.label).toBe('Check for Updates…');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -182,6 +195,7 @@ function makeHandlers(): { handlers: AppMenuHandlers; spies: Record<string, Retu
     'open-dashboard': vi.fn(),
     'latest-briefing': vi.fn(),
     'pause-resume': vi.fn(),
+    'check-for-updates': vi.fn(),
     'open-documentation': vi.fn(),
     'report-issue': vi.fn(),
     'reload': vi.fn(),

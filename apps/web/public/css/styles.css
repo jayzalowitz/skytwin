@@ -221,6 +221,67 @@ body.has-autonomy-banner.has-connectors-banner { padding-top: 5rem; }
 body.has-autonomy-banner.has-connectors-banner .sidebar { top: 5rem; height: calc(100vh - 5rem); }
 body.has-autonomy-banner.has-connectors-banner .connectors-banner { top: 2.5rem; }
 
+/* Desktop auto-update banner (#370 follow-up). Unlike the autonomy/connectors
+ * banners (top edge, page-reflowing), this floats at the BOTTOM-center like a
+ * toast — an update prompt is awareness-with-action, not a panic state, so it
+ * never fights the top-banner layout. Neutral surface; the only accent is the
+ * "Restart to update" CTA (.btn-primary) — DESIGN.md: accent = "needs you /
+ * act here". One element, re-rendered in place across the update lifecycle. */
+.update-banner {
+  position: fixed;
+  bottom: 1.25rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1400; /* below toasts (1500), above page content */
+  max-width: min(520px, calc(100vw - 2rem));
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.7rem 0.9rem 0.7rem 1rem;
+  background: var(--bg-card);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4);
+  font-size: 0.875rem;
+}
+.update-banner[hidden] { display: none; }
+.update-banner-body { display: flex; flex-direction: column; gap: 0.35rem; flex: 1; min-width: 0; }
+.update-banner-text { display: flex; flex-direction: column; gap: 0.1rem; }
+.update-banner-title { font-weight: 600; color: var(--text); }
+.update-banner-detail { color: var(--text-muted); font-size: 0.8rem; }
+.update-banner-progress {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--bg-input);
+  overflow: hidden;
+}
+/* Progress fill stays accent — it's the "an action is coming" signal that
+ * resolves into the accent CTA when ready. */
+.update-banner-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 999px;
+  transition: width 0.3s ease;
+}
+.update-banner-actions { display: flex; align-items: center; gap: 0.4rem; flex-shrink: 0; }
+.update-banner-dismiss {
+  background: transparent;
+  border: 0;
+  color: var(--text-dim);
+  font-size: 1.1rem;
+  line-height: 1;
+  padding: 0.2rem 0.35rem;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+.update-banner-dismiss:hover { color: var(--text); background: var(--bg-hover); }
+/* The update banner never reflows the page (it floats), so no body padding
+ * class is needed — it co-exists with every top banner without coordination. */
+@media (prefers-reduced-motion: reduce) {
+  .update-banner-progress-fill { transition: none; }
+}
+
 .connection-banner {
   display: flex;
   align-items: center;
