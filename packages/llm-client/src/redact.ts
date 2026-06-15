@@ -30,7 +30,14 @@
 
 // user@host.tld — the local part allows the usual RFC-ish symbols; the domain
 // requires at least one dot + a 2+ char TLD so we don't match a bare `a@b`.
-const EMAIL_RE = /[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}/g;
+//
+// The quantifiers are LENGTH-BOUNDED (local <=64, domain label run <=255, TLD
+// 2-24) on purpose: this regex runs over UNTRUSTED inbound email content
+// (Safety Invariant #8), and the unbounded form — adjacent `+` quantifiers over
+// overlapping classes that both match `.` — backtracks quadratically on crafted
+// input like `a@....…` (many dots, no TLD), a ReDoS vector. The bounds cap
+// backtracking AND match RFC 5321 length limits, so they cost no real address.
+const EMAIL_RE = /[A-Za-z0-9._%+\-]{1,64}@[A-Za-z0-9.\-]{1,255}\.[A-Za-z]{2,24}/g;
 
 /**
  * Mask email addresses in `text`. Returns the input unchanged when it's

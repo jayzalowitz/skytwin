@@ -45,4 +45,15 @@ describe('redactPromptPii (#375)', () => {
   it('handles addresses with subdomains and plus-addressing', () => {
     expect(redactPromptPii('jay+skytwin@mail.corp.example.com')).toBe('[redacted:email]');
   });
+
+  it('does not hang on pathological input (ReDoS guard — input is untrusted inbound email)', () => {
+    // `a@` + thousands of dots with no TLD is the backtracking-bait shape. The
+    // length-bounded quantifiers must keep this near-instant, not quadratic.
+    const evil = `a@${'.'.repeat(50000)}`;
+    const start = Date.now();
+    const out = redactPromptPii(evil);
+    expect(Date.now() - start).toBeLessThan(1000);
+    // No valid TLD → nothing masked; the string passes through unchanged.
+    expect(out).toBe(evil);
+  });
 });
