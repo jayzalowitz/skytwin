@@ -32,6 +32,14 @@ import { escapeHtml } from '../api-client.js';
 
 const BANNER_ID = 'skytwin-update-banner';
 
+// Module-level idempotence guard. wireDesktopUpdateBanner() is called once on
+// DOMContentLoaded, but a second call (re-init, hot reload, a test) must not
+// stack a second onUpdateStatus subscription or leave the banner's click
+// listener bound to a stale closure — the listener-stacking bug class called
+// out in CLAUDE.md "Frontend Event Handling". Once wired, later calls return
+// the existing teardown.
+let _wiredTeardown = null;
+
 /**
  * Pure view-model: given the latest update status (and the previously-computed
  * banner state, for the error-suppression rule), decide what the banner shows.
@@ -175,6 +183,8 @@ export function wireDesktopUpdateBanner(opts = {}) {
   const desktop = opts.desktop ?? (typeof window !== 'undefined' ? window.skytwinDesktop : undefined);
   const doc = opts.doc ?? (typeof document !== 'undefined' ? document : undefined);
   if (!desktop || typeof desktop.onUpdateStatus !== 'function' || !doc) return undefined;
+  // Already wired this session — don't stack a second subscription/listener.
+  if (_wiredTeardown) return _wiredTeardown;
 
   let bannerEl = null;
   let lastState = null;
@@ -250,5 +260,10 @@ export function wireDesktopUpdateBanner(opts = {}) {
         /* bridge unavailable mid-call — the live subscription still covers us */
       });
   }
-  return desktop.onUpdateStatus(apply);
+  const unsubscribe = desktop.onUpdateStatus(apply);
+  _wiredTeardown = () => {
+    if (typeof unsubscribe === 'function') unsubscribe();
+    _wiredTeardown = null;
+  };
+  return _wiredTeardown;
 }

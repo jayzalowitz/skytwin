@@ -159,7 +159,7 @@ contextBridge.exposeInMainWorld('skytwinDesktop', {
       error?: string;
     }>,
   getUpdateStatus: () =>
-    ipcRenderer.invoke('update-status') as Promise<{
+    ipcRenderer.invoke('get-update-status') as Promise<{
       status: string;
       version?: string;
       downloadPercent?: number;

@@ -257,6 +257,11 @@ async function startApp(): Promise<void> {
     // start() subscribes to backend events, schedules the 6h poll, and fires an
     // immediate check.
     updateController.start();
+    // Rebuild the menu now that updateController exists — the first
+    // refreshAppMenu() above ran before this block, so its "Check for
+    // Updates…" handler closed over a null controller (dead no-op). This
+    // re-binds it to the live controller.
+    refreshAppMenu();
     console.info('[auto-update] Auto-update started (periodic checks + event stream).');
   }
 
@@ -309,7 +314,11 @@ ipcMain.handle('update-check', async () => {
   if (!updateController) return { status: 'no-update' };
   return updateController.checkNow();
 });
-ipcMain.handle('update-status', () => updateController?.getLatestStatus() ?? { status: 'no-update' });
+// Note: distinct channel name from the `update-status` push stream
+// (webContents.send) so the request/response getter and the one-way event
+// stream never share a channel name — they're separate IPC dispatch tables in
+// Electron, but the naming would mislead a future reader.
+ipcMain.handle('get-update-status', () => updateController?.getLatestStatus() ?? { status: 'no-update' });
 ipcMain.handle('update-install', () => {
   if (!updateController) return false;
   return updateController.installNow();
