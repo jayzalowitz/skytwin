@@ -312,6 +312,16 @@ export async function renderSettings(container, userId) {
           <span class="toggle-slider"></span>
         </label>
       </div>
+      <div style="display: flex; align-items: center; justify-content: space-between; padding: 0.75rem; background: var(--bg); border-radius: var(--radius-sm); margin-top: 0.5rem;">
+        <div>
+          <div style="font-weight: 500;">Send anonymous crash reports</div>
+          <div style="font-size: 0.85rem; color: var(--text-muted);">If the app crashes, send an anonymous report (error type, stack trace, app version) so we can fix it. No personal data, email, or twin content is ever included. Off by default.</div>
+        </div>
+        <label class="toggle-switch">
+          <input type="checkbox" id="crash-reports-toggle" data-action="toggle-crash-reports">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
     </div>
     ` : ''}
 
@@ -632,6 +642,16 @@ export async function renderSettings(container, userId) {
     window.skytwinDesktop.getIdlePauseEnabled()
       .then((enabled) => { idlePauseToggle.checked = !!enabled; })
       .catch(() => { idlePauseToggle.checked = true; });
+  }
+
+  // Crash-reports toggle (#399). Default OFF — opt-in only. If the
+  // round-trip fails we leave it unchecked, which matches the safe
+  // default (don't imply reporting is on when we couldn't confirm it).
+  const crashReportsToggle = document.getElementById('crash-reports-toggle');
+  if (crashReportsToggle instanceof HTMLInputElement && window.skytwinDesktop?.getCrashReportsEnabled) {
+    window.skytwinDesktop.getCrashReportsEnabled()
+      .then((enabled) => { crashReportsToggle.checked = !!enabled; })
+      .catch(() => { crashReportsToggle.checked = false; });
   }
 
   // Federation: render the peer list. Fetched fresh per render so a
@@ -1005,6 +1025,18 @@ function ensureSettingsListener() {
         const enabled = checkbox.checked;
         window.skytwinDesktop?.setIdlePauseEnabled?.(enabled)
           .then(() => showSavedToast(enabled ? 'Will pause when idle' : 'Always running'))
+          .catch((err) => {
+            checkbox.checked = !enabled;
+            showErrorToast(`Couldn\'t save: ${err?.message || 'unknown error'}`);
+          });
+        return;
+      }
+      case 'toggle-crash-reports': {
+        const checkbox = el;
+        if (!(checkbox instanceof HTMLInputElement)) return;
+        const enabled = checkbox.checked;
+        window.skytwinDesktop?.setCrashReportsEnabled?.(enabled)
+          .then(() => showSavedToast(enabled ? 'Crash reports on' : 'Crash reports off'))
           .catch((err) => {
             checkbox.checked = !enabled;
             showErrorToast(`Couldn\'t save: ${err?.message || 'unknown error'}`);

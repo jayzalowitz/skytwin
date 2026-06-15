@@ -36,6 +36,16 @@ contextBridge.exposeInMainWorld('skytwinDesktop', {
   setIdlePauseEnabled: (enabled: boolean) =>
     ipcRenderer.invoke('set-idle-pause-enabled', enabled) as Promise<boolean>,
 
+  /**
+   * "Send anonymous crash reports" preference (#399). Default OFF —
+   * opt-in only. Setter returns the persisted value so the renderer can
+   * round-trip-confirm, matching the idle-pause toggle's contract.
+   */
+  getCrashReportsEnabled: () =>
+    ipcRenderer.invoke('get-crash-reports-enabled') as Promise<boolean>,
+  setCrashReportsEnabled: (enabled: boolean) =>
+    ipcRenderer.invoke('set-crash-reports-enabled', enabled) as Promise<boolean>,
+
   /** Open a URL in the system default browser (used for OAuth) */
   openExternal: (url: string) => ipcRenderer.invoke('open-external', url),
 
