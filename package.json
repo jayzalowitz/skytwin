@@ -43,10 +43,10 @@
     "demo:install": "cd scripts/demo && pnpm install --ignore-workspace && pnpm exec playwright install chromium"
   },
   "devDependencies": {
-    "@types/node": "^25.9.1",
-    "eslint": "^10.4.0",
+    "@types/node": "^25.9.3",
+    "eslint": "^10.5.0",
     "prettier": "^3.8.3",
-    "tsx": "^4.22.3",
+    "tsx": "^4.22.4",
     "turbo": "^2.9.16",
     "typescript": "^6.0.3",
     "vitest": "^1.3.0"

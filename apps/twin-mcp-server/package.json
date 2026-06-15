@@ -14,19 +14,19 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@skytwin/core": "workspace:*",
     "@skytwin/db": "workspace:*",
-    "@skytwin/memory-port": "workspace:*",
+    "@skytwin/llm-client": "workspace:*",
     "@skytwin/memory-mempalace": "workspace:*",
-    "@skytwin/twin-model": "workspace:*",
+    "@skytwin/memory-port": "workspace:*",
     "@skytwin/policy-engine": "workspace:*",
     "@skytwin/shared-types": "workspace:*",
-    "@skytwin/llm-client": "workspace:*",
+    "@skytwin/twin-model": "workspace:*",
     "express": "^5.2.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
-    "@types/node": "^25.9.1",
-    "tsx": "^4.22.3",
+    "@types/node": "^25.9.3",
+    "tsx": "^4.22.4",
     "typescript": "^6.0.3",
     "vitest": "^1.3.0"
   }
