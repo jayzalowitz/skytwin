@@ -29,6 +29,7 @@
     "pg": "^8.21.0",
     "@skytwin/shared-types": "workspace:*",
     "@skytwin/config": "workspace:*",
+    "@skytwin/credential-vault": "workspace:*",
     "@skytwin/decision-engine": "workspace:*",
     "@skytwin/policy-engine": "workspace:*",
     "@skytwin/explanations": "workspace:*",

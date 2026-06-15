@@ -277,7 +277,24 @@ export {
   decisionRepositoryAdapter,
   explanationRepositoryAdapter,
   policyRepositoryAdapter,
+  setPreferenceVaultKeyProvider,
+  VaultLockedError,
 } from './adapters/index.js';
+
+// #374 at-rest envelope-encryption column helpers
+export {
+  encryptColumn,
+  decryptColumn,
+  readColumn,
+  resolveKey,
+  packEncrypted,
+  unpackEncrypted,
+} from './lib/vault-helper.js';
+export type {
+  VaultKeyProvider,
+  VaultReadResult,
+  VaultKeyState,
+} from './lib/vault-helper.js';
 
 // Schema metadata
 export { TABLE_NAMES, SCHEMA_PATH } from './schemas/index.js';

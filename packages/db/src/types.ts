@@ -80,13 +80,23 @@ export interface PreferenceRow {
   user_id: string;
   domain: string;
   key: string;
+  /** Plaintext JSONB; NULL once the row has been encrypted (#374 lazy migration). */
   value: unknown;
   confidence: string;
   source: string;
+  /** Plaintext JSONB; NULL once the row has been encrypted (#374 lazy migration). */
   evidence: unknown[];
   version: number;
   created_at: Date;
   updated_at: Date;
+  /**
+   * #374 envelope-encryption columns (migration 065). Present on every row
+   * after the migration; populated (and the plaintext sibling set to NULL)
+   * once the row is encrypted. Packed format: IV(12) + tag(16) + ciphertext.
+   */
+  value_encrypted?: Buffer | null;
+  evidence_encrypted?: Buffer | null;
+  encryption_key_version?: number;
 }
 
 // ============================================================================
