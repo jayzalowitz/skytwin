@@ -1,4 +1,5 @@
 import { query, withTransaction } from '../connection.js';
+import { assertUserContext } from '../request-context.js';
 import type { TwinProfileRow, TwinProfileVersionRow } from '../types.js';
 
 /**
@@ -27,6 +28,7 @@ export const twinRepository = {
    * yet) — fail-closed.
    */
   async isDraftsEnabled(userId: string): Promise<boolean> {
+    assertUserContext(userId);
     const result = await query<{ drafts_enabled: boolean }>(
       'SELECT drafts_enabled FROM twin_profiles WHERE user_id = $1',
       [userId],
@@ -44,6 +46,7 @@ export const twinRepository = {
     userId: string,
     enabled: boolean,
   ): Promise<TwinProfileRow | null> {
+    assertUserContext(userId);
     const result = await query<TwinProfileRow>(
       `UPDATE twin_profiles
        SET drafts_enabled = $1, updated_at = now()
@@ -64,6 +67,7 @@ export const twinRepository = {
    * default rather than letting an unbounded number of calls through.
    */
   async getDraftsDailyCallCap(userId: string): Promise<number> {
+    assertUserContext(userId);
     const result = await query<{ drafts_daily_call_cap: number }>(
       'SELECT drafts_daily_call_cap FROM twin_profiles WHERE user_id = $1',
       [userId],
@@ -80,6 +84,7 @@ export const twinRepository = {
     userId: string,
     cap: number,
   ): Promise<TwinProfileRow | null> {
+    assertUserContext(userId);
     if (!Number.isInteger(cap) || cap < 0) {
       throw new Error(
         `drafts_daily_call_cap must be a non-negative integer; got ${cap}`,
@@ -108,6 +113,7 @@ export const twinRepository = {
    * without joining the full `draft_email_eval_runs` history.
    */
   async isDraftsEvalPassed(userId: string): Promise<boolean> {
+    assertUserContext(userId);
     const result = await query<{ drafts_eval_passed_at: Date | null }>(
       'SELECT drafts_eval_passed_at FROM twin_profiles WHERE user_id = $1',
       [userId],
@@ -120,6 +126,7 @@ export const twinRepository = {
    * ran, or null if no passing run exists.
    */
   async getDraftsEvalPassedAt(userId: string): Promise<Date | null> {
+    assertUserContext(userId);
     const result = await query<{ drafts_eval_passed_at: Date | null }>(
       'SELECT drafts_eval_passed_at FROM twin_profiles WHERE user_id = $1',
       [userId],
@@ -134,6 +141,7 @@ export const twinRepository = {
    * timestamp on pass); this is the manual-override write side.
    */
   async clearDraftsEvalPass(userId: string): Promise<TwinProfileRow | null> {
+    assertUserContext(userId);
     const result = await query<TwinProfileRow>(
       `UPDATE twin_profiles
        SET drafts_eval_passed_at = NULL, updated_at = now()
@@ -148,6 +156,7 @@ export const twinRepository = {
    * Get the current twin profile for a user.
    */
   async getProfile(userId: string): Promise<TwinProfileRow | null> {
+    assertUserContext(userId);
     const result = await query<TwinProfileRow>(
       'SELECT * FROM twin_profiles WHERE user_id = $1',
       [userId],
@@ -163,6 +172,7 @@ export const twinRepository = {
     userId: string,
     initial?: Partial<UpdateProfileInput>,
   ): Promise<TwinProfileRow> {
+    assertUserContext(userId);
     const result = await query<TwinProfileRow>(
       `INSERT INTO twin_profiles (
         user_id, preferences, inferences, risk_tolerance,
@@ -202,6 +212,7 @@ export const twinRepository = {
     updates: UpdateProfileInput,
     reason?: string,
   ): Promise<TwinProfileRow | null> {
+    assertUserContext(userId);
     return withTransaction(async (client) => {
       // Get the current profile
       const currentResult = await client.query<TwinProfileRow>(
@@ -290,6 +301,7 @@ export const twinRepository = {
     userId: string,
     limit = 50,
   ): Promise<TwinProfileVersionRow[]> {
+    assertUserContext(userId);
     const result = await query<TwinProfileVersionRow>(
       `SELECT tpv.*
        FROM twin_profile_versions tpv
@@ -309,6 +321,7 @@ export const twinRepository = {
     userId: string,
     version: number,
   ): Promise<TwinProfileVersionRow | null> {
+    assertUserContext(userId);
     const result = await query<TwinProfileVersionRow>(
       `SELECT tpv.*
        FROM twin_profile_versions tpv

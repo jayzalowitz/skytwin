@@ -22,6 +22,7 @@ import { createSessionsRouter } from './routes/sessions.js';
 import { createAuditRouter } from './routes/audit.js';
 import { sessionAuth } from './middleware/session-auth.js';
 import { requireOwnership } from './middleware/require-ownership.js';
+import { requestContext } from './middleware/request-context.js';
 import { createPoliciesRouter } from './routes/policies.js';
 import { createActivityRouter } from './routes/activity.js';
 import { createMempalaceRouter } from './routes/mempalace.js';
@@ -312,51 +313,51 @@ app.get('/metrics', async (_req, res, next) => {
 
 // Routes
 // Protected routes
-app.use('/api/events', sessionAuth, requireOwnership, createEventsRouter());
-app.use('/api/twin', sessionAuth, requireOwnership, createTwinRouter());
-app.use('/api/decisions', sessionAuth, requireOwnership, createDecisionsRouter());
-app.use('/api/activity', sessionAuth, requireOwnership, createActivityRouter());
-app.use('/api/approvals', sessionAuth, requireOwnership, createApprovalsRouter());
-app.use('/api/feedback', sessionAuth, requireOwnership, createFeedbackRouter());
+app.use('/api/events', sessionAuth, requireOwnership, requestContext, createEventsRouter());
+app.use('/api/twin', sessionAuth, requireOwnership, requestContext, createTwinRouter());
+app.use('/api/decisions', sessionAuth, requireOwnership, requestContext, createDecisionsRouter());
+app.use('/api/activity', sessionAuth, requireOwnership, requestContext, createActivityRouter());
+app.use('/api/approvals', sessionAuth, requireOwnership, requestContext, createApprovalsRouter());
+app.use('/api/feedback', sessionAuth, requireOwnership, requestContext, createFeedbackRouter());
 app.use('/api/oauth', createOAuthRouter()); // manages its own public callback
-app.use('/api/evals', sessionAuth, requireOwnership, createEvalsRouter());
+app.use('/api/evals', sessionAuth, requireOwnership, requestContext, createEvalsRouter());
 app.use('/api/users', createUsersRouter());
-app.use('/api/proposals', sessionAuth, requireOwnership, createProposalsRouter());
-app.use('/api/v1/twin', sessionAuth, requireOwnership, createAskRouter());
-app.use('/api/v1/briefings', sessionAuth, requireOwnership, createBriefingsRouter());
-app.use('/api/v1/skill-gaps', sessionAuth, requireOwnership, createSkillGapsRouter());
-app.use('/api/settings', sessionAuth, requireOwnership, createSettingsRouter());
+app.use('/api/proposals', sessionAuth, requireOwnership, requestContext, createProposalsRouter());
+app.use('/api/v1/twin', sessionAuth, requireOwnership, requestContext, createAskRouter());
+app.use('/api/v1/briefings', sessionAuth, requireOwnership, requestContext, createBriefingsRouter());
+app.use('/api/v1/skill-gaps', sessionAuth, requireOwnership, requestContext, createSkillGapsRouter());
+app.use('/api/settings', sessionAuth, requireOwnership, requestContext, createSettingsRouter());
 app.use('/api/sessions', createSessionsRouter()); // POST pairing is public; others are protected in-router
-app.use('/api/audit', sessionAuth, requireOwnership, createAuditRouter());
-app.use('/api/policies', sessionAuth, requireOwnership, createPoliciesRouter());
-app.use('/api/mempalace', sessionAuth, requireOwnership, createMempalaceRouter());
-app.use('/api/memory-config', sessionAuth, requireOwnership, createMemoryConfigRouter());
-app.use('/api/assistant', sessionAuth, requireOwnership, createAssistantRouter());
-app.use('/api/credentials', sessionAuth, requireOwnership, createCredentialsRouter());
-app.use('/api/routines', sessionAuth, requireOwnership, createRoutinesRouter());
+app.use('/api/audit', sessionAuth, requireOwnership, requestContext, createAuditRouter());
+app.use('/api/policies', sessionAuth, requireOwnership, requestContext, createPoliciesRouter());
+app.use('/api/mempalace', sessionAuth, requireOwnership, requestContext, createMempalaceRouter());
+app.use('/api/memory-config', sessionAuth, requireOwnership, requestContext, createMemoryConfigRouter());
+app.use('/api/assistant', sessionAuth, requireOwnership, requestContext, createAssistantRouter());
+app.use('/api/credentials', sessionAuth, requireOwnership, requestContext, createCredentialsRouter());
+app.use('/api/routines', sessionAuth, requireOwnership, requestContext, createRoutinesRouter());
 app.use('/api/v1/demo', createDemoRouter()); // public — onboarding tour discovery
-app.use('/api/capabilities', sessionAuth, requireOwnership, createCapabilitiesRouter());
-app.use('/api/risk-profile', sessionAuth, requireOwnership, createRiskProfileRouter());
-app.use('/api/about-me', sessionAuth, requireOwnership, createAboutMeRouter());
-app.use('/api/twin-briefings', sessionAuth, requireOwnership, createTwinBriefingsRouter());
-app.use('/api/onboarding', sessionAuth, requireOwnership, createOnboardingRouter());
-app.use('/api/external-agents', sessionAuth, requireOwnership, createExternalAgentsRouter());
-app.use('/api/credential-vault', sessionAuth, requireOwnership, createCredentialVaultRouter());
-app.use('/api/dxt', sessionAuth, requireOwnership, createDxtRouter());
-app.use('/api/lifebooks', sessionAuth, requireOwnership, createLifebooksRouter());
-app.use('/api/federation', sessionAuth, createFederationRouter()); // userId-param ownership applied in-router
+app.use('/api/capabilities', sessionAuth, requireOwnership, requestContext, createCapabilitiesRouter());
+app.use('/api/risk-profile', sessionAuth, requireOwnership, requestContext, createRiskProfileRouter());
+app.use('/api/about-me', sessionAuth, requireOwnership, requestContext, createAboutMeRouter());
+app.use('/api/twin-briefings', sessionAuth, requireOwnership, requestContext, createTwinBriefingsRouter());
+app.use('/api/onboarding', sessionAuth, requireOwnership, requestContext, createOnboardingRouter());
+app.use('/api/external-agents', sessionAuth, requireOwnership, requestContext, createExternalAgentsRouter());
+app.use('/api/credential-vault', sessionAuth, requireOwnership, requestContext, createCredentialVaultRouter());
+app.use('/api/dxt', sessionAuth, requireOwnership, requestContext, createDxtRouter());
+app.use('/api/lifebooks', sessionAuth, requireOwnership, requestContext, createLifebooksRouter());
+app.use('/api/federation', sessionAuth, requestContext, createFederationRouter()); // userId-param ownership applied in-router
 // /api/voice — `requireOwnership` enforces body/path/query userId matches the
 // authenticated session. POST /transcribe + /synthesize take userId in the
 // body, so the in-router :userId middleware alone wasn't sufficient — caught
 // by Copilot on PR #255.
-app.use('/api/voice', sessionAuth, requireOwnership, createVoiceRouter());
-app.use('/api/crisis-modes', sessionAuth, createCrisisModesRouter()); // userId-param ownership in-router
-app.use('/api/connectors', sessionAuth, createConnectorsRouter()); // #377 — per-user OAuth re-auth surface
-app.use('/api/embedded-llm', sessionAuth, createEmbeddedLlmRouter()); // catalog endpoints; no userId in path
+app.use('/api/voice', sessionAuth, requireOwnership, requestContext, createVoiceRouter());
+app.use('/api/crisis-modes', sessionAuth, requestContext, createCrisisModesRouter()); // userId-param ownership in-router
+app.use('/api/connectors', sessionAuth, requestContext, createConnectorsRouter()); // #377 — per-user OAuth re-auth surface
+app.use('/api/embedded-llm', sessionAuth, requestContext, createEmbeddedLlmRouter()); // catalog endpoints; no userId in path
 // #310: promotion-offer durable surface. GET takes :userId in the path
 // (require-ownership enforces); POST takes offerId in the path with
 // userId in the body (cross-checked in-router).
-app.use('/api/promotion-offers', sessionAuth, createPromotionOffersRouter());
+app.use('/api/promotion-offers', sessionAuth, requestContext, createPromotionOffersRouter());
 
 // Error handling middleware
 //
