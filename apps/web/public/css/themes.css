@@ -652,7 +652,7 @@ select:focus-visible,
 textarea:focus-visible,
 [role="button"]:focus-visible,
 [data-action]:focus-visible {
-  outline: 2px solid var(--accent, #6366f1);
+  outline: 2px solid var(--accent, #7C72E8);
   outline-offset: 2px;
   border-radius: var(--radius-sm, 4px);
 }
@@ -668,7 +668,7 @@ textarea:focus-visible,
   left: 0;
   z-index: 10000;
   padding: 0.75rem 1rem;
-  background: var(--accent, #6366f1);
+  background: var(--accent, #7C72E8);
   color: #ffffff;
   text-decoration: none;
   border-radius: 0 0 4px 0;
