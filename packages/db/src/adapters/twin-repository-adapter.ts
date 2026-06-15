@@ -12,6 +12,68 @@ import { twinRepository } from '../repositories/twin-repository.js';
 import { feedbackRepository } from '../repositories/feedback-repository.js';
 import { query } from '../connection.js';
 import type { TwinProfileRow, PreferenceRow, FeedbackEventRow } from '../types.js';
+import {
+  encryptColumn,
+  readColumn,
+  resolveKey,
+  type VaultKeyProvider,
+} from '../lib/vault-helper.js';
+
+/**
+ * #374 — process-wide vault key provider for at-rest column encryption.
+ *
+ * Null by default: when unset, the preferences read/write paths operate on
+ * plaintext columns exactly as before (backward compatible for vault-not-yet-
+ * enabled deployments and unit tests). The API/worker calls
+ * `setPreferenceVaultKeyProvider(keyCache)` at composition time once the
+ * credential vault is enabled; the master key derives from the existing
+ * credential-vault passphrase mechanism (OS-keychain integration: #401).
+ */
+let vaultKeyProvider: VaultKeyProvider | null = null;
+
+/** Wire the per-user key provider (e.g. the credential-vault KeyCache). */
+export function setPreferenceVaultKeyProvider(
+  provider: VaultKeyProvider | null,
+): void {
+  vaultKeyProvider = provider;
+}
+
+/**
+ * Raised when a preference row is stored encrypted but the vault is locked.
+ * Surfaced to the API as a 409; the UI prompts the user for their passphrase.
+ * NEVER swallowed into a plaintext / ciphertext fallback.
+ */
+export class VaultLockedError extends Error {
+  readonly code = 'vault_locked' as const;
+  constructor(message = 'credential vault is locked; unlock to read preferences') {
+    super(message);
+    this.name = 'VaultLockedError';
+  }
+}
+
+/**
+ * Decode a JSONB column that may be encrypted (#374). `value`/`evidence` are
+ * stored either as plaintext JSONB (pre-migration) or AES-256-GCM ciphertext
+ * in the `*_encrypted` sibling. Returns the parsed JSON value.
+ */
+function decodeJsonbColumn(
+  encrypted: Buffer | null | undefined,
+  plaintext: unknown,
+  key: Buffer | null,
+  emptyFallback: string,
+): unknown {
+  // When there is no ciphertext, the plaintext column is already parsed JSONB
+  // returned by node-postgres — pass it through untouched.
+  if (!encrypted || encrypted.length === 0) {
+    return plaintext ?? JSON.parse(emptyFallback);
+  }
+  const result = readColumn(encrypted, null, key, emptyFallback);
+  if (!result.success) {
+    if (result.error === 'vault_locked') throw new VaultLockedError();
+    throw new Error(`preferences: failed to decrypt column (${result.error})`);
+  }
+  return JSON.parse(result.value);
+}
 
 function profileRowToDomain(row: TwinProfileRow): TwinProfile {
   return {
@@ -25,15 +87,22 @@ function profileRowToDomain(row: TwinProfileRow): TwinProfile {
   };
 }
 
-function preferenceRowToDomain(row: PreferenceRow): Preference {
+/**
+ * @param key - the per-user vault key, or null when the vault is locked /
+ *   the feature is off. A null key + an encrypted row throws VaultLockedError;
+ *   a null key + a plaintext row reads the plaintext (backward compat).
+ */
+function preferenceRowToDomain(row: PreferenceRow, key: Buffer | null): Preference {
+  const value = decodeJsonbColumn(row.value_encrypted, row.value, key, 'null');
+  const evidence = decodeJsonbColumn(row.evidence_encrypted, row.evidence, key, '[]');
   return {
     id: row.id,
     domain: row.domain,
     key: row.key,
-    value: row.value,
+    value,
     confidence: row.confidence as ConfidenceLevel,
     source: row.source as PreferenceSource,
-    evidenceIds: (row.evidence ?? []) as string[],
+    evidenceIds: (evidence ?? []) as string[],
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -88,22 +157,43 @@ export class TwinRepositoryAdapter implements TwinRepositoryPort {
   }
 
   async getPreferences(userId: string): Promise<Preference[]> {
+    const key = this.requireKeyForRead(userId);
     const result = await query<PreferenceRow>(
       'SELECT * FROM preferences WHERE user_id = $1 ORDER BY updated_at DESC',
       [userId],
     );
-    return result.rows.map(preferenceRowToDomain);
+    return result.rows.map((r) => preferenceRowToDomain(r, key));
   }
 
   async getPreferencesByDomain(userId: string, domain: string): Promise<Preference[]> {
+    const key = this.requireKeyForRead(userId);
     const result = await query<PreferenceRow>(
       'SELECT * FROM preferences WHERE user_id = $1 AND domain = $2 ORDER BY updated_at DESC',
       [userId, domain],
     );
-    return result.rows.map(preferenceRowToDomain);
+    return result.rows.map((r) => preferenceRowToDomain(r, key));
+  }
+
+  /**
+   * Resolve the per-user vault key for a read. Returns null in plaintext mode
+   * (feature off) — preferenceRowToDomain then reads plaintext columns. Throws
+   * VaultLockedError when the vault is wired but locked, so a locked read can
+   * never silently return ciphertext.
+   */
+  private requireKeyForRead(userId: string): Buffer | null {
+    const state = resolveKey(vaultKeyProvider, userId);
+    if (state.mode === 'locked') throw new VaultLockedError();
+    return state.mode === 'unlocked' ? state.key : null;
   }
 
   async upsertPreference(userId: string, preference: Preference): Promise<Preference> {
+    const state = resolveKey(vaultKeyProvider, userId);
+    if (state.mode === 'locked') throw new VaultLockedError();
+    const key = state.mode === 'unlocked' ? state.key : null;
+
+    const valueJson = JSON.stringify(preference.value);
+    const evidenceJson = JSON.stringify(preference.evidenceIds);
+
     // Check if a preference with this domain+key already exists for the user
     const existing = await query<PreferenceRow>(
       'SELECT * FROM preferences WHERE user_id = $1 AND domain = $2 AND key = $3 LIMIT 1',
@@ -113,16 +203,48 @@ export class TwinRepositoryAdapter implements TwinRepositoryPort {
     let result;
     if (existing.rows.length > 0) {
       const row = existing.rows[0]!;
+      if (key !== null) {
+        // Encrypted write: store ciphertext, NULL the plaintext columns.
+        result = await query<PreferenceRow>(
+          `UPDATE preferences
+             SET value = NULL, evidence = NULL,
+                 value_encrypted = $1, evidence_encrypted = $2,
+                 confidence = $3, source = $4,
+                 version = version + 1, updated_at = now()
+           WHERE id = $5 RETURNING *`,
+          [
+            encryptColumn(valueJson, key),
+            encryptColumn(evidenceJson, key),
+            preference.confidence,
+            preference.source,
+            row.id,
+          ],
+        );
+      } else {
+        // Plaintext write (vault feature off). Also clears any stale ciphertext.
+        result = await query<PreferenceRow>(
+          `UPDATE preferences
+             SET value = $1, confidence = $2, source = $3, evidence = $4,
+                 value_encrypted = NULL, evidence_encrypted = NULL,
+                 version = version + 1, updated_at = now()
+           WHERE id = $5 RETURNING *`,
+          [valueJson, preference.confidence, preference.source, evidenceJson, row.id],
+        );
+      }
+    } else if (key !== null) {
       result = await query<PreferenceRow>(
-        `UPDATE preferences SET value = $1, confidence = $2, source = $3, evidence = $4,
-         version = version + 1, updated_at = now()
-         WHERE id = $5 RETURNING *`,
+        `INSERT INTO preferences
+           (user_id, domain, key, value, evidence,
+            value_encrypted, evidence_encrypted, confidence, source, version)
+         VALUES ($1, $2, $3, NULL, NULL, $4, $5, $6, $7, 1) RETURNING *`,
         [
-          JSON.stringify(preference.value),
+          userId,
+          preference.domain,
+          preference.key,
+          encryptColumn(valueJson, key),
+          encryptColumn(evidenceJson, key),
           preference.confidence,
           preference.source,
-          JSON.stringify(preference.evidenceIds),
-          row.id,
         ],
       );
     } else {
@@ -133,14 +255,14 @@ export class TwinRepositoryAdapter implements TwinRepositoryPort {
           userId,
           preference.domain,
           preference.key,
-          JSON.stringify(preference.value),
+          valueJson,
           preference.confidence,
           preference.source,
-          JSON.stringify(preference.evidenceIds),
+          evidenceJson,
         ],
       );
     }
-    return preferenceRowToDomain(result.rows[0]!);
+    return preferenceRowToDomain(result.rows[0]!, key);
   }
 
   async getInferences(userId: string): Promise<Inference[]> {

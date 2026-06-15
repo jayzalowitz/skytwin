@@ -452,6 +452,9 @@ importers:
       '@skytwin/config':
         specifier: workspace:*
         version: link:../config
+      '@skytwin/credential-vault':
+        specifier: workspace:*
+        version: link:../credential-vault
       '@skytwin/decision-engine':
         specifier: workspace:*
         version: link:../decision-engine
