@@ -5,6 +5,7 @@ import {
   hideLifebook,
   setLifebookImportance,
   clearLifebookImportance,
+  editLifebookFact,
   escapeHtml,
 } from '../api-client.js';
 import { showSavedToast, showErrorToast } from '../toast.js';
@@ -356,10 +357,7 @@ function renderLayoutSection(section, lb, domainName) {
         'Per-Lifebook upcoming-events view lands with the calendar-filter slice.',
       );
     case 'inline_edit':
-      return emptyCard(
-        title,
-        'Inline fact-edit is the follow-up to this PR. The layout prompt is forward-compatible with it.',
-      );
+      return renderInlineEditCard(title, lb, domainName);
     default:
       // Forward-compatible default. Surfaces unknown types loudly so
       // they're visible to the next developer rather than silently
@@ -369,6 +367,52 @@ function renderLayoutSection(section, lb, domainName) {
         `Unsupported section type <code>${escapeHtml(String(section?.type ?? 'unknown'))}</code> — frontend needs an update.`,
       );
   }
+}
+
+/**
+ * #319: inline fact-edit section. Renders each extracted fact
+ * (`sampleSignals`) with an Edit affordance. Clicking Edit reveals an
+ * inline input (toggled by the delegated handler via the `hidden`
+ * attribute — no inline onclick); Save PATCHes the fact and records a
+ * user-authored provenance correction server-side.
+ *
+ * Every row carries `data-fact-index` so the delegated handler knows
+ * which fact to PATCH without closing over per-render state.
+ */
+function renderInlineEditCard(title, lb, domainName) {
+  const signals = Array.isArray(lb.sampleSignals) ? lb.sampleSignals : [];
+  if (signals.length === 0) {
+    return emptyCard(
+      title,
+      `Nothing extracted for ${escapeHtml(domainName)} yet — once the twin reads signals into this Lifebook, you'll be able to correct anything it gets wrong here.`,
+    );
+  }
+  const rows = signals
+    .map((s, i) => {
+      const safe = escapeHtml(s);
+      return `
+        <li data-fact-index="${i}" style="margin-bottom:0.6rem;list-style:none;">
+          <div data-fact-display="${i}" style="display:flex;align-items:flex-start;justify-content:space-between;gap:0.5rem;">
+            <span style="flex:1;">${safe}</span>
+            <button class="btn btn-outline btn-sm" data-action="edit-fact" data-fact-index="${i}">Edit</button>
+          </div>
+          <div data-fact-editor="${i}" hidden style="margin-top:0.4rem;display:flex;gap:0.4rem;align-items:center;">
+            <input type="text" data-fact-input="${i}" value="${safe}" maxlength="2000"
+              style="flex:1;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:0.9rem;" />
+            <button class="btn btn-primary btn-sm" data-action="save-fact" data-fact-index="${i}">Save</button>
+            <button class="btn btn-outline btn-sm" data-action="cancel-fact" data-fact-index="${i}">Cancel</button>
+          </div>
+        </li>
+      `;
+    })
+    .join('');
+  return `
+    <div class="card">
+      <div class="card-header"><span class="card-title">${escapeHtml(title)}</span></div>
+      <div class="card-subtitle">Wrong date, misread name? Fix any extracted fact — your correction is recorded.</div>
+      <ul style="margin:0.6rem 0 0;padding-left:0;">${rows}</ul>
+    </div>
+  `;
 }
 
 function emptyCard(title, htmlBody) {
@@ -444,6 +488,17 @@ function ensureLifebookListener() {
     const target = e.target instanceof Element ? e.target : null;
     if (!target) return;
 
+    // #319 inline fact-edit affordances (edit/save/cancel). Read userId +
+    // domain inside the handler (not closed over) so a dev "Switch user"
+    // doesn't leave stale-id listeners firing under the next user.
+    const factBtn = target.closest(
+      '[data-action="edit-fact"],[data-action="save-fact"],[data-action="cancel-fact"]',
+    );
+    if (factBtn) {
+      await handleFactAction(factBtn);
+      return;
+    }
+
     const hideBtn = target.closest('[data-action="hide-lifebook"]');
     if (hideBtn) {
       const domain = hideBtn.getAttribute('data-domain');
@@ -513,6 +568,59 @@ async function applyImportanceChange(btn, apiCall, successMessage) {
       } catch {
         /* re-render is best-effort; the toast already reported success/failure */
       }
+    }
+  }
+}
+
+/**
+ * #319: dispatch the three inline fact-edit actions. Edit/Cancel only
+ * toggle the row's display vs editor blocks (no network). Save PATCHes
+ * the corrected fact and re-renders the page so the new value + any
+ * server-side normalization (trim/cap) is reflected.
+ */
+async function handleFactAction(btn) {
+  const action = btn.getAttribute('data-action');
+  const index = btn.getAttribute('data-fact-index');
+  if (index === null) return;
+  const li = btn.closest('[data-fact-index]');
+  if (!li) return;
+  const display = li.querySelector(`[data-fact-display="${index}"]`);
+  const editor = li.querySelector(`[data-fact-editor="${index}"]`);
+  const input = li.querySelector(`[data-fact-input="${index}"]`);
+
+  if (action === 'edit-fact') {
+    if (display) display.setAttribute('hidden', '');
+    if (editor) editor.removeAttribute('hidden');
+    if (input instanceof HTMLInputElement) input.focus();
+    return;
+  }
+  if (action === 'cancel-fact') {
+    if (editor) editor.setAttribute('hidden', '');
+    if (display) display.removeAttribute('hidden');
+    return;
+  }
+  if (action === 'save-fact') {
+    if (!(input instanceof HTMLInputElement)) return;
+    const text = input.value.trim();
+    if (text.length === 0) {
+      showErrorToast('Fact text cannot be empty.');
+      return;
+    }
+    const domain = parseLifebookRoute();
+    const userId = getCurrentUserId();
+    if (!domain || !userId) {
+      showErrorToast('Could not determine which Lifebook to edit.');
+      return;
+    }
+    try {
+      await editLifebookFact(userId, domain, index, text);
+      showSavedToast('Fact corrected');
+      // Re-render so the corrected value shows everywhere it appears
+      // (signals, timeline, inline-edit) from a single source of truth.
+      const container = document.getElementById('page-content');
+      if (container) await renderLifebook(container);
+    } catch (err) {
+      showErrorToast(`Couldn't save: ${err?.message ?? 'unknown error'}`);
     }
   }
 }

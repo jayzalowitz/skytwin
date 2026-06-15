@@ -1001,6 +1001,23 @@ export function fetchLifebookLayout(userId, domainName) {
   );
 }
 
+/**
+ * #319: inline fact-edit. Correct an extracted fact at `index` in the
+ * Lifebook's `sample_signals`. Records a user-authored provenance
+ * correction node server-side. Returns `{ lifebook, correction }`.
+ */
+export function editLifebookFact(userId, domainName, index, text) {
+  return fetchJSON(
+    `${API}/lifebooks/${encodeURIComponent(userId)}/${encodeURIComponent(
+      domainName,
+    )}/facts/${encodeURIComponent(index)}`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify({ text }),
+    },
+  );
+}
+
 export function hideLifebook(userId, domainName) {
   return fetchJSON(
     `${API}/lifebooks/${encodeURIComponent(userId)}/${encodeURIComponent(domainName)}/hide`,

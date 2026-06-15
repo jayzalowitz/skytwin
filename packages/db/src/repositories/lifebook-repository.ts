@@ -334,6 +334,49 @@ export const lifebookRepository = {
   },
 
   /**
+   * #319: inline fact-edit. Replace the extracted `sample_signals[index]`
+   * fact with a user-supplied correction. Used by the per-Lifebook detail
+   * page's inline edit affordance — the user spotted a wrong extracted
+   * fact (a Health appointment date, a misread recruiter name) and fixed
+   * it in place.
+   *
+   * The write is index-targeted and bounds-checked IN SQL so it stays
+   * race-free against a concurrent extractor upsert that may have just
+   * reordered/replaced the array: `jsonb_set` only touches the targeted
+   * element, and the `jsonb_array_length` guard in the WHERE clause means
+   * an out-of-range index updates nothing (the caller distinguishes
+   * "lifebook missing" from "index out of range" via `findByDomain`).
+   *
+   * Returns the updated row, or null when the (user, domain) doesn't
+   * exist OR the index is out of range for the current array. The
+   * route layer is responsible for writing the provenance correction
+   * node — this method only mutates the fact text.
+   */
+  async editSampleSignal(
+    userId: string,
+    domainName: string,
+    index: number,
+    correctedText: string,
+  ): Promise<LifebookRow | null> {
+    const result = await query<LifebookRow>(
+      `UPDATE lifebooks
+       SET sample_signals = jsonb_set(
+             sample_signals,
+             ARRAY[$3::int::string],
+             to_jsonb($4::string),
+             false
+           )
+       WHERE user_id = $1
+         AND domain_name = $2
+         AND $3::int >= 0
+         AND $3::int < jsonb_array_length(sample_signals)
+       RETURNING *`,
+      [userId, domainName, index, correctedText],
+    );
+    return result.rows[0] ?? null;
+  },
+
+  /**
    * #321: clear an existing override. The `importance` column stays at
    * its current value (caller can manually set it back if they want
    * the extractor to recompute on the next run; otherwise the next

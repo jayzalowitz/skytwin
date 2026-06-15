@@ -3,6 +3,7 @@ import {
   aiProviderRepository,
   lifebookRepository,
   mempalaceRepository,
+  provenanceRepository,
 } from '@skytwin/db';
 import type { LifebookImportance } from '@skytwin/db';
 import { LlmClient } from '@skytwin/llm-client';
@@ -145,6 +146,7 @@ const GENERIC_LAYOUT = {
  *   GET    /api/lifebooks/:userId/all                          — list all (including hidden)
  *   GET    /api/lifebooks/:userId/:domainName                  — single lifebook + wing summary
  *   GET    /api/lifebooks/:userId/:domainName/layout           — adaptive layout (#319)
+ *   PATCH  /api/lifebooks/:userId/:domainName/facts/:index     — inline fact-edit + correction (#319)
  *   POST   /api/lifebooks/:userId/:domainName/hide             — hide from dashboards
  *   POST   /api/lifebooks/:userId/:domainName/unhide           — restore visibility
  *   POST   /api/lifebooks/:userId/:domainName/importance       — set override (#321)
@@ -364,6 +366,141 @@ export function createLifebooksRouter(): Router {
         wingId: updated.wing_id,
       });
       res.json({ lifebook: rowToJson(updated) });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  /**
+   * #319: PATCH /:userId/:domainName/facts/:index — inline fact-edit.
+   *
+   * The twin extracted a fact that's wrong (a Health appointment date, a
+   * misread recruiter name) and the user fixed it inline on the detail
+   * page. We replace `sample_signals[index]` with the corrected text AND
+   * write a provenance `feedback` node so the correction is recorded as
+   * user-authored — the extractor can later down-weight whatever it
+   * extracted there, and the provenance graph shows the human in the loop.
+   *
+   * Body: { text: string }
+   *
+   * Status codes:
+   *   - 400 — missing params, missing/blank `text`, or a non-integer /
+   *     negative `index`.
+   *   - 404 — the lifebook doesn't exist OR the index is out of range
+   *     for the current `sample_signals` array (the repo update is
+   *     index-bounds-checked in SQL and returns null in both cases; we
+   *     re-fetch to disambiguate the 404 message).
+   *   - 200 — `{ lifebook, correction }` where `correction` echoes the
+   *     before/after and the provenance node id.
+   *
+   * This is a content mutation, not an action the twin executes, so it
+   * does NOT flow through the policy engine — there's no autonomous
+   * action, no spend, and no external side effect. It's the user
+   * correcting the twin's reading of their own memory. Provenance is
+   * still recorded (the feedback node) so the correction is auditable.
+   */
+  router.patch('/:userId/:domainName/facts/:index', async (req, res, next) => {
+    try {
+      const { userId, domainName, index } = req.params;
+      if (!userId || !domainName || index === undefined) {
+        res.status(400).json({ error: 'Missing userId, domainName, or index' });
+        return;
+      }
+      // `index` arrives as a string path segment — accept only a
+      // non-negative integer. parseInt would silently accept '3abc'
+      // → 3; use a strict integer regex first.
+      if (!/^\d+$/.test(index)) {
+        res.status(400).json({ error: 'index must be a non-negative integer' });
+        return;
+      }
+      const factIndex = Number.parseInt(index, 10);
+      if (!Number.isSafeInteger(factIndex)) {
+        res.status(400).json({ error: 'index out of range' });
+        return;
+      }
+      const body = req.body as { text?: unknown } | undefined;
+      if (typeof body?.text !== 'string' || body.text.trim().length === 0) {
+        res.status(400).json({ error: 'text must be a non-empty string' });
+        return;
+      }
+      // Cap the corrected fact length so a runaway client can't write a
+      // multi-MB string into the JSONB array.
+      const correctedText = body.text.trim().slice(0, 2000);
+
+      // Decode the path segment once (every sibling route does this): the
+      // frontend encodeURIComponent's the domain, so multi-word domains like
+      // "Aging Parents" arrive as "Aging%20Parents". Passing the raw segment
+      // to findByDomain/editSampleSignal would never match → silent 404.
+      const decodedDomain = decodeURIComponent(domainName);
+
+      // Snapshot the pre-edit value so the provenance node + response
+      // can echo the before/after. A missing lifebook → 404.
+      const before = await lifebookRepository.findByDomain(userId, decodedDomain);
+      if (!before) {
+        res.status(404).json({ error: 'Lifebook not found' });
+        return;
+      }
+      const previousText =
+        Array.isArray(before.sample_signals) && factIndex < before.sample_signals.length
+          ? before.sample_signals[factIndex]
+          : undefined;
+
+      const updated = await lifebookRepository.editSampleSignal(
+        userId,
+        decodedDomain,
+        factIndex,
+        correctedText,
+      );
+      if (!updated) {
+        // Lifebook exists (we fetched it above) but the index was out
+        // of range — the SQL bounds-check returned no row.
+        res.status(404).json({
+          error: `No extracted fact at index ${factIndex} for this Lifebook`,
+        });
+        return;
+      }
+
+      // Record the correction as a user-authored provenance node. This
+      // is best-effort: if provenance write fails, the fact edit still
+      // stands (the correction is the user's intent; losing the audit
+      // trail is the lesser harm). Source provenance is explicit
+      // `userCorrected: true` — never inferred from absence.
+      let correctionNodeId: string | null = null;
+      try {
+        const node = await provenanceRepository.writeNode({
+          userId,
+          nodeType: 'feedback',
+          refTable: 'lifebooks',
+          refId: updated.id,
+          wingId: updated.wing_id,
+          payload: {
+            kind: 'fact_correction',
+            domainName: updated.domain_name,
+            factIndex,
+            previousText: previousText ?? null,
+            correctedText,
+            userCorrected: true,
+          },
+        });
+        correctionNodeId = node.id;
+      } catch (err) {
+        log.warn('failed to write fact-correction provenance node', {
+          userId,
+          domainName,
+          factIndex,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+
+      res.json({
+        lifebook: rowToJson(updated),
+        correction: {
+          factIndex,
+          previousText: previousText ?? null,
+          correctedText,
+          provenanceNodeId: correctionNodeId,
+        },
+      });
     } catch (err) {
       next(err);
     }
