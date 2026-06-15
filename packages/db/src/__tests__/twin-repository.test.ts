@@ -8,6 +8,9 @@ vi.mock('../connection.js', () => ({
 }));
 
 const { twinRepository } = await import('../repositories/twin-repository.js');
+const { runWithRequestContext, UserContextMismatchError } = await import(
+  '../request-context.js'
+);
 
 describe('twinRepository.isDraftsEnabled (#302)', () => {
   beforeEach(() => {
@@ -203,5 +206,48 @@ describe('twinRepository.clearDraftsEvalPass (#301)', () => {
   it('returns null when the user has no twin_profiles row', async () => {
     mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
     expect(await twinRepository.clearDraftsEvalPass('u-missing')).toBeNull();
+  });
+});
+
+describe('twinRepository request-context isolation (#408)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('AC-3: a cross-user query attempt under an active context throws before touching the DB', async () => {
+    mockQuery.mockResolvedValue({ rows: [{ drafts_enabled: true }], rowCount: 1 });
+
+    // Request context is user-a; a deep callee asks for user-b's profile.
+    await runWithRequestContext({ userId: 'user-a' }, async () => {
+      await expect(twinRepository.getProfile('user-b')).rejects.toBeInstanceOf(
+        UserContextMismatchError,
+      );
+    });
+
+    // The assertion must fire BEFORE the query — no DB round-trip on a
+    // blocked cross-user read.
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  it('allows the matching userId under an active context (happy path)', async () => {
+    mockQuery.mockResolvedValue({ rows: [{ user_id: 'user-a' }], rowCount: 1 });
+    await runWithRequestContext({ userId: 'user-a' }, async () => {
+      const profile = await twinRepository.getProfile('user-a');
+      expect(profile).toEqual({ user_id: 'user-a' });
+    });
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it('writes are guarded too — a cross-user updateProfile throws before the transaction', async () => {
+    await runWithRequestContext({ userId: 'user-a' }, async () => {
+      await expect(
+        twinRepository.updateProfile('user-b', { preferences: [] }),
+      ).rejects.toBeInstanceOf(UserContextMismatchError);
+    });
+  });
+
+  it('stays a no-op with no active context (worker / seed path unaffected)', async () => {
+    mockQuery.mockResolvedValue({ rows: [{ drafts_enabled: false }], rowCount: 1 });
+    await expect(twinRepository.isDraftsEnabled('user-anything')).resolves.toBe(false);
   });
 });

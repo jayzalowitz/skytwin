@@ -8,6 +8,18 @@
 export { getPool, query, withTransaction, healthCheck, closePool, getPoolStats } from './connection.js';
 export type { DatabaseConfig } from './connection.js';
 
+// Request-scoped context (#408): AsyncLocalStorage carries the authoritative
+// userId across async boundaries so deep callees — including this repository
+// layer — can assert they're operating in the right user's context.
+export {
+  runWithRequestContext,
+  getRequestContext,
+  getRequestUserId,
+  assertUserContext,
+  UserContextMismatchError,
+} from './request-context.js';
+export type { RequestContext } from './request-context.js';
+
 // Idempotent seed/provision helper (spec 10 Part B) — shared by the launch
 // demo fixture (spec 09) and any re-runnable seed path.
 export { seedUpsert, buildUpsertSql, type UpsertSpec, type Queryable } from './seeds/upsert.js';
