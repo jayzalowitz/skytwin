@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SkyTwin Demo — five minutes from cold start to trust</title>
+  <meta name="description" content="A five-minute SkyTwin launch demo storyboard: sample profile, briefing, approvals, settings, pause controls, and the automated recorder path.">
+  <link rel="canonical" href="https://jayzalowitz.github.io/skytwin/demo.html">
+  <!-- No external font fetch: the --font-* vars below fall back to the system
+       stack, matching the self-contained sibling pages (index/privacy/terms)
+       and keeping this privacy-focused doc set free of third-party requests. -->
+  <style>
+    :root {
+      --bg: #0E0F13;
+      --surface: #16181F;
+      --elevated: #1D2029;
+      --border: #272B38;
+      --border-strong: #363B4C;
+      --text: #ECEDF1;
+      --text-muted: #9CA0AE;
+      --text-dim: #5E6374;
+      --accent: #7C72E8;
+      --accent-hover: #9A92F2;
+      --accent-soft: rgba(124,114,232,.16);
+      --safe: #46C08A;
+      --danger: #F26D5B;
+      --shadow: 0 24px 80px rgba(0, 0, 0, .32);
+      --font-ui: "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --font-voice: "Fraunces", Georgia, serif;
+      --font-data: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-ui);
+      line-height: 1.5;
+    }
+
+    a {
+      color: inherit;
+      text-decoration-color: rgba(124, 114, 232, .58);
+      text-underline-offset: .22em;
+    }
+
+    a:hover { color: var(--accent-hover); }
+
+    .nav {
+      position: fixed;
+      inset: 0 0 auto;
+      z-index: 10;
+      border-bottom: 1px solid rgba(39, 43, 56, .72);
+      background: rgba(14, 15, 19, .82);
+      backdrop-filter: blur(18px);
+    }
+
+    .nav-inner,
+    .wrap {
+      width: min(1120px, calc(100% - 2rem));
+      margin: 0 auto;
+    }
+
+    .nav-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      min-height: 64px;
+    }
+
+    .brand,
+    .nav-links {
+      display: inline-flex;
+      align-items: center;
+    }
+
+    .brand {
+      gap: .65rem;
+      font-weight: 600;
+      text-decoration: none;
+    }
+
+    .brand-mark {
+      display: grid;
+      place-items: center;
+      width: 2rem;
+      height: 2rem;
+      border-radius: 8px;
+      background: var(--accent);
+      color: #fff;
+      font-weight: 600;
+    }
+
+    .nav-links {
+      gap: 1rem;
+      color: var(--text-muted);
+      font-size: .9rem;
+    }
+
+    .nav-links a { text-decoration: none; }
+
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 42px;
+      padding: 0 .95rem;
+      border: 1px solid var(--border-strong);
+      border-radius: 6px;
+      color: var(--text);
+      font-weight: 500;
+      text-decoration: none;
+    }
+
+    .button:hover {
+      border-color: var(--accent-hover);
+      background: rgba(255, 255, 255, .04);
+      color: var(--text);
+    }
+
+    .button.primary {
+      border-color: var(--accent);
+      background: var(--accent);
+      color: #fff;
+    }
+
+    .button.primary:hover {
+      border-color: var(--accent-hover);
+      background: var(--accent-hover);
+      color: #fff;
+    }
+
+    .hero {
+      position: relative;
+      min-height: 82vh;
+      display: flex;
+      align-items: flex-end;
+      padding: 9rem 0 5rem;
+      border-bottom: 1px solid var(--border);
+      background-image:
+        linear-gradient(90deg, rgba(14, 15, 19, .97) 0%, rgba(14, 15, 19, .82) 45%, rgba(14, 15, 19, .28) 100%),
+        linear-gradient(0deg, rgba(14, 15, 19, .82) 0%, rgba(14, 15, 19, .1) 44%),
+        url("screenshots/onboarding.png");
+      background-size: cover;
+      background-position: center top;
+    }
+
+    .hero-copy {
+      max-width: 680px;
+    }
+
+    .eyebrow {
+      margin: 0 0 .9rem;
+      color: var(--text-muted);
+      font-family: var(--font-data);
+      font-size: .72rem;
+      font-weight: 500;
+      text-transform: uppercase;
+    }
+
+    h1,
+    h2,
+    h3,
+    p { margin-top: 0; }
+
+    h1 {
+      margin-bottom: 1rem;
+      font-size: clamp(3rem, 7vw, 6.4rem);
+      line-height: .98;
+      font-weight: 600;
+    }
+
+    .lede {
+      max-width: 620px;
+      color: var(--text);
+      font-size: clamp(1.12rem, 2vw, 1.34rem);
+      line-height: 1.45;
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: .75rem;
+      margin-top: 1.65rem;
+    }
+
+    .section {
+      padding: 5rem 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .section.compact { padding: 3.5rem 0; }
+
+    .section-heading {
+      max-width: 760px;
+      margin-bottom: 2rem;
+    }
+
+    .section-heading h2 {
+      margin-bottom: .8rem;
+      font-size: clamp(2rem, 4vw, 3.4rem);
+      line-height: 1.08;
+      font-weight: 600;
+    }
+
+    .section-heading p {
+      color: var(--text-muted);
+      font-size: 1.04rem;
+    }
+
+    .demo-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 1rem;
+    }
+
+    .metric {
+      padding: 1rem;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--surface);
+    }
+
+    .metric strong {
+      display: block;
+      margin-bottom: .35rem;
+      font-size: 1.65rem;
+      line-height: 1;
+    }
+
+    .metric span {
+      color: var(--text-muted);
+      font-size: .9rem;
+    }
+
+    .story {
+      display: grid;
+      gap: 3rem;
+    }
+
+    .story-step {
+      display: grid;
+      grid-template-columns: minmax(0, .86fr) minmax(0, 1.14fr);
+      gap: 2rem;
+      align-items: center;
+    }
+
+    .story-step:nth-child(even) {
+      grid-template-columns: minmax(0, 1.14fr) minmax(0, .86fr);
+    }
+
+    .story-step:nth-child(even) .copy { order: 2; }
+
+    .step-number {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 2rem;
+      height: 2rem;
+      margin-bottom: .9rem;
+      border: 1px solid var(--border-strong);
+      border-radius: 999px;
+      color: var(--text-muted);
+      font-family: var(--font-data);
+      font-size: .78rem;
+    }
+
+    .copy h3 {
+      margin-bottom: .65rem;
+      font-size: clamp(1.55rem, 3vw, 2.3rem);
+      line-height: 1.08;
+    }
+
+    .copy p {
+      color: var(--text-muted);
+      font-size: 1rem;
+    }
+
+    .voice {
+      font-family: var(--font-voice);
+      font-weight: 500;
+    }
+
+    .frame {
+      margin: 0;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--surface);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .frame img {
+      display: block;
+      width: 100%;
+      height: auto;
+    }
+
+    .script {
+      display: grid;
+      grid-template-columns: minmax(0, .85fr) minmax(0, 1.15fr);
+      gap: 2rem;
+      align-items: start;
+    }
+
+    pre {
+      margin: 0;
+      padding: 1rem;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--surface);
+      color: var(--text);
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
+    code {
+      font-family: var(--font-data);
+      font-size: .85em;
+    }
+
+    .checklist {
+      display: grid;
+      gap: .8rem;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .checklist li {
+      padding: .85rem 1rem;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--surface);
+      color: var(--text-muted);
+    }
+
+    .checklist strong {
+      color: var(--text);
+      font-weight: 600;
+    }
+
+    footer {
+      padding: 2.5rem 0 3rem;
+      color: var(--text-dim);
+      font-size: .9rem;
+    }
+
+    @media (max-width: 860px) {
+      .nav-links a:not(.button) { display: none; }
+      .demo-grid,
+      .story-step,
+      .story-step:nth-child(even),
+      .script {
+        grid-template-columns: 1fr;
+      }
+      .story-step:nth-child(even) .copy { order: 0; }
+    }
+
+    @media (max-width: 560px) {
+      .hero {
+        min-height: 86vh;
+        padding-top: 7rem;
+        background-image:
+          linear-gradient(90deg, rgba(14, 15, 19, .96) 0%, rgba(14, 15, 19, .86) 100%),
+          linear-gradient(0deg, rgba(14, 15, 19, .84) 0%, rgba(14, 15, 19, .12) 44%),
+          url("screenshots/onboarding.png");
+        background-position: center top;
+      }
+      .actions { display: grid; }
+      .button { width: 100%; }
+      .nav .button { width: auto; min-height: 36px; padding: 0 .75rem; }
+    }
+  </style>
+</head>
+<body>
+  <nav class="nav" aria-label="Primary">
+    <div class="nav-inner">
+      <a class="brand" href="index.html" aria-label="SkyTwin home">
+        <span class="brand-mark">S</span>
+        <span>SkyTwin</span>
+      </a>
+      <div class="nav-links">
+        <a href="index.html">Home</a>
+        <a href="demo.md">Demo script</a>
+        <a class="button" href="https://github.com/jayzalowitz/skytwin">GitHub</a>
+      </div>
+    </div>
+  </nav>
+
+  <main>
+    <section class="hero">
+      <div class="wrap">
+        <div class="hero-copy">
+          <p class="eyebrow">Launch demo</p>
+          <h1>Five minutes from cold start to trust.</h1>
+          <p class="lede">The demo path uses a seeded sample profile, so the product shows real decisions, real explanations, and real controls without connecting a private inbox.</p>
+          <div class="actions">
+            <a class="button primary" href="https://github.com/jayzalowitz/skytwin/releases/latest">Download desktop beta</a>
+            <a class="button" href="demo.md">Read the operator script</a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section compact">
+      <div class="wrap">
+        <div class="demo-grid" role="group" aria-label="Demo facts">
+          <div class="metric">
+            <strong>0</strong>
+            <span>real accounts needed for the sample-profile demo.</span>
+          </div>
+          <div class="metric">
+            <strong>5 min</strong>
+            <span>target runtime from first screen to pause control.</span>
+          </div>
+          <div class="metric">
+            <strong>1 cmd</strong>
+            <span>automated recorder path for screenshots, narration, and mp4 assembly.</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="wrap">
+        <div class="section-heading">
+          <p class="eyebrow">Story spine</p>
+          <h2>The demo is a trust arc, not a feature tour.</h2>
+          <p>Each scene proves one thing a launch viewer needs to believe before leaving personal automation running on their machine.</p>
+        </div>
+        <div class="story">
+          <article class="story-step">
+            <div class="copy">
+              <span class="step-number">01</span>
+              <h3>Start with a safe way in.</h3>
+              <p>The first-run modal offers Google setup, a direct self-description path, and a sample profile. The sample path is the demo path because it avoids private data and shows the full loop immediately.</p>
+            </div>
+            <figure class="frame">
+              <img src="screenshots/onboarding.png" alt="SkyTwin onboarding modal offering email connection, self-description, or a sample profile" loading="lazy">
+            </figure>
+          </article>
+
+          <article class="story-step">
+            <div class="copy">
+              <span class="step-number">02</span>
+              <h3 class="voice">Two things need you.</h3>
+              <p>The briefing is the memorable surface. It separates action from awareness, shows what SkyTwin handled, and gives power users a path to inspect why.</p>
+            </div>
+            <figure class="frame">
+              <img src="screenshots/briefing.png" alt="SkyTwin briefing with to-dos, topics, and Power view" loading="lazy">
+            </figure>
+          </article>
+
+          <article class="story-step">
+            <div class="copy">
+              <span class="step-number">03</span>
+              <h3>Every approval carries its why.</h3>
+              <p>The pending-action screen is where the safety model becomes visible. The user sees what the twin wants to do, what evidence it used, and how to say yes or no in plain language.</p>
+            </div>
+            <figure class="frame">
+              <img src="screenshots/approvals.png" alt="SkyTwin approvals page with pending actions that need the user's OK" loading="lazy">
+            </figure>
+          </article>
+
+          <article class="story-step">
+            <div class="copy">
+              <span class="step-number">04</span>
+              <h3>Trust controls are not buried.</h3>
+              <p>Settings shows autonomy level, spend caps, credential status, connected accounts, and erasure controls. This is where the viewer sees that autopilot is earned, bounded, and reversible where possible.</p>
+            </div>
+            <figure class="frame">
+              <img src="screenshots/settings.png" alt="SkyTwin settings page with autonomy, spend, credential, and privacy controls" loading="lazy">
+            </figure>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section compact">
+      <div class="wrap script">
+        <div>
+          <p class="eyebrow">No-human render</p>
+          <h2>Generate the launch video without screen recording.</h2>
+          <p>The recorder drives the UI with Playwright, captures frames, synthesizes narration with local Piper TTS (via the app's own <code>/api/voice/synthesize</code>), and assembles an mp4 with ffmpeg. No API keys, no cloud — every dependency is local-first and open-source.</p>
+        </div>
+        <pre><code># one-time: install the standalone recorder + headless browser
+cd scripts/demo
+pnpm install --ignore-workspace
+pnpm exec playwright install chromium   # ffmpeg must be on PATH
+
+# render: boot the dev stack, seed the sample profile, record
+pnpm dev      # terminal 1: API + worker + web
+pnpm db:seed  # terminal 2: one-time per fresh DB
+pnpm record   # narration via local Piper /api/voice/synthesize</code></pre>
+      </div>
+    </section>
+
+    <section class="section compact">
+      <div class="wrap">
+        <div class="section-heading">
+          <p class="eyebrow">Launch checks</p>
+          <h2>What the demo must prove.</h2>
+        </div>
+        <ul class="checklist">
+          <li><strong>Cold load has a useful path.</strong> A stranger can explore with a sample profile before touching OAuth.</li>
+          <li><strong>The briefing knows the difference between act and FYI.</strong> The accent means attention, not decoration.</li>
+          <li><strong>Approvals teach the model.</strong> Yes, no, edits, and feedback are part of the product loop.</li>
+          <li><strong>Autonomy is inspectable.</strong> Trust tiers, spend limits, credential status, pause, and delete are visible.</li>
+        </ul>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <p>SkyTwin demo assets live in <a href="https://github.com/jayzalowitz/skytwin/tree/main/docs/screenshots">docs/screenshots</a>. The operator script is <a href="demo.md">docs/demo.md</a>.</p>
+      <p>Last updated: 2026-06-16.</p>
+    </div>
+  </footer>
+</body>
+</html>
