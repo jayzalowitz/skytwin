@@ -21,7 +21,7 @@
     "expo-barcode-scanner": "~13.0.0",
     "expo-camera": "~56.0.7",
     "expo-file-system": "~56.0.7",
-    "expo-notifications": "~56.0.15",
+    "expo-notifications": "~56.0.18",
     "expo-secure-store": "~56.0.4",
     "expo-status-bar": "~56.0.4",
     "react": "19.2.7",
