@@ -6,9 +6,9 @@
   <title>SkyTwin Demo — five minutes from cold start to trust</title>
   <meta name="description" content="A five-minute SkyTwin launch demo storyboard: sample profile, briefing, approvals, settings, pause controls, and the automated recorder path.">
   <link rel="canonical" href="https://jayzalowitz.github.io/skytwin/demo.html">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500&family=Geist:wght@400;450;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <!-- No external font fetch: the --font-* vars below fall back to the system
+       stack, matching the self-contained sibling pages (index/privacy/terms)
+       and keeping this privacy-focused doc set free of third-party requests. -->
   <style>
     :root {
       --bg: #0E0F13;
@@ -384,8 +384,8 @@
         <span>SkyTwin</span>
       </a>
       <div class="nav-links">
-        <a href="index.html#product">Product</a>
-        <a href="index.html#trust">Trust</a>
+        <a href="index.html">Home</a>
+        <a href="demo.md">Demo script</a>
         <a class="button" href="https://github.com/jayzalowitz/skytwin">GitHub</a>
       </div>
     </div>
@@ -408,7 +408,7 @@
 
     <section class="section compact">
       <div class="wrap">
-        <div class="demo-grid" aria-label="Demo facts">
+        <div class="demo-grid" role="group" aria-label="Demo facts">
           <div class="metric">
             <strong>0</strong>
             <span>real accounts needed for the sample-profile demo.</span>
@@ -485,19 +485,17 @@
         <div>
           <p class="eyebrow">No-human render</p>
           <h2>Generate the launch video without screen recording.</h2>
-          <p>The recorder drives the UI with Playwright, captures frames, synthesizes narration, and assembles an mp4 with ffmpeg. Piper is the local default; ElevenLabs is the polish path.</p>
+          <p>The recorder drives the UI with Playwright, captures frames, synthesizes narration with local Piper TTS (via the app's own <code>/api/voice/synthesize</code>), and assembles an mp4 with ffmpeg. No API keys, no cloud — every dependency is local-first and open-source.</p>
         </div>
-        <pre><code>pnpm dev
-pnpm db:seed
-
+        <pre><code># one-time: install the standalone recorder + headless browser
 cd scripts/demo
 pnpm install --ignore-workspace
-pnpm exec playwright install chromium
+pnpm exec playwright install chromium   # ffmpeg must be on PATH
 
-export SKYTWIN_TTS_PROVIDER=elevenlabs
-export ELEVENLABS_API_KEY=...
-pnpm narrate
-pnpm record</code></pre>
+# render: boot the dev stack, seed the sample profile, record
+pnpm dev      # terminal 1: API + worker + web
+pnpm db:seed  # terminal 2: one-time per fresh DB
+pnpm record   # narration via local Piper /api/voice/synthesize</code></pre>
       </div>
     </section>
 
