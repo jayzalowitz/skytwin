@@ -47,15 +47,14 @@ The remaining launch blockers are **not code**:
 
 ## The one code-side launch task
 
-**[#374 — user memory and preferences are stored unencrypted](https://github.com/jayzalowitz/skytwin/issues/374)** (P1, Epic D). The audit confirms this is **entirely unimplemented**: only OAuth tokens are encrypted today (migration `032`, via `@skytwin/credential-vault`). `brain_pages`, `preferences`, `twin_profiles`, `decisions`, `signals`, `explanation_records`, episodic/assistant/lifebook tables (~14 total) all store plaintext.
+**[#374 — user memory and preferences are stored unencrypted](https://github.com/jayzalowitz/skytwin/issues/374)** (P1, Epic D). Re-audited 2026-06-16 (full code-state findings on the issue). The encryption **infrastructure shipped** via #520 — but it is **dormant** in production and **partial**, and the memory half has an architectural conflict that makes it a design task, not a wiring task:
 
-It is code-writable — the issue's "Option B" (application-level envelope encryption, reusing `credential-vault`'s `envelope.ts` + `key-cache.ts`) avoids the only paid path (CRDB Enterprise TDE). The shape:
+- **Shipped (#520):** migration `066-encrypt-high-value-tables.sql` adds `_encrypted BYTES` columns to `preferences` / `twin_profiles` / `brain_pages`; `packages/db/src/lib/vault-helper.ts` (`encryptColumn`/`readColumn`/`resolveKey`, AES-256-GCM + scrypt); and encrypt-on-write / decrypt-on-read wiring in `twin-repository-adapter.ts` **for `preferences` only**.
+- **Dormant:** `setPreferenceVaultKeyProvider(...)` is called **only in tests** — no app composition root enables it, so `vaultKeyProvider` stays `null` and even preferences are written plaintext in the running app. Enabling it is the #401 key-management call.
+- **Partial:** `twin_profiles`' 7 `_encrypted` columns are unused, and `brain_pages` (user memory) is written plaintext (`memory-gbrain-crdb-adapter/src/repository.ts:41` ignores the `_encrypted` columns).
+- **The hard part:** `brain_pages` is the *searchable* store. RRF retrieval needs `content_tsv @@ plainto_tsquery` (full-text) and `embedding <=>` (vector), both derived from plaintext content — and a `tsvector` stores the lexemes in the clear, so encrypting `content` while keeping the index queryable leaks it anyway, while encrypting the index breaks search. So memory-at-rest encryption needs a design (scope to non-searched columns, index-time decrypt, or searchable encryption), not just an `encryptColumn` call.
 
-1. New migrations adding `<col>_encrypted/_iv/_tag BYTES` + `encryption_key_version INT` to the sensitive tables (mirroring `032`), making plaintext columns nullable for a lazy-migration window.
-2. Encrypt-on-write / decrypt-on-read wrapping in the brain/memory/episodic/preference/twin/decision/signal/explanation/assistant/lifebook repositories, with plaintext fallback during migration.
-3. A shared vault accessor for the master key.
-
-**Why it isn't in this PR:** the master-key strategy is a deliberate security decision — passphrase-derived vs OS-keychain-backed (this is exactly [#401](https://github.com/jayzalowitz/skytwin/issues/401)). Shipping envelope encryption with the wrong key-management model is worse than shipping none. This should be designed and reviewed, not auto-merged. **Recommended:** make the #374↔#401 key-management call, then implement in a dedicated, reviewed PR. It is the top engineering pre-launch item.
+**Why it isn't auto-fixable:** enabling the provider with a wrong/ephemeral master key is worse than shipping none (lost key → unrecoverable memory) — that's exactly the #374↔#401 decision — and the memory search-conflict needs a design call. **Recommended sequence:** decide #401 key management → enable the provider (makes the existing preference encryption live) → extend to `twin_profiles` (not searched, straightforward) → design `brain_pages` against the search conflict. Top engineering pre-launch item.
 
 ## Issues closed this pass (shipped, verified in code)
 
@@ -66,16 +65,13 @@ It is code-writable — the issue's "Option B" (application-level envelope encry
 | [#479](https://github.com/jayzalowitz/skytwin/issues/479) | Inbound security-alert classifier, escalate-only (zero auto-exec); 7/8 ACs + defense-in-depth |
 | [#489](https://github.com/jayzalowitz/skytwin/issues/489) | Power view — inline technical depth; all ACs, QA'd live |
 
-## Inbox-Intelligence epic ([#484](https://github.com/jayzalowitz/skytwin/issues/484)) — 11/14 shipped
+## Inbox-Intelligence epic ([#484](https://github.com/jayzalowitz/skytwin/issues/484)) — read layer complete
 
-Merged via #488. Shipped **and** wired into the live digest: #474, #476, #477, #479, #480, #481, #482, #483, #486 (foundation), #487, #489. **Three extractors are built + tested but not yet consumed** in the live path — closing these closes the epic:
-- **#485** — hide/pin enforcement in `buildLiveDigest` (`DigestItem.meta` population).
-- **#475** — wire `extractCommitments` into the digest.
-- **#478** — wire `linkEntitiesAcrossSignals` into cluster dedup.
+Merged via #488 + follow-ups. As of 2026-06-16 the three extractors that were "built but not consumed" are now **wired into the live digest and their issues closed**: #485 (hide/pin enforcement in `buildLiveDigest`), #475 (`extractCommitments`), #478 (`linkEntitiesAcrossSignals` cluster dedup), alongside #474/#481/#482/#486/#487 (all verified in code + closed this pass). The epic's read layer is complete; #483 (the "grandma seed" new-user bootstrap) is the one ambiguous remainder — idempotent seeding + the demo fixture ship, but what "grandma seed" requires beyond the demo persona needs a one-line product clarification.
 
 ## Dependabot PRs
 
-9 of 10 are CI-clean and mergeable: #494, #493, #492, #491, #490, #473, #472, #471, #470. **#469** (bonjour-service) has 2 failing checks. Recommendation: batch-review and merge the 9 clean ones in a separate pass (per the repo's "/review every PR" discipline); investigate #469's failures before merging. Deliberately left out of the launch-readiness PR to avoid churning dependencies right before a release.
+**Done (2026-06-16):** all 10 open bumps (#469–#494, incl. the bonjour-service one that had been failing) were batched into a single lockfile regeneration and merged via **#522**; the individual PRs are closed as superseded. `pnpm build` 35/35 + `pnpm lint` 61/61 + all six platform installer builds + eval + Test green on the batch.
 
 ## Full audit — every open issue
 
