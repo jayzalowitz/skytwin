@@ -68,3 +68,52 @@ describe('PromptBuilder.buildCandidatePrompt (#411)', () => {
     }
   });
 });
+
+describe('PromptBuilder PII redaction (#375)', () => {
+  function decisionWithEmail(): DecisionObject {
+    return {
+      ...makeDecision(),
+      rawData: { from: 'sender@acme.com', subject: 'Q3 report due Friday' },
+    };
+  }
+
+  function contextWithEmailMemory(): DecisionContext {
+    return {
+      ...makeContext(),
+      // EpisodicMemory summaries are user memory and can quote addresses.
+      episodicMemories: [
+        { situationSummary: 'email from boss@corp.com', actionTaken: 'archived', feedbackType: 'approved' },
+      ] as never,
+    };
+  }
+
+  it('redacts email addresses in the raw-data dump by default', () => {
+    const prompt = PromptBuilder.buildCandidatePrompt(decisionWithEmail(), makeContext());
+    expect(prompt).not.toContain('sender@acme.com');
+    expect(prompt).toContain('[redacted:email]');
+    // Non-PII content the model reasons about survives.
+    expect(prompt).toContain('Q3 report due Friday');
+  });
+
+  it('redacts email addresses in episodic-memory summaries by default', () => {
+    const prompt = PromptBuilder.buildCandidatePrompt(makeDecision(), contextWithEmailMemory());
+    expect(prompt).not.toContain('boss@corp.com');
+    expect(prompt).toContain('[redacted:email]');
+  });
+
+  it('passes raw addresses through when redactPii is explicitly disabled', () => {
+    const prompt = PromptBuilder.buildCandidatePrompt(decisionWithEmail(), makeContext(), { redactPii: false });
+    expect(prompt).toContain('sender@acme.com');
+  });
+
+  it('redacts the raw event in buildSituationPrompt by default', () => {
+    const prompt = PromptBuilder.buildSituationPrompt({ from: 'alice@example.org', body: 'hi' });
+    expect(prompt).not.toContain('alice@example.org');
+    expect(prompt).toContain('[redacted:email]');
+  });
+
+  it('buildSituationPrompt passes through when redactPii is disabled', () => {
+    const prompt = PromptBuilder.buildSituationPrompt({ from: 'alice@example.org' }, { redactPii: false });
+    expect(prompt).toContain('alice@example.org');
+  });
+});
