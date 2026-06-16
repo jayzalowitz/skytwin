@@ -1,6 +1,6 @@
 # SkyTwin Launch-Readiness Report
 
-**Date:** 2026-06-14 · **Version audited:** 0.6.58.0 · **Branch:** `jayzalowitz/launch-readiness-audit`
+**Date:** 2026-06-14 (updated 2026-06-16) · **Version audited:** 0.6.58.0 · **Branch:** `jayzalowitz/launch-readiness-audit`
 
 This report is the output of a full launch-readiness pass: every open GitHub issue audited against the actual code (not the issue narrative), the whole app built/tested/linted, and the running dashboard QA'd against the [master pre-launch epic #357](https://github.com/jayzalowitz/skytwin/issues/357) launch criteria. It pairs with [`launch-plan.md`](./launch-plan.md) (the procurement/sequencing plan) — this document is the *current-state truth*.
 
@@ -94,14 +94,14 @@ Verdict legend: ✅ shipped · 🟡 partial · ⬜ not started · ⛔ external (
 | [#357](https://github.com/jayzalowitz/skytwin/issues/357) | 🟡 partial | **YES** | — | Code-writable launch criteria have shipped; rest is external |
 | [#359](https://github.com/jayzalowitz/skytwin/issues/359) | ⛔ external | **YES** | — | Apple Developer + Windows EV cert purchase/enroll |
 | [#360](https://github.com/jayzalowitz/skytwin/issues/360) | 🟡 partial | **YES** | yes | Mobile: #369 store-readiness gate is the bulk |
-| [#361](https://github.com/jayzalowitz/skytwin/issues/361) | 🟡 partial | — | yes | Epic D: #374 + #375(b) remain |
+| [#361](https://github.com/jayzalowitz/skytwin/issues/361) | 🟡 partial | — | yes | Epic D: #375 decision-path redactor shipped (#524). Remaining: #374 (encryption — needs #401 key-mgmt decision) + #375 follow-ups (assistant block, number/name). |
 | [#368](https://github.com/jayzalowitz/skytwin/issues/368) | ⛔ external | **YES** | — | Code-signing certs + notarization (external) |
 | [#369](https://github.com/jayzalowitz/skytwin/issues/369) | 🟡 partial | **YES** | partly | EAS config + CI rewrite (code) · real icons + store accounts (external) |
-| [#370](https://github.com/jayzalowitz/skytwin/issues/370) | 🟡 code complete | **YES** | yes | manifest gen + curl-latest CI shipped (runbook in docs/release-procedure.md); user-facing update banner + "Check for Updates…" menu shipped; only signed-build e2e remains (gated on #368) |
+| [#370](https://github.com/jayzalowitz/skytwin/issues/370) | ✅ closed | done | yes | Code complete + closed: manifests + curl-latest CI + the user-facing banner + "Check for Updates…" menu all shipped (#523). Only signed-build e2e remains, tracked under #368. |
 | [#374](https://github.com/jayzalowitz/skytwin/issues/374) | ⬜ not started | **YES** | yes | Encrypt ~14 sensitive tables at rest — **needs key-mgmt decision (#401)** |
-| [#375](https://github.com/jayzalowitz/skytwin/issues/375) | 🟡 partial | — | yes | Only in-prompt PII redactor (b) — explicitly deferred to v0.8 |
-| [#386](https://github.com/jayzalowitz/skytwin/issues/386) | 🟡 partial | — | yes | Wire chunked-upload backbone into `VoiceScreen.tsx` |
-| [#387](https://github.com/jayzalowitz/skytwin/issues/387) | 🟡 partial | — | yes | Native inline notification Approve/Reject actions (routing slice shipped) |
+| [#375](https://github.com/jayzalowitz/skytwin/issues/375) | 🟡 partial | — | yes | Decision-pipeline redactor shipped (#524): `redactPromptPii` masks email addresses in `PromptBuilder` by default, ReDoS-hardened. Remaining: assistant memory-context block (needs provider-trust gating) + number/name masking. |
+| [#386](https://github.com/jayzalowitz/skytwin/issues/386) | ✅ closed | done | yes | Shipped + closed: resumable chunked voice upload end-to-end — `voice-chunker.ts` + `transcribeChunked()` (per-chunk retry, progress, cancel) + server `/upload/session`/`/chunk`/finalize + 3 test files. Only the airplane-mode manual smoke is device-only. |
+| [#387](https://github.com/jayzalowitz/skytwin/issues/387) | 🟡 partial | — | yes | Deep-link routing slice shipped + wired (tap → specific approval, scrolled into view; `deep-link.ts` + `App.tsx` + `ApprovalsScreen.tsx`, tested). Remaining: native inline Approve/Reject actions (iOS NSE + Android actions + EAS dev build — gated on #360/#404). |
 | [#399](https://github.com/jayzalowitz/skytwin/issues/399) | ⬜ not started | — | yes | Opt-in crash reporting (P3) |
 | [#400](https://github.com/jayzalowitz/skytwin/issues/400) | ⬜ not started | — | yes | Backup/restore CLI (P3) |
 | [#401](https://github.com/jayzalowitz/skytwin/issues/401) | ⬜ not started | — | yes | OS-keychain for vault passphrase (P3) — pairs with #374 |
@@ -125,15 +125,14 @@ Verdict legend: ✅ shipped · 🟡 partial · ⬜ not started · ⛔ external (
 | [#483](https://github.com/jayzalowitz/skytwin/issues/483) | 🟡 partial | — | yes | Grandma seed shipped; tier-ladder intro card remains |
 | [#484](https://github.com/jayzalowitz/skytwin/issues/484) | 🟡 partial | **YES** | yes | 11/14 shipped; wire #485/#475/#478 into live path |
 | [#485](https://github.com/jayzalowitz/skytwin/issues/485) | 🟡 partial | — | yes | Hide/pin enforcement in the live digest path |
-| [#486](https://github.com/jayzalowitz/skytwin/issues/486) | 🟡 partial | — | yes | Foundation shipped; connector locale/tz sync + extractor routing remain |
-| [#487](https://github.com/jayzalowitz/skytwin/issues/487) | 🟡 partial | — | yes | Coverage model shipped on web; mobile parity + flag remain |
+| [#486](https://github.com/jayzalowitz/skytwin/issues/486) | ✅ closed | done | yes | Connector locale/tz sync (`google-profile-sync.ts`) + locale-aware extractor routing shipped; closed. |
+| [#487](https://github.com/jayzalowitz/skytwin/issues/487) | ✅ closed | done | yes | Coverage model (`source-coverage.ts`) shipped + exposed in the digest payload; closed. |
 | [#489](https://github.com/jayzalowitz/skytwin/issues/489) | ✅ shipped | — | yes | Closed |
 
 ## Recommended next actions (ordered)
 
 1. **Procurement (start now — long lead time):** enroll Apple Developer + buy Windows EV cert (#368/#359). The certs alone aren't enough — `build.yml` currently skips signing (`CSC_IDENTITY_AUTO_DISCOVERY: 'false'`), so someone must also wire the cert secrets into its `package:*` steps (see launch-plan §1.3). Submit Google OAuth verification (#351) — multi-week.
-2. **Make the #374 ↔ #401 key-management decision**, then implement memory/preference encryption in a reviewed PR. Top engineering pre-launch item.
-3. **Commission mobile icon/splash assets** (#409), then land the EAS config + CI rewrite (#369, code).
-4. **Finish #370's code half:** generate electron-updater manifests (`latest*.yml`) from `build.yml`'s `release`/`package:*` steps + add a curl-latest CI check. (Pipeline-sensitive — verify on a release dry-run.) The release runbook itself is now written — [`docs/release-procedure.md`](./release-procedure.md).
-5. **Close the Inbox-Intelligence epic (#484):** wire #485/#475/#478 into the live digest (extractors already built + tested).
-6. **Batch-merge the 9 clean dependabot PRs**; investigate #469.
+2. **Make the #374 ↔ #401 key-management decision**, then implement memory/preference encryption in a reviewed PR. Top engineering pre-launch item (the encryption schema + adapter already exist via #520; what remains is the default-on key-management policy decision).
+3. **Mobile cut-or-commit (#360):** decide whether mobile ships at launch. If yes: commission icon/splash assets (#409), land the EAS config + CI (#369/#404), then the native inline notification actions (#387's remaining half). If no: descope to a fast-follow.
+
+**Done since the 2026-06-14 audit (2026-06-16 update):** auto-update code half + user-facing banner/menu (#370, #523 — closed); the 10 dependabot bumps batched + merged (#522, #469–#494 closed); decision-pipeline LLM prompt redaction (#375 decision-path, #524); resumable chunked voice upload verified shipped (#386 — closed); deep-link notification routing verified shipped (#387 routing half); and the Inbox-Intelligence read layer (#324/#474/#478/#481/#482/#485/#486/#487) verified shipped + closed.
