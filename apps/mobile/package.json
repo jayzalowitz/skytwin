@@ -17,7 +17,7 @@
     "@react-navigation/native-stack": "^7.17.5",
     "expo": "~56.0.12",
     "expo-asset": "~56.0.15",
-    "expo-audio": "~56.0.11",
+    "expo-audio": "~56.0.12",
     "expo-barcode-scanner": "~13.0.0",
     "expo-camera": "~56.0.7",
     "expo-file-system": "~56.0.7",
