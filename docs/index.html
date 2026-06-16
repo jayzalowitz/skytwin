@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SkyTwin — a digital twin that learns what you'd want and does it</title>
-  <meta name="description" content="SkyTwin is an open-source, local-first personal assistant. It builds a structured model of your preferences from your inbox and calendar, then acts on your behalf — with explanations, trust tiers, spend limits, and a pause-everything switch. Runs entirely on your machine.">
+  <meta name="description" content="SkyTwin is an open-source, local-first personal assistant. It builds a structured model of your preferences from your inbox and calendar, then acts on your behalf — with explanations, trust tiers, spend limits, and a pause-everything switch. Local by default; cloud AI is opt-in.">
   <link rel="canonical" href="https://jayzalowitz.github.io/skytwin/">
   <meta property="og:title" content="SkyTwin — it acts, it doesn't chat">
   <meta property="og:description" content="Open-source, local-first digital twin: reads your inbox + calendar, splits what needs you from what's just awareness, and acts within limits you set. Five minutes from cold start to trust.">
@@ -128,7 +128,7 @@
     <section class="hero wrap">
       <p class="eyebrow">Open source · local-first · Apache 2.0</p>
       <h1>A digital twin that learns what you'd want — and does it.</h1>
-      <p class="lede">SkyTwin reads your inbox and calendar, builds a structured model of your preferences, and acts on your behalf. It splits what needs you from what's just awareness, explains every decision, and never does anything risky without asking. Everything runs on your machine.</p>
+      <p class="lede">SkyTwin reads your inbox and calendar, builds a structured model of your preferences, and acts on your behalf. It splits what needs you from what's just awareness, explains every decision, and never does anything risky without asking. Local-first by default — cloud AI is opt-in.</p>
       <div class="actions">
         <a class="button primary" href="https://github.com/jayzalowitz/skytwin/releases/latest">Download desktop beta</a>
         <a class="button" href="demo.html">See the 5-minute demo</a>
@@ -159,8 +159,8 @@
         </div>
         <div class="card">
           <span class="tag">Local-first</span>
-          <h3>Your data never leaves</h3>
-          <p>CockroachDB and an optional local LLM are embedded in the desktop app. OAuth tokens are encrypted on disk. Nothing is sent to a server we control — and email addresses are redacted before any prompt reaches a cloud model.</p>
+          <h3>Local by default</h3>
+          <p>CockroachDB and an optional local LLM are embedded in the desktop app, and OAuth tokens are encrypted on disk. We don't run a server your data flows through. Cloud AI is opt-in — and when you choose it, the decision pipeline redacts email addresses from its prompts first.</p>
         </div>
       </div>
     </section>
@@ -169,10 +169,10 @@
       <h2>See it before you connect anything</h2>
       <p class="section-lede">The demo path uses a seeded sample profile, so a stranger sees real decisions, real explanations, and real controls without touching a private inbox. <a href="demo.html">Walk the five-minute storyboard →</a></p>
       <div class="shot-grid">
-        <figure><img class="shot" src="screenshots/onboarding.png" alt="Cold-start onboarding with a 'try a sample profile' path."><figcaption>Cold start — explore with a sample profile in seconds.</figcaption></figure>
-        <figure><img class="shot" src="screenshots/approvals.png" alt="Approvals queue: approve, reject, or edit a proposed action."><figcaption>Approvals — yes, no, or edit; every answer teaches the model.</figcaption></figure>
-        <figure><img class="shot" src="screenshots/settings.png" alt="Settings: autonomy level, spend limits, connected accounts, pause and delete controls."><figcaption>Settings — autonomy, spend limits, pause everything, delete my data.</figcaption></figure>
-        <figure><img class="shot" src="screenshots/briefing.png" alt="The briefing digest with to-dos and topics."><figcaption>Briefing — what needs you, and what's just FYI.</figcaption></figure>
+        <figure><img class="shot" loading="lazy" src="screenshots/onboarding.png" alt="Cold-start onboarding with a 'try a sample profile' path."><figcaption>Cold start — explore with a sample profile in seconds.</figcaption></figure>
+        <figure><img class="shot" loading="lazy" src="screenshots/approvals.png" alt="Approvals queue: approve, reject, or edit a proposed action."><figcaption>Approvals — yes, no, or edit; every answer teaches the model.</figcaption></figure>
+        <figure><img class="shot" loading="lazy" src="screenshots/settings.png" alt="Settings: autonomy level, spend limits, connected accounts, pause and delete controls."><figcaption>Settings — autonomy, spend limits, pause everything, delete my data.</figcaption></figure>
+        <figure><img class="shot" loading="lazy" src="screenshots/briefing.png" alt="The briefing digest with to-dos and topics."><figcaption>Briefing — what needs you, and what's just FYI.</figcaption></figure>
       </div>
     </section>
 
