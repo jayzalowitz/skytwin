@@ -49,13 +49,13 @@ The remaining launch blockers are **not code**:
 
 | Check | Result |
 |---|---|
-| `pnpm install --frozen-lockfile` | ✅ clean (5.6s) |
+| `pnpm install --frozen-lockfile` | ✅ clean |
 | `pnpm audit --prod` + `pnpm audit` | ✅ clean |
 | `pnpm build --concurrency=1 --force` | ✅ 35 targets |
 | `pnpm lint --force` | ✅ 61 targets |
 | `pnpm exec turbo run test --force` | ✅ 70 targets |
 | `pnpm test:e2e` | ✅ DB + API e2e smoke passed |
-| Live QA (api:3100 + web vs seeded CRDB) | ✅ 17 dashboard routes, 0 console errors/4xx/5xx/overflow; memory settings + MCP token generation verified |
+| Live QA (api:3100 + web vs seeded CRDB) | ✅ v0.6.60 runtime sweep remains valid for v0.6.61.0's dev-toolchain-only change: 17 dashboard routes, 0 console errors/4xx/5xx/overflow; memory settings + MCP token generation verified |
 
 ## Launch criteria status (epic #357)
 
