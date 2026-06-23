@@ -13,5 +13,6 @@ describe('global layout guardrails', () => {
   it('wraps long inline code and constrains pre blocks on mobile', () => {
     expect(source).toMatch(/code\s*{[^}]*overflow-wrap:\s*anywhere;/s);
     expect(source).toMatch(/pre\s*{[^}]*max-width:\s*100%;/s);
+    expect(source).toMatch(/pre\s*{[^}]*overflow-x:\s*auto;/s);
   });
 });
