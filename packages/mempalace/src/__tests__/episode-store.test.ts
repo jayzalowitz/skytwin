@@ -52,7 +52,7 @@ function createMockRepo(): EpisodeRepositoryPort {
       return episode;
     }),
 
-    searchEpisodes: vi.fn(async (_userId, terms) => {
+    searchEpisodes: vi.fn(async (_userId: string, terms: string[]) => {
       return episodes.filter((e) =>
         terms.some((t) => e.situationSummary.toLowerCase().includes(t.toLowerCase())),
       );
