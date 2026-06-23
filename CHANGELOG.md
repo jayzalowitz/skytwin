@@ -5,7 +5,7 @@ All notable changes to SkyTwin will be documented in this file.
 ### For contributors
 
 - **Pre-launch dependency checks now cover the full workspace.** The extended audit found dev/build-chain advisories in Vitest/Vite/esbuild and a transitive desktop-packaging `tar` path. Vitest is now on the patched 3.2.6 line across the workspace, `esbuild` and `tar` are pinned to patched versions through pnpm overrides, and both production and full `pnpm audit` runs are clean.
-- **Turbo's GitHub Actions cache is now non-blocking.** The cache proxy is still used when available, but GitHub cache API reservation failures now degrade to a cache miss instead of failing the Test job after install/build/test have already passed. The desktop idle bridge test is also deterministic under Vitest 3 on CI: explicit `powerMonitor: null` now means "headless/no monitor" instead of falling back to Electron resolution, and fake timers are cleared between cases.
+- **Turbo's GitHub Actions cache is now non-blocking.** The cache proxy is still used when available, but GitHub cache API reservation failures now degrade to a cache miss instead of failing the Test job after install/build/test have already passed. The desktop idle bridge test is also deterministic under Vitest 3 on CI: explicit `powerMonitor: null` now means "headless/no monitor" instead of falling back to Electron resolution, and fake timers are cleared between cases. Windows package validation now builds the prompt and registry packages with portable Node copy scripts instead of Unix-only `cp -r` commands.
 
 ## [0.6.60.0] - 2026-06-23
 
