@@ -37,8 +37,13 @@ vi.mock('@skytwin/twin-model', () => ({
 }));
 
 vi.mock('../middleware/session-auth.js', () => ({
-  sessionAuth: (_req: express.Request, _res: express.Response, next: express.NextFunction) =>
-    next(),
+  sessionAuth: (req: express.Request, _res: express.Response, next: express.NextFunction) => {
+    const authenticatedUserId = req.headers['x-auth-user-id'];
+    if (typeof authenticatedUserId === 'string') {
+      req.authenticatedUserId = authenticatedUserId;
+    }
+    next();
+  },
 }));
 
 vi.mock('../middleware/require-ownership.js', () => ({
@@ -60,6 +65,7 @@ async function request(
   app: Express,
   method: 'DELETE' | 'GET',
   path: string,
+  headers: Record<string, string> = {},
 ): Promise<{ status: number; body: Record<string, unknown> }> {
   const [pathOnly, queryStr] = path.split('?');
   const query: Record<string, string> = {};
@@ -73,7 +79,7 @@ async function request(
     const req: Partial<express.Request> = {
       method,
       url: path,
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...headers },
       body: {},
       query,
     } as Partial<express.Request>;
@@ -128,6 +134,57 @@ describe('GET /users/:userId', () => {
     expect(mockUserRepository.findById).not.toHaveBeenCalled();
     expect(mockUserRepository.findByEmail).toHaveBeenCalledWith('test@example.com');
     expect((body['user'] as { id: string }).id).toBe(USER_ID);
+  });
+
+  it('allows an authenticated user to read their own row by email', async () => {
+    mockUserRepository.findById.mockResolvedValue({
+      id: USER_ID,
+      email: 'test@example.com',
+      name: 'Test User',
+      trust_tier: 'observer',
+      created_at: new Date('2026-06-01'),
+    });
+    mockUserRepository.findByEmail.mockResolvedValue({
+      id: USER_ID,
+      email: 'test@example.com',
+      name: 'Test User',
+      trust_tier: 'observer',
+      created_at: new Date('2026-06-01'),
+    });
+
+    const app = makeApp();
+    const { status, body } = await request(
+      app,
+      'GET',
+      '/users/test%40example.com',
+      { 'x-auth-user-id': USER_ID },
+    );
+
+    expect(status).toBe(200);
+    expect(mockUserRepository.findByEmail).toHaveBeenCalledWith('test@example.com');
+    expect((body['user'] as { id: string }).id).toBe(USER_ID);
+  });
+
+  it('403s for non-owned email identifiers without probing whether that email exists', async () => {
+    mockUserRepository.findById.mockResolvedValue({
+      id: USER_ID,
+      email: 'test@example.com',
+      name: 'Test User',
+      trust_tier: 'observer',
+      created_at: new Date('2026-06-01'),
+    });
+
+    const app = makeApp();
+    const { status, body } = await request(
+      app,
+      'GET',
+      '/users/other%40example.com',
+      { 'x-auth-user-id': USER_ID },
+    );
+
+    expect(status).toBe(403);
+    expect(body['error']).toBe('Forbidden');
+    expect(mockUserRepository.findByEmail).not.toHaveBeenCalled();
   });
 });
 

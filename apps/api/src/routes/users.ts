@@ -68,13 +68,8 @@ export function createUsersRouter(): Router {
       return;
     }
 
-    const user = await userRepository.findByEmail(requested);
-    if (!user) {
-      next();
-      return;
-    }
-
-    if (user.id !== authenticatedUserId) {
+    const authenticatedUser = await userRepository.findById(authenticatedUserId);
+    if (!authenticatedUser || requested !== authenticatedUser.email) {
       res.status(403).json({
         error: 'Forbidden',
         message: 'You do not have access to this resource.',
