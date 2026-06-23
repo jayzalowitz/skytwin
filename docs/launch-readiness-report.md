@@ -1,8 +1,24 @@
 # SkyTwin Launch-Readiness Report
 
-**Date:** 2026-06-14 (updated 2026-06-16) · **Version audited:** 0.6.58.0 · **Branch:** `jayzalowitz/launch-readiness-audit`
+**Date:** 2026-06-14 (updated 2026-06-23) · **Version audited:** 0.6.59.0 · **Branch:** `jayzalowitz/pre-launch-code-audit`
 
 This report is the output of a full launch-readiness pass: every open GitHub issue audited against the actual code (not the issue narrative), the whole app built/tested/linted, and the running dashboard QA'd against the [master pre-launch epic #357](https://github.com/jayzalowitz/skytwin/issues/357) launch criteria. It pairs with [`launch-plan.md`](./launch-plan.md) (the procurement/sequencing plan) — this document is the *current-state truth*.
+
+---
+
+## 2026-06-23 code-audit addendum
+
+The v0.6.59.0 pre-launch code audit fixed the remaining runtime/QA issues found in the release candidate:
+
+- The web dashboard's MCP token form now follows the delegated event-listener pattern and no longer renders inline `onsubmit`; the page was rechecked on mobile widths.
+- `/api/users/:userId` routes now resolve UUID-or-email identifiers safely while preserving ownership checks and avoiding email-existence enumeration.
+- Cockroach `INT8` policy priorities are normalized back to JavaScript numbers in both repository paths before the policy engine consumes them.
+- The local e2e runner can reuse the existing Cockroach container name and scopes `SKYTWIN_DEV_AUTH_BYPASS=true` to its API subprocess only.
+- Production dependency audit is clean after root `pnpm.overrides` pin patched transitive versions.
+
+Verification for the addendum: `pnpm audit --prod`, `pnpm lint --force`, `pnpm exec turbo run test --force`, `pnpm build --concurrency=1 --force`, `pnpm test:e2e`, `git diff --check origin/main...HEAD`, and live web/API smoke against seeded Cockroach all passed.
+
+The issue inventory below remains the 2026-06-16 launch-readiness classification; this addendum covers the final code and QA pass for v0.6.59.0.
 
 ---
 
@@ -20,15 +36,17 @@ The remaining launch blockers are **not code**:
 
 ---
 
-## App health (verified 2026-06-14)
+## App health (verified 2026-06-23)
 
 | Check | Result |
 |---|---|
 | `pnpm install --frozen-lockfile` | ✅ clean (5.6s) |
-| `pnpm build` | ✅ 35 packages, 38s |
-| `pnpm lint` | ✅ 61 targets, 37s |
-| `pnpm test` | ✅ **3,821 passing** across 307 test files (24 skipped), exit 0 |
-| Live QA (api:3100 + web vs seeded CRDB) | ✅ 0 console errors on cold-start / tour / briefing / decisions / settings |
+| `pnpm audit --prod` | ✅ clean |
+| `pnpm build --concurrency=1 --force` | ✅ 35 targets |
+| `pnpm lint --force` | ✅ 61 targets |
+| `pnpm exec turbo run test --force` | ✅ 70 targets |
+| `pnpm test:e2e` | ✅ DB + API e2e smoke passed |
+| Live QA (api:3100 + web vs seeded CRDB) | ✅ 0 console errors on main dashboard routes; MCP token generation verified |
 
 ## Launch criteria status (epic #357)
 
