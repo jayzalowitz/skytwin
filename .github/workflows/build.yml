@@ -72,7 +72,11 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
 
-      - uses: dtinth/setup-github-actions-caching-for-turbo@v1
+      # Turbo cache is opportunistic; GitHub cache API failures must not fail
+      # correctness gates after install/build/test pass.
+      - name: Set up Turbo remote cache
+        uses: dtinth/setup-github-actions-caching-for-turbo@v1
+        continue-on-error: true
 
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
@@ -108,7 +112,9 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
 
-      - uses: dtinth/setup-github-actions-caching-for-turbo@v1
+      - name: Set up Turbo remote cache
+        uses: dtinth/setup-github-actions-caching-for-turbo@v1
+        continue-on-error: true
 
       - name: Cache electron-builder + CRDB downloads
         uses: actions/cache@v5
@@ -266,7 +272,9 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
 
-      - uses: dtinth/setup-github-actions-caching-for-turbo@v1
+      - name: Set up Turbo remote cache
+        uses: dtinth/setup-github-actions-caching-for-turbo@v1
+        continue-on-error: true
 
       - name: Cache electron-builder + CRDB downloads
         uses: actions/cache@v5
@@ -354,7 +362,9 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
 
-      - uses: dtinth/setup-github-actions-caching-for-turbo@v1
+      - name: Set up Turbo remote cache
+        uses: dtinth/setup-github-actions-caching-for-turbo@v1
+        continue-on-error: true
 
       - run: pnpm install --frozen-lockfile
 
@@ -406,7 +416,9 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
 
-      - uses: dtinth/setup-github-actions-caching-for-turbo@v1
+      - name: Set up Turbo remote cache
+        uses: dtinth/setup-github-actions-caching-for-turbo@v1
+        continue-on-error: true
 
       - name: Cache CocoaPods
         uses: actions/cache@v5
