@@ -1,5 +1,11 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.61.0] - 2026-06-23
+
+### Fixed (pre-launch dev/toolchain audit)
+
+- **The full dependency audit is clean, not just the production audit.** The extended pre-launch pass found dev/build-chain advisories in Vitest/Vite/esbuild and a transitive desktop-packaging `tar` path. Vitest is upgraded across the workspace to the patched 3.2.6 line, `esbuild` and `tar` are pinned to patched versions through pnpm overrides, and the lockfile now resolves the vulnerable toolchain paths away.
+
 ## [0.6.60.0] - 2026-06-23
 
 ### Fixed (post-merge pre-launch audit rerun)

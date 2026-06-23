@@ -1,6 +1,6 @@
 {
   "name": "skytwin",
-  "version": "0.6.60.0",
+  "version": "0.6.61.0",
   "description": "A delegated judgment layer that builds a digital twin of your preferences and acts on your behalf — with safety constraints, explanations, and progressive trust.",
   "private": true,
   "repository": {
@@ -49,14 +49,16 @@
     "tsx": "^4.22.4",
     "turbo": "^2.9.18",
     "typescript": "^6.0.3",
-    "vitest": "^1.3.0"
+    "vitest": "^3.2.6"
   },
   "packageManager": "pnpm@9.1.0",
   "pnpm": {
     "overrides": {
+      "esbuild": "0.28.1",
       "fast-uri": "3.1.2",
       "hono": "4.12.27",
       "qs": "6.15.2",
+      "tar": "7.5.16",
       "uuid": "11.1.1"
     }
   },

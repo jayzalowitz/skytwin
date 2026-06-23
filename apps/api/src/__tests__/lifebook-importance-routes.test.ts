@@ -225,7 +225,8 @@ describe('POST /api/lifebooks/:userId/:domainName/importance — #321', () => {
     expect(res.status).toBe(200);
     // Legacy episodic_memories write — domain-tagged, edit feedback.
     expect(mockCreateEpisode).toHaveBeenCalledTimes(1);
-    const ep = mockCreateEpisode.mock.calls[0][0];
+    const ep = mockCreateEpisode.mock.calls[0]?.[0];
+    if (!ep) throw new Error('Expected createEpisode to receive an episode payload');
     expect(ep.userId).toBe(USER_ID);
     expect(ep.domain).toBe('Health');
     expect(ep.situationType).toBe('lifebook_importance_override');
@@ -233,7 +234,8 @@ describe('POST /api/lifebooks/:userId/:domainName/importance — #321', () => {
     expect(ep.situationSummary).toContain('Core');
     // Pluggable memory port also gets the episode.
     expect(mockRecordEpisode).toHaveBeenCalledTimes(1);
-    const portEp = mockRecordEpisode.mock.calls[0][0];
+    const portEp = mockRecordEpisode.mock.calls[0]?.[0];
+    if (!portEp) throw new Error('Expected recordEpisode to receive an episode payload');
     expect(portEp.id).toBe('episode-1');
     expect(portEp.wing).toBe('wing-9');
     expect(portEp.metadata).toMatchObject({
@@ -384,11 +386,14 @@ describe('DELETE /api/lifebooks/:userId/:domainName/importance — #321', () => 
     );
     expect(res.status).toBe(200);
     expect(mockCreateEpisode).toHaveBeenCalledTimes(1);
-    const ep = mockCreateEpisode.mock.calls[0][0];
+    const ep = mockCreateEpisode.mock.calls[0]?.[0];
+    if (!ep) throw new Error('Expected createEpisode to receive an episode payload');
     expect(ep.actionTaken).toBe('clear_importance_override');
     expect(ep.situationSummary).toContain('cleared');
     expect(mockRecordEpisode).toHaveBeenCalledTimes(1);
-    expect(mockRecordEpisode.mock.calls[0][0].metadata).toMatchObject({
+    const portEp = mockRecordEpisode.mock.calls[0]?.[0];
+    if (!portEp) throw new Error('Expected recordEpisode to receive an episode payload');
+    expect(portEp.metadata).toMatchObject({
       action: 'clear',
       value: null,
     });

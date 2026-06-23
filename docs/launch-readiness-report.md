@@ -1,6 +1,6 @@
 # SkyTwin Launch-Readiness Report
 
-**Date:** 2026-06-14 (updated 2026-06-23) · **Version audited:** 0.6.60.0 · **Branch:** `jayzalowitz/pre-launch-audit-followup-memory-settings`
+**Date:** 2026-06-14 (updated 2026-06-23) · **Version audited:** 0.6.61.0 · **Branch:** `jayzalowitz/pre-launch-dev-audit-toolchain`
 
 This report is the output of a full launch-readiness pass: every open GitHub issue audited against the actual code (not the issue narrative), the whole app built/tested/linted, and the running dashboard QA'd against the [master pre-launch epic #357](https://github.com/jayzalowitz/skytwin/issues/357) launch criteria. It pairs with [`launch-plan.md`](./launch-plan.md) (the procurement/sequencing plan) — this document is the *current-state truth*.
 
@@ -25,7 +25,9 @@ After v0.6.59.0 merged, the required rerun against `origin/main` found two post-
 
 Verification for the v0.6.60.0 follow-up: `pnpm audit --prod`, `git diff --check`, inline-handler scan, focused web regression tests, `pnpm --filter @skytwin/web lint`, `pnpm --filter @skytwin/web build`, `pnpm lint --force`, `pnpm exec turbo run test --force`, `pnpm build --concurrency=1 --force`, `pnpm test:e2e`, and live browser QA against built API/web with seeded Cockroach all passed. The browser sweep covered 17 dashboard routes with no console errors, no 4xx/5xx requests, no route overflow, `memory-config` 200 responses with the seeded user id, MCP token creation (`POST /api/external-agents/tokens` 201), and the 390px token layout.
 
-The issue inventory below remains the 2026-06-16 launch-readiness classification; this addendum covers the final code and QA pass through v0.6.60.0.
+The v0.6.61.0 toolchain audit extended the dependency gate from production-only to the full dev/build graph. It upgraded Vitest across the workspace to 3.2.6, pinned patched `esbuild` and `tar` versions through pnpm overrides, and adjusted three tests for Vitest 3's stricter mock-call typing. Verification for the toolchain follow-up: `pnpm audit --prod`, `pnpm audit`, `git diff --check`, `pnpm lint --force`, `pnpm exec turbo run test --force`, `pnpm build --concurrency=1 --force`, and `pnpm test:e2e` all passed.
+
+The issue inventory below remains the 2026-06-16 launch-readiness classification; this addendum covers the final code and QA pass through v0.6.61.0.
 
 ---
 
@@ -48,7 +50,7 @@ The remaining launch blockers are **not code**:
 | Check | Result |
 |---|---|
 | `pnpm install --frozen-lockfile` | ✅ clean (5.6s) |
-| `pnpm audit --prod` | ✅ clean |
+| `pnpm audit --prod` + `pnpm audit` | ✅ clean |
 | `pnpm build --concurrency=1 --force` | ✅ 35 targets |
 | `pnpm lint --force` | ✅ 61 targets |
 | `pnpm exec turbo run test --force` | ✅ 70 targets |

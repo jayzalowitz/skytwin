@@ -5,6 +5,8 @@ import type { MemPalaceMemoryPort } from '@skytwin/memory-mempalace';
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
+type MockFn = ReturnType<typeof vi.fn>;
+
 /**
  * Build a minimal MemoryPort double. Each method is a vi.fn() typed as the
  * correct MemoryPort method signature. We cast the assembled object to
@@ -14,13 +16,13 @@ import type { MemPalaceMemoryPort } from '@skytwin/memory-mempalace';
 function makeMockPort(capSet: Set<string> = new Set()): MemoryPort {
   const port = {
     capabilities: vi.fn().mockReturnValue(capSet),
-    recordSignal: vi.fn<[Parameters<MemoryPort['recordSignal']>[0]], Promise<void>>().mockResolvedValue(undefined),
-    recordEntity: vi.fn<[Parameters<MemoryPort['recordEntity']>[0]], Promise<void>>().mockResolvedValue(undefined),
-    recordTriple: vi.fn<[Parameters<MemoryPort['recordTriple']>[0]], Promise<void>>().mockResolvedValue(undefined),
-    recordEpisode: vi.fn<[Parameters<MemoryPort['recordEpisode']>[0]], Promise<void>>().mockResolvedValue(undefined),
-    searchSemantic: vi.fn<[string, number], Promise<SemanticHit[]>>().mockResolvedValue([]),
-    walkGraph: vi.fn<[Parameters<MemoryPort['walkGraph']>[0]], Promise<KnowledgeNode[]>>().mockResolvedValue([]),
-    getEpisodes: vi.fn<[Parameters<MemoryPort['getEpisodes']>[0]], Promise<Episode[]>>().mockResolvedValue([]),
+    recordSignal: vi.fn(async (_signal: Parameters<MemoryPort['recordSignal']>[0]) => undefined),
+    recordEntity: vi.fn(async (_entity: Parameters<MemoryPort['recordEntity']>[0]) => undefined),
+    recordTriple: vi.fn(async (_triple: Parameters<MemoryPort['recordTriple']>[0]) => undefined),
+    recordEpisode: vi.fn(async (_episode: Parameters<MemoryPort['recordEpisode']>[0]) => undefined),
+    searchSemantic: vi.fn(async (_query: string, _k: number): Promise<SemanticHit[]> => []),
+    walkGraph: vi.fn(async (_spec: Parameters<MemoryPort['walkGraph']>[0]): Promise<KnowledgeNode[]> => []),
+    getEpisodes: vi.fn(async (_range: Parameters<MemoryPort['getEpisodes']>[0]): Promise<Episode[]> => []),
     getEntitiesByType: vi.fn().mockResolvedValue([]),
     getTriples: vi.fn().mockResolvedValue([]),
     summarize: vi.fn().mockResolvedValue({ text: '', tokenCount: 0, citations: [] }),
@@ -32,10 +34,8 @@ function makeMockPort(capSet: Set<string> = new Set()): MemoryPort {
 }
 
 /** Helper to access mock fns on a port returned by makeMockPort. */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function fn(port: MemoryPort, method: keyof MemoryPort): ReturnType<typeof vi.fn<any[], any>> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (port as any)[method] as ReturnType<typeof vi.fn<any[], any>>;
+function fn(port: MemoryPort, method: keyof MemoryPort): MockFn {
+  return (port as unknown as Record<keyof MemoryPort, MockFn>)[method];
 }
 
 // Compile-time verification: MemPalaceMemoryPort must satisfy MemoryPort.
