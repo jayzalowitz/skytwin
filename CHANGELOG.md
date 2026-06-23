@@ -1,5 +1,15 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.59.0] - 2026-06-23
+
+### Fixed (pre-launch code audit)
+
+- **Full pre-launch audit pass fixed launch-blocking runtime and QA failures.** The web dashboard's twin-server token page no longer renders an inline `onsubmit` handler; token generation now uses the repo-standard delegated submit listener pattern, keeps the handler hash-gated to `#/twin-server-tokens`, and uses short native select labels so the token form fits on mobile widths. The API user routes now resolve `:userId` as UUID-or-email before repository lookup, so email-based routes no longer fall into UUID parsing, and ownership checks compare email parameters against the authenticated user's actual row. Policy rows returned from Cockroach now normalize `INT8` priority values back to numbers before the policy engine reads them. The e2e runner can reuse the existing Cockroach container name and enables the dev-auth bypass only for the local e2e process, which restores the real DB/API smoke path. Added regression tests for the token page event pattern/mobile labels, email lookup routing, policy priority normalization, and the conservative `observer` new-user trust tier expectation.
+
+### Security
+
+- **Production dependency audit is clean again.** Root `pnpm` overrides pin patched transitive versions for `fast-uri`, `hono`, `qs`, and `uuid`, resolving the production advisories that surfaced during the launch audit without broad dependency churn.
+
 ## [0.6.58.0] - 2026-05-23
 
 ### Documentation

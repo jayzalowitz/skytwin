@@ -157,7 +157,7 @@ Every user can wipe their entire footprint from Settings → "Delete everything 
 - Leaves of the dependency graph go first (execution_results, execution_events, execution_plans, explanation_records, decision_outcomes, candidate_actions, twin_profile_versions, knowledge_triples)
 - Then the final `DELETE FROM users` cascades through the 32 user_id FKs from migration 061 (#413) and collapses the rest of the footprint — twin profile, decisions, memory pages, knowledge entities, episodic memories, preferences, OAuth tokens, sessions, spend records, etc. — in one statement
 
-Either the whole delete completes or the transaction rolls back; there is no partial-delete state. Cascade behaviour is exercised end-to-end by `cascade-cleanup.e2e.test.ts`. The endpoint is gated by the existing `sessionAuth + requireOwnership` middleware so user A cannot delete user B.
+Either the whole delete completes or the transaction rolls back; there is no partial-delete state. Cascade behaviour is exercised end-to-end by `cascade-cleanup.e2e.test.ts`. The endpoint is gated by `sessionAuth + requireUserParamOwnership` in `apps/api/src/routes/users.ts`, so user A cannot delete user B whether `:userId` is passed as a UUID or the authenticated user's own email.
 
 ### Layer 9: Access audit log (#393)
 

@@ -29,7 +29,7 @@ function toDomain(row: ActionPolicyRow): ActionPolicy {
     name: row.name,
     description: '',
     rules: rawRules.filter(isStructuredRule),
-    priority: row.priority,
+    priority: Number(row.priority),
     enabled: row.is_active,
     builtIn: false,
     createdAt: row.created_at,

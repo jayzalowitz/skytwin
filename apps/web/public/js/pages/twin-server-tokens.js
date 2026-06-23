@@ -16,7 +16,7 @@ function ensureTwinTokensListener() {
     const currentPage = window.location.hash.split('?')[0];
     if (currentPage !== '#/twin-server-tokens') return;
 
-    const target = e.target.closest('[data-action]');
+    const target = e.target instanceof Element ? e.target.closest('[data-action]') : null;
     if (!target) return;
 
     const action = target.dataset.action;
@@ -36,33 +36,6 @@ function ensureTwinTokensListener() {
         if (container) await renderTwinServerTokens(container, userId);
       } catch (err) {
         showToast(err.friendlyMessage ?? 'Failed to revoke token', 'error');
-      }
-      return;
-    }
-
-    if (action === 'generate-token') {
-      const form = document.getElementById('generate-token-form');
-      if (!form) return;
-
-      const scope = form.querySelector('[name="scope"]')?.value;
-      const agentName = form.querySelector('[name="agentName"]')?.value?.trim();
-
-      if (!scope || !agentName) {
-        showToast('Please fill in all fields', 'error');
-        return;
-      }
-
-      try {
-        const data = await fetchJSON(
-          `/api/external-agents/tokens?userId=${encodeURIComponent(userId)}`,
-          {
-            method: 'POST',
-            body: JSON.stringify({ scope, agentName }),
-          },
-        );
-        showNewTokenModal(data, userId);
-      } catch (err) {
-        showToast(err.friendlyMessage ?? 'Failed to generate token', 'error');
       }
       return;
     }
@@ -98,10 +71,47 @@ function ensureTwinTokensListener() {
       }
     }
   });
+
+  document.addEventListener('submit', async (e) => {
+    const currentPage = window.location.hash.split('?')[0];
+    if (currentPage !== '#/twin-server-tokens') return;
+
+    const form = e.target instanceof Element ? e.target.closest('#generate-token-form') : null;
+    if (!form) return;
+
+    e.preventDefault();
+    await generateToken(getCurrentUserId());
+  });
 }
 
 function getCurrentUserId() {
   return localStorage.getItem(KEY_USER_ID) || '';
+}
+
+async function generateToken(userId) {
+  const form = document.getElementById('generate-token-form');
+  if (!form) return;
+
+  const scope = form.querySelector('[name="scope"]')?.value;
+  const agentName = form.querySelector('[name="agentName"]')?.value?.trim();
+
+  if (!scope || !agentName) {
+    showToast('Please fill in all fields', 'error');
+    return;
+  }
+
+  try {
+    const data = await fetchJSON(
+      `/api/external-agents/tokens?userId=${encodeURIComponent(userId)}`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ scope, agentName }),
+      },
+    );
+    showNewTokenModal(data, userId);
+  } catch (err) {
+    showToast(err.friendlyMessage ?? 'Failed to generate token', 'error');
+  }
 }
 
 /**
@@ -265,24 +275,24 @@ export async function renderTwinServerTokens(container, userId) {
         <span class="card-title">Generate a new token</span>
       </div>
 
-      <form id="generate-token-form" onsubmit="return false;">
+      <form id="generate-token-form">
         <div class="form-group">
           <label>Agent name</label>
-          <input class="form-input" name="agentName" placeholder="e.g. claude-desktop, cursor, cline" autocomplete="off">
-          <div class="form-hint">A label so you can identify this connection later.</div>
+          <input class="form-input" name="agentName" placeholder="e.g. Claude Desktop" autocomplete="off">
+          <div class="form-hint">A label so you can identify this connection later, like Cursor or Cline.</div>
         </div>
 
         <div class="form-group">
           <label>Scope</label>
           <select class="form-input" name="scope">
-            <option value="read">Read — query memory + preferences</option>
-            <option value="propose">Propose — read + suggest actions for your approval</option>
-            <option value="subscribe">Subscribe — read + receive your signal stream</option>
+            <option value="read">Read</option>
+            <option value="propose">Propose</option>
+            <option value="subscribe">Subscribe</option>
           </select>
-          <div class="form-hint">Start with Read. Upgrade to Propose only for agents you want to submit action requests.</div>
+          <div class="form-hint">Read can query memory and preferences. Propose can suggest actions for approval. Subscribe can receive your signal stream.</div>
         </div>
 
-        <button class="btn btn-primary" data-action="generate-token">
+        <button class="btn btn-primary" type="submit">
           Generate token
         </button>
       </form>

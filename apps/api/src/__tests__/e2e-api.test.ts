@@ -152,8 +152,8 @@ describe.skipIf(!E2E)('E2E: API integration', () => {
       expect(body.created).toBe(true);
       expect(body.user.email).toBe(email);
       expect(body.user.name).toBe('API Test User');
-      // New users get 'suggest' tier (not 'observer' -- the API route enforces this)
-      expect(body.user.trust_tier).toBe('suggest');
+      // New users start read-only and earn higher trust tiers through feedback.
+      expect(body.user.trust_tier).toBe('observer');
     });
 
     it('POST /api/users with same email returns existing user', async () => {

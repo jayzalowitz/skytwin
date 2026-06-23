@@ -58,6 +58,24 @@ export NODE_ENV="test"
 export E2E="true"
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+discover_crdb_container() {
+  local preferred="$CRDB_CONTAINER"
+
+  if docker ps --format '{{.Names}}' | grep -Fxq "$preferred"; then
+    echo "$preferred"
+    return 0
+  fi
+
+  docker ps --format '{{.Names}}\t{{.Image}}\t{{.Ports}}' \
+    | awk -v sql=":${CRDB_PORT}->26257/tcp" -v admin=":${CRDB_ADMIN_PORT}->8080/tcp" '
+        $2 ~ /cockroach/ && index($0, sql) && index($0, admin) { print $1; exit }
+      '
+}
+
+# ---------------------------------------------------------------------------
 # Cleanup handler
 # ---------------------------------------------------------------------------
 
@@ -131,9 +149,19 @@ echo ""
 
 echo -e "${YELLOW}Ensuring CockroachDB is running...${NC}"
 
-if curl -sf "http://localhost:${CRDB_ADMIN_PORT}/health" &>/dev/null; then
-  echo -e "  ${GREEN}Already running${NC} on port ${CRDB_PORT}"
+RUNNING_CRDB_CONTAINER="$(discover_crdb_container || true)"
+
+if [ -n "$RUNNING_CRDB_CONTAINER" ]; then
+  CRDB_CONTAINER="$RUNNING_CRDB_CONTAINER"
+  echo -e "  ${GREEN}Already running${NC} in container '${CRDB_CONTAINER}' on port ${CRDB_PORT}"
 else
+  if curl -sf "http://localhost:${CRDB_ADMIN_PORT}/health" &>/dev/null; then
+    echo -e "  ${RED}CockroachDB health responded on ${CRDB_ADMIN_PORT}, but no usable Docker container was found.${NC}"
+    echo "  Expected a Cockroach container exposing ${CRDB_PORT}->26257 and ${CRDB_ADMIN_PORT}->8080."
+    echo "  Stop the process using those ports, or run it in a Docker container before retrying."
+    exit 1
+  fi
+
   echo -e "  Starting CockroachDB via Docker Compose..."
   docker compose up -d cockroachdb 2>&1 | tail -2
   CRDB_STARTED_BY_US=true
@@ -152,6 +180,13 @@ else
     echo -n "."
     sleep 1
   done
+
+  RUNNING_CRDB_CONTAINER="$(discover_crdb_container || true)"
+  if [ -z "$RUNNING_CRDB_CONTAINER" ]; then
+    echo -e "  ${RED}CockroachDB became healthy, but no usable Docker container was found.${NC}"
+    exit 1
+  fi
+  CRDB_CONTAINER="$RUNNING_CRDB_CONTAINER"
 fi
 echo ""
 
@@ -217,7 +252,7 @@ if [ "$DB_ONLY" = false ]; then
 
   echo -e "${YELLOW}Starting API server on port ${API_PORT}...${NC}"
 
-  node apps/api/dist/index.js > /tmp/skytwin-e2e-api.log 2>&1 &
+  SKYTWIN_DEV_AUTH_BYPASS=true node apps/api/dist/index.js > /tmp/skytwin-e2e-api.log 2>&1 &
   API_PID=$!
   echo -e "  API PID: $API_PID"
 
