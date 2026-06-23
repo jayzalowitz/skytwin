@@ -69,6 +69,18 @@ describe('policyRepository', () => {
       expect(params).toEqual(['u-001']);
     });
 
+    it('normalizes CockroachDB INT8 priority strings to numbers', async () => {
+      const row = {
+        ...fakePolicyRow(),
+        priority: '10' as unknown as number,
+      };
+      mockQuery.mockResolvedValue({ rows: [row], rowCount: 1 });
+
+      const result = await policyRepository.getPoliciesForUser('u-001');
+
+      expect(result[0]?.priority).toBe(10);
+    });
+
     it('filters by domain when provided', async () => {
       const rows = [fakePolicyRow({ domain: 'email' })];
       mockQuery.mockResolvedValue({ rows, rowCount: 1 });

@@ -107,6 +107,30 @@ async function request(
 
 const USER_ID = 'aaaaaaaa-bbbb-cccc-dddd-000000000088';
 
+describe('GET /users/:userId', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('looks non-UUID identifiers up by email without sending them through the UUID query path', async () => {
+    mockUserRepository.findByEmail.mockResolvedValue({
+      id: USER_ID,
+      email: 'test@example.com',
+      name: 'Test User',
+      trust_tier: 'observer',
+      created_at: new Date('2026-06-01'),
+    });
+
+    const app = makeApp();
+    const { status, body } = await request(app, 'GET', '/users/test%40example.com');
+
+    expect(status).toBe(200);
+    expect(mockUserRepository.findById).not.toHaveBeenCalled();
+    expect(mockUserRepository.findByEmail).toHaveBeenCalledWith('test@example.com');
+    expect((body['user'] as { id: string }).id).toBe(USER_ID);
+  });
+});
+
 describe('DELETE /users/:userId (#376)', () => {
   beforeEach(() => {
     vi.clearAllMocks();

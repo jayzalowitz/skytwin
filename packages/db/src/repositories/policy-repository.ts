@@ -1,6 +1,13 @@
 import { query } from '../connection.js';
 import type { ActionPolicyRow } from '../types.js';
 
+function normalizePolicyRow(row: ActionPolicyRow): ActionPolicyRow {
+  return {
+    ...row,
+    priority: Number(row.priority),
+  };
+}
+
 /**
  * Input for creating a policy.
  */
@@ -43,7 +50,7 @@ export const policyRepository = {
          ORDER BY priority DESC`,
         [userId, domain],
       );
-      return result.rows;
+      return result.rows.map(normalizePolicyRow);
     }
 
     const result = await query<ActionPolicyRow>(
@@ -52,7 +59,7 @@ export const policyRepository = {
        ORDER BY priority DESC`,
       [userId],
     );
-    return result.rows;
+    return result.rows.map(normalizePolicyRow);
   },
 
   /**
@@ -63,7 +70,8 @@ export const policyRepository = {
       'SELECT * FROM action_policies WHERE id = $1',
       [id],
     );
-    return result.rows[0] ?? null;
+    const row = result.rows[0];
+    return row ? normalizePolicyRow(row) : null;
   },
 
   /**
@@ -83,7 +91,7 @@ export const policyRepository = {
         input.isActive ?? true,
       ],
     );
-    return result.rows[0]!;
+    return normalizePolicyRow(result.rows[0]!);
   },
 
   /**
@@ -137,7 +145,8 @@ export const policyRepository = {
       `UPDATE action_policies SET ${setClauses.join(', ')} WHERE id = $${paramIndex} RETURNING *`,
       values,
     );
-    return result.rows[0] ?? null;
+    const row = result.rows[0];
+    return row ? normalizePolicyRow(row) : null;
   },
 
   /**

@@ -771,11 +771,9 @@ export function createOAuthRouter(): Router {
 
       // Resolve target userId.
       //
-      // Auto-created users start at 'observer' (read-only). The interactive
-      // POST /api/users path uses 'suggest' — there a real human is filling
-      // out a form — but a passive sign-in-with-Google grant shouldn't
-      // unlock action suggestions on day one. The user earns 'suggest' via
-      // approval feedback through the trust-tier audit pipeline.
+      // Auto-created users start at 'observer' (read-only), matching the
+      // interactive POST /api/users path. Users earn 'suggest' via approval
+      // feedback through the trust-tier audit pipeline.
       const NEW_USER_TIER = 'observer';
 
       let userId = parsed.userId;

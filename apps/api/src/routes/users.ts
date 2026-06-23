@@ -1,10 +1,10 @@
-import { Router } from 'express';
+import { Router, type Request, type Response, type NextFunction } from 'express';
 import { userRepository, userPurgeRepository } from '@skytwin/db';
 import { TwinService } from '@skytwin/twin-model';
 import { TwinRepositoryAdapter, PatternRepositoryAdapter } from '@skytwin/db';
 import { ConfidenceLevel } from '@skytwin/shared-types';
 import { sessionAuth } from '../middleware/session-auth.js';
-import { requireOwnership } from '../middleware/require-ownership.js';
+import { isValidUserId } from '../middleware/validate-uuid.js';
 
 const VALID_TIERS = ['observer', 'suggest', 'low_autonomy', 'moderate_autonomy', 'high_autonomy'];
 
@@ -33,6 +33,58 @@ export function createUsersRouter(): Router {
   const router = Router();
   const twinService = new TwinService(new TwinRepositoryAdapter(), new PatternRepositoryAdapter());
 
+  async function findUserByIdOrEmail(identifier: string) {
+    return isValidUserId(identifier)
+      ? userRepository.findById(identifier)
+      : userRepository.findByEmail(identifier);
+  }
+
+  async function requireUserParamOwnership(
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    const authenticatedUserId = req.authenticatedUserId;
+    if (!authenticatedUserId) {
+      next();
+      return;
+    }
+
+    const requested = req.params['userId'];
+    if (typeof requested !== 'string' || !requested) {
+      next();
+      return;
+    }
+
+    if (isValidUserId(requested)) {
+      if (requested !== authenticatedUserId) {
+        res.status(403).json({
+          error: 'Forbidden',
+          message: 'You do not have access to this resource.',
+        });
+        return;
+      }
+      next();
+      return;
+    }
+
+    const user = await userRepository.findByEmail(requested);
+    if (!user) {
+      next();
+      return;
+    }
+
+    if (user.id !== authenticatedUserId) {
+      res.status(403).json({
+        error: 'Forbidden',
+        message: 'You do not have access to this resource.',
+      });
+      return;
+    }
+
+    next();
+  }
+
   /**
    * Provision the zero-content default state every real user starts from:
    * an empty twin profile (eagerly, not lazily) + conservative autonomy
@@ -47,7 +99,7 @@ export function createUsersRouter(): Router {
   }
 
   // Everything under /:userId is user-scoped and must be authenticated.
-  router.use('/:userId', sessionAuth, requireOwnership);
+  router.use('/:userId', sessionAuth, requireUserParamOwnership);
 
   /**
    * GET /api/users
@@ -170,11 +222,7 @@ export function createUsersRouter(): Router {
         return;
       }
 
-      // Try by ID first, then by email
-      let user = await userRepository.findById(userId);
-      if (!user) {
-        user = await userRepository.findByEmail(userId);
-      }
+      const user = await findUserByIdOrEmail(userId);
       if (!user) {
         res.status(404).json({ error: 'User not found' });
         return;
@@ -206,14 +254,10 @@ export function createUsersRouter(): Router {
         return;
       }
 
-      // Try to update by ID, then by email
-      let updated = await userRepository.updateTrustTier(userId, body.trustTier);
-      if (!updated) {
-        const byEmail = await userRepository.findByEmail(userId);
-        if (byEmail) {
-          updated = await userRepository.updateTrustTier(byEmail.id, body.trustTier);
-        }
-      }
+      const user = await findUserByIdOrEmail(userId);
+      const updated = user
+        ? await userRepository.updateTrustTier(user.id, body.trustTier)
+        : null;
 
       if (!updated) {
         res.status(404).json({ error: 'User not found. Complete setup first.' });
@@ -244,11 +288,7 @@ export function createUsersRouter(): Router {
       // Filter to valid domain identifiers
       const domains = body.domains.filter((d) => VALID_DOMAINS.includes(d));
 
-      // Look up user (by ID or email)
-      let user = await userRepository.findById(userId);
-      if (!user) {
-        user = await userRepository.findByEmail(userId);
-      }
+      const user = await findUserByIdOrEmail(userId);
       if (!user) {
         res.status(404).json({ error: 'User not found.' });
         return;
@@ -288,8 +328,7 @@ export function createUsersRouter(): Router {
         return;
       }
 
-      let user = await userRepository.findById(userId);
-      if (!user) user = await userRepository.findByEmail(userId);
+      const user = await findUserByIdOrEmail(userId);
       if (!user) {
         res.status(404).json({ error: 'User not found.' });
         return;
@@ -336,8 +375,7 @@ export function createUsersRouter(): Router {
   router.get('/:userId/autonomy-state', async (req, res, next) => {
     try {
       const { userId } = req.params;
-      let user = await userRepository.findById(userId);
-      if (!user) user = await userRepository.findByEmail(userId);
+      const user = await findUserByIdOrEmail(userId);
       if (!user) {
         res.status(404).json({ error: 'User not found.' });
         return;
@@ -377,16 +415,10 @@ export function createUsersRouter(): Router {
         return;
       }
 
-      // Resolve the real user ID (callers may pass an email)
-      let resolvedId = userId;
-      const byId = await userRepository.findById(userId);
-      if (!byId) {
-        const byEmail = await userRepository.findByEmail(userId);
-        if (!byEmail) {
-          res.status(404).json({ error: 'User not found.' });
-          return;
-        }
-        resolvedId = byEmail.id;
+      const user = await findUserByIdOrEmail(userId);
+      if (!user) {
+        res.status(404).json({ error: 'User not found.' });
+        return;
       }
 
       const MAX_SEED_PREFERENCES = 100;
@@ -394,7 +426,7 @@ export function createUsersRouter(): Router {
 
       const validPrefs = prefs.filter((pref) => pref.domain && pref.key);
       for (const pref of validPrefs) {
-        await twinService.updatePreference(resolvedId, {
+        await twinService.updatePreference(user.id, {
           id: `pref_seed_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
           domain: pref.domain,
           key: pref.key,
@@ -427,9 +459,8 @@ export function createUsersRouter(): Router {
    * `twin_profile_versions.profile_id`, etc.). Failure anywhere
    * rolls the whole thing back — no partial-delete state.
    *
-   * The caller's own session middleware (`sessionAuth +
-   * requireOwnership` from `router.use('/:userId', ...)` above) gates
-   * this to the user themselves — a session token for user A cannot
+   * The caller's own session middleware (`sessionAuth` plus the user-param
+   * ownership check above) gates this to the user themselves — a session token for user A cannot
    * delete user B. After the delete the caller's own session row is
    * also gone (cascades via `sessions.user_id`), so the response is
    * the last useful thing they'll get from this server until they
@@ -453,7 +484,19 @@ export function createUsersRouter(): Router {
         return;
       }
 
-      const result = await userPurgeRepository.purgeUser(userId);
+      const targetUserId = isValidUserId(userId)
+        ? userId
+        : (await findUserByIdOrEmail(userId))?.id;
+      if (!targetUserId) {
+        res.status(404).json({
+          error: 'user_not_found',
+          message: 'No user with that id existed at delete time.',
+          counts: {},
+        });
+        return;
+      }
+
+      const result = await userPurgeRepository.purgeUser(targetUserId);
 
       if (!result.userExisted) {
         res.status(404).json({
@@ -466,7 +509,7 @@ export function createUsersRouter(): Router {
 
       res.json({
         deleted: true,
-        userId,
+        userId: targetUserId,
         counts: result.counts,
         totalRows: result.total,
       });
