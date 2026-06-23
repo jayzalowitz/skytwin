@@ -1,5 +1,12 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.60.0] - 2026-06-23
+
+### Fixed (post-merge pre-launch audit rerun)
+
+- **The dashboard memory settings route now uses the shared localStorage keys.** The post-merge browser sweep found `#/memory-settings` still reading obsolete dotted keys (`skytwin.userId` / `skytwin.sessionToken`), so the page issued three API calls with an empty `userId` and produced 400s plus console errors. It now imports `KEY_USER_ID` / `KEY_SESSION_TOKEN`, URL-encodes the user id, and has a regression test to keep it aligned with the rest of the SPA.
+- **Mobile dashboard pages no longer gain horizontal scroll from the global pause control or long setup snippets.** The same rerun found the global pause mount sitting in the document flex flow at 390px widths, and long inline MCP setup paths could force page-width overflow. The mount is now fixed-positioned as intended, inline `code` wraps at mobile widths, `pre` blocks stay constrained, and CSS source tests pin those layout guardrails.
+
 ## [0.6.59.0] - 2026-06-23
 
 ### Fixed (pre-launch code audit)

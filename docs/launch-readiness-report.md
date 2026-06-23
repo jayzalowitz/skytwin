@@ -1,6 +1,6 @@
 # SkyTwin Launch-Readiness Report
 
-**Date:** 2026-06-14 (updated 2026-06-23) · **Version audited:** 0.6.59.0 · **Branch:** `jayzalowitz/pre-launch-code-audit`
+**Date:** 2026-06-14 (updated 2026-06-23) · **Version audited:** 0.6.60.0 · **Branch:** `jayzalowitz/pre-launch-audit-followup-memory-settings`
 
 This report is the output of a full launch-readiness pass: every open GitHub issue audited against the actual code (not the issue narrative), the whole app built/tested/linted, and the running dashboard QA'd against the [master pre-launch epic #357](https://github.com/jayzalowitz/skytwin/issues/357) launch criteria. It pairs with [`launch-plan.md`](./launch-plan.md) (the procurement/sequencing plan) — this document is the *current-state truth*.
 
@@ -18,7 +18,14 @@ The v0.6.59.0 pre-launch code audit fixed the remaining runtime/QA issues found 
 
 Verification for the addendum: `pnpm audit --prod`, `pnpm lint --force`, `pnpm exec turbo run test --force`, `pnpm build --concurrency=1 --force`, `pnpm test:e2e`, `git diff --check origin/main...HEAD`, and live web/API smoke against seeded Cockroach all passed.
 
-The issue inventory below remains the 2026-06-16 launch-readiness classification; this addendum covers the final code and QA pass for v0.6.59.0.
+After v0.6.59.0 merged, the required rerun against `origin/main` found two post-merge browser QA regressions and v0.6.60.0 fixes both:
+
+- `#/memory-settings` now uses the shared storage-key constants instead of obsolete dotted localStorage names, so its `memory-config` calls include the current user id and return 200 instead of 400.
+- Mobile dashboard pages no longer gain horizontal scroll from the global pause mount or long MCP setup snippets; the 390px token-page check now reports `scrollWidth === clientWidth === 390`.
+
+Verification for the v0.6.60.0 follow-up: `pnpm audit --prod`, `git diff --check`, inline-handler scan, focused web regression tests, `pnpm --filter @skytwin/web lint`, `pnpm --filter @skytwin/web build`, `pnpm lint --force`, `pnpm exec turbo run test --force`, `pnpm build --concurrency=1 --force`, `pnpm test:e2e`, and live browser QA against built API/web with seeded Cockroach all passed. The browser sweep covered 17 dashboard routes with no console errors, no 4xx/5xx requests, no route overflow, `memory-config` 200 responses with the seeded user id, MCP token creation (`POST /api/external-agents/tokens` 201), and the 390px token layout.
+
+The issue inventory below remains the 2026-06-16 launch-readiness classification; this addendum covers the final code and QA pass through v0.6.60.0.
 
 ---
 
@@ -46,7 +53,7 @@ The remaining launch blockers are **not code**:
 | `pnpm lint --force` | ✅ 61 targets |
 | `pnpm exec turbo run test --force` | ✅ 70 targets |
 | `pnpm test:e2e` | ✅ DB + API e2e smoke passed |
-| Live QA (api:3100 + web vs seeded CRDB) | ✅ 0 console errors on main dashboard routes; MCP token generation verified |
+| Live QA (api:3100 + web vs seeded CRDB) | ✅ 17 dashboard routes, 0 console errors/4xx/5xx/overflow; memory settings + MCP token generation verified |
 
 ## Launch criteria status (epic #357)
 

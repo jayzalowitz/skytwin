@@ -103,6 +103,13 @@ body {
   color: var(--text-muted);
 }
 
+.global-pause-mount {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  z-index: 1300;
+}
+
 .status-dot {
   width: 8px;
   height: 8px;
@@ -945,6 +952,15 @@ textarea.form-input { resize: vertical; min-height: 60px; }
   margin-bottom: 1rem;
   font-size: 0.85rem;
   color: var(--danger);
+}
+
+code {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+pre {
+  max-width: 100%;
 }
 
 /* ── Modal overlay ──────────────────────────────────── */
