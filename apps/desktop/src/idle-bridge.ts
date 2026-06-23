@@ -9,8 +9,11 @@ export interface IdleBridgeOptions {
   pollIntervalMs?: number;
   /** Called once on every idle ↔ active transition. */
   onStateChange: (state: IdleState, reason: IdleStateReason) => void;
-  /** Injectable for tests; defaults to electron's powerMonitor at runtime. */
-  powerMonitor?: PowerMonitorLike;
+  /**
+   * Injectable for tests; omitted defaults to Electron's powerMonitor at
+   * runtime, while null explicitly disables the bridge in headless callers.
+   */
+  powerMonitor?: PowerMonitorLike | null;
   /** Logger; defaults to console. */
   logger?: { info: (msg: string, meta?: unknown) => void };
 }
@@ -56,6 +59,7 @@ export class IdleBridge {
   private readonly pollIntervalMs: number;
   private readonly onStateChange: IdleBridgeOptions['onStateChange'];
   private readonly logger: NonNullable<IdleBridgeOptions['logger']>;
+  private readonly shouldResolveDefaultPowerMonitor: boolean;
   private powerMonitor: PowerMonitorLike | null;
 
   private state: IdleState = 'active';
@@ -75,6 +79,7 @@ export class IdleBridge {
     this.logger = opts.logger ?? {
       info: (msg, meta) => console.info(`[idle-bridge] ${msg}`, meta ?? ''),
     };
+    this.shouldResolveDefaultPowerMonitor = opts.powerMonitor === undefined;
     this.powerMonitor = opts.powerMonitor ?? null;
 
     this.boundLock = () => this.transition('idle', 'lock-screen');
@@ -95,7 +100,11 @@ export class IdleBridge {
     if (this.started) return;
     this.started = true;
 
-    const pm = this.powerMonitor ?? this.tryResolveDefaultPowerMonitor();
+    const pm =
+      this.powerMonitor ??
+      (this.shouldResolveDefaultPowerMonitor
+        ? this.tryResolveDefaultPowerMonitor()
+        : null);
     if (pm === null) {
       this.logger.info('powerMonitor unavailable — bridge inert');
       return;
