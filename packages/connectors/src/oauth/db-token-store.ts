@@ -2,6 +2,8 @@ import type { OAuthTokenSet } from '@skytwin/shared-types';
 import type { OAuthTokenStore } from './token-store.js';
 import type { GoogleOAuthConfig } from './google-oauth.js';
 import { refreshAccessToken } from './google-oauth.js';
+import type { MicrosoftOAuthConfig } from './microsoft-oauth.js';
+import { refreshAccessToken as refreshMicrosoftAccessToken } from './microsoft-oauth.js';
 import { encrypt, decrypt, IV_LENGTH, TAG_LENGTH } from '@skytwin/credential-vault';
 import { createLogger } from '@skytwin/core';
 
@@ -178,6 +180,13 @@ export class DbTokenStore implements OAuthTokenStore {
   constructor(
     private readonly repo: OAuthRepositoryLike,
     private readonly oauthConfig: GoogleOAuthConfig,
+    /**
+     * Optional Microsoft (Entra) config. Required to refresh `microsoft`
+     * tokens — without it, refreshing a microsoft token THROWS rather than
+     * falling back to the Google endpoint (which would POST the token to the
+     * wrong vendor; the same token-leak class fixed in the disconnect routes).
+     */
+    private readonly microsoftConfig?: MicrosoftOAuthConfig,
   ) {}
 
   /**
@@ -361,6 +370,13 @@ export class DbTokenStore implements OAuthTokenStore {
   }
 
   async refreshIfExpired(userId: string, provider: string): Promise<OAuthTokenSet> {
+    // Validate the provider up-front — fail loud on an unsupported provider
+    // BEFORE fetching (and potentially decrypting) any stored secret. The
+    // switch below keeps a defensive `default: throw` as a backstop.
+    if (provider !== 'google' && provider !== 'microsoft') {
+      throw new Error(`DbTokenStore: unsupported provider '${provider}' for token refresh.`);
+    }
+
     const existing = await this.getToken(userId, provider);
     if (!existing) {
       throw new Error(`No OAuth token found for user ${userId} provider ${provider}`);
@@ -372,8 +388,33 @@ export class DbTokenStore implements OAuthTokenStore {
       return existing;
     }
 
-    // Token is expired or about to expire — refresh it
-    const refreshed = await refreshAccessToken(this.oauthConfig, existing.refreshToken);
+    // Token is expired or about to expire — refresh it via the RIGHT
+    // provider's endpoint. Never fall back to Google for a non-Google token:
+    // that would POST the refresh token to the wrong vendor (the token-leak
+    // class fixed in the disconnect routes). For non-rotating Microsoft
+    // tokens the stored refresh token is reused (rotation persistence is a
+    // follow-up); the access token is updated below.
+    // `switch` with a `default: throw` makes the no-fallback property
+    // structural: an unrecognized provider can NEVER reach the Google branch,
+    // so a future reorder/addition can't silently reintroduce the cross-vendor
+    // leak this dispatch exists to prevent.
+    let refreshed: OAuthTokenSet;
+    switch (provider) {
+      case 'microsoft':
+        if (!this.microsoftConfig) {
+          throw new Error(
+            'DbTokenStore: refusing to refresh a microsoft token — no Microsoft OAuth config was wired. ' +
+              'Construct DbTokenStore with a microsoftConfig to support Outlook.',
+          );
+        }
+        refreshed = await refreshMicrosoftAccessToken(this.microsoftConfig, existing.refreshToken);
+        break;
+      case 'google':
+        refreshed = await refreshAccessToken(this.oauthConfig, existing.refreshToken);
+        break;
+      default:
+        throw new Error(`DbTokenStore: unsupported provider '${provider}' for token refresh.`);
+    }
 
     // Persist the new access token. If the row is currently stored
     // encrypted (key cache populated AND row has encrypted_access_token),
@@ -399,6 +440,16 @@ export class DbTokenStore implements OAuthTokenStore {
       );
     }
 
+    // TODO(outlook-connector): persist a ROTATED Microsoft refresh token.
+    // The persist above only writes the access token, and this returns the
+    // original refresh token. Google never rotates, so this is correct there;
+    // Microsoft is non-rotating by default but CAN rotate under some
+    // conditional-access configs — when it does, the new refresh token is
+    // currently dropped, so the next poll re-submits the stale one and the
+    // grant dies (permanent MicrosoftOAuthRefreshError) until re-auth. The
+    // Outlook signal connector PR must persist `refreshed.refreshToken` (and
+    // return it) when it differs from `existing.refreshToken`, handling the
+    // encrypted-column path too.
     return {
       ...refreshed,
       refreshToken: existing.refreshToken,
