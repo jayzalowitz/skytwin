@@ -14,8 +14,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Mocks (set up BEFORE imports under test so the module sees them)
 // ────────────────────────────────────────────────
 
-const mockBase64 = vi.fn<[], Promise<string>>();
-const mockFileCtor = vi.fn<[string], void>();
+const mockBase64 = vi.fn(async (): Promise<string> => '');
+const mockFileCtor = vi.fn((_uri: string): void => undefined);
 
 vi.mock('expo-file-system', () => ({
   File: class MockFile {
