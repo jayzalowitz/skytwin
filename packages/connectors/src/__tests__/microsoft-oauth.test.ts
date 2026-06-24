@@ -112,6 +112,31 @@ describe('microsoft-oauth', () => {
       expect(opts.body.get('code_verifier')).toBeNull();
     });
 
+    it('includes redirect_uri on the exchange (Microsoft requires it to match the authorize leg)', async () => {
+      fetchMock.mockResolvedValue(okToken());
+      await exchangeCode(baseConfig, 'auth-code', 'v');
+      const [, opts] = fetchMock.mock.calls[0] as [string, { body: URLSearchParams }];
+      expect(opts.body.get('redirect_uri')).toBe(baseConfig.redirectUri);
+    });
+
+    it('throws when the token response has no refresh_token (misconfigured app)', async () => {
+      fetchMock.mockResolvedValue({
+        ok: true,
+        json: async () => ({ access_token: 'at', expires_in: 3600, scope: 'Mail.Read' }),
+      });
+      await expect(exchangeCode(baseConfig, 'c', 'v')).rejects.toThrow(/no refresh_token/);
+    });
+
+    it('treats a missing expires_in as already-expired (no Invalid Date)', async () => {
+      fetchMock.mockResolvedValue({
+        ok: true,
+        json: async () => ({ access_token: 'at', refresh_token: 'rt', scope: 'Mail.Read' }),
+      });
+      const result = await exchangeCode(baseConfig, 'c', 'v');
+      expect(Number.isNaN(result.expiresAt.getTime())).toBe(false);
+      expect(result.expiresAt.getTime()).toBeLessThanOrEqual(Date.now() + 1000);
+    });
+
     it('throws when neither clientSecret nor codeVerifier is available', async () => {
       await expect(exchangeCode(baseConfig, 'auth-code')).rejects.toThrow(/clientSecret.*codeVerifier/);
       expect(fetchMock).not.toHaveBeenCalled();
@@ -141,6 +166,16 @@ describe('microsoft-oauth', () => {
       expect(opts.body.get('grant_type')).toBe('refresh_token');
       expect(result.refreshToken).toBe('stored-rt');
       expect(result.provider).toBe('microsoft');
+    });
+
+    it('omits client_secret on refresh in PKCE/public-client mode', async () => {
+      fetchMock.mockResolvedValue({
+        ok: true,
+        json: async () => ({ access_token: 'at', expires_in: 3600, scope: '' }),
+      });
+      await refreshAccessToken(baseConfig, 'stored-rt'); // baseConfig.clientSecret === ''
+      const [, opts] = fetchMock.mock.calls[0] as [string, { body: URLSearchParams }];
+      expect(opts.body.get('client_secret')).toBeNull();
     });
 
     it('adopts a rotated refresh token when the response returns one', async () => {

@@ -68,6 +68,17 @@ function withOfflineAccess(scopes: string[]): string[] {
 }
 
 /**
+ * Build the access-token expiry from `expires_in` (seconds). A missing /
+ * non-finite value yields "now" — treat the token as already expired so the
+ * next call refreshes it, rather than producing an `Invalid Date` that
+ * serializes to `null` and looks permanently broken.
+ */
+function expiresAtFrom(expiresInSec: number | undefined): Date {
+  const sec = typeof expiresInSec === 'number' && Number.isFinite(expiresInSec) ? expiresInSec : 0;
+  return new Date(Date.now() + sec * 1000);
+}
+
+/**
  * Build a Microsoft authorization URL. PKCE params attach when a
  * `codeChallenge` is supplied (use this whenever the matching `exchangeCode`
  * won't have a `clientSecret`). `offline_access` is force-added so the grant
@@ -137,15 +148,25 @@ export async function exchangeCode(
 
   const data = (await response.json()) as {
     access_token: string;
-    refresh_token: string;
-    expires_in: number;
+    refresh_token?: string;
+    expires_in?: number;
     scope?: string;
   };
+
+  if (!data.refresh_token) {
+    // We force `offline_access`, so a missing refresh token means the app
+    // registration is misconfigured (e.g. a single-page-app redirect type
+    // that never returns one). Surface it rather than silently producing an
+    // `OAuthTokenSet` with an undefined refreshToken.
+    throw new Error(
+      'Microsoft OAuth: token response had no refresh_token — ensure the app registration grants offline_access and is not a single-page-app redirect type.',
+    );
+  }
 
   return {
     accessToken: data.access_token,
     refreshToken: data.refresh_token,
-    expiresAt: new Date(Date.now() + data.expires_in * 1000),
+    expiresAt: expiresAtFrom(data.expires_in),
     scopes: (data.scope ?? '').split(' ').filter(Boolean),
     provider: 'microsoft',
   };
@@ -203,7 +224,7 @@ export async function refreshAccessToken(
   const data = (await response.json()) as {
     access_token: string;
     refresh_token?: string;
-    expires_in: number;
+    expires_in?: number;
     scope?: string;
   };
 
@@ -211,7 +232,7 @@ export async function refreshAccessToken(
     accessToken: data.access_token,
     // Non-rotating by default — fall back to the token we already hold.
     refreshToken: data.refresh_token ?? refreshToken,
-    expiresAt: new Date(Date.now() + data.expires_in * 1000),
+    expiresAt: expiresAtFrom(data.expires_in),
     scopes: (data.scope ?? '').split(' ').filter(Boolean),
     provider: 'microsoft',
   };
