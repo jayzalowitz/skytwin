@@ -370,6 +370,13 @@ export class DbTokenStore implements OAuthTokenStore {
   }
 
   async refreshIfExpired(userId: string, provider: string): Promise<OAuthTokenSet> {
+    // Validate the provider up-front — fail loud on an unsupported provider
+    // BEFORE fetching (and potentially decrypting) any stored secret. The
+    // switch below keeps a defensive `default: throw` as a backstop.
+    if (provider !== 'google' && provider !== 'microsoft') {
+      throw new Error(`DbTokenStore: unsupported provider '${provider}' for token refresh.`);
+    }
+
     const existing = await this.getToken(userId, provider);
     if (!existing) {
       throw new Error(`No OAuth token found for user ${userId} provider ${provider}`);

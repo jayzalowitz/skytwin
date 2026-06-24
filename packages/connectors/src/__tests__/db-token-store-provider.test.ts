@@ -71,10 +71,12 @@ describe('DbTokenStore provider-aware refresh', () => {
     expect(mockMicrosoftRefresh).not.toHaveBeenCalled();
   });
 
-  it('throws on an unsupported provider rather than guessing an endpoint', async () => {
+  it('throws on an unsupported provider BEFORE touching the token store', async () => {
     repo.getToken.mockResolvedValue(expiredRow());
     const store = new DbTokenStore(repo, googleConfig, microsoftConfig);
     await expect(store.refreshIfExpired('u1', 'slack')).rejects.toThrow(/unsupported provider 'slack'/);
+    // Fails up-front — no token fetch/decrypt, no refresh call.
+    expect(repo.getToken).not.toHaveBeenCalled();
     expect(mockGoogleRefresh).not.toHaveBeenCalled();
     expect(mockMicrosoftRefresh).not.toHaveBeenCalled();
   });
