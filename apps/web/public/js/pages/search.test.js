@@ -25,6 +25,12 @@ describe('instant search page', () => {
     expect(source).not.toMatch(/\son(click|keydown|keyup|change|input|submit)=/i);
   });
 
+  it('renderSearch is async so navigate().catch() does not throw', () => {
+    // The SPA does `route.render(...).catch(...)`; a sync renderer makes
+    // `undefined.catch` throw and aborts the rest of navigate().
+    expect(source).toContain('export async function renderSearch');
+  });
+
   it('is registered as a route in the SPA', () => {
     expect(appSource).toContain("import { renderSearch } from './pages/search.js'");
     expect(appSource).toContain("'/search': { title: 'Search', render: renderSearch }");

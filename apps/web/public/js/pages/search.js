@@ -47,7 +47,11 @@ const SEARCH_LIMIT = 15;
 let _searchSeq = 0;
 let _debounceTimer;
 
-export function renderSearch(container, userId) {
+// `async` is load-bearing: the SPA's navigate() calls
+// `route.render(...).catch(...)`, so every renderer MUST return a Promise.
+// A sync renderer makes `undefined.catch` throw a TypeError that aborts the
+// rest of navigate() (the post-render badge/banner/connection refreshes).
+export async function renderSearch(container, userId) {
   container.innerHTML = `
     <div class="search-page" data-region="search">
       <div class="search-bar">
