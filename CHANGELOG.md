@@ -1,5 +1,11 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.67.0] - 2026-06-24
+
+### Added
+
+- **Connect Outlook — Microsoft OAuth routes.** Building on the `microsoft-oauth` module (#550), `GET /api/oauth/microsoft/authorize` + `GET /api/oauth/microsoft/callback` let an authenticated user connect their Outlook mail + calendar (Graph scopes `User.Read` / `Mail.Read` / `Calendars.Read`). The flow reuses the exact provider-agnostic security infrastructure the Google flow uses — HMAC-signed state (so the public callback can't be spoofed into attaching an account to another user), the consume-on-read PKCE verifier store, and `oauthRepository.saveTokenForAccount` (multi-account keyed on `(user, provider, account_email)`). Config resolves env → DB Setup creds → bundled default (`MICROSOFT_CLIENT_ID` / `SKYTWIN_DEFAULT_MICROSOFT_CLIENT_ID`), defaulting to **user-supplied** (bring your own Entra app) since SkyTwin ships no bundled Microsoft client unless that env var is set. The disconnect endpoint (`DELETE /:provider/disconnect`) now accepts `microsoft` (Entra has no token-revoke endpoint, so disconnect drops the stored rows). Identity comes from Graph `/me`, falling back to `userPrincipalName` when `mail` is null (personal Outlook.com accounts). **Scoped intentionally narrow** vs Google: no new-user-sign-in-with-Microsoft and no desktop pending handoff — just "connect Outlook to my existing SkyTwin account." 8 new unit tests (config precedence, Graph identity + UPN fallback); all 33 existing OAuth tests still green. The Outlook mail/calendar **signal connector** (Graph polling → signals) is the next follow-up; it needs a real Entra app to verify end to end.
+
 ## [0.6.66.0] - 2026-06-24
 
 ### Added

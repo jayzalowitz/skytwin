@@ -19,8 +19,10 @@ import {
   exchangeCode,
   revokeToken,
   fetchGoogleProfileSync,
+  microsoftOAuth,
+  MICROSOFT_GRAPH_SCOPES,
 } from '@skytwin/connectors';
-import type { GoogleOAuthConfig } from '@skytwin/connectors';
+import type { GoogleOAuthConfig, MicrosoftOAuthConfig } from '@skytwin/connectors';
 import { sessionAuth } from '../middleware/session-auth.js';
 import { requireOwnership } from '../middleware/require-ownership.js';
 
@@ -164,6 +166,42 @@ async function fetchGoogleUserInfo(accessToken: string): Promise<GoogleUserInfo>
     throw new Error(`Google userinfo failed: ${res.status} ${res.statusText}`);
   }
   return res.json() as Promise<GoogleUserInfo>;
+}
+
+/** Microsoft Graph `/me` identity — the fields we key the token row on. */
+export interface MicrosoftUserInfo {
+  id: string;
+  email: string;
+  name?: string;
+}
+
+/**
+ * Resolve the connected Microsoft identity via Graph `/me`. Personal
+ * (Outlook.com) accounts frequently have a `null` `mail`, so we fall back to
+ * `userPrincipalName` — both are the account's verified Entra identity (there
+ * is no separate "verified_email" step like Google's; the Entra account IS
+ * the verified identity, so no impersonation check is needed here).
+ */
+export async function fetchMicrosoftUserInfo(accessToken: string): Promise<MicrosoftUserInfo> {
+  const res = await fetch('https://graph.microsoft.com/v1.0/me', {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!res.ok) {
+    throw new Error(`Microsoft Graph /me failed: ${res.status} ${res.statusText}`);
+  }
+  const data = (await res.json()) as {
+    id: string;
+    mail?: string | null;
+    userPrincipalName?: string;
+    displayName?: string;
+  };
+  const email =
+    typeof data.mail === 'string' && data.mail.length > 0
+      ? data.mail
+      : typeof data.userPrincipalName === 'string'
+        ? data.userPrincipalName
+        : '';
+  return { id: data.id, email, name: data.displayName };
 }
 
 /**
@@ -401,6 +439,62 @@ async function resolveGoogleConfig(): Promise<ResolvedGoogleConfig> {
   return { clientId, clientSecret, redirectUri, source };
 }
 
+// ── Microsoft (Entra) OAuth config ──────────────────────────────────────────
+type MicrosoftConfigSource = 'user-supplied' | 'bundled' | 'unset';
+
+interface ResolvedMicrosoftConfig extends MicrosoftOAuthConfig {
+  source: MicrosoftConfigSource;
+}
+
+const DEFAULT_MICROSOFT_REDIRECT_URI = 'http://localhost:3100/api/oauth/microsoft/callback';
+
+/**
+ * Resolve the Microsoft OAuth config from ENV only (no DB) — the pure,
+ * unit-testable core of `resolveMicrosoftConfig`. Mirrors the Google
+ * resolver's env+bundled precedence: operator-supplied
+ * `MICROSOFT_CLIENT_ID`/`_SECRET` win, else the PKCE-only bundled default
+ * (`SKYTWIN_DEFAULT_MICROSOFT_CLIENT_ID`). `clientSecret: ''` is load-bearing
+ * (selects the PKCE token-exchange variant). Default-on-launch is
+ * user-supplied — SkyTwin ships no bundled Microsoft client unless the env
+ * var is set, so connecting Outlook means bringing your own Entra app.
+ */
+export function resolveMicrosoftEnvConfig(env: NodeJS.ProcessEnv = process.env): ResolvedMicrosoftConfig {
+  const tenant = env['MICROSOFT_TENANT'] && env['MICROSOFT_TENANT'].length > 0 ? env['MICROSOFT_TENANT'] : 'common';
+  const redirectUri = env['MICROSOFT_REDIRECT_URI'] ?? DEFAULT_MICROSOFT_REDIRECT_URI;
+
+  const envClientId = env['MICROSOFT_CLIENT_ID'] ?? '';
+  if (envClientId) {
+    return { clientId: envClientId, clientSecret: env['MICROSOFT_CLIENT_SECRET'] ?? '', redirectUri, tenant, source: 'user-supplied' };
+  }
+  const bundled = env['SKYTWIN_DEFAULT_MICROSOFT_CLIENT_ID'] ?? '';
+  if (bundled) {
+    return { clientId: bundled, clientSecret: '', redirectUri, tenant, source: 'bundled' };
+  }
+  return { clientId: '', clientSecret: '', redirectUri, tenant, source: 'unset' };
+}
+
+/**
+ * Resolve the Microsoft OAuth config: ENV/bundled (above) overlaid with
+ * DB-stored Setup credentials (`service_credentials` provider='microsoft'),
+ * which take priority — same layering as Google.
+ */
+async function resolveMicrosoftConfig(): Promise<ResolvedMicrosoftConfig> {
+  const cfg = resolveMicrosoftEnvConfig();
+  try {
+    const dbCreds = await serviceCredentialRepository.getAsMap('microsoft');
+    if (dbCreds['client_id']) {
+      cfg.clientId = dbCreds['client_id'];
+      cfg.source = 'user-supplied';
+    }
+    if (dbCreds['client_secret']) cfg.clientSecret = dbCreds['client_secret'];
+    if (dbCreds['redirect_uri']) cfg.redirectUri = dbCreds['redirect_uri'];
+    if (dbCreds['tenant']) cfg.tenant = dbCreds['tenant'];
+  } catch {
+    // No service_credentials table yet — fall through to env/bundled.
+  }
+  return cfg;
+}
+
 /**
  * Scope tiers. The split exists for two reasons:
  *
@@ -525,6 +619,11 @@ export function createOAuthRouter(): Router {
     if (req.path === '/google/callback') return true;
     if (req.path === '/google/authorize' && req.query['newUser'] === 'true') return true;
     if (req.path.startsWith('/google/pending/')) return true;
+    // The Microsoft callback is a browser redirect from Microsoft with no
+    // session. It's safe to be public: it acts only on the HMAC-signed state
+    // (which binds the flow to the user who started the authenticated
+    // /microsoft/authorize), exactly like /google/callback.
+    if (req.path === '/microsoft/callback') return true;
     return false;
   };
   router.use((req, res, next) => {
@@ -937,6 +1036,143 @@ export function createOAuthRouter(): Router {
   });
 
   /**
+   * GET /api/oauth/microsoft/authorize
+   *
+   * Returns a Microsoft (Entra) authorization URL for connecting Outlook mail
+   * + calendar to the AUTHENTICATED user's account. Scoped intentionally
+   * narrow vs the Google flow: no new-user-sign-in-with-Microsoft, no desktop
+   * pending handoff — just "connect Outlook to my existing SkyTwin". Pass
+   * `?userId=…` or rely on the session.
+   */
+  router.get('/microsoft/authorize', async (req, res, next) => {
+    try {
+      const config = await resolveMicrosoftConfig();
+      if (!config.clientId) {
+        res.status(503).json({
+          error:
+            'Microsoft (Outlook) connect is not configured. Add a Microsoft Entra app via Settings, ' +
+            'or set MICROSOFT_CLIENT_ID (+ MICROSOFT_CLIENT_SECRET for a confidential client).',
+          code: 'NO_MICROSOFT_CLIENT_CONFIGURED',
+        });
+        return;
+      }
+
+      const queryUserId = typeof req.query['userId'] === 'string' ? req.query['userId'] : undefined;
+      const userId = queryUserId ?? req.authenticatedUserId;
+      if (!userId) {
+        res.status(400).json({ error: 'Missing userId. Pass ?userId=… or authenticate.' });
+        return;
+      }
+
+      const scopes = [
+        MICROSOFT_GRAPH_SCOPES.userRead,
+        MICROSOFT_GRAPH_SCOPES.mailRead,
+        MICROSOFT_GRAPH_SCOPES.calendarsRead,
+      ];
+
+      // State carries only the userId — connect-for-existing-user, no tags.
+      // Reuses the same HMAC signing as the Google flow so /microsoft/callback
+      // can't be spoofed into attaching an account to another user.
+      const state = signStatePayload(userId, Date.now() + STATE_TTL_MS);
+
+      let codeChallenge: string | undefined;
+      if (!config.clientSecret) {
+        const pkce = microsoftOAuth.generatePkcePair();
+        await rememberPkceVerifier(state, pkce.codeVerifier);
+        codeChallenge = pkce.codeChallenge;
+      }
+
+      const url = microsoftOAuth.generateAuthUrl(config, scopes, state, codeChallenge);
+      res.json({ url });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /**
+   * GET /api/oauth/microsoft/callback
+   *
+   * Public (browser redirect from Microsoft). Validates the signed state,
+   * exchanges the code, resolves the Graph identity, and persists tokens
+   * keyed on (userId, 'microsoft', accountEmail). Connect-for-existing-user
+   * only: the signed state MUST carry a userId (no auto-create).
+   */
+  router.get('/microsoft/callback', async (req, res, next) => {
+    try {
+      const code = req.query['code'] as string | undefined;
+      const state = req.query['state'] as string | undefined;
+      if (!code) {
+        res.status(400).json({ error: 'Missing authorization code' });
+        return;
+      }
+      if (!state) {
+        res.status(400).json({ error: 'Missing state parameter' });
+        return;
+      }
+
+      let parsed: ParsedState;
+      try {
+        parsed = parseSignedState(state);
+      } catch (err) {
+        res.status(400).json({ error: err instanceof InvalidStateError ? err.message : 'Invalid state' });
+        return;
+      }
+
+      const userId = parsed.userId;
+      if (!userId) {
+        res.status(400).json({ error: 'Microsoft connect requires an existing user in the signed state.' });
+        return;
+      }
+
+      const config = await resolveMicrosoftConfig();
+      // Consume-on-read so a replayed callback can't redeem the same code.
+      const codeVerifier = await consumePkceVerifier(state);
+      if (!config.clientSecret && !codeVerifier) {
+        res.status(400).json({
+          error: 'OAuth verifier expired or missing. Re-start the connect flow from the dashboard.',
+        });
+        return;
+      }
+
+      const tokenSet = await microsoftOAuth.exchangeCode(config, code, codeVerifier);
+      const userInfo = await fetchMicrosoftUserInfo(tokenSet.accessToken);
+      const accountEmail = userInfo.email.trim();
+      if (!accountEmail) {
+        res.status(502).json({
+          error: 'Microsoft Graph /me returned no mail or userPrincipalName — cannot key the account.',
+        });
+        return;
+      }
+
+      // Connect attaches to an EXISTING user; if the signed-state userId no
+      // longer exists, fail rather than auto-creating an orphaned account.
+      const existing = await userRepository.findById(userId);
+      if (!existing) {
+        res.status(404).json({ error: 'User not found for this connect flow.' });
+        return;
+      }
+
+      await oauthRepository.saveTokenForAccount({
+        userId,
+        provider: 'microsoft',
+        accountEmail,
+        accountProviderId: userInfo.id,
+        accessToken: tokenSet.accessToken,
+        refreshToken: tokenSet.refreshToken,
+        expiresAt: tokenSet.expiresAt,
+        scopes: tokenSet.scopes,
+      });
+
+      const webBase = process.env['WEB_BASE_URL'] ?? `http://localhost:${process.env['WEB_PORT'] ?? '3200'}`;
+      const topLevel = new URLSearchParams({ userId }).toString();
+      const hashQuery = new URLSearchParams({ connected: 'microsoft', account: accountEmail }).toString();
+      res.redirect(`${webBase}/?${topLevel}#/?${hashQuery}`);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /**
    * GET /api/oauth/google/pending/:key
    *
    * Pollable handoff endpoint for the desktop new-user flow. The
@@ -1179,22 +1415,27 @@ export function createOAuthRouter(): Router {
         return;
       }
 
-      if (provider !== 'google') {
+      if (provider !== 'google' && provider !== 'microsoft') {
         res.status(400).json({ error: `Unsupported provider: ${provider}` });
         return;
       }
 
-      // Revoke each connected account in turn, then drop all rows.
-      // Prefer refresh_token (invalidates the full grant); access_token
-      // alone leaves the grant active per Google's revocation semantics.
       const accounts = await oauthRepository.listAccountsForUser(userId, provider);
-      for (const acct of accounts) {
-        const tokenToRevoke = acct.refresh_token ?? acct.access_token;
-        if (!tokenToRevoke) continue;
-        try {
-          await revokeToken(tokenToRevoke);
-        } catch {
-          // Revocation can fail if a token is already expired — continue.
+      // Google supports server-side token revocation; Microsoft Entra has no
+      // equivalent token-revoke endpoint, so for Microsoft we just drop the
+      // stored rows (deleting the token is the disconnect).
+      if (provider === 'google') {
+        // Revoke each connected account in turn, then drop all rows. Prefer
+        // refresh_token (invalidates the full grant); access_token alone
+        // leaves the grant active per Google's revocation semantics.
+        for (const acct of accounts) {
+          const tokenToRevoke = acct.refresh_token ?? acct.access_token;
+          if (!tokenToRevoke) continue;
+          try {
+            await revokeToken(tokenToRevoke);
+          } catch {
+            // Revocation can fail if a token is already expired — continue.
+          }
         }
       }
       await oauthRepository.deleteAllForProvider(userId, provider);
@@ -1202,7 +1443,10 @@ export function createOAuthRouter(): Router {
       res.json({
         status: 'disconnected',
         provider,
-        revoked: accounts.length,
+        // Microsoft has no revoke endpoint, so for it `revoked` is always 0;
+        // `deleted` reflects the rows dropped for either provider.
+        revoked: provider === 'google' ? accounts.length : 0,
+        deleted: accounts.length,
       });
     } catch (error) {
       next(error);
