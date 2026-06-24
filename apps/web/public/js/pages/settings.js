@@ -298,6 +298,7 @@ export async function renderSettings(container, userId) {
             type="checkbox"
             id="email-attribution-toggle"
             data-action="toggle-email-attribution"
+            aria-label="Add SkyTwin footer to sent emails"
             ${emailAttributionEnabled ? 'checked' : ''}
           >
           <span class="toggle-slider"></span>
