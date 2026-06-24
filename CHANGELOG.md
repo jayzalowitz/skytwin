@@ -1,5 +1,11 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.66.0] - 2026-06-24
+
+### Added
+
+- **Microsoft Entra OAuth foundation (Outlook connector groundwork).** New `@skytwin/connectors` `microsoft-oauth` module — `generateAuthUrl` / `exchangeCode` / `refreshAccessToken` over the Microsoft identity platform v2 endpoints, mirroring the Google OAuth module (pure, transport-only, returns the shared `OAuthTokenSet`, unit-tested against a mocked `fetch`). It handles the Microsoft-specific details Google doesn't: tenant-scoped endpoints (`common` by default — supports personal Outlook.com *and* work/school Microsoft 365), `offline_access` force-added so the grant always yields a refresh token (Microsoft's equivalent of Google's `access_type=offline`), non-rotating refresh tokens (the stored token is kept unless the response returns a new one), PKCE reuse, and a `MicrosoftOAuthRefreshError` that classifies permanent (4xx) vs transient failures. Exported namespaced (`microsoftOAuth.*`) since the function names intentionally mirror the Google module. 15 unit tests. **This is the foundation only** — wiring the live `/microsoft/*` authorize/callback routes (which carry product decisions: bundled Azure app vs user-supplied client, scope grouping) and the Outlook mail/calendar Graph signal connector are scoped follow-ups; the latter needs a real Azure/Entra app to verify end to end.
+
 ## [0.6.65.0] - 2026-06-24
 
 ### Added
