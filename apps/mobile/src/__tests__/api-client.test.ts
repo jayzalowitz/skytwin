@@ -19,6 +19,35 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
 
+interface TestRequestInit extends RequestInit {
+  headers: Record<string, string>;
+  body?: string;
+  method: string;
+  signal: AbortSignal;
+}
+
+function firstFetchCall(): [string, TestRequestInit] {
+  const call = mockFetch.mock.calls[0];
+  if (!call) {
+    throw new Error('Expected fetch to have been called');
+  }
+
+  const [url, opts] = call as [string, TestRequestInit | undefined];
+  if (!opts) {
+    throw new Error('Expected fetch options to be present');
+  }
+
+  return [url, opts];
+}
+
+function firstFetchJsonBody(): Record<string, unknown> {
+  const [, opts] = firstFetchCall();
+  if (typeof opts.body !== 'string') {
+    throw new Error('Expected fetch body to be a JSON string');
+  }
+  return JSON.parse(opts.body) as Record<string, unknown>;
+}
+
 // Inline the API client to avoid React Native import issues
 class TestApiClient {
   private readonly baseUrl: string;
@@ -136,14 +165,14 @@ describe('API client request construction', () => {
   it('includes Bearer token in every request', async () => {
     mockFetch.mockResolvedValue({ ok: true, json: async () => ({}) });
     await client.getServiceStatus();
-    const [, opts] = mockFetch.mock.calls[0];
+    const [, opts] = firstFetchCall();
     expect(opts.headers.Authorization).toBe('Bearer sess-token-xyz');
   });
 
   it('sets Content-Type and Accept to JSON', async () => {
     mockFetch.mockResolvedValue({ ok: true, json: async () => ({}) });
     await client.getApprovals('u1');
-    const [, opts] = mockFetch.mock.calls[0];
+    const [, opts] = firstFetchCall();
     expect(opts.headers['Content-Type']).toBe('application/json');
     expect(opts.headers.Accept).toBe('application/json');
   });
@@ -152,14 +181,14 @@ describe('API client request construction', () => {
     const c = new TestApiClient('http://host:3100///', 'tok');
     mockFetch.mockResolvedValue({ ok: true, json: async () => ({}) });
     await c.getServiceStatus();
-    const [url] = mockFetch.mock.calls[0];
+    const [url] = firstFetchCall();
     expect(url).toBe('http://host:3100/api/health');
   });
 
   it('does not send body for GET requests', async () => {
     mockFetch.mockResolvedValue({ ok: true, json: async () => ({}) });
     await client.getServiceStatus();
-    const [, opts] = mockFetch.mock.calls[0];
+    const [, opts] = firstFetchCall();
     expect(opts.body).toBeUndefined();
     expect(opts.method).toBe('GET');
   });
@@ -167,16 +196,16 @@ describe('API client request construction', () => {
   it('sends JSON body for POST requests', async () => {
     mockFetch.mockResolvedValue({ ok: true, json: async () => ({}) });
     await client.approveAction('req-1', 'user-1');
-    const [, opts] = mockFetch.mock.calls[0];
+    const [, opts] = firstFetchCall();
     expect(opts.method).toBe('POST');
-    const body = JSON.parse(opts.body);
+    const body = firstFetchJsonBody();
     expect(body).toEqual({ action: 'approve', userId: 'user-1' });
   });
 
   it('includes AbortSignal for timeout', async () => {
     mockFetch.mockResolvedValue({ ok: true, json: async () => ({}) });
     await client.getServiceStatus();
-    const [, opts] = mockFetch.mock.calls[0];
+    const [, opts] = firstFetchCall();
     expect(opts.signal).toBeDefined();
     expect(opts.signal).toBeInstanceOf(AbortSignal);
   });
@@ -197,33 +226,33 @@ describe('API client URL encoding', () => {
 
   it('encodes userId with special characters', async () => {
     await client.getApprovals('user@example.com');
-    const [url] = mockFetch.mock.calls[0];
+    const [url] = firstFetchCall();
     expect(url).toContain('user%40example.com');
     expect(url).not.toContain('@');
   });
 
   it('encodes userId with spaces', async () => {
     await client.getApprovals('john doe');
-    const [url] = mockFetch.mock.calls[0];
+    const [url] = firstFetchCall();
     expect(url).toContain('john%20doe');
   });
 
   it('encodes userId with slashes (path traversal prevention)', async () => {
     await client.getApprovals('../../etc/passwd');
-    const [url] = mockFetch.mock.calls[0];
+    const [url] = firstFetchCall();
     expect(url).toContain('..%2F..%2Fetc%2Fpasswd');
     expect(url).not.toMatch(/\/\.\.\//);
   });
 
   it('encodes requestId in approve path', async () => {
     await client.approveAction('req/with/slashes', 'u1');
-    const [url] = mockFetch.mock.calls[0];
+    const [url] = firstFetchCall();
     expect(url).toContain('req%2Fwith%2Fslashes');
   });
 
   it('encodes unicode characters', async () => {
     await client.getApprovals('用户');
-    const [url] = mockFetch.mock.calls[0];
+    const [url] = firstFetchCall();
     expect(url).toContain('%E7%94%A8%E6%88%B7');
   });
 });
@@ -243,31 +272,31 @@ describe('API client decision history params', () => {
 
   it('sends no query string when no params', async () => {
     await client.getDecisionHistory('u1');
-    const [url] = mockFetch.mock.calls[0];
+    const [url] = firstFetchCall();
     expect(url).toBe('http://host:3100/api/decisions/u1');
   });
 
   it('includes limit param', async () => {
     await client.getDecisionHistory('u1', { limit: 10 });
-    const [url] = mockFetch.mock.calls[0];
+    const [url] = firstFetchCall();
     expect(url).toContain('limit=10');
   });
 
   it('includes offset param', async () => {
     await client.getDecisionHistory('u1', { offset: 20 });
-    const [url] = mockFetch.mock.calls[0];
+    const [url] = firstFetchCall();
     expect(url).toContain('offset=20');
   });
 
   it('includes domain param', async () => {
     await client.getDecisionHistory('u1', { domain: 'email' });
-    const [url] = mockFetch.mock.calls[0];
+    const [url] = firstFetchCall();
     expect(url).toContain('domain=email');
   });
 
   it('combines multiple params correctly', async () => {
     await client.getDecisionHistory('u1', { limit: 5, offset: 10, domain: 'calendar' });
-    const [url] = mockFetch.mock.calls[0];
+    const [url] = firstFetchCall();
     const parsed = new URL(url);
     expect(parsed.searchParams.get('limit')).toBe('5');
     expect(parsed.searchParams.get('offset')).toBe('10');
@@ -276,7 +305,7 @@ describe('API client decision history params', () => {
 
   it('does NOT include undefined params', async () => {
     await client.getDecisionHistory('u1', { limit: 5 });
-    const [url] = mockFetch.mock.calls[0];
+    const [url] = firstFetchCall();
     expect(url).not.toContain('offset');
     expect(url).not.toContain('domain');
   });
@@ -400,7 +429,7 @@ describe('API client rejection flow', () => {
 
   it('sends reason with rejection', async () => {
     await client.rejectAction('req-1', 'u1', 'Too expensive, try a cheaper option');
-    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    const body = firstFetchJsonBody();
     expect(body.action).toBe('reject');
     expect(body.reason).toBe('Too expensive, try a cheaper option');
     expect(body.userId).toBe('u1');
@@ -408,14 +437,14 @@ describe('API client rejection flow', () => {
 
   it('sends empty reason when blank', async () => {
     await client.rejectAction('req-1', 'u1', '');
-    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    const body = firstFetchJsonBody();
     expect(body.reason).toBe('');
   });
 
   it('reason can contain unicode and special characters', async () => {
     const reason = 'No thanks 🚫 — coût trop élevé & <script>alert(1)</script>';
     await client.rejectAction('req-1', 'u1', reason);
-    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    const body = firstFetchJsonBody();
     expect(body.reason).toBe(reason);
   });
 });
@@ -562,7 +591,10 @@ describe('SSE event parsing', () => {
     const chunk = 'event: new-approval\ndata: {"action":{"type":"send_email","to":"boss@co.com"},"risk":{"level":"high"}}';
     const result = parseSSEChunk(chunk);
     expect(result).not.toBeNull();
-    const data = result!.data as Record<string, Record<string, string>>;
+    const data = result!.data as {
+      action: { type: string };
+      risk: { level: string };
+    };
     expect(data.action.type).toBe('send_email');
     expect(data.risk.level).toBe('high');
   });
@@ -865,9 +897,9 @@ describe('manual IP entry parsing', () => {
     }
     // IP:port
     if (trimmed.includes(':')) {
-      const [host, portStr] = trimmed.split(':');
+      const [host = trimmed, portStr = ''] = trimmed.split(':');
       const port = parseInt(portStr, 10);
-      return { host, port: isNaN(port) ? 3100 : port };
+      return { host, port: Number.isNaN(port) ? 3100 : port };
     }
     // Bare IP/hostname
     return { host: trimmed, port: 3100 };

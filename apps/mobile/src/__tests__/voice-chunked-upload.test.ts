@@ -10,7 +10,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
  * device or real network.
  */
 
-const mockBase64 = vi.fn<[], Promise<string>>();
+const mockBase64 = vi.fn(async (): Promise<string> => '');
 vi.mock('expo-file-system', () => ({
   File: class MockFile {
     async base64(): Promise<string> {
