@@ -1,11 +1,12 @@
 import type { ActionHandler, ExecutionStep, StepResult } from '@skytwin/shared-types';
+import { appendSkyTwinEmailAttribution } from '@skytwin/shared-types';
 import type { CredentialProvider } from '../credential-provider.js';
 
 const GMAIL_API = 'https://gmail.googleapis.com/gmail/v1';
 
 /**
  * Handler for email actions via the Gmail API.
- * Handles archive, label, send_reply, and delete operations.
+ * Handles archive, label, send_reply, draft_email, send_email, and delete operations.
  */
 export class EmailActionHandler implements ActionHandler {
   readonly actionType = 'email';
@@ -14,7 +15,15 @@ export class EmailActionHandler implements ActionHandler {
   constructor(private readonly credentialProvider?: CredentialProvider) {}
 
   canHandle(actionType: string): boolean {
-    return ['archive_email', 'label_email', 'send_reply', 'delete_email'].includes(actionType);
+    return [
+      'archive_email',
+      'label_email',
+      'send_reply',
+      'reply_email',
+      'draft_email',
+      'send_email',
+      'delete_email',
+    ].includes(actionType);
   }
 
   async execute(step: ExecutionStep): Promise<StepResult> {
@@ -22,26 +31,31 @@ export class EmailActionHandler implements ActionHandler {
     const accessToken = await this.resolveAccessToken(step);
     const messageId = step.parameters['emailId'] as string | undefined;
 
-    if (!messageId) {
-      throw new Error('Missing emailId in step parameters');
-    }
-
     switch (actionType) {
       case 'archive_email':
+        if (!messageId) throw new Error('Missing emailId in step parameters');
         return this.archiveEmail(accessToken, messageId);
       case 'label_email':
+        if (!messageId) throw new Error('Missing emailId in step parameters');
         return this.labelEmail(
           accessToken,
           messageId,
           step.parameters['labels'] as string[] ?? [],
         );
       case 'send_reply':
+      case 'reply_email':
+      case 'draft_email':
+        if (!messageId) throw new Error('Missing emailId in step parameters');
         return this.sendReply(
           accessToken,
           messageId,
-          step.parameters['replyType'] as string ?? 'acknowledgment',
+          this.resolveReplyBody(step),
+          step.parameters,
         );
+      case 'send_email':
+        return this.sendEmail(accessToken, step.parameters);
       case 'delete_email':
+        if (!messageId) throw new Error('Missing emailId in step parameters');
         return this.deleteEmail(accessToken, messageId);
       default:
         return { success: false, error: `Unknown email action: ${actionType}` };
@@ -111,16 +125,103 @@ export class EmailActionHandler implements ActionHandler {
     return { success: true, output: { action: 'trashed', messageId } };
   }
 
-  private async sendReply(accessToken: string, messageId: string, replyType: string): Promise<StepResult> {
-    // Build a minimal reply message
-    // In production this would construct a proper MIME message referencing the original
-    const raw = Buffer.from(
-      `Subject: Re: (auto-reply)\r\n` +
-      `In-Reply-To: ${messageId}\r\n` +
-      `Content-Type: text/plain; charset="UTF-8"\r\n\r\n` +
-      `[SkyTwin auto-${replyType}] This is an automated response.`,
-    ).toString('base64url');
+  private resolveReplyBody(step: ExecutionStep): string {
+    const body =
+      step.parameters['draftBody'] ??
+      step.parameters['body'] ??
+      step.parameters['messageBody'];
+    if (typeof body === 'string' && body.trim().length > 0) {
+      return this.applyAttribution(body, step.parameters);
+    }
 
+    const replyType = step.parameters['replyType'] as string | undefined ?? 'acknowledgment';
+    return this.applyAttribution(
+      `[SkyTwin auto-${replyType}] This is an automated response.`,
+      step.parameters,
+    );
+  }
+
+  private async sendEmail(
+    accessToken: string,
+    parameters: Record<string, unknown>,
+  ): Promise<StepResult> {
+    const to = parameters['to'];
+    if (typeof to !== 'string' || to.trim().length === 0) {
+      throw new Error('Missing to in step parameters');
+    }
+
+    const subject = typeof parameters['subject'] === 'string'
+      ? parameters['subject']
+      : '(no subject)';
+    const body = this.applyAttribution(
+      typeof parameters['body'] === 'string'
+        ? parameters['body']
+        : typeof parameters['messageBody'] === 'string'
+          ? parameters['messageBody']
+          : '',
+      parameters,
+    );
+
+    const raw = this.encodeMime([
+      `To: ${this.safeHeader(to)}`,
+      `Subject: ${this.safeHeader(subject)}`,
+      'MIME-Version: 1.0',
+      'Content-Type: text/plain; charset="UTF-8"',
+      '',
+      body,
+    ]);
+
+    return this.sendRawMessage(accessToken, { raw });
+  }
+
+  private async sendReply(
+    accessToken: string,
+    messageId: string,
+    body: string,
+    parameters: Record<string, unknown>,
+  ): Promise<StepResult> {
+    const original = await this.getOriginalMessageMetadata(accessToken, messageId);
+    const to = typeof parameters['replyToFrom'] === 'string' && parameters['replyToFrom'].trim()
+      ? parameters['replyToFrom']
+      : original.from;
+    if (!to) {
+      throw new Error('Missing reply recipient; original From header was unavailable');
+    }
+
+    const subjectParam = parameters['replyToSubject'] ?? parameters['subject'];
+    const subject = typeof subjectParam === 'string' && subjectParam.trim()
+      ? subjectParam
+      : original.subject;
+    const replySubject = /^re:/i.test(subject) ? subject : `Re: ${subject || '(no subject)'}`;
+    const references = [original.references, original.messageId].filter(Boolean).join(' ');
+
+    const lines = [
+      `To: ${this.safeHeader(to)}`,
+      `Subject: ${this.safeHeader(replySubject)}`,
+      'MIME-Version: 1.0',
+      'Content-Type: text/plain; charset="UTF-8"',
+      '',
+      body,
+    ];
+    if (original.messageId) lines.splice(2, 0, `In-Reply-To: ${this.safeHeader(original.messageId)}`);
+    if (references) {
+      const insertAt = original.messageId ? 3 : 2;
+      lines.splice(insertAt, 0, `References: ${this.safeHeader(references)}`);
+    }
+    const raw = this.encodeMime(lines);
+
+    return this.sendRawMessage(accessToken, { raw, threadId: original.threadId ?? messageId }, {
+      action: 'reply_sent',
+      messageId,
+      replyType: parameters['replyType'] ?? 'custom',
+    });
+  }
+
+  private async sendRawMessage(
+    accessToken: string,
+    payload: { raw: string; threadId?: string },
+    output: Record<string, unknown> = { action: 'email_sent' },
+  ): Promise<StepResult> {
     const url = `${GMAIL_API}/users/me/messages/send`;
     const response = await fetch(url, {
       method: 'POST',
@@ -128,14 +229,71 @@ export class EmailActionHandler implements ActionHandler {
         Authorization: `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ raw, threadId: messageId }),
+      body: JSON.stringify(payload),
     });
 
     if (!response.ok) {
       return { success: false, error: `Gmail send failed: ${response.status}` };
     }
 
-    return { success: true, output: { action: 'reply_sent', messageId, replyType } };
+    return { success: true, output };
+  }
+
+  private async getOriginalMessageMetadata(
+    accessToken: string,
+    messageId: string,
+  ): Promise<{
+    from: string;
+    subject: string;
+    messageId: string;
+    references: string;
+    threadId: string | null;
+  }> {
+    const url = new URL(`${GMAIL_API}/users/me/messages/${encodeURIComponent(messageId)}`);
+    url.searchParams.set('format', 'metadata');
+    for (const header of ['From', 'Subject', 'Message-ID', 'References']) {
+      url.searchParams.append('metadataHeaders', header);
+    }
+
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!response.ok) {
+      throw new Error(`Gmail metadata fetch failed: ${response.status}`);
+    }
+
+    const json = await response.json() as {
+      threadId?: string;
+      payload?: { headers?: Array<{ name?: string; value?: string }> };
+    };
+    const headers = new Map<string, string>();
+    for (const header of json.payload?.headers ?? []) {
+      if (header.name && typeof header.value === 'string') {
+        headers.set(header.name.toLowerCase(), header.value);
+      }
+    }
+    return {
+      from: headers.get('from') ?? '',
+      subject: headers.get('subject') ?? '',
+      messageId: headers.get('message-id') ?? '',
+      references: headers.get('references') ?? '',
+      threadId: json.threadId ?? null,
+    };
+  }
+
+  private applyAttribution(body: string, parameters: Record<string, unknown>): string {
+    return appendSkyTwinEmailAttribution(body, {
+      enabled: parameters['emailAttributionSignatureEnabled'] !== false,
+    });
+  }
+
+  private encodeMime(lines: string[]): string {
+    return Buffer.from(lines.join('\r\n')).toString('base64url');
+  }
+
+  private safeHeader(value: string): string {
+    return value.replace(/[\r\n]+/g, ' ').trim();
   }
 
   private async modifyLabels(

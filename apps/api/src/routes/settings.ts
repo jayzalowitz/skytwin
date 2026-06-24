@@ -7,6 +7,11 @@ import {
 } from '@skytwin/db';
 import type { DomainAutonomyPolicyRow, EscalationTriggerRow, AIProviderSettingsRow } from '@skytwin/db';
 import { TrustTier } from '@skytwin/shared-types';
+import {
+  SKYTWIN_EMAIL_ATTRIBUTION_TEXT,
+  SKYTWIN_REPO_URL,
+  resolveEmailAttributionEnabled,
+} from '@skytwin/shared-types';
 import { LlmClient, validateBaseUrlWithDns } from '@skytwin/llm-client';
 import type { ProviderEntry } from '@skytwin/llm-client';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
@@ -50,6 +55,11 @@ export function createSettingsRouter(): Router {
         ironclawChannel: user.ironclaw_channel ?? 'skytwin',
         ironclawChannels: ['skytwin', 'telegram', 'discord', 'slack', 'signal'],
         autonomySettings: user.autonomy_settings,
+        emailAttribution: {
+          enabled: resolveEmailAttributionEnabled(user.autonomy_settings),
+          text: SKYTWIN_EMAIL_ATTRIBUTION_TEXT,
+          repoUrl: SKYTWIN_REPO_URL,
+        },
         domainPolicies: domainPolicies.map((p: DomainAutonomyPolicyRow) => ({
           domain: p.domain,
           trustTier: p.trust_tier,
@@ -129,6 +139,7 @@ export function createSettingsRouter(): Router {
         allowedDomains,
         blockedDomains,
         requireApprovalForIrreversible,
+        emailAttributionSignatureEnabled,
       } = req.body as Record<string, unknown>;
 
       // Validate spend limit values
@@ -144,6 +155,13 @@ export function createSettingsRouter(): Router {
           return;
         }
       }
+      if (
+        emailAttributionSignatureEnabled !== undefined &&
+        typeof emailAttributionSignatureEnabled !== 'boolean'
+      ) {
+        res.status(400).json({ error: 'emailAttributionSignatureEnabled must be a boolean' });
+        return;
+      }
 
       const updatedSettings: Record<string, unknown> = {
         ...user.autonomy_settings,
@@ -154,6 +172,9 @@ export function createSettingsRouter(): Router {
       if (allowedDomains !== undefined) updatedSettings['allowedDomains'] = allowedDomains;
       if (blockedDomains !== undefined) updatedSettings['blockedDomains'] = blockedDomains;
       if (requireApprovalForIrreversible !== undefined) updatedSettings['requireApprovalForIrreversible'] = requireApprovalForIrreversible;
+      if (emailAttributionSignatureEnabled !== undefined) {
+        updatedSettings['emailAttributionSignatureEnabled'] = emailAttributionSignatureEnabled;
+      }
 
       const updated = await userRepository.updateAutonomySettings(userId!, updatedSettings);
 
@@ -165,6 +186,11 @@ export function createSettingsRouter(): Router {
       res.json({
         userId: updated.id,
         autonomySettings: updated.autonomy_settings,
+        emailAttribution: {
+          enabled: resolveEmailAttributionEnabled(updated.autonomy_settings),
+          text: SKYTWIN_EMAIL_ATTRIBUTION_TEXT,
+          repoUrl: SKYTWIN_REPO_URL,
+        },
       });
     } catch (error) {
       next(error);

@@ -57,6 +57,13 @@ export function renderDraftEmailCard(a, action) {
   const replyToFrom = typeof params.replyToFrom === 'string' ? params.replyToFrom : '';
   const replyToSubject =
     typeof params.replyToSubject === 'string' ? params.replyToSubject : '';
+  const attributionEnabled = params.emailAttributionSignatureEnabled !== false;
+  const attributionRepoUrl = typeof params.emailAttributionRepoUrl === 'string'
+    ? params.emailAttributionRepoUrl
+    : 'https://github.com/jayzalowitz/skytwin';
+  const attributionText = typeof params.emailAttributionSignatureText === 'string'
+    ? params.emailAttributionSignatureText
+    : `Sent by SkyTwin - the open-source digital twin: ${attributionRepoUrl}`;
   const confidenceText = confidenceCopy(action.confidence);
 
   // Estimate display lines for the textarea: at least 4, at most 12;
@@ -98,6 +105,14 @@ export function renderDraftEmailCard(a, action) {
         aria-describedby="draft-meta-${escapeHtml(id)}"
         style="width: 100%; min-height: 6.5rem; font-family: inherit; font-size: 0.92rem; line-height: 1.5; padding: 0.6rem 0.7rem; resize: vertical;"
       >${escapeHtml(draftBody)}</textarea>
+      <div
+        class="draft-email-attribution"
+        style="margin-top: 0.45rem; padding: 0.45rem 0.6rem; border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text-muted); font-size: 0.78rem; line-height: 1.45;"
+      >
+        ${attributionEnabled
+          ? `SkyTwin footer will be added on send: <span style="color: var(--text);">${escapeHtml(attributionText)}</span> <a href="${escapeHtml(attributionRepoUrl)}" target="_blank" rel="noopener noreferrer" style="color: var(--accent);">repo</a>`
+          : 'SkyTwin footer is off in Settings. This draft will send without it.'}
+      </div>
       <details class="draft-email-details" style="margin: 0.4rem 0 0; font-size: 0.78rem;">
         <summary style="cursor: pointer; color: var(--text-dim);">Show prompt details</summary>
         <div style="margin-top: 0.4rem; padding: 0.5rem 0.7rem; border-left: 2px solid var(--border); display: flex; flex-direction: column; gap: 0.35rem; color: var(--text-dim);">

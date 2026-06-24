@@ -127,6 +127,16 @@ export async function renderSettings(container, userId) {
   const domainPolicies = settings?.domainPolicies ?? [];
   const escalationTriggers = settings?.escalationTriggers ?? [];
   const autonomy = settings?.autonomySettings ?? {};
+  const emailAttribution = settings?.emailAttribution ?? {};
+  const emailAttributionRepoUrl =
+    typeof emailAttribution.repoUrl === 'string'
+      ? emailAttribution.repoUrl
+      : 'https://github.com/jayzalowitz/skytwin';
+  const emailAttributionText =
+    typeof emailAttribution.text === 'string'
+      ? emailAttribution.text
+      : `Sent by SkyTwin - the open-source digital twin: ${emailAttributionRepoUrl}`;
+  const emailAttributionEnabled = emailAttribution.enabled !== false;
   const aiProviders = settings?.aiProviders ?? [];
   const ironclawChannel = settings?.ironclawChannel ?? 'skytwin';
   const ironclawChannels = settings?.ironclawChannels ?? ['skytwin', 'telegram', 'discord', 'slack', 'signal'];
@@ -266,6 +276,37 @@ export async function renderSettings(container, userId) {
             : `<button class="btn btn-primary btn-sm" data-action="connect-google">Connect</button>`
           }
         </div>
+      </div>
+    </div>
+
+    <div class="card" id="email-attribution-card">
+      <div class="card-header">
+        <span class="card-title">Email attribution</span>
+      </div>
+      <div class="card-subtitle" style="margin-bottom: 1rem;">
+        When your twin sends or replies to an email, add a small footer so recipients know SkyTwin sent it and can visit the open-source repo.
+      </div>
+      <div style="display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 0.75rem; background: var(--bg); border-radius: var(--radius-sm);">
+        <div style="min-width: 0;">
+          <div style="font-weight: 500;">Add SkyTwin footer to sent emails</div>
+          <div id="email-attribution-state" style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.2rem;">
+            ${emailAttributionEnabled ? 'On — appended to outgoing emails.' : 'Off — outgoing emails send without the SkyTwin footer.'}
+          </div>
+        </div>
+        <label class="toggle-switch" title="Add SkyTwin footer to sent emails">
+          <input
+            type="checkbox"
+            id="email-attribution-toggle"
+            data-action="toggle-email-attribution"
+            ${emailAttributionEnabled ? 'checked' : ''}
+          >
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      <div style="margin-top: 0.75rem; padding: 0.65rem 0.75rem; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-card); font-size: 0.82rem; color: var(--text-muted); line-height: 1.55;">
+        <div style="font-size: 0.72rem; color: var(--text-dim); text-transform: uppercase; margin-bottom: 0.25rem;">Footer preview</div>
+        <div style="white-space: pre-wrap; color: var(--text);">${escapeHtml(emailAttributionText)}</div>
+        <a href="${escapeHtml(emailAttributionRepoUrl)}" target="_blank" rel="noopener noreferrer" style="display: inline-block; margin-top: 0.35rem; color: var(--accent);">Open repo</a>
       </div>
     </div>
 
@@ -833,6 +874,10 @@ function ensureSettingsListener() {
       showSavedToast('Animation preference updated');
       return;
     }
+    if (action === 'toggle-email-attribution' && target instanceof HTMLInputElement) {
+      window.toggleEmailAttribution(getCurrentUserId(), target);
+      return;
+    }
     const card = target.closest('[data-region="ai-provider-card"]');
     if (!card) return;
     const idx = parseInt(card.getAttribute('data-idx') || '', 10);
@@ -1179,6 +1224,28 @@ window.handleDisconnectGoogle = async function(userId) {
       'afterbegin',
       `<div class="error-banner">${escapeHtml(err.message)}</div>`,
     );
+  }
+};
+
+window.toggleEmailAttribution = async function(userId, checkbox) {
+  const enabled = checkbox.checked;
+  checkbox.disabled = true;
+  try {
+    await updateAutonomySettings(userId, {
+      emailAttributionSignatureEnabled: enabled,
+    });
+    const state = document.getElementById('email-attribution-state');
+    if (state) {
+      state.textContent = enabled
+        ? 'On — appended to outgoing emails.'
+        : 'Off — outgoing emails send without the SkyTwin footer.';
+    }
+    showSavedToast(enabled ? 'Email attribution on' : 'Email attribution off');
+  } catch (err) {
+    checkbox.checked = !enabled;
+    showErrorToast(`Couldn't save email attribution: ${err?.friendlyMessage || err?.message || 'unknown error'}`);
+  } finally {
+    checkbox.disabled = false;
   }
 };
 

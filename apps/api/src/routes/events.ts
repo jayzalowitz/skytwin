@@ -49,6 +49,11 @@ import { sseManager } from '../sse.js';
 import { validateEventIngest } from '../validators/event-ingest.js';
 import { getMemoryPortForUser } from '../memory-setup.js';
 import type { DecisionObject as _DecisionObject } from '@skytwin/shared-types';
+import {
+  annotateEmailAttributionPreview,
+  isOutboundEmailAction,
+  prepareEmailActionForExecution,
+} from '../email-attribution.js';
 
 /**
  * Best-effort: write an inbound raw event into the user's MemoryPort as a
@@ -529,6 +534,9 @@ export function createEventsRouter(): Router {
           rawData: _omitRawData,
           ...visibleParameters
         } = (outcome.selectedAction.parameters ?? {}) as Record<string, unknown>;
+        const approvalVisibleParameters = isOutboundEmailAction(outcome.selectedAction.actionType)
+          ? annotateEmailAttributionPreview(visibleParameters, user)
+          : visibleParameters;
 
         const approvalResult = await approvalRepository.create({
           userId,
@@ -543,7 +551,7 @@ export function createEventsRouter(): Router {
             actionType: outcome.selectedAction.actionType,
             description: outcome.selectedAction.description,
             domain: outcome.selectedAction.domain,
-            parameters: visibleParameters,
+            parameters: approvalVisibleParameters,
             estimatedCostCents: outcome.selectedAction.estimatedCostCents,
             reversible: outcome.selectedAction.reversible,
             confidence: outcome.selectedAction.confidence,
@@ -592,6 +600,9 @@ export function createEventsRouter(): Router {
             rawData: _omitRawDataEsc,
             ...visibleParametersEsc
           } = (outcome.selectedAction.parameters ?? {}) as Record<string, unknown>;
+          const approvalVisibleParametersEsc = isOutboundEmailAction(outcome.selectedAction.actionType)
+            ? annotateEmailAttributionPreview(visibleParametersEsc, user)
+            : visibleParametersEsc;
           const escalationResult = await approvalRepository.create({
             userId,
             decisionId: decision.id,
@@ -600,7 +611,7 @@ export function createEventsRouter(): Router {
               actionType: outcome.selectedAction.actionType,
               description: outcome.selectedAction.description,
               domain: outcome.selectedAction.domain,
-              parameters: visibleParametersEsc,
+              parameters: approvalVisibleParametersEsc,
               estimatedCostCents: outcome.selectedAction.estimatedCostCents,
               reversible: outcome.selectedAction.reversible,
               confidence: outcome.selectedAction.confidence,
@@ -613,121 +624,122 @@ export function createEventsRouter(): Router {
           approvalRequest = escalationResult.row;
           approvalNewlyCreated = escalationResult.created;
         } else {
+          prepareEmailActionForExecution(outcome.selectedAction, user);
 
-        // Persist the DB execution plan before routing so streaming events can
-        // reference it via execution_events.plan_id.
-        const savedPlan = await executionRepository.createPlan({
-          decisionId: decision.id,
-          actionId: outcome.selectedAction.id,
-          status: 'running',
-          steps: [{ type: outcome.selectedAction.actionType, status: 'pending' }],
-        });
-        outcome.selectedAction.parameters['executionPlanId'] = savedPlan.id;
-        if (user?.ironclaw_channel) {
-          outcome.selectedAction.parameters['ironclawChannel'] = user.ironclaw_channel;
-        }
+          // Persist the DB execution plan before routing so streaming events can
+          // reference it via execution_events.plan_id.
+          const savedPlan = await executionRepository.createPlan({
+            decisionId: decision.id,
+            actionId: outcome.selectedAction.id,
+            status: 'running',
+            steps: [{ type: outcome.selectedAction.actionType, status: 'pending' }],
+          });
+          outcome.selectedAction.parameters['executionPlanId'] = savedPlan.id;
+          if (user?.ironclaw_channel) {
+            outcome.selectedAction.parameters['ironclawChannel'] = user.ironclaw_channel;
+          }
 
-        // Execute via the trust-ranked execution router (IronClaw > Direct > OpenClaw)
-        const executionRouter = await getRouter();
-        let terminalEvent: ExecutionEvent | null = null;
-        let terminalStatus: 'completed' | 'failed' = 'failed';
-        const stepOutputs: Array<{ stepId?: string; eventType: string; payload: Record<string, unknown> }> = [];
-        let terminalPayload: Record<string, unknown> = {};
+          // Execute via the trust-ranked execution router (IronClaw > Direct > OpenClaw)
+          const executionRouter = await getRouter();
+          let terminalEvent: ExecutionEvent | null = null;
+          let terminalStatus: 'completed' | 'failed' = 'failed';
+          const stepOutputs: Array<{ stepId?: string; eventType: string; payload: Record<string, unknown> }> = [];
+          let terminalPayload: Record<string, unknown> = {};
 
-        try {
-          for await (const event of executionRouter.executeWithRoutingStreaming(
-            outcome.selectedAction,
-            riskAssessment,
-            userId,
-          )) {
-            if (event.payload && Object.keys(event.payload).length > 0) {
-              stepOutputs.push({ stepId: event.stepId, eventType: event.eventType, payload: event.payload });
+          try {
+            for await (const event of executionRouter.executeWithRoutingStreaming(
+              outcome.selectedAction,
+              riskAssessment,
+              userId,
+            )) {
+              if (event.payload && Object.keys(event.payload).length > 0) {
+                stepOutputs.push({ stepId: event.stepId, eventType: event.eventType, payload: event.payload });
+              }
+              terminalPayload = event.payload ?? terminalPayload;
+              await executionRepository.createEvent({
+                planId: savedPlan.id,
+                stepId: event.stepId,
+                eventType: event.eventType,
+                payload: event.payload ?? {},
+              });
+              sseManager.emit(userId, 'decision:step', {
+                decisionId: decision.id,
+                actionType: outcome.selectedAction.actionType,
+                description: outcome.selectedAction.description,
+                ...event,
+              });
+
+              if (event.eventType === 'plan_completed' || event.eventType === 'plan_failed') {
+                terminalEvent = event;
+                terminalStatus = event.eventType === 'plan_completed' ? 'completed' : 'failed';
+              }
             }
-            terminalPayload = event.payload ?? terminalPayload;
+          } catch (error) {
+            terminalStatus = 'failed';
+            terminalPayload = {
+              error: error instanceof Error ? error.message : String(error),
+            };
+            terminalEvent = {
+              planId: savedPlan.id,
+              eventType: 'plan_failed',
+              timestamp: new Date(),
+              payload: terminalPayload,
+            };
+            stepOutputs.push({ eventType: 'plan_failed', payload: terminalPayload });
             await executionRepository.createEvent({
               planId: savedPlan.id,
-              stepId: event.stepId,
-              eventType: event.eventType,
-              payload: event.payload ?? {},
+              eventType: 'plan_failed',
+              payload: terminalPayload,
             });
             sseManager.emit(userId, 'decision:step', {
               decisionId: decision.id,
               actionType: outcome.selectedAction.actionType,
               description: outcome.selectedAction.description,
-              ...event,
+              ...terminalEvent,
             });
-
-            if (event.eventType === 'plan_completed' || event.eventType === 'plan_failed') {
-              terminalEvent = event;
-              terminalStatus = event.eventType === 'plan_completed' ? 'completed' : 'failed';
-            }
           }
-        } catch (error) {
-          terminalStatus = 'failed';
-          terminalPayload = {
-            error: error instanceof Error ? error.message : String(error),
+
+          await executionRepository.updatePlanStatus(savedPlan.id, terminalStatus);
+          const fullOutputs: Record<string, unknown> = {
+            ...terminalPayload,
+            steps: stepOutputs,
           };
-          terminalEvent = {
+          await executionRepository.createResult({
             planId: savedPlan.id,
-            eventType: 'plan_failed',
-            timestamp: new Date(),
-            payload: terminalPayload,
-          };
-          stepOutputs.push({ eventType: 'plan_failed', payload: terminalPayload });
-          await executionRepository.createEvent({
-            planId: savedPlan.id,
-            eventType: 'plan_failed',
-            payload: terminalPayload,
+            success: terminalStatus === 'completed',
+            outputs: fullOutputs,
+            error: typeof terminalPayload['error'] === 'string' ? terminalPayload['error'] : undefined,
+            rollbackAvailable: outcome.selectedAction.reversible,
           });
-          sseManager.emit(userId, 'decision:step', {
+
+          executionResult = {
+            status: terminalStatus,
+            planId: savedPlan.id,
+            adapterUsed: terminalPayload['adapter_used'] ?? 'unknown',
+          };
+
+          // Record post-execution spend tagged with the action's registry
+          // source (#323 AC#3). Only on success — a failed execution
+          // shouldn't charge the user's per-app budget. Best-effort: the
+          // helper swallows its own errors so a ledger write can't break
+          // the auto-execute response. The spend cap was already enforced
+          // upstream by the policy engine before this action ran.
+          if (terminalStatus === 'completed') {
+            await recordMcpActionSpend({
+              userId,
+              decisionId: decision.id,
+              action: outcome.selectedAction,
+            });
+          }
+
+          // Notify via SSE
+          sseManager.emit(userId, 'decision:executed', {
             decisionId: decision.id,
             actionType: outcome.selectedAction.actionType,
             description: outcome.selectedAction.description,
-            ...terminalEvent,
+            status: terminalStatus,
+            eventType: terminalEvent?.eventType,
           });
-        }
-
-        await executionRepository.updatePlanStatus(savedPlan.id, terminalStatus);
-        const fullOutputs: Record<string, unknown> = {
-          ...terminalPayload,
-          steps: stepOutputs,
-        };
-        await executionRepository.createResult({
-          planId: savedPlan.id,
-          success: terminalStatus === 'completed',
-          outputs: fullOutputs,
-          error: typeof terminalPayload['error'] === 'string' ? terminalPayload['error'] : undefined,
-          rollbackAvailable: outcome.selectedAction.reversible,
-        });
-
-        executionResult = {
-          status: terminalStatus,
-          planId: savedPlan.id,
-          adapterUsed: terminalPayload['adapter_used'] ?? 'unknown',
-        };
-
-        // Record post-execution spend tagged with the action's registry
-        // source (#323 AC#3). Only on success — a failed execution
-        // shouldn't charge the user's per-app budget. Best-effort: the
-        // helper swallows its own errors so a ledger write can't break
-        // the auto-execute response. The spend cap was already enforced
-        // upstream by the policy engine before this action ran.
-        if (terminalStatus === 'completed') {
-          await recordMcpActionSpend({
-            userId,
-            decisionId: decision.id,
-            action: outcome.selectedAction,
-          });
-        }
-
-        // Notify via SSE
-        sseManager.emit(userId, 'decision:executed', {
-          decisionId: decision.id,
-          actionType: outcome.selectedAction.actionType,
-          description: outcome.selectedAction.description,
-          status: terminalStatus,
-          eventType: terminalEvent?.eventType,
-        });
         } // end if (riskAssessment) — escalation branch above handles null
       }
 
