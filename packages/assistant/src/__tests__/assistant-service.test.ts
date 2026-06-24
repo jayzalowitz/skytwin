@@ -92,9 +92,12 @@ describe('AssistantService.reply', () => {
   it('prepends ContextBuilder output to the system prompt when enrichment is supplied', async () => {
     const llm = stubLlm();
     const builder = {
-      build: vi.fn().mockResolvedValue('## What I know about you\nTrust tier: high_autonomy'),
+      buildWithSources: vi.fn().mockResolvedValue({
+        context: '## What I know about you\nTrust tier: high_autonomy',
+        sources: [],
+      }),
     };
-    // Cast — the service only depends on the .build() method shape.
+    // Cast — the service only depends on the .buildWithSources() method shape.
     const service = new AssistantService(llm, undefined, builder as unknown as ConstructorParameters<typeof AssistantService>[2]);
 
     await service.reply(
@@ -102,7 +105,7 @@ describe('AssistantService.reply', () => {
       { userId: 'user-1', query: 'hi' },
     );
 
-    expect(builder.build).toHaveBeenCalledWith('user-1', 'hi');
+    expect(builder.buildWithSources).toHaveBeenCalledWith('user-1', 'hi');
     const [, options] = (llm.generate as ReturnType<typeof vi.fn>).mock.calls[0]!;
     // Context block lands BEFORE the default system prompt so the
     // assistant reads the user-specific facts first.
@@ -112,7 +115,7 @@ describe('AssistantService.reply', () => {
 
   it('falls back to the bare system prompt when ContextBuilder returns empty', async () => {
     const llm = stubLlm();
-    const builder = { build: vi.fn().mockResolvedValue('') };
+    const builder = { buildWithSources: vi.fn().mockResolvedValue({ context: '', sources: [] }) };
     const service = new AssistantService(llm, undefined, builder as unknown as ConstructorParameters<typeof AssistantService>[2]);
 
     await service.reply(
@@ -124,13 +127,49 @@ describe('AssistantService.reply', () => {
     expect(options.systemPrompt).toMatch(/^You are SkyTwin/);
   });
 
+  it('attaches consulted memories to reply metadata as sources', async () => {
+    const llm = stubLlm();
+    const sources = [
+      { id: 'page-1', label: 'Archived a Stripe receipt', source: 'gmail', domain: 'email' },
+    ];
+    const builder = {
+      buildWithSources: vi.fn().mockResolvedValue({
+        context: '## Relevant past episodes\n- email · Archived a Stripe receipt',
+        sources,
+      }),
+    };
+    const service = new AssistantService(llm, undefined, builder as unknown as ConstructorParameters<typeof AssistantService>[2]);
+
+    const result = await service.reply(
+      [{ role: 'user', content: 'what about that receipt' }],
+      { userId: 'user-1', query: 'what about that receipt' },
+    );
+    expect(result.metadata.sources).toEqual(sources);
+  });
+
+  it('omits the sources key when no memories were consulted', async () => {
+    const llm = stubLlm();
+    const builder = {
+      buildWithSources: vi.fn().mockResolvedValue({ context: 'Trust tier: x', sources: [] }),
+    };
+    const service = new AssistantService(llm, undefined, builder as unknown as ConstructorParameters<typeof AssistantService>[2]);
+
+    const result = await service.reply(
+      [{ role: 'user', content: 'q' }],
+      { userId: 'user-1', query: 'q' },
+    );
+    // Back-compat: the metadata shape is unchanged for callers without sources.
+    expect(result.metadata).toEqual({ provider: 'anthropic', model: 'claude-test', latencyMs: 42 });
+    expect('sources' in result.metadata).toBe(false);
+  });
+
   it('skips ContextBuilder when no enrichment is supplied (back-compat)', async () => {
     const llm = stubLlm();
-    const builder = { build: vi.fn() };
+    const builder = { buildWithSources: vi.fn() };
     const service = new AssistantService(llm, undefined, builder as unknown as ConstructorParameters<typeof AssistantService>[2]);
 
     await service.reply([{ role: 'user', content: 'q' }]);
-    expect(builder.build).not.toHaveBeenCalled();
+    expect(builder.buildWithSources).not.toHaveBeenCalled();
   });
 
   it('skips ContextBuilder when no builder was injected (early bring-up)', async () => {
@@ -247,7 +286,10 @@ describe('AssistantService.replyStream', () => {
       { type: 'done', content: 'ok', provider: 'anthropic', model: 'm', latencyMs: 1 },
     ]));
     const builder = {
-      build: vi.fn().mockResolvedValue('## What I know about you\nTrust tier: high_autonomy'),
+      buildWithSources: vi.fn().mockResolvedValue({
+        context: '## What I know about you\nTrust tier: high_autonomy',
+        sources: [],
+      }),
     };
     const service = new AssistantService(llm, undefined, builder as unknown as ConstructorParameters<typeof AssistantService>[2]);
 
@@ -256,7 +298,7 @@ describe('AssistantService.replyStream', () => {
       { userId: 'user-1', query: 'hi' },
     ));
 
-    expect(builder.build).toHaveBeenCalledWith('user-1', 'hi');
+    expect(builder.buildWithSources).toHaveBeenCalledWith('user-1', 'hi');
     const [, options] = (llm.generateStream as ReturnType<typeof vi.fn>).mock.calls[0]!;
     expect(options.systemPrompt.startsWith('## What I know about you')).toBe(true);
     expect(options.systemPrompt).toContain('SkyTwin');
@@ -266,13 +308,35 @@ describe('AssistantService.replyStream', () => {
     const llm = stubStreamingLlm(streamEvents([
       { type: 'done', content: 'ok', provider: 'anthropic', model: 'm', latencyMs: 1 },
     ]));
-    const builder = { build: vi.fn() };
+    const builder = { buildWithSources: vi.fn() };
     const service = new AssistantService(llm, undefined, builder as unknown as ConstructorParameters<typeof AssistantService>[2]);
 
     await collectStream(service.replyStream([{ role: 'user', content: 'hi' }]));
-    expect(builder.build).not.toHaveBeenCalled();
+    expect(builder.buildWithSources).not.toHaveBeenCalled();
     const [, options] = (llm.generateStream as ReturnType<typeof vi.fn>).mock.calls[0]!;
     expect(options.systemPrompt).toMatch(/^You are SkyTwin/);
+  });
+
+  it('carries consulted memories into the done event metadata as sources', async () => {
+    const llm = stubStreamingLlm(streamEvents([
+      { type: 'chunk', content: 'ok' },
+      { type: 'done', content: 'ok', provider: 'anthropic', model: 'm', latencyMs: 1 },
+    ]));
+    const sources = [{ id: 'ep-1', label: 'Declined a recurring meeting', source: 'decision' }];
+    const builder = {
+      buildWithSources: vi.fn().mockResolvedValue({
+        context: '## Relevant past episodes\n- calendar · Declined a recurring meeting',
+        sources,
+      }),
+    };
+    const service = new AssistantService(llm, undefined, builder as unknown as ConstructorParameters<typeof AssistantService>[2]);
+
+    const events = await collectStream(service.replyStream(
+      [{ role: 'user', content: 'hi' }],
+      { userId: 'user-1', query: 'hi' },
+    ));
+    const done = events.find((e) => e.type === 'done') as { metadata: { sources?: unknown } };
+    expect(done.metadata.sources).toEqual(sources);
   });
 });
 

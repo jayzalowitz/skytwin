@@ -68,6 +68,45 @@ export interface MemoryHit {
   outcome?: string;
   /** ISO timestamp of when this episode happened. */
   occurredAt?: string;
+  /**
+   * The record's stable id from the memory backend — e.g. a gbrain page
+   * reference or a mempalace episode id (each backend decides what the id
+   * points at). Optional so older providers that predate source attribution
+   * still satisfy the contract; when present it lets the assistant cite
+   * *which* memory it consulted and anchors a future "view source" link.
+   */
+  id?: string;
+  /**
+   * Origin label of the record — the connector or surface it came from
+   * (e.g. `gmail`, `calendar`, `decision`, `memory`). Used to render a
+   * human-readable provenance hint next to the cited memory.
+   */
+  source?: string;
+}
+
+/**
+ * A citable reference to a memory the assistant consulted when composing a
+ * reply. Surfaced in `AssistantReply.metadata.sources` and rendered as a
+ * "based on what I found" footer in the chat UI — the Explanation-First
+ * promise applied to the conversational surface: the user can see *what
+ * evidence the answer drew on*, not just the answer.
+ *
+ * This attributes the memories that were retrieved and fed to the model as
+ * context for this turn. It does not (and cannot) claim the model quoted
+ * each one verbatim — it's "here's what I looked at," which is the honest,
+ * verifiable claim.
+ */
+export interface MemorySource {
+  /** Stable id of the cited record from the memory backend (gbrain page reference or mempalace episode id). */
+  id: string;
+  /** Human-readable one-line label — the episode/page summary. */
+  label: string;
+  /** Origin of the memory (e.g. `gmail`, `calendar`, `decision`, `memory`). */
+  source: string;
+  /** Domain tag when known (`email` / `calendar` / `finance` / …). */
+  domain?: string;
+  /** ISO timestamp of when the episode occurred, when known. */
+  occurredAt?: string;
 }
 
 export interface MemoryContextProvider {
@@ -105,6 +144,13 @@ const SHOW_CONFIDENCES = new Set(['confirmed', 'high', 'moderate']);
 const MAX_PREFERENCES = 12;
 const MAX_INFERENCES = 6;
 const MAX_MEMORIES = 5;
+
+/**
+ * Max characters of a memory summary surfaced as a source label. Long
+ * summaries get ellipsis-truncated so a citation chip stays one line and
+ * the persisted `metadata.sources` blob stays small.
+ */
+const SOURCE_LABEL_MAX = 140;
 
 const CONFIDENCE_RANK: Record<string, number> = {
   confirmed: 4,
@@ -185,7 +231,30 @@ export class ContextBuilder {
     private readonly memory: MemoryContextProvider | null = null,
   ) {}
 
+  /**
+   * Render the context block only. Kept for back-compat — callers that
+   * don't need source attribution (and the existing unit tests) use this.
+   * Delegates to `buildWithSources` and drops the sources.
+   */
   async build(userId: string, query: string): Promise<string> {
+    return (await this.buildWithSources(userId, query)).context;
+  }
+
+  /**
+   * Render the context block AND return the memories it drew on as citable
+   * `MemorySource[]`. The assistant attaches these to the reply metadata so
+   * the chat UI can show "based on what I found" — the Explanation-First
+   * promise on the conversational surface.
+   *
+   * Only memories carrying a stable `id` become sources: a citation the
+   * user can't trace back to a record isn't a citation. Memories without an
+   * id still contribute to the prompt context (they're rendered in the
+   * block); they just aren't claimed as attributable sources.
+   */
+  async buildWithSources(
+    userId: string,
+    query: string,
+  ): Promise<{ context: string; sources: MemorySource[] }> {
     // Fetch in parallel — twin profile and memory search are independent.
     // If either provider throws, log via console.warn (the AssistantService
     // catches rejections and falls back to no-context, but that's coarse;
@@ -205,10 +274,31 @@ export class ContextBuilder {
       sections.push(renderMemoriesBlock(memories));
     }
 
-    if (sections.length === 0) return '';
+    if (sections.length === 0) return { context: '', sources: [] };
 
-    const composed = sections.join('\n\n');
-    return truncateToBytes(composed, MAX_CONTEXT_BYTES);
+    const context = truncateToBytes(sections.join('\n\n'), MAX_CONTEXT_BYTES);
+
+    // Cite only memories whose rendered text actually survived truncation.
+    // The memories block sits at the end of the composed context, so a
+    // `MAX_CONTEXT_BYTES` cut drops its tail first; citing a memory the model
+    // never received would over-claim the evidence behind the reply.
+    //
+    // Survival is checked against the memory's FULL rendered line, not the
+    // bare summary: a bare-summary substring can coincide with another
+    // surviving line or with the twin block and falsely read as "survived."
+    // The guard also drops a null / whitespace-only summary (pluggable
+    // providers) before the `includes` check.
+    const sources = memories
+      .filter((m): m is MemoryHit & { id: string } => typeof m.id === 'string' && m.id.length > 0)
+      .filter(
+        (m) =>
+          typeof m.summary === 'string' &&
+          m.summary.trim().length > 0 &&
+          context.includes(renderMemoryLine(m)),
+      )
+      .map(toMemorySource);
+
+    return { context, sources };
   }
 
   private async fetchTwinSafe(userId: string): Promise<TwinContextSnapshot | null> {
@@ -267,15 +357,47 @@ function renderTwinBlock(snap: TwinContextSnapshot): string {
   return lines.join('\n');
 }
 
+/**
+ * Project a retrieved `MemoryHit` (already known to carry an `id`) into a
+ * citable `MemorySource`. `source` prefers the hit's origin label and falls
+ * back to its domain (then a generic `memory`) so the chip never renders a
+ * blank provenance.
+ *
+ * The label is normalized to a single clean line before the `SOURCE_LABEL_MAX`
+ * ellipsis cap: the default gbrain backend stores raw page bodies (multi-line
+ * email / web / file content) as the hit text, and a citation chip must read
+ * as one legible line, not a wrapped body dump. `summary` is typed required,
+ * but the package serves pluggable external providers, so a non-string value
+ * coalesces to '' rather than throwing out of `buildWithSources`.
+ */
+function toMemorySource(hit: MemoryHit & { id: string }): MemorySource {
+  const oneLine = (typeof hit.summary === 'string' ? hit.summary : '').replace(/\s+/g, ' ').trim();
+  const label =
+    oneLine.length > SOURCE_LABEL_MAX ? `${oneLine.slice(0, SOURCE_LABEL_MAX - 1)}…` : oneLine || 'A memory';
+  return {
+    id: hit.id,
+    label,
+    source: hit.source && hit.source.length > 0 ? hit.source : hit.domain || 'memory',
+    ...(hit.domain ? { domain: hit.domain } : {}),
+    ...(hit.occurredAt ? { occurredAt: hit.occurredAt } : {}),
+  };
+}
+
+/**
+ * Render one memory's line exactly as it appears in the episodes block.
+ * Shared by `renderMemoriesBlock` and the truncation-survival check in
+ * `buildWithSources` so the two cannot drift — survival must be tested
+ * against the same string the prompt actually contains.
+ */
+function renderMemoryLine(m: MemoryHit): string {
+  const date = m.occurredAt ? `[${m.occurredAt.slice(0, 10)}] ` : '';
+  const action = m.actionTaken ? ` · ${m.actionTaken}` : '';
+  const outcome = m.outcome ? ` (${m.outcome})` : '';
+  return `- ${date}${m.domain} · ${m.summary}${action}${outcome}`;
+}
+
 function renderMemoriesBlock(memories: MemoryHit[]): string {
-  const lines: string[] = ['## Relevant past episodes'];
-  for (const m of memories) {
-    const date = m.occurredAt ? `[${m.occurredAt.slice(0, 10)}] ` : '';
-    const action = m.actionTaken ? ` · ${m.actionTaken}` : '';
-    const outcome = m.outcome ? ` (${m.outcome})` : '';
-    lines.push(`- ${date}${m.domain} · ${m.summary}${action}${outcome}`);
-  }
-  return lines.join('\n');
+  return ['## Relevant past episodes', ...memories.map(renderMemoryLine)].join('\n');
 }
 
 /**

@@ -8,6 +8,7 @@ import {
   type ActionRouter,
   type ActionRouteOutcome,
   type ActionIntent,
+  type MemorySource,
 } from '@skytwin/assistant';
 import { LlmClient, AllProvidersFailedError } from '@skytwin/llm-client';
 import type { ProviderEntry } from '@skytwin/llm-client';
@@ -177,38 +178,84 @@ function buildContextBuilder(): ContextBuilder {
         actionTaken: string | undefined;
         outcome: string | undefined;
         occurredAt: string | undefined;
+        // Source identity for attribution (#147 follow-up). `id` is the
+        // underlying record id (brain page / episode); `source` is the
+        // origin label shown next to the cited memory in chat. Both were
+        // previously discarded — the retrieval knew them, the chat threw
+        // them away.
+        id: string | undefined;
+        source: string | undefined;
       }
       // Convert both shapes into the renderer-friendly contract.
       const fromSemantic: MergedHit[] = semanticHits.map((h) => {
         const meta = (h.metadata ?? {}) as Record<string, unknown>;
         return {
-          summary: h.content,
+          // Coalesce to a string at the backend boundary — `content` is typed
+          // `string`, but a non-conforming pluggable backend must not crash
+          // the dedup loop's `.trim()` below.
+          summary: typeof h.content === 'string' ? h.content : '',
           domain: typeof meta['domain'] === 'string' ? (meta['domain'] as string) : 'memory',
           actionTaken:
             typeof meta['actionType'] === 'string' ? (meta['actionType'] as string) : undefined,
           outcome: undefined,
           occurredAt: undefined,
+          // gbrain `SemanticHit` carries the page id + its origin (e.g.
+          // `gmail`, `calendar`). Fall back to the metadata domain only
+          // when the backend left `source` blank.
+          id: typeof h.id === 'string' && h.id.length > 0 ? h.id : undefined,
+          source:
+            typeof h.source === 'string' && h.source.length > 0
+              ? h.source
+              : typeof meta['domain'] === 'string'
+                ? (meta['domain'] as string)
+                : undefined,
         };
       });
       const fromMempalace: MergedHit[] = mempalaceRows.map((r) => ({
-        summary: r.situation_summary,
+        summary: typeof r.situation_summary === 'string' ? r.situation_summary : '',
         domain: r.domain,
         actionTaken: r.action_taken ?? undefined,
         outcome: r.outcome ? renderOutcomeHint(r.outcome) : undefined,
         occurredAt: r.created_at instanceof Date ? r.created_at.toISOString() : undefined,
+        // Episodes are past decisions the twin recorded. The episode id is
+        // the citable record; label the origin `decision` so the chip reads
+        // "from a past decision" rather than a connector name.
+        id: typeof r.id === 'string' && r.id.length > 0 ? r.id : undefined,
+        source: 'decision',
       }));
 
-      // Dedupe by summary text — same episode may surface from both sources.
-      const seen = new Set<string>();
-      const merged: MergedHit[] = [];
+      // Dedupe by summary text — the same episode may surface from both
+      // sources. On a collision, enrich the kept record with any richer
+      // fields the duplicate carries instead of dropping it: the mempalace
+      // side has occurredAt / actionTaken / outcome (and the `decision`
+      // origin) that the gbrain side leaves undefined. Without this merge a
+      // full semantic result set fills the cap first and every mempalace hit
+      // — the richer one — is discarded, so the `decision` provenance never
+      // surfaces for an episode that also has a brain page.
+      const byKey = new Map<string, MergedHit>();
+      const order: string[] = [];
       for (const item of [...fromSemantic, ...fromMempalace]) {
         const key = item.summary.trim().toLowerCase();
-        if (seen.has(key)) continue;
-        seen.add(key);
-        merged.push(item);
-        if (merged.length >= limit) break;
+        // Skip empty-summary hits: they can't be rendered or cited, and an
+        // empty key would collapse unrelated rows together.
+        if (!key) continue;
+        const existing = byKey.get(key);
+        if (!existing) {
+          if (order.length >= limit) continue;
+          byKey.set(key, item);
+          order.push(key);
+          continue;
+        }
+        existing.occurredAt ??= item.occurredAt;
+        existing.actionTaken ??= item.actionTaken;
+        existing.outcome ??= item.outcome;
+        existing.id ??= item.id;
+        // Prefer a specific origin over the generic gbrain fallback.
+        if ((!existing.source || existing.source === 'memory') && item.source) {
+          existing.source = item.source;
+        }
       }
-      return merged;
+      return order.map((k) => byKey.get(k)!);
     },
   };
 
@@ -540,7 +587,12 @@ async function streamAssistantReply(args: {
   send('user', userMessage);
 
   let collectedFullContent = '';
-  let metadata: { provider: string; model: string; latencyMs: number } | null = null;
+  // `sources` rides along in the done-event metadata (#147 source attribution);
+  // type it explicitly so a future refactor that rebuilds the persisted payload
+  // from this local can't silently drop the citations.
+  let metadata:
+    | { provider: string; model: string; latencyMs: number; sources?: MemorySource[] }
+    | null = null;
 
   try {
     for await (const event of service.replyStream(history, enrichment)) {

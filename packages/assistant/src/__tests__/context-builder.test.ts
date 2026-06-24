@@ -215,3 +215,141 @@ describe('ContextBuilder.build', () => {
     expect(out).not.toContain('## Relevant past episodes');
   });
 });
+
+describe('ContextBuilder.buildWithSources', () => {
+  it('renders the memory in context AND returns it as a citable source', async () => {
+    const twin = stubTwin({ trustTier: 'observer', preferences: [], inferences: [] });
+    const memory = stubMemory([
+      {
+        id: 'page-1',
+        source: 'gmail',
+        summary: 'Archived a Stripe receipt without asking',
+        domain: 'email',
+        actionTaken: 'auto-archive',
+        outcome: 'approved',
+        occurredAt: '2026-04-12T10:30:00Z',
+      },
+    ]);
+    const builder = new ContextBuilder(twin, memory);
+    const { context, sources } = await builder.buildWithSources(VALID_USER, 'stripe receipts');
+
+    // The memory still renders into the prompt block (build() behavior).
+    expect(context).toContain('## Relevant past episodes');
+    expect(context).toContain('Archived a Stripe receipt without asking');
+    // ...and is also surfaced as a citable source for the UI footer.
+    expect(sources).toEqual([
+      {
+        id: 'page-1',
+        label: 'Archived a Stripe receipt without asking',
+        source: 'gmail',
+        domain: 'email',
+        occurredAt: '2026-04-12T10:30:00Z',
+      },
+    ]);
+  });
+
+  it('excludes memories without an id from sources (uncitable) but still renders them', async () => {
+    const twin = stubTwin({ trustTier: 'observer', preferences: [], inferences: [] });
+    const memory = stubMemory([
+      { id: 'has-id', source: 'calendar', summary: 'Citable episode', domain: 'calendar' },
+      { summary: 'Uncitable episode', domain: 'general' }, // no id
+    ]);
+    const builder = new ContextBuilder(twin, memory);
+    const { context, sources } = await builder.buildWithSources(VALID_USER, 'q');
+
+    // Both render in the prompt context...
+    expect(context).toContain('Citable episode');
+    expect(context).toContain('Uncitable episode');
+    // ...but only the one with an id is claimed as a source.
+    expect(sources.map((s) => s.id)).toEqual(['has-id']);
+  });
+
+  it('falls back to domain for the source label when no source slug is present', async () => {
+    const twin = stubTwin({ trustTier: 'observer', preferences: [], inferences: [] });
+    const memory = stubMemory([
+      { id: 'e1', summary: 'No source slug', domain: 'finance' },
+    ]);
+    const builder = new ContextBuilder(twin, memory);
+    const { sources } = await builder.buildWithSources(VALID_USER, 'q');
+    expect(sources[0]).toMatchObject({ id: 'e1', source: 'finance', domain: 'finance' });
+  });
+
+  it('ellipsis-truncates an over-long source label', async () => {
+    const twin = stubTwin({ trustTier: 'observer', preferences: [], inferences: [] });
+    const longSummary = 'x'.repeat(300);
+    const memory = stubMemory([{ id: 'e1', source: 'memory', summary: longSummary, domain: 'general' }]);
+    const builder = new ContextBuilder(twin, memory);
+    const { sources } = await builder.buildWithSources(VALID_USER, 'q');
+    expect(sources[0]!.label.length).toBeLessThanOrEqual(140);
+    expect(sources[0]!.label.endsWith('…')).toBe(true);
+  });
+
+  it('collapses a multi-line summary into a single clean source label', async () => {
+    // gbrain stores raw page bodies (multi-line email/web/file content); the
+    // citation label must read as one legible line, not a wrapped body dump.
+    const twin = stubTwin({ trustTier: 'observer', preferences: [], inferences: [] });
+    const memory = stubMemory([
+      {
+        id: 'page-9',
+        source: 'gmail',
+        summary: 'Subject: Invoice\n\nHi there,\n\n  Your   invoice   is attached.\nThanks',
+        domain: 'email',
+      },
+    ]);
+    const builder = new ContextBuilder(twin, memory);
+    const { sources } = await builder.buildWithSources(VALID_USER, 'q');
+    expect(sources[0]!.label).toBe('Subject: Invoice Hi there, Your invoice is attached. Thanks');
+    expect(sources[0]!.label).not.toContain('\n');
+  });
+
+  it('does not cite a memory that truncation dropped from the context (no over-claim)', async () => {
+    // A big twin block fills the byte budget; the memories block sits at the
+    // end of the composed context and gets cut, so its memory must NOT be
+    // cited — the footer can only claim evidence the model actually received.
+    const prefs = Array.from({ length: 60 }, (_, i) => ({
+      domain: 'spam',
+      key: `k${i}`,
+      value: 'a very long preference value '.repeat(8),
+      confidence: 'high' as const,
+    }));
+    const twin = stubTwin({ trustTier: 'observer', preferences: prefs, inferences: [] });
+    const memory = stubMemory([
+      { id: 'page-cut', source: 'gmail', summary: 'UNIQUE_MEMORY_THAT_GETS_TRUNCATED_AWAY', domain: 'email' },
+    ]);
+    const builder = new ContextBuilder(twin, memory);
+    const { context, sources } = await builder.buildWithSources(VALID_USER, 'q');
+
+    expect(new TextEncoder().encode(context).length).toBeLessThanOrEqual(MAX_CONTEXT_BYTES);
+    expect(context).not.toContain('UNIQUE_MEMORY_THAT_GETS_TRUNCATED_AWAY');
+    expect(sources).toEqual([]);
+  });
+
+  it('does not cite a truncated-away memory whose summary text survives elsewhere (substring collision)', async () => {
+    // The twin block (top, survives) contains the token "COLLIDE"; a memory
+    // whose summary IS "COLLIDE" sits at the end and is cut. A bare-summary
+    // `includes` check would wrongly cite it; the full-line check must not.
+    const prefs = Array.from({ length: 12 }, (_, i) => ({
+      domain: 'spam',
+      key: `k${i}`,
+      value: `COLLIDE ${'z'.repeat(180)}`,
+      confidence: 'high' as const,
+    }));
+    const twin = stubTwin({ trustTier: 'observer', preferences: prefs, inferences: [] });
+    const memory = stubMemory([{ id: 'b', source: 'gmail', summary: 'COLLIDE', domain: 'email' }]);
+    const builder = new ContextBuilder(twin, memory);
+    const { context, sources } = await builder.buildWithSources(VALID_USER, 'q');
+
+    expect(context).toContain('COLLIDE'); // the bare token survives (in the twin block)
+    expect(context).not.toContain('- email · COLLIDE'); // ...but the memory's own line was cut
+    expect(sources).toEqual([]); // so it must NOT be cited
+  });
+
+  it('returns empty context and empty sources when nothing is relevant', async () => {
+    const twin = stubTwin({ trustTier: 'observer', preferences: [], inferences: [] });
+    const memory = stubMemory([]);
+    const builder = new ContextBuilder(twin, memory);
+    const { context, sources } = await builder.buildWithSources(VALID_USER, 'q');
+    expect(context).toBe('');
+    expect(sources).toEqual([]);
+  });
+});

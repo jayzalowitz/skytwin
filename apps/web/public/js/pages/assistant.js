@@ -266,10 +266,17 @@ function renderMessages(messages, sending) {
       // approvals for `requires-approval`, plain notice for `blocked`.
       const intentRoute = m?.metadata?.intentRoute;
       const footer = intentRoute ? renderActionFooter(intentRoute) : '';
+      // Source attribution: when the assistant enriched this reply with
+      // memories, the metadata carries the records it consulted. Render a
+      // muted "based on what I found" footer so the user can see the
+      // evidence behind the answer (Explanation-First on the chat surface).
+      const sources = Array.isArray(m?.metadata?.sources) ? m.metadata.sources : [];
+      const sourcesFooter = role === 'assistant' && sources.length ? renderSourcesFooter(sources) : '';
       return `
         <div class="assistant-bubble assistant-bubble-${role}">
           <div class="assistant-bubble-content"${streamingAttr}>${escapeHtml(m.content)}</div>
           ${footer}
+          ${sourcesFooter}
         </div>
       `;
     })
@@ -334,6 +341,68 @@ function renderActionFooter(intentRoute) {
     `;
   }
   return '';
+}
+
+// Human-readable labels for memory origins. The raw `source` values are
+// connector / record-type slugs (gbrain emits 'signal' / 'extract' /
+// 'episode'; the API labels past decisions 'decision'); users don't speak
+// slug. Per the project's human-meaningful-presentation rule, an unmapped
+// slug must NEVER leak to the UI — the fallback is the generic, always-safe
+// 'your memory', not a title-cased slug. Add a mapping when a new origin
+// ships rather than letting "from Extract" reach a human.
+const SOURCE_LABELS = {
+  gmail: 'Gmail',
+  email: 'Email',
+  calendar: 'Calendar',
+  decision: 'a past decision',
+  episode: 'a past decision',
+  signal: 'your activity',
+  extract: 'your notes',
+  note: 'your notes',
+  voice: 'a voice note',
+  page: 'your memory',
+  memory: 'your memory',
+};
+
+function prettySource(source) {
+  if (typeof source !== 'string' || !source) return 'your memory';
+  // hasOwnProperty guard: an untrusted slug like '__proto__' / 'constructor'
+  // must not resolve to an inherited prototype member (a non-string value
+  // that would defeat the never-leak-a-slug invariant).
+  return Object.prototype.hasOwnProperty.call(SOURCE_LABELS, source)
+    ? SOURCE_LABELS[source]
+    : 'your memory';
+}
+
+/**
+ * Render the source-attribution footer under an assistant bubble. Lists the
+ * memories the assistant consulted to compose the reply, in plain language.
+ *
+ * Design: this is the awareness zone, not the action zone — DESIGN.md
+ * reserves the iris accent for "needs you / act" and keeps provenance /
+ * source-type strictly neutral. So this footer is muted, small, no accent,
+ * no edge. It informs; it doesn't ask for a click.
+ */
+function renderSourcesFooter(sources) {
+  const items = sources
+    .slice(0, 5)
+    .map((s) => {
+      const label = escapeHtml(typeof s?.label === 'string' ? s.label : 'A memory');
+      const origin = escapeHtml(prettySource(s?.source));
+      return `
+        <li class="assistant-source-item">
+          <span class="assistant-source-text">${label}</span>
+          <span class="assistant-source-origin">from ${origin}</span>
+        </li>
+      `;
+    })
+    .join('');
+  return `
+    <div class="assistant-sources-footer">
+      <div class="assistant-sources-label">Based on what I found in your memory</div>
+      <ul class="assistant-sources-list">${items}</ul>
+    </div>
+  `;
 }
 
 function renderError(err) {

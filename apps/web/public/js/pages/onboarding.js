@@ -594,22 +594,23 @@ function renderComputerChoice() {
   renderContent(`
     <div id="onb-wizard-error" style="color:var(--danger);font-size:0.85rem;margin-bottom:0.75rem;display:none;"></div>
     <div class="onboarding-title" style="font-size:1.2rem;font-weight:700;margin-bottom:0.5rem;">
-      Let SkyTwin observe your workflow
+      Let SkyTwin learn what you work on
     </div>
     <div class="onboarding-desc" style="margin-bottom:1rem;">
-      The background observer watches which apps and files you use — privately, on your machine.
-      It never uploads your data; it only notifies SkyTwin of the app names it sees.
+      During idle time, SkyTwin can scan the code projects on this machine to learn which tools and
+      technologies you work with — so it can suggest capabilities that fit your work. It runs locally,
+      never uploads your data, and never reads your file contents or any natural-language text.
     </div>
 
     <div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:0.75rem;margin-bottom:1rem;font-size:0.85rem;">
-      <div style="font-weight:600;margin-bottom:0.4rem;">What it can observe (you control this list)</div>
+      <div style="font-weight:600;margin-bottom:0.4rem;">What it reads (project metadata only)</div>
       <ul style="margin:0;padding-left:1.2rem;line-height:1.7;">
-        <li>Active application names</li>
-        <li>Window titles (optional)</li>
-        <li>Browser domain names (optional, no URLs or content)</li>
+        <li>Project names and the technologies they use — from manifest files like package.json, pyproject.toml, Cargo.toml, and go.mod</li>
+        <li>Dependency names only — never versions, descriptions, or your source code</li>
+        <li>Your git remote URL and the name and email in your git config</li>
       </ul>
       <div style="margin-top:0.6rem;font-size:0.78rem;color:var(--text-muted);">
-        You can adjust or turn this off at any time in Settings.
+        It never watches your screen, open apps, window titles, or browsing. Choose “Not now” to skip this step.
       </div>
     </div>
 
@@ -637,14 +638,14 @@ async function renderIdleMinerPoll() {
   renderContent(`
     <div id="onb-wizard-error" style="color:var(--danger);font-size:0.85rem;margin-bottom:0.75rem;display:none;"></div>
     <div class="onboarding-title" style="font-size:1.2rem;font-weight:700;margin-bottom:0.5rem;">
-      Learning your workflow…
+      Learning what you work on…
     </div>
     <div class="onboarding-desc" style="margin-bottom:1rem;">
-      SkyTwin is watching which apps you use. This usually takes under 60 seconds.
+      SkyTwin is scanning your code projects for the tools you use. This usually takes under 60 seconds.
     </div>
     <div id="onb-poll-status" style="text-align:center;padding:1.5rem 0;color:var(--text-muted);">
       <div class="loading" style="margin-bottom:0.5rem;"></div>
-      Looking for your first app signal…
+      Looking for your first project signal…
     </div>
     <div id="onb-poll-result" style="display:none;"></div>
     <div id="onb-poll-actions" style="margin-top:1rem;display:none;">
@@ -653,7 +654,7 @@ async function renderIdleMinerPoll() {
     </div>
     <div id="onb-poll-timeout" style="display:none;margin-top:1rem;">
       <div style="font-size:0.85rem;color:var(--text-muted);margin-bottom:0.5rem;">
-        Still learning — I'll keep watching in the background. Let's continue to the dashboard.
+        Still scanning — I'll keep looking in the background. Let's continue to the dashboard.
       </div>
       <button class="btn btn-primary" data-action="onb-go-dashboard">Continue to dashboard</button>
     </div>
