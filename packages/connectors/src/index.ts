@@ -40,6 +40,13 @@ export {
 } from './oauth/google-oauth.js';
 export type { GoogleOAuthConfig, PkcePair } from './oauth/google-oauth.js';
 
+// Microsoft Entra OAuth — foundation for the Outlook (Graph) connector.
+// Namespaced because its function names (generateAuthUrl, exchangeCode,
+// refreshAccessToken) intentionally mirror the Google module's.
+export * as microsoftOAuth from './oauth/microsoft-oauth.js';
+export type { MicrosoftOAuthConfig } from './oauth/microsoft-oauth.js';
+export { MicrosoftOAuthRefreshError, MICROSOFT_GRAPH_SCOPES } from './oauth/microsoft-oauth.js';
+
 // Profile sync — capture per-user language + timezone from the Google identity (#486).
 export { fetchGoogleProfileSync } from './google-profile-sync.js';
 export type { GoogleProfileSyncResult, FetchLike } from './google-profile-sync.js';
