@@ -52,6 +52,16 @@ export {
   evaluateInjectionGuard,
 } from './action-safety.js';
 
+export {
+  EMAIL_ATTRIBUTION_SETTINGS_KEY,
+  SKYTWIN_EMAIL_ATTRIBUTION_SIGNATURE,
+  SKYTWIN_EMAIL_ATTRIBUTION_TEXT,
+  SKYTWIN_REPO_URL,
+  appendSkyTwinEmailAttribution,
+  hasSkyTwinEmailAttribution,
+  resolveEmailAttributionEnabled,
+} from './email-attribution.js';
+
 export type {
   ActionPolicy,
   PolicyRule,

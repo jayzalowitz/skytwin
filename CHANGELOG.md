@@ -1,5 +1,11 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.62.0] - 2026-06-24
+
+### Added
+
+- **Outgoing email attribution is now a clear, default-on setting.** SkyTwin-sent emails and reviewed draft replies now get a small plain-text footer linking recipients to the open-source repo (`https://github.com/jayzalowitz/skytwin`), with duplicate detection so the footer is not stacked on retries or edited drafts. Settings exposes a visible "Add SkyTwin footer to sent emails" toggle, the settings API persists it in user autonomy settings, and approval cards preview whether the footer will be added before send. The execution path applies the footer at the send boundary for `draft_email`, `send_reply`, `reply_email`, and `send_email`, converts reviewed `draft_email` actions into real `send_reply` execution after approval, and keeps the policy/routing checks on the final outbound action. The direct Gmail handler now builds proper plain-text MIME for replies and new sends, preserves thread metadata (`In-Reply-To` / `References`), and sanitizes headers before calling Gmail. Tests cover the shared attribution helper, settings API validation, approval/auto-execute plumbing, and Gmail MIME output with enabled/disabled attribution.
+
 ## [0.6.61.0] - 2026-06-23
 
 ### For contributors
