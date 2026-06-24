@@ -387,19 +387,26 @@ export class DbTokenStore implements OAuthTokenStore {
     // class fixed in the disconnect routes). For non-rotating Microsoft
     // tokens the stored refresh token is reused (rotation persistence is a
     // follow-up); the access token is updated below.
+    // `switch` with a `default: throw` makes the no-fallback property
+    // structural: an unrecognized provider can NEVER reach the Google branch,
+    // so a future reorder/addition can't silently reintroduce the cross-vendor
+    // leak this dispatch exists to prevent.
     let refreshed: OAuthTokenSet;
-    if (provider === 'microsoft') {
-      if (!this.microsoftConfig) {
-        throw new Error(
-          'DbTokenStore: refusing to refresh a microsoft token — no Microsoft OAuth config was wired. ' +
-            'Construct DbTokenStore with a microsoftConfig to support Outlook.',
-        );
-      }
-      refreshed = await refreshMicrosoftAccessToken(this.microsoftConfig, existing.refreshToken);
-    } else if (provider === 'google') {
-      refreshed = await refreshAccessToken(this.oauthConfig, existing.refreshToken);
-    } else {
-      throw new Error(`DbTokenStore: unsupported provider '${provider}' for token refresh.`);
+    switch (provider) {
+      case 'microsoft':
+        if (!this.microsoftConfig) {
+          throw new Error(
+            'DbTokenStore: refusing to refresh a microsoft token — no Microsoft OAuth config was wired. ' +
+              'Construct DbTokenStore with a microsoftConfig to support Outlook.',
+          );
+        }
+        refreshed = await refreshMicrosoftAccessToken(this.microsoftConfig, existing.refreshToken);
+        break;
+      case 'google':
+        refreshed = await refreshAccessToken(this.oauthConfig, existing.refreshToken);
+        break;
+      default:
+        throw new Error(`DbTokenStore: unsupported provider '${provider}' for token refresh.`);
     }
 
     // Persist the new access token. If the row is currently stored
@@ -426,6 +433,16 @@ export class DbTokenStore implements OAuthTokenStore {
       );
     }
 
+    // TODO(outlook-connector): persist a ROTATED Microsoft refresh token.
+    // The persist above only writes the access token, and this returns the
+    // original refresh token. Google never rotates, so this is correct there;
+    // Microsoft is non-rotating by default but CAN rotate under some
+    // conditional-access configs — when it does, the new refresh token is
+    // currently dropped, so the next poll re-submits the stale one and the
+    // grant dies (permanent MicrosoftOAuthRefreshError) until re-auth. The
+    // Outlook signal connector PR must persist `refreshed.refreshToken` (and
+    // return it) when it differs from `existing.refreshToken`, handling the
+    // encrypted-column path too.
     return {
       ...refreshed,
       refreshToken: existing.refreshToken,
