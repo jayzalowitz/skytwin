@@ -210,7 +210,10 @@ export class EmailActionHandler implements ActionHandler {
     }
     const raw = this.encodeMime(lines);
 
-    return this.sendRawMessage(accessToken, { raw, threadId: original.threadId ?? messageId }, {
+    return this.sendRawMessage(accessToken, {
+      raw,
+      ...(original.threadId ? { threadId: original.threadId } : {}),
+    }, {
       action: 'reply_sent',
       messageId,
       replyType: parameters['replyType'] ?? 'custom',

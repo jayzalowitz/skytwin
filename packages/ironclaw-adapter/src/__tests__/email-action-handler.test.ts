@@ -89,6 +89,30 @@ describe('EmailActionHandler outbound sends', () => {
     expect(decodeRaw(sendBody.raw)).not.toContain(SKYTWIN_EMAIL_ATTRIBUTION_TEXT);
   });
 
+  it('omits Gmail threadId when metadata does not include a real thread id', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        payload: { headers: [{ name: 'From', value: 'pat@example.com' }] },
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: 'sent-1' }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await new EmailActionHandler().execute(makeStep({
+      parameters: {
+        actionType: 'send_reply',
+        accessToken: 'token-1',
+        emailId: 'msg-1',
+        body: 'Plain reply.',
+      },
+    }));
+
+    const sendBody = JSON.parse(fetchMock.mock.calls[1]![1].body as string) as {
+      raw: string;
+      threadId?: string;
+    };
+    expect(sendBody.threadId).toBeUndefined();
+  });
+
   it('sends new email bodies with attribution and sanitized headers', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ id: 'sent-1' }), { status: 200 }));
