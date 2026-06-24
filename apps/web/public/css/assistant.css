@@ -473,3 +473,51 @@
   outline-offset: 2px;
   border-radius: 4px;
 }
+
+/* ── Source attribution footer (awareness zone) ──────────────────
+ * Per DESIGN.md the iris accent means "needs you / act"; provenance and
+ * source-type are strictly neutral. This footer informs ("here's what I
+ * looked at") — so it's muted, small, no accent, no left edge. */
+.assistant-sources-footer {
+  margin-top: 0.55rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border, rgba(255, 255, 255, 0.06));
+}
+
+.assistant-sources-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-muted, rgba(255, 255, 255, 0.55));
+  margin-bottom: 0.35rem;
+}
+
+.assistant-sources-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.assistant-source-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  line-height: 1.35;
+  color: var(--text-muted, rgba(255, 255, 255, 0.6));
+}
+
+.assistant-source-text {
+  color: var(--text, rgba(255, 255, 255, 0.82));
+}
+
+.assistant-source-origin {
+  font-size: 0.72rem;
+  color: var(--text-dim, rgba(255, 255, 255, 0.42));
+  white-space: nowrap;
+}

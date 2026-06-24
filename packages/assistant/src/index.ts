@@ -32,6 +32,7 @@ export type {
   TwinInference,
   MemoryContextProvider,
   MemoryHit,
+  MemorySource,
 } from './context-builder.js';
 
 export { detectIntent } from './intent-classifier.js';

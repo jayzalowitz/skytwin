@@ -1,5 +1,5 @@
 import type { LlmClient, LlmStreamEvent } from '@skytwin/llm-client';
-import type { ContextBuilder } from './context-builder.js';
+import type { ContextBuilder, MemorySource } from './context-builder.js';
 import type { ActionRouter, ActionRouteOutcome } from './action-router.js';
 import { detectIntent, type ActionIntent } from './intent-classifier.js';
 
@@ -28,6 +28,13 @@ export interface AssistantReply {
     provider: string;
     model: string;
     latencyMs: number;
+    /**
+     * Memories the assistant consulted to compose this reply, when the
+     * request was enriched (issue #147) and the retrieval returned
+     * attributable hits. Omitted entirely when empty so the persisted
+     * metadata blob stays minimal and existing callers see no shape change.
+     */
+    sources?: MemorySource[];
   };
 }
 
@@ -188,12 +195,24 @@ export class AssistantService {
    * `ContextBuilder` output when `enrichment` is supplied. Shared between
    * `reply()` and `replyStream()` so they cannot drift on the
    * compose-the-prompt step.
+   *
+   * Returns the composed prompt AND the memories that fed it (as citable
+   * `MemorySource[]`) so both reply paths can attach the same attribution
+   * to their metadata. `sources` is `[]` when no enrichment ran or the
+   * retrieval came up empty.
    */
-  private async composeSystemPrompt(enrichment?: EnrichmentRequest): Promise<string> {
-    if (!enrichment || !this.contextBuilder) return this.systemPrompt;
-    const context = await this.contextBuilder.build(enrichment.userId, enrichment.query);
-    if (!context) return this.systemPrompt;
-    return `${context}\n\n${this.systemPrompt}`;
+  private async composePrompt(
+    enrichment?: EnrichmentRequest,
+  ): Promise<{ systemPrompt: string; sources: MemorySource[] }> {
+    if (!enrichment || !this.contextBuilder) {
+      return { systemPrompt: this.systemPrompt, sources: [] };
+    }
+    const { context, sources } = await this.contextBuilder.buildWithSources(
+      enrichment.userId,
+      enrichment.query,
+    );
+    if (!context) return { systemPrompt: this.systemPrompt, sources };
+    return { systemPrompt: `${context}\n\n${this.systemPrompt}`, sources };
   }
 
   /**
@@ -216,7 +235,7 @@ export class AssistantService {
    */
   async reply(history: ChatTurn[], enrichment?: EnrichmentRequest): Promise<AssistantReply> {
     const trimmed = history.slice(-MAX_HISTORY_TURNS);
-    const systemPrompt = await this.composeSystemPrompt(enrichment);
+    const { systemPrompt, sources } = await this.composePrompt(enrichment);
 
     // Issue #149: pass the trimmed history directly as a ChatMessage[]
     // — providers handle multi-turn natively now. The role-flattening
@@ -235,6 +254,9 @@ export class AssistantService {
         provider: response.provider,
         model: response.model,
         latencyMs: response.latencyMs,
+        // Attach the consulted memories only when there are any — keeps the
+        // metadata shape identical to pre-#147 for unenriched calls.
+        ...(sources.length > 0 ? { sources } : {}),
       },
     };
   }
@@ -265,7 +287,7 @@ export class AssistantService {
     enrichment?: EnrichmentRequest,
   ): AsyncIterable<AssistantStreamEvent> {
     const trimmed = history.slice(-MAX_HISTORY_TURNS);
-    const systemPrompt = await this.composeSystemPrompt(enrichment);
+    const { systemPrompt, sources } = await this.composePrompt(enrichment);
 
     const collected: string[] = [];
     try {
@@ -289,6 +311,10 @@ export class AssistantService {
               provider: event.provider,
               model: event.model,
               latencyMs: event.latencyMs,
+              // Same omit-when-empty rule as `reply()`. The route persists
+              // this metadata verbatim, so the citations ride into the
+              // stored message + the SSE `done` payload with no extra wiring.
+              ...(sources.length > 0 ? { sources } : {}),
             },
           };
           return;
@@ -330,7 +356,12 @@ export type AssistantStreamEvent =
   | {
       type: 'done';
       fullContent: string;
-      metadata: { provider: string; model: string; latencyMs: number };
+      metadata: {
+        provider: string;
+        model: string;
+        latencyMs: number;
+        sources?: MemorySource[];
+      };
     }
   | { type: 'error'; partialContent: string; message: string };
 

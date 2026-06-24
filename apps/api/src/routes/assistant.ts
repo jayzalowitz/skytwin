@@ -177,6 +177,13 @@ function buildContextBuilder(): ContextBuilder {
         actionTaken: string | undefined;
         outcome: string | undefined;
         occurredAt: string | undefined;
+        // Source identity for attribution (#147 follow-up). `id` is the
+        // underlying record id (brain page / episode); `source` is the
+        // origin label shown next to the cited memory in chat. Both were
+        // previously discarded — the retrieval knew them, the chat threw
+        // them away.
+        id: string | undefined;
+        source: string | undefined;
       }
       // Convert both shapes into the renderer-friendly contract.
       const fromSemantic: MergedHit[] = semanticHits.map((h) => {
@@ -188,6 +195,16 @@ function buildContextBuilder(): ContextBuilder {
             typeof meta['actionType'] === 'string' ? (meta['actionType'] as string) : undefined,
           outcome: undefined,
           occurredAt: undefined,
+          // gbrain `SemanticHit` carries the page id + its origin (e.g.
+          // `gmail`, `calendar`). Fall back to the metadata domain only
+          // when the backend left `source` blank.
+          id: typeof h.id === 'string' && h.id.length > 0 ? h.id : undefined,
+          source:
+            typeof h.source === 'string' && h.source.length > 0
+              ? h.source
+              : typeof meta['domain'] === 'string'
+                ? (meta['domain'] as string)
+                : undefined,
         };
       });
       const fromMempalace: MergedHit[] = mempalaceRows.map((r) => ({
@@ -196,6 +213,11 @@ function buildContextBuilder(): ContextBuilder {
         actionTaken: r.action_taken ?? undefined,
         outcome: r.outcome ? renderOutcomeHint(r.outcome) : undefined,
         occurredAt: r.created_at instanceof Date ? r.created_at.toISOString() : undefined,
+        // Episodes are past decisions the twin recorded. The episode id is
+        // the citable record; label the origin `decision` so the chip reads
+        // "from a past decision" rather than a connector name.
+        id: typeof r.id === 'string' && r.id.length > 0 ? r.id : undefined,
+        source: 'decision',
       }));
 
       // Dedupe by summary text — same episode may surface from both sources.

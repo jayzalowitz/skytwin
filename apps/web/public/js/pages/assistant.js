@@ -266,10 +266,17 @@ function renderMessages(messages, sending) {
       // approvals for `requires-approval`, plain notice for `blocked`.
       const intentRoute = m?.metadata?.intentRoute;
       const footer = intentRoute ? renderActionFooter(intentRoute) : '';
+      // Source attribution: when the assistant enriched this reply with
+      // memories, the metadata carries the records it consulted. Render a
+      // muted "based on what I found" footer so the user can see the
+      // evidence behind the answer (Explanation-First on the chat surface).
+      const sources = Array.isArray(m?.metadata?.sources) ? m.metadata.sources : [];
+      const sourcesFooter = role === 'assistant' && sources.length ? renderSourcesFooter(sources) : '';
       return `
         <div class="assistant-bubble assistant-bubble-${role}">
           <div class="assistant-bubble-content"${streamingAttr}>${escapeHtml(m.content)}</div>
           ${footer}
+          ${sourcesFooter}
         </div>
       `;
     })
@@ -334,6 +341,55 @@ function renderActionFooter(intentRoute) {
     `;
   }
   return '';
+}
+
+// Human-readable labels for memory origins. The raw `source` values are
+// connector / record-type slugs; users don't speak slug. Anything not in
+// the map falls through to a title-cased version of the slug.
+const SOURCE_LABELS = {
+  gmail: 'Gmail',
+  email: 'Email',
+  calendar: 'Calendar',
+  decision: 'a past decision',
+  memory: 'your memory',
+  voice: 'a voice note',
+};
+
+function prettySource(source) {
+  if (typeof source !== 'string' || !source) return 'your memory';
+  if (SOURCE_LABELS[source]) return SOURCE_LABELS[source];
+  return source.charAt(0).toUpperCase() + source.slice(1);
+}
+
+/**
+ * Render the source-attribution footer under an assistant bubble. Lists the
+ * memories the assistant consulted to compose the reply, in plain language.
+ *
+ * Design: this is the awareness zone, not the action zone — DESIGN.md
+ * reserves the iris accent for "needs you / act" and keeps provenance /
+ * source-type strictly neutral. So this footer is muted, small, no accent,
+ * no edge. It informs; it doesn't ask for a click.
+ */
+function renderSourcesFooter(sources) {
+  const items = sources
+    .slice(0, 5)
+    .map((s) => {
+      const label = escapeHtml(typeof s?.label === 'string' ? s.label : 'A memory');
+      const origin = escapeHtml(prettySource(s?.source));
+      return `
+        <li class="assistant-source-item">
+          <span class="assistant-source-text">${label}</span>
+          <span class="assistant-source-origin">from ${origin}</span>
+        </li>
+      `;
+    })
+    .join('');
+  return `
+    <div class="assistant-sources-footer">
+      <div class="assistant-sources-label">Based on what I found in your memory</div>
+      <ul class="assistant-sources-list">${items}</ul>
+    </div>
+  `;
 }
 
 function renderError(err) {
