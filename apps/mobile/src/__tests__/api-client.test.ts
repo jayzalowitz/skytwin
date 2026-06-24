@@ -100,6 +100,13 @@ class TestApiClient {
     return this.get(`/api/twin/${encodeURIComponent(userId)}`);
   }
 
+  async sendAssistantMessage(userId: string, content: string, threadId?: string) {
+    const body: Record<string, unknown> = { userId, content };
+    if (threadId) body['threadId'] = threadId;
+    // 60s override — LLM replies routinely exceed the 10s default.
+    return this.request('POST', '/api/assistant/messages', body, 60_000);
+  }
+
   private headers(): Record<string, string> {
     return {
       Authorization: `Bearer ${this.token}`,
@@ -116,9 +123,9 @@ class TestApiClient {
     return this.request<T>('POST', path, body);
   }
 
-  private async request<T>(method: string, path: string, body?: unknown) {
+  private async request<T>(method: string, path: string, body?: unknown, timeoutOverrideMs?: number) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    const timer = setTimeout(() => controller.abort(), timeoutOverrideMs ?? this.timeoutMs);
     try {
       const response = await fetch(`${this.baseUrl}${path}`, {
         method,
@@ -208,6 +215,29 @@ describe('API client request construction', () => {
     const [, opts] = firstFetchCall();
     expect(opts.signal).toBeDefined();
     expect(opts.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('posts an assistant message to /api/assistant/messages with userId + content', async () => {
+    mockFetch.mockResolvedValue({ ok: true, json: async () => ({}) });
+    await client.sendAssistantMessage('user-1', 'hello twin');
+    const [url, opts] = firstFetchCall();
+    expect(url).toBe('http://192.168.1.50:3100/api/assistant/messages');
+    expect(opts.method).toBe('POST');
+    expect(firstFetchJsonBody()).toEqual({ userId: 'user-1', content: 'hello twin' });
+  });
+
+  it('includes threadId only when continuing an existing conversation', async () => {
+    mockFetch.mockResolvedValue({ ok: true, json: async () => ({}) });
+    await client.sendAssistantMessage('user-1', 'next', 'thread-9');
+    expect(firstFetchJsonBody()).toEqual({ userId: 'user-1', content: 'next', threadId: 'thread-9' });
+  });
+
+  it('uses a 60s timeout for assistant messages (LLM replies exceed the 10s default)', async () => {
+    mockFetch.mockResolvedValue({ ok: true, json: async () => ({}) });
+    const spy = vi.spyOn(global, 'setTimeout');
+    await client.sendAssistantMessage('user-1', 'hi');
+    expect(spy.mock.calls.some((c) => c[1] === 60_000)).toBe(true);
+    spy.mockRestore();
   });
 });
 
