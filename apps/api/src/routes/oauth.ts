@@ -487,12 +487,30 @@ async function resolveMicrosoftConfig(): Promise<ResolvedMicrosoftConfig> {
       cfg.source = 'user-supplied';
     }
     if (dbCreds['client_secret']) cfg.clientSecret = dbCreds['client_secret'];
-    if (dbCreds['redirect_uri']) cfg.redirectUri = dbCreds['redirect_uri'];
+    // Only let a DB redirect_uri override env when env didn't explicitly set
+    // one (cfg is still the default) — mirrors the Google resolver, so an
+    // explicit MICROSOFT_REDIRECT_URI isn't silently clobbered by DB.
+    if (dbCreds['redirect_uri'] && cfg.redirectUri === DEFAULT_MICROSOFT_REDIRECT_URI) {
+      cfg.redirectUri = dbCreds['redirect_uri'];
+    }
     if (dbCreds['tenant']) cfg.tenant = dbCreds['tenant'];
   } catch {
     // No service_credentials table yet — fall through to env/bundled.
   }
   return cfg;
+}
+
+/**
+ * Whether a provider has a server-side token-revocation endpoint we call on
+ * disconnect. Google does (`oauth2.googleapis.com/revoke`); Microsoft Entra
+ * does NOT — calling `revokeToken` (which is Google's endpoint) for a
+ * Microsoft token would POST the Microsoft refresh token to Google AND fail
+ * to revoke it. Both disconnect routes gate the revoke on this so a new
+ * provider can't accidentally leak a token to Google. For providers without
+ * revocation, deleting the stored row IS the disconnect.
+ */
+export function providerSupportsRevoke(provider: string): boolean {
+  return provider === 'google';
 }
 
 /**
@@ -1370,6 +1388,10 @@ export function createOAuthRouter(): Router {
         res.status(400).json({ error: 'Missing provider, userId, or accountEmail' });
         return;
       }
+      if (provider !== 'google' && provider !== 'microsoft') {
+        res.status(400).json({ error: `Unsupported provider: ${provider}` });
+        return;
+      }
 
       const decodedEmail = decodeURIComponent(accountEmail);
       const token = await oauthRepository.getTokenByAccount(userId, provider, decodedEmail);
@@ -1382,8 +1404,11 @@ export function createOAuthRouter(): Router {
       // grant; revoking only the access_token still leaves the long-lived
       // grant active. Prefer refresh, fall back to access if missing.
       // Either may be null after credential-vault migration (#183 follow-up).
+      // ONLY revoke for providers with a revoke endpoint — see
+      // providerSupportsRevoke; for Microsoft, deleting the row is the
+      // disconnect (revoking there would leak the token to Google).
       const tokenToRevoke = token.refresh_token ?? token.access_token;
-      if (tokenToRevoke) {
+      if (providerSupportsRevoke(provider) && tokenToRevoke) {
         try {
           await revokeToken(tokenToRevoke);
         } catch {
@@ -1424,7 +1449,7 @@ export function createOAuthRouter(): Router {
       // Google supports server-side token revocation; Microsoft Entra has no
       // equivalent token-revoke endpoint, so for Microsoft we just drop the
       // stored rows (deleting the token is the disconnect).
-      if (provider === 'google') {
+      if (providerSupportsRevoke(provider)) {
         // Revoke each connected account in turn, then drop all rows. Prefer
         // refresh_token (invalidates the full grant); access_token alone
         // leaves the grant active per Google's revocation semantics.
@@ -1445,7 +1470,7 @@ export function createOAuthRouter(): Router {
         provider,
         // Microsoft has no revoke endpoint, so for it `revoked` is always 0;
         // `deleted` reflects the rows dropped for either provider.
-        revoked: provider === 'google' ? accounts.length : 0,
+        revoked: providerSupportsRevoke(provider) ? accounts.length : 0,
         deleted: accounts.length,
       });
     } catch (error) {

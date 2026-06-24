@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   fetchMicrosoftUserInfo,
   resolveMicrosoftEnvConfig,
+  providerSupportsRevoke,
 } from '../routes/oauth.js';
 
 /**
@@ -52,6 +53,21 @@ describe('resolveMicrosoftEnvConfig', () => {
     } as NodeJS.ProcessEnv);
     expect(cfg.clientId).toBe('op');
     expect(cfg.source).toBe('user-supplied');
+  });
+});
+
+describe('providerSupportsRevoke (token-leak guard for disconnect)', () => {
+  it('is true only for Google — the only provider with a revoke endpoint', () => {
+    expect(providerSupportsRevoke('google')).toBe(true);
+  });
+
+  it('is false for Microsoft — revoking there would POST the MS token to Google', () => {
+    expect(providerSupportsRevoke('microsoft')).toBe(false);
+  });
+
+  it('is false for any unknown provider (fail safe — never revoke blindly)', () => {
+    expect(providerSupportsRevoke('slack')).toBe(false);
+    expect(providerSupportsRevoke('')).toBe(false);
   });
 });
 
