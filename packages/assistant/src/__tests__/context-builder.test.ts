@@ -302,6 +302,28 @@ describe('ContextBuilder.buildWithSources', () => {
     expect(sources[0]!.label).not.toContain('\n');
   });
 
+  it('does not cite a memory that truncation dropped from the context (no over-claim)', async () => {
+    // A big twin block fills the byte budget; the memories block sits at the
+    // end of the composed context and gets cut, so its memory must NOT be
+    // cited — the footer can only claim evidence the model actually received.
+    const prefs = Array.from({ length: 60 }, (_, i) => ({
+      domain: 'spam',
+      key: `k${i}`,
+      value: 'a very long preference value '.repeat(8),
+      confidence: 'high' as const,
+    }));
+    const twin = stubTwin({ trustTier: 'observer', preferences: prefs, inferences: [] });
+    const memory = stubMemory([
+      { id: 'page-cut', source: 'gmail', summary: 'UNIQUE_MEMORY_THAT_GETS_TRUNCATED_AWAY', domain: 'email' },
+    ]);
+    const builder = new ContextBuilder(twin, memory);
+    const { context, sources } = await builder.buildWithSources(VALID_USER, 'q');
+
+    expect(new TextEncoder().encode(context).length).toBeLessThanOrEqual(MAX_CONTEXT_BYTES);
+    expect(context).not.toContain('UNIQUE_MEMORY_THAT_GETS_TRUNCATED_AWAY');
+    expect(sources).toEqual([]);
+  });
+
   it('returns empty context and empty sources when nothing is relevant', async () => {
     const twin = stubTwin({ trustTier: 'observer', preferences: [], inferences: [] });
     const memory = stubMemory([]);

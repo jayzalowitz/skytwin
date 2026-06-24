@@ -19,8 +19,13 @@ describe('assistant source-attribution footer', () => {
 
   it('never falls back to a raw/title-cased slug (human-meaningful-presentation rule)', () => {
     // The fallback must be the generic safe label, not a title-cased slug.
-    expect(assistantSource).toContain("return SOURCE_LABELS[source] || 'your memory';");
     expect(assistantSource).not.toContain('source.charAt(0).toUpperCase()');
+    expect(assistantSource).toContain("'your memory'");
+  });
+
+  it('guards the SOURCE_LABELS lookup against prototype keys', () => {
+    // '__proto__' / 'constructor' must not resolve to a prototype member.
+    expect(assistantSource).toContain('Object.prototype.hasOwnProperty.call(SOURCE_LABELS, source)');
   });
 
   it('escapes the untrusted source label + origin before rendering', () => {

@@ -274,14 +274,20 @@ export class ContextBuilder {
       sections.push(renderMemoriesBlock(memories));
     }
 
+    if (sections.length === 0) return { context: '', sources: [] };
+
+    const context = truncateToBytes(sections.join('\n\n'), MAX_CONTEXT_BYTES);
+
+    // Cite only memories whose rendered text actually survived truncation.
+    // The memories block sits at the end of the composed context, so a
+    // `MAX_CONTEXT_BYTES` cut drops its tail first; citing a memory the model
+    // never received would over-claim the evidence behind the reply.
     const sources = memories
       .filter((m): m is MemoryHit & { id: string } => typeof m.id === 'string' && m.id.length > 0)
+      .filter((m) => m.summary.length > 0 && context.includes(m.summary))
       .map(toMemorySource);
 
-    if (sections.length === 0) return { context: '', sources };
-
-    const composed = sections.join('\n\n');
-    return { context: truncateToBytes(composed, MAX_CONTEXT_BYTES), sources };
+    return { context, sources };
   }
 
   private async fetchTwinSafe(userId: string): Promise<TwinContextSnapshot | null> {

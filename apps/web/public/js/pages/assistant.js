@@ -366,7 +366,12 @@ const SOURCE_LABELS = {
 
 function prettySource(source) {
   if (typeof source !== 'string' || !source) return 'your memory';
-  return SOURCE_LABELS[source] || 'your memory';
+  // hasOwnProperty guard: an untrusted slug like '__proto__' / 'constructor'
+  // must not resolve to an inherited prototype member (a non-string value
+  // that would defeat the never-leak-a-slug invariant).
+  return Object.prototype.hasOwnProperty.call(SOURCE_LABELS, source)
+    ? SOURCE_LABELS[source]
+    : 'your memory';
 }
 
 /**
