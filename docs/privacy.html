@@ -29,7 +29,7 @@
   <div class="wrap">
     <nav><a href="index.html">← Back to SkyTwin</a></nav>
     <h1>Privacy Policy</h1>
-    <p class="meta">Effective: 2026-05-22. SkyTwin is an open-source personal automation project. This policy describes how the SkyTwin desktop app handles Google user data accessed via Google API scopes.</p>
+    <p class="meta">Effective: 2026-06-24. SkyTwin is an open-source personal automation project. This policy describes how the SkyTwin desktop app handles Google user data accessed via Google API scopes.</p>
 
     <div class="callout">
       <strong>Summary:</strong> SkyTwin runs entirely on your computer. By default — using the built-in on-device language model — your Google data (emails, calendar events, profile information) never leaves your machine. We do not operate servers that hold your user data; the SkyTwin developers cannot access it. The one exception is opt-in: if <em>you</em> enable a cloud AI provider (Anthropic, OpenAI, or Google AI) in Settings for sharper reasoning, the content of each decision SkyTwin reasons about is sent to that provider for processing — see <a href="#ai-providers">AI providers</a> below. Nothing is shared with a cloud provider unless you turn it on.
@@ -43,7 +43,7 @@
     <ul>
       <li><code>openid</code> + <code>email</code> + <code>profile</code> — to identify which Google account is connecting, used as the primary key for the local twin profile.</li>
       <li><code>https://www.googleapis.com/auth/gmail.readonly</code> — to read incoming mail metadata and body content so SkyTwin can interpret signals (a newsletter just arrived; a friend asked for a meeting; a calendar invite needs response).</li>
-      <li><code>https://www.googleapis.com/auth/gmail.modify</code> — to apply labels and archive mail that you have taught SkyTwin to archive automatically. SkyTwin never <em>sends</em> mail on your behalf and never <em>deletes</em> mail.</li>
+      <li><code>https://www.googleapis.com/auth/gmail.modify</code> — to apply labels and archive mail that you have taught SkyTwin to archive automatically, and to send Gmail replies or new messages after your approval or under autonomy rules you have explicitly enabled. SkyTwin does not permanently delete mail. Outgoing SkyTwin-sent emails include a small default-on footer linking to the open-source repo; you can turn that footer off in Settings.</li>
       <li><code>https://www.googleapis.com/auth/calendar.readonly</code> — to read your calendar so SkyTwin can spot conflicts, suggest times, and learn your scheduling preferences.</li>
       <li><code>https://www.googleapis.com/auth/calendar.events</code> — to create, modify, and respond to calendar invites with your approval, or automatically for events that match patterns you have explicitly taught the twin.</li>
     </ul>
@@ -51,7 +51,7 @@
     <h2>How we use Google user data</h2>
     <p>SkyTwin uses Google user data exclusively to provide the user-facing personal-assistant features visible in the SkyTwin desktop app. Specifically:</p>
     <ul>
-      <li><strong>Inbox triage</strong> — classify mail by sender, content, and urgency; surface the few items that need your attention; auto-archive ones you have taught the app to ignore.</li>
+      <li><strong>Inbox triage and replies</strong> — classify mail by sender, content, and urgency; surface the few items that need your attention; auto-archive ones you have taught the app to ignore; send Gmail replies or new messages only after approval or under autonomy rules you have explicitly enabled.</li>
       <li><strong>Calendar management</strong> — detect conflicts; auto-respond to invites that match your stated preferences; suggest scheduling actions.</li>
       <li><strong>Preference learning</strong> — observe your actions (archive, reply, decline, accept) and update the typed twin profile stored locally. The twin profile is what makes future predictions about what you would want.</li>
     </ul>
@@ -73,7 +73,7 @@
     <h2 id="ai-providers">Data sharing &amp; transfers</h2>
     <p>SkyTwin does not transfer Google user data to any third party for the developers' benefit — there is no analytics, advertising, model-training, or data-broker pipeline, and no SkyTwin-operated server ever receives it. The only network connections the app makes with your Google data are the ones below; note that item&nbsp;2 (an optional, opt-in cloud AI provider <em>you</em> enable) is the single case where decision content is sent to a third party, and only then:</p>
     <ol>
-      <li>Direct API calls from the SkyTwin desktop process to Google API servers (e.g. <code>gmail.googleapis.com</code>, <code>calendar.googleapis.com</code>) to fetch the data you authorized.</li>
+      <li>Direct API calls from the SkyTwin desktop process to Google API servers (e.g. <code>gmail.googleapis.com</code>, <code>calendar.googleapis.com</code>) to fetch the data you authorized and carry out approved actions, including Gmail label/archive operations, Gmail sends, and calendar changes.</li>
       <li>Optional outbound calls to LLM providers (OpenAI, Anthropic, Google AI) <em>only if</em> you have configured one of those in Setup — the prompts may contain your data, in which case that provider's terms apply. The default install uses the embedded <code>llama.cpp</code> runtime and makes no outbound LLM calls.</li>
       <li>
         <strong>Provider order is local-first by default for the env-driven factory (#375 — partial).</strong> The shared LLM client constructed from environment variables (used today by capability suggestions and any future caller that goes through <code>getLlmClientFromConfig</code>) now orders local providers (embedded <code>llama.cpp</code>, Ollama) ahead of cloud providers (Anthropic, OpenAI, Google) by default. A cloud key in your env no longer silently escalates that path to cloud-as-primary. Set <code>SKYTWIN_LLM_PRIORITY=cloud-first</code> on the API process to put cloud providers ahead of local — that's an explicit consent gate and the env var is the audit trail.
@@ -117,7 +117,7 @@
     <p>Privacy questions, security disclosures, or data-handling concerns: open an issue at <a href="https://github.com/jayzalowitz/skytwin/issues">github.com/jayzalowitz/skytwin/issues</a> or, for security-sensitive matters, follow the disclosure process described in <a href="https://github.com/jayzalowitz/skytwin/blob/main/SECURITY.md">SECURITY.md</a>.</p>
 
     <footer>
-      <p>Last updated: 2026-05-22.</p>
+      <p>Last updated: 2026-06-24.</p>
       <p>Source for this page: <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/privacy.html">docs/privacy.html</a> in the SkyTwin repository.</p>
     </footer>
   </div>

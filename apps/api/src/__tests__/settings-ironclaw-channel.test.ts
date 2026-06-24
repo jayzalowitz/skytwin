@@ -62,6 +62,10 @@ vi.mock('../middleware/require-ownership.js', () => ({
 // ---------------------------------------------------------------------------
 
 import { createSettingsRouter } from '../routes/settings.js';
+import {
+  SKYTWIN_EMAIL_ATTRIBUTION_TEXT,
+  SKYTWIN_REPO_URL,
+} from '@skytwin/shared-types';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -230,5 +234,91 @@ describe('PUT /api/settings/:userId/ironclaw-channel', () => {
       });
       expect(mockUserRepository.updateIronClawChannel).toHaveBeenCalledWith('aaaaaaaa-bbbb-cccc-dddd-000000000001', channel);
     }
+  });
+});
+
+describe('email attribution settings', () => {
+  let app: Express;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    app = buildApp();
+    mockDomainAutonomyRepository.getForUser.mockResolvedValue([]);
+    mockEscalationTriggerRepository.getForUser.mockResolvedValue([]);
+    mockAiProviderRepository.getForUser.mockResolvedValue([]);
+  });
+
+  it('GET /api/settings/:userId defaults email attribution on and returns the exact footer text', async () => {
+    mockUserRepository.findById.mockResolvedValue({
+      id: 'aaaaaaaa-bbbb-cccc-dddd-000000000001',
+      trust_tier: 'suggest',
+      ironclaw_channel: 'skytwin',
+      autonomy_settings: {},
+    });
+
+    const res = await request(
+      app,
+      'GET',
+      '/api/settings/aaaaaaaa-bbbb-cccc-dddd-000000000001',
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      emailAttribution: {
+        enabled: true,
+        text: SKYTWIN_EMAIL_ATTRIBUTION_TEXT,
+        repoUrl: SKYTWIN_REPO_URL,
+      },
+    });
+  });
+
+  it('PUT /api/settings/:userId/autonomy persists the email attribution toggle', async () => {
+    mockUserRepository.findById.mockResolvedValue({
+      id: 'aaaaaaaa-bbbb-cccc-dddd-000000000001',
+      autonomy_settings: { maxDailySpendCents: 50000 },
+    });
+    mockUserRepository.updateAutonomySettings.mockResolvedValue({
+      id: 'aaaaaaaa-bbbb-cccc-dddd-000000000001',
+      autonomy_settings: {
+        maxDailySpendCents: 50000,
+        emailAttributionSignatureEnabled: false,
+      },
+    });
+
+    const res = await request(
+      app,
+      'PUT',
+      '/api/settings/aaaaaaaa-bbbb-cccc-dddd-000000000001/autonomy',
+      { emailAttributionSignatureEnabled: false },
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockUserRepository.updateAutonomySettings).toHaveBeenCalledWith(
+      'aaaaaaaa-bbbb-cccc-dddd-000000000001',
+      {
+        maxDailySpendCents: 50000,
+        emailAttributionSignatureEnabled: false,
+      },
+    );
+    expect(res.body).toMatchObject({
+      emailAttribution: { enabled: false, text: SKYTWIN_EMAIL_ATTRIBUTION_TEXT },
+    });
+  });
+
+  it('PUT /api/settings/:userId/autonomy rejects non-boolean email attribution values', async () => {
+    mockUserRepository.findById.mockResolvedValue({
+      id: 'aaaaaaaa-bbbb-cccc-dddd-000000000001',
+      autonomy_settings: {},
+    });
+
+    const res = await request(
+      app,
+      'PUT',
+      '/api/settings/aaaaaaaa-bbbb-cccc-dddd-000000000001/autonomy',
+      { emailAttributionSignatureEnabled: 'nope' },
+    );
+
+    expect(res.status).toBe(400);
+    expect(mockUserRepository.updateAutonomySettings).not.toHaveBeenCalled();
   });
 });

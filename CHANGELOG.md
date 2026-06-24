@@ -1,6 +1,6 @@
 All notable changes to SkyTwin will be documented in this file.
 
-## [0.6.62.0] - 2026-06-24
+## [0.6.63.0] - 2026-06-24
 
 ### Added
 
@@ -9,6 +9,11 @@ All notable changes to SkyTwin will be documented in this file.
 ### Fixed
 
 - **Onboarding no longer claims screen / app / window / browser observation it can't do.** The "computer" onboarding step (`apps/web/public/js/pages/onboarding.js`) advertised that a background observer watches "Active application names / Window titles / Browser domain names" and promised Settings controls to manage the list — none of which is implemented (no screen/window/browser capture exists anywhere in the tree, and the enable flow is a documented `#181` stub). Both the choice screen and the follow-on poll screen now describe what `@skytwin/idle-miner` actually does: an idle-time scan of code projects that reads **project metadata only** (manifest dependency keys from `package.json`/`pyproject.toml`/`Cargo.toml`/`go.mod`, the git remote, and the gitconfig name/email — never file contents or natural-language text), and they state explicitly what it does *not* do. A web source-text test pins the copy so the false claims can't regress.
+## [0.6.62.0] - 2026-06-24
+
+### Added
+
+- **Outgoing email attribution is now a clear, default-on setting.** SkyTwin-sent emails and reviewed draft replies now get a small plain-text footer linking recipients to the open-source repo (`https://github.com/jayzalowitz/skytwin`), with duplicate detection so the footer is not stacked on retries or edited drafts. Settings exposes a visible "Add SkyTwin footer to sent emails" toggle, the settings API persists it in user autonomy settings, and approval cards preview whether the footer will be added before send. The execution path applies the footer at the send boundary for `draft_email`, `send_reply`, `reply_email`, and `send_email`, converts reviewed `draft_email` actions into real `send_reply` execution after approval, and keeps the policy/routing checks on the final outbound action. The direct Gmail handler now builds proper plain-text MIME for replies and new sends, preserves thread metadata (`In-Reply-To` / `References`), and sanitizes headers before calling Gmail. Tests cover the shared attribution helper, settings API validation, approval/auto-execute plumbing, and Gmail MIME output with enabled/disabled attribution.
 
 ## [0.6.61.0] - 2026-06-23
 

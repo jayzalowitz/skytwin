@@ -30,7 +30,7 @@ SkyTwin ships with **two** OAuth code paths, both already implemented in `apps/a
 - Documented at [`/connect-gmail.html`](https://jayzalowitz.github.io/skytwin/connect-gmail.html) — five-minute walkthrough on the public web.
 - In-app wizard at `#/connect-gmail` in the SkyTwin dashboard ([apps/web/public/js/pages/connect-gmail.js](https://github.com/jayzalowitz/skytwin/blob/main/apps/web/public/js/pages/connect-gmail.js)) — same five steps, with progress dots, per-step deep links into GCP Console, and a final paste-and-connect form that PUTs to `/api/credentials/google` then redirects through `/api/oauth/google/authorize?include=gmail`.
 - User creates a Google Cloud OAuth client (Web application type, `http://localhost:3100/api/oauth/google/callback` as the redirect) in their own GCP project; pastes client_id + client_secret.
-- `resolveRequestedScopes()` then includes `gmail.readonly` and `gmail.modify` because `source === 'user-supplied'`.
+- `resolveRequestedScopes()` then includes `gmail.readonly` and `gmail.modify` because `source === 'user-supplied'`. The Gmail API accepts `gmail.modify` for approved send operations, so SkyTwin does not need the separate sensitive-only `gmail.send` scope on top of its restricted BYO Gmail grant.
 - Cost to the user: ~5 minutes of clicking. Cost to SkyTwin: $0.
 
 ### How the gate is enforced in code
@@ -95,7 +95,7 @@ Tracked in [Issue #TBD](https://github.com/jayzalowitz/skytwin/issues) (to be cr
 
 ### `https://www.googleapis.com/auth/gmail.modify` (Tier 2 only)
 
-> Required for SkyTwin's auto-archive feature: when the user has taught the twin (via approval feedback) to archive a specific category of mail — newsletters, notifications from a specific service, etc. — SkyTwin applies the relevant Gmail label and archives the thread. This is the user-facing action visible in the dashboard's "Recent actions" feed. SkyTwin never sends mail (`gmail.send` is not requested) and never deletes mail. `gmail.labels` alone is insufficient because applying a label does not move a thread out of the inbox.
+> Required for SkyTwin's Gmail action surface: when the user has taught the twin (via approval feedback) to archive a specific category of mail — newsletters, notifications from a specific service, etc. — SkyTwin applies the relevant Gmail label and archives the thread. When the user approves a draft reply or has explicitly earned enough autonomy for routine email replies, SkyTwin can also send a Gmail reply or new message through `users.messages.send`; those outgoing emails include a default-on SkyTwin attribution footer that the user can disable in Settings. `gmail.modify` is one of the scopes Google accepts for `users.messages.send`, so a separate `gmail.send` scope is not requested. SkyTwin does not permanently delete mail. `gmail.labels` alone is insufficient because applying a label does not move a thread out of the inbox or allow approved replies.
 
 ## Demo video plan
 
@@ -107,7 +107,8 @@ When submitting for sensitive- or restricted-scope review, record a 2–3 minute
 4. Click "Continue." Return to the SkyTwin desktop; show the "Connected" celebration card.
 5. (For Calendar review) Show a conflict-detection card. Decline an event from the dashboard; show the resulting RSVP in Google Calendar's web UI.
 6. (For Gmail review, Tier 2 BYO) Open the Connect Gmail walkthrough at `/connect-gmail.html`; show a credential paste; show a real Gmail signal coming through the Approvals queue.
-7. End on the dashboard's "Recent actions" feed showing each action with its explanation record.
+7. Approve a Gmail action from the dashboard. If the action is a draft reply, point out the SkyTwin footer preview and Settings toggle before send, then show the resulting Gmail message.
+8. End on the dashboard's "Recent actions" feed showing each action with its explanation record.
 
 Upload as unlisted YouTube. Paste the link into the verification submission.
 

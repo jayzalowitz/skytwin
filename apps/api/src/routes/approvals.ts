@@ -29,6 +29,11 @@ import { sseManager } from '../sse.js';
 import { createLogger } from '@skytwin/core';
 import { getMemoryPortForUser } from '../memory-setup.js';
 import { applyDraftEditOverride } from './draft-edit-merge.js';
+import {
+  annotateEmailAttributionPreview,
+  isOutboundEmailAction,
+  prepareEmailActionForExecution,
+} from '../email-attribution.js';
 
 const log = createLogger('api:approvals');
 
@@ -56,9 +61,10 @@ export function createApprovalsRouter(): Router {
 
       // Batch-fetch decisions and candidate actions in two queries instead of N+1
       const decisionIds = [...new Set(approvals.map((a) => a.decision_id).filter(Boolean))] as string[];
-      const [decisions, allCandidates] = await Promise.all([
+      const [decisions, allCandidates, user] = await Promise.all([
         decisionRepository.findByIds(decisionIds),
         decisionRepository.getCandidateActionsForDecisions(decisionIds),
+        userRepository.findById(userId!),
       ]);
 
       const decisionMap = new Map(decisions.map((d) => [d.id, d]));
@@ -112,11 +118,26 @@ export function createApprovalsRouter(): Router {
           }
         }
 
+        let candidateAction = a.candidate_action;
+        const rawAction = (candidateAction ?? {}) as Record<string, unknown>;
+        const actionType = typeof rawAction['actionType'] === 'string'
+          ? rawAction['actionType']
+          : '';
+        if (isOutboundEmailAction(actionType)) {
+          candidateAction = {
+            ...rawAction,
+            parameters: annotateEmailAttributionPreview(
+              (rawAction['parameters'] as Record<string, unknown> | undefined) ?? {},
+              user,
+            ),
+          };
+        }
+
         return {
           id: a.id,
           userId: a.user_id,
           decisionId: a.decision_id,
-          candidateAction: a.candidate_action,
+          candidateAction,
           signalContext,
           alternatives,
           reason: a.reason,
@@ -450,6 +471,7 @@ export function createApprovalsRouter(): Router {
         // Run policy check even on approved actions (spend limits, domain restrictions still apply)
         const user = await userRepository.findById(body.userId);
         const userTier = user?.trust_tier as TrustTier ?? TrustTier.OBSERVER;
+        prepareEmailActionForExecution(candidateAction, user);
         if (user?.ironclaw_channel) {
           candidateAction.parameters['ironclawChannel'] = user.ironclaw_channel;
         }
