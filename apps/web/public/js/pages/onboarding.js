@@ -638,14 +638,14 @@ async function renderIdleMinerPoll() {
   renderContent(`
     <div id="onb-wizard-error" style="color:var(--danger);font-size:0.85rem;margin-bottom:0.75rem;display:none;"></div>
     <div class="onboarding-title" style="font-size:1.2rem;font-weight:700;margin-bottom:0.5rem;">
-      Learning your workflow…
+      Learning what you work on…
     </div>
     <div class="onboarding-desc" style="margin-bottom:1rem;">
-      SkyTwin is watching which apps you use. This usually takes under 60 seconds.
+      SkyTwin is scanning your code projects for the tools you use. This usually takes under 60 seconds.
     </div>
     <div id="onb-poll-status" style="text-align:center;padding:1.5rem 0;color:var(--text-muted);">
       <div class="loading" style="margin-bottom:0.5rem;"></div>
-      Looking for your first app signal…
+      Looking for your first project signal…
     </div>
     <div id="onb-poll-result" style="display:none;"></div>
     <div id="onb-poll-actions" style="margin-top:1rem;display:none;">
@@ -654,7 +654,7 @@ async function renderIdleMinerPoll() {
     </div>
     <div id="onb-poll-timeout" style="display:none;margin-top:1rem;">
       <div style="font-size:0.85rem;color:var(--text-muted);margin-bottom:0.5rem;">
-        Still learning — I'll keep watching in the background. Let's continue to the dashboard.
+        Still scanning — I'll keep looking in the background. Let's continue to the dashboard.
       </div>
       <button class="btn btn-primary" data-action="onb-go-dashboard">Continue to dashboard</button>
     </div>

@@ -344,21 +344,29 @@ function renderActionFooter(intentRoute) {
 }
 
 // Human-readable labels for memory origins. The raw `source` values are
-// connector / record-type slugs; users don't speak slug. Anything not in
-// the map falls through to a title-cased version of the slug.
+// connector / record-type slugs (gbrain emits 'signal' / 'extract' /
+// 'episode'; the API labels past decisions 'decision'); users don't speak
+// slug. Per the project's human-meaningful-presentation rule, an unmapped
+// slug must NEVER leak to the UI — the fallback is the generic, always-safe
+// 'your memory', not a title-cased slug. Add a mapping when a new origin
+// ships rather than letting "from Extract" reach a human.
 const SOURCE_LABELS = {
   gmail: 'Gmail',
   email: 'Email',
   calendar: 'Calendar',
   decision: 'a past decision',
-  memory: 'your memory',
+  episode: 'a past decision',
+  signal: 'your activity',
+  extract: 'your notes',
+  note: 'your notes',
   voice: 'a voice note',
+  page: 'your memory',
+  memory: 'your memory',
 };
 
 function prettySource(source) {
   if (typeof source !== 'string' || !source) return 'your memory';
-  if (SOURCE_LABELS[source]) return SOURCE_LABELS[source];
-  return source.charAt(0).toUpperCase() + source.slice(1);
+  return SOURCE_LABELS[source] || 'your memory';
 }
 
 /**

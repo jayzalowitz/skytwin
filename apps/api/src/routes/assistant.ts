@@ -8,6 +8,7 @@ import {
   type ActionRouter,
   type ActionRouteOutcome,
   type ActionIntent,
+  type MemorySource,
 } from '@skytwin/assistant';
 import { LlmClient, AllProvidersFailedError } from '@skytwin/llm-client';
 import type { ProviderEntry } from '@skytwin/llm-client';
@@ -220,17 +221,35 @@ function buildContextBuilder(): ContextBuilder {
         source: 'decision',
       }));
 
-      // Dedupe by summary text — same episode may surface from both sources.
-      const seen = new Set<string>();
-      const merged: MergedHit[] = [];
+      // Dedupe by summary text — the same episode may surface from both
+      // sources. On a collision, enrich the kept record with any richer
+      // fields the duplicate carries instead of dropping it: the mempalace
+      // side has occurredAt / actionTaken / outcome (and the `decision`
+      // origin) that the gbrain side leaves undefined. Without this merge a
+      // full semantic result set fills the cap first and every mempalace hit
+      // — the richer one — is discarded, so the `decision` provenance never
+      // surfaces for an episode that also has a brain page.
+      const byKey = new Map<string, MergedHit>();
+      const order: string[] = [];
       for (const item of [...fromSemantic, ...fromMempalace]) {
         const key = item.summary.trim().toLowerCase();
-        if (seen.has(key)) continue;
-        seen.add(key);
-        merged.push(item);
-        if (merged.length >= limit) break;
+        const existing = byKey.get(key);
+        if (!existing) {
+          if (order.length >= limit) continue;
+          byKey.set(key, item);
+          order.push(key);
+          continue;
+        }
+        existing.occurredAt ??= item.occurredAt;
+        existing.actionTaken ??= item.actionTaken;
+        existing.outcome ??= item.outcome;
+        existing.id ??= item.id;
+        // Prefer a specific origin over the generic gbrain fallback.
+        if ((!existing.source || existing.source === 'memory') && item.source) {
+          existing.source = item.source;
+        }
       }
-      return merged;
+      return order.map((k) => byKey.get(k)!);
     },
   };
 
@@ -562,7 +581,12 @@ async function streamAssistantReply(args: {
   send('user', userMessage);
 
   let collectedFullContent = '';
-  let metadata: { provider: string; model: string; latencyMs: number } | null = null;
+  // `sources` rides along in the done-event metadata (#147 source attribution);
+  // type it explicitly so a future refactor that rebuilds the persisted payload
+  // from this local can't silently drop the citations.
+  let metadata:
+    | { provider: string; model: string; latencyMs: number; sources?: MemorySource[] }
+    | null = null;
 
   try {
     for await (const event of service.replyStream(history, enrichment)) {

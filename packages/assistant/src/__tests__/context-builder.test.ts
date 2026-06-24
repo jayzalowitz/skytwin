@@ -284,6 +284,24 @@ describe('ContextBuilder.buildWithSources', () => {
     expect(sources[0]!.label.endsWith('…')).toBe(true);
   });
 
+  it('collapses a multi-line summary into a single clean source label', async () => {
+    // gbrain stores raw page bodies (multi-line email/web/file content); the
+    // citation label must read as one legible line, not a wrapped body dump.
+    const twin = stubTwin({ trustTier: 'observer', preferences: [], inferences: [] });
+    const memory = stubMemory([
+      {
+        id: 'page-9',
+        source: 'gmail',
+        summary: 'Subject: Invoice\n\nHi there,\n\n  Your   invoice   is attached.\nThanks',
+        domain: 'email',
+      },
+    ]);
+    const builder = new ContextBuilder(twin, memory);
+    const { sources } = await builder.buildWithSources(VALID_USER, 'q');
+    expect(sources[0]!.label).toBe('Subject: Invoice Hi there, Your invoice is attached. Thanks');
+    expect(sources[0]!.label).not.toContain('\n');
+  });
+
   it('returns empty context and empty sources when nothing is relevant', async () => {
     const twin = stubTwin({ trustTier: 'observer', preferences: [], inferences: [] });
     const memory = stubMemory([]);

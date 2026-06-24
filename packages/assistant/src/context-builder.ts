@@ -69,10 +69,11 @@ export interface MemoryHit {
   /** ISO timestamp of when this episode happened. */
   occurredAt?: string;
   /**
-   * Stable id of the underlying record this hit came from — a brain page
-   * id (gbrain) or an episode id (mempalace). Optional so older providers
-   * that predate source attribution still satisfy the contract; when
-   * present it lets the assistant cite *which* memory it consulted.
+   * The record's stable id from the memory backend — e.g. a gbrain page
+   * reference or a mempalace episode id (each backend decides what the id
+   * points at). Optional so older providers that predate source attribution
+   * still satisfy the contract; when present it lets the assistant cite
+   * *which* memory it consulted and anchors a future "view source" link.
    */
   id?: string;
   /**
@@ -96,7 +97,7 @@ export interface MemoryHit {
  * verifiable claim.
  */
 export interface MemorySource {
-  /** Stable id of the underlying record (brain page id or episode id). */
+  /** Stable id of the cited record from the memory backend (gbrain page reference or mempalace episode id). */
   id: string;
   /** Human-readable one-line label — the episode/page summary. */
   label: string;
@@ -341,16 +342,21 @@ function renderTwinBlock(snap: TwinContextSnapshot): string {
 
 /**
  * Project a retrieved `MemoryHit` (already known to carry an `id`) into a
- * citable `MemorySource`. The label is the episode summary, ellipsis-capped
- * at `SOURCE_LABEL_MAX`. `source` prefers the hit's origin label and falls
+ * citable `MemorySource`. `source` prefers the hit's origin label and falls
  * back to its domain (then a generic `memory`) so the chip never renders a
  * blank provenance.
+ *
+ * The label is normalized to a single clean line before the `SOURCE_LABEL_MAX`
+ * ellipsis cap: the default gbrain backend stores raw page bodies (multi-line
+ * email / web / file content) as the hit text, and a citation chip must read
+ * as one legible line, not a wrapped body dump. `summary` is typed required,
+ * but the package serves pluggable external providers, so a non-string value
+ * coalesces to '' rather than throwing out of `buildWithSources`.
  */
 function toMemorySource(hit: MemoryHit & { id: string }): MemorySource {
+  const oneLine = (typeof hit.summary === 'string' ? hit.summary : '').replace(/\s+/g, ' ').trim();
   const label =
-    hit.summary.length > SOURCE_LABEL_MAX
-      ? `${hit.summary.slice(0, SOURCE_LABEL_MAX - 1)}…`
-      : hit.summary;
+    oneLine.length > SOURCE_LABEL_MAX ? `${oneLine.slice(0, SOURCE_LABEL_MAX - 1)}…` : oneLine || 'A memory';
   return {
     id: hit.id,
     label,
