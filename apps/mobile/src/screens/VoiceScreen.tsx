@@ -243,7 +243,11 @@ export function VoiceScreen({ onSendToTwin }: VoiceScreenProps = {}): React.JSX.
                 <Text style={styles.primaryButtonText}>Send to twin</Text>
               </Pressable>
             )}
-            <Pressable onPress={reset} style={styles.secondaryButton} accessibilityRole="button">
+            <Pressable
+              onPress={reset}
+              style={[styles.secondaryButton, { alignSelf: 'center' }]}
+              accessibilityRole="button"
+            >
               <Text style={styles.secondaryButtonText}>Record again</Text>
             </Pressable>
           </View>

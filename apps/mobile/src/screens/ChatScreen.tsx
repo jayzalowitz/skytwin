@@ -37,6 +37,13 @@ interface UiMessage {
   content: string;
 }
 
+// Monotonic suffix so two replies that fall back to a Date.now()-based id in
+// the same millisecond (or after a remount) can't collide on a React key.
+let _replyCounter = 0;
+function nextReplyId(serverId?: string): string {
+  return serverId && serverId.length > 0 ? serverId : `reply-${Date.now()}-${++_replyCounter}`;
+}
+
 export function ChatScreen({ initialText, onInitialTextConsumed }: ChatScreenProps): React.JSX.Element {
   const [messages, setMessages] = useState<UiMessage[]>([]);
   const [input, setInput] = useState('');
@@ -44,11 +51,15 @@ export function ChatScreen({ initialText, onInitialTextConsumed }: ChatScreenPro
   const [error, setError] = useState<string | null>(null);
   const threadIdRef = useRef<string | undefined>(undefined);
   const scrollRef = useRef<ScrollView | null>(null);
+  const consumedTextRef = useRef<string | null>(null);
 
   // Pre-fill the composer when a transcript is handed over from the Voice
-  // screen. Consume it once so re-renders don't keep re-filling.
+  // screen. Consume each distinct value exactly once — keyed on the value
+  // itself, not on the parent remembering to null it — so a caller that
+  // doesn't wire `onInitialTextConsumed` still can't clobber an edited draft.
   useEffect(() => {
-    if (initialText && initialText.trim()) {
+    if (initialText && initialText.trim() && consumedTextRef.current !== initialText) {
+      consumedTextRef.current = initialText;
       setInput(initialText.trim());
       onInitialTextConsumed?.();
     }
@@ -64,26 +75,37 @@ export function ChatScreen({ initialText, onInitialTextConsumed }: ChatScreenPro
     setMessages((prev) => [...prev, { id: optimisticId, role: 'user', content }]);
     setSending(true);
 
+    // On ANY failure (expired session, network drop, 60s timeout, server
+    // error) roll the optimistic bubble back out and restore the composer,
+    // so the user never silently loses the message they typed and isn't left
+    // with a reply-less dangling bubble. `editable={!sending}` keeps the
+    // input empty during the send, so restoring `content` is safe.
+    const fail = (message: string): void => {
+      setMessages((prev) => prev.filter((m) => m.id !== optimisticId));
+      setInput((cur) => (cur.length === 0 ? content : cur));
+      setError(message);
+    };
+
     try {
       const session = await getSession();
       if (!session) {
-        setError('Your session expired — pair with your SkyTwin again.');
+        fail('Your session expired — pair with your SkyTwin again.');
         return;
       }
       const client = new SkyTwinApiClient(session.baseUrl, session.token);
       const result = await client.sendAssistantMessage(session.userId, content, threadIdRef.current);
       if (!result.success) {
-        setError(result.error);
+        fail(result.error);
         return;
       }
       threadIdRef.current = result.data.thread.id;
       const reply: AssistantMessage = result.data.assistantMessage;
       setMessages((prev) => [
         ...prev,
-        { id: reply.id ?? `reply-${Date.now()}`, role: 'assistant', content: reply.content },
+        { id: nextReplyId(reply.id), role: 'assistant', content: reply.content },
       ]);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Something went wrong.');
+      fail(err instanceof Error ? err.message : 'Something went wrong.');
     } finally {
       setSending(false);
     }
@@ -92,7 +114,9 @@ export function ChatScreen({ initialText, onInitialTextConsumed }: ChatScreenPro
   return (
     <KeyboardAvoidingView
       style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      // 'height' on Android so the composer isn't hidden behind the soft
+      // keyboard when adjustResize isn't guaranteed; 'padding' on iOS.
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
       <ScrollView
         ref={scrollRef}
