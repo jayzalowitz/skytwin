@@ -1,5 +1,15 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.62.0] - 2026-06-24
+
+### Added
+
+- **The assistant cites the memory it consulted.** Every enriched chat reply already pulled twin profile + relevant episodic memories into its system prompt (#147), but the retrieval's source identity was discarded at the context-builder boundary — the chat threw away provenance it had in hand. `ContextBuilder.buildWithSources()` now returns the consulted memories as citable `MemorySource[]` (record id + plain-language origin + a one-line label) alongside the rendered context (`build()` kept as a back-compat shim); `AssistantService` attaches them to both the sync reply and the streaming `done` event metadata, **omitted when empty** so unenriched calls keep their exact prior shape; and the API memory provider now maps `SemanticHit.id`/`source` + the episode id into each hit (previously dropped) and merges richer fields on dedup collisions. The web chat renders a muted **"Based on what I found in your memory"** footer — awareness-zone styling per `DESIGN.md` (provenance is never the iris accent), labels normalized to one clean line, origin slugs mapped to plain language so no internal slug ever reaches the UI. Delivers the Explanation-First promise (*what evidence was used?*) on the conversational surface. New `@skytwin/assistant` unit tests (label normalization, id-less exclusion, source/domain fallback, omit-when-empty, streaming `done` path) plus a web source-text regression suite (jargon-safety, escaping, no inline handlers).
+
+### Fixed
+
+- **Onboarding no longer claims screen / app / window / browser observation it can't do.** The "computer" onboarding step (`apps/web/public/js/pages/onboarding.js`) advertised that a background observer watches "Active application names / Window titles / Browser domain names" and promised Settings controls to manage the list — none of which is implemented (no screen/window/browser capture exists anywhere in the tree, and the enable flow is a documented `#181` stub). Both the choice screen and the follow-on poll screen now describe what `@skytwin/idle-miner` actually does: an idle-time scan of code projects that reads **project metadata only** (manifest dependency keys from `package.json`/`pyproject.toml`/`Cargo.toml`/`go.mod`, the git remote, and the gitconfig name/email — never file contents or natural-language text), and they state explicitly what it does *not* do. A web source-text test pins the copy so the false claims can't regress.
+
 ## [0.6.61.0] - 2026-06-23
 
 ### For contributors
