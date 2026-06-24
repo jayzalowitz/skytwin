@@ -324,6 +324,26 @@ describe('ContextBuilder.buildWithSources', () => {
     expect(sources).toEqual([]);
   });
 
+  it('does not cite a truncated-away memory whose summary text survives elsewhere (substring collision)', async () => {
+    // The twin block (top, survives) contains the token "COLLIDE"; a memory
+    // whose summary IS "COLLIDE" sits at the end and is cut. A bare-summary
+    // `includes` check would wrongly cite it; the full-line check must not.
+    const prefs = Array.from({ length: 12 }, (_, i) => ({
+      domain: 'spam',
+      key: `k${i}`,
+      value: `COLLIDE ${'z'.repeat(180)}`,
+      confidence: 'high' as const,
+    }));
+    const twin = stubTwin({ trustTier: 'observer', preferences: prefs, inferences: [] });
+    const memory = stubMemory([{ id: 'b', source: 'gmail', summary: 'COLLIDE', domain: 'email' }]);
+    const builder = new ContextBuilder(twin, memory);
+    const { context, sources } = await builder.buildWithSources(VALID_USER, 'q');
+
+    expect(context).toContain('COLLIDE'); // the bare token survives (in the twin block)
+    expect(context).not.toContain('- email · COLLIDE'); // ...but the memory's own line was cut
+    expect(sources).toEqual([]); // so it must NOT be cited
+  });
+
   it('returns empty context and empty sources when nothing is relevant', async () => {
     const twin = stubTwin({ trustTier: 'observer', preferences: [], inferences: [] });
     const memory = stubMemory([]);

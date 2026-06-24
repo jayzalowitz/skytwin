@@ -9,6 +9,7 @@ All notable changes to SkyTwin will be documented in this file.
 ### Fixed
 
 - **Onboarding no longer claims screen / app / window / browser observation it can't do.** The "computer" onboarding step (`apps/web/public/js/pages/onboarding.js`) advertised that a background observer watches "Active application names / Window titles / Browser domain names" and promised Settings controls to manage the list — none of which is implemented (no screen/window/browser capture exists anywhere in the tree, and the enable flow is a documented `#181` stub). Both the choice screen and the follow-on poll screen now describe what `@skytwin/idle-miner` actually does: an idle-time scan of code projects that reads **project metadata only** (manifest dependency keys from `package.json`/`pyproject.toml`/`Cargo.toml`/`go.mod`, the git remote, and the gitconfig name/email — never file contents or natural-language text), and they state explicitly what it does *not* do. A web source-text test pins the copy so the false claims can't regress.
+
 ## [0.6.62.0] - 2026-06-24
 
 ### Added

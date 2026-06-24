@@ -282,9 +282,20 @@ export class ContextBuilder {
     // The memories block sits at the end of the composed context, so a
     // `MAX_CONTEXT_BYTES` cut drops its tail first; citing a memory the model
     // never received would over-claim the evidence behind the reply.
+    //
+    // Survival is checked against the memory's FULL rendered line, not the
+    // bare summary: a bare-summary substring can coincide with another
+    // surviving line or with the twin block and falsely read as "survived."
+    // The guard also drops a null / whitespace-only summary (pluggable
+    // providers) before the `includes` check.
     const sources = memories
       .filter((m): m is MemoryHit & { id: string } => typeof m.id === 'string' && m.id.length > 0)
-      .filter((m) => m.summary.length > 0 && context.includes(m.summary))
+      .filter(
+        (m) =>
+          typeof m.summary === 'string' &&
+          m.summary.trim().length > 0 &&
+          context.includes(renderMemoryLine(m)),
+      )
       .map(toMemorySource);
 
     return { context, sources };
@@ -372,15 +383,21 @@ function toMemorySource(hit: MemoryHit & { id: string }): MemorySource {
   };
 }
 
+/**
+ * Render one memory's line exactly as it appears in the episodes block.
+ * Shared by `renderMemoriesBlock` and the truncation-survival check in
+ * `buildWithSources` so the two cannot drift — survival must be tested
+ * against the same string the prompt actually contains.
+ */
+function renderMemoryLine(m: MemoryHit): string {
+  const date = m.occurredAt ? `[${m.occurredAt.slice(0, 10)}] ` : '';
+  const action = m.actionTaken ? ` · ${m.actionTaken}` : '';
+  const outcome = m.outcome ? ` (${m.outcome})` : '';
+  return `- ${date}${m.domain} · ${m.summary}${action}${outcome}`;
+}
+
 function renderMemoriesBlock(memories: MemoryHit[]): string {
-  const lines: string[] = ['## Relevant past episodes'];
-  for (const m of memories) {
-    const date = m.occurredAt ? `[${m.occurredAt.slice(0, 10)}] ` : '';
-    const action = m.actionTaken ? ` · ${m.actionTaken}` : '';
-    const outcome = m.outcome ? ` (${m.outcome})` : '';
-    lines.push(`- ${date}${m.domain} · ${m.summary}${action}${outcome}`);
-  }
-  return lines.join('\n');
+  return ['## Relevant past episodes', ...memories.map(renderMemoryLine)].join('\n');
 }
 
 /**

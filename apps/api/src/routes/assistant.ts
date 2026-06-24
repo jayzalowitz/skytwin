@@ -190,7 +190,10 @@ function buildContextBuilder(): ContextBuilder {
       const fromSemantic: MergedHit[] = semanticHits.map((h) => {
         const meta = (h.metadata ?? {}) as Record<string, unknown>;
         return {
-          summary: h.content,
+          // Coalesce to a string at the backend boundary — `content` is typed
+          // `string`, but a non-conforming pluggable backend must not crash
+          // the dedup loop's `.trim()` below.
+          summary: typeof h.content === 'string' ? h.content : '',
           domain: typeof meta['domain'] === 'string' ? (meta['domain'] as string) : 'memory',
           actionTaken:
             typeof meta['actionType'] === 'string' ? (meta['actionType'] as string) : undefined,
@@ -209,7 +212,7 @@ function buildContextBuilder(): ContextBuilder {
         };
       });
       const fromMempalace: MergedHit[] = mempalaceRows.map((r) => ({
-        summary: r.situation_summary,
+        summary: typeof r.situation_summary === 'string' ? r.situation_summary : '',
         domain: r.domain,
         actionTaken: r.action_taken ?? undefined,
         outcome: r.outcome ? renderOutcomeHint(r.outcome) : undefined,
@@ -233,6 +236,9 @@ function buildContextBuilder(): ContextBuilder {
       const order: string[] = [];
       for (const item of [...fromSemantic, ...fromMempalace]) {
         const key = item.summary.trim().toLowerCase();
+        // Skip empty-summary hits: they can't be rendered or cited, and an
+        // empty key would collapse unrelated rows together.
+        if (!key) continue;
         const existing = byKey.get(key);
         if (!existing) {
           if (order.length >= limit) continue;
