@@ -25,6 +25,10 @@ describe('instant search page', () => {
     expect(source).not.toMatch(/\son(click|keydown|keyup|change|input|submit)=/i);
   });
 
+  it('route-guards the debounced timer so it cannot fire after navigating away', () => {
+    expect(source).toContain("window.location.hash.split('?')[0] !== '#/search'");
+  });
+
   it('renderSearch is async so navigate().catch() does not throw', () => {
     // The SPA does `route.render(...).catch(...)`; a sync renderer makes
     // `undefined.catch` throw and aborts the rest of navigate().

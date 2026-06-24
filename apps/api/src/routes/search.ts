@@ -66,40 +66,40 @@ export function createSearchRouter(): Router {
         : DEFAULT_LIMIT;
 
       // Soft-fail: search is a non-critical, read-only surface. An embedding
-      // outage or empty index should render "no matches", not a 500.
-      let hits;
+      // outage or empty index should render "no matches", not a 500. `hits`
+      // is typed via the `const` inference (SemanticHit[]) — no implicit any.
       try {
         const { port } = await getMemoryPortForUser(userId);
-        hits = await port.searchSemantic(query, limit);
+        const hits = await port.searchSemantic(query, limit);
+        const results = hits
+          .map((h) => {
+            const meta = (h.metadata ?? {}) as Record<string, unknown>;
+            const rawDomain = meta['domain'];
+            // Treat an empty / whitespace-only domain as absent so the source
+            // fallback never produces a blank origin label.
+            const domain =
+              typeof rawDomain === 'string' && rawDomain.trim().length > 0 ? rawDomain : undefined;
+            return {
+              id: h.id,
+              snippet: toSnippet(typeof h.content === 'string' ? h.content : ''),
+              // Prefer the backend's origin label; fall back to the metadata
+              // domain (when non-empty), then a generic 'memory' so a chip
+              // never renders blank.
+              source:
+                typeof h.source === 'string' && h.source.length > 0 ? h.source : domain ?? 'memory',
+              ...(domain ? { domain } : {}),
+              ...(typeof h.score === 'number' ? { score: h.score } : {}),
+            };
+          })
+          .filter((r) => r.snippet.length > 0);
+        res.json({ query, results });
       } catch (err) {
-        log.warn('searchSemantic failed, returning empty result set', {
+        log.warn('search failed, returning empty result set', {
           userId,
           error: err instanceof Error ? err.message : String(err),
         });
         res.json({ query, results: [], degraded: true });
-        return;
       }
-
-      const results = hits
-        .map((h) => {
-          const meta = (h.metadata ?? {}) as Record<string, unknown>;
-          const domain = typeof meta['domain'] === 'string' ? (meta['domain'] as string) : undefined;
-          return {
-            id: h.id,
-            snippet: toSnippet(typeof h.content === 'string' ? h.content : ''),
-            // Prefer the backend's origin label; fall back to the metadata
-            // domain so a chip never renders blank.
-            source:
-              typeof h.source === 'string' && h.source.length > 0
-                ? h.source
-                : domain ?? 'memory',
-            ...(domain ? { domain } : {}),
-            ...(typeof h.score === 'number' ? { score: h.score } : {}),
-          };
-        })
-        .filter((r) => r.snippet.length > 0);
-
-      res.json({ query, results });
     } catch (err) {
       next(err);
     }

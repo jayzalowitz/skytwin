@@ -84,6 +84,9 @@ export async function renderSearch(container, userId) {
     }
     results.innerHTML = '<div class="search-hint">Searching…</div>';
     _debounceTimer = setTimeout(() => {
+      // Route guard: the user may have navigated away during the debounce
+      // window — don't fire a background request into a detached page.
+      if (window.location.hash.split('?')[0] !== '#/search') return;
       void runSearch(query, userId, results);
     }, DEBOUNCE_MS);
   });

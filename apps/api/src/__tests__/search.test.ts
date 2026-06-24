@@ -104,6 +104,15 @@ describe('GET /api/search', () => {
     ]);
   });
 
+  it('falls back source to memory when domain is empty/whitespace (never blank)', async () => {
+    mockSearchSemantic.mockResolvedValue([
+      { id: 'p', score: 0.3, content: 'hello world', source: '', metadata: { domain: '   ' } },
+    ]);
+    const { body } = await get(makeApp(), `/api/search?userId=${USER}&q=hi`);
+    expect(body.results[0].source).toBe('memory');
+    expect(body.results[0].domain).toBeUndefined();
+  });
+
   it('clamps limit to MAX_LIMIT (25)', async () => {
     mockSearchSemantic.mockResolvedValue([]);
     await get(makeApp(), `/api/search?userId=${USER}&q=hi&limit=999`);
