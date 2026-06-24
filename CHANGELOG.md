@@ -1,5 +1,11 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.65.0] - 2026-06-24
+
+### Added
+
+- **Chat with your twin from your phone.** The assistant has always existed server-side (`POST /api/assistant/messages`), but the mobile app had no surface for it — it was an approvals remote, not a twin in your pocket. New **Chat** tab (`ChatScreen`) talks to the assistant over the JSON path (the client's `Accept: application/json` header makes the route reply in one shot rather than SSE, the right fit for React Native), keeps the thread going across turns, and bumps the request timeout to 60s for LLM replies. The mobile `SkyTwinApiClient` gains `sendAssistantMessage(userId, content, threadId?)`. The Voice screen's long-promised "send to twin" hand-off (`VoiceScreen.tsx` admitted it was missing) now works: a finished transcript pre-fills the Chat composer so you review the transcription before it goes to the twin. Tested: api-client request/body construction (path, payload, threadId-only-when-continuing); mobile typecheck + the full suite (209) green.
+
 ## [0.6.64.0] - 2026-06-24
 
 ### Added

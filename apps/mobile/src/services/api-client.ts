@@ -143,6 +143,22 @@ export interface ApprovalResponse {
   processedAt: string;
 }
 
+// -- Assistant chat --
+
+export interface AssistantMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  createdAt?: string;
+  metadata?: Record<string, unknown> | null;
+}
+
+export interface AssistantSendResponse {
+  thread: { id: string; isNew: boolean };
+  userMessage: AssistantMessage;
+  assistantMessage: AssistantMessage;
+}
+
 // -- Client --
 
 export class SkyTwinApiClient {
@@ -332,6 +348,26 @@ export class SkyTwinApiClient {
   }
 
   // -- Internal helpers --
+
+  /**
+   * Send a chat message to the assistant and get its reply. Uses the JSON
+   * (non-streaming) path — the client's `Accept: application/json` header
+   * makes the route return `{ thread, userMessage, assistantMessage }` in one
+   * shot rather than an SSE stream, which is the right fit for React Native.
+   *
+   * Omit `threadId` to start a new conversation; pass it to continue one.
+   * LLM replies routinely exceed the default 10s budget, so this overrides
+   * the timeout to 60s.
+   */
+  async sendAssistantMessage(
+    userId: string,
+    content: string,
+    threadId?: string,
+  ): Promise<ApiResult<AssistantSendResponse>> {
+    const body: Record<string, unknown> = { userId, content };
+    if (threadId) body['threadId'] = threadId;
+    return this.request<AssistantSendResponse>('POST', '/api/assistant/messages', body, 60_000);
+  }
 
   private headers(): Record<string, string> {
     return {

@@ -100,6 +100,12 @@ class TestApiClient {
     return this.get(`/api/twin/${encodeURIComponent(userId)}`);
   }
 
+  async sendAssistantMessage(userId: string, content: string, threadId?: string) {
+    const body: Record<string, unknown> = { userId, content };
+    if (threadId) body['threadId'] = threadId;
+    return this.post('/api/assistant/messages', body);
+  }
+
   private headers(): Record<string, string> {
     return {
       Authorization: `Bearer ${this.token}`,
@@ -208,6 +214,21 @@ describe('API client request construction', () => {
     const [, opts] = firstFetchCall();
     expect(opts.signal).toBeDefined();
     expect(opts.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('posts an assistant message to /api/assistant/messages with userId + content', async () => {
+    mockFetch.mockResolvedValue({ ok: true, json: async () => ({}) });
+    await client.sendAssistantMessage('user-1', 'hello twin');
+    const [url, opts] = firstFetchCall();
+    expect(url).toBe('http://192.168.1.50:3100/api/assistant/messages');
+    expect(opts.method).toBe('POST');
+    expect(firstFetchJsonBody()).toEqual({ userId: 'user-1', content: 'hello twin' });
+  });
+
+  it('includes threadId only when continuing an existing conversation', async () => {
+    mockFetch.mockResolvedValue({ ok: true, json: async () => ({}) });
+    await client.sendAssistantMessage('user-1', 'next', 'thread-9');
+    expect(firstFetchJsonBody()).toEqual({ userId: 'user-1', content: 'next', threadId: 'thread-9' });
   });
 });
 

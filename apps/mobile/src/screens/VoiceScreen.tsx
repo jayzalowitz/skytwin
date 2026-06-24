@@ -56,7 +56,12 @@ type VoiceState =
   | { kind: 'result'; transcript: string; durationBytes: number }
   | { kind: 'error'; message: string };
 
-export function VoiceScreen(): React.JSX.Element {
+interface VoiceScreenProps {
+  /** Hand a finished transcript to the Chat screen ("send to twin"). */
+  onSendToTwin?: (text: string) => void;
+}
+
+export function VoiceScreen({ onSendToTwin }: VoiceScreenProps = {}): React.JSX.Element {
   const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const [state, setState] = useState<VoiceState>({ kind: 'idle' });
   const [elapsedSec, setElapsedSec] = useState(0);
@@ -228,8 +233,18 @@ export function VoiceScreen(): React.JSX.Element {
               <Text style={styles.resultText}>{state.transcript.trim() || '(silence)'}</Text>
             </View>
             <Text style={styles.resultMeta}>Audio size: {formatBytes(state.durationBytes)}</Text>
-            <Pressable onPress={reset} style={styles.primaryButton} accessibilityRole="button">
-              <Text style={styles.primaryButtonText}>Record again</Text>
+            {onSendToTwin && state.transcript.trim().length > 0 && (
+              <Pressable
+                onPress={() => onSendToTwin(state.transcript.trim())}
+                style={styles.primaryButton}
+                accessibilityRole="button"
+                accessibilityLabel="Send transcript to your twin"
+              >
+                <Text style={styles.primaryButtonText}>Send to twin</Text>
+              </Pressable>
+            )}
+            <Pressable onPress={reset} style={styles.secondaryButton} accessibilityRole="button">
+              <Text style={styles.secondaryButtonText}>Record again</Text>
             </Pressable>
           </View>
         )}

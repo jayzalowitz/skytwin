@@ -18,6 +18,7 @@ import { CapabilitiesScreen } from './screens/CapabilitiesScreen';
 import { CapabilityDetailScreen } from './screens/CapabilityDetailScreen';
 import { BriefingScreen } from './screens/BriefingScreen';
 import { VoiceScreen } from './screens/VoiceScreen';
+import { ChatScreen } from './screens/ChatScreen';
 
 // -- Navigation types --
 
@@ -45,8 +46,8 @@ const SkyTwinTheme = {
 
 // -- Bottom tab bar --
 
-// Tab type now includes Capabilities and Briefing.
-type MainTab = 'approvals' | 'briefing' | 'capabilities' | 'voice' | 'dashboard' | 'settings';
+// Tab type now includes Capabilities, Briefing, and Chat.
+type MainTab = 'approvals' | 'chat' | 'briefing' | 'capabilities' | 'voice' | 'dashboard' | 'settings';
 
 function MainWithTabs({
   onDisconnect,
@@ -82,6 +83,16 @@ function MainWithTabs({
     setActiveTab('approvals');
   }, []);
 
+  // Voice → Chat hand-off (#179 follow-up): a finished transcript can be sent
+  // to the assistant. We pre-fill the composer (not auto-send) so the user
+  // reviews the transcription before it goes to the twin.
+  const [chatInitialText, setChatInitialText] = useState<string | null>(null);
+  const handleSendToTwin = useCallback((text: string) => {
+    setChatInitialText(text);
+    setActiveTab('chat');
+  }, []);
+  const clearChatInitialText = useCallback(() => setChatInitialText(null), []);
+
   const renderContent = (): React.JSX.Element => {
     switch (activeTab) {
       case 'approvals':
@@ -103,8 +114,12 @@ function MainWithTabs({
           );
         }
         return <CapabilitiesScreen onSelectCapability={handleSelectCapability} />;
+      case 'chat':
+        return (
+          <ChatScreen initialText={chatInitialText} onInitialTextConsumed={clearChatInitialText} />
+        );
       case 'voice':
-        return <VoiceScreen />;
+        return <VoiceScreen onSendToTwin={handleSendToTwin} />;
       case 'dashboard':
         return <DashboardScreen />;
       case 'settings':
@@ -132,6 +147,11 @@ function MainWithTabs({
           label="Approvals"
           active={activeTab === 'approvals'}
           onPress={() => handleTabPress('approvals')}
+        />
+        <TabButton
+          label="Chat"
+          active={activeTab === 'chat'}
+          onPress={() => handleTabPress('chat')}
         />
         <TabButton
           label="Briefing"
