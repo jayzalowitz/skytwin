@@ -8,6 +8,7 @@ import { renderAudit } from './pages/audit.js';
 import { renderSetup } from './pages/setup.js';
 import { renderConnectGmail } from './pages/connect-gmail.js';
 import { renderAssistant } from './pages/assistant.js';
+import { renderSearch } from './pages/search.js';
 import { renderOnboarding } from './pages/onboarding.js';
 import { renderCapabilities } from './pages/capabilities.js';
 import { renderCapabilityDetail } from './pages/capability-detail.js';
@@ -34,6 +35,7 @@ let currentUserId = localStorage.getItem(KEY_USER_ID) || '';
 const routes = {
   '/': { title: 'Home', render: renderDashboard },
   '/assistant': { title: 'Chat', render: renderAssistant },
+  '/search': { title: 'Search', render: renderSearch },
   '/approvals': { title: 'Needs your OK', render: renderApprovals },
   '/decisions': { title: 'What happened', render: renderDecisions },
   '/activity': { title: "What's been happening", render: renderActivity },

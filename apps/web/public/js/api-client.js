@@ -279,6 +279,14 @@ export function wireApiRetry(container, retry) {
   });
 }
 
+// ── Search ──────────────────────────────────────────────
+// Instant memory search over the semantic retrieval engine (the same RRF
+// index the assistant consults), now exposed as a first-class surface.
+export function searchMemory(userId, query, limit = 10) {
+  const params = new URLSearchParams({ userId, q: query, limit: String(limit) });
+  return fetchJSON(`${API}/search?${params.toString()}`);
+}
+
 // ── Decisions ───────────────────────────────────────────
 
 export function fetchDecisions(userId, options = {}) {
