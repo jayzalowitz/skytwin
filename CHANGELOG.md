@@ -1,5 +1,11 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.64.0] - 2026-06-24
+
+### Added
+
+- **Instant memory search.** The semantic retrieval engine (vector + tsvector RRF via `MemoryPort.searchSemantic`) already powered the assistant's context enrichment, but it was reachable *only* through a chat turn — there was no way to just search your own memory. New `GET /api/search?userId=&q=&limit=` route exposes it directly (mounted under `sessionAuth` + `requireOwnership`, so it's scoped to the authenticated user), and a new **Search** page (`#/search`) in the web dashboard runs an instant, debounced lookup across emails, calendar, and what the twin has learned. Results are awareness-zone styled per `DESIGN.md` (neutral, no iris accent), snippets collapsed to one clean line, origin slugs mapped to plain language with a prototype-key-safe lookup, and the UI drops stale responses so a slow earlier query can't overwrite a newer one. The route soft-fails to an empty `degraded` result set on an embedding outage rather than 500-ing. Tested: route validation/clamping/soft-fail (8 cases) + a web source-text regression suite (escaping, no inline handlers, stale-response guard).
+
 ## [0.6.63.0] - 2026-06-24
 
 ### Added

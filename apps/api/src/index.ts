@@ -28,6 +28,7 @@ import { createActivityRouter } from './routes/activity.js';
 import { createMempalaceRouter } from './routes/mempalace.js';
 import { createMemoryConfigRouter } from './routes/memory-config.js';
 import { createAssistantRouter } from './routes/assistant.js';
+import { createSearchRouter } from './routes/search.js';
 import { createCredentialsRouter } from './routes/credentials.js';
 import { createRoutinesRouter } from './routes/routines.js';
 import { createDemoRouter } from './routes/demo.js';
@@ -334,6 +335,7 @@ app.use('/api/policies', sessionAuth, requireOwnership, requestContext, createPo
 app.use('/api/mempalace', sessionAuth, requireOwnership, requestContext, createMempalaceRouter());
 app.use('/api/memory-config', sessionAuth, requireOwnership, requestContext, createMemoryConfigRouter());
 app.use('/api/assistant', sessionAuth, requireOwnership, requestContext, createAssistantRouter());
+app.use('/api/search', sessionAuth, requireOwnership, requestContext, createSearchRouter());
 app.use('/api/credentials', sessionAuth, requireOwnership, requestContext, createCredentialsRouter());
 app.use('/api/routines', sessionAuth, requireOwnership, requestContext, createRoutinesRouter());
 app.use('/api/v1/demo', createDemoRouter()); // public — onboarding tour discovery
