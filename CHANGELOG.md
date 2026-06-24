@@ -1,5 +1,11 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.68.0] - 2026-06-24
+
+### Fixed
+
+- **`DbTokenStore` token refresh is now provider-aware (closes a latent token-leak footgun).** `DbTokenStore.refreshIfExpired` called Google's `refreshAccessToken` for **any** provider. Harmless while only Google existed — but now that Microsoft tokens can be persisted (#551), refreshing one through `DbTokenStore` would have POSTed the Microsoft refresh token to Google's token endpoint (the same token-leak class fixed in the disconnect routes). It now dispatches by provider: `google` → Google's endpoint, `microsoft` → Microsoft's (via the new optional `microsoftConfig` constructor arg), and **refuses (throws) rather than falling back to Google** for a `microsoft` token when no Microsoft config is wired, or for any unsupported provider. This is the token-refresh foundation the Outlook signal connector needs (a connector calls `refreshIfExpired(userId, 'microsoft')` on every poll). Backward-compatible — the existing Google-only construction and refresh path are unchanged. 5 unit tests assert which endpoint each provider hits + the no-leak refusal; all 25 existing `DbTokenStore` tests still green.
+
 ## [0.6.67.0] - 2026-06-24
 
 ### Added

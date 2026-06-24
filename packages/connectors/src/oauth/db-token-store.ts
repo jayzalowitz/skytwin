@@ -2,6 +2,8 @@ import type { OAuthTokenSet } from '@skytwin/shared-types';
 import type { OAuthTokenStore } from './token-store.js';
 import type { GoogleOAuthConfig } from './google-oauth.js';
 import { refreshAccessToken } from './google-oauth.js';
+import type { MicrosoftOAuthConfig } from './microsoft-oauth.js';
+import { refreshAccessToken as refreshMicrosoftAccessToken } from './microsoft-oauth.js';
 import { encrypt, decrypt, IV_LENGTH, TAG_LENGTH } from '@skytwin/credential-vault';
 import { createLogger } from '@skytwin/core';
 
@@ -178,6 +180,13 @@ export class DbTokenStore implements OAuthTokenStore {
   constructor(
     private readonly repo: OAuthRepositoryLike,
     private readonly oauthConfig: GoogleOAuthConfig,
+    /**
+     * Optional Microsoft (Entra) config. Required to refresh `microsoft`
+     * tokens — without it, refreshing a microsoft token THROWS rather than
+     * falling back to the Google endpoint (which would POST the token to the
+     * wrong vendor; the same token-leak class fixed in the disconnect routes).
+     */
+    private readonly microsoftConfig?: MicrosoftOAuthConfig,
   ) {}
 
   /**
@@ -372,8 +381,26 @@ export class DbTokenStore implements OAuthTokenStore {
       return existing;
     }
 
-    // Token is expired or about to expire — refresh it
-    const refreshed = await refreshAccessToken(this.oauthConfig, existing.refreshToken);
+    // Token is expired or about to expire — refresh it via the RIGHT
+    // provider's endpoint. Never fall back to Google for a non-Google token:
+    // that would POST the refresh token to the wrong vendor (the token-leak
+    // class fixed in the disconnect routes). For non-rotating Microsoft
+    // tokens the stored refresh token is reused (rotation persistence is a
+    // follow-up); the access token is updated below.
+    let refreshed: OAuthTokenSet;
+    if (provider === 'microsoft') {
+      if (!this.microsoftConfig) {
+        throw new Error(
+          'DbTokenStore: refusing to refresh a microsoft token — no Microsoft OAuth config was wired. ' +
+            'Construct DbTokenStore with a microsoftConfig to support Outlook.',
+        );
+      }
+      refreshed = await refreshMicrosoftAccessToken(this.microsoftConfig, existing.refreshToken);
+    } else if (provider === 'google') {
+      refreshed = await refreshAccessToken(this.oauthConfig, existing.refreshToken);
+    } else {
+      throw new Error(`DbTokenStore: unsupported provider '${provider}' for token refresh.`);
+    }
 
     // Persist the new access token. If the row is currently stored
     // encrypted (key cache populated AND row has encrypted_access_token),
