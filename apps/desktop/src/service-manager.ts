@@ -518,6 +518,7 @@ export class ServiceManager {
   }
 
   private async waitForExternalApi(timeoutMs: number): Promise<boolean> {
+    if (app.isPackaged) return false;
     const deadline = Date.now() + timeoutMs;
     do {
       if (await this.detectExternalApi()) return true;
