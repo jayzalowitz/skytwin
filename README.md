@@ -277,7 +277,7 @@ packages/
   llm-client/                     Unified LLM client — Anthropic / OpenAI / Google / Ollama / embedded
   embedded-llm/                   Local-first: llama.cpp text, whisper.cpp STT, Piper TTS — spawn-based
   explanations/                   Human-readable explanation generation
-  connectors/                     Gmail / Calendar / mock connectors with OAuth, stamps AuthoringTier
+  connectors/                     Gmail / Google Calendar / Outlook mail+calendar / mock connectors with OAuth, stamps AuthoringTier
   assistant/                      Stateless chat service wrapping LlmClient with context enrichment
   capability-engine/              Infers user app capabilities from signals (keyword v1 + LLM verification)
   credential-vault/               Envelope encryption for OAuth tokens (AES-256-GCM + scrypt KDF)
