@@ -222,6 +222,9 @@ The API starts on `localhost:3100`, the web dashboard on `localhost:3200`.
 Turbo starts. If another process owns a required port, it prints the owning
 PID/command/cwd; if this same workspace is already healthy, it exits cleanly
 instead of starting a duplicate dev stack.
+The OpenClaw bridge is supervised during `pnpm dev`, so a one-off child
+SIGKILL/exit 137 restarts the bridge without tearing down API/web/worker; fast
+crash loops still fail visibly.
 
 ### Validating the install path
 
