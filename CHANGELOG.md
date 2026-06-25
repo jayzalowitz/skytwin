@@ -1,5 +1,11 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.69.0] - 2026-06-25
+
+### Fixed
+
+- **Semantic search no longer silently degrades to vector-only on CockroachDB (`ts_rank_cd` → `ts_rank`).** The gbrain CRDB adapter's `textSearch` ranked the tsvector half of the RRF fold with `ts_rank_cd`, which **CockroachDB does not implement** — verified live on CRDB v23.2.30, it throws `unimplemented: this function is not yet supported`. That made the *entire* tsvector branch of every hybrid semantic search throw, so retrieval fell back to vector-only across the board: the assistant's memory enrichment + source citations AND the new `/api/search` surface. (Found by browser-dogfooding the search page — it soft-failed to "warming up", and the api log named `ts_rank_cd`.) Swapped to `ts_rank`, which CRDB supports and which the verified full `textSearch` query now executes cleanly; the RRF fold uses rank *position*, so the cover-density vs standard ranking difference is immaterial. New regression test asserts the SQL uses `ts_rank` and never `ts_rank_cd`.
+
 ## [0.6.68.0] - 2026-06-24
 
 ### Fixed
