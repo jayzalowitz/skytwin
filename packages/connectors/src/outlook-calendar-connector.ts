@@ -229,7 +229,16 @@ export class OutlookCalendarConnector implements SignalConnector {
     const needsResponse = !event.isCancelled && response === 'notResponded';
     const startTime = toUtcIso(event.start?.dateTime);
     const endTime = toUtcIso(event.end?.dateTime);
-    const updated = toUtcIso(event.lastModifiedDateTime ?? event.createdDateTime ?? event.start?.dateTime) || 'unknown';
+    // `??` only falls through on null/undefined, but Graph can hand back an
+    // empty string — pick the first NON-EMPTY timestamp so an empty
+    // `lastModifiedDateTime` doesn't collapse the version to 'unknown' (which
+    // would freeze the signal id and defeat the `_<version>` change-dedup) or
+    // trigger the Date.now() timestamp fallback. The poll() start-guard
+    // guarantees a non-empty `start.dateTime`, so this never reaches 'unknown'.
+    const updatedSource = [event.lastModifiedDateTime, event.createdDateTime, event.start?.dateTime].find(
+      (d): d is string => typeof d === 'string' && d.length > 0,
+    );
+    const updated = toUtcIso(updatedSource) || 'unknown';
     const version = updated.replace(/[^a-zA-Z0-9]/g, '');
 
     // `isOrganizer` is Graph's direct signal that the user organized the event,
@@ -286,6 +295,9 @@ export class OutlookCalendarConnector implements SignalConnector {
         start: new Date(toUtcIso(e.start!.dateTime)).getTime(),
         end: new Date(toUtcIso(e.end!.dateTime)).getTime(),
       }))
+      // Drop unparseable times — a NaN start/end makes every `b.start >= a.end`
+      // comparison false, which would break the early-exit and over-flag.
+      .filter((e) => !Number.isNaN(e.start) && !Number.isNaN(e.end))
       .sort((a, b) => a.start - b.start);
 
     for (let i = 0; i < withTimes.length; i++) {

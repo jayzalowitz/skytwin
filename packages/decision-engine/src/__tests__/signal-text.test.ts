@@ -57,7 +57,7 @@ describe('toSignalText — per-source mapping (spec 07 AC1)', () => {
     expect(t.authoredByUser).toBe(false); // received_shared is not user-authored
   });
 
-  it('maps an outlook signal like gmail (subject/body/recipients)', () => {
+  it('maps an outlook signal like gmail (subject/body/recipients incl. cc)', () => {
     const t = toSignalText(
       sig({
         source: 'outlook',
@@ -66,6 +66,9 @@ describe('toSignalText — per-source mapping (spec 07 AC1)', () => {
           body: 'Approving the Q3 spend.',
           from: 'me@example.com',
           to: 'cfo@example.com',
+          // cc is collected ONLY by the gmail/outlook branch, not the default —
+          // asserting it proves the `case 'outlook'` arm is actually wired.
+          cc: 'controller@example.com',
           authoringTier: 'user_sent_reply',
         },
       }),
@@ -73,7 +76,7 @@ describe('toSignalText — per-source mapping (spec 07 AC1)', () => {
     expect(t.title).toBe('Budget sign-off');
     expect(t.body).toBe('Approving the Q3 spend.');
     expect(t.participants).toEqual(
-      expect.arrayContaining(['cfo@example.com', 'me@example.com']),
+      expect.arrayContaining(['cfo@example.com', 'controller@example.com', 'me@example.com']),
     );
     expect(t.authoredByUser).toBe(true);
   });

@@ -106,6 +106,20 @@ describe('OutlookCalendarConnector', () => {
     expect(days).toBe(30);
   });
 
+  it('fans every emitted signal out to onSignal handlers exactly once', async () => {
+    fetchMock.mockResolvedValueOnce(
+      res(200, { value: [gevent({ id: 'a' }), gevent({ id: 'b' })], '@odata.deltaLink': 'D' }),
+    );
+    const conn = await connected();
+    const hits: string[] = [];
+    conn.onSignal((s) => hits.push(s.data.eventId as string));
+    const signals = await conn.poll();
+    // The handler fan-out (not the return value) is how the worker receives
+    // signals — each emitted event must fire the handler exactly once.
+    expect(hits).toEqual(['a', 'b']);
+    expect(hits).toEqual(signals.map((s) => s.data.eventId));
+  });
+
   it('normalizes naked Graph dateTimes to UTC (appends Z) so absolute time is correct', async () => {
     fetchMock.mockResolvedValueOnce(res(200, { value: [gevent({ id: 'e1' })], '@odata.deltaLink': 'D' }));
     const conn = await connected();
@@ -171,8 +185,12 @@ describe('OutlookCalendarConnector', () => {
   });
 
   it('skips tombstones (@removed) and events with no start time', async () => {
+    // The tombstone carries a full start/end so it can ONLY be excluded by the
+    // @removed guard (a real Graph tombstone may retain its fields) — and a
+    // separate no-start event isolates the start-time guard.
+    const tombstone = { ...(gevent({ id: 'del' }) as Record<string, unknown>), '@removed': { reason: 'deleted' } };
     fetchMock.mockResolvedValueOnce(
-      res(200, { value: [gevent({ id: 'real' }), { id: 'del', '@removed': { reason: 'deleted' } }, { id: 'nostart', subject: 'x' }], '@odata.deltaLink': 'D' }),
+      res(200, { value: [gevent({ id: 'real' }), tombstone, { id: 'nostart', subject: 'x' }], '@odata.deltaLink': 'D' }),
     );
     const signals = await (await connected()).poll();
     expect(signals.map((s) => s.data.eventId)).toEqual(['real']);
@@ -228,6 +246,27 @@ describe('OutlookCalendarConnector', () => {
     expect((fetchMock.mock.calls[1] as [string])[0]).toContain('/me/calendarView/delta');
     expect(signals.map((s) => s.data.eventId)).toEqual(['r']);
     expect(cursor.map.get(DELTA_KEY)).toBe('D4');
+  });
+
+  it('on a mid-sync 410 returns the partial page, fires each handler once, and keeps the pagination cursor', async () => {
+    fetchMock
+      // page 1 drains an event + a nextLink, then the follow request 410s mid-sync
+      .mockResolvedValueOnce(res(200, { value: [gevent({ id: 'a' })], '@odata.nextLink': 'NEXT1' }))
+      .mockResolvedValueOnce(res(410, {}));
+    const cursor = makeCursorStore();
+    const conn = await connected(cursor);
+    const hits: string[] = [];
+    conn.onSignal((s) => hits.push(s.data.eventId as string));
+
+    const signals = await conn.poll();
+    // partial: only the page-1 event, emitted (and handled) exactly once — the
+    // mid-sync 410 must not re-bootstrap and double-fire.
+    expect(signals.map((s) => s.data.eventId)).toEqual(['a']);
+    expect(hits).toEqual(['a']);
+    // second fetch was the nextLink, NOT a fresh calendarView bootstrap
+    expect((fetchMock.mock.calls[1] as [string])[0]).toBe('NEXT1');
+    // cursor advanced to the nextLink so the next poll resumes pagination
+    expect(cursor.map.get(DELTA_KEY)).toBe('NEXT1');
   });
 
   it('poll() throws before connect()', async () => {
