@@ -44,6 +44,8 @@ interface GraphMessage {
   receivedDateTime?: string;
   isRead?: boolean;
   internetMessageHeaders?: Array<{ name: string; value: string }>;
+  /** Present on delta *tombstones* (a deleted message) — never a real message. */
+  '@removed'?: { reason?: string };
 }
 interface GraphDeltaPage {
   value?: GraphMessage[];
@@ -110,25 +112,12 @@ export class OutlookMailConnector implements SignalConnector {
       throw new Error('OutlookMailConnector is not connected. Call connect() first.');
     }
     const accessToken = (await this.tokenStore.refreshIfExpired(this.userId, 'microsoft')).accessToken;
-
     // Start a fresh delta when we have no cursor, else resume the stored one.
-    const startUrl =
-      this.deltaLink ??
-      `${GRAPH_API}/me/mailFolders/inbox/messages/delta?$select=${MSG_SELECT}&$top=${PAGE_SIZE}`;
+    return this.drainDelta(this.deltaLink ?? this.freshDeltaUrl(), accessToken);
+  }
 
-    try {
-      return await this.drainDelta(startUrl, accessToken);
-    } catch (err) {
-      // 410 Gone — the deltaLink aged out. Drop the cursor and re-bootstrap
-      // from a fresh delta, exactly as Gmail re-bootstraps on a 404 cursor.
-      if (err instanceof Error && err.message.includes('410')) {
-        console.warn(`[outlook] delta link expired for user ${this.userId} — re-bootstrapping`);
-        this.deltaLink = null;
-        const fresh = `${GRAPH_API}/me/mailFolders/inbox/messages/delta?$select=${MSG_SELECT}&$top=${PAGE_SIZE}`;
-        return this.drainDelta(fresh, accessToken);
-      }
-      throw err;
-    }
+  private freshDeltaUrl(): string {
+    return `${GRAPH_API}/me/mailFolders/inbox/messages/delta?$select=${MSG_SELECT}&$top=${PAGE_SIZE}`;
   }
 
   /**
@@ -137,21 +126,47 @@ export class OutlookMailConnector implements SignalConnector {
    * `@odata.nextLink` if the sync is still draining, otherwise the
    * `@odata.deltaLink`) so the next poll resumes exactly where this one left
    * off. Stops early at the page cap to bound a single poll's work.
+   *
+   * 410 handling lives here so it can't double-emit: a 410 on the FIRST
+   * request means the stored delta link is stale → reset and restart once from
+   * a fresh delta. A 410 *after* we've already emitted earlier pages does NOT
+   * restart (that would re-fire handlers for those messages) — we stop and
+   * return what we have; the next poll resumes from the last persisted cursor.
    */
   private async drainDelta(startUrl: string, accessToken: string): Promise<RawSignal[]> {
     const signals: RawSignal[] = [];
     let url: string | undefined = startUrl;
     let pages = 0;
     let nextCursor: string | undefined;
+    let rebootstrapped = false;
 
     while (url && pages < MAX_PAGES_PER_POLL) {
-      const resp = await this.graphGet(url, accessToken, 'delta');
-      const body = (await resp.json()) as GraphDeltaPage;
+      let resp: Response;
+      try {
+        resp = await this.graphGet(url, accessToken, 'delta');
+      } catch (err) {
+        if (err instanceof Error && err.message.includes('410')) {
+          if (signals.length === 0 && !rebootstrapped) {
+            console.warn(`[outlook] delta link expired for user ${this.userId} — re-bootstrapping`);
+            this.deltaLink = null;
+            rebootstrapped = true;
+            url = this.freshDeltaUrl();
+            continue;
+          }
+          console.warn(`[outlook] delta link expired mid-sync for user ${this.userId} — returning partial`);
+          break;
+        }
+        throw err;
+      }
 
+      const body = (await resp.json()) as GraphDeltaPage;
       for (const msg of body.value ?? []) {
-        // Delta tombstones (deleted messages) carry `@removed` and no body;
-        // skip anything without an id we can build a signal from.
         if (!msg || typeof msg.id !== 'string') continue;
+        // Skip deletion tombstones (carry `@removed`, no real body) and any
+        // message with no `receivedDateTime` — fabricating "now" would
+        // mis-rank it as just-arrived.
+        if ('@removed' in msg) continue;
+        if (!msg.receivedDateTime) continue;
         const signal = this.messageToSignal(msg);
         signals.push(signal);
         for (const handler of this.handlers) handler(signal);

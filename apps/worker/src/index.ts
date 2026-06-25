@@ -384,24 +384,27 @@ async function resolveGoogleConfig(): Promise<GoogleOAuthConfig | null> {
  * the bundled PKCE-only default. Returns null when no client is configured.
  */
 async function resolveMicrosoftConfig(): Promise<MicrosoftOAuthConfig | null> {
+  const DEFAULT_REDIRECT = 'http://localhost:3100/api/oauth/microsoft/callback';
   let clientId = process.env['MICROSOFT_CLIENT_ID'] ?? '';
   let clientSecret = process.env['MICROSOFT_CLIENT_SECRET'] ?? '';
-  let redirectUri = process.env['MICROSOFT_REDIRECT_URI'] ?? 'http://localhost:3100/api/oauth/microsoft/callback';
-  const tenant = process.env['MICROSOFT_TENANT'] ?? 'common';
+  let redirectUri = process.env['MICROSOFT_REDIRECT_URI'] ?? DEFAULT_REDIRECT;
+  let tenant = process.env['MICROSOFT_TENANT'] ?? 'common';
 
-  if (!clientId) {
-    try {
-      const dbCreds = await serviceCredentialRepository.getAsMap('microsoft');
-      clientId = clientId || dbCreds['client_id'] || '';
-      clientSecret = clientSecret || dbCreds['client_secret'] || '';
-      if (dbCreds['redirect_uri'] && redirectUri === 'http://localhost:3100/api/oauth/microsoft/callback') {
-        redirectUri = dbCreds['redirect_uri'];
-      }
-    } catch (error) {
-      log.warn('Could not load Microsoft OAuth credentials from DB', {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
+  // DB Setup creds overlay env UNCONDITIONALLY (matching the API resolver in
+  // oauth.ts). Critical for the env-id + DB-secret/tenant split: if we only
+  // read the DB when clientId is empty, a connect flow that succeeded with the
+  // DB secret would then fail to refresh in the worker (empty secret / wrong
+  // tenant) — "works once, then stops."
+  try {
+    const dbCreds = await serviceCredentialRepository.getAsMap('microsoft');
+    if (dbCreds['client_id']) clientId = dbCreds['client_id'];
+    if (dbCreds['client_secret']) clientSecret = dbCreds['client_secret'];
+    if (dbCreds['tenant']) tenant = dbCreds['tenant'];
+    if (dbCreds['redirect_uri'] && redirectUri === DEFAULT_REDIRECT) redirectUri = dbCreds['redirect_uri'];
+  } catch (error) {
+    log.warn('Could not load Microsoft OAuth credentials from DB', {
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 
   if (!clientId) {

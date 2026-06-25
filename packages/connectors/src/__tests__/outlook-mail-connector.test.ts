@@ -157,6 +157,53 @@ describe('OutlookMailConnector', () => {
     expect(cursor.map.get(CURSOR_KEY)).toBe('DELTA4');
   });
 
+  it('skips delta tombstones (@removed deletions) and messages with no receivedDateTime', async () => {
+    fetchMock.mockResolvedValueOnce(
+      res(200, {
+        value: [
+          gmsg({ id: 'real' }),
+          { id: 'deleted', '@removed': { reason: 'deleted' } }, // tombstone — has an id but no body
+          { id: 'no-date', subject: 'partial' }, // missing receivedDateTime
+        ],
+        '@odata.deltaLink': 'D',
+      }),
+    );
+    const conn = await connected();
+    const signals = await conn.poll();
+    // Only the real message becomes a signal — not the deletion, not the dateless one.
+    expect(signals.map((s) => s.data.messageId)).toEqual(['real']);
+  });
+
+  it('caps pages per poll and persists the last nextLink to resume next time', async () => {
+    for (let i = 1; i <= 6; i++) {
+      fetchMock.mockResolvedValueOnce(res(200, { value: [gmsg({ id: `p${i}` })], '@odata.nextLink': `NEXT${i}` }));
+    }
+    const cursor = makeCursorStore();
+    const conn = await connected(cursor);
+    const signals = await conn.poll();
+    // MAX_PAGES_PER_POLL is 5 → 5 fetches, 5 signals, cursor at the 5th nextLink.
+    expect(fetchMock.mock.calls.length).toBe(5);
+    expect(signals).toHaveLength(5);
+    expect(cursor.map.get(CURSOR_KEY)).toBe('NEXT5');
+  });
+
+  it('on a 410 mid-sync (after pages already emitted) returns partial WITHOUT double-emitting', async () => {
+    fetchMock
+      .mockResolvedValueOnce(res(200, { value: [gmsg({ id: 'a' })], '@odata.nextLink': 'NEXT1' }))
+      .mockResolvedValueOnce(res(410, {})); // the next page's link expired mid-sync
+    const cursor = makeCursorStore();
+    const conn = await connected(cursor);
+    const hits: string[] = [];
+    conn.onSignal((s) => hits.push(s.id));
+
+    const signals = await conn.poll();
+    // 'a' was emitted once; the 410 stops the drain rather than restarting +
+    // re-emitting it. The cursor advanced to NEXT1 so the next poll resumes.
+    expect(signals.map((s) => s.data.messageId)).toEqual(['a']);
+    expect(hits).toEqual(['sig_outlook_a']); // exactly once — no double-fire
+    expect(cursor.map.get(CURSOR_KEY)).toBe('NEXT1');
+  });
+
   it('poll() throws before connect()', async () => {
     const conn = new OutlookMailConnector('user-1', makeStubStore(VALID_TOKEN));
     await expect(conn.poll()).rejects.toThrow(/not connected/);
