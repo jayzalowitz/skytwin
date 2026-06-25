@@ -1,13 +1,10 @@
-version: "3.9"
-
 services:
   cockroachdb:
     image: cockroachdb/cockroach:latest-v23.2
-    container_name: skytwin-cockroachdb
     command: start-single-node --insecure
     ports:
-      - "26257:26257" # SQL
-      - "8080:8080"   # Admin UI
+      - "${SKYTWIN_DOCKER_SQL_PORT:-26257}:26257" # SQL
+      - "${SKYTWIN_DOCKER_ADMIN_PORT:-8080}:8080" # Admin UI
     volumes:
       - cockroach-data:/cockroach/cockroach-data
     environment:
@@ -24,9 +21,8 @@ services:
     build:
       context: .
       dockerfile: apps/api/Dockerfile
-    container_name: skytwin-api
     ports:
-      - "3000:3000"
+      - "${SKYTWIN_DOCKER_API_PORT:-3000}:3000"
     environment:
       - DATABASE_URL=postgresql://root@cockroachdb:26257/skytwin?sslmode=disable
       - NODE_ENV=development

@@ -295,16 +295,25 @@ setup_project() {
   # Prefer the native binary path; fall back to Docker only when the user
   # explicitly opted in via SKYTWIN_USE_DOCKER=true.
   if [ "${SKYTWIN_USE_DOCKER:-false}" = "true" ] && command -v docker &>/dev/null; then
+    local _docker_sql_port="${SKYTWIN_DOCKER_SQL_PORT:-${SKYTWIN_DB_PORT:-26257}}"
+    local _docker_admin_port="${SKYTWIN_DOCKER_ADMIN_PORT:-8080}"
+    export SKYTWIN_DOCKER_SQL_PORT="$_docker_sql_port"
+    export SKYTWIN_DOCKER_ADMIN_PORT="$_docker_admin_port"
+
     echo -e "  Starting CockroachDB (Docker, SKYTWIN_USE_DOCKER=true)..."
     docker compose up -d cockroachdb 2>&1 | tail -2
 
     # Wait for CRDB
     for i in $(seq 1 30); do
-      curl -sf http://localhost:8080/health &>/dev/null && break
+      curl -sf "http://localhost:${_docker_admin_port}/health" &>/dev/null && break
       sleep 1
     done
 
-    docker exec skytwin-cockroachdb cockroach sql --insecure -e "CREATE DATABASE IF NOT EXISTS skytwin;" 2>/dev/null || true
+    local _crdb_container
+    _crdb_container="$(docker compose ps -q cockroachdb 2>/dev/null || true)"
+    if [ -n "$_crdb_container" ]; then
+      docker exec "$_crdb_container" cockroach sql --insecure -e "CREATE DATABASE IF NOT EXISTS skytwin;" 2>/dev/null || true
+    fi
   else
     echo -e "  Starting CockroachDB (native binary)..."
     "$ROOT/bin/skytwin-db" start 2>&1 | tail -3
@@ -319,7 +328,12 @@ setup_project() {
   # distros). bin/skytwin-db respects the same env vars; we build the URL
   # from the same source of truth.
   local _db_host="${SKYTWIN_DB_LISTEN_HOST:-127.0.0.1}"
-  local _db_port="${SKYTWIN_DB_PORT:-26257}"
+  local _db_port
+  if [ "${SKYTWIN_USE_DOCKER:-false}" = "true" ]; then
+    _db_port="${SKYTWIN_DOCKER_SQL_PORT:-${SKYTWIN_DB_PORT:-26257}}"
+  else
+    _db_port="${SKYTWIN_DB_PORT:-26257}"
+  fi
   export DATABASE_URL="postgresql://root@${_db_host}:${_db_port}/skytwin?sslmode=disable"
 
   echo -e "  Running migrations..."
