@@ -1496,6 +1496,21 @@ pre {
   font-size: 0.85rem; color: var(--text); font-weight: 400; }
 .digest-topic-item + .digest-topic-item { border-top: 1px solid var(--border); }
 
+/* Memory action opportunities: route hints, not obligations. */
+.digest-memory { margin-top: 0.8rem; border-top: 1px solid var(--border); padding-top: 0.2rem; }
+.digest-memory ul { list-style: none; padding: 0; margin: 0; }
+.digest-memory-item { display: flex; align-items: flex-start; gap: 0.6rem; padding: 0.6rem 0.7rem;
+  border-radius: var(--radius-sm); }
+.digest-memory-item + .digest-memory-item { border-top: 1px solid var(--border); }
+.digest-memory-kind { font-family: var(--font-data); font-size: 0.64rem; color: var(--text-dim);
+  border: 1px solid var(--border); border-radius: 999px; padding: 0.08rem 0.4rem; margin-top: 0.1rem;
+  text-transform: uppercase; }
+.digest-memory-title { font-size: 0.88rem; font-weight: 500; color: var(--text); }
+.digest-memory-plan { font-family: var(--font-data); font-size: 0.68rem; color: var(--text-dim);
+  margin-top: 0.12rem; }
+.digest-memory-refs { font-family: var(--font-data); font-size: 0.68rem; color: var(--text-dim);
+  margin-top: 0.2rem; }
+
 /* Power-view detail panel */
 .digest-detail { display: none; width: 100%; margin: 0.4rem 0 0.1rem; padding: 0.5rem 0.7rem;
   background: var(--bg-hover); border-radius: var(--radius-sm); font-size: 0.76rem; color: var(--text-muted); }

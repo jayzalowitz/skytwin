@@ -249,6 +249,7 @@ Key routing rules:
 - Product ideas, "is this worth building", brainstorming → invoke office-hours
 - Bugs, errors, "why is this broken", 500 errors → invoke investigate
 - Ship, deploy, push, create PR → invoke ship
+- Merge, land, or prepare a PR for merge → follow the PR merge gate above: invoke review first, then Copilot review, then document-release before merging
 - QA, test the site, find bugs → invoke qa
 - Code review, check my diff → invoke review
 - Update docs after shipping → invoke document-release

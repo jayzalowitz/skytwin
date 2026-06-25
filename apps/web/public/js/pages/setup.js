@@ -493,6 +493,20 @@ function renderAdapterStatus(name, adapter, description, optional = false) {
     ? `<span style="color: var(--text-muted); font-size: 0.75rem; margin-left: 0.5rem;">${escapeHtml(adapter.url)}</span>`
     : '';
 
+  const versionParts = [];
+  if (adapter.knownStableVersion) versionParts.push(`stable ${adapter.knownStableVersion}`);
+  if (adapter.knownPrereleaseVersion) versionParts.push(`beta ${adapter.knownPrereleaseVersion}`);
+  if (adapter.knownVersionCheckedAt) versionParts.push(`checked ${adapter.knownVersionCheckedAt}`);
+  const versionText = versionParts.length > 0
+    ? `
+        <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.1rem; padding-left: 1rem;">
+          ${adapter.knownStableUrl
+            ? `<a href="${escapeHtml(adapter.knownStableUrl)}" target="_blank" rel="noreferrer" style="color: inherit;">${escapeHtml(versionParts.join(' · '))}</a>`
+            : escapeHtml(versionParts.join(' · '))}
+        </div>
+      `
+    : '';
+
   return `
     <div style="display: flex; align-items: center; justify-content: space-between; padding: 0.6rem 0.75rem; background: var(--bg); border-radius: var(--radius-sm); margin-bottom: 0.5rem;">
       <div style="flex: 1;">
@@ -504,6 +518,7 @@ function renderAdapterStatus(name, adapter, description, optional = false) {
         <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.15rem; padding-left: 1rem;">
           ${escapeHtml(description)}
         </div>
+        ${versionText}
       </div>
       <div>${statusText}</div>
     </div>

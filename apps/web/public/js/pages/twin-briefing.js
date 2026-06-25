@@ -242,6 +242,42 @@ function renderTopicItem(it) {
     </li>`;
 }
 
+function renderMemorySuggestion(s) {
+  const refs = Array.isArray(s.sourceRefs) ? s.sourceRefs : [];
+  const sourceCount = refs.length;
+  const plan = s.actionPlan || {};
+  const adapter = plan.primaryAdapter || 'openclaw';
+  const readiness = plan.readiness === 'learn_or_connect' ? 'learn' : 'try';
+  const kind = `${adapter} · ${readiness}`;
+  const actionType = plan.actionType || '';
+  const runtime = plan.runtimeVersion || {};
+  const runtimeText = runtime.stableVersion
+    ? `${runtime.displayName || adapter} ${runtime.stableVersion}${runtime.prereleaseVersion ? ` · beta ${runtime.prereleaseVersion}` : ''}`
+    : '';
+  const planLine = [actionType, runtimeText].filter(Boolean).join(' · ');
+  const label = plan.label || s.title || 'Memory action';
+  return `
+    <li class="digest-memory-item">
+      <div class="digest-memory-kind">${escapeHtml(kind)}</div>
+      <div class="digest-todo-body">
+        <div class="digest-memory-title">${escapeHtml(label)}</div>
+        ${planLine ? `<div class="digest-memory-plan">${escapeHtml(planLine)}</div>` : ''}
+        ${s.reason ? `<div class="digest-body">${escapeHtml(s.reason)}</div>` : ''}
+        ${s.suggestedAction ? `<div class="digest-suggested">→ ${escapeHtml(s.suggestedAction)}</div>` : ''}
+        ${sourceCount ? `<div class="digest-memory-refs">${sourceCount} memory source${sourceCount > 1 ? 's' : ''}</div>` : ''}
+      </div>
+    </li>`;
+}
+
+function renderMemorySuggestions(list) {
+  if (!Array.isArray(list) || list.length === 0) return '';
+  return `
+    <div class="digest-memory">
+      <div class="digest-heading">Actions from memory <span class="count">· ${list.length}</span></div>
+      <ul>${list.map(renderMemorySuggestion).join('')}</ul>
+    </div>`;
+}
+
 function renderCoveragePanel(coverage) {
   if (!coverage || !Array.isArray(coverage.capabilityStatus)) return '';
   const status = coverage.capabilityStatus
@@ -280,7 +316,8 @@ function renderDigestSection(structured) {
 
   const todoList = structured.todos || [];
   const topicList = structured.topics || [];
-  if (!todoList.length && !topicList.length) {
+  const memoryList = structured.memorySuggestions || [];
+  if (!todoList.length && !topicList.length && !memoryList.length) {
     return `<section class="digest"><p class="digest-voice">You're all caught up.</p><p class="muted">Nothing needs you right now.</p></section>`;
   }
   const powerOn = isPowerView();
@@ -288,12 +325,14 @@ function renderDigestSection(structured) {
   // Value line: the twin earned its keep.
   const needYou = todoList.length;
   const catchUp = topicList.reduce((n, g) => n + (g.items?.length || 0), 0);
+  const memoryCount = memoryList.length;
   const handled = typeof structured.handledCount === 'number' ? structured.handledCount : null;
   const valueLine = `
     <p class="digest-value">
       ${handled !== null ? `<span class="done">✓ ${handled} handled on my own</span><span class="sep"></span>` : ''}
       <span><b>${needYou}</b> need you</span><span class="sep"></span>
       <span><b>${catchUp}</b> to catch up on</span>
+      ${memoryCount ? `<span class="sep"></span><span><b>${memoryCount}</b> from memory</span>` : ''}
     </p>`;
 
   const todos = todoList.map(renderTodoRow).join('');
@@ -316,6 +355,7 @@ function renderDigestSection(structured) {
       ${todos ? `<ul class="digest-todos">${todos}</ul>` : '<p class="muted">Nothing needs you right now.</p>'}
       <div class="digest-heading">Topics to catch up on <span class="count">· ${catchUp}</span></div>
       ${topics || '<p class="muted">No topics today.</p>'}
+      ${renderMemorySuggestions(memoryList)}
       ${powerOn ? renderCoveragePanel(structured.coverage) : ''}
     </section>
   `;

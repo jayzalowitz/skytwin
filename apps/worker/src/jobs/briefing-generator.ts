@@ -2,6 +2,11 @@ import { createLogger } from '@skytwin/core';
 import { briefingRepository, appSuggestionRepository, lifebookRepository, mcpServerRepository, userRepository, query } from '@skytwin/db';
 import { runPrompt } from '@skytwin/policy-prompts';
 import type { LlmClient } from '@skytwin/llm-client';
+import {
+  buildDailyMemorySuggestions,
+  type DailyMemorySuggestion,
+  type DailyMemorySuggestionPage,
+} from '@skytwin/shared-types';
 
 const log = createLogger('worker:briefing-generator');
 
@@ -55,6 +60,17 @@ export interface BriefingGeneratorJobDeps {
  */
 const BRIEFING_USER_PAGE_SIZE = 500;
 
+interface MemorySuggestionRow {
+  bucket: 'recent' | 'older';
+  id: string;
+  title: string | null;
+  content: string | null;
+  source: string;
+  source_ref: string | null;
+  metadata: Record<string, unknown> | null;
+  created_at: string | Date;
+}
+
 async function getActiveUserIds(): Promise<string[]> {
   const allIds: string[] = [];
   let lastSeen: string | null = null;
@@ -83,14 +99,65 @@ async function getActiveUserIds(): Promise<string[]> {
   return allIds;
 }
 
+async function fetchDailyMemorySuggestions(userId: string): Promise<DailyMemorySuggestion[]> {
+  let rows: { rows: MemorySuggestionRow[] } | undefined;
+  try {
+    rows = await query<MemorySuggestionRow>(
+      `WITH recent AS (
+         SELECT id, title, COALESCE(content, '') AS content, source, source_ref, metadata, created_at
+           FROM brain_pages
+          WHERE user_id = $1
+            AND created_at >= now() - INTERVAL '36 hours'
+            AND COALESCE(metadata->>'userOverride', '') <> 'hidden'
+          ORDER BY created_at DESC
+          LIMIT 24
+       ),
+       older AS (
+         SELECT id, title, COALESCE(content, '') AS content, source, source_ref, metadata, created_at
+           FROM brain_pages
+          WHERE user_id = $1
+            AND created_at < now() - INTERVAL '36 hours'
+            AND created_at >= now() - INTERVAL '120 days'
+            AND COALESCE(metadata->>'userOverride', '') <> 'hidden'
+          ORDER BY created_at DESC
+          LIMIT 160
+       )
+       SELECT 'recent' AS bucket, * FROM recent
+       UNION ALL
+       SELECT 'older' AS bucket, * FROM older`,
+      [userId],
+    );
+  } catch {
+    return [];
+  }
+
+  const resultRows = Array.isArray(rows?.rows) ? rows.rows : [];
+  const toPage = (row: MemorySuggestionRow): DailyMemorySuggestionPage => ({
+    id: row.id,
+    title: row.title,
+    content: row.content ?? '',
+    source: row.source,
+    sourceRef: row.source_ref,
+    metadata: row.metadata ?? {},
+    createdAt: row.created_at,
+  });
+
+  return buildDailyMemorySuggestions({
+    recent: resultRows.filter((r) => r.bucket === 'recent').map(toPage),
+    older: resultRows.filter((r) => r.bucket === 'older').map(toPage),
+    maxSuggestions: 3,
+  });
+}
+
 /**
  * Gather the source data for a user's briefing.
  * Shared between the adaptive and deterministic paths.
  */
 async function gatherBriefingData(userId: string, cadence: 'daily' | 'weekly') {
-  const [suggestions, allServers] = await Promise.all([
+  const [suggestions, allServers, memorySuggestions] = await Promise.all([
     appSuggestionRepository.getPendingForUser(userId),
     mcpServerRepository.listForUser(userId),
+    fetchDailyMemorySuggestions(userId),
   ]);
 
   const active = allServers.filter(
@@ -121,7 +188,7 @@ async function gatherBriefingData(userId: string, cadence: 'daily' | 'weekly') {
     if (s.registry_id) serverIdToRegistry.set(s.id, s.registry_id);
   }
 
-  return { suggestions, active, dormant, recentlyInstalled, promotionResult, serverIdToRegistry, since };
+  return { suggestions, active, dormant, recentlyInstalled, promotionResult, serverIdToRegistry, since, memorySuggestions };
 }
 
 /**
@@ -131,7 +198,7 @@ function buildTemplatedProse(
   cadence: 'daily' | 'weekly',
   data: Awaited<ReturnType<typeof gatherBriefingData>>,
 ): string {
-  const { suggestions, active, dormant, recentlyInstalled, promotionResult } = data;
+  const { suggestions, active, dormant, recentlyInstalled, promotionResult, memorySuggestions } = data;
   const lines: string[] = [];
 
   if (cadence === 'daily') {
@@ -196,11 +263,31 @@ function buildTemplatedProse(
     lines.push('');
   }
 
+  if (memorySuggestions.length > 0) {
+    lines.push(`### Action opportunities from memory`);
+    lines.push('');
+    for (const s of memorySuggestions) {
+      const plan = s.actionPlan;
+      const route = `${plan.primaryAdapter} ${plan.actionType}`;
+      const runtime = plan.runtimeVersion
+        ? `${plan.runtimeVersion.displayName} ${plan.runtimeVersion.stableVersion}`
+        : plan.primaryAdapter;
+      const prerelease = plan.runtimeVersion?.prereleaseVersion
+        ? `; beta ${plan.runtimeVersion.prereleaseVersion} observed`
+        : '';
+      const readiness =
+        plan.readiness === 'learn_or_connect' ? 'learn/setup needed' : 'known action';
+      lines.push(`- **${plan.label}** (${route}, ${runtime}, ${readiness}${prerelease}) — ${s.reason} ${s.suggestedAction}`);
+    }
+    lines.push('');
+  }
+
   const sourceEventCount =
     suggestions.length +
     recentlyInstalled.length +
     dormant.length +
-    promotionResult.rows.length;
+    promotionResult.rows.length +
+    memorySuggestions.length;
 
   if (sourceEventCount === 0) {
     lines.push(`_Nothing new to report. Your twin is watching and learning._`);
@@ -239,6 +326,7 @@ function filterDataByLifebook(
       promotionResult: { ...data.promotionResult, rows: [] },
       serverIdToRegistry: data.serverIdToRegistry,
       since: data.since,
+      memorySuggestions: [],
     };
   }
   const inSet = (registryId: string | null | undefined): boolean =>
@@ -260,6 +348,9 @@ function filterDataByLifebook(
     promotionResult: { ...data.promotionResult, rows: filteredPromotions },
     serverIdToRegistry: data.serverIdToRegistry,
     since: data.since,
+    // Memory-derived action opportunities are global today. Do not repeat them
+    // inside per-Lifebook prose until they carry a domain tag.
+    memorySuggestions: [],
   };
 }
 
@@ -295,7 +386,8 @@ async function generateBriefingProse(
     data.suggestions.length +
     data.recentlyInstalled.length +
     data.dormant.length +
-    data.promotionResult.rows.length;
+    data.promotionResult.rows.length +
+    data.memorySuggestions.length;
 
   // ── Adaptive path (H: briefing-prose) ─────────────────────────────────
   if (llmClient) {
@@ -327,6 +419,20 @@ async function generateBriefingProse(
           name: s.display_name,
           status: s.status,
         })),
+        memorySuggestions: data.memorySuggestions.map((s) => ({
+          title: s.title,
+          reason: s.reason,
+          suggestedAction: s.suggestedAction,
+          novelty: s.novelty,
+          sourceCount: s.sourceRefs.length,
+          actionType: s.actionPlan.actionType,
+          actionLabel: s.actionPlan.label,
+          primaryAdapter: s.actionPlan.primaryAdapter,
+          fallbackAdapters: s.actionPlan.fallbackAdapters,
+          readiness: s.actionPlan.readiness,
+          learnTarget: s.actionPlan.learnTarget ?? '',
+          actionPlan: s.actionPlan,
+        })),
         cadence,
         sourceEventCount,
       };
@@ -356,6 +462,7 @@ async function generateBriefingProse(
           events,
           language: briefingLanguage,
           pending_tasks: pendingTasks,
+          memory_suggestions: events.memorySuggestions,
           risk_profile: '',
           domain: scope?.domainName ?? '',
         },

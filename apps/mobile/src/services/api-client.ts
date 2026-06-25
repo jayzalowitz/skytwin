@@ -111,11 +111,132 @@ export interface TwinBriefing {
   generatedAt: string;
   readAt: string | null;
   proseMarkdown: string;
+  actionOpportunities?: BriefingActionOpportunity[];
+}
+
+export interface BriefingActionOpportunity {
+  title: string;
+  label: string;
+  reason: string;
+  suggestedAction: string;
+  actionType: string;
+  primaryAdapter: string;
+  readiness: string;
+  runtimeVersion?: {
+    displayName?: string;
+    stableVersion?: string;
+    prereleaseVersion?: string;
+  };
 }
 
 export interface TwinBriefingPayload {
   briefing: TwinBriefing | null;
   unreadCount: number;
+}
+
+interface RawTwinBriefingPayload {
+  briefing?: RawTwinBriefing | null;
+  unreadCount?: number;
+}
+
+interface RawTwinBriefing {
+  id?: string;
+  cadence?: 'daily' | 'weekly';
+  headline?: string;
+  keySignals?: string[];
+  pendingApprovalsCount?: number;
+  generatedAt?: string;
+  readAt?: string | null;
+  proseMarkdown?: string;
+  generated_at?: string;
+  read_at?: string | null;
+  prose_markdown?: string | null;
+  structured?: {
+    todos?: unknown[];
+    topics?: Array<{ items?: unknown[] }>;
+    memorySuggestions?: RawMemorySuggestion[];
+  } | null;
+}
+
+interface RawMemorySuggestion {
+  title?: string;
+  reason?: string;
+  suggestedAction?: string;
+  actionPlan?: {
+    label?: string;
+    actionType?: string;
+    primaryAdapter?: string;
+    readiness?: string;
+    runtimeVersion?: {
+      displayName?: string;
+      stableVersion?: string;
+      prereleaseVersion?: string;
+    };
+  };
+}
+
+function normalizeTwinBriefingPayload(raw: RawTwinBriefingPayload): TwinBriefingPayload {
+  const briefing = raw.briefing ?? null;
+  if (!briefing) return { briefing: null, unreadCount: raw.unreadCount ?? 0 };
+
+  const prose = briefing.proseMarkdown ?? briefing.prose_markdown ?? '';
+  const generatedAt =
+    briefing.generatedAt ?? briefing.generated_at ?? new Date().toISOString();
+  const readAt = briefing.readAt ?? briefing.read_at ?? null;
+  const memory = briefing.structured?.memorySuggestions ?? [];
+  const todos = briefing.structured?.todos ?? [];
+  const actionOpportunities = memory.map((s): BriefingActionOpportunity => ({
+    title: s.title ?? 'Action from memory',
+    label: s.actionPlan?.label ?? s.title ?? 'Act on memory',
+    reason: s.reason ?? '',
+    suggestedAction: s.suggestedAction ?? '',
+    actionType: s.actionPlan?.actionType ?? '',
+    primaryAdapter: s.actionPlan?.primaryAdapter ?? '',
+    readiness: s.actionPlan?.readiness ?? '',
+    runtimeVersion: s.actionPlan?.runtimeVersion,
+  }));
+
+  return {
+    briefing: {
+      id: briefing.id ?? 'latest',
+      cadence: briefing.cadence ?? 'daily',
+      headline: briefing.headline ?? deriveBriefingHeadline(prose, actionOpportunities.length),
+      keySignals: briefing.keySignals ?? deriveKeySignals(prose, actionOpportunities),
+      pendingApprovalsCount: briefing.pendingApprovalsCount ?? todos.length,
+      generatedAt,
+      readAt,
+      proseMarkdown: prose,
+      actionOpportunities,
+    },
+    unreadCount: raw.unreadCount ?? (readAt === null ? 1 : 0),
+  };
+}
+
+function deriveBriefingHeadline(prose: string, actionCount: number): string {
+  const firstLine = prose
+    .split('\n')
+    .map((line) => line.replace(/^#+\s*/, '').trim())
+    .find((line) => line.length > 0);
+  if (firstLine) return firstLine;
+  if (actionCount > 0) return `${actionCount} action opportunit${actionCount === 1 ? 'y' : 'ies'} from memory`;
+  return 'Your latest briefing';
+}
+
+function deriveKeySignals(
+  prose: string,
+  actionOpportunities: BriefingActionOpportunity[],
+): string[] {
+  const rawLines = prose
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  const lines = rawLines
+    .filter((line, index) => index !== 0 || !line.startsWith('#'))
+    .map((line) => line.replace(/^[-*]\s*/, '').replace(/^#+\s*/, '').trim())
+    .filter((line) => line.length > 0)
+    .slice(0, 3);
+  if (lines.length > 0) return lines;
+  return actionOpportunities.slice(0, 3).map((a) => a.label);
 }
 
 // -- Voice types --
@@ -265,9 +386,12 @@ export class SkyTwinApiClient {
    * Fetch the most recent twin briefing and count of unread briefings.
    */
   async fetchTwinBriefing(userId: string): Promise<ApiResult<TwinBriefingPayload>> {
-    return this.get<TwinBriefingPayload>(
-      `/api/briefing/${encodeURIComponent(userId)}/latest`,
+    const query = new URLSearchParams({ cadence: 'daily', userId });
+    const result = await this.get<RawTwinBriefingPayload>(
+      `/api/twin-briefings/latest?${query.toString()}`,
     );
+    if (!result.success) return result;
+    return { success: true, data: normalizeTwinBriefingPayload(result.data) };
   }
 
   /**

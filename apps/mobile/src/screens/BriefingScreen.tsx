@@ -9,6 +9,7 @@ import {
 } from 'react-native';
 import {
   SkyTwinApiClient,
+  type BriefingActionOpportunity,
   type TwinBriefing,
 } from '../services/api-client';
 import { getSession } from '../services/session-store';
@@ -193,6 +194,15 @@ function BriefingContent({
           ))}
         </View>
       )}
+
+      {(briefing.actionOpportunities?.length ?? 0) > 0 && (
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Actions from memory</Text>
+          {briefing.actionOpportunities!.map((action, index) => (
+            <ActionOpportunityRow key={`${action.actionType}-${index}`} action={action} />
+          ))}
+        </View>
+      )}
     </>
   );
 }
@@ -208,6 +218,31 @@ function SignalRow({
     <View style={styles.signalRow}>
       <Text style={styles.signalBullet}>{index + 1}</Text>
       <Text style={styles.signalText}>{signal}</Text>
+    </View>
+  );
+}
+
+function ActionOpportunityRow({
+  action,
+}: {
+  action: BriefingActionOpportunity;
+}): React.JSX.Element {
+  const runtime = action.runtimeVersion?.stableVersion
+    ? `${action.runtimeVersion.displayName ?? action.primaryAdapter} ${action.runtimeVersion.stableVersion}`
+    : '';
+  const route = [action.primaryAdapter, action.actionType, runtime].filter(Boolean).join(' · ');
+  const readiness = action.readiness === 'learn_or_connect' ? 'learn' : 'try';
+  return (
+    <View style={styles.actionRow}>
+      <View style={styles.actionMetaRow}>
+        <Text style={styles.actionRoute}>{route || readiness}</Text>
+        <Text style={styles.actionReadiness}>{readiness}</Text>
+      </View>
+      <Text style={styles.actionLabel}>{action.label}</Text>
+      {action.reason ? <Text style={styles.actionReason}>{action.reason}</Text> : null}
+      {action.suggestedAction ? (
+        <Text style={styles.actionSuggested}>{action.suggestedAction}</Text>
+      ) : null}
     </View>
   );
 }
@@ -416,5 +451,48 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 19,
     flex: 1,
+  },
+  actionRow: {
+    backgroundColor: '#242438',
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: '#353552',
+  },
+  actionMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 6,
+  },
+  actionRoute: {
+    color: '#a0a0b8',
+    fontSize: 11,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+  },
+  actionReadiness: {
+    color: '#4a90d9',
+    fontSize: 11,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+  },
+  actionLabel: {
+    color: '#e0e0f0',
+    fontSize: 14,
+    fontWeight: '600',
+    marginBottom: 4,
+  },
+  actionReason: {
+    color: '#b8b8cc',
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  actionSuggested: {
+    color: '#d0d0e0',
+    fontSize: 13,
+    lineHeight: 18,
+    marginTop: 6,
   },
 });

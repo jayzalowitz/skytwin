@@ -72,6 +72,40 @@ export {
   resolveEmailAttributionEnabled,
 } from './email-attribution.js';
 
+export {
+  buildDailyMemorySuggestions,
+} from './daily-memory-suggestions.js';
+export type {
+  BuildDailyMemorySuggestionsInput,
+  DailyMemorySuggestion,
+  DailyMemorySuggestionPage,
+} from './daily-memory-suggestions.js';
+
+export {
+  buildExecutableActionPlan,
+  IRONCLAW_CORE_ACTION_TYPES,
+  OPENCLAW_ACTION_TYPES,
+} from './action-capabilities.js';
+export type {
+  ActionPlanReadiness,
+  ExecutableActionPlan,
+  ExecutionAdapterName,
+} from './action-capabilities.js';
+
+export {
+  EXECUTION_RUNTIME_VERSION_CHECKED_AT,
+  EXECUTION_RUNTIME_VERSIONS,
+  getExecutionRuntimeVersionInfo,
+  getExecutionRuntimeVersionSummary,
+} from './execution-runtime-versions.js';
+export type {
+  ExecutionRuntimeName,
+  ExecutionRuntimePrerelease,
+  ExecutionRuntimeVersionInfo,
+  ExecutionRuntimeVersionSource,
+  ExecutionRuntimeVersionSummary,
+} from './execution-runtime-versions.js';
+
 export type {
   ActionPolicy,
   PolicyRule,

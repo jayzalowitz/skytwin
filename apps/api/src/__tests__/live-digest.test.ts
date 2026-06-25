@@ -46,6 +46,53 @@ describe('buildLiveDigest', () => {
     expect(await buildLiveDigest('u1')).toBeNull();
   });
 
+  it('returns a memory-only digest when recent memory has a novel older connection', async () => {
+    mockQuery
+      .mockResolvedValueOnce({ rows: [] }) // decisions+outcomes
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            bucket: 'recent',
+            id: 'page-recent',
+            title: 'gmail/message',
+            content: 'Acme renewal thread: Maria asked whether the security review is still blocking procurement.',
+            source: 'signal',
+            source_ref: 'sig-recent',
+            metadata: { signalSource: 'gmail', fromAddress: 'maria@acme.example' },
+            created_at: new Date('2026-06-25T12:00:00Z'),
+          },
+          {
+            bucket: 'older',
+            id: 'page-older',
+            title: 'gmail/message',
+            content: 'Acme security review was blocked on the SOC2 packet and procurement wanted an exception memo.',
+            source: 'signal',
+            source_ref: 'sig-older',
+            metadata: { signalSource: 'gmail', fromAddress: 'maria@acme.example' },
+            created_at: new Date('2026-05-10T12:00:00Z'),
+          },
+        ],
+      }) // brain_pages action opportunities
+      .mockResolvedValueOnce({ rows: [{ provider: 'google', scopes: [] }] }); // oauth_tokens
+
+    const d = await buildLiveDigest('u1');
+    expect(d).not.toBeNull();
+    expect(d!.todos).toEqual([]);
+    expect(d!.topics).toEqual([]);
+    expect(d!.memorySuggestions).toHaveLength(1);
+    expect(d!.memorySuggestions[0]?.novelty).toBe('connection');
+    expect(d!.memorySuggestions[0]?.reason).toMatch(/Acme security review/i);
+    expect(d!.memorySuggestions[0]?.actionPlan).toMatchObject({
+      actionType: 'draft_email',
+      primaryAdapter: 'ironclaw',
+      readiness: 'known_action_type',
+      runtimeVersion: {
+        runtime: 'ironclaw',
+        stableVersion: '0.29.1',
+      },
+    });
+  });
+
   it('coverage reflects connected oauth_tokens accounts (panel is not stuck in cold-start)', async () => {
     mockQuery
       .mockResolvedValueOnce({ rows: [decisionRow()] }) // decisions+outcomes

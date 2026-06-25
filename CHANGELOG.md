@@ -1,5 +1,16 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.76.0] - 2026-06-25
+
+### Added
+
+- **Daily briefings now surface executable action opportunities from memory.** The live digest and briefing generator read recent plus older memory, infer novel or resurfaced actions, and attach a structured action plan that says whether SkyTwin should try IronClaw first, use OpenClaw, or learn/connect a missing capability. Web and mobile briefings render the new "Actions from memory" section, and the briefing prose prompt now includes these suggestions instead of reducing them to generic prose.
+- **SkyTwin now tracks known IronClaw/OpenClaw runtime versions explicitly.** `@skytwin/shared-types` records IronClaw `0.29.1`, OpenClaw stable `2026.6.10`, and OpenClaw beta `2026.6.11-beta.1` separately, then exposes that metadata through action plans and `/api/credentials/status`. The Setup page, docs, env example, and briefing report now show stable runtime context without pretending these external runtimes are normal workspace dependencies.
+
+### Changed
+
+- **Claude guidance now routes merge/landing work through the review gate.** `CLAUDE.md` explicitly tells agents to use the PR merge gate for merge preparation: `/review` first, then Copilot review, then `/document-release` before merging.
+
 ## [0.6.75.0] - 2026-06-25
 
 ### Added

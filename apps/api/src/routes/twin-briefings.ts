@@ -113,7 +113,12 @@ export function createTwinBriefingsRouter(): Router {
       let briefingWithStructured: unknown = null;
       if (briefing) {
         briefingWithStructured = { ...briefing, structured: structured ?? null };
-      } else if (liveDigest && (liveDigest.todos.length || liveDigest.topics.length)) {
+      } else if (
+        liveDigest &&
+        (liveDigest.todos.length ||
+          liveDigest.topics.length ||
+          (liveDigest.memorySuggestions?.length ?? 0) > 0)
+      ) {
         // No stored briefing row yet, but we can render live parity from
         // decisions. Synthesize a minimal briefing envelope carrying the
         // structured digest; prose is null so the UI renders the digest only.
