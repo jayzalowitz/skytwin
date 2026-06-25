@@ -6,11 +6,36 @@ import { classifyCalendarAuthoringTier } from './calendar-authoring-tier.js';
 
 const GRAPH_API = 'https://graph.microsoft.com/v1.0';
 const DELTA_LINK_KIND = 'delta_link';
+const WINDOW_END_KIND = 'window_end';
 const MAX_PAGES_PER_POLL = 5;
 const WINDOW_DAYS = 7;
+const DAY_MS = 24 * 60 * 60 * 1000;
+/**
+ * Re-bootstrap the delta (with a fresh now..now+7d window) once the stored
+ * window has less than this much runway left. `calendarView/delta` fixes its
+ * window at bootstrap, so without this the deltaLink tracks the ORIGINAL
+ * window forever and the connector goes blind to events created beyond it.
+ * Re-bootstrapping when <6 days remain keeps roughly a full week of forward
+ * coverage at all times (re-bootstraps ~daily).
+ */
+const MIN_FORWARD_MS = 6 * DAY_MS;
 
 const EVENT_SELECT =
   'id,subject,bodyPreview,start,end,organizer,attendees,isOrganizer,responseStatus,isCancelled,webLink,createdDateTime,lastModifiedDateTime';
+
+/**
+ * Graph returns calendar dateTimes as a naked wall-clock string with NO zone
+ * suffix (e.g. `2026-06-26T10:00:00.0000000`) plus a separate `timeZone`. We
+ * send `Prefer: outlook.timezone="UTC"` so the VALUES are UTC, but they still
+ * lack a `Z` — so `new Date(raw)` would parse them as the WORKER's local time.
+ * Append `Z` (when no zone is present) so every parse + stored string is
+ * absolute UTC. Without this, conflict math and timestamps silently shift by
+ * the worker's offset.
+ */
+function toUtcIso(dt: string | undefined): string {
+  if (!dt) return '';
+  return /[Zz]$|[+-]\d{2}:?\d{2}$/.test(dt) ? dt : `${dt}Z`;
+}
 
 interface GraphAttendee {
   emailAddress?: { name?: string; address?: string };
@@ -46,15 +71,14 @@ interface GraphDeltaPage {
  * `AuthoringTier` (via `classifyCalendarAuthoringTier`) and shaped like the
  * Google calendar signal so downstream code treats both identically.
  *
- * Like the Outlook mail connector it uses Graph's delta cursor (vs Google's
- * syncToken): a `@odata.deltaLink` stored in the `CursorStore`, with a 410
- * Gone triggering a re-bootstrap. Conflict detection runs across all events
- * collected in a poll, so signals are built+emitted AFTER the drain (a single
- * emit pass — no double-fire even if a mid-sync 410 cuts the drain short).
+ * Like the Outlook mail connector it uses Graph's delta cursor (a
+ * `@odata.deltaLink` in the `CursorStore`), with a 410 Gone triggering a
+ * re-bootstrap. Events are collected across the poll, conflict-detected as a
+ * set, then emitted in a SINGLE pass — so a mid-sync 410 can't double-fire
+ * handlers. Times are forced to UTC so conflict math is absolute.
  *
- * Window note: `calendarView/delta` fixes its time window at bootstrap, so the
- * deltaLink tracks changes within the window set when it was created; the
- * worker's periodic re-discovery + restarts re-bootstrap a fresh window.
+ * The window is refreshed proactively (see `MIN_FORWARD_MS`) so the connector
+ * doesn't go blind to events created beyond the originally-bootstrapped window.
  */
 export class OutlookCalendarConnector implements SignalConnector {
   readonly name = 'outlook_calendar';
@@ -62,6 +86,7 @@ export class OutlookCalendarConnector implements SignalConnector {
   private handlers: SignalHandler[] = [];
   private connected = false;
   private deltaLink: string | null = null;
+  private windowEnd: number | null = null;
   private readonly userId: string;
   private readonly tokenStore: OAuthTokenStore;
   private readonly cursorStore: CursorStore | null;
@@ -79,6 +104,8 @@ export class OutlookCalendarConnector implements SignalConnector {
     }
     if (this.cursorStore) {
       this.deltaLink = await this.cursorStore.get(this.userId, 'outlook_calendar', DELTA_LINK_KIND);
+      const we = await this.cursorStore.get(this.userId, 'outlook_calendar', WINDOW_END_KIND);
+      this.windowEnd = we ? Number(we) : null;
     }
     this.connected = true;
   }
@@ -87,18 +114,17 @@ export class OutlookCalendarConnector implements SignalConnector {
     this.connected = false;
     this.handlers = [];
     this.deltaLink = null;
+    this.windowEnd = null;
   }
 
   onSignal(handler: SignalHandler): void {
     this.handlers.push(handler);
   }
 
-  private freshDeltaUrl(): string {
-    const now = new Date();
-    const end = new Date(now.getTime() + WINDOW_DAYS * 24 * 60 * 60 * 1000);
+  private freshDeltaUrl(now: number, end: number): string {
     const params = new URLSearchParams({
-      startDateTime: now.toISOString(),
-      endDateTime: end.toISOString(),
+      startDateTime: new Date(now).toISOString(),
+      endDateTime: new Date(end).toISOString(),
       $select: EVENT_SELECT,
     });
     return `${GRAPH_API}/me/calendarView/delta?${params.toString()}`;
@@ -110,12 +136,27 @@ export class OutlookCalendarConnector implements SignalConnector {
     }
     const accessToken = (await this.tokenStore.refreshIfExpired(this.userId, 'microsoft')).accessToken;
 
+    const now = Date.now();
+    // Use the stored delta cursor only while its window still has runway;
+    // otherwise bootstrap a fresh now..now+7d window so far-future events
+    // aren't missed.
+    const windowFresh = this.deltaLink !== null && this.windowEnd !== null && this.windowEnd - now >= MIN_FORWARD_MS;
+    let startUrl: string;
+    let freshWindowEnd: number | null = null;
+    if (windowFresh) {
+      startUrl = this.deltaLink as string;
+    } else {
+      this.deltaLink = null;
+      freshWindowEnd = now + WINDOW_DAYS * DAY_MS;
+      startUrl = this.freshDeltaUrl(now, freshWindowEnd);
+    }
+
     // Drain the delta into a flat event list (collect, don't emit yet — we
     // need the whole set for conflict detection). 410 handling mirrors the
     // mail connector: re-bootstrap only on the first request (stale stored
     // cursor); a mid-sync 410 stops and keeps what we collected.
     const events: GraphEvent[] = [];
-    let url: string | undefined = this.deltaLink ?? this.freshDeltaUrl();
+    let url: string | undefined = startUrl;
     let pages = 0;
     let nextCursor: string | undefined;
     let rebootstrapped = false;
@@ -130,7 +171,8 @@ export class OutlookCalendarConnector implements SignalConnector {
             console.warn(`[outlook-calendar] delta link expired for user ${this.userId} — re-bootstrapping`);
             this.deltaLink = null;
             rebootstrapped = true;
-            url = this.freshDeltaUrl();
+            freshWindowEnd = now + WINDOW_DAYS * DAY_MS;
+            url = this.freshDeltaUrl(now, freshWindowEnd);
             continue;
           }
           console.warn(`[outlook-calendar] delta link expired mid-sync for user ${this.userId} — returning partial`);
@@ -159,7 +201,7 @@ export class OutlookCalendarConnector implements SignalConnector {
       }
     }
 
-    if (nextCursor) await this.persistCursor(nextCursor);
+    if (nextCursor) await this.persistCursor(nextCursor, freshWindowEnd);
 
     // Single emit pass over the collected events, with conflicts computed
     // across the whole set.
@@ -173,11 +215,17 @@ export class OutlookCalendarConnector implements SignalConnector {
     return signals;
   }
 
-  private async persistCursor(link: string): Promise<void> {
+  private async persistCursor(link: string, windowEnd: number | null): Promise<void> {
     this.deltaLink = link;
+    if (windowEnd !== null) this.windowEnd = windowEnd;
     if (this.cursorStore) {
       try {
         await this.cursorStore.save(this.userId, 'outlook_calendar', DELTA_LINK_KIND, link);
+        // Persist the window end only when this poll opened a fresh window, so
+        // following an existing deltaLink doesn't rewrite it.
+        if (windowEnd !== null) {
+          await this.cursorStore.save(this.userId, 'outlook_calendar', WINDOW_END_KIND, String(windowEnd));
+        }
       } catch (err) {
         console.warn(
           `[outlook-calendar] Failed to persist delta cursor for ${this.userId}:`,
@@ -191,10 +239,12 @@ export class OutlookCalendarConnector implements SignalConnector {
     const organizerEmail = event.organizer?.emailAddress?.address ?? '';
     const organizerName = event.organizer?.emailAddress?.name ?? '';
     const response = event.responseStatus?.response ?? 'none';
-    const needsResponse = response === 'notResponded';
-    const startTime = event.start?.dateTime ?? '';
-    const endTime = event.end?.dateTime ?? '';
-    const updated = event.lastModifiedDateTime ?? event.createdDateTime ?? startTime ?? 'unknown';
+    // A cancelled event isn't an invite to RSVP to, even if the prior response
+    // was 'notResponded' — route it as a plain calendar_event update.
+    const needsResponse = !event.isCancelled && response === 'notResponded';
+    const startTime = toUtcIso(event.start?.dateTime);
+    const endTime = toUtcIso(event.end?.dateTime);
+    const updated = toUtcIso(event.lastModifiedDateTime ?? event.createdDateTime ?? event.start?.dateTime) || 'unknown';
     const version = updated.replace(/[^a-zA-Z0-9]/g, '');
 
     // `isOrganizer` is Graph's direct signal that the user organized the event,
@@ -232,7 +282,7 @@ export class OutlookCalendarConnector implements SignalConnector {
         htmlLink: event.webLink ?? '',
         authoringTier,
       },
-      timestamp: new Date(updated),
+      timestamp: new Date(updated === 'unknown' ? Date.now() : updated),
     };
   }
 
@@ -243,8 +293,8 @@ export class OutlookCalendarConnector implements SignalConnector {
       .filter((e) => e.start?.dateTime && e.end?.dateTime)
       .map((e) => ({
         id: e.id,
-        start: new Date(e.start!.dateTime!).getTime(),
-        end: new Date(e.end!.dateTime!).getTime(),
+        start: new Date(toUtcIso(e.start!.dateTime)).getTime(),
+        end: new Date(toUtcIso(e.end!.dateTime)).getTime(),
       }))
       .sort((a, b) => a.start - b.start);
 
@@ -264,7 +314,15 @@ export class OutlookCalendarConnector implements SignalConnector {
     let accessToken = initialToken;
     return withRetry(
       async () => {
-        const response = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+        const response = await fetch(url, {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            // Return event dateTimes in UTC (still without a Z suffix — see
+            // toUtcIso) so absolute-time math is correct regardless of the
+            // worker's or the user's calendar timezone.
+            Prefer: 'outlook.timezone="UTC"',
+          },
+        });
         if (response.ok) return response;
         if (response.status === 401) {
           accessToken = (await this.tokenStore.refreshIfExpired(this.userId, 'microsoft')).accessToken;
