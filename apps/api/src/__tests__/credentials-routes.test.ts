@@ -317,14 +317,25 @@ describe('Credentials API routes', () => {
 
       expect(res.status).toBe(200);
       const body = res.body as {
-        adapters: Record<string, { registered: boolean; healthy: boolean; url: string }>;
+        adapters: Record<string, {
+          registered: boolean;
+          healthy: boolean;
+          url: string;
+          knownStableVersion?: string;
+          knownStableUrl?: string;
+          knownPrereleaseVersion?: string;
+        }>;
         google: { configured: boolean };
         unmetIntegrations: unknown[];
       };
       expect(body.adapters.ironclaw!.registered).toBe(true);
       expect(body.adapters.ironclaw!.healthy).toBe(true);
+      expect(body.adapters.ironclaw!.knownStableVersion).toBe('0.29.1');
+      expect(body.adapters.ironclaw!.knownStableUrl).toBe('https://github.com/nearai/ironclaw/releases/tag/ironclaw-v0.29.1');
       expect(body.adapters.direct!.registered).toBe(true);
       expect(body.adapters.direct!.healthy).toBe(true);
+      expect(body.adapters.openclaw!.knownStableVersion).toBe('2026.6.10');
+      expect(body.adapters.openclaw!.knownPrereleaseVersion).toBe('2026.6.11-beta.1');
       expect(body.google.configured).toBe(true);
     });
 

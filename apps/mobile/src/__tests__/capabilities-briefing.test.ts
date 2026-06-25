@@ -74,6 +74,21 @@ interface TwinBriefing {
   generatedAt: string;
   readAt: string | null;
   proseMarkdown: string;
+  actionOpportunities?: BriefingActionOpportunity[];
+}
+
+interface BriefingActionOpportunity {
+  label: string;
+  reason: string;
+  suggestedAction: string;
+  actionType: string;
+  primaryAdapter: string;
+  readiness: string;
+  runtimeVersion?: {
+    displayName?: string;
+    stableVersion?: string;
+    prereleaseVersion?: string;
+  };
 }
 
 interface TwinBriefingPayload {
@@ -110,9 +125,57 @@ class TestApiClient {
   }
 
   async fetchTwinBriefing(userId: string): Promise<ApiResult<TwinBriefingPayload>> {
-    return this.get<TwinBriefingPayload>(
-      `/api/briefing/${encodeURIComponent(userId)}/latest`,
+    const query = new URLSearchParams({ cadence: 'daily', userId });
+    const result = await this.get<Record<string, unknown>>(
+      `/api/twin-briefings/latest?${query.toString()}`,
     );
+    if (!result.success) return result;
+    const raw = result.data['briefing'] as Record<string, unknown> | null | undefined;
+    if (!raw) return { success: true, data: { briefing: null, unreadCount: Number(result.data['unreadCount'] ?? 0) } };
+    const structured = raw['structured'] as Record<string, unknown> | null | undefined;
+    const memory = (structured?.['memorySuggestions'] as Array<Record<string, unknown>> | undefined) ?? [];
+    const todos = (structured?.['todos'] as unknown[] | undefined) ?? [];
+    const prose = String(raw['proseMarkdown'] ?? raw['prose_markdown'] ?? '');
+    const readAt = (raw['readAt'] ?? raw['read_at'] ?? null) as string | null;
+    const actionOpportunities = memory.map((s) => {
+      const plan = (s['actionPlan'] as Record<string, unknown> | undefined) ?? {};
+      return {
+        label: String(plan['label'] ?? s['title'] ?? 'Act on memory'),
+        reason: String(s['reason'] ?? ''),
+        suggestedAction: String(s['suggestedAction'] ?? ''),
+        actionType: String(plan['actionType'] ?? ''),
+        primaryAdapter: String(plan['primaryAdapter'] ?? ''),
+        readiness: String(plan['readiness'] ?? ''),
+        runtimeVersion: plan['runtimeVersion'] as BriefingActionOpportunity['runtimeVersion'],
+      };
+    });
+    const firstLine = prose.split('\n').map((line) => line.replace(/^#+\s*/, '').trim()).find(Boolean);
+    const rawLines = prose
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
+    const keySignals = rawLines
+      .filter((line, index) => index !== 0 || !line.startsWith('#'))
+      .map((line) => line.replace(/^[-*]\s*/, '').replace(/^#+\s*/, '').trim())
+      .filter(Boolean)
+      .slice(0, 3);
+    return {
+      success: true,
+      data: {
+        briefing: {
+          id: String(raw['id'] ?? 'latest'),
+          cadence: raw['cadence'] === 'weekly' ? 'weekly' : 'daily',
+          headline: String(raw['headline'] ?? firstLine ?? 'Your latest briefing'),
+          keySignals,
+          pendingApprovalsCount: Number(raw['pendingApprovalsCount'] ?? todos.length),
+          generatedAt: String(raw['generatedAt'] ?? raw['generated_at'] ?? new Date().toISOString()),
+          readAt,
+          proseMarkdown: prose,
+          actionOpportunities,
+        },
+        unreadCount: Number(result.data['unreadCount'] ?? (readAt === null ? 1 : 0)),
+      },
+    };
   }
 
   private headers(): Record<string, string> {
@@ -281,7 +344,7 @@ describe('API client fetchTwinBriefing', () => {
     });
     await client.fetchTwinBriefing('user-1');
     const [url] = mockFetch.mock.calls[0] as [string, unknown];
-    expect(url).toBe('http://192.168.1.50:3100/api/briefing/user-1/latest');
+    expect(url).toBe('http://192.168.1.50:3100/api/twin-briefings/latest?cadence=daily&userId=user-1');
   });
 
   it('encodes userId in briefing endpoint', async () => {
@@ -295,19 +358,37 @@ describe('API client fetchTwinBriefing', () => {
   });
 
   it('returns briefing payload on success', async () => {
-    const briefing: TwinBriefing = {
+    const briefing = {
       id: 'br-1',
       cadence: 'daily',
-      headline: 'Three meetings and a long email thread',
-      keySignals: ['Calendar conflict at 2pm', 'Unread thread from Alice'],
-      pendingApprovalsCount: 2,
-      generatedAt: '2026-05-08T08:00:00Z',
-      readAt: null,
-      proseMarkdown: '## Today\n...',
+      generated_at: '2026-05-08T08:00:00Z',
+      read_at: null,
+      prose_markdown: '## Three meetings and a long email thread\n\n- Calendar conflict at 2pm\n- Unread thread from Alice',
+      structured: {
+        todos: [{ ref: 'todo-1' }, { ref: 'todo-2' }],
+        topics: [],
+        memorySuggestions: [
+          {
+            title: 'Memory link',
+            reason: 'Maria asked about the security review.',
+            suggestedAction: 'Try draft a reply through IronClaw (draft_email).',
+            actionPlan: {
+              label: 'draft a reply using this memory',
+              actionType: 'draft_email',
+              primaryAdapter: 'ironclaw',
+              readiness: 'known_action_type',
+              runtimeVersion: {
+                displayName: 'IronClaw',
+                stableVersion: '0.29.1',
+              },
+            },
+          },
+        ],
+      },
     };
     mockFetch.mockResolvedValue({
       ok: true,
-      json: async () => ({ briefing, unreadCount: 1 }),
+      json: async () => ({ briefing }),
     });
     const result = await client.fetchTwinBriefing('u1');
     expect(result.success).toBe(true);
@@ -316,6 +397,13 @@ describe('API client fetchTwinBriefing', () => {
       expect(result.data.briefing?.headline).toBe('Three meetings and a long email thread');
       expect(result.data.briefing?.keySignals).toHaveLength(2);
       expect(result.data.briefing?.pendingApprovalsCount).toBe(2);
+      expect(result.data.briefing?.actionOpportunities?.[0]).toMatchObject({
+        actionType: 'draft_email',
+        primaryAdapter: 'ironclaw',
+        runtimeVersion: {
+          stableVersion: '0.29.1',
+        },
+      });
       expect(result.data.unreadCount).toBe(1);
     }
   });

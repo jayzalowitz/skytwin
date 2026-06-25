@@ -4,6 +4,20 @@
 
 [IronClaw](https://github.com/nearai/ironclaw/) is a Rust-based autonomous agent server developed by NEAR AI. It runs as a standalone process and exposes an HTTP webhook API for receiving execution requests. SkyTwin decides what should happen; IronClaw makes it happen.
 
+## Runtime Version Tracking
+
+SkyTwin tracks known compatible execution runtime versions in
+`packages/shared-types/src/execution-runtime-versions.ts`, and surfaces them in
+Setup adapter status plus action opportunity reports. As of 2026-06-25:
+
+- IronClaw stable: [0.29.1](https://github.com/nearai/ironclaw/releases/tag/ironclaw-v0.29.1)
+- OpenClaw stable: [2026.6.10](https://www.npmjs.com/package/openclaw/v/2026.6.10)
+- OpenClaw beta observed but not treated as stable: [2026.6.11-beta.1](https://www.npmjs.com/package/openclaw/v/2026.6.11-beta.1)
+
+The npm package named `ironclaw` currently points at a different repository, so
+IronClaw compatibility is sourced from the NEAR AI GitHub release rather than an
+npm dist-tag.
+
 IronClaw provides:
 - **Sandboxed tool execution** via WASM containers with capability-based permissions
 - **Credential management** with endpoint allowlisting and leak detection

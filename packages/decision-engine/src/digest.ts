@@ -28,6 +28,7 @@ import {
 import type { DigestItemDetail } from './digest-detail.js';
 import type { SourceCoverage } from './source-coverage.js';
 import type { ResolvedEntity } from './entity-linking.js';
+import type { DailyMemorySuggestion } from '@skytwin/shared-types';
 
 export interface DigestItem {
   ref: string;
@@ -78,6 +79,8 @@ export interface Digest {
   topics: DigestTopic[];
   /** Source coverage for the power-view panel (spec 13/14). Optional. */
   coverage?: SourceCoverage;
+  /** Novel daily suggestions inferred by connecting fresh memory to older context. */
+  memorySuggestions?: DailyMemorySuggestion[];
 }
 
 export interface BuildDigestOptions {

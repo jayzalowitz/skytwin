@@ -3,6 +3,19 @@
 How to exercise SkyTwin's OpenClaw execution adapter end-to-end without any real
 external side effects (no real Gmail/Calendar, no touching a running demo API).
 
+## Runtime version target
+
+SkyTwin tracks OpenClaw stable `2026.6.10` as of 2026-06-25 in
+`packages/shared-types/src/execution-runtime-versions.ts`. The npm beta
+`2026.6.11-beta.1` is recorded separately, but tests and setup copy should assume
+the stable dist-tag unless a specific beta validation task says otherwise.
+
+If you need the upstream OpenClaw package rather than the local bridge:
+
+```bash
+npm install -g openclaw@2026.6.10
+```
+
 ## What OpenClaw is, in this repo
 
 - `@skytwin/execution-router` exposes `OpenClawAdapter`

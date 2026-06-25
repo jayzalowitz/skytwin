@@ -6,6 +6,7 @@ import type {
   ExecutionStep,
   RollbackResult,
 } from '@skytwin/shared-types';
+import { OPENCLAW_ACTION_TYPES } from '@skytwin/shared-types';
 import type { IronClawAdapter } from '@skytwin/ironclaw-adapter';
 
 /**
@@ -38,85 +39,7 @@ export type OnCredentialNeeded = (requirement: OpenClawCredentialRequirement) =>
  * OpenClaw supports a broader range of action types than IronClaw,
  * including social media, web search, data analysis, and content generation.
  */
-export const OPENCLAW_SKILLS = new Set([
-  // Standard email action types (shared with IronClaw)
-  'send_email',
-  'archive_email',
-  'label_email',
-  'reply_email',
-  'forward_email',
-  // Extended email action types
-  'snooze_email',
-  'unsubscribe_email',
-  'create_filter',
-  'move_to_folder',
-  // Standard calendar action types (shared with IronClaw)
-  'create_calendar_event',
-  'update_calendar_event',
-  'delete_calendar_event',
-  'reschedule_event',
-  'decline_event',
-  // Extended calendar action types
-  'set_out_of_office',
-  'block_focus_time',
-  'find_meeting_time',
-  // Extended action types (OpenClaw-specific)
-  'social_media_post',
-  'web_search',
-  'data_analysis',
-  'content_generation',
-  // Subscription and shopping action types
-  'cancel_subscription',
-  'downgrade_subscription',
-  'renew_subscription',
-  'reorder_items',
-  'add_to_list',
-  // Travel action types
-  'book_travel',
-  'set_travel_alert',
-  // Finance action types
-  'pay_bill',
-  'categorize_transaction',
-  'flag_suspicious_transaction',
-  'transfer_funds',
-  'record_expense',
-  'set_budget_alert',
-  // Smart home action types
-  'set_thermostat',
-  'toggle_lights',
-  'lock_door',
-  'set_alarm',
-  'run_routine',
-  // Task management action types
-  'create_task',
-  'complete_task',
-  'assign_task',
-  'set_reminder',
-  'update_task_priority',
-  // Social media action types
-  'draft_social_post',
-  'schedule_social_post',
-  'respond_to_mention',
-  'mute_conversation',
-  'share_content',
-  // Document management action types
-  'organize_file',
-  'share_document',
-  'summarize_document',
-  'create_document',
-  // Health & wellness action types
-  'log_health_metric',
-  'set_medication_reminder',
-  'book_appointment',
-  'reschedule_appointment',
-  'flag_health_anomaly',
-  // General action types
-  'create_note',
-  'escalate_to_user',
-  'snooze_reminder',
-  'save_option',
-  'place_order',
-]);
+export const OPENCLAW_SKILLS = new Set(OPENCLAW_ACTION_TYPES);
 
 /**
  * OpenClaw adapter implementing the IronClawAdapter interface.

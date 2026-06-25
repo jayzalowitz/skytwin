@@ -30,6 +30,11 @@ import {
   type SignalText,
   type SignalVisibilityMeta,
 } from '@skytwin/decision-engine';
+import {
+  buildDailyMemorySuggestions,
+  type DailyMemorySuggestion,
+  type DailyMemorySuggestionPage,
+} from '@skytwin/shared-types';
 
 /**
  * Cross-signal entity linking (spec 05, #478) collapse switch. Default ON;
@@ -211,6 +216,17 @@ interface SenderOverrideRow {
   user_override: string;
 }
 
+interface MemorySuggestionRow {
+  bucket: 'recent' | 'older';
+  id: string;
+  title: string | null;
+  content: string | null;
+  source: string;
+  source_ref: string | null;
+  metadata: Record<string, unknown> | null;
+  created_at: string | Date;
+}
+
 /**
  * Per-sender pin/hide overrides (#270) keyed by the bare `fromAddress`, read
  * from the canonical `brain_pages.metadata` store the pin/hide controls write
@@ -254,6 +270,63 @@ async function fetchSenderOverrides(userId: string): Promise<Map<string, SignalV
   return map;
 }
 
+/**
+ * Pull enough memory to create daily "novel suggestions": links between
+ * memory written/indexed today and older context the user may have forgotten.
+ * This deliberately reads brain_pages directly because it needs recency slices,
+ * not top-k semantic search. Fail-soft: memory should enrich the digest, never
+ * make the briefing endpoint unavailable.
+ */
+async function fetchDailyMemorySuggestions(userId: string): Promise<DailyMemorySuggestion[]> {
+  let rows: { rows: MemorySuggestionRow[] } | undefined;
+  try {
+    rows = await query<MemorySuggestionRow>(
+      `WITH recent AS (
+         SELECT id, title, COALESCE(content, '') AS content, source, source_ref, metadata, created_at
+           FROM brain_pages
+          WHERE user_id = $1
+            AND created_at >= now() - INTERVAL '36 hours'
+            AND COALESCE(metadata->>'userOverride', '') <> 'hidden'
+          ORDER BY created_at DESC
+          LIMIT 24
+       ),
+       older AS (
+         SELECT id, title, COALESCE(content, '') AS content, source, source_ref, metadata, created_at
+           FROM brain_pages
+          WHERE user_id = $1
+            AND created_at < now() - INTERVAL '36 hours'
+            AND created_at >= now() - INTERVAL '120 days'
+            AND COALESCE(metadata->>'userOverride', '') <> 'hidden'
+          ORDER BY created_at DESC
+          LIMIT 160
+       )
+       SELECT 'recent' AS bucket, * FROM recent
+       UNION ALL
+       SELECT 'older' AS bucket, * FROM older`,
+      [userId],
+    );
+  } catch {
+    return [];
+  }
+
+  const resultRows = Array.isArray(rows?.rows) ? rows.rows : [];
+  const toPage = (row: MemorySuggestionRow): DailyMemorySuggestionPage => ({
+    id: row.id,
+    title: row.title,
+    content: row.content ?? '',
+    source: row.source,
+    sourceRef: row.source_ref,
+    metadata: row.metadata ?? {},
+    createdAt: row.created_at,
+  });
+
+  return buildDailyMemorySuggestions({
+    recent: resultRows.filter((r) => r.bucket === 'recent').map(toPage),
+    older: resultRows.filter((r) => r.bucket === 'older').map(toPage),
+    maxSuggestions: 3,
+  });
+}
+
 /** Friendly "where it's from" when there's no concrete sender. */
 const SOURCE_FRIENDLY: Record<string, string> = {
   email: 'your inbox',
@@ -283,6 +356,7 @@ export function needsYou(row: {
 
 export interface LiveDigest extends Digest {
   handledCount: number;
+  memorySuggestions: DailyMemorySuggestion[];
 }
 
 /**
@@ -392,13 +466,21 @@ export async function buildLiveDigest(userId: string): Promise<LiveDigest | null
      LIMIT $2`,
     [userId, RECENT_DECISIONS_WINDOW],
   );
-  if (decisions.rows.length === 0) return null;
+
+  const hasDecisions = decisions.rows.length > 0;
+  let memorySuggestions: DailyMemorySuggestion[] = [];
+  if (!hasDecisions) {
+    memorySuggestions = await fetchDailyMemorySuggestions(userId);
+    if (memorySuggestions.length === 0) return null;
+  }
 
   // Per-sender pin/hide overrides (#270/#485) from the canonical
   // brain_pages.metadata store. Read alongside the decisions so buildDigest's
   // filterVisible can drop hidden senders and surface pinned ones. A brain
   // that's empty (no gbrain pages yet) yields an empty map → no overrides.
-  const senderOverrides = await fetchSenderOverrides(userId);
+  const senderOverrides = hasDecisions
+    ? await fetchSenderOverrides(userId)
+    : new Map<string, SignalVisibilityMeta>();
 
   // Power-view detail (spec 14) is attached to each todo/topic by ref AFTER
   // buildDigest (the generator's job — buildDigest itself leaves it unset).
@@ -534,6 +616,9 @@ export async function buildLiveDigest(userId: string): Promise<LiveDigest | null
   );
 
   const handledCount = decisions.rows.filter((r) => r.auto_executed === true).length;
+  if (hasDecisions) {
+    memorySuggestions = await fetchDailyMemorySuggestions(userId);
+  }
 
   // Cross-signal entity linking (spec 05, #478): resolve people/orgs that recur
   // across this window's signals so buildDigest can collapse one matter that
@@ -557,5 +642,5 @@ export async function buildLiveDigest(userId: string): Promise<LiveDigest | null
     }
   }
 
-  return { ...digest, coverage, handledCount };
+  return { ...digest, coverage, handledCount, memorySuggestions };
 }

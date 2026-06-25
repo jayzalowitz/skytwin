@@ -157,6 +157,48 @@ describe('runBriefingGeneratorJob', () => {
     expect(prose).toContain('Nothing new');
   });
 
+  it('includes memory-derived action opportunities in the generated report', async () => {
+    mockMcpServerRepository.listForUser.mockResolvedValue([]);
+    mockAppSuggestionRepository.getPendingForUser.mockResolvedValue([]);
+    mockQuery
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            bucket: 'recent',
+            id: 'page-recent',
+            title: 'voice/note',
+            content: 'I will send the Madrid launch checklist to the team tomorrow morning.',
+            source: 'signal',
+            source_ref: 'sig-recent',
+            metadata: { signalSource: 'voice', authoringTier: 'user_sent_originated' },
+            created_at: new Date(),
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ rows: [] }); // no promotion rows
+    mockBriefingRepository.create.mockResolvedValue({
+      id: 'briefing-memory',
+      user_id: 'user-memory',
+      cadence: 'daily',
+      generated_at: new Date(),
+      prose_markdown: '',
+      source_event_count: 1,
+      llm_provider: null,
+      llm_cost_cents: null,
+      read_at: null,
+    });
+
+    await runBriefingGeneratorJob({ cadence: 'daily', userIds: ['user-memory'] });
+
+    expect(mockBriefingRepository.create).toHaveBeenCalledOnce();
+    const createArg = mockBriefingRepository.create.mock.calls[0]?.[0];
+    expect(createArg.proseMarkdown).toContain('### Action opportunities from memory');
+    expect(createArg.proseMarkdown).toContain('Madrid launch checklist');
+    expect(createArg.proseMarkdown).toContain('ironclaw');
+    expect(createArg.proseMarkdown).toContain('IronClaw 0.29.1');
+    expect(createArg.sourceEventCount).toBe(1);
+  });
+
   it('writes a briefing to the briefings table (create is called)', async () => {
     const server = makeServer({ user_id: 'user-002' });
     mockMcpServerRepository.listForUser.mockResolvedValue([server]);

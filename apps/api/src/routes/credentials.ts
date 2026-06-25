@@ -2,6 +2,10 @@ import { Router } from 'express';
 import { loadConfig } from '@skytwin/config';
 import { serviceCredentialRepository, credentialRequirementRepository } from '@skytwin/db';
 import {
+  getExecutionRuntimeVersionInfo,
+  type ExecutionRuntimeName,
+} from '@skytwin/shared-types';
+import {
   getExecutionRouter,
   getIronClawEnhancedAdapter,
   ironClawCredentialName,
@@ -76,6 +80,35 @@ const SERVICE_SCHEMAS: Record<
 const EXECUTION_ENGINE_SERVICES = new Set(['ironclaw', 'openclaw']);
 const EXECUTION_ENGINE_URL_KEYS = new Set(['api_url']);
 
+interface AdapterStatus {
+  registered: boolean;
+  healthy: boolean;
+  url: string;
+  runtime?: ExecutionRuntimeName;
+  runtimeDisplayName?: string;
+  knownStableVersion?: string;
+  knownStableUrl?: string;
+  knownVersionCheckedAt?: string;
+  knownPrereleaseVersion?: string;
+  installHint?: string;
+}
+
+function withExecutionRuntimeMetadata(name: string, status: AdapterStatus): AdapterStatus {
+  if (name !== 'ironclaw' && name !== 'openclaw') return status;
+
+  const info = getExecutionRuntimeVersionInfo(name);
+  return {
+    ...status,
+    runtime: info.runtime,
+    runtimeDisplayName: info.displayName,
+    knownStableVersion: info.stableVersion,
+    knownStableUrl: info.stableUrl,
+    knownVersionCheckedAt: info.checkedAt,
+    knownPrereleaseVersion: info.prerelease?.version,
+    installHint: info.installHint,
+  };
+}
+
 /**
  * Create the credentials management router.
  */
@@ -140,7 +173,7 @@ export function createCredentialsRouter(): Router {
       const entries = registry.getAll();
 
       // Check each adapter's health in parallel
-      const healthResults: Record<string, { registered: boolean; healthy: boolean; url: string }> = {};
+      const healthResults: Record<string, AdapterStatus> = {};
 
       const healthChecks = Array.from(entries.entries()).map(async ([name, entry]) => {
         let healthy = false;
@@ -155,7 +188,11 @@ export function createCredentialsRouter(): Router {
           openclaw: config.openclawApiUrl,
           direct: 'local',
         };
-        healthResults[name] = { registered: true, healthy, url: urls[name] ?? '' };
+        healthResults[name] = withExecutionRuntimeMetadata(name, {
+          registered: true,
+          healthy,
+          url: urls[name] ?? '',
+        });
       });
 
       await Promise.allSettled(healthChecks);
@@ -183,9 +220,17 @@ export function createCredentialsRouter(): Router {
 
       res.json({
         adapters: {
-          ironclaw: healthResults['ironclaw'] ?? { registered: false, healthy: false, url: config.ironclawApiUrl },
+          ironclaw: healthResults['ironclaw'] ?? withExecutionRuntimeMetadata('ironclaw', {
+            registered: false,
+            healthy: false,
+            url: config.ironclawApiUrl,
+          }),
           direct: healthResults['direct'] ?? { registered: true, healthy: true, url: 'local' },
-          openclaw: healthResults['openclaw'] ?? { registered: false, healthy: false, url: config.openclawApiUrl },
+          openclaw: healthResults['openclaw'] ?? withExecutionRuntimeMetadata('openclaw', {
+            registered: false,
+            healthy: false,
+            url: config.openclawApiUrl,
+          }),
         },
         // `hosted` = env vars set by the operator (no user setup needed).
         // `configured` = either hosted OR user-supplied via Setup page.
