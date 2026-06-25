@@ -45,10 +45,6 @@ pid_is_in_workspace() {
   [[ "$cwd" == "$ROOT_DIR" || "$cwd" == "$ROOT_DIR"/* ]]
 }
 
-url_ok() {
-  command -v curl >/dev/null 2>&1 && curl -fsS --max-time 2 "$1" >/dev/null 2>&1
-}
-
 url_contains() {
   command -v curl >/dev/null 2>&1 &&
     curl -fsS --max-time 2 "$1" 2>/dev/null | grep -F "$2" >/dev/null 2>&1
@@ -85,18 +81,18 @@ check_dev_ports() {
   fi
 
   local specs=(
-    "API|${API_PORT}|http://localhost:${API_PORT}/api/health"
-    "web|${WEB_PORT}|http://localhost:${WEB_PORT}/"
-    "OpenClaw bridge|${BRIDGE_PORT}|http://localhost:${BRIDGE_PORT}/health"
-    "Twin MCP server|${TWIN_MCP_SERVER_PORT}|"
+    "API|${API_PORT}"
+    "web|${WEB_PORT}"
+    "OpenClaw bridge|${BRIDGE_PORT}"
+    "Twin MCP server|${TWIN_MCP_SERVER_PORT}"
   )
 
   local conflicts=0
   local all_conflicts_from_workspace=1
-  local spec name port url pids pid cmd cwd
+  local spec name port pids pid cmd cwd
 
   for spec in "${specs[@]}"; do
-    IFS='|' read -r name port url <<< "$spec"
+    IFS='|' read -r name port <<< "$spec"
     if ! is_valid_port "$port"; then
       echo "[dev] Invalid port for ${name}: ${port}" >&2
       exit 1
@@ -140,7 +136,7 @@ SKYTWIN_DEV_SKIP_PORT_PREFLIGHT=1 only if you intentionally want Turbo to try an
 EOF
 
   for spec in "${specs[@]}"; do
-    IFS='|' read -r name port url <<< "$spec"
+    IFS='|' read -r name port <<< "$spec"
     pids="$(port_pids "$port")"
     [[ -z "$pids" ]] && continue
     echo >&2
