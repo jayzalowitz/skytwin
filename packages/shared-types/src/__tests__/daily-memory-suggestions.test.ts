@@ -99,4 +99,48 @@ describe('buildDailyMemorySuggestions', () => {
 
     expect(suggestions).toEqual([]);
   });
+
+  it('does not treat a null hidden_at marker as hidden', () => {
+    const suggestions = buildDailyMemorySuggestions({
+      recent: [
+        page({
+          id: 'visible-null-hidden-at',
+          content: 'I will send the revised Madrid launch checklist to the team tomorrow morning.',
+          metadata: { hidden_at: null, authoringTier: 'user_sent_originated' },
+        }),
+        page({
+          id: 'hidden-timestamp',
+          content: 'This page has a hidden timestamp and should not appear in suggestions.',
+          metadata: { hidden_at: '2026-06-25T10:00:00Z' },
+        }),
+      ],
+      older: [],
+      maxSuggestions: 3,
+    });
+
+    expect(suggestions).toHaveLength(1);
+    expect(suggestions[0]!.memoryRefs).toEqual(['visible-null-hidden-at']);
+  });
+
+  it('sorts recent memory by creation time before resurfacing', () => {
+    const suggestions = buildDailyMemorySuggestions({
+      recent: [
+        page({
+          id: 'older-recent',
+          content: 'I will send the Madrid launch checklist to the team tomorrow morning.',
+          createdAt: new Date('2026-06-25T08:00:00Z'),
+        }),
+        page({
+          id: 'newer-recent',
+          content: 'I will send the revised Madrid budget checklist to finance tomorrow morning.',
+          createdAt: new Date('2026-06-25T14:00:00Z'),
+        }),
+      ],
+      older: [],
+      maxSuggestions: 1,
+    });
+
+    expect(suggestions).toHaveLength(1);
+    expect(suggestions[0]!.memoryRefs).toEqual(['newer-recent']);
+  });
 });

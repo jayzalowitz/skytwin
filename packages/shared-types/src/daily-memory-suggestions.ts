@@ -74,8 +74,8 @@ export function buildDailyMemorySuggestions(
   const maxSuggestions = Math.max(0, input.maxSuggestions ?? DEFAULT_MAX_SUGGESTIONS);
   if (maxSuggestions === 0) return [];
 
-  const recent = input.recent.filter(isUsablePage);
-  const older = input.older.filter(isUsablePage);
+  const recent = sortPagesByCreatedAtDesc(input.recent.filter(isUsablePage));
+  const older = sortPagesByCreatedAtDesc(input.older.filter(isUsablePage));
   if (recent.length === 0) return [];
 
   const suggestions: DailyMemorySuggestion[] = [];
@@ -112,10 +112,19 @@ function isUsablePage(page: DailyMemorySuggestionPage): boolean {
   const content = page.content.trim();
   if (content.length < 20) return false;
   const metadata = page.metadata ?? {};
-  if (metadata['userOverride'] === 'hidden' || metadata['hidden_at'] !== undefined) {
+  if (metadata['userOverride'] === 'hidden' || metadata['hidden_at'] != null) {
     return false;
   }
   return true;
+}
+
+function sortPagesByCreatedAtDesc(pages: DailyMemorySuggestionPage[]): DailyMemorySuggestionPage[] {
+  return [...pages].sort((a, b) => {
+    const bTime = timeValue(b.createdAt);
+    const aTime = timeValue(a.createdAt);
+    if (bTime !== aTime) return bTime - aTime;
+    return a.id.localeCompare(b.id);
+  });
 }
 
 function bestOlderMatch(
@@ -330,11 +339,16 @@ function isUserAuthored(metadata: Record<string, unknown>): boolean {
 }
 
 function ageDays(value: Date | string, now?: Date): number {
-  const date = value instanceof Date ? value : new Date(value);
   const anchor = now ?? new Date();
-  const diffMs = anchor.getTime() - date.getTime();
+  const diffMs = anchor.getTime() - timeValue(value);
   if (!Number.isFinite(diffMs)) return 0;
   return Math.max(0, Math.floor(diffMs / 86_400_000));
+}
+
+function timeValue(value: Date | string): number {
+  const date = value instanceof Date ? value : new Date(value);
+  const time = date.getTime();
+  return Number.isFinite(time) ? time : 0;
 }
 
 function ageLabel(value: Date | string, now?: Date): string {
