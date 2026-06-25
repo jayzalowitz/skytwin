@@ -46,11 +46,40 @@ describe('buildLiveDigest', () => {
     expect(await buildLiveDigest('u1')).toBeNull();
   });
 
+  it('coverage reflects connected oauth_tokens accounts (panel is not stuck in cold-start)', async () => {
+    mockQuery
+      .mockResolvedValueOnce({ rows: [decisionRow()] }) // decisions+outcomes
+      .mockResolvedValueOnce({ rows: [] }) // brain_pages pin/hide overrides
+      .mockResolvedValueOnce({ rows: [{ provider: 'google', scopes: [] }] }); // oauth_tokens (connected accounts)
+
+    const d = await buildLiveDigest('u1');
+    expect(d).not.toBeNull();
+    // A Google connection → the "what I can see" panel is NOT cold-start.
+    expect(d!.coverage?.coldStart).toBe(false);
+    expect(d!.coverage?.connected).toContain('gmail');
+    const security = d!.coverage?.capabilityStatus.find((c) => c.capability === 'security');
+    expect(security?.status).toBe('available');
+  });
+
+  it('coverage gives a Microsoft-only user the same statuses as Google (no cross-vendor nudge)', async () => {
+    mockQuery
+      .mockResolvedValueOnce({ rows: [decisionRow()] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ provider: 'microsoft', scopes: [] }] }); // oauth_tokens (connected accounts)
+
+    const d = await buildLiveDigest('u1');
+    expect(d!.coverage?.coldStart).toBe(false);
+    expect(d!.coverage?.connected).toEqual(['outlook', 'outlook_calendar']);
+    const security = d!.coverage?.capabilityStatus.find((c) => c.capability === 'security');
+    expect(security?.status).toBe('available'); // Outlook mail enables security, parity with Google
+    expect(d!.coverage?.missing).not.toContain('gmail'); // never nudged to connect Google
+  });
+
   it('maps a security decision to a to-do with meaningful power-view detail', async () => {
     mockQuery
       .mockResolvedValueOnce({ rows: [decisionRow()] }) // decisions+outcomes
       .mockResolvedValueOnce({ rows: [] }) // brain_pages pin/hide overrides
-      .mockResolvedValueOnce({ rows: [] }); // connected_accounts
+      .mockResolvedValueOnce({ rows: [] }); // oauth_tokens (connected accounts)
 
     const d = await buildLiveDigest('u1');
     expect(d).not.toBeNull();
@@ -97,7 +126,7 @@ describe('buildLiveDigest', () => {
         ],
       })
       .mockResolvedValueOnce({ rows: [] }) // brain_pages overrides
-      .mockResolvedValueOnce({ rows: [] }); // connected_accounts
+      .mockResolvedValueOnce({ rows: [] }); // oauth_tokens (connected accounts)
 
     const d = await buildLiveDigest('u1');
     // calendar_invite is a to-do (needs RSVP)
@@ -125,7 +154,7 @@ describe('buildLiveDigest', () => {
         ],
       })
       .mockResolvedValueOnce({ rows: [] }) // brain_pages overrides
-      .mockResolvedValueOnce({ rows: [] }); // connected_accounts
+      .mockResolvedValueOnce({ rows: [] }); // oauth_tokens (connected accounts)
 
     const d = await buildLiveDigest('u1');
     const item = d!.topics.flatMap((t) => t.items)[0];
@@ -153,7 +182,7 @@ describe('buildLiveDigest', () => {
         ],
       })
       .mockResolvedValueOnce({ rows: [] }) // brain_pages overrides
-      .mockResolvedValueOnce({ rows: [] }); // connected_accounts
+      .mockResolvedValueOnce({ rows: [] }); // oauth_tokens (connected accounts)
 
     const d = await buildLiveDigest('u1');
     expect(d!.todos).toHaveLength(0);
@@ -178,7 +207,7 @@ describe('buildLiveDigest', () => {
         ],
       })
       .mockResolvedValueOnce({ rows: [] }) // brain_pages overrides
-      .mockResolvedValueOnce({ rows: [] }); // connected_accounts
+      .mockResolvedValueOnce({ rows: [] }); // oauth_tokens (connected accounts)
 
     const d = await buildLiveDigest('u1');
     const item = d!.topics.flatMap((t) => t.items)[0];
@@ -203,7 +232,7 @@ describe('buildLiveDigest', () => {
         ],
       })
       .mockResolvedValueOnce({ rows: [] }) // brain_pages overrides
-      .mockResolvedValueOnce({ rows: [] }); // connected_accounts
+      .mockResolvedValueOnce({ rows: [] }); // oauth_tokens (connected accounts)
 
     const d = await buildLiveDigest('u1');
     const item = d!.topics.flatMap((t) => t.items)[0];
@@ -249,7 +278,7 @@ describe('buildLiveDigest', () => {
         ],
       })
       .mockResolvedValueOnce({ rows: [] }) // brain_pages pin/hide overrides (#485)
-      .mockResolvedValueOnce({ rows: [] }); // connected_accounts
+      .mockResolvedValueOnce({ rows: [] }); // oauth_tokens (connected accounts)
 
     const d = await buildLiveDigest('u1');
     expect(d).not.toBeNull();
@@ -292,7 +321,7 @@ describe('buildLiveDigest', () => {
         ],
       })
       .mockResolvedValueOnce({ rows: [] }) // brain_pages pin/hide overrides (#485)
-      .mockResolvedValueOnce({ rows: [] }); // connected_accounts
+      .mockResolvedValueOnce({ rows: [] }); // oauth_tokens (connected accounts)
 
     const d = await buildLiveDigest('u1');
     // No commitment to-do; the inbound email is a routine FYI topic.
@@ -309,7 +338,7 @@ describe('buildLiveDigest', () => {
         ],
       })
       .mockResolvedValueOnce({ rows: [] }) // brain_pages pin/hide overrides (#485)
-      .mockResolvedValueOnce({ rows: [] }); // connected_accounts
+      .mockResolvedValueOnce({ rows: [] }); // oauth_tokens (connected accounts)
 
     const d = await buildLiveDigest('u1');
     expect(d!.todos).toHaveLength(1);
@@ -325,7 +354,7 @@ describe('buildLiveDigest', () => {
           rows: [authoredEmailRow("I'll send over the draft tomorrow.")],
         })
         .mockResolvedValueOnce({ rows: [] }) // brain_pages pin/hide overrides (#485)
-        .mockResolvedValueOnce({ rows: [] }); // connected_accounts
+        .mockResolvedValueOnce({ rows: [] }); // oauth_tokens (connected accounts)
 
       const d = await buildLiveDigest('u1');
       expect(d!.todos).toHaveLength(0);
@@ -345,7 +374,7 @@ describe('buildLiveDigest', () => {
         ],
       })
       .mockResolvedValueOnce({ rows: [] }) // brain_pages overrides
-      .mockResolvedValueOnce({ rows: [] }); // connected_accounts
+      .mockResolvedValueOnce({ rows: [] }); // oauth_tokens (connected accounts)
 
     const d = await buildLiveDigest('u1');
     expect(d!.handledCount).toBe(1);
@@ -380,7 +409,7 @@ describe('buildLiveDigest', () => {
       .mockResolvedValueOnce({
         rows: [{ from_address: 'spam@x.example', user_override: 'hidden' }],
       })
-      .mockResolvedValueOnce({ rows: [] }); // connected_accounts
+      .mockResolvedValueOnce({ rows: [] }); // oauth_tokens (connected accounts)
 
     const d = await buildLiveDigest('u1');
     const allRefs = [
@@ -406,7 +435,7 @@ describe('buildLiveDigest', () => {
         ],
       })
       .mockResolvedValueOnce({ rows: [] }) // brain_pages overrides — empty
-      .mockResolvedValueOnce({ rows: [] }); // connected_accounts
+      .mockResolvedValueOnce({ rows: [] }); // oauth_tokens (connected accounts)
 
     const d = await buildLiveDigest('u1');
     const allRefs = [
@@ -433,7 +462,7 @@ describe('buildLiveDigest', () => {
       // brain_pages overrides query throws (e.g. table absent on a
       // mempalace-only deploy) — must not error the whole digest.
       .mockRejectedValueOnce(new Error('relation "brain_pages" does not exist'))
-      .mockResolvedValueOnce({ rows: [] }); // connected_accounts
+      .mockResolvedValueOnce({ rows: [] }); // oauth_tokens (connected accounts)
 
     const d = await buildLiveDigest('u1');
     expect(d).not.toBeNull();
