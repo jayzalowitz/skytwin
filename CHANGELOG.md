@@ -1,5 +1,11 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.75.0] - 2026-06-25
+
+### Added
+
+- **No-code routines — the domain foundation (#519, part 1 of a series).** New `Routine` / `RoutineSpec` / `RoutineFilter` types in `@skytwin/shared-types` and a new `@skytwin/routines` package whose `parseRoutineSpec()` turns a plain-language ask ("every morning, summarize my calendar conflicts and anything from finance@acme.com") into a structured, schedulable routine: cadence (hourly / daily / weekly + day-of-week + hour-of-day), a signal filter (sources, sender, keywords, domains), and an action. The parser is **deterministic** (no LLM dependency, fully unit-tested — 25 cases) so the authoring contract is stable; an LLM-backed parse that resolves fuzzy references ("my biggest client") can layer on later with this as the fallback. It guards against footguns: a recurrence cue is required (most chat returns `matched: false`, not a routine), a filter that would match *every* signal raises a warning, and a vague sender it can't resolve to an address is flagged so the user can refine it. **v1 is read-only by design** — routines `digest` or `notify` on matching signals; they never send, reply, schedule, or spend. Action-taking routines (which must route through the policy engine per firing) are a deliberate follow-up. This part ships the types + parser only; the DB/repository, API + chat authoring, worker scheduler, and Routines management page are the next parts in the series.
+
 ## [0.6.74.0] - 2026-06-25
 
 ### Fixed

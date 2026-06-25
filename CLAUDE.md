@@ -111,6 +111,7 @@ CI is unaffected (clean dist on every run).
 | `@skytwin/observability` | In-memory metrics collection (latency, success rate, spend) with a ring-buffered rollup that powers the capability acquisition loop dashboards (#210). |
 | `@skytwin/policy-prompts` | Versioned LLM prompt templates with JSON-schema-validated outputs and deterministic fallbacks when no LLM is configured. Used by briefing prose, draft-email generation, and risk profiling (#200). |
 | `@skytwin/registry-client` | Loads the curated MCP registry, knows about each entry's OAuth quirks, and looks services up by keyword. Smithery-augmented when configured. |
+| `@skytwin/routines` | No-code routines (#519). `parseRoutineSpec()` turns a plain-language ask ("every morning, summarize my calendar conflicts and anything from finance@acme.com") into a structured, schedulable `RoutineSpec` (cadence + signal filter + action). Deterministic (no LLM dependency), so the authoring contract is stable; an LLM-backed parse can layer on later with this as the fallback. v1 is **read-only** — routines `digest`/`notify` on matching signals, never send/reply/schedule/spend. Foundation only so far (types + parser); DB/API/worker/UI are follow-up parts. |
 | `@skytwin/evals` | Evaluation framework for measuring decision quality over time. |
 
 ### Apps
