@@ -342,10 +342,13 @@ export async function textSearch(
 
   const result = await query<BrainPageRow & { rank: number }>(sql, params);
 
-  return result.rows.map((row) => ({
-    page: parsePageRow(row),
-    score: Number(row.rank ?? 0),
-  }));
+  return result.rows.map((row) => {
+    // Strip the SELECT's `… AS rank` column before building the page — the
+    // rank is the hit *score*, not a page field, and parsePageRow spreads the
+    // raw row, so leaving it in would carry a stray `rank` onto the page shape.
+    const { rank, ...pageRow } = row;
+    return { page: parsePageRow(pageRow), score: Number(rank ?? 0) };
+  });
 }
 
 /**
