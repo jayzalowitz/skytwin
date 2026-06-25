@@ -28,6 +28,12 @@ pnpm test         # Run all tests
 pnpm lint         # Lint all packages
 ```
 
+`pnpm dev` preflights the required local ports before Turbo starts. If another
+process owns the API, web, OpenClaw bridge, or Twin MCP port, the script prints
+the owning PID/command/cwd and exits before services start racing each other.
+For Docker-backed CockroachDB, set `SKYTWIN_DOCKER_SQL_PORT` and
+`SKYTWIN_DOCKER_ADMIN_PORT` when running multiple local workspaces.
+
 To work on a single package:
 
 ```bash

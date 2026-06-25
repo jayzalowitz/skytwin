@@ -1,6 +1,6 @@
 {
   "name": "skytwin",
-  "version": "0.6.62.0",
+  "version": "0.6.70.0",
   "description": "A delegated judgment layer that builds a digital twin of your preferences and acts on your behalf — with safety constraints, explanations, and progressive trust.",
   "private": true,
   "repository": {
@@ -25,7 +25,7 @@
     "stop": "./bin/skytwin-dev --stop",
     "setup": "./bin/skytwin-install",
     "build": "turbo run build",
-    "dev": "NODE_ENV=development IRONCLAW_API_URL=http://localhost:4000 IRONCLAW_WEBHOOK_SECRET=dev-skytwin-ironclaw-local-shared-secret OPENCLAW_API_URL=http://localhost:3456 turbo run dev --concurrency=25",
+    "dev": "bash ./bin/skytwin-turbo-dev",
     "test": "turbo run test",
     "lint": "turbo run lint",
     "db:migrate": "pnpm --filter @skytwin/db migrate",

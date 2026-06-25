@@ -23,6 +23,18 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+if [ -f "$ROOT/.env" ]; then
+  while IFS='=' read -r key value; do
+    case "$key" in
+      COMPOSE_PROJECT_NAME|SKYTWIN_DB_PORT|SKYTWIN_DOCKER_SQL_PORT|SKYTWIN_DOCKER_ADMIN_PORT|SKYTWIN_DOCKER_API_PORT)
+        value="${value%\"}"
+        value="${value#\"}"
+        export "$key=$value"
+        ;;
+    esac
+  done < <(grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "$ROOT/.env")
+fi
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -32,6 +44,14 @@ NC='\033[0m'
 PIDFILE="$ROOT/.skytwin-pids"
 SKIP_OLLAMA=false
 USE_DOCKER="${SKYTWIN_USE_DOCKER:-false}"
+CRDB_DOCKER_SQL_PORT="${SKYTWIN_DOCKER_SQL_PORT:-${SKYTWIN_DB_PORT:-26257}}"
+CRDB_DOCKER_ADMIN_PORT="${SKYTWIN_DOCKER_ADMIN_PORT:-8080}"
+export SKYTWIN_DOCKER_SQL_PORT="$CRDB_DOCKER_SQL_PORT"
+export SKYTWIN_DOCKER_ADMIN_PORT="$CRDB_DOCKER_ADMIN_PORT"
+
+compose_crdb_container() {
+  docker compose ps -q cockroachdb 2>/dev/null
+}
 
 for arg in "$@"; do
   case "$arg" in
@@ -147,13 +167,13 @@ echo ""
 # 2. Start CockroachDB
 echo -e "${YELLOW}Starting CockroachDB...${NC}"
 if [ "$USE_DOCKER" = "true" ]; then
-  if curl -sf http://localhost:26257/ &>/dev/null || curl -sf http://localhost:8080/health &>/dev/null; then
-    echo -e "  ${GREEN}Already running${NC} on port 26257"
+  if curl -sf "http://localhost:${CRDB_DOCKER_SQL_PORT}/" &>/dev/null || curl -sf "http://localhost:${CRDB_DOCKER_ADMIN_PORT}/health" &>/dev/null; then
+    echo -e "  ${GREEN}Already running${NC} on port ${CRDB_DOCKER_SQL_PORT}"
   else
     docker compose up -d cockroachdb 2>&1 | tail -2
     echo -n "  Waiting for health"
     for i in $(seq 1 30); do
-      if curl -sf http://localhost:8080/health &>/dev/null; then
+      if curl -sf "http://localhost:${CRDB_DOCKER_ADMIN_PORT}/health" &>/dev/null; then
         echo -e " ${GREEN}ready${NC}"
         break
       fi
@@ -164,7 +184,13 @@ if [ "$USE_DOCKER" = "true" ]; then
 
   # Create database if needed
   echo -e "${YELLOW}Ensuring database exists...${NC}"
-  docker exec skytwin-cockroachdb cockroach sql --insecure -e "CREATE DATABASE IF NOT EXISTS skytwin;" 2>/dev/null \
+  CRDB_CONTAINER="$(compose_crdb_container)"
+  if [ -z "$CRDB_CONTAINER" ]; then
+    echo -e "  ${RED}CockroachDB is listening on ${CRDB_DOCKER_SQL_PORT}/${CRDB_DOCKER_ADMIN_PORT}, but this Compose project does not own it.${NC}"
+    echo "  Stop the other process or set SKYTWIN_DOCKER_SQL_PORT and SKYTWIN_DOCKER_ADMIN_PORT before retrying."
+    exit 1
+  fi
+  docker exec "$CRDB_CONTAINER" cockroach sql --insecure -e "CREATE DATABASE IF NOT EXISTS skytwin;" 2>/dev/null \
     && echo -e "  ${GREEN}Database 'skytwin' ready${NC}" \
     || echo -e "  ${YELLOW}Could not verify database (may already exist)${NC}"
 else
@@ -172,6 +198,16 @@ else
   "$ROOT/bin/skytwin-db" start 2>&1 | sed 's/^/  /'
   "$ROOT/bin/skytwin-db" ensure-db 2>&1 | sed 's/^/  /'
 fi
+
+# .env defaults used by build-time scripts, migrations, seed, and services.
+if [ "$USE_DOCKER" = "true" ]; then
+  export DATABASE_URL="${DATABASE_URL:-postgresql://root@127.0.0.1:${CRDB_DOCKER_SQL_PORT}/skytwin?sslmode=disable}"
+else
+  export DATABASE_URL="${DATABASE_URL:-postgresql://root@127.0.0.1:26257/skytwin?sslmode=disable}"
+fi
+export NODE_ENV="${NODE_ENV:-development}"
+export API_PORT="${API_PORT:-3100}"
+export OPENCLAW_API_URL="${OPENCLAW_API_URL:-http://localhost:3456}"
 
 # 4. Install deps + build + migrate + seed (if needed)
 if [ ! -d "node_modules" ]; then
@@ -194,7 +230,12 @@ pnpm db:migrate 2>&1 | tail -3
 # so the seed-skip check connects to the right endpoint.
 USER_COUNT="0"
 if [ "$USE_DOCKER" = "true" ]; then
-  USER_COUNT=$(docker exec skytwin-cockroachdb cockroach sql --insecure -e "SELECT count(*) FROM skytwin.users;" --format=csv 2>/dev/null | tail -1 || echo "0")
+  CRDB_CONTAINER="$(compose_crdb_container)"
+  if [ -z "$CRDB_CONTAINER" ]; then
+    echo -e "${RED}Docker CockroachDB container not found for this Compose project.${NC}"
+    exit 1
+  fi
+  USER_COUNT=$(docker exec "$CRDB_CONTAINER" cockroach sql --insecure -e "SELECT count(*) FROM skytwin.users;" --format=csv 2>/dev/null | tail -1 || echo "0")
 else
   COCKROACH_BIN="${SKYTWIN_DB_PREFIX:-${XDG_DATA_HOME:-$HOME/.local/share}/skytwin}/bin/cockroach"
   CRDB_HOST="${SKYTWIN_DB_LISTEN_HOST:-127.0.0.1}"
@@ -213,12 +254,6 @@ echo ""
 rm -f "$PIDFILE"
 
 echo -e "${YELLOW}Starting services...${NC}"
-
-# .env defaults
-export DATABASE_URL="${DATABASE_URL:-postgresql://root@127.0.0.1:26257/skytwin?sslmode=disable}"
-export NODE_ENV="${NODE_ENV:-development}"
-export API_PORT="${API_PORT:-3100}"
-export OPENCLAW_API_URL="${OPENCLAW_API_URL:-http://localhost:3456}"
 
 MAX_RESTARTS=5
 RESTART_DELAY=2

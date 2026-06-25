@@ -179,6 +179,9 @@ The defaults give you a working SkyTwin without any LLM API keys or Docker. Powe
 | Env var | Effect |
 |---------|--------|
 | `SKYTWIN_USE_DOCKER=true` | Run CockroachDB inside Docker instead of as a native binary. Useful for users who already have Docker and prefer container lifecycle. |
+| `SKYTWIN_DOCKER_SQL_PORT`, `SKYTWIN_DOCKER_ADMIN_PORT`, `SKYTWIN_DOCKER_API_PORT` | Override Docker Compose host ports for SQL, the Cockroach admin UI, and the optional API container. Useful when another Conductor workspace or local stack already owns `26257`, `8080`, or `3000`. |
+| `TURBO_DEV_CONCURRENCY` | Override the `pnpm dev` Turbo concurrency. The default is `50`, high enough for the current persistent dev task count. |
+| `SKYTWIN_DEV_SKIP_PORT_PREFLIGHT=1` | Bypass the `pnpm dev` port preflight. Use only when you intentionally want Turbo to try starting even though a required dev port is already listening. |
 | `SKYTWIN_WITH_OLLAMA=true` | Install Ollama + pull the gemma4 model (~9.6GB). The default install uses the embedded llama.cpp provider, which doesn't require this. |
 | `SKYTWIN_DISABLE_EMBEDDED=1` | Skip the embedded LLM provider in the API's provider chain. Pair with hosted-only keys (e.g. `ANTHROPIC_API_KEY`) for reproducible evaluation runs. |
 | `SKYTWIN_CRDB_VERSION` | Pin a non-default CockroachDB version. Refresh the hash tables in `bin/skytwin-db` and `apps/desktop/scripts/build-single-binary.sh` together. |
@@ -215,6 +218,10 @@ pnpm dev
 ```
 
 The API starts on `localhost:3100`, the web dashboard on `localhost:3200`.
+`pnpm dev` preflights the API, web, OpenClaw bridge, and Twin MCP ports before
+Turbo starts. If another process owns a required port, it prints the owning
+PID/command/cwd; if this same workspace is already healthy, it exits cleanly
+instead of starting a duplicate dev stack.
 
 ### Validating the install path
 

@@ -1,0 +1,163 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+ROOT_DIR="$(pwd -P)"
+
+if [[ -f .env ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source ./.env
+  set +a
+fi
+
+export NODE_ENV="${NODE_ENV:-development}"
+export API_PORT="${API_PORT:-3100}"
+export WEB_PORT="${WEB_PORT:-3200}"
+export WORKER_PORT="${WORKER_PORT:-3101}"
+export BRIDGE_PORT="${BRIDGE_PORT:-3456}"
+export TWIN_MCP_SERVER_PORT="${TWIN_MCP_SERVER_PORT:-4444}"
+export API_BASE_URL="${API_BASE_URL:-http://localhost:${API_PORT}}"
+export IRONCLAW_API_URL="${IRONCLAW_API_URL:-http://localhost:4000}"
+export IRONCLAW_WEBHOOK_SECRET="${IRONCLAW_WEBHOOK_SECRET:-dev-skytwin-ironclaw-local-shared-secret}"
+export OPENCLAW_API_URL="${OPENCLAW_API_URL:-http://localhost:${BRIDGE_PORT}}"
+
+is_valid_port() {
+  [[ "$1" =~ ^[0-9]+$ ]] && (( "$1" >= 1 && "$1" <= 65535 ))
+}
+
+port_pids() {
+  local port="$1"
+  lsof -nP -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null | sort -u || true
+}
+
+pid_command() {
+  ps -p "$1" -o command= 2>/dev/null || true
+}
+
+pid_cwd() {
+  lsof -a -p "$1" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1
+}
+
+pid_is_in_workspace() {
+  local cwd
+  cwd="$(pid_cwd "$1")"
+  [[ "$cwd" == "$ROOT_DIR" || "$cwd" == "$ROOT_DIR"/* ]]
+}
+
+url_contains() {
+  command -v curl >/dev/null 2>&1 &&
+    curl -fsS --max-time 2 "$1" 2>/dev/null | grep -F "$2" >/dev/null 2>&1
+}
+
+port_has_listener() {
+  [[ -n "$(port_pids "$1")" ]]
+}
+
+existing_workspace_dev_is_healthy() {
+  url_contains "http://localhost:${API_PORT}/api/health" '"service":"skytwin-api"' &&
+    url_contains "http://localhost:${WEB_PORT}/" 'SkyTwin' &&
+    url_contains "http://localhost:${BRIDGE_PORT}/health" '"service":"openclaw-bridge"' &&
+    port_has_listener "${TWIN_MCP_SERVER_PORT}"
+}
+
+tmux_hint() {
+  if command -v tmux >/dev/null 2>&1 && tmux has-session -t skytwin-dev-algiers 2>/dev/null; then
+    cat <<'EOF'
+
+Existing tmux session:
+  tmux attach -t skytwin-dev-algiers
+  tmux kill-session -t skytwin-dev-algiers
+EOF
+  fi
+}
+
+check_dev_ports() {
+  [[ "${SKYTWIN_DEV_SKIP_PORT_PREFLIGHT:-}" == "1" ]] && return 0
+
+  if ! command -v lsof >/dev/null 2>&1; then
+    echo "[dev] lsof is unavailable; skipping port preflight." >&2
+    return 0
+  fi
+
+  local specs=(
+    "API|${API_PORT}"
+    "web|${WEB_PORT}"
+    "OpenClaw bridge|${BRIDGE_PORT}"
+    "Twin MCP server|${TWIN_MCP_SERVER_PORT}"
+  )
+
+  local conflicts=0
+  local all_conflicts_from_workspace=1
+  local spec name port pids pid cmd cwd
+
+  for spec in "${specs[@]}"; do
+    IFS='|' read -r name port <<< "$spec"
+    if ! is_valid_port "$port"; then
+      echo "[dev] Invalid port for ${name}: ${port}" >&2
+      exit 1
+    fi
+
+    pids="$(port_pids "$port")"
+    [[ -z "$pids" ]] && continue
+
+    conflicts=$((conflicts + 1))
+    while IFS= read -r pid; do
+      [[ -z "$pid" ]] && continue
+      if ! pid_is_in_workspace "$pid"; then
+        all_conflicts_from_workspace=0
+      fi
+    done <<< "$pids"
+  done
+
+  [[ "$conflicts" -eq 0 ]] && return 0
+
+  if [[ "$all_conflicts_from_workspace" -eq 1 ]] && existing_workspace_dev_is_healthy; then
+    cat >&2 <<EOF
+[dev] SkyTwin dev already appears to be running for this workspace.
+
+Endpoints:
+  API:             http://localhost:${API_PORT}/api/health
+  Web:             http://localhost:${WEB_PORT}
+  OpenClaw bridge: http://localhost:${BRIDGE_PORT}/health
+  Twin MCP server: localhost:${TWIN_MCP_SERVER_PORT}
+
+Stop the existing run before starting another copy, or attach to it if it is in tmux.
+EOF
+    tmux_hint >&2
+    exit 0
+  fi
+
+  cat >&2 <<EOF
+[dev] SkyTwin dev cannot start because required ports are already in use.
+
+Stop the listed process(es), change the relevant *_PORT env var, or set
+SKYTWIN_DEV_SKIP_PORT_PREFLIGHT=1 only if you intentionally want Turbo to try anyway.
+EOF
+
+  for spec in "${specs[@]}"; do
+    IFS='|' read -r name port <<< "$spec"
+    pids="$(port_pids "$port")"
+    [[ -z "$pids" ]] && continue
+    echo >&2
+    echo "Port ${port} (${name}) is owned by:" >&2
+    while IFS= read -r pid; do
+      [[ -z "$pid" ]] && continue
+      cmd="$(pid_command "$pid")"
+      cwd="$(pid_cwd "$pid")"
+      echo "  PID ${pid}: ${cmd:-unknown command}" >&2
+      [[ -n "$cwd" ]] && echo "    cwd: ${cwd}" >&2
+    done <<< "$pids"
+  done
+
+  tmux_hint >&2
+  exit 1
+}
+
+check_dev_ports
+
+if command -v turbo >/dev/null 2>&1; then
+  exec turbo run dev --concurrency="${TURBO_DEV_CONCURRENCY:-50}"
+fi
+
+exec pnpm exec turbo run dev --concurrency="${TURBO_DEV_CONCURRENCY:-50}"

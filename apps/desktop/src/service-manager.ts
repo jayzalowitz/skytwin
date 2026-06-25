@@ -400,12 +400,21 @@ export class ServiceManager {
         throw err;
       }
     }
-    await this.startCockroach();
-    // Migrations must complete after CRDB is up but before API starts;
-    // otherwise API hits "relation does not exist" on first query and
-    // crashlooks until restart-backoff exhausts.
-    if (this.cockroachStatus === 'running') {
-      await this.runMigrations();
+    if (await this.waitForExternalApi(10000)) {
+      console.log('[crdb] External API detected on :3100 — skipping local CockroachDB startup.');
+      // In monorepo dev, the external API owns the DB connection and
+      // migrations. Treat the dependency as satisfied for tray/status
+      // purposes; the API health check below remains the source of truth.
+      this.cockroachStatus = 'running';
+      this.emitStatus();
+    } else {
+      await this.startCockroach();
+      // Migrations must complete after CRDB is up but before API starts;
+      // otherwise API hits "relation does not exist" on first query and
+      // crashlooks until restart-backoff exhausts.
+      if (this.cockroachStatus === 'running') {
+        await this.runMigrations();
+      }
     }
     await this.startApi();
     const apiReady = await this.waitForApi(10000);
@@ -498,12 +507,24 @@ export class ServiceManager {
     const timer = setTimeout(() => controller.abort(), 500);
     try {
       const res = await fetch('http://localhost:3100/api/health', { signal: controller.signal });
-      return res.ok;
+      if (!res.ok) return false;
+      const payload = (await res.json().catch(() => null)) as { service?: unknown } | null;
+      return payload?.service === 'skytwin-api';
     } catch {
       return false;
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  private async waitForExternalApi(timeoutMs: number): Promise<boolean> {
+    if (app.isPackaged) return false;
+    const deadline = Date.now() + timeoutMs;
+    do {
+      if (await this.detectExternalApi()) return true;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    } while (Date.now() < deadline);
+    return false;
   }
 
   private async startApi(): Promise<void> {

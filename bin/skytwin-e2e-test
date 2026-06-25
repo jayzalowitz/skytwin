@@ -27,9 +27,9 @@ NC='\033[0m'
 # ---------------------------------------------------------------------------
 
 TEST_DB="skytwin_e2e_test"
-CRDB_PORT=26257
-CRDB_ADMIN_PORT=8080
-CRDB_CONTAINER="skytwin-cockroachdb"
+CRDB_PORT="${SKYTWIN_DOCKER_SQL_PORT:-${SKYTWIN_DB_PORT:-26257}}"
+CRDB_ADMIN_PORT="${SKYTWIN_DOCKER_ADMIN_PORT:-8080}"
+CRDB_CONTAINER="${SKYTWIN_CRDB_CONTAINER:-skytwin-cockroachdb}"
 API_PORT=3199  # Use a non-standard port to avoid conflicting with dev server
 API_PID=""
 CRDB_STARTED_BY_US=false
@@ -56,6 +56,8 @@ export DATABASE_NAME="$TEST_DB"
 export API_PORT
 export NODE_ENV="test"
 export E2E="true"
+export SKYTWIN_DOCKER_SQL_PORT="$CRDB_PORT"
+export SKYTWIN_DOCKER_ADMIN_PORT="$CRDB_ADMIN_PORT"
 
 # ---------------------------------------------------------------------------
 # Helpers
