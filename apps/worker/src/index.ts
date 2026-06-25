@@ -4,11 +4,13 @@ import type { SignalConnector, RawSignal } from '@skytwin/connectors';
 import {
   GmailConnector,
   GoogleCalendarConnector,
+  OutlookMailConnector,
   DbTokenStore,
   OAuthRefreshError,
   type CursorStore,
   type LabelObserver,
   type GoogleOAuthConfig,
+  type MicrosoftOAuthConfig,
 } from '@skytwin/connectors';
 import {
   connectorCursorRepository,
@@ -374,6 +376,50 @@ async function resolveGoogleConfig(): Promise<GoogleOAuthConfig | null> {
   return { clientId, clientSecret, redirectUri };
 }
 
+/**
+ * Worker-local Microsoft (Entra) config resolver — the Microsoft counterpart
+ * to `resolveGoogleConfig`, mirroring apps/api/src/routes/oauth.ts so the
+ * worker can refresh Outlook tokens minted by the connect flow. Reads env
+ * directly (config doesn't carry Microsoft fields), then DB Setup creds, then
+ * the bundled PKCE-only default. Returns null when no client is configured.
+ */
+async function resolveMicrosoftConfig(): Promise<MicrosoftOAuthConfig | null> {
+  let clientId = process.env['MICROSOFT_CLIENT_ID'] ?? '';
+  let clientSecret = process.env['MICROSOFT_CLIENT_SECRET'] ?? '';
+  let redirectUri = process.env['MICROSOFT_REDIRECT_URI'] ?? 'http://localhost:3100/api/oauth/microsoft/callback';
+  const tenant = process.env['MICROSOFT_TENANT'] ?? 'common';
+
+  if (!clientId) {
+    try {
+      const dbCreds = await serviceCredentialRepository.getAsMap('microsoft');
+      clientId = clientId || dbCreds['client_id'] || '';
+      clientSecret = clientSecret || dbCreds['client_secret'] || '';
+      if (dbCreds['redirect_uri'] && redirectUri === 'http://localhost:3100/api/oauth/microsoft/callback') {
+        redirectUri = dbCreds['redirect_uri'];
+      }
+    } catch (error) {
+      log.warn('Could not load Microsoft OAuth credentials from DB', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  if (!clientId) {
+    const bundled = process.env['SKYTWIN_DEFAULT_MICROSOFT_CLIENT_ID'] ?? '';
+    if (bundled) {
+      clientId = bundled;
+      clientSecret = '';
+    }
+  }
+
+  if (!clientId) {
+    log.warn('Microsoft OAuth tokens exist, but no Microsoft client ID is configured (env/DB/bundle all empty); skipping Outlook connectors');
+    return null;
+  }
+
+  return { clientId, clientSecret, redirectUri, tenant };
+}
+
 async function connectUserConnectors(discovered: UserConnectors[]): Promise<UserConnectors[]> {
   const connectedUsers: UserConnectors[] = [];
 
@@ -439,29 +485,45 @@ async function discoverUsers(): Promise<UserConnectors[]> {
       userTokens.set(token.user_id, existing);
     }
 
+    // Resolve each provider's config at most once per discovery cycle.
     let googleConfig: GoogleOAuthConfig | null | undefined;
+    let microsoftConfig: MicrosoftOAuthConfig | null | undefined;
     const result: UserConnectors[] = [];
     for (const [userId, userTokenList] of userTokens) {
       const connectors: SignalConnector[] = [];
       const hasGoogle = userTokenList.some((t) => t.provider === 'google');
+      const hasMicrosoft = userTokenList.some((t) => t.provider === 'microsoft');
 
-      if (hasGoogle) {
-        if (googleConfig === undefined) {
-          googleConfig = await resolveGoogleConfig();
-        }
-        if (googleConfig) {
-          const tokenStore = new DbTokenStore(oauthRepository, googleConfig);
-          tokenStore.setKeyCache(workerKeyCache);
-          // Audit-log every credential-vault decryption (#393). The
-          // sink writes to access_log with actor='worker'; failures
-          // are swallowed and logged at the call site so a CRDB blip
-          // doesn't block legitimate OAuth refreshes.
-          tokenStore.setAuditLog(
-            { recordAccess: (input) => accessLogRepository.record(input) },
-            'worker',
-          );
+      if (hasGoogle && googleConfig === undefined) googleConfig = await resolveGoogleConfig();
+      if (hasMicrosoft && microsoftConfig === undefined) microsoftConfig = await resolveMicrosoftConfig();
+
+      // A user is "usable" for a provider only when they have a token AND a
+      // resolvable client config for it. One DbTokenStore per user carries
+      // whichever configs resolved (provider-aware refresh routes correctly);
+      // the connectors attached are gated on usability.
+      const usableGoogle = hasGoogle && !!googleConfig;
+      const usableMicrosoft = hasMicrosoft && !!microsoftConfig;
+
+      if (usableGoogle || usableMicrosoft) {
+        const tokenStore = new DbTokenStore(
+          oauthRepository,
+          googleConfig ?? undefined,
+          microsoftConfig ?? undefined,
+        );
+        tokenStore.setKeyCache(workerKeyCache);
+        // Audit-log every credential-vault decryption (#393). The sink writes
+        // to access_log with actor='worker'; failures are swallowed and logged
+        // at the call site so a CRDB blip doesn't block legitimate refreshes.
+        tokenStore.setAuditLog(
+          { recordAccess: (input) => accessLogRepository.record(input) },
+          'worker',
+        );
+        if (usableGoogle) {
           connectors.push(new GmailConnector(userId, tokenStore, gmailCursorStore, gmailLabelObserver));
           connectors.push(new GoogleCalendarConnector(userId, tokenStore, gmailCursorStore));
+        }
+        if (usableMicrosoft) {
+          connectors.push(new OutlookMailConnector(userId, tokenStore, gmailCursorStore));
         }
       }
 
