@@ -117,6 +117,18 @@ describe('OutlookMailConnector', () => {
     );
   });
 
+  it('normalizes the List-Id header to the bare identifier (Gmail parity)', async () => {
+    fetchMock.mockResolvedValueOnce(
+      res(200, {
+        value: [gmsg({ id: 'l', headers: [{ name: 'List-Id', value: 'Rangers <rangers.lists.example.org>' }] })],
+        '@odata.deltaLink': 'D',
+      }),
+    );
+    const conn = await connected();
+    const [sig] = await conn.poll();
+    expect(sig!.data.listId).toBe('rangers.lists.example.org');
+  });
+
   it('drains paginated delta (nextLink → deltaLink) in one poll and stores the deltaLink', async () => {
     fetchMock
       .mockResolvedValueOnce(res(200, { value: [gmsg({ id: 'a' })], '@odata.nextLink': 'NEXT1' }))

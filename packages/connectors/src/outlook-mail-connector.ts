@@ -1,6 +1,6 @@
 import type { SignalConnector, RawSignal, SignalHandler } from './connector-interface.js';
 import type { OAuthTokenStore } from './oauth/token-store.js';
-import type { CursorStore } from './gmail-connector.js';
+import { parseListId, type CursorStore } from './gmail-connector.js';
 import { withRetry, RetryableHttpError, parseRetryAfter } from '@skytwin/core';
 import { classifyEmailAuthoringTier, type AuthoringTier } from './authoring-tier.js';
 
@@ -230,7 +230,10 @@ export class OutlookMailConnector implements SignalConnector {
     const ccBare = this.bareAddresses(msg.ccRecipients);
     const inReplyTo = this.headerValue(msg.internetMessageHeaders, 'In-Reply-To');
     const listUnsubscribe = this.headerValue(msg.internetMessageHeaders, 'List-Unsubscribe');
-    const listId = this.headerValue(msg.internetMessageHeaders, 'List-Id');
+    // Normalize the raw `List-Id` header to the bare identifier, matching the
+    // Gmail connector (e.g. `<rangers.lists.example.org>` → `rangers.lists.example.org`)
+    // so the signal shape + downstream listId comparisons line up across both.
+    const listId = parseListId(this.headerValue(msg.internetMessageHeaders, 'List-Id'));
     const type = this.inferEmailType(from, subject);
 
     // Inbox mail is inbound, so we hand the classifier an `INBOX` label (no
