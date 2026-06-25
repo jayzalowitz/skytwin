@@ -43,10 +43,9 @@ export const CAPABILITY_SOURCE_MATRIX: Readonly<
   // matrix (commitment-extractor early-returns []). `outlook`/`outlook_calendar`
   // must be members or Outlook mail + calendar produce zero commitments.
   // NOTE: the other capabilities' extractors do not gate on the matrix, so the
-  // Outlook sources are intentionally only added here. Folding them into
-  // `computeCoverage` (the source-coverage UI) needs an alternative-provider
-  // model (gmail OR outlook fully covers email) so Google users aren't told
-  // they're "missing Outlook" — tracked as a follow-up.
+  // Outlook sources are intentionally only added here. The source-coverage UI
+  // (`computeCoverage`) handles Outlook via alternative-provider source GROUPS
+  // (gmail OR outlook covers "email"), so it doesn't need them in every set.
   commitments: new Set(['gmail', 'outlook', 'email', 'google_calendar', 'outlook_calendar', 'calendar', 'voice']),
   deadlines: new Set(ALL_TEXT_SOURCES),
   security: new Set(['gmail', 'email']),

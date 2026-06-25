@@ -1,5 +1,11 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.74.0] - 2026-06-25
+
+### Fixed
+
+- **The "what I can see" coverage panel now understands that Gmail and Outlook are *alternatives*, not things to collect.** `computeCoverage` treated every source in a capability's allow-list as separately required, so once the Outlook connectors landed (#557) a **Microsoft-only user's panel went all-red** — every capability "unavailable", with prompts to connect Gmail/Google Calendar — even though their Outlook mail + calendar were actively producing commitments. The inverse was also latent: a Google user would have been nudged to "also connect Outlook." Coverage is now computed over **source equivalence groups** (`gmail`/`outlook` → "email", `google_calendar`/`outlook_calendar` → "a calendar"): a group is satisfied by *any* connected member, so a Microsoft-only user gets the exact same capability statuses a Google user gets, and neither is ever told to connect the other vendor. `unlockedBy`/`missing` now carry **human-meaningful group labels** ("connect a calendar") instead of raw, redundant source ids ("connect google_calendar, outlook_calendar"). The `microsoft` provider maps to `outlook` + `outlook_calendar`. 11 unit tests, including Microsoft↔Google status parity and the no-cross-vendor-nudge guarantees.
+
 ## [0.6.73.0] - 2026-06-25
 
 ### Added
