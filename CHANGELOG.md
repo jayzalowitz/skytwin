@@ -1,5 +1,11 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.71.0] - 2026-06-25
+
+### Fixed
+
+- **The OpenClaw bridge can no longer take down the whole `pnpm dev` stack after a one-off `SIGKILL`/exit 137.** Its dev script now runs through a tiny supervisor that restarts `server.mjs` after unexpected exits, including the `137` failure mode seen in long-running local dev, while still failing fast if the bridge crash-loops repeatedly in a short window. The production `start` script remains the direct `node server.mjs` path. A new regression test starts the supervisor, kills the child bridge process with `SIGKILL`, and asserts that a new child is spawned instead of letting Turbo tear down API/web/worker.
+
 ## [0.6.70.0] - 2026-06-25
 
 ### Fixed
