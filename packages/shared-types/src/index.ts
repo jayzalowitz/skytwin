@@ -9,6 +9,16 @@ export {
 export type { User, AutonomySettings, PerAppOverride } from './user.js';
 
 export type {
+  RoutineCadence,
+  RoutineActionKind,
+  RoutineStatus,
+  RoutineFilter,
+  RoutineSpec,
+  Routine,
+  RoutineParseResult,
+} from './routine.js';
+
+export type {
   TwinProfile,
   Preference,
   PreferenceSource,
