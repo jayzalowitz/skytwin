@@ -1,5 +1,11 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.73.0] - 2026-06-25
+
+### Added
+
+- **Outlook calendar connector (Microsoft Graph) — the calendar half of the Outlook integration.** `OutlookCalendarConnector` is the Microsoft counterpart to `GoogleCalendarConnector` and the companion to the Outlook mail connector (#556). It polls `calendarView/delta` over a rolling 7-day window and emits one `RawSignal` per event, stamped with the same `AuthoringTier` (`classifyCalendarAuthoringTier`) and shaped like the Google calendar signal — `meeting_invite` vs `calendar_event`, organizer, attendees, conflict flag, etc. Graph's `isOrganizer` maps to the classifier's `selfEmail` so events the user organized classify as `user_sent_originated`, and a `responseStatus` of `notResponded` marks `requiresResponse`. It reuses the mail connector's delta machinery: a `@odata.deltaLink` cursor in the `CursorStore`, **410 Gone → re-bootstrap**, and per-poll page caps. Events are **collected across pages, conflict-detected as a set, then emitted in a single pass**, so a mid-sync 410 can't double-fire handlers. Tombstones (`@removed`) and events with no start time are skipped. The worker wires it alongside the mail connector for users with `microsoft` tokens. 7 mocked-Graph tests (bootstrap, organizer-tier, conflict detection, tombstone skip, incremental + 410 re-bootstrap). End-to-end against real Outlook needs an Azure/Entra app.
+
 ## [0.6.72.0] - 2026-06-25
 
 ### Added
