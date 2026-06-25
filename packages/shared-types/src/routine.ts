@@ -6,8 +6,8 @@
  * recorded with an `ExplanationRecord`.
  *
  * v1 is deliberately READ-ONLY. A routine summarizes / notifies on matching
- * signals — it never takes an outbound or destructive action on its own. Action
- * -taking routines (draft a reply, RSVP, file something) are a deliberate
+ * signals — it never takes an outbound or destructive action on its own.
+ * Action-taking routines (draft a reply, RSVP, file something) are a deliberate
  * follow-up: every such action must route through the policy engine + approval
  * path per firing, exactly like a one-off decision. Keeping v1 read-only means
  * a routine can be authored and run without ever bypassing the autonomy model.

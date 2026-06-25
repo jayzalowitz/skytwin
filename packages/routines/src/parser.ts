@@ -56,7 +56,7 @@ const TIME_OF_DAY: Record<string, number> = {
 
 /** A recurrence cue is required — without one, the text isn't a routine. */
 const RECURRENCE =
-  /\b(every|each|daily|weekly|hourly|recurring|routinely|whenever|anytime|any time|bi-?weekly|fortnight(?:ly)?)\b/;
+  /\b(every|each|daily|weekly|hourly|recurring|routinely|whenever|anytime|any time|as soon as|the moment|bi-?weekly|fortnight(?:ly)?)\b/;
 
 /**
  * True when the text signals recurrence. Beyond the explicit cues above, a
@@ -66,7 +66,11 @@ const RECURRENCE =
  */
 function hasRecurrence(t: string): boolean {
   if (RECURRENCE.test(t)) return true;
+  // Only FULL day names gate as recurrence (length >= 6). A 3-letter
+  // abbreviation like "tues" would false-positive one-off chat ("meet me tues");
+  // "every tue" still matches via the RECURRENCE cue above.
   for (const name of Object.keys(DAYS)) {
+    if (name.length < 6) continue;
     if (new RegExp(`\\b${name}s\\b`).test(t)) return true; // plural day = recurring
     if (new RegExp(`\\b(?:every|each|on)\\s+${name}\\b`).test(t)) return true;
   }
@@ -222,8 +226,12 @@ function detectFrom(t: string): { values: string[]; fuzzy: boolean } {
 
 function detectKeywords(text: string): string[] {
   const out = new Set<string>();
-  // Quoted phrases (straight or curly, single or double) are taken verbatim.
-  for (const m of text.matchAll(/["'“”‘’]([^"'“”‘’]+)["'“”‘’]/g)) {
+  // Quoted phrases are taken verbatim. ONLY double quotes (straight + curly)
+  // delimit a phrase — single quotes (straight `'` and curly `’`) are excluded
+  // because they appear in contractions/possessives ("don't … it's"), which
+  // would otherwise be captured as one nonsensical span. Unquoted phrases are
+  // still picked up by the "about X" / "regarding X" capture below.
+  for (const m of text.matchAll(/["“”]([^"“”]+)["“”]/g)) {
     out.add(m[1]!.trim().toLowerCase());
   }
   // "about X" / "regarding X" / "mentioning X" / "containing X" / "related to X"
@@ -235,7 +243,7 @@ function detectKeywords(text: string): string[] {
   )) {
     // Strip surrounding quotes so `about "Q3 budget"` dedupes with the
     // quoted-phrase capture above rather than adding `"q3 budget"` verbatim.
-    const phrase = m[1]!.trim().replace(/^["'“”‘’]|["'“”‘’]$/g, '').trim();
+    const phrase = m[1]!.trim().replace(/^["“”]|["“”]$/g, '').trim();
     if (phrase) out.add(phrase);
   }
   return [...out];

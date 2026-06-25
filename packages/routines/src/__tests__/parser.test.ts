@@ -28,9 +28,18 @@ describe('parseRoutineSpec — recurrence gate', () => {
       'check my inbox hourly',
       'each week recap my meetings',
       'whenever an email from finance@acme.com arrives, alert me',
+      'as soon as an email from finance@acme.com arrives, alert me', // event-driven
     ]) {
       expect(parseRoutineSpec(msg).matched).toBe(true);
     }
+  });
+
+  it('does NOT treat a 3-letter day abbreviation as recurrence (one-off chat)', () => {
+    // "meet me tues" is a one-off — must not be classified as a weekly routine.
+    expect(parseRoutineSpec('meet me tues').matched).toBe(false);
+    expect(parseRoutineSpec('lunch thurs?').matched).toBe(false);
+    // ...but an explicit cue with an abbreviation still matches.
+    expect(parseRoutineSpec('every tue summarize my email').matched).toBe(true);
   });
 });
 
@@ -161,6 +170,14 @@ describe('parseRoutineSpec — from / keywords / domains', () => {
   it('handles curly “smart” quotes in keywords', () => {
     const s = spec('every day summarize my email about “merger talks”').spec;
     expect(s.filter.keywords).toContain('merger talks');
+  });
+
+  it('does not capture apostrophes in contractions as a quoted phrase', () => {
+    // "don't" / "it's" must NOT produce a bogus keyword spanning the apostrophes.
+    const s = spec("every day summarize emails where the sender doesn't say it's urgent").spec;
+    for (const kw of s.filter.keywords ?? []) {
+      expect(kw).not.toContain("t say it"); // the old apostrophe-span bug
+    }
   });
 
   it('detects domains (security, scheduling)', () => {
