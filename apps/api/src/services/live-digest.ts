@@ -72,7 +72,6 @@ interface DecisionDigestRow {
 interface AccountRow {
   provider: string;
   scopes: string[] | null;
-  is_active: boolean;
 }
 
 /** Map a RawSignal source channel to the digest's source-type label. */
@@ -516,15 +515,21 @@ export async function buildLiveDigest(userId: string): Promise<LiveDigest | null
   });
 
   // Coverage for the power-view panel, from the user's connected accounts.
+  // Source of truth is oauth_tokens: a row exists iff the user has a live
+  // connection (disconnect deletes the row), so there's no is_active flag to
+  // consult. The legacy `connected_accounts` table this used to read has no
+  // writer anywhere, which left the panel stuck in cold-start for EVERY user.
+  // refresh_token is intentionally not filtered — it's NULL for credential-
+  // vault-migrated rows (the token lives in the encrypted columns).
   const accounts = await query<AccountRow>(
-    `SELECT provider, scopes, is_active FROM connected_accounts WHERE user_id = $1`,
+    `SELECT provider, scopes FROM oauth_tokens WHERE user_id = $1`,
     [userId],
   );
   const coverage = computeCoverage(
     accounts.rows.map((a) => ({
       provider: a.provider,
       scopes: a.scopes ?? [],
-      isActive: a.is_active,
+      isActive: true,
     })),
   );
 

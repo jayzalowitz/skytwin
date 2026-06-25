@@ -1,5 +1,12 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.74.0] - 2026-06-25
+
+### Fixed
+
+- **The "what I can see" coverage panel now actually sees your connected accounts.** The panel read a legacy `connected_accounts` table that **nothing writes to** — OAuth connections are persisted to `oauth_tokens` — so `computeCoverage` always got zero accounts and the panel was stuck in **cold-start ("connect a source") for every user**, even one with Gmail connected. The digest now reads connected providers from `oauth_tokens` (the OAuth source of truth; a row exists iff the connection is live, since disconnect deletes it). Found by an adversarial pre-merge review of the change below — the alternative-provider fix would have been invisible in production without this.
+- **The coverage panel now understands that Gmail and Outlook are *alternatives*, not things to collect.** `computeCoverage` treated every source in a capability's allow-list as separately required, so once the Outlook connectors landed (#557) a **Microsoft-only user's panel went all-red** — every capability "unavailable", with prompts to connect Gmail/Google Calendar — even though their Outlook mail + calendar were actively producing commitments. The inverse was also latent: a Google user would have been nudged to "also connect Outlook." Coverage is now computed over **source equivalence groups** (`gmail`/`outlook` → "email", `google_calendar`/`outlook_calendar` → "a calendar"): a group is satisfied by *any* connected member, so a Microsoft-only user gets the exact same capability statuses a Google user gets, and neither is ever told to connect the other vendor. `unlockedBy`/`missing` now carry **human-meaningful group labels** ("connect a calendar") instead of raw, redundant source ids ("connect google_calendar, outlook_calendar"). The `microsoft` provider maps to `outlook` + `outlook_calendar`. 11 unit tests, including Microsoft↔Google status parity and the no-cross-vendor-nudge guarantees.
+
 ## [0.6.73.0] - 2026-06-25
 
 ### Added

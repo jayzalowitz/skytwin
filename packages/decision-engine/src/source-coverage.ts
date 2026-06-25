@@ -21,13 +21,19 @@ export type CoverageCapability = Capability | 'todos';
 export interface CapabilityStatus {
   capability: CoverageCapability;
   status: 'available' | 'partial' | 'unavailable';
-  /** Real sources that, if connected, would enable or enrich this capability. */
+  /**
+   * Human-meaningful source-group labels that, if connected, would enable or
+   * enrich this capability (e.g. `["a calendar", "voice"]`). Labels are groups,
+   * not raw source ids, so a Gmail user is told "connect a calendar" rather than
+   * the redundant/jargon "connect google_calendar, outlook_calendar".
+   */
   unlockedBy: string[];
 }
 
 export interface SourceCoverage {
+  /** Real source ids the user has connected (e.g. `["gmail", "google_calendar"]`). */
   connected: string[];
-  /** Real sources not connected that would unlock/enrich some capability. */
+  /** Source-group labels not connected that would unlock/enrich some capability. */
   missing: string[];
   capabilityStatus: CapabilityStatus[];
   /** True when zero sources are connected (distinct from "connected but quiet"). */
@@ -38,16 +44,46 @@ export interface SourceCoverage {
 // coverage math so a real gmail user isn't told they're "missing" the email mock.
 const MOCK_SOURCES = new Set(['email', 'calendar']);
 
-// Some providers map to multiple sources.
-// NOTE: `microsoft` (→ outlook + outlook_calendar) is intentionally NOT mapped
-// here yet. The coverage model treats a capability's source set as "all enrich
-// coverage", which has no notion of alternative providers — mapping microsoft
-// would report `security: unavailable` for Outlook-only users (security-alert
-// actually runs on Outlook mail; it just isn't in the matrix's security set)
-// and nudge Google users to "connect Outlook". Both need the alternative-
-// provider coverage redesign tracked alongside CAPABILITY_SOURCE_MATRIX.
+/**
+ * Source equivalence groups. Gmail and Outlook are ALTERNATIVE email sources,
+ * not complementary ones — connecting either fully covers "email"; likewise
+ * Google and Outlook calendars both cover "a calendar". Coverage is computed
+ * over these groups (a group is satisfied by ANY connected member), so an
+ * Outlook-only user gets the same coverage a Gmail user does, and a Gmail user
+ * is never nudged to "also connect Outlook". The `label` is what the UI shows.
+ */
+const SOURCE_GROUPS: ReadonlyArray<{ key: string; label: string; members: ReadonlyArray<string> }> = [
+  { key: 'email', label: 'email', members: ['gmail', 'outlook'] },
+  { key: 'calendar', label: 'a calendar', members: ['google_calendar', 'outlook_calendar'] },
+  { key: 'filesystem', label: 'files', members: ['filesystem'] },
+  { key: 'voice', label: 'voice', members: ['voice'] },
+];
+
+/** Map a real source id to its group. Ungrouped sources are their own singleton group. */
+function groupFor(source: string): { key: string; label: string } {
+  for (const g of SOURCE_GROUPS) {
+    if (g.members.includes(source)) return { key: g.key, label: g.label };
+  }
+  return { key: source, label: source };
+}
+
+/** Dedupe a list of groups by key, preserving first-seen label + order. */
+function dedupeGroups(groups: Array<{ key: string; label: string }>): Array<{ key: string; label: string }> {
+  const seen = new Set<string>();
+  const out: Array<{ key: string; label: string }> = [];
+  for (const g of groups) {
+    if (seen.has(g.key)) continue;
+    seen.add(g.key);
+    out.push(g);
+  }
+  return out;
+}
+
+// A provider can yield multiple sources; alternative providers (google vs
+// microsoft) map to the same source GROUPS so coverage treats them as peers.
 function normalizeProvider(provider: string): string[] {
   if (provider === 'google') return ['gmail', 'google_calendar'];
+  if (provider === 'microsoft') return ['outlook', 'outlook_calendar'];
   return [provider];
 }
 
@@ -69,10 +105,10 @@ const COVERAGE_CAPABILITIES: CoverageCapability[] = [
 ];
 
 /**
- * Evaluate coverage for a user's connected accounts.
- *  - unavailable: no allowed source connected.
- *  - available: every (real) allowed source connected.
- *  - partial: some but not all allowed sources connected.
+ * Evaluate coverage for a user's connected accounts, over source GROUPS:
+ *  - unavailable: no allowed group connected.
+ *  - available: every allowed group connected (a group = any one of its members).
+ *  - partial: some but not all allowed groups connected.
  */
 export function computeCoverage(accounts: ConnectedAccountInfo[]): SourceCoverage {
   const connectedSet = new Set<string>();
@@ -84,21 +120,23 @@ export function computeCoverage(accounts: ConnectedAccountInfo[]): SourceCoverag
     }
   }
   const connected = [...connectedSet].sort();
+  const connectedGroupKeys = new Set([...connectedSet].map((s) => groupFor(s).key));
 
   const capabilityStatus: CapabilityStatus[] = COVERAGE_CAPABILITIES.map((cap) => {
-    const allowed =
+    const allowedReal =
       cap === 'todos'
         ? ALL_REAL_SOURCES
         : realSources(CAPABILITY_SOURCE_MATRIX[cap as Capability] ?? new Set());
-    const connectedAllowed = allowed.filter((s) => connectedSet.has(s));
-    const missingAllowed = allowed.filter((s) => !connectedSet.has(s)).sort();
+    const allowedGroups = dedupeGroups(allowedReal.map(groupFor));
+    const connectedAllowed = allowedGroups.filter((g) => connectedGroupKeys.has(g.key));
+    const missingGroups = allowedGroups.filter((g) => !connectedGroupKeys.has(g.key));
 
     let status: CapabilityStatus['status'];
     if (connectedAllowed.length === 0) status = 'unavailable';
-    else if (missingAllowed.length === 0) status = 'available';
+    else if (missingGroups.length === 0) status = 'available';
     else status = 'partial';
 
-    return { capability: cap, status, unlockedBy: missingAllowed };
+    return { capability: cap, status, unlockedBy: missingGroups.map((g) => g.label).sort() };
   });
 
   const missing = [

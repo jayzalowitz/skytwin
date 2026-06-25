@@ -72,7 +72,8 @@ memory_rooms
 | Table | Purpose | Write Pattern | Read Pattern |
 |-------|---------|---------------|-------------|
 | `users` | User identity and autonomy settings | Low frequency (settings changes) | Per-decision (load user context) |
-| `connected_accounts` | OAuth tokens, service connections | Low frequency | On signal ingestion |
+| `oauth_tokens` | OAuth tokens + connected accounts (the source of truth; keyed `(user, provider, account_email)` for multi-account) | On connect / token refresh | Per-poll (connectors), coverage panel |
+| `connected_accounts` | Legacy — superseded by `oauth_tokens`; retained in schema but unwritten | — | — |
 | `twin_profiles` | Current twin state | On every feedback event | Per-decision |
 | `twin_profile_versions` | Historical twin snapshots | On every twin mutation | Audit, replay, debugging |
 | `preferences` | Individual preferences with evidence | On feedback and learning | Per-decision (domain-filtered) |
