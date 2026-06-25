@@ -79,6 +79,12 @@ describe('parseRoutineSpec — time of day', () => {
   it('leaves hourly cadence without an hour-of-day', () => {
     expect(spec('hourly digest of my inbox').spec.hourOfDay).toBeUndefined();
   });
+  it('rejects contradictory clock times (13pm) and falls back to the default', () => {
+    // "13pm" is nonsense — must not yield hour 13; falls through to default 8.
+    expect(spec('every day at 13pm summarize my inbox').spec.hourOfDay).toBe(8);
+    // ...but a valid named time still wins on fall-through.
+    expect(spec('every evening at 13pm summarize my inbox').spec.hourOfDay).toBe(18);
+  });
 });
 
 describe('parseRoutineSpec — action', () => {
@@ -121,6 +127,25 @@ describe('parseRoutineSpec — from / keywords / domains', () => {
     expect(s.filter.fromContains).toEqual(['finance@acme.com']);
   });
 
+  it('captures MULTIPLE senders — both addresses, not just the first', () => {
+    expect(
+      spec('every day flag mail from alice@x.com and bob@y.com').spec.filter.fromContains,
+    ).toEqual(['alice@x.com', 'bob@y.com']);
+    expect(
+      spec('every day flag mail from alice@x.com and from bob@y.com').spec.filter.fromContains,
+    ).toEqual(['alice@x.com', 'bob@y.com']);
+  });
+
+  it('does not swallow a trailing clause after the sender', () => {
+    // "alert me" / "summarize" must not become part of the sender filter.
+    expect(
+      spec('whenever an email from finance@acme.com arrives, alert me').spec.filter.fromContains,
+    ).toEqual(['finance@acme.com']);
+    expect(
+      spec('every day flag mail from boss@acme.com and summarize it').spec.filter.fromContains,
+    ).toEqual(['boss@acme.com']);
+  });
+
   it('flags a fuzzy sender with a warning and keeps the literal remainder', () => {
     const r = spec('every morning flag anything from my biggest client');
     expect(r.warnings.some((w) => /vague sender/i.test(w))).toBe(true);
@@ -131,6 +156,11 @@ describe('parseRoutineSpec — from / keywords / domains', () => {
   it('captures quoted phrases and "about X" keywords', () => {
     const s = spec('daily summarize my email about "Q3 budget" and regarding hiring').spec;
     expect(s.filter.keywords).toEqual(expect.arrayContaining(['q3 budget', 'hiring']));
+  });
+
+  it('handles curly “smart” quotes in keywords', () => {
+    const s = spec('every day summarize my email about “merger talks”').spec;
+    expect(s.filter.keywords).toContain('merger talks');
   });
 
   it('detects domains (security, scheduling)', () => {
@@ -152,6 +182,30 @@ describe('parseRoutineSpec — warnings + naming', () => {
   it('does not warn when the filter is narrowed', () => {
     const r = spec('every day summarize my email from finance@acme.com');
     expect(r.warnings.some((w) => /match every signal/i.test(w))).toBe(false);
+  });
+
+  it('warns when more than one day is named (v1 schedules one)', () => {
+    const r = spec('every monday and friday recap my meetings');
+    expect(r.warnings.some((w) => /more than one day/i.test(w))).toBe(true);
+  });
+
+  it('warns when an unsupported interval is coarsened', () => {
+    expect(
+      spec('every 2 days summarize my email').warnings.some((w) => /hourly, daily, or weekly/i.test(w)),
+    ).toBe(true);
+    expect(
+      spec('biweekly recap my calendar').warnings.some((w) => /hourly, daily, or weekly/i.test(w)),
+    ).toBe(true);
+  });
+
+  it('is not vulnerable to catastrophic backtracking on a long no-TLD address', () => {
+    // Long local-part with no closing .tld is the ReDoS trigger for an
+    // unbounded email regex. Bounded quantifiers + input cap keep it fast.
+    const evil = 'every day flag mail from ' + 'a'.repeat(50_000) + '@';
+    const start = performance.now();
+    const r = parseRoutineSpec(evil);
+    expect(performance.now() - start).toBeLessThan(100);
+    expect(r.matched).toBe(true);
   });
 
   it('generates a readable, bounded name', () => {

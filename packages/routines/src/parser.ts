@@ -21,6 +21,22 @@ import type {
  * an error — the caller treats the message as ordinary chat.
  */
 
+/**
+ * Hard cap on input length before any regex runs. Routine asks are short; a
+ * multi-kilobyte message is never a routine, and an unbounded `from …@`-style
+ * string could otherwise drive the email matcher into quadratic backtracking
+ * (a remote-input DoS once chat feeds this). Truncate (don't reject) so a
+ * routine stated at the top of a longer message still parses.
+ */
+const MAX_INPUT = 2000;
+
+/**
+ * Email matcher with BOUNDED quantifiers ({1,64}/{1,255}/{2,24}) so a long
+ * local-part with no TLD can't trigger catastrophic backtracking. Built fresh
+ * (with /g) at each call site to avoid shared `lastIndex` state.
+ */
+const EMAIL_RE = '[a-z0-9._%+-]{1,64}@[a-z0-9.-]{1,255}\\.[a-z]{2,24}';
+
 const DAYS: Record<string, number> = {
   sunday: 0, sun: 0,
   monday: 1, mon: 1,
@@ -39,7 +55,8 @@ const TIME_OF_DAY: Record<string, number> = {
 };
 
 /** A recurrence cue is required — without one, the text isn't a routine. */
-const RECURRENCE = /\b(every|each|daily|weekly|hourly|recurring|routinely|whenever|anytime|any time)\b/;
+const RECURRENCE =
+  /\b(every|each|daily|weekly|hourly|recurring|routinely|whenever|anytime|any time|bi-?weekly|fortnight(?:ly)?)\b/;
 
 /**
  * True when the text signals recurrence. Beyond the explicit cues above, a
@@ -65,7 +82,7 @@ function detectCadence(t: string): { cadence: RoutineCadence; dayOfWeek?: number
   }
   // A named day, or "every/each <day>", or an explicit weekly cue → weekly.
   const dow = detectDayOfWeek(t);
-  if (dow !== undefined || /\b(weekly|every week|each week)\b/.test(t)) {
+  if (dow !== undefined || /\b(weekly|every week|each week|bi-?weekly|fortnight(?:ly)?)\b/.test(t)) {
     return { cadence: 'weekly', dayOfWeek: dow };
   }
   // "daily", "every morning", or a bare "every/each …" with no unit → daily.
@@ -80,6 +97,19 @@ function detectDayOfWeek(t: string): number | undefined {
   return undefined;
 }
 
+/** How many DISTINCT days are named — used to warn that v1 schedules only one. */
+function distinctDayCount(t: string): number {
+  const found = new Set<number>();
+  for (const [name, n] of Object.entries(DAYS)) {
+    if (new RegExp(`\\b${name}s?\\b`).test(t)) found.add(n);
+  }
+  return found.size;
+}
+
+/** Interval cues v1's coarse hourly/daily/weekly cadence can't represent exactly. */
+const UNSUPPORTED_INTERVAL =
+  /\b(every\s+\d+\s+\w+|every other|bi-?weekly|fortnight(ly)?|twice (a|per) (day|week)|weekday|business day)\b/;
+
 /** Hour of day for daily/weekly cadences. Undefined for hourly (it ignores it). */
 function detectHourOfDay(t: string, cadence: RoutineCadence): number | undefined {
   if (cadence === 'hourly') return undefined;
@@ -90,9 +120,17 @@ function detectHourOfDay(t: string, cadence: RoutineCadence): number | undefined
   if (m) {
     let h = parseInt(m[1]!, 10);
     const ampm = m[3];
-    if (ampm === 'pm' && h < 12) h += 12;
-    if (ampm === 'am' && h === 12) h = 0;
-    if (h >= 0 && h <= 23) return h;
+    if (ampm) {
+      // With am/pm the hour must read 1-12; "13pm" is contradictory → fall
+      // through to a named time / default rather than trust "13".
+      if (h >= 1 && h <= 12) {
+        if (ampm === 'pm' && h < 12) h += 12;
+        if (ampm === 'am' && h === 12) h = 0;
+        return h;
+      }
+    } else if (h >= 0 && h <= 23) {
+      return h;
+    }
   }
   for (const [word, h] of Object.entries(TIME_OF_DAY)) {
     if (new RegExp(`\\b${word}\\b`).test(t)) return h;
@@ -148,28 +186,28 @@ const ARRIVAL_VERB = /\s+(?:arrives?|comes?\s+in|shows?\s+up|lands?|hits?|appear
 function detectFrom(t: string): { values: string[]; fuzzy: boolean } {
   const values: string[] = [];
   let fuzzy = false;
-  // Capture every "from <target>" occurrence. Lazy up to a comma/semicolon, a
-  // sentence-ending period (period + space, or period at end), or end of
-  // string — so dots INSIDE an address/domain (finance@acme.com) are kept,
-  // but a real sentence boundary still stops the capture.
-  const re = /\bfrom\s+(.+?)(?=[,;]|\.\s|\.$|$)/g;
+  // Capture each "from <run>" up to a sentence boundary (period+space / period
+  // at end), a semicolon, or end of string — dots inside an address are kept.
+  const re = /\bfrom\s+(.+?)(?=\.\s|\.$|;|$)/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(t)) !== null) {
-    let phrase = m[1]!;
-    // Trim at the first clause boundary word.
-    const stop = phrase.search(FROM_STOP);
-    if (stop > 0) phrase = phrase.slice(0, stop);
-    phrase = phrase.trim();
-    if (!phrase) continue;
-    // An email address is the cleanest signal — take it verbatim and drop any
-    // trailing verb ("from finance@acme.com arrives" → "finance@acme.com").
-    const email = phrase.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i);
-    if (email) {
-      values.push(email[0].toLowerCase());
+    const run = m[1]!;
+    // Emails are the cleanest signal — pull EVERY address from the run first,
+    // so "from alice@x.com and bob@y.com" keeps both and a trailing clause
+    // ("… arrives, alert me") is ignored.
+    const emails = [...run.matchAll(new RegExp(EMAIL_RE, 'gi'))].map((e) => e[0].toLowerCase());
+    if (emails.length) {
+      values.push(...emails);
       continue;
     }
-    // No address: strip a trailing arrival verb so "X arrives" → "X".
+    // No address: drop a trailing clause / arrival verb, then keep the FIRST
+    // listed sender (avoid swallowing "… alert me" after a comma/"and").
+    let phrase = run;
+    const stop = phrase.search(FROM_STOP);
+    if (stop > 0) phrase = phrase.slice(0, stop);
     phrase = phrase.replace(ARRIVAL_VERB, '').trim();
+    const first = phrase.split(/\s+and\s+|,\s*/)[0]?.trim();
+    phrase = first ?? phrase;
     if (!phrase) continue;
     if (FUZZY_SENDER.test(phrase)) {
       fuzzy = true;
@@ -184,8 +222,10 @@ function detectFrom(t: string): { values: string[]; fuzzy: boolean } {
 
 function detectKeywords(text: string): string[] {
   const out = new Set<string>();
-  // Quoted phrases (single or double) are taken verbatim.
-  for (const m of text.matchAll(/["']([^"']+)["']/g)) out.add(m[1]!.trim().toLowerCase());
+  // Quoted phrases (straight or curly, single or double) are taken verbatim.
+  for (const m of text.matchAll(/["'“”‘’]([^"'“”‘’]+)["'“”‘’]/g)) {
+    out.add(m[1]!.trim().toLowerCase());
+  }
   // "about X" / "regarding X" / "mentioning X" / "containing X" / "related to X"
   const t = text.toLowerCase();
   // Lazy capture stops at " and ", punctuation, or end — so "about X and
@@ -195,7 +235,7 @@ function detectKeywords(text: string): string[] {
   )) {
     // Strip surrounding quotes so `about "Q3 budget"` dedupes with the
     // quoted-phrase capture above rather than adding `"q3 budget"` verbatim.
-    const phrase = m[1]!.trim().replace(/^["']|["']$/g, '').trim();
+    const phrase = m[1]!.trim().replace(/^["'“”‘’]|["'“”‘’]$/g, '').trim();
     if (phrase) out.add(phrase);
   }
   return [...out];
@@ -235,10 +275,18 @@ function buildName(spec: Omit<RoutineSpec, 'name'>): string {
 /**
  * Parse a natural-language ask into a `RoutineSpec`. Returns `matched: false`
  * when the text carries no recurrence cue (ordinary chat).
+ *
+ * The recurrence gate is deliberately PERMISSIVE (a stray "every …" can match)
+ * — the parser is a pure function and does not decide WHEN it runs. The caller
+ * (the chat authoring layer, a later part) is responsible for invoking it only
+ * on a routine intent and for showing the parsed spec for confirmation before
+ * anything is persisted. The empty-filter warning below is the backstop.
  */
 export function parseRoutineSpec(text: string): RoutineParseResult {
   if (!text || !text.trim()) return { matched: false, reason: 'empty input' };
-  const t = text.toLowerCase();
+  // Bound work before any regex runs (DoS guard — see MAX_INPUT).
+  const input = text.length > MAX_INPUT ? text.slice(0, MAX_INPUT) : text;
+  const t = input.toLowerCase();
 
   if (!hasRecurrence(t)) {
     return { matched: false, reason: 'no recurrence cue (not a routine)' };
@@ -253,7 +301,7 @@ export function parseRoutineSpec(text: string): RoutineParseResult {
   const sources = detectSources(t);
   if (sources.length) filter.sources = sources;
   if (from.values.length) filter.fromContains = from.values;
-  const keywords = detectKeywords(text);
+  const keywords = detectKeywords(input);
   if (keywords.length) filter.keywords = keywords;
   const domains = detectDomains(t);
   if (domains.length) filter.domains = domains;
@@ -281,6 +329,17 @@ export function parseRoutineSpec(text: string): RoutineParseResult {
   if (from.fuzzy) {
     warnings.push(
       'Couldn’t resolve a vague sender (e.g. “my biggest client”) to a specific address — matching the literal text for now; edit the routine to set the exact sender.',
+    );
+  }
+  if (cadence === 'weekly' && distinctDayCount(t) > 1) {
+    const day = dayOfWeek !== undefined ? DOW_NAME[dayOfWeek] : 'one day';
+    warnings.push(
+      `You named more than one day — this routine runs weekly on ${day} for now; edit it to adjust the day.`,
+    );
+  }
+  if (UNSUPPORTED_INTERVAL.test(t)) {
+    warnings.push(
+      `I can only schedule hourly, daily, or weekly — approximated this as ${cadence}; edit the routine if that’s not what you meant.`,
     );
   }
 

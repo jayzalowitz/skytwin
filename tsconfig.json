@@ -43,6 +43,7 @@
       "@skytwin/observability": ["./packages/observability/src"],
       "@skytwin/policy-engine": ["./packages/policy-engine/src"],
       "@skytwin/registry-client": ["./packages/registry-client/src"],
+      "@skytwin/routines": ["./packages/routines/src"],
       "@skytwin/shared-types": ["./packages/shared-types/src"],
       "@skytwin/twin-model": ["./packages/twin-model/src"]
     }
