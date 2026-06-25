@@ -1,5 +1,11 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.72.0] - 2026-06-25
+
+### Added
+
+- **Outlook mail connector (Microsoft Graph) — your inbox now feeds the twin.** `OutlookMailConnector` is the Microsoft counterpart to the Gmail connector, completing the Outlook integration started in #550–#552 (connect → safe token refresh → now *read*). It polls the inbox with Graph's **delta query** and emits one `RawSignal` per message, stamped with the **same `AuthoringTier`** the Gmail path produces, so tier-weighted retrieval treats Outlook and Gmail mail identically. The delta link is the cursor (vs Gmail's historyId) — stored in the same `CursorStore`; a **410 Gone** (expired delta) triggers a re-bootstrap, mirroring Gmail's 404 path, and pages are capped per poll so the initial sync spreads over a few cycles. The Graph fetch wrapper handles 401 (refresh + retry), 429/5xx (retryable with `Retry-After` / `RateLimit-Reset-After`), and 410. `DbTokenStore`'s `googleConfig` is now optional too (symmetric with `microsoftConfig`, same refuse-to-refresh guard) so a Microsoft-only deployment can build the store, and the worker's connector discovery resolves a Microsoft config and wires the Outlook connector for users with `microsoft` tokens. **Scope:** inbound inbox mail (v1); sent-mail capture (the `user_sent_*` tiers) is a follow-up needing a Sent-folder delta. Verified with mocked Graph (7 connector tests: bootstrap, pagination, incremental, 410 re-bootstrap, tier stamping); end-to-end against real Outlook needs an Azure/Entra app.
+
 ## [0.6.71.0] - 2026-06-25
 
 ### Fixed

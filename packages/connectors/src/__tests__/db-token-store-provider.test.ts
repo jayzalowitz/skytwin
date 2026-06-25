@@ -71,6 +71,13 @@ describe('DbTokenStore provider-aware refresh', () => {
     expect(mockMicrosoftRefresh).not.toHaveBeenCalled();
   });
 
+  it('refuses to refresh a google token when no googleConfig is wired (Microsoft-only deployment)', async () => {
+    repo.getToken.mockResolvedValue(expiredRow());
+    const store = new DbTokenStore(repo, undefined, microsoftConfig); // no googleConfig
+    await expect(store.refreshIfExpired('u1', 'google')).rejects.toThrow(/refusing to refresh a google token/);
+    expect(mockGoogleRefresh).not.toHaveBeenCalled();
+  });
+
   it('throws on an unsupported provider BEFORE touching the token store', async () => {
     repo.getToken.mockResolvedValue(expiredRow());
     const store = new DbTokenStore(repo, googleConfig, microsoftConfig);

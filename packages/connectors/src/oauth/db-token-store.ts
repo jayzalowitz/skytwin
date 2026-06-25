@@ -179,7 +179,14 @@ export class DbTokenStore implements OAuthTokenStore {
 
   constructor(
     private readonly repo: OAuthRepositoryLike,
-    private readonly oauthConfig: GoogleOAuthConfig,
+    /**
+     * Google config. Optional so a Microsoft-only deployment can construct the
+     * store without a Google client; refreshing a `google` token without it
+     * THROWS (same fail-loud guard as Microsoft below) rather than crashing on
+     * an undefined config. Existing 2-arg `(repo, googleConfig)` callers are
+     * unaffected.
+     */
+    private readonly oauthConfig?: GoogleOAuthConfig,
     /**
      * Optional Microsoft (Entra) config. Required to refresh `microsoft`
      * tokens — without it, refreshing a microsoft token THROWS rather than
@@ -410,6 +417,12 @@ export class DbTokenStore implements OAuthTokenStore {
         refreshed = await refreshMicrosoftAccessToken(this.microsoftConfig, existing.refreshToken);
         break;
       case 'google':
+        if (!this.oauthConfig) {
+          throw new Error(
+            'DbTokenStore: refusing to refresh a google token — no Google OAuth config was wired. ' +
+              'Construct DbTokenStore with a googleConfig.',
+          );
+        }
         refreshed = await refreshAccessToken(this.oauthConfig, existing.refreshToken);
         break;
       default:
