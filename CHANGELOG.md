@@ -1,10 +1,16 @@
 All notable changes to SkyTwin will be documented in this file.
 
-## [0.6.69.0] - 2026-06-25
+## [0.6.70.0] - 2026-06-25
 
 ### Fixed
 
 - **`pnpm dev` now fails fast on local port collisions instead of letting Turbo fan out into noisy service crashes.** The root dev script now runs through `bin/skytwin-turbo-dev`, sets the same local defaults as the previous inline command, raises Turbo concurrency above the current persistent task count, and preflights the API, web, OpenClaw bridge, and Twin MCP ports before Turbo starts. If another process owns a required port, the script prints the owning PID, command, and cwd; if this workspace's dev stack is already healthy, a second `pnpm dev` exits cleanly with the endpoint list. The desktop dev service manager now skips embedded Cockroach/API/web/worker startup only when `/api/health` identifies a real SkyTwin API, so a stray `200` on port 3100 can no longer trick it into attaching to the wrong process. Docker Compose no longer pins global container names, and its host ports are configurable via `SKYTWIN_DOCKER_SQL_PORT`, `SKYTWIN_DOCKER_ADMIN_PORT`, and `SKYTWIN_DOCKER_API_PORT`; the Docker-backed setup/dev/e2e helpers now discover the Compose-owned Cockroach container instead of assuming `skytwin-cockroachdb`.
+
+## [0.6.69.0] - 2026-06-25
+
+### Fixed
+
+- **Semantic search no longer silently degrades to vector-only on CockroachDB (`ts_rank_cd` → `ts_rank`).** The gbrain CRDB adapter's `textSearch` ranked the tsvector half of the RRF fold with `ts_rank_cd`, which **CockroachDB does not implement** — verified live on CRDB v23.2.30, it throws `unimplemented: this function is not yet supported`. That made the *entire* tsvector branch of every hybrid semantic search throw, so retrieval fell back to vector-only across the board: the assistant's memory enrichment + source citations AND the new `/api/search` surface. (Found by browser-dogfooding the search page — it soft-failed to "warming up", and the api log named `ts_rank_cd`.) Swapped to `ts_rank`, which CRDB supports and which the verified full `textSearch` query now executes cleanly; the RRF fold uses rank *position*, so the cover-density vs standard ranking difference is immaterial. New regression test asserts the SQL uses `ts_rank` and never `ts_rank_cd`.
 
 ## [0.6.68.0] - 2026-06-24
 
