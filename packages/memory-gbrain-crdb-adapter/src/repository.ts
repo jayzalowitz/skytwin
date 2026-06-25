@@ -297,7 +297,15 @@ interface ScoredHit {
 
 /**
  * tsvector + plainto_tsquery ranked search. Returns up to `limit` rows ordered
- * by `ts_rank_cd` descending. Empty / whitespace-only queries return [].
+ * by `ts_rank` descending. Empty / whitespace-only queries return [].
+ *
+ * Uses `ts_rank`, NOT `ts_rank_cd`: CockroachDB (verified on v23.2.30) does
+ * not implement `ts_rank_cd` — it throws `unimplemented: this function is not
+ * yet supported`, which made the entire tsvector half of the RRF fold throw,
+ * silently degrading every semantic search (assistant memory retrieval + the
+ * /api/search surface) to vector-only. `ts_rank` is supported and produces a
+ * valid ranking; the fold uses rank *position* (RRF), so the difference
+ * between the cover-density and standard ranking functions is immaterial here.
  */
 export async function textSearch(
   userId: string,
@@ -315,14 +323,14 @@ export async function textSearch(
   // and runs out of recall on noisy corpora.
   const useFilter = authoringTier && authoringTier.length > 0;
   const sql = useFilter
-    ? `SELECT bp.*, ts_rank_cd(bp.content_tsv, plainto_tsquery('english', $2)) AS rank
+    ? `SELECT bp.*, ts_rank(bp.content_tsv, plainto_tsquery('english', $2)) AS rank
          FROM brain_pages bp
         WHERE bp.user_id = $1
           AND bp.content_tsv @@ plainto_tsquery('english', $2)
           AND bp.metadata->>'authoringTier' = ANY($4)
         ORDER BY rank DESC
         LIMIT $3`
-    : `SELECT bp.*, ts_rank_cd(bp.content_tsv, plainto_tsquery('english', $2)) AS rank
+    : `SELECT bp.*, ts_rank(bp.content_tsv, plainto_tsquery('english', $2)) AS rank
          FROM brain_pages bp
         WHERE bp.user_id = $1
           AND bp.content_tsv @@ plainto_tsquery('english', $2)
