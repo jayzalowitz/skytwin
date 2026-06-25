@@ -286,6 +286,7 @@ packages/
   dxt/                            Serializes/deserializes DXT artifacts (packed MCP server configs)
   observability/                  In-memory metrics + ring-buffered rollup for the capability loop
   registry-client/                Loads curated MCP registry entries with OAuth quirks and service lookup
+  routines/                       No-code routines: plain-language → schedulable RoutineSpec (read-only digest/notify)
   mempalace/                      Legacy memory: episodic, knowledge graph, 4-layer retrieval (opt-in backend)
   memory-port/                    Backend-agnostic MemoryPort interface + capability negotiation
   memory-gbrain/                  Default memory backend — vector + tsvector RRF on CRDB brain_* tables
