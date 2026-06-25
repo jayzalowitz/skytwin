@@ -34,6 +34,11 @@ the owning PID/command/cwd and exits before services start racing each other.
 For Docker-backed CockroachDB, set `SKYTWIN_DOCKER_SQL_PORT` and
 `SKYTWIN_DOCKER_ADMIN_PORT` when running multiple local workspaces.
 
+During `pnpm dev`, the OpenClaw bridge runs under a dev-only supervisor. If the
+bridge child process is killed once, including exit 137/SIGKILL, it restarts
+without bringing down API/web/worker. Repeated fast exits still fail the task so
+real crash loops are visible.
+
 To work on a single package:
 
 ```bash
