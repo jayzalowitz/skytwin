@@ -39,6 +39,13 @@ export interface SourceCoverage {
 const MOCK_SOURCES = new Set(['email', 'calendar']);
 
 // Some providers map to multiple sources.
+// NOTE: `microsoft` (→ outlook + outlook_calendar) is intentionally NOT mapped
+// here yet. The coverage model treats a capability's source set as "all enrich
+// coverage", which has no notion of alternative providers — mapping microsoft
+// would report `security: unavailable` for Outlook-only users (security-alert
+// actually runs on Outlook mail; it just isn't in the matrix's security set)
+// and nudge Google users to "connect Outlook". Both need the alternative-
+// provider coverage redesign tracked alongside CAPABILITY_SOURCE_MATRIX.
 function normalizeProvider(provider: string): string[] {
   if (provider === 'google') return ['gmail', 'google_calendar'];
   return [provider];

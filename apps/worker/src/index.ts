@@ -5,6 +5,7 @@ import {
   GmailConnector,
   GoogleCalendarConnector,
   OutlookMailConnector,
+  OutlookCalendarConnector,
   DbTokenStore,
   OAuthRefreshError,
   type CursorStore,
@@ -527,6 +528,7 @@ async function discoverUsers(): Promise<UserConnectors[]> {
         }
         if (usableMicrosoft) {
           connectors.push(new OutlookMailConnector(userId, tokenStore, gmailCursorStore));
+          connectors.push(new OutlookCalendarConnector(userId, tokenStore, gmailCursorStore));
         }
       }
 

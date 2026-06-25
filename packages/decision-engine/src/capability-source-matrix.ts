@@ -38,7 +38,16 @@ const ALL_TEXT_SOURCES = [
 export const CAPABILITY_SOURCE_MATRIX: Readonly<
   Record<Capability, ReadonlySet<string>>
 > = {
-  commitments: new Set(['gmail', 'email', 'google_calendar', 'calendar', 'voice']),
+  // Outlook signals are commitment-bearing just like their Google peers, and
+  // `commitments` is the one capability whose extractor actually GATES on this
+  // matrix (commitment-extractor early-returns []). `outlook`/`outlook_calendar`
+  // must be members or Outlook mail + calendar produce zero commitments.
+  // NOTE: the other capabilities' extractors do not gate on the matrix, so the
+  // Outlook sources are intentionally only added here. Folding them into
+  // `computeCoverage` (the source-coverage UI) needs an alternative-provider
+  // model (gmail OR outlook fully covers email) so Google users aren't told
+  // they're "missing Outlook" — tracked as a follow-up.
+  commitments: new Set(['gmail', 'outlook', 'email', 'google_calendar', 'outlook_calendar', 'calendar', 'voice']),
   deadlines: new Set(ALL_TEXT_SOURCES),
   security: new Set(['gmail', 'email']),
   clusters: new Set(ALL_TEXT_SOURCES),

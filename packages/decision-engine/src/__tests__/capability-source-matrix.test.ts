@@ -34,6 +34,20 @@ describe('capability×source matrix (spec 07 AC6 / spec 02 AC matrix)', () => {
     }
   });
 
+  it('Outlook mail + calendar feed commitments (the gated capability) so their signals are not silently dropped', () => {
+    // commitment-extractor early-returns [] when capabilityCoversSource is false;
+    // without these, Outlook signals would produce zero commitments.
+    expect(capabilityCoversSource('commitments', 'outlook')).toBe(true);
+    expect(capabilityCoversSource('commitments', 'outlook_calendar')).toBe(true);
+    // commitments parity with the Google peers.
+    expect(capabilityCoversSource('commitments', 'outlook')).toBe(
+      capabilityCoversSource('commitments', 'gmail'),
+    );
+    expect(capabilityCoversSource('commitments', 'outlook_calendar')).toBe(
+      capabilityCoversSource('commitments', 'google_calendar'),
+    );
+  });
+
   it('unknown source is never covered (fail safe)', () => {
     expect(capabilityCoversSource('commitments', 'slack')).toBe(false);
     expect(capabilityCoversSource('deadlines', 'unknown')).toBe(false);
