@@ -127,6 +127,7 @@ export function toSignalText(signal: RawSignal): SignalText {
 
   switch (signal.source) {
     case 'gmail':
+    case 'outlook':
     case 'email':
       title = str(data['subject']);
       // Gmail signals carry `snippet` (a body proxy); mocks may carry `body`.
@@ -140,6 +141,7 @@ export function toSignalText(signal: RawSignal): SignalText {
       break;
 
     case 'google_calendar':
+    case 'outlook_calendar':
     case 'calendar':
       title = firstStr(data['title'], data['summary']);
       body = str(data['description']);

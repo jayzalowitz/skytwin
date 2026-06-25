@@ -57,6 +57,45 @@ describe('toSignalText — per-source mapping (spec 07 AC1)', () => {
     expect(t.authoredByUser).toBe(false); // received_shared is not user-authored
   });
 
+  it('maps an outlook signal like gmail (subject/body/recipients)', () => {
+    const t = toSignalText(
+      sig({
+        source: 'outlook',
+        data: {
+          subject: 'Budget sign-off',
+          body: 'Approving the Q3 spend.',
+          from: 'me@example.com',
+          to: 'cfo@example.com',
+          authoringTier: 'user_sent_reply',
+        },
+      }),
+    );
+    expect(t.title).toBe('Budget sign-off');
+    expect(t.body).toBe('Approving the Q3 spend.');
+    expect(t.participants).toEqual(
+      expect.arrayContaining(['cfo@example.com', 'me@example.com']),
+    );
+    expect(t.authoredByUser).toBe(true);
+  });
+
+  it('maps an outlook_calendar signal like google_calendar (title/description/attendees)', () => {
+    const t = toSignalText(
+      sig({
+        source: 'outlook_calendar',
+        data: {
+          title: 'Sprint planning',
+          description: 'Groom the backlog.',
+          organizer: 'org@example.com',
+          attendees: [{ email: 'x@example.com' }],
+          authoringTier: 'inbox_personal',
+        },
+      }),
+    );
+    expect(t.title).toBe('Sprint planning');
+    expect(t.body).toBe('Groom the backlog.');
+    expect(t.participants).toEqual(['org@example.com', 'x@example.com']);
+  });
+
   it('maps a filesystem signal (fileName/excerpt), not user-authored', () => {
     const t = toSignalText(
       sig({

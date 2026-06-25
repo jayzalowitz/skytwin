@@ -6,19 +6,27 @@ import { classifyCalendarAuthoringTier } from './calendar-authoring-tier.js';
 
 const GRAPH_API = 'https://graph.microsoft.com/v1.0';
 const DELTA_LINK_KIND = 'delta_link';
-const WINDOW_END_KIND = 'window_end';
 const MAX_PAGES_PER_POLL = 5;
-const WINDOW_DAYS = 7;
 const DAY_MS = 24 * 60 * 60 * 1000;
 /**
- * Re-bootstrap the delta (with a fresh now..now+7d window) once the stored
- * window has less than this much runway left. `calendarView/delta` fixes its
- * window at bootstrap, so without this the deltaLink tracks the ORIGINAL
- * window forever and the connector goes blind to events created beyond it.
- * Re-bootstrapping when <6 days remain keeps roughly a full week of forward
- * coverage at all times (re-bootstraps ~daily).
+ * `calendarView/delta` fixes its time window at bootstrap, so the deltaLink only
+ * ever tracks changes to events inside the window set when it was created. A
+ * generous 30-day window means the connector sees roughly a month of forward
+ * calendar at any given bootstrap; events scheduled beyond the window (or created
+ * after the worker has run long enough that the window has aged out) are picked
+ * up on the next re-bootstrap (a 410 or a fresh connect on worker restart /
+ * user re-discovery).
+ *
+ * Why NOT a proactive rolling re-bootstrap: re-fetching a fresh window re-emits
+ * EVERY event in it, and `SignalDeduper`'s TTL (24h) means a periodic
+ * re-bootstrap (e.g. daily) would re-present unchanged events past their dedup
+ * window, creating duplicate decisions/approvals. Following the deltaLink
+ * incrementally only emits real changes; the rare 410/restart re-emit is
+ * absorbed by the deduper's persistent ledger. A true rolling window without
+ * re-emit needs `events/delta` (no fixed window, but no recurrence expansion) —
+ * tracked as a follow-up.
  */
-const MIN_FORWARD_MS = 6 * DAY_MS;
+const WINDOW_DAYS = 30;
 
 const EVENT_SELECT =
   'id,subject,bodyPreview,start,end,organizer,attendees,isOrganizer,responseStatus,isCancelled,webLink,createdDateTime,lastModifiedDateTime';
@@ -73,12 +81,12 @@ interface GraphDeltaPage {
  *
  * Like the Outlook mail connector it uses Graph's delta cursor (a
  * `@odata.deltaLink` in the `CursorStore`), with a 410 Gone triggering a
- * re-bootstrap. Events are collected across the poll, conflict-detected as a
- * set, then emitted in a SINGLE pass — so a mid-sync 410 can't double-fire
- * handlers. Times are forced to UTC so conflict math is absolute.
- *
- * The window is refreshed proactively (see `MIN_FORWARD_MS`) so the connector
- * doesn't go blind to events created beyond the originally-bootstrapped window.
+ * re-bootstrap. Following the deltaLink yields only CHANGED events, so steady
+ * state emits no duplicates; the window is bootstrapped once (30 days, see
+ * `WINDOW_DAYS`) and refreshed only on a 410 or a fresh connect. Events are
+ * collected across the poll, conflict-detected as a set, then emitted in a
+ * SINGLE pass — so a mid-sync 410 can't double-fire handlers. Times are forced
+ * to UTC so conflict math is absolute.
  */
 export class OutlookCalendarConnector implements SignalConnector {
   readonly name = 'outlook_calendar';
@@ -86,7 +94,6 @@ export class OutlookCalendarConnector implements SignalConnector {
   private handlers: SignalHandler[] = [];
   private connected = false;
   private deltaLink: string | null = null;
-  private windowEnd: number | null = null;
   private readonly userId: string;
   private readonly tokenStore: OAuthTokenStore;
   private readonly cursorStore: CursorStore | null;
@@ -104,8 +111,6 @@ export class OutlookCalendarConnector implements SignalConnector {
     }
     if (this.cursorStore) {
       this.deltaLink = await this.cursorStore.get(this.userId, 'outlook_calendar', DELTA_LINK_KIND);
-      const we = await this.cursorStore.get(this.userId, 'outlook_calendar', WINDOW_END_KIND);
-      this.windowEnd = we ? Number(we) : null;
     }
     this.connected = true;
   }
@@ -114,17 +119,17 @@ export class OutlookCalendarConnector implements SignalConnector {
     this.connected = false;
     this.handlers = [];
     this.deltaLink = null;
-    this.windowEnd = null;
   }
 
   onSignal(handler: SignalHandler): void {
     this.handlers.push(handler);
   }
 
-  private freshDeltaUrl(now: number, end: number): string {
+  private freshDeltaUrl(): string {
+    const now = Date.now();
     const params = new URLSearchParams({
       startDateTime: new Date(now).toISOString(),
-      endDateTime: new Date(end).toISOString(),
+      endDateTime: new Date(now + WINDOW_DAYS * DAY_MS).toISOString(),
       $select: EVENT_SELECT,
     });
     return `${GRAPH_API}/me/calendarView/delta?${params.toString()}`;
@@ -136,27 +141,14 @@ export class OutlookCalendarConnector implements SignalConnector {
     }
     const accessToken = (await this.tokenStore.refreshIfExpired(this.userId, 'microsoft')).accessToken;
 
-    const now = Date.now();
-    // Use the stored delta cursor only while its window still has runway;
-    // otherwise bootstrap a fresh now..now+7d window so far-future events
-    // aren't missed.
-    const windowFresh = this.deltaLink !== null && this.windowEnd !== null && this.windowEnd - now >= MIN_FORWARD_MS;
-    let startUrl: string;
-    let freshWindowEnd: number | null = null;
-    if (windowFresh) {
-      startUrl = this.deltaLink as string;
-    } else {
-      this.deltaLink = null;
-      freshWindowEnd = now + WINDOW_DAYS * DAY_MS;
-      startUrl = this.freshDeltaUrl(now, freshWindowEnd);
-    }
-
+    // Follow the stored deltaLink (incremental — changed events only) when we
+    // have one; otherwise bootstrap a fresh now..now+30d window.
     // Drain the delta into a flat event list (collect, don't emit yet — we
     // need the whole set for conflict detection). 410 handling mirrors the
     // mail connector: re-bootstrap only on the first request (stale stored
     // cursor); a mid-sync 410 stops and keeps what we collected.
     const events: GraphEvent[] = [];
-    let url: string | undefined = startUrl;
+    let url: string | undefined = this.deltaLink ?? this.freshDeltaUrl();
     let pages = 0;
     let nextCursor: string | undefined;
     let rebootstrapped = false;
@@ -171,8 +163,7 @@ export class OutlookCalendarConnector implements SignalConnector {
             console.warn(`[outlook-calendar] delta link expired for user ${this.userId} — re-bootstrapping`);
             this.deltaLink = null;
             rebootstrapped = true;
-            freshWindowEnd = now + WINDOW_DAYS * DAY_MS;
-            url = this.freshDeltaUrl(now, freshWindowEnd);
+            url = this.freshDeltaUrl();
             continue;
           }
           console.warn(`[outlook-calendar] delta link expired mid-sync for user ${this.userId} — returning partial`);
@@ -201,7 +192,7 @@ export class OutlookCalendarConnector implements SignalConnector {
       }
     }
 
-    if (nextCursor) await this.persistCursor(nextCursor, freshWindowEnd);
+    if (nextCursor) await this.persistCursor(nextCursor);
 
     // Single emit pass over the collected events, with conflicts computed
     // across the whole set.
@@ -215,17 +206,11 @@ export class OutlookCalendarConnector implements SignalConnector {
     return signals;
   }
 
-  private async persistCursor(link: string, windowEnd: number | null): Promise<void> {
+  private async persistCursor(link: string): Promise<void> {
     this.deltaLink = link;
-    if (windowEnd !== null) this.windowEnd = windowEnd;
     if (this.cursorStore) {
       try {
         await this.cursorStore.save(this.userId, 'outlook_calendar', DELTA_LINK_KIND, link);
-        // Persist the window end only when this poll opened a fresh window, so
-        // following an existing deltaLink doesn't rewrite it.
-        if (windowEnd !== null) {
-          await this.cursorStore.save(this.userId, 'outlook_calendar', WINDOW_END_KIND, String(windowEnd));
-        }
       } catch (err) {
         console.warn(
           `[outlook-calendar] Failed to persist delta cursor for ${this.userId}:`,
@@ -286,11 +271,16 @@ export class OutlookCalendarConnector implements SignalConnector {
     };
   }
 
-  /** Overlapping-event detection — identical logic to the Google connector. */
+  /**
+   * Overlapping-event detection — same sweep as the Google connector, but
+   * cancelled events are excluded: Outlook keeps the original start/end on an
+   * `isCancelled` event (Google strips them in its sync), so without this a
+   * cancelled meeting would spuriously flag a real one as conflicting.
+   */
   private detectConflicts(events: GraphEvent[]): Set<string> {
     const conflicts = new Set<string>();
     const withTimes = events
-      .filter((e) => e.start?.dateTime && e.end?.dateTime)
+      .filter((e) => !e.isCancelled && e.start?.dateTime && e.end?.dateTime)
       .map((e) => ({
         id: e.id,
         start: new Date(toUtcIso(e.start!.dateTime)).getTime(),

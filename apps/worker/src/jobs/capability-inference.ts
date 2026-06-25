@@ -26,8 +26,10 @@ export interface CapabilityInferenceJobDeps {
 function signalKindFromRow(row: SignalRow): SignalLike['kind'] {
   switch (row.source) {
     case 'gmail':
+    case 'outlook':
       return 'email';
     case 'google_calendar':
+    case 'outlook_calendar':
       return 'calendar';
     case 'fs':
     case 'filesystem':

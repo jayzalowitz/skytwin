@@ -79,9 +79,11 @@ interface AccountRow {
 export function sourceLabel(source: string): string {
   switch (source) {
     case 'gmail':
+    case 'outlook':
     case 'email':
       return 'email';
     case 'google_calendar':
+    case 'outlook_calendar':
     case 'calendar':
       return 'calendar';
     case 'filesystem':

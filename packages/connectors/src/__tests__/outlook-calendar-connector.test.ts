@@ -17,8 +17,6 @@ function makeStubStore(token: { accessToken: string; refreshToken: string; expir
 const VALID_TOKEN = { accessToken: 'at', refreshToken: 'rt', expiresAt: new Date(Date.now() + 60_000) };
 
 const DELTA_KEY = 'user-1|outlook_calendar|delta_link';
-const WINDOW_KEY = 'user-1|outlook_calendar|window_end';
-const FRESH_WINDOW = String(Date.now() + 7 * 24 * 60 * 60 * 1000); // ~full week of runway
 
 function makeCursorStore(seeds: Record<string, string> = {}): CursorStore & { map: Map<string, string> } {
   const map = new Map<string, string>(Object.entries(seeds));
@@ -95,7 +93,17 @@ describe('OutlookCalendarConnector', () => {
     expect(signals[0]!.type).toBe('meeting_invite');
     expect(signals[0]!.data.requiresResponse).toBe(true);
     expect(cursor.map.get(DELTA_KEY)).toBe('DELTA1');
-    expect(cursor.map.get(WINDOW_KEY)).toBeDefined(); // window end persisted on bootstrap
+  });
+
+  it('bootstraps over a 30-day forward window', async () => {
+    fetchMock.mockResolvedValueOnce(res(200, { value: [], '@odata.deltaLink': 'D' }));
+    await (await connected()).poll();
+    const url = (fetchMock.mock.calls[0] as [string])[0];
+    const params = new URL(url).searchParams;
+    const start = new Date(params.get('startDateTime')!).getTime();
+    const end = new Date(params.get('endDateTime')!).getTime();
+    const days = Math.round((end - start) / (24 * 60 * 60 * 1000));
+    expect(days).toBe(30);
   });
 
   it('normalizes naked Graph dateTimes to UTC (appends Z) so absolute time is correct', async () => {
@@ -146,6 +154,22 @@ describe('OutlookCalendarConnector', () => {
     expect(byId['c']).toBe(false);
   });
 
+  it('a cancelled event does not create a spurious conflict on a real overlapping event', async () => {
+    fetchMock.mockResolvedValueOnce(
+      res(200, {
+        value: [
+          gevent({ id: 'real', start: { dateTime: '2026-06-26T10:00:00Z' }, end: { dateTime: '2026-06-26T11:00:00Z' } }),
+          gevent({ id: 'dead', isCancelled: true, start: { dateTime: '2026-06-26T10:30:00Z' }, end: { dateTime: '2026-06-26T11:30:00Z' } }),
+        ],
+        '@odata.deltaLink': 'D',
+      }),
+    );
+    const signals = await (await connected()).poll();
+    const byId = Object.fromEntries(signals.map((s) => [s.data.eventId, s.data.hasConflict]));
+    expect(byId['real']).toBe(false); // the cancelled overlap must not flag it
+    expect(byId['dead']).toBe(false);
+  });
+
   it('skips tombstones (@removed) and events with no start time', async () => {
     fetchMock.mockResolvedValueOnce(
       res(200, { value: [gevent({ id: 'real' }), { id: 'del', '@removed': { reason: 'deleted' } }, { id: 'nostart', subject: 'x' }], '@odata.deltaLink': 'D' }),
@@ -165,27 +189,41 @@ describe('OutlookCalendarConnector', () => {
     expect(cursor.map.get(DELTA_KEY)).toBe('D2');
   });
 
-  it('follows a stored deltaLink while its window has runway', async () => {
+  it('follows a stored deltaLink incrementally (no fresh bootstrap)', async () => {
     fetchMock.mockResolvedValueOnce(res(200, { value: [gevent({ id: 'i' })], '@odata.deltaLink': 'D2' }));
-    const cursor = makeCursorStore({ [DELTA_KEY]: 'STORED', [WINDOW_KEY]: FRESH_WINDOW });
+    const cursor = makeCursorStore({ [DELTA_KEY]: 'STORED' });
     await (await connected(cursor)).poll();
+    // Following the cursor emits only changed events — no full-window re-fetch.
     expect((fetchMock.mock.calls[0] as [string])[0]).toBe('STORED');
+    expect(cursor.map.get(DELTA_KEY)).toBe('D2');
   });
 
-  it('re-bootstraps a fresh window when the stored window has run out (not blind to far-future events)', async () => {
-    fetchMock.mockResolvedValueOnce(res(200, { value: [gevent({ id: 'fresh' })], '@odata.deltaLink': 'D3' }));
-    // window already in the past → must bootstrap fresh, not follow the cursor.
-    const cursor = makeCursorStore({ [DELTA_KEY]: 'OLD', [WINDOW_KEY]: String(Date.now() - 1000) });
-    const signals = await (await connected(cursor)).poll();
+  it('a second poll follows the deltaLink and does not re-fetch the window (no re-emit storm)', async () => {
+    fetchMock
+      // poll 1: bootstrap returns two events + a deltaLink
+      .mockResolvedValueOnce(res(200, { value: [gevent({ id: 'a' }), gevent({ id: 'b' })], '@odata.deltaLink': 'DL1' }))
+      // poll 2: following DL1 returns only the one changed event + a new deltaLink
+      .mockResolvedValueOnce(res(200, { value: [gevent({ id: 'b' })], '@odata.deltaLink': 'DL2' }));
+    const cursor = makeCursorStore();
+    const conn = await connected(cursor);
+
+    const first = await conn.poll();
+    expect(first.map((s) => s.data.eventId)).toEqual(['a', 'b']);
     expect((fetchMock.mock.calls[0] as [string])[0]).toContain('/me/calendarView/delta');
-    expect(signals.map((s) => s.data.eventId)).toEqual(['fresh']);
+
+    const second = await conn.poll();
+    // Second poll FOLLOWS the stored deltaLink (incremental) — it must NOT
+    // re-issue a full calendarView/delta bootstrap that would re-emit 'a'.
+    expect((fetchMock.mock.calls[1] as [string])[0]).toBe('DL1');
+    expect(second.map((s) => s.data.eventId)).toEqual(['b']);
+    expect(cursor.map.get(DELTA_KEY)).toBe('DL2');
   });
 
   it('re-bootstraps on a 410 (stale stored cursor)', async () => {
     fetchMock
       .mockResolvedValueOnce(res(410, {}))
       .mockResolvedValueOnce(res(200, { value: [gevent({ id: 'r' })], '@odata.deltaLink': 'D4' }));
-    const cursor = makeCursorStore({ [DELTA_KEY]: 'STALE', [WINDOW_KEY]: FRESH_WINDOW });
+    const cursor = makeCursorStore({ [DELTA_KEY]: 'STALE' });
     const signals = await (await connected(cursor)).poll();
     expect((fetchMock.mock.calls[1] as [string])[0]).toContain('/me/calendarView/delta');
     expect(signals.map((s) => s.data.eventId)).toEqual(['r']);
