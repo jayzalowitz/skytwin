@@ -53,6 +53,7 @@ export type {
   ExecutionPlanRow,
   ExecutionResultRow,
   ExecutionEventRow,
+  MemoryActionOpportunityRow,
   ExplanationRecordRow,
   FeedbackEventRow,
   OAuthTokenRow,
@@ -145,8 +146,13 @@ export type {
 
 export { signalRepository, proposalRepository, skillGapRepository, proactiveScanRepository } from './repositories/index.js';
 
-export { trustTierAuditRepository, spendRepository, domainAutonomyRepository, escalationTriggerRepository, preferenceHistoryRepository, sessionRepository, mempalaceRepository, serviceCredentialRepository, credentialRequirementRepository, aiProviderRepository, ironClawToolRepository, forwardedSignalsRepository, connectorCursorRepository, emailLabelRepository, assistantRepository, deriveThreadTitle, appSuggestionRepository, mcpServerRepository, riskProfileRepository, provenanceRepository, briefingRepository } from './repositories/index.js';
+export { trustTierAuditRepository, spendRepository, domainAutonomyRepository, escalationTriggerRepository, preferenceHistoryRepository, sessionRepository, mempalaceRepository, serviceCredentialRepository, credentialRequirementRepository, aiProviderRepository, ironClawToolRepository, forwardedSignalsRepository, connectorCursorRepository, emailLabelRepository, assistantRepository, deriveThreadTitle, appSuggestionRepository, memoryActionOpportunityRepository, mcpServerRepository, riskProfileRepository, provenanceRepository, briefingRepository } from './repositories/index.js';
 export type { AppSuggestionRow, UpsertPendingSuggestionInput } from './repositories/index.js';
+export type {
+  ClaimDueOptions,
+  MarkMemoryActionOpportunityInput,
+  UpsertMemoryActionOpportunityInput,
+} from './repositories/index.js';
 export type { McpServerRow } from './repositories/index.js';
 export { promotionOffersRepository } from './repositories/index.js';
 export type {
