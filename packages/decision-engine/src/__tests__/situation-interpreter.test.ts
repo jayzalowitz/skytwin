@@ -276,5 +276,29 @@ describe('SituationInterpreter', () => {
       });
       expect(result.situationType).toBe(SituationType.EMAIL_TRIAGE);
     });
+
+    // Regression: the inbox_* tier clause must not swallow real calendar invites
+    // (which also carry an inbox_ tier) into email triage.
+    it('keeps a real calendar invite (carrying an inbox_ tier) as CALENDAR_INVITE, not EMAIL_TRIAGE', () => {
+      const result = interpreter.interpretRuleBased({
+        source: 'google_calendar',
+        type: 'meeting_invite',
+        title: 'Q3 planning sync',
+        authoringTier: 'inbox_broadcast',
+        data: { requiresResponse: true, hasConflict: false },
+      });
+      expect(result.situationType).toBe(SituationType.CALENDAR_INVITE);
+    });
+
+    it('keeps an automated calendar event (inbox_automated) as CALENDAR_UPDATE, not EMAIL_TRIAGE', () => {
+      const result = interpreter.interpretRuleBased({
+        source: 'google_calendar',
+        type: 'calendar_event',
+        title: 'Recurring birthday',
+        authoringTier: 'inbox_automated',
+        data: { hasConflict: false, requiresResponse: false },
+      });
+      expect(result.situationType).toBe(SituationType.CALENDAR_UPDATE);
+    });
   });
 });
