@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import express from 'express';
 import type { Express } from 'express';
 
@@ -14,6 +14,7 @@ const {
   mockSaveDecision,
   mockSaveCandidates,
   mockGetOutcome,
+  mockSaveOutcome,
 } = vi.hoisted(() => ({
   mockInterpret: vi.fn(),
   mockEvaluate: vi.fn(),
@@ -34,6 +35,7 @@ const {
   mockSaveDecision: vi.fn(),
   mockSaveCandidates: vi.fn(),
   mockGetOutcome: vi.fn(),
+  mockSaveOutcome: vi.fn(),
 }));
 
 vi.mock('@skytwin/decision-engine', () => ({
@@ -86,6 +88,7 @@ vi.mock('@skytwin/db', () => ({
   decisionRepositoryAdapter: {
     saveDecision: mockSaveDecision,
     saveCandidates: mockSaveCandidates,
+    saveOutcome: mockSaveOutcome,
     getOutcome: mockGetOutcome,
     // Auto-execute path looks up the persisted RiskAssessment by action
     // id when outcome.riskAssessment is absent. Echo the requested id
@@ -217,9 +220,92 @@ describe('Events API routes', () => {
       created: true,
     }));
     mockSaveCandidates.mockResolvedValue([]);
+    mockSaveOutcome.mockImplementation(async (o: unknown) => o);
     mockGetOutcome.mockResolvedValue(null);
     mockApprovalFindByDecisionId.mockResolvedValue(null);
     mockExecutionRepository.getByDecisionId.mockResolvedValue(null);
+  });
+
+  // ---------------------------------------------------------------------
+  // awareness disposition gate (#601)
+  // ---------------------------------------------------------------------
+  describe('awareness disposition gate', () => {
+    const prevFlag = process.env['AWARENESS_DISPOSITION_GATE'];
+    afterEach(() => {
+      if (prevFlag === undefined) delete process.env['AWARENESS_DISPOSITION_GATE'];
+      else process.env['AWARENESS_DISPOSITION_GATE'] = prevFlag;
+    });
+
+    function setupNewsletter() {
+      mockInterpret.mockResolvedValue({
+        id: 'decision-1',
+        situationType: 'email_triage',
+        domain: 'email',
+        urgency: 'low',
+        summary: 'Newsletter from Acme',
+        rawData: { authoringTier: 'inbox_newsletter' },
+      });
+      mockEvaluate.mockResolvedValue({
+        autoExecute: false,
+        requiresApproval: true,
+        reasoning: 'observer tier forces approval',
+        selectedAction: {
+          id: 'action-1',
+          decisionId: 'decision-1',
+          actionType: 'archive_email',
+          description: 'Archive this email',
+          domain: 'email',
+          parameters: {},
+          reversible: true,
+          estimatedCostCents: 0,
+          confidence: 'low',
+          reasoning: 'low-risk',
+        },
+        allCandidates: [],
+      });
+    }
+
+    it('suppresses the approval row and flips requires_approval=false when the flag is on', async () => {
+      process.env['AWARENESS_DISPOSITION_GATE'] = 'on';
+      setupNewsletter();
+
+      const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+        userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+        source: 'gmail',
+        type: 'newsletter',
+      });
+
+      expect(res.status).toBe(200);
+      // No approval row, no approval:new SSE.
+      expect(mockApprovalCreate).not.toHaveBeenCalled();
+      expect(mockSseManager.emit).not.toHaveBeenCalledWith(
+        'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+        'approval:new',
+        expect.anything(),
+      );
+      // Outcome re-saved with requires_approval flipped to false (digest FYI).
+      expect(mockSaveOutcome).toHaveBeenCalledWith(
+        expect.objectContaining({ requiresApproval: false }),
+      );
+      expect((res.body as { approval: unknown }).approval).toBeNull();
+    });
+
+    it('still creates the approval row when the flag is off (Phase 0 no-op)', async () => {
+      delete process.env['AWARENESS_DISPOSITION_GATE'];
+      setupNewsletter();
+      mockApprovalCreate.mockResolvedValue({ row: { id: 'ar-1', status: 'pending' }, created: true });
+
+      const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+        userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+        source: 'gmail',
+        type: 'newsletter',
+      });
+
+      expect(res.status).toBe(200);
+      expect(mockApprovalCreate).toHaveBeenCalledTimes(1);
+      // The gate didn't fire — no requires_approval flip.
+      expect(mockSaveOutcome).not.toHaveBeenCalled();
+    });
   });
 
   // ---------------------------------------------------------------------
