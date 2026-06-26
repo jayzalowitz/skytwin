@@ -572,7 +572,7 @@ export class DecisionMaker {
       actionType: 'archive_email',
       description: 'Archive this email for later review.',
       domain: 'email',
-      parameters: { emailId: decision.rawData['emailId'], folder: 'archive' },
+      parameters: { emailId: (decision.rawData['emailId'] ?? decision.rawData['messageId']), folder: 'archive' },
       estimatedCostCents: 0,
       reversible: true,
       confidence: this.getPreferenceConfidence(profile, 'email', 'auto_archive'),
@@ -587,7 +587,7 @@ export class DecisionMaker {
       description: 'Apply appropriate labels to this email.',
       domain: 'email',
       parameters: {
-        emailId: decision.rawData['emailId'],
+        emailId: (decision.rawData['emailId'] ?? decision.rawData['messageId']),
         labels: this.inferLabels(decision, senderLabelHints),
       },
       estimatedCostCents: 0,
@@ -605,7 +605,7 @@ export class DecisionMaker {
         description: 'Send a brief acknowledgment reply.',
         domain: 'email',
         parameters: {
-          emailId: decision.rawData['emailId'],
+          emailId: (decision.rawData['emailId'] ?? decision.rawData['messageId']),
           replyType: 'acknowledgment',
         },
         estimatedCostCents: 0,
