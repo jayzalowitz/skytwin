@@ -110,6 +110,12 @@ describe('isAwarenessOnly', () => {
     ).toBe(false);
   });
 
+  it('does NOT gate an action whose zero cost is unverified (costZeroIntent unknown)', () => {
+    expect(
+      isAwarenessOnly(decision(), outcome({ selectedAction: action({ costZeroIntent: 'unknown' }) })),
+    ).toBe(false);
+  });
+
   it('does NOT gate a CALENDAR_INVITE (needs a real response)', () => {
     const d = decision({
       situationType: SituationType.CALENDAR_INVITE,

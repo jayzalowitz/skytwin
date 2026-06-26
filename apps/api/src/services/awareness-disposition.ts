@@ -96,6 +96,9 @@ export function isAwarenessOnly(decision: DecisionObject, outcome: DecisionOutco
   if (!PASSIVE_AWARENESS_ACTIONS.has(action.actionType)) return false;
   if (!action.reversible) return false;
   if ((action.estimatedCostCents ?? 0) !== 0) return false;
+  // Defensive: an action whose zero cost is unverified (costZeroIntent='unknown')
+  // is escalated by the cost gate without a confirmationLevel — don't gate it.
+  if (action.costZeroIntent === 'unknown') return false;
 
   // Awareness context: a calendar update/cancellation, or email from an
   // awareness tier (newsletter / automated / the user's own sent mail).
