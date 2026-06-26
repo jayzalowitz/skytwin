@@ -261,4 +261,55 @@ describe('buildDailyMemorySuggestions', () => {
 
     expect(suggestions[0]!.actionPlan.actionType).toBe('draft_email');
   });
+
+  it('files an idle-crawled document as a note, not a data-analysis action', () => {
+    const suggestions = buildDailyMemorySuggestions({
+      recent: [
+        page({
+          id: 'file-report',
+          content:
+            'Q3 quarterly report: revenue metrics, churn analysis, and the full dataset of numbers.',
+          source: 'file',
+          metadata: { signalSource: 'file' },
+        }),
+      ],
+      older: [],
+    });
+
+    expect(suggestions[0]!.actionPlan.actionType).toBe('create_note');
+    expect(suggestions[0]!.actionPlan.actionType).not.toBe('data_analysis');
+  });
+
+  it('never drafts a public social post from received / ambient content', () => {
+    const suggestions = buildDailyMemorySuggestions({
+      recent: [
+        page({
+          id: 'ambient-social',
+          content: 'A colleague mentioned you in a LinkedIn post about the product launch.',
+          source: 'file',
+          metadata: { signalSource: 'file' },
+        }),
+      ],
+      older: [],
+    });
+
+    expect(suggestions[0]!.actionPlan.actionType).toBe('create_note');
+    expect(suggestions[0]!.actionPlan.actionType).not.toBe('draft_social_post');
+  });
+
+  it('still infers an active action for a user-authored voice note', () => {
+    const suggestions = buildDailyMemorySuggestions({
+      recent: [
+        page({
+          id: 'voice-social',
+          content: 'I should post about the launch on LinkedIn this afternoon.',
+          source: 'voice',
+          metadata: { signalSource: 'voice' },
+        }),
+      ],
+      older: [],
+    });
+
+    expect(suggestions[0]!.actionPlan.actionType).toBe('draft_social_post');
+  });
 });

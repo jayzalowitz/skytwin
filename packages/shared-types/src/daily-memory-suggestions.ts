@@ -231,15 +231,27 @@ function inferActionPlan(
     return buildExecutableActionPlan('create_note', 'note your interest in this topic');
   }
 
-  // Genuine inbound correspondence (a real person, in your inbox) → draft a reply.
-  if (
-    source.includes('mail') ||
-    typeof meta['fromAddress'] === 'string' ||
-    /\b(reply|respond|asked|thread|inbox|email)\b/i.test(content)
-  ) {
+  // Classify what the memory IS before guessing an action. The keyword cascade
+  // below proposes ACTIVE actions (reply, schedule, post, analyze) — those only
+  // make sense for content the USER authored, or a real person's inbound mail.
+  // Ambient / received content (idle-crawled files, shared docs, third-party
+  // notifications) is awareness: note it, never fire an active action off a
+  // keyword that merely appears in someone else's text. Generalizes the
+  // broadcast gate above from "newsletters" to every source.
+  const kind = memoryKind(meta, source);
+
+  // A real person's inbound mail (1:1 or a cc'd human thread) → offer a reply.
+  if (kind === 'received_personal') {
     return buildExecutableActionPlan('draft_email', 'draft a reply using this memory');
   }
 
+  // Received / ambient content that isn't correspondence → file it as awareness.
+  if (kind === 'awareness') {
+    return buildExecutableActionPlan('create_note', 'note this for later');
+  }
+
+  // From here down the memory is user-authored (sent mail, voice, chat) — keyword
+  // hints pick which active action.
   if (/\b(meeting|schedule|reschedule|availability|calendar|invite|time slot|find time)\b/i.test(content)) {
     return buildExecutableActionPlan('find_meeting_time', 'find or propose a meeting time');
   }
@@ -378,6 +390,45 @@ function isBroadcastEmail(metadata: Record<string, unknown>): boolean {
   if (typeof tier === 'string' && BROADCAST_AUTHORING_TIERS.has(tier)) return true;
   const from = metadata['fromAddress'];
   return typeof from === 'string' && NO_REPLY_SENDER.test(from);
+}
+
+type MemoryKind = 'authored' | 'received_personal' | 'awareness';
+
+/** Authoring tiers (#251) that mean the user created the content themselves. */
+const AUTHORED_TIERS = new Set<string>([
+  'user_sent_originated',
+  'user_sent_reply',
+  'authored_originated',
+]);
+
+/** Signal sources that are inherently user-authored even without an authoring tier. */
+const AUTHORED_SOURCES = new Set<string>(['voice', 'chat', 'ask_twin']);
+
+/**
+ * Classify what a memory IS so action inference can gate ACTIVE actions
+ * (reply / schedule / post / analyze) to content the user authored or a real
+ * correspondent's inbound mail — never to ambient or received content, where a
+ * keyword match is incidental. Broadcast / newsletter mail is handled by
+ * `isBroadcastEmail` before this is consulted.
+ */
+function memoryKind(metadata: Record<string, unknown>, source: string): MemoryKind {
+  const tier = metadata['authoringTier'];
+  if (typeof tier === 'string' && AUTHORED_TIERS.has(tier)) return 'authored';
+  if (AUTHORED_SOURCES.has(source)) return 'authored';
+  // A real person's inbound mail — 1:1 (inbox_personal) or a cc'd human thread
+  // (inbox_broadcast) — may genuinely want a reply.
+  if (tier === 'inbox_personal' || tier === 'inbox_broadcast') return 'received_personal';
+  // Legacy / untyped inbound mail that still carries a real sender address.
+  // Recognize both gmail-style sources (`*mail*`) and outlook (no "mail"
+  // substring) so an un-tiered Outlook email is treated like its gmail peer.
+  if (
+    (source.includes('mail') || source === 'outlook') &&
+    typeof metadata['fromAddress'] === 'string'
+  ) {
+    return 'received_personal';
+  }
+  // Everything else: idle-crawled files, shared docs, third-party content.
+  return 'awareness';
 }
 
 function ageDays(value: Date | string, now?: Date): number {

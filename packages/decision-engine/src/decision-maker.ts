@@ -565,6 +565,18 @@ export class DecisionMaker {
     const candidates: CandidateAction[] = [];
     // IDs generated inline via crypto.randomUUID()
 
+    // Connectors store the message id as `messageId`; older paths used `emailId`.
+    // Normalize to string | undefined once (mirrors the draft-email generator) so
+    // action params never carry a non-string id.
+    const rawEmailId = decision.rawData['emailId'];
+    const rawMessageId = decision.rawData['messageId'];
+    const emailId =
+      typeof rawEmailId === 'string'
+        ? rawEmailId
+        : typeof rawMessageId === 'string'
+          ? rawMessageId
+          : undefined;
+
     // Archive low-priority emails
     candidates.push({
       id: crypto.randomUUID(),
@@ -572,7 +584,7 @@ export class DecisionMaker {
       actionType: 'archive_email',
       description: 'Archive this email for later review.',
       domain: 'email',
-      parameters: { emailId: decision.rawData['emailId'], folder: 'archive' },
+      parameters: { emailId: emailId, folder: 'archive' },
       estimatedCostCents: 0,
       reversible: true,
       confidence: this.getPreferenceConfidence(profile, 'email', 'auto_archive'),
@@ -587,7 +599,7 @@ export class DecisionMaker {
       description: 'Apply appropriate labels to this email.',
       domain: 'email',
       parameters: {
-        emailId: decision.rawData['emailId'],
+        emailId: emailId,
         labels: this.inferLabels(decision, senderLabelHints),
       },
       estimatedCostCents: 0,
@@ -605,7 +617,7 @@ export class DecisionMaker {
         description: 'Send a brief acknowledgment reply.',
         domain: 'email',
         parameters: {
-          emailId: decision.rawData['emailId'],
+          emailId: emailId,
           replyType: 'acknowledgment',
         },
         estimatedCostCents: 0,

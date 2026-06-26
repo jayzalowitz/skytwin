@@ -118,6 +118,27 @@ describe('SenderAwareCandidateGenerator — protected senders', () => {
     expect(out.find((c) => c.actionType === 'archive_email')).toBeUndefined();
   });
 
+  it('the manual-review flag carries the message id via the messageId fallback', async () => {
+    const gen = new SenderAwareCandidateGenerator(makeFakeDecisionMaker());
+    const decision: DecisionObject = {
+      id: 'd-msgid',
+      situationType: SituationType.EMAIL_TRIAGE,
+      domain: 'email',
+      urgency: 'medium',
+      summary: 'May meeting agenda',
+      // Real connectors store the id as messageId, not emailId.
+      rawData: {
+        messageId: 'msg-xyz',
+        from: 'chair@beacon-board.example',
+        subject: 'May meeting agenda',
+      },
+      interpretedAt: new Date(),
+    };
+    const out = await gen.generate(decision, PROFILE, CONTEXT);
+    expect(out[0]?.actionType).toBe('flag_for_manual_review');
+    expect(out[0]?.parameters['emailId']).toBe('msg-xyz');
+  });
+
   it('flags CFO email', async () => {
     const gen = new SenderAwareCandidateGenerator(makeFakeDecisionMaker());
     const decision = makeEmailDecision({ from: 'cfo@beacon.example', subject: 'Q2 forecast' });

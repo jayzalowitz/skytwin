@@ -463,6 +463,26 @@ describe('DecisionMaker', () => {
       expect(actionTypes).toContain('dismiss');
     });
 
+    it('EMAIL_TRIAGE archive/label candidates carry the message id (messageId fallback)', () => {
+      const dm = makeDecisionMaker();
+      const decision: DecisionObject = {
+        id: 'dec_email_001',
+        situationType: SituationType.EMAIL_TRIAGE,
+        domain: 'email',
+        urgency: 'low',
+        summary: 'Newsletter from Acme',
+        // Real connectors store the message id as `messageId`, not `emailId`.
+        rawData: { messageId: 'msg_abc' },
+        interpretedAt: new Date(),
+      };
+
+      const candidates = dm.generateCandidates(decision, emptyProfile);
+      const archive = candidates.find((c) => c.actionType === 'archive_email');
+      const label = candidates.find((c) => c.actionType === 'label_email');
+      expect(archive?.parameters['emailId']).toBe('msg_abc');
+      expect(label?.parameters['emailId']).toBe('msg_abc');
+    });
+
     it('SUBSCRIPTION_RENEWAL should generate renew, cancel, and snooze candidates', () => {
       const dm = makeDecisionMaker();
       const decision: DecisionObject = {
