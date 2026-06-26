@@ -419,7 +419,12 @@ function memoryKind(metadata: Record<string, unknown>, source: string): MemoryKi
   // (inbox_broadcast) — may genuinely want a reply.
   if (tier === 'inbox_personal' || tier === 'inbox_broadcast') return 'received_personal';
   // Legacy / untyped inbound mail that still carries a real sender address.
-  if (source.includes('mail') && typeof metadata['fromAddress'] === 'string') {
+  // Recognize both gmail-style sources (`*mail*`) and outlook (no "mail"
+  // substring) so an un-tiered Outlook email is treated like its gmail peer.
+  if (
+    (source.includes('mail') || source === 'outlook') &&
+    typeof metadata['fromAddress'] === 'string'
+  ) {
     return 'received_personal';
   }
   // Everything else: idle-crawled files, shared docs, third-party content.
