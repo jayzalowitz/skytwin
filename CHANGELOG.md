@@ -1,5 +1,12 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.80.0] - 2026-06-26
+
+### Fixed
+
+- **Memory action inference now asks "what is this memory?" before "what keyword does it contain?"** `inferActionPlan` was a flat keyword cascade — any memory whose text happened to match a regex got that action regardless of what the memory actually was: an idle-crawled "Q3 report" inferred a data-analysis action, an ambient "X mentioned you in a LinkedIn post" inferred a draft of a **public** social post, and a past event you attended inferred "schedule a meeting". The newsletter gate (0.6.78.0) only covered email; voice notes, idle-miner files, and chat carry no authoring tier and fell straight through all eight active-action branches. It now classifies the memory first — authored (your sent mail / voice / chat) vs. a real person's inbound mail vs. ambient/received content — from the `source` + `authoringTier` the connectors already record, and only lets the keyword cascade fire for content you authored. Received-but-not-correspondence is filed as a note; a real person's email still drafts a reply. Generalizes the newsletter fix to every signal source. 15 unit tests.
+- **Email triage actions now carry the real message id.** `generateEmailTriageCandidates` built archive / label / reply action params from `rawData['emailId']`, but the Gmail and Outlook connectors store the id as `messageId` — so every archive/label/reply action on a real inbound email carried `emailId: undefined` and couldn't identify the message. Mirrors the `?? messageId` fallback the draft-email generator already uses.
+
 ## [0.6.79.0] - 2026-06-26
 
 ### Fixed
