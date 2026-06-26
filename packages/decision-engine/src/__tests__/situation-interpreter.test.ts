@@ -266,5 +266,15 @@ describe('SituationInterpreter', () => {
       });
       expect(result.situationType).toBe(SituationType.EMAIL_TRIAGE);
     });
+
+    it('reads the authoring tier from the data envelope (real connector shape)', () => {
+      const result = interpreter.interpretRuleBased({
+        source: 'imap',
+        type: 'broadcast',
+        subject: 'Monthly community roundup',
+        data: { authoringTier: 'inbox_newsletter' },
+      });
+      expect(result.situationType).toBe(SituationType.EMAIL_TRIAGE);
+    });
   });
 });

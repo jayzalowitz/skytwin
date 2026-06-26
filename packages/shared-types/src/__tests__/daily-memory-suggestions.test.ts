@@ -167,7 +167,7 @@ describe('buildDailyMemorySuggestions', () => {
     expect(suggestions[0]!.actionPlan.label).toMatch(/interest/i);
   });
 
-  it.each(['inbox_newsletter', 'inbox_broadcast', 'inbox_automated'])(
+  it.each(['inbox_newsletter', 'inbox_automated'])(
     'treats %s mail as topic-interest, never a reply draft',
     (tier) => {
       const suggestions = buildDailyMemorySuggestions({
@@ -218,6 +218,42 @@ describe('buildDailyMemorySuggestions', () => {
             signalSource: 'gmail',
             fromAddress: 'maria@acme.example',
           },
+        }),
+      ],
+      older: [],
+    });
+
+    expect(suggestions[0]!.actionPlan.actionType).toBe('draft_email');
+  });
+
+  it("drafts a reply for inbox_broadcast (a cc'd human thread), not a topic note", () => {
+    const suggestions = buildDailyMemorySuggestions({
+      recent: [
+        page({
+          id: 'bcast-human',
+          content:
+            'Priya looped in finance and asked you to send the revised Q3 figures to the thread by Friday.',
+          metadata: {
+            authoringTier: 'inbox_broadcast',
+            signalSource: 'gmail',
+            fromAddress: 'priya@acme.example',
+          },
+        }),
+      ],
+      older: [],
+    });
+
+    expect(suggestions[0]!.actionPlan.actionType).toBe('draft_email');
+  });
+
+  it('does not mistake a real person whose local-part ends in a trigger word for bulk mail', () => {
+    const suggestions = buildDailyMemorySuggestions({
+      recent: [
+        page({
+          id: 'person-trigger-word',
+          content:
+            'Mary asked whether the security review is still blocking procurement and wants a reply today.',
+          metadata: { signalSource: 'gmail', fromAddress: 'mary.newsletter@acme.example' },
         }),
       ],
       older: [],

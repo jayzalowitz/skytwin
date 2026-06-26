@@ -211,7 +211,16 @@ export class SituationInterpreter {
     // source.includes('email') check missed them, dropping them into GENERIC
     // where the only candidate is a high-confidence escalate_to_user ("Decision
     // needed regarding: …") rather than an archive/label triage.
-    const authoringTier = String(rawEvent['authoringTier'] ?? '').toLowerCase();
+    // Connectors are inconsistent about envelope shape — gmail/outlook nest
+    // `authoringTier` under `data` (see deriveProvenance above), others may put
+    // it top-level. Check both so the tier clause works for either.
+    const tierEnvelope =
+      typeof rawEvent['data'] === 'object' && rawEvent['data'] !== null
+        ? (rawEvent['data'] as Record<string, unknown>)
+        : {};
+    const authoringTier = String(
+      rawEvent['authoringTier'] ?? tierEnvelope['authoringTier'] ?? '',
+    ).toLowerCase();
     if (
       source.includes('email') ||
       source === 'gmail' ||
