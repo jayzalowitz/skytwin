@@ -371,6 +371,46 @@ describe('feedback loop — approval records an episode for memory boost', () =>
     expect(candidate['provenance']).toBe('untrusted_external');
   });
 
+  it('approve treats malformed stored cost intent as unknown', async () => {
+    const storedAction = {
+      id: 'aaaaaaaa-bbbb-cccc-dddd-000000000abc',
+      actionType: 'create_task',
+      description: 'Create task from memory',
+      domain: 'tasks',
+      parameters: {},
+      estimatedCostCents: 0,
+      costZeroIntent: 'tampered_zero',
+      reversible: true,
+      confidence: 'moderate',
+      reasoning: 'memory action loop',
+      provenance: 'trusted_context',
+    };
+    fakeApprovalRepo.findById.mockResolvedValueOnce({
+      id: 'app-1',
+      user_id: USER_ID,
+      decision_id: 'dec-1',
+      candidate_action: storedAction,
+      status: 'pending',
+    });
+    fakeApprovalRepo.respond.mockResolvedValueOnce({
+      id: 'app-1',
+      user_id: USER_ID,
+      decision_id: 'dec-1',
+      candidate_action: storedAction,
+      status: 'approved',
+      responded_at: new Date(),
+    });
+
+    const app = buildApp();
+    await postJson(app, '/api/approvals/app-1/respond', {
+      action: 'approve',
+      userId: USER_ID,
+    });
+
+    const candidate = fakeExecutionRouter.executeWithRouting.mock.calls[0]![0] as Record<string, unknown>;
+    expect(candidate['costZeroIntent']).toBe('unknown');
+  });
+
   it('approve updates memory action opportunity status after execution attempt', async () => {
     const storedAction = {
       id: 'aaaaaaaa-bbbb-cccc-dddd-000000000abc',
@@ -410,7 +450,8 @@ describe('feedback loop — approval records an episode for memory boost', () =>
       userId: USER_ID,
     });
 
-    expect(fakeMemoryActionOpportunityRepo.markStatus).toHaveBeenCalledWith(
+    const markInput = fakeMemoryActionOpportunityRepo.markStatus.mock.calls[0]![0] as Record<string, unknown>;
+    expect(markInput).toEqual(
       expect.objectContaining({
         id: '11111111-1111-1111-1111-111111111111',
         status: 'execution_failed',
@@ -419,6 +460,7 @@ describe('feedback loop — approval records an episode for memory boost', () =>
         nextStep: expect.stringContaining('retry'),
       }),
     );
+    expect(markInput).not.toHaveProperty('routeReason');
   });
 
   it('reject marks the memory action opportunity skipped', async () => {

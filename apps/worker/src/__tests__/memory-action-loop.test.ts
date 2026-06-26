@@ -318,4 +318,30 @@ describe('runMemoryActionLoopJob', () => {
       }),
     );
   });
+
+  it('marks outbound email memory actions irreversible before policy evaluation', async () => {
+    const opportunity = makeOpportunity('draft_email');
+    mockCommon(opportunity);
+    const policyEvaluator = {
+      evaluate: vi.fn().mockResolvedValue({
+        allowed: true,
+        requiresApproval: true,
+        reason: 'Irreversible outbound email requires approval.',
+      }),
+    };
+
+    await runMemoryActionLoopJob({
+      userIds: ['user-1'],
+      fetchBundle: async () => ({ suggestions: [], pagesById: new Map() }),
+      policyEvaluator,
+      loadPolicies: async () => [],
+    });
+
+    expect(policyEvaluator.evaluate.mock.calls[0]![0]).toEqual(
+      expect.objectContaining({
+        actionType: 'draft_email',
+        reversible: false,
+      }),
+    );
+  });
 });

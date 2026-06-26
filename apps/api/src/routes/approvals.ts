@@ -45,7 +45,8 @@ import {
 const log = createLogger('api:approvals');
 
 function parseCostZeroIntent(value: unknown): CandidateAction['costZeroIntent'] {
-  return value === 'unknown' || value === 'verified_zero' ? value : undefined;
+  if (value === undefined) return undefined;
+  return value === 'unknown' || value === 'verified_zero' ? value : 'unknown';
 }
 
 function parseActionProvenance(value: unknown): ActionProvenance | undefined {
@@ -127,7 +128,6 @@ async function markMemoryOpportunityFromApproval(input: ApprovalMemoryLedgerInpu
       executionPlanId: input.executionResult?.planId,
       adapterName,
       policyReason: input.policyReason,
-      routeReason: input.executionResult?.error,
       nextStep,
     });
   } catch (err) {

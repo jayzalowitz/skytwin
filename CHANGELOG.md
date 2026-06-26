@@ -10,6 +10,7 @@ All notable changes to SkyTwin will be documented in this file.
 ### Fixed (post-/review)
 
 - **Memory action reports now name the adapter that actually executed after fallback.** If the router initially prefers IronClaw but falls back to Direct or OpenClaw, the report records the executed adapter instead of the first route choice.
+- **Copilot review fixes hardened the memory action loop approval edge cases.** Malformed persisted `costZeroIntent` values now fail safe to `unknown`, approval execution errors no longer overwrite the route-rationale field, and outbound email memory actions are treated as irreversible before policy evaluation.
 
 ## [0.6.76.0] - 2026-06-25
 

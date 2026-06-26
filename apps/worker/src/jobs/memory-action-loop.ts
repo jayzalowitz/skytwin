@@ -799,6 +799,7 @@ function inferSituationType(actionType: string): SituationType {
 function inferReversible(actionType: string): boolean {
   if (classifyActionSeverity({ actionType }) !== 'none') return false;
   const lower = actionType.toLowerCase();
+  if (isOutboundEmailActionType(lower)) return false;
   return ![
     'pay_',
     'transfer_',
@@ -807,6 +808,16 @@ function inferReversible(actionType: string): boolean {
     'book_appointment',
     'schedule_social_post',
   ].some((marker) => lower.includes(marker));
+}
+
+function isOutboundEmailActionType(actionType: string): boolean {
+  return [
+    'draft_email',
+    'reply_email',
+    'send_reply',
+    'send_email',
+    'forward_email',
+  ].some((marker) => actionType.includes(marker));
 }
 
 function confidenceLevel(confidence: number): ConfidenceLevel {
