@@ -205,11 +205,20 @@ export class SituationInterpreter {
       return SituationType.SECURITY_ALERT;
     }
 
-    // Email triage
+    // Email triage. Recognize first-party mail connectors (gmail/outlook) and
+    // any signal carrying an inbound email authoring tier (#251 Layer 1).
+    // Newsletters arrive as source='gmail', type='newsletter' — the old
+    // source.includes('email') check missed them, dropping them into GENERIC
+    // where the only candidate is a high-confidence escalate_to_user ("Decision
+    // needed regarding: …") rather than an archive/label triage.
+    const authoringTier = String(rawEvent['authoringTier'] ?? '').toLowerCase();
     if (
       source.includes('email') ||
+      source === 'gmail' ||
+      source === 'outlook' ||
       type.includes('email') ||
-      type.includes('message')
+      type.includes('message') ||
+      authoringTier.startsWith('inbox_')
     ) {
       // Check for subscription renewal emails
       if (
