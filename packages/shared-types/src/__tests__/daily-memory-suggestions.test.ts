@@ -143,4 +143,122 @@ describe('buildDailyMemorySuggestions', () => {
     expect(suggestions).toHaveLength(1);
     expect(suggestions[0]!.memoryRefs).toEqual(['newer-recent']);
   });
+
+  it('notes topic interest instead of drafting a reply to a newsletter', () => {
+    const suggestions = buildDailyMemorySuggestions({
+      recent: [
+        page({
+          id: 'nl-1',
+          content:
+            'Breaking news: the House votes to end the conflict, in a bipartisan rebuke.',
+          metadata: {
+            authoringTier: 'inbox_newsletter',
+            signalSource: 'gmail',
+            fromAddress: 'breakingnews@nytimes.com',
+          },
+        }),
+      ],
+      older: [],
+    });
+
+    expect(suggestions).toHaveLength(1);
+    expect(suggestions[0]!.actionPlan.actionType).toBe('create_note');
+    expect(suggestions[0]!.actionPlan.actionType).not.toBe('draft_email');
+    expect(suggestions[0]!.actionPlan.label).toMatch(/interest/i);
+  });
+
+  it.each(['inbox_newsletter', 'inbox_automated'])(
+    'treats %s mail as topic-interest, never a reply draft',
+    (tier) => {
+      const suggestions = buildDailyMemorySuggestions({
+        recent: [
+          page({
+            id: `bcast-${tier}`,
+            content:
+              'A roundup of platform changes and industry headlines worth being aware of this week.',
+            metadata: {
+              authoringTier: tier,
+              signalSource: 'gmail',
+              fromAddress: 'list@e.example.com',
+            },
+          }),
+        ],
+        older: [],
+      });
+
+      expect(suggestions[0]!.actionPlan.actionType).toBe('create_note');
+    },
+  );
+
+  it('treats a no-reply sender as topic-interest even without an authoring tier', () => {
+    const suggestions = buildDailyMemorySuggestions({
+      recent: [
+        page({
+          id: 'nr-1',
+          content:
+            'Your weekly product summary and the latest platform changes are ready to read.',
+          metadata: { signalSource: 'gmail', fromAddress: 'no-reply@product.example' },
+        }),
+      ],
+      older: [],
+    });
+
+    expect(suggestions[0]!.actionPlan.actionType).toBe('create_note');
+  });
+
+  it("still offers a reply draft for a real person's inbound email", () => {
+    const suggestions = buildDailyMemorySuggestions({
+      recent: [
+        page({
+          id: 'person-1',
+          content:
+            'Maria asked whether the security review is still blocking procurement and wants a reply today.',
+          metadata: {
+            authoringTier: 'inbox_personal',
+            signalSource: 'gmail',
+            fromAddress: 'maria@acme.example',
+          },
+        }),
+      ],
+      older: [],
+    });
+
+    expect(suggestions[0]!.actionPlan.actionType).toBe('draft_email');
+  });
+
+  it("drafts a reply for inbox_broadcast (a cc'd human thread), not a topic note", () => {
+    const suggestions = buildDailyMemorySuggestions({
+      recent: [
+        page({
+          id: 'bcast-human',
+          content:
+            'Priya looped in finance and asked you to send the revised Q3 figures to the thread by Friday.',
+          metadata: {
+            authoringTier: 'inbox_broadcast',
+            signalSource: 'gmail',
+            fromAddress: 'priya@acme.example',
+          },
+        }),
+      ],
+      older: [],
+    });
+
+    expect(suggestions[0]!.actionPlan.actionType).toBe('draft_email');
+  });
+
+  it('does not mistake a real person whose local-part ends in a trigger word for bulk mail', () => {
+    const suggestions = buildDailyMemorySuggestions({
+      recent: [
+        page({
+          id: 'person-trigger-word',
+          content:
+            'Mary asked whether the security review is still blocking procurement and wants a reply today.',
+          metadata: { signalSource: 'gmail', fromAddress: 'mary.newsletter@acme.example' },
+        }),
+      ],
+      older: [],
+    });
+
+    expect(suggestions[0]!.actionPlan.actionType).toBe('draft_email');
+  });
 });

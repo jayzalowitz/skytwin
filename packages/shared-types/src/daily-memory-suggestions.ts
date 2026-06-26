@@ -223,6 +223,15 @@ function inferActionPlan(
   const meta = page.metadata ?? {};
   const source = sourceLabel(page).toLowerCase();
 
+  // Broadcast / no-reply mail — newsletters, marketing blasts, automated
+  // notifications — is something to be AWARE of, not correspondence to answer.
+  // "Draft a reply" to breakingnews@nytimes.com is nonsense; capture the topic
+  // interest instead. The #251 authoring tiers already mark these inbound.
+  if (isBroadcastEmail(meta)) {
+    return buildExecutableActionPlan('create_note', 'note your interest in this topic');
+  }
+
+  // Genuine inbound correspondence (a real person, in your inbox) → draft a reply.
   if (
     source.includes('mail') ||
     typeof meta['fromAddress'] === 'string' ||
@@ -336,6 +345,39 @@ function truncate(text: string, max: number): string {
 function isUserAuthored(metadata: Record<string, unknown>): boolean {
   const tier = metadata['authoringTier'];
   return tier === 'user_sent_originated' || tier === 'user_sent_reply';
+}
+
+/**
+ * Authoring tiers (#251 Layer 1) for no-reply mail the twin should note as
+ * topic interest rather than answer: newsletters / list blasts
+ * (`inbox_newsletter`) and automated / transactional notifications
+ * (`inbox_automated`).
+ *
+ * `inbox_broadcast` is deliberately NOT here. Per the connector classifier
+ * (`authoring-tier.ts`) that tier is plain inbound mail the user is one of
+ * several human recipients on (To+Cc > 1) — a cc'd thread that often wants a
+ * reply. Treating it as a newsletter would silently drop the reply draft.
+ */
+const BROADCAST_AUTHORING_TIERS = new Set<string>([
+  'inbox_newsletter',
+  'inbox_automated',
+]);
+
+/**
+ * Conservative no-reply / bulk sender match, used only as a fallback when the
+ * connector did not stamp an authoring tier. The trigger must be the whole
+ * local-part (optionally `+tag` / `.id` suffixed) right before `@`, anchored to
+ * the start of the address or a `<` / whitespace boundary — so `mary.newsletter@…`
+ * or `johnnotifications@…` (real people) are NOT mistaken for bulk senders.
+ */
+const NO_REPLY_SENDER =
+  /(?:^|[\s<])(?:no-?reply|do-?not-?reply|donotreply|mailer-daemon|notifications?|newsletter)(?:[+._-][^@\s]*)?@/i;
+
+function isBroadcastEmail(metadata: Record<string, unknown>): boolean {
+  const tier = metadata['authoringTier'];
+  if (typeof tier === 'string' && BROADCAST_AUTHORING_TIERS.has(tier)) return true;
+  const from = metadata['fromAddress'];
+  return typeof from === 'string' && NO_REPLY_SENDER.test(from);
 }
 
 function ageDays(value: Date | string, now?: Date): number {

@@ -235,4 +235,46 @@ describe('SituationInterpreter', () => {
       expect(d.provenance).toBe('user_originated');
     });
   });
+
+  describe('email source classification (#251 newsletter-aware)', () => {
+    it('classifies a gmail newsletter as EMAIL_TRIAGE, not GENERIC', () => {
+      const result = interpreter.interpretRuleBased({
+        source: 'gmail',
+        type: 'newsletter',
+        subject: 'Breaking news: House votes to end the conflict',
+        authoringTier: 'inbox_newsletter',
+      });
+      expect(result.situationType).toBe(SituationType.EMAIL_TRIAGE);
+    });
+
+    it('classifies an outlook newsletter as EMAIL_TRIAGE', () => {
+      const result = interpreter.interpretRuleBased({
+        source: 'outlook',
+        type: 'newsletter',
+        subject: 'Your weekly product digest',
+        authoringTier: 'inbox_newsletter',
+      });
+      expect(result.situationType).toBe(SituationType.EMAIL_TRIAGE);
+    });
+
+    it('routes inbound mail to EMAIL_TRIAGE via authoring tier even from an unrecognized source', () => {
+      const result = interpreter.interpretRuleBased({
+        source: 'imap',
+        type: 'broadcast',
+        subject: 'Quarterly investor update',
+        authoringTier: 'inbox_broadcast',
+      });
+      expect(result.situationType).toBe(SituationType.EMAIL_TRIAGE);
+    });
+
+    it('reads the authoring tier from the data envelope (real connector shape)', () => {
+      const result = interpreter.interpretRuleBased({
+        source: 'imap',
+        type: 'broadcast',
+        subject: 'Monthly community roundup',
+        data: { authoringTier: 'inbox_newsletter' },
+      });
+      expect(result.situationType).toBe(SituationType.EMAIL_TRIAGE);
+    });
+  });
 });

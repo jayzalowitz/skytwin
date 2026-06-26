@@ -1,5 +1,11 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.78.0] - 2026-06-26
+
+### Fixed
+
+- **The twin no longer treats newsletters like correspondence.** Connecting a Gmail account used to flood the approval queue with newsletter noise. The daily memory action loop proposed "draft a reply using this memory" for *any* email-derived memory, so a NYT breaking-news blast from `breakingnews@nytimes.com` became a reply draft; and the reactive triage escalated every newsletter as "Decision needed regarding: <subject>" because `classifySituation` only routed `source.includes('email')` to email triage while the Gmail connector emits `source: 'gmail'` — dropping newsletters into `GENERIC`, whose only candidates are a note and a high-confidence escalation. Both paths now consult the `AuthoringTier` (#251) the connectors already stamp: broadcast / no-reply mail (`inbox_newsletter`, `inbox_automated`, or a no-reply sender) infers `create_note` "note your interest in this topic" instead of a reply, and Gmail/Outlook signals plus any `inbox_*` tier classify as `EMAIL_TRIAGE` (archive / label) instead of escalating. `inbox_broadcast` — a cc'd human thread, not a newsletter — still drafts a reply. Hardened by adversarial pre-merge review: the no-reply sender match is anchored so `mary.newsletter@…` (a real person) isn't mistaken for bulk mail, and the tier check reads `authoringTier` from both the top-level event and the nested `data` envelope the connectors actually use. 11 new unit tests across the two paths.
+
 ## [0.6.77.0] - 2026-06-25
 
 ### Added
