@@ -104,7 +104,7 @@ export class SenderAwareCandidateGenerator implements CandidateGenerator {
       description: `Flag this email for manual review (${why}).`,
       domain: 'email',
       parameters: {
-        emailId: decision.rawData['emailId'],
+        emailId: (decision.rawData['emailId'] ?? decision.rawData['messageId']),
         reason: why,
         from: decision.rawData['from'],
         subject: decision.rawData['subject'],
