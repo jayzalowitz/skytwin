@@ -334,6 +334,7 @@ async function executeAllowedOpportunity(
     const router = await getRouter();
     const routing = await router.route(candidate, riskAssessment, userId);
     const result = await router.executeWithRouting(candidate, riskAssessment, userId);
+    const adapterName = adapterUsedFromResult(result.output) ?? routing.selectedAdapter;
     await recordOutcomeAndExplanation(candidate, riskAssessment, {
       autoExecuted: result.status === 'completed',
       requiresApproval: false,
@@ -361,8 +362,8 @@ async function executeAllowedOpportunity(
       opportunity,
       status,
       result.status === 'completed'
-        ? `SkyTwin executed this memory action through ${routing.selectedAdapter}.`
-        : `SkyTwin tried ${routing.selectedAdapter}, but execution failed: ${result.error ?? 'unknown error'}.`,
+        ? `SkyTwin executed this memory action through ${adapterName}.`
+        : `SkyTwin tried ${adapterName}, but execution failed: ${result.error ?? 'unknown error'}.`,
       result.status === 'completed'
         ? 'Monitor feedback and keep the memory pattern available for future opportunities.'
         : 'Retry after adapter health or credentials are fixed.',
@@ -370,7 +371,7 @@ async function executeAllowedOpportunity(
       {
         decisionId: candidate.decisionId,
         executionPlanId: plan.id,
-        adapterName: routing.selectedAdapter,
+        adapterName,
         routeReason: routing.reasoning,
       },
     );
@@ -380,7 +381,7 @@ async function executeAllowedOpportunity(
       report,
       decisionId: candidate.decisionId,
       executionPlanId: plan.id,
-      adapterName: routing.selectedAdapter,
+      adapterName,
       routeReason: routing.reasoning,
       nextStep: report.nextStep,
     });
@@ -423,6 +424,11 @@ async function executeAllowedOpportunity(
     });
     return report;
   }
+}
+
+function adapterUsedFromResult(output: Record<string, unknown> | undefined): string | undefined {
+  const adapterUsed = output?.['adapter_used'];
+  return typeof adapterUsed === 'string' && adapterUsed.length > 0 ? adapterUsed : undefined;
 }
 
 async function logMemorySkillGap(

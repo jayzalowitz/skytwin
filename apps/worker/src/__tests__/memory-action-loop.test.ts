@@ -268,18 +268,18 @@ describe('runMemoryActionLoopJob', () => {
     const router = {
       route: vi.fn().mockResolvedValue({
         selectedAdapter: 'ironclaw',
-        fallbackChain: [],
+        fallbackChain: ['direct'],
         trustProfile: {},
         riskModifierApplied: 0,
         modifiedRiskAssessment: {},
-        reasoning: 'IronClaw can handle create_task.',
+        reasoning: 'IronClaw is preferred; Direct can fall back for create_task.',
       }),
       executeWithRouting: vi.fn().mockResolvedValue({
-        planId: 'ironclaw-plan-1',
+        planId: 'direct-plan-1',
         status: 'completed',
         startedAt: new Date(),
         completedAt: new Date(),
-        output: { adapter_used: 'ironclaw' },
+        output: { adapter_used: 'direct', routing_decision: 'ironclaw', fallbacks_attempted: 1 },
       }),
     };
 
@@ -309,8 +309,12 @@ describe('runMemoryActionLoopJob', () => {
     expect(mockMemoryActionOpportunityRepository.markStatus).toHaveBeenCalledWith(
       expect.objectContaining({
         status: 'auto_executed',
-        adapterName: 'ironclaw',
+        adapterName: 'direct',
         executionPlanId: '44444444-4444-4444-4444-444444444444',
+        report: expect.objectContaining({
+          adapterName: 'direct',
+          summary: expect.stringContaining('direct'),
+        }),
       }),
     );
   });
