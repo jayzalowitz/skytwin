@@ -42,6 +42,10 @@ import { processSubscriptionRenewal } from '../workflows/subscription-renewal.js
 import { processGroceryReorder } from '../workflows/grocery-reorder.js';
 import { processTravelDecision } from '../workflows/travel-decision.js';
 import { getExecutionRouter } from '../execution-setup.js';
+import {
+  isAwarenessOnly,
+  awarenessDispositionGateEnabled,
+} from '../services/awareness-disposition.js';
 import { recordMcpActionSpend } from '../mcp-action-spend.js';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
 import { bindUserIdParamValidator } from '../middleware/validate-uuid.js';
@@ -517,6 +521,38 @@ export function createEventsRouter(): Router {
       // duplicate ingestion is silent end-to-end (DB no-op + UI no-op),
       // not just at the DB level.
       let approvalNewlyCreated = false;
+
+      // Awareness disposition (#601). Routine awareness signals — newsletters,
+      // automated notices, the user's own re-ingested sent mail, calendar
+      // updates — select a passive, reversible, zero-cost action and at observer
+      // tier would each become an approval card AND a "needs you" digest to-do.
+      // When the gate is on we dispose them as awareness: the decision and
+      // explanation are still persisted, but the outcome is flipped to
+      // requires_approval=false so NO approval row + approval:new SSE is created
+      // and the digest's needsYou() (which reads requires_approval) shows it
+      // under FYI, not To-dos. Never gates an injection-guard escalation (see
+      // isAwarenessOnly). Phase 0 logs the candidate with no behaviour change;
+      // Phase 1 (AWARENESS_DISPOSITION_GATE=on, default off) does the suppression.
+      const awarenessOnly =
+        outcome.requiresApproval &&
+        !!outcome.selectedAction &&
+        isAwarenessOnly(decision, outcome);
+      if (awarenessOnly) {
+        log.info('Awareness-disposition candidate', {
+          decisionId: decision.id,
+          situationType: decision.situationType,
+          actionType: outcome.selectedAction?.actionType,
+          gateEnabled: awarenessDispositionGateEnabled(),
+        });
+      }
+      if (awarenessOnly && awarenessDispositionGateEnabled()) {
+        // Phase 1: flip the PERSISTED outcome so the approval branch below is
+        // skipped (no row, no approval:new SSE) and needsYou() buckets it as FYI.
+        // selectedAction stays non-null, so decision:blocked-by-policy stays
+        // silent. saveOutcome upserts the existing row (ON CONFLICT DO UPDATE).
+        outcome.requiresApproval = false;
+        await decisionRepositoryAdapter.saveOutcome(outcome);
+      }
 
       if (outcome.requiresApproval && outcome.selectedAction) {
         // Create an approval request so the user can review it. We include

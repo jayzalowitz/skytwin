@@ -1,5 +1,11 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.81.0] - 2026-06-26
+
+### Added
+
+- **Awareness disposition gate — stop the approval queue from flooding with things that aren't decisions (flagged, default off).** The newsletter and classify-first fixes improved *which* action a signal gets; this addresses *how many cards* it makes. At `observer`/`suggest` tier the policy engine forces approval on every action and the ingest route creates one "Needs your OK" card per signal — so newsletters, automated notices, the user's own re-ingested sent mail, and "no action required" calendar updates each become a card. `isAwarenessOnly()` identifies a pure-awareness outcome (a passive, reversible, zero-cost action — archive / label / note / acknowledge / dismiss — selected for an awareness-tier email `inbox_newsletter` / `inbox_automated` / `user_sent_*`, or a `CALENDAR_UPDATE`) and, when `AWARENESS_DISPOSITION_GATE=on`, flips the persisted outcome to `requires_approval=false` — so the decision is still recorded but surfaces as **FYI** in the digest (the `needsYou()` read path) rather than a To-do, with no approval row and no `approval:new` SSE. Hard safety carve-outs: it never gates an injection-guard escalation (`outcome.confirmationLevel` set), a non-passive / irreversible / costed action, human inbound mail (`inbox_personal` / `inbox_broadcast`), or a calendar invite. Phased: Phase 0 logs every candidate with no behaviour change, Phase 1 is the flagged suppression. 17 unit tests.
+
 ## [0.6.80.0] - 2026-06-26
 
 ### Fixed
