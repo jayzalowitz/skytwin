@@ -42,6 +42,10 @@ import { processSubscriptionRenewal } from '../workflows/subscription-renewal.js
 import { processGroceryReorder } from '../workflows/grocery-reorder.js';
 import { processTravelDecision } from '../workflows/travel-decision.js';
 import { getExecutionRouter } from '../execution-setup.js';
+import {
+  isAwarenessOnly,
+  awarenessDispositionGateEnabled,
+} from '../services/awareness-disposition.js';
 import { recordMcpActionSpend } from '../mcp-action-spend.js';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
 import { bindUserIdParamValidator } from '../middleware/validate-uuid.js';
@@ -518,7 +522,35 @@ export function createEventsRouter(): Router {
       // not just at the DB level.
       let approvalNewlyCreated = false;
 
-      if (outcome.requiresApproval && outcome.selectedAction) {
+      // Awareness disposition (#601). Routine awareness signals — newsletters,
+      // automated notices, the user's own sent mail, calendar updates — select a
+      // passive, reversible, zero-cost action and at observer tier would each
+      // become an approval card. The decision/outcome/explanation are already
+      // persisted above, so the digest still surfaces them as FYI; gating only
+      // skips creating the approval ROW + the approval:new SSE. It never gates an
+      // injection-guard escalation (see isAwarenessOnly). Phase 0 logs the
+      // candidate with no behaviour change; Phase 1 (AWARENESS_DISPOSITION_GATE=on)
+      // suppresses the row.
+      const awarenessOnly =
+        outcome.requiresApproval &&
+        !!outcome.selectedAction &&
+        isAwarenessOnly(decision, outcome);
+      if (awarenessOnly) {
+        log.info('Awareness-disposition candidate', {
+          decisionId: decision.id,
+          situationType: decision.situationType,
+          actionType: outcome.selectedAction?.actionType,
+          gateEnabled: awarenessDispositionGateEnabled(),
+        });
+      }
+      const gateAwareness = awarenessOnly && awarenessDispositionGateEnabled();
+
+      if (gateAwareness) {
+        // Phase 1: recorded as FYI only. Intentionally no approval row and no
+        // approval:new SSE — the digest reads the persisted decision instead.
+        // selectedAction stays non-null, so the decision:blocked-by-policy SSE
+        // below (gated on !selectedAction) also correctly does not fire.
+      } else if (outcome.requiresApproval && outcome.selectedAction) {
         // Create an approval request so the user can review it. We include
         // `parameters` here so the dashboard can render *what specifically*
         // is being proposed (e.g. which Gmail label, which calendar id, the
