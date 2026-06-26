@@ -1,12 +1,9 @@
 import { createLogger } from '@skytwin/core';
-import { briefingRepository, appSuggestionRepository, lifebookRepository, mcpServerRepository, userRepository, query } from '@skytwin/db';
+import { briefingRepository, appSuggestionRepository, lifebookRepository, mcpServerRepository, userRepository, query, memoryActionOpportunityRepository } from '@skytwin/db';
 import { runPrompt } from '@skytwin/policy-prompts';
 import type { LlmClient } from '@skytwin/llm-client';
-import {
-  buildDailyMemorySuggestions,
-  type DailyMemorySuggestion,
-  type DailyMemorySuggestionPage,
-} from '@skytwin/shared-types';
+import type { MemoryActionLoopReport } from '@skytwin/shared-types';
+import { fetchDailyMemorySuggestions } from './memory-suggestions.js';
 
 const log = createLogger('worker:briefing-generator');
 
@@ -60,17 +57,6 @@ export interface BriefingGeneratorJobDeps {
  */
 const BRIEFING_USER_PAGE_SIZE = 500;
 
-interface MemorySuggestionRow {
-  bucket: 'recent' | 'older';
-  id: string;
-  title: string | null;
-  content: string | null;
-  source: string;
-  source_ref: string | null;
-  metadata: Record<string, unknown> | null;
-  created_at: string | Date;
-}
-
 async function getActiveUserIds(): Promise<string[]> {
   const allIds: string[] = [];
   let lastSeen: string | null = null;
@@ -99,65 +85,19 @@ async function getActiveUserIds(): Promise<string[]> {
   return allIds;
 }
 
-async function fetchDailyMemorySuggestions(userId: string): Promise<DailyMemorySuggestion[]> {
-  let rows: { rows: MemorySuggestionRow[] } | undefined;
-  try {
-    rows = await query<MemorySuggestionRow>(
-      `WITH recent AS (
-         SELECT id, title, COALESCE(content, '') AS content, source, source_ref, metadata, created_at
-           FROM brain_pages
-          WHERE user_id = $1
-            AND created_at >= now() - INTERVAL '36 hours'
-            AND COALESCE(metadata->>'userOverride', '') <> 'hidden'
-          ORDER BY created_at DESC
-          LIMIT 24
-       ),
-       older AS (
-         SELECT id, title, COALESCE(content, '') AS content, source, source_ref, metadata, created_at
-           FROM brain_pages
-          WHERE user_id = $1
-            AND created_at < now() - INTERVAL '36 hours'
-            AND created_at >= now() - INTERVAL '120 days'
-            AND COALESCE(metadata->>'userOverride', '') <> 'hidden'
-          ORDER BY created_at DESC
-          LIMIT 160
-       )
-       SELECT 'recent' AS bucket, * FROM recent
-       UNION ALL
-       SELECT 'older' AS bucket, * FROM older`,
-      [userId],
-    );
-  } catch {
-    return [];
-  }
-
-  const resultRows = Array.isArray(rows?.rows) ? rows.rows : [];
-  const toPage = (row: MemorySuggestionRow): DailyMemorySuggestionPage => ({
-    id: row.id,
-    title: row.title,
-    content: row.content ?? '',
-    source: row.source,
-    sourceRef: row.source_ref,
-    metadata: row.metadata ?? {},
-    createdAt: row.created_at,
-  });
-
-  return buildDailyMemorySuggestions({
-    recent: resultRows.filter((r) => r.bucket === 'recent').map(toPage),
-    older: resultRows.filter((r) => r.bucket === 'older').map(toPage),
-    maxSuggestions: 3,
-  });
-}
-
 /**
  * Gather the source data for a user's briefing.
  * Shared between the adaptive and deterministic paths.
  */
 async function gatherBriefingData(userId: string, cadence: 'daily' | 'weekly') {
-  const [suggestions, allServers, memorySuggestions] = await Promise.all([
+  const lookbackMs = cadence === 'daily' ? 7 * 24 * 60 * 60 * 1000 : 30 * 24 * 60 * 60 * 1000;
+  const since = new Date(Date.now() - lookbackMs);
+
+  const [suggestions, allServers, memorySuggestions, memoryActionReports] = await Promise.all([
     appSuggestionRepository.getPendingForUser(userId),
     mcpServerRepository.listForUser(userId),
-    fetchDailyMemorySuggestions(userId),
+    fetchDailyMemorySuggestions(userId, 5),
+    memoryActionOpportunityRepository.listRecentReportsForUser(userId, since, 8),
   ]);
 
   const active = allServers.filter(
@@ -165,8 +105,6 @@ async function gatherBriefingData(userId: string, cadence: 'daily' | 'weekly') {
   );
   const dormant = allServers.filter((s) => s.status === 'dormant' || s.status === 'paused');
 
-  const lookbackMs = cadence === 'daily' ? 7 * 24 * 60 * 60 * 1000 : 30 * 24 * 60 * 60 * 1000;
-  const since = new Date(Date.now() - lookbackMs);
   const recentlyInstalled = active.filter((s) => s.installed_at && s.installed_at > since);
 
   const promotionResult = await query<{ payload: unknown; occurred_at: Date; server_id: string | null }>(
@@ -188,7 +126,7 @@ async function gatherBriefingData(userId: string, cadence: 'daily' | 'weekly') {
     if (s.registry_id) serverIdToRegistry.set(s.id, s.registry_id);
   }
 
-  return { suggestions, active, dormant, recentlyInstalled, promotionResult, serverIdToRegistry, since, memorySuggestions };
+  return { suggestions, active, dormant, recentlyInstalled, promotionResult, serverIdToRegistry, since, memorySuggestions, memoryActionReports };
 }
 
 /**
@@ -198,7 +136,7 @@ function buildTemplatedProse(
   cadence: 'daily' | 'weekly',
   data: Awaited<ReturnType<typeof gatherBriefingData>>,
 ): string {
-  const { suggestions, active, dormant, recentlyInstalled, promotionResult, memorySuggestions } = data;
+  const { suggestions, active, dormant, recentlyInstalled, promotionResult, memorySuggestions, memoryActionReports } = data;
   const lines: string[] = [];
 
   if (cadence === 'daily') {
@@ -282,12 +220,22 @@ function buildTemplatedProse(
     lines.push('');
   }
 
+  if (memoryActionReports.length > 0) {
+    lines.push(`### Memory action loop`);
+    lines.push('');
+    for (const report of memoryActionReports) {
+      lines.push(`- **${report.actionLabel}** (${report.status}) — ${report.summary} Next: ${report.nextStep}`);
+    }
+    lines.push('');
+  }
+
   const sourceEventCount =
     suggestions.length +
     recentlyInstalled.length +
     dormant.length +
     promotionResult.rows.length +
-    memorySuggestions.length;
+    memorySuggestions.length +
+    memoryActionReports.length;
 
   if (sourceEventCount === 0) {
     lines.push(`_Nothing new to report. Your twin is watching and learning._`);
@@ -327,6 +275,7 @@ function filterDataByLifebook(
       serverIdToRegistry: data.serverIdToRegistry,
       since: data.since,
       memorySuggestions: [],
+      memoryActionReports: [],
     };
   }
   const inSet = (registryId: string | null | undefined): boolean =>
@@ -351,6 +300,7 @@ function filterDataByLifebook(
     // Memory-derived action opportunities are global today. Do not repeat them
     // inside per-Lifebook prose until they carry a domain tag.
     memorySuggestions: [],
+    memoryActionReports: [],
   };
 }
 
@@ -387,7 +337,8 @@ async function generateBriefingProse(
     data.recentlyInstalled.length +
     data.dormant.length +
     data.promotionResult.rows.length +
-    data.memorySuggestions.length;
+    data.memorySuggestions.length +
+    data.memoryActionReports.length;
 
   // ── Adaptive path (H: briefing-prose) ─────────────────────────────────
   if (llmClient) {
@@ -433,6 +384,19 @@ async function generateBriefingProse(
           learnTarget: s.actionPlan.learnTarget ?? '',
           actionPlan: s.actionPlan,
         })),
+        memoryActionReports: data.memoryActionReports.map((r: MemoryActionLoopReport) => ({
+          status: r.status,
+          title: r.title,
+          actionType: r.actionType,
+          actionLabel: r.actionLabel,
+          adapterName: r.adapterName ?? '',
+          summary: r.summary,
+          nextStep: r.nextStep,
+          policyReason: r.policyReason ?? '',
+          routeReason: r.routeReason ?? '',
+          approvalRequestId: r.approvalRequestId ?? '',
+          executionPlanId: r.executionPlanId ?? '',
+        })),
         cadence,
         sourceEventCount,
       };
@@ -463,6 +427,7 @@ async function generateBriefingProse(
           language: briefingLanguage,
           pending_tasks: pendingTasks,
           memory_suggestions: events.memorySuggestions,
+          memory_action_reports: events.memoryActionReports,
           risk_profile: '',
           domain: scope?.domainName ?? '',
         },

@@ -9,13 +9,17 @@ import type { LlmClient } from '@skytwin/llm-client';
 const {
   mockBriefingRepository,
   mockAppSuggestionRepository,
+  mockMemoryActionOpportunityRepository,
   mockMcpServerRepository,
+  mockLifebookRepository,
   mockUserRepository,
   mockQuery,
 } = vi.hoisted(() => ({
   mockBriefingRepository: { create: vi.fn() },
   mockAppSuggestionRepository: { getPendingForUser: vi.fn() },
+  mockMemoryActionOpportunityRepository: { listRecentReportsForUser: vi.fn() },
   mockMcpServerRepository: { listForUser: vi.fn() },
+  mockLifebookRepository: { listVisible: vi.fn() },
   // spec 12: briefing-generator reads the user's locale before runPrompt. Without
   // this the call threw and the generator silently fell back to the templated
   // path, leaving the LLM-prose path untested (review #13).
@@ -26,7 +30,9 @@ const {
 vi.mock('@skytwin/db', () => ({
   briefingRepository: mockBriefingRepository,
   appSuggestionRepository: mockAppSuggestionRepository,
+  memoryActionOpportunityRepository: mockMemoryActionOpportunityRepository,
   mcpServerRepository: mockMcpServerRepository,
+  lifebookRepository: mockLifebookRepository,
   userRepository: mockUserRepository,
   query: mockQuery,
 }));
@@ -62,7 +68,9 @@ describe('runBriefingGeneratorJob — H: briefing-prose adaptive path', () => {
     vi.clearAllMocks();
     mockBriefingRepository.create.mockResolvedValue({ id: 'brief-1' });
     mockAppSuggestionRepository.getPendingForUser.mockResolvedValue([]);
+    mockMemoryActionOpportunityRepository.listRecentReportsForUser.mockResolvedValue([]);
     mockMcpServerRepository.listForUser.mockResolvedValue([ACTIVE_SERVER]);
+    mockLifebookRepository.listVisible.mockResolvedValue([]);
     mockQuery.mockResolvedValue({ rows: [] }); // no promotions, no active user query
   });
 

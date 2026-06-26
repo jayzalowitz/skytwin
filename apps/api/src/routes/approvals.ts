@@ -9,6 +9,7 @@ import {
   decisionRepositoryAdapter,
   feedbackRepository,
   mempalaceRepository,
+  memoryActionOpportunityRepository,
   oauthRepository,
   userRepository,
   TwinRepositoryAdapter,
@@ -18,7 +19,13 @@ import {
 } from '@skytwin/db';
 import { TwinService } from '@skytwin/twin-model';
 import { PolicyEvaluator } from '@skytwin/policy-engine';
-import type { FeedbackEvent, CandidateAction } from '@skytwin/shared-types';
+import type {
+  FeedbackEvent,
+  CandidateAction,
+  ActionProvenance,
+  MemoryActionLoopReport,
+  MemoryActionOpportunityStatus,
+} from '@skytwin/shared-types';
 import { ConfidenceLevel, TrustTier } from '@skytwin/shared-types';
 import { isValidUserId as isValidUuid } from '../middleware/validate-uuid.js';
 import { getExecutionRouter } from '../execution-setup.js';
@@ -36,6 +43,142 @@ import {
 } from '../email-attribution.js';
 
 const log = createLogger('api:approvals');
+
+function parseCostZeroIntent(value: unknown): CandidateAction['costZeroIntent'] {
+  return value === 'unknown' || value === 'verified_zero' ? value : undefined;
+}
+
+function parseActionProvenance(value: unknown): ActionProvenance | undefined {
+  if (value === 'user_originated' || value === 'trusted_context' || value === 'untrusted_external') {
+    return value;
+  }
+  return undefined;
+}
+
+interface ApprovalMemoryLedgerInput {
+  approval: {
+    id: string;
+    decision_id: string;
+    candidate_action: unknown;
+  };
+  action: 'approve' | 'reject';
+  executionResult?: { status: string; planId?: string; adapterUsed?: unknown; error?: string } | null;
+  overrideStatus?: MemoryActionOpportunityStatus;
+  policyReason?: string;
+  reason?: string;
+}
+
+function memoryOpportunityIdFromAction(action: Record<string, unknown>): string | null {
+  const parameters = action['parameters'];
+  if (!parameters || typeof parameters !== 'object') return null;
+  const opportunityId = (parameters as Record<string, unknown>)['opportunityId'];
+  return typeof opportunityId === 'string' && isValidUuid(opportunityId) ? opportunityId : null;
+}
+
+async function markMemoryOpportunityFromApproval(input: ApprovalMemoryLedgerInput): Promise<void> {
+  const storedAction = (input.approval.candidate_action ?? {}) as Record<string, unknown>;
+  const opportunityId = memoryOpportunityIdFromAction(storedAction);
+  if (!opportunityId) return;
+
+  const actionType = typeof storedAction['actionType'] === 'string'
+    ? storedAction['actionType']
+    : 'unknown';
+  const actionLabel = typeof storedAction['description'] === 'string' && storedAction['description']
+    ? storedAction['description']
+    : actionType;
+  const parameters = (storedAction['parameters'] ?? {}) as Record<string, unknown>;
+  const title = typeof parameters['summary'] === 'string' && parameters['summary']
+    ? parameters['summary']
+    : actionLabel;
+  const adapterName = typeof input.executionResult?.adapterUsed === 'string'
+    ? input.executionResult.adapterUsed
+    : undefined;
+  const status = input.overrideStatus ?? approvalMemoryStatus(input.action, input.executionResult);
+  const { summary, nextStep } = approvalMemoryCopy({
+    status,
+    actionLabel,
+    policyReason: input.policyReason,
+    error: input.executionResult?.error,
+    reason: input.reason,
+  });
+  const report: MemoryActionLoopReport = {
+    opportunityId,
+    status,
+    title,
+    actionType,
+    actionLabel,
+    adapterName,
+    decisionId: input.approval.decision_id,
+    approvalRequestId: input.approval.id,
+    executionPlanId: input.executionResult?.planId,
+    policyReason: input.policyReason,
+    summary,
+    nextStep,
+    attemptedAt: new Date().toISOString(),
+  };
+
+  try {
+    await memoryActionOpportunityRepository.markStatus({
+      id: opportunityId,
+      status,
+      report,
+      decisionId: input.approval.decision_id,
+      approvalRequestId: input.approval.id,
+      executionPlanId: input.executionResult?.planId,
+      adapterName,
+      policyReason: input.policyReason,
+      routeReason: input.executionResult?.error,
+      nextStep,
+    });
+  } catch (err) {
+    log.warn('Failed to update memory action opportunity after approval response', {
+      decisionId: input.approval.decision_id,
+      approvalId: input.approval.id,
+      opportunityId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+function approvalMemoryStatus(
+  action: 'approve' | 'reject',
+  executionResult?: { status: string } | null,
+): MemoryActionOpportunityStatus {
+  if (action === 'reject') return 'skipped';
+  return executionResult?.status === 'completed' ? 'auto_executed' : 'execution_failed';
+}
+
+function approvalMemoryCopy(input: {
+  status: MemoryActionOpportunityStatus;
+  actionLabel: string;
+  policyReason?: string;
+  error?: string;
+  reason?: string;
+}): { summary: string; nextStep: string } {
+  if (input.status === 'skipped') {
+    return {
+      summary: `User rejected this memory action${input.reason ? `: ${input.reason}` : '.'}`,
+      nextStep: 'Keep this feedback in memory; hide the source memory if it should not resurface.',
+    };
+  }
+  if (input.status === 'blocked_by_policy') {
+    return {
+      summary: `Policy blocked the approved memory action: ${input.policyReason ?? 'policy check failed'}.`,
+      nextStep: 'Update policy or autonomy settings before retrying this opportunity.',
+    };
+  }
+  if (input.status === 'auto_executed') {
+    return {
+      summary: `User approved and SkyTwin executed this memory action: ${input.actionLabel}.`,
+      nextStep: 'Monitor feedback and keep the pattern available for future opportunities.',
+    };
+  }
+  return {
+    summary:
+      `User approved this memory action, but execution failed: ${input.error ?? 'adapter or persistence failure'}.`,
+    nextStep: 'Fix adapter health or credentials; the memory action loop can retry after the cooldown.',
+  };
+}
 
 /**
  * Create the approvals handling router.
@@ -452,9 +595,11 @@ export function createApprovalsRouter(): Router {
           domain: (storedAction['domain'] as string) ?? 'general',
           parameters: (storedAction['parameters'] as Record<string, unknown>) ?? {},
           estimatedCostCents: (storedAction['estimatedCostCents'] as number) ?? 0,
+          costZeroIntent: parseCostZeroIntent(storedAction['costZeroIntent']),
           reversible: (storedAction['reversible'] as boolean) ?? true,
           confidence: (storedAction['confidence'] as ConfidenceLevel) ?? ConfidenceLevel.LOW,
           reasoning: (storedAction['reasoning'] as string) ?? '',
+          provenance: parseActionProvenance(storedAction['provenance']),
         };
 
         // #303: draft-email edit-before-approve. The dashboard
@@ -483,6 +628,13 @@ export function createApprovalsRouter(): Router {
         );
 
         if (policyResult && !policyResult.allowed) {
+          await markMemoryOpportunityFromApproval({
+            approval,
+            action: body.action,
+            overrideStatus: 'blocked_by_policy',
+            policyReason: policyResult.reason ?? 'Policy check failed',
+            reason: body.reason,
+          });
           res.status(403).json({
             error: 'Action blocked by policy even after approval.',
             reason: policyResult.reason ?? 'Policy check failed',
@@ -646,6 +798,13 @@ export function createApprovalsRouter(): Router {
           delete candidateAction.parameters['accessToken'];
         }
       }
+
+      await markMemoryOpportunityFromApproval({
+        approval,
+        action: body.action,
+        executionResult,
+        reason: body.reason,
+      });
 
       // Notify via SSE
       sseManager.emit(body.userId, 'approval:resolved', {
