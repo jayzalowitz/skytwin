@@ -223,6 +223,15 @@ function inferActionPlan(
   const meta = page.metadata ?? {};
   const source = sourceLabel(page).toLowerCase();
 
+  // Broadcast / no-reply mail — newsletters, marketing blasts, automated
+  // notifications — is something to be AWARE of, not correspondence to answer.
+  // "Draft a reply" to breakingnews@nytimes.com is nonsense; capture the topic
+  // interest instead. The #251 authoring tiers already mark these inbound.
+  if (isBroadcastEmail(meta)) {
+    return buildExecutableActionPlan('create_note', 'note your interest in this topic');
+  }
+
+  // Genuine inbound correspondence (a real person, in your inbox) → draft a reply.
   if (
     source.includes('mail') ||
     typeof meta['fromAddress'] === 'string' ||
@@ -336,6 +345,33 @@ function truncate(text: string, max: number): string {
 function isUserAuthored(metadata: Record<string, unknown>): boolean {
   const tier = metadata['authoringTier'];
   return tier === 'user_sent_originated' || tier === 'user_sent_reply';
+}
+
+/**
+ * Authoring tiers (#251 Layer 1) for broadcast / no-reply mail: newsletters,
+ * mailing-list blasts, and automated notifications. These are awareness, not
+ * correspondence — the twin notes the topic of interest, it never drafts a
+ * reply to them.
+ */
+const BROADCAST_AUTHORING_TIERS = new Set<string>([
+  'inbox_broadcast',
+  'inbox_newsletter',
+  'inbox_automated',
+]);
+
+/**
+ * Conservative no-reply / bulk sender match, used only as a fallback when the
+ * connector did not stamp an authoring tier. Kept narrow so a real person is
+ * never mistaken for a newsletter.
+ */
+const NO_REPLY_SENDER =
+  /(?:no-?reply|do-?not-?reply|donotreply|mailer-daemon|notifications?|newsletter)@/i;
+
+function isBroadcastEmail(metadata: Record<string, unknown>): boolean {
+  const tier = metadata['authoringTier'];
+  if (typeof tier === 'string' && BROADCAST_AUTHORING_TIERS.has(tier)) return true;
+  const from = metadata['fromAddress'];
+  return typeof from === 'string' && NO_REPLY_SENDER.test(from);
 }
 
 function ageDays(value: Date | string, now?: Date): number {
