@@ -229,6 +229,39 @@ export interface ExecutionEventRow {
   created_at: Date;
 }
 
+export interface MemoryActionOpportunityRow {
+  id: string;
+  user_id: string;
+  fingerprint: string;
+  suggestion_id: string;
+  title: string;
+  reason: string;
+  suggested_action: string;
+  action_type: string;
+  action_label: string;
+  action_plan: Record<string, unknown>;
+  source_refs: string[];
+  memory_refs: string[];
+  source_types: string[];
+  novelty: string;
+  confidence: number;
+  provenance: string;
+  status: string;
+  attempt_count: number;
+  last_suggested_at: Date;
+  last_attempted_at: Date | null;
+  last_report: Record<string, unknown> | null;
+  decision_id: string | null;
+  approval_request_id: string | null;
+  execution_plan_id: string | null;
+  adapter_name: string | null;
+  policy_reason: string | null;
+  route_reason: string | null;
+  next_step: string | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
 // ============================================================================
 // Explanation / Audit
 // ============================================================================

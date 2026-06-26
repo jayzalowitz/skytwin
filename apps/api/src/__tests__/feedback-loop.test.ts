@@ -24,8 +24,10 @@ const {
   fakeDecisionRepo,
   fakeFeedbackRepo,
   fakeMempalaceRepo,
+  fakeMemoryActionOpportunityRepo,
   fakeUserRepo,
   fakeOauthRepo,
+  fakeExecutionRouter,
 } = vi.hoisted(() => ({
   fakeApprovalRepo: {
     findById: vi.fn(),
@@ -44,11 +46,18 @@ const {
   fakeMempalaceRepo: {
     createEpisode: vi.fn(),
   },
+  fakeMemoryActionOpportunityRepo: {
+    markStatus: vi.fn(),
+  },
   fakeUserRepo: {
     findById: vi.fn(),
   },
   fakeOauthRepo: {
     getToken: vi.fn(),
+  },
+  fakeExecutionRouter: {
+    executeWithRoutingStreaming: vi.fn(async function* () {}),
+    executeWithRouting: vi.fn(),
   },
 }));
 
@@ -78,6 +87,7 @@ vi.mock('@skytwin/db', () => ({
   },
   feedbackRepository: fakeFeedbackRepo,
   mempalaceRepository: fakeMempalaceRepo,
+  memoryActionOpportunityRepository: fakeMemoryActionOpportunityRepo,
   oauthRepository: fakeOauthRepo,
   userRepository: fakeUserRepo,
   TwinRepositoryAdapter: vi.fn().mockImplementation(() => ({
@@ -116,10 +126,7 @@ vi.mock('@skytwin/db', () => ({
 }));
 
 vi.mock('../execution-setup.js', () => ({
-  getExecutionRouter: vi.fn().mockResolvedValue({
-    executeWithRoutingStreaming: async function* () {},
-    executeWithRouting: async () => ({ success: false, error: 'no execution in test' }),
-  }),
+  getExecutionRouter: vi.fn().mockResolvedValue(fakeExecutionRouter),
 }));
 
 vi.mock('../sse.js', () => ({
@@ -206,6 +213,7 @@ beforeEach(() => {
   });
   fakeFeedbackRepo.create.mockResolvedValue({ id: 'fb-1' });
   fakeMempalaceRepo.createEpisode.mockResolvedValue({ id: 'ep-1' });
+  fakeMemoryActionOpportunityRepo.markStatus.mockResolvedValue(null);
   fakeDecisionRepo.findById.mockResolvedValue({
     id: 'dec-1',
     user_id: USER_ID,
@@ -220,6 +228,14 @@ beforeEach(() => {
   });
   fakeUserRepo.findById.mockResolvedValue({ id: USER_ID, trust_tier: 'moderate_autonomy', ironclaw_channel: 'skytwin' });
   fakeOauthRepo.getToken.mockResolvedValue(null);
+  fakeExecutionRouter.executeWithRouting.mockResolvedValue({
+    planId: 'plan-1',
+    status: 'failed',
+    startedAt: new Date(),
+    completedAt: new Date(),
+    error: 'no execution in test',
+    output: {},
+  });
 });
 
 describe('feedback loop — approval records an episode for memory boost', () => {
@@ -312,5 +328,183 @@ describe('feedback loop — approval records an episode for memory boost', () =>
     const call = fakeMempalaceRepo.createEpisode.mock.calls[0]![0];
     // Synthetic summary mentions the user action and the action type
     expect(call.situationSummary).toMatch(/approved.*archive_email|archive_email/);
+  });
+
+  it('approve preserves stored cost intent and provenance when reconstructing the candidate', async () => {
+    const storedAction = {
+      id: 'aaaaaaaa-bbbb-cccc-dddd-000000000abc',
+      actionType: 'create_task',
+      description: 'Create task from memory',
+      domain: 'tasks',
+      parameters: {},
+      estimatedCostCents: 0,
+      costZeroIntent: 'unknown',
+      reversible: true,
+      confidence: 'moderate',
+      reasoning: 'memory action loop',
+      provenance: 'untrusted_external',
+    };
+    fakeApprovalRepo.findById.mockResolvedValueOnce({
+      id: 'app-1',
+      user_id: USER_ID,
+      decision_id: 'dec-1',
+      candidate_action: storedAction,
+      status: 'pending',
+    });
+    fakeApprovalRepo.respond.mockResolvedValueOnce({
+      id: 'app-1',
+      user_id: USER_ID,
+      decision_id: 'dec-1',
+      candidate_action: storedAction,
+      status: 'approved',
+      responded_at: new Date(),
+    });
+
+    const app = buildApp();
+    await postJson(app, '/api/approvals/app-1/respond', {
+      action: 'approve',
+      userId: USER_ID,
+    });
+
+    const candidate = fakeExecutionRouter.executeWithRouting.mock.calls[0]![0] as Record<string, unknown>;
+    expect(candidate['costZeroIntent']).toBe('unknown');
+    expect(candidate['provenance']).toBe('untrusted_external');
+  });
+
+  it('approve treats malformed stored cost intent as unknown', async () => {
+    const storedAction = {
+      id: 'aaaaaaaa-bbbb-cccc-dddd-000000000abc',
+      actionType: 'create_task',
+      description: 'Create task from memory',
+      domain: 'tasks',
+      parameters: {},
+      estimatedCostCents: 0,
+      costZeroIntent: 'tampered_zero',
+      reversible: true,
+      confidence: 'moderate',
+      reasoning: 'memory action loop',
+      provenance: 'trusted_context',
+    };
+    fakeApprovalRepo.findById.mockResolvedValueOnce({
+      id: 'app-1',
+      user_id: USER_ID,
+      decision_id: 'dec-1',
+      candidate_action: storedAction,
+      status: 'pending',
+    });
+    fakeApprovalRepo.respond.mockResolvedValueOnce({
+      id: 'app-1',
+      user_id: USER_ID,
+      decision_id: 'dec-1',
+      candidate_action: storedAction,
+      status: 'approved',
+      responded_at: new Date(),
+    });
+
+    const app = buildApp();
+    await postJson(app, '/api/approvals/app-1/respond', {
+      action: 'approve',
+      userId: USER_ID,
+    });
+
+    const candidate = fakeExecutionRouter.executeWithRouting.mock.calls[0]![0] as Record<string, unknown>;
+    expect(candidate['costZeroIntent']).toBe('unknown');
+  });
+
+  it('approve updates memory action opportunity status after execution attempt', async () => {
+    const storedAction = {
+      id: 'aaaaaaaa-bbbb-cccc-dddd-000000000abc',
+      actionType: 'create_task',
+      description: 'Create task from memory',
+      domain: 'tasks',
+      parameters: {
+        opportunityId: '11111111-1111-1111-1111-111111111111',
+        summary: 'Madrid launch checklist',
+      },
+      estimatedCostCents: 0,
+      costZeroIntent: 'unknown',
+      reversible: true,
+      confidence: 'moderate',
+      reasoning: 'memory action loop',
+      provenance: 'user_originated',
+    };
+    fakeApprovalRepo.findById.mockResolvedValueOnce({
+      id: 'app-1',
+      user_id: USER_ID,
+      decision_id: 'dec-1',
+      candidate_action: storedAction,
+      status: 'pending',
+    });
+    fakeApprovalRepo.respond.mockResolvedValueOnce({
+      id: 'app-1',
+      user_id: USER_ID,
+      decision_id: 'dec-1',
+      candidate_action: storedAction,
+      status: 'approved',
+      responded_at: new Date(),
+    });
+
+    const app = buildApp();
+    await postJson(app, '/api/approvals/app-1/respond', {
+      action: 'approve',
+      userId: USER_ID,
+    });
+
+    const markInput = fakeMemoryActionOpportunityRepo.markStatus.mock.calls[0]![0] as Record<string, unknown>;
+    expect(markInput).toEqual(
+      expect.objectContaining({
+        id: '11111111-1111-1111-1111-111111111111',
+        status: 'execution_failed',
+        decisionId: 'dec-1',
+        approvalRequestId: 'app-1',
+        nextStep: expect.stringContaining('retry'),
+      }),
+    );
+    expect(markInput).not.toHaveProperty('routeReason');
+  });
+
+  it('reject marks the memory action opportunity skipped', async () => {
+    const storedAction = {
+      id: 'aaaaaaaa-bbbb-cccc-dddd-000000000abc',
+      actionType: 'create_task',
+      description: 'Create task from memory',
+      domain: 'tasks',
+      parameters: {
+        opportunityId: '11111111-1111-1111-1111-111111111111',
+        summary: 'Madrid launch checklist',
+      },
+      reversible: true,
+    };
+    fakeApprovalRepo.findById.mockResolvedValueOnce({
+      id: 'app-1',
+      user_id: USER_ID,
+      decision_id: 'dec-1',
+      candidate_action: storedAction,
+      status: 'pending',
+    });
+    fakeApprovalRepo.respond.mockResolvedValueOnce({
+      id: 'app-1',
+      user_id: USER_ID,
+      decision_id: 'dec-1',
+      candidate_action: storedAction,
+      status: 'rejected',
+      responded_at: new Date(),
+    });
+
+    const app = buildApp();
+    await postJson(app, '/api/approvals/app-1/respond', {
+      action: 'reject',
+      userId: USER_ID,
+      reason: 'not useful',
+    });
+
+    expect(fakeMemoryActionOpportunityRepo.markStatus).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: '11111111-1111-1111-1111-111111111111',
+        status: 'skipped',
+        decisionId: 'dec-1',
+        approvalRequestId: 'app-1',
+      }),
+    );
   });
 });

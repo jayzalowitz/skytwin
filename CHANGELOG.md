@@ -1,5 +1,17 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.77.0] - 2026-06-25
+
+### Added
+
+- **Memory action opportunities now keep moving instead of stopping at suggestion text.** The worker persists daily memory-derived opportunities into a durable ledger, dedupes them by fingerprint, evaluates each candidate through the normal policy engine and persisted risk assessment path, then either queues approval, auto-executes through the execution router, blocks on policy, records execution failure, or logs the exact OpenClaw/IronClaw skill gap that needs to be learned or connected. The loop runs every six hours, retries due opportunities even when no fresh memory arrived, and keeps explanations plus decision outcomes attached to every attempt.
+- **Daily reports now include the memory action loop's actual outcomes.** Briefings still show novel memory suggestions, but now also include a "Memory action loop" section summarizing what SkyTwin tried, what got queued or executed, what policy blocked, and the next step. Approval responses update the same ledger, so a memory action does not stay stuck as "queued" after the user approves or rejects it.
+
+### Fixed (post-/review)
+
+- **Memory action reports now name the adapter that actually executed after fallback.** If the router initially prefers IronClaw but falls back to Direct or OpenClaw, the report records the executed adapter instead of the first route choice.
+- **Copilot review fixes hardened the memory action loop approval edge cases.** Malformed persisted `costZeroIntent` values now fail safe to `unknown`, approval execution errors no longer overwrite the route-rationale field, and outbound email memory actions are treated as irreversible before policy evaluation.
+
 ## [0.6.76.0] - 2026-06-25
 
 ### Added

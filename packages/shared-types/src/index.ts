@@ -82,6 +82,15 @@ export type {
 } from './daily-memory-suggestions.js';
 
 export {
+  buildMemoryActionFingerprint,
+} from './memory-action-loop.js';
+export type {
+  MemoryActionLoopReport,
+  MemoryActionOpportunitySnapshot,
+  MemoryActionOpportunityStatus,
+} from './memory-action-loop.js';
+
+export {
   buildExecutableActionPlan,
   IRONCLAW_CORE_ACTION_TYPES,
   OPENCLAW_ACTION_TYPES,

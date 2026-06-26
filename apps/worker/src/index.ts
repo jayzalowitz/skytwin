@@ -37,6 +37,7 @@ import { runEmbeddingBackfillJob } from './jobs/embedding-backfill.js';
 import { runTierBackfillJob } from './jobs/tier-backfill.js';
 import { runRelationshipTierBackfillBatch } from './jobs/relationship-tier-scheduler.js';
 import { runBriefingGeneratorJob } from './jobs/briefing-generator.js';
+import { runMemoryActionLoopJob } from './jobs/memory-action-loop.js';
 import { runPromotionEligibilityCheckJob } from './jobs/promotion-eligibility-check.js';
 import { extractErrorCode } from './oauth-error-code.js';
 import { DeadLetterTracker } from './dead-letter.js';
@@ -697,6 +698,10 @@ async function main(): Promise<void> {
   const BRIEFING_DAILY_INTERVAL_MS = 24 * 60 * 60 * 1000;
   let briefingDailyInFlight = false;
 
+  let lastMemoryActionLoopAt = 0;
+  const MEMORY_ACTION_LOOP_INTERVAL_MS = 6 * 60 * 60 * 1000;
+  let memoryActionLoopInFlight = false;
+
   let lastBriefingWeeklyAt = 0;
   const BRIEFING_WEEKLY_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
   let briefingWeeklyInFlight = false;
@@ -811,6 +816,36 @@ async function main(): Promise<void> {
         })
         .finally(() => {
           relationshipTierBackfillInFlight = false;
+        });
+    }
+
+    // Memory action loop: persist daily opportunities, then try to advance
+    // them through policy + routing. Its 6h cadence gives the briefing
+    // generator recent "queued approval / needs skill / executed" outcomes
+    // to report instead of only raw suggestions.
+    if (
+      !memoryActionLoopInFlight &&
+      nowMs - lastMemoryActionLoopAt >= MEMORY_ACTION_LOOP_INTERVAL_MS
+    ) {
+      memoryActionLoopInFlight = true;
+      const previousLastAt = lastMemoryActionLoopAt;
+      lastMemoryActionLoopAt = nowMs;
+      void runMemoryActionLoopJob()
+        .then((summary) => {
+          if (summary.attempted > 0 || summary.opportunitiesUpserted > 0) {
+            log.info('Memory action loop tick complete', { ...summary, reports: summary.reports.length });
+          }
+          void deadLetterTracker.recordOutcome('memory-action-loop', null);
+        })
+        .catch((err) => {
+          log.warn('Memory action loop failed', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+          lastMemoryActionLoopAt = previousLastAt;
+          void deadLetterTracker.recordOutcome('memory-action-loop', err);
+        })
+        .finally(() => {
+          memoryActionLoopInFlight = false;
         });
     }
 

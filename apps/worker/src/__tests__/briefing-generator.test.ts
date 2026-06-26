@@ -8,6 +8,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const {
   mockBriefingRepository,
   mockAppSuggestionRepository,
+  mockMemoryActionOpportunityRepository,
   mockMcpServerRepository,
   mockLifebookRepository,
   mockQuery,
@@ -24,6 +25,9 @@ const {
     getActiveForUser: vi.fn(),
     markDismissed: vi.fn(),
     markSnoozed: vi.fn(),
+  },
+  mockMemoryActionOpportunityRepository: {
+    listRecentReportsForUser: vi.fn(),
   },
   mockMcpServerRepository: {
     listForUser: vi.fn(),
@@ -54,6 +58,7 @@ const {
 vi.mock('@skytwin/db', () => ({
   briefingRepository: mockBriefingRepository,
   appSuggestionRepository: mockAppSuggestionRepository,
+  memoryActionOpportunityRepository: mockMemoryActionOpportunityRepository,
   mcpServerRepository: mockMcpServerRepository,
   lifebookRepository: mockLifebookRepository,
   query: mockQuery,
@@ -108,6 +113,7 @@ describe('runBriefingGeneratorJob', () => {
     // Default: user has no lifebooks (no per-domain briefings written).
     // Tests that exercise the per-domain path override this.
     mockLifebookRepository.listVisible.mockResolvedValue([]);
+    mockMemoryActionOpportunityRepository.listRecentReportsForUser.mockResolvedValue([]);
   });
 
   it('generates a daily briefing for an active user with an installed server', async () => {
@@ -196,6 +202,42 @@ describe('runBriefingGeneratorJob', () => {
     expect(createArg.proseMarkdown).toContain('Madrid launch checklist');
     expect(createArg.proseMarkdown).toContain('ironclaw');
     expect(createArg.proseMarkdown).toContain('IronClaw 0.29.1');
+    expect(createArg.sourceEventCount).toBe(1);
+  });
+
+  it('includes memory action loop results in the generated report', async () => {
+    mockMcpServerRepository.listForUser.mockResolvedValue([]);
+    mockAppSuggestionRepository.getPendingForUser.mockResolvedValue([]);
+    mockMemoryActionOpportunityRepository.listRecentReportsForUser.mockResolvedValue([
+      {
+        opportunityId: 'opp-1',
+        status: 'queued_approval',
+        title: 'Madrid launch checklist',
+        actionType: 'create_task',
+        actionLabel: 'create a follow-up task',
+        summary: 'SkyTwin prepared this memory action and queued it for approval.',
+        nextStep: 'Review the approval request.',
+        attemptedAt: '2026-06-25T12:00:00.000Z',
+      },
+    ]);
+    mockBriefingRepository.create.mockResolvedValue({
+      id: 'briefing-loop',
+      user_id: 'user-loop',
+      cadence: 'daily',
+      generated_at: new Date(),
+      prose_markdown: '',
+      source_event_count: 1,
+      llm_provider: null,
+      llm_cost_cents: null,
+      read_at: null,
+    });
+
+    await runBriefingGeneratorJob({ cadence: 'daily', userIds: ['user-loop'] });
+
+    const createArg = mockBriefingRepository.create.mock.calls[0]?.[0];
+    expect(createArg.proseMarkdown).toContain('### Memory action loop');
+    expect(createArg.proseMarkdown).toContain('queued_approval');
+    expect(createArg.proseMarkdown).toContain('Review the approval request');
     expect(createArg.sourceEventCount).toBe(1);
   });
 

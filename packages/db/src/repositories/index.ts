@@ -138,6 +138,13 @@ export type {
   UpsertPendingSuggestionInput,
 } from './app-suggestion-repository.js';
 
+export { memoryActionOpportunityRepository } from './memory-action-opportunity-repository.js';
+export type {
+  ClaimDueOptions,
+  MarkMemoryActionOpportunityInput,
+  UpsertMemoryActionOpportunityInput,
+} from './memory-action-opportunity-repository.js';
+
 export { mcpServerRepository } from './mcp-server-repository.js';
 export type { McpServerRow } from './mcp-server-repository.js';
 
