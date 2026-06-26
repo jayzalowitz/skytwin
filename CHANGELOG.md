@@ -1,5 +1,11 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.79.0] - 2026-06-26
+
+### Fixed
+
+- **Calendar invites are no longer mis-routed into email triage (regression fix for 0.6.78.0).** The newsletter-aware change in 0.6.78.0 taught `classifySituation` to treat any signal carrying an `inbox_*` authoring tier as email — but the calendar connectors stamp an `inbox_*` tier on every invite the user didn't organize (`inbox_personal` / `inbox_broadcast` / `inbox_automated`), and the email block runs before the calendar block. So a real calendar invite matched the email path and got archive/label candidates — and, because meeting invites set `requiresResponse: true`, a possible irreversible "send a reply" *email* candidate — instead of accept / decline / propose-a-new-time. The tier clause is now scoped to non-calendar signals, so calendar invites stay `CALENDAR_INVITE` / `CALENDAR_UPDATE`. The new tests set `authoringTier` on the calendar fixtures (the field production always sets) — the omission that let this through in the first place.
+
 ## [0.6.78.0] - 2026-06-26
 
 ### Fixed
