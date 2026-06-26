@@ -221,13 +221,22 @@ export class SituationInterpreter {
     const authoringTier = String(
       rawEvent['authoringTier'] ?? tierEnvelope['authoringTier'] ?? '',
     ).toLowerCase();
+    // Calendar signals ALSO carry an inbox_* authoring tier (an invite the user
+    // didn't organize is inbox_personal/broadcast/automated), so the tier clause
+    // below must NOT swallow them into email triage — they belong in the calendar
+    // block, where accept/decline/propose-time candidates are generated.
+    const isCalendarSignal =
+      source.includes('calendar') ||
+      type.includes('calendar') ||
+      type === 'event' ||
+      type.includes('meeting');
     if (
       source.includes('email') ||
       source === 'gmail' ||
       source === 'outlook' ||
       type.includes('email') ||
       type.includes('message') ||
-      authoringTier.startsWith('inbox_')
+      (authoringTier.startsWith('inbox_') && !isCalendarSignal)
     ) {
       // Check for subscription renewal emails
       if (
@@ -250,12 +259,7 @@ export class SituationInterpreter {
     }
 
     // Calendar events — sub-classify using connector-provided signals
-    if (
-      source.includes('calendar') ||
-      type.includes('calendar') ||
-      type === 'event' ||
-      type.includes('meeting')
-    ) {
+    if (isCalendarSignal) {
       // Actual time overlap between events
       const data = (typeof rawEvent['data'] === 'object' && rawEvent['data'] !== null)
         ? rawEvent['data'] as Record<string, unknown>
