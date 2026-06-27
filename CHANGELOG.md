@@ -1,5 +1,11 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.82.0] - 2026-06-27
+
+### Fixed
+
+- **The `AWARENESS_DISPOSITION_GATE` flag now actually reaches the dev server.** 0.6.81.0 added the flag, but `turbo.json`'s `dev` task uses a strict env allowlist, so `AWARENESS_DISPOSITION_GATE=on pnpm dev` was silently stripped before the API process saw it (the gate stayed off, `gateEnabled: false`). Added it to the allowlist. Verified live: a newsletter now ingests as `email_triage` → `label_email` → gated → `requires_approval=false` with no approval row (it lands in the digest as FYI), and the Phase-0 log shows `gateEnabled: true`.
+
 ## [0.6.81.0] - 2026-06-26
 
 ### Added
