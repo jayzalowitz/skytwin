@@ -19,7 +19,8 @@
         "OPENCLAW_API_URL",
         "BRIDGE_PORT",
         "OLLAMA_HOST",
-        "OLLAMA_MODEL"
+        "OLLAMA_MODEL",
+        "AWARENESS_DISPOSITION_GATE"
       ]
     },
     "test": {
