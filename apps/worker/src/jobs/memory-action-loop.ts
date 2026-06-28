@@ -568,24 +568,34 @@ function buildCandidateForOpportunity(
 
 /**
  * True when a memory-loop candidate is pure awareness: a passive, reversible,
- * verified-free action (shared shape) that the injection guard did NOT escalate.
+ * verified-free action (shared shape), from UNTRUSTED content, that the
+ * injection guard did NOT escalate. Three guards, each a different safety axis:
  *
- * `policyDecision.confirmationLevel` is the injection-guard escalation marker —
- * the policy evaluator sets it ONLY when the guard escalates (an irreversible /
- * destructive / outbound action on untrusted content) and never strips it; a
- * plain trust-tier approval leaves it undefined. A set confirmationLevel must
- * therefore always surface as an approval and is never disposed as awareness —
- * the same security boundary the ingest-route gate uses (`outcome.confirmationLevel`).
+ *  - `policyDecision.confirmationLevel` is the injection-guard escalation marker.
+ *    The policy evaluator sets it ONLY when the guard escalates (an irreversible
+ *    / destructive / outbound action on untrusted content) and never strips it;
+ *    a plain trust-tier approval leaves it undefined. A set confirmationLevel
+ *    must always surface as an approval — the same security boundary the
+ *    ingest-route gate uses (`outcome.confirmationLevel`).
+ *  - `provenance === 'untrusted_external'` scopes disposition to newsletters /
+ *    automated notices (the actual flood). A note derived from the user's own
+ *    authored or trusted-context memory still surfaces as an approval — the same
+ *    spirit as the ingest gate, which disposes only awareness-tier email +
+ *    calendar updates, never human / self-authored correspondence.
+ *  - `isPassiveAwarenessShape` requires a passive, reversible, verified-free
+ *    action — no outward effect.
  *
- * No provenance check: provenance is `untrusted_external` for the very
- * newsletter notes we want to dispose, and the injection guard (not provenance)
- * is the boundary that decides whether untrusted content needs confirmation.
+ * This never EXECUTES anything (the caller records FYI without routing), so it
+ * does not breach an operator pause / kill switch, whose contract is "no actions
+ * without approval" — an FYI recording is not an action. Consistent with the
+ * ingest gate, which likewise disposes awareness items regardless of pause.
  */
 export function isAwarenessOnlyMemoryAction(
-  candidate: Pick<CandidateAction, 'actionType' | 'reversible' | 'estimatedCostCents' | 'costZeroIntent'>,
+  candidate: Pick<CandidateAction, 'actionType' | 'reversible' | 'estimatedCostCents' | 'costZeroIntent' | 'provenance'>,
   policyDecision: Pick<PolicyDecision, 'confirmationLevel'>,
 ): boolean {
   if (policyDecision.confirmationLevel) return false;
+  if (candidate.provenance !== 'untrusted_external') return false;
   return isPassiveAwarenessShape(candidate);
 }
 

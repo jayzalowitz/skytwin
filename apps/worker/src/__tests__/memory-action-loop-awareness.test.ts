@@ -10,7 +10,10 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PolicyDecision } from '@skytwin/policy-engine';
-import type { MemoryActionOpportunitySnapshot } from '@skytwin/shared-types';
+import type { ExecutionRouter } from '@skytwin/execution-router';
+import type { ActionProvenance, MemoryActionOpportunitySnapshot } from '@skytwin/shared-types';
+
+type RouterStub = Pick<ExecutionRouter, 'route' | 'executeWithRouting'>;
 
 // ── Mocks ─────────────────────────────────────────────────────────────────
 
@@ -42,8 +45,8 @@ const {
     mockExplanationRepository: { create: vi.fn(async () => undefined) },
     mockMemoryActionOpportunityRepository: {
       upsertFromSuggestion: vi.fn(async () => undefined),
-      claimDueForUser: vi.fn(async () => []),
-      listUsersWithDue: vi.fn(async () => []),
+      claimDueForUser: vi.fn(async (): Promise<MemoryActionOpportunitySnapshot[]> => []),
+      listUsersWithDue: vi.fn(async (): Promise<string[]> => []),
       markStatus: vi.fn(async () => undefined),
     },
     mockUserRepository: {
@@ -81,7 +84,10 @@ import {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-function makeOpportunity(actionType: string): MemoryActionOpportunitySnapshot {
+function makeOpportunity(
+  actionType: string,
+  provenance: ActionProvenance = 'untrusted_external',
+): MemoryActionOpportunitySnapshot {
   return {
     id: 'opp-1',
     userId: 'user-1',
@@ -104,7 +110,7 @@ function makeOpportunity(actionType: string): MemoryActionOpportunitySnapshot {
     sourceTypes: ['gmail'],
     novelty: 'resurface',
     confidence: 0.7,
-    provenance: 'untrusted_external',
+    provenance,
     status: 'suggested',
     attemptCount: 1,
     lastSuggestedAt: new Date('2026-06-27T00:00:00Z'),
@@ -134,7 +140,9 @@ const injectionEscalation: PolicyDecision = {
   confirmationLevel: 'single',
 };
 
-function runWith(actionType: string, policyDecision: PolicyDecision) {
+// The action type under test is set via the claimDueForUser mock (makeOpportunity);
+// runWith only varies the policy decision.
+function runWith(policyDecision: PolicyDecision) {
   return runMemoryActionLoopJob({
     userIds: ['user-1'],
     fetchBundle: async () => ({ suggestions: [], pagesById: new Map() }),
@@ -147,15 +155,26 @@ function runWith(actionType: string, policyDecision: PolicyDecision) {
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 describe('isAwarenessOnlyMemoryAction', () => {
-  const passiveNote = { actionType: 'create_note', reversible: true, estimatedCostCents: 0, costZeroIntent: 'verified_zero' as const };
+  const passiveNote = {
+    actionType: 'create_note',
+    reversible: true,
+    estimatedCostCents: 0,
+    costZeroIntent: 'verified_zero' as const,
+    provenance: 'untrusted_external' as const,
+  };
 
-  it('is true for a passive note with no injection escalation', () => {
+  it('is true for a passive, untrusted note with no injection escalation', () => {
     expect(isAwarenessOnlyMemoryAction(passiveNote, {})).toBe(true);
   });
 
   it('is false when the injection guard escalated (confirmationLevel set)', () => {
     expect(isAwarenessOnlyMemoryAction(passiveNote, { confirmationLevel: 'single' })).toBe(false);
     expect(isAwarenessOnlyMemoryAction(passiveNote, { confirmationLevel: 'dual' })).toBe(false);
+  });
+
+  it('is false for trusted / user-authored provenance (only untrusted awareness is disposed)', () => {
+    expect(isAwarenessOnlyMemoryAction({ ...passiveNote, provenance: 'user_originated' }, {})).toBe(false);
+    expect(isAwarenessOnlyMemoryAction({ ...passiveNote, provenance: 'trusted_context' }, {})).toBe(false);
   });
 
   it('is false for an outward / irreversible action', () => {
@@ -179,7 +198,7 @@ describe('runMemoryActionLoopJob — awareness disposition', () => {
     process.env['AWARENESS_DISPOSITION_GATE'] = 'on';
     mockMemoryActionOpportunityRepository.claimDueForUser.mockResolvedValue([makeOpportunity('create_note')]);
 
-    const summary = await runWith('create_note', trustTierApproval);
+    const summary = await runWith(trustTierApproval);
 
     expect(mockApprovalRepository.create).not.toHaveBeenCalled();
     expect(summary.approvalsQueued).toBe(0);
@@ -197,7 +216,7 @@ describe('runMemoryActionLoopJob — awareness disposition', () => {
     delete process.env['AWARENESS_DISPOSITION_GATE'];
     mockMemoryActionOpportunityRepository.claimDueForUser.mockResolvedValue([makeOpportunity('create_note')]);
 
-    const summary = await runWith('create_note', trustTierApproval);
+    const summary = await runWith(trustTierApproval);
 
     expect(mockApprovalRepository.create).toHaveBeenCalledTimes(1);
     expect(summary.approvalsQueued).toBe(1);
@@ -208,10 +227,65 @@ describe('runMemoryActionLoopJob — awareness disposition', () => {
     process.env['AWARENESS_DISPOSITION_GATE'] = 'on';
     mockMemoryActionOpportunityRepository.claimDueForUser.mockResolvedValue([makeOpportunity('draft_email')]);
 
-    const summary = await runWith('draft_email', injectionEscalation);
+    const summary = await runWith(injectionEscalation);
 
     expect(mockApprovalRepository.create).toHaveBeenCalledTimes(1);
     expect(summary.approvalsQueued).toBe(1);
     expect(summary.notedAwareness).toBe(0);
+  });
+
+  it('gate ON: a user-authored (trusted) note still queues an approval (not disposed)', async () => {
+    process.env['AWARENESS_DISPOSITION_GATE'] = 'on';
+    mockMemoryActionOpportunityRepository.claimDueForUser.mockResolvedValue([
+      makeOpportunity('create_note', 'user_originated'),
+    ]);
+
+    const summary = await runWith(trustTierApproval);
+
+    expect(mockApprovalRepository.create).toHaveBeenCalledTimes(1);
+    expect(summary.approvalsQueued).toBe(1);
+    expect(summary.notedAwareness).toBe(0);
+  });
+
+  it('gate ON: label_email is NOT disposed — its zero cost is unverified (costZeroIntent unknown)', async () => {
+    // buildCandidateForOpportunity stamps label_email costZeroIntent='unknown'
+    // (not in VERIFIED_ZERO_MEMORY_ACTION_TYPES), so the shape predicate rejects
+    // it and it stays an approval even though label_email is in the passive set.
+    process.env['AWARENESS_DISPOSITION_GATE'] = 'on';
+    mockMemoryActionOpportunityRepository.claimDueForUser.mockResolvedValue([makeOpportunity('label_email')]);
+
+    const summary = await runWith(trustTierApproval);
+
+    expect(mockApprovalRepository.create).toHaveBeenCalledTimes(1);
+    expect(summary.approvalsQueued).toBe(1);
+    expect(summary.notedAwareness).toBe(0);
+  });
+
+  it('gate ON + higher tier (policy auto-executes): the note runs, it is NOT disposed as FYI', async () => {
+    // The gate only intercepts the approval path (requiresApproval). When policy
+    // allows auto-execution, the note must execute, not get FYI-bucketed. Guards
+    // the `policyDecision.requiresApproval &&` conjunct in the gate condition.
+    process.env['AWARENESS_DISPOSITION_GATE'] = 'on';
+    noop.createPlan.mockResolvedValue({ id: 'plan-1' });
+    noop.createResult.mockResolvedValue({});
+    mockMemoryActionOpportunityRepository.claimDueForUser.mockResolvedValue([makeOpportunity('create_note')]);
+
+    const summary = await runMemoryActionLoopJob({
+      userIds: ['user-1'],
+      fetchBundle: async () => ({ suggestions: [], pagesById: new Map() }),
+      policyEvaluator: { evaluate: vi.fn(async () => ({ allowed: true, requiresApproval: false, reason: 'tier allows auto' })) },
+      loadPolicies: async () => [],
+      getExecutionRouter: async () => ({
+        route: vi.fn(async () => ({ selectedAdapter: 'direct', reasoning: 'direct ok' })),
+        executeWithRouting: vi.fn(async () => ({ status: 'completed', output: {}, planId: 'p1' })),
+      }) as unknown as RouterStub,
+    });
+
+    expect(summary.notedAwareness).toBe(0);
+    expect(summary.autoExecuted).toBe(1);
+    expect(mockApprovalRepository.create).not.toHaveBeenCalled();
+    expect(mockMemoryActionOpportunityRepository.markStatus).not.toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'noted_awareness' }),
+    );
   });
 });
