@@ -1,11 +1,14 @@
 import {
   SituationType,
+  AWARENESS_TIERS,
+  awarenessDispositionGateEnabled,
+  isPassiveAwarenessShape,
   type DecisionObject,
   type DecisionOutcome,
 } from '@skytwin/shared-types';
 
 /**
- * Awareness disposition gate (#601 follow-up to the newsletter audit).
+ * Awareness disposition gate — ingest-route entrypoint (#601).
  *
  * At `observer`/`suggest` tier the policy engine forces `requiresApproval` on
  * EVERY selected action, and the ingest route creates one approval card per
@@ -20,43 +23,18 @@ import {
  * it never gates an injection-guard escalation, a non-passive / irreversible /
  * costed action, or human inbound mail.
  *
+ * The passive action set, awareness authoring tiers, rollout flag, and the
+ * action-shape predicate are shared with the worker's memory-action-loop gate
+ * via `@skytwin/shared-types` so the two write paths cannot drift. This file
+ * adds only the ingest-route CONTEXT half (situation type + authoring tier).
+ *
  * Rollout is flagged + phased: Phase 0 logs `isAwarenessOnly` candidates with
  * no behaviour change; Phase 1 (`AWARENESS_DISPOSITION_GATE=on`) suppresses the
  * approval row.
  */
 
-/** Passive, reversible, zero-cost "file it" actions — no outward effect. */
-const PASSIVE_AWARENESS_ACTIONS = new Set<string>([
-  'acknowledge',
-  'dismiss',
-  'create_note',
-  'label_email',
-  'archive_email',
-]);
-
-/**
- * Authoring tiers (#251) that mark mail the user does not need to act on:
- * newsletters, automated/transactional notices, and the user's own sent mail.
- *
- * Human inbound (`inbox_personal` / `inbox_broadcast`) is deliberately EXCLUDED
- * — a 1:1 or cc'd human thread can be important, so it still surfaces as an
- * approval. The gate's job is to remove noise, not to hide correspondence.
- */
-const AWARENESS_TIERS = new Set<string>([
-  'inbox_newsletter',
-  'inbox_automated',
-  'user_sent_originated',
-  'user_sent_reply',
-]);
-
-/**
- * Phase-1 master switch. Default OFF — `AWARENESS_DISPOSITION_GATE=on` enables
- * suppression. (Opposite default from the `ENTITY_LINKING`/`COMMITMENT_EXTRACTION`
- * rollback flags, which default on; this is opt-in until Phase 2.)
- */
-export function awarenessDispositionGateEnabled(): boolean {
-  return process.env['AWARENESS_DISPOSITION_GATE'] === 'on';
-}
+// Re-export so existing import sites (events.ts) keep a stable path.
+export { awarenessDispositionGateEnabled };
 
 /** Read `authoringTier` whether the connector left it top-level or under `data`. */
 function readAuthoringTier(rawData: Record<string, unknown> | undefined): string | undefined {
@@ -80,7 +58,7 @@ function readAuthoringTier(rawData: Record<string, unknown> | undefined): string
  * - an injection-guard escalation (`outcome.confirmationLevel` is set) — that is
  *   a security escalation on untrusted content and must always surface;
  * - a non-passive action (reply/schedule/post/execute), an irreversible action,
- *   or a costed action;
+ *   or a costed action (see `isPassiveAwarenessShape`);
  * - human inbound mail (`inbox_personal` / `inbox_broadcast`) or a calendar
  *   invite (`CALENDAR_INVITE`) — those stay approvals.
  */
@@ -92,13 +70,8 @@ export function isAwarenessOnly(decision: DecisionObject, outcome: DecisionOutco
   // regardless of the action's shape (policy-evaluator never strips this).
   if (outcome.confirmationLevel) return false;
 
-  // Passive, reversible, free action only.
-  if (!PASSIVE_AWARENESS_ACTIONS.has(action.actionType)) return false;
-  if (!action.reversible) return false;
-  if ((action.estimatedCostCents ?? 0) !== 0) return false;
-  // Defensive: an action whose zero cost is unverified (costZeroIntent='unknown')
-  // is escalated by the cost gate without a confirmationLevel — don't gate it.
-  if (action.costZeroIntent === 'unknown') return false;
+  // Passive, reversible, verified-free action only (shared shape core).
+  if (!isPassiveAwarenessShape(action)) return false;
 
   // Awareness context: a calendar update/cancellation, or email from an
   // awareness tier (newsletter / automated / the user's own sent mail).
