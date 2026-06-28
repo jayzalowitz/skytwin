@@ -616,8 +616,9 @@ async function recordAwarenessDisposition(
     autoExecuted: false,
     requiresApproval: false,
     reason:
-      'Awareness-only memory note (passive, reversible, free, not injection-escalated): ' +
-      'recorded as FYI without an approval. Raise your trust tier to act on these automatically.',
+      'Awareness-only memory note (passive, reversible, free, from an untrusted source, ' +
+      'not injection-escalated): recorded as FYI, not queued for approval, and not executed. ' +
+      'Turn off the awareness gate to receive these as approvals.',
   });
   const report = buildReport(
     opportunity,
