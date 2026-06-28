@@ -417,6 +417,7 @@ CREATE TABLE IF NOT EXISTS memory_action_opportunities (
       'blocked_by_policy',
       'learning_needed',
       'execution_failed',
+      'noted_awareness',
       'skipped'
     )),
   attempt_count INT NOT NULL DEFAULT 0,
