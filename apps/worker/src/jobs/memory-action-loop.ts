@@ -42,9 +42,11 @@ import {
   userRepository,
 } from '@skytwin/db';
 import {
+  awarenessDispositionGateEnabled,
   buildMemoryActionFingerprint,
   classifyActionSeverity,
   ConfidenceLevel,
+  isPassiveAwarenessShape,
   RiskTier,
   SituationType,
   TrustTier,
@@ -90,6 +92,7 @@ export interface MemoryActionLoopSummary {
   attempted: number;
   approvalsQueued: number;
   autoExecuted: number;
+  notedAwareness: number;
   blocked: number;
   learningNeeded: number;
   executionFailed: number;
@@ -120,6 +123,7 @@ export async function runMemoryActionLoopJob(
     attempted: 0,
     approvalsQueued: 0,
     autoExecuted: 0,
+    notedAwareness: 0,
     blocked: 0,
     learningNeeded: 0,
     executionFailed: 0,
@@ -161,6 +165,7 @@ export async function runMemoryActionLoopJob(
         summary.reports.push(report);
         if (report.status === 'queued_approval') summary.approvalsQueued++;
         else if (report.status === 'auto_executed') summary.autoExecuted++;
+        else if (report.status === 'noted_awareness') summary.notedAwareness++;
         else if (report.status === 'blocked_by_policy') summary.blocked++;
         else if (report.status === 'learning_needed') summary.learningNeeded++;
         else if (report.status === 'execution_failed') summary.executionFailed++;
@@ -277,6 +282,20 @@ async function processOpportunity(
       nextStep: report.nextStep,
     });
     return report;
+  }
+
+  // Awareness disposition (#601): a passive, reversible, verified-free memory
+  // note that the injection guard did NOT escalate is awareness, not a decision.
+  // Record it as FYI (the digest still shows it) WITHOUT queuing an approval or
+  // executing it — the same disposition the ingest route applies to newsletters,
+  // so the two write paths stay consistent. Only intercepts the approval path;
+  // when policy already allows auto-execution (higher tier) the note executes.
+  if (
+    policyDecision.requiresApproval &&
+    awarenessDispositionGateEnabled() &&
+    isAwarenessOnlyMemoryAction(candidate, policyDecision)
+  ) {
+    return recordAwarenessDisposition(attempted, candidate, riskAssessment, decision.id, deps.now);
   }
 
   if (policyDecision.requiresApproval) {
@@ -545,6 +564,78 @@ function buildCandidateForOpportunity(
       opportunity.reason,
     provenance: opportunity.provenance,
   };
+}
+
+/**
+ * True when a memory-loop candidate is pure awareness: a passive, reversible,
+ * verified-free action (shared shape), from UNTRUSTED content, that the
+ * injection guard did NOT escalate. Three guards, each a different safety axis:
+ *
+ *  - `policyDecision.confirmationLevel` is the injection-guard escalation marker.
+ *    The policy evaluator sets it ONLY when the guard escalates (an irreversible
+ *    / destructive / outbound action on untrusted content) and never strips it;
+ *    a plain trust-tier approval leaves it undefined. A set confirmationLevel
+ *    must always surface as an approval — the same security boundary the
+ *    ingest-route gate uses (`outcome.confirmationLevel`).
+ *  - `provenance === 'untrusted_external'` scopes disposition to newsletters /
+ *    automated notices (the actual flood). A note derived from the user's own
+ *    authored or trusted-context memory still surfaces as an approval — the same
+ *    spirit as the ingest gate, which disposes only awareness-tier email +
+ *    calendar updates, never human / self-authored correspondence.
+ *  - `isPassiveAwarenessShape` requires a passive, reversible, verified-free
+ *    action — no outward effect.
+ *
+ * This never EXECUTES anything (the caller records FYI without routing), so it
+ * does not breach an operator pause / kill switch, whose contract is "no actions
+ * without approval" — an FYI recording is not an action. Consistent with the
+ * ingest gate, which likewise disposes awareness items regardless of pause.
+ */
+export function isAwarenessOnlyMemoryAction(
+  candidate: Pick<CandidateAction, 'actionType' | 'reversible' | 'estimatedCostCents' | 'costZeroIntent' | 'provenance'>,
+  policyDecision: Pick<PolicyDecision, 'confirmationLevel'>,
+): boolean {
+  if (policyDecision.confirmationLevel) return false;
+  if (candidate.provenance !== 'untrusted_external') return false;
+  return isPassiveAwarenessShape(candidate);
+}
+
+/**
+ * Dispose a memory opportunity as awareness FYI: record the outcome as
+ * not-requiring-approval (so the digest buckets it with awareness, not To-do)
+ * and mark the opportunity terminal — WITHOUT creating an approval row or
+ * executing the action. Mirrors the ingest route's awareness disposition.
+ */
+async function recordAwarenessDisposition(
+  opportunity: MemoryActionOpportunitySnapshot,
+  candidate: CandidateAction,
+  riskAssessment: RiskAssessment,
+  decisionId: string,
+  now: Date | undefined,
+): Promise<MemoryActionLoopReport> {
+  await recordOutcomeAndExplanation(candidate, riskAssessment, {
+    autoExecuted: false,
+    requiresApproval: false,
+    reason:
+      'Awareness-only memory note (passive, reversible, free, from an untrusted source, ' +
+      'not injection-escalated): recorded as FYI, not queued for approval, and not executed. ' +
+      'Turn off the awareness gate to receive these as approvals.',
+  });
+  const report = buildReport(
+    opportunity,
+    'noted_awareness',
+    'SkyTwin noted this as awareness — no approval needed and nothing was executed.',
+    'Nothing required. It appears in your digest as FYI; hide the underlying memory if it should not resurface.',
+    now,
+    { decisionId },
+  );
+  await memoryActionOpportunityRepository.markStatus({
+    id: opportunity.id,
+    status: 'noted_awareness',
+    report,
+    decisionId,
+    nextStep: report.nextStep,
+  });
+  return report;
 }
 
 async function recordOutcomeAndExplanation(

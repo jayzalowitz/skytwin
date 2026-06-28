@@ -9,6 +9,7 @@ export type MemoryActionOpportunityStatus =
   | 'blocked_by_policy'
   | 'learning_needed'
   | 'execution_failed'
+  | 'noted_awareness'
   | 'skipped';
 
 export interface MemoryActionLoopReport {

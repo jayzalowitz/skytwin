@@ -63,6 +63,14 @@ export {
 } from './action-safety.js';
 
 export {
+  PASSIVE_AWARENESS_ACTIONS,
+  AWARENESS_TIERS,
+  awarenessDispositionGateEnabled,
+  isPassiveAwarenessShape,
+} from './awareness-disposition.js';
+export type { AwarenessActionShape } from './awareness-disposition.js';
+
+export {
   EMAIL_ATTRIBUTION_SETTINGS_KEY,
   SKYTWIN_EMAIL_ATTRIBUTION_SIGNATURE,
   SKYTWIN_EMAIL_ATTRIBUTION_TEXT,

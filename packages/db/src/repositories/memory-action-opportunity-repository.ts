@@ -258,9 +258,12 @@ function reportFromRow(row: MemoryActionOpportunityRow): MemoryActionLoopReport 
 }
 
 function parseStatus(value: string): MemoryActionOpportunityStatus {
+  // `noted_awareness` is terminal (deliberately absent from RETRYABLE_STATUSES):
+  // a disposed awareness item must not be re-claimed and re-FYI'd every cycle.
   return RETRYABLE_STATUSES.includes(value as MemoryActionOpportunityStatus) ||
     value === 'queued_approval' ||
     value === 'auto_executed' ||
+    value === 'noted_awareness' ||
     value === 'skipped'
     ? value as MemoryActionOpportunityStatus
     : 'suggested';

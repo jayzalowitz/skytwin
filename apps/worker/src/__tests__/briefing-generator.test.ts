@@ -219,6 +219,16 @@ describe('runBriefingGeneratorJob', () => {
         nextStep: 'Review the approval request.',
         attemptedAt: '2026-06-25T12:00:00.000Z',
       },
+      {
+        opportunityId: 'opp-2',
+        status: 'noted_awareness',
+        title: 'Acme Weekly — issue 42',
+        actionType: 'create_note',
+        actionLabel: 'note your interest in this topic',
+        summary: 'SkyTwin noted this as awareness — no approval needed and nothing was executed.',
+        nextStep: 'Nothing required.',
+        attemptedAt: '2026-06-25T12:05:00.000Z',
+      },
     ]);
     mockBriefingRepository.create.mockResolvedValue({
       id: 'briefing-loop',
@@ -236,9 +246,12 @@ describe('runBriefingGeneratorJob', () => {
 
     const createArg = mockBriefingRepository.create.mock.calls[0]?.[0];
     expect(createArg.proseMarkdown).toContain('### Memory action loop');
-    expect(createArg.proseMarkdown).toContain('queued_approval');
+    // Status renders as a plain-language label, not the raw enum (no jargon in UI).
+    expect(createArg.proseMarkdown).toContain('waiting for your OK');
+    expect(createArg.proseMarkdown).not.toContain('queued_approval');
+    expect(createArg.proseMarkdown).toContain('noted as FYI');
     expect(createArg.proseMarkdown).toContain('Review the approval request');
-    expect(createArg.sourceEventCount).toBe(1);
+    expect(createArg.sourceEventCount).toBe(2); // two memory-loop reports now
   });
 
   it('writes a briefing to the briefings table (create is called)', async () => {

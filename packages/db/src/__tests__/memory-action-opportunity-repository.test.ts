@@ -171,4 +171,34 @@ describe('memoryActionOpportunityRepository', () => {
     expect(sql).toContain('last_report IS NOT NULL');
     expect(sql).toContain('ORDER BY last_attempted_at DESC NULLS LAST');
   });
+
+  it('treats noted_awareness as terminal — excluded from the retryable claim set', async () => {
+    // Guards the re-FYI loop: a disposed awareness item must never be re-claimed.
+    await memoryActionOpportunityRepository.claimDueForUser(ROW.user_id, { limit: 5 });
+    const [, params] = mockQuery.mock.calls[0]!;
+    const retryable = params[1] as string[];
+    expect(retryable).toContain('suggested');
+    expect(retryable).not.toContain('noted_awareness');
+    expect(retryable).not.toContain('auto_executed');
+  });
+
+  it('round-trips the terminal noted_awareness status (parseStatus does not coerce it to suggested)', async () => {
+    const report = {
+      opportunityId: ROW.id,
+      status: 'noted_awareness' as const,
+      title: ROW.title,
+      actionType: ROW.action_type,
+      actionLabel: ROW.action_label,
+      summary: 'noted as awareness',
+      nextStep: 'nothing required',
+      attemptedAt: '2026-06-25T12:05:00.000Z',
+    };
+    mockQuery.mockResolvedValue({ rows: [{ ...ROW, status: 'noted_awareness', last_report: report }], rowCount: 1 });
+    const row = await memoryActionOpportunityRepository.markStatus({
+      id: ROW.id,
+      status: 'noted_awareness',
+      report,
+    });
+    expect(row?.status).toBe('noted_awareness');
+  });
 });

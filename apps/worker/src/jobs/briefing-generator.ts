@@ -2,10 +2,27 @@ import { createLogger } from '@skytwin/core';
 import { briefingRepository, appSuggestionRepository, lifebookRepository, mcpServerRepository, userRepository, query, memoryActionOpportunityRepository } from '@skytwin/db';
 import { runPrompt } from '@skytwin/policy-prompts';
 import type { LlmClient } from '@skytwin/llm-client';
-import type { MemoryActionLoopReport } from '@skytwin/shared-types';
+import type { MemoryActionLoopReport, MemoryActionOpportunityStatus } from '@skytwin/shared-types';
 import { fetchDailyMemorySuggestions } from './memory-suggestions.js';
 
 const log = createLogger('worker:briefing-generator');
+
+/**
+ * Plain-language labels for memory-loop outcome statuses in the user-facing
+ * briefing — humans don't read `noted_awareness`/`queued_approval`. Typed as a
+ * total Record so adding a new `MemoryActionOpportunityStatus` without a label
+ * is a compile error (enum-completeness enforced by the compiler).
+ */
+const MEMORY_STATUS_LABEL: Record<MemoryActionOpportunityStatus, string> = {
+  suggested: 'suggested',
+  queued_approval: 'waiting for your OK',
+  auto_executed: 'done automatically',
+  blocked_by_policy: 'blocked by your rules',
+  learning_needed: 'needs a new skill',
+  execution_failed: "couldn't complete",
+  noted_awareness: 'noted as FYI',
+  skipped: 'skipped',
+};
 
 /**
  * Generates daily and weekly twin briefings for all active users.
@@ -224,7 +241,7 @@ function buildTemplatedProse(
     lines.push(`### Memory action loop`);
     lines.push('');
     for (const report of memoryActionReports) {
-      lines.push(`- **${report.actionLabel}** (${report.status}) — ${report.summary} Next: ${report.nextStep}`);
+      lines.push(`- **${report.actionLabel}** (${MEMORY_STATUS_LABEL[report.status] ?? report.status}) — ${report.summary} Next: ${report.nextStep}`);
     }
     lines.push('');
   }
