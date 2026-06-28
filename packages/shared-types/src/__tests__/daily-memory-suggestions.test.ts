@@ -206,6 +206,25 @@ describe('buildDailyMemorySuggestions', () => {
     expect(suggestions[0]!.actionPlan.actionType).toBe('create_note');
   });
 
+  it('treats a compound no-reply sender as topic-interest even when mis-tiered personal', () => {
+    // Real regression: the connector tagged google-noreply@google.com as
+    // inbox_personal, and the start-anchored fallback missed the hyphen
+    // compound, so the loop offered to "draft a reply" to an automated notice.
+    const suggestions = buildDailyMemorySuggestions({
+      recent: [
+        page({
+          id: 'nr-compound',
+          content: 'Learn more about our updated Terms of Service and new privacy settings.',
+          metadata: { signalSource: 'gmail', authoringTier: 'inbox_personal', fromAddress: 'google-noreply@google.com' },
+        }),
+      ],
+      older: [],
+    });
+
+    expect(suggestions[0]!.actionPlan.actionType).toBe('create_note');
+    expect(suggestions[0]!.actionPlan.actionType).not.toBe('draft_email');
+  });
+
   it("still offers a reply draft for a real person's inbound email", () => {
     const suggestions = buildDailyMemorySuggestions({
       recent: [
