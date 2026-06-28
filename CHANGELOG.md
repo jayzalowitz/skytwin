@@ -1,5 +1,12 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.83.0] - 2026-06-27
+
+### Fixed
+
+- **The memory action loop no longer re-floods the approval queue with newsletter "note your interest" cards.** The awareness disposition gate (0.6.81.0) only covered the ingest route. The memory action loop is a *second* write path — it turns memory-derived opportunities into one approval each — so at `observer`/`suggest` tier passive "note your interest in this topic" notes from newsletters still piled up as "Needs your OK" cards (verified live: 4 such cards in the queue, all `create_note`, `reversible`, cost 0, escalated only by *Trust Tier Gating*, never by the injection guard). The worker now applies the same gate: when `AWARENESS_DISPOSITION_GATE=on`, a passive, reversible, verified-free memory action that the injection guard did **not** escalate is recorded as **FYI** (`requires_approval=false`, terminal `noted_awareness` status) with **no approval row and no execution** — the same disposition the ingest route applies. The injection guard stays the security boundary: an irreversible draft reply on untrusted newsletter content (which the guard escalates with a `confirmationLevel`) still surfaces as an approval. Provenance is deliberately not consulted — it is `untrusted_external` for the very notes we dispose, and the guard, not provenance, decides whether untrusted content needs confirmation.
+- **The awareness gate is now a single source of truth across both write paths.** The passive-action set, awareness authoring tiers, rollout flag, and action-shape predicate (`isPassiveAwarenessShape`) moved to `@skytwin/shared-types`; the ingest-route service (`apps/api`) and the worker both consume them, so the two gates cannot drift. Behaviour of the existing ingest gate is unchanged. 16 new unit tests (shared shape predicate + worker disposition, gate on/off, injection-escalation carve-out).
+
 ## [0.6.82.0] - 2026-06-27
 
 ### Fixed
