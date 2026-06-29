@@ -309,6 +309,50 @@ describe('Events API routes', () => {
   });
 
   // ---------------------------------------------------------------------
+  // #372: the approval serializer must round-trip costZeroIntent + provenance
+  // ---------------------------------------------------------------------
+  describe('approval payload round-trips the safety flags', () => {
+    it('persists costZeroIntent and provenance so they are not lost on approve', async () => {
+      mockEvaluate.mockResolvedValue({
+        autoExecute: false,
+        requiresApproval: true,
+        reasoning: 'Requires approval',
+        selectedAction: {
+          id: 'action-1',
+          decisionId: 'decision-1',
+          actionType: 'send_email',
+          description: 'Send',
+          domain: 'email',
+          parameters: {},
+          reversible: false,
+          estimatedCostCents: 0,
+          // An unverified zero cost — must NOT degrade to verified_zero on reload.
+          costZeroIntent: 'unknown',
+          provenance: 'untrusted_external',
+          confidence: 'medium',
+          reasoning: 'r',
+        },
+        allCandidates: [],
+      });
+      mockApprovalCreate.mockResolvedValue({ row: { id: 'ar-1', status: 'pending' }, created: true });
+
+      const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+        userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+        source: 'test',
+        type: 'email_received',
+      });
+
+      expect(res.status).toBe(200);
+      expect(mockApprovalCreate).toHaveBeenCalledTimes(1);
+      const payload = mockApprovalCreate.mock.calls[0]?.[0] as {
+        candidateAction: { costZeroIntent?: string; provenance?: string };
+      };
+      expect(payload.candidateAction.costZeroIntent).toBe('unknown');
+      expect(payload.candidateAction.provenance).toBe('untrusted_external');
+    });
+  });
+
+  // ---------------------------------------------------------------------
   // approval:new SSE gating (re-ingestion suppression)
   // ---------------------------------------------------------------------
   //
