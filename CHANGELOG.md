@@ -1,5 +1,12 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.90.0] - 2026-06-29
+
+### Changed
+
+- **Corrected a stale, safety-relevant comment on `twinRepository.isDraftsEvalPassed` (#301/#314).** The getter's doc-comment claimed the eval-bench gate was "NOT yet wired into `buildDraftEmailGenerator` — a follow-up". An audit of the draft-email path found that is no longer true: the gate has been wired since #314. `buildDraftEmailGenerator` (`apps/api/src/draft-email-setup.ts`) enforces three fail-closed layers before constructing the *only* `DraftEmailCandidateGenerator` instance — the `SKYTWIN_DRAFTS_ENABLED` env flag (default off), the per-user `drafts_enabled` opt-in, then this eval-bench quality gate — and both the "eval not passed → null" and "read error → fail closed" behaviours are covered by `draft-email-setup.test.ts`. The comment now describes the shipped state and cites the wiring site + tests, so a future reader can't mistake the quality gate for unbuilt. No behaviour change — drafting remains off by default.
+
+
 ## [0.6.89.0] - 2026-06-29
 
 ### Security
