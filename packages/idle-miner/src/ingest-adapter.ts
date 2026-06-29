@@ -3,9 +3,24 @@ import type { RawSignal } from '@skytwin/shared-types';
 
 const log = createLogger('idle-miner:emitter');
 
-// HTTP statuses worth retrying. Everything else (4xx other than 429) is a
-// permanent failure for this request and is not retried.
-const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
+// HTTP statuses worth retrying (transient). 408 Request Timeout and 429 are
+// transient alongside the 5xx family; everything else (other 4xx) is a permanent
+// failure for this request and is not retried.
+const RETRYABLE_STATUS = new Set([408, 429, 500, 502, 503, 504]);
+
+// Cap on the serialized file-derived metadata. The miner emits bounded metadata
+// by design (a package.json name, a git remote — never file content), so this
+// only fires on pathological input; oversized `extracted` is dropped rather than
+// ballooning the request body.
+const MAX_EXTRACTED_BYTES = 64 * 1024;
+
+/**
+ * A permanent (non-retryable) ingest failure — a 4xx other than 408/429, i.e. a
+ * likely misconfiguration (wrong URL, auth, payload schema). Distinguished from
+ * transient failures so the emitter can log it loudly instead of burying a
+ * standing config error among per-signal retry warnings.
+ */
+class PermanentIngestError extends Error {}
 
 /**
  * Map an idle-miner filesystem `RawSignal` into the body the SkyTwin
@@ -18,14 +33,24 @@ const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
  *
  * SECURITY: the extracted `structuredFields` (a package.json `name`, a git
  * remote URL, …) are derived from the user's file CONTENT and are therefore only
- * semi-trusted. They are spread FIRST so the trusted envelope fields — `source`,
- * `type`, `signalId`, `userId` — always win. A file must never be able to set
- * `source: 'gmail'` or re-attribute the signal to another `userId` by naming a
- * structured field after an envelope key.
+ * semi-trusted. They are kept entirely OUT of the top level — nested under a
+ * single `extracted` key — so they can neither shadow a trusted envelope field
+ * (`source` / `type` / `signalId` / `userId`) nor inject arbitrary top-level
+ * ingest keys (including a `__proto__` key that an unsafe downstream merge might
+ * honor). Everything at the top level is controlled by this function.
  */
 export function toIngestEvent(signal: RawSignal, userId: string): Record<string, unknown> {
+  let extracted: Record<string, unknown> | undefined;
+  const raw = signal.structuredFields;
+  if (raw && typeof raw === 'object') {
+    try {
+      // Drop pathologically-large metadata rather than send an oversized body.
+      if (JSON.stringify(raw).length <= MAX_EXTRACTED_BYTES) extracted = raw;
+    } catch {
+      // Non-serializable (e.g. a cycle) → omit.
+    }
+  }
   return {
-    ...(signal.structuredFields ?? {}),
     source: 'fs',
     type: signal.skippedReason ? 'file_skipped' : 'file_indexed',
     signalId: signal.id,
@@ -38,6 +63,7 @@ export function toIngestEvent(signal: RawSignal, userId: string): Record<string,
     ...(signal.mimeType !== undefined ? { mimeType: signal.mimeType } : {}),
     ...(signal.contentHash !== undefined ? { contentHash: signal.contentHash } : {}),
     ...(signal.skippedReason !== undefined ? { skippedReason: signal.skippedReason } : {}),
+    ...(extracted ? { extracted } : {}),
   };
 }
 
@@ -84,17 +110,26 @@ export function createHttpSignalEmitter(
               // Retryable: withRetry backs off and tries again.
               throw new RetryableHttpError(resp.status, `ingest returned ${resp.status}`, null);
             }
-            // Permanent: a plain Error is NOT retried by withRetry.
-            throw new Error(`ingest returned ${resp.status}`);
+            // Permanent: not retried by withRetry, and surfaced loudly below.
+            throw new PermanentIngestError(`ingest returned ${resp.status}`);
           }
         },
         { maxRetries, baseDelayMs: 500 },
       );
     } catch (err) {
-      log.warn('idle-miner signal emit failed (dropped; re-attempted on a later scan)', {
+      // Never crash the scan. But distinguish a likely-permanent misconfiguration
+      // (wrong URL / auth / payload schema → 4xx) from a transient drop (5xx /
+      // network, retried then given up): a standing config error must be visible
+      // at error severity, not buried among per-signal retry warnings.
+      const detail = {
         signalId: signal.id,
         error: err instanceof Error ? err.message : String(err),
-      });
+      };
+      if (err instanceof PermanentIngestError) {
+        log.error('idle-miner signal emit rejected (check ingestUrl / auth / payload schema)', detail);
+      } else {
+        log.warn('idle-miner signal emit failed (dropped; re-attempted on a later scan)', detail);
+      }
     }
   };
 }
