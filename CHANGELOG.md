@@ -1,5 +1,12 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.92.0] - 2026-06-29
+
+### Documentation
+
+- **Added a build-ready spec for wiring `@skytwin/idle-miner` into the desktop (`docs/idle-miner-desktop-integration.md`).** An audit found the idle-miner is genuinely unwired into `apps/desktop` and that wiring it is a multi-piece feature, not a flag-gated call: `startIdleMiner` requires a signal emitter, two persistence repos, and a resolved `userId`, none of which exist for the desktop. The spec front-loads the three non-obvious design findings so the implementation is one focused PR: (1) the emitter must **transform** idle-miner's filesystem `RawSignal` (rootId/absPath/relPath) into the `/api/events/ingest` event shape — it is a *different* type than the connector `RawSignal` the worker forwards; (2) the file-index + cursor repos must be **device-local, not CockroachDB** (a file index is per-machine; the shared DB would let one device suppress scans on another) and persistence is **load-bearing** — ingest has no content dedup, so in-memory repos would re-emit every file on each restart; (3) the Electron **main** process has no paired-`userId` resolution today (userId only arrives via IPC from the renderer), so that plumbing must be added and the miner must fail-closed until it resolves. Includes the flag (`SKYTWIN_IDLE_MINER_ENABLED`, default off), a test plan, and the open design decisions. No code change.
+
+
 ## [0.6.91.0] - 2026-06-29
 
 ### Added
