@@ -1,5 +1,12 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.91.0] - 2026-06-29
+
+### Added
+
+- **Capability inference is now scheduled in the worker poll loop (opt-in, `SKYTWIN_CAPABILITY_INFERENCE_ENABLED`, default off).** `runCapabilityInferenceJob` (#201/#202) — which reads a user's recent signals and upserts advisory `app_suggestions` for apps the twin should learn to support — existed but carried a standing TODO to wire it into the worker. It now runs on a daily cadence via the same `nowMs - lastAt >= INTERVAL` + `deadLetterTracker.run` pattern the other scheduled jobs use (metrics-rollup, changelog-poll, domain-extraction). It is **opt-in and default off** so nothing runs autonomously without explicit enablement; the job writes advisory suggestions only — no real-account writes, no sends — and absorbs per-user errors internally. The flag + interval decision is a pure, injectable helper (`capabilityInferenceEnabled()` / `shouldRunCapabilityInference()`) so the gate is unit-tested (13 cases: default-off, exact-"true"-only, fail-closed on `TRUE`/`1`/`yes`/empty, the interval boundary `>=`, and an injected-interval override) without driving the infinite poll loop. The job's and the scheduler's stale "TODO: wire this in" comments are replaced with the shipped wiring + cadence.
+
+
 ## [0.6.90.0] - 2026-06-29
 
 ### Changed

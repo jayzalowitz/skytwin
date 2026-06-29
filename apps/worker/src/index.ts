@@ -39,6 +39,11 @@ import { runRelationshipTierBackfillBatch } from './jobs/relationship-tier-sched
 import { runBriefingGeneratorJob } from './jobs/briefing-generator.js';
 import { runMemoryActionLoopJob } from './jobs/memory-action-loop.js';
 import { runPromotionEligibilityCheckJob } from './jobs/promotion-eligibility-check.js';
+import {
+  runCapabilityInferenceJob,
+  capabilityInferenceEnabled,
+  shouldRunCapabilityInference,
+} from './jobs/capability-inference.js';
 import { extractErrorCode } from './oauth-error-code.js';
 import { DeadLetterTracker } from './dead-letter.js';
 
@@ -716,6 +721,14 @@ async function main(): Promise<void> {
   const PROMOTION_ELIGIBILITY_INTERVAL_MS = 24 * 60 * 60 * 1000;
   let promotionEligibilityInFlight = false;
 
+  // #201/#202: infer which apps the twin should learn to support, from the
+  // user's recent signals. Opt-in via `SKYTWIN_CAPABILITY_INFERENCE_ENABLED`
+  // (default off) so it never runs autonomously without explicit enablement.
+  // The job writes advisory `app_suggestions` rows only — no real-account
+  // writes, no sends. Per-user errors are absorbed inside the job; the
+  // dead-letter tracker bounds repeated whole-job failures.
+  let lastCapabilityInferenceAt = 0;
+
   // Poll loop
   while (running) {
     for (const uc of userConnectors) {
@@ -747,6 +760,21 @@ async function main(): Promise<void> {
     if (nowMs - lastDomainExtractionAt >= DOMAIN_EXTRACTION_INTERVAL_MS) {
       await deadLetterTracker.run('domain-extraction', () => runDomainExtractionJob());
       lastDomainExtractionAt = nowMs;
+    }
+
+    // Infer which apps the twin should learn to support (#201/#202). Opt-in,
+    // default off; advisory app_suggestions only. The pure gate is unit-tested
+    // (capability-inference-schedule.test.ts) so the flag + interval logic is
+    // verified without driving this loop.
+    if (
+      shouldRunCapabilityInference({
+        enabled: capabilityInferenceEnabled(),
+        nowMs,
+        lastRunAt: lastCapabilityInferenceAt,
+      })
+    ) {
+      await deadLetterTracker.run('capability-inference', () => runCapabilityInferenceJob());
+      lastCapabilityInferenceAt = nowMs;
     }
 
     // Push federation deltas to active peers hourly (#194 Child 1).
