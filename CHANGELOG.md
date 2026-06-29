@@ -1,5 +1,16 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.93.0] - 2026-06-29
+
+### Added
+
+- **`@skytwin/idle-miner` now ships `SnapshotFileStore` — a device-local, durable `FileIndexRepo` + `CursorRepo`.** `MinerOptions` requires both repos, but the package shipped no implementation, so every host had to write one before it could run the miner at all — a big part of why the idle-miner was never wired anywhere. `SnapshotFileStore` is the sensible default: an in-memory index backed by a single JSON snapshot under an injected directory, flushed atomically (write-temp + rename) on a debounce and on `close()`, so a crash can never corrupt the index (worst case: a re-scan of the last unflushed window). It is deliberately **device-local, not CockroachDB** — a file index is per-machine state, and a shared index would let one paired device suppress scans on another. Persistence here is **load-bearing, not an optimization**: the signal pipeline does not content-dedup, so an in-memory-only repo would re-emit every scanned file on each host restart. 10 unit tests cover round-trip, cross-instance persistence (the no-re-emit property), key-collision safety, atomic write (no lingering `.tmp`), corrupt-snapshot and version-mismatch recovery, and no-op flush.
+
+### Documentation
+
+- **Corrected the idle-miner desktop-integration spec (`docs/idle-miner-desktop-integration.md`) with what building revealed.** The original spec assumed idle-miner runs in the Electron main process; implementing it surfaced that this is wrong: `apps/desktop` is a deliberate thin shell with **zero `@skytwin/*` dependencies**, compiled as CommonJS — it manages the api/worker/cockroach as child processes, so pulling an ESM workspace package into Electron-main breaks that boundary. And the worker is **paused exactly when idle-miner would run** (`IdlePauseController` stops the worker child process on idle, #382), so it can't host the miner either. The corrected host is a **separately-managed idle-miner child process**, spawned by the desktop's `ServiceManager` like api/worker/cockroach, started on the desktop's idle signal and exempt from the worker's idle-pause. The dependency-assembly sections (emitter transform, roots, userId, flag) still apply, relocated into that process.
+
+
 ## [0.6.92.0] - 2026-06-29
 
 ### Documentation

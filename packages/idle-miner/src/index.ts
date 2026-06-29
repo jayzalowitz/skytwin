@@ -51,6 +51,9 @@ export type { MinerOptions } from './miner.js';
 export { startIdleMiner } from './runtime.js';
 export type { IdleMinerHandle, StartIdleMinerOptions } from './runtime.js';
 
+export { SnapshotFileStore } from './snapshot-store.js';
+export type { SnapshotFileStoreOptions } from './snapshot-store.js';
+
 export type {
   FsScanRoot,
   RawSignal,

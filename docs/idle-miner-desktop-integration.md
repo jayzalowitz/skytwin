@@ -11,7 +11,44 @@ don't exist for the desktop yet.
 Source of truth: `packages/idle-miner/src/runtime.ts` (`StartIdleMinerOptions`),
 `packages/idle-miner/src/miner.ts` (`MinerOptions`), `apps/desktop/src/idle-bridge.ts`.
 
-## Where it runs
+## Architecture correction (post-build) — it does NOT run in the Electron main process
+
+The "Where it runs" section below was the original assumption and is **wrong**.
+Starting the implementation surfaced two hard facts:
+
+1. **`apps/desktop` is a deliberate thin shell with ZERO `@skytwin/*` dependencies,
+   compiled as CommonJS** (`apps/desktop/package.json` has no workspace deps;
+   `tsconfig.json` is `"module": "commonjs"`). It manages the API / worker /
+   CockroachDB as child processes via `ServiceManager` and talks to them over
+   HTTP/IPC. Pulling `@skytwin/idle-miner` (an ESM workspace package, plus its
+   transitive deps) into the Electron main process would break that boundary. So
+   idle-miner cannot run in desktop-main.
+2. **The worker is PAUSED exactly when idle-miner would want to run.**
+   `IdlePauseController` (`apps/desktop/src/idle-pause-controller.ts`, #382) calls
+   `ServiceManager.pause()` — which stops the worker child process — when the user
+   goes idle. So idle-miner cannot piggyback the worker either: the worker is dead
+   during idle.
+
+**Corrected host: a separately-managed idle-miner child process.** Spawn it from the
+desktop's `ServiceManager` the same way `api` / `worker` / `cockroach` are spawned
+(the shell owns lifecycle via process spawn, never an in-process import). That
+process is ESM, carries the `@skytwin/idle-miner` dep, owns the device-local store,
+and is started/stopped on the desktop's idle/active transitions (reuse the same
+`IdleBridge` signal the pause controller consumes — but to START mining on idle,
+not pause). It is exempt from the idle-pause that stops the *worker*.
+
+**Persistence is now provided.** `@skytwin/idle-miner` ships `SnapshotFileStore`
+(`packages/idle-miner/src/snapshot-store.ts`) — a device-local, atomic-snapshot
+`FileIndexRepo` + `CursorRepo`, so the host no longer reimplements the repos. Point
+it at the child process's data dir. This was the load-bearing, design-heavy piece
+(persistence is required, not optional — see "device-local, NOT CockroachDB" below);
+it is implemented and unit-tested.
+
+The remaining sections describe the dependency assembly (emitter transform, roots,
+userId, flag), which all still apply — they just move from "desktop main" into the
+managed idle-miner process.
+
+## Where it runs (ORIGINAL ASSUMPTION — superseded by the correction above)
 
 The desktop **Electron main process** (`apps/desktop/src/main.ts`). It has Node, can
 `require('electron').powerMonitor` (idle-miner's default `ElectronIdleDetector` uses
