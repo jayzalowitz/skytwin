@@ -221,3 +221,21 @@ describe('OutlookMailConnector', () => {
     await expect(conn.poll()).rejects.toThrow(/not connected/);
   });
 });
+
+describe('OutlookMailConnector.inferEmailType', () => {
+  // Private method — accessed via cast, mirroring the Gmail connector test.
+  function infer(from: string, subject: string): string {
+    const conn = new OutlookMailConnector('u', makeStubStore(null));
+    return (conn as unknown as { inferEmailType: (f: string, s: string) => string }).inferEmailType(from, subject);
+  }
+
+  it('does NOT classify an automated sender as meeting_invite even with a meeting subject', () => {
+    expect(infer('events-noreply@brand.com', "You're invited to our webinar")).toBe('notification');
+    expect(infer('google-noreply@google.com', 'Calendar invite for Q3')).toBe('notification');
+    expect(infer('noreply.team <support@brand.com>', 'Meeting Friday')).toBe('notification');
+  });
+
+  it('still classifies a real person with a meeting subject as meeting_invite', () => {
+    expect(infer('dana@company.com', 'Meeting Friday')).toBe('meeting_invite');
+  });
+});

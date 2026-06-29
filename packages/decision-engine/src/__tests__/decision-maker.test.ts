@@ -483,6 +483,95 @@ describe('DecisionMaker', () => {
       expect(label?.parameters['emailId']).toBe('msg_abc');
     });
 
+    it('EMAIL_TRIAGE offers send_reply for human mail but NEVER for awareness-tier mail', () => {
+      const dm = makeDecisionMaker();
+      const base = {
+        id: 'dec_reply_001',
+        situationType: SituationType.EMAIL_TRIAGE,
+        domain: 'email',
+        urgency: 'low' as const,
+        summary: 'Inbound mail',
+        interpretedAt: new Date(),
+      };
+
+      // Grant the gmail.send scope so the scope gate is not what removes
+      // send_reply — this isolates the authoring-tier gate under test.
+      const granted = { grantedScopes: ['gmail.send'] };
+
+      // Human inbound mail that expects a response → a reply is offered.
+      const human = dm.generateCandidates(
+        { ...base, rawData: { messageId: 'm1', requiresResponse: true, authoringTier: 'inbox_personal' } },
+        emptyProfile,
+        granted,
+      );
+      expect(human.map((c) => c.actionType)).toContain('send_reply');
+
+      // Newsletter / automated notice / the user's own sent mail → never a
+      // reply, even when a connector leaves requiresResponse truthy.
+      for (const tier of ['inbox_newsletter', 'inbox_automated', 'user_sent_originated']) {
+        const awareness = dm.generateCandidates(
+          { ...base, rawData: { messageId: 'm1', requiresResponse: true, authoringTier: tier } },
+          emptyProfile,
+          granted,
+        );
+        expect(awareness.map((c) => c.actionType)).not.toContain('send_reply');
+      }
+
+      // Tier is also honored when the worker nests it under `data`.
+      const nested = dm.generateCandidates(
+        { ...base, rawData: { messageId: 'm1', requiresResponse: true, data: { authoringTier: 'inbox_automated' } } },
+        emptyProfile,
+        granted,
+      );
+      expect(nested.map((c) => c.actionType)).not.toContain('send_reply');
+    });
+
+    it('strips a strategy-generated send_reply for awareness-tier mail (LLM/draft path)', async () => {
+      // The rule-generator gate cannot see candidates from an injected
+      // candidateGenerator (the production LLM/draft path). The post-generation
+      // filter in evaluate() must drop the reply regardless of its source.
+      const twinService = createMockTwinService({ preferences: [] });
+      const policyEvaluator = createMockPolicyEvaluator({ allowed: true, requiresApproval: true });
+      const decisionRepo = createMockDecisionRepository();
+      const stubGenerator = {
+        generate: async (decision: DecisionObject) => [
+          {
+            id: 'c_reply', decisionId: decision.id, actionType: 'send_reply', description: 'reply',
+            domain: 'email', parameters: {}, estimatedCostCents: 0, reversible: false,
+            confidence: ConfidenceLevel.LOW, reasoning: 'r',
+          },
+          {
+            id: 'c_ack', decisionId: decision.id, actionType: 'acknowledge', description: 'note it',
+            domain: 'email', parameters: {}, estimatedCostCents: 0, reversible: true,
+            confidence: ConfidenceLevel.LOW, reasoning: 'a',
+          },
+        ],
+      };
+      const dm = new DecisionMaker(
+        twinService as never,
+        policyEvaluator as never,
+        decisionRepo as never,
+        stubGenerator as never,
+      );
+
+      const decision = createEmailDecision({
+        rawData: { from: 'noreply@brand.com', subject: 'Your weekly digest', authoringTier: 'inbox_automated' },
+      });
+      // gmail.send granted so the scope gate is not what removes the reply.
+      const outcome = await dm.evaluate({
+        userId: 'user_test',
+        decision,
+        trustTier: TrustTier.OBSERVER,
+        relevantPreferences: [],
+        timestamp: new Date(),
+        grantedScopes: ['gmail.send'],
+      } as DecisionContext);
+
+      const types = outcome.allCandidates.map((c) => c.actionType);
+      expect(types).not.toContain('send_reply');
+      expect(types).toContain('acknowledge');
+    });
+
     it('SUBSCRIPTION_RENEWAL should generate renew, cancel, and snooze candidates', () => {
       const dm = makeDecisionMaker();
       const decision: DecisionObject = {
