@@ -73,21 +73,25 @@ const AUTOMATED_LOCAL_PARTS = new Set<string>([
 ]);
 
 /**
- * Match any `AUTOMATED_LOCAL_PARTS` token as a delimited component of a local
- * part, anchored on `-`/`.`/`_`/`+`/start/end on BOTH sides so it never matches
- * inside a larger word (`noreplyfan@` stays human). Built from the set so the
- * vocabulary has one source of truth. Tokens are sorted longest-first so a
- * multi-word token (`do-not-reply`) wins over a shorter overlap. The
- * compound-prefix case (`google-noreply@`) is the one the original
- * start-anchored checks missed, mis-tiering automated mail as `inbox_personal`.
+ * Match an `AUTOMATED_LOCAL_PARTS` token that is EITHER the first segment of the
+ * local part (`noreply@`, `noreply+id@`, `notifications.42@`, `noreply-team@`)
+ * OR the last segment after a hyphen (`google-noreply@`). Built from the set so
+ * the vocabulary stays single-sourced; longest-first so a multi-word token
+ * (`do-not-reply`) wins over a shorter overlap.
+ *
+ * Deliberately NOT "token anywhere": a token after a dot (`alex.alert@`,
+ * `svc.notifications@`) or mid-string (`real-newsletter-editor@`) reads as a
+ * `firstname.role` human or a staffed team, so those stay personal — matching
+ * the original first-segment-only intent. The added end-after-hyphen form is the
+ * one the start-anchored checks missed, which mis-tiered `google-noreply@` as
+ * `inbox_personal` (a human) and produced "draft a reply" to a no-reply address.
  */
+const AUTOMATED_LOCAL_TOKENS = [...AUTOMATED_LOCAL_PARTS]
+  .sort((a, b) => b.length - a.length)
+  .map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+  .join('|');
 const AUTOMATED_LOCAL_PART_RE = new RegExp(
-  '(?:^|[-._+])(?:' +
-    [...AUTOMATED_LOCAL_PARTS]
-      .sort((a, b) => b.length - a.length)
-      .map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-      .join('|') +
-    ')(?:[-._+]|$)',
+  `^(?:${AUTOMATED_LOCAL_TOKENS})(?:$|[-._+])|-(?:${AUTOMATED_LOCAL_TOKENS})$`,
   'i',
 );
 

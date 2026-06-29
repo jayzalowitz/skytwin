@@ -51,19 +51,22 @@ describe('isAutomatedSender', () => {
     expect(isAutomatedSender('notifications.thread-42@github.com')).toBe(true);
   });
 
-  it('flags compound local parts where the token follows a prefix', () => {
+  it('flags a token as the last segment after a hyphen (google-noreply@)', () => {
     // The regression: a real Google notification was mis-tiered as personal.
     expect(isAutomatedSender('google-noreply@google.com')).toBe(true);
     expect(isAutomatedSender('email-noreply@company.com')).toBe(true);
     expect(isAutomatedSender('account-no-reply@bank.com')).toBe(true);
     expect(isAutomatedSender('noreply-team@vendor.com')).toBe(true);
-    expect(isAutomatedSender('svc.notifications@vendor.com')).toBe(true);
   });
 
-  it('does NOT match a token embedded without a delimiter boundary', () => {
+  it('does NOT match an embedded substring or a dot-suffixed human/role alias', () => {
     // "noreply" is a substring of "noreplyfan" but not a delimited component.
     expect(isAutomatedSender('noreplyfan@acme.com')).toBe(false);
     expect(isAutomatedSender('alerting@acme.com')).toBe(false);
+    // `firstname.role@` reads as a person; the original only matched the FIRST
+    // segment, and the compound fix keeps that (only hyphen-suffix is added).
+    expect(isAutomatedSender('alex.alert@company.com')).toBe(false);
+    expect(isAutomatedSender('pat.notifications@example.edu')).toBe(false);
   });
 
   it('flags known transactional sender domains', () => {

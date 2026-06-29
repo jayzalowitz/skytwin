@@ -378,18 +378,17 @@ const BROADCAST_AUTHORING_TIERS = new Set<string>([
 /**
  * Conservative no-reply / bulk sender match, used only as a fallback when the
  * connector did not stamp an authoring tier (the connector's `isAutomatedSender`
- * is the primary classifier). The trigger must be a whole local-part component
- * (optionally `+tag` / `.id` suffixed) right before `@`, anchored to the start
- * of the address, a `<` / whitespace boundary, OR an alphanumeric-then-hyphen
- * boundary — so a hyphen-compound automated alias like `google-noreply@…` IS
- * caught, while a dot-compound like `mary.newsletter@…` or a run-on like
- * `johnnotifications@…` (possible real people) is NOT. A hyphen before a role
- * word reads as an automated alias; a dot reads as firstname.lastname. A rare
- * false positive only errs toward awareness (note vs. draft-a-reply), the safe
- * direction.
+ * is the primary classifier). The token must sit at the start of the address, a
+ * `<` / whitespace boundary, OR an alphanumeric-then-hyphen boundary, and be
+ * followed by `@` (optionally a `+tag` / `.id` suffix) — so a hyphen-compound
+ * automated alias like `google-noreply@…` IS caught, while a dot-compound
+ * (`mary.newsletter@…`), a run-on (`johnnotifications@…`), or a mid-string token
+ * (`real-newsletter-editor@…`) is NOT. A hyphen before a role word reads as an
+ * automated alias; a dot or a trailing word reads as a person/team. A rare false
+ * positive only errs toward awareness (note vs. draft-a-reply), the safe direction.
  */
 const NO_REPLY_SENDER =
-  /(?:^|[\s<]|[a-z0-9]-)(?:no-?reply|do-?not-?reply|donotreply|mailer-daemon|notifications?|newsletter)(?:[+._-][^@\s]*)?@/i;
+  /(?:^|[\s<]|[a-z0-9]-)(?:no-?reply|do-?not-?reply|donotreply|mailer-daemon|notifications?|newsletter)(?:[+.][^@\s]*)?@/i;
 
 function isBroadcastEmail(metadata: Record<string, unknown>): boolean {
   const tier = metadata['authoringTier'];
