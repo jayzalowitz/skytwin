@@ -12,6 +12,13 @@ const SNAPSHOT_VERSION = 1;
 const SNAPSHOT_FILENAME = 'idle-miner-index.json';
 const DEFAULT_FLUSH_DELAY_MS = 5_000;
 
+// Distinguishes temp files when more than one store (a second process, or a
+// second instance in the same process) points at the same directory, so
+// concurrent flushes can't clobber each other's temp file and rename a
+// half-written snapshot into place. One store per dir is the intended use; this
+// is cheap insurance against misuse.
+let instanceCounter = 0;
+
 function fileKey(rootId: string, relativePath: string): string {
   // JSON-encoded pair: unambiguous, so no two distinct (rootId, relativePath)
   // pairs can ever collide onto the same key.
@@ -58,7 +65,14 @@ export interface SnapshotFileStoreOptions {
  */
 export class SnapshotFileStore implements FileIndexRepo, CursorRepo {
   private readonly snapshotPath: string;
+  private readonly tmpPath: string;
   private readonly flushDelayMs: number;
+  // In-memory index + cursors. Size is bounded by the number of scanned files;
+  // `flush()` serializes the whole map synchronously, but the debounce coalesces
+  // a burst of upserts into one write per window, so churn doesn't flush
+  // per-file. For very large trees (hundreds of thousands of files) prefer a
+  // streaming / SQLite-backed repo (see docs/idle-miner-desktop-integration.md);
+  // this snapshot store is the simple default for the typical allowlist.
   private readonly files = new Map<string, FileIndexEntry>();
   private readonly cursors = new Map<string, ScanCursor>();
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -67,6 +81,7 @@ export class SnapshotFileStore implements FileIndexRepo, CursorRepo {
 
   constructor(dir: string, options: SnapshotFileStoreOptions = {}) {
     this.snapshotPath = join(dir, SNAPSHOT_FILENAME);
+    this.tmpPath = `${this.snapshotPath}.${process.pid}.${++instanceCounter}.tmp`;
     this.flushDelayMs = options.flushDelayMs ?? DEFAULT_FLUSH_DELAY_MS;
     try {
       mkdirSync(dir, { recursive: true });
@@ -82,11 +97,23 @@ export class SnapshotFileStore implements FileIndexRepo, CursorRepo {
     if (!existsSync(this.snapshotPath)) return;
     try {
       const parsed = JSON.parse(readFileSync(this.snapshotPath, 'utf8')) as Partial<Snapshot>;
-      // An incompatible schema version is discarded rather than misread — the
-      // cost is one full re-scan, which is safe.
-      if (parsed.version !== SNAPSHOT_VERSION) return;
+      // A snapshot from a DIFFERENT schema version (e.g. a newer one left by a
+      // version we then downgraded from) is not loaded — but it must NOT be
+      // silently overwritten by our v1 on the next flush, which would discard the
+      // newer data permanently. Quarantine it aside so it survives, then start
+      // fresh (cost: one re-scan, which is safe).
+      if (parsed.version !== SNAPSHOT_VERSION) {
+        try {
+          renameSync(this.snapshotPath, `${this.snapshotPath}.v${String(parsed.version ?? 'unknown')}.bak`);
+        } catch {
+          // Best-effort; if we can't move it we at least haven't loaded it.
+        }
+        return;
+      }
       for (const entry of parsed.files ?? []) {
         if (entry && typeof entry.rootId === 'string' && typeof entry.relativePath === 'string') {
+          // Stored object is owned by the store (parsed fresh from JSON, no
+          // caller alias), so no copy needed on load.
           this.files.set(fileKey(entry.rootId, entry.relativePath), entry);
         }
       }
@@ -103,25 +130,33 @@ export class SnapshotFileStore implements FileIndexRepo, CursorRepo {
     }
   }
 
+  // The four repo methods defensively copy at the boundary: stored values are
+  // cloned on the way in (upsert/save) and on the way out (lookup/load) so a
+  // caller mutating an object it passed or received can't silently diverge the
+  // in-memory state from what the repo calls recorded. The entries are flat
+  // (primitive fields), so a shallow spread is a full copy.
+
   async lookup(rootId: string, relativePath: string): Promise<FileIndexEntry | null> {
     this.ensureLoaded();
-    return this.files.get(fileKey(rootId, relativePath)) ?? null;
+    const found = this.files.get(fileKey(rootId, relativePath));
+    return found ? { ...found } : null;
   }
 
   async upsert(entry: FileIndexEntry): Promise<void> {
     this.ensureLoaded();
-    this.files.set(fileKey(entry.rootId, entry.relativePath), entry);
+    this.files.set(fileKey(entry.rootId, entry.relativePath), { ...entry });
     this.markDirty();
   }
 
   async load(rootId: string): Promise<ScanCursor | null> {
     this.ensureLoaded();
-    return this.cursors.get(rootId) ?? null;
+    const found = this.cursors.get(rootId);
+    return found ? { ...found } : null;
   }
 
   async save(rootId: string, cursor: ScanCursor): Promise<void> {
     this.ensureLoaded();
-    this.cursors.set(rootId, cursor);
+    this.cursors.set(rootId, { ...cursor });
     this.markDirty();
   }
 
@@ -148,10 +183,15 @@ export class SnapshotFileStore implements FileIndexRepo, CursorRepo {
       files: [...this.files.values()],
       cursors: Object.fromEntries(this.cursors),
     };
-    const tmpPath = `${this.snapshotPath}.tmp`;
     try {
-      writeFileSync(tmpPath, JSON.stringify(snapshot), 'utf8');
-      renameSync(tmpPath, this.snapshotPath); // atomic within one filesystem
+      // Instance-unique temp name so two stores sharing a dir can't clobber each
+      // other's temp file mid-write. rename() is atomic within one filesystem.
+      // We deliberately do NOT fsync the temp file or parent dir: a power-loss
+      // window can lose the most recent flush, but the file index is fully
+      // reconstructible (the loss costs a re-scan of those files), so the fsync
+      // latency on every flush isn't worth it for this data.
+      writeFileSync(this.tmpPath, JSON.stringify(snapshot), 'utf8');
+      renameSync(this.tmpPath, this.snapshotPath);
       this.dirty = false;
     } catch {
       // Keep dirty=true; the next markDirty/close flush retries.

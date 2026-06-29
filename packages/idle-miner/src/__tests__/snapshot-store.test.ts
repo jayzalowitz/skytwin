@@ -103,14 +103,38 @@ describe('SnapshotFileStore', () => {
     expect(await store.lookup('root1', 'recovered.ts')).not.toBeNull();
   });
 
-  it('ignores a snapshot written by an incompatible schema version', async () => {
+  it('ignores AND quarantines a snapshot from an incompatible schema version (no silent data loss on downgrade)', async () => {
     writeFileSync(
       join(dir, SNAPSHOT),
       JSON.stringify({ version: 999, files: [entry({ relativePath: 'future.ts' })], cursors: {} }),
       'utf8',
     );
     const store = new SnapshotFileStore(dir, NO_AUTO_FLUSH);
+    // Not loaded...
     expect(await store.lookup('root1', 'future.ts')).toBeNull();
+    // ...and the newer snapshot was moved aside, not left to be overwritten.
+    expect(existsSync(join(dir, `${SNAPSHOT}.v999.bak`))).toBe(true);
+
+    // A subsequent v1 write must not clobber the quarantined newer data.
+    await store.upsert(entry({ relativePath: 'now.ts' }));
+    store.flush();
+    expect(existsSync(join(dir, `${SNAPSHOT}.v999.bak`))).toBe(true);
+    const backup = JSON.parse(readFileSync(join(dir, `${SNAPSHOT}.v999.bak`), 'utf8'));
+    expect(backup.version).toBe(999);
+  });
+
+  it('defensively copies at the boundary — mutating a returned/passed object cannot diverge stored state', async () => {
+    const store = new SnapshotFileStore(dir, NO_AUTO_FLUSH);
+    const passed = entry({ relativePath: 'alias.ts', sizeBytes: 1 });
+    await store.upsert(passed);
+    passed.sizeBytes = 9999; // mutate the object we passed in
+
+    const got = await store.lookup('root1', 'alias.ts');
+    expect(got?.sizeBytes).toBe(1); // store kept its own copy
+    got!.sizeBytes = 7777; // mutate the object we got back
+
+    const again = await store.lookup('root1', 'alias.ts');
+    expect(again?.sizeBytes).toBe(1); // still pristine
   });
 
   it('flush is a no-op when nothing changed (no write amplification)', async () => {
