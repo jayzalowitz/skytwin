@@ -11,6 +11,7 @@ import {
   CompositeCandidateGenerator,
 } from '@skytwin/decision-engine';
 import { buildDraftEmailGenerator } from '../draft-email-setup.js';
+import { serializeApprovalCandidate } from './approval-candidate.js';
 import { TwinService } from '@skytwin/twin-model';
 import { PolicyEvaluator } from '@skytwin/policy-engine';
 import { ExplanationGenerator } from '@skytwin/explanations';
@@ -577,30 +578,9 @@ export function createEventsRouter(): Router {
         const approvalResult = await approvalRepository.create({
           userId,
           decisionId: decision.id,
-          candidateAction: {
-            // Persist the original candidate id so the approve handler can
-            // look up the decision-maker's stored RiskAssessment by that
-            // id (#371). Previously the approve path generated a fresh
-            // UUID and lost the linkage, forcing it to fabricate a LOW
-            // assessment in place of the one the decision-maker computed.
-            id: outcome.selectedAction.id,
-            actionType: outcome.selectedAction.actionType,
-            description: outcome.selectedAction.description,
-            domain: outcome.selectedAction.domain,
-            parameters: approvalVisibleParameters,
-            estimatedCostCents: outcome.selectedAction.estimatedCostCents,
-            // costZeroIntent MUST round-trip: an absent value is treated as
-            // legacy `verified_zero` on reload (decision.ts), so dropping an
-            // `'unknown'` here would let the spend fast-path fire after approve
-            // and re-open the #372 bypass. provenance round-trips too so the
-            // injection guard re-evaluates against the real origin, not the
-            // untrusted-external fail-safe default.
-            costZeroIntent: outcome.selectedAction.costZeroIntent,
-            provenance: outcome.selectedAction.provenance,
-            reversible: outcome.selectedAction.reversible,
-            confidence: outcome.selectedAction.confidence,
-            reasoning: outcome.selectedAction.reasoning,
-          },
+          // Single serializer (approval-candidate.ts) keeps the safety fields —
+          // costZeroIntent / provenance / the #371 id linkage — from drifting.
+          candidateAction: serializeApprovalCandidate(outcome.selectedAction, approvalVisibleParameters),
           reason: outcome.reasoning,
           urgency: decision.urgency,
           // The injection guard sets `dual` for extreme-severity actions —
@@ -650,21 +630,7 @@ export function createEventsRouter(): Router {
           const escalationResult = await approvalRepository.create({
             userId,
             decisionId: decision.id,
-            candidateAction: {
-              id: outcome.selectedAction.id,
-              actionType: outcome.selectedAction.actionType,
-              description: outcome.selectedAction.description,
-              domain: outcome.selectedAction.domain,
-              parameters: approvalVisibleParametersEsc,
-              estimatedCostCents: outcome.selectedAction.estimatedCostCents,
-              // Round-trip the safety flags (see the other approval serializer
-              // above) so a dropped `'unknown'` cost isn't read as verified_zero.
-              costZeroIntent: outcome.selectedAction.costZeroIntent,
-              provenance: outcome.selectedAction.provenance,
-              reversible: outcome.selectedAction.reversible,
-              confidence: outcome.selectedAction.confidence,
-              reasoning: outcome.selectedAction.reasoning,
-            },
+            candidateAction: serializeApprovalCandidate(outcome.selectedAction, approvalVisibleParametersEsc),
             reason: 'Auto-execute path could not verify a persisted risk assessment for this candidate. Escalated to manual approval to fail closed (#371).',
             urgency: decision.urgency,
             confirmationLevel: 'single',
