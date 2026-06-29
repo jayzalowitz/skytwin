@@ -149,12 +149,27 @@ export class PolicyEvaluator {
     let confirmationLevel: ConfirmationLevel | undefined = guard.confirmationLevel;
     let approvalReason = guard.reason ?? '';
 
-    if (
-      action.actionType === 'escalate_to_user' &&
-      action.parameters['reason'] === 'missing_write_scope'
-    ) {
+    // `escalate_to_user` is a human-review TERMINAL, never an executable action:
+    // it means "surface this to the user to decide". It must therefore ALWAYS
+    // require approval, regardless of trust tier, risk, or provenance. Without
+    // this, a HIGH-confidence, reversible, zero-cost escalation on a TRUSTED
+    // path (e.g. a user's own chat intent, provenance `user_originated`) clears
+    // `shouldAutoExecute` at LOW_AUTONOMY+, and the auto-execute path routes it
+    // to the execution router — where `escalate_to_user` is a registered action
+    // with no real handler, so it dead-ends. Forcing approval makes `autoExecute`
+    // false (`autoExecute = !requiresApproval && …`) so it always lands in the
+    // approval queue, which renders it as a "tell me what to do" card with the
+    // alternative candidates (apps/api/src/routes/approvals.ts). This makes the
+    // Safety-Invariant-#8 guarantee ("a security alert is NEVER auto-executed")
+    // server-enforced for EVERY escalation source, instead of incidental to the
+    // inbound signal's untrusted provenance. (Found by cross-model review.)
+    if (action.actionType === 'escalate_to_user') {
       requiresApproval = true;
-      approvalReason = approvalReason || 'Write access is missing; user approval is required to grant access.';
+      approvalReason =
+        approvalReason ||
+        (action.parameters['reason'] === 'missing_write_scope'
+          ? 'Write access is missing; user approval is required to grant access.'
+          : 'This was escalated for you to decide; it never runs unattended.');
     }
 
     // Check autonomy settings if provided

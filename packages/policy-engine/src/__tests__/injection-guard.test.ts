@@ -125,6 +125,43 @@ describe('PolicyEvaluator.evaluate — injection guard integration', () => {
     expect(decision.requiresApproval).toBe(false);
   });
 
+  it('forces escalate_to_user to approval even at HIGH_AUTONOMY (it never auto-executes)', async () => {
+    // Same shape as the auto-executing action above (reversible, low-risk,
+    // user_originated, HIGH_AUTONOMY) EXCEPT the actionType. escalate_to_user is
+    // a human-review terminal, so it must always require approval — otherwise the
+    // auto-execute path would route it to the execution router and dead-end. This
+    // makes the Invariant #8 "security alert is never auto-executed" guarantee
+    // server-enforced rather than incidental to untrusted provenance.
+    const decision = await evaluator.evaluate(
+      createAction({
+        actionType: 'escalate_to_user',
+        provenance: 'user_originated',
+        confidence: ConfidenceLevel.HIGH,
+        parameters: { intent: 'decline_event' },
+      }),
+      [],
+      TrustTier.HIGH_AUTONOMY,
+      lowRisk(),
+    );
+    expect(decision.allowed).toBe(true);
+    expect(decision.requiresApproval).toBe(true);
+  });
+
+  it('escalate_to_user keeps the missing_write_scope approval reason', async () => {
+    const decision = await evaluator.evaluate(
+      createAction({
+        actionType: 'escalate_to_user',
+        provenance: 'user_originated',
+        parameters: { reason: 'missing_write_scope' },
+      }),
+      [],
+      TrustTier.HIGH_AUTONOMY,
+      lowRisk(),
+    );
+    expect(decision.requiresApproval).toBe(true);
+    expect(decision.reason).toContain('Write access is missing');
+  });
+
   it('forces a destructive action to approval even at HIGH_AUTONOMY', async () => {
     const decision = await evaluator.evaluate(
       createAction({ actionType: 'delete_email', provenance: 'user_originated' }),
