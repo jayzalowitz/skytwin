@@ -12,6 +12,7 @@ import type {
   WhatWouldIDoResponse,
 } from '@skytwin/shared-types';
 import {
+  AWARENESS_TIERS,
   ConfidenceLevel,
   RiskTier,
   SituationType,
@@ -146,7 +147,7 @@ export class DecisionMaker {
     );
 
     // Step 3: Generate candidate actions (LLM strategy or built-in rules)
-    const candidates = this.candidateGenerator
+    const generatedCandidates = this.candidateGenerator
       ? applyScopeGate(
           await this.candidateGenerator.generate(context.decision, profile, enrichedContext),
           context.grantedScopes ?? [],
@@ -155,6 +156,16 @@ export class DecisionMaker {
           senderLabelHints,
           grantedScopes: context.grantedScopes,
         });
+
+    // Awareness-tier reply guard — applied to EVERY candidate source. The rule
+    // generator's own send_reply gate (in generateEmailTriageCandidates) does
+    // not cover the LLM/draft strategies that run on the production path
+    // (candidateGenerator branch above), so strip any outbound reply/draft here:
+    // a reply to a newsletter, an automated/no-reply notice, or the user's own
+    // re-ingested sent mail is never appropriate. Human inbound mail
+    // (inbox_personal / inbox_broadcast) keeps its reply candidates; if this
+    // empties the list, the zero-candidate branch below safely escalates.
+    const candidates = this.stripAwarenessTierReplies(generatedCandidates, context.decision);
 
     // Stamp provenance onto every candidate from the originating decision so
     // the policy engine's injection guard can gate without re-deriving where
@@ -608,8 +619,13 @@ export class DecisionMaker {
       reasoning: this.labelReasoning(senderLabelHints),
     });
 
-    // Reply with acknowledgment
-    if (decision.rawData['requiresResponse']) {
+    // Reply with acknowledgment — but only for mail that actually expects one.
+    // An awareness-tier email (newsletter / automated notice / the user's own
+    // re-ingested sent mail) never warrants an acknowledgment reply, even if a
+    // connector left `requiresResponse` truthy. This is the robust half of the
+    // fix: it gates on the authoring tier directly rather than trusting the
+    // upstream `requiresResponse` heuristic.
+    if (decision.rawData['requiresResponse'] && !this.isAwarenessTierEmail(decision)) {
       candidates.push({
         id: crypto.randomUUID(),
         decisionId: decision.id,
@@ -628,6 +644,50 @@ export class DecisionMaker {
     }
 
     return candidates;
+  }
+
+  /**
+   * True when the email's #251 authoring tier marks it as awareness — a
+   * newsletter, an automated/no-reply notice, or the user's own re-ingested
+   * sent mail — none of which warrant an acknowledgment reply. Reads the tier
+   * whether the worker left it top-level on `rawData` or nested under `data`.
+   */
+  private isAwarenessTierEmail(decision: DecisionObject): boolean {
+    const raw = decision.rawData ?? {};
+    let tier = raw['authoringTier'];
+    if (typeof tier !== 'string') {
+      const data = raw['data'];
+      if (data && typeof data === 'object') {
+        tier = (data as Record<string, unknown>)['authoringTier'];
+      }
+    }
+    return typeof tier === 'string' && AWARENESS_TIERS.has(tier);
+  }
+
+  /** Outbound email actions that must never target awareness-tier mail. */
+  private static readonly OUTBOUND_REPLY_ACTIONS = new Set<string>([
+    'send_reply',
+    'reply_email',
+    'send_email',
+    'forward_email',
+    'draft_email',
+  ]);
+
+  /**
+   * Drop outbound reply/draft candidates when the email is awareness-tier
+   * (newsletter / automated notice / the user's own sent mail), from EVERY
+   * generator — so an LLM- or draft-strategy-proposed reply to a newsletter is
+   * removed, not just the rule generator's. Non-email decisions and human
+   * inbound mail (inbox_personal / inbox_broadcast) pass through untouched.
+   */
+  private stripAwarenessTierReplies(
+    candidates: CandidateAction[],
+    decision: DecisionObject,
+  ): CandidateAction[] {
+    if (!this.isAwarenessTierEmail(decision)) return candidates;
+    return candidates.filter(
+      (c) => !DecisionMaker.OUTBOUND_REPLY_ACTIONS.has(c.actionType),
+    );
   }
 
   private generateCalendarCandidates(
