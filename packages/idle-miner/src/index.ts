@@ -54,6 +54,9 @@ export type { IdleMinerHandle, StartIdleMinerOptions } from './runtime.js';
 export { SnapshotFileStore } from './snapshot-store.js';
 export type { SnapshotFileStoreOptions } from './snapshot-store.js';
 
+export { toIngestEvent, createHttpSignalEmitter } from './ingest-adapter.js';
+export type { HttpSignalEmitterOptions } from './ingest-adapter.js';
+
 export type {
   FsScanRoot,
   RawSignal,

@@ -1,5 +1,12 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.94.0] - 2026-06-29
+
+### Added
+
+- **`@skytwin/idle-miner` now ships its signal emitter — `createHttpSignalEmitter` + the pure `toIngestEvent` transform.** Alongside the repos (`SnapshotFileStore`, #577), `MinerOptions` also requires a `signalEmitter`, and the package shipped none — so a host had to hand-write the filesystem-`RawSignal` → ingest-event mapping before it could deliver anything. `toIngestEvent(signal, userId)` wraps idle-miner's filesystem signal (a *different* shape than the connector `RawSignal` the worker forwards) in the `/api/events/ingest` envelope with `source: 'fs'` (which capability inference maps to `kind: 'fs'`). **Security:** the file-derived `structuredFields` are spread FIRST so the trusted envelope fields (`source` / `type` / `signalId` / `userId`) always win — a file can't spoof its source or re-attribute the signal to another user by naming an extracted field after an envelope key. `createHttpSignalEmitter({ ingestUrl, userId })` POSTs that body with bounded exponential-backoff retry on transient (429 / 5xx / network) failures via `@skytwin/core`'s `withRetry`, and **never throws into the miner loop** — a final failure is logged and swallowed, since the durable file index re-attempts the signal on a later scan. With the store + emitter + `DEFAULT_EXTRACTORS` + `expandAllowlist` + `ElectronIdleDetector` all package-provided, the only host-specific work left to wire the miner is the managed child process, the resolved `userId`, and the flag. 8 unit tests cover the envelope mapping, the `file_skipped` path, the structuredFields-can't-override-envelope security property, optional-field omission, and the emitter's POST + swallow-on-permanent-failure + swallow-on-network-error + retry-then-succeed behaviors. Spec (`docs/idle-miner-desktop-integration.md`) updated.
+
+
 ## [0.6.93.0] - 2026-06-29
 
 ### Added
