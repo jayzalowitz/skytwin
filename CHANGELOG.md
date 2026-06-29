@@ -1,15 +1,23 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.88.0] - 2026-06-29
+
+### Fixed
+
+- **`/api/routines` now runs the FULL policy gate before registering an auto-executing cron routine.** The route's `policyEvaluator.evaluate(plan.action, policies, userTier)` omitted both `riskAssessment` and `autonomySettings`, so the spend hard-limit (Invariant #4), the reversibility/risk-dimension escalations, the domain allowlist and quiet-hours were all silently skipped — a costed or irreversible action could be scheduled to run unattended. Now the route risk-assesses the action and loads the user's autonomy settings, passes both to `evaluate()`, and — critically — **refuses creation (403) when the action requires approval**: a routine has no human in the loop per run, so an action the policy engine would escalate must not be registered to auto-run. The policy check runs against a SERVER-DERIVED action — the caller never gets to assert its own cost, reversibility, or provenance. Cost + reversibility are classified from the action TYPE against a small free-action allowlist (note / reminder / label / archive / acknowledge / dismiss → verified-zero + reversible); any other type (outbound, costed, destructive) is unknown-cost + assumed irreversible, so it escalates and is refused. Provenance is forced to `untrusted_external`. And the registered routine carries only the normalized action with EMPTY steps — caller-supplied `steps`/`rollbackSteps` were never policy-checked, so dropping them closes a check-one-thing-execute-another gap (both caught by cross-model review). New tests: requires-approval → 403 (no routine created); `evaluate` receives a riskAssessment + autonomySettings. (Per-run execution still happens on IronClaw's own scheduler with no SkyTwin backstop — a deeper architectural gap noted for follow-up.)
+
 ## [0.6.87.0] - 2026-06-29
 
 ### Added
 
 - **Schema-drift guard: a static test that fails when a TS enum union and its DB `CHECK` constraint disagree.** The #567 incident shipped because a new `MemoryActionOpportunityStatus` value (`noted_awareness`) passed the whole suite — every `@skytwin/db` repository test mocks the query layer, so none observe a real CHECK constraint — while production CockroachDB would reject the write. The new guard (`packages/db/src/__tests__/schema-enum-drift.test.ts`) parses each TS union's members from source AND the allowed values from `schemas/schema.sql`, and fails with a pointer to the missing migration if they diverge. Covers the named-union enum columns in `schema.sql` (`memory_action_opportunities.status` ⇄ `MemoryActionOpportunityStatus`, `.provenance` ⇄ `ActionProvenance`); a self-test proves the guard actually detects drift. The `CASES` list is one line to extend; covering migration-only tables and inline field-type unions is a noted follow-up.
+
 ## [0.6.86.0] - 2026-06-29
 
 ### Fixed
 
 - **Approval serializers now round-trip `costZeroIntent` + `provenance`, closing a re-opened spend bypass (#372).** The events ingest route (two `approvalRepository.create` sites) and the chat/assistant route serialized the selected action's `costZeroIntent` as *absent*. On approve, `parseCostZeroIntent(undefined)` returns `undefined`, which the cost gate treats as legacy `verified_zero` (per the documented contract in `decision.ts`) — so an LLM-generated `'unknown'`-cost candidate would clear the spend fast-path after approval instead of escalating. `decision.ts` explicitly warns that any new serializer must carry this flag; these three did not. The three serializers are now consolidated into one `serializeApprovalCandidate` helper (apps/api/src/routes/approval-candidate.ts) — a single source of truth so these safety fields cannot drift between paths again (the root cause). It carries `costZeroIntent` and `provenance` (the worker's memory-action-loop serializer already did), and restores the candidate `id` on the chat/assistant path so the approve handler can relink the stored RiskAssessment (#371). Unit test on the helper + an integration test asserting the events approval payload carries `costZeroIntent: 'unknown'` + `provenance`.
+
 ## [0.6.85.0] - 2026-06-29
 
 ### Fixed
@@ -1612,7 +1620,6 @@ What this does NOT ship (deliberate):
   current briefing. That's a UI follow-up gated on the existing
   briefing surface; the backend it needs is in main as of this PR.
 
-
 ## [unreleased] — Mobile voice recording module (#179 voice side)
 
 ### Fixed (post-Copilot review)
@@ -2353,7 +2360,6 @@ model once installed) doesn't change at all.
   flip to `paused` on boot; the user sees a "Paused" download with a
   Resume button on next Settings visit, which is the desired UX. A
   toast / banner alerting them proactively is a small follow-up.
-
 
 ## [unreleased] — Accessibility: high-contrast + text-scale + voice STT route (#194 Child 4)
 
