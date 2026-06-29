@@ -147,7 +147,7 @@ export class DecisionMaker {
     );
 
     // Step 3: Generate candidate actions (LLM strategy or built-in rules)
-    const candidates = this.candidateGenerator
+    const generatedCandidates = this.candidateGenerator
       ? applyScopeGate(
           await this.candidateGenerator.generate(context.decision, profile, enrichedContext),
           context.grantedScopes ?? [],
@@ -156,6 +156,16 @@ export class DecisionMaker {
           senderLabelHints,
           grantedScopes: context.grantedScopes,
         });
+
+    // Awareness-tier reply guard — applied to EVERY candidate source. The rule
+    // generator's own send_reply gate (in generateEmailTriageCandidates) does
+    // not cover the LLM/draft strategies that run on the production path
+    // (candidateGenerator branch above), so strip any outbound reply/draft here:
+    // a reply to a newsletter, an automated/no-reply notice, or the user's own
+    // re-ingested sent mail is never appropriate. Human inbound mail
+    // (inbox_personal / inbox_broadcast) keeps its reply candidates; if this
+    // empties the list, the zero-candidate branch below safely escalates.
+    const candidates = this.stripAwarenessTierReplies(generatedCandidates, context.decision);
 
     // Stamp provenance onto every candidate from the originating decision so
     // the policy engine's injection guard can gate without re-deriving where
@@ -652,6 +662,32 @@ export class DecisionMaker {
       }
     }
     return typeof tier === 'string' && AWARENESS_TIERS.has(tier);
+  }
+
+  /** Outbound email actions that must never target awareness-tier mail. */
+  private static readonly OUTBOUND_REPLY_ACTIONS = new Set<string>([
+    'send_reply',
+    'reply_email',
+    'send_email',
+    'forward_email',
+    'draft_email',
+  ]);
+
+  /**
+   * Drop outbound reply/draft candidates when the email is awareness-tier
+   * (newsletter / automated notice / the user's own sent mail), from EVERY
+   * generator — so an LLM- or draft-strategy-proposed reply to a newsletter is
+   * removed, not just the rule generator's. Non-email decisions and human
+   * inbound mail (inbox_personal / inbox_broadcast) pass through untouched.
+   */
+  private stripAwarenessTierReplies(
+    candidates: CandidateAction[],
+    decision: DecisionObject,
+  ): CandidateAction[] {
+    if (!this.isAwarenessTierEmail(decision)) return candidates;
+    return candidates.filter(
+      (c) => !DecisionMaker.OUTBOUND_REPLY_ACTIONS.has(c.actionType),
+    );
   }
 
   private generateCalendarCandidates(

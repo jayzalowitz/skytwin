@@ -132,6 +132,9 @@ describe('GmailConnector.inferEmailType', () => {
     expect(infer('mailer-daemon@brand.com', 'Re: Meeting Friday')).toBe('notification');
     // A real person with the same subject is still a meeting_invite.
     expect(infer('dana@company.com', 'Meeting Friday')).toBe('meeting_invite');
+    // A "noreply" token in the display name (human-looking address) is still
+    // detected — preserves the pre-refactor full-From substring behavior.
+    expect(infer('noreply.team <support@brand.com>', 'Meeting Friday')).toBe('notification');
   });
 
   it('classifies CATEGORY_UPDATES as notification', () => {

@@ -486,13 +486,19 @@ export class GmailConnector implements SignalConnector {
     if (lowerSubject.includes('subscription') || lowerSubject.includes('renewal') || lowerSubject.includes('billing')) {
       return 'subscription_renewal';
     }
-    // A meeting/invite subject implies a REPLY, so it must not apply to an
-    // automated/no-reply sender — "you're invited to our webinar" from
-    // events-noreply@ is a notification, not a meeting to RSVP. Reuse the
-    // connector's own automated-sender classifier so compound no-reply aliases
-    // (google-noreply@, mailer-daemon@, notifications@) are caught too.
+    // No-reply / automated sender. Use the connector's address-based classifier
+    // (catches compound aliases: google-noreply@, mailer-daemon@, notifications@)
+    // OR a no-reply token in the raw From — the latter preserves detection of a
+    // "noreply" display name on an otherwise human-looking address.
+    const lowerFrom = from.toLowerCase();
+    const isNoReplySender =
+      isAutomatedSender(from) || lowerFrom.includes('noreply') || lowerFrom.includes('no-reply');
+
+    // A meeting/invite subject implies a REPLY, so it must not apply to a
+    // no-reply sender — "you're invited to our webinar" from events-noreply@ is
+    // a notification, not a meeting to RSVP.
     if (
-      !isAutomatedSender(from) &&
+      !isNoReplySender &&
       (lowerSubject.includes('meeting') || lowerSubject.includes('invite') || lowerSubject.includes('calendar'))
     ) {
       return 'meeting_invite';
@@ -503,7 +509,7 @@ export class GmailConnector implements SignalConnector {
     if (lowerSubject.includes('flight') || lowerSubject.includes('hotel') || lowerSubject.includes('travel') || lowerSubject.includes('booking')) {
       return 'travel_alert';
     }
-    if (isAutomatedSender(from) || labels.includes('CATEGORY_UPDATES')) {
+    if (isNoReplySender || labels.includes('CATEGORY_UPDATES')) {
       return 'notification';
     }
     return 'work_email';
