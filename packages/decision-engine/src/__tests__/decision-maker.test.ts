@@ -463,6 +463,100 @@ describe('DecisionMaker', () => {
       expect(actionTypes).toContain('dismiss');
     });
 
+    it('CALENDAR_UPDATE with a chat decline_event intent leads with a decline_invite', () => {
+      const dm = makeDecisionMaker();
+      const decision: DecisionObject = {
+        id: 'dec_upd_decline',
+        situationType: SituationType.CALENDAR_UPDATE,
+        domain: 'calendar',
+        urgency: 'low',
+        summary: 'Decline or cancel a calendar event',
+        // What the intent classifier emits for "decline that meeting".
+        rawData: { intent: 'decline_event', source: 'chat', eventId: 'evt_x' },
+        interpretedAt: new Date(),
+      };
+
+      const candidates = dm.generateCandidates(decision, emptyProfile, {
+        grantedScopes: CALENDAR_WRITE_SCOPES,
+      });
+
+      const decline = candidates.find((c) => c.actionType === 'decline_invite');
+      expect(decline, 'the explicit decline the user asked for must be offered').toBeDefined();
+      // It leads: highest-confidence candidate, since the user explicitly asked.
+      expect(decline!.confidence).toBe(ConfidenceLevel.HIGH);
+      expect(decline!.reversible).toBe(false);
+      // acknowledge/dismiss stay as lower-confidence alternatives.
+      const actionTypes = candidates.map((c) => c.actionType);
+      expect(actionTypes).toContain('acknowledge');
+      expect(actionTypes).toContain('dismiss');
+    });
+
+    it('CALENDAR_UPDATE decline_event is a scoped write — downgraded without the calendar scope', () => {
+      const dm = makeDecisionMaker();
+      const decision: DecisionObject = {
+        id: 'dec_upd_decline_noscope',
+        situationType: SituationType.CALENDAR_UPDATE,
+        domain: 'calendar',
+        urgency: 'low',
+        summary: 'Decline or cancel a calendar event',
+        rawData: { intent: 'decline_event', source: 'chat', eventId: 'evt_y' },
+        interpretedAt: new Date(),
+      };
+
+      const candidates = dm.generateCandidates(decision, emptyProfile);
+      // No decline_invite survives as an auto-executable write; it is downgraded
+      // to a grant-access escalation (the scope gate fails safe on empty grants).
+      expect(candidates.some((c) => c.actionType === 'decline_invite')).toBe(false);
+      const downgraded = candidates.find(
+        (c) => c.parameters['originalActionType'] === 'decline_invite',
+      );
+      expect(downgraded?.actionType).toBe('escalate_to_user');
+    });
+
+    it('CALENDAR_UPDATE without a chat intent keeps the acknowledge/dismiss menu (no decline)', () => {
+      const dm = makeDecisionMaker();
+      const decision: DecisionObject = {
+        id: 'dec_upd_real',
+        situationType: SituationType.CALENDAR_UPDATE,
+        domain: 'calendar',
+        urgency: 'low',
+        // A real inbound update signal that happens to carry an intent-like field
+        // but did NOT originate from chat — must not be treated as a decline ask.
+        summary: 'Sprint review moved to 3pm',
+        rawData: { intent: 'decline_event', source: 'gmail', eventId: 'evt_z' },
+        interpretedAt: new Date(),
+      };
+
+      const candidates = dm.generateCandidates(decision, emptyProfile);
+      expect(candidates.map((c) => c.actionType).sort()).toEqual(['acknowledge', 'dismiss']);
+    });
+
+    it('CALENDAR_INVITE with a chat create_event intent yields a create_calendar_event (not an RSVP menu)', () => {
+      const dm = makeDecisionMaker();
+      const decision: DecisionObject = {
+        id: 'dec_inv_create',
+        situationType: SituationType.CALENDAR_INVITE,
+        domain: 'calendar',
+        urgency: 'medium',
+        summary: 'Schedule a calendar event',
+        // What the intent classifier emits for "schedule a meeting with Sam".
+        rawData: { intent: 'create_event', source: 'chat' },
+        interpretedAt: new Date(),
+      };
+
+      const candidates = dm.generateCandidates(decision, emptyProfile, {
+        grantedScopes: CALENDAR_WRITE_SCOPES,
+      });
+
+      expect(candidates.length).toBe(1);
+      expect(candidates[0]!.actionType).toBe('create_calendar_event');
+      expect(candidates[0]!.confidence).toBe(ConfidenceLevel.HIGH);
+      // The accept/tentative/decline menu against a non-existent invite is gone.
+      const actionTypes = candidates.map((c) => c.actionType);
+      expect(actionTypes).not.toContain('accept_invite');
+      expect(actionTypes).not.toContain('decline_invite');
+    });
+
     it('EMAIL_TRIAGE archive/label candidates carry the message id (messageId fallback)', () => {
       const dm = makeDecisionMaker();
       const decision: DecisionObject = {

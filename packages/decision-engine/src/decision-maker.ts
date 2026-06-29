@@ -751,6 +751,28 @@ export class DecisionMaker {
   ): CandidateAction[] {
     const candidates: CandidateAction[] = [];
 
+    // Explicit chat intent to CREATE a new event (e.g. "schedule a meeting with
+    // Sam"). There is no inbound invite to accept/decline/tentatively-accept, so
+    // honor the action the user actually asked for instead of offering an RSVP
+    // menu against an undefined eventId. Previously the chat `intent` was dead:
+    // the situationType alone drove the menu, so "schedule a meeting" surfaced
+    // accept/decline of a non-existent invite.
+    if (decision.rawData['intent'] === 'create_event' && decision.rawData['source'] === 'chat') {
+      candidates.push({
+        id: crypto.randomUUID(),
+        decisionId: decision.id,
+        actionType: 'create_calendar_event',
+        description: 'Create the calendar event you asked for.',
+        domain: 'calendar',
+        parameters: { summary: decision.summary },
+        estimatedCostCents: 0,
+        reversible: true,
+        confidence: ConfidenceLevel.HIGH,
+        reasoning: 'You explicitly asked to schedule a new event.',
+      });
+      return candidates;
+    }
+
     // Accept the invite
     candidates.push({
       id: crypto.randomUUID(),
@@ -801,6 +823,27 @@ export class DecisionMaker {
     _profile: TwinProfile,
   ): CandidateAction[] {
     const candidates: CandidateAction[] = [];
+
+    // Explicit chat intent to DECLINE (e.g. "decline that meeting"). The intent
+    // classifier routes this to `calendar_update`, but the generic update menu
+    // is acknowledge/dismiss only — so the user's actual ask was discarded. Lead
+    // with the decline action they requested; acknowledge/dismiss stay below as
+    // lower-confidence alternatives. (A real, non-chat calendar_update signal —
+    // "meeting moved to 3pm" — has no such intent and keeps the original menu.)
+    if (decision.rawData['intent'] === 'decline_event' && decision.rawData['source'] === 'chat') {
+      candidates.push({
+        id: crypto.randomUUID(),
+        decisionId: decision.id,
+        actionType: 'decline_invite',
+        description: 'Decline this meeting, as you asked.',
+        domain: 'calendar',
+        parameters: { eventId: decision.rawData['eventId'] },
+        estimatedCostCents: 0,
+        reversible: false,
+        confidence: ConfidenceLevel.HIGH,
+        reasoning: 'You explicitly asked to decline this meeting.',
+      });
+    }
 
     // Acknowledge the update (no action needed)
     candidates.push({

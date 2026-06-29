@@ -1,5 +1,11 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.89.0] - 2026-06-29
+
+### Fixed
+
+- **Chat calendar intent is now honored instead of discarded.** When you tell the assistant "decline that meeting" or "schedule a meeting with Sam", the intent classifier already tags the decision with `rawData.intent` (`decline_event` / `create_event`) — but `DecisionMaker` keyed only off `situationType` and threw the intent away. So "decline that meeting" (routed to `calendar_update`) surfaced an *acknowledge/dismiss* menu — never the decline you asked for — and "schedule a meeting" (routed to `calendar_invite`) offered accept/tentative/decline of a non-existent invite (with an undefined `eventId`) rather than *creating* an event. Now `generateCalendarUpdateCandidates` leads with the `decline_invite` you requested (HIGH confidence; acknowledge/dismiss remain as lower-confidence alternatives) when the decision carries a chat `decline_event` intent, and `generateCalendarInviteCandidates` returns a single `create_calendar_event` candidate for a chat `create_event` intent instead of the RSVP menu. Both are gated on `source === 'chat'`, so a real inbound `calendar_update`/`calendar_invite` signal keeps its original menu. Both new candidates are real calendar writes, so the existing scope gate still downgrades them to a grant-access escalation when `calendar.events` isn't connected. New tests: chat decline leads with `decline_invite`; the decline is scope-gated; a non-chat update keeps acknowledge/dismiss; chat create yields only `create_calendar_event`.
+
 ## [0.6.88.0] - 2026-06-29
 
 ### Fixed
