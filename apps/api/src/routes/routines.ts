@@ -14,6 +14,23 @@ import { bindUserIdParamValidator } from '../middleware/validate-uuid.js';
 const CRON_REGEX = /^[0-9*/,-]+( [0-9*/,-]+){4,5}$/;
 const MAX_CRON_LENGTH = 128;
 
+// A routine auto-executes unattended on a schedule, so it may ONLY schedule a
+// known free + reversible action type. The cost/reversibility of these is
+// classified server-side here, never trusted from the request body. Any other
+// type is treated as unknown-cost + irreversible, which escalates to
+// requiresApproval and is refused (an action needing per-run approval cannot
+// run unattended). Outbound/costed/destructive actions are intentionally absent.
+const FREE_ROUTINE_ACTION_TYPES = new Set<string>([
+  'create_note',
+  'create_document',
+  'set_reminder',
+  'snooze_reminder',
+  'label_email',
+  'archive_email',
+  'acknowledge',
+  'dismiss',
+]);
+
 export function createRoutinesRouter(): Router {
   const router = Router();
   bindUserIdParamValidator(router);
@@ -59,14 +76,14 @@ export function createRoutinesRouter(): Router {
       // riskAssessment and autonomySettings are supplied. The previous 3-arg
       // call silently skipped both, so a costed or irreversible plan.action
       // sailed through.
-      // plan.action is untrusted request-body input, so normalize it into a
-      // complete CandidateAction with CONSERVATIVE defaults for the policy check:
-      // a missing reversible flag is treated as irreversible, an omitted cost
-      // intent as 'unknown' (never verified_zero by omission), and provenance is
-      // forced to untrusted_external — a routine auto-executes, so the caller does
-      // not get to assert a more-trusted origin. The registered routine still
-      // carries the caller's action; this stricter shape only gates creation.
+      // plan.action is untrusted request-body input, so the policy check runs
+      // against a SERVER-DERIVED action — the caller never gets to assert its own
+      // cost, reversibility, or provenance to slip past the gate. Cost +
+      // reversibility are classified from the action TYPE: a known free + safe
+      // type is verified-zero and reversible; anything else is unknown-cost and
+      // assumed irreversible, so it escalates to requiresApproval and is refused.
       const rawAction = plan.action as Partial<CandidateAction>;
+      const knownSafe = FREE_ROUTINE_ACTION_TYPES.has(plan.action.actionType);
       const action: CandidateAction = {
         id: typeof rawAction.id === 'string' ? rawAction.id : randomUUID(),
         decisionId: typeof rawAction.decisionId === 'string' ? rawAction.decisionId : '',
@@ -75,10 +92,9 @@ export function createRoutinesRouter(): Router {
         domain: typeof rawAction.domain === 'string' ? rawAction.domain : 'general',
         parameters:
           rawAction.parameters && typeof rawAction.parameters === 'object' ? rawAction.parameters : {},
-        estimatedCostCents:
-          typeof rawAction.estimatedCostCents === 'number' ? rawAction.estimatedCostCents : 0,
-        reversible: rawAction.reversible === true,
-        costZeroIntent: rawAction.costZeroIntent === 'verified_zero' ? 'verified_zero' : 'unknown',
+        estimatedCostCents: 0,
+        costZeroIntent: knownSafe ? 'verified_zero' : 'unknown',
+        reversible: knownSafe,
         confidence: ConfidenceLevel.LOW,
         reasoning: typeof rawAction.reasoning === 'string' ? rawAction.reasoning : 'Scheduled routine action',
         provenance: 'untrusted_external',
@@ -118,15 +134,17 @@ export function createRoutinesRouter(): Router {
         return;
       }
 
+      // Register the SERVER-NORMALIZED action — the exact object the policy gate
+      // approved — and drop any caller-supplied steps/rollbackSteps, which were
+      // never policy-checked. The executed routine therefore equals the checked
+      // action; a caller cannot smuggle unchecked steps past the gate.
       const scopedPlan: ExecutionPlan = {
-        ...plan,
-        action: {
-          ...plan.action,
-          parameters: {
-            ...plan.action.parameters,
-            userId,
-          },
-        },
+        id: randomUUID(),
+        decisionId: '',
+        action: { ...action, parameters: { ...action.parameters, userId } },
+        steps: [],
+        rollbackSteps: [],
+        createdAt: new Date(),
       };
 
       const result = await adapter.createRoutine(userId, schedule, scopedPlan);

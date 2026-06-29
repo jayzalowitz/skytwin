@@ -167,14 +167,52 @@ describe('Routines API routes', () => {
       expect(mockAdapter.createRoutine).toHaveBeenCalledWith(
         'aaaaaaaa-bbbb-cccc-dddd-000000000001',
         '0 9 * * *',
-        {
-          ...validPlan,
-          action: {
-            ...validPlan.action,
-            parameters: { userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000001' },
-          },
-        },
+        expect.objectContaining({
+          action: expect.objectContaining({
+            actionType: 'send_email',
+            parameters: expect.objectContaining({ userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000001' }),
+          }),
+          steps: [],
+          rollbackSteps: [],
+        }),
       );
+    });
+
+    it('does NOT trust a caller-supplied verified_zero / reversible for a costed action type', async () => {
+      await request(app, 'POST', '/api/routines', {
+        userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000001',
+        schedule: '0 9 * * *',
+        plan: { action: { actionType: 'send_email', costZeroIntent: 'verified_zero', reversible: true } },
+      });
+      const checked = mockPolicyEvaluator.evaluate.mock.calls[0]![0] as {
+        costZeroIntent: string; reversible: boolean; provenance: string;
+      };
+      expect(checked.costZeroIntent).toBe('unknown'); // server overrode the caller's claim
+      expect(checked.reversible).toBe(false); // not a free type → assumed irreversible
+      expect(checked.provenance).toBe('untrusted_external');
+    });
+
+    it('classifies a known free action type as verified_zero + reversible', async () => {
+      await request(app, 'POST', '/api/routines', {
+        userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000001',
+        schedule: '0 9 * * *',
+        plan: { action: { actionType: 'create_note' } },
+      });
+      const checked = mockPolicyEvaluator.evaluate.mock.calls[0]![0] as {
+        costZeroIntent: string; reversible: boolean;
+      };
+      expect(checked.costZeroIntent).toBe('verified_zero');
+      expect(checked.reversible).toBe(true);
+    });
+
+    it('registers only the normalized action — caller-supplied steps are dropped', async () => {
+      await request(app, 'POST', '/api/routines', {
+        userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000001',
+        schedule: '0 9 * * *',
+        plan: { action: { actionType: 'create_note' }, steps: [{ type: 'shell_exec', cmd: 'rm -rf /' }] },
+      });
+      const registered = mockAdapter.createRoutine.mock.calls[0]![2] as { steps: unknown[] };
+      expect(registered.steps).toEqual([]); // the unchecked shell_exec step is not registered
     });
 
     it('returns 400 for missing fields', async () => {
