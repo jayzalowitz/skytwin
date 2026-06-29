@@ -44,6 +44,16 @@ it at the child process's data dir. This was the load-bearing, design-heavy piec
 (persistence is required, not optional — see "device-local, NOT CockroachDB" below);
 it is implemented and unit-tested.
 
+**The emitter is now provided too.** `@skytwin/idle-miner` ships
+`createHttpSignalEmitter({ ingestUrl, userId })` and the pure `toIngestEvent`
+transform (`packages/idle-miner/src/ingest-adapter.ts`), so the host no longer
+hand-writes the filesystem-`RawSignal` → ingest-event mapping. It POSTs with
+bounded retry and never throws into the miner loop (a dropped signal is
+re-attempted on a later scan). With the store + emitter + `DEFAULT_EXTRACTORS` +
+`expandAllowlist` + `ElectronIdleDetector` all package-provided, the only
+host-specific work left is the managed process, the resolved `userId`, and the
+flag.
+
 The remaining sections describe the dependency assembly (emitter transform, roots,
 userId, flag), which all still apply — they just move from "desktop main" into the
 managed idle-miner process.
