@@ -376,9 +376,13 @@ const BROADCAST_AUTHORING_TIERS = new Set<string>([
 ]);
 
 /**
- * Conservative no-reply / bulk sender match, used only as a fallback when the
- * connector did not stamp an authoring tier (the connector's `isAutomatedSender`
- * is the primary classifier). The token must sit at the start of the address, a
+ * Conservative no-reply / bulk sender match. The connector's `isAutomatedSender`
+ * is the primary classifier (it stamps `inbox_automated` at write time); this
+ * runs in `isBroadcastEmail` whenever the stored authoring tier is NOT already a
+ * broadcast tier — a missing tier, OR a non-broadcast tier including one the
+ * connector mis-classified as `inbox_personal` (exactly the `google-noreply@`
+ * case this guards). It is a real safety net, not dead code, so keep it.
+ * The token must sit at the start of the address, a
  * `<` / whitespace boundary, OR an alphanumeric-then-hyphen boundary, and be
  * followed by `@` (optionally a `+tag` / `.id` suffix) — so a hyphen-compound
  * automated alias like `google-noreply@…` IS caught, while a dot-compound
