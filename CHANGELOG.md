@@ -1,5 +1,10 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.87.0] - 2026-06-29
+
+### Added
+
+- **Schema-drift guard: a static test that fails when a TS enum union and its DB `CHECK` constraint disagree.** The #567 incident shipped because a new `MemoryActionOpportunityStatus` value (`noted_awareness`) passed the whole suite — every `@skytwin/db` repository test mocks the query layer, so none observe a real CHECK constraint — while production CockroachDB would reject the write. The new guard (`packages/db/src/__tests__/schema-enum-drift.test.ts`) parses each TS union's members from source AND the allowed values from `schemas/schema.sql`, and fails with a pointer to the missing migration if they diverge. Covers the named-union enum columns in `schema.sql` (`memory_action_opportunities.status` ⇄ `MemoryActionOpportunityStatus`, `.provenance` ⇄ `ActionProvenance`); a self-test proves the guard actually detects drift. The `CASES` list is one line to extend; covering migration-only tables and inline field-type unions is a noted follow-up.
 ## [0.6.86.0] - 2026-06-29
 
 ### Fixed
