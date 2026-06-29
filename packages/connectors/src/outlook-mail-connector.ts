@@ -2,7 +2,7 @@ import type { SignalConnector, RawSignal, SignalHandler } from './connector-inte
 import type { OAuthTokenStore } from './oauth/token-store.js';
 import { parseListId, type CursorStore } from './gmail-connector.js';
 import { withRetry, RetryableHttpError, parseRetryAfter } from '@skytwin/core';
-import { classifyEmailAuthoringTier, type AuthoringTier } from './authoring-tier.js';
+import { classifyEmailAuthoringTier, isAutomatedSender, type AuthoringTier } from './authoring-tier.js';
 
 const GRAPH_API = 'https://graph.microsoft.com/v1.0';
 
@@ -279,13 +279,14 @@ export class OutlookMailConnector implements SignalConnector {
    */
   private inferEmailType(from: string, subject: string): string {
     const s = subject.toLowerCase();
-    const f = from.toLowerCase();
     if (s.includes('newsletter') || s.includes('digest')) return 'newsletter';
     if (s.includes('subscription') || s.includes('renewal') || s.includes('billing')) return 'subscription_renewal';
-    if (s.includes('meeting') || s.includes('invite') || s.includes('calendar')) return 'meeting_invite';
+    // A meeting/invite subject implies a reply — never apply it to an automated
+    // / no-reply sender (mirrors the Gmail connector fix).
+    if (!isAutomatedSender(from) && (s.includes('meeting') || s.includes('invite') || s.includes('calendar'))) return 'meeting_invite';
     if (s.includes('order') || s.includes('delivery') || s.includes('grocery')) return 'grocery_reorder';
     if (s.includes('flight') || s.includes('hotel') || s.includes('travel') || s.includes('booking')) return 'travel_alert';
-    if (f.includes('noreply') || f.includes('no-reply')) return 'notification';
+    if (isAutomatedSender(from)) return 'notification';
     return 'work_email';
   }
 

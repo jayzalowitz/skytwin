@@ -483,6 +483,49 @@ describe('DecisionMaker', () => {
       expect(label?.parameters['emailId']).toBe('msg_abc');
     });
 
+    it('EMAIL_TRIAGE offers send_reply for human mail but NEVER for awareness-tier mail', () => {
+      const dm = makeDecisionMaker();
+      const base = {
+        id: 'dec_reply_001',
+        situationType: SituationType.EMAIL_TRIAGE,
+        domain: 'email',
+        urgency: 'low' as const,
+        summary: 'Inbound mail',
+        interpretedAt: new Date(),
+      };
+
+      // Grant the gmail.send scope so the scope gate is not what removes
+      // send_reply — this isolates the authoring-tier gate under test.
+      const granted = { grantedScopes: ['gmail.send'] };
+
+      // Human inbound mail that expects a response → a reply is offered.
+      const human = dm.generateCandidates(
+        { ...base, rawData: { messageId: 'm1', requiresResponse: true, authoringTier: 'inbox_personal' } },
+        emptyProfile,
+        granted,
+      );
+      expect(human.map((c) => c.actionType)).toContain('send_reply');
+
+      // Newsletter / automated notice / the user's own sent mail → never a
+      // reply, even when a connector leaves requiresResponse truthy.
+      for (const tier of ['inbox_newsletter', 'inbox_automated', 'user_sent_originated']) {
+        const awareness = dm.generateCandidates(
+          { ...base, rawData: { messageId: 'm1', requiresResponse: true, authoringTier: tier } },
+          emptyProfile,
+          granted,
+        );
+        expect(awareness.map((c) => c.actionType)).not.toContain('send_reply');
+      }
+
+      // Tier is also honored when the worker nests it under `data`.
+      const nested = dm.generateCandidates(
+        { ...base, rawData: { messageId: 'm1', requiresResponse: true, data: { authoringTier: 'inbox_automated' } } },
+        emptyProfile,
+        granted,
+      );
+      expect(nested.map((c) => c.actionType)).not.toContain('send_reply');
+    });
+
     it('SUBSCRIPTION_RENEWAL should generate renew, cancel, and snooze candidates', () => {
       const dm = makeDecisionMaker();
       const decision: DecisionObject = {

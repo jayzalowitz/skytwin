@@ -123,6 +123,17 @@ describe('GmailConnector.inferEmailType', () => {
     expect(infer('no-reply@github.com', 'Pull request')).toBe('notification');
   });
 
+  it('does NOT classify an automated sender as meeting_invite even with a meeting subject', () => {
+    // Regression: "You're invited to our webinar" from events-noreply@ was
+    // meeting_invite → requiresResponse → a reply draft to a no-reply address.
+    // A reply-implying subject must lose to an automated sender.
+    expect(infer('events-noreply@brand.com', "You're invited to our webinar")).toBe('notification');
+    expect(infer('google-noreply@google.com', 'Calendar invite for Q3 review')).toBe('notification');
+    expect(infer('mailer-daemon@brand.com', 'Re: Meeting Friday')).toBe('notification');
+    // A real person with the same subject is still a meeting_invite.
+    expect(infer('dana@company.com', 'Meeting Friday')).toBe('meeting_invite');
+  });
+
   it('classifies CATEGORY_UPDATES as notification', () => {
     expect(infer('person@example.com', 'Update', ['CATEGORY_UPDATES'])).toBe('notification');
   });

@@ -12,6 +12,7 @@ import type {
   WhatWouldIDoResponse,
 } from '@skytwin/shared-types';
 import {
+  AWARENESS_TIERS,
   ConfidenceLevel,
   RiskTier,
   SituationType,
@@ -608,8 +609,13 @@ export class DecisionMaker {
       reasoning: this.labelReasoning(senderLabelHints),
     });
 
-    // Reply with acknowledgment
-    if (decision.rawData['requiresResponse']) {
+    // Reply with acknowledgment — but only for mail that actually expects one.
+    // An awareness-tier email (newsletter / automated notice / the user's own
+    // re-ingested sent mail) never warrants an acknowledgment reply, even if a
+    // connector left `requiresResponse` truthy. This is the robust half of the
+    // fix: it gates on the authoring tier directly rather than trusting the
+    // upstream `requiresResponse` heuristic.
+    if (decision.rawData['requiresResponse'] && !this.isAwarenessTierEmail(decision)) {
       candidates.push({
         id: crypto.randomUUID(),
         decisionId: decision.id,
@@ -628,6 +634,24 @@ export class DecisionMaker {
     }
 
     return candidates;
+  }
+
+  /**
+   * True when the email's #251 authoring tier marks it as awareness — a
+   * newsletter, an automated/no-reply notice, or the user's own re-ingested
+   * sent mail — none of which warrant an acknowledgment reply. Reads the tier
+   * whether the worker left it top-level on `rawData` or nested under `data`.
+   */
+  private isAwarenessTierEmail(decision: DecisionObject): boolean {
+    const raw = decision.rawData ?? {};
+    let tier = raw['authoringTier'];
+    if (typeof tier !== 'string') {
+      const data = raw['data'];
+      if (data && typeof data === 'object') {
+        tier = (data as Record<string, unknown>)['authoringTier'];
+      }
+    }
+    return typeof tier === 'string' && AWARENESS_TIERS.has(tier);
   }
 
   private generateCalendarCandidates(

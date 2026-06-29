@@ -3,6 +3,7 @@ import type { OAuthTokenStore } from './oauth/token-store.js';
 import { withRetry, RetryableHttpError, parseRetryAfter, normalizeSenderAddress } from '@skytwin/core';
 import {
   classifyEmailAuthoringTier,
+  isAutomatedSender,
   splitAddressList,
   type AuthoringTier,
 } from './authoring-tier.js';
@@ -478,7 +479,6 @@ export class GmailConnector implements SignalConnector {
 
   private inferEmailType(from: string, subject: string, labels: string[]): string {
     const lowerSubject = subject.toLowerCase();
-    const lowerFrom = from.toLowerCase();
 
     if (labels.includes('CATEGORY_PROMOTIONS') || lowerSubject.includes('newsletter') || lowerSubject.includes('digest')) {
       return 'newsletter';
@@ -486,7 +486,15 @@ export class GmailConnector implements SignalConnector {
     if (lowerSubject.includes('subscription') || lowerSubject.includes('renewal') || lowerSubject.includes('billing')) {
       return 'subscription_renewal';
     }
-    if (lowerSubject.includes('meeting') || lowerSubject.includes('invite') || lowerSubject.includes('calendar')) {
+    // A meeting/invite subject implies a REPLY, so it must not apply to an
+    // automated/no-reply sender — "you're invited to our webinar" from
+    // events-noreply@ is a notification, not a meeting to RSVP. Reuse the
+    // connector's own automated-sender classifier so compound no-reply aliases
+    // (google-noreply@, mailer-daemon@, notifications@) are caught too.
+    if (
+      !isAutomatedSender(from) &&
+      (lowerSubject.includes('meeting') || lowerSubject.includes('invite') || lowerSubject.includes('calendar'))
+    ) {
       return 'meeting_invite';
     }
     if (lowerSubject.includes('order') || lowerSubject.includes('delivery') || lowerSubject.includes('grocery')) {
@@ -495,7 +503,7 @@ export class GmailConnector implements SignalConnector {
     if (lowerSubject.includes('flight') || lowerSubject.includes('hotel') || lowerSubject.includes('travel') || lowerSubject.includes('booking')) {
       return 'travel_alert';
     }
-    if (lowerFrom.includes('noreply') || lowerFrom.includes('no-reply') || labels.includes('CATEGORY_UPDATES')) {
+    if (isAutomatedSender(from) || labels.includes('CATEGORY_UPDATES')) {
       return 'notification';
     }
     return 'work_email';

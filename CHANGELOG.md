@@ -1,5 +1,11 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.85.0] - 2026-06-29
+
+### Fixed
+
+- **The twin no longer offers to "reply" to newsletters and no-reply senders in the primary decision path.** PRs #564/#568 closed this in the memory-suggestion path, but the core events→decision path still had it: `inferEmailType` (gmail + outlook connectors) classified any subject containing "meeting/invite/calendar" as `meeting_invite` *before* checking the sender, so a webinar blast from `events-noreply@brand.com` became `requiresResponse: true` → a `send_reply` candidate. And `generateEmailTriageCandidates` (decision-engine) generated `send_reply` purely on `requiresResponse`, never consulting the #251 authoring tier. Fixed both layers: (1) the connectors now reject a reply-implying type (`meeting_invite`/`work_email`) for an automated sender — reusing the same `isAutomatedSender` classifier from #568, so compound no-reply aliases are caught; (2) `DecisionMaker` now suppresses the `send_reply` candidate whenever the authoring tier is an awareness tier (`inbox_newsletter`/`inbox_automated`/`user_sent_*`), even if `requiresResponse` slipped through — a robust gate that doesn't trust the upstream heuristic. Human inbound mail (`inbox_personal`/`inbox_broadcast`) is unaffected and still gets a reply offer. New tests: connector classification (automated sender + meeting subject → notification; a real person → meeting_invite) and the decision-maker tier gate (reply for human mail, never for awareness tiers, tier read top-level or nested under `data`).
+
 ## [0.6.84.0] - 2026-06-28
 
 ### Fixed
