@@ -51,6 +51,24 @@ describe('isAutomatedSender', () => {
     expect(isAutomatedSender('notifications.thread-42@github.com')).toBe(true);
   });
 
+  it('flags a token as the last segment after a hyphen (google-noreply@)', () => {
+    // The regression: a real Google notification was mis-tiered as personal.
+    expect(isAutomatedSender('google-noreply@google.com')).toBe(true);
+    expect(isAutomatedSender('email-noreply@company.com')).toBe(true);
+    expect(isAutomatedSender('account-no-reply@bank.com')).toBe(true);
+    expect(isAutomatedSender('noreply-team@vendor.com')).toBe(true);
+  });
+
+  it('does NOT match an embedded substring or a dot-suffixed human/role alias', () => {
+    // "noreply" is a substring of "noreplyfan" but not a delimited component.
+    expect(isAutomatedSender('noreplyfan@acme.com')).toBe(false);
+    expect(isAutomatedSender('alerting@acme.com')).toBe(false);
+    // `firstname.role@` reads as a person; the original only matched the FIRST
+    // segment, and the compound fix keeps that (only hyphen-suffix is added).
+    expect(isAutomatedSender('alex.alert@company.com')).toBe(false);
+    expect(isAutomatedSender('pat.notifications@example.edu')).toBe(false);
+  });
+
   it('flags known transactional sender domains', () => {
     expect(isAutomatedSender('hello@sub.mailchimp.com')).toBe(true);
     expect(isAutomatedSender('list@amazonses.com')).toBe(true);
@@ -130,6 +148,14 @@ describe('classifyEmailAuthoringTier', () => {
   it('classifies noreply senders as inbox_automated', () => {
     expect(
       classifyEmailAuthoringTier({ ...base, fromAddress: 'noreply@stripe.com' }),
+    ).toBe('inbox_automated');
+  });
+
+  it('classifies a compound no-reply sender as inbox_automated, not personal', () => {
+    // Regression: google-noreply@google.com fell through to inbox_personal, so
+    // the memory loop offered to "draft a reply" to an automated notification.
+    expect(
+      classifyEmailAuthoringTier({ ...base, fromAddress: 'Google <google-noreply@google.com>' }),
     ).toBe('inbox_automated');
   });
 

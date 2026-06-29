@@ -1,5 +1,11 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.84.0] - 2026-06-28
+
+### Fixed
+
+- **No more "draft a reply" to `google-noreply@google.com` (and other hyphen-compound no-reply senders).** Same bug class as the newsletter-reply fix, one level deeper: a memory-link suggestion offered to draft a reply to an automated Google Terms-of-Service notice. Root cause was a shared anchoring gap in both no-reply detectors — they only recognized the automated token as the **first segment** of the local part (`noreply@`, `noreply+thread@`, `notifications.42@`), so a hyphen-compound like `google-noreply@` slipped through. The connector then mis-tiered it `inbox_personal` (a human!), and the suggestion engine classified it `received_personal` → `draft_email`. Fixed both: `isAutomatedSender` (`@skytwin/connectors`) now also matches a token as the **last segment after a hyphen** (regex built from the token set, so the vocabulary stays single-sourced), and the `NO_REPLY_SENDER` fallback (`@skytwin/shared-types`) now also accepts an alphanumeric-hyphen boundary. Deliberately precise — a token embedded without a delimiter (`noreplyfan@`), a dot-suffixed `firstname.role` (`alex.alert@`, `pat.notifications@`), and a mid-string role word (`real-newsletter-editor@`) all stay personal, matching the original first-segment-only intent. Any rare false positive only errs toward awareness (note, not draft-a-reply) — the safe direction. New tests cover the hyphen-suffix compound, the embedded/dot/mid-string negatives, and the end-to-end `inbox_automated` classification.
+
 ## [0.6.83.0] - 2026-06-27
 
 ### Fixed

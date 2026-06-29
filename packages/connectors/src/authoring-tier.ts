@@ -49,10 +49,11 @@ export interface EmailAuthoringInputs {
 
 /**
  * Local parts that almost always indicate an automated/transactional sender.
- * Matches exactly OR `<part>+...` (Gmail subaddressing) OR `<part>.<digits>...`
- * (e.g. `notifications.123` for thread-specific reply-tos). Deliberately
- * conservative — `support@`, `hello@`, `team@` are not included because they
- * are often staffed by humans.
+ * Matched (via `AUTOMATED_LOCAL_PART_RE`) as a delimited component of the local
+ * part: exactly (`noreply@`), Gmail subaddressing (`noreply+thread@`), a
+ * dot-delimited id (`notifications.42@`), OR a hyphen/dot-prefixed compound
+ * (`google-noreply@`). Deliberately conservative — `support@`, `hello@`,
+ * `team@` are not included because they are often staffed by humans.
  */
 const AUTOMATED_LOCAL_PARTS = new Set<string>([
   'noreply',
@@ -70,6 +71,29 @@ const AUTOMATED_LOCAL_PARTS = new Set<string>([
   'auto-reply',
   'autoreply',
 ]);
+
+/**
+ * Match an `AUTOMATED_LOCAL_PARTS` token that is EITHER the first segment of the
+ * local part (`noreply@`, `noreply+id@`, `notifications.42@`, `noreply-team@`)
+ * OR the last segment after a hyphen (`google-noreply@`). Built from the set so
+ * the vocabulary stays single-sourced; longest-first so a multi-word token
+ * (`do-not-reply`) wins over a shorter overlap.
+ *
+ * Deliberately NOT "token anywhere": a token after a dot (`alex.alert@`,
+ * `svc.notifications@`) or mid-string (`real-newsletter-editor@`) reads as a
+ * `firstname.role` human or a staffed team, so those stay personal — matching
+ * the original first-segment-only intent. The added end-after-hyphen form is the
+ * one the start-anchored checks missed, which mis-tiered `google-noreply@` as
+ * `inbox_personal` (a human) and produced "draft a reply" to a no-reply address.
+ */
+const AUTOMATED_LOCAL_TOKENS = [...AUTOMATED_LOCAL_PARTS]
+  .sort((a, b) => b.length - a.length)
+  .map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+  .join('|');
+const AUTOMATED_LOCAL_PART_RE = new RegExp(
+  `^(?:${AUTOMATED_LOCAL_TOKENS})(?:$|[-._+])|-(?:${AUTOMATED_LOCAL_TOKENS})$`,
+  'i',
+);
 
 /**
  * Known transactional sender-domain patterns. These are domains that
@@ -142,14 +166,11 @@ export function isAutomatedSender(rawFrom: string): boolean {
   const local = addr.slice(0, at);
   const domain = addr.slice(at + 1);
 
-  // Exact-match local-part hits (the common case: `noreply@acme.com`).
-  if (AUTOMATED_LOCAL_PARTS.has(local)) return true;
-  // Gmail subaddressing variant: `noreply+thread-id@acme.com`.
-  const plus = local.indexOf('+');
-  if (plus > 0 && AUTOMATED_LOCAL_PARTS.has(local.slice(0, plus))) return true;
-  // Dot-delimited variant: `notifications.42@github.com`.
-  const dot = local.indexOf('.');
-  if (dot > 0 && AUTOMATED_LOCAL_PARTS.has(local.slice(0, dot))) return true;
+  // A known automated token as a delimited component of the local part —
+  // covers exact (`noreply@`), subaddressing (`noreply+thread@`), dot-id
+  // (`notifications.42@`), and the compound-prefix form (`google-noreply@`)
+  // the original start-anchored checks missed.
+  if (AUTOMATED_LOCAL_PART_RE.test(local)) return true;
 
   return AUTOMATED_DOMAIN_PATTERNS.some((re) => re.test(domain));
 }
