@@ -1,5 +1,11 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.86.0] - 2026-06-29
+
+### Fixed
+
+- **Approval serializers now round-trip `costZeroIntent` + `provenance`, closing a re-opened spend bypass (#372).** The events ingest route (two `approvalRepository.create` sites) and the chat/assistant route serialized the selected action's `costZeroIntent` as *absent*. On approve, `parseCostZeroIntent(undefined)` returns `undefined`, which the cost gate treats as legacy `verified_zero` (per the documented contract in `decision.ts`) — so an LLM-generated `'unknown'`-cost candidate would clear the spend fast-path after approval instead of escalating. `decision.ts` explicitly warns that any new serializer must carry this flag; these three did not. Now they pass `costZeroIntent` and `provenance` through (the worker's memory-action-loop serializer already did), so the spend hard-limit and injection-guard origin survive the approval round-trip. New test asserts the events approval payload carries `costZeroIntent: 'unknown'` + `provenance`.
+
 ## [0.6.84.0] - 2026-06-28
 
 ### Fixed

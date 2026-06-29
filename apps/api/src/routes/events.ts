@@ -589,6 +589,14 @@ export function createEventsRouter(): Router {
             domain: outcome.selectedAction.domain,
             parameters: approvalVisibleParameters,
             estimatedCostCents: outcome.selectedAction.estimatedCostCents,
+            // costZeroIntent MUST round-trip: an absent value is treated as
+            // legacy `verified_zero` on reload (decision.ts), so dropping an
+            // `'unknown'` here would let the spend fast-path fire after approve
+            // and re-open the #372 bypass. provenance round-trips too so the
+            // injection guard re-evaluates against the real origin, not the
+            // untrusted-external fail-safe default.
+            costZeroIntent: outcome.selectedAction.costZeroIntent,
+            provenance: outcome.selectedAction.provenance,
             reversible: outcome.selectedAction.reversible,
             confidence: outcome.selectedAction.confidence,
             reasoning: outcome.selectedAction.reasoning,
@@ -649,6 +657,10 @@ export function createEventsRouter(): Router {
               domain: outcome.selectedAction.domain,
               parameters: approvalVisibleParametersEsc,
               estimatedCostCents: outcome.selectedAction.estimatedCostCents,
+              // Round-trip the safety flags (see the other approval serializer
+              // above) so a dropped `'unknown'` cost isn't read as verified_zero.
+              costZeroIntent: outcome.selectedAction.costZeroIntent,
+              provenance: outcome.selectedAction.provenance,
               reversible: outcome.selectedAction.reversible,
               confidence: outcome.selectedAction.confidence,
               reasoning: outcome.selectedAction.reasoning,

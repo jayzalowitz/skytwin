@@ -438,6 +438,10 @@ function buildActionRouter(): ActionRouter {
             domain: outcome.selectedAction.domain,
             parameters: visibleParameters,
             estimatedCostCents: outcome.selectedAction.estimatedCostCents,
+            // Round-trip the safety flags so an `'unknown'` cost isn't read as
+            // verified_zero on approve (see events.ts approval serializers).
+            costZeroIntent: outcome.selectedAction.costZeroIntent,
+            provenance: outcome.selectedAction.provenance,
             reversible: outcome.selectedAction.reversible,
             confidence: outcome.selectedAction.confidence,
             reasoning: outcome.selectedAction.reasoning,
