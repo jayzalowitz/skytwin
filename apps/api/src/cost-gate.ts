@@ -82,7 +82,7 @@ const FALLBACK_AUTONOMY: AutonomySettings = {
   requireApprovalForIrreversible: true,
 };
 
-function readAutonomy(user: UserRow | null): AutonomySettings {
+export function readAutonomy(user: UserRow | null): AutonomySettings {
   const raw = user?.autonomy_settings;
   if (!raw || typeof raw !== 'object') return FALLBACK_AUTONOMY;
   const r = raw as Record<string, unknown>;

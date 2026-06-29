@@ -1,9 +1,12 @@
 import { Router } from 'express';
-import type { ExecutionPlan } from '@skytwin/shared-types';
-import { TrustTier } from '@skytwin/shared-types';
+import { randomUUID } from 'node:crypto';
+import type { ExecutionPlan, CandidateAction } from '@skytwin/shared-types';
+import { TrustTier, ConfidenceLevel } from '@skytwin/shared-types';
 import { PolicyEvaluator } from '@skytwin/policy-engine';
+import { RiskAssessor } from '@skytwin/decision-engine';
 import { userRepository, policyRepositoryAdapter } from '@skytwin/db';
 import { getIronClawEnhancedAdapter } from '../execution-setup.js';
+import { readAutonomy } from '../cost-gate.js';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
 import { bindUserIdParamValidator } from '../middleware/validate-uuid.js';
 
@@ -50,12 +53,61 @@ export function createRoutinesRouter(): Router {
       }
       const userTier = user.trust_tier as TrustTier ?? TrustTier.OBSERVER;
       const policies = await policyRepositoryAdapter.getAllPolicies();
-      const policyResult = await policyEvaluator.evaluate(plan.action, policies, userTier);
+      // A routine auto-executes unattended on a schedule, so its action must
+      // clear the FULL policy gate — including the spend hard-limit and the
+      // reversibility / risk-dimension escalations, which only fire when BOTH a
+      // riskAssessment and autonomySettings are supplied. The previous 3-arg
+      // call silently skipped both, so a costed or irreversible plan.action
+      // sailed through.
+      // plan.action is untrusted request-body input, so normalize it into a
+      // complete CandidateAction with CONSERVATIVE defaults for the policy check:
+      // a missing reversible flag is treated as irreversible, an omitted cost
+      // intent as 'unknown' (never verified_zero by omission), and provenance is
+      // forced to untrusted_external — a routine auto-executes, so the caller does
+      // not get to assert a more-trusted origin. The registered routine still
+      // carries the caller's action; this stricter shape only gates creation.
+      const rawAction = plan.action as Partial<CandidateAction>;
+      const action: CandidateAction = {
+        id: typeof rawAction.id === 'string' ? rawAction.id : randomUUID(),
+        decisionId: typeof rawAction.decisionId === 'string' ? rawAction.decisionId : '',
+        actionType: plan.action.actionType,
+        description: typeof rawAction.description === 'string' ? rawAction.description : '',
+        domain: typeof rawAction.domain === 'string' ? rawAction.domain : 'general',
+        parameters:
+          rawAction.parameters && typeof rawAction.parameters === 'object' ? rawAction.parameters : {},
+        estimatedCostCents:
+          typeof rawAction.estimatedCostCents === 'number' ? rawAction.estimatedCostCents : 0,
+        reversible: rawAction.reversible === true,
+        costZeroIntent: rawAction.costZeroIntent === 'verified_zero' ? 'verified_zero' : 'unknown',
+        confidence: ConfidenceLevel.LOW,
+        reasoning: typeof rawAction.reasoning === 'string' ? rawAction.reasoning : 'Scheduled routine action',
+        provenance: 'untrusted_external',
+      };
+      const riskAssessment = new RiskAssessor().assess(action);
+      const autonomy = readAutonomy(user);
+      const policyResult = await policyEvaluator.evaluate(
+        action,
+        policies,
+        userTier,
+        riskAssessment,
+        autonomy,
+      );
 
-      if (policyResult && !policyResult.allowed) {
+      if (!policyResult.allowed) {
         res.status(403).json({
           error: 'Routine blocked by policy.',
           reason: policyResult.reason ?? 'Policy check failed',
+        });
+        return;
+      }
+      // Otherwise allowed, but the policy engine says it needs human approval
+      // (trust tier, cost, irreversibility, injection guard). A scheduled
+      // routine has no human in the loop per run, so it must NOT be registered
+      // to auto-run — refuse creation rather than silently auto-executing it.
+      if (policyResult.requiresApproval) {
+        res.status(403).json({
+          error: 'Routine blocked: this action requires manual approval and cannot run unattended on a schedule.',
+          reason: policyResult.reason ?? 'Action requires manual approval.',
         });
         return;
       }

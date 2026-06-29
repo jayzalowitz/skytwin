@@ -1,5 +1,11 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.88.0] - 2026-06-29
+
+### Fixed
+
+- **`/api/routines` now runs the FULL policy gate before registering an auto-executing cron routine.** The route's `policyEvaluator.evaluate(plan.action, policies, userTier)` omitted both `riskAssessment` and `autonomySettings`, so the spend hard-limit (Invariant #4), the reversibility/risk-dimension escalations, the domain allowlist and quiet-hours were all silently skipped — a costed or irreversible action could be scheduled to run unattended. Now the route risk-assesses the action and loads the user's autonomy settings, passes both to `evaluate()`, and — critically — **refuses creation (403) when the action requires approval**: a routine has no human in the loop per run, so an action the policy engine would escalate must not be registered to auto-run. The untrusted request-body action is normalized into a complete `CandidateAction` with conservative defaults (irreversible unless explicitly reversible; cost intent `'unknown'` unless explicitly `verified_zero`; provenance forced to `untrusted_external`) so a caller can't sneak past the gate by omitting fields. New tests: requires-approval → 403 (no routine created); `evaluate` receives a riskAssessment + autonomySettings. (Per-run execution still happens on IronClaw's own scheduler with no SkyTwin backstop — a deeper architectural gap noted for follow-up.)
+
 ## [0.6.85.0] - 2026-06-29
 
 ### Fixed

@@ -256,6 +256,38 @@ describe('Routines API routes', () => {
       expect(body.reason).toBe('Spend limit exceeded');
     });
 
+    it('returns 403 when the action requires approval (cannot run unattended)', async () => {
+      mockPolicyEvaluator.evaluate.mockResolvedValue({
+        allowed: true,
+        requiresApproval: true,
+        reason: 'Irreversible action requires approval',
+      });
+
+      const res = await request(app, 'POST', '/api/routines', {
+        userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000001',
+        schedule: '0 9 * * *',
+        plan: validPlan,
+      });
+
+      expect(res.status).toBe(403);
+      const body = res.body as { error: string; reason: string };
+      expect(body.error).toMatch(/requires manual approval/);
+      expect(body.reason).toBe('Irreversible action requires approval');
+      expect(mockAdapter.createRoutine).not.toHaveBeenCalled();
+    });
+
+    it('evaluates the action with a riskAssessment AND autonomySettings (full policy gate)', async () => {
+      await request(app, 'POST', '/api/routines', {
+        userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000001',
+        schedule: '0 9 * * *',
+        plan: validPlan,
+      });
+      const evalArgs = mockPolicyEvaluator.evaluate.mock.calls[0]!;
+      expect(evalArgs).toHaveLength(5); // action, policies, tier, riskAssessment, autonomy
+      expect(evalArgs[3]).toBeDefined(); // riskAssessment (enables reversibility/risk rules)
+      expect(evalArgs[4]).toBeDefined(); // autonomySettings (enables the spend hard-limit)
+    });
+
     it('returns 503 when adapter unavailable', async () => {
       mockGetIronClawEnhancedAdapter.mockResolvedValue(null);
 
