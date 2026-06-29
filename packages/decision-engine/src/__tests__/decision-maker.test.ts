@@ -463,7 +463,7 @@ describe('DecisionMaker', () => {
       expect(actionTypes).toContain('dismiss');
     });
 
-    it('CALENDAR_UPDATE with a chat decline_event intent leads with a decline_invite', () => {
+    it('CALENDAR_UPDATE with a chat decline_event intent leads with a human-completion escalation', () => {
       const dm = makeDecisionMaker();
       const decision: DecisionObject = {
         id: 'dec_upd_decline',
@@ -476,22 +476,28 @@ describe('DecisionMaker', () => {
         interpretedAt: new Date(),
       };
 
-      const candidates = dm.generateCandidates(decision, emptyProfile, {
-        grantedScopes: CALENDAR_WRITE_SCOPES,
-      });
+      const candidates = dm.generateCandidates(decision, emptyProfile);
 
-      const decline = candidates.find((c) => c.actionType === 'decline_invite');
-      expect(decline, 'the explicit decline the user asked for must be offered').toBeDefined();
-      // It leads: highest-confidence candidate, since the user explicitly asked.
-      expect(decline!.confidence).toBe(ConfidenceLevel.HIGH);
-      expect(decline!.reversible).toBe(false);
+      // The intent is recognized and surfaced as a HIGH-confidence escalation
+      // (not the old acknowledge/dismiss menu, and not an auto-decline that would
+      // dead-end at execution with no resolved eventId).
+      const escalation = candidates.find(
+        (c) => c.actionType === 'escalate_to_user' && c.parameters['intent'] === 'decline_event',
+      );
+      expect(escalation, 'the decline ask must be surfaced for the user to complete').toBeDefined();
+      expect(escalation!.confidence).toBe(ConfidenceLevel.HIGH);
+      // It carries the (possibly undefined) eventId + the request so the UI can
+      // render what the user asked for.
+      expect(escalation!.parameters).toHaveProperty('eventId');
+      // No auto-decline is proposed — that would fail at the execution boundary.
+      expect(candidates.some((c) => c.actionType === 'decline_invite')).toBe(false);
       // acknowledge/dismiss stay as lower-confidence alternatives.
       const actionTypes = candidates.map((c) => c.actionType);
       expect(actionTypes).toContain('acknowledge');
       expect(actionTypes).toContain('dismiss');
     });
 
-    it('CALENDAR_UPDATE decline_event is a scoped write — downgraded without the calendar scope', () => {
+    it('CALENDAR_UPDATE decline escalation needs no calendar scope (it is a prompt, not a write)', () => {
       const dm = makeDecisionMaker();
       const decision: DecisionObject = {
         id: 'dec_upd_decline_noscope',
@@ -503,17 +509,17 @@ describe('DecisionMaker', () => {
         interpretedAt: new Date(),
       };
 
+      // No grantedScopes passed. The escalation is a human-review prompt, not a
+      // calendar write, so the scope gate must leave it intact (a real
+      // decline_invite WOULD have been downgraded here).
       const candidates = dm.generateCandidates(decision, emptyProfile);
-      // No decline_invite survives as an auto-executable write; it is downgraded
-      // to a grant-access escalation (the scope gate fails safe on empty grants).
-      expect(candidates.some((c) => c.actionType === 'decline_invite')).toBe(false);
-      const downgraded = candidates.find(
-        (c) => c.parameters['originalActionType'] === 'decline_invite',
+      const escalation = candidates.find(
+        (c) => c.actionType === 'escalate_to_user' && c.parameters['intent'] === 'decline_event',
       );
-      expect(downgraded?.actionType).toBe('escalate_to_user');
+      expect(escalation, 'the escalation survives without calendar scope').toBeDefined();
     });
 
-    it('CALENDAR_UPDATE without a chat intent keeps the acknowledge/dismiss menu (no decline)', () => {
+    it('CALENDAR_UPDATE without a chat intent keeps the acknowledge/dismiss menu (no escalation)', () => {
       const dm = makeDecisionMaker();
       const decision: DecisionObject = {
         id: 'dec_upd_real',
@@ -531,7 +537,7 @@ describe('DecisionMaker', () => {
       expect(candidates.map((c) => c.actionType).sort()).toEqual(['acknowledge', 'dismiss']);
     });
 
-    it('CALENDAR_INVITE with a chat create_event intent yields a create_calendar_event (not an RSVP menu)', () => {
+    it('CALENDAR_INVITE with a chat create_event intent yields a single human-completion escalation (not an RSVP menu)', () => {
       const dm = makeDecisionMaker();
       const decision: DecisionObject = {
         id: 'dec_inv_create',
@@ -544,17 +550,18 @@ describe('DecisionMaker', () => {
         interpretedAt: new Date(),
       };
 
-      const candidates = dm.generateCandidates(decision, emptyProfile, {
-        grantedScopes: CALENDAR_WRITE_SCOPES,
-      });
+      const candidates = dm.generateCandidates(decision, emptyProfile);
 
       expect(candidates.length).toBe(1);
-      expect(candidates[0]!.actionType).toBe('create_calendar_event');
+      expect(candidates[0]!.actionType).toBe('escalate_to_user');
+      expect(candidates[0]!.parameters['intent']).toBe('create_event');
       expect(candidates[0]!.confidence).toBe(ConfidenceLevel.HIGH);
-      // The accept/tentative/decline menu against a non-existent invite is gone.
+      // The accept/tentative/decline menu against a non-existent invite is gone,
+      // and no auto-create (which has no execution handler) is proposed.
       const actionTypes = candidates.map((c) => c.actionType);
       expect(actionTypes).not.toContain('accept_invite');
       expect(actionTypes).not.toContain('decline_invite');
+      expect(actionTypes).not.toContain('create_calendar_event');
     });
 
     it('EMAIL_TRIAGE archive/label candidates carry the message id (messageId fallback)', () => {
