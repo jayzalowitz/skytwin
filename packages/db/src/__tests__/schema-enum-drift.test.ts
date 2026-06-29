@@ -26,7 +26,7 @@ const SCHEMA = read('../schemas/schema.sql');
 function tsUnionMembers(source: string, typeName: string): string[] {
   const m = source.match(new RegExp(`export type ${typeName}\\s*=([\\s\\S]*?);`));
   if (!m) throw new Error(`TS union '${typeName}' not found`);
-  const body = m[1]
+  const body = m[1]!
     .replace(/\/\*[\s\S]*?\*\//g, '') // strip block comments (may contain apostrophes)
     .replace(/\/\/.*$/gm, ''); // strip line comments
   return [...body.matchAll(/'([^']+)'/g)].map((x) => x[1]!);
@@ -40,7 +40,7 @@ function checkConstraintValues(table: string, column: string): string[] {
   if (!chunk) throw new Error(`table '${table}' not found in schema.sql`);
   const m = chunk.match(new RegExp(`CHECK\\s*\\(\\s*${column}\\s+IN\\s*\\(([\\s\\S]*?)\\)\\s*\\)`, 'i'));
   if (!m) throw new Error(`CHECK (${column} IN …) not found on table '${table}'`);
-  return [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1]!);
+  return [...m[1]!.matchAll(/'([^']+)'/g)].map((x) => x[1]!);
 }
 
 interface Case {
