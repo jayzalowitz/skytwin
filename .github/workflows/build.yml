@@ -117,7 +117,7 @@ jobs:
         continue-on-error: true
 
       - name: Cache electron-builder + CRDB downloads
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/Library/Caches/electron
@@ -198,7 +198,7 @@ jobs:
       # wall-clock here; missing the TS-compile cache is negligible.
 
       - name: Cache electron-builder + CRDB downloads
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/AppData/Local/electron/Cache
@@ -277,7 +277,7 @@ jobs:
         continue-on-error: true
 
       - name: Cache electron-builder + CRDB downloads
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cache/electron
@@ -421,7 +421,7 @@ jobs:
         continue-on-error: true
 
       - name: Cache CocoaPods
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             apps/mobile/ios/Pods
