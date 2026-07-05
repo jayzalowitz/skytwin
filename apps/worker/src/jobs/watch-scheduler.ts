@@ -100,7 +100,7 @@ export function evaluateWatch(watch: Watch, signals: SignalRow[], windowStart: D
 
 export interface WatchSchedulerDeps {
   now?: Date;
-  watchRepo?: Pick<typeof watchRepository, 'listDue' | 'markRan'>;
+  watchRepo?: Pick<typeof watchRepository, 'listDue' | 'claimDue'>;
   runRepo?: Pick<typeof watchRunRepository, 'create'>;
   signalRepo?: Pick<typeof signalRepository, 'getRecent'>;
   userRepo?: Pick<typeof userRepository, 'getLocale'>;
@@ -125,8 +125,22 @@ export async function runWatchSchedulerJob(deps: WatchSchedulerDeps = {}): Promi
   let fired = 0;
   for (const watch of due) {
     try {
-      const tz = (await userRepo.getLocale(watch.userId)).timezone ?? 'UTC';
+      // The window is the OLD last_run_at, captured before the claim advances it.
       const windowStart = watch.lastRunAt ?? new Date(now.getTime() - defaultLookbackMs(watch.cadence));
+      const tz = (await userRepo.getLocale(watch.userId)).timezone ?? 'UTC';
+
+      // Claim FIRST: atomically advance next_run_at (gated on the value we saw),
+      // so a concurrent worker can't process the same firing. If we lose the
+      // race, another worker already claimed it — skip.
+      if (!watch.nextRunAt) continue; // defensive: listDue only returns non-null
+      const claimed = await watchRepo.claimDue(
+        watch.id,
+        watch.nextRunAt,
+        computeNextRun(watch, now, tz),
+        now,
+      );
+      if (!claimed) continue;
+
       const lookbackHours = Math.ceil((now.getTime() - windowStart.getTime()) / HOUR_MS) + 1;
       const signals = await signalRepo.getRecent(watch.userId, undefined, lookbackHours);
 
@@ -142,8 +156,6 @@ export async function runWatchSchedulerJob(deps: WatchSchedulerDeps = {}): Promi
         });
         fired += 1;
       }
-      // Always advance the schedule, even on a no-match firing.
-      await watchRepo.markRan(watch.id, now, computeNextRun(watch, now, tz));
     } catch (err) {
       log.error(`Watch ${watch.id} failed to run`, {
         error: err instanceof Error ? err.message : String(err),

@@ -101,52 +101,68 @@ describe('runWatchSchedulerJob', () => {
   const getRecentWith = (rows: SignalRow[]) => vi.fn().mockResolvedValue(rows);
   const getLocaleUTC = () => vi.fn().mockResolvedValue({ language: null, timezone: 'UTC' });
 
-  it('writes a run and schedules the next firing when a due watch matches', async () => {
-    const listDue = vi.fn().mockResolvedValue([watch()]);
-    const markRan = vi.fn().mockResolvedValue(undefined);
+  it('claims + writes a run and advances the next firing when a due watch matches', async () => {
+    const claimDue = vi.fn().mockResolvedValue(true);
     const create = vi.fn().mockResolvedValue({});
     await runWatchSchedulerJob({
       now: NOW,
-      watchRepo: { listDue, markRan },
+      watchRepo: { listDue: vi.fn().mockResolvedValue([watch()]), claimDue },
       runRepo: { create },
       signalRepo: { getRecent: getRecentWith([signal({ id: 'a' })]) },
       userRepo: { getLocale: getLocaleUTC() },
     });
+    expect(claimDue).toHaveBeenCalledTimes(1);
+    // claimDue(id, seenNextRunAt, nextRunAt, ranAt) — the new next_run_at is future.
+    expect((claimDue.mock.calls[0]![2] as Date).getTime()).toBeGreaterThan(NOW.getTime());
     expect(create).toHaveBeenCalledTimes(1);
     expect(create.mock.calls[0]![0].matchedRefs).toEqual(['a']);
-    const nextArg = markRan.mock.calls[0]![2] as Date;
-    expect(nextArg.getTime()).toBeGreaterThan(NOW.getTime()); // next_run_at advanced
   });
 
   it('advances the schedule even when nothing matched (no run row)', async () => {
-    const markRan = vi.fn().mockResolvedValue(undefined);
+    const claimDue = vi.fn().mockResolvedValue(true);
     const create = vi.fn().mockResolvedValue({});
     await runWatchSchedulerJob({
       now: NOW,
-      watchRepo: { listDue: vi.fn().mockResolvedValue([watch()]), markRan },
+      watchRepo: { listDue: vi.fn().mockResolvedValue([watch()]), claimDue },
       runRepo: { create },
       signalRepo: { getRecent: getRecentWith([]) }, // no signals
       userRepo: { getLocale: getLocaleUTC() },
     });
+    expect(claimDue).toHaveBeenCalledTimes(1); // claimed (schedule advanced)
+    expect(create).not.toHaveBeenCalled(); // but no run row
+  });
+
+  it('skips a watch it loses the claim on (another worker took it)', async () => {
+    const claimDue = vi.fn().mockResolvedValue(false); // lost the race
+    const getRecent = getRecentWith([signal({ id: 'a' })]);
+    const create = vi.fn().mockResolvedValue({});
+    await runWatchSchedulerJob({
+      now: NOW,
+      watchRepo: { listDue: vi.fn().mockResolvedValue([watch()]), claimDue },
+      runRepo: { create },
+      signalRepo: { getRecent },
+      userRepo: { getLocale: getLocaleUTC() },
+    });
+    expect(claimDue).toHaveBeenCalledTimes(1);
+    expect(getRecent).not.toHaveBeenCalled(); // no processing after a lost claim
     expect(create).not.toHaveBeenCalled();
-    expect(markRan).toHaveBeenCalledTimes(1); // still rescheduled
   });
 
   it('isolates a failing watch so the rest still run', async () => {
-    const markRan = vi.fn().mockResolvedValue(undefined);
-    // First getLocale throws → the 'bad' watch fails; the 'good' one proceeds.
+    const claimDue = vi.fn().mockResolvedValue(true);
+    // First getLocale throws → the 'bad' watch fails before its claim; 'good' proceeds.
     const getLocale = vi
       .fn()
       .mockRejectedValueOnce(new Error('locale lookup failed'))
       .mockResolvedValue({ language: null, timezone: 'UTC' });
     await runWatchSchedulerJob({
       now: NOW,
-      watchRepo: { listDue: vi.fn().mockResolvedValue([watch({ id: 'bad' }), watch({ id: 'good' })]), markRan },
+      watchRepo: { listDue: vi.fn().mockResolvedValue([watch({ id: 'bad' }), watch({ id: 'good' })]), claimDue },
       runRepo: { create: vi.fn().mockResolvedValue({}) },
       signalRepo: { getRecent: getRecentWith([signal({ id: 'a' })]) },
       userRepo: { getLocale },
     });
-    expect(markRan).toHaveBeenCalledTimes(1); // only the good one
-    expect(markRan.mock.calls[0]![0]).toBe('good');
+    expect(claimDue).toHaveBeenCalledTimes(1); // only the good one reached the claim
+    expect(claimDue.mock.calls[0]![0]).toBe('good');
   });
 });

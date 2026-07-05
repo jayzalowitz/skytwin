@@ -172,4 +172,27 @@ export const watchRepository = {
       [id, ranAt, nextRunAt],
     );
   },
+
+  /**
+   * Optimistically CLAIM a due watch before processing it: atomically advance
+   * `next_run_at`/`last_run_at`, gated on the `next_run_at` the scheduler saw in
+   * `listDue`. Returns true if this caller won the claim, false if another
+   * worker already advanced it (so the caller skips) — this is what makes the
+   * scheduler safe to run on multiple worker instances without double-firing.
+   */
+  async claimDue(
+    id: string,
+    seenNextRunAt: Date,
+    nextRunAt: Date,
+    ranAt: Date,
+  ): Promise<boolean> {
+    const result = await query<{ id: string }>(
+      `UPDATE watches
+          SET next_run_at = $3, last_run_at = $4, updated_at = now()
+        WHERE id = $1 AND status = 'active' AND next_run_at = $2
+      RETURNING id`,
+      [id, seenNextRunAt, nextRunAt, ranAt],
+    );
+    return result.rows.length > 0;
+  },
 };
