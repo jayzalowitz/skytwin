@@ -23,6 +23,7 @@ export type {
 export {
   ElectronIdleDetector,
   MockIdleDetector,
+  EventDrivenIdleDetector,
 } from './idle-detector.js';
 export type { IdleDetectorPort } from './idle-detector.js';
 

@@ -73,6 +73,15 @@ export interface Routine extends RoutineSpec {
 }
 
 /**
+ * A persisted **Watch** — the stored form of a no-code routine (a read-only
+ * signal watcher). Structurally identical to `Routine`; the distinct name keeps
+ * it clear at the storage / API layer (`watches` table, `/api/watches`) that
+ * this is the no-code, read-only feature, NOT the IronClaw cron `/api/routines`
+ * execution primitive.
+ */
+export type Watch = Routine;
+
+/**
  * Result of parsing a natural-language ask into a `RoutineSpec`.
  * `matched: false` means the text wasn't a recurring/routine intent (most chat
  * messages) — the caller should treat it as an ordinary message, not an error.

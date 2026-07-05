@@ -112,6 +112,9 @@ importers:
       '@skytwin/registry-client':
         specifier: workspace:*
         version: link:../../packages/registry-client
+      '@skytwin/routines':
+        specifier: workspace:*
+        version: link:../../packages/routines
       '@skytwin/shared-types':
         specifier: workspace:*
         version: link:../../packages/shared-types
@@ -156,6 +159,25 @@ importers:
       electron-builder:
         specifier: ^26.15.3
         version: 26.15.3(electron-builder-squirrel-windows@24.13.3(dmg-builder@26.15.3))
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^3.2.6
+        version: 3.2.6(@types/debug@4.1.13)(@types/node@25.9.3)(jiti@2.7.0)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.32.0)(terser@5.48.0)(tsx@4.22.4)(yaml@2.9.0)
+
+  apps/idle-miner-runner:
+    dependencies:
+      '@skytwin/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@skytwin/idle-miner':
+        specifier: workspace:*
+        version: link:../../packages/idle-miner
+    devDependencies:
+      '@types/node':
+        specifier: ^25.9.3
+        version: 25.9.3
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
@@ -2221,9 +2243,6 @@ packages:
 
   '@types/ms@2.1.0':
     resolution: {integrity: sha512-GsCCIZDE/p3i96vtEqx+7dBUGXrc7zeSK3wwPHIaRThS+9OhWIXRqzs4d6k1SVU8g91DrNRWxWUGhp5KXQb2VA==}
-
-  '@types/node@24.12.4':
-    resolution: {integrity: sha512-GUUEShf+PBCGW2KaXwcIt3Yk+e3pkKwWKb9GSyM9WQVE+ep2jzmHdGsHzu4wgcZy5fN9FBdVzjpBQsYlpfpgLA==}
 
   '@types/node@24.13.2':
     resolution: {integrity: sha512-fRa09kZTgu8o71KFcDjUFuc7F+dEbZYZmkI0mg5YBTRs0yMKjYHsq/c0urDKeDb+D5qVgXOdFcuu+DZPKOITwA==}
@@ -5034,9 +5053,6 @@ packages:
     resolution: {integrity: sha512-rvKSBiC5zqCCiDZ9kAOszZcDvdAHwwIKJG33Ykj43OKcWsnmcBRL09YTU4nOeHZ8Y2a7l1MgTd08SBe9A8Qj6A==}
     engines: {node: '>=18'}
 
-  undici-types@7.16.0:
-    resolution: {integrity: sha512-Zz+aZWSj8LE6zoxD+xrjh4VfkIG8Ya6LvYkZqtUQGJPZjYl53ypCaUwWqo7eI0x66KBGeRo+mlBEkMSeSZ38Nw==}
-
   undici-types@7.18.2:
     resolution: {integrity: sha512-AsuCzffGHJybSaRrmr5eHr81mwJU3kjw6M+uprWvCXiNeN9SOGwQ3Jn8jb8m3Z6izVgknn1R0FTCEAP2QrLY/w==}
 
@@ -6918,10 +6934,6 @@ snapshots:
 
   '@types/ms@2.1.0': {}
 
-  '@types/node@24.12.4':
-    dependencies:
-      undici-types: 7.16.0
-
   '@types/node@24.13.2':
     dependencies:
       undici-types: 7.18.2
@@ -7943,7 +7955,7 @@ snapshots:
   electron@41.5.0:
     dependencies:
       '@electron/get': 2.0.3
-      '@types/node': 24.12.4
+      '@types/node': 24.13.2
       extract-zip: 2.0.1
     transitivePeerDependencies:
       - supports-color
@@ -10179,8 +10191,6 @@ snapshots:
   typescript@6.0.3: {}
 
   uint8array-extras@1.5.0: {}
-
-  undici-types@7.16.0: {}
 
   undici-types@7.18.2: {}
 

@@ -1,6 +1,6 @@
 All notable changes to SkyTwin will be documented in this file.
 
-## [0.6.95.0] - 2026-07-05
+## [0.6.98.0] - 2026-07-05
 
 ### Added
 
@@ -14,6 +14,35 @@ All notable changes to SkyTwin will be documented in this file.
 
 - **`twin_profiles.version` overflowed int64 after enough profile updates.** The column is `BIGINT`, which node-pg returns as a *string*, so `twin-repository.updateProfile` did `current.version + 1` = string concatenation (`"1" + 1 = "11"`) — the version grew one digit per update until it exceeded int64 range and every approval response 500'd. Now coerced to a number before incrementing. Surfaced by the functional-approvals work above (approving triggers a profile update).
 - **Seed correctness (post-`/review` + Copilot):** invalid `overallTier: 'medium'` → `'moderate'` (RiskTier has no "medium"; it silently downgraded to negligible); the Q3-offsite RSVP decision had a pending approval but `requires_approval: false` (inconsistent) → now `true`; invalid `inbox_received` AuthoringTier → `inbox_personal`; `medium` (not a `ConfidenceLevel`) → `moderate`; `implicit_approval` feedback that was invisible to trust metrics → `approve`. Disk-fit rounding uses `Math.floor` (conservative), and the local-model recommendation no longer promises "runs entirely on your machine" when no llama.cpp binary is present.
+
+## [0.6.97.0] - 2026-07-05
+
+### Added
+
+- **No-code routines — the scheduling + matching engine (#519, part 3a).** Two pure functions in `@skytwin/routines`, the foundation the worker scheduler (part 3b) will consume:
+  - `computeNextRun(spec, from, tz?)` — a Watch's next firing time. `hourly` is +1h; `daily`/`weekly` fire at `hourOfDay` (default 8) — and, for weekly, on `dayOfWeek` — computed in the user's **IANA timezone** (so "every morning at 8am" means 8am *where the user is*, not 8am UTC). Timezone math uses only native `Intl` (no date library), with a **two-pass DST correction** so 8am stays 8am even on spring-forward / fall-back days; an invalid IANA zone falls back to UTC, an invalid `from` date fails loud, and an out-of-range `dayOfWeek` is normalized — the pure function stays total.
+  - `matchesFilter(signal, filter)` — does a signal match a Watch's `RoutineFilter`? AND across `sources`/`fromContains`/`keywords`/`domains`, OR within each; case-insensitive. `domains` are topical tags **expanded to related terms** (a `security` watch catches phishing / suspicious / fraud, not only the literal word). An empty filter matches everything — but the API forbids an *active* empty-filter watch, so the scheduler only runs this on narrowed filters.
+
+  Deterministic and fully unit-tested (24 cases: hourly/daily/weekly rollover, timezone correctness incl. a non-UTC zone + DST spring-forward/fall-back, invalid-tz/invalid-date/out-of-range-day totality, steady-state 24h spacing; source/sender/keyword/domain matching + expansion, AND-across / OR-within). Part 3b wires these into a gated worker scheduler that fires due watches → matches signals → writes a `watch_run` + explanation.
+
+## [0.6.96.0] - 2026-07-05
+
+### Added
+
+- **No-code routines — storage + API (#519, part 2).** A no-code routine is now persistable and manageable as a **Watch**: a read-only signal watcher that, on a schedule, matches recent signals against a filter and digests / notifies. New `watches` table (migration 069, with CHECK constraints on cadence/action/status so a bad value is rejected at write time), a `watchRepository` (create / list / get / pause-resume / edit / delete, plus `listDue`/`markRan` seams the scheduler will use), and a `/api/watches` router:
+  - `POST /api/watches/parse` — preview a plain-language ask as a `RoutineSpec` (runs the `@skytwin/routines` parser; pure, no persistence).
+  - `POST /api/watches/:userId` — create a watch from natural language (`{text}`) or a confirmed structured `{spec}`.
+  - `GET /api/watches/:userId` — list the user's watches.
+  - `PATCH /api/watches/:userId/:watchId` — pause / resume (`{status}`) or edit (`{spec}`).
+  - `DELETE /api/watches/:userId/:watchId`.
+
+  **Named "Watches" deliberately** to avoid colliding with the existing `/api/routines` — a different, action-taking IronClaw cron-execution primitive. Watches take **no action** (read-only digest/notify), so there is **no policy gate** on creation or firing — that's the safety point of read-only v1; action-taking routines remain the separate policy-gated path. Ownership is enforced on every `:userId` route. Migration DDL verified against real CockroachDB (table, indexes, and the cadence CHECK constraint rejecting a bad value). 18 route tests (parse preview, NL + structured create, spec validation, non-UUID rejection, pause/resume/edit/delete, 404s). Next parts: the worker scheduler (fire due watches → digest/notify + explanation) and the Watches management page + chat authoring.
+
+## [0.6.95.0] - 2026-07-05
+
+### Added
+
+- **The managed idle-miner process is now built: `apps/idle-miner-runner`** (plus `EventDrivenIdleDetector` in `@skytwin/idle-miner`). Per the #577 architecture correction, idle-miner can't run in the Electron main process (a CommonJS shell with no `@skytwin` deps) or in the worker (paused on idle), so it runs as a separately-managed ESM child process the desktop spawns like api/worker/cockroach. This ships that process. `config.ts` parses the environment the `ServiceManager` will pass, **fail-closed**: `SKYTWIN_IDLE_MINER_ENABLED` must be exactly `true` (default off), and `SKYTWIN_IDLE_MINER_USER_ID` / `_INGEST_URL` (validated) / `_DATA_DIR` are required (home resolves from `SKYTWIN_IDLE_MINER_HOME` / `HOME` / `USERPROFILE`) — it scans the user's real filesystem, so it never runs on ambiguous defaults. `runner.ts` assembles the miner entirely from the now-complete package core — `SnapshotFileStore` at the data dir, `createHttpSignalEmitter` at the ingest URL, `expandAllowlist`→`FsScanRoot[]`, `DEFAULT_EXTRACTORS` — driven by the new `EventDrivenIdleDetector`. Because a plain Node child has no Electron `powerMonitor`, the process does NOT self-detect idle: the parent (which owns OS idle detection) writes one control word per line to the child's stdin — `idle` / `active` / `stop` — which the runner relays to the detector (de-duped to clean edges). Clean shutdown on SIGTERM/SIGINT/stdin-close (and the `stop` control word) DRAINS any in-flight scan batch before flushing the device-local index, so no mid-file work is lost — via a new `IdleMinerHandle.drain()` (await the settling batch after `stop()`); the entrypoint owns process exit (a bare `stop` no longer leaves a live child). Hardened per cross-model review. 28 unit tests (21 runner: fail-closed config across the flag + every required field + home fallbacks; assembly wires the right roots/detector/store; the control protocol + idempotent shutdown — plus 5 for `EventDrivenIdleDetector`: start-gating, clean edges, de-dup, stop; and 2 for `handle.drain()`: resolves with no batch, awaits an in-flight batch). The only remaining work is desktop-side: `ServiceManager` spawning this process + piping `IdleBridge` transitions to its stdin + embedded-build packaging + paired-`userId` resolution (spec `docs/idle-miner-desktop-integration.md` updated).
 
 ## [0.6.94.0] - 2026-06-29
 
