@@ -83,6 +83,7 @@ memory_rooms
 | `action_policies` | User-configured policy rules | Low frequency | Per-decision (policy evaluation) |
 | `approval_requests` | Pending and completed approval requests | On escalation | User review queue |
 | `execution_plans` | Plans sent to IronClaw | On auto-execute | Status tracking |
+| `watches` | No-code routines (#519) — read-only signal watchers (digest/notify on a schedule) | On create / edit / pause | Per-user listing, scheduler `listDue` |
 | `execution_results` | Results from IronClaw | On execution completion | Audit, failure analysis |
 | `explanation_records` | Human-readable explanations | Per-decision | User review, audit |
 | `feedback_events` | User responses (approve/reject/edit/undo) | On user interaction | Twin model updates, evals |

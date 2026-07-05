@@ -35,6 +35,7 @@
     "@skytwin/policy-engine": "workspace:*",
     "@skytwin/policy-prompts": "workspace:*",
     "@skytwin/registry-client": "workspace:*",
+    "@skytwin/routines": "workspace:*",
     "@skytwin/shared-types": "workspace:*",
     "@skytwin/twin-model": "workspace:*",
     "bonjour-service": "^1.4.1",
