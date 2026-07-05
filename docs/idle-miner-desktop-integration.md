@@ -37,6 +37,23 @@ and is started/stopped on the desktop's idle/active transitions (reuse the same
 `IdleBridge` signal the pause controller consumes — but to START mining on idle,
 not pause). It is exempt from the idle-pause that stops the *worker*.
 
+**That process is now built: `apps/idle-miner-runner`.** It is the ESM managed
+process the desktop spawns. Its logic is fail-closed and unit-tested: `config.ts`
+parses + validates the environment the `ServiceManager` passes
+(`SKYTWIN_IDLE_MINER_ENABLED` must be `true`; `SKYTWIN_IDLE_MINER_USER_ID` /
+`_INGEST_URL` / `_DATA_DIR` required; home from `SKYTWIN_IDLE_MINER_HOME` / `HOME`
+/ `USERPROFILE`), and `runner.ts` assembles the miner from the package pieces
+(`SnapshotFileStore` at the data dir, `createHttpSignalEmitter` at the ingest URL,
+`expandAllowlist`→`FsScanRoot[]`, `DEFAULT_EXTRACTORS`) driven by an
+`EventDrivenIdleDetector`. Because a plain Node child has no `powerMonitor`, it
+does NOT self-detect idle — the parent writes one control word per line to the
+child's **stdin**: `idle` / `active` / `stop`, which the runner relays to the
+detector. It shuts down cleanly (SIGTERM/SIGINT/stdin-close → stop miner + flush
+index). **Remaining (the desktop side):** `ServiceManager` spawning this process +
+piping `IdleBridge` transitions to its stdin + the embedded-build packaging, and
+resolving the paired `userId` (persist to a desktop pref on pair). The
+`EventDrivenIdleDetector` is exported from `@skytwin/idle-miner`.
+
 **Persistence is now provided.** `@skytwin/idle-miner` ships `SnapshotFileStore`
 (`packages/idle-miner/src/snapshot-store.ts`) — a device-local, atomic-snapshot
 `FileIndexRepo` + `CursorRepo`, so the host no longer reimplements the repos. Point

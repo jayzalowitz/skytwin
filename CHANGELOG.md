@@ -1,5 +1,12 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.95.0] - 2026-07-05
+
+### Added
+
+- **The managed idle-miner process is now built: `apps/idle-miner-runner`** (plus `EventDrivenIdleDetector` in `@skytwin/idle-miner`). Per the #577 architecture correction, idle-miner can't run in the Electron main process (a CommonJS shell with no `@skytwin` deps) or in the worker (paused on idle), so it runs as a separately-managed ESM child process the desktop spawns like api/worker/cockroach. This ships that process. `config.ts` parses the environment the `ServiceManager` will pass, **fail-closed**: `SKYTWIN_IDLE_MINER_ENABLED` must be exactly `true` (default off), and `SKYTWIN_IDLE_MINER_USER_ID` / `_INGEST_URL` (validated) / `_DATA_DIR` are required (home resolves from `SKYTWIN_IDLE_MINER_HOME` / `HOME` / `USERPROFILE`) — it scans the user's real filesystem, so it never runs on ambiguous defaults. `runner.ts` assembles the miner entirely from the now-complete package core — `SnapshotFileStore` at the data dir, `createHttpSignalEmitter` at the ingest URL, `expandAllowlist`→`FsScanRoot[]`, `DEFAULT_EXTRACTORS` — driven by the new `EventDrivenIdleDetector`. Because a plain Node child has no Electron `powerMonitor`, the process does NOT self-detect idle: the parent (which owns OS idle detection) writes one control word per line to the child's stdin — `idle` / `active` / `stop` — which the runner relays to the detector (de-duped to clean edges). Clean shutdown on SIGTERM/SIGINT/stdin-close flushes the device-local index. 26 unit tests (21 runner: fail-closed config across the flag + every required field + home fallbacks; assembly wires the right roots/detector/store; the control protocol + idempotent shutdown — plus 5 for `EventDrivenIdleDetector`: start-gating, clean edges, de-dup, stop). The only remaining work is desktop-side: `ServiceManager` spawning this process + piping `IdleBridge` transitions to its stdin + embedded-build packaging + paired-`userId` resolution (spec `docs/idle-miner-desktop-integration.md` updated).
+
+
 ## [0.6.94.0] - 2026-06-29
 
 ### Added
