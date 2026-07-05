@@ -7,6 +7,13 @@ import type { MinerOptions } from './miner.js';
 
 export interface IdleMinerHandle {
   stop(): void;
+  /**
+   * Await any in-flight scan batch to settle. Call AFTER `stop()` (which prevents
+   * new batches and signals the current one to wind down) so a host can flush its
+   * index and exit without killing mid-file work. Resolves immediately when no
+   * batch is running.
+   */
+  drain(): Promise<void>;
 }
 
 export interface StartIdleMinerOptions
@@ -58,6 +65,16 @@ export function startIdleMiner(options: StartIdleMinerOptions): IdleMinerHandle 
       stopped = true;
       miner.stop();
       detector.stop();
+    },
+    async drain() {
+      const inFlight = activeBatch;
+      if (inFlight) {
+        try {
+          await inFlight;
+        } catch {
+          // A batch error is non-fatal to draining — we only need it settled.
+        }
+      }
     },
   };
 }

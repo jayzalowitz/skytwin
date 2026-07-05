@@ -25,10 +25,17 @@ export interface RunnerDeps {
 }
 
 export interface IdleMinerRunner {
-  /** Feed one control line from the parent (stdin): `idle` | `active` | `stop`. */
+  /**
+   * Feed one control line from the parent (stdin): `idle` | `active`. `stop` and
+   * process exit are owned by the entrypoint (`index.ts`), not the runner.
+   */
   handleControlLine(line: string): void;
-  /** Stop the miner + flush the device-local index. Idempotent. */
-  shutdown(): void;
+  /**
+   * Stop the miner, DRAIN any in-flight scan batch, then flush the device-local
+   * index. Async + idempotent — awaiting it guarantees no mid-file work is lost
+   * on shutdown.
+   */
+  shutdown(): Promise<void>;
 }
 
 /**
@@ -77,6 +84,13 @@ export function createIdleMinerRunner(config: RunnerConfig, deps: RunnerDeps = {
   const startFn = deps.startIdleMinerFn ?? startIdleMiner;
   const detector = deps.detector ?? new EventDrivenIdleDetector();
   const store = deps.store ?? new SnapshotFileStore(config.dataDir);
+  // Posts to the local API's ingest endpoint exactly like the worker's
+  // `forwardSignalToApi` — no auth header. This process runs on the same host as
+  // the API (spawned by the desktop) and posts from localhost, so it relies on
+  // the same trust model as the worker (the API's dev/localhost auth bypass on a
+  // single-user desktop install). A hardened multi-tenant deployment would give
+  // both the worker and this process a service credential; that's a shared
+  // concern for the local-forwarding architecture, not specific to idle mining.
   const emitter = createHttpSignalEmitter({ ingestUrl: config.ingestUrl, userId: config.userId });
 
   const roots = toScanRoots(expandAllowlist(config.homedir), config.userId);
@@ -94,11 +108,12 @@ export function createIdleMinerRunner(config: RunnerConfig, deps: RunnerDeps = {
   log.info(`started for user ${config.userId}: ${roots.length} scan root(s) under ${config.homedir}`);
 
   let stopped = false;
-  const shutdown = (): void => {
+  const shutdown = async (): Promise<void> => {
     if (stopped) return;
     stopped = true;
-    detector.stop();
-    handle.stop();
+    detector.stop(); // no new idle triggers
+    handle.stop(); // stop the current batch + prevent new ones
+    await handle.drain(); // let the in-flight batch settle before we flush
     store.close(); // flush the device-local index so we don't re-scan on restart
     log.info('stopped');
   };
@@ -112,11 +127,9 @@ export function createIdleMinerRunner(config: RunnerConfig, deps: RunnerDeps = {
         case 'active':
           detector.setActive();
           break;
-        case 'stop':
-          shutdown();
-          break;
         default:
-          // Ignore blank / unknown control lines.
+          // Ignore blank / unknown control lines. `stop` + process exit are
+          // owned by the entrypoint (index.ts), not the runner.
           break;
       }
     },

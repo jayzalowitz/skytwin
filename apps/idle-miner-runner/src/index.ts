@@ -24,20 +24,30 @@ function main(): void {
   const runner = createIdleMinerRunner(parsed.config);
 
   const rl = createInterface({ input: process.stdin });
-  rl.on('line', (line) => runner.handleControlLine(line));
 
   let shuttingDown = false;
-  const shutdown = (): void => {
+  const appShutdown = async (): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
-    runner.shutdown();
     rl.close();
+    await runner.shutdown(); // drains the in-flight batch + flushes before exit
     process.exit(0);
   };
-  process.on('SIGTERM', shutdown);
-  process.on('SIGINT', shutdown);
+
+  rl.on('line', (line) => {
+    // `stop` is a request to terminate the whole process; idle/active go to the
+    // runner. Exit is owned here, not in the runner.
+    if (line.trim().toLowerCase() === 'stop') {
+      void appShutdown();
+      return;
+    }
+    runner.handleControlLine(line);
+  });
+
+  process.on('SIGTERM', () => void appShutdown());
+  process.on('SIGINT', () => void appShutdown());
   // If the parent closes our stdin (it exited / detached), stop too.
-  rl.on('close', shutdown);
+  rl.on('close', () => void appShutdown());
 }
 
 main();

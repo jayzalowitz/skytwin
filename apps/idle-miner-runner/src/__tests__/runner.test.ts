@@ -31,6 +31,7 @@ describe('createIdleMinerRunner', () => {
   let store: SnapshotFileStore;
   let detector: EventDrivenIdleDetector;
   let handleStop: ReturnType<typeof vi.fn>;
+  let handleDrain: ReturnType<typeof vi.fn>;
   let startFn: ReturnType<typeof vi.fn>;
   let lastOptions: StartIdleMinerOptions | undefined;
 
@@ -43,10 +44,11 @@ describe('createIdleMinerRunner', () => {
     store = new SnapshotFileStore(dataDir);
     detector = new EventDrivenIdleDetector();
     handleStop = vi.fn();
+    handleDrain = vi.fn().mockResolvedValue(undefined);
     lastOptions = undefined;
     startFn = vi.fn((opts: StartIdleMinerOptions) => {
       lastOptions = opts;
-      return { stop: handleStop };
+      return { stop: handleStop, drain: handleDrain };
     });
   });
   afterEach(() => {
@@ -97,28 +99,31 @@ describe('createIdleMinerRunner', () => {
     expect(() => runner.handleControlLine('')).not.toThrow();
   });
 
-  it('shutdown() stops the miner, flushes the store, and halts the detector — idempotently', () => {
+  it('shutdown() stops the miner, DRAINS before flushing, halts the detector — idempotently', async () => {
     const closeSpy = vi.spyOn(store, 'close');
     const onIdle = vi.fn();
     detector.onIdle(onIdle);
     const runner = createIdleMinerRunner(config(), deps());
 
-    runner.shutdown();
+    await runner.shutdown();
     expect(handleStop).toHaveBeenCalledTimes(1);
+    expect(handleDrain).toHaveBeenCalledTimes(1);
     expect(closeSpy).toHaveBeenCalledTimes(1);
+    // Drain the in-flight batch BEFORE flushing the index — no mid-file work lost.
+    expect(handleDrain.mock.invocationCallOrder[0]).toBeLessThan(closeSpy.mock.invocationCallOrder[0]!);
 
     // Detector is stopped: further control lines are inert.
     runner.handleControlLine('idle');
     expect(onIdle).not.toHaveBeenCalled();
 
     // Idempotent.
-    runner.shutdown();
+    await runner.shutdown();
     expect(handleStop).toHaveBeenCalledTimes(1);
   });
 
-  it('the "stop" control line triggers shutdown', () => {
+  it('ignores the "stop" control line at the runner level (process exit is the entrypoint\'s job)', () => {
     const runner = createIdleMinerRunner(config(), deps());
     runner.handleControlLine('stop');
-    expect(handleStop).toHaveBeenCalledTimes(1);
+    expect(handleStop).not.toHaveBeenCalled();
   });
 });
