@@ -211,6 +211,17 @@ export async function renderSettings(container, userId) {
 
     <div id="embedded-llm-card-target"></div>
 
+    <div class="card" id="local-brain-card">
+      <div class="card-header">
+        <span class="card-title">Local brain</span>
+      </div>
+      <div class="card-subtitle" style="margin-bottom: 0.75rem;">
+        Your twin's memory runs locally by default — nothing leaves this computer.
+        Advanced users can switch the memory backend or see what's indexed.
+      </div>
+      <a class="btn btn-outline btn-sm" href="#/memory-settings">Manage local brain</a>
+    </div>
+
     <div class="card" id="a11y-settings-card">
       <div class="card-header">
         <span class="card-title">Accessibility</span>

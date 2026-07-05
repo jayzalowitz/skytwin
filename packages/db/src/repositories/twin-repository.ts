@@ -285,7 +285,10 @@ export const twinRepository = {
       }
 
       setClauses.push(`version = $${paramIndex}`);
-      values.push(current.version + 1);
+      // version is BIGINT — node-pg returns it as a STRING, so `current.version + 1`
+      // string-concatenates ("1" + 1 = "11") and the value grows one digit per
+      // update until it overflows int64. Coerce to a number so it increments.
+      values.push(Number(current.version) + 1);
       paramIndex++;
 
       setClauses.push(`updated_at = now()`);

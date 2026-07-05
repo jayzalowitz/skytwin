@@ -118,7 +118,7 @@ CI is unaffected (clean dist on every run).
 
 | App | Purpose |
 |-----|---------|
-| `api` | HTTP API server exposing decision endpoints, user management, and webhooks. Includes liveness/readiness health checks and mDNS service advertisement. |
+| `api` | HTTP API server exposing decision endpoints, user management, and webhooks. Includes liveness/readiness health checks and mDNS service advertisement. Public (pre-auth) routes mirror the `/api/v1/demo` precedent: `/api/system/hardware` + `/api/system/recommend-local-model` (`src/system/hardware.ts`) detect the machine (RAM / free disk / CPU / arch / llama-binary present) and pick the best-fitting local model from the `@skytwin/embedded-llm` catalog, so onboarding can auto-configure a private on-device model before sign-in. |
 | `web` | Web dashboard for reviewing decisions, managing preferences, and configuring policies. |
 | `worker` | Background job processor for async decision execution and feedback processing. Includes startup hang detection and graceful shutdown. |
 | `desktop` | Electron desktop app with electron-builder. Cross-platform builds for macOS (.dmg), Windows (.exe), and Linux (.AppImage/.deb). In-app auto-update via electron-updater (`auto-update.ts`): background poll + an update banner (downloading → "Restart to update") and a "Check for Updates…" menu item. |

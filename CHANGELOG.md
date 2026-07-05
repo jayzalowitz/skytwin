@@ -1,6 +1,6 @@
 All notable changes to SkyTwin will be documented in this file.
 
-## [0.6.98.0] - 2026-07-05
+## [0.6.99.0] - 2026-07-05
 
 ### Added
 
@@ -13,6 +13,21 @@ All notable changes to SkyTwin will be documented in this file.
 - **Watch scheduler is crash-safe (evaluate-then-claim).** The scheduler fetches and evaluates a watch's signals **before** claiming it (advancing `next_run_at`), not after — so a crash or transient failure during the expensive signal fetch no longer permanently drops that window; it's simply retried next tick. The atomic `claimDue` still guarantees exactly-once across concurrent workers (the claim loser discards its work), but a claim is only committed once the run has been computed.
 - **Bounded signal window.** A watch's firing window is now `(windowStart, claimTime]` — a half-open interval with an explicit upper bound — so a signal at the exact boundary is counted once (never dropped by a strict `>` on both ends, never double-counted next run). `windowStart` is floored at the watch's `created_at` (a fresh watch never digests signals from before it existed) and capped at a 7-day ceiling (bounds per-tick work after long worker downtime).
 - **Bounded run rows.** `matched_refs` stores at most 200 signal ids while `matched_count` keeps the true total, so a pathological match set can't balloon a single `watch_runs` row. Migration 070 adds a `matched_count >= 0` CHECK (verified against real CockroachDB).
+
+## [0.6.98.0] - 2026-07-05
+
+### Added
+
+- **The three sample profiles now show off across every dashboard surface, not just the briefing.** The seeded demo used to be sparse and static (expired approvals, week-old briefings, empty learnings/capabilities/search, a flat trust bar). A new `packages/db/src/seeds/demo-showcase.ts` module fills in every surface for **Alex** (the "Try with a sample profile" user): 12 preferences + 6 inferences ("What I've learned"), behavioral patterns + cross-domain traits (dashboard "habits I've noticed" / "what I've noticed about you"), 16 `brain_pages` that power **Search** and the briefing's "memory link" suggestions, MCP servers/skills/metrics/provenance (**Capabilities**), a 42-approval-in-a-row streak + trust-tier audit history + a pending promotion offer (trust bar 84%, accuracy 91%), an embedded chat-provider row so **Chat** is wired, and an explanation record for every decision. Alex moved to `low_autonomy` so the trust bar shows live *progress* instead of a flat "Maximum trust". Two more personas make switching users tell three stories: **Pat** (`high_autonomy` power user who handles everything, with one big new-vendor approval waiting) and **Carol** (`observer` earning her first promotion, ~70% there). Everything is idempotent (fixed UUIDs + `ON CONFLICT`, relative timestamps), so `pnpm db:seed` always refreshes to a clean, current-looking demo.
+- **The demo's pending approvals now actually execute when you click "Yes, do it".** Fixed a three-bug chain that made every approve fail: the embedded `candidate_action` carried no `id` (409 `risk_assessment_missing`), the seeded `risk_assessment` lacked `overallTier` so `parseRiskAssessmentFromRow` rejected it (409), and seeded inferences lacked `supportingEvidenceIds` so feedback processing crashed (500). Approve / reject / two-step dual-confirm now all succeed through the mock executor with no real credentials.
+- **First-run auto-picks the best local model for the computer.** New public (pre-auth) endpoints `GET /api/system/hardware` (RAM / free disk / CPU cores / arch / whether a llama.cpp binary is present) and `GET /api/system/recommend-local-model` (`apps/api/src/system/hardware.ts`) return the single best model from the `@skytwin/embedded-llm` catalog that actually fits the machine — RAM-appropriate AND fits free disk with headroom, stepping down when disk is tight and saying "not enough disk, use a cloud key" when nothing fits. The Settings download card now uses this real detection instead of the browser's coarse `navigator.deviceMemory` estimate, so the recommended model is correct and disk-aware.
+- **Simpler, less overwhelming onboarding for non-technical users.** The welcome modal leads with two clear choices ("Connect your email" / "Just show me around") plus a one-line "your AI runs privately on this computer — we'll use `<model>` (~N GB), picked to fit your machine" with a "Change" link. Everything else (tell-about-yourself, the not-yet-wired computer observer) moved into a collapsed "More ways to start".
+- **The local memory backend ("local brain") is now discoverable.** The memory-backend page existed but was unreachable (not in nav, not linked). Settings has a new "Local brain" card that links to it, and onboarding's "Change" link lands there too.
+
+### Fixed
+
+- **`twin_profiles.version` overflowed int64 after enough profile updates.** The column is `BIGINT`, which node-pg returns as a *string*, so `twin-repository.updateProfile` did `current.version + 1` = string concatenation (`"1" + 1 = "11"`) — the version grew one digit per update until it exceeded int64 range and every approval response 500'd. Now coerced to a number before incrementing. Surfaced by the functional-approvals work above (approving triggers a profile update).
+- **Seed correctness (post-`/review` + Copilot):** invalid `overallTier: 'medium'` → `'moderate'` (RiskTier has no "medium"; it silently downgraded to negligible); the Q3-offsite RSVP decision had a pending approval but `requires_approval: false` (inconsistent) → now `true`; invalid `inbox_received` AuthoringTier → `inbox_personal`; `medium` (not a `ConfidenceLevel`) → `moderate`; `implicit_approval` feedback that was invisible to trust metrics → `approve`. Disk-fit rounding uses `Math.floor` (conservative), and the local-model recommendation no longer promises "runs entirely on your machine" when no llama.cpp binary is present.
 
 ## [0.6.97.0] - 2026-07-05
 
