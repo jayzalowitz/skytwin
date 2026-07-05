@@ -39,6 +39,14 @@ describe('matchesFilter', () => {
     expect(matchesFilter(sig({ text: 'lunch plans' }), { domains: ['invoice'] })).toBe(false);
   });
 
+  it('AND across keywords and domains: both fields must match when both are present', () => {
+    // budget keyword + security domain: needs a security-related term AND "budget".
+    const filter = { keywords: ['budget'], domains: ['security'] };
+    expect(matchesFilter(sig({ text: 'Q3 budget review' }), filter)).toBe(false); // budget but no security term
+    expect(matchesFilter(sig({ text: 'suspicious login' }), filter)).toBe(false); // security but no budget
+    expect(matchesFilter(sig({ text: 'suspicious change to the budget' }), filter)).toBe(true); // both
+  });
+
   it('AND across fields: source matches but sender does not → no match', () => {
     expect(
       matchesFilter(sig({ source: 'gmail', from: 'stranger@x.com' }), {

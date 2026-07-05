@@ -45,15 +45,17 @@ export function matchesFilter(sig: MatchableSignal, filter: RoutineFilter): bool
   if (filter.fromContains?.length && !filter.fromContains.some((f) => from.includes(f.toLowerCase()))) {
     return false;
   }
-  const needles = [
-    ...(filter.keywords ?? []),
-    ...(filter.domains ?? []).flatMap((dRaw) => {
+  // `keywords` and `domains` are SEPARATE fields — AND across them, OR within
+  // each (per the RoutineFilter contract). Do NOT merge them into one list.
+  if (filter.keywords?.length && !filter.keywords.some((k) => text.includes(k.toLowerCase()))) {
+    return false;
+  }
+  if (filter.domains?.length) {
+    const terms = filter.domains.flatMap((dRaw) => {
       const d = dRaw.toLowerCase();
       return DOMAIN_TERMS[d] ?? [d];
-    }),
-  ];
-  if (needles.length && !needles.some((k) => text.includes(k.toLowerCase()))) {
-    return false;
+    });
+    if (!terms.some((k) => text.includes(k))) return false;
   }
   return true;
 }

@@ -19,9 +19,35 @@ const HOUR_MS = 60 * 60 * 1000;
  * (synced from a calendar, possibly stale/malformed) — a bad value must degrade
  * to UTC, never crash the scheduler tick.
  */
+/**
+ * Cache one wall-clock formatter per timezone. `computeNextRun` calls
+ * `tzOffsetMs` several times (up to ~16 for weekly, with the two-pass
+ * conversion), and the scheduler runs it for many watches — a fresh
+ * `Intl.DateTimeFormat` each time is a needless heavy allocation. Bounded by
+ * the ~600 valid IANA zones.
+ */
+const FORMATTER_CACHE = new Map<string, Intl.DateTimeFormat>();
+function formatterFor(tz: string): Intl.DateTimeFormat {
+  let f = FORMATTER_CACHE.get(tz);
+  if (!f) {
+    f = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz,
+      hourCycle: 'h23',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+    FORMATTER_CACHE.set(tz, f);
+  }
+  return f;
+}
+
 function safeTz(tz: string): string {
   try {
-    new Intl.DateTimeFormat('en-US', { timeZone: tz });
+    formatterFor(tz); // throws RangeError on an unknown zone
     return tz;
   } catch {
     return 'UTC';
@@ -33,16 +59,7 @@ function safeTz(tz: string): string {
  * local wall-clock in `tz`. I.e. `localAsUTC - actualUTC`.
  */
 function tzOffsetMs(instant: Date, tz: string): number {
-  const dtf = new Intl.DateTimeFormat('en-US', {
-    timeZone: tz,
-    hourCycle: 'h23',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  });
+  const dtf = formatterFor(tz);
   const p: Record<string, number> = {};
   for (const part of dtf.formatToParts(instant)) {
     if (part.type !== 'literal') p[part.type] = Number(part.value);
