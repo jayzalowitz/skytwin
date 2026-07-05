@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { parseRoutineSpec } from '@skytwin/routines';
-import type { RoutineSpec, RoutineStatus } from '@skytwin/shared-types';
+import type { RoutineFilter, RoutineSpec, RoutineStatus } from '@skytwin/shared-types';
 import { watchRepository } from '@skytwin/db';
 import { bindUserIdParamValidator } from '../middleware/validate-uuid.js';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
@@ -16,6 +16,46 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const MAX_TEXT = 2000;
 const CADENCES = new Set(['hourly', 'daily', 'weekly']);
 const ACTIONS = new Set(['digest', 'notify']);
+const FILTER_FIELDS = ['sources', 'fromContains', 'keywords', 'domains'] as const;
+const MAX_FILTER_ENTRIES = 50;
+const MAX_ENTRY_LEN = 200;
+
+/**
+ * Sanitize a caller-supplied `filter` down to the known `RoutineFilter` shape:
+ * each of the four fields is an array of NON-EMPTY strings, capped in count and
+ * length; unknown keys / nested objects / non-string entries are rejected. The
+ * declared `RoutineFilter` type is compile-time only — the scheduler (a later
+ * part) iterates these as `string[]`, so a non-string entry would throw or
+ * mismatch, and an unbounded blob would bloat the row.
+ */
+function sanitizeFilter(
+  raw: unknown,
+): { ok: true; filter: RoutineFilter } | { ok: false; error: string } {
+  if (raw === undefined) return { ok: true, filter: {} };
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    return { ok: false, error: 'spec.filter must be an object' };
+  }
+  const src = raw as Record<string, unknown>;
+  const out: RoutineFilter = {};
+  for (const field of FILTER_FIELDS) {
+    const v = src[field];
+    if (v === undefined) continue;
+    if (!Array.isArray(v) || !v.every((x) => typeof x === 'string')) {
+      return { ok: false, error: `spec.filter.${field} must be an array of strings` };
+    }
+    if (v.length > MAX_FILTER_ENTRIES) {
+      return { ok: false, error: `spec.filter.${field} has too many entries (max ${MAX_FILTER_ENTRIES})` };
+    }
+    const cleaned = (v as string[]).map((x) => x.trim().slice(0, MAX_ENTRY_LEN)).filter((x) => x.length > 0);
+    if (cleaned.length) out[field] = cleaned;
+  }
+  return { ok: true, filter: out };
+}
+
+/** True when a filter matches EVERY signal (no narrowing at all). */
+function isFilterEmpty(f: RoutineFilter): boolean {
+  return !f.sources?.length && !f.fromContains?.length && !f.keywords?.length && !f.domains?.length;
+}
 
 /** Validate + normalize a caller-supplied spec into a clean `RoutineSpec`. */
 function validateSpec(
@@ -34,10 +74,8 @@ function validateSpec(
   if (typeof s['action'] !== 'string' || !ACTIONS.has(s['action'])) {
     return { ok: false, error: 'spec.action must be digest | notify' };
   }
-  const filter = s['filter'];
-  if (filter !== undefined && (typeof filter !== 'object' || filter === null || Array.isArray(filter))) {
-    return { ok: false, error: 'spec.filter must be an object' };
-  }
+  const filterResult = sanitizeFilter(s['filter']);
+  if (!filterResult.ok) return filterResult;
   const hod = s['hourOfDay'];
   if (hod !== undefined && (typeof hod !== 'number' || !Number.isInteger(hod) || hod < 0 || hod > 23)) {
     return { ok: false, error: 'spec.hourOfDay must be an integer 0-23' };
@@ -50,7 +88,7 @@ function validateSpec(
     name: (s['name'] as string).trim().slice(0, 120),
     cadence: s['cadence'] as RoutineSpec['cadence'],
     action: s['action'] as RoutineSpec['action'],
-    filter: (filter as RoutineSpec['filter']) ?? {},
+    filter: filterResult.filter,
     ...(typeof hod === 'number' ? { hourOfDay: hod } : {}),
     ...(typeof dow === 'number' ? { dayOfWeek: dow } : {}),
   };
@@ -88,8 +126,19 @@ export function createWatchesRouter(): Router {
         status?: unknown;
       };
 
+      // Only the caller-selectable statuses; anything else is rejected rather
+      // than silently defaulting a garbage value to `active` (a scheduled run).
+      let status: RoutineStatus;
+      if (body.status === undefined || body.status === 'active') status = 'active';
+      else if (body.status === 'draft') status = 'draft';
+      else {
+        res.status(400).json({ error: 'status must be active or draft' });
+        return;
+      }
+
       let spec: RoutineSpec;
       let sourceText: string;
+      const warnings: string[] = [];
       if (typeof body.text === 'string' && body.text.trim()) {
         const parsed = parseRoutineSpec(body.text.slice(0, MAX_TEXT));
         if (!parsed.matched) {
@@ -98,6 +147,7 @@ export function createWatchesRouter(): Router {
         }
         spec = parsed.spec;
         sourceText = body.text.slice(0, MAX_TEXT);
+        warnings.push(...parsed.warnings);
       } else if (body.spec !== undefined) {
         const v = validateSpec(body.spec);
         if (!v.ok) {
@@ -112,7 +162,16 @@ export function createWatchesRouter(): Router {
         return;
       }
 
-      const status: RoutineStatus = body.status === 'draft' ? 'draft' : 'active';
+      // Safety: a filter that matches EVERY signal is never created active — it
+      // would fire on the user's whole stream. Force it to draft so the user
+      // must narrow + explicitly activate it.
+      if (status === 'active' && isFilterEmpty(spec.filter)) {
+        status = 'draft';
+        warnings.push(
+          'This watch matches every signal, so it was saved as a draft — narrow it (a sender, keyword, or source) and activate it.',
+        );
+      }
+
       const watch = await watchRepository.create({
         userId,
         sourceText,
@@ -122,7 +181,7 @@ export function createWatchesRouter(): Router {
         // recomputes next_run_at after each firing.
         nextRunAt: status === 'active' ? new Date() : null,
       });
-      res.status(201).json(watch);
+      res.status(201).json({ watch, warnings });
     } catch (err) {
       next(err);
     }

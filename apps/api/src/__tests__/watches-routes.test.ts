@@ -147,6 +147,49 @@ describe('watches routes', () => {
       expect(res.status).toBe(400);
     });
 
+    it('400s on an invalid create status (no silent default to active)', async () => {
+      const res = await request(buildApp(), 'POST', `/api/watches/${USER}`, {
+        text: 'every morning summarize my email',
+        status: 'bogus',
+      });
+      expect(res.status).toBe(400);
+      expect(mockWatchRepository.create).not.toHaveBeenCalled();
+    });
+
+    it('rejects a filter with non-string entries', async () => {
+      const res = await request(buildApp(), 'POST', `/api/watches/${USER}`, {
+        spec: { name: 'x', cadence: 'daily', action: 'digest', filter: { keywords: [{ nested: 1 }] } },
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('caps and normalizes filter entries, dropping unknown keys', async () => {
+      mockWatchRepository.create.mockResolvedValue(fakeWatch);
+      await request(buildApp(), 'POST', `/api/watches/${USER}`, {
+        spec: {
+          name: 'x',
+          cadence: 'daily',
+          action: 'digest',
+          filter: { keywords: [' Budget ', ''], junk: 'dropped', domains: ['finance'] },
+        },
+      });
+      const filter = mockWatchRepository.create.mock.calls[0]![0].spec.filter;
+      expect(filter.keywords).toEqual(['Budget']); // trimmed, empty dropped
+      expect(filter.domains).toEqual(['finance']);
+      expect((filter as Record<string, unknown>).junk).toBeUndefined(); // unknown key dropped
+    });
+
+    it('forces an all-match watch to draft (never fires on the whole stream) with a warning', async () => {
+      mockWatchRepository.create.mockResolvedValue({ ...fakeWatch, status: 'draft' });
+      const res = await request(buildApp(), 'POST', `/api/watches/${USER}`, {
+        text: 'every day summarize', // no source/sender/keyword → matches everything
+      });
+      expect(res.status).toBe(201);
+      expect(mockWatchRepository.create.mock.calls[0]![0].status).toBe('draft');
+      const b = res.body as { warnings: string[] };
+      expect(b.warnings.some((w) => /matches every signal/i.test(w))).toBe(true);
+    });
+
     it('400s on a non-UUID userId (validator)', async () => {
       const res = await request(buildApp(), 'POST', '/api/watches/not-a-uuid', {
         text: 'every morning summarize my email',
