@@ -1,5 +1,13 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.98.0] - 2026-07-05
+
+### Added
+
+- **No-code routines — the worker scheduler (#519, part 3b). Watches now fire.** A gated worker job (`SKYTWIN_WATCHES_ENABLED`, default off) that, each minute, claims every **due** Watch (`watchRepository.listDue`), matches the user's recent signals against the watch's filter (`matchesFilter`, part 3a), records the result, and schedules the next firing (`computeNextRun` in the user's timezone). New `watch_runs` table (migration 070, verified against real CockroachDB) is the **canonical, explanation-carrying record** of each firing: `matched_refs` is the evidence (which signals matched), `summary` is the digest/notify output, and the watch's own filter (joinable) is the "why" — the read-only equivalent of an `ExplanationRecord`. The ambient surfaces (briefing projection, notifications — part 4) will READ from this table; it is the single source of truth, never a separate copy.
+
+  **Read-only, no policy gate** — a firing produces a digest/notification and takes no action (the `watch_runs.action` CHECK constraint enforces `digest`/`notify`). Only meaningful firings (≥1 match) write a row; a no-match firing still advances the schedule, so the run history stays signal, not noise. Each watch is isolated so one failure (a bad timezone, a signal-query error) can't stall the rest; the pure gate + matcher + summary are unit-tested (11 cases) without driving the worker loop. First-run lookback is cadence-sized (hourly 1h / daily 24h / weekly 7d), then windowed by the watch's last run so a digest never re-summarizes the same signals. Next: part 4 surfaces the runs (briefing projection + the Watches management page + chat authoring).
+
 ## [0.6.97.0] - 2026-07-05
 
 ### Added
