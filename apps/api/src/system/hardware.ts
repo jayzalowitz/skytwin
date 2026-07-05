@@ -77,7 +77,9 @@ function freeDiskGBFor(dir: string): number | null {
   try {
     const stat = fs.statfsSync(probe);
     const freeBytes = stat.bavail * stat.bsize;
-    return Math.round(freeBytes / GB);
+    // floor, not round: overstating free space by ~0.5GB could green-light a
+    // model that won't actually fit once headroom is applied. Stay conservative.
+    return Math.floor(freeBytes / GB);
   } catch {
     return null;
   }
@@ -158,9 +160,15 @@ export function recommendLocalModel(hw: HardwareProfile = detectHardware()): Loc
 
   const downloadGB = Math.round((pick.approxBytes / GB) * 10) / 10;
   const steppedDown = ramFits[0] && ramFits[0].id !== pick.id;
+  // Only promise "runs entirely on your machine" when the llama.cpp runtime is
+  // actually present. Without it, the model download alone can't run inference
+  // yet — say so honestly instead of over-promising local execution.
+  const localClaim = hw.hasLlamaBinary
+    ? ' Runs entirely on your machine, no account or API key needed.'
+    : " We'll set up the on-device runtime alongside it — no account or API key needed.";
   const reason = steppedDown
-    ? `Best model that fits your free disk: ${pick.displayName} (~${downloadGB} GB). A larger model would run on your ${hw.ramGB} GB of RAM, but wouldn't fit the disk space you have right now.`
-    : `Best model for your computer: ${pick.displayName} (~${downloadGB} GB) — sized for your ${hw.ramGB} GB of RAM${diskGB !== null ? ` and ${diskGB} GB free disk` : ''}. Runs entirely on your machine, no account or API key needed.`;
+    ? `Best model that fits your free disk: ${pick.displayName} (~${downloadGB} GB). A larger model would run on your ${hw.ramGB} GB of RAM, but wouldn't fit the disk space you have right now.${localClaim}`
+    : `Best model for your computer: ${pick.displayName} (~${downloadGB} GB) — sized for your ${hw.ramGB} GB of RAM${diskGB !== null ? ` and ${diskGB} GB free disk` : ''}.${localClaim}`;
 
   return { model: pick, fitsDisk: diskGB === null ? true : fitsDisk(pick), downloadGB, reason, hardware: hw };
 }

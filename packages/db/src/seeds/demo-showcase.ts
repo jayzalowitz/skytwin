@@ -134,7 +134,7 @@ async function insertDemoDecision(client: Db, userId: string, d: DemoDecision): 
         // {level,factors} object reads as "no assessment" and 409s.
         JSON.stringify({
           actionId: sel.id,
-          overallTier: d.outcome.requiresApproval ? 'medium' : 'low',
+          overallTier: d.outcome.requiresApproval ? 'moderate' : 'low',
           dimensions: {},
           reasoning: d.outcome.escalationReason ?? 'Routine, low-risk action matching your preferences.',
         }),
@@ -436,7 +436,7 @@ async function seedPat(client: Db): Promise<void> {
   await client.query(
     `INSERT INTO twin_profiles (id, user_id, version, preferences, inferences, risk_tolerance, spend_norms, communication_style, routines, domain_heuristics)
      VALUES ($1, $2, 1, $3, $4, '{}'::jsonb, '{}'::jsonb, $5, '[]'::jsonb, '{}'::jsonb)
-     ON CONFLICT (user_id) DO UPDATE SET preferences = EXCLUDED.preferences, inferences = EXCLUDED.inferences, communication_style = EXCLUDED.communication_style, updated_at = now()`,
+     ON CONFLICT (user_id) DO UPDATE SET version = EXCLUDED.version, preferences = EXCLUDED.preferences, inferences = EXCLUDED.inferences, communication_style = EXCLUDED.communication_style, updated_at = now()`,
     [
       id('bd', 1), DEMO_PAT_ID,
       JSON.stringify([
@@ -510,7 +510,7 @@ async function seedCarol(client: Db): Promise<void> {
   await client.query(
     `INSERT INTO twin_profiles (id, user_id, version, preferences, inferences, risk_tolerance, spend_norms, communication_style, routines, domain_heuristics)
      VALUES ($1, $2, 1, $3, $4, '{}'::jsonb, '{}'::jsonb, $5, '[]'::jsonb, '{}'::jsonb)
-     ON CONFLICT (user_id) DO UPDATE SET preferences = EXCLUDED.preferences, inferences = EXCLUDED.inferences, communication_style = EXCLUDED.communication_style, updated_at = now()`,
+     ON CONFLICT (user_id) DO UPDATE SET version = EXCLUDED.version, preferences = EXCLUDED.preferences, inferences = EXCLUDED.inferences, communication_style = EXCLUDED.communication_style, updated_at = now()`,
     [
       id('bd', 2), DEMO_CAROL_ID,
       JSON.stringify([

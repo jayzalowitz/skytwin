@@ -65,6 +65,7 @@ async function seed(): Promise<void> {
         $1, 1, $2, $3, $4, $5, $6, $7, $8
       )
       ON CONFLICT (user_id) DO UPDATE SET
+        version = EXCLUDED.version,
         preferences = EXCLUDED.preferences,
         inferences = EXCLUDED.inferences,
         risk_tolerance = EXCLUDED.risk_tolerance,
@@ -1081,7 +1082,11 @@ async function seed(): Promise<void> {
         minutesAgo: 520,
         outcome: {
           autoExecuted: false,
-          requiresApproval: false,
+          // Has a pending approval, so the outcome must agree it needs you —
+          // otherwise the digest treats it as an FYI while the queue shows it
+          // pending, and the seeded risk tier drops to 'low'.
+          requiresApproval: true,
+          escalationReason: 'New calendar invite — RSVPs always come to you',
           explanation:
             'New calendar invite from Priya for the Q3 Planning Offsite. Invites always come to you for an RSVP.',
           confidence: 0.9,
@@ -1370,7 +1375,7 @@ async function seed(): Promise<void> {
             // as "no assessment on file" and blocks execution.
             JSON.stringify({
               actionId: sel.id,
-              overallTier: d.outcome.requiresApproval ? 'medium' : 'low',
+              overallTier: d.outcome.requiresApproval ? 'moderate' : 'low',
               dimensions: {},
               reasoning: d.outcome.escalationReason ?? 'Routine, low-risk action matching your preferences.',
             }),
