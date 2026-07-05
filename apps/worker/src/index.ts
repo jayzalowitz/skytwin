@@ -44,6 +44,11 @@ import {
   capabilityInferenceEnabled,
   shouldRunCapabilityInference,
 } from './jobs/capability-inference.js';
+import {
+  runWatchSchedulerJob,
+  watchSchedulerEnabled,
+  shouldRunWatchScheduler,
+} from './jobs/watch-scheduler.js';
 import { extractErrorCode } from './oauth-error-code.js';
 import { DeadLetterTracker } from './dead-letter.js';
 
@@ -728,6 +733,7 @@ async function main(): Promise<void> {
   // writes, no sends. Per-user errors are absorbed inside the job; the
   // dead-letter tracker bounds repeated whole-job failures.
   let lastCapabilityInferenceAt = 0;
+  let lastWatchSchedulerAt = 0;
 
   // Poll loop
   while (running) {
@@ -775,6 +781,21 @@ async function main(): Promise<void> {
     ) {
       await deadLetterTracker.run('capability-inference', () => runCapabilityInferenceJob());
       lastCapabilityInferenceAt = nowMs;
+    }
+
+    // Fire due no-code routines ("watches", #519). Opt-in, default off; each
+    // firing is READ-ONLY (digest/notify) and writes a watch_run. The pure gate
+    // is unit-tested (watch-scheduler.test.ts) so the flag + interval logic is
+    // verified without driving this loop.
+    if (
+      shouldRunWatchScheduler({
+        enabled: watchSchedulerEnabled(),
+        nowMs,
+        lastRunAt: lastWatchSchedulerAt,
+      })
+    ) {
+      await deadLetterTracker.run('watch-scheduler', () => runWatchSchedulerJob());
+      lastWatchSchedulerAt = nowMs;
     }
 
     // Push federation deltas to active peers hourly (#194 Child 1).

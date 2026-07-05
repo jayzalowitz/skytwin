@@ -22,6 +22,7 @@
     "@skytwin/ironclaw-adapter": "workspace:*",
     "@skytwin/llm-client": "workspace:*",
     "@skytwin/mcp-host": "workspace:*",
+    "@skytwin/routines": "workspace:*",
     "@skytwin/memory-gbrain-crdb-adapter": "workspace:*",
     "@skytwin/observability": "workspace:*",
     "@skytwin/policy-engine": "workspace:*",

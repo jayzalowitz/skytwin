@@ -1,5 +1,19 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.99.0] - 2026-07-05
+
+### Added
+
+- **No-code routines — the worker scheduler (#519, part 3b). Watches now fire.** A gated worker job (`SKYTWIN_WATCHES_ENABLED`, default off) that, each minute, claims every **due** Watch (`watchRepository.listDue`), matches the user's recent signals against the watch's filter (`matchesFilter`, part 3a), records the result, and schedules the next firing (`computeNextRun` in the user's timezone). New `watch_runs` table (migration 070, verified against real CockroachDB) is the **canonical, explanation-carrying record** of each firing: `matched_refs` is the evidence (which signals matched), `summary` is the digest/notify output, and the watch's own filter (joinable) is the "why" — the read-only equivalent of an `ExplanationRecord`. The ambient surfaces (briefing projection, notifications — part 4) will READ from this table; it is the single source of truth, never a separate copy.
+
+  **Read-only, no policy gate** — a firing produces a digest/notification and takes no action (the `watch_runs.action` CHECK constraint enforces `digest`/`notify`). Only meaningful firings (≥1 match) write a row; a no-match firing still advances the schedule, so the run history stays signal, not noise. Each watch is isolated so one failure (a bad timezone, a signal-query error) can't stall the rest; the pure gate + matcher + summary are unit-tested (16 cases) without driving the worker loop. Next: part 4 surfaces the runs (briefing projection + the Watches management page + chat authoring).
+
+### Fixed (post-/review)
+
+- **Watch scheduler is crash-safe (evaluate-then-claim).** The scheduler fetches and evaluates a watch's signals **before** claiming it (advancing `next_run_at`), not after — so a crash or transient failure during the expensive signal fetch no longer permanently drops that window; it's simply retried next tick. The atomic `claimDue` still guarantees exactly-once across concurrent workers (the claim loser discards its work), but a claim is only committed once the run has been computed.
+- **Bounded signal window.** A watch's firing window is now `(windowStart, claimTime]` — a half-open interval with an explicit upper bound — so a signal at the exact boundary is counted once (never dropped by a strict `>` on both ends, never double-counted next run). `windowStart` is floored at the watch's `created_at` (a fresh watch never digests signals from before it existed) and capped at a 7-day ceiling (bounds per-tick work after long worker downtime).
+- **Bounded run rows.** `matched_refs` stores at most 200 signal ids while `matched_count` keeps the true total, so a pathological match set can't balloon a single `watch_runs` row. Migration 070 adds a `matched_count >= 0` CHECK (verified against real CockroachDB).
+
 ## [0.6.98.0] - 2026-07-05
 
 ### Added

@@ -123,6 +123,7 @@ export {
   userPurgeRepository,
   accessLogRepository,
   watchRepository,
+  watchRunRepository,
 } from './repositories/index.js';
 export type {
   ConnectorHealthRow,
@@ -134,6 +135,8 @@ export type {
   RecordAccessInput,
   WatchRow,
   CreateWatchInput,
+  WatchRunRow,
+  CreateWatchRunInput,
 } from './repositories/index.js';
 export type {
   RememberPendingSigninInput,

@@ -378,6 +378,9 @@ importers:
       '@skytwin/registry-client':
         specifier: workspace:*
         version: link:../../packages/registry-client
+      '@skytwin/routines':
+        specifier: workspace:*
+        version: link:../../packages/routines
       '@skytwin/shared-types':
         specifier: workspace:*
         version: link:../../packages/shared-types
