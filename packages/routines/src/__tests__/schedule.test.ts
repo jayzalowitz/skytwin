@@ -73,6 +73,44 @@ describe('computeNextRun', () => {
     expect(Math.round((next.getTime() - from.getTime()) / DAY)).toBe(7);
   });
 
+  it('is correct across a DST spring-forward day (8am stays 8am local)', () => {
+    // US DST 2026 springs forward on 2026-03-08 (02:00→03:00 in New York).
+    const from = new Date('2026-03-08T05:00:00Z'); // 00:00 EST, before the jump
+    const next = computeNextRun(spec({ cadence: 'daily', hourOfDay: 8 }), from, 'America/New_York');
+    expect(localHour(next, 'America/New_York')).toBe(8); // exactly 8am despite the DST shift
+  });
+
+  it('is correct across a DST fall-back day', () => {
+    // Falls back 2026-11-01 (02:00→01:00 in New York).
+    const from = new Date('2026-11-01T04:00:00Z'); // 00:00 EDT, before the fall-back
+    const next = computeNextRun(spec({ cadence: 'daily', hourOfDay: 8 }), from, 'America/New_York');
+    expect(localHour(next, 'America/New_York')).toBe(8);
+  });
+
+  it('throws a clear error on an invalid `from` date (does not return Invalid Date)', () => {
+    expect(() => computeNextRun(spec({ cadence: 'daily' }), new Date('nonsense'), 'UTC')).toThrow(
+      /valid Date/i,
+    );
+    expect(() => computeNextRun(spec({ cadence: 'hourly' }), new Date(NaN))).toThrow(/valid Date/i);
+  });
+
+  it('normalizes an out-of-range dayOfWeek instead of returning the wrong day', () => {
+    const from = new Date('2026-07-05T12:00:00Z');
+    // dayOfWeek 8 wraps to 1 (Monday); the result must be a real weekday, not a fallthrough.
+    const next = computeNextRun(spec({ cadence: 'weekly', dayOfWeek: 8, hourOfDay: 9 }), from, 'UTC');
+    expect(localDow(next, 'UTC')).toBe(1);
+    expect(next.getTime()).toBeGreaterThan(from.getTime());
+  });
+
+  it('falls back to UTC on an invalid timezone instead of throwing', () => {
+    const from = new Date('2026-07-05T06:00:00Z');
+    let next!: Date;
+    expect(() => {
+      next = computeNextRun(spec({ cadence: 'daily', hourOfDay: 8 }), from, 'Not/AZone');
+    }).not.toThrow();
+    expect(localHour(next, 'UTC')).toBe(8); // computed as if UTC
+  });
+
   it('daily runs are ~24h apart in steady state', () => {
     const from = new Date('2026-07-05T08:00:00Z');
     const s = spec({ cadence: 'daily', hourOfDay: 8 });

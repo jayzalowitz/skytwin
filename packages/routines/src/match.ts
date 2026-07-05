@@ -1,6 +1,18 @@
 import type { RoutineFilter } from '@skytwin/shared-types';
 
 /**
+ * A `domains` filter entry is a topical tag (the parser emits `security` /
+ * `scheduling`), not a literal word to find. Expand each to the related terms
+ * the parser itself recognizes, so a `security` watch actually catches
+ * phishing/suspicious/fraud messages — not only ones containing "security".
+ * An unknown domain falls back to a literal match on itself.
+ */
+const DOMAIN_TERMS: Record<string, string[]> = {
+  security: ['security', 'phishing', 'suspicious', 'breach', 'compromis', 'fraud'],
+  scheduling: ['scheduling', 'conflict', 'double-book', 'double book', 'reschedul'],
+};
+
+/**
  * A signal reduced to the fields a Watch filter matches on (#519). The worker
  * (a later part) builds this from a stored signal — `source` is the channel
  * (`gmail`/`outlook`/`google_calendar`/…), `from` is the sender/organizer, and
@@ -33,7 +45,13 @@ export function matchesFilter(sig: MatchableSignal, filter: RoutineFilter): bool
   if (filter.fromContains?.length && !filter.fromContains.some((f) => from.includes(f.toLowerCase()))) {
     return false;
   }
-  const needles = [...(filter.keywords ?? []), ...(filter.domains ?? [])];
+  const needles = [
+    ...(filter.keywords ?? []),
+    ...(filter.domains ?? []).flatMap((dRaw) => {
+      const d = dRaw.toLowerCase();
+      return DOMAIN_TERMS[d] ?? [d];
+    }),
+  ];
   if (needles.length && !needles.some((k) => text.includes(k.toLowerCase()))) {
     return false;
   }

@@ -26,9 +26,17 @@ describe('matchesFilter', () => {
     expect(matchesFilter(sig({ text: 'lunch plans' }), { keywords: ['budget'] })).toBe(false);
   });
 
-  it('domains are matched as text needles (parser topical tags)', () => {
-    expect(matchesFilter(sig({ text: 'calendar conflict detected' }), { domains: ['conflict'] })).toBe(true);
+  it('domains expand to related terms (a security watch catches phishing/suspicious)', () => {
+    // 'security' expands so the text need not literally say "security".
+    expect(matchesFilter(sig({ text: 'a suspicious login attempt' }), { domains: ['security'] })).toBe(true);
+    expect(matchesFilter(sig({ text: 'possible phishing email' }), { domains: ['security'] })).toBe(true);
+    expect(matchesFilter(sig({ text: 'calendar conflict detected' }), { domains: ['scheduling'] })).toBe(true);
     expect(matchesFilter(sig({ text: 'all clear' }), { domains: ['security'] })).toBe(false);
+  });
+
+  it('an unknown domain falls back to a literal match', () => {
+    expect(matchesFilter(sig({ text: 'the invoice is attached' }), { domains: ['invoice'] })).toBe(true);
+    expect(matchesFilter(sig({ text: 'lunch plans' }), { domains: ['invoice'] })).toBe(false);
   });
 
   it('AND across fields: source matches but sender does not → no match', () => {
