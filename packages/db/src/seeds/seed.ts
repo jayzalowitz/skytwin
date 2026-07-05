@@ -1,4 +1,5 @@
 import { getPool, closePool, withTransaction } from '../connection.js';
+import { seedDemoShowcase } from './demo-showcase.js';
 
 /**
  * Seed the database with sample data for development.
@@ -17,7 +18,11 @@ async function seed(): Promise<void> {
          'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d',
          'alex@example.com',
          'Alex Thompson',
-         'moderate_autonomy',
+         -- low_autonomy (not moderate): the trust bar only shows live *progress*
+         -- below the top tiers. At low_autonomy Alex is visibly climbing toward
+         -- "Handle most things" (50-approval threshold), which is the story the
+         -- demo wants — moderate_autonomy renders a flat "Maximum trust" dead-end.
+         'low_autonomy',
          $1
        )
        ON CONFLICT (id) DO UPDATE SET
@@ -71,43 +76,33 @@ async function seed(): Promise<void> {
       RETURNING id`,
       [
         userId,
+        // Preferences drive "What I've learned" + the dashboard's "how well I
+        // know you" confidence rollup. source explicit/corrected count as
+        // "confirmed" (100%); confidence must be a valid ConfidenceLevel
+        // (speculative|low|moderate|high|confirmed — NOT "medium").
         JSON.stringify([
-          {
-            domain: 'communication',
-            key: 'response_style',
-            value: 'concise',
-            confidence: 'high',
-          },
-          {
-            domain: 'scheduling',
-            key: 'meeting_buffer',
-            value: 15,
-            confidence: 'medium',
-          },
-          {
-            domain: 'shopping',
-            key: 'brand_preference',
-            value: { category: 'electronics', preferred: ['Apple', 'Sony'] },
-            confidence: 'high',
-          },
+          { domain: 'communication', key: 'response_style', value: 'Keep replies short and to the point', confidence: 'high', source: 'explicit', evidenceIds: [] },
+          { domain: 'email', key: 'auto_archive_promo', value: 'Archive promotions and receipts automatically', confidence: 'confirmed', source: 'explicit', evidenceIds: [] },
+          { domain: 'email', key: 'snooze_newsletters', value: 'Snooze newsletters to the weekend', confidence: 'high', source: 'corrected', evidenceIds: [] },
+          { domain: 'email', key: 'draft_work_replies', value: 'Draft replies to coworkers, but let me send them', confidence: 'high', source: 'explicit', evidenceIds: [] },
+          { domain: 'calendar', key: 'protect_morning_focus', value: 'Protect 8–10am for focused work', confidence: 'high', source: 'explicit', evidenceIds: [] },
+          { domain: 'calendar', key: 'auto_accept_recurring', value: 'Auto-accept recurring meetings with no conflicts', confidence: 'confirmed', source: 'corrected', evidenceIds: [] },
+          { domain: 'calendar', key: 'no_meetings_friday', value: 'Keep Friday afternoons meeting-free', confidence: 'moderate', source: 'explicit', evidenceIds: [] },
+          { domain: 'scheduling', key: 'meeting_buffer', value: 'Leave 15 minutes between meetings', confidence: 'moderate', source: 'inferred', evidenceIds: [] },
+          { domain: 'finance', key: 'alert_large_charges', value: 'Ask before anything over $50 goes through', confidence: 'high', source: 'explicit', evidenceIds: [] },
+          { domain: 'subscriptions', key: 'review_before_renew', value: 'Review subscription renewals before they charge', confidence: 'moderate', source: 'corrected', evidenceIds: [] },
+          { domain: 'shopping', key: 'brand_preference', value: 'Prefer Apple and Sony for electronics', confidence: 'high', source: 'explicit', evidenceIds: [] },
+          { domain: 'travel', key: 'aisle_seat', value: 'Book the aisle seat when flying', confidence: 'moderate', source: 'inferred', evidenceIds: [] },
         ]),
+        // Inferences are things the twin figured out on its own; each carries a
+        // human "reasoning" line rendered under the item.
         JSON.stringify([
-          {
-            type: 'behavioral',
-            domain: 'calendar',
-            key: 'morning_person',
-            value: true,
-            confidence: 'high',
-            observedFrom: 'calendar_patterns',
-          },
-          {
-            type: 'preference',
-            domain: 'email',
-            key: 'prefers_async',
-            value: true,
-            confidence: 'moderate',
-            observedFrom: 'communication_history',
-          },
+          { type: 'behavioral', domain: 'calendar', key: 'morning_person', value: 'Most productive before noon', confidence: 'high', supportingEvidenceIds: [], contradictingEvidenceIds: [], observedFrom: 'calendar_patterns', reasoning: 'You schedule deep work in the morning and decline early meetings 14 of the last 20 weekdays.' },
+          { type: 'preference', domain: 'email', key: 'prefers_async', value: 'Prefers async over meetings', confidence: 'moderate', supportingEvidenceIds: [], contradictingEvidenceIds: [], observedFrom: 'communication_history', reasoning: 'You often reply "let\'s handle this over email" instead of booking a call.' },
+          { type: 'behavioral', domain: 'finance', key: 'cautious_spender', value: 'Careful with money', confidence: 'high', supportingEvidenceIds: [], contradictingEvidenceIds: [], observedFrom: 'transaction_history', reasoning: 'You review nearly every charge over ~$50 before approving it.' },
+          { type: 'behavioral', domain: 'communication', key: 'professional_tone', value: 'Professional, warm tone', confidence: 'high', supportingEvidenceIds: [], contradictingEvidenceIds: [], observedFrom: 'sent_mail', reasoning: 'Your sent mail is concise and friendly, signs off with "Best".' },
+          { type: 'behavioral', domain: 'calendar', key: 'declines_late_meetings', value: 'Avoids evening meetings', confidence: 'moderate', supportingEvidenceIds: [], contradictingEvidenceIds: [], observedFrom: 'calendar_patterns', reasoning: 'You\'ve declined 6 of the last 7 meetings after 5pm.' },
+          { type: 'behavioral', domain: 'health', key: 'morning_exerciser', value: 'Runs in the morning', confidence: 'moderate', supportingEvidenceIds: [], contradictingEvidenceIds: [], observedFrom: 'activity_logs', reasoning: 'Your workouts are logged before 9am on most weekdays.' },
         ]),
         JSON.stringify({
           financial: 'moderate',
@@ -817,6 +812,691 @@ async function seed(): Promise<void> {
       );
       console.log(`[seed] Created social domain decision for Alex.`);
     }
+
+    // ========================================================================
+    // 8. Rich, "live-looking" demo for the SAMPLE PROFILE (Alex Thompson).
+    //
+    // This is the profile the web onboarding loads via "Try with a sample
+    // profile", so it must look alive on first glance: real to-dos sitting in
+    // the approvals queue, a populated daily briefing, and a mix of handled
+    // activity — all phrased for a human (no internal jargon).
+    //
+    // Everything here is dated RELATIVE to now() and upserts on a fixed id, so
+    // re-running `pnpm db:seed` always refreshes it: approvals never drift into
+    // "expired", the briefing is always "today", and recent activity stays
+    // recent. The live-digest builder (apps/api live-digest.ts) reconstructs
+    // each item from raw_event = { source, type, data }, so raw_event is shaped
+    // that way here to yield real titles/bodies instead of generic fallbacks.
+    // ========================================================================
+
+    // Mark the sample profile as having Gmail + Google Calendar connected. The
+    // briefing's live digest treats "no connected accounts" as cold-start and
+    // hides everything (source-coverage.ts computeCoverage → coldStart), so
+    // without this the rich to-dos below never render. Tokens are intentionally
+    // NULL — nothing here can actually call Google (db-token-store returns "no
+    // usable token" for a NULL row), it only represents the connection so the
+    // digest, coverage panel, and "connected" chrome reflect a real user.
+    await client.query(
+      `INSERT INTO oauth_tokens
+         (id, user_id, provider, account_email, scopes, expires_at, encryption_key_version, created_at, updated_at)
+       VALUES
+         ('ac000001-0000-4000-8000-000000000001', $1, 'google', 'alex@example.com',
+          ARRAY['https://www.googleapis.com/auth/gmail.modify','https://www.googleapis.com/auth/calendar'],
+          now() + INTERVAL '30 days', 1, now(), now())
+       ON CONFLICT (user_id, provider, account_email) DO UPDATE SET
+         scopes = EXCLUDED.scopes,
+         expires_at = EXCLUDED.expires_at,
+         updated_at = now()`,
+      [userId],
+    );
+    console.log('[seed] Marked the sample profile as Gmail + Calendar connected (synthetic, NULL tokens).');
+
+    interface DemoOutcome {
+      autoExecuted: boolean;
+      requiresApproval: boolean;
+      escalationReason?: string;
+      explanation: string;
+      confidence: number;
+      selectedAction?: {
+        id: string;
+        type: string;
+        description: string;
+        parameters: Record<string, unknown>;
+        reversible: boolean;
+        estimatedCost: number | null;
+      };
+    }
+    interface DemoApproval {
+      id: string;
+      candidateAction: Record<string, unknown>;
+      reason: string;
+      urgency: string;
+      confirmationLevel?: 'single' | 'dual';
+      expiresInDays: number;
+    }
+    interface DemoDecision {
+      id: string;
+      outcomeId: string;
+      situationType: string;
+      domain: string;
+      urgency: string;
+      source: string;
+      eventType: string;
+      data: Record<string, unknown>;
+      summary: string;
+      minutesAgo: number;
+      outcome: DemoOutcome;
+      approval?: DemoApproval;
+    }
+
+    const demoDecisions: DemoDecision[] = [
+      // ---- TO-DOs: things sitting in the approvals queue, needing Alex ----
+      {
+        id: 'de000001-0000-4000-8000-000000000001',
+        outcomeId: 'ea000001-0000-4000-8000-000000000001',
+        situationType: 'email_reply',
+        domain: 'communication',
+        urgency: 'high',
+        source: 'gmail',
+        eventType: 'email_received',
+        data: {
+          subject: 'Re: SkyTwin pilot — pricing & timeline',
+          from: 'Dana Ruiz <dana@brightpath.io>',
+          to: 'alex@example.com',
+          snippet:
+            "Thanks Alex — can you confirm the pilot start date and send over the pricing tiers we discussed? We'd love to get sign-off this week.",
+          authoringTier: 'inbox_personal',
+        },
+        summary: 'Dana at BrightPath asked for the pilot start date and pricing tiers',
+        minutesAgo: 42,
+        outcome: {
+          autoExecuted: false,
+          requiresApproval: true,
+          escalationReason: 'External recipient — email sends always go to you first',
+          explanation:
+            'Drafted a reply to Dana confirming the pilot start date and pricing. Held for your review because it goes to an external client.',
+          confidence: 0.82,
+          selectedAction: {
+            id: 'ca000001-0000-4000-8000-000000000001',
+            type: 'draft_email',
+            description: 'Send the reply I drafted to Dana at BrightPath',
+            parameters: {
+              to: 'dana@brightpath.io',
+              subject: 'Re: SkyTwin pilot — pricing & timeline',
+              draftBody:
+                'Hi Dana,\n\nGreat to hear you\'re ready to move. We can start the pilot on Monday, July 14. Pricing tiers are: Starter $2k/mo, Team $5k/mo, and Scale $9k/mo — all month-to-month for the pilot.\n\nHappy to hop on a quick call if that\'s easier.\n\nBest,\nAlex',
+              summary: 'Reply to Dana with the pilot start date and pricing tiers',
+            },
+            reversible: true,
+            estimatedCost: 0,
+          },
+        },
+        approval: {
+          id: 'ab000001-0000-4000-8000-000000000001',
+          candidateAction: {
+            actionType: 'send_email',
+            description: 'Send the reply I drafted to Dana at BrightPath',
+            parameters: {
+              to: 'dana@brightpath.io',
+              subject: 'Re: SkyTwin pilot — pricing & timeline',
+              draftBody:
+                'Hi Dana,\n\nGreat to hear you\'re ready to move. We can start the pilot on Monday, July 14. Pricing tiers are: Starter $2k/mo, Team $5k/mo, and Scale $9k/mo — all month-to-month for the pilot.\n\nHappy to hop on a quick call if that\'s easier.\n\nBest,\nAlex',
+              summary: 'Reply to Dana with the pilot start date and pricing',
+            },
+            estimatedCost: 0,
+            reasoning:
+              'Dana asked for the pilot start date and pricing tiers. I drafted a reply in your usual concise style.',
+          },
+          reason:
+            'This reply goes to an external client. Review the draft, then I\'ll send it.',
+          urgency: 'high',
+          expiresInDays: 2,
+        },
+      },
+      {
+        id: 'de000002-0000-4000-8000-000000000002',
+        outcomeId: 'ea000002-0000-4000-8000-000000000002',
+        situationType: 'purchase_suggestion',
+        domain: 'purchasing',
+        urgency: 'medium',
+        source: 'gmail',
+        eventType: 'email_received',
+        data: {
+          subject: 'Your Figma annual plan renews July 8',
+          from: 'Figma Billing <billing@figma.com>',
+          snippet:
+            'Your annual Figma Organization plan ($79.99) will renew automatically on July 8. No action needed to continue.',
+          authoringTier: 'inbox_automated',
+        },
+        summary: 'Figma annual plan ($79.99) renews July 8 — over the auto-approve limit',
+        minutesAgo: 180,
+        outcome: {
+          autoExecuted: false,
+          requiresApproval: true,
+          escalationReason: '$79.99 is over your $50 auto-approve limit',
+          explanation:
+            'Figma\'s annual renewal is $79.99, which is over your $50 auto-approve limit, so I\'m checking with you before it renews.',
+          confidence: 0.68,
+          selectedAction: {
+            id: 'ca000002-0000-4000-8000-000000000002',
+            type: 'approve_renewal',
+            description: 'Approve the $79.99 Figma annual renewal',
+            parameters: { vendor: 'Figma', summary: 'Renew Figma annual plan ($79.99)' },
+            reversible: true,
+            estimatedCost: 7999,
+          },
+        },
+        approval: {
+          id: 'ab000002-0000-4000-8000-000000000002',
+          candidateAction: {
+            actionType: 'approve_renewal',
+            description: 'Approve the $79.99 Figma annual renewal',
+            parameters: { vendor: 'Figma', summary: 'Renew Figma annual plan ($79.99)' },
+            estimatedCost: 7999,
+            reasoning:
+              'You use Figma regularly, but $79.99 is over your $50 auto-approve limit, so this one is your call.',
+          },
+          reason:
+            'This $79.99 renewal is over your $50 auto-approve limit. Approve it, or I\'ll let it lapse.',
+          urgency: 'medium',
+          expiresInDays: 3,
+        },
+      },
+      {
+        id: 'de000003-0000-4000-8000-000000000003',
+        outcomeId: 'ea000003-0000-4000-8000-000000000003',
+        situationType: 'finance_operation',
+        domain: 'finance',
+        urgency: 'high',
+        source: 'gmail',
+        eventType: 'email_received',
+        data: {
+          subject: 'Invoice #2041 from Northwind Design — due July 7',
+          from: 'Accounts Payable <ap@northwind.design>',
+          snippet:
+            'Invoice #2041 for $1,250.00 is due July 7. Please remit payment to the account on file. Thank you for your business.',
+          authoringTier: 'inbox_personal',
+        },
+        summary: 'Invoice #2041 from Northwind Design for $1,250 is due July 7',
+        minutesAgo: 300,
+        outcome: {
+          autoExecuted: false,
+          requiresApproval: true,
+          escalationReason: '$1,250 exceeds your auto-approve limit and Northwind is a new payee',
+          explanation:
+            'Northwind Design sent invoice #2041 for $1,250, due July 7. It\'s a new payee and well over your limit, so I\'ll need you to confirm the payment.',
+          confidence: 0.6,
+          selectedAction: {
+            id: 'ca000003-0000-4000-8000-000000000003',
+            type: 'pay_invoice',
+            description: 'Pay invoice #2041 to Northwind Design ($1,250.00)',
+            parameters: {
+              payee: 'Northwind Design',
+              amount: 125000,
+              summary: 'Pay invoice #2041 ($1,250)',
+            },
+            reversible: false,
+            estimatedCost: 125000,
+          },
+        },
+        approval: {
+          id: 'ab000003-0000-4000-8000-000000000003',
+          candidateAction: {
+            actionType: 'pay_invoice',
+            description: 'Pay invoice #2041 to Northwind Design ($1,250.00)',
+            parameters: {
+              payee: 'Northwind Design',
+              amount: 125000,
+              summary: 'Pay invoice #2041 ($1,250)',
+            },
+            estimatedCost: 125000,
+            reasoning:
+              'A $1,250 payment to a payee you haven\'t paid before — high-value and irreversible, so it needs a two-step confirmation.',
+          },
+          reason:
+            'This is $1,250 to a payee you haven\'t paid before. I\'ll ask you to confirm twice.',
+          urgency: 'high',
+          confirmationLevel: 'dual',
+          expiresInDays: 2,
+        },
+      },
+      {
+        id: 'de000004-0000-4000-8000-000000000004',
+        outcomeId: 'ea000004-0000-4000-8000-000000000004',
+        situationType: 'calendar_invite',
+        domain: 'scheduling',
+        urgency: 'medium',
+        source: 'google_calendar',
+        eventType: 'event_invite',
+        data: {
+          title: 'Q3 Planning Offsite',
+          summary: 'Q3 Planning Offsite',
+          organizer: 'Priya Nair <priya@example.com>',
+          description:
+            'Full-day offsite to lock in Q3 goals. Lunch provided. Please RSVP by Friday so we can finalize the room.',
+          attendees: [{ email: 'priya@example.com' }, { email: 'alex@example.com' }],
+          authoringTier: 'inbox_personal',
+        },
+        summary: 'Priya invited you to the Q3 Planning Offsite — RSVP by Friday',
+        minutesAgo: 520,
+        outcome: {
+          autoExecuted: false,
+          requiresApproval: false,
+          explanation:
+            'New calendar invite from Priya for the Q3 Planning Offsite. Invites always come to you for an RSVP.',
+          confidence: 0.9,
+          selectedAction: {
+            id: 'ca000004-0000-4000-8000-000000000004',
+            type: 'respond_to_event',
+            description: 'RSVP to the Q3 Planning Offsite',
+            parameters: {
+              eventTitle: 'Q3 Planning Offsite',
+              summary: 'RSVP: Q3 Planning Offsite (Friday deadline)',
+            },
+            reversible: true,
+            estimatedCost: null,
+          },
+        },
+        approval: {
+          id: 'ab000004-0000-4000-8000-000000000004',
+          candidateAction: {
+            actionType: 'respond_to_event',
+            description: 'RSVP to the Q3 Planning Offsite',
+            parameters: {
+              eventTitle: 'Q3 Planning Offsite',
+              summary: 'RSVP: Q3 Planning Offsite (Friday deadline)',
+            },
+            estimatedCost: 0,
+            reasoning:
+              'Priya asked for an RSVP by Friday. Accept, decline, or propose another time.',
+          },
+          reason: 'Priya invited you to the Q3 Planning Offsite and asked for an RSVP by Friday.',
+          urgency: 'medium',
+          expiresInDays: 4,
+        },
+      },
+      {
+        id: 'de000005-0000-4000-8000-000000000005',
+        outcomeId: 'ea000005-0000-4000-8000-000000000005',
+        situationType: 'security_alert',
+        domain: 'security',
+        urgency: 'critical',
+        source: 'gmail',
+        eventType: 'email_received',
+        data: {
+          subject: 'Security alert: new sign-in to your Google Account',
+          from: 'Google <no-reply@accounts.google.com>',
+          snippet:
+            'A new sign-in from Lisbon, Portugal was detected on your account. If this was you, no action is needed. If not, secure your account now.',
+          authoringTier: 'inbox_automated',
+        },
+        summary: 'New Google sign-in from Lisbon, Portugal — confirm it was you',
+        minutesAgo: 90,
+        outcome: {
+          autoExecuted: false,
+          requiresApproval: false,
+          escalationReason: 'Security alerts are always sent to you — never auto-handled',
+          explanation:
+            'Google flagged a new sign-in from Lisbon. Security alerts always come straight to you — I never act on them for you.',
+          confidence: 0.99,
+        },
+      },
+      // ---- FYIs: handled automatically, shown so you stay in the loop ----
+      {
+        id: 'de000006-0000-4000-8000-000000000006',
+        outcomeId: 'ea000006-0000-4000-8000-000000000006',
+        situationType: 'meeting_request',
+        domain: 'scheduling',
+        urgency: 'low',
+        source: 'google_calendar',
+        eventType: 'event_invite',
+        data: {
+          title: 'Eng Standup (daily)',
+          summary: 'Eng Standup (daily)',
+          organizer: 'Eng Team <team@example.com>',
+          description: 'Daily 15-minute standup. Recurring.',
+          authoringTier: 'inbox_personal',
+        },
+        summary: 'Recurring daily Eng Standup',
+        minutesAgo: 610,
+        outcome: {
+          autoExecuted: true,
+          requiresApproval: false,
+          explanation: 'Accepted your recurring daily Eng Standup — no conflicts on your calendar.',
+          confidence: 0.95,
+        },
+      },
+      {
+        id: 'de000007-0000-4000-8000-000000000007',
+        outcomeId: 'ea000007-0000-4000-8000-000000000007',
+        situationType: 'email_triage',
+        domain: 'communication',
+        urgency: 'low',
+        source: 'gmail',
+        eventType: 'email_received',
+        data: {
+          subject: 'The Daily Stoic — Wednesday',
+          from: 'The Daily Stoic <newsletter@dailystoic.com>',
+          snippet: 'Today\'s meditation: the obstacle is the way…',
+          authoringTier: 'inbox_broadcast',
+        },
+        summary: 'Daily Stoic newsletter',
+        minutesAgo: 700,
+        outcome: {
+          autoExecuted: true,
+          requiresApproval: false,
+          explanation: 'Archived a Daily Stoic newsletter — matches your "snooze newsletters" preference.',
+          confidence: 0.9,
+          selectedAction: {
+            id: 'ca000007-0000-4000-8000-000000000007',
+            type: 'archive_email',
+            description: 'Archive the newsletter',
+            parameters: {},
+            reversible: true,
+            estimatedCost: null,
+          },
+        },
+      },
+      {
+        id: 'de000008-0000-4000-8000-000000000008',
+        outcomeId: 'ea000008-0000-4000-8000-000000000008',
+        situationType: 'finance_operation',
+        domain: 'finance',
+        urgency: 'low',
+        source: 'app',
+        eventType: 'transaction',
+        data: {
+          title: 'Blue Bottle Coffee — $5.75',
+          body: 'Card ending 4242 · categorized as Food & Drink',
+          authoringTier: 'inbox_automated',
+        },
+        summary: 'Blue Bottle Coffee charge — $5.75',
+        minutesAgo: 800,
+        outcome: {
+          autoExecuted: true,
+          requiresApproval: false,
+          explanation: 'Categorized a $5.75 Blue Bottle Coffee charge as Food & Drink.',
+          confidence: 0.96,
+        },
+      },
+      {
+        id: 'de000009-0000-4000-8000-000000000009',
+        outcomeId: 'ea000009-0000-4000-8000-000000000009',
+        situationType: 'document_management',
+        domain: 'documents',
+        urgency: 'low',
+        source: 'filesystem',
+        eventType: 'file_indexed',
+        data: {
+          fileName: 'Invoice-Northwind-2041.pdf',
+          excerpt: 'Filed to Finance/Invoices/2026',
+          authoringTier: 'authored_originated',
+        },
+        summary: 'Filed Invoice-Northwind-2041.pdf',
+        minutesAgo: 305,
+        outcome: {
+          autoExecuted: true,
+          requiresApproval: false,
+          explanation: 'Filed Invoice-Northwind-2041.pdf into Finance/Invoices/2026.',
+          confidence: 0.94,
+        },
+      },
+      {
+        id: 'de00000a-0000-4000-8000-00000000000a',
+        outcomeId: 'ea00000a-0000-4000-8000-00000000000a',
+        situationType: 'health_wellness',
+        domain: 'health',
+        urgency: 'low',
+        source: 'app',
+        eventType: 'metric_log',
+        data: {
+          title: 'Morning run logged — 3.2 mi',
+          body: '28:14 · avg 8:49/mi',
+          authoringTier: 'inbox_automated',
+        },
+        summary: 'Logged a 3.2 mile morning run',
+        minutesAgo: 540,
+        outcome: {
+          autoExecuted: true,
+          requiresApproval: false,
+          explanation: 'Logged your 3.2 mile morning run (28:14).',
+          confidence: 0.99,
+        },
+      },
+    ];
+
+    // Keep the sample profile's digest crisp and human-meaningful: remove any
+    // of Alex's legacy/low-quality decisions whose raw_event has no nested
+    // `data` (the pre-refactor flat seed rows from sections 4 & 7, plus any
+    // worker-generated "reactive" memory items). Those render as generic
+    // "<situation> needs review" lines and repeated one-liners in the live
+    // digest — exactly the sparse, robotic look we're fixing. The curated
+    // decisions below (all carry `data`) fully replace that surface.
+    //
+    // Children are cleared first because their FKs to decisions are NO ACTION
+    // (memory_action_opportunities is ON DELETE SET NULL, so it's left alone).
+    // The subtree has real depth from worker-run items:
+    //   execution_results / execution_events → execution_plans → candidate_actions
+    //   decision_outcomes → { candidate_actions, execution_plans }
+    // so the order below is dependents-before-parents, not a flat loop.
+    const flatDecisionFilter = `SELECT id FROM decisions WHERE user_id = $1 AND raw_event->'data' IS NULL`;
+    const flatPlanFilter = `SELECT id FROM execution_plans WHERE decision_id IN (${flatDecisionFilter})`;
+
+    // 1. execution subtree (keyed on plan_id)
+    await client.query(`DELETE FROM execution_results WHERE plan_id IN (${flatPlanFilter})`, [userId]);
+    await client.query(`DELETE FROM execution_events WHERE plan_id IN (${flatPlanFilter})`, [userId]);
+    // 2. decision_outcomes — references BOTH candidate_actions and execution_plans
+    await client.query(`DELETE FROM decision_outcomes WHERE decision_id IN (${flatDecisionFilter})`, [userId]);
+    // 3. execution_plans — references candidate_actions
+    await client.query(`DELETE FROM execution_plans WHERE decision_id IN (${flatDecisionFilter})`, [userId]);
+    // 4. remaining decision_id-keyed children
+    for (const childTable of [
+      'candidate_actions',
+      'approval_requests',
+      'explanation_records',
+      'feedback_events',
+      'skill_gap_log',
+      'episodic_memories',
+    ]) {
+      await client.query(
+        `DELETE FROM ${childTable} WHERE decision_id IN (${flatDecisionFilter})`,
+        [userId],
+      );
+    }
+    const cleanup = await client.query(
+      `DELETE FROM decisions WHERE user_id = $1 AND raw_event->'data' IS NULL`,
+      [userId],
+    );
+    console.log(`[seed] Cleaned up ${cleanup.rowCount ?? 0} legacy flat decisions for the sample profile.`);
+
+    for (const d of demoDecisions) {
+      // raw_event carries the signal two ways on purpose:
+      //   • nested `data` — how the live-digest builder reads titles/bodies
+      //     (toSignalText reads raw_event.data.{subject,title,snippet,…}); and
+      //   • flat top-level `from`/`subject`/`body` — how the approvals card
+      //     renders "who it's from / subject" (apps/api approvals.ts reads
+      //     raw_event.{from,subject,body} directly).
+      // Deriving the flat fields from `data` keeps the two in lockstep.
+      const flatFrom = (d.data['from'] ?? d.data['organizer'] ?? null) as unknown;
+      const flatSubject = (d.data['subject'] ?? d.data['title'] ?? d.data['summary'] ?? d.data['fileName'] ?? null) as unknown;
+      const flatBody = (d.data['body'] ?? d.data['snippet'] ?? d.data['description'] ?? d.data['excerpt'] ?? null) as unknown;
+      await client.query(
+        `INSERT INTO decisions (id, user_id, situation_type, raw_event, interpreted_situation, domain, urgency, metadata, source, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now() - ($10 || ' minutes')::interval)
+         ON CONFLICT (id) DO UPDATE SET
+           raw_event = EXCLUDED.raw_event,
+           interpreted_situation = EXCLUDED.interpreted_situation,
+           urgency = EXCLUDED.urgency,
+           created_at = EXCLUDED.created_at`,
+        [
+          d.id,
+          userId,
+          d.situationType,
+          JSON.stringify({
+            source: d.source,
+            type: d.eventType,
+            from: flatFrom,
+            subject: flatSubject,
+            body: flatBody,
+            data: d.data,
+          }),
+          JSON.stringify({ summary: d.summary, type: d.situationType }),
+          d.domain,
+          d.urgency,
+          JSON.stringify({ source: d.source, demo: true }),
+          d.source,
+          String(d.minutesAgo),
+        ],
+      );
+
+      const sel = d.outcome.selectedAction;
+      if (sel) {
+        await client.query(
+          `INSERT INTO candidate_actions (id, decision_id, action_type, description, parameters, predicted_user_preference, risk_assessment, reversible, estimated_cost)
+           VALUES ($1, $2, $3, $4, $5, 'likely_approve', $6, $7, $8)
+           ON CONFLICT (id) DO UPDATE SET
+             description = EXCLUDED.description,
+             parameters = EXCLUDED.parameters,
+             risk_assessment = EXCLUDED.risk_assessment`,
+          [
+            sel.id,
+            d.id,
+            sel.type,
+            sel.description,
+            JSON.stringify(sel.parameters),
+            // Must be a real RiskAssessment (overallTier + reasoning) — the
+            // approve preflight parses this via parseRiskAssessmentFromRow and
+            // 409s if overallTier is absent. A thin {level,factors} shape reads
+            // as "no assessment on file" and blocks execution.
+            JSON.stringify({
+              actionId: sel.id,
+              overallTier: d.outcome.requiresApproval ? 'medium' : 'low',
+              dimensions: {},
+              reasoning: d.outcome.escalationReason ?? 'Routine, low-risk action matching your preferences.',
+            }),
+            sel.reversible,
+            sel.estimatedCost,
+          ],
+        );
+      }
+
+      await client.query(
+        `INSERT INTO decision_outcomes (id, decision_id, selected_action_id, auto_executed, requires_approval, escalation_reason, explanation, confidence)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         ON CONFLICT (id) DO UPDATE SET
+           auto_executed = EXCLUDED.auto_executed,
+           requires_approval = EXCLUDED.requires_approval,
+           escalation_reason = EXCLUDED.escalation_reason,
+           explanation = EXCLUDED.explanation,
+           confidence = EXCLUDED.confidence`,
+        [
+          d.outcomeId,
+          d.id,
+          sel?.id ?? null,
+          d.outcome.autoExecuted,
+          d.outcome.requiresApproval,
+          d.outcome.escalationReason ?? null,
+          d.outcome.explanation,
+          d.outcome.confidence,
+        ],
+      );
+
+      if (d.approval) {
+        await client.query(
+          `INSERT INTO approval_requests (id, user_id, decision_id, candidate_action, reason, urgency, status, requested_at, expires_at, confirmation_level)
+           VALUES ($1, $2, $3, $4, $5, $6, 'pending', now() - ($7 || ' minutes')::interval, now() + ($8 || ' days')::interval, $9)
+           ON CONFLICT (id) DO UPDATE SET
+             candidate_action = EXCLUDED.candidate_action,
+             reason = EXCLUDED.reason,
+             urgency = EXCLUDED.urgency,
+             status = 'pending',
+             responded_at = NULL,
+             response = NULL,
+             first_confirmed_at = NULL,
+             requested_at = EXCLUDED.requested_at,
+             expires_at = EXCLUDED.expires_at,
+             confirmation_level = EXCLUDED.confirmation_level`,
+          [
+            d.approval.id,
+            userId,
+            d.id,
+            // The approve preflight (approvals.ts) reads candidate_action.id and
+            // looks up its risk_assessment in the candidate_actions table before
+            // it will execute — a missing id means every "Yes, do it" 409s with
+            // risk_assessment_missing. Link the embedded action to the seeded
+            // candidate_actions row (sel.id), which carries a risk_assessment,
+            // so the demo approvals actually run (via the mock executor).
+            JSON.stringify({ id: sel?.id, ...d.approval.candidateAction }),
+            d.approval.reason,
+            d.approval.urgency,
+            String(d.minutesAgo),
+            String(d.approval.expiresInDays),
+            d.approval.confirmationLevel ?? 'single',
+          ],
+        );
+      }
+    }
+    console.log(`[seed] Created ${demoDecisions.length} recent demo decisions (with approvals + outcomes) for the sample profile.`);
+
+    // A populated daily briefing so /briefing reads real prose immediately —
+    // human-meaningful, to-dos vs FYIs, no internal jargon. generated_at = now()
+    // and read_at = NULL so it shows the "New" badge. Structured to-dos/topics
+    // are built live from the decisions above; this is the prose companion.
+    const dailyBriefingProse = [
+      '## Your daily briefing',
+      '',
+      'Here\'s where things stand. Three things need you; the rest I\'ve handled.',
+      '',
+      '### Needs you',
+      '',
+      '- **Reply to Dana at BrightPath** about the pilot start date and pricing — I drafted it, just review and send.',
+      '- **Approve (or skip) the $79.99 Figma renewal** — it\'s over your $50 auto-approve limit, so it\'s your call.',
+      '- **Confirm the $1,250 payment to Northwind Design** (invoice #2041, due July 7). New payee, so I\'ll ask you to confirm twice.',
+      '',
+      'Also worth a look: a Google security alert about a new sign-in from Lisbon, and an RSVP for Priya\'s Q3 Planning Offsite (due Friday).',
+      '',
+      '### Handled for you',
+      '',
+      '- Accepted your recurring daily Eng Standup',
+      '- Archived a Daily Stoic newsletter',
+      '- Categorized a $5.75 Blue Bottle coffee as Food & Drink',
+      '- Filed Invoice-Northwind-2041.pdf into Finance/Invoices',
+      '- Logged your 3.2 mile morning run',
+      '',
+      'Nothing else needs you right now.',
+    ].join('\n');
+
+    const weeklyBriefingProse = [
+      '## Your week with your twin',
+      '',
+      'Over the last seven days I handled 34 things on my own and brought 6 to you.',
+      '',
+      '- **Calendar:** accepted 12 recurring meetings, declined 2 Friday-afternoon invites, protected your focus blocks.',
+      '- **Inbox:** archived 18 newsletters and promotions, drafted 4 replies (you sent 3, edited 1).',
+      '- **Money:** auto-categorized 9 small charges; escalated 2 over your $50 limit.',
+      '- **You corrected me once** — you\'d rather I not auto-accept meetings that overlap lunch. Learned it; I\'ll ask next time.',
+      '',
+      'Trust is trending up: you\'ve approved 91% of what I proposed this week.',
+    ].join('\n');
+
+    await client.query(
+      `INSERT INTO twin_briefings (id, user_id, cadence, generated_at, prose_markdown, source_event_count, llm_provider, llm_cost_cents, read_at)
+       VALUES
+         ('bf000001-0000-4000-8000-000000000001', $1, 'daily', now() - INTERVAL '15 minutes', $2, 10, 'embedded', 0, NULL),
+         ('bf000002-0000-4000-8000-000000000002', $1, 'weekly', now() - INTERVAL '2 days', $3, 40, 'embedded', 0, NULL)
+       ON CONFLICT (id) DO UPDATE SET
+         generated_at = EXCLUDED.generated_at,
+         prose_markdown = EXCLUDED.prose_markdown,
+         source_event_count = EXCLUDED.source_event_count,
+         read_at = NULL`,
+      [userId, dailyBriefingProse, weeklyBriefingProse],
+    );
+    console.log('[seed] Created fresh daily + weekly briefings for the sample profile.');
+
+    // Fill in every OTHER surface for the sample profile, plus rich Pat + Carol
+    // personas (learnings, memory/search, capabilities, trust progress, chat
+    // wiring). Kept in its own module so this file stays readable.
+    await seedDemoShowcase(client);
 
     console.log('[seed] Seeding complete!');
   });
