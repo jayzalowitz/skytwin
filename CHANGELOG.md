@@ -1,5 +1,15 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.97.0] - 2026-07-05
+
+### Added
+
+- **No-code routines — the scheduling + matching engine (#519, part 3a).** Two pure functions in `@skytwin/routines`, the foundation the worker scheduler (part 3b) will consume:
+  - `computeNextRun(spec, from, tz?)` — a Watch's next firing time. `hourly` is +1h; `daily`/`weekly` fire at `hourOfDay` (default 8) — and, for weekly, on `dayOfWeek` — computed in the user's **IANA timezone** (so "every morning at 8am" means 8am *where the user is*, not 8am UTC). Timezone math uses only native `Intl` (no date library); exact except within the ~1h DST transition window.
+  - `matchesFilter(signal, filter)` — does a signal match a Watch's `RoutineFilter`? AND across `sources`/`fromContains`/`keywords`/`domains`, OR within each; case-insensitive; `domains` are matched as text needles (the parser's topical tags). An empty filter matches everything — but the API forbids an *active* empty-filter watch, so the scheduler only runs this on narrowed filters.
+
+  Deterministic and fully unit-tested (16 cases: hourly/daily/weekly rollover, timezone correctness incl. a non-UTC zone, steady-state 24h spacing; source/sender/keyword/domain matching, AND-across / OR-within). Part 3b wires these into a gated worker scheduler that fires due watches → matches signals → writes a `watch_run` + explanation.
+
 ## [0.6.96.0] - 2026-07-05
 
 ### Added
