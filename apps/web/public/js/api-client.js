@@ -1132,6 +1132,19 @@ export function recommendEmbeddedDefault(bracket) {
   return fetchJSON(`${API}/embedded-llm/recommend-default?bracket=${encodeURIComponent(bracket)}`);
 }
 
+// Real server-side machine profile (RAM / free disk / cores / arch). Public
+// (no auth) so onboarding can size the local-model pick before sign-in.
+export function fetchHardwareProfile() {
+  return fetchJSON(`${API}/system/hardware`);
+}
+
+// The single best local model that actually fits THIS computer (RAM + free
+// disk aware), with a plain-language reason. Returns { model, reason,
+// downloadGB, fitsDisk, hardware }. `model` is null when nothing fits.
+export function fetchLocalModelRecommendation() {
+  return fetchJSON(`${API}/system/recommend-local-model`);
+}
+
 export function startModelDownload(userId, modelId) {
   return fetchJSON(`${API}/embedded-llm/downloads/start`, {
     method: 'POST',

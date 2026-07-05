@@ -168,9 +168,10 @@ To stop later: `cd ~/skytwin && ./bin/skytwin-dev --stop`.
 
 **The first 60 seconds:**
 1. The dashboard opens. Type any situation into "Ask your twin" — the agent reasons out loud and explains what it would do, with confidence and alternatives. No accounts connected yet, no signals required.
-2. Click **"Try with a sample profile"** on the welcome screen to skip the OAuth setup entirely and poke at a fully populated example twin (decisions, learnings, approvals, the whole thing). The button is enabled whenever the seeded demo user is loaded — and tells you exactly what to run (`pnpm db:seed`) when it isn't, instead of silently disappearing.
-3. Want to look around first? Press **Esc**, click the **×** in the modal corner, or hit **Skip for now** — the dashboard chrome stays navigable behind the modal, and a "Sign in" button on the placeholder gets you back into the wizard whenever you're ready.
-4. When you're ready to wire up your own, the in-app walkthrough handles the Google API setup in about 5 minutes — paste your client ID, click "Save and connect now," and you're at Google's sign-in.
+2. Click **"Just show me around"** on the welcome screen to skip the OAuth setup entirely and poke at a fully populated example twin — Alex, who's alive on every surface: recent decisions, a daily briefing, **4 pending approvals you can actually click through and run**, "What I've learned", Capabilities, Search, and a trust bar climbing toward "handle most things". Two more personas (Pat, a power user; Carol, a brand-new user) ship too, so the dev "Switch user" button tells three stories. The button is enabled whenever the seeded demo is loaded — and tells you exactly what to run (`pnpm db:seed`) when it isn't, instead of silently disappearing.
+3. The welcome screen also shows a one-line **"your AI runs privately on this computer — we'll use `<model>`"** — the app detects your machine's RAM and free disk and picks the best local model that fits, so a non-technical user never has to choose a model or paste an API key. "Change" opens Settings → AI (and the local memory backend).
+4. Want to look around first? Press **Esc**, click the **×** in the modal corner, or hit **Skip for now** — the dashboard chrome stays navigable behind the modal, and a "Sign in" button on the placeholder gets you back into the wizard whenever you're ready.
+5. When you're ready to wire up your own, the in-app walkthrough handles the Google API setup in about 5 minutes — paste your client ID, click "Save and connect now," and you're at Google's sign-in.
 
 ### Advanced env vars
 

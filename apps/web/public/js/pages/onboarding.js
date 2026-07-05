@@ -27,6 +27,7 @@ import {
   postOnboardingComplete,
   installCapabilityRecipe,
   fetchCapabilityDependencyGraph,
+  fetchLocalModelRecommendation,
   escapeHtml,
 } from '../api-client.js';
 import {
@@ -371,6 +372,14 @@ async function handleOnboardingClick(e) {
       }
       break;
 
+    // ── "Change" the auto-picked private AI → Settings (AI + local brain) ────
+    case 'onb-open-ai-settings':
+      if (typeof window.skyTwinDismissOnboarding === 'function') {
+        window.skyTwinDismissOnboarding();
+      }
+      window.location.hash = '#/settings';
+      break;
+
     // ── Tour mode ───────────────────────────────────────────────────────────
     case 'onb-start-tour': {
       try {
@@ -444,82 +453,83 @@ function renderWelcome() {
       How would you like to start?
     </div>
 
-    <div style="display:flex;flex-direction:column;gap:0.6rem;margin-bottom:1.25rem;">
+    <!-- Two clear ways to start — the wall of options was overwhelming for
+         non-technical first-runs (user feedback). Everything else (tell-about-
+         yourself, the not-yet-wired computer observer) moved into a collapsed
+         "More ways to start" so the primary path is obvious. -->
+    <div style="display:flex;flex-direction:column;gap:0.6rem;margin-bottom:1rem;">
       <button class="btn btn-primary btn-lg" style="text-align:left;display:flex;align-items:center;gap:0.75rem;"
               data-action="onb-choose-email">
         <span style="font-size:1.2rem;">✉</span>
         <div>
           <div style="font-weight:600;">Connect your email</div>
-          <div style="font-size:0.78rem;opacity:0.8;">Link Gmail so your twin can see your inbox from day one.</div>
+          <div style="font-size:0.78rem;opacity:0.8;">Link Gmail so your twin can start from your real inbox.</div>
         </div>
       </button>
-      <!-- #389: the "learn from your computer" path goes through
-           computer_choice → recipe_preview but never actually enables
-           the idle miner (the runtime hook in apps/desktop/src/
-           idle-bridge.ts is dead code today, tracked by #382). Until
-           the wiring lands, this button is disabled with a "Coming
-           soon" badge so a user who clicks it doesn't complete
-           onboarding with zero signals enabled and wonder why
-           nothing's happening. Option (b) per the issue.
-           NOTE: interactive content (the #389 link) lives in a sibling
-           paragraph below — nesting an <a> inside a <button> is invalid
-           HTML and a disabled button blocks pointer events on the
-           link anyway. -->
-      <button class="btn btn-outline btn-lg"
-              style="text-align:left;display:flex;align-items:center;gap:0.75rem;opacity:0.55;cursor:not-allowed;"
-              type="button"
-              disabled
-              aria-disabled="true"
-              aria-describedby="onb-computer-coming-soon"
-              title="Computer-learning is not yet wired up — coming soon.">
-        <span style="font-size:1.2rem;">💻</span>
-        <div>
-          <div style="font-weight:600;">
-            Let SkyTwin learn from your computer
-            <span class="badge badge-muted" style="font-size:0.65rem;margin-left:0.4rem;vertical-align:middle;">Coming soon</span>
-          </div>
-          <div style="font-size:0.78rem;opacity:0.8;">A background observer that learns which apps you use. We're still wiring up the runtime side.</div>
-        </div>
-      </button>
-      <p id="onb-computer-coming-soon" style="margin:-0.4rem 0 0;padding:0 0.25rem;font-size:0.72rem;color:var(--text-muted);">
-        Track status on <a href="https://github.com/jayzalowitz/skytwin/issues/389" target="_blank" rel="noopener">issue #389</a>.
-      </p>
-      <button class="btn btn-outline btn-lg" style="text-align:left;display:flex;align-items:center;gap:0.75rem;"
-              data-action="onb-choose-about-me">
-        <span style="font-size:1.2rem;">💬</span>
-        <div>
-          <div style="font-weight:600;">Tell SkyTwin about yourself</div>
-          <div style="font-size:0.78rem;opacity:0.8;">Answer a few quick questions so your twin knows where to start.</div>
-        </div>
-      </button>
-    </div>
 
-    <div role="separator" aria-label="or" style="display:flex;align-items:center;gap:0.5rem;margin:0.25rem 0 0.75rem;color:var(--text-muted);font-size:0.78rem;">
-      <span aria-hidden="true" style="flex:1;height:1px;background:var(--border);"></span>
-      <span aria-hidden="true" style="text-transform:uppercase;letter-spacing:0.08em;">or</span>
-      <span aria-hidden="true" style="flex:1;height:1px;background:var(--border);"></span>
-    </div>
-
-    <div id="onb-tour-row">
       <button id="onb-tour-button" class="btn btn-outline btn-lg" disabled
               style="text-align:left;display:flex;align-items:center;gap:0.75rem;width:100%;"
               data-action="onb-start-tour"
               title="Sample profile not seeded — run pnpm db:seed">
         <span style="font-size:1.2rem;" aria-hidden="true">🧭</span>
         <div>
-          <div style="font-weight:600;">Try with a sample profile</div>
+          <div style="font-weight:600;">Just show me around</div>
           <div id="onb-tour-subtext" style="font-size:0.78rem;opacity:0.7;">Checking sample profile…</div>
         </div>
       </button>
     </div>
 
-    <div style="margin-top:1rem;text-align:center;">
+    <!-- Private-AI reassurance: the app auto-picks the best local model for this
+         computer (filled in async below), so a non-technical user never has to
+         choose a model or paste an API key. "Change" opens Settings → AI. -->
+    <div id="onb-ai-line" style="font-size:0.76rem;color:var(--text-muted);background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:0.55rem 0.7rem;margin-bottom:0.85rem;display:flex;align-items:center;gap:0.5rem;">
+      <span aria-hidden="true">🔒</span>
+      <span id="onb-ai-text">Your AI runs privately on this computer — checking what fits best…</span>
+    </div>
+
+    <details style="margin-bottom:0.5rem;">
+      <summary style="cursor:pointer;font-size:0.82rem;color:var(--text-muted);">More ways to start</summary>
+      <div style="display:flex;flex-direction:column;gap:0.6rem;margin-top:0.6rem;">
+        <button class="btn btn-outline" style="text-align:left;display:flex;align-items:center;gap:0.75rem;"
+                data-action="onb-choose-about-me">
+          <span style="font-size:1.1rem;">💬</span>
+          <div>
+            <div style="font-weight:600;">Tell SkyTwin about yourself</div>
+            <div style="font-size:0.76rem;opacity:0.8;">Answer a few quick questions so your twin knows where to start.</div>
+          </div>
+        </button>
+        <div style="font-size:0.74rem;color:var(--text-muted);padding:0 0.25rem;">
+          💻 Learning from the apps on your computer is coming soon —
+          track it on <a href="https://github.com/jayzalowitz/skytwin/issues/389" target="_blank" rel="noopener">issue #389</a>.
+        </div>
+      </div>
+    </details>
+
+    <div style="margin-top:0.75rem;text-align:center;">
       <button class="btn-link" data-action="onb-dismiss-modal" type="button"
               style="font-size:0.82rem;color:var(--text-muted);background:none;border:none;cursor:pointer;padding:0;">
         Skip for now
       </button>
     </div>
   `);
+
+  // Auto-pick the best local model for this machine and reassure the user it's
+  // handled. Best-effort: if the probe fails, keep the generic private line.
+  fetchLocalModelRecommendation()
+    .then((rec) => {
+      const el = document.getElementById('onb-ai-text');
+      if (!el) return;
+      if (rec?.model) {
+        el.innerHTML =
+          `Your AI runs privately on this computer — we'll use <strong>${escapeHtml(rec.model.displayName)}</strong> ` +
+          `(~${escapeHtml(String(rec.downloadGB))} GB), picked to fit your machine. ` +
+          `<button class="btn-link" data-action="onb-open-ai-settings" type="button" ` +
+          `style="font-size:0.76rem;color:var(--iris);background:none;border:none;cursor:pointer;padding:0;">Change</button>`;
+      } else if (rec?.reason) {
+        el.textContent = rec.reason;
+      }
+    })
+    .catch(() => { /* keep the generic private-by-default line */ });
 
   // Tour CTA is rendered disabled with "Checking…" copy; resolved state
   // depends on the demo seed being present. When available: enable +

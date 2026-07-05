@@ -41,13 +41,24 @@ start.
 
 **Two paths from here:**
 
-- **"Try with a sample profile"** — gives you a pre-loaded user (Alex)
-  with a handful of sample decisions across several domains and a
-  populated activity log (the seed in `packages/db/src/seeds/` inserts
-  around 8 decisions today; the exact count moves as we tune the demo
-  data). No OAuth, no signal-ingestion wait. This is the demo path.
-- **"Continue with Google"** — real Gmail + Calendar OAuth. Use this if
-  you want to see the live pipeline against your own data.
+- **"Just show me around"** — gives you a pre-loaded user (Alex) who's alive
+  across every surface: ~10 recent decisions, 4 pending approvals you can
+  actually click through, a populated daily briefing, "What I've learned",
+  Capabilities, Search, and a trust bar at 84% climbing toward "handle most
+  things". Two other personas ship too — **Pat** (a power user who handles
+  everything) and **Carol** (a brand-new user earning her first trust) — so
+  the dev "Switch user" button tells three different stories. No OAuth, no
+  signal-ingestion wait. This is the demo path. (The showcase data lives in
+  `packages/db/src/seeds/demo-showcase.ts`; counts move as we tune it.)
+- **"Connect your email"** — real Gmail + Calendar OAuth. Use this if you
+  want to see the live pipeline against your own data.
+
+Under those two, a one-line "your AI runs privately on this computer — we'll
+use `<model>`" reassures a non-technical visitor that the local model is
+already picked for their machine (RAM- and disk-aware); "Change" opens
+Settings → AI. Everything else (tell-SkyTwin-about-yourself, the not-yet-wired
+computer observer) is tucked under "More ways to start" so the first screen
+isn't a wall of options.
 
 For the rest of this walkthrough we'll use the sample profile. The wizard is
 dismissible (Esc, the X, "Skip for now") so a friend who already knows what
