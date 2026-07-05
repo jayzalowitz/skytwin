@@ -56,6 +56,11 @@ export interface CreateWatchInput {
 export const watchRepository = {
   async create(input: CreateWatchInput): Promise<Watch> {
     const s = input.spec;
+    const status = input.status ?? 'active';
+    // Invariant: an ACTIVE watch must have a next_run_at, or listDue() never
+    // returns it and it would never fire. Default to "due now" when the caller
+    // didn't set one; a draft/paused watch is unscheduled (null).
+    const nextRunAt = status === 'active' ? (input.nextRunAt ?? new Date()) : null;
     const result = await query<WatchRow>(
       `INSERT INTO watches
          (user_id, name, source_text, cadence, hour_of_day, day_of_week, filter, action, status, next_run_at)
@@ -70,8 +75,8 @@ export const watchRepository = {
         s.dayOfWeek ?? null,
         JSON.stringify(s.filter ?? {}),
         s.action,
-        input.status ?? 'active',
-        input.nextRunAt ?? null,
+        status,
+        nextRunAt,
       ],
     );
     return rowToWatch(result.rows[0]!);
@@ -93,21 +98,21 @@ export const watchRepository = {
     return result.rows[0] ? rowToWatch(result.rows[0]) : null;
   },
 
-  /** Pause / resume (or draft → active). `nextRunAt` is set when resuming. */
+  /** Pause / resume (or draft → active). Same invariant as create(). */
   async setStatus(
     id: string,
     userId: string,
     status: RoutineStatus,
     nextRunAt: Date | null = null,
   ): Promise<Watch | null> {
+    // Active ⇒ must have a next_run_at (else it never fires); paused/draft ⇒ null.
+    const effectiveNext = status === 'active' ? (nextRunAt ?? new Date()) : null;
     const result = await query<WatchRow>(
       `UPDATE watches
-          SET status = $3,
-              next_run_at = CASE WHEN $3 = 'active' THEN $4 ELSE NULL END,
-              updated_at = now()
+          SET status = $3, next_run_at = $4, updated_at = now()
         WHERE id = $1 AND user_id = $2
       RETURNING *`,
-      [id, userId, status, nextRunAt],
+      [id, userId, status, effectiveNext],
     );
     return result.rows[0] ? rowToWatch(result.rows[0]) : null;
   },
@@ -143,16 +148,19 @@ export const watchRepository = {
   },
 
   /**
-   * Claim active watches whose next run is due (for the scheduler, a later
-   * part). Ordered oldest-due first and bounded so one poll can't stampede.
+   * List active watches whose next run is due, oldest-first and bounded. This
+   * is a plain READ — it does NOT claim or lock. The scheduler (a later part)
+   * owns claim semantics (a status/next_run_at transition, or
+   * `SELECT … FOR UPDATE SKIP LOCKED`) to avoid double-processing across
+   * concurrent workers.
    */
-  async listDue(nowIso: string, limit = 100): Promise<Watch[]> {
+  async listDue(now: Date = new Date(), limit = 100): Promise<Watch[]> {
     const result = await query<WatchRow>(
       `SELECT * FROM watches
         WHERE status = 'active' AND next_run_at IS NOT NULL AND next_run_at <= $1
         ORDER BY next_run_at ASC
         LIMIT $2`,
-      [nowIso, limit],
+      [now, limit],
     );
     return result.rows.map(rowToWatch);
   },

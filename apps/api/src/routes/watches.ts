@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { parseRoutineSpec } from '@skytwin/routines';
 import type { RoutineFilter, RoutineSpec, RoutineStatus } from '@skytwin/shared-types';
 import { watchRepository } from '@skytwin/db';
-import { bindUserIdParamValidator } from '../middleware/validate-uuid.js';
+import { bindUserIdParamValidator, UUID_REGEX } from '../middleware/validate-uuid.js';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
 
 /**
@@ -12,7 +12,6 @@ import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
  * Deliberately separate from the IronClaw cron `/api/routines` execution path.
  */
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_TEXT = 2000;
 const CADENCES = new Set(['hourly', 'daily', 'weekly']);
 const ACTIONS = new Set(['digest', 'notify']);
@@ -202,7 +201,7 @@ export function createWatchesRouter(): Router {
     try {
       const userId = req.params['userId']!;
       const watchId = req.params['watchId']!;
-      if (!UUID_RE.test(watchId)) {
+      if (!UUID_REGEX.test(watchId)) {
         res.status(400).json({ error: 'Invalid watchId.' });
         return;
       }
@@ -252,7 +251,7 @@ export function createWatchesRouter(): Router {
   router.delete('/:userId/:watchId', async (req, res, next) => {
     try {
       const watchId = req.params['watchId']!;
-      if (!UUID_RE.test(watchId)) {
+      if (!UUID_REGEX.test(watchId)) {
         res.status(400).json({ error: 'Invalid watchId.' });
         return;
       }
