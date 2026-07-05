@@ -1,5 +1,18 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.95.0] - 2026-07-05
+
+### Added
+
+- **No-code routines — storage + API (#519, part 2).** A no-code routine is now persistable and manageable as a **Watch**: a read-only signal watcher that, on a schedule, matches recent signals against a filter and digests / notifies. New `watches` table (migration 069, with CHECK constraints on cadence/action/status so a bad value is rejected at write time), a `watchRepository` (create / list / get / pause-resume / edit / delete, plus `listDue`/`markRan` seams the scheduler will use), and a `/api/watches` router:
+  - `POST /api/watches/parse` — preview a plain-language ask as a `RoutineSpec` (runs the `@skytwin/routines` parser; pure, no persistence).
+  - `POST /api/watches/:userId` — create a watch from natural language (`{text}`) or a confirmed structured `{spec}`.
+  - `GET /api/watches/:userId` — list the user's watches.
+  - `PATCH /api/watches/:userId/:watchId` — pause / resume (`{status}`) or edit (`{spec}`).
+  - `DELETE /api/watches/:userId/:watchId`.
+
+  **Named "Watches" deliberately** to avoid colliding with the existing `/api/routines` — a different, action-taking IronClaw cron-execution primitive. Watches take **no action** (read-only digest/notify), so there is **no policy gate** on creation or firing — that's the safety point of read-only v1; action-taking routines remain the separate policy-gated path. Ownership is enforced on every `:userId` route. Migration DDL verified against real CockroachDB (table, indexes, and the cadence CHECK constraint rejecting a bad value). 18 route tests (parse preview, NL + structured create, spec validation, non-UUID rejection, pause/resume/edit/delete, 404s). Next parts: the worker scheduler (fire due watches → digest/notify + explanation) and the Watches management page + chat authoring.
+
 ## [0.6.94.0] - 2026-06-29
 
 ### Added

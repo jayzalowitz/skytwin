@@ -31,6 +31,7 @@ import { createAssistantRouter } from './routes/assistant.js';
 import { createSearchRouter } from './routes/search.js';
 import { createCredentialsRouter } from './routes/credentials.js';
 import { createRoutinesRouter } from './routes/routines.js';
+import { createWatchesRouter } from './routes/watches.js';
 import { createDemoRouter } from './routes/demo.js';
 import { createCapabilitiesRouter } from './routes/capabilities.js';
 import { createRiskProfileRouter } from './routes/risk-profile.js';
@@ -338,6 +339,7 @@ app.use('/api/assistant', sessionAuth, requireOwnership, requestContext, createA
 app.use('/api/search', sessionAuth, requireOwnership, requestContext, createSearchRouter());
 app.use('/api/credentials', sessionAuth, requireOwnership, requestContext, createCredentialsRouter());
 app.use('/api/routines', sessionAuth, requireOwnership, requestContext, createRoutinesRouter());
+app.use('/api/watches', sessionAuth, requireOwnership, requestContext, createWatchesRouter());
 app.use('/api/v1/demo', createDemoRouter()); // public — onboarding tour discovery
 app.use('/api/capabilities', sessionAuth, requireOwnership, requestContext, createCapabilitiesRouter());
 app.use('/api/risk-profile', sessionAuth, requireOwnership, requestContext, createRiskProfileRouter());
