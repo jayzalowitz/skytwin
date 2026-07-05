@@ -23,7 +23,8 @@ CREATE TABLE IF NOT EXISTS watch_runs (
     matched_count INT NOT NULL DEFAULT 0,
     summary       STRING NOT NULL DEFAULT '',
     matched_refs  JSONB NOT NULL DEFAULT '[]'::JSONB,
-    CONSTRAINT watch_runs_action_chk CHECK (action IN ('digest', 'notify'))
+    CONSTRAINT watch_runs_action_chk CHECK (action IN ('digest', 'notify')),
+    CONSTRAINT watch_runs_matched_count_chk CHECK (matched_count >= 0)
 );
 
 -- Per-watch run history (the Watches page reads a watch's recent runs).

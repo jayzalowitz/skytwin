@@ -12,6 +12,10 @@ import { computeNextRun, matchesFilter, type MatchableSignal } from '@skytwin/ro
 const log = createLogger('worker:watch-scheduler');
 
 const HOUR_MS = 60 * 60 * 1000;
+/** Hard ceiling on a single firing's signal window (bounds per-tick work after long downtime). */
+const MAX_WINDOW_MS = 7 * 24 * HOUR_MS;
+/** Cap on the matched-signal refs stored in a run row (matchedCount keeps the true total). */
+const MAX_STORED_REFS = 200;
 
 /**
  * The scheduler polls this often; per-watch cadence is enforced by each watch's
@@ -76,12 +80,24 @@ export interface WatchEvaluation {
 }
 
 /**
- * Pure: which of `signals` (that arrived after `windowStart`) match the watch,
- * and the digest/notify summary. No DB, no clock — unit-testable in isolation.
+ * Pure: which of `signals` in the half-open window `(windowStart, windowEnd]`
+ * match the watch, and the digest/notify summary. The upper bound is the claim
+ * time, and the NEXT run's `windowStart` is this claim time — so a signal at
+ * exactly the boundary is counted once, never dropped or double-counted. No DB,
+ * no clock — unit-testable in isolation.
  */
-export function evaluateWatch(watch: Watch, signals: SignalRow[], windowStart: Date): WatchEvaluation {
+export function evaluateWatch(
+  watch: Watch,
+  signals: SignalRow[],
+  windowStart: Date,
+  windowEnd: Date,
+): WatchEvaluation {
   const matched = signals.filter(
-    (s) => s.timestamp instanceof Date && s.timestamp > windowStart && matchesFilter(toMatchable(s), watch.filter),
+    (s) =>
+      s.timestamp instanceof Date &&
+      s.timestamp > windowStart &&
+      s.timestamp <= windowEnd &&
+      matchesFilter(toMatchable(s), watch.filter),
   );
   const titles = matched.map(titleOf);
   const n = matched.length;
@@ -95,7 +111,9 @@ export function evaluateWatch(watch: Watch, signals: SignalRow[], windowStart: D
       summary = `${n} update${n === 1 ? '' : 's'}: ${shown}${n > 5 ? ' …' : ''}`;
     }
   }
-  return { matchedCount: n, matchedRefs: matched.map((s) => s.id), summary };
+  // matchedCount is the true total; store a bounded slice of refs so a run row
+  // can't balloon on a pathological match set.
+  return { matchedCount: n, matchedRefs: matched.slice(0, MAX_STORED_REFS).map((s) => s.id), summary };
 }
 
 export interface WatchSchedulerDeps {
@@ -125,14 +143,26 @@ export async function runWatchSchedulerJob(deps: WatchSchedulerDeps = {}): Promi
   let fired = 0;
   for (const watch of due) {
     try {
-      // The window is the OLD last_run_at, captured before the claim advances it.
-      const windowStart = watch.lastRunAt ?? new Date(now.getTime() - defaultLookbackMs(watch.cadence));
+      if (!watch.nextRunAt) continue; // defensive: listDue only returns non-null
       const tz = (await userRepo.getLocale(watch.userId)).timezone ?? 'UTC';
 
-      // Claim FIRST: atomically advance next_run_at (gated on the value we saw),
-      // so a concurrent worker can't process the same firing. If we lose the
-      // race, another worker already claimed it — skip.
-      if (!watch.nextRunAt) continue; // defensive: listDue only returns non-null
+      // Window since the last run — but never before the watch existed (a fresh
+      // watch must not digest signals from before it was created), and never
+      // wider than MAX_WINDOW_MS (bound work after long downtime).
+      const cadenceFloor = new Date(now.getTime() - defaultLookbackMs(watch.cadence));
+      const createdAt = watch.createdAt instanceof Date ? watch.createdAt : cadenceFloor;
+      const firstRunStart = new Date(Math.max(cadenceFloor.getTime(), createdAt.getTime()));
+      let windowStart = watch.lastRunAt ?? firstRunStart;
+      const hardFloor = new Date(now.getTime() - MAX_WINDOW_MS);
+      if (windowStart < hardFloor) windowStart = hardFloor;
+
+      const lookbackHours = Math.ceil((now.getTime() - windowStart.getTime()) / HOUR_MS) + 1;
+      const signals = await signalRepo.getRecent(watch.userId, undefined, lookbackHours);
+      const evalResult = evaluateWatch(watch, signals, windowStart, now);
+
+      // Claim AFTER the expensive fetch/evaluate: a crash there does NOT advance
+      // the schedule, so the window is retried next tick (no lost digest). Only
+      // the winner of the atomic claim writes the run; a loser discards its work.
       const claimed = await watchRepo.claimDue(
         watch.id,
         watch.nextRunAt,
@@ -141,10 +171,6 @@ export async function runWatchSchedulerJob(deps: WatchSchedulerDeps = {}): Promi
       );
       if (!claimed) continue;
 
-      const lookbackHours = Math.ceil((now.getTime() - windowStart.getTime()) / HOUR_MS) + 1;
-      const signals = await signalRepo.getRecent(watch.userId, undefined, lookbackHours);
-
-      const evalResult = evaluateWatch(watch, signals, windowStart);
       if (evalResult.matchedCount > 0) {
         await runRepo.create({
           watchId: watch.id,
