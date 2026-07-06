@@ -1,13 +1,15 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventDrivenIdleDetector, SnapshotFileStore } from '@skytwin/idle-miner';
-import type { StartIdleMinerOptions } from '@skytwin/idle-miner';
+import type { IdleMinerHandle, StartIdleMinerOptions } from '@skytwin/idle-miner';
 import { createIdleMinerRunner, toScanRoots, type RunnerDeps } from '../runner.js';
 import type { RunnerConfig } from '../config.js';
 
 const silentLogger = { info: () => {}, warn: () => {} };
+
+type StartIdleMinerFn = NonNullable<RunnerDeps['startIdleMinerFn']>;
 
 describe('toScanRoots', () => {
   it('maps paths to fs FsScanRoots with the path as stable id', () => {
@@ -30,9 +32,9 @@ describe('createIdleMinerRunner', () => {
   let dataDir: string;
   let store: SnapshotFileStore;
   let detector: EventDrivenIdleDetector;
-  let handleStop: ReturnType<typeof vi.fn>;
-  let handleDrain: ReturnType<typeof vi.fn>;
-  let startFn: ReturnType<typeof vi.fn>;
+  let handleStop: Mock<IdleMinerHandle['stop']>;
+  let handleDrain: Mock<IdleMinerHandle['drain']>;
+  let startFn: Mock<StartIdleMinerFn>;
   let lastOptions: StartIdleMinerOptions | undefined;
 
   beforeEach(() => {

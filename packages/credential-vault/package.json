@@ -17,9 +17,9 @@
     "test": "vitest run",
     "lint": "tsc --noEmit"
   },
-  "dependencies": {},
   "devDependencies": {
+    "@types/node": "^26.1.0",
     "typescript": "^6.0.3",
-    "vitest": "^3.2.6"
+    "vitest": "^4.1.9"
   }
 }

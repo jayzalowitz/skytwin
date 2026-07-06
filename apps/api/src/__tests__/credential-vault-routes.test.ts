@@ -42,7 +42,9 @@ vi.mock('@skytwin/credential-vault', async () => {
   const actual = await vi.importActual('@skytwin/credential-vault') as Record<string, unknown>;
   return {
     ...actual,
-    KeyCache: vi.fn(() => mockKeyCache),
+    KeyCache: vi.fn(function KeyCache() {
+      return mockKeyCache;
+    }),
   };
 });
 

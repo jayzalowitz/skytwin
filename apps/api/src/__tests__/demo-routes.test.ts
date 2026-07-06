@@ -24,7 +24,9 @@ vi.mock('@skytwin/db', () => ({
 }));
 
 vi.mock('@skytwin/decision-engine', () => ({
-  DecisionMaker: vi.fn().mockImplementation(() => ({ whatWouldIDo: mockWhatWouldIDo })),
+  DecisionMaker: vi.fn(function DecisionMaker() {
+    return { whatWouldIDo: mockWhatWouldIDo };
+  }),
 }));
 
 vi.mock('@skytwin/twin-model', () => ({
@@ -54,6 +56,7 @@ async function request(
   method: string,
   path: string,
   body?: unknown,
+  extraHeaders: Record<string, string> = {},
 ): Promise<{ status: number; body: unknown; headers: Record<string, string> }> {
   return new Promise((resolve, reject) => {
     const server = app.listen(0, () => {
@@ -64,7 +67,7 @@ async function request(
         return;
       }
       const url = `http://127.0.0.1:${addr.port}${path}`;
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      const headers: Record<string, string> = { 'Content-Type': 'application/json', ...extraHeaders };
       const options: RequestInit = { method, headers };
       if (body !== undefined) options.body = JSON.stringify(body);
 
@@ -243,12 +246,14 @@ describe('demo routes', () => {
       mockUserRepository.findById.mockResolvedValue(SEEDED_USER);
       mockWhatWouldIDo.mockResolvedValue(SUCCESSFUL_PREDICTION);
       const app = buildApp();
+      app.set('trust proxy', true);
+      const clientIp = { 'X-Forwarded-For': '203.0.113.20' };
       // Burn the bucket — 20 requests should succeed, the 21st should 429.
       for (let i = 0; i < 20; i++) {
-        const ok = await request(app, 'POST', '/api/v1/demo/preview', { situation: 'ping' });
+        const ok = await request(app, 'POST', '/api/v1/demo/preview', { situation: 'ping' }, clientIp);
         expect(ok.status).toBe(200);
       }
-      const limited = await request(app, 'POST', '/api/v1/demo/preview', { situation: 'ping' });
+      const limited = await request(app, 'POST', '/api/v1/demo/preview', { situation: 'ping' }, clientIp);
       expect(limited.status).toBe(429);
       expect(limited.headers['retry-after']).toBeDefined();
       expect(parseInt(limited.headers['retry-after']!, 10)).toBeGreaterThan(0);

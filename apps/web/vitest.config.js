@@ -1,12 +1,37 @@
 import { defineConfig } from 'vitest/config';
 
-// The dashboard SPA under public/js is plain browser ESM (served statically,
-// not TS-compiled). Its unit tests are written to run in a DOM-less node env:
-// pure render helpers + storage-injectable wrappers, no jsdom dependency.
+/**
+ * Two test families share this package:
+ *  - `public/js/**` — the dashboard's browser ESM modules. Written for a Node
+ *    env + the minimal DOM stubs in `test/setup.ts` (#499/#511).
+ *  - `src/**` — accessibility tests (#402) that mount markup into a real DOM
+ *    (jsdom) before handing it to axe-core.
+ * Vitest 4 removed `environmentMatchGlobs`, so model the split as explicit
+ * projects. `passWithNoTests` keeps the script green if a family is ever moved
+ * out.
+ */
 export default defineConfig({
   test: {
-    environment: 'node',
-    include: ['public/js/**/*.test.js'],
+    projects: [
+      {
+        test: {
+          name: 'public-js',
+          environment: 'node',
+          include: ['public/js/**/*.test.{js,ts}'],
+          setupFiles: ['./test/setup.ts'],
+          passWithNoTests: true,
+        },
+      },
+      {
+        test: {
+          name: 'a11y',
+          environment: 'jsdom',
+          include: ['src/**/*.test.ts'],
+          setupFiles: ['./test/setup.ts'],
+          passWithNoTests: true,
+        },
+      },
+    ],
     passWithNoTests: true,
   },
 });

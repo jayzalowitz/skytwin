@@ -154,7 +154,8 @@ vi.mock('@skytwin/db', () => {
       topLabelsForSender: vi.fn().mockResolvedValue([]),
       topLabelsForListId: vi.fn().mockResolvedValue([]),
     },
-    TwinRepositoryAdapter: vi.fn().mockImplementation(() => ({
+    TwinRepositoryAdapter: vi.fn(function TwinRepositoryAdapter() {
+      return {
       getProfile: vi.fn().mockResolvedValue(null),
       createProfile: vi.fn().mockImplementation(async (p: unknown) => p),
       updateProfile: vi.fn().mockImplementation(async (p: unknown) => p),
@@ -168,13 +169,16 @@ vi.mock('@skytwin/db', () => {
       getEvidenceByIds: vi.fn().mockResolvedValue([]),
       addFeedback: vi.fn(),
       getFeedback: vi.fn().mockResolvedValue([]),
-    })),
-    PatternRepositoryAdapter: vi.fn().mockImplementation(() => ({
+      };
+    }),
+    PatternRepositoryAdapter: vi.fn(function PatternRepositoryAdapter() {
+      return {
       getPatterns: vi.fn().mockResolvedValue([]),
       upsertPattern: vi.fn(),
       getTraits: vi.fn().mockResolvedValue([]),
       upsertTrait: vi.fn(),
-    })),
+      };
+    }),
     decisionRepositoryAdapter: {
       saveDecision: vi.fn().mockImplementation(async (d: unknown) => {
         const decision = d as Record<string, unknown>;
@@ -226,7 +230,8 @@ vi.mock('../sse.js', () => ({
 }));
 
 vi.mock('@skytwin/explanations', () => ({
-  ExplanationGenerator: vi.fn().mockImplementation(() => ({
+  ExplanationGenerator: vi.fn(function ExplanationGenerator() {
+    return {
     generate: vi.fn().mockResolvedValue({
       id: 'expl-1',
       decisionId: 'dec-1',
@@ -237,7 +242,8 @@ vi.mock('@skytwin/explanations', () => ({
       reversalInstructions: '',
       generatedAt: new Date(),
     }),
-  })),
+    };
+  }),
 }));
 
 vi.mock('@skytwin/llm-client', () => ({ LlmClient: vi.fn() }));

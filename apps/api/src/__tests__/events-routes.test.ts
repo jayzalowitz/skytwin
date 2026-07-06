@@ -39,8 +39,12 @@ const {
 }));
 
 vi.mock('@skytwin/decision-engine', () => ({
-  SituationInterpreter: vi.fn().mockImplementation(() => ({ interpret: mockInterpret })),
-  DecisionMaker: vi.fn().mockImplementation(() => ({ evaluate: mockEvaluate })),
+  SituationInterpreter: vi.fn(function SituationInterpreter() {
+    return { interpret: mockInterpret };
+  }),
+  DecisionMaker: vi.fn(function DecisionMaker() {
+    return { evaluate: mockEvaluate };
+  }),
   LlmSituationStrategy: vi.fn(),
   LlmCandidateGenerator: vi.fn(),
   FallbackSituationStrategy: vi.fn(),
@@ -50,13 +54,15 @@ vi.mock('@skytwin/decision-engine', () => ({
 }));
 
 vi.mock('@skytwin/twin-model', () => ({
-  TwinService: vi.fn().mockImplementation(() => ({
+  TwinService: vi.fn(function TwinService() {
+    return {
     getOrCreateProfile: vi.fn().mockResolvedValue({}),
     getRelevantPreferences: vi.fn().mockResolvedValue([]),
     getPatterns: vi.fn().mockResolvedValue([]),
     getTraits: vi.fn().mockResolvedValue([]),
     getTemporalProfile: vi.fn().mockResolvedValue({}),
-  })),
+    };
+  }),
 }));
 
 vi.mock('@skytwin/policy-engine', () => ({
@@ -64,7 +70,9 @@ vi.mock('@skytwin/policy-engine', () => ({
 }));
 
 vi.mock('@skytwin/explanations', () => ({
-  ExplanationGenerator: vi.fn().mockImplementation(() => ({ generate: mockGenerate })),
+  ExplanationGenerator: vi.fn(function ExplanationGenerator() {
+    return { generate: mockGenerate };
+  }),
 }));
 
 vi.mock('@skytwin/db', () => ({
@@ -119,7 +127,9 @@ vi.mock('@skytwin/llm-client', () => ({
 }));
 
 vi.mock('../workflows/registry.js', () => ({
-  WorkflowHandlerRegistry: vi.fn().mockImplementation(() => ({ register: vi.fn() })),
+  WorkflowHandlerRegistry: vi.fn(function WorkflowHandlerRegistry() {
+    return { register: vi.fn() };
+  }),
 }));
 
 vi.mock('../workflows/calendar-conflict.js', () => ({ processCalendarConflict: vi.fn() }));

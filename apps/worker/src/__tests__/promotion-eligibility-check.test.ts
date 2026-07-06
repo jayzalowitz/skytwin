@@ -17,9 +17,11 @@ vi.mock('@skytwin/db', () => ({
 
 const mockEvaluateProgression = vi.fn();
 vi.mock('@skytwin/policy-engine', () => ({
-  TrustTierEngine: vi.fn().mockImplementation(() => ({
+  TrustTierEngine: vi.fn(function TrustTierEngine() {
+    return {
     evaluateProgression: mockEvaluateProgression,
-  })),
+    };
+  }),
 }));
 
 vi.mock('@skytwin/shared-types', async (importOriginal) => {
