@@ -50,6 +50,7 @@ import {
   shouldRunWatchScheduler,
 } from './jobs/watch-scheduler.js';
 import { extractErrorCode } from './oauth-error-code.js';
+import { recordPermanentOAuthFailure } from './oauth-circuit.js';
 import { DeadLetterTracker } from './dead-letter.js';
 
 const config = loadConfig();
@@ -294,10 +295,7 @@ async function pollUser(userConnectors: UserConnectors): Promise<void> {
           });
         }
         // Force-open circuit immediately — no point retrying a revoked token.
-        // Stop once breaker transitions to open to avoid extending backoff.
-        for (let i = 0; i < 3 && breaker.canExecute(); i++) {
-          breaker.recordFailure();
-        }
+        recordPermanentOAuthFailure(breaker);
         return;
       }
 
@@ -459,9 +457,22 @@ async function connectUserConnectors(discovered: UserConnectors[]): Promise<User
             error: error.message,
             statusCode: error.statusCode,
           });
-          for (let i = 0; i < 3 && breaker.canExecute(); i++) {
-            breaker.recordFailure();
+          try {
+            await connectorHealthRepository.upsert({
+              userId: uc.userId,
+              connectorName: connector.name,
+              status: 'needs_reauth',
+              errorCode: extractErrorCode(error.message) ?? 'invalid_grant',
+              lastFailureAt: new Date(),
+            });
+          } catch (writeErr) {
+            log.warn('connector_health upsert failed (needs_reauth) — continuing', {
+              userId: uc.userId,
+              connector: connector.name,
+              error: writeErr instanceof Error ? writeErr.message : String(writeErr),
+            });
           }
+          recordPermanentOAuthFailure(breaker);
           break;
         }
 
