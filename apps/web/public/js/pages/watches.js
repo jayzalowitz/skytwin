@@ -136,7 +136,7 @@ function paint() {
             class="watch-input"
             data-region="watch-input"
             rows="3"
-            placeholder="Every morning summarize email from finance@acme.com"
+            placeholder="Every morning summarize email from the finance team"
           >${escapeHtml(_state.draftText)}</textarea>
           <div class="watch-composer-actions">
             <button class="btn btn-outline btn-sm" type="submit">Preview</button>
@@ -171,7 +171,7 @@ function renderPreview() {
         ${[
           'Every morning summarize calendar conflicts',
           'Every weekday notify me about security email',
-          'Every Friday digest email from finance@acme.com',
+          'Every Friday digest email from the finance team',
         ].map((text) => `
           <button type="button" class="watch-example" data-action="watch-example" data-text="${escapeHtml(text)}">
             ${escapeHtml(text)}
