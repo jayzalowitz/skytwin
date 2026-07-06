@@ -446,6 +446,7 @@ async function connectUserConnectors(discovered: UserConnectors[]): Promise<User
     }
 
     const connected: SignalConnector[] = [];
+    let permanentOAuthFailure = false;
     for (const connector of uc.connectors) {
       try {
         await connector.connect();
@@ -473,6 +474,7 @@ async function connectUserConnectors(discovered: UserConnectors[]): Promise<User
             });
           }
           recordPermanentOAuthFailure(breaker);
+          permanentOAuthFailure = true;
           break;
         }
 
@@ -485,7 +487,13 @@ async function connectUserConnectors(discovered: UserConnectors[]): Promise<User
 
     if (connected.length > 0) {
       connectedUsers.push({ userId: uc.userId, connectors: connected });
-      breaker.recordSuccess();
+      // Do NOT credit success when a connector hit a permanent OAuth failure:
+      // recordSuccess() would close the circuit forceOpen() just opened, undoing
+      // the permanent-failure protection (#595 review). The open circuit still
+      // gates polling for the successfully-connected connectors until re-auth.
+      if (!permanentOAuthFailure) {
+        breaker.recordSuccess();
+      }
     }
   }
 
