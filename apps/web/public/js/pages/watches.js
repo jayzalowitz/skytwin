@@ -426,7 +426,11 @@ async function handleRuns(id) {
       _state.runsByWatchId.set(id, Array.isArray(data?.runs) ? data.runs : []);
     } catch (err) {
       showToast(err?.message || 'Could not load runs.', { kind: 'error' });
-      _state.runsByWatchId.set(id, []);
+      // Do NOT cache on failure: the `!has(id)` guard above would then treat a
+      // transient error as "no runs" forever (Copilot review). Leave the cache
+      // empty and collapse the row so the next click re-fetches.
+      _state.runsByWatchId.delete(id);
+      _state.selectedWatchId = null;
     } finally {
       _state.runsLoadingId = null;
     }

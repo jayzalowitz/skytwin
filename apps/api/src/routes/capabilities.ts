@@ -176,9 +176,28 @@ function nullableNumber(value: unknown): number | null {
   return null;
 }
 
-function serializeCapabilityServer(server: McpServerRow): McpServerRow {
+/**
+ * Fields that must never reach the client: the raw process invocation
+ * (command/args), environment variables (may hold API keys / secrets), the raw
+ * server URL (may embed inline credentials or tokens), and the vault token
+ * reference. GET /:id previously spread the whole mcp_servers row (Copilot
+ * review), leaking all of these. The capability UI only consumes display
+ * metadata + spend limits, so redact the sensitive fields here.
+ */
+type RedactedCapabilityServer = Omit<
+  McpServerRow,
+  'command' | 'args' | 'env' | 'url' | 'oauth_token_id'
+>;
+
+function serializeCapabilityServer(server: McpServerRow): RedactedCapabilityServer {
+  const safe: Partial<McpServerRow> = { ...server };
+  delete safe.command;
+  delete safe.args;
+  delete safe.env;
+  delete safe.url;
+  delete safe.oauth_token_id;
   return {
-    ...server,
+    ...(safe as RedactedCapabilityServer),
     per_app_spend_per_action_cents: nullableNumber(server.per_app_spend_per_action_cents),
     per_app_daily_spend_cents: nullableNumber(server.per_app_daily_spend_cents),
     per_app_monthly_spend_cents: nullableNumber(server.per_app_monthly_spend_cents),
