@@ -99,8 +99,9 @@ describe('GET /about-me — J: self-portrait', () => {
     expect((res.body as { modelVersion: string }).modelVersion).toBe('stub-v0');
   });
 
-  // 3. LLM throws → placeholder fallback
-  it('returns placeholder when LLM throws', async () => {
+  // 3. LLM throws WITH facts present → deterministic portrait fallback
+  //    (facts exist, so it's a real deterministic-v1 portrait, not the empty stub-v0).
+  it('returns deterministic portrait when LLM throws and facts are present', async () => {
     const mockLlm = {
       hasProviders: true,
       generate: vi.fn().mockRejectedValue(new Error('timeout')),
@@ -118,7 +119,7 @@ describe('GET /about-me — J: self-portrait', () => {
     const app = buildApp();
     const res = await request(app, 'GET', '/api/about-me');
     expect(res.status).toBe(200);
-    expect((res.body as { modelVersion: string }).modelVersion).toBe('stub-v0');
+    expect((res.body as { modelVersion: string }).modelVersion).toBe('deterministic-v1');
   });
 
   // 4. POST /correct hard rail: always writes provenance node
