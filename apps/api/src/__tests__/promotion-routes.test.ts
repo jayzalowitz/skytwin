@@ -54,14 +54,17 @@ vi.mock('@skytwin/db', () => ({
 }));
 
 vi.mock('@skytwin/registry-client', () => ({
-  RegistryClient: vi.fn().mockImplementation(() => ({
+  RegistryClient: vi.fn(function RegistryClient() {
+    return {
     search: vi.fn().mockResolvedValue([]),
     getAll: vi.fn().mockResolvedValue([]),
-  })),
+    };
+  }),
 }));
 
 vi.mock('@skytwin/policy-engine', () => ({
-  TrustTierEngine: vi.fn().mockImplementation(() => ({
+  TrustTierEngine: vi.fn(function TrustTierEngine() {
+    return {
     evaluateProgression: vi.fn().mockReturnValue({
       shouldChange: true,
       currentTier: 'observer',
@@ -71,7 +74,8 @@ vi.mock('@skytwin/policy-engine', () => ({
     }),
     evaluateRegression: vi.fn().mockReturnValue({ shouldChange: false, currentTier: 'observer', reason: 'No regression.' }),
     evaluate: vi.fn().mockReturnValue({ shouldChange: false, currentTier: 'observer', reason: 'Stable.' }),
-  })),
+    };
+  }),
 }));
 
 vi.mock('@skytwin/shared-types', async (importOriginal) => {
@@ -201,13 +205,15 @@ describe('POST /api/capabilities/:id/promote-tier', () => {
 
   it('returns 409 when threshold is not met', async () => {
     const { TrustTierEngine } = await import('@skytwin/policy-engine');
-    (TrustTierEngine as ReturnType<typeof vi.fn>).mockImplementationOnce(() => ({
-      evaluateProgression: vi.fn().mockReturnValue({
-        shouldChange: false,
-        currentTier: 'observer',
-        reason: 'Need more approvals.',
-      }),
-    }));
+    (TrustTierEngine as ReturnType<typeof vi.fn>).mockImplementationOnce(function TrustTierEngine() {
+      return {
+        evaluateProgression: vi.fn().mockReturnValue({
+          shouldChange: false,
+          currentTier: 'observer',
+          reason: 'Need more approvals.',
+        }),
+      };
+    });
 
     mockMcpServerRepository.getById.mockResolvedValue(SERVER_ROW);
     mockQuery.mockResolvedValue({ rows: [{ total: '2', approved: '1' }] });

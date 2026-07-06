@@ -31,7 +31,9 @@ vi.mock('@skytwin/db', () => ({
 }));
 
 vi.mock('@skytwin/policy-engine', () => ({
-  PolicyEvaluator: vi.fn().mockImplementation(() => mockPolicyEvaluator),
+  PolicyEvaluator: vi.fn(function PolicyEvaluator() {
+    return mockPolicyEvaluator;
+  }),
 }));
 
 vi.mock('../execution-setup.js', () => ({

@@ -134,6 +134,9 @@ importers:
       '@types/express':
         specifier: ^5.0.6
         version: 5.0.6
+      '@types/node':
+        specifier: ^26.1.0
+        version: 26.1.0
       tsx:
         specifier: ^4.22.4
         version: 4.22.4
@@ -153,6 +156,9 @@ importers:
         specifier: ^6.8.9
         version: 6.8.9
     devDependencies:
+      '@types/node':
+        specifier: ^26.1.0
+        version: 26.1.0
       electron:
         specifier: ^43.0.0
         version: 43.0.0
@@ -315,6 +321,9 @@ importers:
       '@types/express':
         specifier: ^5.0.6
         version: 5.0.6
+      '@types/node':
+        specifier: ^26.1.0
+        version: 26.1.0
       axe-core:
         specifier: ^4.10.2
         version: 4.12.1
@@ -388,6 +397,9 @@ importers:
         specifier: ^1.0.3
         version: 1.0.3
     devDependencies:
+      '@types/node':
+        specifier: ^26.1.0
+        version: 26.1.0
       tsx:
         specifier: ^4.22.4
         version: 4.22.4
@@ -404,6 +416,9 @@ importers:
         specifier: workspace:*
         version: link:../llm-client
     devDependencies:
+      '@types/node':
+        specifier: ^26.1.0
+        version: 26.1.0
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
@@ -441,6 +456,9 @@ importers:
 
   packages/config:
     devDependencies:
+      '@types/node':
+        specifier: ^26.1.0
+        version: 26.1.0
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
@@ -460,6 +478,9 @@ importers:
         specifier: workspace:*
         version: link:../shared-types
     devDependencies:
+      '@types/node':
+        specifier: ^26.1.0
+        version: 26.1.0
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
@@ -473,6 +494,9 @@ importers:
         specifier: workspace:*
         version: link:../shared-types
     devDependencies:
+      '@types/node':
+        specifier: ^26.1.0
+        version: 26.1.0
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
@@ -482,6 +506,9 @@ importers:
 
   packages/credential-vault:
     devDependencies:
+      '@types/node':
+        specifier: ^26.1.0
+        version: 26.1.0
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
@@ -516,6 +543,9 @@ importers:
         specifier: ^8.21.0
         version: 8.21.0
     devDependencies:
+      '@types/node':
+        specifier: ^26.1.0
+        version: 26.1.0
       '@types/pg':
         specifier: ^8.10.9
         version: 8.20.0
@@ -553,6 +583,9 @@ importers:
         specifier: ^2.7.7
         version: 2.9.1
     devDependencies:
+      '@types/node':
+        specifier: ^26.1.0
+        version: 26.1.0
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
@@ -622,6 +655,9 @@ importers:
         specifier: workspace:*
         version: link:../twin-model
     devDependencies:
+      '@types/node':
+        specifier: ^26.1.0
+        version: 26.1.0
       tsx:
         specifier: ^4.22.4
         version: 4.22.4
@@ -641,6 +677,9 @@ importers:
         specifier: workspace:*
         version: link:../shared-types
     devDependencies:
+      '@types/node':
+        specifier: ^26.1.0
+        version: 26.1.0
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
@@ -695,6 +734,9 @@ importers:
         specifier: workspace:*
         version: link:../shared-types
     devDependencies:
+      '@types/node':
+        specifier: ^26.1.0
+        version: 26.1.0
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
@@ -714,6 +756,9 @@ importers:
         specifier: workspace:*
         version: link:../shared-types
     devDependencies:
+      '@types/node':
+        specifier: ^26.1.0
+        version: 26.1.0
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
@@ -900,6 +945,9 @@ importers:
         specifier: workspace:*
         version: link:../shared-types
     devDependencies:
+      '@types/node':
+        specifier: ^26.1.0
+        version: 26.1.0
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
@@ -966,6 +1014,9 @@ importers:
 
   packages/shared-types:
     devDependencies:
+      '@types/node':
+        specifier: ^26.1.0
+        version: 26.1.0
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
@@ -979,6 +1030,9 @@ importers:
         specifier: workspace:*
         version: link:../shared-types
     devDependencies:
+      '@types/node':
+        specifier: ^26.1.0
+        version: 26.1.0
       typescript:
         specifier: ^6.0.3
         version: 6.0.3

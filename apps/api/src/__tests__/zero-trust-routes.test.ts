@@ -54,14 +54,18 @@ vi.mock('@skytwin/db', () => ({
 }));
 
 vi.mock('@skytwin/registry-client', () => ({
-  RegistryClient: vi.fn().mockImplementation(() => ({
+  RegistryClient: vi.fn(function RegistryClient() {
+    return {
     search: vi.fn().mockResolvedValue([]),
     getAll: vi.fn().mockResolvedValue([]),
-  })),
+    };
+  }),
 }));
 
 vi.mock('@skytwin/policy-engine', () => ({
-  TrustTierEngine: vi.fn().mockImplementation(() => ({})),
+  TrustTierEngine: vi.fn(function TrustTierEngine() {
+    return {};
+  }),
 }));
 
 vi.mock('@skytwin/policy-prompts', () => ({
