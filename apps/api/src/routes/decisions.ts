@@ -79,6 +79,9 @@ export function createDecisionsRouter(): Router {
             situationType: d.situation_type,
             domain: d.domain,
             urgency: d.urgency,
+            summary: typeof d.interpreted_situation?.['summary'] === 'string'
+              ? d.interpreted_situation['summary']
+              : null,
             autoExecuted: outcome ? outcome.auto_executed : null,
             requiresApproval: outcome ? outcome.requires_approval === true : false,
             createdAt: d.created_at,

@@ -425,6 +425,29 @@ async function seedAlexProfileSurfaces(client: Db): Promise<void> {
      ON CONFLICT (id) DO UPDATE SET reason = EXCLUDED.reason, offered_at = EXCLUDED.offered_at, responded_at = NULL, response = NULL`,
     [id('db', 1), DEMO_ALEX_ID, github],
   );
+
+  await client.query(
+    `INSERT INTO user_risk_profiles (user_id, profile_text, interpreted_caps, last_interpreted_at, last_model_version)
+     VALUES ($1, $2, $3::jsonb, now() - INTERVAL '1 hour', 'demo-seed-v1')
+     ON CONFLICT (user_id) DO UPDATE SET
+       profile_text = EXCLUDED.profile_text,
+       interpreted_caps = EXCLUDED.interpreted_caps,
+       last_interpreted_at = EXCLUDED.last_interpreted_at,
+       last_model_version = EXCLUDED.last_model_version,
+       updated_at = now()`,
+    [
+      DEMO_ALEX_ID,
+      'I like my twin to handle boring, reversible work without interrupting me: archive newsletters, file receipts, summarize routine threads, and accept obvious calendar updates. Ask before sending external email, spending more than $50, changing security settings, paying invoices, or touching anything irreversible. Keep sensitive work local when possible.',
+      JSON.stringify({
+        spend_limit_per_action_cents: 5000,
+        daily_spend_limit_cents: 15000,
+        auto_approve_domains: ['email_triage', 'document_management', 'calendar_low_risk'],
+        escalate_domains: ['finance', 'security', 'external_email_send', 'irreversible_actions'],
+        boldness: 'moderate',
+        raw_notes: 'Demo-seeded from Alex autonomy preferences.',
+      }),
+    ],
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

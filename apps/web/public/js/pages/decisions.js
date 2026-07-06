@@ -161,7 +161,7 @@ export async function renderDecisions(container, userId) {
                   <tr class="decision-row" style="cursor: pointer;" data-action="toggle-explanation" data-decision-id="${escapeHtml(d.id)}">
                     <td>${formatTime(d.createdAt || d.created_at)}</td>
                     <td><span class="badge badge-info">${escapeHtml(domainLabel(d.domain))}</span></td>
-                    <td>${escapeHtml(situationLabel(d.situationType || d.situation_type))}</td>
+                    <td>${escapeHtml(d.summary || situationLabel(d.situationType || d.situation_type))}</td>
                     <td><span class="badge badge-${urgencyBadge(d.urgency)}">${escapeHtml(d.urgency || '--')}</span></td>
                     <td>${d.autoExecuted === true
                       ? '<span class="badge badge-accent" title="Your twin handled this automatically">Auto</span>'

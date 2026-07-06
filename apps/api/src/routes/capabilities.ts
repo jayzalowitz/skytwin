@@ -140,6 +140,62 @@ export function buildEvidencePreview(signal: Record<string, unknown>): EvidenceP
 // RegistryClient reads curated.json on construction; constructing once
 // avoids re-parsing the file on every request.
 const registryClient = new RegistryClient();
+function getCapabilityUserId(req: Request): string | undefined {
+  return (req as unknown as { user?: { id?: string } }).user?.id
+    ?? (req.query['userId'] as string | undefined);
+}
+
+async function getOwnedCapabilityServer(
+  id: string,
+  userId: string,
+): Promise<{ status: 200; server: McpServerRow } | { status: 403 | 404; error: string }> {
+  const server = await mcpServerRepository.getById(id);
+  if (!server || server.status === 'uninstalled') {
+    return { status: 404, error: 'Capability server not found' };
+  }
+  if (server.user_id !== userId) {
+    return { status: 403, error: 'Forbidden: you do not own this capability server' };
+  }
+  return { status: 200, server };
+}
+
+function parseOptionalCents(value: unknown): number | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return undefined;
+  return Math.round(value);
+}
+
+function nullableNumber(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function serializeCapabilityServer(server: McpServerRow): McpServerRow {
+  return {
+    ...server,
+    per_app_spend_per_action_cents: nullableNumber(server.per_app_spend_per_action_cents),
+    per_app_daily_spend_cents: nullableNumber(server.per_app_daily_spend_cents),
+    per_app_monthly_spend_cents: nullableNumber(server.per_app_monthly_spend_cents),
+  };
+}
+
+function serializeCapabilityPolicy(server: McpServerRow): Record<string, unknown> {
+  return {
+    perAppSpendPerActionCents: nullableNumber(server.per_app_spend_per_action_cents),
+    perAppDailySpendCents: nullableNumber(server.per_app_daily_spend_cents),
+    perAppMonthlySpendCents: nullableNumber(server.per_app_monthly_spend_cents),
+    perAppMonthlyRollover: server.per_app_monthly_rollover,
+    perAppIrreversibleRequiresApproval: server.per_app_irreversible_requires_approval,
+    zeroTrustMode: server.zero_trust_mode,
+    trustTier: server.trust_tier,
+  };
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Hardcoded recipes (v1). Each recipe bundles a set of registry IDs that a
@@ -277,6 +333,142 @@ async function writeProvenanceNode(opts: {
  */
 export function createCapabilitiesRouter(): Router {
   const router = Router();
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // GET /:id/skills
+  // Returns cached MCP tool names and descriptions for the capability detail
+  // page. This is read-only and scoped by server ownership.
+  // ─────────────────────────────────────────────────────────────────────────
+  router.get('/:id/skills', async (req, res, next) => {
+    try {
+      const { id } = req.params;
+      const userId = getCapabilityUserId(req);
+      if (!id || !UUID_REGEX.test(id)) {
+        res.status(400).json({ error: 'id path param must be a UUID' });
+        return;
+      }
+      if (!userId) {
+        res.status(400).json({ error: 'userId is required' });
+        return;
+      }
+
+      const owned = await getOwnedCapabilityServer(id, userId);
+      if (owned.status !== 200) {
+        res.status(owned.status).json({ error: owned.error });
+        return;
+      }
+
+      const result = await query<{
+        skill_name: string;
+        skill_description: string | null;
+        is_destructive: boolean;
+        is_irreversible: boolean;
+        estimated_cost_cents: number | null;
+      }>(
+        `SELECT skill_name, skill_description, is_destructive, is_irreversible, estimated_cost_cents
+         FROM mcp_server_skills
+         WHERE server_id = $1
+         ORDER BY skill_name`,
+        [id],
+      );
+
+      res.json({ skills: result.rows });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // GET/PUT /:id/policy
+  // Per-capability spend caps live on mcp_servers. The detail page reads and
+  // writes only these local overrides; omitted fields preserve existing values.
+  // ─────────────────────────────────────────────────────────────────────────
+  router.get('/:id/policy', async (req, res, next) => {
+    try {
+      const { id } = req.params;
+      const userId = getCapabilityUserId(req);
+      if (!id || !UUID_REGEX.test(id)) {
+        res.status(400).json({ error: 'id path param must be a UUID' });
+        return;
+      }
+      if (!userId) {
+        res.status(400).json({ error: 'userId is required' });
+        return;
+      }
+
+      const owned = await getOwnedCapabilityServer(id, userId);
+      if (owned.status !== 200) {
+        res.status(owned.status).json({ error: owned.error });
+        return;
+      }
+
+      res.json({ policy: serializeCapabilityPolicy(owned.server) });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.put('/:id/policy', async (req, res, next) => {
+    try {
+      const { id } = req.params;
+      const userId = getCapabilityUserId(req);
+      if (!id || !UUID_REGEX.test(id)) {
+        res.status(400).json({ error: 'id path param must be a UUID' });
+        return;
+      }
+      if (!userId) {
+        res.status(400).json({ error: 'userId is required' });
+        return;
+      }
+
+      const owned = await getOwnedCapabilityServer(id, userId);
+      if (owned.status !== 200) {
+        res.status(owned.status).json({ error: owned.error });
+        return;
+      }
+
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const perAction = parseOptionalCents(body['perAppSpendPerActionCents']);
+      const perDay = parseOptionalCents(body['perAppDailySpendCents']);
+      if (
+        (body['perAppSpendPerActionCents'] !== undefined && perAction === undefined) ||
+        (body['perAppDailySpendCents'] !== undefined && perDay === undefined)
+      ) {
+        res.status(400).json({ error: 'Spend caps must be non-negative cents or null' });
+        return;
+      }
+
+      const result = await query<McpServerRow>(
+        `UPDATE mcp_servers
+         SET per_app_spend_per_action_cents = CASE WHEN $2 THEN $3 ELSE per_app_spend_per_action_cents END,
+             per_app_daily_spend_cents      = CASE WHEN $4 THEN $5 ELSE per_app_daily_spend_cents END,
+             updated_at = now()
+         WHERE id = $1 AND user_id = $6
+         RETURNING *`,
+        [
+          id,
+          body['perAppSpendPerActionCents'] !== undefined,
+          perAction ?? null,
+          body['perAppDailySpendCents'] !== undefined,
+          perDay ?? null,
+          userId,
+        ],
+      );
+
+      const updated = result.rows[0];
+      if (!updated) {
+        res.status(404).json({ error: 'Capability server not found' });
+        return;
+      }
+
+      res.json({
+        ok: true,
+        policy: serializeCapabilityPolicy(updated),
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
 
   // ─────────────────────────────────────────────────────────────────────────
   // POST /:id/uninstall
@@ -2080,7 +2272,36 @@ export function createCapabilitiesRouter(): Router {
     }
   });
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // GET /:id
+  // Base detail route lives last because Express 5 no longer supports inline
+  // regex params. Static routes above (/suggestions, /registry, etc.) get first
+  // chance; this handler still validates that :id is a UUID before reading.
+  // ─────────────────────────────────────────────────────────────────────────
+  router.get('/:id', async (req, res, next) => {
+    try {
+      const { id } = req.params;
+      const userId = getCapabilityUserId(req);
+      if (!id || !UUID_REGEX.test(id)) {
+        res.status(400).json({ error: 'id path param must be a UUID' });
+        return;
+      }
+      if (!userId) {
+        res.status(400).json({ error: 'userId is required' });
+        return;
+      }
+
+      const owned = await getOwnedCapabilityServer(id, userId);
+      if (owned.status !== 200) {
+        res.status(owned.status).json({ error: owned.error });
+        return;
+      }
+
+      res.json({ server: serializeCapabilityServer(owned.server) });
+    } catch (err) {
+      next(err);
+    }
+  });
+
   return router;
 }
-
-

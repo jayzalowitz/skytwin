@@ -122,14 +122,14 @@ export function createActivityRouter(): Router {
       if (decisions.status === 'fulfilled') {
         for (const d of decisions.value) {
           const ts = (d.created_at ?? since).getTime();
+          const interpretedSummary = typeof d.interpreted_situation?.['summary'] === 'string'
+            ? d.interpreted_situation['summary']
+            : null;
           events.push({
             id: `dec:${d.id}`,
             kind: 'decision',
             at: new Date(ts).toISOString(),
-            // DecisionRow has no `summary` column — synthesise one from
-            // situation_type + domain. The future UI can fetch the
-            // ExplanationRecord via decisionId for the rich copy.
-            summary: `${d.situation_type ?? 'decision'} (${d.domain ?? 'unknown'})`,
+            summary: interpretedSummary ?? `${d.situation_type ?? 'decision'} (${d.domain ?? 'unknown'})`,
             domain: d.domain ?? null,
             decisionId: d.id,
             _ts: ts,

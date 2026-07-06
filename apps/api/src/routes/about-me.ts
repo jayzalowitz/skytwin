@@ -99,6 +99,53 @@ const PLACEHOLDER_PARAGRAPH: SelfPortraitParagraph = {
   citations: [],
 };
 
+function humanTier(tier: string): string {
+  const labels: Record<string, string> = {
+    observer: 'just watch',
+    suggest: 'ask first',
+    low_autonomy: 'handle small routine tasks',
+    moderate_autonomy: 'handle most familiar tasks',
+    high_autonomy: 'high autonomy',
+  };
+  return labels[tier] ?? tier.replace(/_/g, ' ');
+}
+
+function buildDeterministicPortrait(
+  facts: Awaited<ReturnType<typeof aggregateUserFacts>>,
+): SelfPortraitParagraph[] {
+  if (facts.installedCapabilities.length === 0 && facts.recentActions.length === 0) {
+    return [PLACEHOLDER_PARAGRAPH];
+  }
+
+  const capabilitySummary = facts.installedCapabilities.length > 0
+    ? facts.installedCapabilities
+        .slice(0, 4)
+        .map((c) => `${c.name} (${humanTier(c.trustTier)})`)
+        .join(', ')
+    : 'a small set of connected tools';
+
+  const actionCount = facts.recentActions.filter((a) => a.nodeType === 'action').length;
+  const installCount = facts.recentActions.filter((a) => a.nodeType === 'install').length;
+  const promotionCount = facts.tierPromotions.length;
+
+  return [
+    {
+      text: `You prefer useful autonomy with visible guardrails. Your active capabilities are ${capabilitySummary}, which means your twin can help across communication and work tools while still treating unfamiliar or higher-risk work as something that needs your review.`,
+      citations: [],
+    },
+    {
+      text: `The recent audit trail shows ${actionCount} capability action${actionCount === 1 ? '' : 's'} and ${installCount} install event${installCount === 1 ? '' : 's'}. That points to a twin that is already doing routine background work, while keeping an audit trail you can inspect and correct.`,
+      citations: [],
+    },
+    {
+      text: promotionCount > 0
+        ? `Your trust settings are changing gradually instead of jumping straight to autopilot. Recent promotion history shows the system waits for repeated approvals before widening what it can do on its own.`
+        : `Your trust settings are set up to grow gradually. The system should ask before spending money, sending sensitive messages, or taking actions that would be hard to undo.`,
+      citations: [],
+    },
+  ];
+}
+
 export function createAboutMeRouter(): Router {
   const router = Router();
 
@@ -120,11 +167,10 @@ export function createAboutMeRouter(): Router {
         return;
       }
 
+      const userFacts = await aggregateUserFacts(userId);
       const llmClient = getLlmClientFromConfig();
       if (llmClient) {
         try {
-          const userFacts = await aggregateUserFacts(userId);
-
           // Only call the LLM if we have meaningful facts to portrait
           const hasFacts =
             userFacts.installedCapabilities.length > 0 ||
@@ -160,11 +206,12 @@ export function createAboutMeRouter(): Router {
         }
       }
 
-      // Deterministic fallback: placeholder paragraph
       res.json({
-        paragraphs: [PLACEHOLDER_PARAGRAPH],
+        paragraphs: buildDeterministicPortrait(userFacts),
         generatedAt: new Date().toISOString(),
-        modelVersion: 'stub-v0',
+        modelVersion: userFacts.installedCapabilities.length > 0 || userFacts.recentActions.length > 0
+          ? 'deterministic-v1'
+          : 'stub-v0',
       });
     } catch (err) {
       next(err);

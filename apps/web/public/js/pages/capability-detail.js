@@ -484,7 +484,7 @@ async function loadMonthlyCostMeter(serverId, userId, server) {
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
     const spentCents = recent
       .filter(b => new Date(b.bucket_started_at) >= monthStart)
-      .reduce((sum, b) => sum + (b.spend_cents || 0), 0);
+      .reduce((sum, b) => sum + (Number(b.spend_cents) || 0), 0);
 
     const pct = perMonthCap > 0 ? Math.min(100, Math.round((spentCents / perMonthCap) * 100)) : 0;
     const barColor = pct >= 90 ? 'var(--danger)' : pct >= 70 ? 'var(--warning)' : 'var(--success)';
