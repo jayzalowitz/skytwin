@@ -42,4 +42,12 @@ describe('watches page', () => {
   it('introduces no inline event handlers', () => {
     expect(source).not.toMatch(/\son(click|keydown|keyup|change|input|submit)=/i);
   });
+
+  it('does not poison the runs cache on a transient fetch failure (retry stays possible)', () => {
+    // handleRuns guards re-fetch behind `!runsByWatchId.has(id)`. Caching an
+    // empty array on error would make a transient failure show "no runs"
+    // forever. The catch must clear the entry, not set [].
+    expect(source).toContain('_state.runsByWatchId.delete(id)');
+    expect(source).not.toMatch(/catch[\s\S]{0,200}runsByWatchId\.set\(id,\s*\[\]\)/);
+  });
 });
