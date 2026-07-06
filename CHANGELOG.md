@@ -1,5 +1,19 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.101.0] - 2026-07-06
+
+### Added
+
+- **No-code routines — Watches now have their user-facing surface (#519, part 4).** The web app now has a first-class **Watches** page (`#/watches`) that lets a user preview a natural-language watch, activate it, save it as a draft, inspect the normalized filter, pause/resume, edit the source text, delete the watch, and expand recent run history. The page follows the existing dashboard event model: no inline handlers, singleton delegated listeners gated by the `#/watches` route, and all untrusted watch/run/filter values escaped before rendering. A new navigation item makes the page discoverable from the sidebar.
+- **Recent Watch runs now project into the daily briefing.** `buildLiveDigest` reads recent `watch_runs` best-effort, maps them into the live briefing structure, and allows a live briefing to be synthesized when Watch runs are the only new signal. The briefing UI now renders those runs in the awareness zone with matched counts, summaries, timing, and a link back to Watches, so Watch output shows up where the user already reviews ambient activity instead of living only in a management table.
+- **Chat can author Watches without silently creating anything.** When the assistant response contains a recurring watch-style ask, the chat UI parses it through the same Watches preview endpoint and appends an explicit "Save as a Watch" footer. The user must click **Activate** or **Save draft** before anything is persisted, preserving read-only v1 safety and keeping chat authoring auditable. The footer escapes generated labels/filters and reuses the existing current-user lookup at click time so switch-user flows do not leak stale user ids.
+- **The Watches API exposes run history and safer activation/edits.** `GET /api/watches/:userId/:watchId/runs` returns recent run rows after validating ownership, and `PATCH /api/watches/:userId/:watchId` can now preserve the edited natural-language `sourceText` alongside the structured spec. Active watches cannot be edited or resumed into an all-match filter; sender, keyword, domain, or source narrowing is required before an active watch can run.
+
+### Fixed
+
+- **Web API calls now handle `204 No Content` responses.** `fetchJSON` returns `null` for 204s instead of attempting `res.json()`, which fixes post-delete Watches rerenders and any other dashboard command endpoint that correctly returns an empty success response.
+- **Release metadata is back in sync.** `origin/main` had `VERSION` at `0.6.99.0` while root `package.json` still reported `0.6.82.0`; this release writes the queue-selected `0.6.101.0` to both files so subsequent version-gated PRs have a consistent base.
+
 ## [0.6.99.0] - 2026-07-05
 
 ### Added
