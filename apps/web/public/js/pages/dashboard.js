@@ -666,7 +666,7 @@ export async function renderDashboard(container, userId) {
           const pending = d.autoExecuted == null;
           const verb = auto ? 'I handled' : pending ? 'I noticed' : 'You OK\'d';
           const verbColor = auto ? 'var(--success)' : pending ? 'var(--text-muted)' : 'var(--accent, #1976d2)';
-          const situation = situationLabel(d.situationType || d.situation_type);
+          const situation = d.summary || situationLabel(d.situationType || d.situation_type);
           const dom = escapeHtml(domainLabel(d.domain));
           return `
             <div class="activity-item">
@@ -783,4 +783,3 @@ export async function renderDashboard(container, userId) {
     window._skytwinFirstScanStartedAt = null;
   }
 }
-
