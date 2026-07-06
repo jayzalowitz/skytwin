@@ -57,7 +57,9 @@ vi.mock('@skytwin/llm-client', async () => {
   );
   return {
     ...actual,
-    LlmClient: vi.fn().mockImplementation(() => ({})),
+    LlmClient: vi.fn(function LlmClient() {
+      return {};
+    }),
   };
 });
 

@@ -13,40 +13,104 @@
 
 import { vi } from 'vitest';
 
+interface NativeImageStub {
+  isEmpty(): boolean;
+}
+
+interface NativeImageModuleStub {
+  createFromDataURL(dataUrl: string): NativeImageStub;
+  createFromPath(path: string): NativeImageStub;
+}
+
+interface TrayInstanceStub {
+  setToolTip(label: string): void;
+  setImage(image: unknown): void;
+  setContextMenu(menu: unknown): void;
+  on(eventName: string, listener: (...args: unknown[]) => void): void;
+}
+
+interface TrayConstructorStub {
+  new (...args: unknown[]): TrayInstanceStub;
+}
+
+interface MenuModuleStub {
+  buildFromTemplate(template: unknown[]): { template: unknown[] };
+  setApplicationMenu(menu?: unknown): void;
+}
+
+interface DialogModuleStub {
+  showMessageBox(...args: unknown[]): Promise<{ response: number }>;
+}
+
+interface AppModuleStub {
+  getVersion(): string;
+  quit(): void;
+  isPackaged: boolean;
+}
+
+interface BrowserWindowInstanceStub {
+  show(): void;
+  hide(): void;
+  focus(): void;
+  isVisible(): boolean;
+  webContents: { executeJavaScript(script: string): unknown };
+  on(eventName: string, listener: (...args: unknown[]) => void): void;
+  isQuitting: boolean;
+}
+
+interface BrowserWindowConstructorStub {
+  new (...args: unknown[]): BrowserWindowInstanceStub;
+}
+
+interface IpcMainModuleStub {
+  handle(channel: string, listener: (...args: unknown[]) => unknown): void;
+  on(channel: string, listener: (...args: unknown[]) => void): void;
+}
+
+interface ShellModuleStub {
+  openExternal(url: string): Promise<void>;
+}
+
+interface SafeStorageModuleStub {
+  isEncryptionAvailable(): boolean;
+  encryptString(plaintext: string): Buffer;
+  decryptString(ciphertext: Buffer): string;
+}
+
 // nativeImage stub — createFromDataURL returns a trivial object
-const nativeImage = {
+const nativeImage: NativeImageModuleStub = {
   createFromDataURL: vi.fn(() => ({ isEmpty: () => false })),
   createFromPath: vi.fn(() => ({ isEmpty: () => false })),
 };
 
 // Tray stub
-const Tray = vi.fn().mockImplementation(() => ({
+const Tray: TrayConstructorStub = vi.fn().mockImplementation(() => ({
   setToolTip: vi.fn(),
   setImage: vi.fn(),
   setContextMenu: vi.fn(),
   on: vi.fn(),
-}));
+})) as unknown as TrayConstructorStub;
 
 // Menu stub
-const Menu = {
+const Menu: MenuModuleStub = {
   buildFromTemplate: vi.fn((template: unknown[]) => ({ template })),
   setApplicationMenu: vi.fn(),
 };
 
 // dialog stub
-const dialog = {
+const dialog: DialogModuleStub = {
   showMessageBox: vi.fn(() => Promise.resolve({ response: 0 })),
 };
 
 // app stub
-const app = {
+const app: AppModuleStub = {
   getVersion: vi.fn(() => '0.0.0-test'),
   quit: vi.fn(),
   isPackaged: false,
 };
 
 // BrowserWindow stub — only the constructor + methods used by tray.ts
-const BrowserWindow = vi.fn().mockImplementation(() => ({
+const BrowserWindow: BrowserWindowConstructorStub = vi.fn().mockImplementation(() => ({
   show: vi.fn(),
   hide: vi.fn(),
   focus: vi.fn(),
@@ -54,22 +118,22 @@ const BrowserWindow = vi.fn().mockImplementation(() => ({
   webContents: { executeJavaScript: vi.fn() },
   on: vi.fn(),
   isQuitting: false,
-}));
+})) as unknown as BrowserWindowConstructorStub;
 
 // ipcMain stub
-const ipcMain = {
+const ipcMain: IpcMainModuleStub = {
   handle: vi.fn(),
   on: vi.fn(),
 };
 
 // shell stub
-const shell = {
+const shell: ShellModuleStub = {
   openExternal: vi.fn(() => Promise.resolve()),
 };
 
 // safeStorage stub — round-trips with a reversible (NOT secure) transform so
 // tests that exercise the passphrase-vault wiring don't need a real keychain.
-const safeStorage = {
+const safeStorage: SafeStorageModuleStub = {
   isEncryptionAvailable: vi.fn(() => true),
   encryptString: vi.fn((plaintext: string) => Buffer.from(plaintext, 'utf8')),
   decryptString: vi.fn((ciphertext: Buffer) => ciphertext.toString('utf8')),

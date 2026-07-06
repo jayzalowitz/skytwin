@@ -56,7 +56,9 @@ vi.mock('@skytwin/config', () => ({
 vi.mock('@skytwin/ironclaw-adapter', () => ({
   RealIronClawAdapter: mockRealIronClawAdapter,
   DirectExecutionAdapter: vi.fn(),
-  ActionHandlerRegistry: vi.fn().mockImplementation(() => ({ register: vi.fn() })),
+  ActionHandlerRegistry: vi.fn(function ActionHandlerRegistry() {
+    return { register: vi.fn() };
+  }),
   EmailActionHandler: vi.fn(),
   CalendarActionHandler: vi.fn(),
   FinanceActionHandler: vi.fn(),
@@ -70,8 +72,12 @@ vi.mock('@skytwin/ironclaw-adapter', () => ({
 }));
 
 vi.mock('@skytwin/execution-router', () => ({
-  ExecutionRouter: vi.fn().mockImplementation(() => mockExecutionRouter),
-  AdapterRegistry: vi.fn().mockImplementation(() => mockAdapterRegistry),
+  ExecutionRouter: vi.fn(function ExecutionRouter() {
+    return mockExecutionRouter;
+  }),
+  AdapterRegistry: vi.fn(function AdapterRegistry() {
+    return mockAdapterRegistry;
+  }),
   OpenClawAdapter: vi.fn(),
   IRONCLAW_TRUST_PROFILE: {},
   OPENCLAW_TRUST_PROFILE: {},
@@ -82,7 +88,9 @@ vi.mock('@skytwin/execution-router', () => ({
 }));
 
 vi.mock('@skytwin/mcp-host', () => ({
-  McpHost: vi.fn().mockImplementation(() => ({})),
+  McpHost: vi.fn(function McpHost() {
+    return {};
+  }),
 }));
 
 vi.mock('../sse.js', () => ({
@@ -410,7 +418,9 @@ describe('execution-setup', () => {
   describe('createExecutionRouter', () => {
     it('uses DB execution engine overrides when constructing adapters', async () => {
       const ironclawAdapter = makeAdapter();
-      mockRealIronClawAdapter.mockImplementation(() => ironclawAdapter);
+      mockRealIronClawAdapter.mockImplementation(function RealIronClawAdapter() {
+        return ironclawAdapter;
+      });
       mockIsIronClawEnhancedAdapter.mockReturnValue(true);
       mockLoadConfig.mockReturnValue({
         ironclawApiUrl: 'http://env-ironclaw:4000',

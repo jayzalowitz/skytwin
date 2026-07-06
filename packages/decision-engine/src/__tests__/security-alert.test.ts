@@ -26,7 +26,7 @@ describe('security-alert classification (spec 06)', () => {
       expect(d.situationType).toBe(SituationType.SECURITY_ALERT);
       expect(d.urgency).toBe('high');
     }
-  });
+  }, 15_000);
 
   it('a breach alert about a financial provider classifies as SECURITY_ALERT, not FINANCE (AC5 precedence)', async () => {
     const d = await interp.interpret({

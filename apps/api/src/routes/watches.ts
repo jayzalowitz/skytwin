@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { parseRoutineSpec } from '@skytwin/routines';
 import type { RoutineFilter, RoutineSpec, RoutineStatus } from '@skytwin/shared-types';
-import { watchRepository } from '@skytwin/db';
+import { watchRepository, watchRunRepository } from '@skytwin/db';
 import { bindUserIdParamValidator, UUID_REGEX } from '../middleware/validate-uuid.js';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
 
@@ -196,6 +196,32 @@ export function createWatchesRouter(): Router {
     }
   });
 
+  // GET /:userId/:watchId/runs — recent run history for the Watches page.
+  router.get('/:userId/:watchId/runs', async (req, res, next) => {
+    try {
+      const userId = req.params['userId']!;
+      const watchId = req.params['watchId']!;
+      if (!UUID_REGEX.test(watchId)) {
+        res.status(400).json({ error: 'Invalid watchId.' });
+        return;
+      }
+      const rawLimit = req.query['limit'];
+      const limit =
+        typeof rawLimit === 'string' && /^\d+$/.test(rawLimit)
+          ? Math.min(parseInt(rawLimit, 10), 50)
+          : 20;
+      const watch = await watchRepository.getForUser(watchId, userId);
+      if (!watch) {
+        res.status(404).json({ error: 'Watch not found.' });
+        return;
+      }
+      const runs = await watchRunRepository.listForWatch(watchId, userId, limit);
+      res.json({ runs });
+    } catch (err) {
+      next(err);
+    }
+  });
+
   // PATCH /:userId/:watchId — pause/resume ({status}) or edit ({spec}).
   router.patch('/:userId/:watchId', async (req, res, next) => {
     try {
@@ -205,12 +231,25 @@ export function createWatchesRouter(): Router {
         res.status(400).json({ error: 'Invalid watchId.' });
         return;
       }
-      const body = (req.body ?? {}) as { status?: unknown; spec?: unknown };
+      const body = (req.body ?? {}) as { status?: unknown; spec?: unknown; sourceText?: unknown };
 
       if (body.status !== undefined) {
         if (body.status !== 'active' && body.status !== 'paused' && body.status !== 'draft') {
           res.status(400).json({ error: 'status must be active | paused | draft' });
           return;
+        }
+        if (body.status === 'active') {
+          const existing = await watchRepository.getForUser(watchId, userId);
+          if (!existing) {
+            res.status(404).json({ error: 'Watch not found.' });
+            return;
+          }
+          if (isFilterEmpty(existing.filter)) {
+            res.status(400).json({
+              error: 'Active watches must be narrowed by sender, keyword, domain, or source.',
+            });
+            return;
+          }
         }
         const updated = await watchRepository.setStatus(
           watchId,
@@ -232,7 +271,20 @@ export function createWatchesRouter(): Router {
           res.status(400).json({ error: v.error });
           return;
         }
-        const updated = await watchRepository.updateSpec(watchId, userId, v.spec);
+        const existing = await watchRepository.getForUser(watchId, userId);
+        if (!existing) {
+          res.status(404).json({ error: 'Watch not found.' });
+          return;
+        }
+        if (existing.status === 'active' && isFilterEmpty(v.spec.filter)) {
+          res.status(400).json({
+            error: 'Active watches must be narrowed by sender, keyword, domain, or source.',
+          });
+          return;
+        }
+        const sourceText =
+          typeof body.sourceText === 'string' ? body.sourceText.slice(0, MAX_TEXT) : undefined;
+        const updated = await watchRepository.updateSpec(watchId, userId, v.spec, sourceText);
         if (!updated) {
           res.status(404).json({ error: 'Watch not found.' });
           return;

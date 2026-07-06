@@ -18,16 +18,17 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
-    "@skytwin/shared-types": "workspace:*",
-    "@skytwin/core": "workspace:*",
-    "@skytwin/twin-model": "workspace:*",
-    "@skytwin/policy-engine": "workspace:*",
-    "@skytwin/llm-client": "workspace:*",
     "@skytwin/connectors": "workspace:*",
+    "@skytwin/core": "workspace:*",
+    "@skytwin/llm-client": "workspace:*",
+    "@skytwin/policy-engine": "workspace:*",
+    "@skytwin/shared-types": "workspace:*",
+    "@skytwin/twin-model": "workspace:*",
     "chrono-node": "^2.7.7"
   },
   "devDependencies": {
+    "@types/node": "^26.1.0",
     "typescript": "^6.0.3",
-    "vitest": "^3.2.6"
+    "vitest": "^4.1.9"
   }
 }

@@ -6,18 +6,32 @@ import { defineConfig } from 'vitest/config';
  *    env + the minimal DOM stubs in `test/setup.ts` (#499/#511).
  *  - `src/**` — accessibility tests (#402) that mount markup into a real DOM
  *    (jsdom) before handing it to axe-core.
- * `environmentMatchGlobs` gives each family the environment it was written for,
- * so neither breaks the other. `passWithNoTests` keeps the script green if a
- * family is ever moved out.
+ * Vitest 4 removed `environmentMatchGlobs`, so model the split as explicit
+ * projects. `passWithNoTests` keeps the script green if a family is ever moved
+ * out.
  */
 export default defineConfig({
   test: {
-    environmentMatchGlobs: [
-      ['public/js/**', 'node'],
-      ['src/**', 'jsdom'],
+    projects: [
+      {
+        test: {
+          name: 'public-js',
+          environment: 'node',
+          include: ['public/js/**/*.test.{js,ts}'],
+          setupFiles: ['./test/setup.ts'],
+          passWithNoTests: true,
+        },
+      },
+      {
+        test: {
+          name: 'a11y',
+          environment: 'jsdom',
+          include: ['src/**/*.test.ts'],
+          setupFiles: ['./test/setup.ts'],
+          passWithNoTests: true,
+        },
+      },
     ],
-    include: ['public/js/**/*.test.{js,ts}', 'src/**/*.test.ts'],
-    setupFiles: ['./test/setup.ts'],
     passWithNoTests: true,
   },
 });

@@ -33,7 +33,9 @@ vi.mock('@skytwin/llm-client', async () => {
   );
   return {
     ...actual,
-    LlmClient: vi.fn().mockImplementation(() => ({})),
+    LlmClient: vi.fn(function LlmClient() {
+      return {};
+    }),
   };
 });
 
@@ -62,13 +64,15 @@ vi.mock('@skytwin/db', () => ({
 }));
 
 vi.mock('@skytwin/registry-client', () => ({
-  RegistryClient: vi.fn().mockImplementation(() => ({
+  RegistryClient: vi.fn(function RegistryClient() {
+    return {
     getAll: vi.fn().mockResolvedValue([
       { id: 'linear-mcp', displayName: 'Linear', description: 'Manage Linear issues' },
       { id: '@modelcontextprotocol/server-github', displayName: 'GitHub', description: 'GitHub PRs and issues' },
       { id: '@modelcontextprotocol/server-slack', displayName: 'Slack', description: 'Send Slack messages' },
     ]),
-  })),
+    };
+  }),
 }));
 
 vi.mock('@skytwin/assistant', () => ({

@@ -24,10 +24,12 @@ vi.mock('@skytwin/db', () => ({
 }));
 
 vi.mock('@skytwin/twin-model', () => ({
-  TwinService: vi.fn().mockImplementation(() => ({
+  TwinService: vi.fn(function TwinService() {
+    return {
     exportTwin: vi.fn(),
     formatAsMarkdown: vi.fn(),
-  })),
+    };
+  }),
 }));
 
 vi.mock('../middleware/require-ownership.js', () => ({

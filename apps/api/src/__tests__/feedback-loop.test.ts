@@ -90,7 +90,8 @@ vi.mock('@skytwin/db', () => ({
   memoryActionOpportunityRepository: fakeMemoryActionOpportunityRepo,
   oauthRepository: fakeOauthRepo,
   userRepository: fakeUserRepo,
-  TwinRepositoryAdapter: vi.fn().mockImplementation(() => ({
+  TwinRepositoryAdapter: vi.fn(function TwinRepositoryAdapter() {
+    return {
     getProfile: vi.fn().mockResolvedValue({ id: 'p', userId: 'u', version: 1, preferences: [], inferences: [], createdAt: new Date(), updatedAt: new Date() }),
     createProfile: vi.fn().mockImplementation(async (p: unknown) => p),
     updateProfile: vi.fn().mockImplementation(async (p: unknown) => p),
@@ -104,13 +105,16 @@ vi.mock('@skytwin/db', () => ({
     getEvidenceByIds: vi.fn().mockResolvedValue([]),
     addFeedback: vi.fn(),
     getFeedback: vi.fn().mockResolvedValue([]),
-  })),
-  PatternRepositoryAdapter: vi.fn().mockImplementation(() => ({
+    };
+  }),
+  PatternRepositoryAdapter: vi.fn(function PatternRepositoryAdapter() {
+    return {
     getPatterns: vi.fn().mockResolvedValue([]),
     upsertPattern: vi.fn(),
     getTraits: vi.fn().mockResolvedValue([]),
     upsertTrait: vi.fn(),
-  })),
+    };
+  }),
   policyRepositoryAdapter: {
     getAllPolicies: vi.fn().mockResolvedValue([]),
     getEnabledPolicies: vi.fn().mockResolvedValue([]),

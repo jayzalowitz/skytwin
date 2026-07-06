@@ -57,7 +57,8 @@ vi.mock('../execution-setup.js', () => ({
 
 // Mock RegistryClient so tests don't hit the filesystem during vitest
 vi.mock('@skytwin/registry-client', () => ({
-  RegistryClient: vi.fn().mockImplementation(() => ({
+  RegistryClient: vi.fn(function RegistryClient() {
+    return {
     search: vi.fn().mockResolvedValue([
       {
         id: '@modelcontextprotocol/server-filesystem',
@@ -71,7 +72,8 @@ vi.mock('@skytwin/registry-client', () => ({
       },
     ]),
     getAll: vi.fn().mockResolvedValue([]),
-  })),
+    };
+  }),
 }));
 
 // ---------------------------------------------------------------------------
