@@ -37,7 +37,7 @@ jobs:
       desktop: ${{ steps.filter.outputs.desktop }}
       mobile: ${{ steps.filter.outputs.mobile }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dorny/paths-filter@v4
         id: filter
         with:
@@ -63,7 +63,7 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: pnpm/action-setup@v5
 
@@ -103,7 +103,7 @@ jobs:
     if: github.event_name != 'pull_request' || needs.changes.outputs.desktop == 'true'
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: pnpm/action-setup@v5
 
@@ -183,7 +183,7 @@ jobs:
     if: github.event_name != 'pull_request' || needs.changes.outputs.desktop == 'true'
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: pnpm/action-setup@v5
 
@@ -263,7 +263,7 @@ jobs:
     if: github.event_name != 'pull_request' || needs.changes.outputs.desktop == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: pnpm/action-setup@v5
 
@@ -342,7 +342,7 @@ jobs:
     if: github.event_name != 'pull_request' || needs.changes.outputs.mobile == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: pnpm/action-setup@v5
 
@@ -407,7 +407,7 @@ jobs:
     if: github.event_name != 'pull_request' || needs.changes.outputs.mobile == 'true'
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: pnpm/action-setup@v5
 
