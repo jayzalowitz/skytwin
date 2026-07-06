@@ -230,6 +230,32 @@ describe('Capabilities API routes', () => {
       expect(body.server.display_name).toBe('Filesystem');
     });
 
+    it('redacts command/args/env/url/token from the detail response', async () => {
+      const server = makeMcpServer();
+      Object.assign(server, {
+        command: '/usr/bin/npx',
+        args: ['-y', '@modelcontextprotocol/server-filesystem'],
+        env: { API_KEY: 'super-secret-value' },
+        url: 'https://user:pass@example.com/mcp?token=abc',
+        oauth_token_id: 'tok-123',
+      });
+      mockMcpServerRepository.getById.mockResolvedValue(server);
+
+      const app = buildApp(USER_ID);
+      const res = await request(app, 'GET', `/api/capabilities/${SERVER_ID}`);
+
+      expect(res.status).toBe(200);
+      const srv = (res.body as { server: Record<string, unknown> }).server;
+      for (const field of ['command', 'args', 'env', 'url', 'oauth_token_id']) {
+        expect(srv).not.toHaveProperty(field);
+      }
+      // The secret value must not leak anywhere in the payload.
+      expect(JSON.stringify(res.body)).not.toContain('super-secret-value');
+      // Safe display metadata is still returned.
+      expect(srv.display_name).toBe('Filesystem');
+      expect(srv.trust_tier).toBeDefined();
+    });
+
     it('does not expose a capability owned by another user', async () => {
       const OTHER_USER = 'cccccccc-dddd-eeee-ffff-000000000099';
       mockMcpServerRepository.getById.mockResolvedValue(makeMcpServer({ user_id: OTHER_USER }));
