@@ -6,6 +6,8 @@ import {
   searchCapabilityRegistry,
   installCapability,
   requestInstallSuggestion,
+  parseWatchText,
+  createWatch,
   escapeHtml,
   renderApiError,
   wireApiRetry,
@@ -41,6 +43,7 @@ let _state = {
 };
 
 let _assistantListenerWired = false;
+let _watchDraft = null;
 
 export async function renderAssistant(container, userId) {
   _state.userId = userId;
@@ -625,6 +628,75 @@ async function handleReverseCapabilityInstall(registryId, displayName) {
   }
 }
 
+function formatWatchSpec(spec) {
+  const cadence = spec?.cadence || 'daily';
+  const action = spec?.action === 'notify' ? 'notify' : 'digest';
+  const hour = typeof spec?.hourOfDay === 'number' ? ` at ${formatHour(spec.hourOfDay)}` : '';
+  return `${action} · ${cadence}${hour}`;
+}
+
+function formatHour(h) {
+  const suffix = h >= 12 ? 'PM' : 'AM';
+  const hour = h % 12 || 12;
+  return `${hour}:00 ${suffix}`;
+}
+
+function renderWatchDraftAffordance(parsed, sourceText, container) {
+  const msgRegion = container?.querySelector('[data-region="messages"]');
+  if (!msgRegion || !parsed?.matched) return;
+
+  _watchDraft = { sourceText, spec: parsed.spec };
+  msgRegion.querySelector('.assistant-watch-draft')?.remove();
+
+  const warnings = Array.isArray(parsed.warnings) ? parsed.warnings : [];
+  const el = document.createElement('div');
+  el.className = 'assistant-watch-draft assistant-bubble assistant-bubble-assistant';
+  el.innerHTML = `
+    <div class="assistant-watch-draft-label">Save as a Watch</div>
+    <div class="assistant-watch-draft-title">${escapeHtml(parsed.spec.name)}</div>
+    <div class="assistant-watch-draft-meta">${escapeHtml(formatWatchSpec(parsed.spec))}</div>
+    ${warnings.length ? `<div class="assistant-watch-draft-warning">${escapeHtml(warnings.join(' '))}</div>` : ''}
+    <div class="assistant-watch-draft-actions">
+      <button class="btn btn-primary btn-sm" type="button" data-action="watch-draft-active">Activate</button>
+      <button class="btn btn-outline btn-sm" type="button" data-action="watch-draft-save">Save draft</button>
+      <button class="btn btn-ghost btn-sm" type="button" data-action="watch-draft-open">Open Watches</button>
+    </div>
+  `;
+  msgRegion.appendChild(el);
+  msgRegion.scrollTop = msgRegion.scrollHeight;
+}
+
+async function checkWatchDraftFlow(userMessage, container) {
+  const userId = localStorage.getItem(KEY_USER_ID) || _state.userId || '';
+  if (!userId || !userMessage) return;
+  const parsed = await parseWatchText(userMessage);
+  if (!parsed?.matched) return;
+  renderWatchDraftAffordance(parsed, userMessage, container);
+}
+
+async function handleCreateWatchFromChat(status) {
+  const userId = localStorage.getItem(KEY_USER_ID) || _state.userId || '';
+  if (!userId || !_watchDraft?.spec) return;
+  const buttons = document.querySelectorAll('.assistant-watch-draft button');
+  buttons.forEach((b) => { b.disabled = true; });
+  try {
+    const result = await createWatch(userId, {
+      spec: _watchDraft.spec,
+      sourceText: _watchDraft.sourceText,
+      status,
+    });
+    const warnings = Array.isArray(result?.warnings) ? result.warnings : [];
+    showToast(warnings[0] || (status === 'active' ? 'Watch activated.' : 'Watch saved as draft.'), {
+      kind: warnings.length ? 'warning' : 'success',
+    });
+    document.querySelector('.assistant-watch-draft')?.remove();
+    _watchDraft = null;
+  } catch (err) {
+    showToast(err?.message || 'Could not save that Watch.', { kind: 'error' });
+    buttons.forEach((b) => { b.disabled = false; });
+  }
+}
+
 // Wire the tier-promotion-offered SSE event to the modal (issue #177).
 // This runs once when the assistant page first loads.
 // We subscribe on the global EventSource that app.js maintains.
@@ -752,6 +824,12 @@ function ensureAssistantListener() {
       const registryId = btn.getAttribute('data-registry-id');
       const displayName = btn.getAttribute('data-display-name') || registryId || '';
       if (registryId) handleReverseCapabilityInstall(registryId, displayName);
+    } else if (action === 'watch-draft-active') {
+      handleCreateWatchFromChat('active');
+    } else if (action === 'watch-draft-save') {
+      handleCreateWatchFromChat('draft');
+    } else if (action === 'watch-draft-open') {
+      window.location.hash = '#/watches';
     } else if (action === 'jump-latest') {
       const c = document.getElementById('page-content');
       if (c) {
@@ -1034,6 +1112,9 @@ async function handleSend() {
         // reply indicates an unfulfillable intent and surface install affordance.
         // Best-effort — never blocks the render path.
         checkReverseCapabilityFlow(content, assistantMessage.content, container).catch(() => {});
+        // No-code Watch authoring: a recurring read-only ask gets an explicit
+        // save affordance. Detection is best-effort and never auto-creates.
+        checkWatchDraftFlow(content, container).catch(() => {});
       },
       onError: ({ message, partialContent }) => {
         // Mid-stream error — keep the partial content if any, append an

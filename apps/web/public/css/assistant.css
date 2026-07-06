@@ -521,3 +521,41 @@
   color: var(--text-dim, rgba(255, 255, 255, 0.42));
   white-space: nowrap;
 }
+
+/* ── Watch draft affordance (read-only routine authoring) ───────── */
+.assistant-watch-draft {
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+  background: var(--bg-card, rgba(255, 255, 255, 0.04));
+}
+
+.assistant-watch-draft-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--text-muted, rgba(255, 255, 255, 0.55));
+  margin-bottom: 0.3rem;
+}
+
+.assistant-watch-draft-title {
+  color: var(--text, rgba(255, 255, 255, 0.85));
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.assistant-watch-draft-meta,
+.assistant-watch-draft-warning {
+  color: var(--text-dim, rgba(255, 255, 255, 0.45));
+  font-size: 0.78rem;
+  margin-top: 0.2rem;
+}
+
+.assistant-watch-draft-warning {
+  color: var(--warning, #E7B14C);
+}
+
+.assistant-watch-draft-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-top: 0.6rem;
+}
