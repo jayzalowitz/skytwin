@@ -102,6 +102,27 @@ export class CircuitBreaker {
   }
 
   /**
+   * Force the circuit open immediately for a *permanent* failure (e.g. a revoked
+   * OAuth refresh token), bypassing the consecutive-failure threshold so a
+   * half-open probe cannot be consumed without reopening.
+   *
+   * Unlike calling recordFailure() repeatedly, this is idempotent while the
+   * circuit is already open: it will not re-run open() and inflate the
+   * exponential backoff (#595 review). A half-open window (elapsed timeout) is
+   * treated as a failed probe and reopened with increased backoff.
+   */
+  forceOpen(): void {
+    this.halfOpenProbeInFlight = false;
+    this.consecutiveFailures = Math.max(this.consecutiveFailures, this.config.failureThreshold);
+    // getState() accounts for an elapsed timeout (open -> half_open), so an
+    // already-open-and-fresh circuit is left untouched (no backoff inflation),
+    // while a closed or half-open circuit is opened/reopened.
+    if (this.getState() !== 'open') {
+      this.open();
+    }
+  }
+
+  /**
    * Get the current state of the circuit breaker.
    */
   getState(): CircuitState {
