@@ -106,11 +106,18 @@ export const twinRepository = {
    * (drafts_eval_passed_at IS NOT NULL). Symmetric with
    * `isDraftsEnabled` — single-column narrow read.
    *
-   * NOTE: the eval-bench gate is NOT yet wired into
-   * `buildDraftEmailGenerator` — that hookup is a follow-up
-   * coordinated with the cost-gating PR. Until then this getter
-   * exists for the dashboard / settings UI to display eval status
-   * without joining the full `draft_email_eval_runs` history.
+   * The eval-bench gate IS wired into `buildDraftEmailGenerator`
+   * (`apps/api/src/draft-email-setup.ts`): after the env flag
+   * (`SKYTWIN_DRAFTS_ENABLED`, default off) and the per-user
+   * `drafts_enabled` opt-in, the generator refuses to construct unless
+   * this returns true — the QUALITY gate layered on top of the OPT-IN
+   * gate, fail-closed on any read error (a DB hiccup here must not take
+   * down `/api/events/ingest`). It is the single construction path for
+   * `DraftEmailCandidateGenerator`. Covered by `draft-email-setup.test.ts`
+   * ("returns null when the per-user flag is ON but the eval-bench gate
+   * has NOT passed"; "fails closed when the eval-bench gate read errors").
+   * This getter is also read by the dashboard / settings UI to display
+   * eval status without joining the full `draft_email_eval_runs` history.
    */
   async isDraftsEvalPassed(userId: string): Promise<boolean> {
     assertUserContext(userId);
@@ -278,7 +285,10 @@ export const twinRepository = {
       }
 
       setClauses.push(`version = $${paramIndex}`);
-      values.push(current.version + 1);
+      // version is BIGINT — node-pg returns it as a STRING, so `current.version + 1`
+      // string-concatenates ("1" + 1 = "11") and the value grows one digit per
+      // update until it overflows int64. Coerce to a number so it increments.
+      values.push(Number(current.version) + 1);
       paramIndex++;
 
       setClauses.push(`updated_at = now()`);

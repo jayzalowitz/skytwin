@@ -255,3 +255,9 @@ export type {
   ModelDownloadStatus,
   CreateModelDownloadInput,
 } from './model-download-repository.js';
+
+export { watchRepository } from './watch-repository.js';
+export type { WatchRow, CreateWatchInput } from './watch-repository.js';
+
+export { watchRunRepository } from './watch-run-repository.js';
+export type { WatchRunRow, CreateWatchRunInput } from './watch-run-repository.js';

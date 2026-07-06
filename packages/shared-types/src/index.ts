@@ -15,6 +15,7 @@ export type {
   RoutineFilter,
   RoutineSpec,
   Routine,
+  Watch,
   RoutineParseResult,
 } from './routine.js';
 

@@ -463,6 +463,107 @@ describe('DecisionMaker', () => {
       expect(actionTypes).toContain('dismiss');
     });
 
+    it('CALENDAR_UPDATE with a chat decline_event intent leads with a human-completion escalation', () => {
+      const dm = makeDecisionMaker();
+      const decision: DecisionObject = {
+        id: 'dec_upd_decline',
+        situationType: SituationType.CALENDAR_UPDATE,
+        domain: 'calendar',
+        urgency: 'low',
+        summary: 'Decline or cancel a calendar event',
+        // What the intent classifier emits for "decline that meeting".
+        rawData: { intent: 'decline_event', source: 'chat', eventId: 'evt_x' },
+        interpretedAt: new Date(),
+      };
+
+      const candidates = dm.generateCandidates(decision, emptyProfile);
+
+      // The intent is recognized and surfaced as a HIGH-confidence escalation
+      // (not the old acknowledge/dismiss menu, and not an auto-decline that would
+      // dead-end at execution with no resolved eventId).
+      const escalation = candidates.find(
+        (c) => c.actionType === 'escalate_to_user' && c.parameters['intent'] === 'decline_event',
+      );
+      expect(escalation, 'the decline ask must be surfaced for the user to complete').toBeDefined();
+      expect(escalation!.confidence).toBe(ConfidenceLevel.HIGH);
+      // It carries the (possibly undefined) eventId + the request so the UI can
+      // render what the user asked for.
+      expect(escalation!.parameters).toHaveProperty('eventId');
+      // No auto-decline is proposed — that would fail at the execution boundary.
+      expect(candidates.some((c) => c.actionType === 'decline_invite')).toBe(false);
+      // acknowledge/dismiss stay as lower-confidence alternatives.
+      const actionTypes = candidates.map((c) => c.actionType);
+      expect(actionTypes).toContain('acknowledge');
+      expect(actionTypes).toContain('dismiss');
+    });
+
+    it('CALENDAR_UPDATE decline escalation needs no calendar scope (it is a prompt, not a write)', () => {
+      const dm = makeDecisionMaker();
+      const decision: DecisionObject = {
+        id: 'dec_upd_decline_noscope',
+        situationType: SituationType.CALENDAR_UPDATE,
+        domain: 'calendar',
+        urgency: 'low',
+        summary: 'Decline or cancel a calendar event',
+        rawData: { intent: 'decline_event', source: 'chat', eventId: 'evt_y' },
+        interpretedAt: new Date(),
+      };
+
+      // No grantedScopes passed. The escalation is a human-review prompt, not a
+      // calendar write, so the scope gate must leave it intact (a real
+      // decline_invite WOULD have been downgraded here).
+      const candidates = dm.generateCandidates(decision, emptyProfile);
+      const escalation = candidates.find(
+        (c) => c.actionType === 'escalate_to_user' && c.parameters['intent'] === 'decline_event',
+      );
+      expect(escalation, 'the escalation survives without calendar scope').toBeDefined();
+    });
+
+    it('CALENDAR_UPDATE without a chat intent keeps the acknowledge/dismiss menu (no escalation)', () => {
+      const dm = makeDecisionMaker();
+      const decision: DecisionObject = {
+        id: 'dec_upd_real',
+        situationType: SituationType.CALENDAR_UPDATE,
+        domain: 'calendar',
+        urgency: 'low',
+        // A real inbound update signal that happens to carry an intent-like field
+        // but did NOT originate from chat — must not be treated as a decline ask.
+        summary: 'Sprint review moved to 3pm',
+        rawData: { intent: 'decline_event', source: 'gmail', eventId: 'evt_z' },
+        interpretedAt: new Date(),
+      };
+
+      const candidates = dm.generateCandidates(decision, emptyProfile);
+      expect(candidates.map((c) => c.actionType).sort()).toEqual(['acknowledge', 'dismiss']);
+    });
+
+    it('CALENDAR_INVITE with a chat create_event intent yields a single human-completion escalation (not an RSVP menu)', () => {
+      const dm = makeDecisionMaker();
+      const decision: DecisionObject = {
+        id: 'dec_inv_create',
+        situationType: SituationType.CALENDAR_INVITE,
+        domain: 'calendar',
+        urgency: 'medium',
+        summary: 'Schedule a calendar event',
+        // What the intent classifier emits for "schedule a meeting with Sam".
+        rawData: { intent: 'create_event', source: 'chat' },
+        interpretedAt: new Date(),
+      };
+
+      const candidates = dm.generateCandidates(decision, emptyProfile);
+
+      expect(candidates.length).toBe(1);
+      expect(candidates[0]!.actionType).toBe('escalate_to_user');
+      expect(candidates[0]!.parameters['intent']).toBe('create_event');
+      expect(candidates[0]!.confidence).toBe(ConfidenceLevel.HIGH);
+      // The accept/tentative/decline menu against a non-existent invite is gone,
+      // and no auto-create (which has no execution handler) is proposed.
+      const actionTypes = candidates.map((c) => c.actionType);
+      expect(actionTypes).not.toContain('accept_invite');
+      expect(actionTypes).not.toContain('decline_invite');
+      expect(actionTypes).not.toContain('create_calendar_event');
+    });
+
     it('EMAIL_TRIAGE archive/label candidates carry the message id (messageId fallback)', () => {
       const dm = makeDecisionMaker();
       const decision: DecisionObject = {
@@ -481,6 +582,95 @@ describe('DecisionMaker', () => {
       const label = candidates.find((c) => c.actionType === 'label_email');
       expect(archive?.parameters['emailId']).toBe('msg_abc');
       expect(label?.parameters['emailId']).toBe('msg_abc');
+    });
+
+    it('EMAIL_TRIAGE offers send_reply for human mail but NEVER for awareness-tier mail', () => {
+      const dm = makeDecisionMaker();
+      const base = {
+        id: 'dec_reply_001',
+        situationType: SituationType.EMAIL_TRIAGE,
+        domain: 'email',
+        urgency: 'low' as const,
+        summary: 'Inbound mail',
+        interpretedAt: new Date(),
+      };
+
+      // Grant the gmail.send scope so the scope gate is not what removes
+      // send_reply — this isolates the authoring-tier gate under test.
+      const granted = { grantedScopes: ['gmail.send'] };
+
+      // Human inbound mail that expects a response → a reply is offered.
+      const human = dm.generateCandidates(
+        { ...base, rawData: { messageId: 'm1', requiresResponse: true, authoringTier: 'inbox_personal' } },
+        emptyProfile,
+        granted,
+      );
+      expect(human.map((c) => c.actionType)).toContain('send_reply');
+
+      // Newsletter / automated notice / the user's own sent mail → never a
+      // reply, even when a connector leaves requiresResponse truthy.
+      for (const tier of ['inbox_newsletter', 'inbox_automated', 'user_sent_originated']) {
+        const awareness = dm.generateCandidates(
+          { ...base, rawData: { messageId: 'm1', requiresResponse: true, authoringTier: tier } },
+          emptyProfile,
+          granted,
+        );
+        expect(awareness.map((c) => c.actionType)).not.toContain('send_reply');
+      }
+
+      // Tier is also honored when the worker nests it under `data`.
+      const nested = dm.generateCandidates(
+        { ...base, rawData: { messageId: 'm1', requiresResponse: true, data: { authoringTier: 'inbox_automated' } } },
+        emptyProfile,
+        granted,
+      );
+      expect(nested.map((c) => c.actionType)).not.toContain('send_reply');
+    });
+
+    it('strips a strategy-generated send_reply for awareness-tier mail (LLM/draft path)', async () => {
+      // The rule-generator gate cannot see candidates from an injected
+      // candidateGenerator (the production LLM/draft path). The post-generation
+      // filter in evaluate() must drop the reply regardless of its source.
+      const twinService = createMockTwinService({ preferences: [] });
+      const policyEvaluator = createMockPolicyEvaluator({ allowed: true, requiresApproval: true });
+      const decisionRepo = createMockDecisionRepository();
+      const stubGenerator = {
+        generate: async (decision: DecisionObject) => [
+          {
+            id: 'c_reply', decisionId: decision.id, actionType: 'send_reply', description: 'reply',
+            domain: 'email', parameters: {}, estimatedCostCents: 0, reversible: false,
+            confidence: ConfidenceLevel.LOW, reasoning: 'r',
+          },
+          {
+            id: 'c_ack', decisionId: decision.id, actionType: 'acknowledge', description: 'note it',
+            domain: 'email', parameters: {}, estimatedCostCents: 0, reversible: true,
+            confidence: ConfidenceLevel.LOW, reasoning: 'a',
+          },
+        ],
+      };
+      const dm = new DecisionMaker(
+        twinService as never,
+        policyEvaluator as never,
+        decisionRepo as never,
+        stubGenerator as never,
+      );
+
+      const decision = createEmailDecision({
+        rawData: { from: 'noreply@brand.com', subject: 'Your weekly digest', authoringTier: 'inbox_automated' },
+      });
+      // gmail.send granted so the scope gate is not what removes the reply.
+      const outcome = await dm.evaluate({
+        userId: 'user_test',
+        decision,
+        trustTier: TrustTier.OBSERVER,
+        relevantPreferences: [],
+        timestamp: new Date(),
+        grantedScopes: ['gmail.send'],
+      } as DecisionContext);
+
+      const types = outcome.allCandidates.map((c) => c.actionType);
+      expect(types).not.toContain('send_reply');
+      expect(types).toContain('acknowledge');
     });
 
     it('SUBSCRIPTION_RENEWAL should generate renew, cancel, and snooze candidates', () => {

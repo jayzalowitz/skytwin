@@ -11,6 +11,7 @@ import {
   type MemorySource,
 } from '@skytwin/assistant';
 import { LlmClient, AllProvidersFailedError } from '@skytwin/llm-client';
+import { serializeApprovalCandidate } from './approval-candidate.js';
 import type { ProviderEntry } from '@skytwin/llm-client';
 import type { AIProviderName, DecisionContext, DecisionObject } from '@skytwin/shared-types';
 import { SituationType, TrustTier } from '@skytwin/shared-types';
@@ -432,16 +433,7 @@ function buildActionRouter(): ActionRouter {
         await approvalRepository.create({
           userId,
           decisionId: decision.id,
-          candidateAction: {
-            actionType: outcome.selectedAction.actionType,
-            description: outcome.selectedAction.description,
-            domain: outcome.selectedAction.domain,
-            parameters: visibleParameters,
-            estimatedCostCents: outcome.selectedAction.estimatedCostCents,
-            reversible: outcome.selectedAction.reversible,
-            confidence: outcome.selectedAction.confidence,
-            reasoning: outcome.selectedAction.reasoning,
-          },
+          candidateAction: serializeApprovalCandidate(outcome.selectedAction, visibleParameters),
           reason: outcome.reasoning,
           urgency: decision.urgency,
           // The injection guard sets `dual` for extreme-severity actions —

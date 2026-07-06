@@ -148,3 +148,59 @@ export class MockIdleDetector implements IdleDetectorPort {
     for (const h of this.activeHandlers) h();
   }
 }
+
+/**
+ * An idle detector driven EXTERNALLY by the host rather than by the OS.
+ *
+ * A managed idle-miner process spawned as a plain Node child (see
+ * `docs/idle-miner-desktop-integration.md`) has no access to Electron's
+ * `powerMonitor`, so it can't use `ElectronIdleDetector`. Instead the parent —
+ * which DOES own OS-level idle detection — signals transitions via `setIdle()` /
+ * `setActive()` and this detector relays them to the miner.
+ *
+ * Unlike `MockIdleDetector` (a bare test double), this is production glue:
+ * handlers fire only while `start()`ed, and repeated same-state signals are
+ * de-duped so the miner sees clean idle↔active edges (no double-fires if the
+ * parent sends "idle" twice).
+ */
+export class EventDrivenIdleDetector implements IdleDetectorPort {
+  private idleHandlers: Array<() => void> = [];
+  private activeHandlers: Array<() => void> = [];
+  private started = false;
+  private idle = false;
+
+  onIdle(handler: () => void): void {
+    this.idleHandlers.push(handler);
+  }
+
+  onActive(handler: () => void): void {
+    this.activeHandlers.push(handler);
+  }
+
+  start(): void {
+    this.started = true;
+  }
+
+  stop(): void {
+    this.started = false;
+  }
+
+  /** Relay an OS "went idle" transition. No-op if not started or already idle. */
+  setIdle(): void {
+    if (!this.started || this.idle) return;
+    this.idle = true;
+    for (const h of this.idleHandlers) h();
+  }
+
+  /** Relay an OS "became active" transition. No-op if not started or already active. */
+  setActive(): void {
+    if (!this.started || !this.idle) return;
+    this.idle = false;
+    for (const h of this.activeHandlers) h();
+  }
+
+  /** Current relayed state — exposed for the host / debugging. */
+  isIdle(): boolean {
+    return this.idle;
+  }
+}

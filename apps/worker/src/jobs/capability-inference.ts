@@ -18,6 +18,42 @@ const SIGNAL_LOOKBACK_HOURS = 7 * 24;
  */
 const DISMISSED_COOLDOWN_DAYS = 30;
 
+/**
+ * Poll-loop cadence for the capability-inference job. Daily: the job reads a
+ * rolling 7-day signal window, so a 24h pass keeps suggestions fresh without
+ * re-scanning the same window every cycle.
+ */
+export const CAPABILITY_INFERENCE_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Feature flag. Capability inference is OFF unless
+ * `SKYTWIN_CAPABILITY_INFERENCE_ENABLED=true`. It reads existing signals and
+ * writes advisory `app_suggestions` rows only — no real-account writes, no
+ * sends — but stays opt-in so nothing runs autonomously without explicit
+ * enablement (mirrors the `SKYTWIN_DRAFTS_ENABLED` opt-in contract).
+ */
+export function capabilityInferenceEnabled(): boolean {
+  return process.env['SKYTWIN_CAPABILITY_INFERENCE_ENABLED'] === 'true';
+}
+
+/**
+ * Poll-loop scheduling decision: run only when the feature is enabled AND at
+ * least one interval has elapsed since the last run. Pure + fully injectable so
+ * the gate (the new logic) is unit-tested without driving the worker's infinite
+ * poll loop. Mirrors the `nowMs - lastAt >= INTERVAL` shape the other scheduled
+ * jobs inline in `apps/worker/src/index.ts`.
+ */
+export function shouldRunCapabilityInference(input: {
+  enabled: boolean;
+  nowMs: number;
+  lastRunAt: number;
+  intervalMs?: number;
+}): boolean {
+  if (!input.enabled) return false;
+  const interval = input.intervalMs ?? CAPABILITY_INFERENCE_INTERVAL_MS;
+  return input.nowMs - input.lastRunAt >= interval;
+}
+
 export interface CapabilityInferenceJobDeps {
   registry?: RegistryClient;
   signalLookbackHours?: number;
@@ -56,9 +92,10 @@ function excerptFromRow(row: SignalRow): string {
  * For each active user, reads recent signals, runs the capability inference
  * engine, and upserts AppSuggestion rows.
  *
- * TODO: Wire this into the worker's poll loop (e.g. run every 10 cycles, after
- * the existing `pollCount % 10 === 0` block in apps/worker/src/index.ts). Or
- * schedule it via a dedicated cron job once cron infrastructure lands.
+ * Wired into the worker poll loop (`apps/worker/src/index.ts`) on a daily
+ * cadence, gated by `capabilityInferenceEnabled()` /
+ * `shouldRunCapabilityInference()` — opt-in via
+ * `SKYTWIN_CAPABILITY_INFERENCE_ENABLED`, default off.
  *
  * Surfacing rules enforced here (in addition to engine threshold):
  *   - Skip if a `pending` suggestion already exists (upsertPending merges in

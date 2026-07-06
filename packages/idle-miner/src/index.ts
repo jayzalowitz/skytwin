@@ -23,6 +23,7 @@ export type {
 export {
   ElectronIdleDetector,
   MockIdleDetector,
+  EventDrivenIdleDetector,
 } from './idle-detector.js';
 export type { IdleDetectorPort } from './idle-detector.js';
 
@@ -50,6 +51,12 @@ export type { MinerOptions } from './miner.js';
 
 export { startIdleMiner } from './runtime.js';
 export type { IdleMinerHandle, StartIdleMinerOptions } from './runtime.js';
+
+export { SnapshotFileStore } from './snapshot-store.js';
+export type { SnapshotFileStoreOptions } from './snapshot-store.js';
+
+export { toIngestEvent, createHttpSignalEmitter } from './ingest-adapter.js';
+export type { HttpSignalEmitterOptions } from './ingest-adapter.js';
 
 export type {
   FsScanRoot,

@@ -19,6 +19,7 @@ import {
   listUserModelDownloads,
   pauseModelDownload,
   recommendEmbeddedDefault,
+  fetchLocalModelRecommendation,
   resumeModelDownload,
   startModelDownload,
 } from '../api-client.js';
@@ -161,12 +162,22 @@ async function renderCardInto(container, userId) {
     ?? downloads.find((d) => d.status === 'paused' || d.status === 'failed');
   const completed = downloads.find((d) => d.status === 'complete');
 
-  const bracket = detectBracket();
+  // Prefer the real server-side pick (actual RAM + free disk on this machine).
+  // Fall back to the browser's coarse RAM estimate only if that call fails —
+  // the server read is authoritative and, unlike navigator.deviceMemory, it
+  // also refuses a model that wouldn't fit on disk.
   let recommended = null;
+  let recommendReason = '';
   try {
-    const rec = await recommendEmbeddedDefault(bracket);
+    const rec = await fetchLocalModelRecommendation();
     recommended = rec?.model ?? null;
-  } catch { /* leave null */ }
+    recommendReason = rec?.reason ?? '';
+  } catch {
+    try {
+      const rec = await recommendEmbeddedDefault(detectBracket());
+      recommended = rec?.model ?? null;
+    } catch { /* leave null */ }
+  }
 
   const recommendedSize = recommended
     ? `${(recommended.approxBytes / (1024 ** 3)).toFixed(1)} GB`
@@ -201,7 +212,7 @@ async function renderCardInto(container, userId) {
         </select>
         <button class="btn btn-primary btn-sm" data-action="embedded-start-download">Download</button>
       </div>
-      ${recommended ? `<div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.5rem;">Recommended for your machine: <strong>${escapeHtml(recommended.displayName)}</strong> (${recommendedSize}).</div>` : ''}
+      ${recommended ? `<div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.5rem;">${recommendReason ? escapeHtml(recommendReason) : `Recommended for your machine: <strong>${escapeHtml(recommended.displayName)}</strong> (${recommendedSize}).`}</div>` : ''}
     `;
   }
 

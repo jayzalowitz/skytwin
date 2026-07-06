@@ -3,6 +3,7 @@ import type { OAuthTokenStore } from './oauth/token-store.js';
 import { withRetry, RetryableHttpError, parseRetryAfter, normalizeSenderAddress } from '@skytwin/core';
 import {
   classifyEmailAuthoringTier,
+  isAutomatedSender,
   splitAddressList,
   type AuthoringTier,
 } from './authoring-tier.js';
@@ -478,7 +479,6 @@ export class GmailConnector implements SignalConnector {
 
   private inferEmailType(from: string, subject: string, labels: string[]): string {
     const lowerSubject = subject.toLowerCase();
-    const lowerFrom = from.toLowerCase();
 
     if (labels.includes('CATEGORY_PROMOTIONS') || lowerSubject.includes('newsletter') || lowerSubject.includes('digest')) {
       return 'newsletter';
@@ -486,7 +486,21 @@ export class GmailConnector implements SignalConnector {
     if (lowerSubject.includes('subscription') || lowerSubject.includes('renewal') || lowerSubject.includes('billing')) {
       return 'subscription_renewal';
     }
-    if (lowerSubject.includes('meeting') || lowerSubject.includes('invite') || lowerSubject.includes('calendar')) {
+    // No-reply / automated sender. Use the connector's address-based classifier
+    // (catches compound aliases: google-noreply@, mailer-daemon@, notifications@)
+    // OR a no-reply token in the raw From — the latter preserves detection of a
+    // "noreply" display name on an otherwise human-looking address.
+    const lowerFrom = from.toLowerCase();
+    const isNoReplySender =
+      isAutomatedSender(from) || lowerFrom.includes('noreply') || lowerFrom.includes('no-reply');
+
+    // A meeting/invite subject implies a REPLY, so it must not apply to a
+    // no-reply sender — "you're invited to our webinar" from events-noreply@ is
+    // a notification, not a meeting to RSVP.
+    if (
+      !isNoReplySender &&
+      (lowerSubject.includes('meeting') || lowerSubject.includes('invite') || lowerSubject.includes('calendar'))
+    ) {
       return 'meeting_invite';
     }
     if (lowerSubject.includes('order') || lowerSubject.includes('delivery') || lowerSubject.includes('grocery')) {
@@ -495,7 +509,7 @@ export class GmailConnector implements SignalConnector {
     if (lowerSubject.includes('flight') || lowerSubject.includes('hotel') || lowerSubject.includes('travel') || lowerSubject.includes('booking')) {
       return 'travel_alert';
     }
-    if (lowerFrom.includes('noreply') || lowerFrom.includes('no-reply') || labels.includes('CATEGORY_UPDATES')) {
+    if (isNoReplySender || labels.includes('CATEGORY_UPDATES')) {
       return 'notification';
     }
     return 'work_email';

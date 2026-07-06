@@ -12,6 +12,7 @@ import type {
   WhatWouldIDoResponse,
 } from '@skytwin/shared-types';
 import {
+  AWARENESS_TIERS,
   ConfidenceLevel,
   RiskTier,
   SituationType,
@@ -146,7 +147,7 @@ export class DecisionMaker {
     );
 
     // Step 3: Generate candidate actions (LLM strategy or built-in rules)
-    const candidates = this.candidateGenerator
+    const generatedCandidates = this.candidateGenerator
       ? applyScopeGate(
           await this.candidateGenerator.generate(context.decision, profile, enrichedContext),
           context.grantedScopes ?? [],
@@ -155,6 +156,16 @@ export class DecisionMaker {
           senderLabelHints,
           grantedScopes: context.grantedScopes,
         });
+
+    // Awareness-tier reply guard — applied to EVERY candidate source. The rule
+    // generator's own send_reply gate (in generateEmailTriageCandidates) does
+    // not cover the LLM/draft strategies that run on the production path
+    // (candidateGenerator branch above), so strip any outbound reply/draft here:
+    // a reply to a newsletter, an automated/no-reply notice, or the user's own
+    // re-ingested sent mail is never appropriate. Human inbound mail
+    // (inbox_personal / inbox_broadcast) keeps its reply candidates; if this
+    // empties the list, the zero-candidate branch below safely escalates.
+    const candidates = this.stripAwarenessTierReplies(generatedCandidates, context.decision);
 
     // Stamp provenance onto every candidate from the originating decision so
     // the policy engine's injection guard can gate without re-deriving where
@@ -608,8 +619,13 @@ export class DecisionMaker {
       reasoning: this.labelReasoning(senderLabelHints),
     });
 
-    // Reply with acknowledgment
-    if (decision.rawData['requiresResponse']) {
+    // Reply with acknowledgment — but only for mail that actually expects one.
+    // An awareness-tier email (newsletter / automated notice / the user's own
+    // re-ingested sent mail) never warrants an acknowledgment reply, even if a
+    // connector left `requiresResponse` truthy. This is the robust half of the
+    // fix: it gates on the authoring tier directly rather than trusting the
+    // upstream `requiresResponse` heuristic.
+    if (decision.rawData['requiresResponse'] && !this.isAwarenessTierEmail(decision)) {
       candidates.push({
         id: crypto.randomUUID(),
         decisionId: decision.id,
@@ -628,6 +644,50 @@ export class DecisionMaker {
     }
 
     return candidates;
+  }
+
+  /**
+   * True when the email's #251 authoring tier marks it as awareness — a
+   * newsletter, an automated/no-reply notice, or the user's own re-ingested
+   * sent mail — none of which warrant an acknowledgment reply. Reads the tier
+   * whether the worker left it top-level on `rawData` or nested under `data`.
+   */
+  private isAwarenessTierEmail(decision: DecisionObject): boolean {
+    const raw = decision.rawData ?? {};
+    let tier = raw['authoringTier'];
+    if (typeof tier !== 'string') {
+      const data = raw['data'];
+      if (data && typeof data === 'object') {
+        tier = (data as Record<string, unknown>)['authoringTier'];
+      }
+    }
+    return typeof tier === 'string' && AWARENESS_TIERS.has(tier);
+  }
+
+  /** Outbound email actions that must never target awareness-tier mail. */
+  private static readonly OUTBOUND_REPLY_ACTIONS = new Set<string>([
+    'send_reply',
+    'reply_email',
+    'send_email',
+    'forward_email',
+    'draft_email',
+  ]);
+
+  /**
+   * Drop outbound reply/draft candidates when the email is awareness-tier
+   * (newsletter / automated notice / the user's own sent mail), from EVERY
+   * generator — so an LLM- or draft-strategy-proposed reply to a newsletter is
+   * removed, not just the rule generator's. Non-email decisions and human
+   * inbound mail (inbox_personal / inbox_broadcast) pass through untouched.
+   */
+  private stripAwarenessTierReplies(
+    candidates: CandidateAction[],
+    decision: DecisionObject,
+  ): CandidateAction[] {
+    if (!this.isAwarenessTierEmail(decision)) return candidates;
+    return candidates.filter(
+      (c) => !DecisionMaker.OUTBOUND_REPLY_ACTIONS.has(c.actionType),
+    );
   }
 
   private generateCalendarCandidates(
@@ -691,6 +751,35 @@ export class DecisionMaker {
   ): CandidateAction[] {
     const candidates: CandidateAction[] = [];
 
+    // Explicit chat intent to CREATE a new event (e.g. "schedule a meeting with
+    // Sam"). There is no inbound invite to accept/decline/tentatively-accept, so
+    // the RSVP menu (which keys off an undefined eventId) is meaningless here.
+    // Previously the chat `intent` was dead — situationType alone drove the menu.
+    //
+    // We surface the intent as a human-completion escalation rather than an
+    // auto-`create_calendar_event`: the chat classifier captures the *intent*
+    // but not the event entities (title/time/attendees), and there is no
+    // autonomous create handler. Proposing an auto-create would dead-end at the
+    // execution boundary (no `create_calendar_event` handler in the IronClaw
+    // adapter). `escalate_to_user` is the established safe terminal — the same
+    // one the scope gate (#485) and the smart-home generator use — so the user
+    // is asked to confirm the details instead of an action silently failing.
+    if (decision.rawData['intent'] === 'create_event' && decision.rawData['source'] === 'chat') {
+      candidates.push({
+        id: crypto.randomUUID(),
+        decisionId: decision.id,
+        actionType: 'escalate_to_user',
+        description: 'You asked to schedule a meeting — confirm the time and attendees to create it.',
+        domain: 'calendar',
+        parameters: { intent: 'create_event', request: decision.summary },
+        estimatedCostCents: 0,
+        reversible: true,
+        confidence: ConfidenceLevel.HIGH,
+        reasoning: 'You explicitly asked to schedule an event; surfacing it for you to confirm the details.',
+      });
+      return candidates;
+    }
+
     // Accept the invite
     candidates.push({
       id: crypto.randomUUID(),
@@ -741,6 +830,34 @@ export class DecisionMaker {
     _profile: TwinProfile,
   ): CandidateAction[] {
     const candidates: CandidateAction[] = [];
+
+    // Explicit chat intent to DECLINE (e.g. "decline that meeting"). The intent
+    // classifier routes this to `calendar_update`, but the generic update menu
+    // is acknowledge/dismiss only — so the user's actual ask was discarded.
+    //
+    // We surface the intent as a human-completion escalation rather than an
+    // auto-`decline_invite`: the chat classifier captures the intent but not
+    // *which* event ("that meeting" carries no eventId), and the calendar
+    // handler hard-fails a decline without one ("Missing eventId"). So an
+    // auto-decline would dead-end at execution. Lead with a HIGH-confidence
+    // `escalate_to_user` that names the ask and asks the user to confirm the
+    // event; acknowledge/dismiss stay below as lower-confidence alternatives.
+    // (A real, non-chat calendar_update — "meeting moved to 3pm" — has no such
+    // intent and keeps the original menu.)
+    if (decision.rawData['intent'] === 'decline_event' && decision.rawData['source'] === 'chat') {
+      candidates.push({
+        id: crypto.randomUUID(),
+        decisionId: decision.id,
+        actionType: 'escalate_to_user',
+        description: 'You asked to decline a meeting — confirm which event to decline.',
+        domain: 'calendar',
+        parameters: { intent: 'decline_event', eventId: decision.rawData['eventId'], request: decision.summary },
+        estimatedCostCents: 0,
+        reversible: true,
+        confidence: ConfidenceLevel.HIGH,
+        reasoning: 'You explicitly asked to decline a meeting; surfacing it for you to confirm the specific event.',
+      });
+    }
 
     // Acknowledge the update (no action needed)
     candidates.push({

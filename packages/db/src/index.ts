@@ -122,6 +122,8 @@ export {
   workerDeadLetterRepository,
   userPurgeRepository,
   accessLogRepository,
+  watchRepository,
+  watchRunRepository,
 } from './repositories/index.js';
 export type {
   ConnectorHealthRow,
@@ -131,6 +133,10 @@ export type {
   PurgeUserResult,
   AccessLogRow,
   RecordAccessInput,
+  WatchRow,
+  CreateWatchInput,
+  WatchRunRow,
+  CreateWatchRunInput,
 } from './repositories/index.js';
 export type {
   RememberPendingSigninInput,

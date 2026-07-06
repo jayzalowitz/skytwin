@@ -2,7 +2,7 @@ import type { SignalConnector, RawSignal, SignalHandler } from './connector-inte
 import type { OAuthTokenStore } from './oauth/token-store.js';
 import { parseListId, type CursorStore } from './gmail-connector.js';
 import { withRetry, RetryableHttpError, parseRetryAfter } from '@skytwin/core';
-import { classifyEmailAuthoringTier, type AuthoringTier } from './authoring-tier.js';
+import { classifyEmailAuthoringTier, isAutomatedSender, type AuthoringTier } from './authoring-tier.js';
 
 const GRAPH_API = 'https://graph.microsoft.com/v1.0';
 
@@ -279,13 +279,17 @@ export class OutlookMailConnector implements SignalConnector {
    */
   private inferEmailType(from: string, subject: string): string {
     const s = subject.toLowerCase();
-    const f = from.toLowerCase();
+    const lf = from.toLowerCase();
+    // Address-based classifier OR a no-reply token in the raw From (preserves a
+    // "noreply" display name on a human-looking address). Mirrors Gmail.
+    const isNoReplySender = isAutomatedSender(from) || lf.includes('noreply') || lf.includes('no-reply');
     if (s.includes('newsletter') || s.includes('digest')) return 'newsletter';
     if (s.includes('subscription') || s.includes('renewal') || s.includes('billing')) return 'subscription_renewal';
-    if (s.includes('meeting') || s.includes('invite') || s.includes('calendar')) return 'meeting_invite';
+    // A meeting/invite subject implies a reply — never apply it to a no-reply sender.
+    if (!isNoReplySender && (s.includes('meeting') || s.includes('invite') || s.includes('calendar'))) return 'meeting_invite';
     if (s.includes('order') || s.includes('delivery') || s.includes('grocery')) return 'grocery_reorder';
     if (s.includes('flight') || s.includes('hotel') || s.includes('travel') || s.includes('booking')) return 'travel_alert';
-    if (f.includes('noreply') || f.includes('no-reply')) return 'notification';
+    if (isNoReplySender) return 'notification';
     return 'work_email';
   }
 
