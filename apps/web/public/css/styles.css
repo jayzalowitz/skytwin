@@ -1371,12 +1371,17 @@ pre {
   /* Activity items stack vertically */
   .activity-item { flex-wrap: wrap; gap: 0.5rem; }
 
+  .watch-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .watch-row { grid-template-columns: 1fr; }
+  .watch-row-actions { justify-content: flex-start; }
+
   /* Cards full-bleed on small screens */
   .card { border-radius: var(--radius-sm); }
 }
 
 @media (max-width: 480px) {
   .stats-grid { grid-template-columns: 1fr; }
+  .watch-summary { grid-template-columns: 1fr; }
   .stat-value { font-size: 1.5rem; }
   .domain-grid { grid-template-columns: 1fr; }
 }
@@ -1511,6 +1516,16 @@ pre {
 .digest-memory-refs { font-family: var(--font-data); font-size: 0.68rem; color: var(--text-dim);
   margin-top: 0.2rem; }
 
+/* Watch runs: read-only awareness, sourced from watch_runs. */
+.digest-watch-runs { margin-top: 0.8rem; border-top: 1px solid var(--border); padding-top: 0.2rem; }
+.digest-watch-runs ul { list-style: none; padding: 0; margin: 0; }
+.digest-watch-run { padding: 0.55rem 0.7rem; border-radius: var(--radius-sm); }
+.digest-watch-run + .digest-watch-run { border-top: 1px solid var(--border); }
+.digest-watch-title { font-size: 0.88rem; font-weight: 500; color: var(--text); }
+.digest-watch-meta { font-family: var(--font-data); font-size: 0.68rem; color: var(--text-dim); margin-top: 0.2rem; }
+.digest-watch-link { display: inline-flex; margin: 0.45rem 0.7rem 0; color: var(--text-muted); font-size: 0.78rem; text-decoration: none; }
+.digest-watch-link:hover { color: var(--text); }
+
 /* Power-view detail panel */
 .digest-detail { display: none; width: 100%; margin: 0.4rem 0 0.1rem; padding: 0.5rem 0.7rem;
   background: var(--bg-hover); border-radius: var(--radius-sm); font-size: 0.76rem; color: var(--text-muted); }
@@ -1596,3 +1611,145 @@ pre {
 }
 .search-result-text { color: var(--text); font-size: 0.92rem; line-height: 1.4; }
 .search-result-meta { margin-top: 0.25rem; font-size: 0.74rem; color: var(--text-dim, var(--text-muted)); }
+
+/* ── Watches (#/watches) ────────────────────────────────────────
+ * Watches are read-only monitoring. The activation button is the only
+ * accent-colored element; filters, runs, and history stay neutral. */
+.watches-page { max-width: 880px; margin: 0 auto; display: flex; flex-direction: column; gap: 1rem; }
+.watch-composer {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem;
+}
+.watch-label {
+  display: block;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  margin-bottom: 0.45rem;
+}
+.watch-input {
+  width: 100%;
+  min-height: 84px;
+  resize: vertical;
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.75rem 0.85rem;
+  font-family: inherit;
+  font-size: 0.95rem;
+  line-height: 1.45;
+}
+.watch-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.watch-composer-actions,
+.watch-preview-actions,
+.watch-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+.watch-composer-actions { margin-top: 0.65rem; }
+.watch-preview {
+  margin-top: 0.85rem;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255,255,255,0.03);
+}
+.watch-preview-title { color: var(--text); font-weight: 600; font-size: 0.92rem; }
+.watch-preview-meta,
+.watch-muted,
+.watch-times,
+.watch-run-meta,
+.watch-run-refs {
+  color: var(--text-dim);
+  font-size: 0.75rem;
+}
+.watch-preview-warning { color: var(--warning); font-size: 0.8rem; margin-top: 0.45rem; }
+.watch-preview-error { color: var(--danger); }
+.watch-preview-actions { margin-top: 0.65rem; }
+.watch-examples { display: flex; flex-wrap: wrap; gap: 0.45rem; margin-top: 0.75rem; }
+.watch-example {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  border-radius: 999px;
+  padding: 0.3rem 0.65rem;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.78rem;
+}
+.watch-example:hover,
+.watch-example:focus-visible {
+  color: var(--text);
+  border-color: var(--border-strong);
+  outline: none;
+}
+.watch-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+.watch-summary > div {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.7rem 0.8rem;
+  background: rgba(255,255,255,0.025);
+}
+.watch-summary b { display: block; color: var(--text); font-size: 1.05rem; }
+.watch-summary span { color: var(--text-dim); font-size: 0.72rem; }
+.watch-list { display: flex; flex-direction: column; gap: 0.65rem; }
+.watch-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-card);
+  padding: 0.95rem;
+}
+.watch-row-head { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.watch-row h3 { margin: 0; font-size: 0.98rem; font-weight: 600; color: var(--text); }
+.watch-row-meta { color: var(--text-muted); font-size: 0.82rem; margin-top: 0.12rem; }
+.watch-filter { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.55rem; }
+.watch-filter-pill {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  padding: 0.14rem 0.5rem;
+}
+.watch-filter-pill.muted { color: var(--text-dim); }
+.watch-times { display: flex; flex-wrap: wrap; gap: 0.7rem; margin-top: 0.55rem; }
+.watch-runs {
+  grid-column: 1 / -1;
+  border-top: 1px solid var(--border);
+  padding-top: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+.watch-run {
+  padding: 0.6rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255,255,255,0.025);
+}
+.watch-run-title { color: var(--text); font-size: 0.88rem; }
+.watch-run-refs { font-family: var(--font-data, monospace); margin-top: 0.25rem; overflow-wrap: anywhere; }
+.watch-empty {
+  text-align: center;
+  padding: 2rem 1rem;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255,255,255,0.025);
+}
