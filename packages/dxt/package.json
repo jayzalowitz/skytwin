@@ -22,7 +22,7 @@
     "@skytwin/shared-types": "workspace:*"
   },
   "devDependencies": {
-    "@types/node": "^25.9.3",
+    "@types/node": "^26.1.0",
     "typescript": "^6.0.3",
     "vitest": "^3.2.6"
   }
