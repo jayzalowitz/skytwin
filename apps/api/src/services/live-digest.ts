@@ -15,7 +15,7 @@
  * across every source instead of "Email triage needed for an email from gmail".
  */
 
-import { query } from '@skytwin/db';
+import { query, watchRunRepository, type WatchRunRow } from '@skytwin/db';
 import {
   buildDigest,
   buildDigestItemDetail,
@@ -327,6 +327,34 @@ async function fetchDailyMemorySuggestions(userId: string): Promise<DailyMemoryS
   });
 }
 
+function toDigestWatchRun(row: WatchRunRow): DigestWatchRun {
+  const ranAt = row.ran_at instanceof Date ? row.ran_at.toISOString() : String(row.ran_at);
+  const refs = Array.isArray(row.matched_refs)
+    ? row.matched_refs.filter((r): r is string => typeof r === 'string').slice(0, 20)
+    : [];
+  return {
+    id: row.id,
+    watchId: row.watch_id,
+    ranAt,
+    action: row.action,
+    matchedCount: Math.max(0, row.matched_count ?? refs.length),
+    summary: row.summary,
+    matchedRefs: refs,
+  };
+}
+
+async function fetchRecentWatchRuns(userId: string): Promise<DigestWatchRun[]> {
+  const since = new Date(Date.now() - 36 * 60 * 60 * 1000);
+  try {
+    const rows = await watchRunRepository.listRecentForUser(userId, since, 6);
+    return rows.map(toDigestWatchRun);
+  } catch {
+    // Watches enrich the briefing, but a migration mismatch or transient DB
+    // error must not take down the whole briefing surface.
+    return [];
+  }
+}
+
 /** Friendly "where it's from" when there's no concrete sender. */
 const SOURCE_FRIENDLY: Record<string, string> = {
   email: 'your inbox',
@@ -357,6 +385,17 @@ export function needsYou(row: {
 export interface LiveDigest extends Digest {
   handledCount: number;
   memorySuggestions: DailyMemorySuggestion[];
+  watchRuns: DigestWatchRun[];
+}
+
+export interface DigestWatchRun {
+  id: string;
+  watchId: string;
+  ranAt: string;
+  action: 'digest' | 'notify';
+  matchedCount: number;
+  summary: string;
+  matchedRefs: string[];
 }
 
 /**
@@ -468,10 +507,11 @@ export async function buildLiveDigest(userId: string): Promise<LiveDigest | null
   );
 
   const hasDecisions = decisions.rows.length > 0;
+  const watchRuns = await fetchRecentWatchRuns(userId);
   let memorySuggestions: DailyMemorySuggestion[] = [];
   if (!hasDecisions) {
     memorySuggestions = await fetchDailyMemorySuggestions(userId);
-    if (memorySuggestions.length === 0) return null;
+    if (memorySuggestions.length === 0 && watchRuns.length === 0) return null;
   }
 
   // Per-sender pin/hide overrides (#270/#485) from the canonical
@@ -642,5 +682,5 @@ export async function buildLiveDigest(userId: string): Promise<LiveDigest | null
     }
   }
 
-  return { ...digest, coverage, handledCount, memorySuggestions };
+  return { ...digest, coverage, handledCount, memorySuggestions, watchRuns };
 }

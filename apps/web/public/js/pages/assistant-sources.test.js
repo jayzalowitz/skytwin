@@ -43,6 +43,21 @@ describe('assistant source-attribution footer', () => {
   });
 });
 
+describe('assistant Watch draft footer', () => {
+  it('parses recurring asks but only creates after an explicit Watch draft action', () => {
+    expect(assistantSource).toContain('parseWatchText(userMessage)');
+    expect(assistantSource).toContain("data-action=\"watch-draft-active\"");
+    expect(assistantSource).toContain("data-action=\"watch-draft-save\"");
+    expect(assistantSource).toContain('createWatch(userId');
+  });
+
+  it('escapes the parsed watch name, metadata, and warning text', () => {
+    expect(assistantSource).toContain('escapeHtml(parsed.spec.name)');
+    expect(assistantSource).toContain('escapeHtml(formatWatchSpec(parsed.spec))');
+    expect(assistantSource).toContain("escapeHtml(warnings.join(' '))");
+  });
+});
+
 describe('onboarding capability copy', () => {
   it('does not claim screen / app / window / browser observation it cannot do', () => {
     expect(onboardingSource).not.toContain('watching which apps you use');

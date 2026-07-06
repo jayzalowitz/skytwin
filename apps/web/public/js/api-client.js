@@ -188,6 +188,7 @@ export async function fetchJSON(url, options = {}) {
     throw apiErr;
   }
   markApiSucceeded();
+  if (res.status === 204) return null;
   return res.json();
 }
 
@@ -606,6 +607,51 @@ export function deleteRoutine(routineId, userId) {
   return fetchJSON(`${API}/routines/${encodeURIComponent(routineId)}?userId=${encodeURIComponent(userId)}`, {
     method: 'DELETE',
   });
+}
+
+// ── Watches (no-code read-only routines) ─────────────────────────────
+
+export function parseWatchText(text) {
+  return fetchJSON(`${API}/watches/parse`, {
+    method: 'POST',
+    body: JSON.stringify({ text }),
+  });
+}
+
+export function fetchWatches(userId) {
+  return fetchJSON(`${API}/watches/${encodeURIComponent(userId)}`);
+}
+
+export function createWatch(userId, payload) {
+  return fetchJSON(`${API}/watches/${encodeURIComponent(userId)}`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateWatchStatus(userId, watchId, status) {
+  return fetchJSON(`${API}/watches/${encodeURIComponent(userId)}/${encodeURIComponent(watchId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ status }),
+  });
+}
+
+export function updateWatchSpec(userId, watchId, spec, sourceText) {
+  return fetchJSON(`${API}/watches/${encodeURIComponent(userId)}/${encodeURIComponent(watchId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ spec, sourceText }),
+  });
+}
+
+export function deleteWatch(userId, watchId) {
+  return fetchJSON(`${API}/watches/${encodeURIComponent(userId)}/${encodeURIComponent(watchId)}`, {
+    method: 'DELETE',
+  });
+}
+
+export function fetchWatchRuns(userId, watchId, limit = 10) {
+  const q = new URLSearchParams({ limit: String(limit) });
+  return fetchJSON(`${API}/watches/${encodeURIComponent(userId)}/${encodeURIComponent(watchId)}/runs?${q}`);
 }
 
 // ── Assistant (issue #135 phase 1) ────────────────────

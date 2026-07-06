@@ -117,7 +117,8 @@ export function createTwinBriefingsRouter(): Router {
         liveDigest &&
         (liveDigest.todos.length ||
           liveDigest.topics.length ||
-          (liveDigest.memorySuggestions?.length ?? 0) > 0)
+          (liveDigest.memorySuggestions?.length ?? 0) > 0 ||
+          (liveDigest.watchRuns?.length ?? 0) > 0)
       ) {
         // No stored briefing row yet, but we can render live parity from
         // decisions. Synthesize a minimal briefing envelope carrying the

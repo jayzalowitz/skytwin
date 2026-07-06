@@ -84,6 +84,7 @@ memory_rooms
 | `approval_requests` | Pending and completed approval requests | On escalation | User review queue |
 | `execution_plans` | Plans sent to IronClaw | On auto-execute | Status tracking |
 | `watches` | No-code routines (#519) — read-only signal watchers (digest/notify on a schedule) | On create / edit / pause | Per-user listing, scheduler `listDue` |
+| `watch_runs` | Canonical firing history for Watches, including matched signal refs and summary text | On each meaningful Watch firing | Briefing projection, Watches run history |
 | `execution_results` | Results from IronClaw | On execution completion | Audit, failure analysis |
 | `explanation_records` | Human-readable explanations | Per-decision | User review, audit |
 | `feedback_events` | User responses (approve/reject/edit/undo) | On user interaction | Twin model updates, evals |

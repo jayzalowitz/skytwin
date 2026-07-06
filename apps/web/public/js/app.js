@@ -9,6 +9,7 @@ import { renderSetup } from './pages/setup.js';
 import { renderConnectGmail } from './pages/connect-gmail.js';
 import { renderAssistant } from './pages/assistant.js';
 import { renderSearch } from './pages/search.js';
+import { renderWatches } from './pages/watches.js';
 import { renderOnboarding } from './pages/onboarding.js';
 import { renderCapabilities } from './pages/capabilities.js';
 import { renderCapabilityDetail } from './pages/capability-detail.js';
@@ -36,6 +37,7 @@ const routes = {
   '/': { title: 'Home', render: renderDashboard },
   '/assistant': { title: 'Chat', render: renderAssistant },
   '/search': { title: 'Search', render: renderSearch },
+  '/watches': { title: 'Watches', render: renderWatches },
   '/approvals': { title: 'Needs your OK', render: renderApprovals },
   '/decisions': { title: 'What happened', render: renderDecisions },
   '/activity': { title: "What's been happening", render: renderActivity },

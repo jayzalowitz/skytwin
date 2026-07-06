@@ -20,10 +20,12 @@ const {
   mockGetLatest,
   mockGetLatestPerLifebook,
   mockListVisible,
+  mockListRecentWatchRuns,
 } = vi.hoisted(() => ({
   mockGetLatest: vi.fn(),
   mockGetLatestPerLifebook: vi.fn(),
   mockListVisible: vi.fn(),
+  mockListRecentWatchRuns: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock('@skytwin/db', () => ({
@@ -37,6 +39,9 @@ vi.mock('@skytwin/db', () => ({
   },
   lifebookRepository: {
     listVisible: mockListVisible,
+  },
+  watchRunRepository: {
+    listRecentForUser: mockListRecentWatchRuns,
   },
   // buildLiveDigest (twin-briefings /latest) queries decisions; an empty
   // result makes it return null so these tests exercise the prose/sections
@@ -116,6 +121,7 @@ function fakeBriefing(domainName: string | null) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockListRecentWatchRuns.mockResolvedValue([]);
 });
 
 describe('GET /api/twin-briefings/latest — #320 sections fold', () => {
@@ -231,5 +237,35 @@ describe('GET /api/twin-briefings/latest — #320 sections fold', () => {
     );
     expect(mockGetLatest).toHaveBeenCalledWith(USER_ID, 'weekly');
     expect(mockGetLatestPerLifebook).toHaveBeenCalledWith(USER_ID, 'weekly');
+  });
+
+  it('synthesizes a live briefing when recent watch runs exist', async () => {
+    mockGetLatest.mockResolvedValue(null);
+    mockGetLatestPerLifebook.mockResolvedValue([]);
+    mockListVisible.mockResolvedValue([]);
+    mockListRecentWatchRuns.mockResolvedValue([
+      {
+        id: 'run-1',
+        watch_id: 'watch-1',
+        user_id: USER_ID,
+        ran_at: new Date('2026-07-06T09:00:00Z'),
+        action: 'digest',
+        matched_count: 3,
+        summary: 'Budget watch found 3 items',
+        matched_refs: ['sig-1', 'sig-2', 'sig-3'],
+      },
+    ]);
+
+    const res = await request(
+      buildApp(),
+      'GET',
+      `/api/twin-briefings/latest?userId=${USER_ID}`,
+    );
+    expect(res.status).toBe(200);
+    const body = res.body as {
+      briefing: { id: string; structured: { watchRuns: Array<{ summary: string }> } };
+    };
+    expect(body.briefing.id).toBe('live');
+    expect(body.briefing.structured.watchRuns[0]!.summary).toBe('Budget watch found 3 items');
   });
 });

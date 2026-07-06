@@ -278,6 +278,31 @@ function renderMemorySuggestions(list) {
     </div>`;
 }
 
+function renderWatchRuns(list) {
+  if (!Array.isArray(list) || list.length === 0) return '';
+  return `
+    <div class="digest-watch-runs">
+      <div class="digest-heading">Watches <span class="count">· ${list.length}</span></div>
+      <ul>
+        ${list.map((run) => {
+          const matched = Number(run?.matchedCount ?? run?.matched_count ?? 0);
+          const refs = Array.isArray(run?.matchedRefs) ? run.matchedRefs : [];
+          return `
+            <li class="digest-watch-run">
+              <div class="digest-watch-title">${escapeHtml(run?.summary || 'A Watch found something')}</div>
+              <div class="digest-watch-meta">
+                ${escapeHtml(formatTime(new Date(run?.ranAt || run?.ran_at || Date.now())))}
+                · ${matched} match${matched === 1 ? '' : 'es'}
+                ${refs.length ? ` · ${refs.length} source${refs.length === 1 ? '' : 's'}` : ''}
+              </div>
+            </li>
+          `;
+        }).join('')}
+      </ul>
+      <a class="digest-watch-link" href="#/watches">Open Watches</a>
+    </div>`;
+}
+
 function renderCoveragePanel(coverage) {
   if (!coverage || !Array.isArray(coverage.capabilityStatus)) return '';
   const status = coverage.capabilityStatus
@@ -317,7 +342,8 @@ function renderDigestSection(structured) {
   const todoList = structured.todos || [];
   const topicList = structured.topics || [];
   const memoryList = structured.memorySuggestions || [];
-  if (!todoList.length && !topicList.length && !memoryList.length) {
+  const watchRuns = structured.watchRuns || [];
+  if (!todoList.length && !topicList.length && !memoryList.length && !watchRuns.length) {
     return `<section class="digest"><p class="digest-voice">You're all caught up.</p><p class="muted">Nothing needs you right now.</p></section>`;
   }
   const powerOn = isPowerView();
@@ -326,6 +352,7 @@ function renderDigestSection(structured) {
   const needYou = todoList.length;
   const catchUp = topicList.reduce((n, g) => n + (g.items?.length || 0), 0);
   const memoryCount = memoryList.length;
+  const watchCount = watchRuns.length;
   const handled = typeof structured.handledCount === 'number' ? structured.handledCount : null;
   const valueLine = `
     <p class="digest-value">
@@ -333,6 +360,7 @@ function renderDigestSection(structured) {
       <span><b>${needYou}</b> need you</span><span class="sep"></span>
       <span><b>${catchUp}</b> to catch up on</span>
       ${memoryCount ? `<span class="sep"></span><span><b>${memoryCount}</b> from memory</span>` : ''}
+      ${watchCount ? `<span class="sep"></span><span><b>${watchCount}</b> from Watches</span>` : ''}
     </p>`;
 
   const todos = todoList.map(renderTodoRow).join('');
@@ -356,6 +384,7 @@ function renderDigestSection(structured) {
       <div class="digest-heading">Topics to catch up on <span class="count">· ${catchUp}</span></div>
       ${topics || '<p class="muted">No topics today.</p>'}
       ${renderMemorySuggestions(memoryList)}
+      ${renderWatchRuns(watchRuns)}
       ${powerOn ? renderCoveragePanel(structured.coverage) : ''}
     </section>
   `;

@@ -118,11 +118,17 @@ export const watchRepository = {
   },
 
   /** Replace the watch's spec (an edit from the UI). Ownership-scoped. */
-  async updateSpec(id: string, userId: string, spec: RoutineSpec): Promise<Watch | null> {
+  async updateSpec(
+    id: string,
+    userId: string,
+    spec: RoutineSpec,
+    sourceText?: string,
+  ): Promise<Watch | null> {
     const result = await query<WatchRow>(
       `UPDATE watches
           SET name = $3, cadence = $4, hour_of_day = $5, day_of_week = $6,
-              filter = $7, action = $8, updated_at = now()
+              filter = $7, action = $8, source_text = COALESCE($9, source_text),
+              updated_at = now()
         WHERE id = $1 AND user_id = $2
       RETURNING *`,
       [
@@ -134,6 +140,7 @@ export const watchRepository = {
         spec.dayOfWeek ?? null,
         JSON.stringify(spec.filter ?? {}),
         spec.action,
+        sourceText === undefined ? null : sourceText,
       ],
     );
     return result.rows[0] ? rowToWatch(result.rows[0]) : null;
