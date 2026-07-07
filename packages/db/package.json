@@ -33,7 +33,7 @@
     "@skytwin/policy-engine": "workspace:*",
     "@skytwin/shared-types": "workspace:*",
     "@skytwin/twin-model": "workspace:*",
-    "pg": "^8.21.0"
+    "pg": "^8.22.0"
   },
   "devDependencies": {
     "@types/node": "^26.1.0",
