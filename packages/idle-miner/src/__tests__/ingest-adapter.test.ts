@@ -85,6 +85,56 @@ describe('toIngestEvent', () => {
 });
 
 describe('createHttpSignalEmitter', () => {
+  // The idle-miner posts to the same guarded endpoint as the worker. Without
+  // the loopback service credential every mined signal 401s in a packaged
+  // build (NODE_ENV=production, localhost auth bypass off).
+  it('sends the service token as an Authorization bearer header when provided', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(okResponse());
+    const emit = createHttpSignalEmitter({
+      ingestUrl: 'http://localhost:3100/api/events/ingest',
+      userId: 'user-1',
+      serviceToken: 'tok-abc',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    await emit(signal());
+
+    const init = fetchImpl.mock.calls[0]![1] as RequestInit;
+    expect(init.headers).toEqual({
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer tok-abc',
+    });
+  });
+
+  it('omits the Authorization header when no service token is configured (dev bypass)', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(okResponse());
+    const emit = createHttpSignalEmitter({
+      ingestUrl: 'http://localhost:3100/api/events/ingest',
+      userId: 'user-1',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    await emit(signal());
+
+    const init = fetchImpl.mock.calls[0]![1] as RequestInit;
+    expect(init.headers).toEqual({ 'Content-Type': 'application/json' });
+  });
+
+  it('omits the Authorization header for a blank service token rather than sending "Bearer "', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(okResponse());
+    const emit = createHttpSignalEmitter({
+      ingestUrl: 'http://localhost:3100/api/events/ingest',
+      userId: 'user-1',
+      serviceToken: '   ',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    await emit(signal());
+
+    const init = fetchImpl.mock.calls[0]![1] as RequestInit;
+    expect(init.headers).toEqual({ 'Content-Type': 'application/json' });
+  });
+
   const url = 'http://localhost:3200/api/events/ingest';
 
   it('POSTs the ingest event to the configured URL', async () => {

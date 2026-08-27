@@ -80,6 +80,13 @@ export class GmailConnector implements SignalConnector {
   private readonly labelObserver: LabelObserver | null;
   /** In-memory mirror of the persisted cursor for the current session. */
   private historyId: string | null = null;
+  /**
+   * Cursor advancement staged by the last `poll()` that returned signals,
+   * held back until `commitCursor()` confirms the caller handled them.
+   * Advancing inside `poll()` marks mail as seen before it has been
+   * forwarded anywhere, so any downstream failure skips it permanently.
+   */
+  private pendingHistoryId: string | null = null;
 
   constructor(
     userId: string,
@@ -108,6 +115,20 @@ export class GmailConnector implements SignalConnector {
     this.connected = false;
     this.handlers = [];
     this.historyId = null;
+    this.pendingHistoryId = null;
+  }
+
+  /**
+   * Persist the cursor staged by the last `poll()`. Call ONLY after every
+   * signal that poll returned has been handled successfully — see
+   * `SignalConnector.commitCursor`. No-op when nothing is staged, so it is
+   * safe to call unconditionally after every poll.
+   */
+  async commitCursor(): Promise<void> {
+    const pending = this.pendingHistoryId;
+    if (pending === null) return;
+    this.pendingHistoryId = null;
+    await this.persistCursor(pending);
   }
 
   async poll(): Promise<RawSignal[]> {
@@ -172,7 +193,8 @@ export class GmailConnector implements SignalConnector {
     }
 
     const { signals, maxHistoryId } = await this.fetchAndConvert(ids, accessToken);
-    if (maxHistoryId) await this.persistCursor(maxHistoryId);
+    // Staged, not persisted: these signals have not been forwarded yet.
+    if (maxHistoryId) this.stageCursor(maxHistoryId);
     return signals;
   }
 
@@ -262,7 +284,15 @@ export class GmailConnector implements SignalConnector {
     }
 
     if (maxHistoryId !== startHistoryId) {
-      await this.persistCursor(maxHistoryId);
+      if (signals.length > 0) {
+        // Hold the advance until the caller confirms delivery.
+        this.stageCursor(maxHistoryId);
+      } else {
+        // Nothing to deliver, so nothing can be lost by advancing now — and
+        // advancing keeps `history.list` from replaying an ever-widening
+        // window on a mailbox with only filtered-out activity.
+        await this.persistCursor(maxHistoryId);
+      }
     }
     return signals;
   }
@@ -320,8 +350,20 @@ export class GmailConnector implements SignalConnector {
     }
   }
 
+  /**
+   * Record a cursor advance without committing it. The in-memory `historyId`
+   * is deliberately NOT moved: if `commitCursor()` never runs, the next poll
+   * re-reads from the same point and re-delivers the batch.
+   */
+  private stageCursor(historyId: string): void {
+    this.pendingHistoryId = historyId;
+  }
+
   private async persistCursor(historyId: string): Promise<void> {
     this.historyId = historyId;
+    // Any staged advance is superseded by this one; keep it from being
+    // re-applied (possibly rewinding the cursor) by a later commit.
+    this.pendingHistoryId = null;
     if (this.cursorStore) {
       try {
         await this.cursorStore.save(this.userId, 'gmail', HISTORY_ID_KIND, historyId);

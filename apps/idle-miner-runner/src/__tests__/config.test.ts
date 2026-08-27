@@ -87,4 +87,24 @@ describe('parseRunnerConfig — fail-closed', () => {
   it('ignores whitespace-only values (treats them as absent)', () => {
     expect(parseRunnerConfig({ ...base(), SKYTWIN_IDLE_MINER_USER_ID: '   ' }).ok).toBe(false);
   });
+
+  // The loopback service credential the desktop mints. Without it, mined
+  // signals 401 against a packaged build's API (bypass off).
+  it('carries SKYTWIN_SERVICE_TOKEN through to the config', () => {
+    const r = parseRunnerConfig({ ...base(), SKYTWIN_SERVICE_TOKEN: 'tok-abc' });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.config.serviceToken).toBe('tok-abc');
+  });
+
+  it('still starts without a service token (dev API with the localhost bypass on)', () => {
+    const r = parseRunnerConfig(base());
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.config.serviceToken).toBeUndefined();
+  });
+
+  it('treats a whitespace-only service token as absent', () => {
+    const r = parseRunnerConfig({ ...base(), SKYTWIN_SERVICE_TOKEN: '   ' });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.config.serviceToken).toBeUndefined();
+  });
 });

@@ -28,6 +28,7 @@ import {
 import { withRetry, RetryableHttpError, CircuitBreaker, createLogger } from '@skytwin/core';
 import { KeyCache } from '@skytwin/credential-vault';
 import { SignalDeduper, DEFAULT_TTL_MS } from './signal-dedupe.js';
+import { buildIngestHeaders } from './ingest-headers.js';
 import { createPruneThrottle } from './label-signal-pruner.js';
 import { runMetricsRollupJob } from './jobs/metrics-rollup.js';
 import { runChangelogPollJob } from './jobs/changelog-poll.js';
@@ -210,7 +211,7 @@ async function forwardSignalToApi(signal: RawSignal, userId: string): Promise<vo
   await withRetry(async () => {
     const resp = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: buildIngestHeaders(),
       body,
     });
 
@@ -265,6 +266,13 @@ async function pollUser(userConnectors: UserConnectors): Promise<void> {
         await forwardSignalToApi(signal, userConnectors.userId);
         markSignalForwarded(signal, userConnectors.userId);
       }
+      // Only now is it safe to advance the connector's durable cursor. A
+      // connector that staged one during `poll()` persists it here; if any
+      // forward above threw we jump to `catch` and the cursor stays put, so
+      // the next poll re-delivers those messages instead of skipping them
+      // forever. Connectors without staged cursors implement this as a no-op
+      // (or not at all — it is optional on the interface).
+      await connector.commitCursor?.();
     } catch (error) {
       hadFailure = true;
       thisConnectorFailed = true;
