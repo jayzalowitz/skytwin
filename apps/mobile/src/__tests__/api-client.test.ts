@@ -234,9 +234,11 @@ describe('API client request construction', () => {
 
   it('uses a 60s timeout for assistant messages (LLM replies exceed the 10s default)', async () => {
     mockFetch.mockResolvedValue({ ok: true, json: async () => ({}) });
-    const spy = vi.spyOn(global, 'setTimeout');
+    // `globalThis`, not `global`: expo/tsconfig.base sets lib to DOM+ESNext with
+    // no node types, so the node-only `global` does not typecheck. Same object.
+    const spy = vi.spyOn(globalThis, 'setTimeout');
     await client.sendAssistantMessage('user-1', 'hi');
-    expect(spy.mock.calls.some((c) => c[1] === 60_000)).toBe(true);
+    expect(spy.mock.calls.some((c: unknown[]) => c[1] === 60_000)).toBe(true);
     spy.mockRestore();
   });
 });
