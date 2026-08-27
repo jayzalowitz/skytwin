@@ -21,7 +21,11 @@ jobs:
           node-version: 20
           cache: pnpm
 
+      # continue-on-error mirrors build.yml: this cache is an optimisation,
+      # and its sidecar returns 400/500 whenever the GitHub cache service is
+      # unavailable. Without this flag a cache hiccup fails the whole job.
       - uses: dtinth/setup-github-actions-caching-for-turbo@v1
+        continue-on-error: true
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile

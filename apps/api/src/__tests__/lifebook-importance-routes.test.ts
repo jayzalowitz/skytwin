@@ -142,13 +142,20 @@ describe('POST /api/lifebooks/:userId/:domainName/importance — #321', () => {
   });
 
   it('writes the override and returns the updated lifebook with importanceOverride surfaced', async () => {
+    // `setAt` MUST be relative to now. The route hides an override once
+    // `setAt + decayDays` has passed, so an absolute date silently ages
+    // out: this test was written with '2026-05-18T00:00:00Z' + 90 days
+    // and started failing on 2026-08-16 with no code change, exactly
+    // like the computeBidirectionalThreadCounts fixtures did. The
+    // sibling freshness tests below already use this relative form.
+    const setAt = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString();
     mockSetImportanceOverride.mockResolvedValue(
       fakeLifebookRow({
         importance: 'core',
         metadata: {
           importanceOverride: {
             value: 'core',
-            setAt: '2026-05-18T00:00:00Z',
+            setAt,
             decayDays: 90,
           },
         },
@@ -172,7 +179,7 @@ describe('POST /api/lifebooks/:userId/:domainName/importance — #321', () => {
     expect(body.lifebook.importance).toBe('core');
     expect(body.lifebook.importanceOverride).toEqual({
       value: 'core',
-      setAt: '2026-05-18T00:00:00Z',
+      setAt,
       decayDays: 90,
     });
     // Repo called with the default decayDays = 90
