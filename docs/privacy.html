@@ -29,24 +29,44 @@
   <div class="wrap">
     <nav><a href="index.html">← Back to SkyTwin</a></nav>
     <h1>Privacy Policy</h1>
-    <p class="meta">Effective: 2026-06-24. SkyTwin is an open-source personal automation project. This policy describes how the SkyTwin desktop app handles Google user data accessed via Google API scopes.</p>
+    <p class="meta">Effective: 2026-08-27. SkyTwin is an open-source personal automation project. This policy describes how the SkyTwin desktop app handles Google and Microsoft user data accessed via their respective APIs.</p>
 
     <div class="callout">
-      <strong>Summary:</strong> SkyTwin runs entirely on your computer. By default — using the built-in on-device language model — your Google data (emails, calendar events, profile information) never leaves your machine. We do not operate servers that hold your user data; the SkyTwin developers cannot access it. The one exception is opt-in: if <em>you</em> enable a cloud AI provider (Anthropic, OpenAI, or Google AI) in Settings for sharper reasoning, the content of each decision SkyTwin reasons about is sent to that provider for processing — see <a href="#ai-providers">AI providers</a> below. Nothing is shared with a cloud provider unless you turn it on.
+      <strong>Summary:</strong> SkyTwin runs entirely on your computer. By default — using the built-in on-device language model — your Google data (emails, calendar events, profile information) never leaves your machine. We do not operate servers that hold your user data; the SkyTwin developers cannot access it. The one exception is opt-in: if <em>you</em> enable a cloud AI provider (Anthropic, OpenAI, or Google AI) in Settings for sharper reasoning, the content of each decision SkyTwin reasons about is sent to that provider for processing — see <a href="#ai-providers">AI providers</a> below. Nothing is shared with a cloud provider unless you turn it on. Local does not mean encrypted: your twin profile, preferences, and memory are stored <em>unencrypted</em> in a database on your own disk today — please turn on full-disk encryption. See <a href="#storage">How we store and protect your data</a> for exactly what is and is not encrypted.
     </div>
 
     <h2>Who we are</h2>
     <p>SkyTwin is developed by Jay Zalowitz, an independent open-source contributor. Source code, including the entirety of the data-handling implementation, lives at <a href="https://github.com/jayzalowitz/skytwin">github.com/jayzalowitz/skytwin</a> under the Apache 2.0 license. There is no SkyTwin Inc., no cloud product, and no centralized data store. Contact: open an issue at <a href="https://github.com/jayzalowitz/skytwin/issues">github.com/jayzalowitz/skytwin/issues</a>.</p>
 
     <h2>What Google user data we access</h2>
-    <p>When you connect your Google account in the SkyTwin desktop app, the app requests the following OAuth scopes:</p>
+    <p>Which Google scopes SkyTwin can request depends on <strong>which OAuth client</strong> is in use. There are two tiers, and the difference matters:</p>
+
+    <h3>Tier 1 — the bundled SkyTwin OAuth client (the default)</h3>
+    <p>A fresh desktop install uses an OAuth client owned by the SkyTwin project. That client is registered for <strong>identity and Calendar scopes only</strong>. It cannot request Gmail access — the code path that builds the authorization URL refuses to add Gmail scopes for the bundled client (<code>resolveRequestedScopes</code> in <code>apps/api/src/routes/oauth.ts</code>). The scopes it requests are:</p>
     <ul>
       <li><code>openid</code> + <code>email</code> + <code>profile</code> — to identify which Google account is connecting, used as the primary key for the local twin profile.</li>
-      <li><code>https://www.googleapis.com/auth/gmail.readonly</code> — to read incoming mail metadata and body content so SkyTwin can interpret signals (a newsletter just arrived; a friend asked for a meeting; a calendar invite needs response).</li>
-      <li><code>https://www.googleapis.com/auth/gmail.modify</code> — to apply labels and archive mail that you have taught SkyTwin to archive automatically, and to send Gmail replies or new messages after your approval or under autonomy rules you have explicitly enabled. SkyTwin does not permanently delete mail. Outgoing SkyTwin-sent emails include a small default-on footer linking to the open-source repo; you can turn that footer off in Settings.</li>
       <li><code>https://www.googleapis.com/auth/calendar.readonly</code> — to read your calendar so SkyTwin can spot conflicts, suggest times, and learn your scheduling preferences.</li>
       <li><code>https://www.googleapis.com/auth/calendar.events</code> — to create, modify, and respond to calendar invites with your approval, or automatically for events that match patterns you have explicitly taught the twin.</li>
     </ul>
+    <p>That is the complete list for the default install. If you never supply your own OAuth credentials, SkyTwin never asks Google for access to your mail.</p>
+
+    <h3>Tier 2 — your own Google OAuth client (bring-your-own, required for Gmail)</h3>
+    <p>Gmail's <code>readonly</code> and <code>modify</code> scopes are <em>restricted</em> scopes under Google's policy. Rather than put restricted scopes on a shared, project-owned client, SkyTwin requires you to create an OAuth client in your own Google Cloud project and paste its credentials into Setup (see <a href="connect-gmail.html">Connect Gmail</a>). Only then, and only if you explicitly opt in to Gmail during the connect flow, does SkyTwin additionally request:</p>
+    <ul>
+      <li><code>https://www.googleapis.com/auth/gmail.readonly</code> — to read incoming mail metadata and body content so SkyTwin can interpret signals (a newsletter just arrived; a friend asked for a meeting; a calendar invite needs response).</li>
+      <li><code>https://www.googleapis.com/auth/gmail.modify</code> — to apply labels and archive mail that you have taught SkyTwin to archive automatically, and to send Gmail replies or new messages after your approval or under autonomy rules you have explicitly enabled. SkyTwin does not permanently delete mail. Outgoing SkyTwin-sent emails include a small default-on footer linking to the open-source repo; you can turn that footer off in Settings.</li>
+    </ul>
+    <p>In this tier the OAuth client is yours; the grant is between you and Google, and the tokens are stored on your own machine exactly as described below.</p>
+
+    <h2>Microsoft (Outlook) data we access</h2>
+    <p>SkyTwin can also connect Outlook mail and calendar via Microsoft Graph. There is no bundled Microsoft client — connecting Outlook means registering your own Microsoft Entra application and supplying its credentials, the same bring-your-own model as Tier 2 above. The Graph scopes requested are:</p>
+    <ul>
+      <li><code>User.Read</code> — to read the signed-in account's basic profile and email address, used as the account key for the local twin profile.</li>
+      <li><code>Mail.Read</code> — read-only access to Outlook mail so SkyTwin can interpret the same kinds of signals it reads from Gmail.</li>
+      <li><code>Calendars.Read</code> — read-only access to your Outlook calendar for conflict detection and scheduling context.</li>
+      <li><code>offline_access</code> — Microsoft's mechanism for issuing a refresh token so background sync survives a restart. It grants no additional data access of its own.</li>
+    </ul>
+    <p>The Outlook integration is <strong>read-only</strong>: SkyTwin does not request write scopes for Microsoft mail or calendar, so it cannot send Outlook mail or modify Outlook events. Microsoft user data is stored, used, and deleted on exactly the same terms as Google user data throughout this policy.</p>
 
     <h2>How we use Google user data</h2>
     <p>SkyTwin uses Google user data exclusively to provide the user-facing personal-assistant features visible in the SkyTwin desktop app. Specifically:</p>
@@ -57,23 +77,38 @@
     </ul>
     <p>SkyTwin does not use Google user data for advertising, model training across users, lending decisions, or any purpose other than the personal-assistant features described above.</p>
 
-    <h2>How we store and protect your data</h2>
+    <h2 id="storage">How we store and protect your data</h2>
     <p>All data accessed via Google APIs — both raw API responses and any derived signals, decisions, preferences, and twin profile records — is stored exclusively in a CockroachDB database that runs locally on the device where SkyTwin is installed. The database files live in your operating-system-standard application data directory:</p>
     <ul>
       <li>macOS: <code>~/Library/Application Support/SkyTwin/crdb-data/</code></li>
       <li>Windows: <code>%LOCALAPPDATA%\SkyTwin\crdb-data\</code></li>
       <li>Linux: <code>~/.local/share/SkyTwin/crdb-data/</code></li>
     </ul>
-    <p>OAuth refresh tokens and any other sensitive credentials are encrypted at rest using AES-256-GCM with per-user keys derived via scrypt; the implementation lives in the <code>@skytwin/credential-vault</code> package on GitHub.</p>
-    <h3>Memory and preferences are encrypted at rest</h3>
-    <p>Beyond credentials, SkyTwin envelope-encrypts the most sensitive user-derived content at rest in the local database, reusing the same AES-256-GCM + scrypt machinery: your <strong>learned preferences</strong> (the <code>preferences</code> table), your <strong>twin profile</strong> (the <code>twin_profiles</code> table — inferences, communication style, risk tolerance, spend norms, routines, domain heuristics), and the <strong>textual memory</strong> the twin extracts from your correspondence (the <code>brain_pages</code> table — titles, body content, and metadata). The encryption key is derived from your passphrase via scrypt and never leaves your device. If your laptop is stolen or your disk is imaged, the contents of your memory and preferences are unreadable without your passphrase.</p>
-    <p>Two derived fields are intentionally left unencrypted so on-device search stays fast: the full-text search index (<code>content_tsv</code>) and the semantic vector (<code>embedding</code>) computed from each memory page. A stolen disk could reveal <em>which words appear</em> in a memory page, but not the readable body, the relationships, or the surrounding context. This is a deliberate v0.7 trade-off, revisited in a future release. Encryption activates once you set a vault passphrase; existing data is migrated lazily on next access, and the master-key derivation will move to your operating-system keychain in a follow-up.</p>
-    <p>No telemetry, no analytics, no error reporting service sends Google user data, derived data, or identifying information to skytwin.dev, the SkyTwin developers, Google Cloud, or any other server.</p>
+    <p>Those files are protected by your operating system's normal file permissions — the same protection as the rest of your home directory. There is no additional SkyTwin-managed encryption layer over them by default.</p>
+
+    <div class="callout">
+      <strong>Turn on full-disk encryption.</strong> The single most effective thing you can do to protect the data SkyTwin stores is to enable your operating system's full-disk encryption: <strong>FileVault</strong> on macOS, <strong>BitLocker</strong> on Windows, or <strong>LUKS</strong>/<code>dm-crypt</code> on Linux. That is what actually protects your SkyTwin database if your machine is lost or stolen or its disk is imaged. We recommend enabling it before you connect an account.
+    </div>
+
+    <h3>OAuth tokens: encryption is available, and opt-in</h3>
+    <p>SkyTwin ships a credential vault (<code>@skytwin/credential-vault</code>) that encrypts stored OAuth access and refresh tokens with AES-256-GCM, using a per-user key derived from a passphrase via scrypt. The key is derived on your device and never leaves it. We would rather be precise than reassuring about what this covers today:</p>
+    <ul>
+      <li>Token encryption applies <strong>only after you set a vault passphrase</strong> in the app. Until you do, OAuth tokens are written to plaintext columns in your local database.</li>
+      <li>The derived key lives in memory in the process you unlocked. Cross-process unlock is not implemented yet (tracked as a follow-up to <a href="https://github.com/jayzalowitz/skytwin/issues/212">issue&nbsp;#212</a>), so the background worker process does not currently receive that key; with the vault enabled it may report credentials as unavailable rather than decrypting them.</li>
+    </ul>
+
+    <h3>What is not encrypted today</h3>
+    <p>Your <strong>learned preferences</strong> (the <code>preferences</code> table), your <strong>twin profile</strong> (the <code>twin_profiles</code> table — inferences, communication style, risk tolerance, spend norms, routines, domain heuristics), and the <strong>textual memory</strong> the twin extracts from your correspondence (the <code>brain_pages</code> table — titles, body content, and metadata) are currently stored <strong>unencrypted</strong> in your local CockroachDB. The same is true of the derived search fields computed from them: the full-text index (<code>content_tsv</code>) and the semantic vector (<code>embedding</code>).</p>
+    <p>A column-level encryption schema and helpers for those three tables exist in the repository (migration <code>066-encrypt-high-value-tables.sql</code> and <code>packages/db/src/lib/vault-helper.ts</code>), but they are <strong>not yet activated by any shipping code path</strong> — no running process supplies the vault key to them, so they operate in plaintext mode. Switching them on is tracked as <a href="https://github.com/jayzalowitz/skytwin/issues/374">issue&nbsp;#374</a>. This page will be updated when that ships. Until then, treat those tables as readable by anyone who can read the files on your machine, and rely on full-disk encryption.</p>
+
+    <h3>Telemetry and crash reports</h3>
+    <p>SkyTwin runs no analytics and collects no usage telemetry. No Google user data, no derived twin data, and no message or calendar content is ever sent to the SkyTwin developers, to Google Cloud, or to any SkyTwin-operated server.</p>
+    <p>The desktop app includes one optional, <strong>default-off</strong> diagnostic: “Send anonymous crash reports” in Settings. When — and only when — you turn it on, an unhandled crash uploads a small JSON report to <code>https://crash.skytwin.dev/api/desktop/report</code> containing the exception type, the error message, the stack trace, the app version, and your OS platform and CPU architecture. The message and stack are scrubbed before upload to remove email addresses, home-directory paths, and token-shaped strings (<code>redactPii</code> in <code>apps/desktop/src/crash-reporter.ts</code>). The report carries no account identifier, no signal or memory content, and no twin profile data. Leaving the setting off means no crash report is ever sent.</p>
 
     <h2 id="ai-providers">Data sharing &amp; transfers</h2>
     <p>SkyTwin does not transfer Google user data to any third party for the developers' benefit — there is no analytics, advertising, model-training, or data-broker pipeline, and no SkyTwin-operated server ever receives it. The only network connections the app makes with your Google data are the ones below; note that item&nbsp;2 (an optional, opt-in cloud AI provider <em>you</em> enable) is the single case where decision content is sent to a third party, and only then:</p>
     <ol>
-      <li>Direct API calls from the SkyTwin desktop process to Google API servers (e.g. <code>gmail.googleapis.com</code>, <code>calendar.googleapis.com</code>) to fetch the data you authorized and carry out approved actions, including Gmail label/archive operations, Gmail sends, and calendar changes.</li>
+      <li>Direct API calls from the SkyTwin desktop process to the provider's own API servers (e.g. <code>gmail.googleapis.com</code>, <code>calendar.googleapis.com</code>, <code>graph.microsoft.com</code>) to fetch the data you authorized and carry out approved actions, including Gmail label/archive operations, Gmail sends, and calendar changes.</li>
       <li>Optional outbound calls to LLM providers (OpenAI, Anthropic, Google AI) <em>only if</em> you have configured one of those in Setup — the prompts may contain your data, in which case that provider's terms apply. The default install uses the embedded <code>llama.cpp</code> runtime and makes no outbound LLM calls.</li>
       <li>
         <strong>Provider order is local-first by default for the env-driven factory (#375 — partial).</strong> The shared LLM client constructed from environment variables (used today by capability suggestions and any future caller that goes through <code>getLlmClientFromConfig</code>) now orders local providers (embedded <code>llama.cpp</code>, Ollama) ahead of cloud providers (Anthropic, OpenAI, Google) by default. A cloud key in your env no longer silently escalates that path to cloud-as-primary. Set <code>SKYTWIN_LLM_PRIORITY=cloud-first</code> on the API process to put cloud providers ahead of local — that's an explicit consent gate and the env var is the audit trail.
@@ -81,13 +116,14 @@
         <strong>Scope note:</strong> the decision-ingest path (the one that actually sends your email / calendar prompts to an LLM) constructs its provider chain from the per-user <code>ai_provider_settings</code> table, ordered by the per-row <code>priority</code> column. That path is NOT changed by this update; the user-facing toggle UI that unifies both ordering paths is tracked as a follow-up to the same issue. Until that ships, configure <code>ai_provider_settings.priority</code> via Settings to control your decision-pipeline ordering.
       </li>
     </ol>
+    <p>Separately from the list above, the desktop app can send an anonymous, PII-scrubbed crash report to <code>crash.skytwin.dev</code> if — and only if — you turn that default-off setting on. Crash reports contain no Google or Microsoft user data; see <a href="#storage">Telemetry and crash reports</a> for the exact contents.</p>
     <p>We do not sell user data. We cannot sell user data — we do not possess it.</p>
 
-    <h2>Human access to Google user data</h2>
-    <p>The SkyTwin development team has no operational mechanism to read your Google user data. The data lives on your device, encrypted credentials included. The only humans who can read it are:</p>
+    <h2>Human access to your data</h2>
+    <p>The SkyTwin development team has no operational mechanism to read your Google or Microsoft user data. The data lives on your device, in files owned by your operating-system user account. The only people who can read it are:</p>
     <ul>
       <li>You, by opening the SkyTwin dashboard or directly querying your local CockroachDB instance.</li>
-      <li>Anyone with administrator access to your computer, subject to your operating system's standard access controls.</li>
+      <li>Anyone with access to your computer or to its disk, subject to your operating system's standard access controls. Because the twin profile, preferences, and memory tables are not encrypted at rest today (see <a href="#storage">How we store and protect your data</a>), full-disk encryption is what keeps that list short.</li>
     </ul>
 
     <h2>Limited Use compliance</h2>
@@ -117,7 +153,7 @@
     <p>Privacy questions, security disclosures, or data-handling concerns: open an issue at <a href="https://github.com/jayzalowitz/skytwin/issues">github.com/jayzalowitz/skytwin/issues</a> or, for security-sensitive matters, follow the disclosure process described in <a href="https://github.com/jayzalowitz/skytwin/blob/main/SECURITY.md">SECURITY.md</a>.</p>
 
     <footer>
-      <p>Last updated: 2026-06-24.</p>
+      <p>Last updated: 2026-08-27.</p>
       <p>Source for this page: <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/privacy.html">docs/privacy.html</a> in the SkyTwin repository.</p>
     </footer>
   </div>

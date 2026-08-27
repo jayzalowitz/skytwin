@@ -160,7 +160,7 @@
         <div class="card">
           <span class="tag">Local-first</span>
           <h3>Local by default</h3>
-          <p>CockroachDB and an optional local LLM are embedded in the desktop app, and OAuth tokens are encrypted on disk. We don't run a server your data flows through. Cloud AI is opt-in — and when you choose it, the decision pipeline redacts email addresses from its prompts first.</p>
+          <p>CockroachDB and an optional local LLM are embedded in the desktop app, and your data stays in a database on your own machine. We don't run a server your data flows through. Cloud AI is opt-in — and when you choose it, the decision pipeline redacts email addresses from its prompts first. Turn on full-disk encryption (FileVault / BitLocker / LUKS); see the <a href="privacy.html#storage">privacy policy</a> for exactly what is and isn't encrypted at rest today.</p>
         </div>
       </div>
     </section>
@@ -178,15 +178,16 @@
 
     <section class="wrap">
       <h2>Google account access — what we use and why</h2>
-      <p class="section-lede">SkyTwin requests the minimum Google API scopes needed to be useful as a personal assistant. Each scope ties to a specific feature. The OAuth flow lands on <code>http://127.0.0.1</code> — your token is delivered straight to the desktop process and stored encrypted on disk. It never traverses any server we control.</p>
+      <p class="section-lede">SkyTwin requests the minimum Google API scopes needed to be useful as a personal assistant. Each scope ties to a specific feature. The OAuth flow lands on <code>http://127.0.0.1</code> — your token is delivered straight to the desktop process and stored in your local database. It never traverses any server we control. <strong>The bundled SkyTwin OAuth client requests identity and Calendar only.</strong> The Gmail scopes below require you to bring your own Google OAuth client; see <a href="connect-gmail.html">Connect Gmail</a>.</p>
       <table class="scopes">
         <thead><tr><th>Scope</th><th>What it enables</th></tr></thead>
         <tbody>
-          <tr><td><code>gmail.readonly</code></td><td>Read inbox to classify incoming mail, learn which threads you act on vs. ignore, and surface the few that need your attention. Without this, SkyTwin can't observe email at all.</td></tr>
-          <tr><td><code>gmail.modify</code></td><td>Apply labels, archive newsletters you've taught SkyTwin to archive, and send Gmail replies or new messages after approval or under autonomy rules you explicitly enable. SkyTwin-sent emails include a default-on repo footer that can be turned off in Settings. SkyTwin does not permanently delete mail.</td></tr>
-          <tr><td><code>calendar.readonly</code></td><td>Read your calendar to spot conflicts, find time, and learn your scheduling preferences.</td></tr>
-          <tr><td><code>calendar.events</code></td><td>Create, modify, and decline calendar invites with your approval (or auto-handle events matching patterns you've taught SkyTwin).</td></tr>
-          <tr><td><code>openid</code>, <code>email</code>, <code>profile</code></td><td>Confirm your Google identity so the right account maps to the right twin profile in your local database.</td></tr>
+          <tr><td><code>gmail.readonly</code><br><small>bring-your-own client</small></td><td>Read inbox to classify incoming mail, learn which threads you act on vs. ignore, and surface the few that need your attention. Without this, SkyTwin can't observe email at all.</td></tr>
+          <tr><td><code>gmail.modify</code><br><small>bring-your-own client</small></td><td>Apply labels, archive newsletters you've taught SkyTwin to archive, and send Gmail replies or new messages after approval or under autonomy rules you explicitly enable. SkyTwin-sent emails include a default-on repo footer that can be turned off in Settings. SkyTwin does not permanently delete mail.</td></tr>
+          <tr><td><code>calendar.readonly</code><br><small>bundled client</small></td><td>Read your calendar to spot conflicts, find time, and learn your scheduling preferences.</td></tr>
+          <tr><td><code>calendar.events</code><br><small>bundled client</small></td><td>Create, modify, and decline calendar invites with your approval (or auto-handle events matching patterns you've taught SkyTwin).</td></tr>
+          <tr><td><code>openid</code>, <code>email</code>, <code>profile</code><br><small>bundled client</small></td><td>Confirm your Google identity so the right account maps to the right twin profile in your local database.</td></tr>
+          <tr><td><code>User.Read</code>, <code>Mail.Read</code>, <code>Calendars.Read</code>, <code>offline_access</code><br><small>Microsoft Graph &middot; bring-your-own client</small></td><td>Read-only Outlook mail and calendar, plus the signed-in account's address. SkyTwin requests no Outlook write scopes, so it cannot send Outlook mail or change Outlook events.</td></tr>
         </tbody>
       </table>
       <p style="margin-top:1rem;color:var(--text-muted);font-size:.95rem;">Full detail in the <a href="privacy.html">privacy policy</a>. Bringing your own OAuth credentials takes about five minutes — see <a href="connect-gmail.html">Connect Gmail</a>.</p>
