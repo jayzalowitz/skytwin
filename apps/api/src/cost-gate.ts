@@ -42,6 +42,7 @@ import type {
   CostGateDecision,
   CostGateReservation,
 } from '@skytwin/decision-engine';
+import { parseAutonomySettings } from '@skytwin/shared-types';
 import type { AutonomySettings } from '@skytwin/shared-types';
 
 /**
@@ -68,51 +69,23 @@ function spendActionIdFor(decisionId: string): string {
 }
 
 /**
- * Default fallback AutonomySettings when a user row exists but
- * autonomy_settings is empty / malformed. Conservative — when in
- * doubt, the gate refuses calls rather than letting unbounded spend
- * through. 0 cents means "every cost-bearing call gets rejected" —
- * embedded (0-cost) calls still pass the spend check.
+ * Read a user row's autonomy settings.
+ *
+ * Thin adapter over the shared `parseAutonomySettings` parser in
+ * `@skytwin/shared-types` — one parser, so the API, the worker, and the
+ * decision pipeline can't drift. This wrapper previously built its own
+ * object literal that silently dropped `paused` / `pausedAt` /
+ * `pausedReason` and the quiet-hours window, which made the user pause
+ * kill switch (#379) inert for every caller that went through it —
+ * including `/api/routines`, which passed the settings to the policy
+ * evaluator correctly but had already lost `paused` by then.
+ *
+ * The fallback (`CONSERVATIVE_AUTONOMY_DEFAULTS`) stays conservative: 0
+ * cents means "every cost-bearing call gets rejected" — embedded (0-cost)
+ * calls still pass the spend check.
  */
-const FALLBACK_AUTONOMY: AutonomySettings = {
-  maxSpendPerActionCents: 0,
-  maxDailySpendCents: 0,
-  allowedDomains: [],
-  blockedDomains: [],
-  requireApprovalForIrreversible: true,
-};
-
 export function readAutonomy(user: UserRow | null): AutonomySettings {
-  const raw = user?.autonomy_settings;
-  if (!raw || typeof raw !== 'object') return FALLBACK_AUTONOMY;
-  const r = raw as Record<string, unknown>;
-  const maxPerAction = typeof r['maxSpendPerActionCents'] === 'number'
-    ? (r['maxSpendPerActionCents'] as number)
-    : FALLBACK_AUTONOMY.maxSpendPerActionCents;
-  const maxDaily = typeof r['maxDailySpendCents'] === 'number'
-    ? (r['maxDailySpendCents'] as number)
-    : FALLBACK_AUTONOMY.maxDailySpendCents;
-  const requireApproval =
-    typeof r['requireApprovalForIrreversible'] === 'boolean'
-      ? (r['requireApprovalForIrreversible'] as boolean)
-      : FALLBACK_AUTONOMY.requireApprovalForIrreversible;
-  const allowedDomains = Array.isArray(r['allowedDomains'])
-    ? (r['allowedDomains'] as string[])
-    : FALLBACK_AUTONOMY.allowedDomains;
-  const blockedDomains = Array.isArray(r['blockedDomains'])
-    ? (r['blockedDomains'] as string[])
-    : FALLBACK_AUTONOMY.blockedDomains;
-  return {
-    maxSpendPerActionCents: maxPerAction,
-    maxDailySpendCents: maxDaily,
-    allowedDomains,
-    blockedDomains,
-    requireApprovalForIrreversible: requireApproval,
-    perAppOverrides:
-      r['perAppOverrides'] && typeof r['perAppOverrides'] === 'object'
-        ? (r['perAppOverrides'] as AutonomySettings['perAppOverrides'])
-        : undefined,
-  };
+  return parseAutonomySettings(user?.autonomy_settings);
 }
 
 export class DbCostGate implements CostGatePort {

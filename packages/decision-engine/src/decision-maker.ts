@@ -243,11 +243,17 @@ export class DecisionMaker {
     let lastBlockedReason = '';
 
     for (const { candidate, assessment } of scoredCandidates) {
+      // The fifth argument is not optional in practice: without it the
+      // evaluator skips the user pause kill switch (#379), the domain
+      // allowlist, the per-action spend cap, the cost-unknown escalation
+      // (#372), requireApprovalForIrreversible, and quiet hours. This is
+      // the primary ingest path, so dropping it made all six decorative.
       const policyDecision = await this.policyEvaluator.evaluate(
         candidate,
         policies,
         context.trustTier,
         assessment,
+        context.autonomySettings,
       );
 
       const verdict: PolicyVerdict = !policyDecision.allowed
