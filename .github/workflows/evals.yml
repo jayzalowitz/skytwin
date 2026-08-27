@@ -33,12 +33,21 @@ jobs:
       - name: Build
         run: pnpm build
 
-      - name: Run eval tests
-        run: pnpm --filter @skytwin/evals test
-
-      - name: Check for safety regressions
+      # Single run. This used to be two steps: `Run eval tests` followed by a
+      # `Check for safety regressions` step that re-ran the identical suite —
+      # which doubled eval wall time AND could never fire, because without
+      # `if: always()` a step is skipped once an earlier step fails. The grep
+      # therefore only ever inspected an already-green run: a dead guard.
+      #
+      # `set -o pipefail` is load-bearing. GitHub runs `run: |` blocks under
+      # `bash -e`, which is errexit WITHOUT pipefail, so the pipeline's status
+      # is tee's (always 0). A vitest crash — an import error, an unhandled
+      # rejection, "No test files found" — produces no literal "FAIL" for the
+      # grep either, so a suite that never executed would report as a passing
+      # safety gate.
+      - name: Run eval tests + check for safety regressions
         run: |
-          # Run safety-specific tests and fail loudly on regression
+          set -o pipefail
           pnpm --filter @skytwin/evals test -- --reporter=verbose 2>&1 | tee eval-output.txt
           if grep -q "FAIL" eval-output.txt; then
             echo "::error::Safety regression detected in eval suite"

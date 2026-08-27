@@ -100,8 +100,12 @@ function fakeLifebookRow(overrides: Record<string, unknown> = {}) {
     sample_signals: [],
     suggested_capabilities: [],
     wing_id: 'wing-9',
-    detected_at: new Date('2026-05-01T00:00:00Z'),
-    last_seen_at: new Date('2026-05-17T00:00:00Z'),
+    // Relative, like every other date in this file. These two are only
+    // echoed by rowToJson today, so an absolute value would not fail —
+    // which is exactly why the next window-sensitive assertion added
+    // against them would rot silently. Same footgun, shared fixture.
+    detected_at: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
+    last_seen_at: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000),
     hidden_at: null,
     metadata: {},
     ...overrides,
@@ -148,7 +152,13 @@ describe('POST /api/lifebooks/:userId/:domainName/importance — #321', () => {
     // and started failing on 2026-08-16 with no code change, exactly
     // like the computeBidirectionalThreadCounts fixtures did. The
     // sibling freshness tests below already use this relative form.
-    const setAt = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString();
+    // Deliberately NON-canonical (no milliseconds). If rowToJson ever
+    // normalises via `new Date(setAt).toISOString()` this assertion
+    // catches it; a plain toISOString() fixture would not, because it
+    // already emits the canonical `.000Z` form.
+    const setAt = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000)
+      .toISOString()
+      .replace('.000Z', 'Z');
     mockSetImportanceOverride.mockResolvedValue(
       fakeLifebookRow({
         importance: 'core',

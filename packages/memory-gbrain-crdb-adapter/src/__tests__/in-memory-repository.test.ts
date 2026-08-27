@@ -347,14 +347,14 @@ describe('InMemoryBrainStore — signals', () => {
       userId: 'u1',
       source: 'g',
       type: 'e',
-      signalTimestamp: new Date('2026-05-02T00:00:00Z'),
+      signalTimestamp: new Date('2026-05-02'),
     });
     store.insertSignal({
       id: 's1',
       userId: 'u1',
       source: 'g',
       type: 'e',
-      signalTimestamp: new Date('2026-05-01T00:00:00Z'),
+      signalTimestamp: new Date('2026-05-01'),
     });
     const list = store.getAllSignals('u1');
     expect(list[0]?.id).toBe('s1');
@@ -647,10 +647,40 @@ describe('InMemoryBrainStore — findPagesMissingAuthoringTier (#251 backfill)',
   });
 });
 
-describe('InMemoryBrainStore — computeBidirectionalThreadCounts (#251 Phase 2, intersection per #281)', () => {
+// Anti-rot: the entire suite runs twice — once on the real clock, once five
+// years ahead. Every fixture below derives from `daysAgo()`, so it travels
+// with the clock; an absolute date literal does not, and falls outside the
+// 90-day window in the shifted run.
+//
+// This shape matters. An earlier version of this guard was a single extra
+// test with its own inline relative fixtures — which only proved the
+// implementation reads `Date.now()` (never in doubt) and stayed green when an
+// absolute date was reintroduced into a sibling test. A guard has to cover the
+// fixtures it is guarding, not restate the thing it is guarding them against.
+describe.each([
+  ['current clock', 0],
+  ['five years ahead', 5 * 365 * 24 * 60 * 60 * 1000],
+] as const)(
+  'InMemoryBrainStore — computeBidirectionalThreadCounts (#251 Phase 2, intersection per #281) [%s]',
+  (_label, clockOffsetMs) => {
   let store: InMemoryBrainStore;
+  // Captured ONCE per test so every `daysAgo()` call within a test resolves
+  // against the same instant. Reading `Date.now()` per call let a test whose
+  // seeds straddled UTC midnight bucket its "same day" pair onto two different
+  // days, producing a midnight-only flake.
+  let now: number;
+
   beforeEach(() => {
+    if (clockOffsetMs > 0) {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(Date.now() + clockOffsetMs));
+    }
+    now = Date.now();
     store = new InMemoryBrainStore();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   function seedReceived(id: string, fromHeader: string, day: string) {
@@ -694,13 +724,14 @@ describe('InMemoryBrainStore — computeBidirectionalThreadCounts (#251 Phase 2,
    * fail on a window boundary.
    */
   function daysAgo(n: number): string {
-    return new Date(Date.now() - n * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    return new Date(now - n * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
   }
 
   it('extracts bare address from RFC 5322 display-name format', () => {
     // Send + receive on the SAME day so the intersection is 1. (Under
     // the pre-#281 loose semantics any cross-day pair counted; now they
-    // must share a day.)
+    // must share a day. `daysAgo` resolves against a per-test `now`, so
+    // both calls are guaranteed the same day even across UTC midnight.)
     seedReceived('r1', 'Alice Smith <alice@example.com>', daysAgo(29));
     seedSent('s1', 'Alice Smith <alice@example.com>', daysAgo(29));
     const out = store.computeBidirectionalThreadCounts('u1', 90);
@@ -750,9 +781,9 @@ describe('InMemoryBrainStore — computeBidirectionalThreadCounts (#251 Phase 2,
   });
 
   it('counts distinct days where both directions occurred (intersection)', () => {
-    // Frank: received 05-01 (twice — same day), received 05-03, sent
-    // 05-01 and 05-03. Under intersection: 2 days (05-01 and 05-03).
-    // The duplicate received on 05-01 doesn't inflate the count.
+    // Frank: received twice on the SAME day (29d ago), received again
+    // 27d ago, sent on both of those days. Under intersection: 2 days.
+    // The duplicate receive on the first day doesn't inflate the count.
     seedReceived('r1', 'frank@example.com', daysAgo(29));
     seedReceived('r2', 'frank@example.com', daysAgo(29));
     seedReceived('r3', 'frank@example.com', daysAgo(27));
@@ -820,7 +851,8 @@ describe('InMemoryBrainStore — computeBidirectionalThreadCounts (#251 Phase 2,
   });
 
   it('counts only the days that appear in BOTH directions', () => {
-    // Received on days 1, 2, 3. Sent on days 2, 3, 4. Intersection: 2, 3.
+    // Received 29/28/27d ago. Sent 28/27/26d ago. Intersection: the
+    // 28d and 27d days — 2.
     seedReceived('r1', 'kate@example.com', daysAgo(29));
     seedReceived('r2', 'kate@example.com', daysAgo(28));
     seedReceived('r3', 'kate@example.com', daysAgo(27));
@@ -830,47 +862,5 @@ describe('InMemoryBrainStore — computeBidirectionalThreadCounts (#251 Phase 2,
     const out = store.computeBidirectionalThreadCounts('u1', 90);
     expect(out.get('kate@example.com')).toBe(2);
   });
-
-  // ── anti-rot guard ────────────────────────────────────────────────────
-  //
-  // This suite previously used absolute `2026-05-0X` fixture dates against
-  // an implementation that filters on `Date.now() - windowDays`. It passed
-  // for two months, then went red on 2026-07-30 with no code change and
-  // took the release pipeline down with it. This test travels five years
-  // forward and re-runs a representative scenario, so any future
-  // reintroduction of an absolute date fails immediately and locally
-  // rather than silently, months later, in CI.
-  describe('is anchored to now, not to absolute dates', () => {
-    afterEach(() => {
-      vi.useRealTimers();
-    });
-
-    it('still counts a same-day pair five years from now', () => {
-      vi.useFakeTimers();
-      vi.setSystemTime(new Date(Date.now() + 5 * 365 * 24 * 60 * 60 * 1000));
-
-      const future = new InMemoryBrainStore();
-      const day = new Date(Date.now() - 29 * 24 * 60 * 60 * 1000)
-        .toISOString()
-        .slice(0, 10);
-      future.insertSignal({
-        id: 'r1',
-        userId: 'u1',
-        source: 'gmail',
-        type: 'email',
-        data: { from: 'late@example.com', labels: ['INBOX'] },
-        signalTimestamp: new Date(day),
-      });
-      future.insertSignal({
-        id: 's1',
-        userId: 'u1',
-        source: 'gmail',
-        type: 'email',
-        data: { from: 'me@example.com', to: 'late@example.com', labels: ['SENT'] },
-        signalTimestamp: new Date(day),
-      });
-
-      expect(future.computeBidirectionalThreadCounts('u1', 90).get('late@example.com')).toBe(1);
-    });
-  });
-});
+  },
+);
