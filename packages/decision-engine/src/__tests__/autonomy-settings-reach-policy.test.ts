@@ -180,7 +180,7 @@ function emailCandidate(): CandidateAction {
     reversible: true,
     confidence: 'high' as CandidateAction['confidence'],
     reasoning: 'routine',
-    provenance: 'user_authored',
+    provenance: 'user_originated',
   };
 }
 
