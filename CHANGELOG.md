@@ -1,5 +1,21 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.102.0] - 2026-08-27
+
+### Added
+
+- **A deck-style page on the GitHub Pages site (`docs/deck.html`).** 22 full-viewport slides at `https://jayzalowitz.github.io/skytwin/deck.html`, built on the same tokens as `docs/index.html` so the Pages site reads as one product. Structure is claim-then-gate: every "it acts" slide is immediately paid for by the mechanism that constrains it, and each claim-and-gate slide carries a collapsible source block citing the file and line range the claim came from (the citations are links into `blob/main`). Keyboard-navigable (arrows/space/Home/End with a Contents overlay that is a real focus-trapping dialog), works as a plain scrolling page with JS off, deep-linkable per slide, and prints to a readable handout. Self-contained: no build step, no framework, and zero third-party subresources — the fonts fall back to the system stack exactly as the sibling pages do, which is what keeps the page's own "no CDN, no third-party anything" claim true.
+- **`docs/index.html` links the deck** from the nav and the footer, and `README.md` adds it to the documentation table.
+
+### Fixed
+
+- **Every screenshot on the published Pages site was 404ing.** `docs/_config.yml` listed `screenshots/` under Jekyll's `exclude:`, which removes a path from the built site entirely rather than merely declining to render it as a page — so `https://jayzalowitz.github.io/skytwin/screenshots/briefing.png` returned 404 in production and the homepage hero image and the demo page's captures had been silently broken. Removed from the exclude list, with a comment explaining why the directory must not go back in.
+- **The at-rest-encryption overclaim, found independently here and in [#612](https://github.com/jayzalowitz/skytwin/pull/612).** Tracing it for the deck turned up the same defect #612 was fixing in parallel: `docs/privacy.html` asserted that preferences, twin profiles and memory pages were envelope-encrypted and that a stolen or imaged disk would be "unreadable without your passphrase." It is not true in the shipped build — `twin-repository-adapter.ts` initialises `vaultKeyProvider` to `null`, its only setter has no production caller (the repo's own test comments it `// default: feature off`), `resolveKey` therefore returns plaintext mode, and `twin_profiles` / `brain_pages` have no encryption path at all. The OAuth-token path was equally unreached: tokens are INSERTed plaintext by `oauth-repository.ts`, and the `DbTokenStore` upgrade runs only in the worker, wired to a `KeyCache` nothing populates — which `apps/worker/src/index.ts` already said in a comment. Open issue [#374](https://github.com/jayzalowitz/skytwin/issues/374) tracked it the whole time; the policy was contradicting our own backlog. **#612's rewrite is the one that ships** — it is more thorough than the version drafted here (a summary-level warning, a full-disk-encryption callout, and separate OAuth / three-tables sections), so this branch takes it wholesale and keeps only the fix below, which #612 did not cover.
+- **`docs/architecture-philosophy.md` carried the same overclaim.** Its fixed-rails list asserted "Authentication and OAuth token storage: envelope-encrypted at rest, never logged in plaintext" as a held invariant. The logging half holds; the at-rest half does not. The entry now states the rail we intend to hold and the current status separately, so the repo no longer contradicts its own privacy policy.
+
+### Why this matters
+
+The Pages site was the project's public face and two of its load-bearing claims were wrong in opposite directions: it showed broken images to everyone who visited, and it promised an encryption guarantee the code does not deliver. The deck exists to make the safety argument legible, which only works if the pages around it are accurate.
 ## [Unreleased] — CI unblock
 
 ### Fixed

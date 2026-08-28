@@ -91,7 +91,17 @@ These are non-negotiable, deterministic, and only change via deploy:
 - User-set absolute spend ceilings (per-action, daily, monthly)
 - Audit log integrity: every action recorded immutably, audit table append-only, never hidden from user
 - MCP protocol conformance: stdio + http/sse transports per spec; tool call schemas validated; security model enforced
-- Authentication and OAuth token storage: envelope-encrypted at rest, never logged in plaintext
+- Authentication and OAuth token storage: envelope-encrypted at rest, never logged in plaintext.
+  **Status:** the "never logged in plaintext" half holds today. The at-rest half does
+  not yet: tokens are written plaintext by `saveTokenForAccount`
+  (`packages/db/src/repositories/oauth-repository.ts`), and the `DbTokenStore` lazy
+  upgrade that would encrypt them runs only in the worker, wired to a `KeyCache` that
+  nothing populates because cross-process unlock IPC isn't built — `apps/worker/src/index.ts`
+  says so in a comment ("this cache is empty … plaintext tokens flow through").
+  Preferences, twin profiles and memory pages are in the same position: migration
+  `066` added the columns, but `setPreferenceVaultKeyProvider()` has no production
+  caller, so `resolveKey` returns plaintext mode. This is a rail we intend to hold,
+  not one we hold yet; `docs/privacy.html` states the same thing to users.
 - Database schema migrations: only via deploy with explicit migration file
 
 Any future change here is a deliberate engineering decision, not a runtime option.

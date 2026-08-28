@@ -22,6 +22,17 @@ baseurl: /skytwin
 # Don't process the technical-spec / safety-model / etc. markdown
 # files as web pages — they're for reading on GitHub.
 #
+# `screenshots/` used to be in the list below and is deliberately removed.
+# `exclude` drops paths from the built site entirely — it is not a "don't
+# render this as a page" switch — so listing the directory meant every PNG
+# under /skytwin/screenshots 404'd in production. Verified 2026-08-27:
+# https://jayzalowitz.github.io/skytwin/screenshots/briefing.png returned
+# 404 while index.html returned 200. That broke the index.html hero and the
+# demo.html captures, and it would have broken every screenshot on the new
+# deck.html plus its og:image unfurl had the directory stayed excluded.
+# Do not add it back. Only *.md files that would otherwise be rendered as
+# pages belong in this list.
+#
 # `launch-readiness-report.md` and `launch-plan.md` are INTERNAL audit /
 # sequencing documents. They describe known gaps in candid engineering
 # language and are not written for, or reviewed as, public-facing statements
@@ -42,7 +53,6 @@ exclude:
   - safety-model.md
   - technical-spec.md
   - twin-mcp-protocol.md
-  - screenshots/
 
 # Don't try to install plugins; we're serving plain HTML.
 plugins: []

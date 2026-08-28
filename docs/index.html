@@ -30,6 +30,8 @@
       --danger: #F26D5B;
       --shadow: 0 24px 80px rgba(0, 0, 0, .32);
       --font-ui: "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      /* Retained deliberately for a forthcoming line the twin actually speaks
+         (DESIGN.md:57-60). Not for headings — see the note on h1 below. */
       --font-voice: "Fraunces", Georgia, serif;
       --font-data: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
     }
@@ -63,7 +65,14 @@
     /* Hero */
     .hero { padding: 4.5rem 0 1rem; }
     .eyebrow { color: var(--accent); font-weight: 600; font-size: .82rem; letter-spacing: .08em; text-transform: uppercase; margin: 0 0 1rem; }
-    h1 { font-family: var(--font-voice); font-weight: 400; font-size: clamp(2.4rem, 5vw, 3.6rem); line-height: 1.06; letter-spacing: -.01em; margin: 0 0 1.1rem; }
+    /* DESIGN.md:57-60 scopes the voice face to the twin's own words and says
+       never for UI chrome; this headline is marketing chrome. It was set in
+       --font-voice at 400, which also disagreed with deck.html — a visitor going
+       site → deck saw the serif signature demoted with no explanation. Both pages
+       now set headings in --font-ui 600 and spend the serif only on a line the
+       twin speaks. (No voice line exists on this page yet; adding one is a copy
+       decision, not a CSS one.) */
+    h1 { font-family: var(--font-ui); font-weight: 600; font-size: clamp(2.4rem, 5vw, 3.6rem); line-height: 1.06; letter-spacing: -.015em; margin: 0 0 1.1rem; }
     .lede { font-size: 1.2rem; color: var(--text-muted); max-width: 40rem; margin: 0 0 1.8rem; }
     .actions { display: flex; flex-wrap: wrap; gap: .6rem; align-items: center; }
     .actions .note { color: var(--text-dim); font-size: .85rem; margin-left: .3rem; }
@@ -117,6 +126,7 @@
       </a>
       <div class="nav-links">
         <a href="demo.html">Demo</a>
+        <a href="deck.html">Deck</a>
         <a href="connect-gmail.html">Connect Gmail</a>
         <a href="https://github.com/jayzalowitz/skytwin">GitHub</a>
         <a class="button primary" href="https://github.com/jayzalowitz/skytwin/releases/latest">Download</a>
@@ -221,6 +231,7 @@
   <footer class="wrap">
     <p>SkyTwin is an open-source personal-automation project by <a href="https://github.com/jayzalowitz">Jay Zalowitz</a>, licensed Apache 2.0.</p>
     <p>Questions, security disclosures, or feedback: <a href="https://github.com/jayzalowitz/skytwin/issues">open an issue on GitHub</a>.</p>
+    <p>Every claim on this page, paired with the code that constrains it: <a href="deck.html">read the deck</a>.</p>
   </footer>
 </body>
 </html>

@@ -19,7 +19,7 @@ These are done in code and live on the `jayzalowitz/grandma-proof-install` branc
 - **Tiered OAuth scope policy** — Calendar + identity through the bundled client (cheap verification path); Gmail through user-supplied credentials (no SkyTwin-side CASA assessment cost). `resolveRequestedScopes()` enforces the gate; 412 response from `/authorize?include=gmail` carries `help: '#/connect-gmail'` + `docs: 'https://jayzalowitz.github.io/skytwin/connect-gmail.html'`.
 - **In-app Gmail-setup wizard** at route `/#/connect-gmail` — five-step progress-bar wizard that opens GCP Console URLs in the user's existing browser, ends with paste-and-connect form.
 - **Dashboard Gmail follow-up CTA** — after Google OAuth completes, if scopes don't include Gmail, the dashboard renders a "Calendar connected — now hook up Gmail" card linking to the wizard.
-- **Public-web documentation** — `https://jayzalowitz.github.io/skytwin/{index,privacy,terms,connect-gmail}.html`. github.io is auto-verified for Google's brand-verification checks.
+- **Public-web documentation** — `https://jayzalowitz.github.io/skytwin/{index,privacy,terms,connect-gmail,demo,deck}.html`. github.io is auto-verified for Google's brand-verification checks.
 - **OAuth consent screen branding configured** in GCP (`skytwin-492700`) — app name "SkyTwin", homepage/privacy/ToS URLs, `jayzalowitz.github.io` authorized domain, Save accepted. Publishing status switched from Testing to Production.
 - **Tracking issue [#351](https://github.com/jayzalowitz/skytwin/issues/351)** for the eventual Gmail restricted-scope CASA assessment.
 
