@@ -85,13 +85,17 @@ export function createIdleMinerRunner(config: RunnerConfig, deps: RunnerDeps = {
   const detector = deps.detector ?? new EventDrivenIdleDetector();
   const store = deps.store ?? new SnapshotFileStore(config.dataDir);
   // Posts to the local API's ingest endpoint exactly like the worker's
-  // `forwardSignalToApi` — no auth header. This process runs on the same host as
-  // the API (spawned by the desktop) and posts from localhost, so it relies on
-  // the same trust model as the worker (the API's dev/localhost auth bypass on a
-  // single-user desktop install). A hardened multi-tenant deployment would give
-  // both the worker and this process a service credential; that's a shared
-  // concern for the local-forwarding architecture, not specific to idle mining.
-  const emitter = createHttpSignalEmitter({ ingestUrl: config.ingestUrl, userId: config.userId });
+  // `forwardSignalToApi`, carrying the same per-install loopback service
+  // credential. This process runs on the same host as the API (spawned by the
+  // desktop), and a packaged build runs the API under NODE_ENV=production with
+  // the localhost auth bypass explicitly off — so the token is what makes the
+  // post succeed. When it is absent (dev, bypass on) the emitter omits the
+  // header and behaves exactly as before.
+  const emitter = createHttpSignalEmitter({
+    ingestUrl: config.ingestUrl,
+    userId: config.userId,
+    ...(config.serviceToken !== undefined ? { serviceToken: config.serviceToken } : {}),
+  });
 
   const roots = toScanRoots(expandAllowlist(config.homedir), config.userId);
   const handle = startFn({

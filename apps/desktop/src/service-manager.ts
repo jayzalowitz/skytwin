@@ -274,8 +274,33 @@ export class ServiceManager {
    * entropy and what `openssl rand -hex 32` produces.
    */
   private getOrCreateSessionSecret(): string {
+    return this.getOrCreateSecret('session-secret');
+  }
+
+  /**
+   * Read or generate the per-installation loopback service token handed to
+   * every managed child process as `SKYTWIN_SERVICE_TOKEN`.
+   *
+   * The desktop pins `NODE_ENV=production` for all children, which turns the
+   * API's localhost auth bypass OFF. Before this existed, the worker's
+   * `forwardSignalToApi()` and the idle-miner's ingest emitter posted to
+   * `/api/events/ingest` with no credential at all, so every packaged install
+   * 401'd on every signal and ingested nothing. Same mint, same file
+   * conventions as the session secret — one value covers the API (verifier)
+   * and the worker + idle-miner (presenters), because they all read the env
+   * produced by `getEnv()`.
+   */
+  private getOrCreateServiceToken(): string {
+    return this.getOrCreateSecret('service-token');
+  }
+
+  /**
+   * Shared read-or-mint for a 32-byte hex secret persisted under
+   * `<userData>/secrets/<name>` with owner-only (0600) permissions.
+   */
+  private getOrCreateSecret(name: string): string {
     const secretsDir = join(app.getPath('userData'), 'secrets');
-    const secretFile = join(secretsDir, 'session-secret');
+    const secretFile = join(secretsDir, name);
     if (existsSync(secretFile)) {
       const existing = readFileSync(secretFile, 'utf-8').trim();
       if (existing.length >= 32) return existing;
@@ -320,6 +345,14 @@ export class ServiceManager {
       // API refuses to start in NODE_ENV=production without this; auto-
       // generate per-install. Persisted across launches.
       SESSION_SECRET: process.env['SESSION_SECRET'] || this.getOrCreateSessionSecret(),
+      // Pinned AFTER the `...process.env` spread on purpose: a packaged build
+      // must never inherit a developer's shell bypass. Real auth, always.
+      SKYTWIN_DEV_AUTH_BYPASS: 'false',
+      // Loopback service credential. The API verifies it; the worker and the
+      // idle-miner present it on `/api/events/ingest`. Without it, a packaged
+      // install (NODE_ENV=production, bypass off) 401s every ingest POST.
+      SKYTWIN_SERVICE_TOKEN:
+        process.env['SKYTWIN_SERVICE_TOKEN'] || this.getOrCreateServiceToken(),
     };
   }
 

@@ -15,6 +15,13 @@ export interface RunnerConfig {
   ingestUrl: string;
   dataDir: string;
   homedir: string;
+  /**
+   * Loopback service credential for `/api/events/ingest`. Optional because a
+   * dev API with the localhost auth bypass on accepts unauthenticated posts;
+   * in a packaged build the desktop always sets `SKYTWIN_SERVICE_TOKEN` and
+   * without it every mined signal 401s.
+   */
+  serviceToken?: string;
 }
 
 export type ParseResult =
@@ -60,5 +67,20 @@ export function parseRunnerConfig(env: Record<string, string | undefined>): Pars
     return { ok: false, error: 'home directory could not be resolved (set SKYTWIN_IDLE_MINER_HOME or HOME/USERPROFILE)' };
   }
 
-  return { ok: true, config: { userId, ingestUrl, dataDir, homedir } };
+  // Not fail-closed: a missing token is a legitimate dev configuration (the
+  // API's localhost bypass). Refusing to start would break `pnpm dev`, and the
+  // failure mode with a bypass-less API is a loud 401 per signal, not silent
+  // over-permission.
+  const serviceToken = trimmed(env, 'SKYTWIN_SERVICE_TOKEN');
+
+  return {
+    ok: true,
+    config: {
+      userId,
+      ingestUrl,
+      dataDir,
+      homedir,
+      ...(serviceToken !== undefined ? { serviceToken } : {}),
+    },
+  };
 }
