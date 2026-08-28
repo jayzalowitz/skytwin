@@ -21,6 +21,13 @@ baseurl: /skytwin
 
 # Don't process the technical-spec / safety-model / etc. markdown
 # files as web pages — they're for reading on GitHub.
+#
+# `launch-readiness-report.md` and `launch-plan.md` are INTERNAL audit /
+# sequencing documents. They describe known gaps in candid engineering
+# language and are not written for, or reviewed as, public-facing statements
+# about the product. Publishing them alongside privacy.html put a
+# contradicting account of the same facts on the same origin. Keep them
+# GitHub-only.
 exclude:
   - architecture-philosophy.md
   - cockroach-architecture.md
@@ -28,6 +35,8 @@ exclude:
   - dxt-transfer.md
   - evals.md
   - ironclaw-integration.md
+  - launch-plan.md
+  - launch-readiness-report.md
   - memory-swap.md
   - product-spec.md
   - safety-model.md
