@@ -1,5 +1,26 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.102.0] - 2026-08-27
+
+### Added
+
+- **A deck-style page on the GitHub Pages site (`docs/deck.html`).** 22 full-viewport slides at `https://jayzalowitz.github.io/skytwin/deck.html`, built on the same tokens as `docs/index.html` so the Pages site reads as one product. Structure is claim-then-gate: every "it acts" slide is immediately paid for by the mechanism that constrains it, and each claim-and-gate slide carries a collapsible source block citing the file and line range the claim came from (the citations are links into `blob/main`). Keyboard-navigable (arrows/space/Home/End with a Contents overlay that is a real focus-trapping dialog), works as a plain scrolling page with JS off, deep-linkable per slide, and prints to a readable handout. Self-contained: no build step, no framework, and zero third-party subresources — the fonts fall back to the system stack exactly as the sibling pages do, which is what keeps the page's own "no CDN, no third-party anything" claim true.
+- **`docs/index.html` links the deck** from the nav and the footer, and `README.md` adds it to the documentation table.
+
+### Fixed
+
+- **Every screenshot on the published Pages site was 404ing.** `docs/_config.yml` listed `screenshots/` under Jekyll's `exclude:`, which removes a path from the built site entirely rather than merely declining to render it as a page — so `https://jayzalowitz.github.io/skytwin/screenshots/briefing.png` returned 404 in production and the homepage hero image and the demo page's captures had been silently broken. Removed from the exclude list, with a comment explaining why the directory must not go back in.
+- **`docs/privacy.html` claimed at-rest encryption that is not switched on.** The policy asserted that preferences, twin profiles and memory pages were envelope-encrypted and that "if your laptop is stolen or your disk is imaged, the contents of your memory and preferences are unreadable without your passphrase." In the shipped build that is not true, and the same is true of the OAuth-token path the policy also claimed:
+  - `packages/db/src/adapters/twin-repository-adapter.ts` initialises `vaultKeyProvider` to `null`, and its only setter (`setPreferenceVaultKeyProvider`) has no production caller — the repo's own test comments the default as `// default: feature off`. With no provider, `vault-helper.ts`'s `resolveKey` resolves to `plaintext` mode, so every preference read and write hits the plaintext column.
+  - `twin_profiles` and `brain_pages` have no encryption code path at all; only migration 066's columns exist.
+  - OAuth tokens are INSERTed plaintext by `oauth-repository.ts`, and the `DbTokenStore` lazy upgrade that would encrypt them runs only in the worker, wired to a `KeyCache` nothing populates — a limitation the worker source already documents in a comment.
+
+  The section is rewritten to state exactly what has shipped (the AES-256-GCM + scrypt machinery, the helper, the migration) and exactly what is not wired, and the effective date is updated. This is the privacy policy backing an active Google OAuth verification, so the overclaim was a real liability rather than a documentation nit. **No code behaviour changed — this release corrects the description, not the implementation.** Turning the encryption on is still the 0.7 item.
+
+### Why this matters
+
+The Pages site was the project's public face and two of its load-bearing claims were wrong in opposite directions: it showed broken images to everyone who visited, and it promised an encryption guarantee the code does not deliver. The deck exists to make the safety argument legible, which only works if the pages around it are accurate.
+
 ## [0.6.101.0] - 2026-07-06
 
 ### Added

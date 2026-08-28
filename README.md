@@ -394,6 +394,7 @@ Trust is **domain-specific**. You might be at `moderate_autonomy` for email but 
 
 | Document | What's Inside |
 |----------|---------------|
+| [The Deck](https://jayzalowitz.github.io/skytwin/deck.html) | 22 slides: every capability claim paired with the mechanism that constrains it. Each claim-and-gate slide carries a collapsible source block citing the file and lines it came from; the "why now" and positioning slides cite external sources instead, and three narrative slides carry no citation block ([source](./docs/deck.html)) |
 | [Product Spec](./docs/product-spec.md) | Vision, target user, operating principles, example workflows |
 | [Technical Spec](./docs/technical-spec.md) | Architecture, data flow, API endpoints, database schema |
 | [Safety Model](./docs/safety-model.md) | Threat model, trust tiers, defense layers, safety philosophy |

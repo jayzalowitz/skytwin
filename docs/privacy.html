@@ -29,7 +29,7 @@
   <div class="wrap">
     <nav><a href="index.html">← Back to SkyTwin</a></nav>
     <h1>Privacy Policy</h1>
-    <p class="meta">Effective: 2026-06-24. SkyTwin is an open-source personal automation project. This policy describes how the SkyTwin desktop app handles Google user data accessed via Google API scopes.</p>
+    <p class="meta">Effective: 2026-08-27. SkyTwin is an open-source personal automation project. This policy describes how the SkyTwin desktop app handles Google user data accessed via Google API scopes.</p>
 
     <div class="callout">
       <strong>Summary:</strong> SkyTwin runs entirely on your computer. By default — using the built-in on-device language model — your Google data (emails, calendar events, profile information) never leaves your machine. We do not operate servers that hold your user data; the SkyTwin developers cannot access it. The one exception is opt-in: if <em>you</em> enable a cloud AI provider (Anthropic, OpenAI, or Google AI) in Settings for sharper reasoning, the content of each decision SkyTwin reasons about is sent to that provider for processing — see <a href="#ai-providers">AI providers</a> below. Nothing is shared with a cloud provider unless you turn it on.
@@ -64,10 +64,12 @@
       <li>Windows: <code>%LOCALAPPDATA%\SkyTwin\crdb-data\</code></li>
       <li>Linux: <code>~/.local/share/SkyTwin/crdb-data/</code></li>
     </ul>
-    <p>OAuth refresh tokens and any other sensitive credentials are encrypted at rest using AES-256-GCM with per-user keys derived via scrypt; the implementation lives in the <code>@skytwin/credential-vault</code> package on GitHub.</p>
-    <h3>Memory and preferences are encrypted at rest</h3>
-    <p>Beyond credentials, SkyTwin envelope-encrypts the most sensitive user-derived content at rest in the local database, reusing the same AES-256-GCM + scrypt machinery: your <strong>learned preferences</strong> (the <code>preferences</code> table), your <strong>twin profile</strong> (the <code>twin_profiles</code> table — inferences, communication style, risk tolerance, spend norms, routines, domain heuristics), and the <strong>textual memory</strong> the twin extracts from your correspondence (the <code>brain_pages</code> table — titles, body content, and metadata). The encryption key is derived from your passphrase via scrypt and never leaves your device. If your laptop is stolen or your disk is imaged, the contents of your memory and preferences are unreadable without your passphrase.</p>
-    <p>Two derived fields are intentionally left unencrypted so on-device search stays fast: the full-text search index (<code>content_tsv</code>) and the semantic vector (<code>embedding</code>) computed from each memory page. A stolen disk could reveal <em>which words appear</em> in a memory page, but not the readable body, the relationships, or the surrounding context. This is a deliberate v0.7 trade-off, revisited in a future release. Encryption activates once you set a vault passphrase; existing data is migrated lazily on next access, and the master-key derivation will move to your operating-system keychain in a follow-up.</p>
+    <h3>At-rest encryption: what has shipped, and what is not switched on</h3>
+    <p>SkyTwin has an at-rest encryption mechanism — AES-256-GCM with a per-user key derived from a vault passphrase via scrypt, a fresh 96-bit initialisation vector for every value encrypted, and a derived key that is held only in memory (a one-hour in-process cache) and never written to disk. The implementation is the <code>@skytwin/credential-vault</code> package, the column helper at <code>packages/db/src/lib/vault-helper.ts</code>, and migration <code>066-encrypt-high-value-tables.sql</code>, all readable on GitHub. What follows is where that mechanism is actually applied in the build you can install today. We would rather state this plainly than let you discover it from the schema.</p>
+    <p><strong>OAuth tokens.</strong> Google access and refresh tokens have a working encrypted-at-rest path, but it is not reached end to end yet. Tokens are first written to the <code>oauth_tokens</code> table in plaintext when you connect your account; a row is upgraded to its encrypted columns (and the plaintext columns set to <code>NULL</code>) only when a process holding your unlocked vault key next reads it. Today that upgrade runs only in the background worker process, and the worker cannot see the key you unlock in the app — they are separate processes and the cross-process handoff has not been built. The source file says so in a comment. Until it ships, your OAuth tokens sit in the local database unencrypted, protected by your operating system's file permissions and whatever full-disk encryption you have enabled, not by SkyTwin's.</p>
+    <p><strong>Preferences, twin profile, and memory pages.</strong> The three highest-value tables — your <strong>learned preferences</strong> (the <code>preferences</code> table), your <strong>twin profile</strong> (the <code>twin_profiles</code> table — inferences, communication style, risk tolerance, spend norms, routines, domain heuristics), and the <strong>textual memory</strong> the twin extracts from your correspondence (the <code>brain_pages</code> table — titles, body content, and metadata) — are designed for envelope encryption with the same machinery, and the encrypted columns exist in your database because migration 066 has run. The wiring has not shipped. The preference read/write path accepts a key provider, but no production code supplies one: <code>setPreferenceVaultKeyProvider()</code> is called only from this repository's own tests, and with no provider set the helper resolves to plaintext mode, so every preference read and write operates on the plaintext column. The <code>twin_profiles</code> and <code>brain_pages</code> tables have no encryption code path at all — only the columns exist. <strong>So in the shipped build, your preferences, your twin profile and your memory pages are written to the local database in plaintext.</strong> Turning this on is planned for 0.7, together with moving the master-key derivation into your operating-system keychain.</p>
+    <p>Two derived fields will stay unencrypted even after that lands, so on-device search stays fast: the full-text search index (<code>content_tsv</code>) and the semantic vector (<code>embedding</code>) computed from each memory page. That means that even once the bodies are encrypted, someone with your disk could still learn <em>which words appear</em> in a memory page, though not the readable body, the relationships, or the surrounding context. It is a deliberate trade-off, and it is revisited in a later release.</p>
+    <p>None of the above changes where your data lives. It is on your computer either way, and no copy of it exists anywhere else.</p>
     <p>No telemetry, no analytics, no error reporting service sends Google user data, derived data, or identifying information to skytwin.dev, the SkyTwin developers, Google Cloud, or any other server.</p>
 
     <h2 id="ai-providers">Data sharing &amp; transfers</h2>
@@ -84,7 +86,7 @@
     <p>We do not sell user data. We cannot sell user data — we do not possess it.</p>
 
     <h2>Human access to Google user data</h2>
-    <p>The SkyTwin development team has no operational mechanism to read your Google user data. The data lives on your device, encrypted credentials included. The only humans who can read it are:</p>
+    <p>The SkyTwin development team has no operational mechanism to read your Google user data. The data lives on your device, credentials included. The only humans who can read it are:</p>
     <ul>
       <li>You, by opening the SkyTwin dashboard or directly querying your local CockroachDB instance.</li>
       <li>Anyone with administrator access to your computer, subject to your operating system's standard access controls.</li>
@@ -117,7 +119,7 @@
     <p>Privacy questions, security disclosures, or data-handling concerns: open an issue at <a href="https://github.com/jayzalowitz/skytwin/issues">github.com/jayzalowitz/skytwin/issues</a> or, for security-sensitive matters, follow the disclosure process described in <a href="https://github.com/jayzalowitz/skytwin/blob/main/SECURITY.md">SECURITY.md</a>.</p>
 
     <footer>
-      <p>Last updated: 2026-06-24.</p>
+      <p>Last updated: 2026-08-27.</p>
       <p>Source for this page: <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/privacy.html">docs/privacy.html</a> in the SkyTwin repository.</p>
     </footer>
   </div>

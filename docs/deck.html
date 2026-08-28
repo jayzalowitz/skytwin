@@ -1,0 +1,1901 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SkyTwin — the deck: every claim, and the mechanism that constrains it</title>
+  <meta name="description" content="Twenty-two slides on SkyTwin, an open-source local-first digital twin. Every capability claim is followed by the mechanism that limits it: provenance-gated actions, autonomy earned in published increments with no automatic path to full autopilot, spend structurally off in the shipped build, a correction control on every row, and no server anywhere in the path.">
+  <link rel="canonical" href="https://jayzalowitz.github.io/skytwin/deck.html">
+  <meta property="og:title" content="SkyTwin — the deck">
+  <meta property="og:description" content="An agent you let into your inbox is only adoptable if its refusals are as legible as its actions. Twenty-two slides, each claim paired with the code that constrains it.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://jayzalowitz.github.io/skytwin/deck.html">
+  <!-- The unfurl image is a page this deck already ships, served from the same
+       origin. It resolves only because docs/_config.yml no longer excludes the
+       screenshots directory from the Jekyll build; if that exclude ever comes
+       back, this 404s along with the index.html hero. -->
+  <meta property="og:image" content="https://jayzalowitz.github.io/skytwin/screenshots/briefing.png">
+  <meta property="og:image:alt" content="The SkyTwin briefing page: a headline reading “2 things need you.” above a counter row and two to-do rows.">
+  <meta name="twitter:card" content="summary_large_image">
+  <!-- No external font fetch, and none of the three design-system typefaces
+       load here. DESIGN.md names Fraunces / Geist / Geist Mono; this page lists
+       them first and falls through to the system stack, so every reader sees
+       the platform sans, a serif (Georgia) for the twin's voice, and the
+       platform mono for data. That is the trade we chose — a serif signature is
+       not worth a third-party request on a doc set whose whole claim is that
+       nothing leaves your machine, and it keeps slide "There is no SkyTwin
+       server" literally true. What survives the fallback is the register
+       change: serif against sans. Same token block as index.html / demo.html so
+       the Pages site reads as one product. No CDN, no analytics, no
+       third-party anything on this page. -->
+  <style>
+    :root {
+      --bg: #0E0F13;
+      --surface: #16181F;
+      --elevated: #1D2029;
+      --border: #272B38;
+      --border-strong: #363B4C;
+      --text: #ECEDF1;
+      --text-muted: #9CA0AE;
+      --text-dim: #5E6374;
+      --accent: #7C72E8;
+      --accent-hover: #9A92F2;
+      /* Iris as INK. --accent stays #7C72E8 for fills and 2px edges (the mark,
+         per DESIGN.md line 53); --accent-text is the same hue darkened only
+         where iris has to be read as text, because #7C72E8 measures 3.7:1 on
+         the light ground. --accent-strong is the button fill that has to carry
+         a white label at 4.5:1 in both modes. */
+      --accent-text: #7C72E8;
+      --accent-strong: #635AD4;
+      --accent-strong-hover: #564DC2;
+      --safe: #46C08A;
+      --danger: #F26D5B;
+      --shadow: 0 24px 80px rgba(0, 0, 0, .32);
+      --font-ui: "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --font-voice: "Fraunces", Georgia, serif;
+      --font-data: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+      /* Spacing: 4px base (DESIGN.md line 73). Every gap and margin in this
+         file resolves to one of these; no ad-hoc rem values. */
+      --sp-1: 4px;
+      --sp-2: 8px;
+      --sp-3: 12px;
+      --sp-4: 16px;
+      --sp-6: 24px;
+      --sp-8: 32px;
+      --sp-12: 48px;
+
+      /* Radius scale, DESIGN.md line 83: card 14 / control 8 / button 6 / pill 999. */
+      --r-card: 14px;
+      --r-control: 8px;
+      --r-button: 6px;
+      --r-pill: 999px;
+    }
+
+    /* Light mode is a derivation of the dark system, not a redesign:
+       invert the surfaces, keep the same iris accent, soften the fills.
+       DESIGN.md line 53. The three semantic hues were tuned against a #0E0F13
+       ground and do not survive the inversion — #46C08A is 2.2:1 on #FAFAFB —
+       so safe and danger get light-mode values at the same meaning, and iris
+       gets a text-only variant. Derived, not redesigned. */
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #FAFAFB;
+        --surface: #FFFFFF;
+        --elevated: #F2F3F6;
+        --border: #E2E4EA;
+        --border-strong: #C6CAD6;
+        --text: #1A1B20;
+        --text-muted: #565B6B;
+        --text-dim: #6E7383;
+        --accent-text: #5A4FCC;
+        --accent-hover: #4A3FBF;
+        --safe: #1B7F58;
+        --danger: #B8402C;
+        --shadow: 0 18px 50px rgba(20, 22, 30, .10);
+      }
+    }
+
+    * { box-sizing: border-box; }
+
+    /* scroll-behavior stays `auto` on purpose. The keyboard handler reads live
+       getBoundingClientRect() values to decide whether to scroll within the
+       current slide or jump to the next one; with smooth scrolling those reads
+       land mid-animation and each new scroll restarts the interpolation, so
+       held-down arrow keys strand the reader mid-deck (measured: 07/22 slides
+       reached at a 60ms key-repeat gap, vs 22/22 with `auto`). It also keeps
+       the deck inside DESIGN.md's 180ms motion ceiling, which a 400-600ms
+       full-viewport smooth scroll blows straight through. */
+    html {
+      scroll-behavior: auto;
+      scroll-snap-type: y proximity;
+      scroll-padding-top: 60px;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-ui);
+      font-size: 16px;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* DESIGN.md line 88: micro interactions are 120ms, ease-out. Everything
+       that changes on hover is on that clock; nothing else animates. */
+    a {
+      color: var(--accent-text); text-decoration: none;
+      transition: color 120ms ease-out;
+    }
+    a:hover { color: var(--accent-hover); }
+    code, pre, .mono { font-family: var(--font-data); }
+
+    :focus-visible {
+      outline: 2px solid var(--text);
+      outline-offset: 2px;
+      border-radius: var(--r-button);
+    }
+
+    .wrap { max-width: 960px; margin: 0 auto; padding: 0 1.5rem; width: 100%; }
+    .col { max-width: 680px; }
+
+    .skip {
+      position: absolute; left: -9999px; top: 0;
+      background: var(--surface); color: var(--text);
+      padding: var(--sp-2) var(--sp-4); border: 1px solid var(--border-strong);
+      border-radius: var(--r-button);
+      z-index: 60;
+    }
+    .skip:focus { left: var(--sp-4); top: var(--sp-2); }
+
+    /* ---------- Nav (shared with index.html) ---------- */
+    .nav {
+      border-bottom: 1px solid var(--border);
+      position: sticky; top: 0; z-index: 30;
+      background: rgba(14,15,19,.82);
+      backdrop-filter: blur(10px);
+    }
+    @media (prefers-color-scheme: light) { .nav { background: rgba(250,250,251,.86); } }
+    .nav-inner { display: flex; align-items: center; justify-content: space-between; height: 60px; gap: var(--sp-4); }
+    .brand { display: flex; align-items: center; gap: var(--sp-2); color: var(--text); font-weight: 600; }
+    /* --accent-strong, not --accent: white on #7C72E8 is 3.87:1, under AA. */
+    .brand-mark { display: grid; place-items: center; width: 28px; height: 28px; border-radius: var(--r-control); background: var(--accent-strong); color: #fff; font-weight: 700; }
+    .nav-links { display: flex; align-items: center; gap: var(--sp-6); font-size: .95rem; }
+    .nav-links a { color: var(--text-muted); }
+    .nav-links a:hover { color: var(--text); }
+    .button {
+      display: inline-block; padding: var(--sp-2) var(--sp-4); border-radius: var(--r-button);
+      border: 1px solid var(--border-strong); color: var(--text);
+      font-weight: 550; font-size: .95rem; background: transparent;
+      font-family: inherit; cursor: pointer;
+      transition: color 120ms ease-out, border-color 120ms ease-out, background-color 120ms ease-out;
+    }
+    .button:hover { color: var(--text); border-color: var(--text-muted); }
+    /* The fill is darkened from the mark's #7C72E8 so the white label clears
+       4.5:1 in both modes; the iris that means "needs you" is unchanged. */
+    .button.primary { background: var(--accent-strong); border-color: var(--accent-strong); color: #fff; }
+    .button.primary:hover { background: var(--accent-strong-hover); border-color: var(--accent-strong-hover); color: #fff; }
+
+    /* ---------- Progress + counter ---------- */
+    .progress {
+      position: fixed; top: 60px; left: 0; right: 0; height: 2px;
+      background: transparent; z-index: 29; pointer-events: none;
+    }
+    .progress-fill {
+      height: 100%; width: 0%;
+      background: var(--text-muted);
+      transition: width 180ms ease-out;
+    }
+    .counter {
+      position: fixed; right: var(--sp-4); bottom: var(--sp-4); z-index: 29;
+      font-family: var(--font-data); font-size: 11.5px; letter-spacing: .04em;
+      color: var(--text-muted);
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--r-pill); padding: var(--sp-1) var(--sp-3);
+      pointer-events: none;
+    }
+    .kbd-hint {
+      position: fixed; left: var(--sp-4); bottom: var(--sp-4); z-index: 29;
+      font-family: var(--font-data); font-size: 11.5px; color: var(--text-muted);
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--r-pill); padding: var(--sp-1) var(--sp-3);
+      pointer-events: none;
+    }
+    /* Hidden well before it can reach the content column: the reading column is
+       centred, so on a narrow desktop window the hint and the prose converge. */
+    @media (max-width: 1100px) { .kbd-hint { display: none; } }
+
+    /* ---------- Slides ---------- */
+    .slide {
+      min-height: 100vh;
+      scroll-snap-align: start;
+      display: flex; flex-direction: column; justify-content: center;
+      padding: var(--sp-12) 0 var(--sp-12);
+      border-top: 1px solid var(--border);
+    }
+    .slide:first-of-type { border-top: 0; }
+    /* Every slide takes tabindex="-1" so picking one from Contents can land focus
+       on the destination rather than leaving it on the nav button. The ring is
+       drawn inside the box — a 100vh section outlined at +2px offset puts its
+       left and right edges off-screen. */
+    .slide:focus-visible { outline-offset: -3px; }
+
+    /* No hand-maintained "NN / 14" here: the label names the section, the
+       fixed counter carries the position, and there is no count to drift when
+       a slide is split. */
+    .slide-label {
+      font-family: var(--font-data); font-size: 11.5px; letter-spacing: .06em;
+      text-transform: uppercase; color: var(--text-muted);
+      margin: 0 0 var(--sp-4);
+    }
+    h1 {
+      font-family: var(--font-ui); font-weight: 600;
+      font-size: clamp(2rem, 4.4vw, 2.75rem); line-height: 1.1;
+      letter-spacing: -.015em; margin: 0 0 var(--sp-6); max-width: 20ch;
+    }
+    h2 {
+      font-family: var(--font-ui); font-weight: 600;
+      font-size: clamp(1.6rem, 3.4vw, 2.4rem); line-height: 1.14;
+      letter-spacing: -.015em; margin: 0 0 var(--sp-4); max-width: 26ch;
+    }
+    h3 {
+      font-size: 12px; font-weight: 600; letter-spacing: .07em;
+      text-transform: uppercase; color: var(--text-muted);
+      margin: var(--sp-8) 0 var(--sp-3);
+    }
+    h3.flush { margin-top: 0; }
+    p { margin: 0 0 var(--sp-4); max-width: 680px; }
+    .lede { font-size: 1.06rem; color: var(--text-muted); }
+    .lede.strong { color: var(--text); }
+    .dim { color: var(--text-muted); }
+    /* --text-dim is the DESIGN.md tertiary token and it measures 3.20:1 on the
+       dark ground — under AA for anything that is read. So it survives in this
+       file only on marks nobody reads (the → separators, the +/− disclosure
+       glyph, the status dash). Every span that carries words — including the
+       de-emphasised cloud providers in the provider chain — is --text-muted,
+       which is 7.35:1 dark and 6.48:1 light. The recessive step is still
+       visible against --text; it is just legible now. */
+    .dimmer { color: var(--text-muted); }
+
+    /* The deck's own question, on the last slide. A named scale size, not an
+       inline one-off: 24px / 1.3 / 600. */
+    .ask {
+      font-size: 1.5rem; line-height: 1.3; font-weight: 600;
+      color: var(--text); max-width: 34ch;
+    }
+
+    /* Vertical-rhythm utilities. These replace the hand-tuned inline
+       margin-top overrides; every value is on the 4px scale. */
+    .mt-0 { margin-top: 0; }
+    .mt-md { margin-top: var(--sp-4); }
+    .mt-lg { margin-top: var(--sp-6); }
+    .mb-0 { margin-bottom: 0; }
+    .mb-sm { margin-bottom: var(--sp-2); }
+
+    /* The twin's voice, and only the twin's. Exactly two appearances in this
+       deck — the product slide and the approvals slide — and never a slide
+       headline, never a developer's words. DESIGN.md 57-60 asks for Fraunces;
+       with no font fetch it renders Georgia for almost everyone. What survives
+       the fallback is the register change — serif against the UI sans — which
+       is the part that carries the meaning. */
+    .voice {
+      font-family: var(--font-voice); font-weight: 500;
+      font-size: clamp(1.25rem, 2.4vw, 1.5625rem); line-height: 1.28;
+      color: var(--text); max-width: 34ch; margin: 0 0 var(--sp-4);
+    }
+
+    /* A source artefact quoted verbatim — a code comment, a config line. Mono,
+       because DESIGN.md line 63 scopes mono to exactly this, and left-aligned
+       in the reading column like everything else. Not the twin's voice. */
+    .quote {
+      border-left: 2px solid var(--border-strong);
+      padding: var(--sp-1) 0 var(--sp-1) var(--sp-3);
+      font-family: var(--font-data); font-size: 12.5px; line-height: 1.7;
+      color: var(--text); max-width: 62ch; margin: var(--sp-6) 0 0;
+    }
+
+    .mono, .num {
+      font-family: var(--font-data); font-size: 11.5px; line-height: 1.7;
+      letter-spacing: .01em;
+    }
+    /* Citations are the credibility mechanism, so they have to be readable:
+       --text-muted at 12px clears 4.5:1 in both modes and still sits visibly
+       under body copy. --text-dim did not (3.2:1 dark, 3.4:1 light). */
+    .src {
+      font-family: var(--font-data); font-size: 12px; line-height: 1.65;
+      color: var(--text-muted); margin-top: var(--sp-4); word-break: break-word;
+      max-width: 92ch;
+    }
+    .src a { color: var(--text-muted); text-decoration: underline; }
+
+    /* Long citation blocks collapse. The summary still signals the rigour and
+       one click still gives the proof, but a dense slide stops spending eight
+       lines on file paths. Forced open in print (see @media print) and by the
+       beforeprint handler, so nothing visible on screen is missing on paper. */
+    details.srcs { margin-top: var(--sp-6); }
+    details.srcs > summary {
+      font-family: var(--font-data); font-size: 11.5px; letter-spacing: .04em;
+      color: var(--text-muted); cursor: pointer; list-style: none;
+      display: inline-flex; align-items: center; gap: var(--sp-2);
+      border: 1px solid var(--border); border-radius: var(--r-button);
+      padding: var(--sp-1) var(--sp-3);
+      transition: color 120ms ease-out, border-color 120ms ease-out;
+    }
+    details.srcs > summary::-webkit-details-marker { display: none; }
+    details.srcs > summary::after { content: "+"; color: var(--text-dim); }
+    details.srcs[open] > summary::after { content: "–"; }
+    details.srcs > summary:hover { color: var(--text); border-color: var(--border-strong); }
+    details.srcs > .src { margin-top: var(--sp-3); }
+
+    /* Full-width hairline rows. No card grids anywhere in this deck.
+       Every row-shaped component in this file — .row, .step, table.data td,
+       .status li, .cmd — is on the same 13px vertical rhythm (DESIGN.md line
+       75), so five list types on adjacent slides read as one system. */
+    .rows { border-top: 1px solid var(--border); margin: var(--sp-4) 0 0; }
+    .row { border-bottom: 1px solid var(--border); padding: 13px 0; }
+    .row:last-child { border-bottom: 0; }
+    /* Independent, numbered facts pair up two-across so a list of them costs
+       one screen instead of two. Sequential prose never uses this. */
+    .two-up { display: grid; grid-template-columns: 1fr 1fr; column-gap: var(--sp-8); }
+    .two-up > p { margin-bottom: 0; }
+    @media (max-width: 860px) { .two-up { grid-template-columns: 1fr; } .two-up > p { margin-bottom: var(--sp-4); } }
+    .rows.cols2 { display: grid; grid-template-columns: 1fr 1fr; column-gap: var(--sp-8); }
+    .rows.cols2 .row.span2 { grid-column: 1 / -1; }
+    @media (max-width: 860px) {
+      .rows.cols2 { grid-template-columns: 1fr; }
+    }
+    .row-t { font-weight: 550; margin: 0 0 var(--sp-1); }
+    .row-b { margin: 0; color: var(--text-muted); font-size: .96rem; max-width: 72ch; }
+    .row-n {
+      font-family: var(--font-data); font-size: 11.5px; color: var(--text-muted);
+      display: inline-block; margin-right: var(--sp-3);
+    }
+
+    .panel {
+      background: var(--elevated); border: 1px solid var(--border);
+      border-radius: var(--r-card); padding: var(--sp-6); margin: var(--sp-6) 0 0;
+    }
+    .panel.tight { padding: var(--sp-4); }
+
+    .split { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-6); align-items: start; margin-top: var(--sp-4); }
+    .split.wide-left { grid-template-columns: 1.35fr 1fr; }
+    .split.wide-right { grid-template-columns: 1fr 1.35fr; }
+
+    /* ---------- Screenshot handling ---------- */
+    figure { margin: 0; }
+    /* A full-bleed screenshot buys nothing once it is already legible, and it
+       costs a third of a slide in height. Figures that carry app UI sit in the
+       same 680px reading column as the prose — still ~0.8 of native scale,
+       which is where the crops stay readable. */
+    figure.col-fig { max-width: 680px; }
+    .shot {
+      width: 100%; display: block;
+      border: 1px solid var(--border); border-radius: var(--r-card);
+      box-shadow: var(--shadow);
+    }
+    figcaption {
+      font-family: var(--font-data); font-size: 11.5px; line-height: 1.7;
+      color: var(--text-muted); margin-top: var(--sp-2);
+    }
+    /* Crop component. --sx/--sy/--sw/--sh are source-pixel coordinates into a
+       1280px-wide capture. Pure CSS so it survives JS-off and print, and so no
+       derivative image files are added to the repo. Used to keep the author's
+       local filesystem path and the raw-JSON preference row off these slides. */
+    .crop {
+      position: relative; overflow: hidden;
+      aspect-ratio: calc(var(--sw) / var(--sh));
+      /* The frame is a box-shadow, not a border, on purpose: a border would
+         shrink the padding box that the absolute offsets below resolve
+         against, and the horizontal (width) and vertical (top) percentages
+         would then resolve at slightly different scales, shifting the crop a
+         couple of pixels. No border = both scales identical = exact crop. */
+      border: 0; border-radius: var(--r-card);
+      box-shadow: 0 0 0 1px var(--border), var(--shadow);
+      background: var(--surface);
+      /* The sources are 1x captures of a 1280px viewport, so their UI text is
+         already at 1:1 — upscaling past --sw only adds blur. */
+      max-width: calc(var(--sw) * 1px);
+    }
+    .crop img {
+      position: absolute; display: block; max-width: none;
+      width: calc(1280 / var(--sw) * 100%);
+      left: calc(var(--sx) / var(--sw) * -100%);
+      top: calc(var(--sy) / var(--sh) * -100%);
+    }
+
+    /* ---------- The ten rows (slide: the problem) ---------- */
+    .stack { display: flex; flex-direction: column; gap: var(--sp-2); }
+    .stack-row {
+      height: 44px; border: 1px solid var(--border); border-radius: var(--r-control);
+      background: var(--surface);
+    }
+    .stack-row.needs { border-left: 2px solid var(--accent); }
+
+    /* ---------- Survey bars (slide: why now) ----------
+       Three things were wrong here and all three are fixed:
+       (1) .bar-fill was an inline <span>, so width/height did not apply and
+           the three tracks rendered empty. It is display:block now.
+       (2) The fill was --accent. These are a third party's survey
+           percentages; they have nothing to do with "needs you / act here",
+           and DESIGN.md line 50 says the accent is rare and means one thing.
+           The fill is --text-muted; the accent is not spent here.
+       (3) The track ran the full column width, where an 11-point spread is
+           invisible. It is capped so 57 / 48 / 46 are actually distinguishable,
+           and the numerals carry the data either way. */
+    .bars { margin-top: var(--sp-3); }
+    .bar-row {
+      display: grid;
+      grid-template-columns: 3.4rem minmax(0, 300px);
+      column-gap: var(--sp-3); row-gap: var(--sp-1);
+      align-items: center; margin: 0 0 var(--sp-6);
+    }
+    .bar-row:last-child { margin-bottom: 0; }
+    .bar-pct {
+      grid-column: 1; grid-row: 1 / span 2; align-self: center;
+      font-family: var(--font-data); font-size: 12px; color: var(--text);
+    }
+    .bar-track {
+      grid-column: 2; grid-row: 1;
+      height: 4px; background: var(--border); border-radius: var(--r-pill); overflow: hidden;
+    }
+    .bar-fill { display: block; height: 100%; background: var(--text-muted); border-radius: var(--r-pill); }
+    .bar-label { grid-column: 2; grid-row: 2; font-size: .95rem; line-height: 1.35; color: var(--text-muted); }
+
+    /* ---------- Steps (slide: the verdict) ---------- */
+    .steps { border-top: 1px solid var(--border); margin-top: var(--sp-4); }
+    .step {
+      display: grid; grid-template-columns: 2.2rem 1fr; gap: var(--sp-3);
+      border-bottom: 1px solid var(--border); padding: 13px 0;
+      font-size: .98rem;
+    }
+    .step .n { font-family: var(--font-data); font-size: 11.5px; color: var(--text-muted); padding-top: .18rem; }
+    /* The one accented step is the one that routes to a person. */
+    .step.gate { border-left: 2px solid var(--accent); padding-left: var(--sp-3); }
+    .step.gate .n { color: var(--accent-text); }
+    .chain {
+      display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2);
+      font-family: var(--font-data); font-size: 11.5px; color: var(--text);
+      margin-top: var(--sp-6);
+    }
+    /* The arrow carries the "promotes to" relation, so it is content, not
+       decoration: --text-dim is 3.2:1 at 11.5px. */
+    .chain .arrow { color: var(--text-muted); }
+
+    /* ---------- Tables ---------- */
+    table.data {
+      width: 100%; border-collapse: collapse;
+      font-family: var(--font-data); font-size: 11.5px; line-height: 1.7;
+      margin-top: var(--sp-4);
+    }
+    table.data th, table.data td {
+      text-align: left; padding: 13px var(--sp-3) 13px 0;
+      border-bottom: 1px solid var(--border); vertical-align: top;
+    }
+    table.data caption.src { text-align: left; margin: 0 0 var(--sp-1); }
+    table.data th { color: var(--text-muted); font-weight: 500; letter-spacing: .04em; text-transform: uppercase; }
+    /* Row headers are labels, not column shouting: the escalation matrix's left
+       column is a <th scope="row"> so the confirmation count in the second cell
+       has something to be the answer TO, but it reads as a sentence. */
+    table.data th[scope="row"] {
+      color: var(--text); font-weight: 500; letter-spacing: 0; text-transform: none;
+    }
+    /* The em dash in the missing promotion row and the row it sits in are read,
+       not decorative — the whole point of that row is that a reader takes in the
+       three dashes. --text-muted, not --text-dim. */
+    table.data td.none { color: var(--text-muted); }
+    table.data tr.missing td { color: var(--text-muted); }
+    table.data td.ui { font-family: var(--font-ui); font-size: .95rem; }
+
+    /* ---------- Status lists ----------
+       One list per slide, running the full reading column at a capped measure
+       — side by side they were 460px wide and 1,390px tall, which is where the
+       ragged-column gap came from. Both lists carry a marker at the same
+       indent so they read as one system across the two slides: a --safe dot
+       for what works, a neutral dash for what doesn't. */
+    .status { margin-top: var(--sp-4); }
+    .status li { max-width: 96ch; }
+    .status ul { list-style: none; margin: var(--sp-2) 0 0; padding: 0; }
+    .status li {
+      border-bottom: 1px solid var(--border); padding: 13px 0 13px 1.3rem;
+      font-size: .95rem; color: var(--text-muted); position: relative;
+    }
+    .status li:last-child { border-bottom: 0; }
+    .status li::before {
+      content: ""; position: absolute; left: 0; top: 1.3rem;
+      width: 7px; height: 2px; background: var(--text-dim);
+    }
+    .status .works li::before {
+      top: 1.25rem; width: 6px; height: 6px; border-radius: var(--r-pill); background: var(--safe);
+    }
+    .status strong { color: var(--text); font-weight: 550; }
+
+    /* ---------- Code / commands ---------- */
+    pre.code {
+      background: var(--elevated); border: 1px solid var(--border); border-radius: var(--r-card);
+      padding: var(--sp-4); overflow-x: auto;
+      font-size: 12.5px; line-height: 1.85; margin: var(--sp-4) 0 0;
+    }
+    .cmd-list { margin: var(--sp-4) 0 0; border: 1px solid var(--border); border-radius: var(--r-card); background: var(--elevated); overflow: hidden; }
+    .cmd-list.cols2 { display: grid; grid-template-columns: 1fr 1fr; }
+    .cmd-list.cols2 .cmd:nth-child(odd) { border-right: 1px solid var(--border); }
+    .cmd-list.cols2 .cmd:nth-last-child(-n+2) { border-bottom: 0; }
+    @media (max-width: 860px) {
+      .cmd-list.cols2 { grid-template-columns: 1fr; }
+      .cmd-list.cols2 .cmd:nth-child(odd) { border-right: 0; }
+      .cmd-list.cols2 .cmd:nth-last-child(2) { border-bottom: 1px solid var(--border); }
+    }
+    .cmd { border-bottom: 1px solid var(--border); padding: 13px var(--sp-4); }
+    .cmd:last-child { border-bottom: 0; }
+    .cmd-note { font-family: var(--font-data); font-size: 11.5px; color: var(--text-muted); margin: 0 0 var(--sp-1); }
+    .cmd-line { display: flex; align-items: flex-start; gap: var(--sp-3); }
+    .cmd-line code { font-size: 12.5px; line-height: 1.7; color: var(--text); flex: 1; word-break: break-all; }
+    /* min-width so "copy" → "copied" (or "select it") does not resize the
+       button and reflow the command next to it at the exact moment the reader
+       is checking that the copy worked. */
+    .copy {
+      flex: 0 0 auto; min-width: 5.25rem; text-align: center;
+      font-family: var(--font-data); font-size: 11px;
+      color: var(--text-muted); background: transparent;
+      border: 1px solid var(--border); border-radius: var(--r-button);
+      padding: var(--sp-1) var(--sp-2); cursor: pointer;
+      transition: color 120ms ease-out, border-color 120ms ease-out, background-color 120ms ease-out;
+    }
+    .copy:hover { color: var(--text); border-color: var(--border-strong); }
+
+    /* ---------- Accents used sparingly, and only with meaning ---------- */
+    .safe { color: var(--safe); }
+    .accent { color: var(--accent-text); }
+    .danger { color: var(--danger); }
+    .callout {
+      display: inline-block; font-family: var(--font-data); font-size: 11.5px;
+      border-left: 2px solid var(--accent); padding: var(--sp-1) 0 var(--sp-1) var(--sp-2);
+      color: var(--text); margin-top: var(--sp-3);
+    }
+    .callout-neutral {
+      display: inline-block; font-family: var(--font-data); font-size: 11.5px;
+      border-left: 2px solid var(--border-strong); padding: var(--sp-1) 0 var(--sp-1) var(--sp-2);
+      color: var(--text-muted); margin-top: var(--sp-3);
+    }
+    .cell-row { display: flex; flex-wrap: wrap; align-items: stretch; gap: var(--sp-2); margin-top: var(--sp-4); }
+    .cell {
+      border: 1px solid var(--border); border-radius: var(--r-control); background: var(--surface);
+      padding: 13px var(--sp-4); font-family: var(--font-data); font-size: 11.5px;
+      color: var(--text-muted); min-width: 0;
+    }
+    .cell.needs-you { border-color: var(--accent); color: var(--text); }
+    .cell-arrow { align-self: center; color: var(--text-muted); font-family: var(--font-data); font-size: 11.5px; }
+    .honest {
+      border-left: 2px solid var(--border-strong); padding: var(--sp-1) 0 var(--sp-1) var(--sp-3);
+      margin-top: var(--sp-6); color: var(--text-muted); font-size: .95rem; max-width: 70ch;
+    }
+    .honest b { color: var(--text); font-weight: 600; font-size: 12px; letter-spacing: .06em; text-transform: uppercase; display: block; margin-bottom: var(--sp-1); }
+
+    /* ---------- Index overlay (i / ?) ---------- */
+    .index-overlay {
+      position: fixed; inset: 0; z-index: 40;
+      background: var(--bg);
+      overflow-y: auto; padding: var(--sp-12) 0;
+    }
+    .index-overlay[hidden] { display: none; }
+    .index-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--sp-4); }
+    .index-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: var(--sp-3); margin-top: var(--sp-6);
+    }
+    .index-tile {
+      display: block; border: 1px solid var(--border); border-radius: var(--r-control);
+      background: var(--surface); padding: 13px var(--sp-4); color: var(--text);
+      transition: color 120ms ease-out, border-color 120ms ease-out, background-color 120ms ease-out;
+    }
+    .index-tile:hover { border-color: var(--border-strong); color: var(--text); background: var(--elevated); }
+    .index-tile .n { font-family: var(--font-data); font-size: 11.5px; color: var(--text-muted); display: block; margin-bottom: var(--sp-1); }
+    .index-tile .t { font-size: .95rem; line-height: 1.35; }
+
+    footer.deck-footer {
+      border-top: 1px solid var(--border); padding: var(--sp-8) 0 var(--sp-12);
+      color: var(--text-muted); font-size: .9rem;
+    }
+    footer.deck-footer a { color: var(--text-muted); }
+    .footer-links { display: flex; flex-wrap: wrap; gap: var(--sp-6); font-family: var(--font-data); font-size: 11.5px; margin-bottom: var(--sp-3); }
+    .actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-6); }
+
+    /* ---------- Responsive: never clip, let tall slides scroll ---------- */
+    @media (max-width: 860px) {
+      .split, .split.wide-left, .split.wide-right { grid-template-columns: 1fr; gap: var(--sp-4); }
+      .slide { min-height: auto; padding: var(--sp-12) 0; justify-content: flex-start; }
+      html { scroll-snap-type: none; }
+      /* index.html hides `a:not(.button)` here because its CTA is an <a class="button">.
+         On this page the only .button in the nav is a <button> element, which that
+         selector cannot match — so the lifted rule hid Overview, Demo AND GitHub on
+         every phone, on a deck whose closing ask is "read the source". Only the
+         redundant one goes: the brand mark to its left already links home. */
+      .nav-links a[href="index.html"] { display: none; }
+      .nav-links { gap: var(--sp-4); }
+      .counter { display: none; }
+    }
+    /* Below ~360px the wordmark plus three links overflowed the nav by 40px and
+       forced a horizontal scrollbar on the whole document; the brand square
+       still carries the link home. */
+    @media (max-width: 380px) {
+      .brand span:not(.brand-mark) { display: none; }
+      .nav-links { gap: var(--sp-3); }
+    }
+    @media (max-height: 620px) {
+      .slide { min-height: auto; justify-content: flex-start; }
+      html { scroll-snap-type: none; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; scroll-snap-type: none; }
+      *, *::before, *::after {
+        transition-duration: .01ms !important;
+        animation-duration: .01ms !important;
+        animation-iteration-count: 1 !important;
+      }
+    }
+
+    /* ---------- Print: every slide starts its own page ----------
+       Each slide begins a fresh sheet, and figures, tables and code blocks are
+       kept off page boundaries. The densest slides still run onto a second
+       sheet — 22 slides print as 29 pages — so this is a readable handout, not
+       a one-slide-per-page deck. Shrinking the type to force 1:1 was measured
+       and rejected: it bought one page and cost legibility. */
+    /* Portrait A4: the tallest page box available, so the fewest slides spill.
+       `break-after: page` guarantees every slide STARTS its own sheet. Type is
+       scaled down here rather than truncated — nothing is hidden in print that
+       is visible on screen, and the collapsed source blocks are forced open
+       below so the citations print in full. */
+    @page { size: A4 portrait; margin: 12mm 12mm; }
+    @media print {
+      /* Print pins the light tokens instead of inheriting whatever
+         prefers-color-scheme resolved to. Without this, a dark-mode reader
+         hitting Cmd-P got every sheet flooded with #0E0F13 — and
+         print-color-adjust: exact below would have forced that ink onto the
+         paper. Print is deterministic regardless of OS preference. */
+      :root {
+        --bg: #FFFFFF;
+        --surface: #FFFFFF;
+        --elevated: #F2F3F6;
+        --border: #E2E4EA;
+        --border-strong: #C6CAD6;
+        --text: #1A1B20;
+        --text-muted: #565B6B;
+        --text-dim: #4A4F5E;
+        --accent-text: #5A4FCC;
+        --safe: #1B7F58;
+        --danger: #B8402C;
+        --shadow: none;
+      }
+      html { scroll-snap-type: none; scroll-behavior: auto; }
+      body {
+        background: var(--bg); color: var(--text);
+        font-size: 9.5pt; line-height: 1.42;
+        print-color-adjust: exact; -webkit-print-color-adjust: exact;
+      }
+      .nav, .progress, .counter, .kbd-hint, .index-overlay, .skip, .copy { display: none !important; }
+
+      /* Citations print in full. The beforeprint handler sets `open` on every
+         details element (and restores it afterwards); these rules are the
+         JS-off backstop. */
+      details.srcs > summary { display: none !important; }
+      details.srcs::details-content { content-visibility: visible; block-size: auto; }
+      details.srcs > .src { display: block !important; margin-top: 0; }
+      .wrap { max-width: none; padding: 0; }
+      .col { max-width: 62ch; }
+      .slide {
+        min-height: 0; padding: 0 0 .4rem; border-top: 0;
+        break-after: page; page-break-after: always;
+        display: block;
+      }
+      .slide:last-of-type { break-after: auto; page-break-after: auto; }
+      h1 { font-size: 20pt; margin-bottom: .5rem; }
+      h2 { font-size: 17pt; margin-bottom: .5rem; }
+      h3 { font-size: 8pt; margin: .9rem 0 .35rem; }
+      .slide-label { font-size: 7.5pt; margin-bottom: .5rem; }
+      .lede { font-size: 10.5pt; }
+      .voice { font-size: 13pt; }
+      .ask { font-size: 13pt; }
+      table.data td.ui { font-size: 9pt; }
+      p { margin-bottom: .5rem; max-width: 100%; }
+      .mono, .num, .src, figcaption, .cmd-note, table.data, .cell, .callout, .callout-neutral { font-size: 7.5pt; line-height: 1.5; }
+      .quote { font-size: 8pt; margin-top: .5rem; }
+      .src, details.srcs { margin-top: .5rem; }
+      .row { padding: 7px 0; }
+      .status li { padding: 6px 0 6px 1.1rem; font-size: 8.5pt; }
+      .panel { padding: 12px 14px; margin-top: .7rem; }
+      .steps .step { padding: 5px 0; font-size: 8.5pt; }
+      pre.code, .cmd-list { font-size: 8pt; }
+      .cmd { padding: 7px 9px; }
+      .split { gap: 1rem; margin-top: .7rem; }
+      img, .crop, figure, .panel, .rows, table.data, pre.code, .cmd-list, .cmd, .row, .status li {
+        break-inside: avoid; page-break-inside: avoid;
+      }
+      img { max-width: 100%; }
+      .shot { box-shadow: none; max-height: 7cm; width: auto; margin: 0 auto; }
+      /* Crops are the tallest thing on the detail slides; without a cap they
+         push the slide past one sheet and the break lands mid-sentence. */
+      .crop { max-height: 7.5cm; }
+      .crop img { max-height: none; }
+      .crop { box-shadow: 0 0 0 1px var(--border); max-width: 100%; }
+      h1, h2, h3 { break-after: avoid; page-break-after: avoid; }
+      a { color: var(--text); }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip" href="#01-ten-things">Skip to the first slide</a>
+
+  <nav class="nav">
+    <div class="wrap nav-inner">
+      <a class="brand" href="index.html" aria-label="SkyTwin home">
+        <span class="brand-mark" aria-hidden="true">S</span><span>SkyTwin</span>
+      </a>
+      <div class="nav-links">
+        <a href="index.html">Overview</a>
+        <a href="demo.html">Demo</a>
+        <a href="https://github.com/jayzalowitz/skytwin">GitHub</a>
+        <button class="button" type="button" data-action="toggle-index" aria-expanded="false" aria-controls="deck-index">Contents</button>
+      </div>
+    </div>
+  </nav>
+
+  <div class="progress" aria-hidden="true"><div class="progress-fill" id="progress-fill"></div></div>
+
+  <main id="deck">
+
+    <!-- ============================ 01-ten-things ============================ -->
+    <section class="slide" tabindex="-1" id="01-ten-things" aria-label="Slide 1 of 22: Ten things arrived. Two need you.">
+      <div class="wrap">
+        <p class="slide-label">The problem</p>
+        <div class="split wide-left">
+          <div class="col">
+            <h1>Ten things arrived. Two need you.</h1>
+            <p class="lede">07:41.</p>
+            <p>Ten things arrived overnight. Two of them need you. You find out which two by reading all ten.</p>
+            <p>That's the tax. Not the writing, not the deciding — the sorting. Every morning you re-derive the same judgments you made yesterday: this one is noise, this thread needs an answer by Friday, this invite collides with the only meeting that mattered this week.</p>
+            <p>And nothing carries over. Tell an assistant three times that you prefer the aisle seat and it asks a fourth time. That isn't a model problem. Nothing is keeping a record of you.</p>
+            <p class="src"><a href="https://github.com/jayzalowitz/skytwin/blob/main/README.md#L17">README.md:17</a> — “Every personal assistant today has amnesia… You tell it you prefer aisle seats three times. It asks again.”</p>
+          </div>
+          <div>
+            <div class="stack" role="img" aria-label="Ten stacked rows representing ten overnight items. Two of them carry an accent edge, marking the two that need a decision.">
+              <div class="stack-row"></div>
+              <div class="stack-row needs"></div>
+              <div class="stack-row"></div>
+              <div class="stack-row"></div>
+              <div class="stack-row"></div>
+              <div class="stack-row needs"></div>
+              <div class="stack-row"></div>
+              <div class="stack-row"></div>
+              <div class="stack-row"></div>
+              <div class="stack-row"></div>
+            </div>
+            <p class="src">You decoded “those two” in about a second. That is the entire argument of the next slide.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================ 02-two-need-you ============================ -->
+    <section class="slide" tabindex="-1" id="02-two-need-you" aria-label="Slide 2 of 22: What 07:41 looks like instead.">
+      <div class="wrap">
+        <p class="slide-label">The product</p>
+        <h2>What 07:41 looks like instead.</h2>
+        <div class="col">
+          <p class="voice">2 things need you.</p>
+          <p class="mono"><span class="safe">✓ 2 handled on my own</span> <span class="dimmer">·</span> 2 need you <span class="dimmer">·</span> 6 to catch up on</p>
+          <p>Same morning. Same ten things.</p>
+          <p>This page is the product: what was already handled, what needs a decision from you, and what you can read later — in that order, with the source of every line one click away. Everything after this slide exists to make this page safe to believe.</p>
+        </div>
+        <figure class="mt-lg col-fig">
+          <div class="crop" style="--sx:284; --sy:296; --sw:800; --sh:356;">
+            <img src="screenshots/briefing.png" alt="Crop of the SkyTwin briefing page. A headline reads '2 things need you.' over a counter row: 2 handled on my own, 2 need you, 6 to catch up on. Below it a TO-DOS block with two accent-edged rows — 'Account notice' (email · 1 source · Details), 'We detected a sign-in from a new device on your account,' instruction 'Open your account's security settings and confirm this sign-in — don't use links in the message'; and 'Acme kickoff' (calendar · 1 source · Details), 'Intro call with the Acme team. Agenda attached,' instruction 'Accept the invite, or decline / propose another time.' A Power view pill sits above the headline.">
+          </div>
+          <figcaption>Briefing · daily · captured 2026-06-15. Cropped to the voice line, the value line and the two to-do rows so the product's own type is readable here; <a href="screenshots/briefing.png">the whole frame</a> is one click away, and <a href="#04-claim-decides">the awareness zone below it</a> gets its own slide.</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <!-- ============================ 03-why-now ============================ -->
+    <section class="slide" tabindex="-1" id="03-why-now" aria-label="Slide 3 of 22: The capability shipped. The trust didn't.">
+      <div class="wrap">
+        <p class="slide-label">Why now</p>
+        <h2>The capability shipped. The trust didn't.</h2>
+        <p class="lede col">Three pieces of evidence, none of them ours.</p>
+
+        <div class="rows">
+          <div class="row">
+            <p class="row-t"><span class="row-n">01</span>Zero-click exfiltration is a scored vulnerability, not a thought experiment.</p>
+            <p class="row-b"><span class="mono danger">CVE-2025-32711</span>, “EchoLeak,” <span class="mono">CVSS 9.3</span>. One crafted email exfiltrated whatever Microsoft 365 Copilot had in context. No click from the victim. An assistant that reads your inbox and treats what it reads as instructions is not hypothetically exposed. It is exposed by construction.</p>
+          </div>
+          <div class="row">
+            <p class="row-t"><span class="row-n">02</span>Three days ago.</p>
+            <p class="row-b">TechCrunch (<span class="mono">2026-08-24</span>) reported privacy and security concerns about Instinct, a personal assistant with access to email, calendar, screen, audio and keystrokes. Per that reporting: it would not delete a user's Gmail records on request; it summarized an inbox after access had been disconnected, while storing emails in plain text; it was phishable into unauthorized email access; and Katie Jacobs Stanton said it “sent an innocuous email on my behalf without checking with me first.”</p>
+          </div>
+          <div class="row">
+            <p class="row-t"><span class="row-n">03</span>What people say they need before they'll use one.</p>
+            <p class="row-b">YouGov for Zendesk, roughly 10,000 respondents across 10 countries.</p>
+            <div class="bars">
+              <div class="bar-row">
+                <span class="bar-pct">57%</span>
+                <span class="bar-track" aria-hidden="true"><span class="bar-fill" style="width:57%"></span></span>
+                <span class="bar-label">data security and privacy</span>
+              </div>
+              <div class="bar-row">
+                <span class="bar-pct">48%</span>
+                <span class="bar-track" aria-hidden="true"><span class="bar-fill" style="width:48%"></span></span>
+                <span class="bar-label">transparency about how it decides</span>
+              </div>
+              <div class="bar-row">
+                <span class="bar-pct">46%</span>
+                <span class="bar-track" aria-hidden="true"><span class="bar-fill" style="width:46%"></span></span>
+                <span class="bar-label">human oversight</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <p class="lede col mt-lg">Those four reported failures and those three percentages are a specification. The rest of this deck is what we built against it.</p>
+        <details class="srcs">
+          <summary>Sources · 5 external references</summary>
+          <p class="src">sentra.io / rescana.com / checkmarx.com on CVE-2025-32711 · techcrunch.com 2026-08-24, “Instinct's powerful AI assistant is raising privacy and security concerns” (attributed to that reporting and to the people named in it) · zendesk.com newsroom, YouGov global survey, n≈10,000 across 10 countries.</p>
+        </details>
+      </div>
+    </section>
+
+    <!-- ============================ 04-claim-decides ============================ -->
+    <section class="slide" tabindex="-1" id="04-claim-decides" aria-label="Slide 4 of 22: Claim 01 — It decides what needs you and what doesn't.">
+      <div class="wrap">
+        <p class="slide-label">CLAIM 01</p>
+        <h2>It decides what needs you and what doesn't.</h2>
+        <p class="lede col">Every line tells you what to do, or tells you that you don't have to.</p>
+
+        <div class="split">
+          <div>
+            <h3 class="flush">The act zone</h3>
+            <figure>
+              <div class="crop" style="--sx:284; --sy:362; --sw:700; --sh:292;">
+                <img loading="lazy" src="screenshots/briefing.png" alt="Crop of the briefing's value line and TO-DOS block: two rows, each with an accent left edge and a checkbox. 'Account notice — email · 1 source · Details' with the instruction 'Open your account's security settings and confirm this sign-in — don't use links in the message.' and 'Acme kickoff — calendar · 1 source · Details' with 'Accept the invite, or decline / propose another time.'">
+              </div>
+              <figcaption>Accent left edge · checkbox · 15px. Both to-do rows.</figcaption>
+            </figure>
+            <p class="callout">act zone — the accent edge is semantics, not decoration</p>
+          </div>
+          <div>
+            <h3 class="flush">The awareness zone</h3>
+            <figure>
+              <div class="crop" style="--sx:284; --sy:645; --sw:700; --sh:292;">
+                <img loading="lazy" src="screenshots/briefing.png" alt="Crop of the briefing's TOPICS TO CATCH UP ON block: lighter rows with no accent edge and no checkbox, grouped under 'Email' — 'Weekly product digest' with 'Nothing needed — I'll file it for you.', 'Re: vendor onboarding' with the same disposition, and 'Trial ending soon' with 'Nothing needed — I'll file it for you.' Each row carries a source-type tag, a '·1 source' citation and a Details link.">
+              </div>
+              <figcaption>No edge · no checkbox · 13.5px. Three of the six rows.</figcaption>
+            </figure>
+            <p class="callout-neutral">awareness zone — visibly recedes</p>
+          </div>
+        </div>
+
+        <div class="col mt-lg">
+          <p>Two things to notice. The instruction is what to do, in the words you would use — not <span class="mono">SECURITY_ALERT, confidence 0.82</span>. And it tells you <em>not</em> to click the links in the message. It won't hand you the attack surface, and it won't touch it itself.</p>
+          <p>Six lines in the awareness zone, five of them saying out loud that nothing is needed: “Nothing needed — I'll file it for you.” · “I'll file it where it belongs.” · “Just an update — no reply needed.” Rows that need you get an accent edge and a checkbox. Rows that don't get neither. You can sort them before you have read a word. Every row carries the email or event it came from — <span class="mono">· 1 source · Details</span> — and that link opens the signal inside the app. Never an external URL.</p>
+          <p>The sixth is wrong, and we are not cropping it out. The voice note reads “Take a look and tell me what to do” — an action request rendered in the zone this slide defines as no-edge, no-checkbox, visibly receding. That is a bug in the frame, and it is exactly the kind the two-zone rule exists to make visible.</p>
+        </div>
+        <details class="srcs">
+          <summary>Sources · 3 file references</summary>
+          <p class="src">Rows verbatim from <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/screenshots/briefing.png">docs/screenshots/briefing.png</a> · two-zone hierarchy specified in <a href="https://github.com/jayzalowitz/skytwin/blob/main/DESIGN.md#L108-L141">DESIGN.md:108-141</a> · in-app signal links, never raw external URLs, per <a href="https://github.com/jayzalowitz/skytwin/blob/main/DESIGN.md#L133-L136">DESIGN.md:133-136</a> and <a href="https://github.com/jayzalowitz/skytwin/blob/main/CLAUDE.md">CLAUDE.md</a> Safety Invariant #8.</p>
+        </details>
+      </div>
+    </section>
+
+    <!-- ============================ 05-gate-verdict ============================ -->
+    <section class="slide" tabindex="-1" id="05-gate-verdict" aria-label="Slide 5 of 22: Gate 01 — Nothing reaches your accounts without a verdict.">
+      <div class="wrap">
+        <p class="slide-label">GATE 01 &nbsp;·&nbsp; pays for CLAIM 01</p>
+        <h2>Nothing reaches your accounts without a verdict.</h2>
+
+        <div class="split wide-left">
+          <div>
+            <p class="dim"><span class="mono">DecisionMaker.evaluate()</span> runs seven numbered steps.</p>
+            <div class="steps">
+              <div class="step"><span class="n">1</span><span>load relevant preferences</span></div>
+              <div class="step"><span class="n">2</span><span>load the twin profile</span></div>
+              <div class="step"><span class="n">2b</span><span>sender label hints for email decisions</span></div>
+              <div class="step"><span class="n">3</span><span>generate candidate actions — LLM strategy, or built-in rules as fallback</span></div>
+              <div class="step"><span class="n">4</span><span>assess risk per candidate</span></div>
+              <div class="step"><span class="n">5</span><span>load policies</span></div>
+              <div class="step"><span class="n">6</span><span>score and rank</span></div>
+              <div class="step gate"><span class="n">7</span><span><strong>policy-evaluate EVERY candidate</strong></span></div>
+            </div>
+            <p class="mt-md">Step 7 is the one that matters. Not the winner — every candidate. The audit trail keeps the alternatives that lost, not only the action that ran.</p>
+            <div class="chain">
+              <span>DecisionObject</span><span class="arrow">→</span>
+              <span>DecisionContext</span><span class="arrow">→</span>
+              <span>CandidateAction[]</span><span class="arrow">→</span>
+              <span>DecisionOutcome</span>
+            </div>
+          </div>
+          <div>
+            <h3 class="flush">Risk is arithmetic, not a model's opinion</h3>
+            <p class="row-b">Six dimensions are scored: reversibility · financial impact · legal sensitivity · privacy sensitivity · relationship sensitivity · operational risk.</p>
+            <div class="panel tight mono mt-md">
+              overall = max(dimensions)<br>
+              if ≥3 dimensions are MODERATE or above → at least HIGH
+            </div>
+            <p class="mt-md">Rules are reproducible and reviewable. A guess about risk is neither. And the type won't compile without per-dimension reasoning: an assessment that says “high” without saying why does not exist in this system.</p>
+            <p>The vocabulary is closed and small — <span class="mono">15</span> situation types, <span class="mono">6</span> risk dimensions, <span class="mono">5</span> risk tiers, <span class="mono">5</span> confidence levels, <span class="mono">5</span> trust tiers. TypeScript enums, not free strings.</p>
+          </div>
+        </div>
+
+        <details class="srcs">
+          <summary>Sources · 5 file references</summary>
+          <p class="src"><a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/decision-engine/src/decision-maker.ts#L122">packages/decision-engine/src/decision-maker.ts:122</a> (step comments at :123-233) · risk rule at <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/decision-engine/src/risk-assessor.ts#L348-L385">packages/decision-engine/src/risk-assessor.ts:348-385</a> (<span class="mono">calculateOverallTier</span>), invoked at decision-maker.ts:526 · per-dimension reasoning required at <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/shared-types/src/decision.ts#L115-L130">packages/shared-types/src/decision.ts:115-130</a> · types at decision.ts:14 / :35 / :58 / :135 · <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/shared-types/src/enums.ts#L5">packages/shared-types/src/enums.ts:5</a> / :21 / :32 / :48 / :71. Quoted from enums.ts, not from <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/decision-engine.md">docs/decision-engine.md</a> — that doc lists 6 situation types and the code has 15.</p>
+        </details>
+      </div>
+    </section>
+
+    <!-- ============================ 06-claim-acts ============================ -->
+    <section class="slide" tabindex="-1" id="06-claim-acts" aria-label="Slide 6 of 22: Claim 02 — It sends mail and answers invites on your real accounts.">
+      <div class="wrap">
+        <p class="slide-label">CLAIM 02</p>
+        <h2>It sends mail and answers invites on your real accounts.</h2>
+
+        <div class="col">
+          <p class="lede">Two local handlers call live APIs: Gmail v1 and Google Calendar v3. Real sends, real RSVPs, real event changes.</p>
+          <p class="voice mt-lg">Your call. I'll explain the why on each one — say yes if it sounds right, or tell me why not so I learn for next time.</p>
+        </div>
+
+        <figure class="mt-lg col-fig">
+          <div class="crop" style="--sx:284; --sy:336; --sw:840; --sh:296;">
+            <img loading="lazy" src="screenshots/approvals.png" alt="Crop of the 'Needs your OK' queue: the first approval card, 'RSVP to the Acme kickoff invite', tagged NORMAL, citing its source as google_calendar / Acme kickoff, with the line 'A new invite needs your yes/no before I respond', a collapsible 'If you approve — what happens' preview, and three controls — a green 'Yes, do it' button, 'Not this time', and a free-text box reading 'Tell me why so I learn (optional)'.">
+          </div>
+          <figcaption>Needs your OK · captured 2026-06-15. The approve control ships green (--safe, “handled”); risk ships amber; iris is spent on the card edge that means “needs you”. <a href="screenshots/approvals.png">The whole queue</a> — the tier card above this crop, and the HIGH card below it — is one click away.</figcaption>
+        </figure>
+          <p class="callout">one primary per card · “Yes, do it” / “Not this time” / “Tell me why so I learn”</p>
+
+        <div class="two-up mt-lg">
+          <p>The queue is titled “I want to handle these — OK?” None of that is decoration. “Approve / Reject” asks you to audit a machine. “Yes, do it” asks you to answer a colleague. Reverting to the generic version is treated as a review failure in this codebase, in writing.</p>
+          <p>Each card shows three things before you commit: where it came from (<span class="mono">google_calendar · Acme kickoff</span>), how urgent it thinks it is (<span class="mono">NORMAL</span>, or <span class="mono">HIGH</span> with an amber edge), and an “If you approve — what happens” preview you can open first. And when it genuinely doesn't know, it says so instead of picking: the high-risk card on this screen reads “I'm not sure what to do with this. What would you like?” — followed by options, not a default with a cancel button.</p>
+        </div>
+
+        <p class="src mt-lg">Copy drift in the tier card above this crop, stated rather than hidden: it renders “Maximum trust” at <span class="mono">Handle most things</span> because <span class="mono">nextTierThreshold</span> is null there — no automatic promotion exists past that rung, so the progress bar has no target to name (<a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/routes/twin.ts#L147-L150">apps/api/src/routes/twin.ts:147-150</a>, rendered at <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/web/public/js/components/progress-bar.js#L67">apps/web/public/js/components/progress-bar.js:67</a>). Full autopilot is still a rung above it. See <a href="#07-gate-ladder">the ladder</a>.</p>
+
+        <div class="honest">
+          <b>The boundary — same slide, same weight</b>
+          Email and calendar execute locally today. The other situation types — finance, tasks, smart home, social, documents, health — generate candidates, get risk-assessed and policy-evaluated, then escalate to you or route to an execution engine you configure yourself. Those six local handlers contain zero API calls and throw by design. We do not book your flights.
+        </div>
+
+        <details class="srcs">
+          <summary>Sources · 7 file references</summary>
+          <p class="src"><a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/ironclaw-adapter/src/handlers/email-action-handler.ts#L5">packages/ironclaw-adapter/src/handlers/email-action-handler.ts:5</a> (GMAIL_API, 4 fetch calls) and calendar-action-handler.ts (Calendar v3, 1 fetch). <span class="mono">grep -c 'fetch('</span> returns 0 for the finance, task, smart-home, social, document and health handlers, all of which throw to force fallback; smart-home-action-handler.ts:6-8 says so in a comment. <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/execution-setup.ts#L62-L132">apps/api/src/execution-setup.ts:62-132</a> registers IronClaw and OpenClaw only when their URLs are configured. Card copy verbatim from docs/screenshots/approvals.png. Brand-voice rule (“never regress to generic Approve/Reject”) is <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/demo.md">docs/demo.md</a> Step 2. Corrects <a href="https://github.com/jayzalowitz/skytwin/blob/main/README.md">README.md</a>'s “Concrete Examples” table, which implies end-to-end flight booking and grocery reorder.</p>
+        </details>
+      </div>
+    </section>
+
+    <!-- ============================ 07-gate-ladder ============================ -->
+    <section class="slide" tabindex="-1" id="07-gate-ladder" aria-label="Slide 7 of 22: Gate 02 — You cannot earn full autopilot.">
+      <div class="wrap">
+        <p class="slide-label">GATE 02 &nbsp;·&nbsp; pays for CLAIM 02</p>
+        <h2>You cannot earn full autopilot.</h2>
+        <p class="lede col">Every new twin starts on the bottom rung, where it proposes and never acts.</p>
+
+        <table class="data">
+          <caption class="src">PROMOTION_THRESHOLDS — <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/shared-types/src/policy.ts#L102-L121">packages/shared-types/src/policy.ts:102-121</a></caption>
+          <thead>
+            <tr><th scope="col">Promotion</th><th scope="col">In a row</th><th scope="col">Approved</th><th scope="col">In tier</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Just watch → Ask me first</td><td>10</td><td>≥80%</td><td>≥24 h</td></tr>
+            <tr><td>Ask me first → Handle small stuff</td><td>20</td><td>≥85%</td><td>≥72 h</td></tr>
+            <tr><td>Handle small stuff → Handle most</td><td>50</td><td>≥90%</td><td>≥7 days</td></tr>
+            <tr class="missing"><td>Handle most things → Full autopilot</td><td class="none">—</td><td class="none">—</td><td class="none">—</td></tr>
+          </tbody>
+        </table>
+
+        <div class="col mt-md">
+          <div>
+            <p>The missing row is the point. <span class="mono">PROMOTION_THRESHOLDS</span> has exactly three keys. There is no code path that grants full autonomy — it is reachable only by a person deliberately choosing it.</p>
+            <p>Promotion needs both a count and a clock. Twenty approvals in twenty minutes proves you clicked fast, not that the twin got you right, so the engine refuses on either, and it reads the time floor from an audit table rather than from a counter anyone could bump.</p>
+            <p>What the clock does <em>not</em> do, stated because it cuts against us: the floor is applied only when the audit table yields a finite number of hours. A missing row — or a malformed one that parses to <span class="mono">NaN</span> or <span class="mono">Infinity</span> under clock skew — <em>skips</em> the floor, and the promotion is then decided on count and ratio alone. The <span class="mono">Number.isFinite</span> guard on that branch keeps a literal “NaN” out of the reasoning a user reads; it is not a second lock on the clock. The repo's own tests assert exactly that behaviour, by name.</p>
+            <p>Stated exactly, because it is stronger than the version we planned to tell: that engine runs today only for per-capability (MCP server) tiers, in the promotion-eligibility job. For your own autonomy tier there is no evaluator at all. The ladder above is a published contract, and <em>no promotion path writes</em> <span class="mono">users.trust_tier</span> — the only runtime writer is your own PUT. Scoped honestly: two developer-tooling paths do write the column, and neither can promote a live user. The demo seed script sets one of its three sample profiles to <span class="mono">high_autonomy</span>, and restore-from-backup writes back whatever tier the backup already held. Nothing promotes you but you, more literally than intended.</p>
+            <p>The observer default is enforced in three independent places: the policy evaluator's tier gate, a built-in policy rule, and the decision maker's auto-execute check. An unrecognized tier string falls through to deny. Above observer, auto-execution stays risk-capped — low caps at low risk, moderate at moderate, and even full autopilot escalates critical.</p>
+            <p class="mb-0">These numbers are not marketing copy, and the lock on them is narrower than “a test diffs the two files.” The settings page mirrors the engine's constant by hand — it is browser JS and cannot import the TypeScript — and <span class="mono">promotion-thresholds-shape.test.ts</span> pins the engine constant to these exact values, so any change to the engine breaks the build and forces the mirror to be updated in the same PR. A test that compares the two directly isn't written yet.</p>
+          </div>
+          </div>
+        <div class="full-figure">
+            <figure>
+              <div class="crop" style="--sx:284; --sy:126; --sw:823; --sh:590;">
+                <img loading="lazy" src="screenshots/settings.png" alt="Crop of the SkyTwin settings page, autonomy section: 'How much should your twin do? Choose how much autonomy your twin should have. You can change this anytime.' Five radio rows — Just watch ('Your assistant watches but never does anything'), Ask me first ('suggests actions and waits for your OK. The safest way to start.'), Handle small stuff, Handle most things (selected, marked with an accent border and filled radio), and Full autopilot. Below them a Save button and a collapsed disclosure reading 'What does it take to move up?'">
+              </div>
+              <figcaption>Settings · the ladder · captured 2026-06-15. Iris marks only the selected rung.</figcaption>
+            </figure>
+            <p class="src mt-md">Copy drift, stated rather than hidden: the settings page ships “Just watch” for the bottom rung while <span class="mono">TIER_DISPLAY_LABELS</span> at policy.ts:128-129 reads “Watch &amp; Suggest”. The table above uses the label the app actually renders.</p>
+            <div class="honest">
+              <b>Honest note</b>
+              Our own safety doc concedes the first two rungs are mechanically near-identical today — both allow-with-approval, neither auto-executes. Four functionally distinct rungs, five labels. The ladder is due for a rethink.
+            </div>
+          </div>
+
+        <details class="srcs">
+          <summary>Sources · 13 file references</summary>
+          <p class="src">policy.ts:102-121 read directly — three keys (OBSERVER 10 / 0.8 / 24, SUGGEST 20 / 0.85 / 72, LOW_AUTONOMY 50 / 0.9 / 168), no MODERATE_AUTONOMY key. Engine at <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/policy-engine/src/trust-tier-engine.ts#L58-L152">packages/policy-engine/src/trust-tier-engine.ts:58-152</a>; the time floor is at :123-136, gated by <span class="mono">Number.isFinite(stats.hoursInCurrentTier)</span> at :123 — so a non-finite value skips the floor rather than blocking on it, and :146 keeps the literal out of the reasoning string. The two tests that pin that behaviour name it: <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/policy-engine/src/__tests__/trust-tier-engine.test.ts#L204">trust-tier-engine.test.ts:204</a> (“should NOT let NaN hoursInCurrentTier bypass the temporal floor”, asserting only that the reason string has no “NaN”) and :224 for Infinity. Its two production callers are both per-MCP-server: <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/worker/src/jobs/promotion-eligibility-check.ts#L53">apps/worker/src/jobs/promotion-eligibility-check.ts:53</a> (<span class="mono">mcpServerRepository.listActive()</span>, writing <span class="mono">promotion_offers</span> rows) and <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/routes/capabilities.ts">apps/api/src/routes/capabilities.ts</a>:1543. <span class="mono">users.trust_tier</span> writers, all three of them: the runtime one is <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/routes/users.ts#L254">apps/api/src/routes/users.ts:254</a> (<span class="mono">userRepository.updateTrustTier</span> → user-repository.ts:190, one caller); the two developer-tooling ones are <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/db/src/seeds/demo-showcase.ts#L458">packages/db/src/seeds/demo-showcase.ts:458</a> (<span class="mono">UPDATE users SET trust_tier = 'high_autonomy'</span> for the seeded power-user profile) and <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/db/src/backup/backup.ts#L280">packages/db/src/backup/backup.ts:280</a> (restore re-inserts the saved tier). Triple enforcement of the observer floor: policy-evaluator.ts:529-535 (default → allowed:false), default-policies.ts:134-170, decision-maker.ts:533-541. Threshold lock: <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/policy-engine/src/__tests__/promotion-thresholds-shape.test.ts">packages/policy-engine/src/__tests__/promotion-thresholds-shape.test.ts</a>; frontend mirror at <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/web/public/js/pages/settings.js">apps/web/public/js/pages/settings.js</a>:32-54. Four-vs-five caveat is <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/safety-model.md#L183">docs/safety-model.md:183</a>, the repo's own words.</p>
+        </details>
+      </div>
+    </section>
+
+    <!-- ============================ 08-gate-provenance ============================ -->
+    <section class="slide" tabindex="-1" id="08-gate-provenance" aria-label="Slide 8 of 22: Gate 03 — The email that tells your twin to forward your mail.">
+      <div class="wrap">
+        <p class="slide-label">GATE 03 &nbsp;·&nbsp; also pays for CLAIM 02</p>
+        <h2>The email that tells your twin to forward your mail.</h2>
+
+        <div class="col">
+          <p class="lede">An assistant that reads your inbox will eventually read an email written to manipulate it.</p>
+          <p>The usual defense is to scan the incoming text for suspicious instructions. That works until someone phrases it differently.</p>
+          <p>This gates on <em>where the content came from</em>, not what it says. Every proposed action carries one of three origin labels — you wrote it, a trusted context produced it, or it came from outside. A missing label is treated as the worst one: fail safe, never fail open. An attack nobody has published yet still lands in the gated bucket, because it doesn't have to be recognized to be caught.</p>
+        </div>
+
+        <div class="cell-row" role="img" aria-label="Three-cell diagram: where it came from, then what shape the action is, then zero, one or two human confirmations. Only the confirmation cell is accented.">
+          <span class="cell">where it came from</span>
+          <span class="cell-arrow">→</span>
+          <span class="cell">what shape the action is</span>
+          <span class="cell-arrow">→</span>
+          <span class="cell needs-you">0, 1, or 2 human confirmations</span>
+        </div>
+
+        <pre class="code"><code>export type ActionProvenance =
+  | 'user_originated'      // the user authored the triggering content
+  | 'trusted_context'      // the user's own profile, history, preferences
+  | 'untrusted_external';  // inbound mail, crawled files, third-party invites
+
+const provenance: ActionProvenance = action.provenance ?? 'untrusted_external';</code></pre>
+        <p class="src"><a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/shared-types/src/action-safety.ts#L36-L46">packages/shared-types/src/action-safety.ts:36-46</a> and :318. The comment above the union reads: “When provenance cannot be determined it MUST default to <span class="mono">untrusted_external</span> — fail safe, never fail open.”</p>
+
+        <h3>The first consequence you can check</h3>
+        <div class="rows">
+          <div class="row">
+            <p class="row-t">The thing that proposes actions cannot label its own work.</p>
+            <p class="row-b">The engine overwrites the origin label on every candidate from the originating signal — an unconditional assignment, not a default. The LLM generator parses model JSON shaped by inbound email bodies, so an injected <span class="mono">"provenance": "user_originated"</span> is thrown away before the policy engine ever sees it. The trust label is written by the trusted side of the boundary.</p>
+          </div>
+        </div>
+
+        <details class="srcs">
+          <summary>Sources · 2 file references</summary>
+          <p class="src"><a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/shared-types/src/action-safety.ts#L36-L46">packages/shared-types/src/action-safety.ts:36-46</a> and :318. Unconditional overwrite at <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/decision-engine/src/decision-maker.ts#L170-L184">packages/decision-engine/src/decision-maker.ts:170-184</a>, whose source comment states verbatim that “a generator must never be able to set its own provenance.” External anchor: CVE-2025-32711, on <a href="#03-why-now">the “why now” slide</a>.</p>
+        </details>
+      </div>
+    </section>
+
+    <!-- ============================ 09-escalation ============================ -->
+    <section class="slide" tabindex="-1" id="09-escalation" aria-label="Slide 9 of 22: Gate 03 — The escalation matrix is published and short.">
+      <div class="wrap">
+        <p class="slide-label">GATE 03 &nbsp;·&nbsp; what the guard does</p>
+        <h2>It never denies. It escalates — to you.</h2>
+        <p class="lede col">Two more consequences of gating on origin, both checkable.</p>
+
+        <div class="rows">
+          <div class="row">
+            <p class="row-t">The escalation matrix is published and short.</p>
+            <table class="data">
+              <tbody>
+                <tr><th scope="row" class="ui">extreme shape — shell, filesystem, database, account destruction</th><td class="ui">two deliberate confirmations</td></tr>
+                <tr><th scope="row" class="ui">destructive shape — delete, revoke, <strong>send</strong>, <strong>forward</strong>, bulk</th><td class="ui">one explicit confirmation, never auto-runs</td></tr>
+                <tr><th scope="row" class="ui">untrusted origin AND irreversible</th><td class="ui">one explicit confirmation</td></tr>
+              </tbody>
+            </table>
+            <p class="row-b mt-md">“Send” and “forward” are on the destructive list on purpose. “Forward all my mail to attacker@example.com” is the exfiltration shape. It cannot fire on its own at any trust tier, including full autopilot.</p>
+          </div>
+          <div class="row">
+            <p class="row-t">The guard never denies. It escalates.</p>
+            <p class="row-b">Every action keeps a path to happening — through a person. Enforced twice by the same pure function, so the two layers cannot drift: the policy engine escalates, and the execution router throws a loud invariant violation if an escalation-worthy action ever reaches execution unapproved. A bug in one layer produces a crash, not a quiet bad action.</p>
+          </div>
+        </div>
+
+        <p class="col mt-lg">And the two-click confirmation is server-side, not a modal. The first request mints a one-time token and executes nothing; the second must present that exact token within ten minutes, compared in constant time. Not an “are you sure?” dialog a script clicks through.</p>
+
+        <details class="srcs">
+          <summary>Sources · 5 file references</summary>
+          <p class="src"><a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/shared-types/src/action-safety.ts#L311-L352">packages/shared-types/src/action-safety.ts:311-352</a> (evaluateInjectionGuard, falling through to <span class="mono">{ escalate: false }</span>); marker lists at :143 and :173; parameter-signature regexes at :204-212. Double enforcement: <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/policy-engine/src/policy-evaluator.ts#L147">packages/policy-engine/src/policy-evaluator.ts:147</a> and :293-306; <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/execution-router/src/execution-router.ts">packages/execution-router/src/execution-router.ts</a>:123-140. Two-click: <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/routes/dual-confirm.ts#L25">apps/api/src/routes/dual-confirm.ts:25</a> (10-minute window), :64-69 (timingSafeEqual), :78-129; wired at approvals.ts:392.</p>
+        </details>
+      </div>
+    </section>
+
+    <!-- ============================ 10-gate-spend ============================ -->
+    <section class="slide" tabindex="-1" id="10-gate-spend" aria-label="Slide 10 of 22: Gate 04 — It cannot spend your money. Not capped. Off.">
+      <div class="wrap">
+        <p class="slide-label">GATE 04 &nbsp;·&nbsp; also pays for CLAIM 02</p>
+        <h2>It cannot spend your money. Not capped. Off.</h2>
+        <p class="lede col">The caps are configurable. The rule sitting above them is not.</p>
+
+        <div class="split wide-right mt-lg">
+          <div>
+            <p>The configured caps are <span class="mono">$100.00</span> per action and <span class="mono">$500.00</span> per day, checked in exact integer cents — no rounding, no tolerance band. Against the per-action cap, <span class="mono">$100.00</span> passes and <span class="mono accent">$100.01 → escalates</span>; against the daily total, a day landing exactly on <span class="mono">$500.00</span> passes and one cent past it is refused. Over the cap goes to you no matter how much trust you've granted.</p>
+            <p>Caps compose in one direction only. Global settings are the ceiling; an LLM-interpreted risk profile can only clamp down; per-app overrides clamp again; and boolean rails like “always ask before doing something that can't be undone” are OR-ed, so no lower layer can relax them. If the model misreads your risk profile, the worst case is over-restriction.</p>
+            <p>And the model is never allowed to price its own action. Candidates emitted by an LLM strategy carry a cost intent of <span class="mono">unknown</span>, and unknown is refused the zero-cost fast path and escalated to a human. Negative costs are rejected outright as a spend-tracking bypass.</p>
+          </div>
+          <figure>
+            <div class="crop" style="--sx:284; --sy:2636; --sw:823; --sh:332;">
+              <img loading="lazy" src="screenshots/settings.png" alt="Crop of the settings page 'Spending guardrails' panel: 'Put a cap on how much your assistant can spend without asking you first.' Two fields — 'Most I can spend at once' set to $100.00, and 'Most I can spend in one day' set to $500.00 — plus a checked box reading 'Always ask before doing something that can't be undone', and a Save button.">
+            </div>
+            <figcaption>Settings · spending guardrails.</figcaption>
+        </figure>
+            <div class="honest">
+              <b>Honest footnote</b>
+              That spend rule's own description says “unless the user has configured spend limits.” The rule has no such condition. The code is stricter than its own doc. We would rather fix the doc than loosen the rule.
+            </div>
+        </div>
+
+        <div class="panel">
+          <p class="mb-sm"><strong>Then the actual state of v0.6.</strong> A built-in, un-disableable rule denies any action with an estimated cost above zero. It is merged into every evaluation ahead of any policy you can write (priority 100) and there is no UI that turns it off.</p>
+          <p class="mono mb-sm">condition { field: 'estimatedCostCents', operator: 'gt', value: 0 } · effect 'deny' · builtIn true · enabled true · priority 100</p>
+          <p class="mb-sm">Where it sits in the order, precisely: the rule fires in the policy loop, which runs after the trust-tier and autonomy-settings checks. If you have quiet hours set, that branch returns early and a &gt;$0 action lands in your approval queue instead of being denied outright — and then the re-evaluation at approve time (approvals.ts:625) denies it. Two different verdicts, same outcome: nothing is spent.</p>
+          <p class="mb-0 dim">Financial autonomy is structurally off in the shipped build. The caps above are the machinery waiting behind a closed door.</p>
+        </div>
+
+        <details class="srcs">
+          <summary>Sources · 8 file references</summary>
+          <p class="src">Caps from <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/web/public/js/pages/settings.js#L514">apps/web/public/js/pages/settings.js:514</a> (<span class="mono">maxSpendPerActionCents ?? 10000</span>) and :521 (<span class="mono">maxDailySpendCents ?? 50000</span>), matching <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/demo.md">docs/demo.md</a> Step 6. Exactness and the costZeroIntent “unknown” refusal at <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/policy-engine/src/policy-evaluator.ts#L312-L332">packages/policy-engine/src/policy-evaluator.ts:312-332</a> (#372) — the per-action comparison is <span class="mono">estimatedCostCents &lt;= maxSpendPerActionCents</span> at :331, so the cap itself passes and one cent over does not; the daily comparison is the strict <span class="mono">totalAfterAction &gt; effectiveDaily</span> at <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/policy-engine/src/spend-tracker.ts#L253">spend-tracker.ts:253</a>, same boundary. Negative-cost rejection at spend-tracker.ts:214-224; one-way clamping (<span class="mono">clampDown = Math.min</span>) at spend-tracker.ts:96-100, covered by 15 tests in per-app-overrides.test.ts and 13 in risk-profile-clamp.test.ts. The cost&gt;0 deny read verbatim at <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/policy-engine/src/default-policies.ts#L13-L38">packages/policy-engine/src/default-policies.ts:13-38</a>, merged unconditionally at policy-evaluator.ts:119-122, evaluated in the policy loop at :229-247 (deny return at :232-239) — after the tier gate at :135, the autonomy-settings check at :175-177 and the quiet-hours early return at :198-226. Approve-time re-evaluation at <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/routes/approvals.ts">apps/api/src/routes/approvals.ts</a>:625-628.</p>
+        </details>
+      </div>
+    </section>
+
+    <!-- ============================ 11-stops ============================ -->
+    <section class="slide" tabindex="-1" id="11-stops" aria-label="Slide 11 of 22: Pause — and what pause does not cover.">
+      <div class="wrap">
+        <p class="slide-label">GATE 05 &nbsp;·&nbsp; the way out, 1 of 2</p>
+        <h2>Pause. And exactly what pause covers.</h2>
+        <p class="lede col">Two buttons in this product say “Pause everything.” Neither one is the switch that stops your twin.</p>
+
+        <div class="col">
+          <p>Four different stops ship today, two of them called “Pause everything,” and they are not the same stop. The one in the top-right corner of every page pauses your installed capability servers — the MCP tools. It never touches the twin's email and calendar path and never touches your trust tier. The one lower in Settings demotes you to observer. Neither is what the label promises, and naming that here is cheaper than letting you find out during an incident.</p>
+          <p>The switch that actually stops the twin is Settings → Pause auto-execution (#379), the panel beside this text. Self-hosters get a matching operator switch, <span class="mono">SKYTWIN_AUTO_EXECUTE_DISABLED</span>, that the interface cannot clear. Either one flips the same flag inside the evaluator, and the ordering is the interesting part: it is applied at the <em>end</em> of policy evaluation, not the start, so it can only escalate things to you — it can never turn a refusal into an approval. That was a real bug once; the source comment records it.</p>
+        </div>
+
+        <figure class="col-fig mt-lg">
+          <div class="crop" style="--sx:284; --sy:2257; --sw:823; --sh:205;">
+            <img loading="lazy" src="screenshots/settings.png" alt="Crop of the settings page 'Pause auto-execution' panel, which carries a red left edge. It reads: 'Panic button (#379). When on, every action your twin would take is routed to the approvals queue for you to review manually — even at the highest autonomy tier.' Below it: 'Your toggle: ACTIVE. Your twin can act on signals per your trust tier.' and a 'Pause auto-execution' button.">
+          </div>
+          <figcaption>Settings · the panic button. The red is the product's own.</figcaption>
+        </figure>
+        <p class="dim mt-md">Read <a href="#19-not-yet">what isn't true yet</a> before you lean on the middle one: on the primary inbound-mail path the per-user pause isn't passed to the evaluator at all, so today only the operator switch fires there. Pause stops your twin from acting. It keeps watching, so nothing is lost.</p>
+      </div>
+    </section>
+
+    <!-- ============================ 12-undo-delete ============================ -->
+    <section class="slide" tabindex="-1" id="12-undo-delete" aria-label="Slide 12 of 22: Undo. Delete.">
+      <div class="wrap">
+        <p class="slide-label">GATE 05 &nbsp;·&nbsp; the way out, 2 of 2</p>
+        <h2>Undo. Delete.</h2>
+        <p class="lede col">One of these two is not what its label says, and we would rather say so here than let you find out during an incident.</p>
+
+        <h3 class="flush">What “Undo” actually does</h3>
+        <div class="two-up">
+          <p>Every row of the decision log carries an Undo button, and it does not un-send the email. Clicking it opens a form — what went wrong, how bad, what you'd have preferred — and writes that as feedback against the decision. The twin reads it and adjusts. The toast is honest about which of the two it is: “Walked back. I'll remember: …”.</p>
+          <p>Real reversal of an executed action exists in exactly one place in this codebase, <span class="mono">POST /api/capabilities/:id/regret</span>, and it only reaches actions taken through an MCP server. The decision log never calls it. Undoing the send itself is not shipped, and Safety Invariant #5 is why we won't write the word “reversible” on this slide until it is.</p>
+        </div>
+
+        <h3>Can I get out?</h3>
+        <div class="split wide-right">
+          <div>
+            <p>“Delete everything about me” — profile, decisions, memory, preferences, OAuth tokens, sessions, spend records — runs as one serializable transaction. Either all of it is gone or nothing changed. There is no half-deleted state to discover later, and the endpoint is ownership-gated so nobody can purge anyone else.</p>
+          </div>
+          <figure>
+            <div class="crop" style="--sx:284; --sy:3668; --sw:823; --sh:186;">
+              <img loading="lazy" src="screenshots/settings.png" alt="Crop of the settings page 'Delete everything about me' panel, which carries a red left edge: 'Wipes your twin profile, every decision, every memory page, every preference, OAuth tokens, sessions, spend records — the whole footprint, in one transaction. Can't be undone. Your connected services (Gmail, Calendar) keep working at the provider level; SkyTwin just stops seeing them and forgets what it learned.' A red-outlined 'Delete my data' button sits below.">
+            </div>
+            <figcaption>Settings · one transaction, or nothing.</figcaption>
+          </figure>
+        </div>
+
+        <details class="srcs">
+          <summary>Sources · 10 file references</summary>
+          <p class="src">Undo wiring: <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/web/public/js/pages/decisions.js#L175">apps/web/public/js/pages/decisions.js:175</a> renders the button on every row, :384-390 posts <span class="mono">submitFeedback(userId, decisionId, 'undo', …)</span> to <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/routes/feedback.ts#L129-L157">apps/api/src/routes/feedback.ts:129-157</a>, which persists the event and calls <span class="mono">twinService.processFeedback</span> — no execution path is touched. Rollback: <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/execution-router/src/execution-router.ts#L336">packages/execution-router/src/execution-router.ts:336</a>, reachable only from <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/routes/capabilities.ts">apps/api/src/routes/capabilities.ts</a>:706. <a href="https://github.com/jayzalowitz/skytwin/blob/main/CLAUDE.md">CLAUDE.md</a> Safety Invariant #5. The four stops: top-right button at <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/web/public/js/components/global-pause-button.js#L101">apps/web/public/js/components/global-pause-button.js:101</a> → <span class="mono">POST /api/capabilities/pause-all</span> (<a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/routes/capabilities.ts#L1391-L1421">apps/api/src/routes/capabilities.ts:1391-1421</a>, which calls <span class="mono">mcpServerRepository.markAllPausedForUser</span> and nothing else); the demote-to-observer button at settings.js:499; the real kill switch at settings.js:483 → <span class="mono">PUT /api/users/:id/autonomy-pause</span> (settings.js:1301); operator env var read once at policy-evaluator.ts:70. User pause and operator switch merged at policy-evaluator.ts:101-117 and applied at :249-273, where the source comment records the pre-review bug in which an early return turned every deny into an approval. Purge at <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/db/src/repositories/user-purge-repository.ts#L24-L26">packages/db/src/repositories/user-purge-repository.ts:24-26</a> (no partial-delete state) and :46-119 / :142-143, ownership-gated at <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/routes/users.ts">apps/api/src/routes/users.ts</a>:97.</p>
+        </details>
+      </div>
+    </section>
+
+    <!-- ============================ 13-receipt ============================ -->
+    <section class="slide" tabindex="-1" id="13-receipt" aria-label="Slide 13 of 22: Every call is logged, explained, and correctable.">
+      <div class="wrap">
+        <p class="slide-label">The receipt</p>
+        <h2>Every call is logged, explained, and correctable.</h2>
+        <p class="lede col">A gate you can't audit after the fact is a promise, not a control.</p>
+
+        <div class="col">
+          <p>An explanation record has four mandatory narrative fields — <span class="mono">summary</span>, <span class="mono">confidenceReasoning</span>, <span class="mono">actionRationale</span>, <span class="mono">correctionGuidance</span> — plus structured <span class="mono">evidenceUsed[]</span> and <span class="mono">preferencesInvoked[]</span>. What happened, what it read, why this and not the alternative, and how you correct it if it's wrong.</p>
+          <p>Refusals get one too. A decision blocked by policy still writes a record carrying the block reason. That is the difference between an audit log and a highlight reel: a log that records only successes isn't a trail.</p>
+        </div>
+
+        <figure class="mt-lg col-fig">
+          <div class="crop" style="--sx:284; --sy:352; --sw:880; --sh:448;">
+            <img loading="lazy" src="screenshots/decisions.png" alt="Crop of the 'What happened' page table. Columns When, Area, What happened, Urgency, How and Actions. Eight rows are tagged by area (EMAIL, VOICE, DOCUMENTS, CALENDAR, SECURITY), urgency (LOW, MEDIUM, HIGH) and disposition (YOU OK'D in green, AUTO in grey, NEEDS YOU in amber). Every row ends with an Undo button.">
+          </div>
+          <figcaption>What happened · 8 rows, 8 correction buttons. Not a subset. Every row. Areas tagged EMAIL, CALENDAR, DOCUMENTS, VOICE, SECURITY; urgency LOW, MEDIUM, HIGH; disposition YOU OK'D, AUTO or NEEDS YOU. Click any row for the full reasoning.</figcaption>
+        </figure>
+
+        <div class="split wide-right mt-lg">
+        <div>
+          <p>And whatever it learned about you is a list you can edit — not a chat transcript, not a pile of vectors. Every entry carries how sure the twin is and where it came from, and every entry has two controls: Edit, and “That's not right.” The page says it in the twin's own words: corrections are the fastest way I get smarter.</p>
+        </div>
+
+        <figure>
+          <div class="crop" style="--sx:300; --sy:318; --sw:800; --sh:78;">
+            <img loading="lazy" src="screenshots/twin.png" alt="Crop of one row on the 'What I've learned' page: the preference 'response style: concise' with a VERY CONFIDENT badge, a 'You told me' provenance label, and two controls — Edit and 'That's not right.'">
+          </div>
+          <figcaption>What I've learned · one preference row: the value, how sure, where it came from, and both correction controls.</figcaption>
+        </figure>
+          <p class="src">Cropped to one row on purpose: the third card on that capture renders a preference as raw JSON, which contradicts the plain-language standard the rest of this deck argues for. It is a bug in the frame, so the bug is named here rather than shown as if it were fine.</p>
+        </div>
+
+        <p class="col mt-md">That is the loop. The “no” you type on an approval card lands here, and this page is what gets promoted on <a href="#07-gate-ladder">the ladder</a>.</p>
+
+        <details class="srcs">
+          <summary>Sources · 5 file references</summary>
+          <p class="src"><a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/shared-types/src/explanation.ts#L6-L35">packages/shared-types/src/explanation.ts:6-35</a> (narrative fields) and :40-56 (EvidenceReference, PreferenceReference); blocked-path branch persisting escalationRationale at <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/explanations/src/explanation-generator.ts">packages/explanations/src/explanation-generator.ts</a>:62-68. Screens read directly from <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/screenshots/decisions.png">docs/screenshots/decisions.png</a> and twin.png. Undo is a feedback control, not a reversal — see <a href="#12-undo-delete">Undo. Delete.</a> for what it does and does not do. <a href="https://github.com/jayzalowitz/skytwin/blob/main/CLAUDE.md">CLAUDE.md</a> Safety Invariants #2 and #6.</p>
+        </details>
+      </div>
+    </section>
+
+    <!-- ============================ 14-local-first ============================ -->
+    <section class="slide" tabindex="-1" id="14-local-first" aria-label="Slide 14 of 22: There is no SkyTwin server.">
+      <div class="wrap">
+        <p class="slide-label">Local-first &nbsp;·&nbsp; 1 of 2</p>
+        <h2>There is no SkyTwin server. Not “we don't look” — there is nothing to look with.</h2>
+        <p class="lede col">Four facts you can check, starting with what the installer actually contains.</p>
+
+        <div class="rows cols2">
+          <div class="row">
+            <p class="row-t"><span class="row-n">01</span>The installer brings its own database. The model it fetches on your say-so.</p>
+            <p class="row-b">CockroachDB ships inside the desktop bundle as a native binary, verified against a published sha256 when the installer is built — a mismatch aborts the build. The model is not in the box: the app sizes one to your machine (row 02) and downloads it, 2.0–9.0 GB, when you agree. Nor is the llama.cpp runtime — the API adds the local provider only once it finds both a binary and a model, so a fresh install has no LLM until you supply one. No Docker, no Ollama, no API key, no <span class="mono">.env</span>, no account.</p>
+          </div>
+          <div class="row">
+            <p class="row-t"><span class="row-n">02</span>It sizes the model to your machine before you sign in.</p>
+            <p class="row-b">Two public endpoints read your RAM, free disk, cores and architecture, then pick from a five-model catalog across four memory brackets — Phi-3.5 Mini at 4 GB, Qwen2.5 3B and Llama-3.2 3B at 8, Qwen2.5 7B at 16, Qwen2.5 14B at 32 and up. The first-run screen says “your AI runs privately on this computer — we'll use &lt;model&gt;” and it has already worked out which one. That removes the two hardest asks in local AI — choose a model, paste a key — before the first screen.</p>
+          </div>
+          <div class="row">
+            <p class="row-t"><span class="row-n">03</span>Cloud is consent, not a default.</p>
+            <div class="chain mt-md">
+              <span>embedded</span><span class="arrow">→</span><span>ollama</span><span class="arrow">→</span>
+              <span class="dimmer">anthropic</span><span class="arrow">→</span><span class="dimmer">openai</span><span class="arrow">→</span><span class="dimmer">google</span>
+            </div>
+            <p class="row-b mt-md">Cloud-first is one environment variable, and an unrecognized value falls back to local — a typo must not silently escalate to a vendor.</p>
+          </div>
+          <div class="row">
+            <p class="row-t"><span class="row-n">04</span>If you do turn cloud on, email addresses are masked out of the decision engine's prompts before they leave.</p>
+            <p class="row-b">On by default, not opt-in. The regex is length-bounded because it runs over untrusted inbound mail and must not backtrack. Scope, stated plainly, because it is narrower than the row title alone would suggest: it covers the two <span class="mono">PromptBuilder</span> paths — situation interpretation and candidate generation — and inside those it masks the raw signal dump and episodic memories, not the situation summary. Chat, briefing prose, draft-email generation and capability inference send their text unmasked today. Addresses only, in any case: names and phone numbers are never masked, and the source file says so and says why.</p>
+          </div>
+        </div>
+
+        <figure class="mt-lg col-fig">
+          <div class="crop" style="--sx:284; --sy:1014; --sw:823; --sh:74;">
+            <img loading="lazy" src="screenshots/settings.png" alt="Crop of the settings page 'Local AI brain' panel showing the model picker set to 'Qwen2.5 14B (Q4) · 9.0 GB · 32gb-plus (recommended)' with a Download button beside it, and below it the line 'Recommended for your machine: Qwen2.5 14B (Q4) (9.0 GB).'">
+          </div>
+          <figcaption>Settings · Local AI brain. Cropped above the panel's description line, which contains the author's local filesystem path.</figcaption>
+        </figure>
+
+        <details class="srcs">
+          <summary>Sources · 14 file references</summary>
+          <p class="src">Provider chain at <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/lib/llm-client-factory.ts#L62-L129">apps/api/src/lib/llm-client-factory.ts:62-129</a>, local-first default at :121-128, embedded gate at :66-75 and :154. Redaction at <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/llm-client/src/redact.ts#L31-L40">packages/llm-client/src/redact.ts:31-40</a> (the length-bounded regex and why) / :51-56, default-on at prompt-builder.ts:21-22, reached only from prompt-builder.ts:41 / :74 / :99 — whose two production callers are <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/decision-engine/src/strategies/llm-situation.ts#L14">packages/decision-engine/src/strategies/llm-situation.ts:14</a> and llm-candidates.ts:18. <span class="mono">grep -n 'redact\|Pii'</span> returns nothing in packages/assistant, packages/policy-prompts, packages/capability-engine or draft-email-candidate.ts. Runtime probes at <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/embedded-llm/src/runtime-detector.ts#L72-L74">packages/embedded-llm/src/runtime-detector.ts:72-74</a> with NullPort fallbacks. Hardware sizing at <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/routes/system.ts#L16">apps/api/src/routes/system.ts:16</a> / :24 and <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/system/hardware.ts#L112-L174">apps/api/src/system/hardware.ts:112-174</a> (:163-168 refuses to promise local execution without the llama.cpp binary); catalog at <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/embedded-llm/src/model-registry.ts#L55-L110">packages/embedded-llm/src/model-registry.ts:55-110</a> — every entry a HuggingFace <span class="mono">downloadUrl</span>, none bundled. Build-time sha256 verify at <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/desktop/scripts/build-single-binary.sh#L121-L130">apps/desktop/scripts/build-single-binary.sh:121-130</a>; that script downloads CockroachDB and nothing else, and <span class="mono">build.extraResources</span> in <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/desktop/package.json">apps/desktop/package.json</a> ships only apps.tar.gz + bundle-manifest.json. “Hash-verified” is claimed for the desktop build script only — not for <a href="https://github.com/jayzalowitz/skytwin/blob/main/install.sh">install.sh</a> (no checksum logic, issue #369) and not for model downloads (the registry ships placeholder hashes).</p>
+        </details>
+      </div>
+    </section>
+
+    <!-- ============================ 15-local-data ============================ -->
+    <section class="slide" tabindex="-1" id="15-local-data" aria-label="Slide 15 of 22: On your hardware — and what that costs.">
+      <div class="wrap">
+        <p class="slide-label">Local-first &nbsp;·&nbsp; 2 of 2</p>
+        <h2>On your hardware — and what that costs.</h2>
+        <p class="lede col">Three more facts you can check, one weight, and the claim we are not making yet.</p>
+
+        <div class="rows cols2">
+          <div class="row">
+            <p class="row-t"><span class="row-n">05</span>Voice is on-device.</p>
+            <p class="row-b">Speech-to-text with whisper.cpp, speech with Piper. The phone app records and ships audio to your own desktop over your own network, not to a service.</p>
+          </div>
+          <div class="row">
+            <p class="row-t"><span class="row-n">06</span>OAuth lands on your loopback interface.</p>
+            <p class="row-b">The redirect is <span class="mono">http://localhost:3100/api/oauth/google/callback</span>. The token goes straight to the desktop process and never passes through a server anyone else operates. Google scopes its third-party security assessment to apps that handle restricted data “from or through a third-party server” — no server in the path is the test we're on the right side of, and you can check that against their wording rather than take it from us. It is not an exemption: <a href="#19-not-yet">what isn't true yet</a> has what we still owe Google on the bundled client.</p>
+          </div>
+          <div class="row span2">
+            <p class="row-t"><span class="row-n">07</span>Eight external runtime dependencies, across 30 packages and six Node apps.</p>
+            <p class="mono mt-md mb-sm">@modelcontextprotocol/sdk · ajv · bonjour-service · chrono-node · express · pg · tweetnacl · zod</p>
+            <p class="row-b">26 of 30 packages have zero. Five LLM providers, no vendor SDKs — Anthropic, OpenAI, Google, Ollama and llama.cpp are all reached over plain <span class="mono">fetch</span>. The Prometheus endpoint is hand-written to keep it that way. The dashboard has no bundler and no framework: 21,693 lines of vanilla JS across 53 files, 31 of them page modules, and <span class="mono">express</span> is its only runtime dependency. One database, no broker, no Redis. One grep disproves any of it if it's false.</p>
+          </div>
+        </div>
+
+        <div class="split wide-left mt-lg">
+        <figure>
+          <div class="crop" style="--sx:284; --sy:2030; --sw:823; --sh:210;">
+            <img loading="lazy" src="screenshots/settings.png" alt="Crop of the settings page 'Your data, your machine' panel: 'Everything your twin learns lives on this computer. Nothing is sent to a SkyTwin cloud, because there isn't one.' Then three lines — 'I keep: the preferences I learn, patterns I notice, and a log of every decision I made (with the reasoning).' 'I don't keep: the actual contents of your emails, your calendar event details, or any of your passwords.' 'Account access: I have a sign-in token from Google so I can read inbox and calendar. Disconnect above and that token is destroyed.'">
+          </div>
+          <figcaption>Settings · “Nothing is sent to a SkyTwin cloud, because there isn't one.”</figcaption>
+        </figure>
+          <div class="honest">
+            <b>The cost, said out loud</b>
+            Shipping a database and an Electron runtime in the box means the installers are 550–730 MB before you have downloaded a model. That is what “no dependencies” weighs.
+          </div>
+
+        <div class="panel mt-0">
+          <h3 class="flush">What isn't encrypted at rest, and how far it got</h3>
+          <p class="mb-sm">OAuth credentials have the whole mechanism — AES-256-GCM, a fresh 96-bit IV per encryption, a scrypt-derived key that is never persisted and lives in a one-hour in-process cache — and it is still not reached end to end. Tokens land plaintext on connect and are upgraded to their encrypted columns only by a process holding your unlocked key. The only place that upgrade runs is the worker, and the worker cannot see the key the API unlocks: they are separate processes and the handoff isn't built. The source comment says so, in those words.</p>
+          <p class="mb-0">Your preferences, twin profile and memory pages are written in plaintext too. The columns shipped, the crypto helper shipped, the key provider is switched on only in tests. Planned for 0.7, along with the cross-process key handoff. Until both land, the thing protecting this data is your operating system's disk encryption, not ours — and we are not going to write “your data is encrypted at rest” before it is.</p>
+        </div>
+        </div>
+
+        <details class="srcs">
+          <summary>Sources · 15 file references</summary>
+          <p class="src">Dependency set recomputed at HEAD by scanning <span class="mono">dependencies</span> in every packages/* and apps/* package.json and excluding <span class="mono">@skytwin/*</span> (desktop and mobile excluded and stated as such): exactly the eight listed; 26 of 30 packages have none. <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/llm-client/package.json">packages/llm-client/package.json</a> has only workspace deps. apps/web's only runtime dep is express. Hand-written Prometheus at <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/observability/src/prometheus.ts#L1-L24">packages/observability/src/prometheus.ts:1-24</a>, mounted at <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/index.ts">apps/api/src/index.ts</a>:255. OAuth redirect at <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/routes/oauth.ts#L419">apps/api/src/routes/oauth.ts:419</a> and <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/config/src/index.ts">packages/config/src/index.ts</a>:123. Crypto at <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/credential-vault/src/key-derivation.ts#L22-L25">packages/credential-vault/src/key-derivation.ts:22-25</a> / :70-98, envelope.ts:14-50, key-cache.ts:36. OAuth gap: tokens are inserted plaintext by <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/db/src/repositories/oauth-repository.ts#L59-L95">oauth-repository.ts:59-95</a> (<span class="mono">saveTokenForAccount</span>, no encrypted columns in the INSERT); the only encrypting path is <span class="mono">DbTokenStore</span>'s lazy migration, and its single production instantiation is <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/worker/src/index.ts#L542">apps/worker/src/index.ts:542</a> / :547, wired to a <span class="mono">KeyCache</span> that nothing ever populates — the comment at :72-85 states it: “Cross-process unlock IPC is not yet implemented… this cache is empty and the worker behaves exactly as it did before — plaintext tokens flow through.” The API's <span class="mono">sharedKeyCache</span> (routes/credential-vault.ts:34) is populated on unlock but is never handed to a token store. Preferences gap: <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/db/src/adapters/twin-repository-adapter.ts#L32">twin-repository-adapter.ts:32</a> defaults the provider to null, <span class="mono">setPreferenceVaultKeyProvider</span> at :35 has no caller outside <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/db/src/__tests__/preferences-vault.test.ts">preferences-vault.test.ts</a>, and <span class="mono">resolveKey(null, …)</span> returns <span class="mono">{ mode: 'plaintext' }</span> at vault-helper.ts:162-174. twin_profiles / brain_pages have the migration-066 columns and zero TypeScript references. Corroborated by <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/launch-readiness-report.md">docs/launch-readiness-report.md</a> on #374. Installer sizes from the v0.6.58.0 release assets.</p>
+        </details>
+      </div>
+    </section>
+
+    <!-- ============================ 16-refusals ============================ -->
+    <section class="slide" tabindex="-1" id="16-refusals" aria-label="Slide 16 of 22: What we refuse to be.">
+      <div class="wrap">
+        <p class="slide-label">Positioning &nbsp;·&nbsp; 1 of 2</p>
+        <h2>What we refuse to be.</h2>
+
+        <div class="rows">
+          <div class="row">
+            <p class="row-t">Not a chatbot.</p>
+            <p class="row-b">It's operational, not conversational — it doesn't wait for you to type.</p>
+          </div>
+          <div class="row">
+            <p class="row-t">Not an unconstrained autonomous agent.</p>
+            <p class="row-b">It doesn't pursue open-ended goals. The constraint system is not a limitation to work around; it is the product.</p>
+          </div>
+          <div class="row">
+            <p class="row-t">Not a rules engine.</p>
+            <p class="row-b">If-this-then-that never learns that this sender is different on Fridays.</p>
+          </div>
+          <div class="row">
+            <p class="row-t">Not AGI theater.</p>
+            <p class="row-b">The project's own tagline is “Mildly Apocalyptic Personal Automation.” The emphasis is on “mildly.”</p>
+          </div>
+        </div>
+
+        <p class="src"><a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/product-spec.md">docs/product-spec.md</a> “What SkyTwin Is NOT” read verbatim, including “The constraint system is not a limitation to work around -- it is the product” and the Mildly Apocalyptic tagline; README “What Makes This Different”.</p>
+      </div>
+    </section>
+
+    <!-- ============================ 17-who-else ============================ -->
+    <section class="slide" tabindex="-1" id="17-who-else" aria-label="Slide 17 of 22: Who else is here, honestly.">
+      <div class="wrap">
+        <p class="slide-label">Positioning &nbsp;·&nbsp; 2 of 2</p>
+        <h2>Who else is here, honestly.</h2>
+        <p class="lede strong col">We are not claiming the category. We are claiming the gate.</p>
+
+        <div class="col mt-lg">
+          <p class="dim">OpenClaw already owns “open-source agent that runs on your machine” — <span class="mono">387,835 stars</span>, and it's good. Its homepage headline is “The AI that really does things,” and the line under it: “Organizes your inbox, sends emails, manages your calendar, checks you in for flights.” On permissions it offers “full access or sandboxed — your choice.” One switch, two positions. This is the graded version: five rungs, per domain, earned, with published thresholds, a policy engine, an origin-based guard and a correction control on every row. We don't check you in for flights either.</p>
+          <p class="dim">Inbox Zero (<span class="mono">12,099 stars</span>) organizes and drafts, well, on a hosted service. The difference isn't the feature list. It's whether there's a server in the path, and whether the thing remembers you between Tuesdays.</p>
+          <p class="dim">Google put free AI summaries and suggested replies in Gmail in 2026. Summarizing an inbox is now a feature you already have and didn't pay for. So we don't sell summarization. We sell the two things a vendor structurally cannot: your mail never reaching one, and a record of what was refused.</p>
+        </div>
+
+        <h3>The academic anchor</h3>
+        <p class="col dim">An April 2026 study of 21 production agent systems (<span class="mono">arXiv 2605.24309</span>) found runtime approval in 15, scope configuration in 16, and policy specification in 14 — and named the open problem as balancing approval fatigue against uncontrolled autonomy. Approaches the literature prefers, like intent anchoring, had zero production deployment. SkyTwin implements all three deployed mechanisms. <a href="#07-gate-ladder">The ladder</a> is the answer to the open problem: the queue is supposed to get shorter as the twin gets you right.</p>
+
+        <p class="src">openclaw.ai homepage copy read verbatim, plus 387,835 stars via the GitHub API on <span class="mono">2026-08-27</span>. getinboxzero.com; elie222/inbox-zero at 12,099 stars, same date. blog.google Gmail announcement, Jan 2026. arxiv.org/abs/2605.24309.</p>
+      </div>
+    </section>
+
+    <!-- ============================ 18-status ============================ -->
+    <section class="slide" tabindex="-1" id="18-status" aria-label="Slide 18 of 22: What's true today.">
+      <div class="wrap">
+        <p class="slide-label">Status &nbsp;·&nbsp; 1 of 3</p>
+        <h2>What's true today.</h2>
+        <p class="lede col">Everything below shipped, runs, and can be checked. <a href="#19-not-yet">The next slide</a> — what isn't true yet — is why you can believe it.</p>
+
+        <div class="status">
+          <div class="works">
+            <ul>
+              <li><strong>116 dated releases</strong> to v0.6.101.0 · <strong>413 commits</strong> and 413 merged pull requests between 2026-03-31 and 2026-08-26, one engineer, essentially every commit through a review gate</li>
+              <li><strong>30 packages, 8 apps, 186,935 lines of TypeScript</strong> — 98,882 source against 88,053 test</li>
+              <li><strong>4,524 test cases across 369 files</strong>, including 17 on the injection guard, 25 on the action-safety primitives, 27 on the policy evaluator, 18 on the spend tracker, 44 across the trust-tier engines</li>
+              <li><strong>70 migrations, 91 tables, one database</strong></li>
+              <li>Gmail, Google Calendar, Outlook mail and Outlook calendar on real OAuth, with Microsoft Graph delta sync</li>
+              <li>The briefing, the approvals queue, the decision log with a per-row correction, the learned-preferences page</li>
+              <li>Desktop installers for .dmg, .exe, .AppImage, .deb and .rpm; a phone app with QR pairing, notifications and voice</li>
+              <li>A one-line install re-validated end to end in CI inside clean Ubuntu 22.04, Debian 12 and Fedora 40 containers — last run green, 2026-08-27</li>
+            </ul>
+          </div>
+        </div>
+
+        <details class="srcs">
+          <summary>Sources · every number above, and the command that produced it</summary>
+          <p class="src">All counts re-run at HEAD (0.6.101.0) in this worktree on 2026-08-27. Releases: <span class="mono">grep -cE '^## \[?[0-9]' CHANGELOG.md</span> → 116; <a href="https://github.com/jayzalowitz/skytwin/blob/main/VERSION">VERSION</a> → 0.6.101.0. Commits: <span class="mono">git rev-list --count HEAD</span> → 413, first 2026-03-31, latest 2026-08-26; merged PRs via <span class="mono">gh pr list --state merged</span> → 413; 408 of the 413 commits carry a <span class="mono">(#N)</span> squash-merge reference, which is what “essentially every commit” means. Layout: <span class="mono">ls -d packages/*/</span> → 30, <span class="mono">ls -d apps/*/</span> → 8. Lines: <span class="mono">wc -l</span> over every non-dist, non-node_modules <span class="mono">*.ts</span> → 186,935 total and 88,053 under <span class="mono">__tests__</span>/<span class="mono">*.test.ts</span>, leaving 98,882 source. Tests: 369 files, 4,524 <span class="mono">it(</span>/<span class="mono">test(</span> declarations — the safety subset counted per file, <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/policy-engine/src/__tests__/injection-guard.test.ts">packages/policy-engine/src/__tests__/injection-guard.test.ts</a> 17, <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/shared-types/src/__tests__/action-safety.test.ts">packages/shared-types/src/__tests__/action-safety.test.ts</a> 25, policy-evaluator.test.ts 27, spend-tracker.test.ts 18, trust-tier-engine.test.ts 28 + trust-tier-engine-adaptive.test.ts 16 = 44. Schema: <span class="mono">ls packages/db/src/migrations/</span> → 70 files (69 <span class="mono">.sql</span> + <span class="mono">001-initial.ts</span>); 91 tables = unique <span class="mono">CREATE TABLE</span> targets across those migrations and <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/db/src/schemas/schema.sql">packages/db/src/schemas/schema.sql</a>, minus <span class="mono">capability_recipes</span>, dropped by <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/db/src/migrations/053-drop-capability-recipes.sql">053-drop-capability-recipes.sql</a>. That number was 80 on an earlier cut of this slide; the grep behind it counted two comment lines in 027-capability-acquisition.sql as tables and missed schema.sql entirely. Installer targets from <span class="mono">build.mac/win/linux.target</span> in <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/desktop/package.json">apps/desktop/package.json</a> (dmg, nsis, AppImage, deb, rpm). Install CI matrix <span class="mono">[ubuntu, debian, fedora]</span> in <a href="https://github.com/jayzalowitz/skytwin/blob/main/.github/workflows/install-validation.yml">.github/workflows/install-validation.yml</a>, last green on main 2026-08-27. Caveat, same as the next slide's: the test and line counts are static greps — this worktree has no node_modules, so nothing here was produced by actually running the suite.</p>
+        </details>
+      </div>
+    </section>
+
+    <!-- ============================ 19-not-yet ============================ -->
+    <section class="slide" tabindex="-1" id="19-not-yet" aria-label="Slide 19 of 22: What isn't true yet.">
+      <div class="wrap">
+        <p class="slide-label">Status &nbsp;·&nbsp; 2 of 3</p>
+        <h2>What isn't true yet.</h2>
+        <p class="lede col">This list is why you can believe the last one. Nothing here is softened.</p>
+
+        <div class="status">
+          <div>
+            <ul>
+              <li><strong>The build badge is red, and no release has been cut since June.</strong> Two separate facts, and it would be convenient to tell them as one. The release job only fires on a <span class="mono">v*</span> tag; the newest tag is v0.6.58.0, published June 2, which is why the download you get is the June build with binaries still stamped 0.3.0 while the repo is on 0.6.101.0. For the two months after that the pipeline was green and simply was not tagged. Separately, since early August seven tests fail in one memory adapter — all seven inside a single helper, <span class="mono">computeBidirectionalThreadCounts</span>: one on RFC 5322 display-name parsing, three on extracting and attributing recipients (bare addresses, comma-separated <span class="mono">to</span> lists, <span class="mono">cc</span>), three on counting the days a contact appears in both directions. Because that job fails, all six downstream build and release jobs are skipped — so the next tag wouldn't produce artifacts either. Both are first in the queue.</li>
+              <li><strong>The installers aren't code-signed.</strong> Gatekeeper and SmartScreen will warn you on first launch. That needs a $99/yr Apple membership, a roughly $400/yr Windows certificate, and the secrets wired into a workflow that currently disables signing outright. Procurement, not code.</li>
+              <li><strong>Gmail is not one click. Calendar is.</strong> The bundled Google client is approved for identity and calendar only; connecting Gmail means creating your own Google Cloud project through an in-app wizard, about five minutes. Both Gmail scopes are classified restricted, and clearing that permanently needs a $15k–$50k/yr third-party assessment, deliberately deferred until there's revenue.</li>
+              <li><strong>“Encrypted at rest” is not true of anything yet.</strong> The AES-256-GCM machinery, the scrypt key derivation and the encrypted columns all shipped; nothing in production supplies the key. OAuth tokens land plaintext and are upgraded only by a process holding an unlocked key, which no process currently is; preferences read and write through a key provider that only the tests ever set; twin profiles and memory pages have the columns and no code path at all. <a href="#15-local-data">The panel on the local-data slide</a> has the specifics.</li>
+              <li><strong>Per-user pause, per-user spend caps, domain lists and quiet hours are not applied on the primary inbound-mail path</strong> — the autonomy settings aren't passed to the evaluator there. Trust tiers, the injection guard, the escalate-only terminal, the built-in deny policies and the operator kill switch still are, and the blanket cost-above-zero deny is why the missing spend check isn't exploitable for money. We found this writing the deck. It's filed.</li>
+              <li><strong>Recurring plain-language routines shipped read-only</strong> and are off by default behind a flag. They digest and notify; they never send, reply, schedule or spend.</li>
+              <li><strong>There is no hosted demo, and the packaged build can't run the tour either.</strong> Tour mode reports itself unavailable off localhost on purpose, because a hosted tour would land you on a dashboard full of 401s. But the same gate also needs the localhost dev-auth bypass, and the .dmg/.exe sets <span class="mono">NODE_ENV=production</span> and never runs the seed — so on the packaged build the “Just show me around” button renders disabled. The sample profile is source-install only today.</li>
+              <li><strong>Feature work has been paused since July 6.</strong> The most recent commits are dependency bumps.</li>
+              <li><strong>No user base, no testimonial, no traction number</strong> in this deck, because there isn't one worth showing.</li>
+            </ul>
+          </div>
+        </div>
+
+        <details class="srcs">
+          <summary>Sources · 20 file references</summary>
+          <p class="src">Counts re-run at HEAD in this worktree: 30 packages, 8 apps, 369 test files, 4,524 test declarations, 98,882 source lines vs 88,053 test lines, 70 migrations. CHANGELOG has 116 release headings; <a href="https://github.com/jayzalowitz/skytwin/blob/main/VERSION">VERSION</a> is 0.6.101.0; <span class="mono">git rev-list</span> → 413 commits; first commit 2026-03-31, latest 2026-08-26. Eval count re-derived by top-level indent: 101 scenario ids across 13 files, safety-regressions.ts has 8. <a href="https://github.com/jayzalowitz/skytwin/blob/main/.github/workflows/evals.yml#L33-L41">.github/workflows/evals.yml:33-41</a> runs the suite and greps for “FAIL”; no eval-results artifact exists anywhere in the repo. Red build: build.yml badge renders “failing”; run 33044196174 shows 14 failed / 262 passed in in-memory-repository.test.ts (7 unique, doubled across src and dist) with all 6 downstream jobs skipped. Release gate: <a href="https://github.com/jayzalowitz/skytwin/blob/main/.github/workflows/build.yml#L500">.github/workflows/build.yml:500</a> — <span class="mono">if: startsWith(github.ref, 'refs/tags/v')</span>; newest tag is v0.6.58.0 (tagged 2026-05-22, published 2026-06-02) and none since. The two facts are independent: build.yml succeeded on main on 2026-07-06 (run 28774758300) and on a branch 2026-07-14; the first failures are 2026-08-04, main went red 2026-08-27. Release drift: assets stamped 0.3.0, <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/desktop/package.json">apps/desktop/package.json</a> still 0.3.0. Signing: <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/launch-plan.md">docs/launch-plan.md</a> §1.3 with build.yml <span class="mono">CSC_IDENTITY_AUTO_DISCOVERY: 'false'</span>; issues #368 / #359. Gmail: <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/routes/oauth.ts#L530-L579">apps/api/src/routes/oauth.ts:530-579</a>; CASA cost and deferral in <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/launch-plan.md">docs/launch-plan.md</a> §3.1. Encryption: <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/launch-readiness-report.md">docs/launch-readiness-report.md</a> on #374, plus the code trail on <a href="#15-local-data">the local-data slide</a> — worker KeyCache never populated (apps/worker/src/index.ts:72-86), <span class="mono">setPreferenceVaultKeyProvider</span> test-only (packages/db/src/adapters/twin-repository-adapter.ts:35), twin_profiles / brain_pages columns with zero TypeScript references. Ingest-path gap: <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/decision-engine/src/decision-maker.ts#L246-L251">packages/decision-engine/src/decision-maker.ts:246-251</a> passes four arguments and omits autonomySettings; <span class="mono">grep 'autonomy'</span> in that file returns nothing; <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/worker/src/jobs/memory-action-loop.ts#L254-L260">apps/worker/src/jobs/memory-action-loop.ts:254-260</a> and <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/routes/routines.ts#L104-L110">apps/api/src/routes/routines.ts:104-110</a> do pass it. Watches gate: <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/worker/src/jobs/watch-scheduler.ts">apps/worker/src/jobs/watch-scheduler.ts</a>:27-33. Demo gate: <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/routes/demo.ts#L107-L125">apps/api/src/routes/demo.ts:107-125</a> (loopback AND <span class="mono">SKYTWIN_DEV_AUTH_BYPASS</span>); <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/desktop/src/service-manager.ts#L297">apps/desktop/src/service-manager.ts:297</a> sets <span class="mono">NODE_ENV: 'production'</span> and never sets the bypass; <span class="mono">runSeed</span> at <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/desktop/src/first-launch.ts#L196">apps/desktop/src/first-launch.ts:196</a> has zero callers; the disabled-button branch is <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/web/public/js/pages/onboarding.js">apps/web/public/js/pages/onboarding.js</a>:548-553. <a href="https://github.com/jayzalowitz/skytwin/blob/main/install.sh">install.sh</a>'s dev path does both (bin/skytwin-dev:208, :248). Install CI: <a href="https://github.com/jayzalowitz/skytwin/blob/main/.github/workflows/install-validation.yml">.github/workflows/install-validation.yml</a>, success on main 2026-08-27. Caveat: test counts are static greps — this worktree has no node_modules.</p>
+        </details>
+      </div>
+    </section>
+
+    <!-- ============================ 20-no-number ============================ -->
+    <section class="slide" tabindex="-1" id="20-no-number" aria-label="Slide 20 of 22: And the number we are not showing you.">
+      <div class="wrap">
+        <p class="slide-label">Status &nbsp;·&nbsp; 3 of 3</p>
+        <h2>And the number we are not showing you.</h2>
+
+        <div class="col">
+          <p>There is no accuracy percentage anywhere in this deck, on purpose. 101 evaluation scenarios across 13 domain files — 8 of the scenarios, in a dedicated safety-regressions file — run in CI, measuring escalation correctness, expected calibration error and decision latency, with a replay engine that re-runs historical decisions against older profile snapshots. Nobody has run it and published a result, so no result appears here.</p>
+          <p>An agent benchmark score is not, by itself, evidence about an agent. In April 2026 the Berkeley RDI group published an automated audit that synthesised exploits scoring <span class="mono">100%</span> on SWE-bench Verified and Terminal-Bench and roughly <span class="mono">100%</span> on WebArena <em>without solving a single task</em> — 219 distinct flaws across ten agent benchmarks.</p>
+          <p>Which is why a number we haven't published the run for would be the easiest sentence on this page to disprove. We went looking for a real-world counterweight to put here — a deployed-agent success rate measured from production telemetry rather than a benchmark — and every version of that statistic we could find traced back to a marketing post carrying no dataset, no methodology and no primary source. It is absent for the same reason our own accuracy number is. When there is one, the code that produced it ships next to it.</p>
+        </div>
+
+        <p class="quote">“Be honest: report the demo as unavailable unless the bypass would actually let the tour work.”</p>
+        <p class="src"><a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/routes/demo.ts#L107-L125">apps/api/src/routes/demo.ts:107-125</a> — a comment in the file that decides whether to offer a public tour. When this project can't deliver something, it turns the thing off rather than letting it half-work. That habit is why <a href="#19-not-yet">the list of what isn't true yet</a> exists.</p>
+        <p class="src">Benchmark audit: <a href="https://rdi.berkeley.edu/blog/trustworthy-benchmarks-cont/">rdi.berkeley.edu/blog/trustworthy-benchmarks-cont/</a>, Berkeley RDI, April 2026 — Wang, Li, Mang, Cheung, Sen, Song, “Do Androids Dream of Breaking the Game? Systematically Auditing AI Agent Benchmarks with BenchJack,” <a href="https://arxiv.org/abs/2605.12673">arXiv:2605.12673</a>, submitted 2026-05-12. Per-benchmark scores read from the blog's own table. A second statistic that stood here — “telemetry across 6,259 deployed agents put real-world success at 56.6%” — was removed on 2026-08-27: it is repeated across a dozen posts, but every one of them resolves to a single vendor blog that publishes neither the dataset nor the method, so we could not stand behind it.</p>
+      </div>
+    </section>
+
+    <!-- ============================ 21-check-it ============================ -->
+    <section class="slide" tabindex="-1" id="21-check-it" aria-label="Slide 21 of 22: Check it yourself.">
+      <div class="wrap">
+        <p class="slide-label">The ask &nbsp;·&nbsp; 1 of 2</p>
+        <h2>Check it yourself.</h2>
+        <p class="ask">What would have to be true before you'd let this read your actual inbox?</p>
+        <p class="col mt-md">That question is the roadmap. <a href="https://github.com/jayzalowitz/skytwin/issues">Open an issue</a> with the answer. Every number on these slides came from a command; here are the ones worth running first.</p>
+
+        <div class="cmd-list cols2">
+          <div class="cmd">
+            <p class="cmd-note"># clone it</p>
+            <div class="cmd-line">
+              <code id="cmd-0">git clone https://github.com/jayzalowitz/skytwin &amp;&amp; cd skytwin</code>
+              <button class="copy" type="button" data-action="copy-command" data-target="cmd-0">copy</button>
+            </div>
+          </div>
+          <div class="cmd">
+            <p class="cmd-note"># the eight dependencies — desktop and mobile excluded, and the command says so</p>
+            <div class="cmd-line">
+              <code id="cmd-1">cat packages/*/package.json apps/{api,web,worker,idle-miner-runner,openclaw-bridge,twin-mcp-server}/package.json | jq -r '.dependencies // {} | keys[]' | grep -v '@skytwin/' | sort -u</code>
+              <button class="copy" type="button" data-action="copy-command" data-target="cmd-1">copy</button>
+            </div>
+          </div>
+          <div class="cmd">
+            <p class="cmd-note"># the trust table, including the row that isn't there</p>
+            <div class="cmd-line">
+              <code id="cmd-2">sed -n '102,121p' packages/shared-types/src/policy.ts</code>
+              <button class="copy" type="button" data-action="copy-command" data-target="cmd-2">copy</button>
+            </div>
+          </div>
+          <div class="cmd">
+            <p class="cmd-note"># the guard, all 42 lines of it</p>
+            <div class="cmd-line">
+              <code id="cmd-3">sed -n '311,352p' packages/shared-types/src/action-safety.ts</code>
+              <button class="copy" type="button" data-action="copy-command" data-target="cmd-3">copy</button>
+            </div>
+          </div>
+          <div class="cmd">
+            <p class="cmd-note"># the provenance overwrite an injected email can't beat</p>
+            <div class="cmd-line">
+              <code id="cmd-4">sed -n '170,184p' packages/decision-engine/src/decision-maker.ts</code>
+              <button class="copy" type="button" data-action="copy-command" data-target="cmd-4">copy</button>
+            </div>
+          </div>
+          <div class="cmd">
+            <p class="cmd-note"># the local-first default</p>
+            <div class="cmd-line">
+              <code id="cmd-5">sed -n '114,128p' apps/api/src/lib/llm-client-factory.ts</code>
+              <button class="copy" type="button" data-action="copy-command" data-target="cmd-5">copy</button>
+            </div>
+          </div>
+        </div>
+
+        <p class="src">All six were run against HEAD and produce the content cited on the slide each one belongs to.</p>
+      </div>
+    </section>
+
+    <!-- ============================ 22-ways-in ============================ -->
+    <section class="slide" tabindex="-1" id="22-ways-in" aria-label="Slide 22 of 22: Three ways in.">
+      <div class="wrap">
+        <p class="slide-label">The ask &nbsp;·&nbsp; 2 of 2</p>
+        <h2>Three ways in. All of them end on your hardware.</h2>
+        <div class="rows cols2">
+          <div class="row span2">
+            <p class="row-t">Click around without connecting anything.</p>
+            <p class="row-b">Build from source with the command below — it seeds the sample profile and enables the local tour — then choose “Just show me around.” You get Alex: a populated twin with recent decisions, a real briefing, learned preferences, and four pending approvals that run the whole approve→execute path end to end, policy re-check and risk preflight and all, against a mock executor. No account, no inbox, no OAuth. Two more seeded people ship with it — a power user on full autopilot, and someone on day one who's 70% of the way to her first promotion. Source-install only today: the packaged desktop build runs in production mode and never seeds, so the tour button renders disabled there. There is no hosted demo either, deliberately.</p>
+          </div>
+          <div class="row">
+            <p class="row-t">Build from source.</p>
+            <div class="cmd-line mt-md mb-sm">
+              <code id="cmd-6">curl -fsSL https://raw.githubusercontent.com/jayzalowitz/skytwin/main/install.sh | bash</code>
+              <button class="copy" type="button" data-action="copy-command" data-target="cmd-6">copy</button>
+            </div>
+            <p class="row-b">Re-tested end to end in CI on clean Ubuntu 22.04, Debian 12 and Fedora 40 containers every time the install path changes.</p>
+          </div>
+          <div class="row">
+            <p class="row-t">Or download the desktop build — .dmg / .exe / .AppImage / .deb / .rpm.</p>
+            <p class="row-b">Read <a href="#19-not-yet">what isn't true yet</a> first: it's unsigned, it's the June build, it's 550–730 MB because the database and Electron are in the box, and the sample-profile tour is disabled on it.</p>
+          </div>
+        </div>
+
+        <p class="col dim mt-lg">The project is Apache 2.0 and free forever for personal use; Team and Hosted tiers are planned for organizations that need shared policies, audit logs or managed infrastructure, and there are no prices published, because publishing prices for a backlog you haven't shipped is the easiest trust to lose.</p>
+
+        <div class="actions">
+          <a class="button" href="https://github.com/jayzalowitz/skytwin">Read the source</a>
+          <a class="button primary" href="https://github.com/jayzalowitz/skytwin/releases/latest">Install it</a>
+        </div>
+
+        <p class="col dim mt-lg">Ask the twin before asking the user. Ask the user before doing anything that can't be undone.</p>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="deck-footer">
+    <div class="wrap">
+      <div class="footer-links">
+        <a href="index.html">Overview</a>
+        <a href="https://github.com/jayzalowitz/skytwin">GitHub repository</a>
+        <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/safety-model.md">Safety model</a>
+        <a href="https://github.com/jayzalowitz/skytwin/releases/latest">Latest release</a>
+        <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/shared-types/src/policy.ts">policy.ts</a>
+        <a href="demo.html">Demo storyboard</a>
+      </div>
+      <p>SkyTwin is an open-source personal-automation project by <a href="https://github.com/jayzalowitz">Jay Zalowitz</a>, licensed Apache 2.0. Screenshots captured 2026-06-15 against v0.6.x; code references verified at 0.6.101.0.</p>
+      <p>install.sh's header advertises a “hash-verified” CockroachDB download and the script contains no checksum logic (issue #369) — that claim is deliberately not repeated on this page; only the desktop build script genuinely verifies a sha256.</p>
+    </div>
+  </footer>
+
+  <p class="counter" id="counter">01 / 22</p>
+  <p class="kbd-hint" aria-hidden="true">← → · space · i</p>
+
+  <div class="index-overlay" id="deck-index" role="dialog" aria-modal="true"
+       aria-labelledby="deck-index-title" hidden>
+    <div class="wrap">
+      <div class="index-head">
+        <div>
+          <h2 class="mb-sm" id="deck-index-title">Contents</h2>
+          <p class="dim"><span id="index-count">22</span> slides. Esc closes.</p>
+        </div>
+        <button class="button" type="button" data-action="toggle-index">Close</button>
+      </div>
+      <div class="index-grid">
+        <a class="index-tile" href="#01-ten-things" data-action="goto-slide"><span class="n">01</span><span class="t">Ten things arrived. Two need you.</span></a>
+        <a class="index-tile" href="#02-two-need-you" data-action="goto-slide"><span class="n">02</span><span class="t">What 07:41 looks like instead.</span></a>
+        <a class="index-tile" href="#03-why-now" data-action="goto-slide"><span class="n">03</span><span class="t">The capability shipped. The trust didn’t.</span></a>
+        <a class="index-tile" href="#04-claim-decides" data-action="goto-slide"><span class="n">04</span><span class="t">CLAIM 01 — It decides what needs you.</span></a>
+        <a class="index-tile" href="#05-gate-verdict" data-action="goto-slide"><span class="n">05</span><span class="t">GATE 01 — Nothing without a verdict.</span></a>
+        <a class="index-tile" href="#06-claim-acts" data-action="goto-slide"><span class="n">06</span><span class="t">CLAIM 02 — It acts on your real accounts.</span></a>
+        <a class="index-tile" href="#07-gate-ladder" data-action="goto-slide"><span class="n">07</span><span class="t">GATE 02 — You cannot earn full autopilot.</span></a>
+        <a class="index-tile" href="#08-gate-provenance" data-action="goto-slide"><span class="n">08</span><span class="t">GATE 03 — The email that manipulates it.</span></a>
+        <a class="index-tile" href="#09-escalation" data-action="goto-slide"><span class="n">09</span><span class="t">GATE 03 — It escalates, it never denies.</span></a>
+        <a class="index-tile" href="#10-gate-spend" data-action="goto-slide"><span class="n">10</span><span class="t">GATE 04 — It cannot spend your money.</span></a>
+        <a class="index-tile" href="#11-stops" data-action="goto-slide"><span class="n">11</span><span class="t">GATE 05 — Pause, and what pause covers.</span></a>
+        <a class="index-tile" href="#12-undo-delete" data-action="goto-slide"><span class="n">12</span><span class="t">GATE 05 — Undo. Delete.</span></a>
+        <a class="index-tile" href="#13-receipt" data-action="goto-slide"><span class="n">13</span><span class="t">Logged, explained, correctable.</span></a>
+        <a class="index-tile" href="#14-local-first" data-action="goto-slide"><span class="n">14</span><span class="t">There is no SkyTwin server.</span></a>
+        <a class="index-tile" href="#15-local-data" data-action="goto-slide"><span class="n">15</span><span class="t">On your hardware — and what that costs.</span></a>
+        <a class="index-tile" href="#16-refusals" data-action="goto-slide"><span class="n">16</span><span class="t">What we refuse to be.</span></a>
+        <a class="index-tile" href="#17-who-else" data-action="goto-slide"><span class="n">17</span><span class="t">Who else is here, honestly.</span></a>
+        <a class="index-tile" href="#18-status" data-action="goto-slide"><span class="n">18</span><span class="t">What’s true today.</span></a>
+        <a class="index-tile" href="#19-not-yet" data-action="goto-slide"><span class="n">19</span><span class="t">What isn’t true yet.</span></a>
+        <a class="index-tile" href="#20-no-number" data-action="goto-slide"><span class="n">20</span><span class="t">The number we are not showing you.</span></a>
+        <a class="index-tile" href="#21-check-it" data-action="goto-slide"><span class="n">21</span><span class="t">Check it yourself.</span></a>
+        <a class="index-tile" href="#22-ways-in" data-action="goto-slide"><span class="n">22</span><span class="t">Three ways in.</span></a>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Deck navigation. No inline event-handler attributes anywhere in this file
+    // (CLAUDE.md, Frontend Event Handling): one delegated click listener on
+    // document behind a module-level guard, plus one keydown listener.
+    // Everything degrades: with JS off the page is a plain scrolling document,
+    // every slide is readable in order, and #slide-id deep links still work.
+    (function () {
+      'use strict';
+      if (window._deckListenerWired) return;
+      window._deckListenerWired = true;
+
+      var slides = Array.prototype.slice.call(document.querySelectorAll('.slide'));
+      var counter = document.getElementById('counter');
+      var fill = document.getElementById('progress-fill');
+      var overlay = document.getElementById('deck-index');
+      var toggle = document.querySelector('[data-action="toggle-index"]');
+      if (!slides.length) return;
+
+      var NAV_H = 60;
+      var indexCount = document.getElementById('index-count');
+      if (indexCount) indexCount.textContent = String(slides.length);
+
+      var SLIDE_COUNT = slides.length;
+
+      function pad(n) { return (n < 10 ? '0' : '') + n; }
+
+      // The slide you are IN — the last one whose top has passed under the nav.
+      // (Nearest-top-edge got this wrong the moment a slide was taller than the
+      // viewport: standing mid-slide, the NEXT slide's top was the closer edge.)
+      function currentIndex() {
+        var best = 0;
+        for (var i = 0; i < SLIDE_COUNT; i++) {
+          if (slides[i].getBoundingClientRect().top <= NAV_H + 24) best = i;
+        }
+        return best;
+      }
+
+      // paint() runs on every animation frame while the page is scrolling, so it
+      // writes only when the value actually changed. Rewriting the counter's text
+      // node 60x/sec with an identical string is a DOM write per frame for nothing
+      // — and if this node is ever given aria-live again, a replaced text node can
+      // re-trigger the announcement in several screen readers.
+      var lastCount = null;
+      var lastFill = null;
+      function paint() {
+        var i = currentIndex();
+        var next = pad(i + 1) + ' / ' + pad(SLIDE_COUNT);
+        if (counter && next !== lastCount) { counter.textContent = next; lastCount = next; }
+        var pct = (SLIDE_COUNT > 1 ? (i / (SLIDE_COUNT - 1)) * 100 : 100) + '%';
+        if (fill && pct !== lastFill) { fill.style.width = pct; lastFill = pct; }
+      }
+
+      function go(i) {
+        var clamped = Math.max(0, Math.min(SLIDE_COUNT - 1, i));
+        var target = slides[clamped];
+        if (!target) return;
+        target.scrollIntoView({ block: 'start' });
+        if (history.replaceState) history.replaceState(null, '', '#' + target.id);
+        paint();
+      }
+
+      // Every slide is written to fit about one viewport, but a short window
+      // (or a long slide) can still leave content below the fold. ← → and space
+      // advance a viewport at a time while that is true, and only jump to the
+      // next slide once the current one is exhausted — so the documented control
+      // can never skip content. ↑ ↓ / PageUp / PageDown / spacebar-with-a-control-
+      // focused are deliberately NOT bound: the browser's own scrolling is the
+      // only thing that gives a keyboard-only reader line-level movement, and
+      // taking all four away left no key that could reach the bottom of a slide.
+      function step(dir) {
+        var i = currentIndex();
+        var r = slides[i].getBoundingClientRect();
+        var vh = window.innerHeight;
+        var page = Math.max(240, vh - NAV_H - 40);
+        if (dir > 0) {
+          if (r.bottom > vh + 24) {
+            window.scrollBy(0, page);
+            paint();
+            return;
+          }
+          if (i === SLIDE_COUNT - 1) {
+            // Past the last slide sits the footer. go() would clamp back onto
+            // this same slide and the closing links would never come on screen.
+            window.scrollTo(0, document.documentElement.scrollHeight);
+            paint();
+            return;
+          }
+          go(i + 1);
+        } else {
+          if (r.top < NAV_H - 24) {
+            window.scrollBy(0, -page);
+            paint();
+            return;
+          }
+          go(i - 1);
+        }
+      }
+
+      // The overlay is an opaque fullscreen dialog, so the page behind it has to
+      // stop being reachable — otherwise Tab walks 20-odd invisible controls under
+      // an opaque layer and a screen reader still reads all 22 slides. `inert`
+      // gives us the focus trap and the AT hiding in one attribute; aria-hidden is
+      // the fallback for engines that do not support it yet.
+      var behind = [
+        document.querySelector('.nav'),
+        document.getElementById('deck'),
+        document.querySelector('.deck-footer'),
+        document.querySelector('.skip')
+      ];
+      var supportsInert = 'inert' in HTMLElement.prototype;
+      function setBackgroundInert(on) {
+        for (var i = 0; i < behind.length; i++) {
+          var el = behind[i];
+          if (!el) continue;
+          if (supportsInert) el.inert = on;
+          else if (on) el.setAttribute('aria-hidden', 'true');
+          else el.removeAttribute('aria-hidden');
+        }
+      }
+
+      // Close without moving focus — used when the caller is about to place focus
+      // somewhere better than the toggle (picking a slide from the index).
+      function closeIndexQuietly() {
+        if (!overlay || overlay.hidden) return;
+        overlay.hidden = true;
+        setBackgroundInert(false);
+        if (toggle) toggle.setAttribute('aria-expanded', 'false');
+      }
+
+      function setIndexOpen(open) {
+        if (!overlay) return;
+        overlay.hidden = !open;
+        setBackgroundInert(open);
+        if (toggle) toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+        if (open) {
+          var first = overlay.querySelector('.index-tile');
+          if (first) first.focus();
+        } else if (toggle) {
+          toggle.focus();
+        }
+      }
+
+      document.addEventListener('click', function (e) {
+        var el = e.target && e.target.closest ? e.target.closest('[data-action]') : null;
+        if (!el) return;
+        var action = el.getAttribute('data-action');
+
+        if (action === 'toggle-index') {
+          e.preventDefault();
+          setIndexOpen(!!(overlay && overlay.hidden));
+          return;
+        }
+
+        if (action === 'goto-slide') {
+          // Close, then put focus ON the destination slide (every section carries
+          // tabindex="-1"). Returning focus to the nav toggle instead — which is
+          // what setIndexOpen(false) does — meant the next Tab resumed from the
+          // top of the document and scrolled the reader away from the slide they
+          // had just chosen. WCAG 2.4.3.
+          closeIndexQuietly();
+          var href = el.getAttribute('href') || '';
+          var target = href.charAt(0) === '#' ? document.getElementById(href.slice(1)) : null;
+          if (target) target.focus({ preventScroll: true });
+          return; // the anchor's default hash navigation still does the scrolling
+        }
+
+        if (action === 'copy-command') {
+          var src = document.getElementById(el.getAttribute('data-target'));
+          if (!src) return;
+          var flash = function (label) {
+            el.textContent = label;
+            window.setTimeout(function () { el.textContent = 'copy'; }, 1600);
+          };
+          // No clipboard API (file://, plain HTTP, or the user denied it):
+          // select the command instead and say so, rather than doing nothing.
+          var selectIt = function () {
+            try {
+              var range = document.createRange();
+              range.selectNodeContents(src);
+              var sel = window.getSelection();
+              sel.removeAllRanges();
+              sel.addRange(range);
+            } catch (err) { /* selection unavailable; the text is still there */ }
+            flash('select it');
+          };
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(src.textContent).then(function () { flash('copied'); }, selectIt);
+          } else {
+            selectIt();
+          }
+        }
+      });
+
+      document.addEventListener('keydown', function (e) {
+        if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+        // Escape is close-only. It used to toggle, so pressing it in browser
+        // fullscreen threw the contents panel over the slide you were
+        // presenting at the same moment the browser left fullscreen.
+        if (e.key === 'Escape') {
+          if (overlay && !overlay.hidden) {
+            e.preventDefault();
+            setIndexOpen(false);
+          }
+          return;
+        }
+        if (overlay && !overlay.hidden) return;
+
+        // 'a' is deliberately NOT in this list. Browsers activate a focused link
+        // on Enter, never on Space, so treating links as space-consuming meant
+        // that merely tabbing to "GitHub" silently changed what the spacebar did.
+        // Buttons and form fields genuinely consume it.
+        var tag = e.target && e.target.tagName ? e.target.tagName.toLowerCase() : '';
+        var interactive = tag === 'input' || tag === 'textarea' || tag === 'select' || tag === 'button';
+
+        if ((e.key === 'i' || e.key === '?') && !interactive) {
+          e.preventDefault();
+          setIndexOpen(true);
+          return;
+        }
+
+        // ArrowUp / ArrowDown / PageUp / PageDown are NOT handled here. They stay
+        // with the browser so a keyboard-only reader can always scroll inside a
+        // slide; the deck's own controls are ← → (viewport-aware, never skips
+        // content), space, Home and End — which is what .kbd-hint advertises.
+        switch (e.key) {
+          case 'ArrowRight':
+            e.preventDefault();
+            step(1);
+            break;
+          case ' ':
+          case 'Spacebar':
+            if (interactive) return; // Space activates a focused control
+            e.preventDefault();
+            step(1);
+            break;
+          case 'ArrowLeft':
+            e.preventDefault();
+            step(-1);
+            break;
+          case 'Home':
+            e.preventDefault();
+            go(0);
+            break;
+          case 'End':
+            e.preventDefault();
+            go(SLIDE_COUNT - 1);
+            break;
+          default:
+            break;
+        }
+      });
+
+      var ticking = false;
+      window.addEventListener('scroll', function () {
+        if (ticking) return;
+        ticking = true;
+        window.requestAnimationFrame(function () { ticking = false; paint(); });
+      }, { passive: true });
+
+      window.addEventListener('hashchange', paint);
+
+      // Print gets the citations open, then gets them put back exactly as the
+      // reader left them. The CSS in @media print is the JS-off backstop.
+      var reopened = [];
+      var printing = false;
+      function openForPrint() {
+        // Chromium and Firefox fire beforeprint AND the matchMedia('print')
+        // change. Without this guard the second call resets `reopened` to [],
+        // finds everything already open, records nothing — and every citation
+        // block stays expanded after the reader closes the print dialog.
+        if (printing) return;
+        printing = true;
+        reopened = [];
+        var all = document.querySelectorAll('details.srcs');
+        for (var i = 0; i < all.length; i++) {
+          if (!all[i].open) { all[i].open = true; reopened.push(all[i]); }
+        }
+      }
+      function restoreAfterPrint() {
+        for (var i = 0; i < reopened.length; i++) reopened[i].open = false;
+        reopened = [];
+        printing = false;
+      }
+      window.addEventListener('beforeprint', openForPrint);
+      window.addEventListener('afterprint', restoreAfterPrint);
+      if (window.matchMedia) {
+        var mq = window.matchMedia('print');
+        var onChange = function (m) { if (m.matches) openForPrint(); else restoreAfterPrint(); };
+        if (mq.addEventListener) mq.addEventListener('change', onChange);
+        else if (mq.addListener) mq.addListener(onChange);
+      }
+
+      paint();
+    })();
+  </script>
+</body>
+</html>
