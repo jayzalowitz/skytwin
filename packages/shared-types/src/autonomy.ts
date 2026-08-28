@@ -32,6 +32,40 @@ export const CONSERVATIVE_AUTONOMY_DEFAULTS: AutonomySettings = Object.freeze({
   requireApprovalForIrreversible: true,
 });
 
+/**
+ * A domain that cannot match any real domain, used to keep a malformed
+ * allowlist fail-CLOSED. See {@link parseAllowlist}.
+ */
+export const UNMATCHABLE_DOMAIN = '\u0000invalid-domain';
+
+/**
+ * Narrow a raw `allowedDomains` value, failing CLOSED.
+ *
+ * The allowlist is polarity-sensitive: `PolicyEvaluator.checkDomainAllowlist`
+ * treats a NON-empty list as "the domain must appear in it" and an EMPTY list
+ * as "every domain is allowed". So naively filtering non-strings out is a
+ * privilege escalation — `allowedDomains: [42]` used to deny everything (no
+ * string domain can equal `42`), and filtering it to `[]` would silently turn
+ * that into "allow every domain".
+ *
+ * When the raw list had entries but none survive narrowing, we keep one
+ * unmatchable entry so the list stays non-empty and continues to deny. A
+ * partially-malformed list (`['ok.com', 42]`) narrows to `['ok.com']`, which
+ * matches the old behaviour exactly.
+ *
+ * `blockedDomains` needs no equivalent: there, empty means "block nothing",
+ * which is already the conservative default, so dropping junk entries cannot
+ * widen anything.
+ */
+function parseAllowlist(raw: unknown, fallback: readonly string[]): string[] {
+  if (!Array.isArray(raw)) return [...fallback];
+  const strings = (raw as unknown[]).filter(
+    (d): d is string => typeof d === 'string',
+  );
+  if (strings.length === 0 && raw.length > 0) return [UNMATCHABLE_DOMAIN];
+  return strings;
+}
+
 function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }
@@ -72,11 +106,7 @@ export function parseAutonomySettings(
       typeof r['maxDailySpendCents'] === 'number'
         ? r['maxDailySpendCents']
         : fallback.maxDailySpendCents,
-    allowedDomains: Array.isArray(r['allowedDomains'])
-      ? (r['allowedDomains'] as unknown[]).filter(
-          (d): d is string => typeof d === 'string',
-        )
-      : [...fallback.allowedDomains],
+    allowedDomains: parseAllowlist(r['allowedDomains'], fallback.allowedDomains),
     blockedDomains: Array.isArray(r['blockedDomains'])
       ? (r['blockedDomains'] as unknown[]).filter(
           (d): d is string => typeof d === 'string',

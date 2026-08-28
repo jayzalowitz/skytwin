@@ -105,4 +105,34 @@ describe('parseAutonomySettings', () => {
     expect(parsed.requireApprovalForIrreversible).toBe(false);
     expect(parsed.quietHoursStart).toBe('23:00');
   });
+  // ── fail-closed allowlist (codex review, [P1]) ────────────────────────
+  //
+  // `PolicyEvaluator.checkDomainAllowlist` reads a NON-empty allowlist as
+  // "the domain must be in this list" and an EMPTY one as "allow every
+  // domain". So narrowing a malformed list down to `[]` is a privilege
+  // escalation, not a cleanup.
+
+  it('keeps a fully-malformed allowlist DENYING rather than filtering it to unrestricted', () => {
+    const parsed = parseAutonomySettings({ allowedDomains: [42, null, {}] });
+
+    // Non-empty is the load-bearing property: empty would mean "allow all".
+    expect(parsed.allowedDomains.length).toBeGreaterThan(0);
+    expect(parsed.allowedDomains).not.toContain('email');
+    expect(parsed.allowedDomains.every((d) => typeof d === 'string')).toBe(true);
+  });
+
+  it('narrows a partially-malformed allowlist to just its real domains', () => {
+    const parsed = parseAutonomySettings({ allowedDomains: ['email', 42, 'calendar'] });
+    expect(parsed.allowedDomains).toEqual(['email', 'calendar']);
+  });
+
+  it('treats an explicitly empty allowlist as unrestricted (unchanged)', () => {
+    // An empty list the user actually set is a real "no restriction" signal;
+    // only a list that HAD entries and lost them all is suspicious.
+    expect(parseAutonomySettings({ allowedDomains: [] }).allowedDomains).toEqual([]);
+  });
+
+  it('falls back rather than inventing a sentinel when allowedDomains is not an array', () => {
+    expect(parseAutonomySettings({ allowedDomains: 'email' }).allowedDomains).toEqual([]);
+  });
 });

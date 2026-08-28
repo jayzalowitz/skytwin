@@ -34,6 +34,7 @@ import {
   type TwinEvidence,
   type TwinProfile,
 } from '@skytwin/shared-types';
+import { parseAutonomySettings } from '@skytwin/shared-types';
 import { PolicyEvaluator } from '@skytwin/policy-engine';
 import {
   TwinService,
@@ -160,6 +161,49 @@ function autoArchivePreference(): Preference {
   };
 }
 
+/**
+ * A candidate + a policy that denies it. Used to source a deny from the POLICY
+ * LOOP specifically, rather than from autonomy settings — those are checked
+ * earlier and early-return, so a settings-sourced deny never exercises the
+ * quiet-hours ordering at all.
+ */
+function emailCandidate(): CandidateAction {
+  return {
+    id: 'cand-quiet-hours',
+    decisionId: 'dec-quiet-hours',
+    actionType: 'archive_email',
+    description: 'Archive this email',
+    domain: 'email',
+    parameters: {},
+    estimatedCostCents: 0,
+    costZeroIntent: 'verified_zero',
+    reversible: true,
+    confidence: 'high' as CandidateAction['confidence'],
+    reasoning: 'routine',
+    provenance: 'user_authored',
+  };
+}
+
+const DENY_ALL_POLICY: ActionPolicy = {
+  id: 'test_deny_all',
+  name: 'Deny All',
+  description: 'Test policy that denies the candidate above.',
+  rules: [
+    {
+      id: 'rule_deny_all',
+      policyId: 'test_deny_all',
+      condition: { field: 'actionType', operator: 'eq', value: 'archive_email' },
+      effect: 'deny',
+      reason: 'Denied by test policy.',
+    },
+  ],
+  priority: 100,
+  enabled: true,
+  builtIn: false,
+  createdAt: new Date(),
+  updatedAt: new Date(),
+};
+
 function setupHarness(policies: ActionPolicy[] = []): DecisionMaker {
   const twinRepo = new TwinRepo();
   void twinRepo.createProfile({
@@ -283,6 +327,53 @@ describe('autonomy settings reach the policy evaluator (primary ingest path)', (
     const outcome = await setupHarness().evaluate(
       contextWith({ ...BASE_AUTONOMY, blockedDomains: ['email'] }),
     );
+
+    expect(outcome.selectedAction).toBeNull();
+    expect(outcome.autoExecute).toBe(false);
+  });
+
+  it('quiet hours do NOT flip a POLICY deny into an approval (codex review [P1])', async () => {
+    // Evaluator-level on purpose. The deny has to come from the POLICY LOOP:
+    // `checkAutonomySettings` (blockedDomains / allowlist / spend) runs and
+    // early-returns BEFORE quiet hours, so a settings-sourced deny never
+    // exercises this ordering — a test written that way passes even with the
+    // bug present (verified: it did).
+    //
+    // Quiet hours used to early-return `allowed: true, requiresApproval: true`
+    // ahead of that loop, so an active window converted a deny into a mere
+    // approval prompt. Escalation is weaker than denial; denial must win.
+    const evaluator = new PolicyEvaluator(new PolicyRepo());
+    const decision = await evaluator.evaluate(
+      emailCandidate(),
+      [DENY_ALL_POLICY],
+      TrustTier.HIGH_AUTONOMY,
+      undefined,
+      { ...BASE_AUTONOMY, ...quietHoursAroundNow() },
+    );
+
+    expect(decision.allowed).toBe(false);
+    expect(decision.blockingPolicy?.id).toBe(DENY_ALL_POLICY.id);
+  });
+
+  it('quiet hours + pause together still lose to a policy deny', async () => {
+    const evaluator = new PolicyEvaluator(new PolicyRepo());
+    const decision = await evaluator.evaluate(
+      emailCandidate(),
+      [DENY_ALL_POLICY],
+      TrustTier.HIGH_AUTONOMY,
+      undefined,
+      { ...BASE_AUTONOMY, ...quietHoursAroundNow(), paused: true },
+    );
+
+    expect(decision.allowed).toBe(false);
+  });
+
+  it('a malformed allowlist denies rather than becoming unrestricted (codex review [P1])', async () => {
+    // Raw JSONB the parser has to narrow. Filtering the junk out would leave
+    // an EMPTY allowlist, which PolicyEvaluator reads as "allow every domain"
+    // — turning a deny-everything config into an allow-everything one.
+    const parsed = parseAutonomySettings({ ...BASE_AUTONOMY, allowedDomains: [42, null] });
+    const outcome = await setupHarness().evaluate(contextWith(parsed));
 
     expect(outcome.selectedAction).toBeNull();
     expect(outcome.autoExecute).toBe(false);

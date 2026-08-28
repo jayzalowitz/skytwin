@@ -194,34 +194,24 @@ export class PolicyEvaluator {
       }
     }
 
-    // Check quiet hours — escalate auto-execute to approval (not blocking urgent escalations)
+    // Quiet hours — escalate auto-execute to approval (never blocks urgent
+    // escalations). Recorded here but APPLIED at the bottom, alongside the
+    // kill switch, for exactly the same reason the kill switch is deferred:
+    // escalating to approval is WEAKER than denying, so it must not
+    // short-circuit ahead of a deny path.
+    //
+    // This used to early-return `allowed: true, requiresApproval: true`
+    // right here, ahead of the policy loop below. With autonomy settings
+    // now reaching this method on the primary ingest path, that turned an
+    // active quiet-hours window into a way to convert a policy `deny` into
+    // an approval prompt. Deferring keeps the documented invariant: every
+    // deny path gets to short-circuit first.
+    let quietHoursReason: string | undefined;
     if (autonomySettings) {
       const quietDecision = this.checkQuietHours(autonomySettings);
       if (quietDecision) {
-        return {
-          ...quietDecision,
-          // Preserve every non-negotiable escalation through the
-          // quiet-hours early return: the injection-guard confirmation
-          // level, the trust tier's own approval requirement
-          // (observer/suggest), and the kill-switch pause (#379).
-          // Each must outlive every early return that can still
-          // return `allowed: true` — observer reaches this path now
-          // that it is allow-with-approval rather than a hard deny,
-          // and a paused user must not silently bypass via quiet
-          // hours either.
-          requiresApproval:
-            quietDecision.requiresApproval ||
-            Boolean(tierDecision?.requiresApproval) ||
-            killSwitchActive,
-          ...(confirmationLevel ? { confirmationLevel } : {}),
-          // Operator/user pause reason wins when both fire — same
-          // priority as the end-of-function merge below.
-          reason: killSwitchActive
-            ? killSwitchReason
-            : (approvalReason
-                ? `${quietDecision.reason} ${approvalReason}`
-                : quietDecision.reason),
-        };
+        requiresApproval = true;
+        quietHoursReason = quietDecision.reason;
       }
     }
 
@@ -261,9 +251,16 @@ export class PolicyEvaluator {
       //   2. Injection-guard / autonomy-settings / policy approval reason
       //   3. Trust-tier requirement
       //   4. Generic fallback
+      //   1. Operator/user pause  2. Quiet hours (composed with any other
+      //   approval reason, as the old early-return did)  3. Injection-guard /
+      //   autonomy-settings / policy reason  4. Trust tier  5. Fallback.
       const reason = killSwitchActive
         ? killSwitchReason
-        : (approvalReason || tierDecision?.reason || 'Approval required by policy.');
+        : quietHoursReason
+          ? approvalReason
+            ? `${quietHoursReason} ${approvalReason}`
+            : quietHoursReason
+          : (approvalReason || tierDecision?.reason || 'Approval required by policy.');
       return {
         allowed: true,
         requiresApproval: true,
