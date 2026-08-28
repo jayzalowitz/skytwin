@@ -15,7 +15,11 @@ All notable changes to SkyTwin will be documented in this file.
   - `twin_profiles` and `brain_pages` have no encryption code path at all; only migration 066's columns exist.
   - OAuth tokens are INSERTed plaintext by `oauth-repository.ts`, and the `DbTokenStore` lazy upgrade that would encrypt them runs only in the worker, wired to a `KeyCache` nothing populates — a limitation the worker source already documents in a comment.
 
+  This is exactly what open issue [#374](https://github.com/jayzalowitz/skytwin/issues/374) ("User memory and preferences are stored unencrypted") already tracked — the policy was contradicting our own backlog.
+
   The section is rewritten to state exactly what has shipped (the AES-256-GCM + scrypt machinery, the helper, the migration) and exactly what is not wired, and the effective date is updated. This is the privacy policy backing an active Google OAuth verification, so the overclaim was a real liability rather than a documentation nit. **No code behaviour changed — this release corrects the description, not the implementation.** Turning the encryption on is still the 0.7 item.
+
+- **`docs/architecture-philosophy.md` carried the same overclaim.** Its fixed-rails list asserted "Authentication and OAuth token storage: envelope-encrypted at rest, never logged in plaintext" as a held invariant. The logging half holds; the at-rest half does not. The entry now states the rail we intend to hold and the current status separately, so the repo no longer contradicts its own privacy policy.
 
 ### Why this matters
 
