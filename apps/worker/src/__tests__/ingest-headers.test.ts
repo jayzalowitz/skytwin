@@ -13,16 +13,26 @@ describe('buildIngestHeaders', () => {
     else process.env['SKYTWIN_SERVICE_TOKEN'] = saved;
   });
 
-  it('sends the service credential as a bearer token when configured', () => {
+  it('sends the service credential in the dedicated header when configured', () => {
+    // Deliberately NOT `Authorization`: apps/web proxies dashboard traffic to
+    // the API and forwards `Authorization` verbatim over a fresh localhost
+    // connection, so a credential on that header could be laundered through
+    // the proxy by a remote caller and arrive looking like loopback.
     expect(buildIngestHeaders({ SKYTWIN_SERVICE_TOKEN: 'tok-123' })).toEqual({
       'Content-Type': 'application/json',
-      Authorization: 'Bearer tok-123',
+      'X-SkyTwin-Service-Token': 'tok-123',
     });
   });
 
+  it('never sends the service credential on the Authorization header', () => {
+    expect(
+      buildIngestHeaders({ SKYTWIN_SERVICE_TOKEN: 'tok-123' })['Authorization'],
+    ).toBeUndefined();
+  });
+
   it('trims surrounding whitespace so a stray newline in the secret file cannot corrupt the header', () => {
-    expect(buildIngestHeaders({ SKYTWIN_SERVICE_TOKEN: '  tok-123\n' })['Authorization']).toBe(
-      'Bearer tok-123',
+    expect(buildIngestHeaders({ SKYTWIN_SERVICE_TOKEN: '  tok-123\n' })['X-SkyTwin-Service-Token']).toBe(
+      'tok-123',
     );
   });
 
@@ -30,7 +40,7 @@ describe('buildIngestHeaders', () => {
     expect(buildIngestHeaders({})).toEqual({ 'Content-Type': 'application/json' });
   });
 
-  it('omits the header for a blank token rather than sending "Bearer "', () => {
+  it('omits the header for a blank token rather than sending an empty one', () => {
     expect(buildIngestHeaders({ SKYTWIN_SERVICE_TOKEN: '   ' })).toEqual({
       'Content-Type': 'application/json',
     });
@@ -38,9 +48,9 @@ describe('buildIngestHeaders', () => {
 
   it('reads process.env by default and picks up rotation between calls', () => {
     delete process.env['SKYTWIN_SERVICE_TOKEN'];
-    expect(buildIngestHeaders()['Authorization']).toBeUndefined();
+    expect(buildIngestHeaders()['X-SkyTwin-Service-Token']).toBeUndefined();
 
     process.env['SKYTWIN_SERVICE_TOKEN'] = 'rotated';
-    expect(buildIngestHeaders()['Authorization']).toBe('Bearer rotated');
+    expect(buildIngestHeaders()['X-SkyTwin-Service-Token']).toBe('rotated');
   });
 });

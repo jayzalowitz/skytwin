@@ -76,6 +76,40 @@ function matchesServiceToken(presented: string): boolean {
 }
 
 /**
+ * The ONLY routes the loopback service credential may reach.
+ *
+ * The worker and idle-miner exist to push signals in; they have no reason to
+ * read or mutate a user's settings, policies, or approvals. `requireOwnership`
+ * skips its check for a service-authenticated request (these daemons act for
+ * every user on the install, so there is no single owning identity to match),
+ * and `requireOwnership` guards ~33 routers — so without this allowlist the
+ * credential would be a cross-user read/write capability for any local process
+ * that can read the token file, not a narrow ingest key.
+ */
+const SERVICE_ROUTE_ALLOWLIST: readonly string[] = ['/api/events/ingest'];
+
+function isServiceRouteAllowed(req: Request): boolean {
+  // originalUrl, because this middleware is mounted per-router and `req.path`
+  // is relative to the mount point.
+  const path = (req.originalUrl ?? '').split('?')[0]?.replace(/\/+$/, '') || '';
+  return SERVICE_ROUTE_ALLOWLIST.includes(path);
+}
+
+/**
+ * Loopback check for the SERVICE credential specifically.
+ *
+ * Deliberately reads the raw socket address rather than `req.ip`. `req.ip`
+ * honours `trust proxy` (the API sets it from TRUST_PROXY_HOPS), so a
+ * spoofed `X-Forwarded-For: 127.0.0.1` could otherwise satisfy it. The
+ * session path keeps using `isLocalhost` since it is additionally gated on a
+ * real session token.
+ */
+function isSocketLoopback(req: Request): boolean {
+  const ip = req.socket.remoteAddress ?? '';
+  return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
+}
+
+/**
  * Check if a request originates from localhost.
  */
 function isLocalhost(req: Request): boolean {
@@ -125,10 +159,19 @@ export async function sessionAuth(
   // than the human session path: header-only (never `?token=`), and only from
   // 127.0.0.1 / ::1. Both conditions plus a configured, matching secret are
   // required — none of them alone grants anything.
+  // Read from a DEDICATED header, not `Authorization`. `apps/web` proxies
+  // dashboard traffic to the API and forwards the `Authorization` header
+  // verbatim from a new localhost connection — so if the service credential
+  // rode on `Authorization`, a remote caller hitting the dashboard port could
+  // launder a token through the proxy and arrive looking like loopback. The
+  // proxy does not forward this header, which closes that path.
+  const serviceToken = req.headers['x-skytwin-service-token'];
   if (
-    bearerToken !== undefined &&
-    isLocalhost(req) &&
-    matchesServiceToken(bearerToken)
+    typeof serviceToken === 'string' &&
+    serviceToken.length > 0 &&
+    isSocketLoopback(req) &&
+    isServiceRouteAllowed(req) &&
+    matchesServiceToken(serviceToken)
   ) {
     // These daemons forward signals for EVERY user on the install, so there
     // is no single owning identity to bind. We leave `authenticatedUserId`

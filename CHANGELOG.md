@@ -68,6 +68,11 @@ All notable changes to SkyTwin will be documented in this file.
 - `apps/worker/src/__tests__/ingest-headers.test.ts`, `packages/idle-miner/src/__tests__/ingest-adapter.test.ts`, `apps/idle-miner-runner/src/__tests__/config.test.ts`, `apps/desktop/src/__tests__/headless.test.ts` — header construction, blank-token handling, and the headless misconfiguration warning.
 - `packages/connectors/src/__tests__/gmail-connector.test.ts` — the existing cursor assertions now commit explicitly, plus a new case proving an uncommitted batch is re-delivered on the next poll.
 
+- **Two over-grants in the service credential, found by codex review and fixed before merge.**
+  - *The credential was a cross-user capability, not an ingest key.* `requireOwnership` skips its check for a service-authenticated request (the daemons act for every user on the install, so there is no single owning identity to match) — and it guards ~33 routers. Any local process that could read the token file could therefore read or mutate arbitrary users through routes like `/api/settings/:userId`. Service auth is now restricted to an explicit route allowlist containing only `/api/events/ingest`.
+  - *The web proxy could launder a remote request into a loopback one.* `apps/web` forwards the `Authorization` header verbatim to the API over a fresh localhost connection, so a remote caller who had the token could POST it to the dashboard port and satisfy the loopback check. The credential moved to a dedicated `X-SkyTwin-Service-Token` header, which the proxy does not forward. The loopback test for the service path also now reads `req.socket.remoteAddress` rather than `req.ip`, so a spoofed `X-Forwarded-For` cannot satisfy it under `trust proxy`.
+  Both fixes ship with regression tests that were **mutation-tested** — removing the allowlist, or moving the credential back onto `Authorization`, each makes the corresponding test fail.
+
 ## [0.6.101.0] - 2026-07-06
 
 ### Added

@@ -74,7 +74,7 @@ export interface HttpSignalEmitterOptions {
   userId: string;
   /**
    * Loopback service credential (`SKYTWIN_SERVICE_TOKEN`), sent as
-   * `Authorization: Bearer <token>`. Required whenever the API runs with the
+   * the `X-SkyTwin-Service-Token` header. Required whenever the API runs with the
    * localhost dev bypass off — which is every packaged desktop build, since
    * the desktop pins `NODE_ENV=production` for its children. Omit it only in
    * a dev environment where the bypass is active.
@@ -106,7 +106,9 @@ export function createHttpSignalEmitter(
   const serviceToken = opts.serviceToken?.trim();
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
-    ...(serviceToken ? { Authorization: `Bearer ${serviceToken}` } : {}),
+    // Dedicated header rather than `Authorization` — see the note in
+    // apps/worker/src/ingest-headers.ts on the web-proxy laundering path.
+    ...(serviceToken ? { 'X-SkyTwin-Service-Token': serviceToken } : {}),
   };
   return async (signal: RawSignal): Promise<void> => {
     const body = JSON.stringify(toIngestEvent(signal, opts.userId));

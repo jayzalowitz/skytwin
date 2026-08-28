@@ -244,15 +244,15 @@ describe('/api/events/ingest behind the production auth chain', () => {
     expect(mocks.interpret).not.toHaveBeenCalled();
   });
 
-  it('accepts the correct SKYTWIN_SERVICE_TOKEN bearer from loopback', async () => {
-    const res = await post({ Authorization: `Bearer ${SERVICE_TOKEN}` });
+  it('accepts the correct SKYTWIN_SERVICE_TOKEN from loopback', async () => {
+    const res = await post({ 'X-SkyTwin-Service-Token': SERVICE_TOKEN });
     expect(res.status).toBeGreaterThanOrEqual(200);
     expect(res.status).toBeLessThan(300);
     expect(mocks.interpret).toHaveBeenCalledTimes(1);
   });
 
-  it('rejects a WRONG bearer token from loopback', async () => {
-    const res = await post({ Authorization: `Bearer ${'b'.repeat(64)}` });
+  it('rejects a WRONG token from loopback', async () => {
+    const res = await post({ 'X-SkyTwin-Service-Token': 'b'.repeat(64) });
     expect(res.status).toBe(401);
     expect(mocks.interpret).not.toHaveBeenCalled();
   });
@@ -260,17 +260,25 @@ describe('/api/events/ingest behind the production auth chain', () => {
   it('rejects a token of a different LENGTH without throwing (timingSafeEqual guard)', async () => {
     // `crypto.timingSafeEqual` throws on unequal buffer lengths; a missing
     // length guard would surface as a 500 from the error handler, not a 401.
-    const res = await post({ Authorization: 'Bearer short' });
+    const res = await post({ 'X-SkyTwin-Service-Token': 'short' });
     expect(res.status).toBe(401);
   });
 
-  it('rejects the correct token presented from a NON-loopback address', async () => {
+  it('ignores X-Forwarded-For for the service credential (reads the raw socket)', async () => {
+    // The service path deliberately uses `req.socket.remoteAddress`, not
+    // `req.ip`. `req.ip` honours `trust proxy` (the API sets it from
+    // TRUST_PROXY_HOPS), so a spoofed `X-Forwarded-For: 127.0.0.1` from a
+    // genuinely remote client could otherwise satisfy the loopback check.
+    // Reading the socket makes the header irrelevant in both directions —
+    // this request IS from loopback, so a spoofed remote XFF must not change
+    // the verdict. Supertest can only connect over loopback, so the
+    // genuinely-remote-socket case is covered by inspection, not by this test.
     const res = await post({
-      Authorization: `Bearer ${SERVICE_TOKEN}`,
+      'X-SkyTwin-Service-Token': SERVICE_TOKEN,
       'X-Forwarded-For': '203.0.113.7',
     });
-    expect(res.status).toBe(401);
-    expect(mocks.interpret).not.toHaveBeenCalled();
+    expect(res.status).toBeGreaterThanOrEqual(200);
+    expect(res.status).toBeLessThan(300);
   });
 
   it('does not accept the service token via the ?token= SSE query fallback', async () => {
@@ -310,8 +318,51 @@ describe('/api/events/ingest behind the production auth chain', () => {
 
   it('rejects everything when SKYTWIN_SERVICE_TOKEN is unset (no token means no service auth)', async () => {
     delete process.env['SKYTWIN_SERVICE_TOKEN'];
-    const res = await post({ Authorization: 'Bearer ' });
+    const res = await post({ 'X-SkyTwin-Service-Token': '' });
     expect(res.status).toBe(401);
     expect(mocks.interpret).not.toHaveBeenCalled();
+  });
+  // ── codex review [P1] / [P2] ──────────────────────────────────────────
+
+  it('does NOT accept the service credential on the Authorization header', async () => {
+    // apps/web proxies dashboard traffic to the API and forwards
+    // `Authorization` verbatim over a fresh localhost connection. If the
+    // service credential rode on that header, a remote caller could POST it to
+    // the dashboard port and the API would see a loopback source. Keeping the
+    // credential on a header the proxy does not forward closes that path.
+    const res = await post({ Authorization: `Bearer ${SERVICE_TOKEN}` });
+    expect(res.status).toBe(401);
+    expect(mocks.interpret).not.toHaveBeenCalled();
+  });
+
+  it('does NOT grant access to non-ingest routes (no cross-user ownership bypass)', async () => {
+    // `requireOwnership` skips its check for a service-authenticated request,
+    // and it guards ~33 routers. Without a route allowlist the ingest
+    // credential would be a cross-user read/write capability for any local
+    // process that can read the token file.
+    //
+    // Mount a second ownership-guarded router shaped like a real one
+    // (`/api/settings/:userId`) so this exercises the allowlist rather than
+    // just hitting a 404.
+    const app = express();
+    app.set('trust proxy', 1);
+    app.use(express.json());
+    const settings = express.Router();
+    settings.get('/:userId', (_req, res) => { res.json({ leaked: true }); });
+    app.use('/api/settings', sessionAuth, requireOwnership, settings);
+
+    const status = await new Promise<number>((resolve, reject) => {
+      const server = app.listen(0, '127.0.0.1', () => {
+        const addr = server.address();
+        if (!addr || typeof addr === 'string') { server.close(); reject(new Error('no port')); return; }
+        fetch(`http://127.0.0.1:${addr.port}/api/settings/${TEST_USER_ID}`, {
+          headers: { 'X-SkyTwin-Service-Token': SERVICE_TOKEN },
+        })
+          .then((r) => { server.close(); resolve(r.status); })
+          .catch((e) => { server.close(); reject(e); });
+      });
+    });
+
+    expect(status).toBe(401);
   });
 });

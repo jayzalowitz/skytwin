@@ -206,6 +206,7 @@ describe('sessionAuth middleware', () => {
   // -------------------------------------------------------------------
   describe('SKYTWIN_SERVICE_TOKEN loopback credential', () => {
     const TOKEN = 'f'.repeat(64);
+    const INGEST = '/api/events/ingest';
 
     async function loadWithBypassOff(): Promise<
       (req: Request, res: Response, next: NextFunction) => Promise<void>
@@ -215,18 +216,33 @@ describe('sessionAuth middleware', () => {
       return mod.sessionAuth;
     }
 
-    it('accepts a matching bearer token from loopback and flags the request as service auth', async () => {
+    /**
+     * A service request as the worker actually sends it: dedicated header,
+     * loopback SOCKET (not just `req.ip`), and an allowlisted route.
+     */
+    function serviceReq(overrides: Partial<Request> = {}): Request {
+      return mockReq({
+        ip: '127.0.0.1',
+        socket: { remoteAddress: '127.0.0.1' },
+        originalUrl: INGEST,
+        headers: { 'x-skytwin-service-token': TOKEN },
+        ...overrides,
+      } as Partial<Request>);
+    }
+
+    async function run(req: Request): Promise<{ res: Response; next: ReturnType<typeof vi.fn> }> {
+      const res = mockRes();
+      const next = vi.fn();
+      await sessionAuth(req, res, next);
+      return { res, next };
+    }
+
+    it('accepts a matching token from a loopback socket on the ingest route', async () => {
       process.env['SKYTWIN_SERVICE_TOKEN'] = TOKEN;
       sessionAuth = await loadWithBypassOff();
 
-      const req = mockReq({
-        ip: '127.0.0.1',
-        headers: { authorization: `Bearer ${TOKEN}` },
-      });
-      const res = mockRes();
-      const next = vi.fn();
-
-      await sessionAuth(req, res, next);
+      const req = serviceReq();
+      const { next } = await run(req);
 
       expect(next).toHaveBeenCalled();
       expect(req.serviceAuthenticated).toBe(true);
@@ -239,14 +255,8 @@ describe('sessionAuth middleware', () => {
       process.env['SKYTWIN_SERVICE_TOKEN'] = TOKEN;
       sessionAuth = await loadWithBypassOff();
 
-      const req = mockReq({
-        ip: '127.0.0.1',
-        headers: { authorization: `Bearer ${'e'.repeat(64)}` },
-      });
-      const res = mockRes();
-      const next = vi.fn();
-
-      await sessionAuth(req, res, next);
+      const req = serviceReq({ headers: { 'x-skytwin-service-token': 'e'.repeat(64) } });
+      const { res, next } = await run(req);
 
       expect(next).not.toHaveBeenCalled();
       expect(res.status).toHaveBeenCalledWith(401);
@@ -257,29 +267,55 @@ describe('sessionAuth middleware', () => {
       process.env['SKYTWIN_SERVICE_TOKEN'] = TOKEN;
       sessionAuth = await loadWithBypassOff();
 
-      const req = mockReq({ ip: '127.0.0.1', headers: { authorization: 'Bearer short' } });
-      const res = mockRes();
-      const next = vi.fn();
+      const req = serviceReq({ headers: { 'x-skytwin-service-token': 'short' } });
+      const { res, next } = await run(req);
 
-      // `crypto.timingSafeEqual` throws on unequal buffer lengths; the guard
-      // must turn that into a plain 401.
-      await expect(sessionAuth(req, res, next)).resolves.toBeUndefined();
       expect(next).not.toHaveBeenCalled();
       expect(res.status).toHaveBeenCalledWith(401);
     });
 
-    it('rejects the correct token from a NON-loopback address', async () => {
+    it('rejects the credential on the Authorization header (web-proxy laundering)', async () => {
+      // apps/web forwards `Authorization` verbatim to the API over a fresh
+      // localhost connection. A credential on that header could therefore be
+      // POSTed to the dashboard port by a remote caller and arrive looking
+      // like loopback. The proxy does not forward `x-skytwin-service-token`.
       process.env['SKYTWIN_SERVICE_TOKEN'] = TOKEN;
       sessionAuth = await loadWithBypassOff();
 
-      const req = mockReq({
-        ip: '203.0.113.7',
-        headers: { authorization: `Bearer ${TOKEN}` },
-      });
-      const res = mockRes();
-      const next = vi.fn();
+      const req = serviceReq({ headers: { authorization: `Bearer ${TOKEN}` } });
+      const { res, next } = await run(req);
 
-      await sessionAuth(req, res, next);
+      expect(next).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(req.serviceAuthenticated).toBeUndefined();
+    });
+
+    it('rejects the credential on a NON-allowlisted route (no cross-user bypass)', async () => {
+      // `requireOwnership` skips its check for a service-authenticated request
+      // and guards ~33 routers, so without the allowlist this credential would
+      // be a cross-user read/write capability, not an ingest key.
+      process.env['SKYTWIN_SERVICE_TOKEN'] = TOKEN;
+      sessionAuth = await loadWithBypassOff();
+
+      const req = serviceReq({ originalUrl: '/api/settings/some-user-id' });
+      const { res, next } = await run(req);
+
+      expect(next).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(req.serviceAuthenticated).toBeUndefined();
+    });
+
+    it('ignores a spoofed X-Forwarded-For and reads the raw socket instead', async () => {
+      // `req.ip` honours `trust proxy`; the socket address does not. A remote
+      // client claiming `X-Forwarded-For: 127.0.0.1` must not pass.
+      process.env['SKYTWIN_SERVICE_TOKEN'] = TOKEN;
+      sessionAuth = await loadWithBypassOff();
+
+      const req = serviceReq({
+        ip: '127.0.0.1',
+        socket: { remoteAddress: '203.0.113.7' },
+      } as Partial<Request>);
+      const { res, next } = await run(req);
 
       expect(next).not.toHaveBeenCalled();
       expect(res.status).toHaveBeenCalledWith(401);
@@ -290,41 +326,31 @@ describe('sessionAuth middleware', () => {
       process.env['SKYTWIN_SERVICE_TOKEN'] = TOKEN;
       sessionAuth = await loadWithBypassOff();
 
-      const req = mockReq({ ip: '127.0.0.1', query: { token: TOKEN } });
-      const res = mockRes();
-      const next = vi.fn();
+      const req = serviceReq({ headers: {}, query: { token: TOKEN } } as Partial<Request>);
+      const { next } = await run(req);
 
-      await sessionAuth(req, res, next);
-
-      // Falls through to the session lookup, which has no such session.
       expect(next).not.toHaveBeenCalled();
-      expect(res.status).toHaveBeenCalledWith(401);
       expect(req.serviceAuthenticated).toBeUndefined();
     });
 
-    it('grants nothing when SKYTWIN_SERVICE_TOKEN is unset, even from loopback', async () => {
+    it('grants nothing when SKYTWIN_SERVICE_TOKEN is unset', async () => {
       delete process.env['SKYTWIN_SERVICE_TOKEN'];
       sessionAuth = await loadWithBypassOff();
 
-      const req = mockReq({ ip: '127.0.0.1', headers: { authorization: 'Bearer ' } });
-      const res = mockRes();
-      const next = vi.fn();
-
-      await sessionAuth(req, res, next);
+      const req = serviceReq();
+      const { res, next } = await run(req);
 
       expect(next).not.toHaveBeenCalled();
       expect(res.status).toHaveBeenCalledWith(401);
+      expect(req.serviceAuthenticated).toBeUndefined();
     });
 
     it('grants nothing when SKYTWIN_SERVICE_TOKEN is an empty string', async () => {
       process.env['SKYTWIN_SERVICE_TOKEN'] = '';
       sessionAuth = await loadWithBypassOff();
 
-      const req = mockReq({ ip: '127.0.0.1', headers: { authorization: 'Bearer ' } });
-      const res = mockRes();
-      const next = vi.fn();
-
-      await sessionAuth(req, res, next);
+      const req = serviceReq({ headers: { 'x-skytwin-service-token': '' } });
+      const { res, next } = await run(req);
 
       expect(next).not.toHaveBeenCalled();
       expect(res.status).toHaveBeenCalledWith(401);

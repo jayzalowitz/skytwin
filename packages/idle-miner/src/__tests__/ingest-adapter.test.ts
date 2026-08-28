@@ -88,7 +88,7 @@ describe('createHttpSignalEmitter', () => {
   // The idle-miner posts to the same guarded endpoint as the worker. Without
   // the loopback service credential every mined signal 401s in a packaged
   // build (NODE_ENV=production, localhost auth bypass off).
-  it('sends the service token as an Authorization bearer header when provided', async () => {
+  it('sends the service token as an X-SkyTwin-Service-Token bearer header when provided', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(okResponse());
     const emit = createHttpSignalEmitter({
       ingestUrl: 'http://localhost:3100/api/events/ingest',
@@ -102,11 +102,11 @@ describe('createHttpSignalEmitter', () => {
     const init = fetchImpl.mock.calls[0]![1] as RequestInit;
     expect(init.headers).toEqual({
       'Content-Type': 'application/json',
-      Authorization: 'Bearer tok-abc',
+      X-SkyTwin-Service-Token: 'tok-abc',
     });
   });
 
-  it('omits the Authorization header when no service token is configured (dev bypass)', async () => {
+  it('omits the X-SkyTwin-Service-Token header when no service token is configured (dev bypass)', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(okResponse());
     const emit = createHttpSignalEmitter({
       ingestUrl: 'http://localhost:3100/api/events/ingest',
@@ -120,7 +120,7 @@ describe('createHttpSignalEmitter', () => {
     expect(init.headers).toEqual({ 'Content-Type': 'application/json' });
   });
 
-  it('omits the Authorization header for a blank service token rather than sending "Bearer "', async () => {
+  it('omits the X-SkyTwin-Service-Token header for a blank service token rather than sending an empty one', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(okResponse());
     const emit = createHttpSignalEmitter({
       ingestUrl: 'http://localhost:3100/api/events/ingest',

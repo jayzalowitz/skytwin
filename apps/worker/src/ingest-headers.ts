@@ -26,7 +26,12 @@ export function buildIngestHeaders(
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   const serviceToken = env['SKYTWIN_SERVICE_TOKEN'];
   if (typeof serviceToken === 'string' && serviceToken.trim().length > 0) {
-    headers['Authorization'] = `Bearer ${serviceToken.trim()}`;
+    // Dedicated header, NOT `Authorization`: `apps/web` proxies dashboard
+    // traffic to the API and forwards `Authorization` verbatim over a fresh
+    // localhost connection, so a service credential riding on that header
+    // could be laundered through the proxy by a remote caller and arrive
+    // looking like loopback. The proxy does not forward this one.
+    headers['X-SkyTwin-Service-Token'] = serviceToken.trim();
   }
   return headers;
 }
