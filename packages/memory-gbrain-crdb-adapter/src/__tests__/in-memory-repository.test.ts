@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { InMemoryBrainStore } from '../in-memory-repository.js';
 import { HashEmbeddingProvider } from '../embedding.js';
 
@@ -339,6 +339,9 @@ describe('InMemoryBrainStore — signals', () => {
 
   it('lists signals chronologically', () => {
     const store = new InMemoryBrainStore();
+    // Absolute dates are fine here: getAllSignals does no window
+    // filtering, so these fixtures cannot age out. Only the
+    // computeBidirectionalThreadCounts suite needs relative days.
     store.insertSignal({
       id: 's2',
       userId: 'u1',
@@ -644,10 +647,40 @@ describe('InMemoryBrainStore — findPagesMissingAuthoringTier (#251 backfill)',
   });
 });
 
-describe('InMemoryBrainStore — computeBidirectionalThreadCounts (#251 Phase 2, intersection per #281)', () => {
+// Anti-rot: the entire suite runs twice — once on the real clock, once five
+// years ahead. Every fixture below derives from `daysAgo()`, so it travels
+// with the clock; an absolute date literal does not, and falls outside the
+// 90-day window in the shifted run.
+//
+// This shape matters. An earlier version of this guard was a single extra
+// test with its own inline relative fixtures — which only proved the
+// implementation reads `Date.now()` (never in doubt) and stayed green when an
+// absolute date was reintroduced into a sibling test. A guard has to cover the
+// fixtures it is guarding, not restate the thing it is guarding them against.
+describe.each([
+  ['current clock', 0],
+  ['five years ahead', 5 * 365 * 24 * 60 * 60 * 1000],
+] as const)(
+  'InMemoryBrainStore — computeBidirectionalThreadCounts (#251 Phase 2, intersection per #281) [%s]',
+  (_label, clockOffsetMs) => {
   let store: InMemoryBrainStore;
+  // Captured ONCE per test so every `daysAgo()` call within a test resolves
+  // against the same instant. Reading `Date.now()` per call let a test whose
+  // seeds straddled UTC midnight bucket its "same day" pair onto two different
+  // days, producing a midnight-only flake.
+  let now: number;
+
   beforeEach(() => {
+    if (clockOffsetMs > 0) {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(Date.now() + clockOffsetMs));
+    }
+    now = Date.now();
     store = new InMemoryBrainStore();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   function seedReceived(id: string, fromHeader: string, day: string) {
@@ -676,20 +709,39 @@ describe('InMemoryBrainStore — computeBidirectionalThreadCounts (#251 Phase 2,
     });
   }
 
+  /**
+   * A `YYYY-MM-DD` day `n` days before today.
+   *
+   * These fixtures MUST be anchored to `Date.now()`, never written as
+   * absolute dates. `computeBidirectionalThreadCounts` filters on
+   * `Date.now() - windowDays * 86_400_000`, so hardcoded days silently
+   * age out of the window: this suite was written with `2026-05-0X`
+   * literals and went red on 2026-07-30 with no code change at all,
+   * taking CI — and with it the whole release pipeline — down until
+   * someone read past the turbo-cache noise in the log.
+   *
+   * Keep every offset comfortably inside 90 days so the suite can never
+   * fail on a window boundary.
+   */
+  function daysAgo(n: number): string {
+    return new Date(now - n * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  }
+
   it('extracts bare address from RFC 5322 display-name format', () => {
     // Send + receive on the SAME day so the intersection is 1. (Under
     // the pre-#281 loose semantics any cross-day pair counted; now they
-    // must share a day.)
-    seedReceived('r1', 'Alice Smith <alice@example.com>', '2026-05-01');
-    seedSent('s1', 'Alice Smith <alice@example.com>', '2026-05-01');
+    // must share a day. `daysAgo` resolves against a per-test `now`, so
+    // both calls are guaranteed the same day even across UTC midnight.)
+    seedReceived('r1', 'Alice Smith <alice@example.com>', daysAgo(29));
+    seedSent('s1', 'Alice Smith <alice@example.com>', daysAgo(29));
     const out = store.computeBidirectionalThreadCounts('u1', 90);
     expect(out.get('alice@example.com')).toBe(1);
     expect(out.has('alice smith <alice@example.com>')).toBe(false);
   });
 
   it('handles bare addresses without angle brackets', () => {
-    seedReceived('r1', 'bob@example.com', '2026-05-01');
-    seedSent('s1', 'bob@example.com', '2026-05-01');
+    seedReceived('r1', 'bob@example.com', daysAgo(29));
+    seedSent('s1', 'bob@example.com', daysAgo(29));
     const out = store.computeBidirectionalThreadCounts('u1', 90);
     expect(out.get('bob@example.com')).toBe(1);
   });
@@ -698,38 +750,45 @@ describe('InMemoryBrainStore — computeBidirectionalThreadCounts (#251 Phase 2,
     // Received once from each of two contacts on the same day; sent a
     // single email to both on that same day. Under intersection, each
     // contact gets a count of 1.
-    seedReceived('r1', 'alice@example.com', '2026-05-01');
-    seedReceived('r2', 'carol@example.com', '2026-05-01');
-    seedSent('s1', 'alice@example.com, carol@example.com', '2026-05-01');
+    seedReceived('r1', 'alice@example.com', daysAgo(29));
+    seedReceived('r2', 'carol@example.com', daysAgo(29));
+    seedSent('s1', 'alice@example.com, carol@example.com', daysAgo(29));
     const out = store.computeBidirectionalThreadCounts('u1', 90);
     expect(out.get('alice@example.com')).toBe(1);
     expect(out.get('carol@example.com')).toBe(1);
   });
 
   it('considers `cc` recipients as bidirectional contacts', () => {
-    seedReceived('r1', 'dan@example.com', '2026-05-01');
-    seedSent('s1', 'alice@example.com', '2026-05-01', 'dan@example.com');
+    seedReceived('r1', 'dan@example.com', daysAgo(29));
+    seedSent('s1', 'alice@example.com', daysAgo(29), 'dan@example.com');
     const out = store.computeBidirectionalThreadCounts('u1', 90);
     expect(out.get('dan@example.com')).toBe(1);
   });
 
   it('returns no entry for received-only contacts (no bidirectional)', () => {
-    seedReceived('r1', 'eve@example.com', '2026-05-01');
-    seedSent('s1', 'alice@example.com', '2026-05-02');
+    seedReceived('r1', 'eve@example.com', daysAgo(29));
+    seedSent('s1', 'alice@example.com', daysAgo(28));
+    // Positive control: a genuinely bidirectional contact in the same
+    // store. Without it every assertion below is satisfied by an empty
+    // map, which is how this test kept passing while the window was
+    // silently dropping all of its fixtures.
+    seedReceived('r-ctl', 'ctl@example.com', daysAgo(27));
+    seedSent('s-ctl', 'ctl@example.com', daysAgo(27));
     const out = store.computeBidirectionalThreadCounts('u1', 90);
+    expect(out.get('ctl@example.com')).toBe(1);
     expect(out.has('eve@example.com')).toBe(false);
     expect(out.get('alice@example.com')).toBeUndefined();
   });
 
   it('counts distinct days where both directions occurred (intersection)', () => {
-    // Frank: received 05-01 (twice — same day), received 05-03, sent
-    // 05-01 and 05-03. Under intersection: 2 days (05-01 and 05-03).
-    // The duplicate received on 05-01 doesn't inflate the count.
-    seedReceived('r1', 'frank@example.com', '2026-05-01');
-    seedReceived('r2', 'frank@example.com', '2026-05-01');
-    seedReceived('r3', 'frank@example.com', '2026-05-03');
-    seedSent('s1', 'frank@example.com', '2026-05-01');
-    seedSent('s2', 'frank@example.com', '2026-05-03');
+    // Frank: received twice on the SAME day (29d ago), received again
+    // 27d ago, sent on both of those days. Under intersection: 2 days.
+    // The duplicate receive on the first day doesn't inflate the count.
+    seedReceived('r1', 'frank@example.com', daysAgo(29));
+    seedReceived('r2', 'frank@example.com', daysAgo(29));
+    seedReceived('r3', 'frank@example.com', daysAgo(27));
+    seedSent('s1', 'frank@example.com', daysAgo(29));
+    seedSent('s2', 'frank@example.com', daysAgo(27));
     const out = store.computeBidirectionalThreadCounts('u1', 90);
     expect(out.get('frank@example.com')).toBe(2);
   });
@@ -745,9 +804,9 @@ describe('InMemoryBrainStore — computeBidirectionalThreadCounts (#251 Phase 2,
       source: 'gmail',
       type: 'email',
       data: { from: 'irene@example.com' },
-      signalTimestamp: new Date('2026-05-01'),
+      signalTimestamp: new Date(daysAgo(29)),
     });
-    seedSent('s1', 'irene@example.com', '2026-05-01');
+    seedSent('s1', 'irene@example.com', daysAgo(29));
     const out = store.computeBidirectionalThreadCounts('u1', 90);
     expect(out.get('irene@example.com')).toBe(1);
   });
@@ -778,23 +837,30 @@ describe('InMemoryBrainStore — computeBidirectionalThreadCounts (#251 Phase 2,
     // 10 received days from a contact, plus one sent message on a day
     // with NO received activity. Old semantics: 10. New semantics: 0.
     for (let i = 1; i <= 10; i++) {
-      const day = `2026-05-${String(i).padStart(2, '0')}`;
-      seedReceived(`r${i}`, 'jim@example.com', day);
+      seedReceived(`r${i}`, 'jim@example.com', daysAgo(30 - i));
     }
-    seedSent('s1', 'jim@example.com', '2026-05-15'); // no overlap
+    seedSent('s1', 'jim@example.com', daysAgo(15)); // no overlap
+    // Positive control — see the note on the received-only test above.
+    // This is the #281 guard; if it can pass on an empty map it is
+    // guarding nothing.
+    seedReceived('r-ctl', 'ctl@example.com', daysAgo(27));
+    seedSent('s-ctl', 'ctl@example.com', daysAgo(27));
     const out = store.computeBidirectionalThreadCounts('u1', 90);
+    expect(out.get('ctl@example.com')).toBe(1);
     expect(out.has('jim@example.com')).toBe(false);
   });
 
   it('counts only the days that appear in BOTH directions', () => {
-    // Received on days 1, 2, 3. Sent on days 2, 3, 4. Intersection: 2, 3.
-    seedReceived('r1', 'kate@example.com', '2026-05-01');
-    seedReceived('r2', 'kate@example.com', '2026-05-02');
-    seedReceived('r3', 'kate@example.com', '2026-05-03');
-    seedSent('s1', 'kate@example.com', '2026-05-02');
-    seedSent('s2', 'kate@example.com', '2026-05-03');
-    seedSent('s3', 'kate@example.com', '2026-05-04');
+    // Received 29/28/27d ago. Sent 28/27/26d ago. Intersection: the
+    // 28d and 27d days — 2.
+    seedReceived('r1', 'kate@example.com', daysAgo(29));
+    seedReceived('r2', 'kate@example.com', daysAgo(28));
+    seedReceived('r3', 'kate@example.com', daysAgo(27));
+    seedSent('s1', 'kate@example.com', daysAgo(28));
+    seedSent('s2', 'kate@example.com', daysAgo(27));
+    seedSent('s3', 'kate@example.com', daysAgo(26));
     const out = store.computeBidirectionalThreadCounts('u1', 90);
     expect(out.get('kate@example.com')).toBe(2);
   });
-});
+  },
+);
