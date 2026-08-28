@@ -5,6 +5,7 @@ import { join } from 'path';
 import { pathToFileURL } from 'url';
 import { app } from 'electron';
 import { CockroachManager } from './cockroach-manager.js';
+import { computeBundleMarker } from './bundle-marker.js';
 import {
   extractionDone,
   extractionProgress,
@@ -130,10 +131,12 @@ export class ServiceManager {
    * electron-builder's win-unpacked copy step + Defender RT-scan races
    * on the resulting .nsis.7z, see PR #350 history).
    *
-   * On first launch — or after a version bump — extract the tarball into
-   * `<userData>/embedded/` and write a `.version` marker so subsequent
-   * launches no-op. Tar is in System32 on Win10 1803+, /usr/bin on
-   * macOS/Linux. No additional bundled tooling.
+   * On first launch — or whenever the shipped bundle differs from the one
+   * already extracted — extract the tarball into `<userData>/embedded/` and
+   * write a `.version` marker so subsequent launches no-op. The marker is the
+   * bundle's content hash, NOT the app version (see `bundle-marker.ts` for
+   * why the version was the wrong key). Tar is in System32 on Win10 1803+,
+   * /usr/bin on macOS/Linux. No additional bundled tooling.
    *
    * Returns the absolute path that callers should use in place of the
    * old `join(getResourcePath(), 'embedded', ...)` constructions.
@@ -153,12 +156,22 @@ export class ServiceManager {
 
     const extractedRoot = join(app.getPath('userData'), 'embedded');
     const marker = join(extractedRoot, '.version');
-    const currentVersion = app.getVersion();
+    const tarPath = join(process.resourcesPath, 'embedded', 'apps.tar.gz');
+    // NOT app.getVersion(): the desktop package.json version was frozen at
+    // 0.3.0 since PR #31, so a user who upgraded via a newer .dmg kept the
+    // marker match and silently ran the new shell against the old extracted
+    // backend. computeBundleMarker() keys off the bundle's own content hash
+    // (bundle-manifest.json#bundleId) instead. See bundle-marker.ts.
+    const { marker: currentMarker, source: markerSource } = computeBundleMarker({
+      manifestPath: join(process.resourcesPath, 'embedded', 'bundle-manifest.json'),
+      tarPath,
+      appVersion: app.getVersion(),
+    });
 
     if (existsSync(marker)) {
       try {
         const installed = readFileSync(marker, 'utf-8').trim();
-        if (installed === currentVersion) {
+        if (installed === currentMarker) {
           // Up to date — sanity-check the api entry exists before declaring
           // the cache hot (partial extractions from a prior crash would
           // leave the marker present but the tree incomplete).
@@ -168,7 +181,9 @@ export class ServiceManager {
           }
           console.warn('[extract] Marker matches but api/dist/index.js missing — re-extracting.');
         } else {
-          console.log(`[extract] Version changed: ${installed} -> ${currentVersion}. Re-extracting.`);
+          console.log(
+            `[extract] Bundle changed (${markerSource}): ${installed} -> ${currentMarker}. Re-extracting.`,
+          );
         }
       } catch {
         // Marker unreadable — fall through to re-extract.
@@ -183,7 +198,6 @@ export class ServiceManager {
       }
     }
 
-    const tarPath = join(process.resourcesPath, 'embedded', 'apps.tar.gz');
     if (!existsSync(tarPath)) {
       throw new Error(
         `Embedded apps tarball missing at ${tarPath}. This means the bundle was assembled without running build-single-binary.sh, or the extraResources filter in apps/desktop/package.json no longer points at apps.tar.gz.`,
@@ -244,7 +258,7 @@ export class ServiceManager {
       });
     });
     this.emitExtractProgress(extractionDone());
-    writeFileSync(marker, currentVersion);
+    writeFileSync(marker, currentMarker);
     console.log(`[extract] Done in ${Date.now() - t0}ms`);
 
     this.extractedEmbeddedRoot = extractedRoot;

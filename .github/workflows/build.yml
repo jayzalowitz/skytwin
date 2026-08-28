@@ -48,7 +48,11 @@ jobs:
               - 'pnpm-lock.yaml'
               - 'package.json'
               - 'turbo.json'
+              - 'VERSION'
               - '.github/workflows/build.yml'
+              # The desktop jobs run this to derive the packaged app version;
+              # a change to it must re-validate packaging.
+              - '.github/scripts/**'
             mobile:
               - 'apps/mobile/**'
               - 'pnpm-lock.yaml'
@@ -131,6 +135,15 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
 
+      # #370 follow-up: derive the electron-builder app version from the
+      # four-segment root VERSION. See the long comment on the macOS package
+      # step below and .github/scripts/derive-app-version.sh for why. `shell:
+      # bash` is explicit so this step behaves identically on the Windows
+      # runner (whose default shell is pwsh).
+      - name: Derive app version
+        shell: bash
+        run: bash .github/scripts/derive-app-version.sh
+
       - name: Package macOS desktop app
         # `--publish never` is critical: the per-package step must NOT
         # auto-publish. electron-builder's default heuristic would otherwise
@@ -140,7 +153,19 @@ jobs:
         # draft) — these matrix jobs only validate packageability and hand
         # their artifacts to that job. (History: the old release.yml was
         # deleted in #356; build.yml is now the only publisher.)
-        run: pnpm --filter skytwin-desktop run package:mac --publish never
+        #
+        # `--config.extraMetadata.version` is equally critical. electron-builder
+        # stamps BOTH the artifact filenames AND the latest*.yml update
+        # manifests from the app's package.json version, and that file is
+        # pinned to `0.3.0` (electron-builder rejects our four-segment
+        # VERSION, so it can't simply be copied in). Without this flag every
+        # release publishes `0.3.0` and electron-updater's semver compare
+        # against an installed `0.3.0` answers "no update available" forever.
+        # The value comes from the `Derive app version` step above, which
+        # hard-fails on anything that isn't four numeric segments — so
+        # APP_VERSION is always [0-9.]+ and safe to interpolate here.
+        # Guarded by apps/desktop/src/__tests__/app-version-injection.test.ts.
+        run: pnpm --filter skytwin-desktop run package:mac --publish never "--config.extraMetadata.version=${{ env.APP_VERSION }}"
         env:
           # Skip code signing for CI builds (not notarized)
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
@@ -234,9 +259,19 @@ jobs:
           Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\electron\Cache" -ErrorAction SilentlyContinue
           Write-Host "Defender exclusions added for build workspace + electron-builder caches."
 
+      # See the macOS job for why the version is derived rather than read
+      # straight out of apps/desktop/package.json.
+      - name: Derive app version
+        shell: bash
+        run: bash .github/scripts/derive-app-version.sh
+
       - name: Package Windows desktop app
-        # See macOS comment re: --publish never; same reasoning here.
-        run: pnpm --filter skytwin-desktop run package:win --publish never
+        # See macOS comment re: --publish never and
+        # --config.extraMetadata.version; same reasoning here. `${{ env.… }}`
+        # is a workflow-level expression substituted before the shell runs, so
+        # it resolves identically under this job's default pwsh shell (where a
+        # bare `${APP_VERSION}` would NOT — pwsh spells env vars `$env:X`).
+        run: pnpm --filter skytwin-desktop run package:win --publish never "--config.extraMetadata.version=${{ env.APP_VERSION }}"
 
       - name: Upload Windows installer
         uses: actions/upload-artifact@v7
@@ -291,9 +326,16 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
 
+      # See the macOS job for why the version is derived rather than read
+      # straight out of apps/desktop/package.json.
+      - name: Derive app version
+        shell: bash
+        run: bash .github/scripts/derive-app-version.sh
+
       - name: Package Linux desktop app
-        # See macOS comment re: --publish never; same reasoning here.
-        run: pnpm --filter skytwin-desktop run package:linux --publish never
+        # See macOS comment re: --publish never and
+        # --config.extraMetadata.version; same reasoning here.
+        run: pnpm --filter skytwin-desktop run package:linux --publish never "--config.extraMetadata.version=${{ env.APP_VERSION }}"
         continue-on-error: true
 
       - name: Upload Linux AppImage
