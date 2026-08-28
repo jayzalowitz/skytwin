@@ -100,6 +100,27 @@ IFS='.' read -r major minor patch build <<EOF
 ${raw}
 EOF
 
+# Bound the DECIMAL LENGTH of every segment before any arithmetic touches it.
+#
+# Without this, an oversized-but-well-formed segment is catastrophic AND
+# silent. `[ "${patch}" -gt "${MAX_PATCH}" ]` does not evaluate to false for a
+# value outside bash's signed-64-bit range — it ERRORS ("integer expression
+# expected"). Because that test sits inside an `if`, `set -e` does not fire,
+# the guard is skipped, and `$(( patch * BUILD_SCALE + build ))` then wraps:
+#
+#   0.6.9223372036854775808.0    -> 0.6.0                    (exit 0!)
+#   0.6.99999999999999999999.0   -> 0.6.1864712049423024028  (exit 0!)
+#
+# The first emits a version LOWER than the one already shipped, which
+# electron-updater reads as "no update available" — permanently, and with no
+# error anywhere. Reject on length first; every real segment is far shorter.
+MAX_SEGMENT_DIGITS=9
+for segment in "${major}" "${minor}" "${patch}" "${build}"; do
+  if [ "${#segment}" -gt "${MAX_SEGMENT_DIGITS}" ]; then
+    fail "VERSION '${raw}' has a segment with ${#segment} digits (max ${MAX_SEGMENT_DIGITS}). Oversized segments overflow bash arithmetic and would silently derive a LOWER version, which auto-update reads as 'no update available'."
+  fi
+done
+
 if [ "${build}" -ge "${BUILD_SCALE}" ]; then
   fail "VERSION '${raw}' has build segment ${build} >= ${BUILD_SCALE}. The derived-version encoding would collide with a different VERSION and break auto-update. Bump the patch segment instead, or raise BUILD_SCALE here (and never lower it)."
 fi

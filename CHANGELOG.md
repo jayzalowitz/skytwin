@@ -43,6 +43,8 @@ All notable changes to SkyTwin will be documented in this file.
 - **CI guards so this can't silently regress.** `derive-app-version.test.ts` runs the derivation script over every `VERSION` this repo has ever published and asserts injectivity, strict monotonicity, and hard failure on malformed / colliding / shell-metacharacter input; `app-version-injection.test.ts` asserts all three desktop package steps still derive `APP_VERSION` and pass `--config.extraMetadata.version`; `bundle-marker.test.ts` covers the marker's source precedence and fallbacks.
 > Note: auto-update still cannot **complete** an install until code signing lands (#368 / #359) — electron-updater refuses an unsigned macOS payload. This change fixes discovery, which was the blocker underneath it.
 
+- **An oversized VERSION segment could silently derive a LOWER app version (codex review).** `[ "$patch" -gt "$MAX_PATCH" ]` does not evaluate to false for a value outside bash's signed-64-bit range — it *errors*, and because the test sits inside an `if`, `set -e` does not fire. The bound check was skipped and the arithmetic wrapped: `0.6.9223372036854775808.0` derived to `0.6.0` and exited 0. That is lower than what is already shipped, so electron-updater would report "no update available" permanently, with no error anywhere. Segment digit length is now bounded before any arithmetic runs, with a mutation-tested regression case.
+
 ## [0.6.101.0] - 2026-07-06
 
 ### Added

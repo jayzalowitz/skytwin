@@ -177,6 +177,35 @@ describe('derive-app-version.sh', () => {
       expect(deriveExpectingFailure('  ').status).toBe(1);
     });
 
+    it('fails on an oversized segment instead of silently deriving a LOWER version (codex review [P2])', () => {
+      // The nastiest failure mode this script has. An oversized-but-numeric
+      // segment passes the regex, and `[ "$patch" -gt "$MAX_PATCH" ]` does
+      // not return false for it — it ERRORS. Inside an `if`, `set -e` does
+      // not fire, so the bound check is skipped and the arithmetic wraps:
+      //
+      //   0.6.9223372036854775808.0  -> 0.6.0                    exit 0
+      //   0.6.99999999999999999999.0 -> 0.6.1864712049423024028  exit 0
+      //
+      // The first is LOWER than what is already shipped, so electron-updater
+      // reports "no update available" forever, silently. Must be rejected.
+      for (const oversized of [
+        '0.6.9223372036854775808.0',
+        '0.6.99999999999999999999.0',
+        '0.6.1.9223372036854775808',
+        '9223372036854775808.0.1.0',
+      ]) {
+        const failure = deriveExpectingFailure(oversized);
+        expect(failure.status, oversized).toBe(1);
+        expect(failure.stderr, oversized).toContain('digits');
+      }
+    });
+
+    it('still accepts the largest in-range version', () => {
+      // The guard bounds digit LENGTH, so it must not reject legitimate
+      // large-but-sane versions.
+      expect(derive('0.6.999999.99')).toBe('0.6.99999999');
+    });
+
     it('fails on leading zeros rather than reinterpreting them', () => {
       expect(deriveExpectingFailure('0.6.08.0').status).toBe(1);
     });
