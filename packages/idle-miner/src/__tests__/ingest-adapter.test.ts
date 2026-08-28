@@ -88,7 +88,7 @@ describe('createHttpSignalEmitter', () => {
   // The idle-miner posts to the same guarded endpoint as the worker. Without
   // the loopback service credential every mined signal 401s in a packaged
   // build (NODE_ENV=production, localhost auth bypass off).
-  it('sends the service token as an X-SkyTwin-Service-Token bearer header when provided', async () => {
+  it('sends the service token in the X-SkyTwin-Service-Token header when provided', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(okResponse());
     const emit = createHttpSignalEmitter({
       ingestUrl: 'http://localhost:3100/api/events/ingest',
@@ -102,7 +102,7 @@ describe('createHttpSignalEmitter', () => {
     const init = fetchImpl.mock.calls[0]![1] as RequestInit;
     expect(init.headers).toEqual({
       'Content-Type': 'application/json',
-      X-SkyTwin-Service-Token: 'tok-abc',
+      'X-SkyTwin-Service-Token': 'tok-abc',
     });
   });
 
