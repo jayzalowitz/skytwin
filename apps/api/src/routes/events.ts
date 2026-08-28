@@ -30,7 +30,7 @@ import {
   policyRepositoryAdapter,
 } from '@skytwin/db';
 import type { DecisionContext, ExecutionEvent, RiskAssessment, EpisodicMemory } from '@skytwin/shared-types';
-import { SituationType, TrustTier } from '@skytwin/shared-types';
+import { parseAutonomySettings, SituationType, TrustTier } from '@skytwin/shared-types';
 import type { AIProviderName } from '@skytwin/shared-types';
 import { LlmClient } from '@skytwin/llm-client';
 import type { ProviderEntry } from '@skytwin/llm-client';
@@ -460,6 +460,14 @@ export function createEventsRouter(): Router {
         traits,
         temporalProfile,
         episodicMemories,
+        // Per-user autonomy settings must travel with the context: the
+        // policy evaluator's pause kill switch (#379), domain allowlist,
+        // per-action spend cap, cost-unknown escalation (#372),
+        // requireApprovalForIrreversible, and quiet hours are all gated on
+        // this argument being present. Missing user row → conservative
+        // defaults (no spend, approval for irreversible), which matches the
+        // OBSERVER tier we fall back to on the line above.
+        autonomySettings: parseAutonomySettings(user?.autonomy_settings),
       };
 
       // 6b. Best-effort: write the inbound signal into the gbrain memory

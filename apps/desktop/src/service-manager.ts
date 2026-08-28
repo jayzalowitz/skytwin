@@ -5,6 +5,7 @@ import { join } from 'path';
 import { pathToFileURL } from 'url';
 import { app } from 'electron';
 import { CockroachManager } from './cockroach-manager.js';
+import { computeBundleMarker } from './bundle-marker.js';
 import {
   extractionDone,
   extractionProgress,
@@ -130,10 +131,12 @@ export class ServiceManager {
    * electron-builder's win-unpacked copy step + Defender RT-scan races
    * on the resulting .nsis.7z, see PR #350 history).
    *
-   * On first launch — or after a version bump — extract the tarball into
-   * `<userData>/embedded/` and write a `.version` marker so subsequent
-   * launches no-op. Tar is in System32 on Win10 1803+, /usr/bin on
-   * macOS/Linux. No additional bundled tooling.
+   * On first launch — or whenever the shipped bundle differs from the one
+   * already extracted — extract the tarball into `<userData>/embedded/` and
+   * write a `.version` marker so subsequent launches no-op. The marker is the
+   * bundle's content hash, NOT the app version (see `bundle-marker.ts` for
+   * why the version was the wrong key). Tar is in System32 on Win10 1803+,
+   * /usr/bin on macOS/Linux. No additional bundled tooling.
    *
    * Returns the absolute path that callers should use in place of the
    * old `join(getResourcePath(), 'embedded', ...)` constructions.
@@ -153,12 +156,22 @@ export class ServiceManager {
 
     const extractedRoot = join(app.getPath('userData'), 'embedded');
     const marker = join(extractedRoot, '.version');
-    const currentVersion = app.getVersion();
+    const tarPath = join(process.resourcesPath, 'embedded', 'apps.tar.gz');
+    // NOT app.getVersion(): the desktop package.json version was frozen at
+    // 0.3.0 since PR #31, so a user who upgraded via a newer .dmg kept the
+    // marker match and silently ran the new shell against the old extracted
+    // backend. computeBundleMarker() keys off the bundle's own content hash
+    // (bundle-manifest.json#bundleId) instead. See bundle-marker.ts.
+    const { marker: currentMarker, source: markerSource } = computeBundleMarker({
+      manifestPath: join(process.resourcesPath, 'embedded', 'bundle-manifest.json'),
+      tarPath,
+      appVersion: app.getVersion(),
+    });
 
     if (existsSync(marker)) {
       try {
         const installed = readFileSync(marker, 'utf-8').trim();
-        if (installed === currentVersion) {
+        if (installed === currentMarker) {
           // Up to date — sanity-check the api entry exists before declaring
           // the cache hot (partial extractions from a prior crash would
           // leave the marker present but the tree incomplete).
@@ -168,7 +181,9 @@ export class ServiceManager {
           }
           console.warn('[extract] Marker matches but api/dist/index.js missing — re-extracting.');
         } else {
-          console.log(`[extract] Version changed: ${installed} -> ${currentVersion}. Re-extracting.`);
+          console.log(
+            `[extract] Bundle changed (${markerSource}): ${installed} -> ${currentMarker}. Re-extracting.`,
+          );
         }
       } catch {
         // Marker unreadable — fall through to re-extract.
@@ -183,7 +198,6 @@ export class ServiceManager {
       }
     }
 
-    const tarPath = join(process.resourcesPath, 'embedded', 'apps.tar.gz');
     if (!existsSync(tarPath)) {
       throw new Error(
         `Embedded apps tarball missing at ${tarPath}. This means the bundle was assembled without running build-single-binary.sh, or the extraResources filter in apps/desktop/package.json no longer points at apps.tar.gz.`,
@@ -244,7 +258,7 @@ export class ServiceManager {
       });
     });
     this.emitExtractProgress(extractionDone());
-    writeFileSync(marker, currentVersion);
+    writeFileSync(marker, currentMarker);
     console.log(`[extract] Done in ${Date.now() - t0}ms`);
 
     this.extractedEmbeddedRoot = extractedRoot;
@@ -260,8 +274,33 @@ export class ServiceManager {
    * entropy and what `openssl rand -hex 32` produces.
    */
   private getOrCreateSessionSecret(): string {
+    return this.getOrCreateSecret('session-secret');
+  }
+
+  /**
+   * Read or generate the per-installation loopback service token handed to
+   * every managed child process as `SKYTWIN_SERVICE_TOKEN`.
+   *
+   * The desktop pins `NODE_ENV=production` for all children, which turns the
+   * API's localhost auth bypass OFF. Before this existed, the worker's
+   * `forwardSignalToApi()` and the idle-miner's ingest emitter posted to
+   * `/api/events/ingest` with no credential at all, so every packaged install
+   * 401'd on every signal and ingested nothing. Same mint, same file
+   * conventions as the session secret — one value covers the API (verifier)
+   * and the worker + idle-miner (presenters), because they all read the env
+   * produced by `getEnv()`.
+   */
+  private getOrCreateServiceToken(): string {
+    return this.getOrCreateSecret('service-token');
+  }
+
+  /**
+   * Shared read-or-mint for a 32-byte hex secret persisted under
+   * `<userData>/secrets/<name>` with owner-only (0600) permissions.
+   */
+  private getOrCreateSecret(name: string): string {
     const secretsDir = join(app.getPath('userData'), 'secrets');
-    const secretFile = join(secretsDir, 'session-secret');
+    const secretFile = join(secretsDir, name);
     if (existsSync(secretFile)) {
       const existing = readFileSync(secretFile, 'utf-8').trim();
       if (existing.length >= 32) return existing;
@@ -306,6 +345,14 @@ export class ServiceManager {
       // API refuses to start in NODE_ENV=production without this; auto-
       // generate per-install. Persisted across launches.
       SESSION_SECRET: process.env['SESSION_SECRET'] || this.getOrCreateSessionSecret(),
+      // Pinned AFTER the `...process.env` spread on purpose: a packaged build
+      // must never inherit a developer's shell bypass. Real auth, always.
+      SKYTWIN_DEV_AUTH_BYPASS: 'false',
+      // Loopback service credential. The API verifies it; the worker and the
+      // idle-miner present it on `/api/events/ingest`. Without it, a packaged
+      // install (NODE_ENV=production, bypass off) 401s every ingest POST.
+      SKYTWIN_SERVICE_TOKEN:
+        process.env['SKYTWIN_SERVICE_TOKEN'] || this.getOrCreateServiceToken(),
     };
   }
 

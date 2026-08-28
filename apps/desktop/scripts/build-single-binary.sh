@@ -325,8 +325,19 @@ echo "[build-single-binary] Tarballing embedded apps into apps.tar.gz..."
 # ---------------------------------------------------------------------------
 
 MANIFEST_FILE="${EMBEDDED_DIR}/bundle-manifest.json"
+
+# Content hash of the embedded apps tarball. The Electron main process uses
+# this as the cache-invalidation marker for the extracted
+# <userData>/embedded/ tree (see apps/desktop/src/bundle-marker.ts). It has to
+# be content-addressed rather than version-derived: the app version was frozen
+# at 0.3.0 since PR #31, so a user upgrading via a newer .dmg kept the old
+# marker match and silently ran the new shell against the STALE extracted
+# backend.
+BUNDLE_ID="$(sha256_of "${EMBEDDED_DIR}/apps.tar.gz")"
+
 cat > "${MANIFEST_FILE}" <<MANIFEST
 {
+  "bundleId": "${BUNDLE_ID}",
   "bundledAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "components": ["api", "worker", "web", "cockroach"],
   "cockroachVersion": "v${CRDB_VERSION}",

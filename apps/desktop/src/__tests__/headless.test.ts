@@ -8,7 +8,7 @@ import * as http from 'http';
  * and the OS assigns an ephemeral port — no EADDRINUSE conflicts.
  */
 
-import { startHeadless } from '../headless.js';
+import { startHeadless, warnIfIngestAuthMisconfigured } from '../headless.js';
 import type { HeadlessServer } from '../headless.js';
 
 // ---------------------------------------------------------------------------
@@ -126,5 +126,70 @@ describe('startHeadless — shutdown', () => {
     await waitForListening(instance.server);
 
     await expect(instance.shutdown()).resolves.toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Ingest auth misconfiguration warning
+// ---------------------------------------------------------------------------
+
+describe('warnIfIngestAuthMisconfigured', () => {
+  function capture(): { lines: string[]; write: (msg: string) => void } {
+    const lines: string[] = [];
+    return { lines, write: (msg: string) => { lines.push(msg); } };
+  }
+
+  it('warns when the bypass is off and no service token is set (silent-no-ingest trap)', () => {
+    const sink = capture();
+    const warned = warnIfIngestAuthMisconfigured({ NODE_ENV: 'production' }, sink.write);
+    expect(warned).toBe(true);
+    expect(sink.lines.join('')).toMatch(/SKYTWIN_SERVICE_TOKEN/);
+  });
+
+  it('stays quiet when a service token is configured', () => {
+    const sink = capture();
+    const warned = warnIfIngestAuthMisconfigured(
+      { NODE_ENV: 'production', SKYTWIN_SERVICE_TOKEN: 'tok' },
+      sink.write,
+    );
+    expect(warned).toBe(false);
+    expect(sink.lines).toEqual([]);
+  });
+
+  it('treats a whitespace-only token as missing', () => {
+    const sink = capture();
+    expect(
+      warnIfIngestAuthMisconfigured({ NODE_ENV: 'production', SKYTWIN_SERVICE_TOKEN: '  ' }, sink.write),
+    ).toBe(true);
+  });
+
+  it('stays quiet when the dev auth bypass is explicitly on', () => {
+    const sink = capture();
+    expect(
+      warnIfIngestAuthMisconfigured(
+        { NODE_ENV: 'production', SKYTWIN_DEV_AUTH_BYPASS: 'true' },
+        sink.write,
+      ),
+    ).toBe(false);
+  });
+
+  it('stays quiet in development, where the bypass defaults on', () => {
+    const sink = capture();
+    expect(warnIfIngestAuthMisconfigured({ NODE_ENV: 'development' }, sink.write)).toBe(false);
+  });
+
+  it('warns in development when the bypass is explicitly disabled', () => {
+    const sink = capture();
+    expect(
+      warnIfIngestAuthMisconfigured(
+        { NODE_ENV: 'development', SKYTWIN_DEV_AUTH_BYPASS: 'false' },
+        sink.write,
+      ),
+    ).toBe(true);
+  });
+
+  it('defaults to production semantics when NODE_ENV is unset (spawnChild does the same)', () => {
+    const sink = capture();
+    expect(warnIfIngestAuthMisconfigured({}, sink.write)).toBe(true);
   });
 });

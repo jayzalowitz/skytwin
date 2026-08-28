@@ -72,6 +72,14 @@ export interface HttpSignalEmitterOptions {
   ingestUrl: string;
   /** The user the mined signals are attributed to. */
   userId: string;
+  /**
+   * Loopback service credential (`SKYTWIN_SERVICE_TOKEN`), sent as
+   * the `X-SkyTwin-Service-Token` header. Required whenever the API runs with the
+   * localhost dev bypass off — which is every packaged desktop build, since
+   * the desktop pins `NODE_ENV=production` for its children. Omit it only in
+   * a dev environment where the bypass is active.
+   */
+  serviceToken?: string;
   /** Injectable for tests; defaults to the global `fetch`. */
   fetchImpl?: typeof fetch;
   /** Max retries on transient (429 / 5xx / network) failures. Default 2. */
@@ -95,6 +103,13 @@ export function createHttpSignalEmitter(
 ): (signal: RawSignal) => Promise<void> {
   const fetchFn = opts.fetchImpl ?? fetch;
   const maxRetries = opts.maxRetries ?? 2;
+  const serviceToken = opts.serviceToken?.trim();
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    // Dedicated header rather than `Authorization` — see the note in
+    // apps/worker/src/ingest-headers.ts on the web-proxy laundering path.
+    ...(serviceToken ? { 'X-SkyTwin-Service-Token': serviceToken } : {}),
+  };
   return async (signal: RawSignal): Promise<void> => {
     const body = JSON.stringify(toIngestEvent(signal, opts.userId));
     try {
@@ -102,7 +117,7 @@ export function createHttpSignalEmitter(
         async () => {
           const resp = await fetchFn(opts.ingestUrl, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers,
             body,
           });
           if (!resp.ok) {

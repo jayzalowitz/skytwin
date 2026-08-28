@@ -424,6 +424,10 @@ describe('GmailConnector History API', () => {
     expect(signals).toHaveLength(2);
     expect(signals[0]!.id).toBe('sig_gmail_m1');
     expect(signals[1]!.id).toBe('sig_gmail_m2');
+    // The cursor is STAGED by poll() and only persisted once the caller
+    // confirms it handled the batch — see `SignalConnector.commitCursor`.
+    expect(cursor.snapshot['user-1:gmail:history_id']).toBeUndefined();
+    await conn.commitCursor();
     // Highest historyId observed becomes the persisted cursor.
     expect(cursor.snapshot['user-1:gmail:history_id']).toBe('1020');
   });
@@ -485,6 +489,8 @@ describe('GmailConnector History API', () => {
     expect(signals[0]!.id).toBe('sig_gmail_new-1');
     expect(calls[0]).toContain('startHistoryId=1000');
     expect(calls[0]).toContain('historyTypes=messageAdded');
+    expect(cursor.snapshot['user-1:gmail:history_id']).toBe('1000');
+    await conn.commitCursor();
     // Cursor advances to the response's historyId (which is the highest observed).
     expect(cursor.snapshot['user-1:gmail:history_id']).toBe('2050');
   });
@@ -530,7 +536,72 @@ describe('GmailConnector History API', () => {
     expect(historyHits).toBe(1);
     expect(signals).toHaveLength(1);
     expect(signals[0]!.id).toBe('sig_gmail_fresh');
+    await conn.commitCursor();
     expect(cursor.snapshot['user-1:gmail:history_id']).toBe('9999');
+  });
+
+  // -------------------------------------------------------------------
+  // Cursor commit is an ACKNOWLEDGEMENT, not part of reading. The worker
+  // calls commitCursor() only after every returned signal was forwarded to
+  // /api/events/ingest; a failed forward must re-deliver, not skip forever.
+  // -------------------------------------------------------------------
+  it('does NOT advance the cursor when the caller never commits — the batch is re-delivered', async () => {
+    let historyCalls = 0;
+    vi.stubGlobal('fetch', makeFetchRouter({
+      '/users/me/history': () => {
+        historyCalls++;
+        return jsonResponse({
+          history: [{ messagesAdded: [{ message: { id: 'new-1' } }] }],
+          historyId: '2050',
+        });
+      },
+      '/users/me/messages/new-1': () => jsonResponse({
+        id: 'new-1',
+        threadId: 't-new-1',
+        labelIds: [],
+        snippet: '',
+        payload: { headers: [] },
+        internalDate: '1735689600000',
+        historyId: '2030',
+      }),
+    }));
+
+    const cursor = makeMemoryCursor({ 'user-1:gmail:history_id': '1000' });
+    const conn = new GmailConnector('user-1', makeFreshTokenStore(), cursor);
+    await conn.connect();
+
+    // Poll 1: caller "fails" downstream and never commits.
+    const first = await conn.poll();
+    expect(first).toHaveLength(1);
+    expect(cursor.snapshot['user-1:gmail:history_id']).toBe('1000');
+
+    // Poll 2: same window, same message re-delivered.
+    const second = await conn.poll();
+    expect(second.map((sig) => sig.id)).toEqual(['sig_gmail_new-1']);
+    expect(historyCalls).toBe(2);
+
+    // Now the caller succeeds and commits.
+    await conn.commitCursor();
+    expect(cursor.snapshot['user-1:gmail:history_id']).toBe('2050');
+  });
+
+  it('commitCursor is a no-op when nothing is staged', async () => {
+    vi.stubGlobal('fetch', makeFetchRouter({
+      '/users/me/history': () => jsonResponse({ historyId: '5500' }),
+    }));
+
+    const cursor = makeMemoryCursor({ 'user-1:gmail:history_id': '5400' });
+    const conn = new GmailConnector('user-1', makeFreshTokenStore(), cursor);
+    await conn.connect();
+
+    // No signals -> the cursor was already persisted inside poll().
+    await conn.poll();
+    expect(cursor.snapshot['user-1:gmail:history_id']).toBe('5500');
+
+    // Committing again must not rewind or re-write anything.
+    await conn.commitCursor();
+    await conn.commitCursor();
+    expect(cursor.snapshot['user-1:gmail:history_id']).toBe('5500');
   });
 
   it('cursor save errors do not crash the poll', async () => {
@@ -624,7 +695,9 @@ describe('GmailConnector History API', () => {
       'sig_gmail_unread-1',
     ]);
 
-    // Highest historyId observed across all three messages wins the cursor.
+    // Highest historyId observed across all three messages wins the cursor,
+    // once the caller acknowledges the batch.
+    await conn.commitCursor();
     expect(cursor.snapshot['user-1:gmail:history_id']).toBe('1300');
   });
 });

@@ -53,6 +53,46 @@ function resolveApiEntry(): string {
   return process.env['SKYTWIN_API_ENTRY'] ?? join(__dirname, '..', '..', 'api', 'dist', 'index.js');
 }
 
+/**
+ * Whether the API this daemon starts will require real auth on
+ * `/api/events/ingest`. Mirrors `apps/api/src/middleware/session-auth.ts`:
+ * the bypass is on only when `SKYTWIN_DEV_AUTH_BYPASS=true`, or by default
+ * when `NODE_ENV=development`. `spawnChild` defaults NODE_ENV to
+ * `'production'`, so the bypass is OFF unless the operator says otherwise.
+ */
+function authBypassActive(env: NodeJS.ProcessEnv): boolean {
+  const explicit = env['SKYTWIN_DEV_AUTH_BYPASS'];
+  if (explicit !== undefined) return explicit === 'true';
+  return (env['NODE_ENV'] ?? 'production') === 'development';
+}
+
+/**
+ * Warn when the forked worker has no way to authenticate to the forked API.
+ *
+ * Unlike the Electron desktop — where `ServiceManager.getEnv()` mints
+ * `SKYTWIN_SERVICE_TOKEN` per install — headless is operator-configured and
+ * inherits whatever `process.env` holds. With the auth bypass off and no
+ * service token, every `POST /api/events/ingest` 401s, the worker's retry
+ * helper does not retry 401, and the per-user circuit breaker opens: the
+ * daemon looks healthy and silently ingests nothing. Fail LOUD instead.
+ *
+ * Exported for tests.
+ */
+export function warnIfIngestAuthMisconfigured(
+  env: NodeJS.ProcessEnv = process.env,
+  write: (msg: string) => void = (msg) => process.stderr.write(msg),
+): boolean {
+  const token = env['SKYTWIN_SERVICE_TOKEN'];
+  const hasToken = typeof token === 'string' && token.trim().length > 0;
+  if (hasToken || authBypassActive(env)) return false;
+  write(
+    '[headless] WARNING: SKYTWIN_SERVICE_TOKEN is not set and the localhost auth bypass is off. ' +
+      'The worker cannot authenticate to /api/events/ingest and every signal will 401 — no data will be ingested. ' +
+      'Set SKYTWIN_SERVICE_TOKEN to a shared random secret (e.g. `openssl rand -hex 32`) before starting the daemon.\n',
+  );
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -182,6 +222,7 @@ export function startHeadless(options?: { noSpawn?: boolean; port?: number }): H
   let workerProcess: ChildProcess | null = null;
 
   if (!noSpawn) {
+    warnIfIngestAuthMisconfigured();
     process.stdout.write(`[headless] Starting API from ${apiEntry}\n`);
     apiProcess = spawnChild(apiEntry, 'api');
 

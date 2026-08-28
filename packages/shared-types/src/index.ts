@@ -8,6 +8,11 @@ export {
 
 export type { User, AutonomySettings, PerAppOverride } from './user.js';
 
+export {
+  parseAutonomySettings,
+  CONSERVATIVE_AUTONOMY_DEFAULTS,
+} from './autonomy.js';
+
 export type {
   RoutineCadence,
   RoutineActionKind,
