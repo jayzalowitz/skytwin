@@ -59,6 +59,26 @@ grep '<NAME>' packages/shared-types/dist/index.js
 
 This shows up most often after rebasing across changes to `packages/shared-types/src/index.ts`. CI is unaffected (fresh installs). Only the local worktree sees it.
 
+### Test gotcha: a package-local vitest config silently disables the dist exclusion
+
+`vitest.config.ts` at the repo root sets `exclude: [...configDefaults.exclude, '**/dist/**']`. That exclusion is **not optional** — 34 packages compile their `__tests__/` directory into `dist/`, and Vitest 4 removed the `dist` glob from its built-in defaults (v3 shipped it; v4's defaults are only `node_modules` and `.git`). Without it, every one of those suites runs twice: once from `src/*.test.ts`, once from the stale compiled `dist/*.test.js`.
+
+A package-local `vitest.config.ts` **replaces** the root config; it does not merge with it. So the moment a package needs any local setting (a jsdom environment, an alias, `fileParallelism`), it silently loses the dist exclusion:
+
+```ts
+// apps/<pkg>/vitest.config.ts
+import { configDefaults, defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    // ...your local settings...
+    exclude: [...configDefaults.exclude, '**/dist/**'], // <- required, always
+  },
+});
+```
+
+The symptom is subtle: tests appear to pass, the count is just quietly doubled, and any failure is reported twice with half the reports pointing at a build artifact rather than at source. If a package needs no local settings, **delete its config** and let it inherit the root one.
+
 ### Build gotcha: turbo parallel race on @skytwin/db dist
 
 If `pnpm build` fails on `@skytwin/api` with `Property 'X' does not exist on type {...}` for a method that's clearly in `packages/db/src/repositories/*.ts`, turbo's default parallel concurrency is racing on the `@skytwin/db` dist between dependent builds. Direct `pnpm --filter @skytwin/api build` succeeds because there's no race; full `pnpm build` fails because parallel writers stomp on each other's `.d.ts` output.

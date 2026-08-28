@@ -1,5 +1,23 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [Unreleased] — CI unblock
+
+### Fixed
+
+- **`main` is green again — two time-bomb tests had taken CI, and with it the entire release pipeline, down.** The `Test` job had been failing since 2026-07-30 with no code change behind it. Two suites pinned fixtures to absolute dates while the code under test filters on a rolling window relative to `Date.now()`, so both aged out on a calendar date rather than on a commit:
+  - `computeBidirectionalThreadCounts` (`@skytwin/memory-gbrain-crdb-adapter`) seeded `2026-05-0X` signals against a `Date.now() - 90 days` cutoff. Detonated 2026-07-30. Fixtures now derive from a `daysAgo(n)` helper.
+  - The `#321` lifebook importance-override route test (`@skytwin/api`) used `setAt: '2026-05-18T00:00:00Z'` with a 90-day decay, so the override the test asserts is *surfaced* became stale on 2026-08-16 and the route correctly hid it. Now relative, matching the freshness tests beside it that already were.
+
+  The production code was correct in both cases; only the fixtures were wrong. Because the packaging matrix and the `release` job both gate on `Test`, this meant **no desktop installer and no GitHub Release could be produced at all** while it was red, and it blocked every open PR.
+
+- **Two `#281` regression guards were passing vacuously.** `returns no entry for received-only contacts` and `does NOT count cross-day activity` assert only *absence*, which an empty result map satisfies — so they kept passing while the window silently swallowed every one of their fixtures. Both now seed a genuinely bidirectional positive control, so absence has to be meaningful. The whole `computeBidirectionalThreadCounts` suite now runs **twice** via `describe.each` — once on the real clock, once five years ahead under fake timers. Every fixture derives from a `daysAgo()` helper and so travels with the clock; an absolute literal does not, and fails the shifted run. (A first attempt at this guard was itself vacuous — a single extra test with its own inline relative fixtures, which only proved the implementation reads `Date.now()` and stayed green when an absolute date was reintroduced into a sibling test. Caught in review and rebuilt.)
+
+- **Every test suite in `@skytwin/api`, `@skytwin/llm-client`, and the workspace root was running twice.** Vitest 4 removed `**/dist/**` from its built-in `exclude` defaults (v3 shipped it; v4's defaults are only `node_modules` and `.git`). Packages that compile `__tests__/` into `dist/` therefore ran each suite once from source and once from the stale compiled copy — doubling CI wall time and double-reporting every failure while attributing half of them to a build artifact, which is a large part of why the real assertion failure stayed buried. **34 packages** compile `__tests__/` into `dist/`, and a package with no local vitest config inherits the root one — so this affected nearly the whole workspace, not a handful of packages. Restored in the root config and in `apps/api`'s local config, which replaces rather than merges with it (`apps/desktop` already had the exclusion; `apps/web` uses explicit `include` globs; `packages/llm-client`'s local config was byte-identical to the root one and is deleted, so it now inherits future fixes automatically). `@skytwin/api` alone drops from 1,976 executed tests across 160 files to 988 across 80. The trap is now documented in CLAUDE.md, since a package-local config silently disables the exclusion.
+
+- **`evals.yml`: a latent CI bug plus a dead safety gate.** Its `setup-github-actions-caching-for-turbo` step lacked the `continue-on-error: true` that every equivalent step in `build.yml` has, so a GitHub cache-service hiccup could fail the whole eval job. (The turbo sidecar's 400/500 chatter is noisy but harmless — it was *not* the cause of the red `Test` job, despite dominating the logs.)
+
+  Separately, the `Check for safety regressions` step **could never fire**: it re-ran the identical eval suite that the step above it had just run, and without `if: always()` a step is skipped once an earlier one fails — so its `grep` only ever inspected an already-green run. It also piped vitest into `tee` without `set -o pipefail`, and GitHub runs `run: |` blocks under `bash -e` (errexit, *not* pipefail), so the pipeline took tee's exit status of 0. A crashed eval suite — import error, unhandled rejection, "No test files found" — produced no literal `FAIL` for the grep either, and would have reported as a **passing safety gate**. Merged into a single run with `pipefail`, halving eval wall time as a side effect.
+
 ## [0.6.101.0] - 2026-07-06
 
 ### Added
