@@ -27,6 +27,7 @@ import type {
   MemoryActionOpportunityStatus,
 } from '@skytwin/shared-types';
 import { ConfidenceLevel, TrustTier } from '@skytwin/shared-types';
+import { readAutonomy } from '../cost-gate.js';
 import { isValidUserId as isValidUuid } from '../middleware/validate-uuid.js';
 import { getExecutionRouter } from '../execution-setup.js';
 import { recordMcpActionSpend } from '../mcp-action-spend.js';
@@ -613,7 +614,12 @@ export function createApprovalsRouter(): Router {
         // mutated.
         applyDraftEditOverride(candidateAction, body.editedBody);
 
-        // Run policy check even on approved actions (spend limits, domain restrictions still apply)
+        // Run policy check even on approved actions (spend limits, domain
+        // restrictions still apply). That claim was previously false: this
+        // call passed only three arguments, dropping both the risk
+        // assessment and the autonomy settings, so the per-action spend cap
+        // and the domain allow/block lists never ran and risk-keyed policy
+        // rules matched nothing. Both are supplied below.
         const user = await userRepository.findById(body.userId);
         const userTier = user?.trust_tier as TrustTier ?? TrustTier.OBSERVER;
         prepareEmailActionForExecution(candidateAction, user);
@@ -625,6 +631,11 @@ export function createApprovalsRouter(): Router {
           candidateAction,
           policies,
           userTier,
+          // Guaranteed non-null on the approve path (the preflight 409'd
+          // above if it was missing), but `?? undefined` keeps the call
+          // total rather than asserting twice.
+          preflightRiskAssessment ?? undefined,
+          readAutonomy(user),
         );
 
         if (policyResult && !policyResult.allowed) {

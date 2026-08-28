@@ -50,6 +50,19 @@ export interface DecisionContext {
   wakeUpContext?: import('./mempalace.js').WakeUpContext;
   /** OAuth/API scopes the user has granted for the source account. Missing means no write scopes. */
   grantedScopes?: string[];
+  /**
+   * The user's persisted autonomy settings, carried so `DecisionMaker` can
+   * hand them to `PolicyEvaluator.evaluate` as its fifth argument.
+   *
+   * Everything the evaluator gates on these is skipped when they are absent:
+   * the per-user pause kill switch (#379), the domain allowlist, the
+   * per-action spend cap, the `costZeroIntent === 'unknown'` escalation
+   * (#372), `requireApprovalForIrreversible`, and quiet hours. Callers that
+   * build a context for a real user should populate this from
+   * `parseAutonomySettings(userRow.autonomy_settings)` — omitting it does
+   * not fail closed, it fails *open* on all six of those checks.
+   */
+  autonomySettings?: import('./user.js').AutonomySettings;
 }
 
 /**

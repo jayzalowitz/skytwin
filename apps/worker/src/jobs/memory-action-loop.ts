@@ -47,6 +47,7 @@ import {
   classifyActionSeverity,
   ConfidenceLevel,
   isPassiveAwarenessShape,
+  parseAutonomySettings,
   RiskTier,
   SituationType,
   TrustTier,
@@ -829,30 +830,17 @@ async function getStoredCredentials(service: string): Promise<Record<string, str
   }
 }
 
+/**
+ * Read a user row's persisted autonomy settings.
+ *
+ * Delegates to the shared `parseAutonomySettings` parser in
+ * `@skytwin/shared-types` so the worker, the API cost gate, and the
+ * decision pipeline all narrow the JSONB column identically. Previously
+ * this was one of two divergent hand-rolled readers; the API copy dropped
+ * the pause kill switch and quiet-hours fields entirely.
+ */
 function readAutonomy(raw: unknown): AutonomySettings {
-  if (!raw || typeof raw !== 'object') return DEFAULT_AUTONOMY;
-  const r = raw as Record<string, unknown>;
-  return {
-    maxSpendPerActionCents: typeof r['maxSpendPerActionCents'] === 'number'
-      ? r['maxSpendPerActionCents']
-      : DEFAULT_AUTONOMY.maxSpendPerActionCents,
-    maxDailySpendCents: typeof r['maxDailySpendCents'] === 'number'
-      ? r['maxDailySpendCents']
-      : DEFAULT_AUTONOMY.maxDailySpendCents,
-    allowedDomains: Array.isArray(r['allowedDomains']) ? r['allowedDomains'] as string[] : [],
-    blockedDomains: Array.isArray(r['blockedDomains']) ? r['blockedDomains'] as string[] : [],
-    requireApprovalForIrreversible:
-      typeof r['requireApprovalForIrreversible'] === 'boolean'
-        ? r['requireApprovalForIrreversible']
-        : DEFAULT_AUTONOMY.requireApprovalForIrreversible,
-    paused: typeof r['paused'] === 'boolean' ? r['paused'] : undefined,
-    pausedAt: typeof r['pausedAt'] === 'string' ? r['pausedAt'] : undefined,
-    pausedReason: typeof r['pausedReason'] === 'string' ? r['pausedReason'] : undefined,
-    perAppOverrides:
-      r['perAppOverrides'] && typeof r['perAppOverrides'] === 'object'
-        ? r['perAppOverrides'] as AutonomySettings['perAppOverrides']
-        : undefined,
-  };
+  return parseAutonomySettings(raw, DEFAULT_AUTONOMY);
 }
 
 function parseTrustTier(value: string): TrustTier {
