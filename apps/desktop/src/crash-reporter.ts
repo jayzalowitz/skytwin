@@ -114,6 +114,17 @@ export function redactPii(input: string): string {
     '$1<redacted>',
   );
 
+  // Bare keys that carry a recognizable vendor prefix. The two rules above
+  // only fire when the secret is LABELLED (`Bearer x`, `token=x`), but a
+  // provider SDK that throws with the key inlined in the message — or a
+  // stack frame carrying it as a positional argument — arrives unlabelled.
+  // Anchored on well-known prefixes rather than on generic entropy so that
+  // ordinary identifiers in a stack trace are not mangled.
+  out = out.replace(
+    /\b(sk-[A-Za-z0-9_-]{16,}|sk-proj-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{20,}|gho_[A-Za-z0-9]{20,}|ghu_[A-Za-z0-9]{20,}|ghs_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AIza[A-Za-z0-9_-]{30,}|AKIA[A-Z0-9]{16})\b/g,
+    '<redacted-token>',
+  );
+
   // file:// URLs — strip the user-home portion, keep the tail.
   out = out.replace(
     /file:\/\/\/(?:Users|home)\/[^/\\\s)]+/gi,

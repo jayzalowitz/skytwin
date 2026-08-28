@@ -3,6 +3,10 @@ All notable changes to SkyTwin will be documented in this file.
 ## [Unreleased] — CI unblock
 
 ### Fixed
+- **Three claims in the rewritten policy were themselves inaccurate (codex review); all corrected before merge.**
+  - The replacement text still implied that setting a vault passphrase encrypts OAuth tokens. It does not: every grant is written by `oauthRepository.saveTokenForAccount`, which stores `access_token` / `refresh_token` in plaintext columns, and the API's unlock only populates its own in-process key cache. The policy now states plainly that token encryption is implemented but **not active in the shipping app**, and tells users to rely on full-disk encryption.
+  - "No message or calendar content is ever sent to ... Google Cloud" was categorical, and contradicted by the opt-in cloud-AI path the same page documents two paragraphs later (a user who picks Google AI sends prompts to `generativelanguage.googleapis.com`). Now scoped to SkyTwin-operated servers, with the cloud-AI exception called out and cross-linked.
+  - "token-shaped strings" overstated `redactPii`, which only matched `Bearer` credentials and labelled `key=value` forms. Rather than only narrowing the wording, the redactor now also strips bare vendor-prefixed keys (`sk-`, `ghp_`, `github_pat_`, `xox*-`, `AIza`, `AKIA`), and the policy describes exactly what is and is not covered — including that pattern-based scrubbing can miss an unrecognized format.
 
 - **`main` is green again — two time-bomb tests had taken CI, and with it the entire release pipeline, down.** The `Test` job had been failing since 2026-07-30 with no code change behind it. Two suites pinned fixtures to absolute dates while the code under test filters on a rolling window relative to `Date.now()`, so both aged out on a calendar date rather than on a commit:
   - `computeBidirectionalThreadCounts` (`@skytwin/memory-gbrain-crdb-adapter`) seeded `2026-05-0X` signals against a `Date.now() - 90 days` cutoff. Detonated 2026-07-30. Fixtures now derive from a `daysAgo(n)` helper.

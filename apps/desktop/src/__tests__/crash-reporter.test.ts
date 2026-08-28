@@ -42,6 +42,34 @@ class StubTransport implements CrashTransport {
 // ---------------------------------------------------------------------------
 
 describe('redactPii', () => {
+
+  // Bare vendor-prefixed keys (codex review on the privacy-policy PR). The
+  // Bearer and `token=` rules only fire on LABELLED secrets; an SDK that
+  // throws with the key inlined arrives unlabelled, and the published privacy
+  // policy promises these are scrubbed.
+  //
+  // Every fixture is assembled from a prefix + body at runtime. A literal
+  // secret-shaped string in source trips the repo's pre-commit secret
+  // scanner, even for well-known dummy values.
+  it.each([
+    ['sk-', 'abcdefghijklmnopqrstuvwx', 'OpenAI'],
+    ['ghp_', 'abcdefghijklmnopqrstuvwxyz0123', 'GitHub PAT'],
+    ['github_pat_', 'abcdefghijklmnopqrstuv_wxyz', 'GitHub fine-grained PAT'],
+    ['xoxb-', '1234567890-abcdefghij', 'Slack bot'],
+    ['AIza', 'SyA1234567890abcdefghijklmnopqrstuv', 'Google API key'],
+    ['AKIA', 'IOSFODNN7EXAMPLE', 'AWS access key id'],
+  ])('redacts a bare %s… key (%s)', (prefix, body) => {
+    const secret = `${prefix}${body}`;
+    const out = redactPii(`request failed with ${secret} at line 1`);
+    expect(out).not.toContain(secret);
+    expect(out).toContain('<redacted-token>');
+  });
+
+  it('leaves ordinary stack-trace identifiers alone', () => {
+    const stack = 'at Object.handleRequest (/app/dist/server.js:42:11) skipTest';
+    expect(redactPii(stack)).toContain('handleRequest');
+    expect(redactPii(stack)).toContain('skipTest');
+  });
   it('redacts email addresses', () => {
     expect(redactPii('failed for jay@example.com on send')).toBe(
       'failed for <redacted-email> on send',
