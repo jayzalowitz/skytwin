@@ -22,7 +22,7 @@
     "expo-camera": "~56.0.8",
     "expo-file-system": "~56.0.8",
     "expo-notifications": "~56.0.18",
-    "expo-secure-store": "~56.0.4",
+    "expo-secure-store": "~57.0.2",
     "expo-splash-screen": "~56.0.10",
     "expo-status-bar": "~56.0.4",
     "react": "19.2.3",
