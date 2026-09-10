@@ -22,6 +22,7 @@ import { renderDxtImports } from './pages/dxt-imports.js';
 import { renderProvenanceGraph } from './pages/provenance-graph.js';
 import { renderMemorySettings } from './pages/memory-settings.js';
 import { renderLifebook } from './pages/lifebook.js';
+import { initSampleGlobals, renderSample } from './pages/sample.js';
 import { renderGlobalPauseButton } from './components/global-pause-button.js';
 import { wireDesktopUpdateBanner } from './components/desktop-update-banner.js';
 import { fetchPendingApprovals, fetchHealth, fetchUser, listUsers, escapeHtml, isApiKnownOffline, fetchJSON } from './api-client.js';
@@ -56,6 +57,7 @@ const routes = {
   '/credential-vault': { title: 'Credential Vault', render: renderCredentialVault },
   '/dxt/imports': { title: 'DXT Imports', render: renderDxtImports },
   '/memory-settings': { title: 'Memory backend', render: renderMemorySettings },
+  '/sample': { title: 'Interactive sample', render: renderSample },
 };
 
 /**
@@ -883,6 +885,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   // Wire dashboard event handlers + document-level delegators.
   // Idempotent so re-running this in tests is safe.
   initDashboardGlobals();
+  initSampleGlobals();
   wireDxtDropAndOpen();
 
   // Mount the always-visible Pause-everything safety button (#190).

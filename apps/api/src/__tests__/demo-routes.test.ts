@@ -6,10 +6,7 @@ import type { Express } from 'express';
 // Mocks — vi.hoisted runs before vi.mock factories execute.
 // ---------------------------------------------------------------------------
 
-const {
-  mockUserRepository,
-  mockWhatWouldIDo,
-} = vi.hoisted(() => ({
+const { mockUserRepository, mockWhatWouldIDo } = vi.hoisted(() => ({
   mockUserRepository: {
     findDemoById: vi.fn(),
   },
@@ -68,7 +65,10 @@ async function request(
         return;
       }
       const url = `http://127.0.0.1:${addr.port}${path}`;
-      const headers: Record<string, string> = { 'Content-Type': 'application/json', ...extraHeaders };
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        ...extraHeaders,
+      };
       const options: RequestInit = { method, headers };
       if (body !== undefined) options.body = JSON.stringify(body);
 
@@ -76,11 +76,16 @@ async function request(
         .then(async (res) => {
           const json = await res.json().catch(() => null);
           const respHeaders: Record<string, string> = {};
-          res.headers.forEach((v, k) => { respHeaders[k] = v; });
+          res.headers.forEach((v, k) => {
+            respHeaders[k] = v;
+          });
           server.close();
           resolve({ status: res.status, body: json, headers: respHeaders });
         })
-        .catch((err) => { server.close(); reject(err); });
+        .catch((err) => {
+          server.close();
+          reject(err);
+        });
     });
   });
 }
@@ -156,7 +161,11 @@ describe('demo routes', () => {
       mockUserRepository.findDemoById.mockResolvedValueOnce(SEEDED_USER);
       const res = await request(buildApp(), 'POST', '/api/v1/demo/session');
       expect(res.status).toBe(201);
-      const body = res.body as { token: string; userId: string; expiresAt: string };
+      const body = res.body as {
+        token: string;
+        userId: string;
+        expiresAt: string;
+      };
       expect(body.userId).toBe(DEMO_USER_ID);
       expect(verifyDemoSession(body.token)).toBe(true);
       expect(new Date(body.expiresAt).getTime()).toBeGreaterThan(Date.now());
@@ -166,7 +175,29 @@ describe('demo routes', () => {
       mockUserRepository.findDemoById.mockResolvedValueOnce(null);
       const res = await request(buildApp(), 'POST', '/api/v1/demo/session');
       expect(res.status).toBe(404);
-      expect(res.body).toMatchObject({ error: expect.stringMatching(/not available/i) });
+      expect(res.body).toMatchObject({
+        error: expect.stringMatching(/not available/i),
+      });
+    });
+
+    it('keeps the packaged credential issuer on the local device', async () => {
+      const app = buildApp();
+      app.set('trust proxy', true);
+      const res = await request(app, 'POST', '/api/v1/demo/session', undefined, { 'X-Forwarded-For': '203.0.113.8' });
+      expect(res.status).toBe(403);
+      expect(mockUserRepository.findDemoById).not.toHaveBeenCalled();
+    });
+
+    it('rate-limits repeated local credential issuance', async () => {
+      mockUserRepository.findDemoById.mockResolvedValue(SEEDED_USER);
+      const app = buildApp();
+      for (let index = 0; index < 12; index += 1) {
+        const issued = await request(app, 'POST', '/api/v1/demo/session');
+        expect(issued.status).toBe(201);
+      }
+      const limited = await request(app, 'POST', '/api/v1/demo/session');
+      expect(limited.status).toBe(429);
+      expect(limited.headers['retry-after']).toBeDefined();
     });
   });
 
@@ -176,7 +207,9 @@ describe('demo routes', () => {
     it('returns the canned recipe library (>=6 recipes, #405)', async () => {
       const res = await request(buildApp(), 'GET', '/api/v1/demo/recipes');
       expect(res.status).toBe(200);
-      const body = res.body as { recipes: Array<{ slug: string; situation: string }> };
+      const body = res.body as {
+        recipes: Array<{ slug: string; situation: string }>;
+      };
       expect(Array.isArray(body.recipes)).toBe(true);
       expect(body.recipes.length).toBeGreaterThanOrEqual(6);
     });
@@ -216,13 +249,17 @@ describe('demo routes', () => {
     });
 
     it('returns 400 when situation is empty string', async () => {
-      const res = await request(buildApp(), 'POST', '/api/v1/demo/preview', { situation: '   ' });
+      const res = await request(buildApp(), 'POST', '/api/v1/demo/preview', {
+        situation: '   ',
+      });
       expect(res.status).toBe(400);
     });
 
     it('returns 400 when situation exceeds 600 chars', async () => {
       const long = 'x'.repeat(601);
-      const res = await request(buildApp(), 'POST', '/api/v1/demo/preview', { situation: long });
+      const res = await request(buildApp(), 'POST', '/api/v1/demo/preview', {
+        situation: long,
+      });
       expect(res.status).toBe(400);
       expect((res.body as any).error).toMatch(/too long|600/i);
     });
@@ -231,7 +268,9 @@ describe('demo routes', () => {
       // Build the app FIRST (env is read at request time, not router-create time).
       const app = buildApp();
       process.env['DEMO_PREVIEW_DISABLED'] = '1';
-      const res = await request(app, 'POST', '/api/v1/demo/preview', { situation: 'test' });
+      const res = await request(app, 'POST', '/api/v1/demo/preview', {
+        situation: 'test',
+      });
       expect(res.status).toBe(503);
     });
 
@@ -255,7 +294,10 @@ describe('demo routes', () => {
         predictedAction: { actionType: 'archive_email' },
         confidence: 'high',
         wouldAutoExecute: true,
-        previewRateLimit: { remaining: expect.any(Number), windowMs: 5 * 60 * 1000 },
+        previewRateLimit: {
+          remaining: expect.any(Number),
+          windowMs: 5 * 60 * 1000,
+        },
       });
     });
 
@@ -283,12 +325,16 @@ describe('demo routes', () => {
       // Send 5 malformed requests (number instead of string) — these should
       // fail validation BEFORE consuming the rate limit.
       for (let i = 0; i < 5; i++) {
-        const bad = await request(app, 'POST', '/api/v1/demo/preview', { situation: 12345 });
+        const bad = await request(app, 'POST', '/api/v1/demo/preview', {
+          situation: 12345,
+        });
         expect(bad.status).toBe(400);
       }
       // Should still have full 20-request budget for legitimate calls.
       for (let i = 0; i < 20; i++) {
-        const ok = await request(app, 'POST', '/api/v1/demo/preview', { situation: 'ping' });
+        const ok = await request(app, 'POST', '/api/v1/demo/preview', {
+          situation: 'ping',
+        });
         expect(ok.status).toBe(200);
       }
     });

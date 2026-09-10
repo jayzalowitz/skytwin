@@ -33,6 +33,7 @@ import { createCredentialsRouter } from './routes/credentials.js';
 import { createRoutinesRouter } from './routes/routines.js';
 import { createWatchesRouter } from './routes/watches.js';
 import { createDemoRouter } from './routes/demo.js';
+import { createDemoSimulationRouter } from './routes/demo-simulation.js';
 import { createSystemRouter } from './routes/system.js';
 import { createCapabilitiesRouter } from './routes/capabilities.js';
 import { createRiskProfileRouter } from './routes/risk-profile.js';
@@ -341,6 +342,7 @@ app.use('/api/search', sessionAuth, requireOwnership, requestContext, createSear
 app.use('/api/credentials', sessionAuth, requireOwnership, requestContext, createCredentialsRouter());
 app.use('/api/routines', sessionAuth, requireOwnership, requestContext, createRoutinesRouter());
 app.use('/api/watches', sessionAuth, requireOwnership, requestContext, createWatchesRouter());
+app.use('/api/v1/demo/simulation', createDemoSimulationRouter()); // signed, session-local fictional commands
 app.use('/api/v1/demo', createDemoRouter()); // public — onboarding tour discovery
 app.use('/api/system', createSystemRouter()); // public — hardware detection + local-model pick for onboarding (pre-auth)
 app.use('/api/capabilities', sessionAuth, requireOwnership, requestContext, createCapabilitiesRouter());

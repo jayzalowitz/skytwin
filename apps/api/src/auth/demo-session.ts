@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'crypto';
 import { UUID_REGEX } from '../middleware/validate-uuid.js';
 
 /** Reserved synthetic identity used by the packaged sample experience. */
@@ -11,6 +11,12 @@ const UUID_PATH_SEGMENT = UUID_REGEX.source.replace(/^\^|\$$/g, '');
 export interface IssuedDemoSession {
   token: string;
   expiresAt: Date;
+}
+
+export interface VerifiedDemoSession {
+  /** One-way key suitable for session-local, disposable server state. */
+  sessionKey: string;
+  expiresAtMs: number;
 }
 
 function sessionSecret(): string {
@@ -46,21 +52,48 @@ export function issueDemoSession(nowMs = Date.now()): IssuedDemoSession {
 }
 
 /** Verify authenticity and expiry without consulting the session database. */
-export function verifyDemoSession(token: string, nowMs = Date.now()): boolean {
+export function inspectDemoSession(
+  token: string,
+  nowMs = Date.now(),
+): VerifiedDemoSession | null {
   const parts = token.split('.');
-  if (parts.length !== 4 || parts[0] !== DEMO_TOKEN_PREFIX) return false;
+  if (parts.length !== 4 || parts[0] !== DEMO_TOKEN_PREFIX) return null;
 
   const [, expiresRaw, nonce, presentedSignature] = parts;
-  if (!expiresRaw || !/^\d{13}$/.test(expiresRaw)) return false;
-  if (!nonce || !/^[A-Za-z0-9_-]{24}$/.test(nonce)) return false;
+  if (!expiresRaw || !/^\d{13}$/.test(expiresRaw)) return null;
+  if (!nonce || !/^[A-Za-z0-9_-]{24}$/.test(nonce)) return null;
   if (!presentedSignature || !/^[a-f0-9]{64}$/.test(presentedSignature))
-    return false;
+    return null;
 
   const expiresAtMs = Number(expiresRaw);
-  if (!Number.isSafeInteger(expiresAtMs) || expiresAtMs <= nowMs) return false;
+  if (!Number.isSafeInteger(expiresAtMs) || expiresAtMs <= nowMs) return null;
 
   const payload = `${DEMO_TOKEN_PREFIX}.${expiresRaw}.${nonce}`;
-  return constantTimeEqual(presentedSignature, signature(payload));
+  if (!constantTimeEqual(presentedSignature, signature(payload))) return null;
+  return {
+    sessionKey: createHash('sha256').update(token).digest('hex'),
+    expiresAtMs,
+  };
+}
+
+export function verifyDemoSession(token: string, nowMs = Date.now()): boolean {
+  return inspectDemoSession(token, nowMs) !== null;
+}
+
+/**
+ * The packaged sample is served through the dashboard's loopback API proxy.
+ * Keeping token issuance and simulation commands loopback-only prevents the
+ * disposable surface from becoming a remotely mintable public principal.
+ */
+export function isLocalDemoAddress(address: string | undefined): boolean {
+  const normalized = address?.split('%')[0]?.toLowerCase();
+  return (
+    normalized === '127.0.0.1' ||
+    normalized === '::1' ||
+    normalized === '::ffff:127.0.0.1' ||
+    normalized === '::ffff:7f00:1' ||
+    normalized === '0:0:0:0:0:ffff:7f00:1'
+  );
 }
 
 function pathIs(path: string, expected: string): boolean {

@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   DEMO_USER_ID,
   isDemoReadRequest,
+  isLocalDemoAddress,
+  inspectDemoSession,
   issueDemoSession,
   verifyDemoSession,
 } from '../auth/demo-session.js';
@@ -39,6 +41,24 @@ describe('demo session credential', () => {
     const tampered = `${issued.token.slice(0, -1)}${replacement}`;
     expect(verifyDemoSession(tampered, 1_800_000_000_001)).toBe(false);
   });
+
+  it('derives distinct one-way state keys for independently issued sessions', () => {
+    const first = issueDemoSession(1_800_000_000_000);
+    const second = issueDemoSession(1_800_000_000_000);
+    const firstClaims = inspectDemoSession(first.token, 1_800_000_000_001);
+    const secondClaims = inspectDemoSession(second.token, 1_800_000_000_001);
+    expect(firstClaims?.sessionKey).toMatch(/^[a-f0-9]{64}$/);
+    expect(secondClaims?.sessionKey).not.toBe(firstClaims?.sessionKey);
+    expect(firstClaims?.sessionKey).not.toContain(first.token);
+  });
+
+  it('recognizes only loopback addresses for the packaged sample', () => {
+    expect(isLocalDemoAddress('127.0.0.1')).toBe(true);
+    expect(isLocalDemoAddress('::1')).toBe(true);
+    expect(isLocalDemoAddress('::ffff:127.0.0.1')).toBe(true);
+    expect(isLocalDemoAddress('203.0.113.8')).toBe(false);
+    expect(isLocalDemoAddress(undefined)).toBe(false);
+  });
 });
 
 describe('demo read allowlist', () => {
@@ -70,6 +90,9 @@ describe('demo read allowlist', () => {
         false,
       );
     }
+    expect(isDemoReadRequest('POST', '/api/v1/demo/simulation/commands')).toBe(
+      false,
+    );
   });
 
   it('rejects another identity, user enumeration, and sensitive surfaces', () => {

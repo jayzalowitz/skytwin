@@ -221,6 +221,18 @@ export type {
   DemoInfoResponse,
   DemoSessionResponse,
   DemoPreviewResponse,
+  SampleSimulationCommand,
+  SampleSimulationActionType,
+  SampleSimulationCommandType,
+  SampleSimulationCorrectionOption,
+  SampleSimulationExplanation,
+  SampleSimulationLearning,
+  SampleSimulationPolicyResult,
+  SampleSimulationPrediction,
+  SampleSimulationProposal,
+  SampleSimulationProposalId,
+  SampleSimulationStateResponse,
+  SampleSimulationStatus,
 } from './demo.js';
 
 export type {
