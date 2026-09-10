@@ -107,14 +107,15 @@ confidential unlocked host.
 
 Each live SQL column belongs to exactly one inventory classification:
 
-| Classification               | Contract                                                                                                                                                                 |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `encrypted_source`           | In the first applicable migration slice. A completed row stores only an authenticated envelope for this source value.                                                    |
-| `deferred_source`            | Inside the decided boundary, but scheduled after the first slices. It remains a launch claim blocker until its stated stage is complete or the public claim is narrowed. |
-| `locally_exposed_derivative` | Remains readable for search or graph operations and is rebuildable from source. It never inherits the source-field encryption claim.                                     |
-| `locally_exposed_metadata`   | Remains readable for joins, scheduling, migration, deletion, and audit. Identifiers, timestamps, types, sizes, and relationships can still be revealing.                 |
-| `one_way_secret`             | Stores a digest/verifier, not recoverable ciphertext. Domain separation and comparison safety still apply.                                                               |
-| `excluded_operational`       | Current global/curated operational data, with a rationale. It must be reclassified if user content or a credential enters it.                                            |
+| Classification               | Contract                                                                                                                                                                                     |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `encrypted_source`           | In the first applicable migration slice. A completed row stores only an authenticated envelope for this source value.                                                                        |
+| `deferred_source`            | Inside the decided boundary, but scheduled after the first slices. It remains a launch claim blocker until its stated stage is complete or the public claim is narrowed.                     |
+| `locally_exposed_derivative` | Remains readable for search or graph operations and is rebuildable from source. It never inherits the source-field encryption claim.                                                         |
+| `locally_exposed_metadata`   | Remains readable for joins, scheduling, migration, deletion, and audit. Identifiers, timestamps, types, sizes, and relationships can still be revealing.                                     |
+| `one_way_secret`             | Stores a digest/verifier, not recoverable ciphertext. Domain separation and comparison safety still apply.                                                                                   |
+| `excluded_operational`       | Current global/curated operational data, with a rationale. It must be reclassified if user content or a credential enters it.                                                                |
+| `forbidden_global_source`    | Source-bearing data found in a system-global row that is prohibited in the target. It must be redacted, deleted, or moved to a user-owned encrypted row, never encrypted under a global key. |
 
 The checked-in inventory, not an informal table list in this ADR, is the schema
 coverage source of truth. A migration that adds or removes a field must update
@@ -123,9 +124,12 @@ the inventory in the same PR.
 Ownership is a strict enum: `user`, `user_child` (resolved through a repository
 join to its parent), `installation`, or `system_global`. Current and target
 repository boundaries are also enums. Every table carries `auditedCallsites`, a
-repository-relative list of literal SQL callsites found in application/package
-source, including direct API/worker queries, backup code, and seeds. Empty lists
-are explicit `no_runtime_sql_found`, not an assertion that the table is unused.
+repository-relative list from a conservative scan of literal SQL after source
+comments are removed, plus validated annotations for the known dynamic seed SQL
+helpers. The list includes direct API/worker queries, backup code, and seeds.
+Empty lists are explicit `no_runtime_sql_found`, not an assertion that the table
+is unused. A new dynamic SQL helper must declare its finite table set with the
+validator's annotation contract or the check fails.
 
 Randomized envelopes cannot preserve SQL equality, uniqueness, range, or prefix
 queries. The inventory's `searchableDerivatives` arrays name only separate
@@ -531,16 +535,22 @@ protection, not encrypted search.
 For the beta:
 
 1. Source title/content/metadata is encrypted after the memory slice.
-2. Existing tsvectors, embeddings, and classified graph derivatives remain
+2. Before `brain_pages.metadata` encryption is enforced, `authoringTier` and
+   `userOverride` move to typed locally exposed columns, while `fromAddress`
+   equality moves to a versioned purpose-keyed HMAC index. These projections
+   preserve filtering, backfill, weighting, and pin/hide behavior and explicitly
+   disclose their leakage. `lifebooks.metadata.importanceOverride` instead
+   requires unlock and bounded in-process evaluation; it does not stay readable.
+3. Existing tsvectors, embeddings, and classified graph derivatives remain
    local and readable, are rebuilt from source, and are deleted with the user.
-3. Remote embedding is an explicit provider/network disclosure. The source is
+4. Remote embedding is an explicit provider/network disclosure. The source is
    decrypted only for the authorized request; provider output remains an
    exposed local derivative.
-4. Locked search may return only the inventory-approved metadata. Snippets,
+5. Locked search may return only the inventory-approved metadata. Snippets,
    source titles, and reconstructed graph prose require unlock.
-5. Product copy says "selected source fields encrypted at rest; local search
-   derivatives and metadata remain readable," never "all data encrypted" or
-   "encrypted memory/search."
+6. Product copy says "selected source fields encrypted at rest; local search
+   derivatives and selected operational metadata remain readable," never "all
+   data encrypted" or "encrypted memory/search."
 
 Searchable encryption, ORAM, and confidential database execution are deferred
 research, not beta dependencies.
@@ -653,21 +663,25 @@ pnpm check:encryption-inventory
 git diff --check
 ```
 
-The validator proves structural facts only: current migration-derived table and
-column coverage, strict enum membership, path existence, completeness against a
-conservative literal-SQL scan, resolvable declared derivatives, and that the
-reviewed per-field semantic manifest still matches a hardcoded SHA-256 baseline.
-Changing an owner, class, boundary, stage, protection statement, rationale, or
-derivative therefore requires an explicit validator-baseline diff. Critical
-credential/DLQ invariants are also hardcoded and mutation-tested.
+The validator proves structural facts only: table and column coverage derived in
+the production migration runner's declared order, strict enum membership,
+realpath-contained regular-file references with symlinks rejected, completeness
+against its conservative SQL scan and validated dynamic-SQL annotations,
+resolvable declared derivatives, and that the reviewed per-field semantic
+manifest still matches a hardcoded SHA-256 baseline. Changing an owner, class,
+boundary, stage, protection statement, rationale, derivative, or documented
+operational dependency therefore requires an explicit validator-baseline diff.
+Critical credential/DLQ invariants and metadata dependency resolutions are also
+hardcoded and mutation-tested.
 
 It does **not** prove that a human classification is correct, that a repository
-is safe, or that every runtime query was found. The callsite scan intentionally
-includes seeds and occasional lexical false positives, while dynamic table
-identifiers, generated/external code, stored procedures, and SQL assembled
-without a literal verb/table pair can escape it. Security review must combine
-the list with repository tracing and direct-SQL review; passing automation is
-not implementation or security evidence.
+is safe, or that every runtime query was found. The callsite scan includes seeds
+and strips comments to avoid prose-only matches. It recognizes only literal
+verb/table pairs and the explicitly annotated seed helpers; other dynamic table
+identifiers, generated/external code, stored procedures, and differently
+assembled SQL can escape it. Security review must combine the list with
+repository tracing and direct-SQL review; passing automation is not
+implementation or security evidence.
 
 Implementation PRs must additionally prove, with fresh-database and upgrade
 tests:

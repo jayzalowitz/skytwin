@@ -11,6 +11,10 @@
  * `INSERT ... ON CONFLICT`, so it is already idempotent; this helper exists to
  * give new callers (spec 09) one shared, tested implementation rather than
  * re-deriving the ON CONFLICT SQL each time.
+ *
+ * @encryption-inventory-dynamic-sql-helper seedUpsert tables=users,twin_profiles
+ * The encryption inventory validator requires this set to match every
+ * annotated seedUpsert caller, because the emitted INSERT table is dynamic.
  */
 
 export interface Queryable {

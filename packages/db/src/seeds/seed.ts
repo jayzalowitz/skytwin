@@ -1295,6 +1295,7 @@ async function seed(): Promise<void> {
     // 3. execution_plans — references candidate_actions
     await client.query(`DELETE FROM execution_plans WHERE decision_id IN (${flatDecisionFilter})`, [userId]);
     // 4. remaining decision_id-keyed children
+    // @encryption-inventory-dynamic-sql tables=candidate_actions,approval_requests,explanation_records,feedback_events,skill_gap_log,episodic_memories
     for (const childTable of [
       'candidate_actions',
       'approval_requests',

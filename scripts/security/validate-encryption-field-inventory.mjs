@@ -1,8 +1,14 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import {
+  existsSync,
+  lstatSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+} from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -27,10 +33,11 @@ const EXPECTED_SOURCES = [
   "packages/db/src/migrations/*.sql",
 ];
 const EXPECTED_MIGRATION_RUNNER = "packages/db/src/migrations/001-initial.ts";
+const MIGRATION_RUNNER_PATH = join(REPO_ROOT, EXPECTED_MIGRATION_RUNNER);
 const EXPECTED_WARNING =
   "This inventory records current exposure and the proposed target boundary. It is not evidence that target encryption is implemented or accepted.";
 const EXPECTED_SEMANTIC_BASELINE_SHA256 =
-  "85909721d28b1931167cff9861a12fa5f29875a81fefd34c1c4e037ad9675bf2";
+  "71912576d9fece240867b2b56083bf5971a291eadcea5bff7c5db030f13b0a8d";
 
 const OWNER_KINDS = new Set([
   "user",
@@ -58,7 +65,43 @@ const CLASSIFICATIONS = new Set([
   "one_way_secret",
   "excluded_operational",
   "deferred_source",
+  "forbidden_global_source",
 ]);
+
+function isContained(root, candidate) {
+  const rel = relative(root, candidate);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+/**
+ * Validate a repository-relative path without following a symlink outside the
+ * checkout. The inventory is reviewed source, but accepting directories,
+ * absolute paths, or symlinks would make its evidence boundary misleading.
+ */
+export function isRepositoryRegularFile(root, repositoryPath) {
+  if (
+    typeof repositoryPath !== "string" ||
+    repositoryPath.length === 0 ||
+    isAbsolute(repositoryPath)
+  ) {
+    return false;
+  }
+  try {
+    const absoluteRoot = realpathSync(root);
+    const lexicalPath = resolve(absoluteRoot, repositoryPath);
+    if (!isContained(absoluteRoot, lexicalPath) || !existsSync(lexicalPath)) {
+      return false;
+    }
+    const lexicalStat = lstatSync(lexicalPath);
+    if (lexicalStat.isSymbolicLink() || !lexicalStat.isFile()) return false;
+    const canonicalPath = realpathSync(lexicalPath);
+    return (
+      canonicalPath === lexicalPath && isContained(absoluteRoot, canonicalPath)
+    );
+  } catch {
+    return false;
+  }
+}
 
 function stripComments(sql) {
   return sql.replace(/\/\*[\s\S]*?\*\//g, "").replace(/--[^\n]*/g, "");
@@ -247,14 +290,61 @@ export function applySchemaSql(schema, rawSql) {
   return schema;
 }
 
-export function extractSchemaColumns() {
-  const files = [
+/**
+ * Check the production runner construct that selects migrations. This parser
+ * intentionally accepts only the simple contract the runner uses today:
+ * schema.sql first, then every sibling .sql file in default lexical order.
+ * If the runner becomes conditional or gains a different ordering policy, the
+ * inventory validator fails until its schema reconstruction is updated too.
+ */
+export function migrationRunnerContractErrors(source) {
+  const errors = [];
+  const schemaRead = source.indexOf("readFileSync(SCHEMA_PATH");
+  const schemaQuery = source.indexOf("await pool.query(schema)");
+  const migrationSelection = source.match(
+    /const\s+sqlFiles\s*=\s*readdirSync\(__dirname\)\s*\.filter\(\(f\)\s*=>\s*f\.endsWith\(['"]\.sql['"]\)\)\s*\.sort\(\)\s*;/,
+  );
+  const migrationLoop = source.indexOf("for (const file of sqlFiles)");
+  if (
+    schemaRead === -1 ||
+    schemaQuery === -1 ||
+    schemaRead > schemaQuery ||
+    (migrationSelection && migrationSelection.index < schemaQuery)
+  ) {
+    errors.push(
+      "production migration runner must execute schema.sql before incremental migrations",
+    );
+  }
+  if (!migrationSelection) {
+    errors.push(
+      "production migration runner must select every sibling .sql file in lexical order",
+    );
+  } else if (migrationLoop < migrationSelection.index) {
+    errors.push(
+      "production migration runner must iterate the selected SQL files in order",
+    );
+  }
+  return errors;
+}
+
+export function productionMigrationSourceFiles() {
+  const runnerErrors = migrationRunnerContractErrors(
+    readFileSync(MIGRATION_RUNNER_PATH, "utf8"),
+  );
+  if (runnerErrors.length > 0) {
+    throw new Error(runnerErrors.join("; "));
+  }
+  return [
     SCHEMA_PATH,
     ...readdirSync(MIGRATIONS_DIR)
       .filter((name) => name.endsWith(".sql"))
       .sort()
       .map((name) => join(MIGRATIONS_DIR, name)),
   ];
+}
+
+export function extractSchemaColumns() {
+  const files = productionMigrationSourceFiles();
   const schema = new Map();
   for (const path of files) applySchemaSql(schema, readFileSync(path, "utf8"));
   return new Map(
@@ -262,6 +352,58 @@ export function extractSchemaColumns() {
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([table, columns]) => [table, [...columns].sort()]),
   );
+}
+
+function stripCodeComments(source) {
+  let output = "";
+  let state = "code";
+  let escaped = false;
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index];
+    const next = source[index + 1];
+    if (state === "line-comment") {
+      if (char === "\n") {
+        output += char;
+        state = "code";
+      } else output += " ";
+      continue;
+    }
+    if (state === "block-comment") {
+      if (char === "*" && next === "/") {
+        output += "  ";
+        index += 1;
+        state = "code";
+      } else output += char === "\n" ? "\n" : " ";
+      continue;
+    }
+    if (["single", "double", "template"].includes(state)) {
+      output += char;
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (
+        (state === "single" && char === "'") ||
+        (state === "double" && char === '"') ||
+        (state === "template" && char === "`")
+      )
+        state = "code";
+      continue;
+    }
+    if (char === "/" && next === "/") {
+      output += "  ";
+      index += 1;
+      state = "line-comment";
+    } else if (char === "/" && next === "*") {
+      output += "  ";
+      index += 1;
+      state = "block-comment";
+    } else {
+      output += char;
+      if (char === "'") state = "single";
+      else if (char === '"') state = "double";
+      else if (char === "`") state = "template";
+    }
+  }
+  return output;
 }
 
 function walkCodeFiles(directory, output = []) {
@@ -285,7 +427,99 @@ function walkCodeFiles(directory, output = []) {
   return output;
 }
 
-export function discoverSqlCallsites(schema) {
+const DYNAMIC_SQL_ANNOTATION =
+  /@encryption-inventory-dynamic-sql\s+tables=([a-z_][a-z0-9_]*(?:,[a-z_][a-z0-9_]*)*)/g;
+const DYNAMIC_SQL_HELPER_ANNOTATION =
+  /@encryption-inventory-dynamic-sql-helper\s+seedUpsert\s+tables=([a-z_][a-z0-9_]*(?:,[a-z_][a-z0-9_]*)*)/g;
+
+function annotationTables(content, pattern) {
+  const tables = new Set();
+  pattern.lastIndex = 0;
+  for (const match of content.matchAll(pattern)) {
+    for (const table of match[1].split(",")) tables.add(table);
+  }
+  return tables;
+}
+
+function sameStringSet(left, right) {
+  return JSON.stringify([...left].sort()) === JSON.stringify([...right].sort());
+}
+
+export function auditDynamicSqlFile(repoPath, content, schema) {
+  const code = stripCodeComments(content);
+  const annotated = annotationTables(content, DYNAMIC_SQL_ANNOTATION);
+  const callsSeedUpsert = /\bseedUpsert\s*\(/.test(code);
+  const dynamicIdentifiers = new Set(
+    [
+      ...code.matchAll(
+        /\b(?:FROM|INTO|UPDATE|JOIN|TABLE|REFERENCES)\s+\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g,
+      ),
+    ].map((match) => match[1]),
+  );
+  const errors = [];
+  if (
+    (dynamicIdentifiers.size > 0 || callsSeedUpsert) &&
+    annotated.size === 0
+  ) {
+    errors.push(
+      `${repoPath}: dynamic SQL must declare @encryption-inventory-dynamic-sql tables=...`,
+    );
+  }
+
+  const loopTables = new Set();
+  for (const identifier of dynamicIdentifiers) {
+    const escaped = identifier.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const loop = code.match(
+      new RegExp(
+        `for\\s*\\(\\s*const\\s+${escaped}\\s+of\\s*\\[([\\s\\S]*?)\\]\\s*\\)`,
+      ),
+    );
+    if (!loop) {
+      errors.push(
+        `${repoPath}: dynamic SQL identifier ${identifier} needs a validator-supported finite table declaration`,
+      );
+      continue;
+    }
+    for (const match of loop[1].matchAll(/['"]([a-z_][a-z0-9_]*)['"]/g)) {
+      loopTables.add(match[1]);
+    }
+  }
+  if (loopTables.size > 0 && !sameStringSet(annotated, loopTables)) {
+    errors.push(
+      `${repoPath}: dynamic SQL annotation must match its literal loop table set`,
+    );
+  }
+
+  if (callsSeedUpsert) {
+    const literalTables = new Set(
+      [...content.matchAll(/\btable\s*:\s*['"]([a-z_][a-z0-9_]*)['"]/g)].map(
+        (match) => match[1],
+      ),
+    );
+    if (!sameStringSet(annotated, literalTables)) {
+      errors.push(
+        `${repoPath}: seedUpsert annotation must match its literal table properties`,
+      );
+    }
+  }
+  for (const table of annotated) {
+    if (!schema.has(table)) {
+      errors.push(
+        `${repoPath}: dynamic SQL annotation names unknown table ${table}`,
+      );
+    }
+  }
+  return { annotated, callsSeedUpsert, errors };
+}
+
+let cachedCallsiteSignature;
+let cachedCallsiteAudit;
+
+export function discoverSqlCallsiteAudit(schema) {
+  const signature = [...schema.keys()].sort().join("\0");
+  if (signature === cachedCallsiteSignature && cachedCallsiteAudit) {
+    return cachedCallsiteAudit;
+  }
   const files = [
     ...walkCodeFiles(join(REPO_ROOT, "packages")),
     ...walkCodeFiles(join(REPO_ROOT, "apps")),
@@ -293,21 +527,81 @@ export function discoverSqlCallsites(schema) {
   const contents = new Map(
     files.map((path) => [path, readFileSync(path, "utf8")]),
   );
-  const result = new Map();
+  const result = new Map([...schema.keys()].map((table) => [table, new Set()]));
+  const errors = [];
   for (const table of schema.keys()) {
     const escaped = table.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const pattern = new RegExp(
       `\\b(?:FROM|INTO|UPDATE|JOIN|TABLE|REFERENCES)\\s+(?:IF\\s+(?:NOT\\s+)?EXISTS\\s+)?[\"\\\`]?(?:public\\.)?${escaped}[\"\\\`]?\\b`,
       "i",
     );
-    result.set(
-      table,
-      files
-        .filter((path) => pattern.test(contents.get(path)))
-        .map((path) => relative(REPO_ROOT, path)),
+    for (const path of files) {
+      if (pattern.test(stripCodeComments(contents.get(path)))) {
+        result.get(table).add(relative(REPO_ROOT, path));
+      }
+    }
+  }
+
+  const helperPath = join(
+    REPO_ROOT,
+    "packages",
+    "db",
+    "src",
+    "seeds",
+    "upsert.ts",
+  );
+  const helperTables = annotationTables(
+    contents.get(helperPath) ?? "",
+    DYNAMIC_SQL_HELPER_ANNOTATION,
+  );
+  const callerTables = new Set();
+  for (const path of files) {
+    const content = contents.get(path);
+    const repoPath = relative(REPO_ROOT, path);
+    const dynamicAudit =
+      path === helperPath
+        ? { annotated: new Set(), callsSeedUpsert: false, errors: [] }
+        : auditDynamicSqlFile(repoPath, content, schema);
+    errors.push(...dynamicAudit.errors);
+    const { annotated, callsSeedUpsert } = dynamicAudit;
+    for (const table of annotated) {
+      if (!schema.has(table)) continue;
+      result.get(table).add(repoPath);
+      if (callsSeedUpsert) callerTables.add(table);
+    }
+  }
+  if (helperTables.size === 0) {
+    errors.push(
+      `${relative(REPO_ROOT, helperPath)}: seedUpsert helper must declare its audited table set`,
     );
   }
-  return result;
+  for (const table of new Set([...helperTables, ...callerTables])) {
+    if (!schema.has(table)) {
+      errors.push(
+        `${relative(REPO_ROOT, helperPath)}: helper annotation names unknown table ${table}`,
+      );
+      continue;
+    }
+    if (!helperTables.has(table) || !callerTables.has(table)) {
+      errors.push(
+        `${relative(REPO_ROOT, helperPath)}: seedUpsert helper and caller annotations disagree for ${table}`,
+      );
+    }
+    result.get(table).add(relative(REPO_ROOT, helperPath));
+  }
+  const audit = {
+    callsites: new Map(
+      [...result].map(([table, paths]) => [table, [...paths].sort()]),
+    ),
+    errors,
+  };
+  cachedCallsiteSignature = signature;
+  cachedCallsiteAudit = audit;
+  return audit;
+}
+
+export function discoverSqlCallsites(schema) {
+  return discoverSqlCallsiteAudit(schema).callsites;
 }
 
 export function semanticManifestHash(inventory) {
@@ -329,6 +623,13 @@ export function semanticManifestHash(inventory) {
           searchableDerivatives: [
             ...(group.searchableDerivatives ?? []),
           ].sort(),
+          operationalDependencies: [...(group.operationalDependencies ?? [])]
+            .map((dependency) => ({
+              jsonPath: dependency.jsonPath,
+              currentUsage: dependency.currentUsage,
+              targetResolution: dependency.targetResolution,
+            }))
+            .sort((left, right) => left.jsonPath.localeCompare(right.jsonPath)),
         });
       }
     }
@@ -361,13 +662,19 @@ export function validateInventory(inventory, schema) {
   }
   if (
     inventory.migrationRunner !== EXPECTED_MIGRATION_RUNNER ||
-    !existsSync(join(REPO_ROOT, EXPECTED_MIGRATION_RUNNER))
+    !isRepositoryRegularFile(REPO_ROOT, EXPECTED_MIGRATION_RUNNER)
   ) {
     errors.push(`migrationRunner must be ${EXPECTED_MIGRATION_RUNNER}`);
+  } else {
+    errors.push(
+      ...migrationRunnerContractErrors(
+        readFileSync(MIGRATION_RUNNER_PATH, "utf8"),
+      ),
+    );
   }
   if (
     typeof inventory.adr !== "string" ||
-    !existsSync(join(REPO_ROOT, String(inventory.adr)))
+    !isRepositoryRegularFile(REPO_ROOT, inventory.adr)
   ) {
     errors.push("adr must reference an existing repository-relative file");
   }
@@ -409,7 +716,9 @@ export function validateInventory(inventory, schema) {
   const inventoryTables = new Map();
   const classificationsByField = new Map();
   const searchableDerivativeRefs = [];
-  const discoveredCallsites = discoverSqlCallsites(schema);
+  const callsiteAudit = discoverSqlCallsiteAudit(schema);
+  errors.push(...callsiteAudit.errors);
+  const discoveredCallsites = callsiteAudit.callsites;
   for (const entry of inventory.tables) {
     if (
       !entry ||
@@ -461,7 +770,8 @@ export function validateInventory(inventory, schema) {
       if (
         actualCallsites.some(
           (path) =>
-            typeof path !== "string" || !existsSync(join(REPO_ROOT, path)),
+            typeof path !== "string" ||
+            !isRepositoryRegularFile(REPO_ROOT, path),
         )
       ) {
         errors.push(
@@ -558,6 +868,29 @@ export function validateInventory(inventory, schema) {
           }
         }
       }
+      if (group.operationalDependencies !== undefined) {
+        if (!Array.isArray(group.operationalDependencies)) {
+          errors.push(
+            `${table}.${group.classification}: operationalDependencies must be an array`,
+          );
+        } else {
+          for (const dependency of group.operationalDependencies) {
+            if (
+              !dependency ||
+              typeof dependency !== "object" ||
+              !["jsonPath", "currentUsage", "targetResolution"].every(
+                (key) =>
+                  typeof dependency[key] === "string" &&
+                  dependency[key].length > 0,
+              )
+            ) {
+              errors.push(
+                `${table}.${group.classification}: every operational dependency needs jsonPath, currentUsage, and targetResolution`,
+              );
+            }
+          }
+        }
+      }
     }
     for (const column of columns) {
       if (!classified.has(column))
@@ -600,10 +933,60 @@ export function validateInventory(inventory, schema) {
     "ironclaw_tools.description",
     "ironclaw_tools.tool_name",
     "service_credentials.credential_value",
-    "worker_dead_letter.context",
   ]) {
     requireField(field, "encrypted_source");
   }
+  for (const field of [
+    "worker_dead_letter.context",
+    "worker_dead_letter.error_message",
+  ]) {
+    requireField(field, "forbidden_global_source");
+  }
+  requireField("brain_pages.metadata", "encrypted_source");
+  requireField("lifebooks.metadata", "deferred_source");
+  const requireOperationalDependency = (
+    table,
+    column,
+    jsonPath,
+    targetResolution,
+  ) => {
+    const entry = inventoryTables.get(table);
+    const group = entry?.groups?.find((candidate) =>
+      candidate.columns?.includes(column),
+    );
+    const dependency = group?.operationalDependencies?.find(
+      (candidate) => candidate.jsonPath === jsonPath,
+    );
+    if (dependency?.targetResolution !== targetResolution) {
+      errors.push(
+        `${table}.${column}: critical operational dependency ${jsonPath} must retain its reviewed target resolution`,
+      );
+    }
+  };
+  requireOperationalDependency(
+    "brain_pages",
+    "metadata",
+    "metadata.authoringTier",
+    "Project to a typed locally_exposed_metadata column before encrypting metadata; disclose that authoring tier remains readable.",
+  );
+  requireOperationalDependency(
+    "brain_pages",
+    "metadata",
+    "metadata.fromAddress",
+    "Replace plaintext equality with a versioned, purpose-keyed HMAC lookup entry; source address remains only in the encrypted metadata envelope.",
+  );
+  requireOperationalDependency(
+    "brain_pages",
+    "metadata",
+    "metadata.userOverride",
+    "Project to a typed locally_exposed_metadata column before encrypting metadata; disclose that pin/hide state remains readable.",
+  );
+  requireOperationalDependency(
+    "lifebooks",
+    "metadata",
+    "metadata.importanceOverride.{value,setAt,decayDays}",
+    "Require unlock, decrypt the bounded per-user lifebook set, and compute effective importance in the authorized process before metadata encryption is enforced.",
+  );
   const criticalBoundaries = [
     ["oauth_tokens", "user", "user_broker_gateway"],
     ["credential_requirements", "installation", "installation_broker_gateway"],
