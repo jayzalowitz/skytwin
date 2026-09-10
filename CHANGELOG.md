@@ -1,10 +1,11 @@
 All notable changes to SkyTwin will be documented in this file.
 
-## [Unreleased] — Account-free sample browsing
+## [Unreleased] — Account-free interactive sample
 
 ### Added
 
-- **Packaged desktop builds can initialize and open a synthetic sample profile without enabling the development authentication bypass.** A short-lived credential is fixed to the reserved `is_demo` identity and an explicit read allowlist; it cannot enumerate users, read credentials or settings, invoke inference-bearing Lifebook layout routes, mutate state, or execute actions. Clean packaged installs provision only against the bundled loopback database and ingest fictional signals through the authenticated event boundary with stable deduplication IDs. This is the safe browsing foundation for the public-beta sample loop; approve, reject, correct, and learn interactions remain follow-up work under [#630](https://github.com/jayzalowitz/skytwin/issues/630).
+- **Packaged desktop builds can initialize and open a synthetic sample profile without enabling the development authentication bypass.** A short-lived credential is fixed to the reserved `is_demo` identity and an explicit read allowlist; it cannot enumerate users, read credentials or settings, invoke inference-bearing Lifebook layout routes, mutate state, or execute actions. Clean packaged installs provision only against the bundled loopback database and ingest fictional signals through the authenticated event boundary with stable deduplication IDs.
+- **The account-free tour now includes a separate, interactive simulation loop.** A visitor can approve, reject, or correct fixed fictional proposals, inspect the real policy and explanation results, and see a session-local preference change the next focus-block prediction. Simulation commands are loopback-only, accept a closed command catalog, keep bounded in-memory state keyed to the signed sample credential, and terminate before any database, connector, provider, credential, or execution adapter. Reset, expiry, and exit discard the state; an untrusted shell-shaped proposal is visibly contained with no approval path. See [#630](https://github.com/jayzalowitz/skytwin/issues/630) and [#633](https://github.com/jayzalowitz/skytwin/issues/633).
 
 ## [0.6.102.0] - 2026-08-27
 
