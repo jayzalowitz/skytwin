@@ -11,7 +11,7 @@ const {
   mockWhatWouldIDo,
 } = vi.hoisted(() => ({
   mockUserRepository: {
-    findById: vi.fn(),
+    findDemoById: vi.fn(),
   },
   mockWhatWouldIDo: vi.fn(),
 }));
@@ -38,6 +38,7 @@ vi.mock('@skytwin/policy-engine', () => ({
 }));
 
 import { createDemoRouter, _resetDemoCacheForTests } from '../routes/demo.js';
+import { verifyDemoSession } from '../auth/demo-session.js';
 
 const DEMO_USER_ID = 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d';
 
@@ -105,51 +106,67 @@ const SUCCESSFUL_PREDICTION = {
 
 describe('demo routes', () => {
   beforeEach(() => {
-    mockUserRepository.findById.mockReset();
+    mockUserRepository.findDemoById.mockReset();
     mockWhatWouldIDo.mockReset();
     _resetDemoCacheForTests();
-    // Default to dev-bypass active so requests from the test client
-    // (loopback) reach the protected branches by default.
-    process.env['SKYTWIN_DEV_AUTH_BYPASS'] = 'true';
     delete process.env['DEMO_PREVIEW_DISABLED'];
   });
 
   afterEach(() => {
-    delete process.env['SKYTWIN_DEV_AUTH_BYPASS'];
     delete process.env['DEMO_PREVIEW_DISABLED'];
   });
 
   // ── /info ──────────────────────────────────────────────────────────
 
   describe('GET /info', () => {
-    it('returns { available: true, userId } when seed exists and dev bypass is active', async () => {
-      mockUserRepository.findById.mockResolvedValueOnce(SEEDED_USER);
+    it('returns { available: true, userId } when the seed exists', async () => {
+      mockUserRepository.findDemoById.mockResolvedValueOnce(SEEDED_USER);
       const res = await request(buildApp(), 'GET', '/api/v1/demo/info');
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ available: true, userId: DEMO_USER_ID });
     });
 
     it('does NOT leak email or name', async () => {
-      mockUserRepository.findById.mockResolvedValueOnce(SEEDED_USER);
+      mockUserRepository.findDemoById.mockResolvedValueOnce(SEEDED_USER);
       const res = await request(buildApp(), 'GET', '/api/v1/demo/info');
       expect(res.body).not.toHaveProperty('email');
       expect(res.body).not.toHaveProperty('name');
     });
 
     it('returns { available: false } when seed is missing', async () => {
-      mockUserRepository.findById.mockResolvedValueOnce(null);
+      mockUserRepository.findDemoById.mockResolvedValueOnce(null);
       const res = await request(buildApp(), 'GET', '/api/v1/demo/info');
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ available: false });
     });
 
-    it('returns { available: false } when dev bypass is disabled (production-like)', async () => {
+    it('remains available when the broad dev bypass is disabled (production-like)', async () => {
       process.env['SKYTWIN_DEV_AUTH_BYPASS'] = 'false';
-      // findById should never be reached because the gate hides the demo first.
-      mockUserRepository.findById.mockResolvedValueOnce(SEEDED_USER);
+      mockUserRepository.findDemoById.mockResolvedValueOnce(SEEDED_USER);
       const res = await request(buildApp(), 'GET', '/api/v1/demo/info');
       expect(res.status).toBe(200);
-      expect(res.body).toEqual({ available: false });
+      expect(res.body).toEqual({ available: true, userId: DEMO_USER_ID });
+    });
+  });
+
+  // ── /session ───────────────────────────────────────────────────────
+
+  describe('POST /session', () => {
+    it('issues a signed, expiring credential bound to the sample user', async () => {
+      mockUserRepository.findDemoById.mockResolvedValueOnce(SEEDED_USER);
+      const res = await request(buildApp(), 'POST', '/api/v1/demo/session');
+      expect(res.status).toBe(201);
+      const body = res.body as { token: string; userId: string; expiresAt: string };
+      expect(body.userId).toBe(DEMO_USER_ID);
+      expect(verifyDemoSession(body.token)).toBe(true);
+      expect(new Date(body.expiresAt).getTime()).toBeGreaterThan(Date.now());
+    });
+
+    it('returns 404 rather than issuing a credential when the fixture is absent', async () => {
+      mockUserRepository.findDemoById.mockResolvedValueOnce(null);
+      const res = await request(buildApp(), 'POST', '/api/v1/demo/session');
+      expect(res.status).toBe(404);
+      expect(res.body).toMatchObject({ error: expect.stringMatching(/not available/i) });
     });
   });
 
@@ -181,11 +198,11 @@ describe('demo routes', () => {
     });
 
     it('is reachable without a seeded demo user (static, no DB read)', async () => {
-      // findById must never be consulted for the recipe library.
-      mockUserRepository.findById.mockResolvedValue(null);
+      // The fixture lookup must never be consulted for the recipe library.
+      mockUserRepository.findDemoById.mockResolvedValue(null);
       const res = await request(buildApp(), 'GET', '/api/v1/demo/recipes');
       expect(res.status).toBe(200);
-      expect(mockUserRepository.findById).not.toHaveBeenCalled();
+      expect(mockUserRepository.findDemoById).not.toHaveBeenCalled();
     });
   });
 
@@ -219,7 +236,7 @@ describe('demo routes', () => {
     });
 
     it('returns 404 when seed user is missing', async () => {
-      mockUserRepository.findById.mockResolvedValue(null);
+      mockUserRepository.findDemoById.mockResolvedValue(null);
       const res = await request(buildApp(), 'POST', '/api/v1/demo/preview', {
         situation: 'A recruiter just emailed me.',
       });
@@ -228,7 +245,7 @@ describe('demo routes', () => {
     });
 
     it('returns 200 with prediction body on happy path', async () => {
-      mockUserRepository.findById.mockResolvedValue(SEEDED_USER);
+      mockUserRepository.findDemoById.mockResolvedValue(SEEDED_USER);
       mockWhatWouldIDo.mockResolvedValueOnce(SUCCESSFUL_PREDICTION);
       const res = await request(buildApp(), 'POST', '/api/v1/demo/preview', {
         situation: 'A recruiter just emailed me about a senior role.',
@@ -243,7 +260,7 @@ describe('demo routes', () => {
     });
 
     it('rate-limits after 20 requests from same IP and returns Retry-After header', async () => {
-      mockUserRepository.findById.mockResolvedValue(SEEDED_USER);
+      mockUserRepository.findDemoById.mockResolvedValue(SEEDED_USER);
       mockWhatWouldIDo.mockResolvedValue(SUCCESSFUL_PREDICTION);
       const app = buildApp();
       app.set('trust proxy', true);
@@ -260,7 +277,7 @@ describe('demo routes', () => {
     });
 
     it('rejects malformed JSON situation type without burning the bucket', async () => {
-      mockUserRepository.findById.mockResolvedValue(SEEDED_USER);
+      mockUserRepository.findDemoById.mockResolvedValue(SEEDED_USER);
       mockWhatWouldIDo.mockResolvedValue(SUCCESSFUL_PREDICTION);
       const app = buildApp();
       // Send 5 malformed requests (number instead of string) — these should

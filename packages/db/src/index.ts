@@ -36,6 +36,17 @@ export {
   type DemoGuardResult,
 } from './seeds/demo-guard.js';
 
+export {
+  assertPackagedSampleSafe,
+  provisionPackagedSample,
+  provisionPackagedSampleWithClient,
+  ingestPackagedSampleSignals,
+  type PackagedSampleEnvironment,
+  type PackagedSampleGuardResult,
+  type PackagedSampleProvisionResult,
+  type PackagedSampleIngestResult,
+} from './seeds/packaged-sample.js';
+
 // Row types
 export type {
   OAuthTokenRowWithEncrypted,

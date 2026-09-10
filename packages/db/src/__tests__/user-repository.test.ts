@@ -74,6 +74,27 @@ describe('userRepository', () => {
     });
   });
 
+  describe('findDemoById', () => {
+    it('requires the database sample marker as well as the reserved id', async () => {
+      const row = fakeUserRow();
+      mockQuery.mockResolvedValue({ rows: [row], rowCount: 1 });
+
+      const result = await userRepository.findDemoById('u-001');
+
+      expect(result).toEqual(row);
+      expect(mockQuery).toHaveBeenCalledWith(
+        'SELECT * FROM users WHERE id = $1 AND is_demo = true',
+        ['u-001'],
+      );
+    });
+
+    it('returns null when the id is not marked as a sample identity', async () => {
+      mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
+
+      await expect(userRepository.findDemoById('u-001')).resolves.toBeNull();
+    });
+  });
+
   // -----------------------------------------------------------------------
   // findByEmail
   // -----------------------------------------------------------------------

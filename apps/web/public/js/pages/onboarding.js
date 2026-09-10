@@ -20,6 +20,7 @@ import {
   createUser,
   fetchJSON,
   fetchDemoInfo,
+  startDemoSession,
   previewDemoDecision,
   fetchOnboardingState,
   postOnboardingDialogue,
@@ -34,7 +35,6 @@ import {
   KEY_USER_ID,
   KEY_ONBOARDED,
   KEY_TOUR_MODE,
-  KEY_SESSION_TOKEN,
   KEY_ONBOARDING_STATE,
   ONBOARDING_STATE_VERSION,
 } from '../storage-keys.js';
@@ -385,6 +385,10 @@ async function handleOnboardingClick(e) {
       try {
         const info = await fetchDemoInfo();
         if (info?.available && info?.userId) {
+          const session = await startDemoSession();
+          if (!session?.token || session.userId !== info.userId) {
+            throw new Error('Sample session could not be verified.');
+          }
           localStorage.setItem(KEY_TOUR_MODE, '1');
           localStorage.setItem(KEY_USER_ID, info.userId);
           // 'sample' (not 'true') so the chrome can tell sample-mode

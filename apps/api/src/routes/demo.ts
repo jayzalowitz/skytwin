@@ -9,6 +9,7 @@ import type {
   WhatWouldIDoRequest,
   WhatWouldIDoResponse,
   DemoInfoResponse,
+  DemoSessionResponse,
   DemoPreviewResponse,
 } from '@skytwin/shared-types';
 import { TrustTier, DEMO_RECIPES } from '@skytwin/shared-types';
@@ -16,6 +17,7 @@ import { DecisionMaker } from '@skytwin/decision-engine';
 import type { DecisionRepositoryPort } from '@skytwin/decision-engine';
 import { TwinService } from '@skytwin/twin-model';
 import { PolicyEvaluator } from '@skytwin/policy-engine';
+import { DEMO_USER_ID, issueDemoSession } from '../auth/demo-session.js';
 
 /**
  * UUID of the seeded "Alex Thompson" demo user from
@@ -27,8 +29,6 @@ import { PolicyEvaluator } from '@skytwin/policy-engine';
  * with a populated twin profile, decision history, learnings, and
  * approvals — that's what makes the "take a tour" button worth offering.
  */
-const DEMO_USER_ID = 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d';
-
 /** Operator kill switch — set DEMO_PREVIEW_DISABLED=1 to turn off the public LLM route.
  *  Read at request time so an operator can flip the kill switch without restarting. */
 function isPreviewDisabled(): boolean {
@@ -58,7 +58,7 @@ const PREVIEW_GLOBAL_WINDOW_MS = 60 * 60 * 1000;
 const PREVIEW_MAX_INPUT_LEN = 600;
 
 /** Cache the demo user lookup so the hot path doesn't query DB every request. */
-let _cachedDemoUser: Awaited<ReturnType<typeof userRepository.findById>> | null = null;
+let _cachedDemoUser: Awaited<ReturnType<typeof userRepository.findDemoById>> | null = null;
 let _cachedDemoUserAt = 0;
 const DEMO_USER_CACHE_TTL_MS = 60 * 1000;
 
@@ -67,7 +67,7 @@ async function getDemoUserCached() {
   if (_cachedDemoUser && (now - _cachedDemoUserAt) < DEMO_USER_CACHE_TTL_MS) {
     return _cachedDemoUser;
   }
-  const fresh = await userRepository.findById(DEMO_USER_ID);
+  const fresh = await userRepository.findDemoById(DEMO_USER_ID);
   _cachedDemoUser = fresh;
   _cachedDemoUserAt = now;
   return fresh;
@@ -88,9 +88,8 @@ export function _resetDemoCacheForTests(): void {
  *
  * Lets a brand-new visitor land on a populated dashboard (Alex Thompson's
  * seeded twin) before they invest in the Google Cloud OAuth credential
- * setup. Only exposes read-style discovery; switching to the user goes
- * through the existing user-switcher path so all the dev-bypass auth
- * rules still apply.
+ * setup. The short-lived sample session is a separate, read-only principal;
+ * production authentication and normal user sessions remain unchanged.
  */
 export function createDemoRouter(): Router {
   const router = Router();
@@ -104,24 +103,8 @@ export function createDemoRouter(): Router {
    * and name are deliberately excluded so an operator who reuses the
    * DEMO_USER_ID slot for a real account can't accidentally leak PII.
    */
-  router.get('/info', async (req, res, next) => {
+  router.get('/info', async (_req, res, next) => {
     try {
-      // Tour mode requires the dashboard's protected endpoints to be
-      // reachable for the tour user — that only works when the localhost
-      // dev auth bypass is active. In any deployment with real auth, the
-      // tour link would land on a 401-riddled dashboard. Be honest:
-      // report the demo as unavailable unless the bypass would actually
-      // let the tour work.
-      const ip = req.ip ?? req.socket.remoteAddress ?? '';
-      const isLocalhost = ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
-      const devBypass = (process.env['SKYTWIN_DEV_AUTH_BYPASS']
-        ?? (process.env['NODE_ENV'] === 'development' ? 'true' : 'false')) === 'true';
-      if (!isLocalhost || !devBypass) {
-        const unavailable: DemoInfoResponse = { available: false };
-        res.json(unavailable);
-        return;
-      }
-
       const user = await getDemoUserCached();
       if (!user) {
         const unavailable: DemoInfoResponse = { available: false };
@@ -130,6 +113,32 @@ export function createDemoRouter(): Router {
       }
       const ok: DemoInfoResponse = { available: true, userId: user.id };
       res.json(ok);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /**
+   * POST /api/demo/session
+   *
+   * Starts an account-free sample session. The returned credential is signed,
+   * short-lived, fixed to DEMO_USER_ID, and restricted by sessionAuth to an
+   * explicit set of read routes. It cannot mutate sample data or access users.
+   */
+  router.post('/session', async (_req, res, next) => {
+    try {
+      const user = await getDemoUserCached();
+      if (!user) {
+        res.status(404).json({ error: 'Demo profile not available on this server.' });
+        return;
+      }
+      const session = issueDemoSession();
+      const response: DemoSessionResponse = {
+        token: session.token,
+        userId: DEMO_USER_ID,
+        expiresAt: session.expiresAt.toISOString(),
+      };
+      res.status(201).json(response);
     } catch (error) {
       next(error);
     }
