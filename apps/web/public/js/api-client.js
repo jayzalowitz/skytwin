@@ -2,6 +2,7 @@ import {
   KEY_DEMO_SESSION_EXPIRES_AT,
   KEY_SESSION_TOKEN,
   KEY_TOUR_MODE,
+  KEY_USER_ID,
 } from './storage-keys.js';
 
 const API = '/api';
@@ -463,6 +464,9 @@ export async function startDemoSession() {
       localStorage.removeItem(KEY_SESSION_TOKEN);
       localStorage.removeItem(KEY_DEMO_SESSION_EXPIRES_AT);
       localStorage.removeItem(KEY_TOUR_MODE);
+      if (localStorage.getItem(KEY_USER_ID) === DEMO_USER_ID) {
+        localStorage.removeItem(KEY_USER_ID);
+      }
       throw new Error('Sample session response was invalid.');
     }
     localStorage.setItem(KEY_SESSION_TOKEN, session.token);

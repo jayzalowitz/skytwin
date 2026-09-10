@@ -130,11 +130,10 @@ export function isDemoReadRequest(
     )
   )
     return true;
-  if (
-    new RegExp(`^/api/lifebooks/${DEMO_USER_ID}/${UUID_PATH_SEGMENT}$`, 'i').test(
-      path,
-    )
-  )
+  // Lifebook detail is keyed by a domain name, not a UUID. Exactly one
+  // additional segment is readable; the two-segment `/:domain/layout`
+  // inference route remains outside this allowlist.
+  if (new RegExp(`^/api/lifebooks/${DEMO_USER_ID}/[^/]+$`).test(path))
     return true;
 
   // These routers carry the identity in the query string rather than the path.

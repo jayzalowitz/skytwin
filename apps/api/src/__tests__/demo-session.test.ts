@@ -59,6 +59,9 @@ describe('demo read allowlist', () => {
     expect(
       isDemoReadRequest('GET', `/api/connectors/${DEMO_USER_ID}/status`),
     ).toBe(true);
+    expect(
+      isDemoReadRequest('GET', `/api/lifebooks/${DEMO_USER_ID}/Health`),
+    ).toBe(true);
   });
 
   it('rejects every mutation even when it targets the sample identity', () => {

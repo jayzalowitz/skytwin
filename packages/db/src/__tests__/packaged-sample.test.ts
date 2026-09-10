@@ -126,5 +126,20 @@ describe('packaged sample safety', () => {
         fetchImpl,
       }),
     ).rejects.toThrow(/reserved identity/);
+
+    await expect(
+      ingestPackagedSampleSignals({
+        apiUrl: 'https://api.example.com',
+        serviceToken: 'local-secret',
+        fetchImpl,
+      }),
+    ).rejects.toThrow(/loopback API URL/);
+    await expect(
+      ingestPackagedSampleSignals({
+        apiUrl: 'http://localhost.evil.example',
+        serviceToken: 'local-secret',
+        fetchImpl,
+      }),
+    ).rejects.toThrow(/loopback API URL/);
   });
 });

@@ -5,6 +5,7 @@ import {
   KEY_DEMO_SESSION_EXPIRES_AT,
   KEY_SESSION_TOKEN,
   KEY_TOUR_MODE,
+  KEY_USER_ID,
 } from './storage-keys.js';
 import { fetchJSON, startDemoSession } from './api-client.js';
 
@@ -80,6 +81,7 @@ describe('api client', () => {
   it('rejects a sample credential for any other identity before storing it', async () => {
     values.set(KEY_TOUR_MODE, '1');
     values.set(KEY_SESSION_TOKEN, 'old-token');
+    values.set(KEY_USER_ID, 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d');
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue(
@@ -97,5 +99,6 @@ describe('api client', () => {
     await expect(startDemoSession()).rejects.toThrow(/invalid/i);
     expect(values.has(KEY_SESSION_TOKEN)).toBe(false);
     expect(values.has(KEY_TOUR_MODE)).toBe(false);
+    expect(values.has(KEY_USER_ID)).toBe(false);
   });
 });

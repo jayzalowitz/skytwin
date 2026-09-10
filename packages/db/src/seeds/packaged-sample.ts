@@ -127,6 +127,22 @@ export async function ingestPackagedSampleSignals(options: {
 }): Promise<PackagedSampleIngestResult> {
   if (!options.serviceToken)
     throw new Error('loopback service credential is required');
+  let apiUrl: URL;
+  try {
+    apiUrl = new URL(options.apiUrl);
+  } catch {
+    throw new Error('sample ingest requires a valid loopback API URL');
+  }
+  const loopbackHosts = new Set(['localhost', '127.0.0.1', '[::1]']);
+  if (
+    !['http:', 'https:'].includes(apiUrl.protocol) ||
+    !loopbackHosts.has(apiUrl.hostname.toLowerCase()) ||
+    apiUrl.username !== '' ||
+    apiUrl.password !== '' ||
+    (apiUrl.pathname !== '' && apiUrl.pathname !== '/')
+  ) {
+    throw new Error('sample ingest is restricted to a loopback API URL');
+  }
   const fetchImpl = options.fetchImpl ?? fetch;
   const userId = options.userId ?? DEMO_USER_ID;
   if (userId !== DEMO_USER_ID)
@@ -134,23 +150,26 @@ export async function ingestPackagedSampleSignals(options: {
 
   let ingested = 0;
   for (const [index, signal] of DEMO_SIGNALS.entries()) {
-    const response = await fetchImpl(`${options.apiUrl}/api/events/ingest`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-skytwin-service-token': options.serviceToken,
-      },
-      body: JSON.stringify({
-        userId,
-        signalId: fixtureSignalId(index),
-        source: signal.source,
-        type: signal.type,
-        data: {
-          ...signal.data,
-          sampleFixtureVersion: PACKAGED_SAMPLE_FIXTURE_VERSION,
+    const response = await fetchImpl(
+      new URL('/api/events/ingest', apiUrl).toString(),
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-skytwin-service-token': options.serviceToken,
         },
-      }),
-    });
+        body: JSON.stringify({
+          userId,
+          signalId: fixtureSignalId(index),
+          source: signal.source,
+          type: signal.type,
+          data: {
+            ...signal.data,
+            sampleFixtureVersion: PACKAGED_SAMPLE_FIXTURE_VERSION,
+          },
+        }),
+      },
+    );
     if (!response.ok) {
       throw new Error(
         `sample signal ingest failed with HTTP ${response.status}`,
