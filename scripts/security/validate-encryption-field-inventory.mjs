@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import ts from "typescript";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(SCRIPT_DIR, "..", "..");
@@ -37,7 +38,7 @@ const MIGRATION_RUNNER_PATH = join(REPO_ROOT, EXPECTED_MIGRATION_RUNNER);
 const EXPECTED_WARNING =
   "This inventory records current exposure and the proposed target boundary. It is not evidence that target encryption is implemented or accepted.";
 const EXPECTED_SEMANTIC_BASELINE_SHA256 =
-  "71912576d9fece240867b2b56083bf5971a291eadcea5bff7c5db030f13b0a8d";
+  "07ea8bd92f95eb4ac2eb4853dad6549929b0ac381858e8c7ae8b8653057b6e1c";
 
 const OWNER_KINDS = new Set([
   "user",
@@ -323,6 +324,221 @@ export function migrationRunnerContractErrors(source) {
     errors.push(
       "production migration runner must iterate the selected SQL files in order",
     );
+  } else if (
+    stripCodeComments(
+      source.slice(
+        migrationSelection.index + migrationSelection[0].length,
+        migrationLoop,
+      ),
+    ).trim() !== ""
+  ) {
+    errors.push(
+      "production migration runner must not modify the selected SQL files before iteration",
+    );
+  }
+
+  const parsed = ts.createSourceFile(
+    "migration-runner.ts",
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  let fileLoop;
+  let schemaReadNode;
+  let schemaQueryNode;
+  let sqlFilesDeclaration;
+  function visit(node) {
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.name.text === "schema" &&
+      node.initializer &&
+      ts.isCallExpression(node.initializer) &&
+      ts.isIdentifier(node.initializer.expression) &&
+      node.initializer.expression.text === "readFileSync" &&
+      node.initializer.arguments.length >= 1 &&
+      ts.isIdentifier(node.initializer.arguments[0]) &&
+      node.initializer.arguments[0].text === "SCHEMA_PATH"
+    ) {
+      schemaReadNode = node;
+    }
+    if (
+      ts.isAwaitExpression(node) &&
+      ts.isCallExpression(node.expression) &&
+      ts.isPropertyAccessExpression(node.expression.expression) &&
+      ts.isIdentifier(node.expression.expression.expression) &&
+      node.expression.expression.expression.text === "pool" &&
+      node.expression.expression.name.text === "query" &&
+      node.expression.arguments.length === 1 &&
+      ts.isIdentifier(node.expression.arguments[0]) &&
+      node.expression.arguments[0].text === "schema"
+    ) {
+      schemaQueryNode = node;
+    }
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.name.text === "sqlFiles"
+    ) {
+      sqlFilesDeclaration = node;
+    }
+    if (
+      ts.isForOfStatement(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === "sqlFiles" &&
+      ts.isVariableDeclarationList(node.initializer) &&
+      node.initializer.declarations.length === 1 &&
+      ts.isIdentifier(node.initializer.declarations[0].name) &&
+      node.initializer.declarations[0].name.text === "file"
+    ) {
+      fileLoop = node;
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(parsed);
+
+  const selectionInitializer =
+    sqlFilesDeclaration?.initializer?.getText(parsed);
+  const validSelectionInitializer =
+    typeof selectionInitializer === "string" &&
+    /^readdirSync\(__dirname\)\s*\.filter\(\(f\)\s*=>\s*f\.endsWith\(['"]\.sql['"]\)\)\s*\.sort\(\)$/.test(
+      selectionInitializer,
+    );
+  if (!validSelectionInitializer) {
+    errors.push(
+      "production migration runner must select every sibling .sql file in lexical order",
+    );
+  }
+  if (
+    !schemaReadNode ||
+    !schemaQueryNode ||
+    !sqlFilesDeclaration ||
+    !fileLoop ||
+    schemaReadNode.getStart(parsed) > schemaQueryNode.getStart(parsed) ||
+    schemaQueryNode.getStart(parsed) > sqlFilesDeclaration.getStart(parsed) ||
+    sqlFilesDeclaration.getStart(parsed) > fileLoop.getStart(parsed)
+  ) {
+    errors.push(
+      "production migration runner must execute schema.sql before incremental migrations",
+    );
+  }
+
+  const isNamedCall = (node, name) =>
+    ts.isCallExpression(node) &&
+    ts.isIdentifier(node.expression) &&
+    node.expression.text === name;
+  const declarationInitializer = (statement, name) => {
+    if (!ts.isVariableStatement(statement)) return undefined;
+    const declaration = statement.declarationList.declarations.find(
+      (candidate) =>
+        ts.isIdentifier(candidate.name) && candidate.name.text === name,
+    );
+    return declaration?.initializer;
+  };
+
+  let readsSelectedFile = false;
+  let splitsSelectedSql = false;
+  let executesEveryStatement = false;
+  let skipsSelectedFile = false;
+  if (fileLoop && ts.isBlock(fileLoop.statement)) {
+    const statements = fileLoop.statement.statements;
+    const readIndex = statements.findIndex((statement) => {
+      const initializer = declarationInitializer(statement, "sql");
+      if (!initializer || !isNamedCall(initializer, "readFileSync"))
+        return false;
+      const path = initializer.arguments[0];
+      return (
+        path !== undefined &&
+        isNamedCall(path, "join") &&
+        path.arguments.length >= 2 &&
+        ts.isIdentifier(path.arguments[0]) &&
+        path.arguments[0].text === "__dirname" &&
+        ts.isIdentifier(path.arguments[1]) &&
+        path.arguments[1].text === "file"
+      );
+    });
+    readsSelectedFile = readIndex !== -1;
+
+    const splitIndex = statements.findIndex((statement) => {
+      const initializer = declarationInitializer(statement, "statements");
+      return (
+        initializer !== undefined &&
+        isNamedCall(initializer, "splitSqlStatements") &&
+        initializer.arguments.length === 1 &&
+        ts.isIdentifier(initializer.arguments[0]) &&
+        initializer.arguments[0].text === "sql"
+      );
+    });
+    splitsSelectedSql = splitIndex > readIndex && readIndex !== -1;
+
+    const statementLoopIndex = statements.findIndex(
+      (statement) =>
+        ts.isForOfStatement(statement) &&
+        ts.isIdentifier(statement.expression) &&
+        statement.expression.text === "statements" &&
+        ts.isVariableDeclarationList(statement.initializer) &&
+        statement.initializer.declarations.length === 1 &&
+        ts.isIdentifier(statement.initializer.declarations[0].name) &&
+        statement.initializer.declarations[0].name.text === "stmt",
+    );
+    skipsSelectedFile = statements
+      .slice(
+        0,
+        statementLoopIndex === -1 ? statements.length : statementLoopIndex,
+      )
+      .some(
+        (statement) =>
+          ts.isIfStatement(statement) ||
+          ts.isContinueStatement(statement) ||
+          ts.isReturnStatement(statement),
+      );
+
+    const statementLoop = statements[statementLoopIndex];
+    if (
+      statementLoopIndex > splitIndex &&
+      splitIndex !== -1 &&
+      ts.isForOfStatement(statementLoop)
+    ) {
+      function findExecution(node, conditionallySkipped = false) {
+        const nextConditionallySkipped =
+          conditionallySkipped ||
+          ts.isIfStatement(node) ||
+          ts.isConditionalExpression(node) ||
+          ts.isSwitchStatement(node);
+        if (
+          !nextConditionallySkipped &&
+          ts.isAwaitExpression(node) &&
+          ts.isCallExpression(node.expression) &&
+          ts.isPropertyAccessExpression(node.expression.expression) &&
+          ts.isIdentifier(node.expression.expression.expression) &&
+          node.expression.expression.expression.text === "pool" &&
+          node.expression.expression.name.text === "query" &&
+          node.expression.arguments.length === 1 &&
+          ts.isIdentifier(node.expression.arguments[0]) &&
+          node.expression.arguments[0].text === "stmt"
+        ) {
+          executesEveryStatement = true;
+        }
+        ts.forEachChild(node, (child) =>
+          findExecution(child, nextConditionallySkipped),
+        );
+      }
+      findExecution(statementLoop.statement);
+    }
+  }
+  if (!readsSelectedFile) {
+    errors.push("production migration runner must read each selected SQL file");
+  }
+  if (!splitsSelectedSql) {
+    errors.push(
+      "production migration runner must split each selected SQL file",
+    );
+  }
+  if (!executesEveryStatement || skipsSelectedFile) {
+    errors.push(
+      "production migration runner must execute every statement from every selected SQL file",
+    );
   }
   return errors;
 }
@@ -406,6 +622,47 @@ function stripCodeComments(source) {
   return output;
 }
 
+/**
+ * Return string/template literal bodies that are SQL statements or SQL
+ * fragments. Restricting table discovery to SQL-shaped literals avoids
+ * treating UI prose such as "from Watches" as a database callsite while still
+ * covering query text assigned to a variable before it is executed.
+ */
+export function sqlTextCandidates(source) {
+  const parsed = ts.createSourceFile(
+    "sql-callsite.ts",
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const candidates = [];
+  let hasQueryCall = false;
+  const sqlStart =
+    /^\s*(?:SELECT|INSERT|UPDATE|DELETE|WITH|CREATE|ALTER|DROP|TRUNCATE|FROM|JOIN|INTO|REFERENCES)\b/i;
+  function visit(node) {
+    if (
+      ts.isCallExpression(node) &&
+      ((ts.isIdentifier(node.expression) && node.expression.text === "query") ||
+        (ts.isPropertyAccessExpression(node.expression) &&
+          node.expression.name.text === "query"))
+    ) {
+      hasQueryCall = true;
+    }
+    if (
+      ts.isStringLiteral(node) ||
+      ts.isNoSubstitutionTemplateLiteral(node) ||
+      ts.isTemplateExpression(node)
+    ) {
+      const text = source.slice(node.getStart(parsed) + 1, node.getEnd() - 1);
+      if (sqlStart.test(text)) candidates.push(text);
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(parsed);
+  return hasQueryCall ? candidates : [];
+}
+
 function walkCodeFiles(directory, output = []) {
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
     const path = join(directory, entry.name);
@@ -445,24 +702,86 @@ function sameStringSet(left, right) {
   return JSON.stringify([...left].sort()) === JSON.stringify([...right].sort());
 }
 
+function seedUpsertRuntimeAllowlist(content) {
+  const parsed = ts.createSourceFile(
+    "seed-upsert.ts",
+    content,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const tables = new Set();
+  function visit(node) {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
+      if (node.name.text !== "SEED_UPSERT_TABLES" || !node.initializer) return;
+      const initializer = ts.isAsExpression(node.initializer)
+        ? node.initializer.expression
+        : node.initializer;
+      if (!ts.isArrayLiteralExpression(initializer)) return;
+      for (const element of initializer.elements) {
+        if (ts.isStringLiteral(element)) tables.add(element.text);
+      }
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(parsed);
+  return tables;
+}
+
+export function auditSeedUpsertHelper(repoPath, content, schema) {
+  const annotated = annotationTables(content, DYNAMIC_SQL_HELPER_ANNOTATION);
+  const runtimeTables = seedUpsertRuntimeAllowlist(content);
+  const errors = [];
+  if (annotated.size === 0) {
+    errors.push(
+      `${repoPath}: seedUpsert helper must declare its audited table set`,
+    );
+  }
+  if (!sameStringSet(annotated, runtimeTables)) {
+    errors.push(
+      `${repoPath}: seedUpsert helper annotation must match its runtime table allowlist`,
+    );
+  }
+  for (const table of new Set([...annotated, ...runtimeTables])) {
+    if (!schema.has(table)) {
+      errors.push(
+        `${repoPath}: helper annotation names unknown table ${table}`,
+      );
+    }
+  }
+  return { annotated, runtimeTables, errors };
+}
+
 export function auditDynamicSqlFile(repoPath, content, schema) {
   const code = stripCodeComments(content);
+  const sql = sqlTextCandidates(content).join("\n");
   const annotated = annotationTables(content, DYNAMIC_SQL_ANNOTATION);
   const callsSeedUpsert = /\bseedUpsert\s*\(/.test(code);
+  const dynamicExpressions = [
+    ...sql.matchAll(
+      /\b(?:FROM|INTO|UPDATE|JOIN|TABLE|REFERENCES|TRUNCATE)\s+(?:["`])?\$\{([^}]+)\}(?:["`])?/gi,
+    ),
+  ].map((match) => match[1].trim());
   const dynamicIdentifiers = new Set(
-    [
-      ...code.matchAll(
-        /\b(?:FROM|INTO|UPDATE|JOIN|TABLE|REFERENCES)\s+\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g,
-      ),
-    ].map((match) => match[1]),
+    dynamicExpressions.filter((expression) =>
+      /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(expression),
+    ),
+  );
+  const unsupportedDynamicExpressions = dynamicExpressions.filter(
+    (expression) => !/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(expression),
   );
   const errors = [];
   if (
-    (dynamicIdentifiers.size > 0 || callsSeedUpsert) &&
+    (dynamicExpressions.length > 0 || callsSeedUpsert) &&
     annotated.size === 0
   ) {
     errors.push(
       `${repoPath}: dynamic SQL must declare @encryption-inventory-dynamic-sql tables=...`,
+    );
+  }
+  for (const expression of unsupportedDynamicExpressions) {
+    errors.push(
+      `${repoPath}: dynamic SQL expression ${expression} needs a validator-supported finite table declaration`,
     );
   }
 
@@ -527,6 +846,12 @@ export function discoverSqlCallsiteAudit(schema) {
   const contents = new Map(
     files.map((path) => [path, readFileSync(path, "utf8")]),
   );
+  const sqlCandidates = new Map(
+    files.map((path) => [
+      path,
+      sqlTextCandidates(contents.get(path)).join("\n"),
+    ]),
+  );
   const result = new Map([...schema.keys()].map((table) => [table, new Set()]));
   const errors = [];
   for (const table of schema.keys()) {
@@ -536,7 +861,7 @@ export function discoverSqlCallsiteAudit(schema) {
       "i",
     );
     for (const path of files) {
-      if (pattern.test(stripCodeComments(contents.get(path)))) {
+      if (pattern.test(sqlCandidates.get(path))) {
         result.get(table).add(relative(REPO_ROOT, path));
       }
     }
@@ -550,10 +875,14 @@ export function discoverSqlCallsiteAudit(schema) {
     "seeds",
     "upsert.ts",
   );
-  const helperTables = annotationTables(
+  const helperRepoPath = relative(REPO_ROOT, helperPath);
+  const helperAudit = auditSeedUpsertHelper(
+    helperRepoPath,
     contents.get(helperPath) ?? "",
-    DYNAMIC_SQL_HELPER_ANNOTATION,
+    schema,
   );
+  const helperTables = helperAudit.annotated;
+  errors.push(...helperAudit.errors);
   const callerTables = new Set();
   for (const path of files) {
     const content = contents.get(path);
@@ -570,24 +899,19 @@ export function discoverSqlCallsiteAudit(schema) {
       if (callsSeedUpsert) callerTables.add(table);
     }
   }
-  if (helperTables.size === 0) {
-    errors.push(
-      `${relative(REPO_ROOT, helperPath)}: seedUpsert helper must declare its audited table set`,
-    );
-  }
   for (const table of new Set([...helperTables, ...callerTables])) {
     if (!schema.has(table)) {
       errors.push(
-        `${relative(REPO_ROOT, helperPath)}: helper annotation names unknown table ${table}`,
+        `${helperRepoPath}: helper annotation names unknown table ${table}`,
       );
       continue;
     }
     if (!helperTables.has(table) || !callerTables.has(table)) {
       errors.push(
-        `${relative(REPO_ROOT, helperPath)}: seedUpsert helper and caller annotations disagree for ${table}`,
+        `${helperRepoPath}: seedUpsert helper and caller annotations disagree for ${table}`,
       );
     }
-    result.get(table).add(relative(REPO_ROOT, helperPath));
+    result.get(table).add(helperRepoPath);
   }
   const audit = {
     callsites: new Map(

@@ -124,9 +124,11 @@ the inventory in the same PR.
 Ownership is a strict enum: `user`, `user_child` (resolved through a repository
 join to its parent), `installation`, or `system_global`. Current and target
 repository boundaries are also enums. Every table carries `auditedCallsites`, a
-repository-relative list from a conservative scan of literal SQL after source
-comments are removed, plus validated annotations for the known dynamic seed SQL
-helpers. The list includes direct API/worker queries, backup code, and seeds.
+repository-relative list from a conservative scan of SQL-shaped string and
+template literals in files that execute database queries, plus validated
+annotations for the known dynamic seed SQL helpers. The seed helper's annotation
+is bound to its runtime table allowlist. The list includes direct API/worker
+queries, backup code, and seeds.
 Empty lists are explicit `no_runtime_sql_found`, not an assertion that the table
 is unused. A new dynamic SQL helper must declare its finite table set with the
 validator's annotation contract or the check fails.

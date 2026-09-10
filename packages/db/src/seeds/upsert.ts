@@ -17,6 +17,9 @@
  * annotated seedUpsert caller, because the emitted INSERT table is dynamic.
  */
 
+export const SEED_UPSERT_TABLES = ['users', 'twin_profiles'] as const;
+const seedUpsertTableSet = new Set<string>(SEED_UPSERT_TABLES);
+
 export interface Queryable {
   query(text: string, values?: unknown[]): Promise<unknown>;
 }
@@ -43,7 +46,10 @@ function quoteIdent(id: string): string {
 /**
  * Build a parameterized `INSERT ... ON CONFLICT` statement. Pure — no DB.
  */
-export function buildUpsertSql(spec: UpsertSpec): { text: string; values: unknown[] } {
+export function buildUpsertSql(spec: UpsertSpec): {
+  text: string;
+  values: unknown[];
+} {
   const columns = Object.keys(spec.row);
   if (columns.length === 0) {
     throw new Error(`seedUpsert: row for "${spec.table}" has no columns`);
@@ -65,17 +71,12 @@ export function buildUpsertSql(spec: UpsertSpec): { text: string; values: unknow
   if (mode === 'nothing') {
     onConflict = `ON CONFLICT (${conflictCols}) DO NOTHING`;
   } else {
-    const updateCols =
-      mode === 'all'
-        ? columns.filter((c) => !spec.conflict.includes(c))
-        : mode;
+    const updateCols = mode === 'all' ? columns.filter((c) => !spec.conflict.includes(c)) : mode;
     if (updateCols.length === 0) {
       // Nothing left to update (all columns are conflict keys) — degrade to DO NOTHING.
       onConflict = `ON CONFLICT (${conflictCols}) DO NOTHING`;
     } else {
-      const setClause = updateCols
-        .map((c) => `${quoteIdent(c)} = EXCLUDED.${quoteIdent(c)}`)
-        .join(', ');
+      const setClause = updateCols.map((c) => `${quoteIdent(c)} = EXCLUDED.${quoteIdent(c)}`).join(', ');
       onConflict = `ON CONFLICT (${conflictCols}) DO UPDATE SET ${setClause}`;
     }
   }
@@ -85,6 +86,9 @@ export function buildUpsertSql(spec: UpsertSpec): { text: string; values: unknow
 
 /** Execute an idempotent upsert against a Postgres-shaped client. */
 export async function seedUpsert(client: Queryable, spec: UpsertSpec): Promise<void> {
+  if (!seedUpsertTableSet.has(spec.table)) {
+    throw new Error(`seedUpsert: table "${spec.table}" is not in the audited allowlist`);
+  }
   const { text, values } = buildUpsertSql(spec);
   await client.query(text, values);
 }
