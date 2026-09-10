@@ -1,5 +1,21 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [Unreleased] — Local encryption boundary
+
+### Added
+
+- **An accepted, implementation-ready source-field encryption contract.** ADR
+  0001 defines key custody, locked behavior, context-bound envelopes,
+  crash-safe migration and rotation, backup/restore, deletion after key loss,
+  the intentionally readable search-derivative boundary, and the supported
+  desktop-beta scope. A machine-readable inventory classifies all 861 columns
+  across the 91 live tables and ties each table to its currently discoverable
+  SQL callsites. `pnpm check:encryption-inventory` fails on schema drift,
+  classification drift, invalid ownership/boundary values, or weakened critical
+  credential and dead-letter invariants. This is a reviewed design contract;
+  encryption claims remain blocked until the implementation and packaged
+  verification gates in the ADR pass.
+
 ## [Unreleased] — Account-free interactive sample
 
 ### Added
@@ -14,7 +30,6 @@ All notable changes to SkyTwin will be documented in this file.
 - **Loopback restrictions now survive the dashboard proxy boundary.** The web server rejects remote peers and non-loopback API upstreams before forwarding sample-info, session, or simulation requests, while the API requires both the resolved client and direct socket peer to be loopback.
 - **Expired simulations cannot return a late asynchronous result.** The simulation checks its signed deadline both before creating state and after policy/explanation work. Exit may present the original signed credential solely to delete the state bound to that credential; it cannot read, renew, or mutate the simulation.
 - **Sample authority is isolated to one browser tab and excluded from offline persistence.** The sample credential, reserved identity, expiry, and onboarding state live in `sessionStorage`; real sign-in authority always takes precedence and clears the tab's sample state. Generation fences prevent late renewal or exit responses from resurrecting a closed sample, including when another tab signs in or out. Concurrent reads now share one renewal, and a late 401 from an older credential reuses the current successor instead of replacing it. The API client also preserves authentication when a caller supplies additional request headers. The service worker applies the API server's case-insensitive path semantics and bypasses every `/api/v1/demo` request. It also bypasses normal product routes whenever they carry the sample bearer credential or EventSource query token, so sample credentials and responses are never cached or queued. Before sending any stored write, the worker reapplies the current policy and deletes entries that are no longer eligible; this prevents an older worker's queue from replaying sample traffic after an update. See [`sample-session.js`](apps/web/public/js/sample-session.js), [`api-client.js`](apps/web/public/js/api-client.js), [`sw-policy.js`](apps/web/public/js/pwa/sw-policy.js), and [`sw.js`](apps/web/public/sw.js).
-
 ## [0.6.102.0] - 2026-08-27
 
 ### Added
