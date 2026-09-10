@@ -62,6 +62,12 @@ describe('demo read allowlist', () => {
     expect(
       isDemoReadRequest('GET', `/api/lifebooks/${DEMO_USER_ID}/Health`),
     ).toBe(true);
+    expect(
+      isDemoReadRequest(
+        'GET',
+        `/api/twin-briefings/lifebook/Health/latest?userId=${DEMO_USER_ID}`,
+      ),
+    ).toBe(true);
   });
 
   it('rejects every mutation even when it targets the sample identity', () => {
@@ -103,5 +109,11 @@ describe('demo read allowlist', () => {
     expect(
       isDemoReadRequest('GET', `/api/about-me?userId=${DEMO_USER_ID}`),
     ).toBe(true);
+    expect(
+      isDemoReadRequest(
+        'GET',
+        '/api/twin-briefings/lifebook/Health/latest?userId=other',
+      ),
+    ).toBe(false);
   });
 });

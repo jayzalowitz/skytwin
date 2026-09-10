@@ -179,6 +179,7 @@ export async function fetchJSON(url, options = {}, demoRenewed = false) {
     !demoRenewed &&
     url !== `${API}/v1/demo/session` &&
     localStorage.getItem(KEY_TOUR_MODE) === '1' &&
+    localStorage.getItem(KEY_USER_ID) === DEMO_USER_ID &&
     Number.isFinite(sampleExpiry) &&
     sampleExpiry <= Date.now()
   ) {
@@ -208,7 +209,8 @@ export async function fetchJSON(url, options = {}, demoRenewed = false) {
       res.status === 401 &&
       !demoRenewed &&
       url !== `${API}/v1/demo/session` &&
-      localStorage.getItem(KEY_TOUR_MODE) === '1'
+      localStorage.getItem(KEY_TOUR_MODE) === '1' &&
+      localStorage.getItem(KEY_USER_ID) === DEMO_USER_ID
     ) {
       await startDemoSession();
       return fetchJSON(url, options, true);
