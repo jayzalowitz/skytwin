@@ -3556,12 +3556,9 @@
       "table": "watches",
       "owner": "user",
       "boundary": {
-        "current": "mixed_repository_and_direct_sql",
+        "current": "repository_sql",
         "target": "user_broker_gateway",
-        "auditedCallsites": [
-          "apps/web/public/js/pages/twin-briefing.js",
-          "packages/db/src/repositories/watch-repository.ts"
-        ]
+        "auditedCallsites": ["packages/db/src/repositories/watch-repository.ts"]
       },
       "groups": [
         {

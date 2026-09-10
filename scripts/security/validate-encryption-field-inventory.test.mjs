@@ -14,6 +14,7 @@ import test from "node:test";
 import {
   applySchemaSql,
   auditDynamicSqlFile,
+  auditSeedUpsertHelper,
   discoverSqlCallsiteAudit,
   extractSchemaColumns,
   isRepositoryRegularFile,
@@ -31,6 +32,10 @@ const migrationRunnerPath = new URL(
 );
 const seedPath = new URL(
   "../../packages/db/src/seeds/seed.ts",
+  import.meta.url,
+);
+const seedUpsertPath = new URL(
+  "../../packages/db/src/seeds/upsert.ts",
   import.meta.url,
 );
 
@@ -142,6 +147,46 @@ test("schema reconstruction is bound to the production migration runner order", 
       error.includes("execute schema.sql before incremental migrations"),
     ),
   );
+
+  const missingRead = runner.replace(
+    "const sql = readFileSync(join(__dirname, file), 'utf-8');",
+    "const sql = '';",
+  );
+  assert.ok(
+    migrationRunnerContractErrors(missingRead).includes(
+      "production migration runner must read each selected SQL file",
+    ),
+  );
+
+  const missingExecution = runner.replace(
+    "await pool.query(stmt);",
+    "void stmt;",
+  );
+  assert.ok(
+    migrationRunnerContractErrors(missingExecution).includes(
+      "production migration runner must execute every statement from every selected SQL file",
+    ),
+  );
+
+  const skippedFile = runner.replace(
+    "for (const file of sqlFiles) {",
+    "for (const file of sqlFiles) {\n    if (file === '070-watch-runs.sql') continue;",
+  );
+  assert.ok(
+    migrationRunnerContractErrors(skippedFile).includes(
+      "production migration runner must execute every statement from every selected SQL file",
+    ),
+  );
+
+  const truncatedSelection = runner.replace(
+    "for (const file of sqlFiles) {",
+    "sqlFiles.pop();\n\n  for (const file of sqlFiles) {",
+  );
+  assert.ok(
+    migrationRunnerContractErrors(truncatedSelection).includes(
+      "production migration runner must not modify the selected SQL files before iteration",
+    ),
+  );
 });
 
 test("repository evidence paths reject directories, traversal, and symlinks", (t) => {
@@ -189,10 +234,51 @@ test("SQL callsites exclude prose matches and include annotated dynamic writers"
     audit.callsites.get("twin_profiles").includes("apps/api/src/cost-gate.ts"),
     false,
   );
+  assert.equal(
+    audit.callsites
+      .get("watches")
+      .includes("apps/web/public/js/pages/twin-briefing.js"),
+    false,
+  );
   assert.ok(
     audit.callsites
       .get("episodic_memories")
       .includes("packages/db/src/seeds/seed.ts"),
+  );
+});
+
+test("dynamic SQL detection covers quoted identifiers and additional table verbs", () => {
+  const schema = new Map([["users", ["id"]]]);
+  for (const source of [
+    'const table = "users"; query(`SELECT * FROM "${table}"`);',
+    'const table = "users"; query(`TRUNCATE ${table}`);',
+  ]) {
+    assert.ok(
+      auditDynamicSqlFile("probe.ts", source, schema).errors.some((error) =>
+        error.includes("must declare"),
+      ),
+    );
+  }
+});
+
+test("seedUpsert helper annotation is bound to its runtime table allowlist", () => {
+  const schema = extractSchemaColumns();
+  const helper = readFileSync(seedUpsertPath, "utf8");
+  assert.deepEqual(
+    auditSeedUpsertHelper("packages/db/src/seeds/upsert.ts", helper, schema)
+      .errors,
+    [],
+  );
+  const staleRuntimeAllowlist = helper.replace(
+    /\[\s*['"]users['"]\s*,\s*['"]twin_profiles['"]\s*\]/,
+    '["users"]',
+  );
+  assert.ok(
+    auditSeedUpsertHelper(
+      "packages/db/src/seeds/upsert.ts",
+      staleRuntimeAllowlist,
+      schema,
+    ).errors.some((error) => error.includes("runtime table allowlist")),
   );
 });
 
