@@ -1,5 +1,11 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [Unreleased] — Account-free sample browsing
+
+### Added
+
+- **Packaged desktop builds can initialize and open a synthetic sample profile without enabling the development authentication bypass.** A short-lived credential is fixed to the reserved `is_demo` identity and an explicit read allowlist; it cannot enumerate users, read credentials or settings, invoke inference-bearing Lifebook layout routes, mutate state, or execute actions. Clean packaged installs provision only against the bundled loopback database and ingest fictional signals through the authenticated event boundary with stable deduplication IDs. This is the safe browsing foundation for the public-beta sample loop; approve, reject, correct, and learn interactions remain follow-up work under [#630](https://github.com/jayzalowitz/skytwin/issues/630).
+
 ## [0.6.102.0] - 2026-08-27
 
 ### Added
