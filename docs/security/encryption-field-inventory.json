@@ -485,6 +485,23 @@
           "searchableDerivatives": [
             "brain_pages.content_tsv",
             "brain_pages.embedding"
+          ],
+          "operationalDependencies": [
+            {
+              "jsonPath": "metadata.authoringTier",
+              "currentUsage": "SQL filtering, tier backfill, and retrieval weighting read this JSON key directly.",
+              "targetResolution": "Project to a typed locally_exposed_metadata column before encrypting metadata; disclose that authoring tier remains readable."
+            },
+            {
+              "jsonPath": "metadata.fromAddress",
+              "currentUsage": "Case-normalized equality lookup links memory pages to sender and relationship state.",
+              "targetResolution": "Replace plaintext equality with a versioned, purpose-keyed HMAC lookup entry; source address remains only in the encrypted metadata envelope."
+            },
+            {
+              "jsonPath": "metadata.userOverride",
+              "currentUsage": "SQL filters and pin/hide updates read this JSON key directly.",
+              "targetResolution": "Project to a typed locally_exposed_metadata column before encrypting metadata; disclose that pin/hide state remains readable."
+            }
           ]
         },
         {
@@ -1338,7 +1355,8 @@
         "target": "user_broker_gateway",
         "auditedCallsites": [
           "apps/api/src/routes/onboarding.ts",
-          "packages/db/src/repositories/mempalace-repository.ts"
+          "packages/db/src/repositories/mempalace-repository.ts",
+          "packages/db/src/seeds/seed.ts"
         ]
       },
       "groups": [
@@ -2036,7 +2054,14 @@
           "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
           "migrationStage": "slice-4-memory-sources",
           "rationale": "User-authored, provider-originated, or learned source data is in the decided boundary but scheduled after the first safe slices.",
-          "searchableDerivatives": []
+          "searchableDerivatives": [],
+          "operationalDependencies": [
+            {
+              "jsonPath": "metadata.importanceOverride.{value,setAt,decayDays}",
+              "currentUsage": "The lifebook repository computes effective importance and expiry from these JSON keys in SQL.",
+              "targetResolution": "Require unlock, decrypt the bounded per-user lifebook set, and compute effective importance in the authorized process before metadata encryption is enforced."
+            }
+          ]
         }
       ],
       "ownershipNotes": "Direct user ownership through user_id."
@@ -2127,7 +2152,6 @@
         "target": "user_broker_gateway",
         "auditedCallsites": [
           "apps/api/src/routes/capabilities.ts",
-          "apps/api/src/routes/dxt.ts",
           "packages/db/src/repositories/mcp-server-repository.ts",
           "packages/db/src/seeds/demo-showcase.ts"
         ]
@@ -2448,7 +2472,6 @@
         "current": "mixed_repository_and_direct_sql",
         "target": "user_broker_gateway",
         "auditedCallsites": [
-          "apps/api/src/routes/lifebooks.ts",
           "apps/worker/src/jobs/domain-extraction.ts",
           "packages/db/src/repositories/mempalace-repository.ts"
         ]
@@ -2775,13 +2798,10 @@
         "current": "mixed_repository_and_direct_sql",
         "target": "user_broker_gateway",
         "auditedCallsites": [
-          "apps/api/src/routes/twin.ts",
           "packages/db/src/adapters/twin-repository-adapter.ts",
           "packages/db/src/backup/backup.ts",
           "packages/db/src/repositories/user-repository.ts",
-          "packages/db/src/seeds/seed.ts",
-          "packages/explanations/src/explanation-generator.ts",
-          "packages/twin-model/src/twin-service.ts"
+          "packages/db/src/seeds/seed.ts"
         ]
       },
       "groups": [
@@ -3060,10 +3080,11 @@
       "table": "skill_gap_log",
       "owner": "user",
       "boundary": {
-        "current": "repository_sql",
+        "current": "mixed_repository_and_direct_sql",
         "target": "user_broker_gateway",
         "auditedCallsites": [
-          "packages/db/src/repositories/skill-gap-repository.ts"
+          "packages/db/src/repositories/skill-gap-repository.ts",
+          "packages/db/src/seeds/seed.ts"
         ]
       },
       "groups": [
@@ -3269,14 +3290,15 @@
         "current": "mixed_repository_and_direct_sql",
         "target": "user_broker_gateway",
         "auditedCallsites": [
-          "apps/api/src/cost-gate.ts",
           "packages/db/src/backup/backup.ts",
           "packages/db/src/repositories/draft-email-eval-runs-repository.ts",
           "packages/db/src/repositories/twin-repository.ts",
           "packages/db/src/repositories/user-purge-repository.ts",
           "packages/db/src/repositories/user-repository.ts",
+          "packages/db/src/seeds/demo-fixture.ts",
           "packages/db/src/seeds/demo-showcase.ts",
-          "packages/db/src/seeds/seed.ts"
+          "packages/db/src/seeds/seed.ts",
+          "packages/db/src/seeds/upsert.ts"
         ]
       },
       "groups": [
@@ -3338,10 +3360,9 @@
       "table": "user_credential_vault_meta",
       "owner": "user",
       "boundary": {
-        "current": "mixed_repository_and_direct_sql",
+        "current": "repository_sql",
         "target": "locally_exposed_or_excluded",
         "auditedCallsites": [
-          "apps/api/src/routes/credential-vault.ts",
           "packages/db/src/repositories/credential-vault-meta-repository.ts"
         ]
       },
@@ -3462,7 +3483,7 @@
           "packages/db/src/seeds/demo-fixture.ts",
           "packages/db/src/seeds/demo-showcase.ts",
           "packages/db/src/seeds/seed.ts",
-          "packages/shared-types/src/autonomy.ts"
+          "packages/db/src/seeds/upsert.ts"
         ]
       },
       "groups": [
@@ -3601,7 +3622,7 @@
           "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
         },
         {
-          "classification": "encrypted_source",
+          "classification": "forbidden_global_source",
           "columns": ["context", "error_message"],
           "currentProtection": "Plaintext in CockroachDB today.",
           "targetProtection": "Forbidden in the global DLQ target. Replace with stable error codes and opaque references; move required user payload to a separately user-owned encrypted record.",
