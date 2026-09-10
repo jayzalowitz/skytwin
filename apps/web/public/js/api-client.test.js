@@ -51,6 +51,7 @@ describe('api client', () => {
 
   it('renews an expired sample credential once and retries the read', async () => {
     values.set(KEY_TOUR_MODE, '1');
+    values.set(KEY_USER_ID, 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d');
     values.set(KEY_SESSION_TOKEN, 'expired-token');
     const fetchMock = vi
       .fn()
@@ -76,6 +77,21 @@ describe('api client', () => {
     await expect(fetchJSON('/api/users/sample-user')).resolves.toEqual({ id: 'sample-user' });
     expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(fetchMock.mock.calls[2][1].headers.Authorization).toBe('Bearer renewed-token');
+  });
+
+  it('never replaces a real session when a stale sample marker survives', async () => {
+    values.set(KEY_TOUR_MODE, '1');
+    values.set(KEY_USER_ID, '11111111-1111-4111-8111-111111111111');
+    values.set(KEY_SESSION_TOKEN, 'real-token');
+    values.set(KEY_DEMO_SESSION_EXPIRES_AT, '2020-01-01T00:00:00.000Z');
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response('{}', { status: 401, headers: { 'Content-Type': 'application/json' } }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(fetchJSON('/api/users/real-user')).rejects.toMatchObject({ status: 401 });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(values.get(KEY_SESSION_TOKEN)).toBe('real-token');
   });
 
   it('rejects a sample credential for any other identity before storing it', async () => {

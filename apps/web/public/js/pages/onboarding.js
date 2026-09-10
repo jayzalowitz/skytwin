@@ -33,6 +33,7 @@ import {
 } from '../api-client.js';
 import {
   KEY_USER_ID,
+  KEY_SESSION_TOKEN,
   KEY_ONBOARDED,
   KEY_TOUR_MODE,
   KEY_ONBOARDING_STATE,

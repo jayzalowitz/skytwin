@@ -180,6 +180,8 @@ export function isDemoReadRequest(
     if (pathIs(path, '/api/about-me')) return true;
     if (pathIs(path, '/api/twin-briefings')) return true;
     if (pathIs(path, '/api/twin-briefings/latest')) return true;
+    if (/^\/api\/twin-briefings\/lifebook\/[^/]+\/latest$/.test(path))
+      return true;
     if (pathIs(path, '/api/search')) return true;
     if (/^\/api\/oauth\/[^/]+\/status$/.test(path)) return true;
     if (

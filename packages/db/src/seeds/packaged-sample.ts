@@ -26,9 +26,12 @@ export interface PackagedSampleIngestResult {
 }
 
 const PACKAGED_SAMPLE_FIXTURE_VERSION = 1;
+const PACKAGED_SAMPLE_FIXTURE_ID_SEGMENT = PACKAGED_SAMPLE_FIXTURE_VERSION
+  .toString(16)
+  .padStart(4, '0');
 
 function fixtureSignalId(index: number): string {
-  return `51a7e000-0001-4000-8000-${String(index + 1).padStart(12, '0')}`;
+  return `51a7e000-${PACKAGED_SAMPLE_FIXTURE_ID_SEGMENT}-4000-8000-${String(index + 1).padStart(12, '0')}`;
 }
 
 /**

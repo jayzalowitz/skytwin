@@ -102,6 +102,9 @@ describe('packaged sample safety', () => {
         /^51a7e000-0001-4000-8000-\d{12}$/,
       );
       expect(body.data.sampleFixtureVersion).toBe(1);
+      expect(body.signalId.split('-')[1]).toBe(
+        body.data.sampleFixtureVersion.toString(16).padStart(4, '0'),
+      );
     }
 
     const firstRunIds = fetchImpl.mock.calls.map((call) =>
