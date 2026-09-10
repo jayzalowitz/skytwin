@@ -32,8 +32,10 @@ import type {
  * polyfill in the impl's docstring so callers know retrieval may be
  * less efficient than the native-pushdown path.
  *
- * The shape is extensible: future filters (e.g. by signal source,
- * date range) can land here without another interface change.
+ * The shape is extensible: backend-specific options can be ignored by
+ * adapters that cannot apply them, but CRDB-backed adapters should push
+ * supported predicates into their native search instead of narrowing the
+ * post-RRF result set.
  */
 export interface SearchSemanticOptions {
   /**
@@ -51,6 +53,40 @@ export interface SearchSemanticOptions {
    * array as read-only input regardless of how it was constructed.
    */
   authoringTier?: readonly string[];
+
+  /**
+   * Restrict hits to `brain_pages.metadata.signalSource` values such as
+   * `gmail`, `cal`, `note`, or future connector IDs. Empty array or absent
+   * means no filter.
+   */
+  signalSource?: readonly string[];
+
+  /**
+   * Restrict hits to the page storage source (`brain_pages.source`) such as
+   * `signal`, `episode`, `extract`, or `code`. This is separate from
+   * `signalSource`, which describes the original connector.
+   */
+  pageSource?: readonly string[];
+
+  /**
+   * Restrict hits to records whose effective date is inside the window.
+   * Embedded gbrain uses `metadata.effectiveDate` when present, falling back
+   * to `created_at`. CLI-backed gbrain forwards this to the native
+   * `query.since` / `query.until` options.
+   */
+  since?: Date;
+  until?: Date;
+
+  /**
+   * Native gbrain multi-source/code-query options. The embedded SkyTwin
+   * adapter ignores these because its source is the current user's CRDB rows;
+   * the external CLI adapter forwards them to `gbrain call query`.
+   */
+  sourceId?: string;
+  lang?: string;
+  symbolKind?: string;
+  adaptiveReturn?: boolean;
+  autocut?: boolean;
 }
 
 export interface MemoryPort {

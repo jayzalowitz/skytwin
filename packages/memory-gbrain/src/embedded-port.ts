@@ -25,6 +25,7 @@ import {
   InMemoryBrainStore,
   rrfFold,
   buildTierWeightFn,
+  userOverrideBonus,
   type BrainPageRow,
   type RrfHit,
   type TierCalibration,
@@ -226,6 +227,7 @@ export class EmbeddedGbrainMemoryPort implements MemoryPort {
     const metadata: Record<string, unknown> = {
       signalSource: s.source,
       signalType: s.type,
+      effectiveDate: s.timestamp.toISOString(),
       bodyLen: content.length,
     };
     const tier = data['authoringTier'];
@@ -429,9 +431,9 @@ export class EmbeddedGbrainMemoryPort implements MemoryPort {
     // only 40 candidates from each side before RRF — truncating recall.
     const candidatePoolSize = this.candidatePoolOverride ?? Math.max(k * 4, 40);
 
-    // #251 Layer 2: build a tier-weight function if the user has opted in.
-    // Reading settings is best-effort — if it fails (no row yet, pre-043
-    // schema, transient DB hiccup) we silently fall back to pure RRF.
+    // Build the personalization callback for retrieval. Direct user
+    // overrides (hidden/pinned) are always honored; the tier_weighting setting
+    // only controls inferred authoring/relationship boosts.
     const tierWeight = await this.resolveTierWeightFn();
 
     // #300: surface the authoring-tier filter to both store + CRDB
@@ -439,6 +441,14 @@ export class EmbeddedGbrainMemoryPort implements MemoryPort {
     const authoringTier =
       options?.authoringTier && options.authoringTier.length > 0
         ? options.authoringTier
+        : undefined;
+    const signalSource =
+      options?.signalSource && options.signalSource.length > 0
+        ? options.signalSource
+        : undefined;
+    const pageSource =
+      options?.pageSource && options.pageSource.length > 0
+        ? options.pageSource
         : undefined;
 
     if (this.backend === 'memory') {
@@ -449,8 +459,12 @@ export class EmbeddedGbrainMemoryPort implements MemoryPort {
         k,
         candidatePoolSize,
         rrfK: this.rrfK,
-        ...(tierWeight ? { tierWeight } : {}),
+        tierWeight,
         ...(authoringTier ? { authoringTier } : {}),
+        ...(signalSource ? { signalSource } : {}),
+        ...(pageSource ? { pageSource } : {}),
+        ...(options?.since ? { since: options.since } : {}),
+        ...(options?.until ? { until: options.until } : {}),
       });
     }
     const repo = await this.crdb();
@@ -461,20 +475,29 @@ export class EmbeddedGbrainMemoryPort implements MemoryPort {
       k,
       candidatePoolSize,
       rrfK: this.rrfK,
-      ...(tierWeight ? { tierWeight } : {}),
+      tierWeight,
       ...(authoringTier ? { authoringTier } : {}),
+      ...(signalSource ? { signalSource } : {}),
+      ...(pageSource ? { pageSource } : {}),
+      ...(options?.since ? { since: options.since } : {}),
+      ...(options?.until ? { until: options.until } : {}),
     });
   }
 
   /**
-   * Look up the per-user `tier_weighting` toggle (and the calibration band)
-   * and return a tier-weight function if both are present, else `undefined`.
-   * Defensive: any failure leaves retrieval as pure RRF, the safe default.
+   * Look up the per-user `tier_weighting` toggle and calibration band.
+   *
+   * Fresh users default to tier weighting on, matching the dashboard/API
+   * default and migration default. If the user explicitly disables inferred
+   * weighting, we still return `userOverrideBonus` so hidden pages stay hidden
+   * and pinned pages remain intentionally boosted.
+   *
+   * Defensive: settings lookup failure falls back to override-only behavior,
+   * which preserves direct user privacy choices without applying inferred
+   * authoring/relationship boosts from possibly stale config.
    */
-  private async resolveTierWeightFn(): Promise<
-    ((metadata: unknown) => number) | undefined
-  > {
-    let enabled = false;
+  private async resolveTierWeightFn(): Promise<(metadata: unknown) => number> {
+    let enabled = true;
     let calibration: TierCalibration = 'normal';
 
     try {
@@ -493,13 +516,13 @@ export class EmbeddedGbrainMemoryPort implements MemoryPort {
         }
       }
     } catch (err) {
-      log.warn('tier-weight settings lookup failed; falling back to pure RRF', {
+      log.warn('tier-weight settings lookup failed; honoring explicit overrides only', {
         reason: err instanceof Error ? err.name : 'unknown',
       });
-      return undefined;
+      return userOverrideBonus;
     }
 
-    if (!enabled) return undefined;
+    if (!enabled) return userOverrideBonus;
     return buildTierWeightFn(calibration);
   }
 

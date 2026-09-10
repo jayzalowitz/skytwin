@@ -1,5 +1,7 @@
+import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { basename } from 'node:path';
+import { basename, resolve } from 'node:path';
+import type { DocumentMemoryCandidate } from '@skytwin/shared-types';
 
 export interface ExtractedFileMetadata {
   absPath: string;
@@ -10,12 +12,28 @@ export interface ExtractedFileMetadata {
   mimeType?: string;
   contentHash?: Buffer;
   structuredFields?: Record<string, unknown>;
+  documentMemory?: DocumentMemoryCandidate;
   skippedReason?: string;
 }
 
 export interface FileTypeExtractor {
   match(absPath: string): boolean;
   extract(absPath: string): Promise<Record<string, unknown>>;
+}
+
+export interface DocumentContentExtractionOptions {
+  enabled?: boolean;
+  /**
+   * Roots the user explicitly treats as their own authored material. Content
+   * extraction is denied unless the file falls under one of these roots.
+   */
+  authoredRoots?: readonly string[];
+  /** Max bytes to read from a candidate document. Default: 128 KiB. */
+  maxBytes?: number;
+}
+
+export interface ExtractFileOptions {
+  documentContent?: DocumentContentExtractionOptions;
 }
 
 const MIME_MAGIC: Array<{ magic: Buffer; mime: string }> = [
@@ -25,6 +43,10 @@ const MIME_MAGIC: Array<{ magic: Buffer; mime: string }> = [
   { magic: Buffer.from([0x25, 0x50, 0x44, 0x46]), mime: 'application/pdf' },
   { magic: Buffer.from([0x50, 0x4b, 0x03, 0x04]), mime: 'application/zip' },
 ];
+
+const DEFAULT_DOCUMENT_MAX_BYTES = 128 * 1024;
+const DOCUMENT_EXTENSIONS = new Set(['.md', '.markdown', '.txt', '.rst', '.adoc']);
+const SECRET_CONTENT_RE = /\b(api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|private key|password)\b/i;
 
 function sniffMimeType(absPath: string): string | undefined {
   try {
@@ -49,6 +71,166 @@ function sniffMimeType(absPath: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+function lowerExt(absPath: string): string {
+  const base = basename(absPath).toLowerCase();
+  const dot = base.lastIndexOf('.');
+  return dot >= 0 ? base.slice(dot) : '';
+}
+
+function isDocumentMemoryCandidate(absPath: string): boolean {
+  return DOCUMENT_EXTENSIONS.has(lowerExt(absPath));
+}
+
+function isUnderRoot(absPath: string, root: string): boolean {
+  const file = resolve(absPath);
+  const base = resolve(root);
+  return file === base || file.startsWith(`${base}/`);
+}
+
+function isDownloadedPath(absPath: string): boolean {
+  return /(^|\/)Downloads(\/|$)/.test(absPath.replace(/\\/g, '/'));
+}
+
+function hasMacWhereFroms(absPath: string): boolean {
+  if (process.platform !== 'darwin') return false;
+  try {
+    const out = execFileSync('xattr', ['-p', 'com.apple.metadata:kMDItemWhereFroms', absPath], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 500,
+    });
+    return out.trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
+function firstHeading(lines: string[], fallback: string): string {
+  for (const line of lines) {
+    const match = /^#{1,3}\s+(.+)$/.exec(line.trim());
+    if (match?.[1]) return match[1].trim().slice(0, 120);
+  }
+  return fallback;
+}
+
+function extractReadableExcerpt(raw: string): string {
+  const lines: string[] = [];
+  let inFence = false;
+  for (const originalLine of raw.split(/\r?\n/)) {
+    const line = originalLine.trim();
+    if (line.startsWith('```') || line.startsWith('~~~')) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+    if (!line) continue;
+    if (line === '---' || line === '+++' || line.startsWith('<!--')) continue;
+    if (/^#{1,6}\s+/.test(line)) continue;
+    if (/^[-*+]\s+\[[ x]\]/i.test(line)) lines.push(line.replace(/^[-*+]\s+\[[ x]\]\s*/i, ''));
+    else lines.push(line.replace(/^[-*+]\s+/, ''));
+    if (lines.join(' ').length >= 900 || lines.length >= 8) break;
+  }
+  return lines.join(' ').replace(/\s+/g, ' ').trim().slice(0, 1000);
+}
+
+export function extractDocumentMemoryCandidate(
+  absPath: string,
+  relPath: string,
+  sizeBytes: number,
+  options: DocumentContentExtractionOptions = {},
+): DocumentMemoryCandidate | undefined {
+  if (!options.enabled) return undefined;
+  if (!isDocumentMemoryCandidate(absPath)) return undefined;
+
+  const title = basename(relPath);
+  const downloaded = isDownloadedPath(absPath) || hasMacWhereFroms(absPath);
+  if (downloaded) {
+    return {
+      title,
+      authoringTier: 'downloaded_external',
+      actionProvenance: 'untrusted_external',
+      contentExtracted: false,
+      confidence: 0.95,
+      reason: 'downloaded_or_where_froms',
+    };
+  }
+
+  const authoredRoots = options.authoredRoots ?? [];
+  const authored = authoredRoots.some((root) => isUnderRoot(absPath, root));
+  if (!authored) {
+    return {
+      title,
+      authoringTier: 'unknown_untrusted',
+      actionProvenance: 'untrusted_external',
+      contentExtracted: false,
+      confidence: 0.4,
+      reason: 'outside_authored_roots',
+    };
+  }
+
+  const maxBytes = options.maxBytes ?? DEFAULT_DOCUMENT_MAX_BYTES;
+  if (sizeBytes > maxBytes) {
+    return {
+      title,
+      authoringTier: 'authored_originated',
+      actionProvenance: 'untrusted_external',
+      contentExtracted: false,
+      confidence: 0.8,
+      reason: 'document_too_large',
+    };
+  }
+
+  let raw: string;
+  try {
+    raw = readFileSync(absPath, 'utf8');
+  } catch {
+    return {
+      title,
+      authoringTier: 'authored_originated',
+      actionProvenance: 'untrusted_external',
+      contentExtracted: false,
+      confidence: 0.8,
+      reason: 'read_failed',
+    };
+  }
+
+  if (SECRET_CONTENT_RE.test(raw)) {
+    return {
+      title,
+      authoringTier: 'authored_originated',
+      actionProvenance: 'untrusted_external',
+      contentExtracted: false,
+      confidence: 0.8,
+      reason: 'secret_like_content',
+    };
+  }
+
+  const lines = raw.split(/\r?\n/);
+  const extractedTitle = firstHeading(lines, title);
+  const excerpt = extractReadableExcerpt(raw);
+  if (!excerpt) {
+    return {
+      title: extractedTitle,
+      authoringTier: 'authored_originated',
+      actionProvenance: 'untrusted_external',
+      contentExtracted: false,
+      confidence: 0.8,
+      reason: 'no_readable_text',
+    };
+  }
+
+  return {
+    title: extractedTitle,
+    excerpt,
+    text: `${extractedTitle}: ${excerpt}`.slice(0, 1200),
+    authoringTier: 'authored_originated',
+    actionProvenance: 'untrusted_external',
+    contentExtracted: true,
+    confidence: 0.85,
+    reason: 'under_authored_root',
+  };
 }
 
 /**
@@ -363,6 +545,7 @@ export async function extractFile(
   sizeBytes: number,
   mtimeMs: number,
   extractors: readonly FileTypeExtractor[] = DEFAULT_EXTRACTORS,
+  options: ExtractFileOptions = {},
 ): Promise<ExtractedFileMetadata> {
   const base: ExtractedFileMetadata = {
     absPath,
@@ -371,6 +554,17 @@ export async function extractFile(
     sizeBytes,
     mtimeMs,
   };
+
+  const documentMemory = extractDocumentMemoryCandidate(
+    absPath,
+    relPath,
+    sizeBytes,
+    options.documentContent,
+  );
+  if (documentMemory) {
+    const mimeType = sniffMimeType(absPath);
+    return { ...base, mimeType, documentMemory };
+  }
 
   // Check for README skip first
   if (isReadmeFile(absPath)) {

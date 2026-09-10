@@ -233,8 +233,9 @@ export interface HybridSearchOptions {
   scanLimit?: number;
   /**
    * Optional post-fold scoring hook (#251 Layer 2). When set, every
-   * accumulated rrfScore is multiplied by `tierWeight(page.metadata)` before
-   * the final sort. A multiplier of 0 drops the page entirely (used by
+   * accumulated rrfScore receives the additive bonus returned by
+   * `tierWeight(page.metadata)` before the final sort. A return value of
+   * `Number.NEGATIVE_INFINITY` drops the page entirely (used by
    * `metadata.userOverride: 'hidden'`).
    */
   tierWeight?: (metadata: unknown) => number;
@@ -258,6 +259,14 @@ export interface HybridSearchOptions {
    * filter (identical to pre-#300 behavior).
    */
   authoringTier?: readonly string[];
+  /** Optional metadata filter on `brain_pages.metadata.signalSource`. */
+  signalSource?: readonly string[];
+  /** Optional filter on `brain_pages.source`. */
+  pageSource?: readonly string[];
+  /** Effective-date lower bound. Uses metadata.effectiveDate when present. */
+  since?: Date;
+  /** Effective-date upper bound. Uses metadata.effectiveDate when present. */
+  until?: Date;
 }
 
 /**
@@ -277,11 +286,18 @@ export async function hybridSearch(opts: HybridSearchOptions): Promise<RrfHit[]>
     opts.authoringTier && opts.authoringTier.length > 0
       ? opts.authoringTier
       : undefined;
+  const pageFilters: PageSearchFilters = {
+    ...(tierFilter ? { authoringTier: tierFilter } : {}),
+    ...(opts.signalSource && opts.signalSource.length > 0 ? { signalSource: opts.signalSource } : {}),
+    ...(opts.pageSource && opts.pageSource.length > 0 ? { pageSource: opts.pageSource } : {}),
+    ...(opts.since ? { since: opts.since } : {}),
+    ...(opts.until ? { until: opts.until } : {}),
+  };
 
   const [textHits, vectorHits] = await Promise.all([
-    textSearch(opts.userId, opts.query, candidatePool, tierFilter),
+    textSearch(opts.userId, opts.query, candidatePool, pageFilters),
     opts.queryEmbedding
-      ? vectorSearch(opts.userId, opts.queryEmbedding, candidatePool, scanLimit, tierFilter)
+      ? vectorSearch(opts.userId, opts.queryEmbedding, candidatePool, scanLimit, pageFilters)
       : Promise.resolve([] as Array<{ page: BrainPageRow; score: number }>),
   ]);
 
@@ -293,6 +309,60 @@ export async function hybridSearch(opts: HybridSearchOptions): Promise<RrfHit[]>
 interface ScoredHit {
   page: BrainPageRow;
   score: number;
+}
+
+export interface PageSearchFilters {
+  authoringTier?: readonly string[];
+  signalSource?: readonly string[];
+  pageSource?: readonly string[];
+  since?: Date;
+  until?: Date;
+}
+
+function normalizePageFilters(
+  filters?: PageSearchFilters | readonly string[],
+): PageSearchFilters | undefined {
+  if (!filters) return undefined;
+  if ('length' in filters) {
+    return filters.length > 0 ? { authoringTier: filters } : undefined;
+  }
+  return filters;
+}
+
+function appendPageFilters(
+  clauses: string[],
+  params: unknown[],
+  rawFilters?: PageSearchFilters | readonly string[],
+): void {
+  const filters = normalizePageFilters(rawFilters);
+  if (filters?.authoringTier && filters.authoringTier.length > 0) {
+    params.push(filters.authoringTier);
+    clauses.push(`bp.metadata->>'authoringTier' = ANY($${params.length})`);
+  }
+  if (filters?.signalSource && filters.signalSource.length > 0) {
+    params.push(filters.signalSource);
+    clauses.push(`bp.metadata->>'signalSource' = ANY($${params.length})`);
+  }
+  if (filters?.pageSource && filters.pageSource.length > 0) {
+    params.push(filters.pageSource);
+    clauses.push(`bp.source = ANY($${params.length})`);
+  }
+  if (filters?.since) {
+    const iso = filters.since.toISOString();
+    params.push(iso, filters.since);
+    clauses.push(`(
+      (bp.metadata->>'effectiveDate' IS NOT NULL AND bp.metadata->>'effectiveDate' >= $${params.length - 1})
+      OR (bp.metadata->>'effectiveDate' IS NULL AND bp.created_at >= $${params.length})
+    )`);
+  }
+  if (filters?.until) {
+    const iso = filters.until.toISOString();
+    params.push(iso, filters.until);
+    clauses.push(`(
+      (bp.metadata->>'effectiveDate' IS NOT NULL AND bp.metadata->>'effectiveDate' <= $${params.length - 1})
+      OR (bp.metadata->>'effectiveDate' IS NULL AND bp.created_at <= $${params.length})
+    )`);
+  }
 }
 
 /**
@@ -311,34 +381,23 @@ export async function textSearch(
   userId: string,
   q: string,
   limit: number,
-  authoringTier?: readonly string[],
+  filters?: PageSearchFilters | readonly string[],
 ): Promise<ScoredHit[]> {
   const sanitised = q.trim();
   if (!sanitised) return [];
 
-  // #300: optional metadata filter, pushed into SQL so the candidate
-  // pool returned by the planner already matches the caller's filter.
-  // Without this, the caller has to over-fetch (k * factor) and narrow
-  // client-side — which scales the candidate pool by 1/filter_rate
-  // and runs out of recall on noisy corpora.
-  const useFilter = authoringTier && authoringTier.length > 0;
-  const sql = useFilter
-    ? `SELECT bp.*, ts_rank(bp.content_tsv, plainto_tsquery('english', $2)) AS rank
-         FROM brain_pages bp
-        WHERE bp.user_id = $1
-          AND bp.content_tsv @@ plainto_tsquery('english', $2)
-          AND bp.metadata->>'authoringTier' = ANY($4)
-        ORDER BY rank DESC
-        LIMIT $3`
-    : `SELECT bp.*, ts_rank(bp.content_tsv, plainto_tsquery('english', $2)) AS rank
-         FROM brain_pages bp
-        WHERE bp.user_id = $1
-          AND bp.content_tsv @@ plainto_tsquery('english', $2)
-        ORDER BY rank DESC
-        LIMIT $3`;
-  const params: unknown[] = useFilter
-    ? [userId, sanitised, limit, authoringTier]
-    : [userId, sanitised, limit];
+  const params: unknown[] = [userId, sanitised, limit];
+  const clauses = [
+    `bp.user_id = $1`,
+    `bp.content_tsv @@ plainto_tsquery('english', $2)`,
+  ];
+  appendPageFilters(clauses, params, filters);
+
+  const sql = `SELECT bp.*, ts_rank(bp.content_tsv, plainto_tsquery('english', $2)) AS rank
+       FROM brain_pages bp
+      WHERE ${clauses.join('\n        AND ')}
+      ORDER BY rank DESC
+      LIMIT $3`;
 
   const result = await query<BrainPageRow & { rank: number }>(sql, params);
 
@@ -361,32 +420,20 @@ export async function vectorSearch(
   queryEmbedding: number[],
   limit: number,
   scanLimit: number,
-  authoringTier?: readonly string[],
+  filters?: PageSearchFilters | readonly string[],
 ): Promise<ScoredHit[]> {
-  // #300: optional metadata filter pushed into SQL. Same shape as
-  // textSearch above — only matching rows enter the cosine-similarity
-  // scoring loop. Without this, the loop scored every row (or
-  // scanLimit, whichever is smaller) and the caller had to narrow
-  // client-side, defeating the cosine-similarity ranking when most
-  // top-scoring rows don't match the filter.
-  const useFilter = authoringTier && authoringTier.length > 0;
-  const sql = useFilter
-    ? `SELECT *
-         FROM brain_pages
-        WHERE user_id = $1
-          AND embedding IS NOT NULL
-          AND metadata->>'authoringTier' = ANY($3)
-        ORDER BY created_at DESC
-        LIMIT $2`
-    : `SELECT *
-         FROM brain_pages
-        WHERE user_id = $1
-          AND embedding IS NOT NULL
-        ORDER BY created_at DESC
-        LIMIT $2`;
-  const params: unknown[] = useFilter
-    ? [userId, scanLimit, authoringTier]
-    : [userId, scanLimit];
+  const params: unknown[] = [userId, scanLimit];
+  const clauses = [
+    `bp.user_id = $1`,
+    `bp.embedding IS NOT NULL`,
+  ];
+  appendPageFilters(clauses, params, filters);
+
+  const sql = `SELECT bp.*
+       FROM brain_pages bp
+      WHERE ${clauses.join('\n        AND ')}
+      ORDER BY bp.created_at DESC
+      LIMIT $2`;
 
   const result = await query<BrainPageRow>(sql, params);
 

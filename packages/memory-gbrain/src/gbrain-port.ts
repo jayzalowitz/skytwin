@@ -24,7 +24,7 @@ import { isGbrainInstalled } from './cli-detector.js';
 
 const log = createLogger('memory-gbrain');
 
-const GBRAIN_TIMEOUT_MS = 5000;
+const GBRAIN_TIMEOUT_MS = 10000;
 
 /**
  * Error thrown by GbrainMemoryPort for operations it does not implement.
@@ -41,10 +41,10 @@ export class NotImplementedError extends Error {
  * GbrainMemoryPort — a MemoryPort skeleton that shells out to the `gbrain`
  * CLI for semantic and code-aware search.
  *
- * SKELETON: This is a partial scaffold for v1.0.5. Live gbrain CLI integration
- * is best-effort: if the CLI is not installed or returns an error, all search
- * methods return [] (empty, not an error) so the HybridMemoryPort can fall
- * back to MemPalace without disruption.
+ * SKELETON: This is a partial scaffold kept for external gbrain users. Live
+ * gbrain CLI integration is best-effort: if the CLI is not installed or returns
+ * an error, all search methods return [] (empty, not an error) so the
+ * HybridMemoryPort can fall back to MemPalace without disruption.
  *
  * Deferred:
  *   - CRDB driver shim (@skytwin/memory-gbrain-crdb-adapter) — v1.0.5
@@ -91,7 +91,8 @@ export class GbrainMemoryPort implements MemoryPort {
   // ── Read — semantic search via gbrain CLI ─────────────────────────
 
   /**
-   * searchSemantic: shells out to `gbrain search --json --query="..." --limit=N`.
+   * searchSemantic: shells out to current gbrain's machine-readable
+   * `gbrain call query '{"query":"..."}'` surface.
    *
    * Returns [] (not an error) when:
    *   - gbrain CLI is not installed
@@ -111,16 +112,13 @@ export class GbrainMemoryPort implements MemoryPort {
       return [];
     }
 
-    // Polyfill contract (#300): when a tier filter is set, the CLI can't
-    // push the predicate, so over-fetch then narrow + slice — otherwise
-    // a small `k` with a strict filter could return zero hits when the
-    // unfiltered top-k happened to be all inbox-tier matches. Same shape
-    // as the pre-#300 client-side filter in draft-email-setup. With no
-    // filter, k is passed through 1:1.
-    const tierFilter = options?.authoringTier?.length
-      ? new Set(options.authoringTier)
-      : null;
-    const fetchLimit = tierFilter ? Math.max(k * 4, 40) : k;
+    const needsLocalFilter = Boolean(
+      options?.authoringTier?.length
+      || options?.signalSource?.length
+      || options?.pageSource?.length,
+    );
+    const fetchLimit = needsLocalFilter ? Math.max(k * 4, 40) : k;
+    const payload = buildQueryPayload(_query, fetchLimit, options);
 
     try {
       // execFileSync (no shell) — args are passed directly to argv, so the
@@ -128,7 +126,7 @@ export class GbrainMemoryPort implements MemoryPort {
       // ;, &&, etc.). Do not switch back to execSync without re-evaluating.
       const raw = execFileSync(
         'gbrain',
-        ['search', '--json', `--query=${_query}`, `--limit=${String(fetchLimit)}`],
+        ['call', 'query', JSON.stringify(payload)],
         { timeout: GBRAIN_TIMEOUT_MS, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
       );
 
@@ -144,19 +142,9 @@ export class GbrainMemoryPort implements MemoryPort {
       const hits: SemanticHit[] = [];
       for (const item of parsed) {
         if (isGbrainHit(item)) {
-          if (tierFilter) {
-            const metaTier = (item.metadata as Record<string, unknown> | undefined)?.[
-              'authoringTier'
-            ];
-            if (typeof metaTier !== 'string' || !tierFilter.has(metaTier)) continue;
-          }
-          hits.push({
-            id: item.id,
-            score: item.score,
-            content: item.content,
-            source: item.source,
-            metadata: item.metadata,
-          });
+          const mapped = gbrainHitToSemanticHit(item);
+          if (!matchesLocalFilters(mapped, options)) continue;
+          hits.push(mapped);
           if (hits.length >= k) break;
         }
       }
@@ -224,10 +212,18 @@ export class GbrainMemoryPort implements MemoryPort {
 // ── Type guard for gbrain JSON output ────────────────────────────────────────
 
 interface GbrainHit {
-  id: string;
+  id?: string;
+  slug?: string;
+  page_id?: string | number;
   score: number;
-  content: string;
-  source: string;
+  content?: string;
+  chunk_text?: string;
+  source?: string;
+  source_id?: string;
+  type?: string;
+  title?: string;
+  evidence?: string;
+  create_safety?: string;
   metadata?: Record<string, unknown>;
 }
 
@@ -235,9 +231,66 @@ function isGbrainHit(value: unknown): value is GbrainHit {
   if (typeof value !== 'object' || value === null) return false;
   const v = value as Record<string, unknown>;
   return (
-    typeof v['id'] === 'string' &&
     typeof v['score'] === 'number' &&
-    typeof v['content'] === 'string' &&
-    typeof v['source'] === 'string'
+    (typeof v['content'] === 'string' || typeof v['chunk_text'] === 'string') &&
+    (
+      typeof v['id'] === 'string' ||
+      typeof v['slug'] === 'string' ||
+      typeof v['page_id'] === 'string' ||
+      typeof v['page_id'] === 'number'
+    )
   );
+}
+
+function buildQueryPayload(
+  query: string,
+  limit: number,
+  options?: SearchSemanticOptions,
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = { query, limit };
+  if (options?.sourceId) payload['source_id'] = options.sourceId;
+  if (options?.lang) payload['lang'] = options.lang;
+  if (options?.symbolKind) payload['symbol_kind'] = options.symbolKind;
+  if (options?.since) payload['since'] = options.since.toISOString();
+  if (options?.until) payload['until'] = options.until.toISOString();
+  if (typeof options?.adaptiveReturn === 'boolean') {
+    payload['adaptive_return'] = options.adaptiveReturn;
+  }
+  if (typeof options?.autocut === 'boolean') payload['autocut'] = options.autocut;
+  return payload;
+}
+
+function gbrainHitToSemanticHit(item: GbrainHit): SemanticHit {
+  const metadata = {
+    ...(item.metadata ?? {}),
+    ...(item.slug ? { slug: item.slug } : {}),
+    ...(item.title ? { title: item.title } : {}),
+    ...(item.type ? { type: item.type } : {}),
+    ...(item.source_id ? { sourceId: item.source_id } : {}),
+    ...(item.evidence ? { evidence: item.evidence } : {}),
+    ...(item.create_safety ? { createSafety: item.create_safety } : {}),
+  };
+  return {
+    id: String(item.id ?? item.page_id ?? item.slug),
+    score: item.score,
+    content: item.content ?? item.chunk_text ?? '',
+    source: item.source ?? item.source_id ?? item.type ?? 'gbrain',
+    metadata,
+  };
+}
+
+function matchesLocalFilters(hit: SemanticHit, options?: SearchSemanticOptions): boolean {
+  const meta = hit.metadata ?? {};
+  if (options?.authoringTier && options.authoringTier.length > 0) {
+    const tier = meta['authoringTier'];
+    if (typeof tier !== 'string' || !options.authoringTier.includes(tier)) return false;
+  }
+  if (options?.signalSource && options.signalSource.length > 0) {
+    const source = meta['signalSource'];
+    if (typeof source !== 'string' || !options.signalSource.includes(source)) return false;
+  }
+  if (options?.pageSource && options.pageSource.length > 0) {
+    if (!options.pageSource.includes(hit.source)) return false;
+  }
+  return true;
 }

@@ -12,7 +12,6 @@ vi.mock('../cli-detector.js', () => ({
 import { execFileSync } from 'node:child_process';
 import { isGbrainInstalled } from '../cli-detector.js';
 import { GbrainMemoryPort, NotImplementedError } from '../gbrain-port.js';
-import type { SemanticHit } from '@skytwin/memory-port';
 
 const mockExecFileSync = execFileSync as ReturnType<typeof vi.fn>;
 const mockIsInstalled = isGbrainInstalled as ReturnType<typeof vi.fn>;
@@ -50,9 +49,10 @@ describe('GbrainMemoryPort', () => {
       const [cmd, args] = mockExecFileSync.mock.calls[0]!;
       expect(cmd).toBe('gbrain');
       expect(Array.isArray(args)).toBe(true);
-      // The query is one discrete argv element — no shell, so metacharacters
-      // are inert.
-      expect(args).toContain(`--query=${malicious}`);
+      // The query is JSON inside one discrete argv element — no shell, so
+      // metacharacters are inert.
+      expect(args).toEqual(['call', 'query', expect.any(String)]);
+      expect(JSON.parse((args as string[])[2]!)).toMatchObject({ query: malicious });
     });
   });
 
@@ -67,15 +67,63 @@ describe('GbrainMemoryPort', () => {
 
     it('returns parsed SemanticHit[] on successful gbrain output', async () => {
       mockIsInstalled.mockReturnValue(true);
-      const hits: SemanticHit[] = [
-        { id: 'h1', score: 0.95, content: 'result text', source: 'file.ts' },
-        { id: 'h2', score: 0.8, content: 'other text', source: 'readme.md', metadata: { line: 42 } },
+      const hits = [
+        {
+          slug: 'file-ts',
+          page_id: 101,
+          score: 0.95,
+          chunk_text: 'result text',
+          source_id: 'repo',
+          type: 'code',
+        },
+        {
+          id: 'h2',
+          score: 0.8,
+          content: 'other text',
+          source: 'readme.md',
+          metadata: { line: 42 },
+        },
       ];
       mockExecFileSync.mockReturnValue(JSON.stringify(hits));
       const port = new GbrainMemoryPort();
       const result = await port.searchSemantic('query', 10);
       expect(result).toHaveLength(2);
-      expect(result[0]).toMatchObject({ id: 'h1', score: 0.95 });
+      expect(result[0]).toMatchObject({
+        id: '101',
+        score: 0.95,
+        content: 'result text',
+        source: 'repo',
+        metadata: { slug: 'file-ts', sourceId: 'repo', type: 'code' },
+      });
+    });
+
+    it('forwards current gbrain query filters through gbrain call query', async () => {
+      mockIsInstalled.mockReturnValue(true);
+      mockExecFileSync.mockReturnValue('[]');
+      const port = new GbrainMemoryPort();
+      await port.searchSemantic('handler', 3, {
+        sourceId: 'gstack-code-skytwin-d273d580',
+        lang: 'typescript',
+        symbolKind: 'function',
+        since: new Date('2026-07-01T00:00:00.000Z'),
+        until: new Date('2026-07-02T00:00:00.000Z'),
+        adaptiveReturn: true,
+        autocut: false,
+      });
+
+      const [, args] = mockExecFileSync.mock.calls[0]!;
+      const payload = JSON.parse((args as string[])[2]!);
+      expect(payload).toEqual({
+        query: 'handler',
+        limit: 3,
+        source_id: 'gstack-code-skytwin-d273d580',
+        lang: 'typescript',
+        symbol_kind: 'function',
+        since: '2026-07-01T00:00:00.000Z',
+        until: '2026-07-02T00:00:00.000Z',
+        adaptive_return: true,
+        autocut: false,
+      });
     });
 
     it('returns [] on non-zero exit (execSync throws)', async () => {

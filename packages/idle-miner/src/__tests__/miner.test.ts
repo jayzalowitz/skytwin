@@ -209,6 +209,35 @@ describe('IdleMiner', () => {
     expect(typeof cursor?.lastVisitedPath).toBe('string');
   });
 
+  it('passes opt-in document memory candidates through emitted signals', async () => {
+    writeFileSync(
+      join(tmpDir, 'notes.md'),
+      '# Product Notes\nLocal-first memory should cite authored documents.',
+    );
+
+    const emitted: RawSignal[] = [];
+    const miner = new IdleMiner({
+      roots: [makeRoot(tmpDir)],
+      governor: new ResourceGovernor({}, { nowMs: () => Date.now(), cpuSampleMs: () => 0 }),
+      extractors: DEFAULT_EXTRACTORS,
+      signalEmitter: async (s) => { emitted.push(s); },
+      homedir: HOME,
+      fileIndexRepo: makeInMemoryIndexRepo(),
+      cursorRepo: makeInMemoryCursorRepo(),
+      userId: USER_ID,
+      documentContent: { enabled: true, authoredRoots: [tmpDir] },
+    });
+
+    await miner.scanBatch();
+    const signal = emitted.find((s) => s.relPath === 'notes.md');
+    expect(signal?.documentMemory).toMatchObject({
+      authoringTier: 'authored_originated',
+      actionProvenance: 'untrusted_external',
+      contentExtracted: true,
+    });
+    expect(signal?.documentMemory?.text).toContain('Local-first memory');
+  });
+
   it('skips files larger than 4 MB', async () => {
     // Create a file larger than 4 MB (we just write a reference)
     const bigFilePath = join(tmpDir, 'bigfile.bin');

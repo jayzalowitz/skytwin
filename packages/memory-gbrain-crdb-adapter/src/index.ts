@@ -37,6 +37,7 @@ export type { TierWeightFn, RrfFoldOptions } from './rrf.js';
 export {
   tierBonus,
   buildTierBonusFn,
+  userOverrideBonus,
   // Back-compat aliases (deprecated).
   tierMultiplier,
   buildTierWeightFn,
@@ -88,4 +89,4 @@ export {
   computeBidirectionalThreadCounts,
 } from './repository.js';
 export type { PageMissingTierRow } from './repository.js';
-export type { HybridSearchOptions } from './repository.js';
+export type { HybridSearchOptions, PageSearchFilters } from './repository.js';

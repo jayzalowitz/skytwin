@@ -106,7 +106,7 @@ describe('#251 Layer 2 — tier-weighted retrieval', () => {
   it('without tier weighting, the newsletter outranks the authored page (baseline)', async () => {
     const store = new InMemoryBrainStore();
     const port = await seedPort(store);
-    // Settings row left at defaults; tier_weighting defaults to false.
+    store.upsertSettings(USER, { tier_weighting: false });
 
     const hits = await port.searchSemantic('board prep quarterly review', 10);
     const ids = hits.map((h) => h.id);
@@ -164,6 +164,39 @@ describe('#251 Layer 2 — tier-weighted retrieval', () => {
     const ids = hits.map((h) => h.id);
     expect(ids).not.toContain('newsletter_board');
     expect(ids).toContain('authored_board');
+  });
+
+  it('userOverride: hidden still drops a page when inferred tier weighting is disabled', async () => {
+    const store = new InMemoryBrainStore();
+    const port = await seedPort(store);
+    store.upsertSettings(USER, { tier_weighting: false });
+
+    for (const page of store.pages.values()) {
+      if (page.source_ref === 'newsletter_board') {
+        page.metadata = { ...page.metadata, userOverride: 'hidden' };
+      }
+    }
+
+    const hits = await port.searchSemantic('board prep quarterly review', 5);
+    const ids = hits.map((h) => h.id);
+    expect(ids).not.toContain('newsletter_board');
+    expect(ids).toContain('authored_board');
+  });
+
+  it('fresh users default to inferred tier weighting on', async () => {
+    const store = new InMemoryBrainStore();
+    const port = await seedPort(store);
+
+    const hits = await port.searchSemantic('board prep quarterly review', 20);
+    const ids = hits.map((h) => h.id);
+    const authoredIdx = ids.indexOf('authored_board');
+    const newsletterIdx = ids.indexOf('newsletter_board');
+
+    expect(authoredIdx).toBeGreaterThanOrEqual(0);
+    if (newsletterIdx >= 0) {
+      expect(authoredIdx).toBeLessThan(newsletterIdx);
+    }
+    expect(authoredIdx).toBe(0);
   });
 
   it('brief-reply downweight: short authored reply gets inbox_personal weight, not user_sent_reply', async () => {
@@ -248,7 +281,7 @@ describe('#251 Layer 2 — tier-weighted retrieval', () => {
     }
 
     sharedStore.upsertSettings(u1, { tier_weighting: true });
-    // u2 left at defaults (tier_weighting = false).
+    sharedStore.upsertSettings(u2, { tier_weighting: false });
 
     const u1Hits = await port1.searchSemantic('board prep', 5);
     const u2Hits = await port2.searchSemantic('board prep', 5);
@@ -259,8 +292,8 @@ describe('#251 Layer 2 — tier-weighted retrieval', () => {
     expect(u1NewsletterIdx).toBeGreaterThanOrEqual(0);
     expect(u1AuthoredIdx).toBeLessThan(u1NewsletterIdx);
 
-    // For u2, with the flag off, the multiplier is identity — original RRF
-    // order survives, whatever it was, and per-user isolation holds.
+    // For u2, with inferred weighting off, explicit override behavior remains
+    // but authoring/relationship boosts are disabled; per-user isolation holds.
     expect(u2Hits.length).toBeGreaterThan(0);
     const u2Ids = u2Hits.map((h) => h.id);
     // u2's results never include u1's ids.

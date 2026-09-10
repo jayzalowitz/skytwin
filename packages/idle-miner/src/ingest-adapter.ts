@@ -1,5 +1,6 @@
 import { withRetry, RetryableHttpError, createLogger } from '@skytwin/core';
 import type { RawSignal } from '@skytwin/shared-types';
+import { basename } from 'node:path';
 
 const log = createLogger('idle-miner:emitter');
 
@@ -8,10 +9,10 @@ const log = createLogger('idle-miner:emitter');
 // failure for this request and is not retried.
 const RETRYABLE_STATUS = new Set([408, 429, 500, 502, 503, 504]);
 
-// Cap on the serialized file-derived metadata. The miner emits bounded metadata
-// by design (a package.json name, a git remote — never file content), so this
-// only fires on pathological input; oversized `extracted` is dropped rather than
-// ballooning the request body.
+// Cap on the serialized file-derived metadata. The default miner emits bounded
+// metadata by design (a package.json name, a git remote). Opt-in document
+// memory uses `documentMemory` instead of `extracted` and has its own caps.
+// Oversized `extracted` is dropped rather than ballooning the request body.
 const MAX_EXTRACTED_BYTES = 64 * 1024;
 
 /**
@@ -31,15 +32,48 @@ class PermanentIngestError extends Error {}
  * to `kind: 'fs'`). Note this is a DIFFERENT shape than the connector `RawSignal`
  * the worker forwards — hence the explicit mapping rather than a pass-through.
  *
- * SECURITY: the extracted `structuredFields` (a package.json `name`, a git
- * remote URL, …) are derived from the user's file CONTENT and are therefore only
- * semi-trusted. They are kept entirely OUT of the top level — nested under a
- * single `extracted` key — so they can neither shadow a trusted envelope field
+ * SECURITY: extracted `structuredFields` (a package.json `name`, a git remote
+ * URL, etc.) are derived from user files and are therefore only semi-trusted.
+ * They are kept entirely OUT of the top level — nested under a single
+ * `extracted` key — so they can neither shadow a trusted envelope field
  * (`source` / `type` / `signalId` / `userId`) nor inject arbitrary top-level
- * ingest keys (including a `__proto__` key that an unsafe downstream merge might
- * honor). Everything at the top level is controlled by this function.
+ * ingest keys. Opt-in `documentMemory` is mapped explicitly and always keeps
+ * `actionProvenance: untrusted_external`; untrusted/downloaded documents do not
+ * expose body text.
  */
 export function toIngestEvent(signal: RawSignal, userId: string): Record<string, unknown> {
+  if (
+    signal.documentMemory?.contentExtracted === true &&
+    typeof signal.documentMemory.text === 'string' &&
+    signal.documentMemory.text.trim().length > 0
+  ) {
+    return {
+      source: 'filesystem',
+      type: 'document_memory',
+      signalId: signal.id,
+      userId,
+      rootId: signal.rootId,
+      relPath: signal.relPath,
+      absPath: signal.absPath,
+      sizeBytes: signal.sizeBytes,
+      mtimeMs: signal.mtimeMs,
+      ...(signal.mimeType !== undefined ? { mimeType: signal.mimeType } : {}),
+      ...(signal.contentHash !== undefined ? { contentHash: signal.contentHash } : {}),
+      data: {
+        fileName: basename(signal.relPath),
+        path: signal.relPath,
+        title: signal.documentMemory.title,
+        excerpt: signal.documentMemory.excerpt,
+        text: signal.documentMemory.text,
+        authoringTier: signal.documentMemory.authoringTier,
+        documentAuthoringTier: signal.documentMemory.authoringTier,
+        actionProvenance: signal.documentMemory.actionProvenance,
+        confidence: signal.documentMemory.confidence,
+        reason: signal.documentMemory.reason,
+      },
+    };
+  }
+
   let extracted: Record<string, unknown> | undefined;
   const raw = signal.structuredFields;
   if (raw && typeof raw === 'object') {
@@ -49,6 +83,20 @@ export function toIngestEvent(signal: RawSignal, userId: string): Record<string,
     } catch {
       // Non-serializable (e.g. a cycle) → omit.
     }
+  }
+  if (signal.documentMemory) {
+    const safeDocumentMemory: Record<string, unknown> = {
+      title: signal.documentMemory.title,
+      authoringTier: signal.documentMemory.authoringTier,
+      actionProvenance: signal.documentMemory.actionProvenance,
+      contentExtracted: signal.documentMemory.contentExtracted,
+      confidence: signal.documentMemory.confidence,
+      reason: signal.documentMemory.reason,
+    };
+    if (signal.documentMemory.contentExtracted === true) {
+      safeDocumentMemory['excerpt'] = signal.documentMemory.excerpt;
+    }
+    extracted = { ...(extracted ?? {}), documentMemory: safeDocumentMemory };
   }
   return {
     source: 'fs',

@@ -37,12 +37,15 @@ export {
   requirementsTxtExtractor,
   cargoTomlExtractor,
   goModExtractor,
+  extractDocumentMemoryCandidate,
   readmeSkipExtractor,
   isReadmeFile,
   getSkipReason,
 } from './extractor.js';
 export type {
+  DocumentContentExtractionOptions,
   ExtractedFileMetadata,
+  ExtractFileOptions,
   FileTypeExtractor,
 } from './extractor.js';
 

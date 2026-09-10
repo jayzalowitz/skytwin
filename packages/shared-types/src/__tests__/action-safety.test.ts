@@ -109,6 +109,7 @@ describe('resolveActionProvenance', () => {
     expect(resolveActionProvenance('idle-miner')).toBe('untrusted_external');
     expect(resolveActionProvenance('idle_miner')).toBe('untrusted_external');
     expect(resolveActionProvenance('filesystem')).toBe('untrusted_external');
+    expect(resolveActionProvenance('filesystem', 'authored_originated')).toBe('untrusted_external');
   });
 
   it('fails safe — unknown source with no tier is untrusted_external', () => {

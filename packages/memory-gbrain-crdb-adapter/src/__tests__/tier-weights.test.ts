@@ -4,6 +4,7 @@ import {
   buildTierBonusFn,
   calibrationFromSentVolume,
   relationshipTierFromThreadCount,
+  userOverrideBonus,
   BRIEF_BODY_THRESHOLD,
   HIDDEN_SENTINEL,
   PINNED_BOOST,
@@ -29,10 +30,15 @@ describe('tierBonus — authoring-tier additive bonuses (#251 additive rewrite)'
     // without an authored alternative.
     expect(b('user_sent_originated')).toBeCloseTo(0.005);
     expect(b('user_sent_reply')).toBeCloseTo(0.003);
+    expect(b('authored_originated')).toBeCloseTo(0.005);
+    expect(b('authored_edited')).toBeCloseTo(0.004);
     expect(b('inbox_personal')).toBe(0);
     expect(b('inbox_broadcast')).toBe(0);
     expect(b('inbox_newsletter')).toBe(0);
     expect(b('inbox_automated')).toBe(0);
+    expect(b('downloaded_external')).toBe(0);
+    expect(b('received_shared')).toBe(0);
+    expect(b('unknown_untrusted')).toBe(0);
   });
 
   it('sparse calibration compresses the spread', () => {
@@ -103,6 +109,25 @@ describe('tierBonus — userOverride composes additively', () => {
       ),
     ).toBe(HIDDEN_SENTINEL);
     expect(tierBonus({ userOverride: 'hidden' }, 'normal')).toBe(HIDDEN_SENTINEL);
+  });
+});
+
+describe('userOverrideBonus — explicit user intent without inferred weighting', () => {
+  it('keeps hidden and pinned active without authoring or relationship boosts', () => {
+    expect(userOverrideBonus({ userOverride: 'hidden' })).toBe(HIDDEN_SENTINEL);
+    expect(userOverrideBonus({ userOverride: 'pinned' })).toBe(PINNED_BOOST);
+    expect(
+      userOverrideBonus({
+        authoringTier: 'user_sent_originated',
+        relationshipTier: 'core',
+      }),
+    ).toBe(0);
+  });
+
+  it('ignores missing or unknown overrides', () => {
+    expect(userOverrideBonus(null)).toBe(0);
+    expect(userOverrideBonus({})).toBe(0);
+    expect(userOverrideBonus({ userOverride: 'starred' })).toBe(0);
   });
 });
 

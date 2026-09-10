@@ -56,3 +56,4 @@ heap_profiler/
 
 # electron-builder output (.dmg/.exe/.AppImage + .app)
 apps/desktop/dist-electron/
+.gbrain-source

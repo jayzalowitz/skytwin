@@ -26,6 +26,7 @@ import type {
   RrfHit,
   InsertBrainPageInput,
 } from './types.js';
+import type { PageSearchFilters } from './repository.js';
 import { cosineSimilarity, tokenise } from './embedding.js';
 import { rrfFold } from './rrf.js';
 
@@ -40,6 +41,16 @@ function bareAddrInMemory(raw: string): string {
   const angle = raw.match(/<([^>]+)>/);
   if (angle && angle[1]) return angle[1].trim().toLowerCase();
   return raw.trim().toLowerCase();
+}
+
+function normalizePageFilters(
+  filters?: PageSearchFilters | readonly string[],
+): PageSearchFilters | undefined {
+  if (!filters) return undefined;
+  if ('length' in filters) {
+    return filters.length > 0 ? { authoringTier: filters } : undefined;
+  }
+  return filters;
 }
 
 interface ScoredHit {
@@ -124,25 +135,43 @@ export class InMemoryBrainStore {
   }
 
   /**
-   * #300: same authoring-tier filter as the CRDB textSearch. Applied
-   * inline during the per-page scan so the candidate pool is already
-   * filtered before sort+slice.
+   * Same metadata/page/date filters as the CRDB search. Applied inline
+   * during the per-page scan so the candidate pool is already filtered
+   * before sort+slice.
    */
-  private pageMatchesTierFilter(
+  private pageMatchesFilters(
     page: BrainPageRow,
-    authoringTier?: readonly string[],
+    rawFilters?: PageSearchFilters | readonly string[],
   ): boolean {
-    if (!authoringTier || authoringTier.length === 0) return true;
-    const tier = (page.metadata as Record<string, unknown>)?.['authoringTier'];
-    if (typeof tier !== 'string') return false;
-    return authoringTier.includes(tier);
+    const filters = normalizePageFilters(rawFilters);
+    const meta = page.metadata as Record<string, unknown>;
+    if (filters?.authoringTier && filters.authoringTier.length > 0) {
+      const tier = meta['authoringTier'];
+      if (typeof tier !== 'string' || !filters.authoringTier.includes(tier)) return false;
+    }
+    if (filters?.signalSource && filters.signalSource.length > 0) {
+      const source = meta['signalSource'];
+      if (typeof source !== 'string' || !filters.signalSource.includes(source)) return false;
+    }
+    if (filters?.pageSource && filters.pageSource.length > 0) {
+      if (!filters.pageSource.includes(page.source)) return false;
+    }
+    const rawEffective = meta['effectiveDate'];
+    const effectiveDate =
+      typeof rawEffective === 'string' ? new Date(rawEffective) : page.created_at;
+    const effectiveMs = Number.isFinite(effectiveDate.getTime())
+      ? effectiveDate.getTime()
+      : page.created_at.getTime();
+    if (filters?.since && effectiveMs < filters.since.getTime()) return false;
+    if (filters?.until && effectiveMs > filters.until.getTime()) return false;
+    return true;
   }
 
   textSearch(
     userId: string,
     q: string,
     limit: number,
-    authoringTier?: readonly string[],
+    filters?: PageSearchFilters | readonly string[],
   ): ScoredHit[] {
     const queryTokens = new Set(tokenise(q));
     if (queryTokens.size === 0) return [];
@@ -150,7 +179,7 @@ export class InMemoryBrainStore {
     const scored: ScoredHit[] = [];
     for (const page of this.pages.values()) {
       if (page.user_id !== userId) continue;
-      if (!this.pageMatchesTierFilter(page, authoringTier)) continue;
+      if (!this.pageMatchesFilters(page, filters)) continue;
       const docTokens = tokenise(`${page.title} ${page.content}`);
       let overlap = 0;
       for (const t of docTokens) if (queryTokens.has(t)) overlap++;
@@ -168,12 +197,12 @@ export class InMemoryBrainStore {
     userId: string,
     queryEmbedding: number[],
     limit: number,
-    authoringTier?: readonly string[],
+    filters?: PageSearchFilters | readonly string[],
   ): ScoredHit[] {
     const scored: ScoredHit[] = [];
     for (const page of this.pages.values()) {
       if (page.user_id !== userId) continue;
-      if (!this.pageMatchesTierFilter(page, authoringTier)) continue;
+      if (!this.pageMatchesFilters(page, filters)) continue;
       const emb = page.embedding;
       if (!emb || emb.length !== queryEmbedding.length) continue;
       scored.push({ page, score: cosineSimilarity(queryEmbedding, emb) });
@@ -195,16 +224,37 @@ export class InMemoryBrainStore {
      * Empty array or absent → no filter (identical to pre-#300).
      */
     authoringTier?: readonly string[];
+    signalSource?: readonly string[];
+    pageSource?: readonly string[];
+    since?: Date;
+    until?: Date;
   }): RrfHit[] {
     const pool = opts.candidatePoolSize ?? Math.max(opts.k * 4, 40);
     const rrfK = opts.rrfK ?? 60;
-    const tierFilter =
-      opts.authoringTier && opts.authoringTier.length > 0
-        ? opts.authoringTier
-        : undefined;
-    const text = this.textSearch(opts.userId, opts.query, pool, tierFilter);
+    const filters: PageSearchFilters = {
+      ...(opts.authoringTier && opts.authoringTier.length > 0
+        ? { authoringTier: opts.authoringTier }
+        : {}),
+      ...(opts.signalSource && opts.signalSource.length > 0
+        ? { signalSource: opts.signalSource }
+        : {}),
+      ...(opts.pageSource && opts.pageSource.length > 0
+        ? { pageSource: opts.pageSource }
+        : {}),
+      ...(opts.since ? { since: opts.since } : {}),
+      ...(opts.until ? { until: opts.until } : {}),
+    };
+    const hasFilters = Boolean(
+      (opts.authoringTier && opts.authoringTier.length > 0)
+        || (opts.signalSource && opts.signalSource.length > 0)
+        || (opts.pageSource && opts.pageSource.length > 0)
+        || opts.since
+        || opts.until,
+    );
+    const activeFilters = hasFilters ? filters : undefined;
+    const text = this.textSearch(opts.userId, opts.query, pool, activeFilters);
     const vec = opts.queryEmbedding
-      ? this.vectorSearch(opts.userId, opts.queryEmbedding, pool, tierFilter)
+      ? this.vectorSearch(opts.userId, opts.queryEmbedding, pool, activeFilters)
       : [];
     return rrfFold(text, vec, opts.k, rrfK, {
       ...(opts.tierWeight ? { tierWeight: opts.tierWeight } : {}),

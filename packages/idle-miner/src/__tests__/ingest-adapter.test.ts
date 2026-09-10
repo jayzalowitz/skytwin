@@ -82,6 +82,65 @@ describe('toIngestEvent', () => {
     expect('contentHash' in ev).toBe(false);
     expect('skippedReason' in ev).toBe(false);
   });
+
+  it('maps extracted authored document memory into filesystem/document_memory data', () => {
+    const ev = toIngestEvent(
+      signal({
+        relPath: 'notes/strategy.md',
+        documentMemory: {
+          title: 'Strategy',
+          excerpt: 'Local-first memory should cite authored docs.',
+          text: 'Strategy: Local-first memory should cite authored docs.',
+          authoringTier: 'authored_originated',
+          actionProvenance: 'untrusted_external',
+          contentExtracted: true,
+          confidence: 0.85,
+          reason: 'under_authored_root',
+        },
+      }),
+      'user-1',
+    );
+    expect(ev).toMatchObject({
+      source: 'filesystem',
+      type: 'document_memory',
+      userId: 'user-1',
+      relPath: 'notes/strategy.md',
+      data: {
+        fileName: 'strategy.md',
+        authoringTier: 'authored_originated',
+        actionProvenance: 'untrusted_external',
+        text: 'Strategy: Local-first memory should cite authored docs.',
+      },
+    });
+  });
+
+  it('does not expose untrusted document body text through the ingest event', () => {
+    const ev = toIngestEvent(
+      signal({
+        relPath: 'Downloads/vendor.md',
+        documentMemory: {
+          title: 'vendor.md',
+          authoringTier: 'downloaded_external',
+          actionProvenance: 'untrusted_external',
+          contentExtracted: false,
+          confidence: 0.95,
+          reason: 'downloaded_or_where_froms',
+        },
+      }),
+      'user-1',
+    );
+    expect(ev.type).toBe('file_indexed');
+    expect('data' in ev).toBe(false);
+    expect(ev.extracted).toMatchObject({
+      documentMemory: {
+        authoringTier: 'downloaded_external',
+        actionProvenance: 'untrusted_external',
+        contentExtracted: false,
+        reason: 'downloaded_or_where_froms',
+      },
+    });
+    expect(JSON.stringify(ev)).not.toContain('ServerEvil');
+  });
 });
 
 describe('createHttpSignalEmitter', () => {

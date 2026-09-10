@@ -292,6 +292,32 @@ describe('EmbeddedGbrainMemoryPort — searchSemantic', () => {
     const empty = await port.searchSemantic('Tuesday', 10, { authoringTier: [] });
     expect(empty.length).toBe(all.length);
   });
+
+  it('filters by original connector source before ranking', async () => {
+    const gmail = await port.searchSemantic('Tuesday', 10, { signalSource: ['gmail'] });
+    expect(gmail.length).toBeGreaterThan(0);
+    expect(gmail.every((h) => h.metadata?.['signalSource'] === 'gmail')).toBe(true);
+
+    const calendar = await port.searchSemantic('planning', 10, { signalSource: ['cal'] });
+    expect(calendar).toHaveLength(1);
+    expect(calendar[0]!.metadata?.['signalSource']).toBe('cal');
+  });
+
+  it('filters signal pages by effective date rather than index time', async () => {
+    const afterApril2 = await port.searchSemantic('Tuesday', 10, {
+      since: new Date('2026-04-02T00:00:00.001Z'),
+    });
+    expect(afterApril2.map((h) => h.metadata?.['effectiveDate'])).toEqual([
+      '2026-04-03T00:00:00.000Z',
+    ]);
+
+    const beforeApril2 = await port.searchSemantic('Tuesday', 10, {
+      until: new Date('2026-04-01T23:59:59.999Z'),
+    });
+    expect(beforeApril2.map((h) => h.metadata?.['effectiveDate'])).toEqual([
+      '2026-04-01T00:00:00.000Z',
+    ]);
+  });
 });
 
 describe('EmbeddedGbrainMemoryPort — code-aware search', () => {

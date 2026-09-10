@@ -40,10 +40,15 @@ import type { TierCalibration } from './types.js';
 export type AuthoringTier =
   | 'user_sent_originated'
   | 'user_sent_reply'
+  | 'authored_originated'
+  | 'authored_edited'
   | 'inbox_personal'
   | 'inbox_broadcast'
   | 'inbox_newsletter'
-  | 'inbox_automated';
+  | 'inbox_automated'
+  | 'downloaded_external'
+  | 'received_shared'
+  | 'unknown_untrusted';
 
 /**
  * Relationship-strength band (#251 Phase 2) computed from bidirectional
@@ -66,10 +71,15 @@ export type UserOverride = 'pinned' | 'hidden';
 interface TierBonusTable {
   readonly user_sent_originated: number;
   readonly user_sent_reply: number;
+  readonly authored_originated: number;
+  readonly authored_edited: number;
   readonly inbox_personal: number;
   readonly inbox_broadcast: number;
   readonly inbox_newsletter: number;
   readonly inbox_automated: number;
+  readonly downloaded_external: number;
+  readonly received_shared: number;
+  readonly unknown_untrusted: number;
 }
 
 // Calibration tables. Numbers chosen so the spread between the strongest
@@ -99,28 +109,43 @@ interface TierBonusTable {
 const BONUSES_SPARSE: TierBonusTable = {
   user_sent_originated: 0.002,
   user_sent_reply: 0.001,
+  authored_originated: 0.002,
+  authored_edited: 0.0015,
   inbox_personal: 0,
   inbox_broadcast: 0,
   inbox_newsletter: 0,
   inbox_automated: 0,
+  downloaded_external: 0,
+  received_shared: 0,
+  unknown_untrusted: 0,
 };
 
 const BONUSES_NORMAL: TierBonusTable = {
   user_sent_originated: 0.005,
   user_sent_reply: 0.003,
+  authored_originated: 0.005,
+  authored_edited: 0.004,
   inbox_personal: 0,
   inbox_broadcast: 0,
   inbox_newsletter: 0,
   inbox_automated: 0,
+  downloaded_external: 0,
+  received_shared: 0,
+  unknown_untrusted: 0,
 };
 
 const BONUSES_DENSE: TierBonusTable = {
   user_sent_originated: 0.008,
   user_sent_reply: 0.005,
+  authored_originated: 0.008,
+  authored_edited: 0.006,
   inbox_personal: 0,
   inbox_broadcast: 0,
   inbox_newsletter: 0,
   inbox_automated: 0,
+  downloaded_external: 0,
+  received_shared: 0,
+  unknown_untrusted: 0,
 };
 
 const TABLES: Record<TierCalibration, TierBonusTable> = {
@@ -255,7 +280,12 @@ export function tierBonus(metadata: unknown, calibration: TierCalibration): numb
       // Brief-reply downweight: short authored body gets inbox_personal
       // bonus (zero) instead of full authored. Cheap heuristic — no need
       // to look at recipient tier or edit time yet.
-      if (tier === 'user_sent_originated' || tier === 'user_sent_reply') {
+      if (
+        tier === 'user_sent_originated' ||
+        tier === 'user_sent_reply' ||
+        tier === 'authored_originated' ||
+        tier === 'authored_edited'
+      ) {
         const bodyLen = m['bodyLen'];
         if (typeof bodyLen === 'number' && bodyLen < BRIEF_BODY_THRESHOLD) {
           base = table.inbox_personal;
@@ -277,6 +307,20 @@ export function tierBonus(metadata: unknown, calibration: TierCalibration): numb
   }
 
   return base + relBonus + pinnedBoost;
+}
+
+/**
+ * Explicit user overrides are not part of the inferred tier-weighting toggle.
+ * A user who turns tier weighting off is opting out of automatic authoring /
+ * relationship boosts, not asking hidden pages to resurface. Use this callback
+ * when the ranking layer should honor only direct user intent.
+ */
+export function userOverrideBonus(metadata: unknown): number {
+  if (!metadata || typeof metadata !== 'object') return 0;
+  const override = (metadata as Record<string, unknown>)['userOverride'];
+  if (override === 'hidden') return HIDDEN_SENTINEL;
+  if (override === 'pinned') return PINNED_BOOST;
+  return 0;
 }
 
 /**

@@ -23,11 +23,38 @@ export interface FsScanRoot {
   updatedAt: Date;
 }
 
+export type DocumentAuthoringTier =
+  | 'authored_originated'
+  | 'authored_edited'
+  | 'downloaded_external'
+  | 'received_shared'
+  | 'unknown_untrusted';
+
+/**
+ * Optional, bounded document-memory evidence emitted only by explicit
+ * content-memory scans. The normal idle-miner path remains metadata-only.
+ *
+ * `contentExtracted=false` is a deliberate result for downloaded/received or
+ * ambiguous documents: the scanner can preserve the provenance verdict without
+ * copying the file body into memory.
+ */
+export interface DocumentMemoryCandidate {
+  title: string;
+  excerpt?: string;
+  text?: string;
+  authoringTier: DocumentAuthoringTier;
+  actionProvenance: 'untrusted_external';
+  contentExtracted: boolean;
+  confidence: number;
+  reason: string;
+}
+
 /**
  * A raw signal emitted by the idle-miner for downstream capability inference.
  *
- * Metadata only — never file body content. See docs/architecture-philosophy.md
- * "Hard rails (deterministic for SAFETY)".
+ * By default this is metadata-only. Opt-in content-memory scans may attach a
+ * bounded, provenance-tagged `documentMemory` candidate; untrusted documents
+ * carry provenance metadata but no body text.
  */
 export interface RawSignal {
   id: string;
@@ -40,6 +67,7 @@ export interface RawSignal {
   mimeType?: string;
   contentHash?: string;
   structuredFields?: Record<string, unknown>;
+  documentMemory?: DocumentMemoryCandidate;
   skippedReason?: string;
   extractedAt: Date;
 }

@@ -5,7 +5,7 @@ import { generateId } from '@skytwin/core';
 import { isDenied } from './denylist.js';
 import { extractFile } from './extractor.js';
 import type { ResourceGovernorPort } from './governor.js';
-import type { FileTypeExtractor } from './extractor.js';
+import type { DocumentContentExtractionOptions, FileTypeExtractor } from './extractor.js';
 import type { RawSignal, FsScanRoot } from './types.js';
 import type { FileIndexRepo, CursorRepo, ScanCursor } from './types.js';
 
@@ -22,6 +22,7 @@ export interface MinerOptions {
   fileIndexRepo: FileIndexRepo;
   cursorRepo: CursorRepo;
   userId: string;
+  documentContent?: DocumentContentExtractionOptions;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -158,6 +159,7 @@ export class IdleMiner {
           sizeBytes,
           mtimeMs,
           this.opts.extractors,
+          { documentContent: this.opts.documentContent },
         );
 
         // Report bytes to governor
@@ -190,6 +192,7 @@ export class IdleMiner {
           mimeType: extracted.mimeType,
           contentHash: contentHash?.toString('hex'),
           structuredFields: extracted.structuredFields,
+          documentMemory: extracted.documentMemory,
           skippedReason: extracted.skippedReason,
           extractedAt: new Date(),
         };

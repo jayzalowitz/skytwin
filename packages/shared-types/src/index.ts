@@ -224,6 +224,8 @@ export type {
 export { DEMO_RECIPES, findDemoRecipe } from './demo-recipes.js';
 
 export type {
+  DocumentAuthoringTier,
+  DocumentMemoryCandidate,
   FsScanRoot,
   RawSignal,
 } from './capability-acquisition.js';
