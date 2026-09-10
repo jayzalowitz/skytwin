@@ -145,8 +145,9 @@ Grab the installer for your OS, double-click, and you're in. No terminal, no Doc
 > **Release boundary:** published installers currently predate the guarded,
 > account-free sample session in this source tree. Check the release notes for
 > the exact features in an artifact. Desktop builds produced from current source
-> can open a short-lived, read-only sample; simulated approve, reject, correct,
-> and learn interactions in that packaged path are later work.
+> can open a short-lived sample whose database-backed surface remains read-only;
+> approve, reject, correct, and learn interactions run only in a separate,
+> session-local simulation that cannot reach providers or execution adapters.
 
 | OS | Installer on the release page |
 |----|-------------------------------|
@@ -415,14 +416,14 @@ Trust is **domain-specific**. You might be at `moderate_autonomy` for email but 
 
 ## Project Status
 
-SkyTwin is in **Tier 1 launch polish** (see [`docs/launch-plan.md`](./docs/launch-plan.md)) — signed binaries, a verified packaged experience, the mobile cut, and safety/privacy debt remain pre-launch work tracked under epic [#357](https://github.com/jayzalowitz/skytwin/issues/357). The 2026-06-14 source audit ([`docs/launch-readiness-report.md`](./docs/launch-readiness-report.md)) verified the development tree at that revision; it was not certification of the currently published installers or of every public-launch gate. Published releases lag the current source, and the packaged account-free sample in this release candidate is deliberately read-only. The report retains the code-signing, OAuth review, mobile, artifact-validation, and encryption/key-management blockers. Core decision pipeline, twin model, policy engine, and swappable memory layer are functional in source; Gmail and Google Calendar connectors run with real OAuth; desktop packaging targets all three platforms; and the mobile source supports QR pairing and voice capture. Consult the release badge, [`CHANGELOG.md`](./CHANGELOG.md), and each release's notes for what a downloadable artifact actually contains.
+SkyTwin is in **Tier 1 launch polish** (see [`docs/launch-plan.md`](./docs/launch-plan.md)) — signed binaries, a verified packaged experience, the mobile cut, and safety/privacy debt remain pre-launch work tracked under epic [#357](https://github.com/jayzalowitz/skytwin/issues/357). The 2026-06-14 source audit ([`docs/launch-readiness-report.md`](./docs/launch-readiness-report.md)) verified the development tree at that revision; it was not certification of the currently published installers or of every public-launch gate. Published releases lag the current source. In this release candidate, the packaged account-free sample keeps its database-backed surface read-only while dedicated interactions run only inside an isolated, session-local simulation. The report retains the code-signing, OAuth review, mobile, artifact-validation, and encryption/key-management blockers. Core decision pipeline, twin model, policy engine, and swappable memory layer are functional in source; Gmail and Google Calendar connectors run with real OAuth; desktop packaging targets all three platforms; and the mobile source supports QR pairing and voice capture. Consult the release badge, [`CHANGELOG.md`](./CHANGELOG.md), and each release's notes for what a downloadable artifact actually contains.
 
 **Free and open-source forever for personal use.** Team and hosted tiers are planned for organizations that need shared policies, audit logs, or managed infrastructure — see [`docs/launch-plan.md`](./docs/launch-plan.md) for the split.
 
 **What works in the development/source tree today:**
 - One-command install (`curl | bash`) on macOS, Linux, and WSL — installs every dependency, clones the repo, starts the services, opens the dashboard
 - "Ask your twin" widget on the dashboard — type any situation, get a predicted action with reasoning and confidence, no accounts required
-- A fully populated development demo seed with mock approval actions, plus a separate guarded, read-only sample-session foundation for packaged desktop builds. The current published installers predate the packaged sample, and interactive packaged simulation remains follow-up work.
+- A fully populated development demo seed with mock approval actions, plus a separate guarded sample session for packaged desktop builds. Its database-backed surface is read-only; a dedicated simulation can approve, reject, or correct fixed proposals and demonstrate session-local learning without invoking real connectors, providers, credentials, or execution adapters. Current published installers predate this packaged sample path.
 - Inbox-Intelligence briefing — a daily/weekly digest that splits **to-dos (act)** from **topics (FYI)**, cites the source signal behind every item, persists memory-derived action opportunities, routes them through policy plus IronClaw/OpenClaw/Direct execution, reports queued/executed/blocked/learning-needed outcomes, and offers a "Power view" toggle for the technical detail behind each call
 - Full decision pipeline: signal → interpret → decide → policy check → execute/escalate → explain → learn
 - LLM-powered decisions via configurable provider chain (Claude, GPT, Gemini, Ollama) with automatic fallback to built-in rules
