@@ -1,10 +1,5 @@
 import { Router } from 'express';
-import {
-  userRepository,
-  TwinRepositoryAdapter,
-  PatternRepositoryAdapter,
-  policyRepositoryAdapter,
-} from '@skytwin/db';
+import { userRepository, TwinRepositoryAdapter, PatternRepositoryAdapter, policyRepositoryAdapter } from '@skytwin/db';
 import type {
   WhatWouldIDoRequest,
   WhatWouldIDoResponse,
@@ -17,7 +12,7 @@ import { DecisionMaker } from '@skytwin/decision-engine';
 import type { DecisionRepositoryPort } from '@skytwin/decision-engine';
 import { TwinService } from '@skytwin/twin-model';
 import { PolicyEvaluator } from '@skytwin/policy-engine';
-import { DEMO_USER_ID, issueDemoSession } from '../auth/demo-session.js';
+import { DEMO_USER_ID, isLocalDemoAddress, issueDemoSession } from '../auth/demo-session.js';
 
 /**
  * UUID of the seeded "Alex Thompson" demo user from
@@ -57,6 +52,10 @@ const PREVIEW_GLOBAL_WINDOW_MS = 60 * 60 * 1000;
 
 const PREVIEW_MAX_INPUT_LEN = 600;
 
+/** The packaged tour should not mint unlimited credentials from one process. */
+const SAMPLE_SESSION_LIMIT = 12;
+const SAMPLE_SESSION_WINDOW_MS = 5 * 60 * 1000;
+
 /** Cache the demo user lookup so the hot path doesn't query DB every request. */
 let _cachedDemoUser: Awaited<ReturnType<typeof userRepository.findDemoById>> | null = null;
 let _cachedDemoUserAt = 0;
@@ -64,7 +63,7 @@ const DEMO_USER_CACHE_TTL_MS = 60 * 1000;
 
 async function getDemoUserCached() {
   const now = Date.now();
-  if (_cachedDemoUser && (now - _cachedDemoUserAt) < DEMO_USER_CACHE_TTL_MS) {
+  if (_cachedDemoUser && now - _cachedDemoUserAt < DEMO_USER_CACHE_TTL_MS) {
     return _cachedDemoUser;
   }
   const fresh = await userRepository.findDemoById(DEMO_USER_ID);
@@ -93,6 +92,31 @@ export function _resetDemoCacheForTests(): void {
  */
 export function createDemoRouter(): Router {
   const router = Router();
+  const sampleSessionBuckets = new Map<string, number[]>();
+
+  function checkSampleSessionRate(ip: string): {
+    allowed: boolean;
+    retryAfterMs: number;
+  } {
+    const now = Date.now();
+    const cutoff = now - SAMPLE_SESSION_WINDOW_MS;
+    for (const [key, values] of sampleSessionBuckets) {
+      if (values.every((timestamp) => timestamp <= cutoff)) {
+        sampleSessionBuckets.delete(key);
+      }
+    }
+    const timestamps = (sampleSessionBuckets.get(ip) ?? []).filter((timestamp) => timestamp > cutoff);
+    if (timestamps.length >= SAMPLE_SESSION_LIMIT) {
+      sampleSessionBuckets.set(ip, timestamps);
+      return {
+        allowed: false,
+        retryAfterMs: Math.max(0, timestamps[0]! + SAMPLE_SESSION_WINDOW_MS - now),
+      };
+    }
+    timestamps.push(now);
+    sampleSessionBuckets.set(ip, timestamps);
+    return { allowed: true, retryAfterMs: 0 };
+  }
 
   /**
    * GET /api/demo/info
@@ -125,11 +149,26 @@ export function createDemoRouter(): Router {
    * short-lived, fixed to DEMO_USER_ID, and restricted by sessionAuth to an
    * explicit set of read routes. It cannot mutate sample data or access users.
    */
-  router.post('/session', async (_req, res, next) => {
+  router.post('/session', async (req, res, next) => {
     try {
+      const ip = req.ip ?? req.socket.remoteAddress;
+      if (!isLocalDemoAddress(ip)) {
+        res.status(403).json({
+          error: 'The packaged sample is available from this device only.',
+        });
+        return;
+      }
       const user = await getDemoUserCached();
       if (!user) {
         res.status(404).json({ error: 'Demo profile not available on this server.' });
+        return;
+      }
+      const limit = checkSampleSessionRate(ip ?? 'unknown');
+      if (!limit.allowed) {
+        res.set('Retry-After', String(Math.max(1, Math.ceil(limit.retryAfterMs / 1000))));
+        res.status(429).json({
+          error: 'Too many sample sessions. Reuse or reset the current sample.',
+        });
         return;
       }
       const session = issueDemoSession();
@@ -186,7 +225,10 @@ export function createDemoRouter(): Router {
   // app.set('trust proxy', N) for this to work as a real per-client limit.
   // The global cap below is the backstop for misconfigured deploys.
   const previewBuckets = new Map<string, number[]>();
-  function checkPreviewRate(ip: string): { allowed: boolean; remaining: number } {
+  function checkPreviewRate(ip: string): {
+    allowed: boolean;
+    remaining: number;
+  } {
     const now = Date.now();
     const cutoff = now - PREVIEW_WINDOW_MS;
     const arr = (previewBuckets.get(ip) ?? []).filter((t) => t > cutoff);
@@ -325,7 +367,10 @@ export function createDemoRouter(): Router {
 
       const previewResponse: DemoPreviewResponse = {
         ...response,
-        previewRateLimit: { remaining: limit.remaining, windowMs: PREVIEW_WINDOW_MS },
+        previewRateLimit: {
+          remaining: limit.remaining,
+          windowMs: PREVIEW_WINDOW_MS,
+        },
       };
       res.json(previewResponse);
     } catch (error) {

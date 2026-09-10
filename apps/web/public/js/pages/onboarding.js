@@ -401,11 +401,9 @@ async function handleOnboardingClick(e) {
           if (typeof window.skyTwinSetUserId === 'function') {
             window.skyTwinSetUserId(info.userId);
           }
-          // Land on a populated route so the sample profile is visible
-          // immediately. setUserId() above calls navigate() against the
-          // current hash; redirecting after means the next navigate()
-          // (fired by hashchange) renders #/decisions.
-          window.location.hash = '#/decisions';
+          // Start with the isolated interactive loop. The rest of the
+          // fictional profile stays available through normal navigation.
+          window.location.hash = '#/sample';
         } else {
           showWizardError(
             'Sample profile is not loaded on this server. Run pnpm db:seed to enable it.',

@@ -511,6 +511,21 @@ export function fetchDemoRecipes() {
   return fetchJSON(`${API}/v1/demo/recipes`);
 }
 
+export function fetchSampleSimulation() {
+  return fetchJSON(`${API}/v1/demo/simulation`);
+}
+
+export function sendSampleSimulationCommand(command) {
+  return fetchJSON(`${API}/v1/demo/simulation/commands`, {
+    method: 'POST',
+    body: JSON.stringify(command),
+  });
+}
+
+export function endSampleSimulation() {
+  return fetchJSON(`${API}/v1/demo/simulation`, { method: 'DELETE' });
+}
+
 export function askTwin(userId, situation, opts = {}) {
   return fetchJSON(`${API}/v1/twin/ask/${encodeURIComponent(userId)}`, {
     method: 'POST',
