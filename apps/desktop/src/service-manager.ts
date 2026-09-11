@@ -6,6 +6,7 @@ import { pathToFileURL } from 'url';
 import { app } from 'electron';
 import { CockroachManager } from './cockroach-manager.js';
 import { computeBundleMarker } from './bundle-marker.js';
+import { DesktopKeyBroker } from './key-broker.js';
 import {
   extractionDone,
   extractionProgress,
@@ -89,6 +90,8 @@ export class ServiceManager {
   private onExtractProgress: ((progress: ExtractionProgress) => void) | null = null;
   private healthCheckTimer: ReturnType<typeof setInterval> | null = null;
   private paused = false;
+
+  constructor(private readonly keyBroker: DesktopKeyBroker | null = null) {}
 
   setStatusHandler(handler: (status: ServiceStatus) => void): void {
     this.onStatusChange = handler;
@@ -604,6 +607,9 @@ export class ServiceManager {
         env: this.getEnv(),
         stdio: 'pipe',
       });
+      // User grants are populated by the authenticated broker client in the
+      // source-migration slice. An empty set is deliberately fail closed.
+      this.keyBroker?.attachChild(this.api.process, 'api', new Set());
 
       this.api.process.stdout?.on('data', (data: Buffer) => {
         console.log(`[api] ${data.toString().trim()}`);
@@ -722,6 +728,7 @@ export class ServiceManager {
         env: this.getEnv(),
         stdio: 'pipe',
       });
+      this.keyBroker?.attachChild(this.worker.process, 'worker', new Set());
 
       this.worker.process.stdout?.on('data', (data: Buffer) => {
         console.log(`[worker] ${data.toString().trim()}`);

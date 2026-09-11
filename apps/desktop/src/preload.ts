@@ -76,6 +76,32 @@ contextBridge.exposeInMainWorld('skytwinDesktop', {
     ipcRenderer.invoke('vault-passphrase-forget', userId) as Promise<void>,
 
   /**
+   * Source-field key custody kernel. This controls only broker state; no
+   * production source field is migrated by the initial broker slice.
+   */
+  sourceVaultInitialize: (userId: string, sessionToken: string, passphrase: string) =>
+    ipcRenderer.invoke('source-vault-initialize', userId, sessionToken, passphrase) as Promise<
+      { success: true } | { success: false; error: 'already_initialized' | 'invalid_passphrase' | 'ciphertext_invalid' }
+    >,
+  sourceVaultUnlock: (userId: string, sessionToken: string, passphrase: string) =>
+    ipcRenderer.invoke('source-vault-unlock', userId, sessionToken, passphrase) as Promise<
+      | { success: true; generation: number }
+      | { success: false; error: 'vault_uninitialized' | 'ciphertext_invalid' }
+    >,
+  sourceVaultLock: (userId: string, sessionToken: string) =>
+    ipcRenderer.invoke('source-vault-lock', userId, sessionToken) as Promise<
+      { success: true; generation: number } | { success: false; error: 'vault_uninitialized' }
+    >,
+  sourceVaultState: (userId: string, sessionToken: string) =>
+    ipcRenderer.invoke('source-vault-state', userId, sessionToken) as Promise<'locked' | 'unlocked' | 'uninitialized'>,
+  sourceVaultRememberDevice: (userId: string, sessionToken: string) =>
+    ipcRenderer.invoke('source-vault-remember-device', userId, sessionToken),
+  sourceVaultUnlockDevice: (userId: string, sessionToken: string) =>
+    ipcRenderer.invoke('source-vault-unlock-device', userId, sessionToken),
+  sourceVaultForgetDevice: (userId: string, sessionToken: string) =>
+    ipcRenderer.invoke('source-vault-forget-device', userId, sessionToken),
+
+  /**
    * Subscribe to idle state changes from the OS-level powerMonitor.
    * Returns an unsubscribe function. The renderer can use this to fire
    * proactive scans when the user goes idle, or to pause expensive work
