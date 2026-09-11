@@ -156,6 +156,49 @@ describe('buildGmailArchiveProposal', () => {
     });
   });
 
+  it('rejects a symbol-keyed input without throwing', () => {
+    process.env['SKYTWIN_GMAIL_ARCHIVE_ENABLED'] = 'true';
+    const input = {
+      decision: decision(),
+      [Symbol('authority')]: messageRefId,
+    };
+
+    expect(buildGmailArchiveProposal(input)).toEqual({
+      ok: false,
+      error: 'invalid_input',
+    });
+  });
+
+  it('returns a typed failure when input reflection throws', () => {
+    process.env['SKYTWIN_GMAIL_ARCHIVE_ENABLED'] = 'true';
+    const input = new Proxy({ decision: decision() }, {
+      ownKeys() {
+        throw new Error('untrusted ownKeys trap');
+      },
+    });
+
+    expect(buildGmailArchiveProposal(input)).toEqual({
+      ok: false,
+      error: 'invalid_input',
+    });
+  });
+
+  it('rejects an accessor without invoking it', () => {
+    process.env['SKYTWIN_GMAIL_ARCHIVE_ENABLED'] = 'true';
+    const decisionGetter = () => {
+      throw new Error('accessor must not run');
+    };
+    const input = Object.defineProperty({}, 'decision', {
+      enumerable: true,
+      get: decisionGetter,
+    });
+
+    expect(buildGmailArchiveProposal(input as { decision: DecisionObject })).toEqual({
+      ok: false,
+      error: 'invalid_decision',
+    });
+  });
+
   it.each([
     ['messageId', 'native-message'],
     ['emailId', 'legacy-message'],
