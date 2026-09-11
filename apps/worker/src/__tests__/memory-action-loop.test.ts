@@ -345,16 +345,20 @@ describe('runMemoryActionLoopJob', () => {
       }),
     };
     const router = makeRouter({ riskTier: RiskTier.HIGH });
+    const loadPolicies = vi.fn().mockResolvedValue([]);
 
     const summary = await runMemoryActionLoopJob({
       userIds: ['user-1'],
       fetchBundle: async () => ({ suggestions: [], pagesById: new Map() }),
       policyEvaluator,
-      loadPolicies: async () => [],
+      loadPolicies,
       getExecutionRouter: async () => router,
     });
 
     expect(summary.autoExecuted).toBe(1);
+    expect(loadPolicies).toHaveBeenCalledTimes(2);
+    expect(loadPolicies).toHaveBeenNthCalledWith(1, 'user-1');
+    expect(loadPolicies).toHaveBeenNthCalledWith(2, 'user-1');
     expect(policyEvaluator.evaluate.mock.calls[0]![0]).toEqual(
       expect.objectContaining({
         actionType: 'create_task',

@@ -32,6 +32,7 @@ const {
   fakeExecutionRouter,
   fakeBarrierRepo,
   fakeExplanationRepo,
+  fakePolicyGetAll,
 } = vi.hoisted(() => ({
   fakeApprovalRepo: {
     findById: vi.fn(),
@@ -70,6 +71,7 @@ const {
     reserve: vi.fn(), markPrepared: vi.fn(), claimPrepared: vi.fn(), markTerminal: vi.fn(),
   },
   fakeExplanationRepo: { save: vi.fn() },
+  fakePolicyGetAll: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock('@skytwin/db', () => ({
@@ -131,7 +133,7 @@ vi.mock('@skytwin/db', () => ({
     };
   }),
   policyRepositoryAdapter: {
-    getAllPolicies: vi.fn().mockResolvedValue([]),
+    getAllPolicies: fakePolicyGetAll,
     getEnabledPolicies: vi.fn().mockResolvedValue([]),
     getPolicy: vi.fn().mockResolvedValue(null),
     getPoliciesByDomain: vi.fn().mockResolvedValue([]),
@@ -298,6 +300,7 @@ describe('feedback loop — approval records an episode for memory boost', () =>
     expect(call.domain).toBe('email');
     expect(call.situationType).toBe('email_triage');
     expect(call.situationSummary).toBe('archive newsletter from sender X');
+    expect(fakePolicyGetAll).toHaveBeenCalledWith(USER_ID);
   });
 
   it('reject → mempalaceRepository.createEpisode is called with utility 0.0', async () => {

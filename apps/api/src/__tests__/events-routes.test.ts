@@ -26,6 +26,7 @@ const {
   mockReceiptCaptureComplete,
   mockEmitReceipt,
   mockLlmClient,
+  mockGetEnabledPolicies,
 } = vi.hoisted(() => ({
   mockInterpret: vi.fn(),
   mockEvaluate: vi.fn(),
@@ -64,6 +65,7 @@ const {
   mockReceiptCaptureComplete: vi.fn(),
   mockEmitReceipt: vi.fn(),
   mockLlmClient: vi.fn(),
+  mockGetEnabledPolicies: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock('@skytwin/decision-engine', () => ({
@@ -166,7 +168,7 @@ vi.mock('@skytwin/db', () => ({
     })),
   },
   explanationRepositoryAdapter: { getByDecisionId: mockGetExplanation },
-  policyRepositoryAdapter: { getEnabledPolicies: vi.fn().mockResolvedValue([]) },
+  policyRepositoryAdapter: { getEnabledPolicies: mockGetEnabledPolicies },
   preEffectBarrierRepository: mockPreEffectBarrier,
 }));
 
@@ -1057,6 +1059,9 @@ describe('Events API routes', () => {
     });
 
     expect(res.status).toBe(200);
+    expect(mockGetEnabledPolicies).toHaveBeenCalledWith(
+      'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+    );
     expect(executionRouter.executePrepared).not.toHaveBeenCalled();
     expect(mockPreEffectBarrier.markPrepared).toHaveBeenCalledOnce();
     expect(mockPreEffectBarrier.markPrepared).toHaveBeenCalledWith(expect.objectContaining({
