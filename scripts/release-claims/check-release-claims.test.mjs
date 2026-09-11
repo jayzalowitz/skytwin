@@ -2004,6 +2004,7 @@ describe("release claim ledger validation", () => {
         "sample.packaged-account-free",
         {
           platform: "macos",
+          runnerPlatform: "darwin-x64",
           executedBinary: {
             name: "SkyTwin",
             sizeBytes: 1024,
@@ -2018,6 +2019,30 @@ describe("release claim ledger validation", () => {
         [],
       ),
     ).toEqual([]);
+    for (const mutation of [
+      { runnerPlatform: "linux-x64" },
+      { executedBinary: { derivationPath: "decoy/SkyTwin" } },
+    ]) {
+      const report = {
+        platform: "macos",
+        runnerPlatform: "darwin-x64",
+        ...mutation,
+        executedBinary: {
+          name: "SkyTwin",
+          sizeBytes: 1024,
+          sha256: "e".repeat(64),
+          device: 1,
+          inode: 2,
+          identityResult: "pass",
+          derivationMethod: "zip-ditto",
+          derivationPath: "SkyTwin.app/Contents/MacOS/SkyTwin",
+          ...(mutation.executedBinary ?? {}),
+        },
+      };
+      expect(
+        verifyMachineEvidenceApplicability("sample.packaged-account-free", report, []),
+      ).toHaveLength(1);
+    }
   });
 
   it("requires native reports for sample mode and signing", () => {

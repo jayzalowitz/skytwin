@@ -988,8 +988,13 @@
         },
         {
           "path": "apps/api/src/routes/demo.ts",
-          "sha256": "1a88bd8d454109d61b12a6f657f1d19644329a4737194d39497124f8d80a90ea",
+          "sha256": "90813a6c1ec5d90716b2b7e83d311ec66d110ffef5a853efd1fbe4d026584a75",
           "why": "Exposes packaged sample availability without enabling the development authentication bypass"
+        },
+        {
+          "path": "scripts/release-claims/verifiers/sample.packaged-account-free.mjs",
+          "sha256": "abbd5599048a96f0bd604600d96e3f392fcb60c7f90e7053619528938a7aeabc",
+          "why": "Canonical native verifier binds the downloaded container, derived executable, isolated runtime probe, and structured report to the current tagged run"
         }
       ],
       "verification": [

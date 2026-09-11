@@ -19,9 +19,10 @@
 > are deliberately not committed to this ledger: doing so would change the SHA
 > they attest and create an impossible hash cycle. The release job now generates
 > the external manifest from current-run GitHub API metadata. Upstream packaging
-> jobs do not yet implement the required machine verifiers or CI result producer,
-> so the final gate still fails closed and the ledger remains blocked until that
-> proof pipeline ships.
+> jobs now include the canonical three-platform packaged-sample verifier, but
+> the other seven machine-verifier implementations and the CI result producer
+> are still absent. The final gate therefore fails closed and the ledger remains
+> blocked until the complete proof pipeline ships.
 
 The intended post-build contract is explicit: the tagged `build.yml` run
 must produce `release-claims-ci` and `release-evidence` artifacts. The former
@@ -139,9 +140,11 @@ allowlist, and generate the sidecars above before the ledger can move to ready.
 Until that lands, the absence is a deliberate stop-ship rather than evidence
 that can be waived.
 
-The native machine-evidence matrix and exclusive aggregator are scaffolded, but
-their verifier implementations and the separate `release-claims-ci` artifact
-producer are absent today. Future machine reports must come from the exact
+The native machine-evidence matrix and exclusive aggregator are scaffolded.
+The packaged-sample verifier now implements three of the twelve matrix reports;
+see [`sample-release-evidence.md`](./sample-release-evidence.md). The other
+seven verifier sources (nine matrix reports) and the separate
+`release-claims-ci` artifact producer are absent today. Machine reports must come from the exact
 successful claim/platform job and canonical verifier step, carry the reviewed
 verifier path, command, and source digest, and provide structured observations;
 the release job independently checks those bindings against the current GitHub
@@ -224,7 +227,10 @@ The desktop app unpacks `<resources>/embedded/apps.tar.gz` into `<userData>/embe
 
 Before the gated workflow can publish, its evidence producers must exercise the
 candidate artifacts on clean machines and record digest-bound evidence for every
-item below. A populated dashboard alone is not sufficient:
+item below. The packaged-sample verifier covers the HTTP portions of items 1 and
+2 as documented in [`sample-release-evidence.md`](./sample-release-evidence.md);
+items 3–5 still require separate lifecycle evidence. A populated dashboard
+alone is not sufficient:
 
 1. The app reaches the fictional sample dashboard within 60 seconds with `SKYTWIN_DEV_AUTH_BYPASS` unset. `GET /api/v1/demo/info` reports availability before `POST /api/v1/demo/session` returns a credential fixed to the reserved sample user and a four-hour expiry.
 2. That credential can read a sample decision and its explanation, but receives an authorization denial for mutations, settings, credential/configuration changes, search, connector invocation, MCP/tool execution, paid or inference-bearing endpoints, SSE, and a request for any other user. Connector status and capability provenance/metrics reads may remain available. Minting a second session returns a distinct credential; the automated demo-session tests must also prove expired and tampered credentials are rejected.

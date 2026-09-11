@@ -3724,6 +3724,16 @@ export function verifyMachineEvidenceApplicability(
       ["windows", "nsis-7zip"],
       ["linux", "appimage-extract"],
     ]);
+    const expectedDerivationPaths = new Map([
+      ["macos", "SkyTwin.app/Contents/MacOS/SkyTwin"],
+      ["windows", "app-64.7z!/SkyTwin.exe"],
+      ["linux", "squashfs-root/skytwin"],
+    ]);
+    const expectedRunnerPlatforms = new Map([
+      ["macos", "darwin-x64"],
+      ["windows", "win32-x64"],
+      ["linux", "linux-x64"],
+    ]);
     if (
       !isNonEmptyString(binary?.name) ||
       !Number.isSafeInteger(binary?.sizeBytes) ||
@@ -3733,7 +3743,8 @@ export function verifyMachineEvidenceApplicability(
       !Number.isSafeInteger(binary?.inode) ||
       binary?.identityResult !== "pass" ||
       expectedDerivations.get(report?.platform) !== binary?.derivationMethod ||
-      !isNonEmptyString(binary?.derivationPath)
+      expectedDerivationPaths.get(report?.platform) !== binary?.derivationPath ||
+      expectedRunnerPlatforms.get(report?.platform) !== report?.runnerPlatform
     )
       errors.push(
         "sample.packaged-account-free machine evidence must identify the unpacked executable exercised by the verifier and prove stable pre/post file identity",

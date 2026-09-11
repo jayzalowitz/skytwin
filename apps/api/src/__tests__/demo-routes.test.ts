@@ -133,10 +133,12 @@ describe('demo routes', () => {
     mockWhatWouldIDo.mockReset();
     _resetDemoCacheForTests();
     delete process.env['DEMO_PREVIEW_DISABLED'];
+    delete process.env['SKYTWIN_RELEASE_EVIDENCE_NONCE'];
   });
 
   afterEach(() => {
     delete process.env['DEMO_PREVIEW_DISABLED'];
+    delete process.env['SKYTWIN_RELEASE_EVIDENCE_NONCE'];
   });
 
   // ── /info ──────────────────────────────────────────────────────────
@@ -154,6 +156,18 @@ describe('demo routes', () => {
       const res = await request(buildApp(), 'GET', '/api/v1/demo/info');
       expect(res.body).not.toHaveProperty('email');
       expect(res.body).not.toHaveProperty('name');
+    });
+
+    it('echoes an opt-in release evidence nonce for process attribution', async () => {
+      process.env['SKYTWIN_RELEASE_EVIDENCE_NONCE'] = 'release-run-nonce';
+      mockUserRepository.findDemoById.mockResolvedValueOnce(SEEDED_USER);
+      const res = await request(buildApp(), 'GET', '/api/v1/demo/info');
+      expect(res.body).toEqual({
+        available: true,
+        userId: DEMO_USER_ID,
+        instanceNonce: 'release-run-nonce',
+      });
+      expect(res.headers['cache-control']).toBe('no-store');
     });
 
     it('returns { available: false } when seed is missing', async () => {
