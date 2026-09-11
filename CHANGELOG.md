@@ -1,5 +1,11 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [Unreleased] — Proposal-only Inbox boundary
+
+### Fixed
+
+- Gmail Inbox proposals using the reserved mutation schema now fail closed in the generic approval responder. Until the dedicated consent-to-admission lifecycle is enabled, those rows cannot be resolved, produce feedback, read credentials, enter the execution router, or contact a provider.
+
 ## [Unreleased] — Owner-scoped policy loading
 
 ### Fixed
