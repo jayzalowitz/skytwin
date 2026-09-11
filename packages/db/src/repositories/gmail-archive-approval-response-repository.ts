@@ -3,7 +3,9 @@ import {
   GMAIL_INBOX_MUTATION_CANDIDATE_SCHEMA,
   RiskDimension,
   RiskTier,
+  buildDecisionReceiptEventKey,
   joinedDecisionReceiptArtifactDigest,
+  joinedDecisionReceiptContentDigest,
   validateJoinedDecisionReceiptContent,
   verifyJoinedDecisionReceiptChain,
   type JoinedDecisionReceiptContentV1,
@@ -17,6 +19,7 @@ import type {
   DecisionReceiptRow,
   DecisionRow,
   ExplanationRecordRow,
+  SignalRow,
 } from '../types.js';
 import {
   decisionReceiptApprovalRefV1,
@@ -24,10 +27,13 @@ import {
   decisionReceiptRowArtifactRefV1,
 } from './decision-receipt-artifacts.js';
 import { decisionReceiptLifecycleRepository } from './decision-receipt-lifecycle.js';
+import {
+  buildGmailArchiveProposalReceiptContents,
+  GMAIL_ARCHIVE_PROPOSAL_REASON,
+} from './gmail-archive-proposal-repository.js';
 import type { PreEffectBarrierRow } from './pre-effect-barrier-repository.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const PROPOSAL_REASON = 'Review is required. This build records the proposal without enabling execution.';
 
 export interface RespondGmailArchiveApprovalInput {
   approvalId: string;
@@ -57,6 +63,8 @@ interface CanonicalState {
   approval: ApprovalRequestRow;
   decision: DecisionRow;
   candidate: CandidateActionRow;
+  explanation: ExplanationRecordRow;
+  signal: SignalRow;
   proposalBarrier: PreEffectBarrierRow;
   receipt: DecisionReceiptRow;
   revisions: DecisionReceiptRevisionRow[];
@@ -186,12 +194,40 @@ function latestCanonicalContent(
   state: CanonicalState,
   disposition: 'requires_approval' | 'approved' | 'rejected',
 ): JoinedDecisionReceiptContentV1 | null {
+  const expectedLength = disposition === 'requires_approval' ? 3 : 4;
+  if (state.revisions.length !== expectedLength) return null;
   if (!verifyJoinedDecisionReceiptChain({
     receiptId: state.receipt.id,
     decisionId: state.decision.id,
     userId: state.approval.user_id,
     revisions: state.revisions,
   })) return null;
+  const pendingApproval: ApprovalRequestRow = {
+    ...state.approval,
+    status: 'pending',
+    responded_at: null,
+  };
+  const expectedPrefix = buildGmailArchiveProposalReceiptContents({
+    decision: state.decision,
+    candidate: state.candidate,
+    explanation: state.explanation,
+    barrier: state.proposalBarrier,
+    approval: pendingApproval,
+    signal: state.signal,
+  });
+  const expectedEventKeys = [
+    buildDecisionReceiptEventKey('decision_created', state.decision.id),
+    buildDecisionReceiptEventKey('policy_evaluated', state.proposalBarrier.id),
+    buildDecisionReceiptEventKey('approval_created', state.approval.id),
+  ];
+  if (state.revisions.slice(0, 3).some((revision, index) =>
+    revision.event_key !== expectedEventKeys[index] ||
+    revision.content_digest !== joinedDecisionReceiptContentDigest(expectedPrefix[index]!) ||
+    revision.trusted !== true
+  )) return null;
+  if (disposition !== 'requires_approval' &&
+      state.revisions[3]?.event_key !==
+        buildDecisionReceiptEventKey('approval_responded', state.approval.id)) return null;
   const content = state.revisions.at(-1)?.content;
   if (!content) return null;
   try {
@@ -233,7 +269,7 @@ async function loadCanonicalState(
   )).rows[0];
   const approval: ApprovalRequestRow | undefined = lockedApproval;
   if (!approval || approval.confirmation_level !== 'single' ||
-      approval.reason !== PROPOSAL_REASON || approval.batch_id !== null ||
+      approval.reason !== GMAIL_ARCHIVE_PROPOSAL_REASON || approval.batch_id !== null ||
       approval.first_confirmed_at !== null || approval.confirmation_token !== null) return null;
   if (approval.status === 'pending' &&
       (approval.responded_at !== null || approval.response !== null)) return null;
@@ -257,8 +293,8 @@ async function loadCanonicalState(
       !exactKeys(rawEvent, ['source', 'type', 'signalId', 'messageRefId', 'authoringTier']) ||
       rawEvent['source'] !== 'gmail' || rawEvent['signalId'] !== decision.signal_id ||
       rawEvent['messageRefId'] !== messageRefId) return null;
-  const evidence = await client.query<{ count: string }>(
-    `SELECT count(*)::STRING AS count
+  const evidence = await client.query<SignalRow>(
+    `SELECT signal.*
        FROM signals AS signal
        JOIN gmail_message_refs AS ref
          ON ref.id = signal.resource_ref_id
@@ -268,10 +304,12 @@ async function loadCanonicalState(
         AND ref.source_signal_id = signal.source_signal_id
       WHERE signal.id::STRING = $2 AND signal.user_id = $1
         AND signal.source = 'gmail' AND ref.provider = 'google'
-        AND ref.authoring_tier = $4 AND signal.type = $5`,
+        AND ref.authoring_tier = $4 AND signal.type = $5
+      LIMIT 2`,
     [input.userId, decision.signal_id, messageRefId, rawEvent['authoringTier'], rawEvent['type']],
   );
-  if (evidence.rows[0]?.count !== '1') return null;
+  if (evidence.rows.length !== 1) return null;
+  const signal = evidence.rows[0]!;
   const outcome = await client.query<{ count: string }>(
     `SELECT count(*)::STRING AS count FROM decision_outcomes
       WHERE decision_id = $1 AND selected_action_id = $2
@@ -292,11 +330,12 @@ async function loadCanonicalState(
       proposalBarrier.effect_result['proposalOnly'] !== true ||
       proposalBarrier.effect_result['dispatched'] !== false ||
       proposalBarrier.explanation_id === null) return null;
-  const explanation = (await client.query<Pick<ExplanationRecordRow, 'action_rationale'>>(
-    'SELECT action_rationale FROM explanation_records WHERE id = $1 AND decision_id = $2',
+  const explanation = (await client.query<ExplanationRecordRow>(
+    'SELECT * FROM explanation_records WHERE id = $1 AND decision_id = $2',
     [proposalBarrier.explanation_id, decision.id],
   )).rows[0];
-  if (explanation?.action_rationale !== approval.candidate_action['reasoning']) return null;
+  if (!explanation ||
+      explanation.action_rationale !== approval.candidate_action['reasoning']) return null;
   const receipt = (await client.query<DecisionReceiptRow>(
     'SELECT * FROM decision_receipts WHERE user_id = $1 AND decision_id = $2',
     [input.userId, decision.id],
@@ -310,6 +349,8 @@ async function loadCanonicalState(
     approval,
     decision,
     candidate,
+    explanation,
+    signal,
     proposalBarrier,
     receipt,
     revisions,

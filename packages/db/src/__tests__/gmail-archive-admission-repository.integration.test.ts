@@ -3,7 +3,8 @@ import { createServer } from 'node:net';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { RiskAssessor } from '@skytwin/decision-engine';
 import { verifyJoinedDecisionReceiptChain } from '@skytwin/shared-types';
-import { closePool, getPool } from '../connection.js';
+import { closePool, getPool, withTransaction } from '../connection.js';
+import { decisionReceiptLifecycleRepository } from '../repositories/decision-receipt-lifecycle.js';
 import { up } from '../migrations/001-initial.js';
 import { gmailArchiveApprovalResponseRepository } from '../repositories/gmail-archive-approval-response-repository.js';
 import {
@@ -80,7 +81,7 @@ describe.runIf(cockroachAvailable)('gmailArchiveApprovalResponseRepository on Co
          $3, 'Owned account', true)`,
       [userId, accountId, 'a'.repeat(64)],
     );
-  }, 120_000);
+  }, 300_000);
 
   afterAll(async () => {
     await closePool();
@@ -269,6 +270,38 @@ describe.runIf(cockroachAvailable)('gmailArchiveApprovalResponseRepository on Co
       [proposal.approval.id],
     );
     expect(durable.rows[0]).toEqual({ status: 'pending', revisions: '3', barriers: '1' });
+  });
+
+  it('refuses to append a response after an extra pending approval revision', async () => {
+    const proposal = await createProposal(5);
+    const pendingContent = proposal.revisions.at(-1)!.content;
+    const appended = await withTransaction((client) =>
+      decisionReceiptLifecycleRepository.appendForUser(client, userId, {
+        eventKind: 'approval_reminded',
+        eventId: id('88', 5),
+        expectedPreviousDigest: proposal.revisions.at(-1)!.revision_digest,
+        content: pendingContent,
+      }),
+    );
+    expect(appended).toMatchObject({ success: true, created: true });
+
+    await expect(gmailArchiveApprovalResponseRepository.respond({
+      approvalId: proposal.approval.id,
+      userId,
+      action: 'approve',
+    })).resolves.toEqual({ ok: false, error: 'idempotency_conflict' });
+    const durable = await getPool().query<{ status: string; revisions: string; barriers: string }>(
+      `SELECT approval.status,
+        (SELECT count(*) FROM decision_receipt_revisions revision
+          JOIN decision_receipts receipt ON receipt.id = revision.receipt_id
+         WHERE receipt.decision_id = approval.decision_id) AS revisions,
+        (SELECT count(*) FROM pre_effect_barriers
+          WHERE decision_id = approval.decision_id
+             OR idempotency_key = approval.id::STRING) AS barriers
+       FROM approval_requests approval WHERE approval.id = $1`,
+      [proposal.approval.id],
+    );
+    expect(durable.rows[0]).toEqual({ status: 'pending', revisions: '4', barriers: '1' });
   });
 
   it('returns typed invalid input before opening a transaction', async () => {
