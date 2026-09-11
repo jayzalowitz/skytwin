@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { DbTokenStore } from '../oauth/db-token-store.js';
+import { encrypt } from '@skytwin/credential-vault';
 
 // Mock the google-oauth refresh function
 vi.mock('../oauth/google-oauth.js', () => ({
@@ -16,6 +17,10 @@ function createMockRepo() {
     saveToken: vi.fn(),
     deleteToken: vi.fn(),
     updateAccessToken: vi.fn(),
+    getTokenByConnectorAccount: vi.fn(),
+    updateAccessTokenByConnectorAccount: vi.fn(),
+    updateEncrypted: vi.fn(),
+    updateEncryptedAccessToken: vi.fn(),
   };
 }
 
@@ -156,5 +161,151 @@ describe('DbTokenStore', () => {
     const result = await store.refreshIfExpired('user1', 'google');
     expect(result.accessToken).toBe('refreshed');
     expect(mockRefresh).toHaveBeenCalled();
+  });
+
+  it('reads only the fixed connector account instead of the latest user token', async () => {
+    const bound = new DbTokenStore(repo, oauthConfig, undefined, 'account-2');
+    repo.getTokenByConnectorAccount.mockResolvedValue({
+      access_token: 'account-2-token',
+      refresh_token: 'account-2-refresh',
+      expires_at: new Date(Date.now() + 10 * 60 * 1000),
+      scopes: ['gmail.readonly'],
+    });
+
+    const result = await bound.getToken('user1', 'google');
+
+    expect(result?.accessToken).toBe('account-2-token');
+    expect(repo.getTokenByConnectorAccount).toHaveBeenCalledWith('user1', 'google', 'account-2');
+    expect(repo.getToken).not.toHaveBeenCalled();
+  });
+
+  it('fails refresh when disconnect wins the active-account update race', async () => {
+    const bound = new DbTokenStore(repo, oauthConfig, undefined, 'account-2');
+    repo.getTokenByConnectorAccount.mockResolvedValue({
+      id: 'token-2',
+      credential_revision: '11111111-1111-4111-8111-111111111111',
+      access_token: 'expired',
+      refresh_token: 'refresh',
+      expires_at: new Date(Date.now() - 1_000),
+      scopes: ['gmail.readonly'],
+    });
+    mockRefresh.mockResolvedValue({
+      accessToken: 'new-token',
+      refreshToken: 'refresh',
+      expiresAt: new Date(Date.now() + 3_600_000),
+      scopes: ['gmail.readonly'],
+      provider: 'google',
+    });
+    repo.updateAccessTokenByConnectorAccount.mockResolvedValue(null);
+
+    await expect(bound.refreshIfExpired('user1', 'google')).rejects.toThrow(
+      /disconnected during token refresh/,
+    );
+    expect(repo.getTokenByConnectorAccount).toHaveBeenCalledTimes(1);
+    expect(repo.updateAccessTokenByConnectorAccount).toHaveBeenCalledWith(
+      'user1', 'google', 'account-2', 'new-token', expect.any(Date),
+      '11111111-1111-4111-8111-111111111111',
+    );
+  });
+
+  it('persists one encrypted write when refreshing an unlocked plaintext credential', async () => {
+    const revision = '22222222-2222-4222-8222-222222222222';
+    const newExpiry = new Date(Date.now() + 3_600_000);
+    const bound = new DbTokenStore(repo, oauthConfig, undefined, 'account-2');
+    bound.setKeyCache({
+      get: () => Buffer.alloc(32, 7),
+      has: () => true,
+      set: () => {},
+    });
+    repo.getTokenByConnectorAccount.mockResolvedValue({
+      id: 'token-2',
+      credential_revision: revision,
+      access_token: 'expired',
+      refresh_token: 'refresh',
+      expires_at: new Date(Date.now() - 1_000),
+      scopes: ['gmail.readonly'],
+    });
+    repo.updateEncrypted.mockResolvedValue(true);
+    mockRefresh.mockResolvedValue({
+      accessToken: 'new-token',
+      refreshToken: 'refresh',
+      expiresAt: newExpiry,
+      scopes: ['gmail.readonly'],
+      provider: 'google',
+    });
+
+    await expect(bound.refreshIfExpired('user1', 'google')).resolves.toMatchObject({
+      accessToken: 'new-token',
+    });
+    expect(repo.updateEncrypted).toHaveBeenCalledOnce();
+    expect(repo.updateEncrypted).toHaveBeenCalledWith('token-2', expect.objectContaining({
+      expiresAt: newExpiry,
+      keyVersion: 1,
+    }), revision);
+    expect(repo.updateAccessTokenByConnectorAccount).not.toHaveBeenCalled();
+    expect(repo.getTokenByConnectorAccount).toHaveBeenCalledTimes(1);
+  });
+
+  it('holds one vault key snapshot across an encrypted refresh', async () => {
+    const revision = '33333333-3333-4333-8333-333333333333';
+    const key = Buffer.alloc(32, 9);
+    const pack = (value: string) => {
+      const encrypted = encrypt(value, key);
+      return Buffer.concat([encrypted.iv, encrypted.tag, encrypted.ciphertext]);
+    };
+    const keyGet = vi.fn()
+      .mockReturnValueOnce(key)
+      .mockReturnValueOnce(null);
+    const bound = new DbTokenStore(repo, oauthConfig, undefined, 'account-2');
+    bound.setKeyCache({ get: keyGet, has: () => true, set: () => {} });
+    repo.getTokenByConnectorAccount.mockResolvedValue({
+      id: 'token-2',
+      credential_revision: revision,
+      access_token: null,
+      refresh_token: null,
+      encrypted_access_token: pack('expired'),
+      encrypted_refresh_token: pack('refresh'),
+      expires_at: new Date(Date.now() - 1_000),
+      scopes: ['gmail.readonly'],
+    });
+    repo.updateEncryptedAccessToken.mockResolvedValue(true);
+    mockRefresh.mockResolvedValue({
+      accessToken: 'new-token',
+      refreshToken: 'refresh',
+      expiresAt: new Date(Date.now() + 3_600_000),
+      scopes: ['gmail.readonly'],
+      provider: 'google',
+    });
+
+    await expect(bound.refreshIfExpired('user1', 'google')).resolves.toMatchObject({
+      accessToken: 'new-token',
+    });
+
+    expect(keyGet).toHaveBeenCalledOnce();
+    expect(repo.updateEncryptedAccessToken).toHaveBeenCalledWith(
+      'token-2', expect.any(Buffer), expect.any(Date), revision,
+    );
+    expect(repo.updateAccessTokenByConnectorAccount).not.toHaveBeenCalled();
+  });
+
+  it('fails before provider refresh when an encrypted credential is locked', async () => {
+    const bound = new DbTokenStore(repo, oauthConfig, undefined, 'account-2');
+    bound.setKeyCache({ get: () => null, has: () => false, set: () => {} });
+    repo.getTokenByConnectorAccount.mockResolvedValue({
+      id: 'token-2',
+      credential_revision: '44444444-4444-4444-8444-444444444444',
+      access_token: null,
+      refresh_token: null,
+      encrypted_access_token: Buffer.alloc(32),
+      encrypted_refresh_token: Buffer.alloc(32),
+      expires_at: new Date(Date.now() - 1_000),
+      scopes: ['gmail.readonly'],
+    });
+
+    await expect(bound.refreshIfExpired('user1', 'google')).rejects.toThrow(
+      /unlock the credential vault/,
+    );
+    expect(mockRefresh).not.toHaveBeenCalled();
+    expect(repo.updateAccessTokenByConnectorAccount).not.toHaveBeenCalled();
   });
 });

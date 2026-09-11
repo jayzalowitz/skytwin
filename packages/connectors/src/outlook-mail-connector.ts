@@ -71,6 +71,7 @@ interface GraphDeltaPage {
  */
 export class OutlookMailConnector implements SignalConnector {
   readonly name = 'outlook_mail';
+  readonly connectorAccountId?: string;
 
   private handlers: SignalHandler[] = [];
   private connected = false;
@@ -80,10 +81,16 @@ export class OutlookMailConnector implements SignalConnector {
   /** In-memory mirror of the persisted delta/continuation link for this session. */
   private deltaLink: string | null = null;
 
-  constructor(userId: string, tokenStore: OAuthTokenStore, cursorStore: CursorStore | null = null) {
+  constructor(
+    userId: string,
+    tokenStore: OAuthTokenStore,
+    cursorStore: CursorStore | null = null,
+    connectorAccountId?: string,
+  ) {
     this.userId = userId;
     this.tokenStore = tokenStore;
     this.cursorStore = cursorStore;
+    this.connectorAccountId = connectorAccountId;
   }
 
   async connect(): Promise<void> {
@@ -92,7 +99,19 @@ export class OutlookMailConnector implements SignalConnector {
       throw new Error('No Microsoft OAuth token available. User must authorize first.');
     }
     if (this.cursorStore) {
-      this.deltaLink = await this.cursorStore.get(this.userId, 'outlook', DELTA_LINK_KIND);
+      if (this.connectorAccountId) {
+        if (!this.cursorStore.getForAccount || !this.cursorStore.saveForAccount) {
+          throw new Error('Account-bound Outlook Mail requires an account-bound cursor store.');
+        }
+        this.deltaLink = await this.cursorStore.getForAccount(
+          this.userId,
+          this.connectorAccountId,
+          'outlook',
+          DELTA_LINK_KIND,
+        );
+      } else {
+        this.deltaLink = await this.cursorStore.get(this.userId, 'outlook', DELTA_LINK_KIND);
+      }
     }
     this.connected = true;
   }
@@ -192,7 +211,20 @@ export class OutlookMailConnector implements SignalConnector {
     this.deltaLink = link;
     if (this.cursorStore) {
       try {
-        await this.cursorStore.save(this.userId, 'outlook', DELTA_LINK_KIND, link);
+        if (this.connectorAccountId) {
+          if (!this.cursorStore.saveForAccount) {
+            throw new Error('Account-bound Outlook Mail requires an account-bound cursor store.');
+          }
+          await this.cursorStore.saveForAccount(
+            this.userId,
+            this.connectorAccountId,
+            'outlook',
+            DELTA_LINK_KIND,
+            link,
+          );
+        } else {
+          await this.cursorStore.save(this.userId, 'outlook', DELTA_LINK_KIND, link);
+        }
       } catch (err) {
         console.warn(
           `[outlook] Failed to persist delta cursor for ${this.userId}:`,

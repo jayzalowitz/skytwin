@@ -32,6 +32,7 @@ interface CalendarEvent {
  */
 export class GoogleCalendarConnector implements SignalConnector {
   readonly name = 'google-calendar';
+  readonly connectorAccountId?: string;
 
   private handlers: SignalHandler[] = [];
   private connected = false;
@@ -46,6 +47,7 @@ export class GoogleCalendarConnector implements SignalConnector {
     tokenStore: OAuthTokenStore,
     cursorStoreOrCalendarId: CursorStore | string | null = null,
     calendarId = 'primary',
+    connectorAccountId?: string,
   ) {
     this.userId = userId;
     this.tokenStore = tokenStore;
@@ -59,6 +61,7 @@ export class GoogleCalendarConnector implements SignalConnector {
       this.cursorStore = cursorStoreOrCalendarId;
       this.calendarId = calendarId;
     }
+    this.connectorAccountId = connectorAccountId;
   }
 
   async connect(): Promise<void> {
@@ -67,7 +70,19 @@ export class GoogleCalendarConnector implements SignalConnector {
       throw new Error('No Google OAuth token available. User must authorize first.');
     }
     if (this.cursorStore) {
-      this.syncToken = await this.cursorStore.get(this.userId, 'google_calendar', SYNC_TOKEN_KIND);
+      if (this.connectorAccountId) {
+        if (!this.cursorStore.getForAccount || !this.cursorStore.saveForAccount) {
+          throw new Error('Account-bound Google Calendar requires an account-bound cursor store.');
+        }
+        this.syncToken = await this.cursorStore.getForAccount(
+          this.userId,
+          this.connectorAccountId,
+          'google_calendar',
+          SYNC_TOKEN_KIND,
+        );
+      } else {
+        this.syncToken = await this.cursorStore.get(this.userId, 'google_calendar', SYNC_TOKEN_KIND);
+      }
     }
     this.connected = true;
   }
@@ -82,7 +97,20 @@ export class GoogleCalendarConnector implements SignalConnector {
     this.syncToken = token;
     if (this.cursorStore) {
       try {
-        await this.cursorStore.save(this.userId, 'google_calendar', SYNC_TOKEN_KIND, token);
+        if (this.connectorAccountId) {
+          if (!this.cursorStore.saveForAccount) {
+            throw new Error('Account-bound Google Calendar requires an account-bound cursor store.');
+          }
+          await this.cursorStore.saveForAccount(
+            this.userId,
+            this.connectorAccountId,
+            'google_calendar',
+            SYNC_TOKEN_KIND,
+            token,
+          );
+        } else {
+          await this.cursorStore.save(this.userId, 'google_calendar', SYNC_TOKEN_KIND, token);
+        }
       } catch (err) {
         console.warn(
           `[google-calendar] Failed to persist sync token for ${this.userId}:`,

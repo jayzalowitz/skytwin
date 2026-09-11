@@ -234,6 +234,33 @@ describe('GoogleCalendarConnector syncToken persistence', () => {
     vi.unstubAllGlobals();
   });
 
+  it('loads and saves sync tokens through the bound connector account', async () => {
+    vi.stubGlobal('fetch', (async () => jsonResponse({ items: [], nextSyncToken: 'next-bound' })) as typeof fetch);
+    const get = vi.fn(async () => null);
+    const save = vi.fn(async () => undefined);
+    const getForAccount = vi.fn(async () => 'prior-bound');
+    const saveForAccount = vi.fn(async () => undefined);
+    const cursor: CursorStore = { get, save, getForAccount, saveForAccount };
+    const tokenStore = makeStubStore({
+      accessToken: 'a', refreshToken: 'r', expiresAt: new Date(Date.now() + 60_000),
+    });
+    const conn = new GoogleCalendarConnector(
+      'user-1', tokenStore, cursor, 'primary', 'account-1',
+    );
+
+    await conn.connect();
+    await conn.poll();
+
+    expect(getForAccount).toHaveBeenCalledWith(
+      'user-1', 'account-1', 'google_calendar', 'sync_token',
+    );
+    expect(saveForAccount).toHaveBeenCalledWith(
+      'user-1', 'account-1', 'google_calendar', 'sync_token', 'next-bound',
+    );
+    expect(get).not.toHaveBeenCalled();
+    expect(save).not.toHaveBeenCalled();
+  });
+
   it('on first poll uses timeMin/timeMax (no syncToken) and persists nextSyncToken', async () => {
     vi.stubGlobal('fetch', (async (input: string | URL | { url: string }): Promise<Response> => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;

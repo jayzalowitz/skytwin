@@ -62,8 +62,7 @@ function unpackEncrypted(packed: Buffer): { iv: Buffer; tag: Buffer; ciphertext:
  * Interface matching the @skytwin/db oauthRepository shape.
  * Defined here to avoid a direct dependency on the DB package from connectors.
  */
-interface OAuthRepositoryLike {
-  getToken(userId: string, provider: string): Promise<{
+interface OAuthRepositoryTokenRow {
     id?: string;
     access_token: string | null;
     refresh_token: string | null;
@@ -74,7 +73,16 @@ interface OAuthRepositoryLike {
     encryption_iv?: Buffer | null;
     encryption_tag?: Buffer | null;
     encryption_key_version?: number;
-  } | null>;
+    credential_revision?: string;
+}
+
+interface OAuthRepositoryLike {
+  getToken(userId: string, provider: string): Promise<OAuthRepositoryTokenRow | null>;
+  getTokenByConnectorAccount?: (
+    userId: string,
+    provider: string,
+    connectorAccountId: string,
+  ) => Promise<OAuthRepositoryTokenRow | null>;
   saveToken(
     userId: string,
     provider: string,
@@ -90,6 +98,14 @@ interface OAuthRepositoryLike {
     accessToken: string,
     expiresAt: Date,
   ): Promise<unknown>;
+  updateAccessTokenByConnectorAccount?: (
+    userId: string,
+    provider: string,
+    connectorAccountId: string,
+    accessToken: string,
+    expiresAt: Date,
+    expectedCredentialRevision: string,
+  ) => Promise<unknown>;
   /**
    * Write encrypted columns and clear the plaintext columns.
    * Optional — callers that do not pass this method will skip lazy migration.
@@ -102,8 +118,10 @@ interface OAuthRepositoryLike {
       iv: Buffer;
       tag: Buffer;
       keyVersion: number;
+      expiresAt: Date;
     },
-  ) => Promise<void>;
+    expectedCredentialRevision?: string,
+  ) => Promise<boolean | void>;
   /**
    * Update only the encrypted access token (for refresh-rotation when the
    * row is stored encrypted). Leaves refresh token alone, NULLs the
@@ -113,7 +131,15 @@ interface OAuthRepositoryLike {
     id: string,
     encryptedAccessToken: Buffer,
     expiresAt: Date,
-  ) => Promise<void>;
+    expectedCredentialRevision?: string,
+  ) => Promise<boolean | void>;
+}
+
+interface TokenMaterializationOptions {
+  /** Exact key snapshot held for a refresh operation. */
+  key?: Buffer | null;
+  /** Ordinary reads migrate in the background; refresh owns its one write. */
+  lazyMigrate?: boolean;
 }
 
 /**
@@ -194,6 +220,8 @@ export class DbTokenStore implements OAuthTokenStore {
      * wrong vendor; the same token-leak class fixed in the disconnect routes).
      */
     private readonly microsoftConfig?: MicrosoftOAuthConfig,
+    /** Fixed stable account identity for worker-side multi-account polling. */
+    private readonly connectorAccountId?: string,
   ) {}
 
   /**
@@ -221,10 +249,24 @@ export class DbTokenStore implements OAuthTokenStore {
   private auditLogActor = 'unknown';
 
   async getToken(userId: string, provider: string): Promise<OAuthTokenSet | null> {
-    const row = await this.repo.getToken(userId, provider);
+    const row = this.connectorAccountId
+      ? await this.getBoundRow(userId, provider)
+      : await this.repo.getToken(userId, provider);
     if (!row) return null;
+    return this.materializeToken(userId, provider, row);
+  }
 
-    const key = this.keyCache?.get(userId) ?? null;
+  /** Decode one exact row snapshot; refresh uses this to avoid a second read. */
+  private async materializeToken(
+    userId: string,
+    provider: string,
+    row: OAuthRepositoryTokenRow,
+    options: TokenMaterializationOptions = {},
+  ): Promise<OAuthTokenSet | null> {
+    const key = Object.prototype.hasOwnProperty.call(options, 'key')
+      ? options.key ?? null
+      : this.keyCache?.get(userId) ?? null;
+    const lazyMigrate = options.lazyMigrate ?? true;
 
     // Case 1: encrypted columns present AND vault is unlocked → decrypt
     if (
@@ -280,7 +322,7 @@ export class DbTokenStore implements OAuthTokenStore {
 
     // Case 2: plaintext present AND vault is unlocked → lazy migrate
     if (row.access_token && row.refresh_token && key !== null) {
-      if (row.id && this.repo.updateEncrypted) {
+      if (lazyMigrate && row.id && this.repo.updateEncrypted) {
         // Fire-and-forget migration — do not block the caller. Failures are
         // surfaced via createLogger.warn AND a counter so downstream
         // observability can detect a stuck migration loop.
@@ -291,6 +333,8 @@ export class DbTokenStore implements OAuthTokenStore {
           row.refresh_token,
           row.encryption_key_version ?? 1,
           key,
+          row.expires_at,
+          row.credential_revision,
         ).catch((err: unknown) => {
           lazyMigrationFailureCounter.count += 1;
           log.warn('Lazy credential-vault migration failed', {
@@ -330,6 +374,13 @@ export class DbTokenStore implements OAuthTokenStore {
     return null;
   }
 
+  private async getBoundRow(userId: string, provider: string) {
+    if (!this.connectorAccountId || !this.repo.getTokenByConnectorAccount) {
+      throw new Error('Account-bound token store requires getTokenByConnectorAccount.');
+    }
+    return this.repo.getTokenByConnectorAccount(userId, provider, this.connectorAccountId);
+  }
+
   /**
    * Encrypt access and refresh tokens independently (each gets a fresh IV)
    * and write them to the encrypted columns, clearing the plaintext columns.
@@ -340,6 +391,8 @@ export class DbTokenStore implements OAuthTokenStore {
     refreshToken: string,
     keyVersion: number,
     key: Buffer,
+    expiresAt: Date,
+    expectedCredentialRevision?: string,
   ): Promise<void> {
     if (!this.repo.updateEncrypted) return;
 
@@ -350,6 +403,8 @@ export class DbTokenStore implements OAuthTokenStore {
     // the IV/tag are now embedded in each packed column. We pass small sentinel
     // buffers to satisfy NOT NULL constraints if any; the DB columns are NULL-able
     // per the migration, so we just use the sentinel value NULL via Buffer(0).
+    // A lost CAS is benign: a refresh/reconnect already wrote newer
+    // credentials, which must win over this background migration.
     await this.repo.updateEncrypted(id, {
       encryptedAccessToken: atPacked,
       encryptedRefreshToken: rtPacked,
@@ -358,10 +413,14 @@ export class DbTokenStore implements OAuthTokenStore {
       iv: Buffer.alloc(0),
       tag: Buffer.alloc(0),
       keyVersion,
-    });
+      expiresAt,
+    }, expectedCredentialRevision);
   }
 
   async saveToken(userId: string, provider: string, tokenSet: OAuthTokenSet): Promise<void> {
+    if (this.connectorAccountId) {
+      throw new Error('Account-bound worker token stores cannot create OAuth identities.');
+    }
     await this.repo.saveToken(
       userId,
       provider,
@@ -373,6 +432,9 @@ export class DbTokenStore implements OAuthTokenStore {
   }
 
   async deleteToken(userId: string, provider: string): Promise<void> {
+    if (this.connectorAccountId) {
+      throw new Error('Account-bound worker token stores cannot disconnect OAuth identities.');
+    }
     await this.repo.deleteToken(userId, provider);
   }
 
@@ -384,13 +446,56 @@ export class DbTokenStore implements OAuthTokenStore {
       throw new Error(`DbTokenStore: unsupported provider '${provider}' for token refresh.`);
     }
 
-    const existing = await this.getToken(userId, provider);
+    // Capture the exact credential version before any network request. The
+    // write after refresh is a compare-and-swap against this exact revision, so a
+    // disconnect/reconnect or another refresh that wins while Google is in
+    // flight makes this attempt fail closed.
+    const refreshSnapshot = this.connectorAccountId
+      ? await this.getBoundRow(userId, provider)
+      : await this.repo.getToken(userId, provider);
+    if (this.connectorAccountId && (!refreshSnapshot?.id || !refreshSnapshot.credential_revision)) {
+      throw new Error('Account-bound OAuth row is missing its refresh CAS version.');
+    }
+    const operationKey = this.keyCache?.get(userId) ?? null;
+    const hasEncryptedAccess = Boolean(refreshSnapshot?.encrypted_access_token);
+    const hasEncryptedRefresh = Boolean(refreshSnapshot?.encrypted_refresh_token);
+    if (hasEncryptedAccess !== hasEncryptedRefresh) {
+      throw new Error('OAuth credential encryption is incomplete; reconnect the account before refreshing.');
+    }
+    if (hasEncryptedAccess && operationKey === null) {
+      throw new Error('credentials unavailable; please unlock the credential vault to continue');
+    }
+    if (
+      refreshSnapshot
+      && refreshSnapshot.access_token
+      && refreshSnapshot.refresh_token
+      && operationKey !== null
+      && this.connectorAccountId
+      && (!refreshSnapshot.id || !this.repo.updateEncrypted)
+    ) {
+      throw new Error('Account-bound encrypted refresh persistence is unavailable.');
+    }
+    if (
+      hasEncryptedAccess
+      && (!refreshSnapshot?.id || !this.repo.updateEncryptedAccessToken)
+    ) {
+      throw new Error('Encrypted OAuth refresh persistence is unavailable.');
+    }
+    const bufferMs = 60 * 1000;
+    const needsRefresh = refreshSnapshot
+      ? refreshSnapshot.expires_at.getTime() <= Date.now() + bufferMs
+      : false;
+    const existing = refreshSnapshot
+      ? await this.materializeToken(userId, provider, refreshSnapshot, {
+          key: operationKey,
+          lazyMigrate: !needsRefresh,
+        })
+      : null;
     if (!existing) {
       throw new Error(`No OAuth token found for user ${userId} provider ${provider}`);
     }
 
     // If not expired yet (with 60s buffer), return as-is
-    const bufferMs = 60 * 1000;
     if (existing.expiresAt.getTime() > Date.now() + bufferMs) {
       return existing;
     }
@@ -434,23 +539,64 @@ export class DbTokenStore implements OAuthTokenStore {
     // write the new token to the ENCRYPTED column — otherwise getToken
     // would keep returning the old, still-encrypted access token while
     // the new plaintext sat unread.
-    const row = await this.repo.getToken(userId, provider);
-    const key = this.keyCache?.get(userId) ?? null;
+    const row = refreshSnapshot;
     if (
       row?.id
-      && row.encrypted_access_token
-      && key !== null
+      && hasEncryptedAccess
+      && operationKey !== null
       && this.repo.updateEncryptedAccessToken
     ) {
-      const packed = packEncrypted(encrypt(refreshed.accessToken, key));
-      await this.repo.updateEncryptedAccessToken(row.id, packed, refreshed.expiresAt);
-    } else {
-      await this.repo.updateAccessToken(
-        userId,
-        provider,
-        refreshed.accessToken,
+      const packed = packEncrypted(encrypt(refreshed.accessToken, operationKey));
+      const updated = await this.repo.updateEncryptedAccessToken(
+        row.id,
+        packed,
         refreshed.expiresAt,
+        refreshSnapshot?.credential_revision,
       );
+      if (updated === false) {
+        throw new Error('OAuth connector account was disconnected during token refresh.');
+      }
+    } else if (
+      row?.id
+      && existing.refreshToken
+      && operationKey !== null
+      && this.repo.updateEncrypted
+    ) {
+      const updated = await this.repo.updateEncrypted(row.id, {
+        encryptedAccessToken: packEncrypted(encrypt(refreshed.accessToken, operationKey)),
+        encryptedRefreshToken: packEncrypted(encrypt(existing.refreshToken, operationKey)),
+        iv: Buffer.alloc(0),
+        tag: Buffer.alloc(0),
+        keyVersion: row.encryption_key_version ?? 1,
+        expiresAt: refreshed.expiresAt,
+      }, refreshSnapshot?.credential_revision);
+      if (updated === false) {
+        throw new Error('OAuth connector account was disconnected during token refresh.');
+      }
+    } else {
+      if (this.connectorAccountId) {
+        if (!this.repo.updateAccessTokenByConnectorAccount) {
+          throw new Error('Account-bound token store requires updateAccessTokenByConnectorAccount.');
+        }
+        const updated = await this.repo.updateAccessTokenByConnectorAccount(
+          userId,
+          provider,
+          this.connectorAccountId,
+          refreshed.accessToken,
+          refreshed.expiresAt,
+          refreshSnapshot!.credential_revision!,
+        );
+        if (!updated) {
+          throw new Error('OAuth connector account was disconnected during token refresh.');
+        }
+      } else {
+        await this.repo.updateAccessToken(
+          userId,
+          provider,
+          refreshed.accessToken,
+          refreshed.expiresAt,
+        );
+      }
     }
 
     // TODO(outlook-connector): persist a ROTATED Microsoft refresh token.

@@ -2,6 +2,8 @@
 export type {
   RawSignal,
   SignalHandler,
+  ConnectorEvidence,
+  GmailConnectorEvidence,
 } from './connector-interface.js';
 export type { SignalConnector } from './connector-interface.js';
 
@@ -17,7 +19,7 @@ export { MockCalendarConnector } from './mock-calendar-connector.js';
 
 // Real connector implementations
 export { GmailConnector, normalizeSenderAddress, parseListId } from './gmail-connector.js';
-export type { CursorStore, LabelObserver } from './gmail-connector.js';
+export type { CursorStore, LabelObserver, GmailAccountBinding } from './gmail-connector.js';
 export {
   classifyEmailAuthoringTier,
   extractBareAddress,

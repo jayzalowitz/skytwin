@@ -1182,4 +1182,71 @@ describe('Events API routes', () => {
       expect.anything(), expect.anything(), 'failed', expect.anything(), expect.anything(),
     );
   });
+
+  it('rejects connectorEvidence without the loopback service-auth authority', async () => {
+    const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      source: 'gmail',
+      type: 'email',
+      signalId: 'sig-forged',
+      connectorEvidence: {
+        kind: 'gmail_message',
+        connectorAccountId: '11111111-1111-4111-8111-111111111111',
+        provider: 'google',
+        providerMessageId: 'forged-provider-id',
+        providerThreadId: null,
+        authoringTier: 'user_sent_originated',
+        observedInInbox: false,
+        observedAt: '2026-09-11T12:00:00.000Z',
+      },
+    });
+
+    expect(res.status).toBe(400);
+    expect(mockInterpret).not.toHaveBeenCalled();
+  });
+
+  it('forces normal-session Gmail claims to untrusted and recursively removes authority keys', async () => {
+    const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      source: 'GMAIL',
+      type: 'email',
+      signalId: 'session-signal',
+      authoringTier: 'user_sent_originated',
+      messageId: 'flat-target',
+      data: {
+        authoringTier: 'user_sent_originated',
+        nested: {
+          threadId: 'nested-target', messageRefId: 'forged-ref',
+          connectorAccountId: 'forged-account', providerMessageId: 'forged-provider', safe: 'kept',
+        },
+      },
+    });
+
+    expect(res.status).toBe(200);
+    const interpreted = mockInterpret.mock.calls[0]![0] as Record<string, unknown>;
+    expect(interpreted['authoringTier']).toBe('inbox_automated');
+    expect(interpreted['source']).toBe('gmail');
+    expect(interpreted).not.toHaveProperty('messageId');
+    expect(interpreted).toMatchObject({ data: { nested: { safe: 'kept' } } });
+    expect(JSON.stringify(interpreted)).not.toMatch(
+      /nested-target|forged-ref|forged-account|forged-provider|user_sent_originated/,
+    );
+  });
+
+  it('removes connector authoring-tier claims from every normal-session source', async () => {
+    const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      source: 'custom_mail_bridge',
+      type: 'email',
+      signalId: 'session-signal-custom',
+      authoringTier: 'user_sent_originated',
+      data: { authoringTier: 'user_sent_reply', subject: 'ordinary session event' },
+    });
+
+    expect(res.status).toBe(200);
+    const interpreted = mockInterpret.mock.calls[0]![0] as Record<string, unknown>;
+    expect(interpreted).not.toHaveProperty('authoringTier');
+    expect(interpreted).toMatchObject({ data: { subject: 'ordinary session event' } });
+    expect(JSON.stringify(interpreted)).not.toMatch(/user_sent_originated|user_sent_reply/);
+  });
 });

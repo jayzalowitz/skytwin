@@ -105,12 +105,35 @@ const DELETE_PLAN: ReadonlyArray<{ table: string; sql: string }> = [
     table: 'preference_history',
     sql: 'DELETE FROM preference_history WHERE user_id = $1',
   },
+  // Connector evidence is operational state, not part of the user's portable
+  // twin. Delete it explicitly so purge counts are auditable and no FK cascade
+  // ordering is left to chance.
+  {
+    table: 'signals',
+    sql: 'DELETE FROM signals WHERE user_id = $1',
+  },
+  {
+    table: 'connector_cursors',
+    sql: 'DELETE FROM connector_cursors WHERE user_id = $1',
+  },
+  {
+    table: 'gmail_message_refs',
+    sql: 'DELETE FROM gmail_message_refs WHERE user_id = $1',
+  },
+  {
+    table: 'oauth_tokens',
+    sql: 'DELETE FROM oauth_tokens WHERE user_id = $1',
+  },
+  {
+    table: 'connected_accounts',
+    sql: 'DELETE FROM connected_accounts WHERE user_id = $1',
+  },
 
   // ── 2. Final DELETE on the users row.
   //       Every direct `user_id → users(id)` FK now carries
   //       ON DELETE CASCADE (migration 061 from #413), so this single
   //       statement collapses the rest of the user's footprint —
-  //       decisions, twin_profiles, preferences, signals, oauth_tokens,
+  //       decisions, twin_profiles, preferences,
   //       sessions, all the mempalace tables (which themselves cascade
   //       internally via wing_id / room_id), behavioral_patterns,
   //       eval_runs, briefings, spend_records, trust_tier_audit,
