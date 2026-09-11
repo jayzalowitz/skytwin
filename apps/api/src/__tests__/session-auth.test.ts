@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Request, Response, NextFunction } from 'express';
+const mockGrantAuthenticatedOwner = vi.fn().mockResolvedValue(true);
 
 /**
  * Tests for the session-auth middleware and require-ownership middleware.
@@ -59,6 +60,8 @@ describe('sessionAuth middleware', () => {
         touchLastActive: vi.fn(),
       },
     }));
+    vi.doMock('../vault-broker-client.js', () => ({ apiVaultBroker: { grantAuthenticatedOwner: mockGrantAuthenticatedOwner } }));
+    mockGrantAuthenticatedOwner.mockClear();
   });
 
   afterEach(() => {
@@ -124,6 +127,7 @@ describe('sessionAuth middleware', () => {
     expect(next).toHaveBeenCalled();
     expect(req.authenticatedUserId).toBe('user-abc');
     expect(req.authenticatedSessionId).toBe('session-1');
+    expect(mockGrantAuthenticatedOwner).toHaveBeenCalledWith('user-abc', expect.any(Date));
   });
 
   it('accepts token from query string for EventSource-based clients', async () => {
