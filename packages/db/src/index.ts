@@ -125,7 +125,7 @@ export type {
   AppendDecisionReceiptResult,
   AppendDecisionReceiptLifecycleInput,
   GmailArchiveProposalBundle,
-  GmailArchiveProposalRiskInput,
+  GmailArchiveProposal,
   PersistGmailArchiveProposalInput,
   PersistGmailArchiveProposalResult,
   FindDecisionReceiptResult,

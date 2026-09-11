@@ -53,15 +53,12 @@ export interface PersistGmailArchiveProposalInput {
   messageRefId: string;
   /** UUID primary key of the already-persisted signals row. */
   signalId: string;
-  /** Reviewed assessment output; persistence only binds its generated action ID. */
-  riskAssessment: GmailArchiveProposalRiskInput;
+  proposal: GmailArchiveProposal;
 }
 
-export interface GmailArchiveProposalRiskInput {
-  overallTier: RiskTier;
-  dimensions: Record<RiskDimension, DimensionAssessment>;
-  reasoning: string;
-  assessedAt: Date;
+export interface GmailArchiveProposal {
+  candidate: CandidateAction;
+  riskAssessment: RiskAssessment;
 }
 
 export interface GmailArchiveProposalBundle {
@@ -86,8 +83,6 @@ export class GmailArchiveProposalReceiptError extends Error {
 }
 
 interface PreallocatedIds {
-  decision: string;
-  candidate: string;
   outcome: string;
   explanation: string;
   barrier: string;
@@ -96,10 +91,13 @@ interface PreallocatedIds {
   revisions: [string, string, string];
 }
 
+interface InsertBundleResult {
+  created: boolean;
+  proposal: GmailArchiveProposalBundle;
+}
+
 function preallocateIds(): PreallocatedIds {
   return {
-    decision: randomUUID(),
-    candidate: randomUUID(),
     outcome: randomUUID(),
     explanation: randomUUID(),
     barrier: randomUUID(),
@@ -109,11 +107,17 @@ function preallocateIds(): PreallocatedIds {
   };
 }
 
-function candidateParameters(messageRefId: string): Record<string, unknown> {
+function commandParameters(messageRefId: string): Record<string, unknown> {
   return {
     schema: GMAIL_INBOX_MUTATION_CANDIDATE_SCHEMA,
     messageRefId,
     operation: 'archive',
+  };
+}
+
+function persistedCandidateParameters(messageRefId: string): Record<string, unknown> {
+  return {
+    ...commandParameters(messageRefId),
     domain: 'email',
     costZeroIntent: 'verified_zero',
     provenance: 'untrusted_external',
@@ -131,7 +135,7 @@ export function buildGmailArchiveProposalCandidate(
     actionType: 'archive_email',
     description: CANDIDATE_DESCRIPTION,
     domain: 'email',
-    parameters: candidateParameters(messageRefId),
+    parameters: commandParameters(messageRefId),
     estimatedCostCents: 0,
     costZeroIntent: 'verified_zero',
     reversible: true,
@@ -143,7 +147,7 @@ export function buildGmailArchiveProposalCandidate(
 
 function completeRisk(
   candidate: CandidateAction,
-  input: GmailArchiveProposalRiskInput,
+  input: RiskAssessment,
 ): Record<string, unknown> {
   const normalized: RiskAssessment = {
     actionId: candidate.id,
@@ -198,10 +202,13 @@ function dateSnapshot(value: unknown): Date | null {
   }
 }
 
-function snapshotRisk(value: unknown): GmailArchiveProposalRiskInput | null {
-  const record = ownDataSnapshot(value, ['overallTier', 'dimensions', 'reasoning', 'assessedAt']);
+function snapshotRisk(value: unknown, candidateId: string): RiskAssessment | null {
+  const record = ownDataSnapshot(value, [
+    'actionId', 'overallTier', 'dimensions', 'reasoning', 'assessedAt',
+  ]);
   if (!record || !Object.values(RiskTier).includes(record['overallTier'] as RiskTier) ||
-      typeof record['reasoning'] !== 'string' || record['reasoning'].length === 0) return null;
+      record['actionId'] !== candidateId ||
+      typeof record['reasoning'] !== 'string' || record['reasoning'].trim().length === 0) return null;
   const dimensions = ownDataSnapshot(record['dimensions'], Object.values(RiskDimension));
   if (!dimensions) return null;
   const copied = {} as Record<RiskDimension, DimensionAssessment>;
@@ -211,16 +218,17 @@ function snapshotRisk(value: unknown): GmailArchiveProposalRiskInput | null {
         !Object.values(RiskTier).includes(item['tier'] as RiskTier) ||
         typeof item['score'] !== 'number' || !Number.isFinite(item['score']) ||
         item['score'] < 0 || item['score'] > 1 ||
-        typeof item['reasoning'] !== 'string' || item['reasoning'].length === 0) return null;
-    copied[dimension] = {
+        typeof item['reasoning'] !== 'string' || item['reasoning'].trim().length === 0) return null;
+    copied[dimension] = Object.freeze({
       tier: item['tier'] as RiskTier,
       score: item['score'],
       reasoning: item['reasoning'],
-    };
+    });
   }
   const assessedAt = dateSnapshot(record['assessedAt']);
   if (!assessedAt) return null;
   return Object.freeze({
+    actionId: candidateId,
     overallTier: record['overallTier'] as RiskTier,
     dimensions: Object.freeze(copied),
     reasoning: record['reasoning'],
@@ -228,20 +236,62 @@ function snapshotRisk(value: unknown): GmailArchiveProposalRiskInput | null {
   });
 }
 
+function snapshotCandidate(value: unknown, messageRefId: string): CandidateAction | null {
+  const record = ownDataSnapshot(value, [
+    'id', 'decisionId', 'actionType', 'description', 'domain', 'parameters',
+    'estimatedCostCents', 'costZeroIntent', 'reversible', 'confidence',
+    'reasoning', 'provenance',
+  ]);
+  if (!record || typeof record['id'] !== 'string' || !UUID.test(record['id']) ||
+      typeof record['decisionId'] !== 'string' || !UUID.test(record['decisionId']) ||
+      record['actionType'] !== 'archive_email' || record['domain'] !== 'email' ||
+      typeof record['description'] !== 'string' || record['description'].trim().length === 0 ||
+      typeof record['reasoning'] !== 'string' || record['reasoning'].trim().length === 0 ||
+      record['estimatedCostCents'] !== 0 || record['costZeroIntent'] !== 'verified_zero' ||
+      record['reversible'] !== true || record['confidence'] !== ConfidenceLevel.MODERATE ||
+      record['provenance'] !== 'untrusted_external') return null;
+  const parameters = ownDataSnapshot(record['parameters'], ['schema', 'messageRefId', 'operation']);
+  if (!parameters || parameters['schema'] !== GMAIL_INBOX_MUTATION_CANDIDATE_SCHEMA ||
+      parameters['messageRefId'] !== messageRefId || parameters['operation'] !== 'archive') return null;
+  return Object.freeze({
+    id: record['id'],
+    decisionId: record['decisionId'],
+    actionType: 'archive_email',
+    description: record['description'],
+    domain: 'email',
+    parameters: Object.freeze(parameters),
+    estimatedCostCents: 0,
+    costZeroIntent: 'verified_zero',
+    reversible: true,
+    confidence: ConfidenceLevel.MODERATE,
+    reasoning: record['reasoning'],
+    provenance: 'untrusted_external',
+  });
+}
+
+function snapshotProposal(value: unknown, messageRefId: string): GmailArchiveProposal | null {
+  const record = ownDataSnapshot(value, ['candidate', 'riskAssessment']);
+  if (!record) return null;
+  const candidate = snapshotCandidate(record['candidate'], messageRefId);
+  if (!candidate) return null;
+  const riskAssessment = snapshotRisk(record['riskAssessment'], candidate.id);
+  return riskAssessment ? Object.freeze({ candidate, riskAssessment }) : null;
+}
+
 function snapshotInput(value: unknown): Readonly<PersistGmailArchiveProposalInput> | null {
   const record = ownDataSnapshot(value, [
-    'userId', 'connectorAccountId', 'messageRefId', 'signalId', 'riskAssessment',
+    'userId', 'connectorAccountId', 'messageRefId', 'signalId', 'proposal',
   ]);
   if (!record || ![record['userId'], record['connectorAccountId'], record['messageRefId'], record['signalId']]
     .every((id) => typeof id === 'string' && UUID.test(id))) return null;
-  const riskAssessment = snapshotRisk(record['riskAssessment']);
-  if (!riskAssessment) return null;
+  const proposal = snapshotProposal(record['proposal'], record['messageRefId'] as string);
+  if (!proposal) return null;
   return Object.freeze({
     userId: record['userId'] as string,
     connectorAccountId: record['connectorAccountId'] as string,
     messageRefId: record['messageRefId'] as string,
     signalId: record['signalId'] as string,
-    riskAssessment,
+    proposal,
   });
 }
 
@@ -379,7 +429,7 @@ function exactCandidateMatches(
     decision_id: row.decision_id,
     action_type: expected.actionType,
     description: expected.description,
-    parameters: expected.parameters,
+    parameters: persistedCandidateParameters(String(expected.parameters['messageRefId'])),
     predicted_user_preference: expected.confidence,
     risk_assessment: risk,
     reversible: true,
@@ -387,6 +437,36 @@ function exactCandidateMatches(
   };
   return decisionReceiptRowArtifactRefV1('candidate_action', { ...row }).canonicalHash ===
     decisionReceiptRowArtifactRefV1('candidate_action', expectedRow).canonicalHash;
+}
+
+function rebindCandidate(
+  candidate: CandidateAction,
+  decisionId: string,
+  candidateId: string,
+): CandidateAction {
+  return { ...candidate, id: candidateId, decisionId };
+}
+
+function storedRiskMatches(
+  value: unknown,
+  incoming: RiskAssessment,
+  candidateId: string,
+): value is Record<string, unknown> {
+  const record = ownDataSnapshot(value, [
+    'actionId', 'overallTier', 'dimensions', 'reasoning', 'assessedAt',
+  ]);
+  if (!record || record['actionId'] !== candidateId ||
+      typeof record['assessedAt'] !== 'string' ||
+      !Number.isFinite(Date.parse(record['assessedAt']))) return false;
+  return sameCanonical({
+    overallTier: record['overallTier'],
+    dimensions: record['dimensions'],
+    reasoning: record['reasoning'],
+  }, {
+    overallTier: incoming.overallTier,
+    dimensions: incoming.dimensions,
+    reasoning: incoming.reasoning,
+  });
 }
 
 function sameCanonical(left: unknown, right: unknown): boolean {
@@ -458,8 +538,8 @@ async function loadExistingBundle(
   const barrier = barrierResult.rows[0]!;
   const approval = approvalResult.rows[0]!;
   const receipt = receiptResult.rows[0]!;
-  const expectedCandidate = buildGmailArchiveProposalCandidate(decision.id, candidate.id, input.messageRefId);
-  const expectedRisk = completeRisk(expectedCandidate, input.riskAssessment);
+  const expectedCandidate = rebindCandidate(input.proposal.candidate, decision.id, candidate.id);
+  const expectedRisk = candidate.risk_assessment;
   const expectedEvidence = [{
     evidenceId: signal.id,
     source: 'gmail',
@@ -473,6 +553,7 @@ async function loadExistingBundle(
   );
   if (revisionsResult.rows.length !== 3 ||
       !exactDecisionMatches(decision, signal, input.messageRefId) ||
+      !storedRiskMatches(expectedRisk, input.proposal.riskAssessment, candidate.id) ||
       !exactCandidateMatches(candidate, expectedCandidate, expectedRisk) ||
       outcome.selected_action_id !== candidate.id || outcome.auto_executed || !outcome.requires_approval ||
       outcome.execution_plan_id !== null || outcome.escalation_reason !== PROPOSAL_REASON ||
@@ -482,7 +563,7 @@ async function loadExistingBundle(
       !sameCanonical(explanation.evidence_used, expectedEvidence) ||
       !sameCanonical(explanation.preferences_invoked, []) ||
       explanation.confidence_reasoning !== String(expectedRisk['reasoning']) ||
-      explanation.action_rationale !== CANDIDATE_REASONING ||
+      explanation.action_rationale !== expectedCandidate.reasoning ||
       explanation.escalation_rationale !== PROPOSAL_REASON ||
       explanation.correction_guidance !== 'Review the proposal. This build does not turn approval into execution.' ||
       explanation.capability_provenance_node_id !== null ||
@@ -536,7 +617,7 @@ async function insertFreshBundle(
   input: PersistGmailArchiveProposalInput,
   signal: BoundGmailSignalRow,
   ids: PreallocatedIds,
-): Promise<GmailArchiveProposalBundle | null> {
+): Promise<InsertBundleResult | null> {
   const decisionResult = await client.query<DecisionRow>(
     `INSERT INTO decisions (
        id, user_id, situation_type, raw_event, interpreted_situation,
@@ -545,7 +626,7 @@ async function insertFreshBundle(
      ON CONFLICT DO NOTHING
      RETURNING *`,
     [
-      ids.decision,
+      input.proposal.candidate.decisionId,
       input.userId,
       JSON.stringify({
         source: 'gmail',
@@ -565,11 +646,12 @@ async function insertFreshBundle(
       [input.userId, signal.id],
     );
     if (existing.rows.length !== 1) return null;
-    return loadExistingBundle(client, input, existing.rows[0]!, signal);
+    const proposal = await loadExistingBundle(client, input, existing.rows[0]!, signal);
+    return proposal ? { created: false, proposal } : null;
   }
   const decision = decisionResult.rows[0];
-  const candidate = buildGmailArchiveProposalCandidate(decision.id, ids.candidate, input.messageRefId);
-  const risk = completeRisk(candidate, input.riskAssessment);
+  const candidate = input.proposal.candidate;
+  const risk = completeRisk(candidate, input.proposal.riskAssessment);
   const candidateResult = await client.query<CandidateActionRow>(
     `INSERT INTO candidate_actions (
        id, decision_id, action_type, description, parameters,
@@ -577,10 +659,10 @@ async function insertFreshBundle(
      ) VALUES ($1, $2, 'archive_email', $3, $4, $5, $6, true, NULL)
      RETURNING *`,
     [
-      ids.candidate,
+      candidate.id,
       decision.id,
       candidate.description,
-      JSON.stringify(candidate.parameters),
+      JSON.stringify(persistedCandidateParameters(input.messageRefId)),
       candidate.confidence,
       JSON.stringify(risk),
     ],
@@ -612,7 +694,7 @@ async function insertFreshBundle(
         relevance: 'The owned signal directly produced this proposal.',
       }]),
       String(risk['reasoning']),
-      CANDIDATE_REASONING,
+      candidate.reasoning,
       PROPOSAL_REASON,
       'Review the proposal. This build does not turn approval into execution.',
     ],
@@ -687,14 +769,17 @@ async function insertFreshBundle(
     previousDigest = append.revision.revision_digest;
   }
   return {
-    decision,
-    candidate: candidateRow,
-    outcome: outcomeResult.rows[0]!,
-    explanation,
-    barrier,
-    approval,
-    receipt: receipt!,
-    revisions: revisions as GmailArchiveProposalBundle['revisions'],
+    created: true,
+    proposal: {
+      decision,
+      candidate: candidateRow,
+      outcome: outcomeResult.rows[0]!,
+      explanation,
+      barrier,
+      approval,
+      receipt: receipt!,
+      revisions: revisions as GmailArchiveProposalBundle['revisions'],
+    },
   };
 }
 
@@ -705,9 +790,13 @@ async function persistInTransaction(
 ): Promise<PersistGmailArchiveProposalResult> {
   const signal = await loadBoundSignal(client, input);
   if (!signal || !signal.source_signal_id) return { ok: false, error: 'evidence_not_found' };
-  const proposal = await insertFreshBundle(client, input, signal, ids);
-  if (!proposal) return { ok: false, error: 'idempotency_conflict' };
-  return { ok: true, created: proposal.decision.id === ids.decision, proposal };
+  const result = await insertFreshBundle(client, input, signal, ids);
+  if (!result) return { ok: false, error: 'idempotency_conflict' };
+  return {
+    ok: true,
+    created: result.created,
+    proposal: result.proposal,
+  };
 }
 
 export const gmailArchiveProposalRepository = {

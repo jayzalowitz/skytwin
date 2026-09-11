@@ -41,7 +41,7 @@ export {
 } from './gmail-archive-proposal-repository.js';
 export type {
   GmailArchiveProposalBundle,
-  GmailArchiveProposalRiskInput,
+  GmailArchiveProposal,
   PersistGmailArchiveProposalInput,
   PersistGmailArchiveProposalResult,
 } from './gmail-archive-proposal-repository.js';

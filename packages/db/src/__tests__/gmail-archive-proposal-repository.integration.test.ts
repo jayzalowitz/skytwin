@@ -52,24 +52,46 @@ describe.runIf(cockroachAvailable)('gmailArchiveProposalRepository on CockroachD
   const secondAccountId = '20000000-0000-4000-8000-000000000002';
   const secondMessageRefId = '30000000-0000-4000-8000-000000000003';
   const secondSignalId = '40000000-0000-4000-8000-000000000003';
+  const decisionId = '60000000-0000-4000-8000-000000000001';
+  const candidateId = '70000000-0000-4000-8000-000000000001';
   let cockroach: ChildProcess | undefined;
   let previousDatabaseUrl: string | undefined;
 
-  const assessment = new RiskAssessor().assess(
-    buildGmailArchiveProposalCandidate(userId, accountId, messageRefId),
-  );
-  const input = {
-    userId,
+  function buildInput(options: {
+    connectorAccountId: string;
+    messageRefId: string;
+    signalId: string;
+    decisionId: string;
+    candidateId: string;
+  }) {
+    const candidate = buildGmailArchiveProposalCandidate(
+      options.decisionId,
+      options.candidateId,
+      options.messageRefId,
+    );
+    const assessment = new RiskAssessor().assess(candidate);
+    return {
+      userId,
+      connectorAccountId: options.connectorAccountId,
+      messageRefId: options.messageRefId,
+      signalId: options.signalId,
+      proposal: {
+        candidate,
+        riskAssessment: {
+          ...assessment,
+          assessedAt: new Date('2026-09-11T12:00:00Z'),
+        },
+      },
+    };
+  }
+
+  const input = buildInput({
     connectorAccountId: accountId,
     messageRefId,
     signalId,
-    riskAssessment: {
-      overallTier: assessment.overallTier,
-      dimensions: assessment.dimensions,
-      reasoning: assessment.reasoning,
-      assessedAt: new Date('2026-09-11T12:00:00Z'),
-    },
-  };
+    decisionId,
+    candidateId,
+  });
 
   beforeAll(async () => {
     const sqlPort = await reservePort(25_000 + (process.pid % 3_000));
@@ -134,9 +156,11 @@ describe.runIf(cockroachAvailable)('gmailArchiveProposalRepository on CockroachD
     if (!first.ok || !replay.ok) return;
     expect(replay.proposal.decision.id).toBe(first.proposal.decision.id);
     expect(first.proposal.decision).toMatchObject({
+      id: decisionId,
       signal_id: signalId,
       raw_event: { signalId, messageRefId },
     });
+    expect(first.proposal.candidate.id).toBe(candidateId);
     expect(JSON.stringify(first.proposal.revisions)).not.toContain('owned-source');
     expect(first.proposal.candidate.parameters).toEqual({
       schema: 'gmail_inbox_mutation_v1',
@@ -148,9 +172,9 @@ describe.runIf(cockroachAvailable)('gmailArchiveProposalRepository on CockroachD
     });
     expect(first.proposal.candidate.risk_assessment).toEqual({
       actionId: first.proposal.candidate.id,
-      overallTier: input.riskAssessment.overallTier,
-      dimensions: input.riskAssessment.dimensions,
-      reasoning: input.riskAssessment.reasoning,
+      overallTier: input.proposal.riskAssessment.overallTier,
+      dimensions: input.proposal.riskAssessment.dimensions,
+      reasoning: input.proposal.riskAssessment.reasoning,
       assessedAt: '2026-09-11T12:00:00.000Z',
     });
     const counts = await getPool().query<{ decisions: string; candidates: string; outcomes: string;
@@ -189,11 +213,13 @@ describe.runIf(cockroachAvailable)('gmailArchiveProposalRepository on CockroachD
          'owned-source-2', $2, $3)`,
       [userId, accountId, concurrentMessageRefId, concurrentSignalId],
     );
-    const concurrentInput = {
-      ...input,
+    const concurrentInput = buildInput({
+      connectorAccountId: accountId,
       messageRefId: concurrentMessageRefId,
       signalId: concurrentSignalId,
-    };
+      decisionId: '60000000-0000-4000-8000-000000000002',
+      candidateId: '70000000-0000-4000-8000-000000000002',
+    });
 
     const results = await Promise.all(Array.from(
       { length: 4 },
@@ -255,12 +281,13 @@ describe.runIf(cockroachAvailable)('gmailArchiveProposalRepository on CockroachD
       [userId, scope, accountId, secondAccountId],
     );
 
-    const second = await gmailArchiveProposalRepository.persist({
-      ...input,
+    const second = await gmailArchiveProposalRepository.persist(buildInput({
       connectorAccountId: secondAccountId,
       messageRefId: secondMessageRefId,
       signalId: secondSignalId,
-    });
+      decisionId: '60000000-0000-4000-8000-000000000003',
+      candidateId: '70000000-0000-4000-8000-000000000003',
+    }));
     expect(second).toMatchObject({ ok: true, created: true });
     if (!second.ok) return;
     expect(second.proposal.decision).toMatchObject({

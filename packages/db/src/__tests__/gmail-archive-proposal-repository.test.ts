@@ -211,16 +211,22 @@ function installReceiptAppender(): void {
   });
 }
 
-const assessed = new RiskAssessor().assess(
-  buildGmailArchiveProposalCandidate(userId, accountId, messageRefId),
-);
+const candidate = buildGmailArchiveProposalCandidate(userId, accountId, messageRefId);
+const assessed = new RiskAssessor().assess(candidate);
 const riskAssessment = {
+  actionId: assessed.actionId,
   overallTier: assessed.overallTier,
   dimensions: assessed.dimensions,
   reasoning: assessed.reasoning,
   assessedAt: observedAt,
 };
-const input = { userId, connectorAccountId: accountId, messageRefId, signalId, riskAssessment };
+const input = {
+  userId,
+  connectorAccountId: accountId,
+  messageRefId,
+  signalId,
+  proposal: { candidate, riskAssessment },
+};
 
 describe('gmailArchiveProposalRepository', () => {
   beforeEach(() => {
@@ -257,10 +263,14 @@ describe('gmailArchiveProposalRepository', () => {
     });
     expect(Object.keys(store.candidate?.parameters ?? {})).toHaveLength(6);
     expect(store.decision).toMatchObject({
+      id: candidate.decisionId,
       signal_id: signalId,
       raw_event: { signalId, messageRefId },
     });
     expect(store.candidate).toMatchObject({
+      id: candidate.id,
+      description: candidate.description,
+      predicted_user_preference: candidate.confidence,
       action_type: 'archive_email', reversible: true, estimated_cost: null,
     });
     const persistedCandidate = store.candidate!;
@@ -298,13 +308,77 @@ describe('gmailArchiveProposalRepository', () => {
     expect(JSON.stringify(store)).not.toMatch(/provider_message|provider_thread|access_token|refresh_token/);
   });
 
+  it('uses one canonical snapshot when the submitted proposal is mutated in flight', async () => {
+    const mutableCandidate = {
+      ...candidate,
+      parameters: { ...candidate.parameters },
+    };
+    const mutableRisk = {
+      ...riskAssessment,
+      dimensions: Object.fromEntries(Object.entries(riskAssessment.dimensions).map(
+        ([key, value]) => [key, { ...value }],
+      )) as typeof riskAssessment.dimensions,
+      assessedAt: new Date(riskAssessment.assessedAt),
+    };
+    const mutableInput = {
+      ...input,
+      proposal: { candidate: mutableCandidate, riskAssessment: mutableRisk },
+    };
+    let releaseTransaction!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseTransaction = resolve; });
+    withTransactionMock.mockImplementationOnce(async (
+      fn: (client: PoolClient) => Promise<unknown>,
+    ) => {
+      await gate;
+      return fn({ query: queryMock } as unknown as PoolClient);
+    });
+
+    const pending = gmailArchiveProposalRepository.persist(mutableInput);
+    mutableCandidate.description = 'Mutated description';
+    mutableCandidate.reasoning = 'Mutated reasoning';
+    mutableCandidate.parameters['messageRefId'] = signalId;
+    mutableRisk.reasoning = 'Mutated risk';
+    mutableRisk.dimensions.reversibility.score = 1;
+    mutableRisk.assessedAt.setTime(0);
+    releaseTransaction();
+
+    await expect(pending).resolves.toMatchObject({ ok: true, created: true });
+    expect(store.candidate).toMatchObject({
+      description: candidate.description,
+      risk_assessment: {
+        reasoning: riskAssessment.reasoning,
+        assessedAt: riskAssessment.assessedAt.toISOString(),
+      },
+    });
+    expect(store.candidate?.parameters['messageRefId']).toBe(messageRefId);
+    expect(
+      (store.candidate?.risk_assessment['dimensions'] as typeof riskAssessment.dimensions)
+        .reversibility.score,
+    ).toBe(riskAssessment.dimensions.reversibility.score);
+  });
+
   it('returns the exact committed graph on replay without inserting another candidate or receipt', async () => {
     const first = await gmailArchiveProposalRepository.persist(input);
     expect(first).toMatchObject({ ok: true, created: true });
     appendMock.mockClear();
     queryMock.mockClear();
 
-    const replay = await gmailArchiveProposalRepository.persist(input);
+    const replayCandidate = {
+      ...candidate,
+      id: '77777777-7777-4777-8777-777777777777',
+      decisionId: '88888888-8888-4888-8888-888888888888',
+    };
+    const replay = await gmailArchiveProposalRepository.persist({
+      ...input,
+      proposal: {
+        candidate: replayCandidate,
+        riskAssessment: {
+          ...riskAssessment,
+          actionId: replayCandidate.id,
+          assessedAt: new Date('2026-09-11T12:05:00.000Z'),
+        },
+      },
+    });
 
     expect(replay).toMatchObject({ ok: true, created: false });
     expect(appendMock).not.toHaveBeenCalled();
@@ -314,6 +388,45 @@ describe('gmailArchiveProposalRepository', () => {
       expect(replay.proposal.candidate.id).toBe(first.proposal.candidate.id);
       expect(replay.proposal.approval.id).toBe(first.proposal.approval.id);
     }
+  });
+
+  it('rejects a semantically changed incoming risk assessment on replay', async () => {
+    await gmailArchiveProposalRepository.persist(input);
+    appendMock.mockClear();
+
+    const changed = await gmailArchiveProposalRepository.persist({
+      ...input,
+      proposal: {
+        ...input.proposal,
+        riskAssessment: {
+          ...riskAssessment,
+          reasoning: `${riskAssessment.reasoning} changed`,
+          assessedAt: new Date('2026-09-11T12:05:00.000Z'),
+        },
+      },
+    });
+
+    expect(changed).toEqual({ ok: false, error: 'idempotency_conflict' });
+    expect(appendMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects changed builder candidate semantics on replay', async () => {
+    await gmailArchiveProposalRepository.persist(input);
+    appendMock.mockClear();
+
+    const changed = await gmailArchiveProposalRepository.persist({
+      ...input,
+      proposal: {
+        ...input.proposal,
+        candidate: {
+          ...candidate,
+          description: `${candidate.description} after review`,
+        },
+      },
+    });
+
+    expect(changed).toEqual({ ok: false, error: 'idempotency_conflict' });
+    expect(appendMock).not.toHaveBeenCalled();
   });
 
   it('rejects a changed existing graph instead of repairing or appending it', async () => {
@@ -339,18 +452,35 @@ describe('gmailArchiveProposalRepository', () => {
     expect(store).toEqual({ revisions: [] });
   });
 
-  it('retries the whole transaction on 40001 with the same preallocated IDs', async () => {
+  it('retries the whole transaction on 40001 with stable builder-owned and preallocated IDs', async () => {
     const serializationFailure = Object.assign(new Error('restart transaction'), { code: '40001' });
-    const baseImplementation = queryMock.getMockImplementation()!;
-    let failed = false;
+    const baseQueryImplementation = queryMock.getMockImplementation()!;
+    const baseAppendImplementation = appendMock.getMockImplementation()!;
+    const artifactIds = new Map<string, string[]>();
     queryMock.mockImplementation(async (...args: unknown[]) => {
       const sql = String(args[0]);
-      if (!failed && sql.includes('INSERT INTO decisions')) {
+      for (const table of [
+        'candidate_actions', 'decision_outcomes', 'explanation_records',
+        'pre_effect_barriers', 'approval_requests',
+      ]) {
+        if (sql.includes(`INSERT INTO ${table}`)) {
+          const values = artifactIds.get(table) ?? [];
+          values.push(String((args[1] as unknown[])[0]));
+          artifactIds.set(table, values);
+        }
+      }
+      return baseQueryImplementation(...args);
+    });
+    const appendIds: Array<[string, string]> = [];
+    let failed = false;
+    appendMock.mockImplementation(async (...args: unknown[]) => {
+      const appendInput = args[2] as { receiptId: string; revisionId: string };
+      appendIds.push([appendInput.receiptId, appendInput.revisionId]);
+      if (!failed && appendIds.length === 3) {
         failed = true;
-        decisionInsertIds.push(String((args[1] as unknown[])[0]));
         throw serializationFailure;
       }
-      return baseImplementation(...args);
+      return baseAppendImplementation(...args);
     });
 
     await expect(gmailArchiveProposalRepository.persist(input)).resolves.toMatchObject({
@@ -359,7 +489,16 @@ describe('gmailArchiveProposalRepository', () => {
     });
     expect(withTransactionMock).toHaveBeenCalledTimes(2);
     expect(decisionInsertIds).toHaveLength(2);
-    expect(new Set(decisionInsertIds).size).toBe(1);
+    expect(new Set(decisionInsertIds)).toEqual(new Set([candidate.decisionId]));
+    for (const [table, ids] of artifactIds) {
+      expect(ids, table).toHaveLength(2);
+      expect(new Set(ids).size, table).toBe(1);
+    }
+    expect(appendIds).toHaveLength(6);
+    expect(new Set(appendIds.map(([id]) => id)).size).toBe(1);
+    expect(appendIds.slice(0, 3).map(([, id]) => id)).toEqual(
+      appendIds.slice(3).map(([, id]) => id),
+    );
   });
 
   it('rejects malformed IDs and missing bound evidence before artifact inserts', async () => {
@@ -373,7 +512,13 @@ describe('gmailArchiveProposalRepository', () => {
     delete incompleteDimensions['operational_risk'];
     await expect(gmailArchiveProposalRepository.persist({
       ...input,
-      riskAssessment: { ...riskAssessment, dimensions: incompleteDimensions } as typeof riskAssessment,
+      proposal: {
+        ...input.proposal,
+        riskAssessment: {
+          ...riskAssessment,
+          dimensions: incompleteDimensions,
+        } as typeof riskAssessment,
+      },
     })).resolves.toEqual({ ok: false, error: 'invalid_input' });
     expect(withTransactionMock).not.toHaveBeenCalled();
 
@@ -404,46 +549,195 @@ describe('gmailArchiveProposalRepository', () => {
       enumerable: true,
       get: () => { throw new Error('accessor must not be invoked'); },
     })],
-    ['null risk', () => ({ ...input, riskAssessment: null })],
-    ['risk extra key', () => ({ ...input, riskAssessment: { ...riskAssessment, extra: true } })],
+    ['null proposal', () => ({ ...input, proposal: null })],
+    ['proposal extra key', () => ({ ...input, proposal: { ...input.proposal, extra: true } })],
+    ['proposal symbol', () => ({
+      ...input,
+      proposal: Object.assign({ ...input.proposal }, { [Symbol('hidden')]: true }),
+    })],
+    ['proposal accessor', () => ({
+      ...input,
+      proposal: Object.defineProperty({ ...input.proposal }, 'candidate', {
+        enumerable: true,
+        get: () => candidate,
+      }),
+    })],
+    ['revoked proposal', () => {
+      const revoked = Proxy.revocable({ ...input.proposal }, {});
+      revoked.revoke();
+      return { ...input, proposal: revoked.proxy };
+    }],
+    ['candidate extra key', () => ({
+      ...input,
+      proposal: { ...input.proposal, candidate: { ...candidate, extra: true } },
+    })],
+    ['candidate accessor', () => ({
+      ...input,
+      proposal: {
+        ...input.proposal,
+        candidate: Object.defineProperty({ ...candidate }, 'description', {
+          enumerable: true,
+          get: () => candidate.description,
+        }),
+      },
+    })],
+    ['candidate symbol', () => ({
+      ...input,
+      proposal: {
+        ...input.proposal,
+        candidate: Object.assign({ ...candidate }, { [Symbol('hidden')]: true }),
+      },
+    })],
+    ['candidate invalid decision ID', () => ({
+      ...input,
+      proposal: { ...input.proposal, candidate: { ...candidate, decisionId: 'not-a-uuid' } },
+    })],
+    ['candidate wrong action', () => ({
+      ...input,
+      proposal: { ...input.proposal, candidate: { ...candidate, actionType: 'delete_email' } },
+    })],
+    ['candidate wrong domain', () => ({
+      ...input,
+      proposal: { ...input.proposal, candidate: { ...candidate, domain: 'calendar' } },
+    })],
+    ['candidate blank description', () => ({
+      ...input,
+      proposal: { ...input.proposal, candidate: { ...candidate, description: '  ' } },
+    })],
+    ['candidate blank reasoning', () => ({
+      ...input,
+      proposal: { ...input.proposal, candidate: { ...candidate, reasoning: '\n' } },
+    })],
+    ['candidate nonzero cost', () => ({
+      ...input,
+      proposal: { ...input.proposal, candidate: { ...candidate, estimatedCostCents: 1 } },
+    })],
+    ['candidate unverified cost', () => ({
+      ...input,
+      proposal: { ...input.proposal, candidate: { ...candidate, costZeroIntent: 'unknown' } },
+    })],
+    ['candidate irreversible', () => ({
+      ...input,
+      proposal: { ...input.proposal, candidate: { ...candidate, reversible: false } },
+    })],
+    ['candidate wrong confidence', () => ({
+      ...input,
+      proposal: { ...input.proposal, candidate: { ...candidate, confidence: 'high' } },
+    })],
+    ['candidate trusted provenance', () => ({
+      ...input,
+      proposal: { ...input.proposal, candidate: { ...candidate, provenance: 'user_authored' } },
+    })],
+    ['command extra key', () => ({
+      ...input,
+      proposal: {
+        ...input.proposal,
+        candidate: { ...candidate, parameters: { ...candidate.parameters, extra: true } },
+      },
+    })],
+    ['command wrong message ref', () => ({
+      ...input,
+      proposal: {
+        ...input.proposal,
+        candidate: { ...candidate, parameters: { ...candidate.parameters, messageRefId: signalId } },
+      },
+    })],
+    ['command wrong operation', () => ({
+      ...input,
+      proposal: {
+        ...input.proposal,
+        candidate: { ...candidate, parameters: { ...candidate.parameters, operation: 'restore' } },
+      },
+    })],
+    ['null risk', () => ({ ...input, proposal: { ...input.proposal, riskAssessment: null } })],
+    ['risk extra key', () => ({
+      ...input,
+      proposal: { ...input.proposal, riskAssessment: { ...riskAssessment, extra: true } },
+    })],
+    ['risk symbol', () => ({
+      ...input,
+      proposal: {
+        ...input.proposal,
+        riskAssessment: Object.assign({ ...riskAssessment }, { [Symbol('hidden')]: true }),
+      },
+    })],
     ['risk accessor', () => ({
       ...input,
-      riskAssessment: Object.defineProperty({ ...riskAssessment }, 'reasoning', {
-        enumerable: true,
-        get: () => riskAssessment.reasoning,
-      }),
+      proposal: {
+        ...input.proposal,
+        riskAssessment: Object.defineProperty({ ...riskAssessment }, 'reasoning', {
+          enumerable: true,
+          get: () => riskAssessment.reasoning,
+        }),
+      },
+    })],
+    ['risk action mismatch', () => ({
+      ...input,
+      proposal: { ...input.proposal, riskAssessment: { ...riskAssessment, actionId: signalId } },
+    })],
+    ['risk blank reasoning', () => ({
+      ...input,
+      proposal: { ...input.proposal, riskAssessment: { ...riskAssessment, reasoning: ' ' } },
     })],
     ['dimensions symbol', () => ({
       ...input,
-      riskAssessment: {
-        ...riskAssessment,
-        dimensions: Object.assign({ ...riskAssessment.dimensions }, { [Symbol('hidden')]: true }),
+      proposal: {
+        ...input.proposal,
+        riskAssessment: {
+          ...riskAssessment,
+          dimensions: Object.assign({ ...riskAssessment.dimensions }, { [Symbol('hidden')]: true }),
+        },
       },
     })],
     ['dimensions extra key', () => ({
       ...input,
-      riskAssessment: {
-        ...riskAssessment,
-        dimensions: { ...riskAssessment.dimensions, extra: riskAssessment.dimensions.reversibility },
+      proposal: {
+        ...input.proposal,
+        riskAssessment: {
+          ...riskAssessment,
+          dimensions: { ...riskAssessment.dimensions, extra: riskAssessment.dimensions.reversibility },
+        },
       },
     })],
     ['dimension accessor', () => ({
       ...input,
-      riskAssessment: {
-        ...riskAssessment,
-        dimensions: {
-          ...riskAssessment.dimensions,
-          reversibility: Object.defineProperty(
-            { ...riskAssessment.dimensions.reversibility },
-            'score',
-            { enumerable: true, get: () => 0.1 },
-          ),
+      proposal: {
+        ...input.proposal,
+        riskAssessment: {
+          ...riskAssessment,
+          dimensions: {
+            ...riskAssessment.dimensions,
+            reversibility: Object.defineProperty(
+              { ...riskAssessment.dimensions.reversibility },
+              'score',
+              { enumerable: true, get: () => 0.1 },
+            ),
+          },
+        },
+      },
+    })],
+    ['dimension symbol', () => ({
+      ...input,
+      proposal: {
+        ...input.proposal,
+        riskAssessment: {
+          ...riskAssessment,
+          dimensions: {
+            ...riskAssessment.dimensions,
+            reversibility: Object.assign(
+              { ...riskAssessment.dimensions.reversibility },
+              { [Symbol('hidden')]: true },
+            ),
+          },
         },
       },
     })],
     ['bad date', () => ({
       ...input,
-      riskAssessment: { ...riskAssessment, assessedAt: new Date(Number.NaN) },
+      proposal: {
+        ...input.proposal,
+        riskAssessment: { ...riskAssessment, assessedAt: new Date(Number.NaN) },
+      },
     })],
     ['throwing proxy', () => new Proxy({ ...input }, {
       ownKeys: () => { throw new Error('hostile reflection'); },
