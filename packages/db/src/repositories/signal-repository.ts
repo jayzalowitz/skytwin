@@ -101,6 +101,17 @@ export const signalRepository = {
     return result.rows;
   },
 
+  /** Exact half-open Watch slot window: `(windowStart, windowEnd]`. */
+  async listInWindow(userId: string, windowStart: Date, windowEnd: Date): Promise<SignalRow[]> {
+    const result = await query<SignalRow>(
+      `SELECT * FROM signals
+        WHERE user_id = $1 AND timestamp > $2 AND timestamp <= $3
+        ORDER BY timestamp DESC`,
+      [userId, windowStart, windowEnd],
+    );
+    return result.rows;
+  },
+
   async getById(id: string): Promise<SignalRow | null> {
     const result = await query<SignalRow>(
       'SELECT * FROM signals WHERE id = $1',

@@ -1,11 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
-import type { SignalRow } from '@skytwin/db';
+import type { ClaimedWatchSlot, SignalRow } from '@skytwin/db';
 import type { Watch } from '@skytwin/shared-types';
 import {
   shouldRunWatchScheduler,
   toMatchable,
   evaluateWatch,
   runWatchSchedulerJob,
+  WATCH_SCHEDULER_INTERVAL_MS,
 } from '../jobs/watch-scheduler.js';
 
 function watch(over: Partial<Watch> = {}): Watch {
@@ -119,96 +120,120 @@ describe('evaluateWatch', () => {
 
 describe('runWatchSchedulerJob', () => {
   const NOW = new Date('2026-07-05T09:00:00Z');
-  const getRecentWith = (rows: SignalRow[]) => vi.fn().mockResolvedValue(rows);
-  const getLocaleUTC = () => vi.fn().mockResolvedValue({ language: null, timezone: 'UTC' });
+  const WINDOW_START = new Date('2026-07-05T07:00:00Z');
 
-  it('claims + writes a run and advances the next firing when a due watch matches', async () => {
-    const claimDue = vi.fn().mockResolvedValue(true);
-    const create = vi.fn().mockResolvedValue({});
-    await runWatchSchedulerJob({
-      now: NOW,
-      watchRepo: { listDue: vi.fn().mockResolvedValue([watch()]), claimDue },
-      runRepo: { create },
-      signalRepo: { getRecent: getRecentWith([signal({ id: 'a' })]) },
-      userRepo: { getLocale: getLocaleUTC() },
-    });
-    expect(claimDue).toHaveBeenCalledTimes(1);
-    // claimDue(id, seenNextRunAt, nextRunAt, ranAt) — the new next_run_at is future.
-    expect((claimDue.mock.calls[0]![2] as Date).getTime()).toBeGreaterThan(NOW.getTime());
-    expect(create).toHaveBeenCalledTimes(1);
-    expect(create.mock.calls[0]![0].matchedRefs).toEqual(['a']);
-  });
-
-  it('advances the schedule even when nothing matched (no run row)', async () => {
-    const claimDue = vi.fn().mockResolvedValue(true);
-    const create = vi.fn().mockResolvedValue({});
-    await runWatchSchedulerJob({
-      now: NOW,
-      watchRepo: { listDue: vi.fn().mockResolvedValue([watch()]), claimDue },
-      runRepo: { create },
-      signalRepo: { getRecent: getRecentWith([]) }, // no signals
-      userRepo: { getLocale: getLocaleUTC() },
-    });
-    expect(claimDue).toHaveBeenCalledTimes(1); // claimed (schedule advanced)
-    expect(create).not.toHaveBeenCalled(); // but no run row
-  });
-
-  it('writes no run when it loses the claim (another worker took it)', async () => {
-    const claimDue = vi.fn().mockResolvedValue(false); // lost the race
-    const getRecent = getRecentWith([signal({ id: 'a' })]);
-    const create = vi.fn().mockResolvedValue({});
-    await runWatchSchedulerJob({
-      now: NOW,
-      watchRepo: { listDue: vi.fn().mockResolvedValue([watch()]), claimDue },
-      runRepo: { create },
-      signalRepo: { getRecent },
-      userRepo: { getLocale: getLocaleUTC() },
-    });
-    expect(claimDue).toHaveBeenCalledTimes(1);
-    // Evaluate-then-claim: getRecent runs BEFORE the claim (so a crash there
-    // doesn't advance the schedule), but the loser discards its work — no run.
-    expect(getRecent).toHaveBeenCalledTimes(1);
-    expect(create).not.toHaveBeenCalled();
-  });
-
-  it('does not digest signals from before a fresh watch was created', async () => {
-    // Watch created 2h before NOW, never run. Its window floor is createdAt,
-    // so a matching signal that predates creation must be excluded even though
-    // getRecent's cadence lookback would otherwise reach it.
-    const fresh = watch({ lastRunAt: null, createdAt: new Date('2026-07-05T07:00:00Z') });
-    const claimDue = vi.fn().mockResolvedValue(true);
-    const create = vi.fn().mockResolvedValue({});
-    await runWatchSchedulerJob({
-      now: NOW, // 09:00Z
-      watchRepo: { listDue: vi.fn().mockResolvedValue([fresh]), claimDue },
-      runRepo: { create },
-      signalRepo: {
-        getRecent: getRecentWith([
-          signal({ id: 'pre', timestamp: new Date('2026-07-05T06:00:00Z') }), // before createdAt
-          signal({ id: 'post', timestamp: new Date('2026-07-05T08:00:00Z') }), // after createdAt
-        ]),
+  function claimedSlot(over: Partial<ClaimedWatchSlot> = {}): ClaimedWatchSlot {
+    const source = watch();
+    return {
+      id: 'slot-1',
+      watchId: source.id,
+      userId: source.userId,
+      spec: {
+        name: source.name,
+        cadence: source.cadence,
+        hourOfDay: source.hourOfDay,
+        filter: source.filter,
+        action: source.action,
       },
-      userRepo: { getLocale: getLocaleUTC() },
+      scheduledFor: new Date('2026-07-05T08:00:00Z'),
+      windowStart: WINDOW_START,
+      windowEnd: NOW,
+      leaseToken: 'lease-1',
+      attemptCount: 1,
+      ...over,
+    };
+  }
+
+  function runRepoWith(slots: Array<ClaimedWatchSlot | null>) {
+    return {
+      claimNextDueSlot: vi.fn()
+        .mockImplementationOnce(async () => slots.shift() ?? null)
+        .mockImplementation(async () => slots.shift() ?? null),
+      completeSlot: vi.fn().mockResolvedValue(true),
+      failSlot: vi.fn().mockResolvedValue('retry_scheduled' as const),
+      pruneZeroMatchSlots: vi.fn().mockResolvedValue(0),
+    };
+  }
+
+  it('claims and completes a durable slot when its persisted window matches', async () => {
+    const slot = claimedSlot();
+    const runRepo = runRepoWith([slot, null]);
+    const listInWindow = vi.fn().mockResolvedValue([
+      signal({ id: 'a', timestamp: new Date('2026-07-05T08:00:00Z') }),
+    ]);
+    await runWatchSchedulerJob({
+      runRepo,
+      signalRepo: { listInWindow },
     });
-    expect(create).toHaveBeenCalledTimes(1);
-    expect(create.mock.calls[0]![0].matchedRefs).toEqual(['post']); // 'pre' excluded
+    expect(listInWindow).toHaveBeenCalledWith(slot.userId, WINDOW_START, NOW);
+    expect(runRepo.completeSlot).toHaveBeenCalledWith({
+      id: slot.id,
+      leaseToken: slot.leaseToken,
+      matchedCount: 1,
+      summary: expect.stringContaining('Q3 budget'),
+      matchedRefs: ['a'],
+    });
+    expect(runRepo.pruneZeroMatchSlots).toHaveBeenCalledWith(30, 100);
   });
 
-  it('isolates a failing watch so the rest still run', async () => {
-    const claimDue = vi.fn().mockResolvedValue(true);
-    // First getLocale throws → the 'bad' watch fails before its claim; 'good' proceeds.
-    const getLocale = vi
-      .fn()
-      .mockRejectedValueOnce(new Error('locale lookup failed'))
-      .mockResolvedValue({ language: null, timezone: 'UTC' });
+  it('completes zero-match slots so the persisted schedule has no gaps', async () => {
+    const slot = claimedSlot();
+    const runRepo = runRepoWith([slot, null]);
     await runWatchSchedulerJob({
-      now: NOW,
-      watchRepo: { listDue: vi.fn().mockResolvedValue([watch({ id: 'bad' }), watch({ id: 'good' })]), claimDue },
-      runRepo: { create: vi.fn().mockResolvedValue({}) },
-      signalRepo: { getRecent: getRecentWith([signal({ id: 'a' })]) },
-      userRepo: { getLocale },
+      runRepo,
+      signalRepo: { listInWindow: vi.fn().mockResolvedValue([]) },
     });
-    expect(claimDue).toHaveBeenCalledTimes(1); // only the good one reached the claim
-    expect(claimDue.mock.calls[0]![0]).toBe('good');
+    expect(runRepo.completeSlot).toHaveBeenCalledWith(expect.objectContaining({
+      id: slot.id,
+      matchedCount: 0,
+      summary: '',
+      matchedRefs: [],
+    }));
+  });
+
+  it('does not retry or fail a completion after losing its lease', async () => {
+    const runRepo = runRepoWith([claimedSlot(), null]);
+    runRepo.completeSlot.mockResolvedValue(false);
+    await runWatchSchedulerJob({
+      runRepo,
+      signalRepo: { listInWindow: vi.fn().mockResolvedValue([signal()]) },
+    });
+    expect(runRepo.completeSlot).toHaveBeenCalledTimes(1);
+    expect(runRepo.failSlot).not.toHaveBeenCalled();
+  });
+
+  it('uses the immutable slot window rather than recalculating a lookback', async () => {
+    const slot = claimedSlot({
+      windowStart: new Date('2026-07-05T08:15:00Z'),
+      windowEnd: new Date('2026-07-05T08:45:00Z'),
+    });
+    const runRepo = runRepoWith([slot, null]);
+    const listInWindow = vi.fn().mockResolvedValue([]);
+    await runWatchSchedulerJob({
+      runRepo,
+      signalRepo: { listInWindow },
+    });
+    expect(listInWindow).toHaveBeenCalledWith(slot.userId, slot.windowStart, slot.windowEnd);
+  });
+
+  it('records a failed attempt and continues to the next durable slot', async () => {
+    const bad = claimedSlot({ id: 'bad-slot', leaseToken: 'bad-lease' });
+    const good = claimedSlot({ id: 'good-slot', leaseToken: 'good-lease' });
+    const runRepo = runRepoWith([bad, good, null]);
+    const listInWindow = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('signal read failed'))
+      .mockResolvedValueOnce([signal({ id: 'a' })]);
+    await runWatchSchedulerJob({
+      runRepo,
+      signalRepo: { listInWindow },
+    });
+    expect(runRepo.failSlot).toHaveBeenCalledWith({
+      id: bad.id,
+      leaseToken: bad.leaseToken,
+      retryDelayMs: WATCH_SCHEDULER_INTERVAL_MS,
+      error: 'signal read failed',
+    });
+    expect(runRepo.completeSlot).toHaveBeenCalledWith(expect.objectContaining({ id: good.id }));
   });
 });

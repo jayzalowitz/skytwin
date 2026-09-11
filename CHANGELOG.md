@@ -1,5 +1,12 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [Unreleased] — Durable Watch scheduling
+
+### Changed
+
+- Scheduled Watches now persist an immutable, owner-bound run slot before reading signals. Slot creation and schedule advancement share one serializable CockroachDB transaction; processing uses database-clock leases with fresh fencing tokens, bounded retries, terminal quarantine for invalid stored work, and exact `(windowStart, windowEnd]` signal reads. See [`watch-run-repository.ts`](./packages/db/src/repositories/watch-run-repository.ts) and [`083-watch-scheduled-slots.sql`](./packages/db/src/migrations/083-watch-scheduled-slots.sql).
+- Every scheduled firing is retained long enough to distinguish “ran with no matches” from “never ran.” Zero-match rows stay out of user-facing history and are pruned after 30 days, while positive completed history is preserved. Active Watch filters are normalized and guarded in the database so malformed, blank, or unknown-only filters fail closed instead of becoming broad matches.
+
 ## [Unreleased] — Account-bound connector evidence
 
 ### Added
