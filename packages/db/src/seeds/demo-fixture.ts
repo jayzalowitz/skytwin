@@ -68,6 +68,7 @@ async function main(): Promise<void> {
         trust_tier: 'moderate_autonomy',
         autonomy_settings: JSON.stringify({ maxAutoSpend: 5000 }),
         is_demo: true,
+        demo_ready: true,
       },
       conflict: ['id'],
       update: 'all',

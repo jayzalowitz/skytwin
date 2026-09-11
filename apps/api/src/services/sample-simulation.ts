@@ -81,7 +81,7 @@ class SampleSimulationTerminal {
 export class SampleSimulationCommandError extends Error {
   constructor(
     message: string,
-    public readonly statusCode: 400 | 409 | 429,
+    public readonly statusCode: 400 | 401 | 409 | 429,
   ) {
     super(message);
     this.name = 'SampleSimulationCommandError';
@@ -138,6 +138,36 @@ function makeRecord(expiresAtMs: number): SessionRecord {
     learning: [],
     resultMessages: {},
     proposalSnapshots: {},
+  };
+}
+
+function cloneRecord(record: SessionRecord): SessionRecord {
+  return {
+    expiresAtMs: record.expiresAtMs,
+    revision: record.revision,
+    statuses: { ...record.statuses },
+    learning: record.learning.map((item) => ({ ...item })),
+    resultMessages: { ...record.resultMessages },
+    proposalSnapshots: Object.fromEntries(
+      Object.entries(record.proposalSnapshots).map(([key, proposal]) => [
+        key,
+        proposal
+          ? {
+              ...proposal,
+              policy: { ...proposal.policy },
+              explanation: {
+                ...proposal.explanation,
+                evidence: [...proposal.explanation.evidence],
+                preferences: [...proposal.explanation.preferences],
+              },
+              allowedCommands: [...proposal.allowedCommands],
+              correctionOptions: proposal.correctionOptions.map((item) => ({
+                ...item,
+              })),
+            }
+          : proposal,
+      ]),
+    ) as SessionRecord['proposalSnapshots'],
   };
 }
 
@@ -444,38 +474,48 @@ export class SampleSimulationService {
   private readonly terminal = new SampleSimulationTerminal();
   private readonly policy: Pick<PolicyEvaluator, 'evaluate'>;
   private readonly maxSessions: number;
+  private readonly clock: () => number;
   private readonly explanations = new ExplanationGenerator(
     noPersistenceExplanationRepository,
   );
 
-  constructor(policy?: Pick<PolicyEvaluator, 'evaluate'>, maxSessions = 1_000) {
+  constructor(
+    policy?: Pick<PolicyEvaluator, 'evaluate'>,
+    maxSessions = 1_000,
+    clock: () => number = Date.now,
+  ) {
     this.policy =
       policy ??
       new PolicyEvaluator(unusablePolicyRepository, { globallyPaused: false });
     this.maxSessions = maxSessions;
+    this.clock = clock;
   }
 
   async getState(
     sessionKey: string,
     expiresAtMs: number,
-    nowMs = Date.now(),
+    nowMs = this.clock(),
   ): Promise<SampleSimulationStateResponse> {
     this.dropExpired(nowMs);
+    this.assertActive(sessionKey, expiresAtMs, nowMs);
     let record = this.records.get(sessionKey);
     if (!record) {
       record = makeRecord(expiresAtMs);
       this.putRecord(sessionKey, record);
     }
-    return this.present(record);
+    const presented = await this.present(record);
+    this.assertActive(sessionKey, expiresAtMs, this.clock());
+    return presented;
   }
 
   async command(
     sessionKey: string,
     expiresAtMs: number,
     command: SampleSimulationCommand,
-    nowMs = Date.now(),
+    nowMs = this.clock(),
   ): Promise<SampleSimulationStateResponse> {
     this.dropExpired(nowMs);
+    this.assertActive(sessionKey, expiresAtMs, nowMs);
     let existing = this.records.get(sessionKey);
     if (!existing) {
       existing = makeRecord(expiresAtMs);
@@ -484,7 +524,17 @@ export class SampleSimulationService {
     if (command.type === 'reset') {
       const reset = makeRecord(expiresAtMs);
       this.putRecord(sessionKey, reset);
-      return this.present(reset);
+      let presented: SampleSimulationStateResponse;
+      try {
+        presented = await this.present(reset);
+      } catch (error) {
+        if (this.records.get(sessionKey) === reset) {
+          this.records.set(sessionKey, existing);
+        }
+        throw error;
+      }
+      this.assertActive(sessionKey, expiresAtMs, this.clock());
+      return presented;
     }
 
     const status = existing.statuses[command.proposalId];
@@ -502,6 +552,7 @@ export class SampleSimulationService {
     // correction may change future predictions, but must never rewrite the
     // evidence, preferences, or proposed action shown for an earlier choice.
     const proposalBeforeCommand = await this.presentProposal(entry, existing);
+    this.assertActive(sessionKey, existing.expiresAtMs, this.clock());
     if (
       this.records.get(sessionKey) !== existing ||
       existing.statuses[command.proposalId] !== 'pending'
@@ -512,6 +563,7 @@ export class SampleSimulationService {
       );
     }
 
+    const staged = cloneRecord(existing);
     if (command.type === 'approve') {
       if (!proposalBeforeCommand.policy.allowed) {
         throw new SampleSimulationCommandError(
@@ -526,35 +578,46 @@ export class SampleSimulationService {
       ) {
         throw new Error('Simulation terminal returned an unsafe receipt.');
       }
-      existing.statuses[command.proposalId] = 'simulated_approved';
-      existing.resultMessages[command.proposalId] =
+      staged.statuses[command.proposalId] = 'simulated_approved';
+      staged.resultMessages[command.proposalId] =
         'Approved in simulation. No external action was sent.';
     } else if (command.type === 'reject') {
-      existing.statuses[command.proposalId] = 'simulated_rejected';
-      existing.resultMessages[command.proposalId] =
+      staged.statuses[command.proposalId] = 'simulated_rejected';
+      staged.resultMessages[command.proposalId] =
         'Rejected in simulation. Nothing was changed outside this session.';
     } else {
-      existing.statuses[command.proposalId] = 'simulated_corrected';
-      existing.learning = [
+      staged.statuses[command.proposalId] = 'simulated_corrected';
+      staged.learning = [
         {
           key: 'preferred_focus_window',
           value: 'afternoon',
           source: 'corrected',
         },
       ];
-      existing.resultMessages[command.proposalId] =
+      staged.resultMessages[command.proposalId] =
         'Correction learned for this sample session only.';
     }
-    existing.proposalSnapshots[command.proposalId] = {
+    staged.proposalSnapshots[command.proposalId] = {
       ...proposalBeforeCommand,
-      status: existing.statuses[command.proposalId],
+      status: staged.statuses[command.proposalId],
       allowedCommands: [],
       correctionOptions: [],
-      resultMessage: existing.resultMessages[command.proposalId] ?? null,
+      resultMessage: staged.resultMessages[command.proposalId] ?? null,
     };
-    existing.revision += 1;
-    this.putRecord(sessionKey, existing);
-    return this.present(existing);
+    staged.revision += 1;
+    const presented = await this.present(staged);
+    this.assertActive(sessionKey, expiresAtMs, this.clock());
+    if (
+      this.records.get(sessionKey) !== existing ||
+      existing.statuses[command.proposalId] !== 'pending'
+    ) {
+      throw new SampleSimulationCommandError(
+        'The sample changed while this command was being checked.',
+        409,
+      );
+    }
+    this.putRecord(sessionKey, staged);
+    return presented;
   }
 
   discard(sessionKey: string): void {
@@ -569,6 +632,19 @@ export class SampleSimulationService {
     for (const [key, record] of this.records) {
       if (record.expiresAtMs <= nowMs) this.records.delete(key);
     }
+  }
+
+  private assertActive(
+    sessionKey: string,
+    expiresAtMs: number,
+    nowMs: number,
+  ): void {
+    if (expiresAtMs > nowMs) return;
+    this.records.delete(sessionKey);
+    throw new SampleSimulationCommandError(
+      'Sample session expired. Restart the sample to continue.',
+      401,
+    );
   }
 
   private putRecord(sessionKey: string, record: SessionRecord): void {

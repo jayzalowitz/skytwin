@@ -3,7 +3,8 @@ import type { NextFunction, Request, Response } from 'express';
 import type { SampleSimulationStateResponse } from '@skytwin/shared-types';
 import {
   inspectDemoSession,
-  isLocalDemoAddress,
+  inspectDemoSessionForDiscard,
+  isLocalDemoRequest,
 } from '../auth/demo-session.js';
 import {
   parseSampleSimulationCommand,
@@ -18,14 +19,15 @@ interface AuthenticatedSampleRequest extends Request {
   };
 }
 
+type SampleReadinessCheck = () => Promise<boolean>;
+
 function requireSampleSimulationSession(
   req: AuthenticatedSampleRequest,
   res: Response,
   next: NextFunction,
 ): void {
   res.setHeader('Cache-Control', 'no-store');
-  const ip = req.ip ?? req.socket.remoteAddress;
-  if (!isLocalDemoAddress(ip)) {
+  if (!isLocalDemoRequest(req.ip, req.socket.remoteAddress)) {
     res.status(403).json({
       error: 'The packaged sample is available from this device only.',
     });
@@ -54,10 +56,49 @@ function requireSampleSimulationSession(
  */
 export function createDemoSimulationRouter(
   service = new SampleSimulationService(),
+  isSampleReady: SampleReadinessCheck = async () => true,
 ): Router {
   const router = Router();
-  router.use(requireSampleSimulationSession);
 
+  // Deletion is the one operation that accepts an authentically signed but
+  // expired sample token: it can only remove the state keyed by that token.
+  router.delete('/', async (req: AuthenticatedSampleRequest, res, next) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!isLocalDemoRequest(req.ip, req.socket.remoteAddress)) {
+      res.status(403).json({
+        error: 'The packaged sample is available from this device only.',
+      });
+      return;
+    }
+    try {
+      const header = req.headers.authorization;
+      const token = header?.startsWith('Bearer ') ? header.slice(7) : '';
+      const session = token ? inspectDemoSessionForDiscard(token) : null;
+      if (!session) {
+        res.status(401).json({ error: 'Invalid sample session' });
+        return;
+      }
+      service.discard(session.sessionKey);
+      res.status(204).end();
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.use(requireSampleSimulationSession);
+  router.use(async (_req, res, next) => {
+    try {
+      if (!(await isSampleReady())) {
+        res
+          .status(401)
+          .json({ error: 'Sample session is no longer available.' });
+        return;
+      }
+      next();
+    } catch (error) {
+      next(error);
+    }
+  });
   router.get('/', async (req: AuthenticatedSampleRequest, res, next) => {
     try {
       const session = req.sampleSimulationSession!;
@@ -96,11 +137,6 @@ export function createDemoSimulationRouter(
       }
     },
   );
-
-  router.delete('/', (req: AuthenticatedSampleRequest, res) => {
-    service.discard(req.sampleSimulationSession!.sessionKey);
-    res.status(204).end();
-  });
 
   return router;
 }

@@ -7,7 +7,7 @@ import {
   KEY_TOUR_MODE,
   KEY_USER_ID,
 } from './storage-keys.js';
-import { fetchJSON, startDemoSession } from './api-client.js';
+import { endSampleSimulation, fetchJSON, startDemoSession } from './api-client.js';
 
 const source = readFileSync(new URL('./api-client.js', import.meta.url), 'utf8');
 
@@ -92,6 +92,22 @@ describe('api client', () => {
     await expect(fetchJSON('/api/users/real-user')).rejects.toMatchObject({ status: 401 });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(values.get(KEY_SESSION_TOKEN)).toBe('real-token');
+  });
+
+  it('deletes disposable state with the original token without renewal', async () => {
+    values.set(KEY_TOUR_MODE, '1');
+    values.set(KEY_USER_ID, 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d');
+    values.set(KEY_SESSION_TOKEN, 'expired-sample-token');
+    values.set(KEY_DEMO_SESSION_EXPIRES_AT, '2020-01-01T00:00:00.000Z');
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(endSampleSimulation()).resolves.toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer expired-sample-token' },
+    });
   });
 
   it('rejects a sample credential for any other identity before storing it', async () => {

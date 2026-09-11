@@ -522,8 +522,15 @@ export function sendSampleSimulationCommand(command) {
   });
 }
 
-export function endSampleSimulation() {
-  return fetchJSON(`${API}/v1/demo/simulation`, { method: 'DELETE' });
+export async function endSampleSimulation() {
+  const token = localStorage.getItem(KEY_SESSION_TOKEN);
+  if (!token) return null;
+  const res = await fetch(`${API}/v1/demo/simulation`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw await classifyHttpError(res);
+  return null;
 }
 
 export function askTwin(userId, situation, opts = {}) {

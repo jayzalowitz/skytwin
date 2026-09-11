@@ -58,6 +58,8 @@ export {
   provisionPackagedSample,
   provisionPackagedSampleWithClient,
   ingestPackagedSampleSignals,
+  markPackagedSampleReady,
+  markPackagedSampleReadyWithClient,
   type PackagedSampleEnvironment,
   type PackagedSampleProvisionOptions,
   type PackagedSampleGuardResult,

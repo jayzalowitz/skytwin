@@ -83,7 +83,7 @@ describe('userRepository', () => {
 
       expect(result).toEqual(row);
       expect(mockQuery).toHaveBeenCalledWith(
-        'SELECT * FROM users WHERE id = $1 AND is_demo = true',
+        'SELECT * FROM users WHERE id = $1 AND is_demo = true AND demo_ready = true',
         ['u-001'],
       );
     });
