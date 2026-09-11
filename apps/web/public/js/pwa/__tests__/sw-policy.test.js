@@ -49,7 +49,7 @@ describe('classifyRequest', () => {
     }
   });
 
-  it('does NOT queue OAuth / pairing / stream writes (non-replayable)', () => {
+  it('does NOT queue OAuth / pairing / stream / approval writes (non-replayable)', () => {
     expect(
       classifyRequest({ method: 'POST', url: `${ORIGIN}/api/sessions/pair/consume` }, ORIGIN),
     ).toBe('passthrough');
@@ -58,6 +58,12 @@ describe('classifyRequest', () => {
     ).toBe('passthrough');
     expect(
       classifyRequest({ method: 'POST', url: `${ORIGIN}/api/assistant/messages` }, ORIGIN),
+    ).toBe('passthrough');
+    expect(
+      classifyRequest(
+        { method: 'POST', url: `${ORIGIN}/api/approvals/req-1/respond` },
+        ORIGIN,
+      ),
     ).toBe('passthrough');
   });
 
@@ -97,13 +103,13 @@ describe('precache list', () => {
 describe('isReplayable', () => {
   it('allows ordinary mutating endpoints', () => {
     expect(isReplayable('/api/feedback')).toBe(true);
-    expect(isReplayable('/api/approvals/req-1/respond')).toBe(true);
     expect(isReplayable('/api/twin/u1/preferences')).toBe(true);
   });
   it('blocks single-use / streamed / time-sensitive endpoints', () => {
     expect(isReplayable('/api/oauth/google/disconnect')).toBe(false);
     expect(isReplayable('/api/sessions/pair/consume')).toBe(false);
     expect(isReplayable('/api/assistant/messages')).toBe(false);
+    expect(isReplayable('/api/approvals/req-1/respond')).toBe(false);
   });
 });
 

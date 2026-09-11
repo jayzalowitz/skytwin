@@ -21,7 +21,8 @@
  * writes verbatim with their OWN session token. It never synthesizes,
  * mutates, or re-targets a request, and it skips OAuth / pairing / stream
  * endpoints. It is not a new action source — it is a deferred send of an
- * action the user already took while the connection was down.
+ * action the user already took while the connection was down. Time-bound
+ * approval responses are excluded from the queue and must complete online.
  */
 
 import {

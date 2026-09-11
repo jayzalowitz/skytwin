@@ -93,9 +93,11 @@ export const approvalRepository = {
    * extreme-severity action that friction is acceptable: "start the whole
    * approval fresh" is the safe behavior, not a re-issued token.
    *
-   * Returns the freshly issued token, or null if the request is no longer
-   * pending, is not a dual-confirmation request, or was already
-   * first-confirmed.
+   * Returns the freshly issued token, or null if the request is expired, is
+   * no longer pending, is not a dual-confirmation request, or was already
+   * first-confirmed. Expiry is checked against the database clock in the same
+   * UPDATE that records the confirmation, so a stale route read cannot mint a
+   * token after the approval's consent window closes.
    */
   async recordFirstConfirmation(
     id: string,
@@ -106,6 +108,7 @@ export const approvalRepository = {
       `UPDATE approval_requests
        SET first_confirmed_at = now(), confirmation_token = $1
        WHERE id = $2 AND user_id = $3 AND status = 'pending'
+         AND expires_at > now()
          AND confirmation_level = 'dual' AND first_confirmed_at IS NULL
        RETURNING *`,
       [token, id, userId],
@@ -175,11 +178,14 @@ export const approvalRepository = {
     // the moment the request resolves — it must not linger in the row after
     // use. Harmless for single-confirmation rows (their token is already
     // NULL). The `status = 'pending'` guard still makes this the atomic
-    // single-winner for concurrent responses.
+    // single-winner for concurrent responses. The database-clock expiry
+    // predicate is part of the same atomic transition: an earlier route read
+    // cannot authorize a response after the consent window has closed.
     const result = await query<ApprovalRequestRow>(
       `UPDATE approval_requests
        SET status = $1, responded_at = now(), response = $2, confirmation_token = NULL
        WHERE id = $3 AND status = 'pending' AND user_id = $4
+         AND expires_at > now()
        RETURNING *`,
       [
         action === 'approve' ? 'approved' : 'rejected',
@@ -249,7 +255,7 @@ export const approvalRepository = {
 
   /**
    * Respond to multiple approval requests at once.
-   * Only updates requests owned by the given userId and still pending.
+   * Only updates unexpired requests owned by the given userId and still pending.
    * Returns the updated rows.
    */
   async batchRespond(
@@ -267,6 +273,7 @@ export const approvalRepository = {
       `UPDATE approval_requests
        SET status = $1, responded_at = now(), response = $2
        WHERE id IN (${placeholders}) AND status = 'pending' AND user_id = $3
+         AND expires_at > now()
        RETURNING *`,
       [
         status,

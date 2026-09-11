@@ -6,6 +6,13 @@ All notable changes to SkyTwin will be documented in this file.
 
 - User decision, approval, routine, event, and memory-action policy evaluation now loads only the policy rows owned by that user. Repository reads require an explicit owner ID and no longer fall back to a process-wide policy set.
 
+## [Unreleased] — Approval consent boundaries
+
+### Fixed
+
+- Approval first-confirmation, single-response, and batch-response transitions now require `expires_at > now()` in their atomic database updates. A route read made before expiry can no longer mint a confirmation token or resolve an approval after its consent window closes.
+- The web service worker no longer queues approval writes for offline replay. Approval responses are sent only while online, preserving their time-bound user context instead of delivering a deferred click after reconnection.
+
 ## [Unreleased] — Restricted Gmail Inbox mutation boundary
 
 ### Added

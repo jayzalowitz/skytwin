@@ -59,12 +59,15 @@ const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
  *     stream POST would produce a duplicate assistant turn.
  *   - auth/session exchange — a stale pairing token is single-use and
  *     replaying it produces a confusing "already used" error.
+ *   - approval responses — consent is time-bound and contextual; an offline
+ *     click must never be queued and delivered after that context expires.
  * Matched as path prefixes (after the leading /api).
  */
 const NON_REPLAYABLE_PREFIXES = Object.freeze([
   '/api/assistant/messages', // streamed; replay would duplicate a turn
   '/api/sessions/pair',      // single-use pairing tokens
   '/api/oauth',              // OAuth handshakes are time-sensitive
+  '/api/approvals/',         // consent transitions must happen online, once
 ]);
 
 /**
