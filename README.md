@@ -113,7 +113,7 @@ Every path produces an explanation. Every outcome feeds back into the twin. The 
 
 | Scenario | What SkyTwin Does |
 |----------|-------------------|
-| **Newsletter arrives** | Your twin knows you archive these without reading. Auto-archived. Explanation logged. You never see it. |
+| **Newsletter arrives** | Your twin recognizes your archive pattern and proposes moving the message out of the Inbox. You confirm before the mailbox changes, and the explanation is logged. |
 | **Calendar conflict** | You always prioritize skip-level 1:1s over standups. Standup rescheduled with a note to the organizer. |
 | **Subscription renewal** | $15.99/mo streaming service, used 3x this month, 18 months of renewals. Auto-renewed within your spend norms. |
 | **Grocery reorder** | Repeats your last order with your substitution rules. Flags the one item that jumped 15% in price. |

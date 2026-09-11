@@ -59,8 +59,9 @@ export function gmailArchiveProposalEnabled(): boolean {
 }
 
 function plainDataDescriptors(value: unknown): PropertyDescriptorMap | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  if (!value || typeof value !== 'object') return null;
   try {
+    if (Array.isArray(value)) return null;
     const prototype = Object.getPrototypeOf(value) as unknown;
     if (prototype !== Object.prototype && prototype !== null) return null;
     return Object.getOwnPropertyDescriptors(value);

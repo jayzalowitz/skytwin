@@ -183,6 +183,17 @@ describe('buildGmailArchiveProposal', () => {
     });
   });
 
+  it('returns a typed failure for a revoked proxy', () => {
+    process.env['SKYTWIN_GMAIL_ARCHIVE_ENABLED'] = 'true';
+    const { proxy, revoke } = Proxy.revocable({ decision: decision() }, {});
+    revoke();
+
+    expect(buildGmailArchiveProposal(proxy)).toEqual({
+      ok: false,
+      error: 'invalid_input',
+    });
+  });
+
   it('rejects an accessor without invoking it', () => {
     process.env['SKYTWIN_GMAIL_ARCHIVE_ENABLED'] = 'true';
     const decisionGetter = () => {
