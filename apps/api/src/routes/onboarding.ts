@@ -13,7 +13,7 @@ import { Router } from 'express';
 import { onboardingRepository, mcpServerRepository, query } from '@skytwin/db';
 import { runPrompt } from '@skytwin/policy-prompts';
 import { createLogger } from '@skytwin/core';
-import { getLlmClientFromConfig } from '../lib/llm-client-factory.js';
+import { buildUserLlmClient } from '../lib/user-llm-client.js';
 
 const log = createLogger('api:onboarding');
 
@@ -164,7 +164,7 @@ export function createOnboardingRouter(): Router {
       );
 
       // Check LLM provider availability
-      const hasLlmProvider = getLlmClientFromConfig() !== null;
+      const hasLlmProvider = await buildUserLlmClient(userId) !== null;
 
       const isFirstRun = !hasMemory && !hasInstalledServers;
 
@@ -199,7 +199,7 @@ export function createOnboardingRouter(): Router {
       // onboarding-dialogue template doesn't read it. Kept on the request
       // shape for future extension but intentionally unused.
 
-      const llmClient = getLlmClientFromConfig();
+      const llmClient = await buildUserLlmClient(userId);
 
       if (llmClient) {
         try {
@@ -221,6 +221,7 @@ export function createOnboardingRouter(): Router {
             },
             user: { userId },
             llmClient,
+            invocationKind: 'interactive',
           });
 
           if (!result.fellBackToDeterministic && result.output) {

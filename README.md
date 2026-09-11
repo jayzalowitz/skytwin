@@ -185,6 +185,7 @@ The defaults give you a working SkyTwin without any LLM API keys or Docker. Powe
 | `SKYTWIN_DEV_SKIP_PORT_PREFLIGHT=1` | Bypass the `pnpm dev` port preflight. Use only when you intentionally want Turbo to try starting even though a required dev port is already listening. |
 | `SKYTWIN_WITH_OLLAMA=true` | Install Ollama + pull the gemma4 model (~9.6GB). The default install uses the embedded llama.cpp provider, which doesn't require this. |
 | `SKYTWIN_DISABLE_EMBEDDED=1` | Skip the embedded LLM provider in the API's provider chain. Pair with hosted-only keys (e.g. `ANTHROPIC_API_KEY`) for reproducible evaluation runs. |
+| `SKYTWIN_REASONING_MODE` | Pin the environment-driven chain to `on_device` or `bring_your_own_provider`. Mixed local/remote chains require this explicit choice; `verified_private_cloud` remains unavailable until a verified adapter ships. |
 | `SKYTWIN_CRDB_VERSION` | Pin a non-default CockroachDB version. Refresh the hash tables in `bin/skytwin-db` and `apps/desktop/scripts/build-single-binary.sh` together. |
 
 ### Manual setup
@@ -418,7 +419,7 @@ SkyTwin is in **Tier 1 launch polish** (see [`docs/launch-plan.md`](./docs/launc
 - Account-free sample mode: browse a populated fictional profile, then use the dedicated simulation to approve, reject, or correct fixed proposals and observe session-local learning without invoking real connectors, providers, credentials, or execution adapters
 - Inbox-Intelligence briefing — a daily/weekly digest that splits **to-dos (act)** from **topics (FYI)**, cites the source signal behind every item, persists memory-derived action opportunities, routes them through policy plus IronClaw/OpenClaw/Direct execution, reports queued/executed/blocked/learning-needed outcomes, and offers a "Power view" toggle for the technical detail behind each call
 - Full decision pipeline: signal → interpret → decide → policy check → execute/escalate → explain → learn
-- LLM-powered decisions via configurable provider chain (Claude, GPT, Gemini, Ollama) with automatic fallback to built-in rules
+- Mode-scoped model reasoning: on-device embedded/Ollama or an explicitly selected provider chain, with fallback contained inside the selected location boundary and deterministic rules when no eligible provider responds
 - Twin model with versioned profiles, confidence scoring, and preference learning
 - Policy engine with spend limits, trust tiers, and domain-specific rules
 - Swappable memory backend: gbrain (default — vector + tsvector RRF on CRDB) plus optional hybrid mode that adds the legacy spatial Memory Palace (#197). Selectable per-installation via `MEMORY_BACKEND` and per-user via the dashboard. See [`docs/memory-swap.md`](./docs/memory-swap.md).

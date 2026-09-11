@@ -9,8 +9,8 @@
  *      (snake_case → camelCase boundary translation)
  *   5. Belt-and-suspenders: filters out any installed-capability suggestion
  *      that leaks through the prompt
- *   6. Deterministic fallback → reports no_llm_configured to browser
- *   7. runPrompt throws → fail-soft to no_llm_configured
+ *   6. Deterministic fallback → reports provider_unavailable to browser
+ *   7. runPrompt throws → fail-soft with prompt_failed
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -33,9 +33,9 @@ vi.mock('@skytwin/llm-client', async () => {
   );
   return {
     ...actual,
-    LlmClient: vi.fn(function LlmClient() {
+    LlmClient: Object.assign(vi.fn(function LlmClient() {
       return {};
-    }),
+    }), { forReasoningMode: vi.fn(() => ({})) }),
   };
 });
 
@@ -44,12 +44,20 @@ const {
   mockAiProviderRepository,
 } = vi.hoisted(() => ({
   mockMcpServerRepository: { listForUser: vi.fn() },
-  mockAiProviderRepository: { getEnabledForUser: vi.fn() },
+  mockAiProviderRepository: {
+    getEnabledForUser: vi.fn(),
+    getReasoningSnapshotForUser: vi.fn(),
+  },
 }));
 
 vi.mock('@skytwin/db', () => ({
   mcpServerRepository: mockMcpServerRepository,
   aiProviderRepository: mockAiProviderRepository,
+  reasoningModeRepository: {
+    getOrCreateForUser: vi.fn().mockResolvedValue({
+      mode: 'bring_your_own_provider', requires_confirmation: false,
+    }),
+  },
   // Other repository imports in assistant.ts — stubbed so the module loads.
   approvalRepository: {},
   assistantRepository: {},
@@ -136,6 +144,18 @@ const USER_ID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockAiProviderRepository.getReasoningSnapshotForUser.mockImplementation(async () => {
+    const providers = await mockAiProviderRepository.getEnabledForUser();
+    return {
+      providers: providers.map((provider: { enabled?: boolean }) => ({
+        ...provider,
+        enabled: provider.enabled ?? true,
+      })),
+      reasoningMode: {
+        mode: 'bring_your_own_provider', requires_confirmation: false,
+      },
+    };
+  });
 });
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -388,7 +408,7 @@ describe('POST /api/assistant/install-suggestion', () => {
     expect(mockRunPrompt).not.toHaveBeenCalled();
   });
 
-  it('reports no_llm_configured when the prompt falls back to deterministic', async () => {
+  it('reports provider_unavailable when the prompt falls back to deterministic', async () => {
     mockAiProviderRepository.getEnabledForUser.mockResolvedValue([
       { provider: 'anthropic', api_key: 'k', model: 'claude-haiku-4-5', base_url: null },
     ]);
@@ -409,11 +429,11 @@ describe('POST /api/assistant/install-suggestion', () => {
     expect(res.body).toEqual({
       intentDetected: false,
       suggestions: [],
-      reason: 'no_llm_configured',
+      reason: 'provider_unavailable',
     });
   });
 
-  it('fails soft to no_llm_configured when runPrompt throws (browser heuristic covers UX)', async () => {
+  it('fails soft to prompt_failed when runPrompt throws (browser heuristic covers UX)', async () => {
     mockAiProviderRepository.getEnabledForUser.mockResolvedValue([
       { provider: 'anthropic', api_key: 'k', model: 'claude-haiku-4-5', base_url: null },
     ]);
@@ -429,7 +449,7 @@ describe('POST /api/assistant/install-suggestion', () => {
 
     expect(res.status).toBe(200);
     const body = res.body as { reason: string; suggestions: unknown[] };
-    expect(body.reason).toBe('no_llm_configured');
+    expect(body.reason).toBe('prompt_failed');
     expect(body.suggestions).toEqual([]);
   });
 });

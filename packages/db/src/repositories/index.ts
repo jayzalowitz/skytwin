@@ -16,6 +16,8 @@ export type { CreatePolicyInput, UpdatePolicyInput } from './policy-repository.j
 
 export { explanationRepository } from './explanation-repository.js';
 export type { CreateExplanationInput } from './explanation-repository.js';
+export { inferenceReceiptRepository } from './inference-receipt-repository.js';
+export type { CreateInferenceReceiptInput } from './inference-receipt-repository.js';
 
 export { feedbackRepository } from './feedback-repository.js';
 export type { CreateFeedbackInput } from './feedback-repository.js';
@@ -108,6 +110,7 @@ export type { RegisterCredentialRequirementInput } from './credential-requiremen
 
 export { aiProviderRepository } from './ai-provider-repository.js';
 export type { UpsertAIProviderInput } from './ai-provider-repository.js';
+export { reasoningModeRepository } from './reasoning-mode-repository.js';
 
 export { ironClawToolRepository } from './ironclaw-tool-repository.js';
 export type { UpsertIronClawToolInput } from './ironclaw-tool-repository.js';

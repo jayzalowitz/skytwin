@@ -285,6 +285,17 @@ export interface ExplanationRecordRow {
   created_at: Date;
 }
 
+export interface InferenceReceiptRow {
+  id: string;
+  version: number;
+  decision_id: string;
+  explanation_id: string;
+  status: string;
+  receipt: unknown;
+  trusted: boolean;
+  created_at: Date;
+}
+
 // ============================================================================
 // Feedback
 // ============================================================================
@@ -733,6 +744,14 @@ export interface AIProviderSettingsRow {
   base_url: string | null;
   priority: number;
   enabled: boolean;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export interface ReasoningModeSettingsRow {
+  user_id: string;
+  mode: import('@skytwin/shared-types').ReasoningMode | null;
+  requires_confirmation: boolean;
   created_at: Date;
   updated_at: Date;
 }

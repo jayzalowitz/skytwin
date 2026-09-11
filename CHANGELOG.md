@@ -13,6 +13,44 @@ All notable changes to SkyTwin will be documented in this file.
 - **Loopback restrictions now survive the dashboard proxy boundary.** The web server rejects remote peers before forwarding sample-info, session, or simulation requests to the local API, and the API derives locality from the direct socket when no trusted proxy address is present.
 - **Expired simulations cannot return a late asynchronous result.** The simulation checks its signed deadline both before creating state and after policy/explanation work. Exit may present the original signed credential solely to delete the state bound to that credential; it cannot read, renew, or mutate the simulation.
 
+## [Unreleased] — Explicit reasoning boundaries and receipts
+
+### Added
+
+- Added the versioned inference-receipt foundation: a metadata-only signed
+  contract, exact-byte integrity verifier with explicit caller-supplied trust
+  roots and provider-specific attestation-policy seam, user-owned
+  persistence boundary, authenticated read/delete API, and backup/restore
+  coverage (restored receipts remain explicitly untrusted).
+- Added receipt emission to the decision-event ingest LLM boundary. Each completed
+  interpretation, candidate-generation, or draft call is classified as
+  on-device, conventional, verified confidential, verification failure, or
+  explicit local fallback; receipts are linked to the durable explanation and
+  persisted before approval or execution. Conventional/local receipts cannot
+  contain attestation fields, and hosted cost remains explicitly unknown when
+  the provider supplies no exact billing fact. Confidential status requires an
+  independently configured verifier and pinned trust roots; that integration is
+  not enabled by this slice. Receipt hashes cover versioned canonical logical
+  inputs/outputs, not provider HTTP wire payloads. Other LLM-powered surfaces,
+  the receipt detail UI, and tagged confidential evidence remain follow-up work.
+
+- **Reasoning location is now a persisted policy, not an inference from a provider name.** Each user chooses `on_device` or `bring_your_own_provider`; the `verified_private_cloud` state exists but remains unavailable until a verifier-owned confidential adapter ships. Provider saves, tests, fallback, and every user-scoped API composition path enforce the same boundary. Legacy local, hosted, mixed, disabled, custom-endpoint, and empty chains are classified deterministically; ambiguous chains require confirmation.
+- **Every normalized model result carries privacy and execution provenance.** Metadata records execution/network/confidentiality/retention capabilities, pricing source and freshness, a SkyTwin invocation ID, verification state, receipt linkage, and a sanitized ordered fallback path. Custom endpoints never inherit an official provider's terms or a confidential-computing label.
+- **Decision receipts now consume that same execution provenance.** The persisted
+  requested mode remains distinct from the observed execution class, failed,
+  circuit-open, and unavailable-price attempts remain in the sanitized path,
+  and the exact receipt batch is durable before approval or execution begins.
+
+### Changed
+
+- **Unattended inference fails closed when provider price is unknown, stale, invalid, or unbounded.** Interactive requests can use an explicitly selected provider; background decision and briefing work skips unpriced providers and stays inside the selected location boundary. Draft generation also evaluates every possible fallback rather than assuming the cheapest configured provider will answer.
+- **Provider-chain and reasoning-mode updates are atomic.** Both records are written in one CockroachDB transaction. CI executes the legacy migration twice against a real CockroachDB fixture matrix, and downloads the pinned test binary only after verifying its published SHA-256.
+
+### Fixed (post-/review)
+
+- **Default Ollama calls now use the same DNS-pinned, no-redirect transport as configured endpoints.** Policy classification, transport checks, and receipt identity share the canonical `127.0.0.1` endpoint. Trailing-dot localhost forms remain local, while DNS aliases resolving to loopback fail closed instead of being admitted as remote BYO endpoints.
+- **Completed duplicate signals short-circuit before LLM composition or interpretation.** A concurrent first-ingest race loser durably links any already-produced interpretation traces to the winner's explanation before returning, so recoverable re-ingestion cannot leave an unreceipted provider call.
+
 ## [0.6.102.0] - 2026-08-27
 
 ### Added

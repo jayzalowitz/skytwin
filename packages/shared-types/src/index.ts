@@ -129,6 +129,26 @@ export type {
   ExecutionRuntimeVersionSummary,
 } from './execution-runtime-versions.js';
 
+export { REASONING_MODES, parseReasoningMode } from './reasoning-mode.js';
+export type {
+  ProviderAttestationPolicy,
+  ProviderConfidentiality,
+  ProviderExecutionLocation,
+  ProviderExecutionMetadata,
+  ProviderExecutionAttempt,
+  ProviderCostBasis,
+  ProviderModality,
+  ProviderNetworkScope,
+  ProviderPriceKind,
+  ProviderPricingCapability,
+  ProviderPrivacyCapabilities,
+  ProviderRequestIdentity,
+  ProviderRetentionClass,
+  ProviderRetentionDisclosure,
+  ProviderVerificationStatus,
+  ReasoningMode,
+} from './reasoning-mode.js';
+
 export type {
   ActionPolicy,
   PolicyRule,
@@ -151,6 +171,25 @@ export type {
   EvidenceReference,
   PreferenceReference,
 } from './explanation.js';
+export {
+  receiptSealPayload,
+  sha256Hex,
+  signInferenceReceipt,
+  verifyInferenceReceiptExport,
+} from './inference-receipt.js';
+export type {
+  AttestationVerificationInput,
+  InferenceCostV1,
+  InferenceFallbackV1,
+  InferenceExecutionClass,
+  InferenceReceiptExportV1,
+  InferenceReceiptStatus,
+  InferenceReceiptV1,
+  ReceiptSignatureV1,
+  ReceiptVerificationCode,
+  ReceiptVerificationResult,
+  ReceiptVerificationOptions,
+} from './inference-receipt.js';
 
 export type {
   ExecutionPlan,
