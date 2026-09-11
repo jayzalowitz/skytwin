@@ -243,6 +243,49 @@ beforeEach(() => {
 });
 
 describe('feedback loop — approval records an episode for memory boost', () => {
+  it('keeps the bounded Gmail Inbox proposal out of the generic responder', async () => {
+    fakeApprovalRepo.findById.mockResolvedValueOnce({
+      id: 'app-1',
+      user_id: USER_ID,
+      decision_id: 'dec-1',
+      candidate_action: {
+        id: 'aaaaaaaa-bbbb-4ccc-8ddd-000000000abc',
+        actionType: 'archive_email',
+        description: 'Archive this email',
+        domain: 'email',
+        parameters: {
+          schema: 'gmail_inbox_mutation_v1',
+          messageRefId: '11111111-1111-4111-8111-111111111111',
+          operation: 'archive',
+        },
+        estimatedCostCents: 0,
+        costZeroIntent: 'verified_zero',
+        provenance: 'untrusted_external',
+        reversible: true,
+      },
+      status: 'pending',
+    });
+    const app = buildApp();
+
+    const response = await postJson(app, '/api/approvals/app-1/respond', {
+      action: 'approve',
+      userId: USER_ID,
+    });
+
+    expect(response.status).toBe(409);
+    expect(response.body).toMatchObject({
+      error: 'gmail_archive_execution_not_enabled',
+      approvalId: 'app-1',
+    });
+    expect(fakeApprovalRepo.respond).not.toHaveBeenCalled();
+    expect(fakeFeedbackRepo.create).not.toHaveBeenCalled();
+    expect(fakeOauthRepo.getToken).not.toHaveBeenCalled();
+    expect(fakeExecutionRouter.route).not.toHaveBeenCalled();
+    expect(fakeExecutionRouter.prepareExecution).not.toHaveBeenCalled();
+    expect(fakeExecutionRouter.executeWithRouting).not.toHaveBeenCalled();
+    expect(fakeExecutionRouter.executePrepared).not.toHaveBeenCalled();
+  });
+
   it('approve → mempalaceRepository.createEpisode is called with utility 0.9', async () => {
     const app = buildApp();
     await postJson(app, '/api/approvals/app-1/respond', {
