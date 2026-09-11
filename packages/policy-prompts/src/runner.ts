@@ -130,6 +130,7 @@ export async function runPrompt<T = unknown>(opts: RunPromptOptions): Promise<Ru
   ): Promise<{ raw: string; provider: string; model: string; latencyMs: number }> {
     const response = await llmClient.generate(prompt, {
       temperature: loaded.meta.temperature ?? 0.2,
+      invocationKind: opts.invocationKind ?? 'unattended',
     });
     return {
       raw: response.content,

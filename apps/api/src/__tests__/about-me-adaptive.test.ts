@@ -7,11 +7,7 @@ import type { Express } from 'express';
 
 // ── Factory mock ──────────────────────────────────────────────────────────────
 const { mockGetLlmClient } = vi.hoisted(() => ({ mockGetLlmClient: vi.fn() }));
-vi.mock('../lib/llm-client-factory.js', () => ({
-  getLlmClientFromConfig: mockGetLlmClient,
-  getLlmClientFromConfigFresh: vi.fn().mockReturnValue(null),
-  _resetLlmClientCache: vi.fn(),
-}));
+vi.mock('../lib/user-llm-client.js', () => ({ buildUserLlmClient: mockGetLlmClient }));
 
 // ── DB mocks ──────────────────────────────────────────────────────────────────
 const { mockQuery } = vi.hoisted(() => ({
@@ -119,6 +115,10 @@ describe('GET /about-me — J: self-portrait', () => {
     const app = buildApp();
     const res = await request(app, 'GET', '/api/about-me');
     expect(res.status).toBe(200);
+    expect(mockLlm.generate).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ invocationKind: 'interactive' }),
+    );
     expect((res.body as { modelVersion: string }).modelVersion).toBe('deterministic-v1');
   });
 

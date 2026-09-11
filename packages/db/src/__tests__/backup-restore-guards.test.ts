@@ -12,11 +12,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 let userExists = false;
+const clientQuery = vi.fn(async (_sql?: unknown) => ({ rows: [], rowCount: 1 }));
 
 vi.mock('../connection.js', () => ({
   query: vi.fn(async () => ({ rows: [], rowCount: 0 })),
   withTransaction: vi.fn(async (fn: (client: unknown) => Promise<unknown>) =>
-    fn({ query: vi.fn(async () => ({ rows: [], rowCount: 0 })) }),
+    fn({ query: clientQuery }),
   ),
 }));
 
@@ -34,6 +35,8 @@ import { restoreBackup, validateBackupData, BACKUP_SCHEMA_VERSION } from '../bac
 
 beforeEach(() => {
   userExists = false;
+  clientQuery.mockClear();
+  clientQuery.mockImplementation(async () => ({ rows: [], rowCount: 1 }));
 });
 
 function validPayload(): Record<string, unknown> {
@@ -74,6 +77,65 @@ describe('validateBackupData', () => {
     expect(problems).toContain('decisions is not an array');
     expect(problems).toContain('twinProfileVersions is not an array');
   });
+
+  it('rejects receipt metadata whose signed linkage disagrees with its decision bundle', () => {
+    const payload = validPayload();
+    payload['decisions'] = [{
+      decision: { id: 'decision-a' }, candidateActions: [], outcome: null,
+      explanations: [{ id: 'explanation-a' }],
+      inferenceReceipts: [{
+        id: 'receipt-a', decision_id: 'decision-a', explanation_id: 'explanation-a', status: 'verified',
+        receipt: { id: 'receipt-a', decisionId: 'decision-b', explanationId: 'explanation-a', status: 'verified' },
+      }],
+    }];
+    expect(validateBackupData(payload)).toContain(
+      'decisions[0].inferenceReceipts[0] has inconsistent linkage',
+    );
+  });
+
+  it('rejects an explanation linked to a different decision than its containing bundle', () => {
+    const payload = validPayload();
+    payload['decisions'] = [{
+      decision: { id: 'decision-a' }, candidateActions: [], outcome: null,
+      explanations: [{ id: 'explanation-a', decision_id: 'decision-b' }], inferenceReceipts: [],
+    }];
+    expect(validateBackupData(payload)).toContain(
+      'decisions[0].explanations[0] has inconsistent linkage',
+    );
+  });
+
+  it('rejects malformed nested collections without throwing', () => {
+    const payload = validPayload();
+    payload['decisions'] = [{
+      decision: { id: 'decision-a', user_id: 'u1' },
+      candidateActions: {}, explanations: {}, inferenceReceipts: {},
+    }];
+    expect(() => validateBackupData(payload)).not.toThrow();
+    expect(validateBackupData(payload)).toEqual(expect.arrayContaining([
+      'decisions[0].candidateActions is not an array',
+      'decisions[0].explanations is not an array',
+      'decisions[0].inferenceReceipts is not an array',
+    ]));
+  });
+
+  it('rejects decisions and signed receipts attributed to another archive owner', () => {
+    const payload = validPayload();
+    payload['decisions'] = [{
+      decision: { id: 'decision-a', user_id: 'another-user' }, candidateActions: [], outcome: null,
+      explanations: [{ id: 'explanation-a', decision_id: 'decision-a' }],
+      inferenceReceipts: [{
+        id: 'receipt-a', decision_id: 'decision-a', explanation_id: 'explanation-a', status: 'on_device',
+        receipt: {
+          id: 'receipt-a', userId: 'another-user', decisionId: 'decision-a',
+          explanationId: 'explanation-a', status: 'on_device',
+        },
+      }],
+    }];
+    expect(validateBackupData(payload)).toEqual(expect.arrayContaining([
+      'decisions[0] has inconsistent owner',
+      'decisions[0].inferenceReceipts[0] has inconsistent linkage',
+    ]));
+  });
 });
 
 describe('restoreBackup guards', () => {
@@ -105,5 +167,24 @@ describe('restoreBackup guards', () => {
       expect(result.summary.counts.users).toBe(1);
       expect(result.summary.total).toBeGreaterThanOrEqual(1);
     }
+  });
+
+  it('aborts instead of reporting a receipt whose linkage insert affected no row', async () => {
+    const payload = validPayload();
+    payload['decisions'] = [{
+      decision: { id: 'decision-a', user_id: 'u1' },
+      candidateActions: [], outcome: null,
+      explanations: [{ id: 'explanation-a', decision_id: 'decision-a' }],
+      inferenceReceipts: [{
+        id: 'receipt-a', version: 1, decision_id: 'decision-a', explanation_id: 'explanation-a',
+        status: 'on_device', receipt: {
+          id: 'receipt-a', userId: 'u1', decisionId: 'decision-a', explanationId: 'explanation-a', status: 'on_device',
+        }, created_at: new Date(),
+      }],
+    }];
+    clientQuery.mockImplementation(async (sql: unknown) => ({
+      rows: [], rowCount: typeof sql === 'string' && sql.includes('INSERT INTO inference_receipts') ? 0 : 1,
+    }));
+    await expect(restoreBackup(payload)).rejects.toThrow('could not be linked during restore');
   });
 });

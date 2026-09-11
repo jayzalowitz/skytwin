@@ -138,6 +138,9 @@ export async function renderSettings(container, userId) {
       : `Sent by SkyTwin - the open-source digital twin: ${emailAttributionRepoUrl}`;
   const emailAttributionEnabled = emailAttribution.enabled !== false;
   const aiProviders = settings?.aiProviders ?? [];
+  _aiSettingsLoaded = settings !== null;
+  _reasoningMode = settings?.reasoningMode?.mode ?? 'on_device';
+  _reasoningModeRequiresConfirmation = settings?.reasoningMode?.requiresConfirmation === true;
   const ironclawChannel = settings?.ironclawChannel ?? 'skytwin';
   const ironclawChannels = settings?.ironclawChannels ?? ['skytwin', 'telegram', 'discord', 'slack', 'signal'];
 
@@ -389,6 +392,9 @@ export async function renderSettings(container, userId) {
             ? `Out of the box your twin uses the local AI on your machine plus built-in rules — that's enough for most decisions. Add a paid provider here if you want sharper reasoning on the tricky calls. Multiple are tried in order with automatic fallback.`
             : `<strong>The Chat surface needs at least one AI provider configured here</strong> to generate replies. Other features (decisions, approvals) work without one — they fall back to local AI + built-in rules. Multiple providers are tried in priority order with automatic fallback.`}
         </div>
+        <div id="ai-reasoning-location">
+          ${renderReasoningLocation(settings !== null)}
+        </div>
         <div id="ai-mode-toggle">
           ${renderModeToggle(aiProviders)}
         </div>
@@ -406,8 +412,8 @@ export async function renderSettings(container, userId) {
           </select>
         </div>
         <div style="margin-top: 0.75rem; display: flex; gap: 0.5rem; justify-content: space-between; align-items: center;">
-          <div style="font-size: 0.75rem; color: var(--text-dim);">If every provider you add is unreachable, your twin falls back to local AI + built-in rules.</div>
-          <button id="save-ai-btn" class="btn btn-primary btn-sm" data-action="save-ai-providers">Save</button>
+          <div style="font-size: 0.75rem; color: var(--text-dim);">If no provider inside your selected boundary responds, your twin uses built-in rules. It never falls through to a different location.</div>
+          <button id="save-ai-btn" class="btn btn-primary btn-sm" data-action="save-ai-providers" ${_aiSettingsLoaded ? '' : 'disabled'}>Save</button>
         </div>
       </div>
     </details>
@@ -886,6 +892,14 @@ function ensureSettingsListener() {
       showSavedToast('Animation preference updated');
       return;
     }
+    if (action === 'ai-reasoning-mode' && target instanceof HTMLSelectElement) {
+      if (target.value !== 'on_device' && target.value !== 'bring_your_own_provider') return;
+      _reasoningMode = target.value;
+      _reasoningModeRequiresConfirmation = false;
+      const location = document.getElementById('ai-reasoning-location');
+      if (location) location.innerHTML = renderReasoningLocation();
+      return;
+    }
     if (action === 'toggle-email-attribution' && target instanceof HTMLInputElement) {
       window.toggleEmailAttribution(getCurrentUserId(), target);
       return;
@@ -989,6 +1003,9 @@ function ensureSettingsListener() {
         return;
       case 'save-ai-providers':
         window.saveAIProvidersHandler(uid);
+        return;
+      case 'reload-settings':
+        renderSettings(document.getElementById('page-content'), uid);
         return;
       case 'switch-to-smart':
         window.switchAIBrainMode(uid, 'smart');
@@ -1730,6 +1747,50 @@ export function applySmarterMode(chain) {
 
 // In-memory state for the current chain being edited
 let _aiChain = [];
+let _aiSettingsLoaded = false;
+let _reasoningMode = 'on_device';
+let _reasoningModeRequiresConfirmation = false;
+
+function renderReasoningLocation(settingsAvailable = true) {
+  if (!settingsAvailable) {
+    return `
+      <div style="padding: 0.75rem; margin-bottom: 0.75rem; border: 1px solid var(--danger); border-radius: 8px;">
+        <div style="font-size: 0.85rem;">Could not load the reasoning-location boundary.</div>
+        <button class="btn btn-outline btn-sm" style="margin-top: 0.5rem;" data-action="reload-settings">Retry</button>
+      </div>
+    `;
+  }
+  const disclosure = _reasoningMode === 'on_device'
+    ? 'Prompts stay on this device. Only the embedded runtime and loopback Ollama endpoints are eligible.'
+    : _reasoningMode === 'bring_your_own_provider'
+      ? 'Prompts and responses may travel over the network to any enabled provider in this chain. Local entries stay local; remote entries follow their operator’s terms. This mode makes no confidential-computing claim.'
+      : 'This mode requires a successfully verified confidential-computing adapter for every request. No eligible adapter is available in this build.';
+  return `
+    <div style="padding: 0.75rem; margin-bottom: 0.75rem; background: var(--bg); border: 1px solid ${_reasoningModeRequiresConfirmation ? 'var(--warning)' : 'var(--border)'}; border-radius: 8px;">
+      <label for="ai-reasoning-mode" style="display: block; font-size: 0.75rem; color: var(--text-muted); margin-bottom: 0.35rem;">Where reasoning runs</label>
+      <select id="ai-reasoning-mode" class="form-input" data-action="ai-reasoning-mode" aria-describedby="ai-reasoning-disclosure">
+        <option value="on_device" ${_reasoningMode === 'on_device' ? 'selected' : ''}>On this device</option>
+        <option value="bring_your_own_provider" ${_reasoningMode === 'bring_your_own_provider' ? 'selected' : ''}>My configured provider</option>
+        <option value="verified_private_cloud" ${_reasoningMode === 'verified_private_cloud' ? 'selected' : ''} disabled>Verified private cloud — unavailable</option>
+      </select>
+      <div id="ai-reasoning-disclosure" style="font-size: 0.75rem; line-height: 1.45; color: var(--text-muted); margin-top: 0.5rem;">${disclosure}</div>
+      ${_reasoningModeRequiresConfirmation ? '<div style="font-size: 0.75rem; color: var(--warning); margin-top: 0.4rem;">Your earlier provider chain was ambiguous. Choose a location before testing or saving.</div>' : ''}
+    </div>
+  `;
+}
+
+function chainRequiresExternalNetwork(chain) {
+  return chain.some((provider) => {
+    if (provider.enabled === false || provider.provider === 'embedded') return false;
+    if (provider.provider !== 'ollama') return true;
+    try {
+      const url = new URL(provider.baseUrl || 'http://localhost:11434');
+      return !['localhost', '127.0.0.1', '[::1]', '::1'].includes(url.hostname.toLowerCase());
+    } catch {
+      return true;
+    }
+  });
+}
 
 /**
  * #187 AC#6: render the Smart / Smarter mode pill above the provider
@@ -1763,12 +1824,12 @@ function renderModeToggle(providers) {
   return `
     <div style="display: flex; gap: 0.5rem; margin-bottom: 0.75rem;">
       ${pill(
-        'Smart (free, on-device)',
+        'Smart (local first)',
         mode === 'smart',
         'switch-to-smart',
         mode === 'smart'
           ? 'Embedded model is your top choice.'
-          : 'No API costs, runs offline.',
+          : 'Puts the embedded runtime first.',
       )}
       ${pill(
         'Smarter (paid API or Ollama)',
@@ -1788,7 +1849,7 @@ function renderProviderChain(providers) {
   _aiChain = providers.map((p, i) => ({ ...p, priority: i }));
 
   if (_aiChain.length === 0) {
-    return '<div style="font-size: 0.85rem; color: var(--text-muted); padding: 0.75rem; background: var(--bg); border-radius: var(--radius-sm);">No paid providers added. Your twin runs on the local AI on this machine plus built-in rules — that\'s the default.</div>';
+    return '<div style="font-size: 0.85rem; color: var(--text-muted); padding: 0.75rem; background: var(--bg); border-radius: var(--radius-sm);">No model provider is configured. Deterministic rules remain available.</div>';
   }
 
   return _aiChain.map((p, idx) => `
@@ -1833,9 +1894,29 @@ function renderProviderChain(providers) {
           }
         </div>
         <div id="ai-test-result-${idx}" style="margin-top: 0.25rem;"></div>
+        <div style="margin-top: 0.4rem; font-size: 0.7rem; color: var(--text-dim); line-height: 1.4;">
+          ${renderProviderBoundary(p)}
+        </div>
       </div>
     </div>
   `).join('');
+}
+
+function renderProviderBoundary(provider) {
+  const privacy = provider?.privacy;
+  if (!privacy) return 'Boundary details will be available after this provider is saved.';
+  const location = privacy.executionLocation === 'on_device' ? 'On device' : 'Remote service';
+  const network = privacy.networkScope === 'none'
+    ? 'no network'
+    : privacy.networkScope === 'loopback'
+      ? 'loopback only'
+      : 'external network';
+  const price = privacy.pricing?.kind === 'zero'
+    ? 'no per-token provider charge'
+    : privacy.pricing?.kind === 'unknown'
+      ? 'price not established'
+      : 'metered price';
+  return `${escapeHtml(location)} · ${escapeHtml(network)} · ${escapeHtml(price)}. ${escapeHtml(privacy.retention?.summary || '')}`;
 }
 
 function getCurrentUserId() {
@@ -1891,6 +1972,7 @@ window.aiRemoveProvider = function(idx, userId) {
 };
 
 window.aiTestProvider = async function(idx, userId) {
+  if (!_aiSettingsLoaded) return;
   const p = _aiChain[idx];
   const resultEl = document.getElementById(`ai-test-result-${idx}`);
   resultEl.innerHTML = '<span style="font-size: 0.75rem; color: var(--text-muted);">Testing...</span>';
@@ -1901,6 +1983,7 @@ window.aiTestProvider = async function(idx, userId) {
       apiKey: p.apiKey || '',
       model: p.model,
       baseUrl: p.baseUrl,
+      reasoningMode: _reasoningMode,
     });
 
     if (result.success) {
@@ -1921,6 +2004,7 @@ window.aiTestProvider = async function(idx, userId) {
  * agree.
  */
 window.switchAIBrainMode = async function(userId, target) {
+  if (!_aiSettingsLoaded) return;
   const next = target === 'smart'
     ? applySmartMode(_aiChain)
     : applySmarterMode(_aiChain);
@@ -1938,10 +2022,16 @@ window.switchAIBrainMode = async function(userId, target) {
   // (e.g. when the API didn't accept `embedded` yet — see paired fix
   // in apps/api/src/routes/settings.ts).
   const prev = _aiChain.map((p) => ({ ...p }));
+  const prevReasoningMode = _reasoningMode;
   _aiChain = next;
+  _reasoningMode = chainRequiresExternalNetwork(_aiChain)
+    ? 'bring_your_own_provider'
+    : 'on_device';
+  _reasoningModeRequiresConfirmation = false;
   // Re-render the pill + provider chain optimistically so the click
   // produces an immediate visual change while the save round-trips.
   document.getElementById('ai-mode-toggle').innerHTML = renderModeToggle(_aiChain);
+  document.getElementById('ai-reasoning-location').innerHTML = renderReasoningLocation();
   document.getElementById('ai-provider-chain').innerHTML = renderProviderChain(_aiChain);
 
   try {
@@ -1952,7 +2042,7 @@ window.switchAIBrainMode = async function(userId, target) {
       baseUrl: p.baseUrl,
       priority: i,
       enabled: p.enabled !== false,
-    })));
+    })), _reasoningMode);
     // Re-fetch from the server so the pill reflects the persisted state
     // (handles edge cases like an existing-but-disabled embedded entry
     // that was re-enabled by applySmartMode, where the server response
@@ -1963,7 +2053,9 @@ window.switchAIBrainMode = async function(userId, target) {
     // Roll back the optimistic state so the user doesn't think the
     // switch succeeded.
     _aiChain = prev;
+    _reasoningMode = prevReasoningMode;
     document.getElementById('ai-mode-toggle').innerHTML = renderModeToggle(_aiChain);
+    document.getElementById('ai-reasoning-location').innerHTML = renderReasoningLocation();
     document.getElementById('ai-provider-chain').innerHTML = renderProviderChain(_aiChain);
     // Defensive `err.message` access — a non-Error rejection (string,
     // object, undefined) would otherwise produce "Failed to switch
@@ -1978,6 +2070,7 @@ window.switchAIBrainMode = async function(userId, target) {
 };
 
 window.saveAIProvidersHandler = async function(userId) {
+  if (!_aiSettingsLoaded) return;
   const btn = document.getElementById('save-ai-btn');
   if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
 
@@ -1989,7 +2082,7 @@ window.saveAIProvidersHandler = async function(userId) {
       baseUrl: p.baseUrl,
       priority: i,
       enabled: p.enabled !== false,
-    })));
+    })), _reasoningMode);
     if (btn) { btn.textContent = 'Saved!'; }
     setTimeout(async () => {
       const { renderSettings } = await import('./settings.js');

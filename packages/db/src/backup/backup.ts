@@ -27,6 +27,7 @@
  */
 
 import { query, withTransaction } from '../connection.js';
+import type { InferenceReceiptV1 } from '@skytwin/shared-types';
 import { twinRepository } from '../repositories/twin-repository.js';
 import { userRepository } from '../repositories/user-repository.js';
 import type {
@@ -34,6 +35,7 @@ import type {
   DecisionOutcomeRow,
   DecisionRow,
   ExplanationRecordRow,
+  InferenceReceiptRow,
   PreferenceRow,
   TwinProfileRow,
   TwinProfileVersionRow,
@@ -49,6 +51,8 @@ export interface DecisionBundle {
   candidateActions: CandidateActionRow[];
   outcome: DecisionOutcomeRow | null;
   explanations: ExplanationRecordRow[];
+  /** Optional so schema-v1 backups produced before receipts remain restorable. */
+  inferenceReceipts?: InferenceReceiptRow[];
 }
 
 /** The full exported payload for one user. */
@@ -173,6 +177,10 @@ async function collectDecisions(userId: string): Promise<DecisionBundle[]> {
     'SELECT * FROM explanation_records WHERE decision_id = ANY($1) ORDER BY created_at ASC',
     [decisionIds],
   );
+  const receipts = await query<InferenceReceiptRow>(
+    'SELECT * FROM inference_receipts WHERE decision_id = ANY($1) ORDER BY created_at ASC',
+    [decisionIds],
+  );
 
   const actionsByDecision = groupBy<CandidateActionRow, string>(
     actions.rows,
@@ -180,6 +188,10 @@ async function collectDecisions(userId: string): Promise<DecisionBundle[]> {
   );
   const explanationsByDecision = groupBy<ExplanationRecordRow, string>(
     explanations.rows,
+    (r) => r.decision_id,
+  );
+  const receiptsByDecision = groupBy<InferenceReceiptRow, string>(
+    receipts.rows,
     (r) => r.decision_id,
   );
   const outcomeByDecision = new Map<string, DecisionOutcomeRow>();
@@ -190,6 +202,7 @@ async function collectDecisions(userId: string): Promise<DecisionBundle[]> {
     candidateActions: actionsByDecision.get(decision.id) ?? [],
     outcome: outcomeByDecision.get(decision.id) ?? null,
     explanations: explanationsByDecision.get(decision.id) ?? [],
+    inferenceReceipts: receiptsByDecision.get(decision.id) ?? [],
   }));
 }
 
@@ -224,6 +237,44 @@ export function validateBackupData(value: unknown): string[] {
   }
   if (!Array.isArray(data.preferences)) problems.push('preferences is not an array');
   if (!Array.isArray(data.decisions)) problems.push('decisions is not an array');
+  else {
+    for (const [index, bundle] of data.decisions.entries()) {
+      if (!bundle || typeof bundle !== 'object' || !bundle.decision || typeof bundle.decision.id !== 'string') {
+        problems.push(`decisions[${index}] is malformed`);
+        continue;
+      }
+      if (bundle.decision.user_id !== data.user?.id) {
+        problems.push(`decisions[${index}] has inconsistent owner`);
+      }
+      if (!Array.isArray(bundle.candidateActions)) {
+        problems.push(`decisions[${index}].candidateActions is not an array`);
+      }
+      if (!Array.isArray(bundle.explanations)) {
+        problems.push(`decisions[${index}].explanations is not an array`);
+      }
+      if (bundle.inferenceReceipts !== undefined && !Array.isArray(bundle.inferenceReceipts)) {
+        problems.push(`decisions[${index}].inferenceReceipts is not an array`);
+      }
+      const explanations = Array.isArray(bundle.explanations) ? bundle.explanations : [];
+      const receipts = Array.isArray(bundle.inferenceReceipts) ? bundle.inferenceReceipts : [];
+      const explanationIds = new Set(explanations.map((e) => e.id));
+      for (const [explanationIndex, explanation] of explanations.entries()) {
+        if (explanation.decision_id !== bundle.decision.id) {
+          problems.push(`decisions[${index}].explanations[${explanationIndex}] has inconsistent linkage`);
+        }
+      }
+      for (const [receiptIndex, receipt] of receipts.entries()) {
+        const signed = receipt?.receipt as Partial<InferenceReceiptV1> | undefined;
+        if (!receipt || receipt.decision_id !== bundle.decision.id ||
+            !explanationIds.has(receipt.explanation_id) || !signed ||
+            signed.id !== receipt.id || signed.decisionId !== receipt.decision_id ||
+            signed.explanationId !== receipt.explanation_id || signed.userId !== data.user?.id ||
+            signed.status !== receipt.status) {
+          problems.push(`decisions[${index}].inferenceReceipts[${receiptIndex}] has inconsistent linkage`);
+        }
+      }
+    }
+  }
   if (!Array.isArray(data.twinProfileVersions)) {
     problems.push('twinProfileVersions is not an array');
   }
@@ -433,6 +484,22 @@ export async function restoreBackup(value: unknown): Promise<RestoreBackupResult
           ],
         );
         bump('explanation_records');
+      }
+
+      for (const r of bundle.inferenceReceipts ?? []) {
+        const insertedReceipt = await client.query(
+          `INSERT INTO inference_receipts (
+             id, version, decision_id, explanation_id, status, receipt, trusted, created_at
+           ) SELECT $1,$2,d.id,e.id,$5,$6,false,$7
+             FROM decisions d JOIN explanation_records e ON e.decision_id = d.id
+            WHERE d.id=$3 AND e.id=$4`,
+          [r.id, r.version, r.decision_id, r.explanation_id, r.status,
+            JSON.stringify(r.receipt), r.created_at],
+        );
+        if (insertedReceipt.rowCount !== 1) {
+          throw new Error(`receipt ${r.id} could not be linked during restore`);
+        }
+        bump('inference_receipts');
       }
 
       // Outcome FKs the (optional) selected candidate action, so it must be

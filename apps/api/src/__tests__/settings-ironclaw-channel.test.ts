@@ -12,6 +12,9 @@ const {
   mockDomainAutonomyRepository,
   mockEscalationTriggerRepository,
   mockAiProviderRepository,
+  mockReasoningModeRepository,
+  mockTestProviderForReasoningMode,
+  mockValidateBaseUrlWithDns,
 } = vi.hoisted(() => ({
   mockUserRepository: {
     findById: vi.fn(),
@@ -32,8 +35,18 @@ const {
   },
   mockAiProviderRepository: {
     getForUser: vi.fn(),
+    getEnabledForUser: vi.fn(),
+    getReasoningSnapshotForUser: vi.fn(),
     replaceAll: vi.fn(),
+    replaceAllWithReasoningMode: vi.fn(),
   },
+  mockReasoningModeRepository: {
+    getOrCreateForUser: vi.fn(),
+    setForUser: vi.fn(),
+    setForUserIfCompatible: vi.fn(),
+  },
+  mockTestProviderForReasoningMode: vi.fn(),
+  mockValidateBaseUrlWithDns: vi.fn(),
 }));
 
 vi.mock('@skytwin/db', () => ({
@@ -41,6 +54,7 @@ vi.mock('@skytwin/db', () => ({
   domainAutonomyRepository: mockDomainAutonomyRepository,
   escalationTriggerRepository: mockEscalationTriggerRepository,
   aiProviderRepository: mockAiProviderRepository,
+  reasoningModeRepository: mockReasoningModeRepository,
 }));
 
 vi.mock('@skytwin/shared-types', async () => {
@@ -48,10 +62,14 @@ vi.mock('@skytwin/shared-types', async () => {
   return actual;
 });
 
-vi.mock('@skytwin/llm-client', () => ({
-  LlmClient: { testProvider: vi.fn() },
-  validateBaseUrlWithDns: vi.fn(),
-}));
+vi.mock('@skytwin/llm-client', async () => {
+  const actual = await vi.importActual('@skytwin/llm-client');
+  return {
+    ...actual,
+    LlmClient: { testProviderForReasoningMode: mockTestProviderForReasoningMode },
+    validateBaseUrlWithDns: mockValidateBaseUrlWithDns,
+  };
+});
 
 vi.mock('../middleware/require-ownership.js', () => ({
   bindUserIdParamOwnership: vi.fn(),
@@ -245,7 +263,10 @@ describe('email attribution settings', () => {
     app = buildApp();
     mockDomainAutonomyRepository.getForUser.mockResolvedValue([]);
     mockEscalationTriggerRepository.getForUser.mockResolvedValue([]);
-    mockAiProviderRepository.getForUser.mockResolvedValue([]);
+    mockAiProviderRepository.getReasoningSnapshotForUser.mockResolvedValue({
+      providers: [],
+      reasoningMode: { mode: 'on_device', requires_confirmation: false },
+    });
   });
 
   it('GET /api/settings/:userId defaults email attribution on and returns the exact footer text', async () => {
@@ -320,5 +341,148 @@ describe('email attribution settings', () => {
 
     expect(res.status).toBe(400);
     expect(mockUserRepository.updateAutonomySettings).not.toHaveBeenCalled();
+  });
+});
+
+describe('reasoning mode settings', () => {
+  let app: Express;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockAiProviderRepository.getEnabledForUser.mockResolvedValue([]);
+    app = buildApp();
+  });
+
+  it('persists only a canonical explicit mode', async () => {
+    mockReasoningModeRepository.setForUserIfCompatible.mockResolvedValue({
+      mode: 'on_device', requires_confirmation: false,
+    });
+    const accepted = await request(
+      app,
+      'PUT',
+      '/api/settings/aaaaaaaa-bbbb-cccc-dddd-000000000001/ai/reasoning-mode',
+      { mode: 'on_device' },
+    );
+    expect(accepted.status).toBe(200);
+    expect(mockReasoningModeRepository.setForUserIfCompatible).toHaveBeenCalledWith(
+      'aaaaaaaa-bbbb-cccc-dddd-000000000001',
+      'on_device',
+    );
+
+    const rejected = await request(
+      app,
+      'PUT',
+      '/api/settings/aaaaaaaa-bbbb-cccc-dddd-000000000001/ai/reasoning-mode',
+      { mode: 'private-ish' },
+    );
+    expect(rejected.status).toBe(400);
+  });
+
+  it('refuses a mode that would cross the active provider boundary', async () => {
+    mockReasoningModeRepository.setForUserIfCompatible.mockResolvedValue(null);
+    const response = await request(
+      app,
+      'PUT',
+      '/api/settings/aaaaaaaa-bbbb-cccc-dddd-000000000001/ai/reasoning-mode',
+      { mode: 'on_device' },
+    );
+    expect(response.status).toBe(409);
+    expect(mockReasoningModeRepository.setForUserIfCompatible).toHaveBeenCalledOnce();
+  });
+});
+
+describe('reasoning-mode provider mutations', () => {
+  let app: Express;
+  const userId = 'aaaaaaaa-bbbb-cccc-dddd-000000000001';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockValidateBaseUrlWithDns.mockReset().mockResolvedValue(undefined);
+    mockTestProviderForReasoningMode.mockReset();
+    mockAiProviderRepository.getForUser.mockResolvedValue([]);
+    mockReasoningModeRepository.getOrCreateForUser.mockResolvedValue({
+      mode: 'on_device', requires_confirmation: false,
+    });
+    mockAiProviderRepository.replaceAllWithReasoningMode.mockImplementation(
+      async (_userId: string, _mode: string, providers: Array<Record<string, unknown>>) => providers.map((p) => ({
+        provider: p['provider'], api_key: p['apiKey'] ?? '', model: p['model'],
+        base_url: p['baseUrl'] ?? null, priority: p['priority'], enabled: p['enabled'] ?? true,
+      })),
+    );
+    app = buildApp();
+  });
+
+  it('rejects an enabled remote provider before replacing a local-mode chain', async () => {
+    const response = await request(app, 'PUT', `/api/settings/${userId}/ai`, {
+      reasoningMode: 'on_device',
+      providers: [{
+        provider: 'openai', apiKey: 'secret', model: 'gpt', priority: 0, enabled: true,
+      }],
+    });
+    expect(response.status).toBe(409);
+    expect(mockAiProviderRepository.replaceAllWithReasoningMode).not.toHaveBeenCalled();
+  });
+
+  it('ignores disabled remote entries when enforcing an on-device chain', async () => {
+    const response = await request(app, 'PUT', `/api/settings/${userId}/ai`, {
+      reasoningMode: 'on_device',
+      providers: [
+        { provider: 'embedded', model: 'managed', priority: 0, enabled: true },
+        { provider: 'openai', apiKey: 'secret', model: 'gpt', priority: 1, enabled: false },
+      ],
+    });
+    expect(response.status).toBe(200);
+    expect(mockAiProviderRepository.replaceAllWithReasoningMode).toHaveBeenCalledWith(
+      userId,
+      'on_device',
+      expect.any(Array),
+    );
+  });
+
+  it('requires the mode in the same request as a full provider replacement', async () => {
+    const response = await request(app, 'PUT', `/api/settings/${userId}/ai`, {
+      providers: [{ provider: 'embedded', model: 'managed', priority: 0, enabled: true }],
+    });
+    expect(response.status).toBe(400);
+    expect(mockAiProviderRepository.replaceAllWithReasoningMode).not.toHaveBeenCalled();
+  });
+
+  it('tests a provider only through the persisted mode boundary', async () => {
+    mockTestProviderForReasoningMode.mockResolvedValue({ latencyMs: 2, model: 'managed' });
+    const response = await request(app, 'POST', `/api/settings/${userId}/ai/test`, {
+      provider: 'ollama', model: 'managed', baseUrl: 'http://localhost:11434',
+    });
+    expect(response.status).toBe(200);
+    expect(mockTestProviderForReasoningMode).toHaveBeenCalledWith(
+      'on_device',
+      expect.objectContaining({ name: 'ollama', baseUrl: 'http://localhost:11434' }),
+    );
+    expect(mockValidateBaseUrlWithDns).toHaveBeenCalledWith(
+      'http://localhost:11434',
+      'ollama',
+    );
+  });
+
+  it('rejects a DNS-unsafe test endpoint before making an inference request', async () => {
+    mockReasoningModeRepository.getOrCreateForUser.mockResolvedValue({
+      mode: 'bring_your_own_provider', requires_confirmation: false,
+    });
+    mockValidateBaseUrlWithDns.mockRejectedValue(new Error('DNS target is private'));
+    const response = await request(app, 'POST', `/api/settings/${userId}/ai/test`, {
+      provider: 'openai', apiKey: 'secret', model: 'gpt', baseUrl: 'https://unsafe.example',
+    });
+    expect(response.status).toBe(400);
+    expect(mockTestProviderForReasoningMode).not.toHaveBeenCalled();
+  });
+
+  it('does not test providers while a migrated chain awaits confirmation', async () => {
+    mockReasoningModeRepository.getOrCreateForUser.mockResolvedValue({
+      mode: null, requires_confirmation: true,
+    });
+    const response = await request(app, 'POST', `/api/settings/${userId}/ai/test`, {
+      provider: 'ollama', model: 'managed', baseUrl: 'http://localhost:11434',
+    });
+    expect(response.status).toBe(409);
+    expect(mockTestProviderForReasoningMode).not.toHaveBeenCalled();
   });
 });

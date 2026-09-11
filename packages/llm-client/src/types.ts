@@ -1,4 +1,58 @@
-import type { AIProviderName } from '@skytwin/shared-types';
+import type {
+  AIProviderName,
+  InferenceFallbackV1,
+  InferenceReceiptStatus,
+  ProviderExecutionMetadata,
+  ReceiptSignatureV1,
+} from '@skytwin/shared-types';
+
+export interface TrustedConfidentialVerification {
+  outcome: 'verified';
+  inferenceId?: string;
+  attestationPolicyVersion: string;
+  verifierVersion: string;
+  evidence: Uint8Array;
+  measurementIdentity: string;
+  responseSignature: ReceiptSignatureV1;
+  verifiedAt: string;
+  freshUntil: string;
+}
+
+export interface RejectedConfidentialVerification {
+  outcome: 'verification_failed' | 'verification_unavailable' | 'verification_stale';
+  verifierVersion: string;
+  reason: string;
+}
+
+export type ConfidentialVerificationResult =
+  | TrustedConfidentialVerification
+  | RejectedConfidentialVerification;
+
+export interface ConfidentialInferenceVerifier {
+  verify(input: {
+    provider: AIProviderName;
+    model: string;
+    endpointIdentity: string;
+    request: Uint8Array;
+    response: Uint8Array;
+  }): Promise<ConfidentialVerificationResult>;
+}
+
+/** Canonical logical input/output bytes and provider facts captured by one client instance. */
+export interface InferenceTrace {
+  id: string;
+  status: InferenceReceiptStatus;
+  execution: ProviderExecutionMetadata;
+  endpointIdentity: string;
+  request: Uint8Array;
+  response: Uint8Array;
+  cost: { basis: 'exact'; currency: string; amountMinor: number } | { basis: 'unknown' };
+  createdAt: string;
+  verifierVersion: string;
+  fallback?: InferenceFallbackV1;
+  verification?: TrustedConfidentialVerification;
+  verificationFailureReason?: string;
+}
 
 /**
  * Configuration for a single provider in the chain.
@@ -10,6 +64,11 @@ export interface ProviderEntry {
   baseUrl?: string;
 }
 
+export interface LlmClientOptions {
+  onInferenceTrace?: (trace: InferenceTrace) => void;
+  now?: () => Date;
+}
+
 /**
  * Options for a generate call.
  */
@@ -18,6 +77,8 @@ export interface GenerateOptions {
   maxTokens?: number;
   systemPrompt?: string;
   timeoutMs?: number;
+  /** User-present calls may use explicitly selected providers with unknown price. */
+  invocationKind?: 'interactive' | 'unattended';
 }
 
 /**
@@ -28,6 +89,8 @@ export interface LlmResponse {
   provider: AIProviderName;
   model: string;
   latencyMs: number;
+  /** Additive provenance for routing, spend and future receipt persistence. */
+  execution: ProviderExecutionMetadata;
 }
 
 /**
@@ -73,7 +136,14 @@ export type ProviderGenerateFn = (
  */
 export type LlmStreamEvent =
   | { type: 'chunk'; content: string }
-  | { type: 'done'; content: string; provider: AIProviderName; model: string; latencyMs: number };
+  | {
+    type: 'done';
+    content: string;
+    provider: AIProviderName;
+    model: string;
+    latencyMs: number;
+    execution: ProviderExecutionMetadata;
+  };
 
 /**
  * Provider-level streaming function signature. Returns an async iterable

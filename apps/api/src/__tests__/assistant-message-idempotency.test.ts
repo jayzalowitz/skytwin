@@ -79,6 +79,11 @@ vi.mock('@skytwin/core', () => ({
 vi.mock('@skytwin/policy-prompts', () => ({ runPrompt: vi.fn() }));
 vi.mock('@skytwin/registry-client', () => ({ RegistryClient: vi.fn() }));
 vi.mock('../memory-setup.js', () => ({ getMemoryPortForUser: vi.fn() }));
+vi.mock('../lib/user-llm-client.js', () => ({
+  resolveUserLlmClient: vi.fn().mockResolvedValue({
+    state: 'ready', client: { hasProviders: true }, reason: 'test provider',
+  }),
+}));
 vi.mock('../sse.js', () => ({ sseManager: { emit: vi.fn() } }));
 
 import { createAssistantRouter } from '../routes/assistant.js';
