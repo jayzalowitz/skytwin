@@ -150,6 +150,10 @@ vi.mock('@skytwin/db', () => {
       }),
     },
     aiProviderRepository: { getEnabledForUser: vi.fn().mockResolvedValue([]) },
+    inferenceReceiptRepository: {
+      isCompleteForDecision: vi.fn().mockResolvedValue(false),
+      createManyForUser: vi.fn().mockResolvedValue([]),
+    },
     emailLabelRepository: {
       topLabelsForSender: vi.fn().mockResolvedValue([]),
       topLabelsForListId: vi.fn().mockResolvedValue([]),
