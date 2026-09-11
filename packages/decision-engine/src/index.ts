@@ -8,6 +8,15 @@ export {
 export { RiskAssessor } from './risk-assessor.js';
 export { ProactiveEvaluator } from './proactive-evaluator.js';
 export { getAssessmentForAction } from './decision-helpers.js';
+export {
+  buildGmailArchiveProposal,
+  gmailArchiveProposalEnabled,
+} from './gmail-archive-proposal.js';
+export type {
+  BuildGmailArchiveProposalInput,
+  BuildGmailArchiveProposalResult,
+  GmailArchiveProposal,
+} from './gmail-archive-proposal.js';
 
 // Strategy interfaces and implementations
 export type { SituationStrategy } from './strategies/situation-strategy.js';

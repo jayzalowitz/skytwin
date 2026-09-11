@@ -29,19 +29,19 @@ function makeAction(overrides: Partial<CandidateAction> = {}): CandidateAction {
   return {
     id: 'action-1',
     decisionId: 'decision-1',
-    // archive_email + user_originated: reversible, non-destructive, trusted
+    // label_email + user_originated: reversible, non-destructive, trusted
     // provenance — so the execution-router injection-guard backstop does not
     // fire, keeping these tests focused on routing/fallback mechanics. The
     // backstop itself is covered by injection-guard-backstop.test.ts. The
     // `route()`-only tests below override actionType where they need to.
-    actionType: 'archive_email',
-    description: 'Archive an email',
+    actionType: 'label_email',
+    description: 'Label an email',
     domain: 'email',
     parameters: { messageId: 'msg-1' },
     estimatedCostCents: 0,
     reversible: true,
     confidence: ConfidenceLevel.HIGH,
-    reasoning: 'User typically archives newsletters',
+    reasoning: 'User typically labels newsletters',
     provenance: 'user_originated',
     ...overrides,
   };
