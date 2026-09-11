@@ -25,6 +25,7 @@ import type { ActionHandlerRegistry } from './handler-registry.js';
 export class DirectExecutionAdapter implements IronClawAdapter {
   private readonly executedPlans = new Map<string, ExecutionPlan>();
   private readonly planStatuses = new Map<string, ExecutionStatus>();
+  private readonly completedStepOrders = new Map<string, Set<number>>();
 
   constructor(private readonly registry: ActionHandlerRegistry) {}
 
@@ -75,6 +76,8 @@ export class DirectExecutionAdapter implements IronClawAdapter {
   async execute(plan: ExecutionPlan): Promise<ExecutionResult> {
     this.executedPlans.set(plan.id, plan);
     this.planStatuses.set(plan.id, 'running');
+    const completedOrders = new Set<number>();
+    this.completedStepOrders.set(plan.id, completedOrders);
 
     const result: ExecutionResult = {
       planId: plan.id,
@@ -102,14 +105,15 @@ export class DirectExecutionAdapter implements IronClawAdapter {
         result.error = stepResult.error ?? `Step ${step.order} failed`;
         this.planStatuses.set(plan.id, 'failed');
 
-        if (plan.rollbackSteps.length > 0) {
-          await this.executeRollbackSteps(plan);
+        if (plan.rollbackSteps.length > 0 && completedOrders.size > 0) {
+          await this.executeRollbackSteps(plan, completedOrders);
         }
 
         return result;
       }
 
       result.output = { ...result.output, ...stepResult.output };
+      completedOrders.add(step.order);
     }
 
     result.status = 'completed';
@@ -121,6 +125,8 @@ export class DirectExecutionAdapter implements IronClawAdapter {
   async *executeStreaming(plan: ExecutionPlan): AsyncIterable<ExecutionEvent> {
     this.executedPlans.set(plan.id, plan);
     this.planStatuses.set(plan.id, 'running');
+    const completedOrders = new Set<number>();
+    this.completedStepOrders.set(plan.id, completedOrders);
 
     yield {
       planId: plan.id,
@@ -166,8 +172,8 @@ export class DirectExecutionAdapter implements IronClawAdapter {
           payload: { error: result.error },
         };
 
-        if (plan.rollbackSteps.length > 0) {
-          await this.executeRollbackSteps(plan);
+        if (plan.rollbackSteps.length > 0 && completedOrders.size > 0) {
+          await this.executeRollbackSteps(plan, completedOrders);
         }
 
         yield {
@@ -180,6 +186,7 @@ export class DirectExecutionAdapter implements IronClawAdapter {
       }
 
       result.output = { ...result.output, ...stepResult.output };
+      completedOrders.add(step.order);
       yield {
         planId: plan.id,
         stepId: step.id,
@@ -229,7 +236,15 @@ export class DirectExecutionAdapter implements IronClawAdapter {
       };
     }
 
-    return this.executeRollbackSteps(plan);
+    const completedOrders = this.completedStepOrders.get(planId);
+    if (!completedOrders || completedOrders.size === 0) {
+      return {
+        success: false,
+        message: 'No successfully completed steps are available to roll back.',
+      };
+    }
+
+    return this.executeRollbackSteps(plan, completedOrders);
   }
 
   async healthCheck(): Promise<{ healthy: boolean; latencyMs: number }> {
@@ -243,8 +258,13 @@ export class DirectExecutionAdapter implements IronClawAdapter {
     };
   }
 
-  private async executeRollbackSteps(plan: ExecutionPlan): Promise<RollbackResult> {
-    const reversedSteps = [...plan.rollbackSteps].reverse();
+  private async executeRollbackSteps(
+    plan: ExecutionPlan,
+    completedOrders: Set<number>,
+  ): Promise<RollbackResult> {
+    const reversedSteps = plan.rollbackSteps
+      .filter((step) => completedOrders.has(step.order))
+      .reverse();
 
     for (const step of reversedSteps) {
       const handler = this.registry.getHandler(step.type) ??
@@ -264,6 +284,7 @@ export class DirectExecutionAdapter implements IronClawAdapter {
           message: `Rollback failed at step ${step.order}: ${stepResult.error}. Manual intervention may be required.`,
         };
       }
+      completedOrders.delete(step.order);
     }
 
     return {

@@ -253,6 +253,13 @@ export type {
   ConnectorConfig,
 } from './oauth.js';
 
+export { GMAIL_INBOX_MUTATION_CANDIDATE_SCHEMA } from './gmail-inbox-mutation.js';
+export type {
+  GmailInboxMutationCommand,
+  GmailInboxMutationPort,
+  GmailInboxMutationResult,
+} from './gmail-inbox-mutation.js';
+
 export type {
   BehavioralPattern,
   PatternTrigger,
