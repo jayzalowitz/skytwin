@@ -124,6 +124,7 @@ describe('sessionAuth middleware', () => {
     expect(next).toHaveBeenCalled();
     expect(req.authenticatedUserId).toBe('user-abc');
     expect(req.authenticatedSessionId).toBe('session-1');
+    expect(req.developmentAuthBypassed).toBeUndefined();
   });
 
   it('accepts token from query string for EventSource-based clients', async () => {
@@ -182,6 +183,7 @@ describe('sessionAuth middleware', () => {
 
     expect(next).toHaveBeenCalled();
     expect(req.authenticatedUserId).toBeUndefined(); // no session in bypass mode
+    expect(req.developmentAuthBypassed).toBe(true);
   });
 
   it('requires auth for localhost when bypass is disabled', async () => {
@@ -249,6 +251,7 @@ describe('sessionAuth middleware', () => {
       // No human identity is bound — the daemons act for every user.
       expect(req.authenticatedUserId).toBeUndefined();
       expect(req.authenticatedSessionId).toBeUndefined();
+      expect(req.developmentAuthBypassed).toBeUndefined();
     });
 
     it('rejects a non-matching token of the same length', async () => {

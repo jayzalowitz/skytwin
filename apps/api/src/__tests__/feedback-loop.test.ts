@@ -174,7 +174,7 @@ function buildApp(): Express {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as unknown as { user: { id: string } }).user = { id: USER_ID };
+    req.authenticatedUserId = USER_ID;
     next();
   });
   app.use('/api/approvals', createApprovalsRouter());
@@ -317,8 +317,7 @@ describe('feedback loop — approval records an episode for memory boost', () =>
 
       expect(response.status).toBe(409);
       expect(response.body).toMatchObject({
-        error: 'gmail_archive_execution_not_enabled',
-        approvalId: 'app-1',
+        code: 'GMAIL_ARCHIVE_APPROVAL_INVALID_STATE',
       });
       expect(fakeApprovalRepo.respond).not.toHaveBeenCalled();
       expect(fakeFeedbackRepo.create).not.toHaveBeenCalled();

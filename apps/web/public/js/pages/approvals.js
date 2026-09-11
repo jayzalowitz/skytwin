@@ -781,7 +781,16 @@ async function handleApproval(requestId, action, userId) {
   const editedBody = action === 'approve' ? readDraftEditedBody(requestId) : null;
 
   try {
-    await respondToApproval(requestId, action, userId, reason, undefined, editedBody ?? undefined);
+    const response = await respondToApproval(
+      requestId,
+      action,
+      userId,
+      reason,
+      undefined,
+      editedBody ?? undefined,
+    );
+    const isGmailArchiveConsent = response?.workflow === 'gmail_archive' &&
+      response?.status === 'approval_recorded' && response?.execution === null;
 
     const el = document.getElementById(`approval-${requestId}`);
     if (el) {
@@ -792,12 +801,15 @@ async function handleApproval(requestId, action, userId) {
       el.querySelector('.approval-actions').innerHTML = `<span class="badge ${badge}">${label}</span>`;
     }
 
-    // Reflect the user's reason back in the toast — they feel heard,
-    // and it surfaces what the twin will actually remember vs. just
-    // saying a generic "noted." If no reason was given, fall back to
-    // a friendly default keyed off approve vs. reject.
+    // The bounded Gmail path records consent only. It does not change the
+    // mailbox or train the twin, so its confirmation copy must not imply
+    // either effect. Other approvals retain their existing feedback copy.
     let toastMsg;
-    if (action === 'approve') {
+    if (isGmailArchiveConsent) {
+      toastMsg = action === 'approve'
+        ? 'Approval recorded. No mailbox change has been made.'
+        : 'Rejection recorded. No mailbox change has been made.';
+    } else if (action === 'approve') {
       toastMsg = reason
         ? `Got it — I'll handle this for you. Noting: "${reason.length > 80 ? reason.slice(0, 77) + '…' : reason}"`
         : 'Got it — I\'ll handle this for you.';
@@ -806,12 +818,12 @@ async function handleApproval(requestId, action, userId) {
         ? `Got it — I'll remember: "${reason.length > 80 ? reason.slice(0, 77) + '…' : reason}" for next time.`
         : 'Noted — I won\'t do that.';
     }
-    showToast(toastMsg, { kind: 'success' });
+    showToast(toastMsg, { kind: isGmailArchiveConsent ? 'info' : 'success' });
 
     // Visibly tick up the trust progress bar right after an approval, so
     // the user feels the trust building rather than having to look up.
     // Re-fetch the trust progress and swap the existing bar in-place.
-    if (action === 'approve') {
+    if (action === 'approve' && !isGmailArchiveConsent) {
       try {
         const fresh = await fetchTrustProgress(userId);
         const existing = document.querySelector('.trust-progress');

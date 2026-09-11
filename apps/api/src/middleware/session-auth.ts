@@ -14,6 +14,12 @@ declare global {
       /** The sessionId from the validated session. */
       authenticatedSessionId?: string;
       /**
+       * True only when `sessionAuth` admitted this localhost request through
+       * the explicit development bypass. This distinguishes that narrow mode
+       * from an accidentally unprotected router invocation.
+       */
+      developmentAuthBypassed?: boolean;
+      /**
        * True when the request authenticated as the local SkyTwin service
        * (the worker or the idle-miner) via `SKYTWIN_SERVICE_TOKEN` from a
        * loopback address. Never set for a human session.
@@ -142,7 +148,10 @@ export async function sessionAuth(
       );
       bypassWarned = true;
     }
-    // No authenticatedUserId set — ownership middleware will skip checks in bypass mode
+    // No authenticatedUserId is available in this explicit localhost-only
+    // mode. Mark it so sensitive handlers can distinguish the deliberate
+    // bypass from missing authentication middleware.
+    req.developmentAuthBypassed = true;
     next();
     return;
   }

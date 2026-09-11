@@ -17,7 +17,10 @@ import {
   policyRepositoryAdapter,
   preEffectBarrierRepository,
   explanationRepositoryAdapter,
+  gmailArchiveApprovalResponseRepository,
   withTransaction,
+  type RespondGmailArchiveApprovalInput,
+  type RespondGmailArchiveApprovalResult,
 } from '@skytwin/db';
 import { TwinService } from '@skytwin/twin-model';
 import { PolicyEvaluator, type PolicyDecision } from '@skytwin/policy-engine';
@@ -54,7 +57,10 @@ import {
   isOutboundEmailAction,
   prepareEmailActionForExecution,
 } from '../email-attribution.js';
-import { isReservedGmailArchiveApproval } from './gmail-archive-approval.js';
+import {
+  isCanonicalGmailArchiveApproval,
+  isReservedGmailArchiveApproval,
+} from './gmail-archive-approval.js';
 
 const log = createLogger('api:approvals');
 
@@ -265,7 +271,15 @@ function approvalMemoryCopy(input: {
 /**
  * Create the approvals handling router.
  */
-export function createApprovalsRouter(): Router {
+export interface ApprovalsRouterDependencies {
+  gmailArchiveApprovalResponder?: {
+    respond(input: RespondGmailArchiveApprovalInput): Promise<RespondGmailArchiveApprovalResult>;
+  };
+}
+
+export function createApprovalsRouter(
+  dependencies: ApprovalsRouterDependencies = {},
+): Router {
   const router = Router();
   bindUserIdParamValidator(router);
   bindUserIdParamOwnership(router);
@@ -455,30 +469,108 @@ export function createApprovalsRouter(): Router {
         return;
       }
 
-      // Verify ownership before mutating state
+      // Read once to select the reserved workflow and preserve the generic
+      // responder's existing ownership/error behavior for every other action.
       const existing = await approvalRepository.findById(requestId);
       if (!existing) {
         res.status(404).json({ error: 'Approval request not found' });
         return;
       }
-      if (existing.user_id !== body.userId) {
-        res.status(403).json({ error: 'You can only respond to your own approval requests.' });
+
+      // The broad classifier reserves this parameter namespace fail-closed;
+      // the strict classifier is the positive authority to enter the dedicated
+      // DB-only consent lifecycle. This branch intentionally occurs before all
+      // generic confirmation, feedback, policy, credential, routing, barrier,
+      // SSE, and execution work.
+      if (isReservedGmailArchiveApproval(existing.candidate_action)) {
+        const authenticatedOwner = req.authenticatedUserId ??
+          (req.developmentAuthBypassed === true ? body.userId : undefined);
+        if (!authenticatedOwner) {
+          res.status(401).json({
+            error: 'Authentication required',
+            code: 'GMAIL_ARCHIVE_APPROVAL_AUTH_REQUIRED',
+          });
+          return;
+        }
+        if (body.userId !== authenticatedOwner || existing.user_id !== authenticatedOwner) {
+          res.status(403).json({
+            error: 'You can only respond to your own approval requests.',
+            code: 'GMAIL_ARCHIVE_APPROVAL_FORBIDDEN',
+          });
+          return;
+        }
+        if (!isCanonicalGmailArchiveApproval(existing.candidate_action)) {
+          res.status(409).json({
+            error: 'This Inbox approval cannot be processed because its persisted proposal is invalid.',
+            code: 'GMAIL_ARCHIVE_APPROVAL_INVALID_STATE',
+            requestId,
+          });
+          return;
+        }
+
+        const result = await (
+          dependencies.gmailArchiveApprovalResponder ?? gmailArchiveApprovalResponseRepository
+        ).respond({
+          approvalId: requestId,
+          userId: authenticatedOwner,
+          action: body.action,
+          ...(body.reason === undefined ? {} : { reason: body.reason }),
+        });
+        if (!result.ok) {
+          if (result.error === 'invalid_input') {
+            res.status(400).json({
+              error: 'The approval response is invalid.',
+              code: 'GMAIL_ARCHIVE_APPROVAL_INVALID_REQUEST',
+              requestId,
+            });
+            return;
+          }
+          if (result.error === 'not_found') {
+            res.status(404).json({
+              error: 'Approval request not found',
+              code: 'GMAIL_ARCHIVE_APPROVAL_NOT_FOUND',
+              requestId,
+            });
+            return;
+          }
+          if (result.error === 'not_pending_or_expired') {
+            res.status(409).json({
+              error: 'Approval request is no longer pending or has expired.',
+              code: 'GMAIL_ARCHIVE_APPROVAL_NOT_PENDING_OR_EXPIRED',
+              requestId,
+            });
+            return;
+          }
+          res.status(409).json({
+            error: 'This approval was already resolved with a different response.',
+            code: 'GMAIL_ARCHIVE_APPROVAL_RESPONSE_CONFLICT',
+            requestId,
+          });
+          return;
+        }
+
+        const approval = result.response.approval;
+        res.json({
+          workflow: 'gmail_archive',
+          status: 'approval_recorded',
+          requestId,
+          action: body.action,
+          reason: body.reason ?? null,
+          approval: {
+            id: approval.id,
+            status: approval.status,
+            respondedAt: approval.responded_at,
+          },
+          execution: null,
+          replayed: !result.created,
+          processedAt: approval.responded_at,
+        });
         return;
       }
 
-      // This bounded Inbox workflow remains proposal-only. Keep its approval
-      // rows out of the generic responder even if the feature flag changes or
-      // a partially migrated row carries malformed reserved parameters. The
-      // dedicated lifecycle will later own the atomic consent-to-admission
-      // transition; until then no response, feedback, token lookup, routing,
-      // or external call is permitted here.
-      if (isReservedGmailArchiveApproval(existing.candidate_action)) {
-        res.status(409).json({
-          error: 'gmail_archive_execution_not_enabled',
-          message: 'This Inbox proposal cannot be acted on in the current build.',
-          approvalId: existing.id,
-          requestId,
-        });
+      // Preserve the generic responder's existing body-scoped ownership check.
+      if (existing.user_id !== body.userId) {
+        res.status(403).json({ error: 'You can only respond to your own approval requests.' });
         return;
       }
 
