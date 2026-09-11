@@ -43,9 +43,16 @@ function buildApp(): Express {
   const app = express();
   app.use(express.json());
   app.use('/api/v1/demo', createDemoRouter());
-  app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-    res.status(500).json({ error: err.message });
-  });
+  app.use(
+    (
+      err: Error,
+      _req: express.Request,
+      res: express.Response,
+      _next: express.NextFunction,
+    ) => {
+      res.status(500).json({ error: err.message });
+    },
+  );
   return app;
 }
 
@@ -152,6 +159,16 @@ describe('demo routes', () => {
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ available: true, userId: DEMO_USER_ID });
     });
+
+    it('does not advertise local sample availability to a remote peer', async () => {
+      const app = buildApp();
+      app.set('trust proxy', true);
+      const res = await request(app, 'GET', '/api/v1/demo/info', undefined, {
+        'X-Forwarded-For': '203.0.113.8',
+      });
+      expect(res.status).toBe(403);
+      expect(mockUserRepository.findDemoById).not.toHaveBeenCalled();
+    });
   });
 
   // ── /session ───────────────────────────────────────────────────────
@@ -180,10 +197,27 @@ describe('demo routes', () => {
       });
     });
 
+    it('does not mint from a stale positive info cache after readiness is revoked', async () => {
+      mockUserRepository.findDemoById
+        .mockResolvedValueOnce(SEEDED_USER)
+        .mockResolvedValueOnce(null);
+      expect(
+        (await request(buildApp(), 'GET', '/api/v1/demo/info')).status,
+      ).toBe(200);
+      const res = await request(buildApp(), 'POST', '/api/v1/demo/session');
+      expect(res.status).toBe(404);
+    });
+
     it('keeps the packaged credential issuer on the local device', async () => {
       const app = buildApp();
       app.set('trust proxy', true);
-      const res = await request(app, 'POST', '/api/v1/demo/session', undefined, { 'X-Forwarded-For': '203.0.113.8' });
+      const res = await request(
+        app,
+        'POST',
+        '/api/v1/demo/session',
+        undefined,
+        { 'X-Forwarded-For': '203.0.113.8' },
+      );
       expect(res.status).toBe(403);
       expect(mockUserRepository.findDemoById).not.toHaveBeenCalled();
     });
@@ -309,10 +343,22 @@ describe('demo routes', () => {
       const clientIp = { 'X-Forwarded-For': '203.0.113.20' };
       // Burn the bucket — 20 requests should succeed, the 21st should 429.
       for (let i = 0; i < 20; i++) {
-        const ok = await request(app, 'POST', '/api/v1/demo/preview', { situation: 'ping' }, clientIp);
+        const ok = await request(
+          app,
+          'POST',
+          '/api/v1/demo/preview',
+          { situation: 'ping' },
+          clientIp,
+        );
         expect(ok.status).toBe(200);
       }
-      const limited = await request(app, 'POST', '/api/v1/demo/preview', { situation: 'ping' }, clientIp);
+      const limited = await request(
+        app,
+        'POST',
+        '/api/v1/demo/preview',
+        { situation: 'ping' },
+        clientIp,
+      );
       expect(limited.status).toBe(429);
       expect(limited.headers['retry-after']).toBeDefined();
       expect(parseInt(limited.headers['retry-after']!, 10)).toBeGreaterThan(0);

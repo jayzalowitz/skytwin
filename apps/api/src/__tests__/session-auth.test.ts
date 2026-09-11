@@ -15,6 +15,9 @@ vi.mock('@skytwin/db', () => ({
     refreshExpiry: vi.fn(),
     touchLastActive: vi.fn(),
   },
+  userRepository: {
+    findDemoById: vi.fn().mockResolvedValue({ id: 'sample-user' }),
+  },
 }));
 
 function mockReq(overrides: Partial<Request> = {}): Request {
@@ -58,6 +61,9 @@ describe('sessionAuth middleware', () => {
         findByTokenHash: vi.fn(),
         refreshExpiry: vi.fn(),
         touchLastActive: vi.fn(),
+      },
+      userRepository: {
+        findDemoById: vi.fn().mockResolvedValue({ id: 'sample-user' }),
       },
     }));
   });
@@ -249,6 +255,44 @@ describe('sessionAuth middleware', () => {
         expect(res.status).toHaveBeenCalledWith(403);
       }
       expect(db.sessionRepository.findByTokenHash).not.toHaveBeenCalled();
+    });
+
+    it('keeps a sample credential read-only when the localhost dev bypass is enabled', async () => {
+      process.env['SKYTWIN_DEV_AUTH_BYPASS'] = 'true';
+      process.env['SESSION_SECRET'] = 'test-demo-session-secret-that-is-long-enough';
+      const auth = await import('../middleware/session-auth.js');
+      const demo = await import('../auth/demo-session.js');
+      const req = mockReq({
+        ip: '127.0.0.1',
+        method: 'POST',
+        originalUrl: '/api/feedback',
+        headers: { authorization: `Bearer ${demo.issueDemoSession().token}` },
+      });
+      const res = mockRes();
+      const next = vi.fn();
+
+      await auth.sessionAuth(req, res, next);
+
+      expect(next).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(403);
+    });
+
+    it('invalidates a sample credential when the ready synthetic row is gone', async () => {
+      const mod = await loadDemoAuth();
+      const db = await import('@skytwin/db');
+      (db.userRepository.findDemoById as ReturnType<typeof vi.fn>).mockResolvedValueOnce(null);
+      const req = mockReq({
+        method: 'GET',
+        originalUrl: '/api/decisions/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d',
+        headers: { authorization: `Bearer ${mod.issueDemoSession().token}` },
+      });
+      const res = mockRes();
+      const next = vi.fn();
+
+      await mod.sessionAuth(req, res, next);
+
+      expect(next).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(401);
     });
   });
 

@@ -4,7 +4,10 @@ import express from 'express';
 import type { Express } from 'express';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SampleSimulationStateResponse } from '@skytwin/shared-types';
-import { issueDemoSession } from '../auth/demo-session.js';
+import {
+  inspectDemoSessionForDiscard,
+  issueDemoSession,
+} from '../auth/demo-session.js';
 import { createDemoSimulationRouter } from '../routes/demo-simulation.js';
 import { SampleSimulationService } from '../services/sample-simulation.js';
 
@@ -105,6 +108,28 @@ describe('isolated sample simulation', () => {
     );
     expect(valid.status).toBe(200);
     expect(valid.cacheControl).toBe('no-store');
+  });
+
+  it('revokes simulation access when the fixture readiness marker is removed', async () => {
+    const app = express();
+    app.use(express.json());
+    app.use(
+      '/api/v1/demo/simulation',
+      createDemoSimulationRouter(
+        new SampleSimulationService(),
+        async () => false,
+      ),
+    );
+    const denied = await request(
+      app,
+      'GET',
+      '/api/v1/demo/simulation',
+      issueDemoSession().token,
+    );
+    expect(denied.status).toBe(401);
+    expect(denied.body).toMatchObject({
+      error: expect.stringMatching(/no longer available/i),
+    });
   });
 
   it('completes approve, reject, correct, and learn without network access', async () => {
@@ -393,6 +418,120 @@ describe('isolated sample simulation', () => {
     expect(service.hasSessionForTests('discard-race')).toBe(false);
   });
 
+  it('rejects expiry before creation and after an in-flight policy check', async () => {
+    let now = 0;
+    let resolvePolicy!: (value: {
+      allowed: boolean;
+      requiresApproval: boolean;
+      reason: string;
+    }) => void;
+    const policyResult = new Promise<{
+      allowed: boolean;
+      requiresApproval: boolean;
+      reason: string;
+    }>((resolve) => {
+      resolvePolicy = resolve;
+    });
+    const service = new SampleSimulationService(
+      { evaluate: vi.fn(() => policyResult) },
+      1_000,
+      () => now,
+    );
+
+    await expect(
+      service.getState('already-expired', 10, 10),
+    ).rejects.toMatchObject({
+      statusCode: 401,
+    });
+    expect(service.hasSessionForTests('already-expired')).toBe(false);
+
+    const command = service.command('expires-in-flight', 10, {
+      type: 'approve',
+      proposalId: 'calendar-focus',
+    });
+    now = 10;
+    resolvePolicy({
+      allowed: true,
+      requiresApproval: true,
+      reason: 'Deferred policy result.',
+    });
+    await expect(command).rejects.toMatchObject({ statusCode: 401 });
+    expect(service.hasSessionForTests('expires-in-flight')).toBe(false);
+  });
+
+  it('rejects expiry during reset and final command rendering without committing', async () => {
+    let resetNow = 0;
+    const resetService = new SampleSimulationService(
+      {
+        evaluate: vi.fn(async () => {
+          resetNow = 10;
+          return {
+            allowed: true,
+            requiresApproval: true,
+            reason: 'Test policy.',
+          };
+        }),
+      },
+      1_000,
+      () => resetNow,
+    );
+    await expect(
+      resetService.command('reset-expiry', 10, { type: 'reset' }),
+    ).rejects.toMatchObject({ statusCode: 401 });
+    expect(resetService.hasSessionForTests('reset-expiry')).toBe(false);
+
+    let commandNow = 0;
+    let calls = 0;
+    const commandService = new SampleSimulationService(
+      {
+        evaluate: vi.fn(async () => {
+          calls += 1;
+          if (calls === 2) commandNow = 10;
+          return {
+            allowed: true,
+            requiresApproval: true,
+            reason: 'Test policy.',
+          };
+        }),
+      },
+      1_000,
+      () => commandNow,
+    );
+    await expect(
+      commandService.command('command-expiry', 10, {
+        type: 'approve',
+        proposalId: 'calendar-focus',
+      }),
+    ).rejects.toMatchObject({ statusCode: 401 });
+    expect(commandService.hasSessionForTests('command-expiry')).toBe(false);
+  });
+
+  it('does not commit a command when final presentation fails', async () => {
+    let calls = 0;
+    const evaluate = vi.fn(async () => {
+      calls += 1;
+      if (calls === 2) throw new Error('render failed');
+      return { allowed: true, requiresApproval: true, reason: 'Test policy.' };
+    });
+    const service = new SampleSimulationService({ evaluate });
+    const expiresAtMs = Date.now() + 60_000;
+    await expect(
+      service.command('atomic-render', expiresAtMs, {
+        type: 'approve',
+        proposalId: 'calendar-focus',
+      }),
+    ).rejects.toThrow('render failed');
+    evaluate.mockResolvedValue({
+      allowed: true,
+      requiresApproval: true,
+      reason: 'Test policy.',
+    });
+    const state = await service.getState('atomic-render', expiresAtMs);
+    expect(
+      state.proposals.find((item) => item.id === 'calendar-focus')?.status,
+    ).toBe('pending');
+  });
+
   it('refuses hostile capacity churn without evicting active sessions', async () => {
     const service = new SampleSimulationService(undefined, 2);
     const expiresAtMs = Date.now() + 60_000;
@@ -496,10 +635,30 @@ describe('isolated sample simulation', () => {
     );
     expect(exited.status).toBe(204);
 
-    await service.getState('expired-key', 10, 0);
-    expect(service.hasSessionForTests('expired-key')).toBe(true);
-    await service.getState('current-key', 20, 11);
-    expect(service.hasSessionForTests('expired-key')).toBe(false);
+    const expired = issueDemoSession(Date.now() - 4 * 60 * 60 * 1000 - 1);
+    const expiredIdentity = inspectDemoSessionForDiscard(expired.token)!;
+    await service.getState(expiredIdentity.sessionKey, Date.now() + 60_000);
+    expect(service.hasSessionForTests(expiredIdentity.sessionKey)).toBe(true);
+    const expiredExit = await request(
+      app,
+      'DELETE',
+      '/api/v1/demo/simulation',
+      expired.token,
+    );
+    expect(expiredExit.status).toBe(204);
+    expect(service.hasSessionForTests(expiredIdentity.sessionKey)).toBe(false);
+
+    let cleanupNow = 0;
+    const cleanupService = new SampleSimulationService(
+      undefined,
+      1_000,
+      () => cleanupNow,
+    );
+    await cleanupService.getState('expired-key', 10);
+    expect(cleanupService.hasSessionForTests('expired-key')).toBe(true);
+    cleanupNow = 11;
+    await cleanupService.getState('current-key', 20);
+    expect(cleanupService.hasSessionForTests('expired-key')).toBe(false);
   });
 
   it('keeps forbidden infrastructure out of the simulation command import boundary', () => {

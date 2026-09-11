@@ -73,8 +73,8 @@ export async function provisionPackagedSampleWithClient(
   client: Db,
 ): Promise<PackagedSampleProvisionResult> {
   const inserted = await client.query(
-    `INSERT INTO users (id, email, name, trust_tier, autonomy_settings, is_demo)
-     VALUES ($1, $2, $3, $4, $5, true)
+    `INSERT INTO users (id, email, name, trust_tier, autonomy_settings, is_demo, demo_ready)
+     VALUES ($1, $2, $3, $4, $5, true, false)
      ON CONFLICT (id) DO NOTHING
      RETURNING id`,
     [
@@ -98,6 +98,18 @@ export async function provisionPackagedSampleWithClient(
     }
   }
 
+  // Reassert the side-effect-free policy before every ingest and make the
+  // profile unavailable until the complete fixture is confirmed below.
+  await client.query(
+    `UPDATE users
+        SET trust_tier = 'observer',
+            autonomy_settings = $2,
+            demo_ready = false,
+            updated_at = now()
+      WHERE id = $1 AND is_demo = true`,
+    [DEMO_USER_ID, JSON.stringify({ maxAutoSpend: 0 })],
+  );
+
   await client.query(
     `INSERT INTO twin_profiles (user_id, version)
      VALUES ($1, 1)
@@ -105,6 +117,27 @@ export async function provisionPackagedSampleWithClient(
     [DEMO_USER_ID],
   );
   return { created: inserted.rowCount === 1, userId: DEMO_USER_ID };
+}
+
+export async function markPackagedSampleReadyWithClient(client: Db): Promise<void> {
+  const result = await client.query(
+    `UPDATE users SET demo_ready = true, updated_at = now()
+      WHERE id = $1 AND is_demo = true
+      RETURNING id`,
+    [DEMO_USER_ID],
+  );
+  if (result.rowCount !== 1) {
+    throw new Error('reserved sample identity is missing');
+  }
+}
+
+export async function markPackagedSampleReady(): Promise<void> {
+  getPool();
+  try {
+    await withTransaction(markPackagedSampleReadyWithClient);
+  } finally {
+    await closePool();
+  }
 }
 
 export async function provisionPackagedSample(

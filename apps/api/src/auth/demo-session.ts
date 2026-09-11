@@ -56,6 +56,19 @@ export function inspectDemoSession(
   token: string,
   nowMs = Date.now(),
 ): VerifiedDemoSession | null {
+  const signed = inspectSignedDemoSession(token);
+  if (!signed || signed.expiresAtMs <= nowMs) return null;
+  return signed;
+}
+
+/** Authenticate an expired credential only for deleting its disposable state. */
+export function inspectDemoSessionForDiscard(
+  token: string,
+): VerifiedDemoSession | null {
+  return inspectSignedDemoSession(token);
+}
+
+function inspectSignedDemoSession(token: string): VerifiedDemoSession | null {
   const parts = token.split('.');
   if (parts.length !== 4 || parts[0] !== DEMO_TOKEN_PREFIX) return null;
 
@@ -66,7 +79,7 @@ export function inspectDemoSession(
     return null;
 
   const expiresAtMs = Number(expiresRaw);
-  if (!Number.isSafeInteger(expiresAtMs) || expiresAtMs <= nowMs) return null;
+  if (!Number.isSafeInteger(expiresAtMs)) return null;
 
   const payload = `${DEMO_TOKEN_PREFIX}.${expiresRaw}.${nonce}`;
   if (!constantTimeEqual(presentedSignature, signature(payload))) return null;
@@ -94,6 +107,18 @@ export function isLocalDemoAddress(address: string | undefined): boolean {
     normalized === '::ffff:7f00:1' ||
     normalized === '0:0:0:0:0:ffff:7f00:1'
   );
+}
+
+/**
+ * Require both Express's resolved client address and the untrusted-header-free
+ * socket peer to be loopback. The second check prevents X-Forwarded-For from
+ * turning a remote request into a local sample request when trust proxy is on.
+ */
+export function isLocalDemoRequest(
+  clientAddress: string | undefined,
+  socketAddress: string | undefined,
+): boolean {
+  return isLocalDemoAddress(clientAddress) && isLocalDemoAddress(socketAddress);
 }
 
 function pathIs(path: string, expected: string): boolean {

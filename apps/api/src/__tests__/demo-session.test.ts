@@ -3,6 +3,7 @@ import {
   DEMO_USER_ID,
   isDemoReadRequest,
   isLocalDemoAddress,
+  isLocalDemoRequest,
   inspectDemoSession,
   issueDemoSession,
   verifyDemoSession,
@@ -25,6 +26,12 @@ describe('demo session credential', () => {
     const issued = issueDemoSession(1_800_000_000_000);
     expect(verifyDemoSession(issued.token, 1_800_000_000_001)).toBe(true);
     expect(issued.expiresAt.getTime()).toBe(1_800_014_400_000);
+  });
+
+  it('requires the resolved client and raw socket peer to both be loopback', () => {
+    expect(isLocalDemoRequest('127.0.0.1', '127.0.0.1')).toBe(true);
+    expect(isLocalDemoRequest('127.0.0.1', '203.0.113.7')).toBe(false);
+    expect(isLocalDemoRequest('203.0.113.7', '127.0.0.1')).toBe(false);
   });
 
   it('rejects expired, malformed, and tampered tokens', () => {

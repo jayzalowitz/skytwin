@@ -510,6 +510,7 @@ export class ServiceManager {
           apiUrl: string;
           serviceToken: string;
         }) => Promise<{ ingested: number; total: number }>;
+        markPackagedSampleReady: () => Promise<void>;
       }>;
       const mod = await nativeImport(moduleUrl);
       const env = this.getEnv();
@@ -517,6 +518,10 @@ export class ServiceManager {
         apiUrl: env['API_BASE_URL'] ?? 'http://127.0.0.1:3100',
         serviceToken: env['SKYTWIN_SERVICE_TOKEN'] ?? '',
       });
+      if (result.ingested !== result.total) {
+        throw new Error(`Expected ${result.total} sample signals, ingested ${result.ingested}.`);
+      }
+      await mod.markPackagedSampleReady();
       console.log(`[sample] Ingested ${result.ingested}/${result.total} sample signals.`);
     } catch (err) {
       console.error('[sample] Signal ingestion incomplete:', err);

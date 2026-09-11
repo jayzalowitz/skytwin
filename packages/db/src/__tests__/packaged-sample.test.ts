@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   assertPackagedSampleSafe,
   ingestPackagedSampleSignals,
+  markPackagedSampleReadyWithClient,
   provisionPackagedSampleWithClient,
 } from '../seeds/packaged-sample.js';
 import { DEMO_USER_ID } from '../seeds/demo-guard.js';
@@ -47,7 +48,11 @@ describe('packaged sample safety', () => {
       userId: DEMO_USER_ID,
     });
     expect(query.mock.calls[0]?.[1]?.[0]).toBe(DEMO_USER_ID);
-    expect(query.mock.calls[1]?.[1]).toEqual([DEMO_USER_ID]);
+    expect(query.mock.calls[1]?.[1]).toEqual([
+      DEMO_USER_ID,
+      JSON.stringify({ maxAutoSpend: 0 }),
+    ]);
+    expect(query.mock.calls[2]?.[1]).toEqual([DEMO_USER_ID]);
   });
 
   it('is idempotent for an existing sample identity', async () => {
@@ -63,8 +68,12 @@ describe('packaged sample safety', () => {
       created: false,
       userId: DEMO_USER_ID,
     });
-    expect(query).toHaveBeenCalledTimes(3);
-    expect(query.mock.calls[2]?.[1]).toEqual([DEMO_USER_ID]);
+    expect(query).toHaveBeenCalledTimes(4);
+    expect(query.mock.calls[2]?.[1]).toEqual([
+      DEMO_USER_ID,
+      JSON.stringify({ maxAutoSpend: 0 }),
+    ]);
+    expect(query.mock.calls[3]?.[1]).toEqual([DEMO_USER_ID]);
   });
 
   it('fails closed when a non-sample account occupies the reserved UUID', async () => {
@@ -76,6 +85,25 @@ describe('packaged sample safety', () => {
     await expect(
       provisionPackagedSampleWithClient({ query } as never),
     ).rejects.toThrow(/non-sample account/);
+  });
+
+  it('marks readiness only for the reserved synthetic row', async () => {
+    const query = vi.fn().mockResolvedValue({
+      rowCount: 1,
+      rows: [{ id: DEMO_USER_ID }],
+    });
+    await expect(
+      markPackagedSampleReadyWithClient({ query } as never),
+    ).resolves.toBeUndefined();
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('WHERE id = $1 AND is_demo = true'),
+      [DEMO_USER_ID],
+    );
+
+    query.mockResolvedValueOnce({ rowCount: 0, rows: [] });
+    await expect(
+      markPackagedSampleReadyWithClient({ query } as never),
+    ).rejects.toThrow(/missing/);
   });
 
   it('authenticates every synthetic event and restricts ingestion to the reserved identity', async () => {
