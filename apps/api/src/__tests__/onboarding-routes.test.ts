@@ -21,11 +21,7 @@ const { mockGetLlmClient, mockRunPrompt } = vi.hoisted(() => ({
   mockRunPrompt: vi.fn(),
 }));
 
-vi.mock('../lib/llm-client-factory.js', () => ({
-  getLlmClientFromConfig: mockGetLlmClient,
-  getLlmClientFromConfigFresh: vi.fn().mockReturnValue(null),
-  _resetLlmClientCache: vi.fn(),
-}));
+vi.mock('../lib/user-llm-client.js', () => ({ buildUserLlmClient: mockGetLlmClient }));
 
 vi.mock('@skytwin/policy-prompts', () => ({
   runPrompt: mockRunPrompt,

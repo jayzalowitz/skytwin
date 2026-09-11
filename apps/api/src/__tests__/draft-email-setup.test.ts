@@ -235,28 +235,31 @@ describe('draft-email-setup', () => {
       expect(result).toBeNull();
     });
 
-    it('queries AI providers to pick the cost-cheapest one for the cost estimate (#299)', async () => {
+    it('fails closed when any possible fallback has unknown pricing', async () => {
       process.env['SKYTWIN_DRAFTS_ENABLED'] = 'true';
-      // User has both anthropic AND embedded enabled. The cost-preferred
-      // resolver should pick embedded (cost-rank 0) → 0 cent estimate.
       mockGetEnabledForUser.mockResolvedValue([
         { provider: 'anthropic', api_key: 'sk-...', model: 'claude-3-5-sonnet', base_url: null, priority: 0 },
         { provider: 'embedded', api_key: '', model: 'phi-3', base_url: null, priority: 1 },
       ]);
       const gen = await buildDraftEmailGenerator('u-1', fakeLlm());
-      expect(gen).not.toBeNull();
+      expect(gen).toBeNull();
       expect(mockGetEnabledForUser).toHaveBeenCalledWith('u-1');
     });
 
-    it('falls through to a conservative cost estimate when the AI-provider read errors (fail-safe-toward-restrictive)', async () => {
+    it('fails closed when the AI-provider price cannot be read', async () => {
       process.env['SKYTWIN_DRAFTS_ENABLED'] = 'true';
       mockGetEnabledForUser.mockRejectedValue(new Error('CRDB pool exhausted'));
-      // No throw — the function must still return a generator, just with
-      // a conservative cost estimate. The mocked LlmClient + per-user
-      // flag are both fine; the AI-provider read failure should NOT
-      // propagate.
       const gen = await buildDraftEmailGenerator('u-1', fakeLlm());
-      expect(gen).not.toBeNull();
+      expect(gen).toBeNull();
+    });
+
+    it('does not classify a remote Ollama endpoint as zero-cost local inference', async () => {
+      process.env['SKYTWIN_DRAFTS_ENABLED'] = 'true';
+      mockGetEnabledForUser.mockResolvedValue([{
+        provider: 'ollama', api_key: '', model: 'qwen',
+        base_url: 'https://ollama.example', priority: 0,
+      }]);
+      expect(await buildDraftEmailGenerator('u-1', fakeLlm())).toBeNull();
     });
 
     it('accepts an explicit CostGatePort override (test seam) and uses it for the generator', async () => {

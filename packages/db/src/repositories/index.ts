@@ -144,6 +144,7 @@ export type { RegisterCredentialRequirementInput } from './credential-requiremen
 
 export { aiProviderRepository } from './ai-provider-repository.js';
 export type { UpsertAIProviderInput } from './ai-provider-repository.js';
+export { reasoningModeRepository } from './reasoning-mode-repository.js';
 
 export { ironClawToolRepository } from './ironclaw-tool-repository.js';
 export type { UpsertIronClawToolInput } from './ironclaw-tool-repository.js';

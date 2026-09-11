@@ -363,6 +363,21 @@ CREATE TABLE IF NOT EXISTS ai_provider_settings (
 );
 CREATE INDEX idx_ai_provider_settings_user ON ai_provider_settings (user_id, priority);
 
+CREATE TABLE IF NOT EXISTS reasoning_mode_settings (
+  user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  mode STRING,
+  requires_confirmation BOOLEAN NOT NULL DEFAULT true,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT reasoning_mode_settings_mode_check CHECK (
+    mode IS NULL OR mode IN ('on_device', 'verified_private_cloud', 'bring_your_own_provider')
+  ),
+  CONSTRAINT reasoning_mode_settings_confirmation_check CHECK (
+    (mode IS NULL AND requires_confirmation = true)
+    OR (mode IS NOT NULL AND requires_confirmation = false)
+  )
+);
+
 CREATE TABLE IF NOT EXISTS ironclaw_tools (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   tool_name STRING NOT NULL UNIQUE,

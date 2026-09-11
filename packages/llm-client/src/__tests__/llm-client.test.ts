@@ -81,13 +81,22 @@ describe('LlmClient', () => {
       const { LlmClient } = await freshImport();
       mockAnthropicGenerate.mockResolvedValue('Hello from Claude');
 
-      const client = new LlmClient([anthropicProvider, openaiProvider]);
-      const result = await client.generate('Say hello');
+      const client = LlmClient.forReasoningMode('bring_your_own_provider', [anthropicProvider, openaiProvider]);
+      const result = await client.generate('Say hello', { invocationKind: 'interactive' });
 
       expect(result.content).toBe('Hello from Claude');
       expect(result.provider).toBe('anthropic');
       expect(result.model).toBe('claude-sonnet-4-5-20250514');
       expect(result.latencyMs).toBeGreaterThanOrEqual(0);
+      expect(result.execution).toMatchObject({
+        reasoningMode: 'bring_your_own_provider',
+        provider: 'anthropic',
+        model: 'claude-sonnet-4-5-20250514',
+        request: { invocationId: expect.any(String), providerRequestId: null },
+        verificationStatus: 'not_applicable',
+        costBasis: { pricing: { kind: 'unknown' } },
+        receiptId: null,
+      });
       expect(mockAnthropicGenerate).toHaveBeenCalledOnce();
       expect(mockOpenaiGenerate).not.toHaveBeenCalled();
     });
@@ -205,8 +214,10 @@ describe('LlmClient', () => {
       const { LlmClient } = await freshImport();
       mockAnthropicGenerate.mockResolvedValue('ok');
 
-      const client = new LlmClient([anthropicProvider]);
-      await client.generate('Test prompt', { temperature: 0.5, maxTokens: 100 });
+      const client = LlmClient.forReasoningMode('bring_your_own_provider', [anthropicProvider]);
+      await client.generate('Test prompt', {
+        temperature: 0.5, maxTokens: 100, invocationKind: 'interactive',
+      });
 
       expect(mockAnthropicGenerate).toHaveBeenCalledWith(
         'sk-ant-test',
@@ -227,7 +238,7 @@ describe('LlmClient', () => {
         baseUrl: 'http://localhost:11434',
       };
 
-      const client = new LlmClient([ollamaProvider]);
+      const client = LlmClient.forReasoningMode('on_device', [ollamaProvider]);
       await client.generate('Test');
 
       expect(mockOllamaGenerate).toHaveBeenCalledWith(
@@ -245,11 +256,15 @@ describe('LlmClient', () => {
       mockAnthropicGenerate.mockRejectedValue(new Error('Rate limited'));
       mockOpenaiGenerate.mockResolvedValue('Hello from OpenAI');
 
-      const client = new LlmClient([anthropicProvider, openaiProvider]);
-      const result = await client.generate('Say hello');
+      const client = LlmClient.forReasoningMode('bring_your_own_provider', [anthropicProvider, openaiProvider]);
+      const result = await client.generate('Say hello', { invocationKind: 'interactive' });
 
       expect(result.content).toBe('Hello from OpenAI');
       expect(result.provider).toBe('openai');
+      expect(result.execution.executionPath).toEqual([
+        { provider: 'anthropic', outcome: 'failed' },
+        { provider: 'openai', outcome: 'succeeded' },
+      ]);
       expect(mockAnthropicGenerate).toHaveBeenCalledOnce();
       expect(mockOpenaiGenerate).toHaveBeenCalledOnce();
     });
@@ -260,8 +275,8 @@ describe('LlmClient', () => {
       mockOpenaiGenerate.mockRejectedValue(new Error('Also down'));
       mockGoogleGenerate.mockResolvedValue('Google to the rescue');
 
-      const client = new LlmClient([anthropicProvider, openaiProvider, googleProvider]);
-      const result = await client.generate('Help');
+      const client = LlmClient.forReasoningMode('bring_your_own_provider', [anthropicProvider, openaiProvider, googleProvider]);
+      const result = await client.generate('Help', { invocationKind: 'interactive' });
 
       expect(result.content).toBe('Google to the rescue');
       expect(result.provider).toBe('google');
@@ -274,9 +289,10 @@ describe('LlmClient', () => {
       mockAnthropicGenerate.mockRejectedValue(new Error('Fail 1'));
       mockOpenaiGenerate.mockRejectedValue(new Error('Fail 2'));
 
-      const client = new LlmClient([anthropicProvider, openaiProvider]);
+      const client = LlmClient.forReasoningMode('bring_your_own_provider', [anthropicProvider, openaiProvider]);
 
-      await expect(client.generate('Help')).rejects.toThrow(AllProvidersFailedError);
+      await expect(client.generate('Help', { invocationKind: 'interactive' }))
+        .rejects.toThrow(AllProvidersFailedError);
     });
 
     it('includes attempted provider names in the error', async () => {
@@ -284,10 +300,10 @@ describe('LlmClient', () => {
       mockAnthropicGenerate.mockRejectedValue(new Error('Fail'));
       mockOpenaiGenerate.mockRejectedValue(new Error('Fail'));
 
-      const client = new LlmClient([anthropicProvider, openaiProvider]);
+      const client = LlmClient.forReasoningMode('bring_your_own_provider', [anthropicProvider, openaiProvider]);
 
       try {
-        await client.generate('Help');
+        await client.generate('Help', { invocationKind: 'interactive' });
         expect.fail('Should have thrown');
       } catch (err) {
         expect(err).toBeInstanceOf(AllProvidersFailedError);
@@ -297,11 +313,10 @@ describe('LlmClient', () => {
       }
     });
 
-    it('throws AllProvidersFailedError with empty chain', async () => {
-      const { LlmClient, AllProvidersFailedError } = await freshImport();
-
-      const client = new LlmClient([]);
-      await expect(client.generate('Help')).rejects.toThrow(AllProvidersFailedError);
+    it('refuses to construct an empty chain', async () => {
+      const { LlmClient } = await freshImport();
+      expect(() => LlmClient.forReasoningMode('on_device', []))
+        .toThrow(expect.objectContaining({ code: 'no_providers' }));
     });
   });
 
@@ -313,11 +328,11 @@ describe('LlmClient', () => {
       mockAnthropicGenerate.mockRejectedValue(new Error('Fail'));
       mockOpenaiGenerate.mockResolvedValue('OpenAI response');
 
-      const client = new LlmClient([anthropicProvider, openaiProvider]);
+      const client = LlmClient.forReasoningMode('bring_your_own_provider', [anthropicProvider, openaiProvider]);
 
       // Fail anthropic 3 times to trip its circuit breaker (threshold=3)
       for (let i = 0; i < 3; i++) {
-        await client.generate('Trip breaker');
+        await client.generate('Trip breaker', { invocationKind: 'interactive' });
       }
 
       // Reset mocks to track the next call
@@ -326,7 +341,7 @@ describe('LlmClient', () => {
       mockOpenaiGenerate.mockResolvedValue('Direct to OpenAI');
 
       // Now anthropic's circuit should be open; client should skip it
-      const result = await client.generate('After breaker trip');
+      const result = await client.generate('After breaker trip', { invocationKind: 'interactive' });
 
       expect(result.content).toBe('Direct to OpenAI');
       expect(result.provider).toBe('openai');
@@ -340,19 +355,19 @@ describe('LlmClient', () => {
       mockAnthropicGenerate.mockRejectedValue(new Error('Fail'));
       mockOpenaiGenerate.mockRejectedValue(new Error('Fail'));
 
-      const client = new LlmClient([anthropicProvider, openaiProvider]);
+      const client = LlmClient.forReasoningMode('bring_your_own_provider', [anthropicProvider, openaiProvider]);
 
       // Both fail 3 times each to trip both breakers
       for (let i = 0; i < 3; i++) {
         try {
-          await client.generate('Trip both');
+          await client.generate('Trip both', { invocationKind: 'interactive' });
         } catch {
           // expected
         }
       }
 
       try {
-        await client.generate('All open');
+        await client.generate('All open', { invocationKind: 'interactive' });
         expect.fail('Should have thrown');
       } catch (err) {
         expect(err).toBeInstanceOf(AllProvidersFailedError);
@@ -367,14 +382,78 @@ describe('LlmClient', () => {
   describe('hasProviders', () => {
     it('returns true when providers are configured', async () => {
       const { LlmClient } = await freshImport();
-      const client = new LlmClient([anthropicProvider]);
+      const client = LlmClient.forReasoningMode('bring_your_own_provider', [anthropicProvider]);
       expect(client.hasProviders).toBe(true);
     });
 
-    it('returns false when no providers are configured', async () => {
+    it('does not expose an unscoped empty-client construction path', async () => {
       const { LlmClient } = await freshImport();
-      const client = new LlmClient([]);
-      expect(client.hasProviders).toBe(false);
+      expect(() => LlmClient.forReasoningMode('bring_your_own_provider', []))
+        .toThrow(expect.objectContaining({ code: 'no_providers' }));
+    });
+  });
+
+  describe('reasoning mode boundary', () => {
+    it('constructs an on-device client only from local providers', async () => {
+      const { LlmClient } = await freshImport();
+      const local: ProviderEntry = { name: 'ollama', apiKey: '', model: 'qwen' };
+      mockOllamaGenerate.mockResolvedValue('local');
+      const client = LlmClient.forReasoningMode('on_device', [local], 'user-local');
+      const response = await client.generate('hello');
+      expect(response.execution).toMatchObject({
+        reasoningMode: 'on_device',
+        capabilities: { executionLocation: 'on_device', networkScope: 'loopback' },
+      });
+    });
+
+    it('rejects a cloud fallback in an on-device chain before any prompt is sent', async () => {
+      const { LlmClient } = await freshImport();
+      expect(() => LlmClient.forReasoningMode('on_device', [anthropicProvider]))
+        .toThrow(expect.objectContaining({ code: 'cross_mode_provider' }));
+      expect(mockAnthropicGenerate).not.toHaveBeenCalled();
+    });
+
+    it('does not invoke an unknown-price provider for unattended reasoning', async () => {
+      const { LlmClient, AllProvidersFailedError } = await freshImport();
+      mockOpenaiGenerate.mockResolvedValue('must not run');
+      const client = LlmClient.forReasoningMode(
+        'bring_your_own_provider', [openaiProvider], 'user-unattended',
+      );
+      await expect(client.generate('background decision')).rejects.toBeInstanceOf(
+        AllProvidersFailedError,
+      );
+      await expect(client.generate('background decision')).rejects.toMatchObject({
+        attempted: ['openai(price-unavailable)'],
+      });
+      expect(mockOpenaiGenerate).not.toHaveBeenCalled();
+    });
+
+    it('may fall back to a priced local provider without invoking an unpriced remote one', async () => {
+      const { LlmClient } = await freshImport();
+      const local: ProviderEntry = { name: 'ollama', apiKey: '', model: 'qwen' };
+      mockOpenaiGenerate.mockResolvedValue('must not run');
+      mockOllamaGenerate.mockResolvedValue('local result');
+      const client = LlmClient.forReasoningMode(
+        'bring_your_own_provider', [openaiProvider, local], 'user-priced-fallback',
+      );
+      await expect(client.generate('background decision')).resolves.toMatchObject({
+        provider: 'ollama',
+        execution: { capabilities: { executionLocation: 'on_device' } },
+      });
+      expect(mockOpenaiGenerate).not.toHaveBeenCalled();
+      expect(mockOllamaGenerate).toHaveBeenCalledOnce();
+    });
+
+    it('fails closed when the only on-device runtime is unavailable', async () => {
+      const { LlmClient, AllProvidersFailedError } = await freshImport();
+      const local: ProviderEntry = { name: 'ollama', apiKey: '', model: 'qwen' };
+      mockOllamaGenerate.mockRejectedValue(new Error('runtime unavailable'));
+      const client = LlmClient.forReasoningMode('on_device', [local], 'user-local-down');
+      await expect(client.generate('background decision')).rejects.toBeInstanceOf(
+        AllProvidersFailedError,
+      );
+      expect(mockAnthropicGenerate).not.toHaveBeenCalled();
+      expect(mockOpenaiGenerate).not.toHaveBeenCalled();
     });
   });
 
@@ -384,10 +463,10 @@ describe('LlmClient', () => {
     it('yields chunks from the native streaming provider then a done event', async () => {
       mockAnthropicStream.mockReturnValueOnce(fromChunks(['Hello, ', 'world', '!']));
       const { LlmClient } = await freshImport();
-      const client = new LlmClient([anthropicProvider], 'user-1');
+      const client = LlmClient.forReasoningMode('bring_your_own_provider', [anthropicProvider], 'user-1');
 
       const events: unknown[] = [];
-      for await (const e of client.generateStream('hi')) {
+      for await (const e of client.generateStream('hi', { invocationKind: 'interactive' })) {
         events.push(e);
       }
 
@@ -413,10 +492,10 @@ describe('LlmClient', () => {
       // Fallback provider (openai) succeeds via single-chunk fallback path.
       mockOpenaiGenerate.mockResolvedValueOnce('from openai');
       const { LlmClient } = await freshImport();
-      const client = new LlmClient([anthropicProvider, openaiProvider], 'user-2');
+      const client = LlmClient.forReasoningMode('bring_your_own_provider', [anthropicProvider, openaiProvider], 'user-2');
 
       const events: unknown[] = [];
-      for await (const e of client.generateStream('hi')) {
+      for await (const e of client.generateStream('hi', { invocationKind: 'interactive' })) {
         events.push(e);
       }
 
@@ -438,12 +517,12 @@ describe('LlmClient', () => {
       );
       mockOpenaiGenerate.mockResolvedValueOnce('would have worked');
       const { LlmClient } = await freshImport();
-      const client = new LlmClient([anthropicProvider, openaiProvider], 'user-3');
+      const client = LlmClient.forReasoningMode('bring_your_own_provider', [anthropicProvider, openaiProvider], 'user-3');
 
       const events: unknown[] = [];
       let thrown: unknown = null;
       try {
-        for await (const e of client.generateStream('hi')) {
+        for await (const e of client.generateStream('hi', { invocationKind: 'interactive' })) {
           events.push(e);
         }
       } catch (err) {
@@ -464,11 +543,11 @@ describe('LlmClient', () => {
       });
       mockOpenaiGenerate.mockRejectedValueOnce(new Error('boom'));
       const { LlmClient, AllProvidersFailedError } = await freshImport();
-      const client = new LlmClient([anthropicProvider, openaiProvider], 'user-4');
+      const client = LlmClient.forReasoningMode('bring_your_own_provider', [anthropicProvider, openaiProvider], 'user-4');
 
       let thrown: unknown = null;
       try {
-        for await (const _ of client.generateStream('hi')) {
+        for await (const _ of client.generateStream('hi', { invocationKind: 'interactive' })) {
           // unreachable
         }
       } catch (err) {
@@ -483,10 +562,10 @@ describe('LlmClient', () => {
       // the full sync response.
       mockOpenaiGenerate.mockResolvedValueOnce('whole reply at once');
       const { LlmClient } = await freshImport();
-      const client = new LlmClient([openaiProvider], 'user-5');
+      const client = LlmClient.forReasoningMode('bring_your_own_provider', [openaiProvider], 'user-5');
 
       const events: unknown[] = [];
-      for await (const e of client.generateStream('hi')) {
+      for await (const e of client.generateStream('hi', { invocationKind: 'interactive' })) {
         events.push(e);
       }
 
@@ -499,10 +578,10 @@ describe('LlmClient', () => {
     it('skips empty chunks (some providers emit zero-length keepalives)', async () => {
       mockAnthropicStream.mockReturnValueOnce(fromChunks(['', 'real', '', 'text']));
       const { LlmClient } = await freshImport();
-      const client = new LlmClient([anthropicProvider], 'user-6');
+      const client = LlmClient.forReasoningMode('bring_your_own_provider', [anthropicProvider], 'user-6');
 
       const chunks: string[] = [];
-      for await (const e of client.generateStream('hi')) {
+      for await (const e of client.generateStream('hi', { invocationKind: 'interactive' })) {
         if (e.type === 'chunk') chunks.push(e.content);
       }
 

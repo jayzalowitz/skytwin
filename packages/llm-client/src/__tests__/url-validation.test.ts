@@ -1,5 +1,9 @@
-import { describe, it, expect } from 'vitest';
-import { validateBaseUrl } from '../url-validation.js';
+import { afterEach, describe, it, expect, vi } from 'vitest';
+import { fetchCustomProviderUrl, validateBaseUrl } from '../url-validation.js';
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe('validateBaseUrl', () => {
   describe('valid public URLs', () => {
@@ -9,8 +13,9 @@ describe('validateBaseUrl', () => {
       expect(() => validateBaseUrl('https://generativelanguage.googleapis.com', 'google')).not.toThrow();
     });
 
-    it('accepts http URLs for public hosts', () => {
-      expect(() => validateBaseUrl('http://api.example.com', 'openai')).not.toThrow();
+    it('rejects plaintext HTTP for public hosts', () => {
+      expect(() => validateBaseUrl('http://api.example.com', 'openai')).toThrow('HTTPS is required');
+      expect(() => validateBaseUrl('http://ollama.example.com', 'ollama')).toThrow('HTTPS is required');
     });
   });
 
@@ -65,8 +70,8 @@ describe('validateBaseUrl', () => {
     });
 
     it('allows 172.15.x.x and 172.32.x.x (not private)', () => {
-      expect(() => validateBaseUrl('http://172.15.0.1', 'openai')).not.toThrow();
-      expect(() => validateBaseUrl('http://172.32.0.1', 'openai')).not.toThrow();
+      expect(() => validateBaseUrl('https://172.15.0.1', 'openai')).not.toThrow();
+      expect(() => validateBaseUrl('https://172.32.0.1', 'openai')).not.toThrow();
     });
 
     it('blocks 192.168.x.x (class C private)', () => {
@@ -128,19 +133,14 @@ describe('validateBaseUrl', () => {
 
     it('blocks octal notation 010.0.0.1', () => {
       // Node's URL parser resolves 010.0.0.1 to 8.0.0.1 (non-private)
-      expect(() => validateBaseUrl('http://010.0.0.1', 'openai')).not.toThrow();
+      expect(() => validateBaseUrl('https://010.0.0.1', 'openai')).not.toThrow();
     });
   });
 
   describe('IPv6-mapped IPv4 addresses', () => {
-    // Node's URL parser converts [::ffff:10.0.0.1] to [::ffff:a00:1] (hex form),
-    // which our isPrivateHost doesn't currently catch. These tests document the
-    // actual behavior. The string-form ::ffff:X.X.X.X IS caught when passed directly.
-    it('catches string-form ::ffff:10.x.x.x directly', () => {
-      // Direct string (not via URL parser) is caught by isPrivateHost
-      // The URL parser rewrites these to hex form, which bypasses the check.
-      // This is a known limitation — documenting current behavior.
-      expect(() => validateBaseUrl('http://10.0.0.1', 'openai')).toThrow('Private/internal URL not allowed');
+    it('blocks the canonical hex form produced for IPv4-mapped private addresses', () => {
+      expect(() => validateBaseUrl('http://[::ffff:10.0.0.1]', 'openai'))
+        .toThrow('Private/internal URL not allowed');
     });
 
     it('blocks direct loopback and private IPs', () => {
@@ -216,8 +216,62 @@ describe('validateBaseUrl', () => {
     });
 
     it('allows 100.63.x.x and 100.128.x.x (outside CGNAT)', () => {
-      expect(() => validateBaseUrl('http://100.63.0.1', 'openai')).not.toThrow();
-      expect(() => validateBaseUrl('http://100.128.0.1', 'openai')).not.toThrow();
+      expect(() => validateBaseUrl('https://100.63.0.1', 'openai')).not.toThrow();
+      expect(() => validateBaseUrl('https://100.128.0.1', 'openai')).not.toThrow();
     });
+  });
+});
+
+describe('fetchCustomProviderUrl', () => {
+  it('fails closed when DNS cannot resolve the configured hostname', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const failingLookup = vi.fn().mockRejectedValue(new Error('ENOTFOUND'));
+
+    await expect(fetchCustomProviderUrl(
+      'https://unresolvable.example/v1/messages',
+      'anthropic',
+      { method: 'POST' },
+      failingLookup,
+    )).rejects.toThrow('DNS lookup failed');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a hostname whose validated DNS answer is private', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const privateLookup = vi.fn().mockResolvedValue([{ address: '127.0.0.1', family: 4 }]);
+
+    await expect(fetchCustomProviderUrl(
+      'https://rebind.example/v1/messages',
+      'anthropic',
+      { method: 'POST' },
+      privateLookup,
+    )).rejects.toThrow('resolves to private address');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('pins the validated lookup into the connection and rejects redirects', async () => {
+    const redirect = new Response('', {
+      status: 302,
+      headers: { Location: 'http://169.254.169.254/latest/meta-data/' },
+    });
+    const fetchMock = vi.fn().mockResolvedValue(redirect);
+    vi.stubGlobal('fetch', fetchMock);
+    const publicLookup = vi.fn().mockResolvedValue([{ address: '93.184.216.34', family: 4 }]);
+
+    await expect(fetchCustomProviderUrl(
+      'https://provider.example/v1/messages',
+      'anthropic',
+      { method: 'POST' },
+      publicLookup,
+    )).rejects.toThrow('Redirects are not allowed');
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://provider.example/v1/messages',
+      expect.objectContaining({
+        redirect: 'manual',
+        dispatcher: expect.any(Object),
+      }),
+    );
   });
 });

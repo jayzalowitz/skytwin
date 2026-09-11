@@ -3,6 +3,8 @@ import type {
   InferenceFallbackV1,
   InferenceReceiptStatus,
   InferenceReasoningMode,
+  ProviderExecutionMetadata,
+  ReasoningMode,
   ReceiptSignatureV1,
 } from '@skytwin/shared-types';
 
@@ -83,6 +85,8 @@ export interface GenerateOptions {
   maxTokens?: number;
   systemPrompt?: string;
   timeoutMs?: number;
+  /** User-present calls may use explicitly selected providers with unknown price. */
+  invocationKind?: 'interactive' | 'unattended';
 }
 
 /**
@@ -93,6 +97,8 @@ export interface LlmResponse {
   provider: AIProviderName;
   model: string;
   latencyMs: number;
+  /** Additive provenance for routing, spend and future receipt persistence. */
+  execution: ProviderExecutionMetadata;
 }
 
 /**
@@ -124,7 +130,7 @@ export type ProviderGenerateFn = (
   apiKey: string,
   model: string,
   prompt: string | ChatMessage[],
-  options: GenerateOptions & { baseUrl?: string },
+  options: GenerateOptions & { baseUrl?: string; reasoningMode?: ReasoningMode },
 ) => Promise<string>;
 
 /**
@@ -138,7 +144,14 @@ export type ProviderGenerateFn = (
  */
 export type LlmStreamEvent =
   | { type: 'chunk'; content: string }
-  | { type: 'done'; content: string; provider: AIProviderName; model: string; latencyMs: number };
+  | {
+    type: 'done';
+    content: string;
+    provider: AIProviderName;
+    model: string;
+    latencyMs: number;
+    execution: ProviderExecutionMetadata;
+  };
 
 /**
  * Provider-level streaming function signature. Returns an async iterable
@@ -154,5 +167,5 @@ export type ProviderStreamFn = (
   apiKey: string,
   model: string,
   prompt: string | ChatMessage[],
-  options: GenerateOptions & { baseUrl?: string },
+  options: GenerateOptions & { baseUrl?: string; reasoningMode?: ReasoningMode },
 ) => AsyncIterable<string>;

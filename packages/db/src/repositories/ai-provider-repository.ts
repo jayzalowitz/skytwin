@@ -1,5 +1,6 @@
 import { query, withTransaction } from '../connection.js';
-import type { AIProviderSettingsRow } from '../types.js';
+import type { AIProviderSettingsRow, ReasoningModeSettingsRow } from '../types.js';
+import type { ReasoningMode } from '@skytwin/shared-types';
 
 /**
  * Input for creating or updating an AI provider setting.
@@ -18,6 +19,33 @@ export interface UpsertAIProviderInput {
  * Repository for AI provider settings operations.
  */
 export const aiProviderRepository = {
+  /** Read the routing policy and enabled chain from one serializable snapshot. */
+  async getReasoningSnapshotForUser(userId: string): Promise<{
+    providers: AIProviderSettingsRow[];
+    reasoningMode: ReasoningModeSettingsRow;
+  }> {
+    return withTransaction(async (client) => {
+      await client.query(
+        `INSERT INTO reasoning_mode_settings (user_id, mode, requires_confirmation)
+         VALUES ($1, 'on_device', false)
+         ON CONFLICT (user_id) DO NOTHING`,
+        [userId],
+      );
+      const modeResult = await client.query<ReasoningModeSettingsRow>(
+        'SELECT * FROM reasoning_mode_settings WHERE user_id = $1 LIMIT 1',
+        [userId],
+      );
+      const providerResult = await client.query<AIProviderSettingsRow>(
+        `SELECT * FROM ai_provider_settings
+         WHERE user_id = $1
+         ORDER BY priority ASC`,
+        [userId],
+      );
+      const reasoningMode = modeResult.rows[0];
+      if (!reasoningMode) throw new Error('reasoning mode snapshot returned no row');
+      return { providers: providerResult.rows, reasoningMode };
+    });
+  },
   /**
    * Get all AI providers for a user, sorted by priority (lowest first).
    */
@@ -103,6 +131,55 @@ export const aiProviderRepository = {
           [userId, p.provider, apiKey, p.model, p.baseUrl ?? null, p.priority, p.enabled ?? true],
         );
         rows.push(row.rows[0]!);
+      }
+      return rows;
+    });
+  },
+
+  /** Atomically replace the provider chain and its independent location policy. */
+  async replaceAllWithReasoningMode(
+    userId: string,
+    mode: ReasoningMode,
+    providers: Omit<UpsertAIProviderInput, 'userId'>[],
+  ): Promise<AIProviderSettingsRow[]> {
+    return withTransaction(async (client) => {
+      await client.query(
+        `INSERT INTO reasoning_mode_settings (user_id, mode, requires_confirmation)
+         VALUES ($1, $2, false)
+         ON CONFLICT (user_id) DO UPDATE SET
+           mode = EXCLUDED.mode,
+           requires_confirmation = false,
+           updated_at = now()`,
+        [userId, mode],
+      );
+      const existing = await client.query<AIProviderSettingsRow>(
+        'SELECT provider, api_key FROM ai_provider_settings WHERE user_id = $1',
+        [userId],
+      );
+      const existingKeys = new Map(existing.rows.map((row) => [row.provider, row.api_key]));
+      await client.query('DELETE FROM ai_provider_settings WHERE user_id = $1', [userId]);
+
+      const rows: AIProviderSettingsRow[] = [];
+      for (const provider of providers) {
+        const apiKey = provider.apiKey && provider.apiKey.length > 0
+          ? provider.apiKey
+          : (existingKeys.get(provider.provider) ?? '');
+        const inserted = await client.query<AIProviderSettingsRow>(
+          `INSERT INTO ai_provider_settings
+             (user_id, provider, api_key, model, base_url, priority, enabled)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
+           RETURNING *`,
+          [
+            userId,
+            provider.provider,
+            apiKey,
+            provider.model,
+            provider.baseUrl ?? null,
+            provider.priority,
+            provider.enabled ?? true,
+          ],
+        );
+        rows.push(inserted.rows[0]!);
       }
       return rows;
     });

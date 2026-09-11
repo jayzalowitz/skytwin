@@ -59,6 +59,13 @@ vi.mock('../execution-setup.js', () => ({
   getExecutionRouter: mockGetExecutionRouter,
 }));
 
+vi.mock('../lib/user-llm-client.js', () => ({
+  buildUserLlmClient: vi.fn().mockResolvedValue(null),
+  resolveUserLlmClient: vi.fn().mockResolvedValue({
+    state: 'no_provider', client: null, reason: 'No enabled provider is configured',
+  }),
+}));
+
 // Mock RegistryClient so tests don't hit the filesystem during vitest
 vi.mock('@skytwin/registry-client', () => ({
   RegistryClient: vi.fn(function RegistryClient() {
