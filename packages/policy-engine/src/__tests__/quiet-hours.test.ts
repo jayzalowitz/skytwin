@@ -18,12 +18,10 @@ function makeAction(overrides: Partial<CandidateAction> = {}): CandidateAction {
   return {
     id: 'test-action',
     decisionId: 'test-decision',
-    // archive_email: reversible and non-destructive, so the injection guard
-    // does not escalate it — keeps these tests exercising quiet-hours logic
-    // rather than tripping the guard. (`email-send` would now classify as
-    // destructive via the `send` marker.)
-    actionType: 'archive_email',
-    description: 'Archive email',
+    // label_email is reversible and non-destructive, so the injection guard
+    // does not escalate it. These tests therefore exercise quiet-hours logic.
+    actionType: 'label_email',
+    description: 'Label email',
     domain: 'communication',
     parameters: {},
     estimatedCostCents: 0,

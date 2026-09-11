@@ -19,8 +19,8 @@ function createAction(overrides?: Partial<CandidateAction>): CandidateAction {
   return {
     id: 'action_test',
     decisionId: 'dec_test',
-    actionType: 'archive_email',
-    description: 'Archive this email',
+    actionType: 'label_email',
+    description: 'Label this email',
     domain: 'email',
     parameters: {},
     estimatedCostCents: 0,
@@ -81,6 +81,17 @@ describe('PolicyEvaluator.checkInjectionGuard — unit', () => {
     );
     expect(r.requiresApproval).toBe(true);
     expect(r.confirmationLevel).toBe('single');
+  });
+
+  it('forces an untrusted archive proposal through single confirmation', () => {
+    const result = evaluator.checkInjectionGuard(createAction({
+      actionType: 'archive_email',
+      provenance: 'untrusted_external',
+      reversible: true,
+    }));
+    expect(result.requiresApproval).toBe(true);
+    expect(result.confirmationLevel).toBe('single');
+    expect(result.reason).toContain('never auto-execute');
   });
 
   it('escalates an extreme action to dual confirmation regardless of provenance', () => {

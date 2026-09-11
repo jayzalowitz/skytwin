@@ -7,12 +7,14 @@ import type {
   Preference,
   BehavioralPattern,
   CrossDomainTrait,
+  CandidateAction,
 } from '@skytwin/shared-types';
 import {
   ConfidenceLevel,
   SituationType,
   TrustTier,
 } from '@skytwin/shared-types';
+import type { CandidateGenerator } from '../strategies/candidate-strategy.js';
 
 // ── Mock TwinService ──────────────────────────────────────────────
 
@@ -1078,6 +1080,24 @@ describe('DecisionMaker', () => {
   // ── shouldAutoExecute with trust tiers (via evaluate) ────────────
 
   describe('shouldAutoExecute with different trust tiers (via evaluate)', () => {
+    const autoLabelGenerator: CandidateGenerator = {
+      async generate(decision): Promise<CandidateAction[]> {
+        return [{
+          id: 'action_label_test',
+          decisionId: decision.id,
+          actionType: 'label_email',
+          description: 'Label this email',
+          domain: 'email',
+          parameters: { labels: ['newsletter'] },
+          estimatedCostCents: 0,
+          reversible: true,
+          confidence: ConfidenceLevel.HIGH,
+          reasoning: 'Low-risk action used to exercise trust-tier eligibility.',
+          provenance: 'user_originated',
+        }];
+      },
+    };
+
     function makeMocksAllowed() {
       const twinService = createMockTwinService({
         preferences: [
@@ -1103,6 +1123,7 @@ describe('DecisionMaker', () => {
         twinService as never,
         policyEvaluator as never,
         decisionRepo as never,
+        autoLabelGenerator,
       );
       return dm;
     }
@@ -1125,12 +1146,11 @@ describe('DecisionMaker', () => {
 
     it('LOW_AUTONOMY tier should auto-execute low-risk reversible actions', async () => {
       const dm = makeMocksAllowed();
-      // Email archive is reversible, zero cost -> negligible/low risk
       const context = createContext(TrustTier.LOW_AUTONOMY);
       const outcome = await dm.evaluate(context);
 
       expect(outcome.selectedAction).not.toBeNull();
-      // archive_email is reversible, zero cost -> low risk -> should auto-execute
+      expect(outcome.selectedAction?.actionType).toBe('label_email');
       expect(outcome.autoExecute).toBe(true);
     });
 

@@ -250,7 +250,7 @@ describe('events pipeline — sender-aware fallback gates board/CFO emails', () 
     expect(body.outcome.autoExecute).toBe(false);
   }, 30_000);
 
-  it('newsletter at MODERATE_AUTONOMY still auto-archives', async () => {
+  it('newsletter at MODERATE_AUTONOMY stays in the routine triage lane', async () => {
     const app = buildApp();
     const res = await postJson(app, '/api/events/ingest', {
       userId: USER_ID,

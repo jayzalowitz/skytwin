@@ -32,8 +32,8 @@ function createAction(overrides?: Partial<CandidateAction>): CandidateAction {
   return {
     id: 'action_test',
     decisionId: 'dec_test',
-    actionType: 'archive_email',
-    description: 'Archive this email',
+    actionType: 'label_email',
+    description: 'Label this email',
     domain: 'email',
     parameters: {},
     estimatedCostCents: 0,

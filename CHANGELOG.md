@@ -1,5 +1,15 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [Unreleased] — Canonical Gmail archive proposals
+
+### Added
+
+- Added a default-off, proposal-only builder for one canonical Gmail Inbox archive candidate. The builder derives its opaque target solely from a trusted decision's repository-issued message reference, rejects alternate authority fields, emits the exact downstream persistence shape and a complete risk assessment, and leaves capability provenance unset. `SKYTWIN_GMAIL_ARCHIVE_ENABLED=true` enables proposal construction only; no route, persistence, dispatch, worker, provider call, or runtime registration is included.
+
+### Changed
+
+- A single-message `archive_email` action is now classified as destructive and requires one explicit confirmation, including when reversible and triggered by untrusted inbound content. It cannot pass the injection guard for auto-execution.
+
 ## [Unreleased] — Account-free sample browsing
 
 ### Added

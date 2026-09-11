@@ -42,6 +42,7 @@ import {
   type TwinRepositoryPort,
 } from '@skytwin/twin-model';
 import { DecisionMaker } from '../decision-maker.js';
+import type { CandidateGenerator } from '../strategies/candidate-strategy.js';
 
 // ── Minimal in-memory repos ────────────────────────────────────────────────
 
@@ -184,6 +185,26 @@ function emailCandidate(): CandidateAction {
   };
 }
 
+/** A reversible, non-destructive control after archive_email became confirmation-only. */
+const autoLabelGenerator: CandidateGenerator = {
+  async generate(decision) {
+    return [{
+      id: 'cand-auto-label',
+      decisionId: decision.id,
+      actionType: 'label_email',
+      description: 'Apply a label to this email',
+      domain: 'email',
+      parameters: { labels: ['newsletters'] },
+      estimatedCostCents: 0,
+      costZeroIntent: 'verified_zero',
+      reversible: true,
+      confidence: ConfidenceLevel.HIGH,
+      reasoning: 'Safe auto-execution control candidate.',
+      provenance: 'untrusted_external',
+    }];
+  },
+};
+
 const DENY_ALL_POLICY: ActionPolicy = {
   id: 'test_deny_all',
   name: 'Deny All',
@@ -204,7 +225,10 @@ const DENY_ALL_POLICY: ActionPolicy = {
   updatedAt: new Date(),
 };
 
-function setupHarness(policies: ActionPolicy[] = []): DecisionMaker {
+function setupHarness(
+  policies: ActionPolicy[] = [],
+  candidateGenerator?: CandidateGenerator,
+): DecisionMaker {
   const twinRepo = new TwinRepo();
   void twinRepo.createProfile({
     id: 'twin-autonomy',
@@ -221,6 +245,7 @@ function setupHarness(policies: ActionPolicy[] = []): DecisionMaker {
     new TwinService(twinRepo, new PatternRepo()),
     new PolicyEvaluator(policyRepo),
     new DecisionRepo() as never,
+    candidateGenerator,
   );
 }
 
@@ -263,7 +288,7 @@ describe('autonomy settings reach the policy evaluator (primary ingest path)', (
     // Guards the tests below from going green for the wrong reason: if this
     // case did not auto-execute, "paused blocks auto-execute" would prove
     // nothing.
-    const outcome = await setupHarness().evaluate(contextWith(BASE_AUTONOMY));
+    const outcome = await setupHarness([], autoLabelGenerator).evaluate(contextWith(BASE_AUTONOMY));
 
     expect(outcome.selectedAction).not.toBeNull();
     expect(outcome.autoExecute).toBe(true);
@@ -438,7 +463,7 @@ describe('autonomy settings reach the policy evaluator (primary ingest path)', (
     // autonomy settings on the context, none of the above gates can fire and
     // the same signal auto-executes. This is why `DecisionContext` carries
     // the field and `apps/api/src/routes/events.ts` populates it.
-    const outcome = await setupHarness().evaluate(contextWith(undefined));
+    const outcome = await setupHarness([], autoLabelGenerator).evaluate(contextWith(undefined));
 
     expect(outcome.autoExecute).toBe(true);
   });
