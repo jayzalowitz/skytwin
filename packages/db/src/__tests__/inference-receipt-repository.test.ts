@@ -3,7 +3,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { sha256Hex, signInferenceReceipt, type InferenceReceiptExportV1 } from '@skytwin/shared-types';
 
 const mockQuery = vi.fn();
-vi.mock('../connection.js', () => ({ query: (...args: unknown[]) => mockQuery(...args) }));
+const mockTransactionQuery = vi.fn();
+const mockWithTransaction = vi.fn(
+  (fn: (client: { query: typeof mockTransactionQuery }) => Promise<unknown>) =>
+    fn({ query: mockTransactionQuery }),
+);
+vi.mock('../connection.js', () => ({
+  query: (...args: unknown[]) => mockQuery(...args),
+  withTransaction: (fn: (client: { query: typeof mockTransactionQuery }) => Promise<unknown>) =>
+    mockWithTransaction(fn),
+}));
 const { inferenceReceiptRepository } = await import('../repositories/inference-receipt-repository.js');
 
 const keys = generateKeyPairSync('ed25519');
@@ -81,6 +90,78 @@ describe('inferenceReceiptRepository', () => {
     expect(await inferenceReceiptRepository.createForUser('another-user', {
       bundle, trustedRecorderKeys: new Map([['recorder', publicKeyPem]]),
     })).toBeNull();
+  });
+
+  it('validates every bundle before opening the atomic batch transaction', async () => {
+    const trusted = fixture();
+    const untrusted = fixture();
+    const { seal: _seal, ...unsigned } = untrusted.receipt;
+    const attacker = generateKeyPairSync('ed25519');
+    untrusted.receipt = signInferenceReceipt(unsigned, {
+      keyId: 'attacker',
+      privateKeyPem: attacker.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString(),
+      publicKeyPem: attacker.publicKey.export({ type: 'spki', format: 'pem' }).toString(),
+    });
+    expect(await inferenceReceiptRepository.createManyForUser(trusted.receipt.userId, [
+      { bundle: trusted, trustedRecorderKeys: new Map([['recorder', publicKeyPem]]) },
+      { bundle: untrusted, trustedRecorderKeys: new Map([['recorder', publicKeyPem]]) },
+    ], { decisionId: trusted.receipt.decisionId, explanationId: trusted.receipt.explanationId })).toBeNull();
+    expect(mockWithTransaction).not.toHaveBeenCalled();
+    expect(mockTransactionQuery).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['userId', 'another-user', undefined, undefined],
+    ['decisionId', undefined, '55555555-5555-4555-8555-555555555555', undefined],
+    ['explanationId', undefined, undefined, '66666666-6666-4666-8666-666666666666'],
+  ] as const)('rejects a bundle with mismatched %s before opening a transaction', async (
+    _field,
+    userId,
+    decisionId,
+    explanationId,
+  ) => {
+    const bundle = fixture();
+    const { seal: _seal, ...unsigned } = bundle.receipt;
+    bundle.receipt = signInferenceReceipt({
+      ...unsigned,
+      userId: userId ?? unsigned.userId,
+      decisionId: decisionId ?? unsigned.decisionId,
+      explanationId: explanationId ?? unsigned.explanationId,
+    }, { keyId: 'recorder', privateKeyPem, publicKeyPem });
+
+    expect(await inferenceReceiptRepository.createManyForUser(
+      unsigned.userId,
+      [{ bundle, trustedRecorderKeys: new Map([['recorder', publicKeyPem]]) }],
+      { decisionId: unsigned.decisionId, explanationId: unsigned.explanationId },
+    )).toBeNull();
+    expect(mockWithTransaction).not.toHaveBeenCalled();
+    expect(mockTransactionQuery).not.toHaveBeenCalled();
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  it('fails the transaction when any receipt cannot link to the owned explanation', async () => {
+    mockTransactionQuery
+      .mockResolvedValueOnce({ rows: [{ id: 'first' }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    const first = fixture();
+    const second = fixture();
+    const { seal: _seal, ...unsigned } = second.receipt;
+    second.receipt = signInferenceReceipt({
+      ...unsigned, id: '55555555-5555-4555-8555-555555555555',
+    }, { keyId: 'recorder', privateKeyPem, publicKeyPem });
+    await expect(inferenceReceiptRepository.createManyForUser(first.receipt.userId, [first, second].map((bundle) => ({
+      bundle, trustedRecorderKeys: new Map([['recorder', publicKeyPem]]),
+    })), { decisionId: first.receipt.decisionId, explanationId: first.receipt.explanationId })).rejects.toThrow(/linkage/);
+  });
+
+  it('writes a completion marker in the same transaction even when no call completed', async () => {
+    mockTransactionQuery.mockResolvedValue({ rows: [{ decision_id: 'decision' }], rowCount: 1 });
+    const rows = await inferenceReceiptRepository.createManyForUser('user', [], {
+      decisionId: 'decision', explanationId: 'explanation',
+    });
+    expect(rows).toEqual([]);
+    expect(mockTransactionQuery).toHaveBeenCalledOnce();
+    expect(mockTransactionQuery.mock.calls[0]![0]).toContain('inference_receipt_completions');
   });
 
   it('scopes reads and deletion through the decision owner', async () => {

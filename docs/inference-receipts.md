@@ -2,21 +2,46 @@
 
 SkyTwin's version-1 inference receipt is a signed, metadata-only record linked
 to one decision and its `ExplanationRecord`. It identifies the reasoning path,
-provider, model, endpoint, hashes of the exact request and response bytes,
+provider, model, endpoint, and hashes of SkyTwin's versioned canonical logical
+input and output bytes,
 cost basis, and verification or fallback outcome. It does not store prompts,
 responses, credentials, chain-of-thought, or complete attestation documents.
 
-This first slice provides the contract, trusted-recorder persistence boundary,
-owner-scoped read/delete repository and API paths, backup/restore support, and
-an independent command-line verifier. Automatic receipt creation in every
-decision workflow and the receipt detail UI remain gated on the strict
-confidential-provider integration; until those land, absence of a receipt must
-be displayed as unavailable and must never be inferred as a privacy outcome.
+The decision-event ingest path captures every completed call made through its
+receipt-aware `LlmClient` instance and persists the resulting batch after the real `ExplanationRecord`
+exists but before approval creation or action execution. A decision may have
+multiple receipts because interpretation, candidate generation, and drafting
+can be separate calls. The metadata API currently returns the latest receipt;
+the repository and backup format retain the complete set. The receipt detail UI
+remains future work; absence of a receipt must be displayed as unavailable and
+must never be inferred as a privacy outcome.
+
+On-device and conventional calls are classified from their configured runtime
+mode. Hosted costs remain `unknown` until provider usage/billing identifiers are
+available; local runtime cost is exactly zero. Conventional and local records
+cannot carry attestation fields. The decision-event integration does not yet
+configure a confidential verifier, so it cannot emit or display
+`verified_confidential`. The lower-level contract requires an independently
+configured verifier and pinned provider trust roots; neither may be derived
+from keys or evidence returned by the verifier. Failed, unavailable, or stale
+verification is captured by a receipt-aware client, and a later local success
+is a separate local-fallback trace. Other application LLM clients (including
+assistant, Lifebooks, and adaptive setup flows) are not covered by this slice
+and must not be presented as receipt-backed.
+
+For a stable recorder identity, configure `SKYTWIN_RECEIPT_KEY_ID`,
+`SKYTWIN_RECEIPT_PRIVATE_KEY_BASE64`, and
+`SKYTWIN_RECEIPT_PUBLIC_KEY_BASE64` together. With none configured, the API
+creates a process-local Ed25519 identity. Those receipts are still
+integrity-checkable using their embedded key, but the recorder identity is not
+stable across restarts and must not be presented as a release-pinned identity.
 
 ## Independent verification
 
-An export bundle contains the canonical signed receipt plus the exact request,
-response, and (for confidential verification) minimum evidence bytes. Verify it
+An export bundle contains the canonical signed receipt plus SkyTwin's canonical
+logical input/output and (for confidential verification) minimum evidence
+bytes. These are provider-neutral application-boundary values, not exact HTTP
+payloads, headers, raw response bodies, or transport transcripts. Verify it
 without running the API or web UI:
 
 ```bash
@@ -53,7 +78,10 @@ through the library API.
 
 ## Privacy, retention, and deletion
 
-Receipt rows contain identifiers and inference metadata. They are not yet
+Receipt rows contain identifiers and inference metadata. Canonical logical
+input/output and verification-evidence bytes exist only while the route validates
+and inserts the metadata receipt; they are not written to the receipt table.
+Receipt rows are not yet
 application-level encrypted; operators should use full-disk encryption, as
 documented in the privacy policy. They cascade-delete with their decision or
 user and can be explicitly deleted atomically through the authenticated decision receipt

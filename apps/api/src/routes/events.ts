@@ -28,13 +28,20 @@ import {
   decisionRepositoryAdapter,
   explanationRepositoryAdapter,
   policyRepositoryAdapter,
+  inferenceReceiptRepository,
 } from '@skytwin/db';
-import type { DecisionContext, ExecutionEvent, RiskAssessment, EpisodicMemory } from '@skytwin/shared-types';
+import type {
+  DecisionContext,
+  ExecutionEvent,
+  RiskAssessment,
+  EpisodicMemory,
+} from '@skytwin/shared-types';
 import { parseAutonomySettings, SituationType, TrustTier } from '@skytwin/shared-types';
 import type { AIProviderName } from '@skytwin/shared-types';
-import { LlmClient } from '@skytwin/llm-client';
-import type { ProviderEntry } from '@skytwin/llm-client';
+import { emitInferenceReceipt, LlmClient } from '@skytwin/llm-client';
+import type { InferenceTrace, ProviderEntry, ReceiptSigningKey } from '@skytwin/llm-client';
 import { createLogger } from '@skytwin/core';
+import { generateKeyPairSync } from 'node:crypto';
 
 const log = createLogger('api:events');
 import { WorkflowHandlerRegistry } from '../workflows/registry.js';
@@ -96,7 +103,40 @@ async function recordSignalToMemory(
  * Build an LlmClient from the user's enabled AI provider settings.
  * Returns null if the user has no enabled providers.
  */
-async function buildLlmClientForUser(userId: string): Promise<LlmClient | null> {
+interface ReceiptAwareLlmClient {
+  client: LlmClient;
+  traces: InferenceTrace[];
+}
+
+let receiptSigningKey: ReceiptSigningKey | undefined;
+
+function getReceiptSigningKey(): ReceiptSigningKey {
+  if (receiptSigningKey) return receiptSigningKey;
+  const encodedPrivate = process.env['SKYTWIN_RECEIPT_PRIVATE_KEY_BASE64'];
+  const encodedPublic = process.env['SKYTWIN_RECEIPT_PUBLIC_KEY_BASE64'];
+  const configuredKeyId = process.env['SKYTWIN_RECEIPT_KEY_ID'];
+  if ((encodedPrivate || encodedPublic || configuredKeyId) &&
+      !(encodedPrivate && encodedPublic && configuredKeyId)) {
+    throw new Error('Receipt signing configuration requires key ID, public key, and private key together');
+  }
+  if (encodedPrivate && encodedPublic && configuredKeyId) {
+    receiptSigningKey = {
+      keyId: configuredKeyId,
+      privateKeyPem: Buffer.from(encodedPrivate, 'base64').toString('utf8'),
+      publicKeyPem: Buffer.from(encodedPublic, 'base64').toString('utf8'),
+    };
+    return receiptSigningKey;
+  }
+  const pair = generateKeyPairSync('ed25519');
+  receiptSigningKey = {
+    keyId: `ephemeral-${crypto.randomUUID()}`,
+    privateKeyPem: pair.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString(),
+    publicKeyPem: pair.publicKey.export({ type: 'spki', format: 'pem' }).toString(),
+  };
+  return receiptSigningKey;
+}
+
+async function buildLlmClientForUser(userId: string): Promise<ReceiptAwareLlmClient | null> {
   const rows = await aiProviderRepository.getEnabledForUser(userId);
   if (rows.length === 0) return null;
 
@@ -105,9 +145,18 @@ async function buildLlmClientForUser(userId: string): Promise<LlmClient | null> 
     apiKey: r.api_key,
     model: r.model,
     baseUrl: r.base_url ?? undefined,
+    reasoningMode: r.provider === 'embedded' || r.provider === 'ollama'
+      ? 'on_device'
+      : 'conventional_cloud',
   }));
 
-  return new LlmClient(providers, userId);
+  const traces: InferenceTrace[] = [];
+  return {
+    client: new LlmClient(providers, userId, {
+      onInferenceTrace: (trace) => traces.push(trace),
+    }),
+    traces,
+  };
 }
 
 export function createEventsRouter(): Router {
@@ -204,7 +253,8 @@ export function createEventsRouter(): Router {
       const userId = validation.userId;
 
       // 0. Build per-user LLM client and strategies (or fall back to rule-based)
-      const llmClient = await buildLlmClientForUser(userId);
+      const receiptAwareLlm = await buildLlmClientForUser(userId);
+      const llmClient = receiptAwareLlm?.client ?? null;
 
       let interpreter: SituationInterpreter;
       let decisionMaker: DecisionMaker;
@@ -312,9 +362,19 @@ export function createEventsRouter(): Router {
       //      no-op anyway, so this case is always safe to short-circuit
       //      regardless of approval-row state.
       if (!decisionCreated) {
-        const previousOutcome = await decisionRepositoryAdapter.getOutcome(decision.id);
-        let recoverable = previousOutcome !== null;
+        const [previousOutcome, receiptCaptureComplete] = await Promise.all([
+          decisionRepositoryAdapter.getOutcome(decision.id),
+          inferenceReceiptRepository.isCompleteForDecision(userId, decision.id),
+        ]);
+        // The completion marker is committed atomically with the receipt batch.
+        // Without it, the prior request may have crashed after saving its
+        // explanation but before receipts/approval/execution were durable.
+        let recoverable = previousOutcome !== null && receiptCaptureComplete;
         let executionTerminal: { status: 'completed' | 'failed'; planId: string } | null = null;
+        const previousApproval = previousOutcome?.requiresApproval
+          ? await approvalRepository.findByDecisionId(decision.id, userId)
+          : null;
+        if (previousOutcome?.requiresApproval) recoverable = recoverable && previousApproval !== null;
         if (previousOutcome && previousOutcome.autoExecute) {
           const previousExec = await executionRepository.getByDecisionId(decision.id);
           if (!previousExec || !previousExec.result) {
@@ -332,16 +392,13 @@ export function createEventsRouter(): Router {
         }
 
         if (recoverable && previousOutcome) {
-          const [previousApproval, previousExplanation] = await Promise.all([
-            previousOutcome.requiresApproval
-              ? approvalRepository.findByDecisionId(decision.id, userId)
-              : Promise.resolve(null),
+          const previousExplanation = await (
             // Refetch the persisted explanation so the short-circuit
             // response carries the same `{ summary, riskTier, confidence }`
             // shape the first-time response did, instead of a null that
             // would make the endpoint's contract branch-dependent.
-            explanationRepositoryAdapter.getByDecisionId(decision.id),
-          ]);
+            explanationRepositoryAdapter.getByDecisionId(decision.id)
+          );
           log.info('Suppressed pipeline for re-ingested signal', {
             userId,
             decisionId: decision.id,
@@ -505,6 +562,39 @@ export function createEventsRouter(): Router {
         outcome,
         context,
       );
+
+      // An LLM-backed decision cannot proceed to approval or execution until
+      // every completed inference has a receipt linked to its real explanation.
+      // The repository inserts the batch atomically and derives ownership from
+      // the decision; raw inference bytes are verified here but never stored.
+      {
+        const signingKey = getReceiptSigningKey();
+        const inputs = (receiptAwareLlm?.traces ?? []).map((trace) => {
+          // Decision-event provider settings currently expose only conventional
+          // cloud and local runtimes. Confidential mode must arrive through a
+          // separately configured verifier + pinned trust-root integration;
+          // never bootstrap trust from fields returned by the verifier itself.
+          if (trace.reasoningMode === 'verified_confidential' || trace.verification) {
+            throw new Error('Confidential receipt emission is not configured for decision events');
+          }
+          const bundle = emitInferenceReceipt(trace, {
+            userId,
+            decisionId: decision.id,
+            explanationId: explanation.id,
+          }, signingKey);
+          return {
+            bundle,
+            trustedRecorderKeys: new Map([[signingKey.keyId, signingKey.publicKeyPem]]),
+          };
+        });
+        const persisted = await inferenceReceiptRepository.createManyForUser(userId, inputs, {
+          decisionId: decision.id,
+          explanationId: explanation.id,
+        });
+        if (!persisted || persisted.length !== inputs.length) {
+          throw new Error('Inference receipts could not be persisted; decision execution stopped');
+        }
+      }
 
       // 8b. Persist candidate actions so alternatives are available for approval UI
       if (outcome.allCandidates.length > 0) {

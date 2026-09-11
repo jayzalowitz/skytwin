@@ -15,6 +15,11 @@ const {
   mockSaveCandidates,
   mockGetOutcome,
   mockSaveOutcome,
+  mockGetProviders,
+  mockCreateReceipts,
+  mockReceiptCaptureComplete,
+  mockEmitReceipt,
+  mockLlmClient,
 } = vi.hoisted(() => ({
   mockInterpret: vi.fn(),
   mockEvaluate: vi.fn(),
@@ -36,6 +41,11 @@ const {
   mockSaveCandidates: vi.fn(),
   mockGetOutcome: vi.fn(),
   mockSaveOutcome: vi.fn(),
+  mockGetProviders: vi.fn(),
+  mockCreateReceipts: vi.fn(),
+  mockReceiptCaptureComplete: vi.fn(),
+  mockEmitReceipt: vi.fn(),
+  mockLlmClient: vi.fn(),
 }));
 
 vi.mock('@skytwin/decision-engine', () => ({
@@ -51,6 +61,7 @@ vi.mock('@skytwin/decision-engine', () => ({
   FallbackCandidateGenerator: vi.fn(),
   RuleBasedCandidateGenerator: vi.fn(),
   SenderAwareCandidateGenerator: vi.fn(),
+  CompositeCandidateGenerator: vi.fn(),
 }));
 
 vi.mock('@skytwin/twin-model', () => ({
@@ -83,7 +94,11 @@ vi.mock('@skytwin/db', () => ({
   oauthRepository: { getToken: vi.fn().mockResolvedValue(null) },
   executionRepository: mockExecutionRepository,
   userRepository: { findById: vi.fn().mockResolvedValue({ id: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', trust_tier: 'observer', ironclaw_channel: 'skytwin' }) },
-  aiProviderRepository: { getEnabledForUser: vi.fn().mockResolvedValue([]) },
+  aiProviderRepository: { getEnabledForUser: mockGetProviders },
+  inferenceReceiptRepository: {
+    createManyForUser: mockCreateReceipts,
+    isCompleteForDecision: mockReceiptCaptureComplete,
+  },
   emailLabelRepository: {
     topLabelsForSender: vi.fn().mockResolvedValue([]),
     topLabelsForListId: vi.fn().mockResolvedValue([]),
@@ -123,7 +138,8 @@ vi.mock('@skytwin/db', () => ({
 }));
 
 vi.mock('@skytwin/llm-client', () => ({
-  LlmClient: vi.fn(),
+  LlmClient: mockLlmClient,
+  emitInferenceReceipt: mockEmitReceipt,
 }));
 
 vi.mock('../workflows/registry.js', () => ({
@@ -234,6 +250,71 @@ describe('Events API routes', () => {
     mockGetOutcome.mockResolvedValue(null);
     mockApprovalFindByDecisionId.mockResolvedValue(null);
     mockExecutionRepository.getByDecisionId.mockResolvedValue(null);
+    mockGetProviders.mockResolvedValue([]);
+    mockCreateReceipts.mockResolvedValue([]);
+    mockReceiptCaptureComplete.mockResolvedValue(true);
+    mockEmitReceipt.mockReturnValue({ exportVersion: 1, receipt: { id: 'receipt-1' } });
+    mockLlmClient.mockImplementation(function MockLlmClient() {
+      return { hasProviders: true };
+    });
+  });
+
+  it('persists every collected inference receipt before creating an approval', async () => {
+    mockGetProviders.mockResolvedValue([{ provider: 'openai', api_key: 'key', model: 'model', base_url: null }]);
+    mockLlmClient.mockImplementation(function MockReceiptLlmClient(
+      _providers: unknown,
+      _userId: unknown,
+      options: { onInferenceTrace: (trace: unknown) => void },
+    ) {
+      options.onInferenceTrace({
+        id: 'receipt-1', reasoningMode: 'conventional_cloud', status: 'conventional',
+        provider: 'openai', model: 'model', endpointIdentity: 'https://api.openai.com',
+        request: Buffer.from('request'), response: Buffer.from('response'),
+        cost: { basis: 'unknown' }, createdAt: '2026-09-10T00:00:00.000Z',
+        verifierVersion: 'boundary-v1',
+      });
+      return { hasProviders: true };
+    });
+    mockGenerate.mockResolvedValue({
+      id: '44444444-4444-4444-8444-444444444444',
+      riskTier: 'low', summary: 'Low risk', overallConfidence: 0.9,
+    });
+    mockEvaluate.mockResolvedValue({
+      autoExecute: false, requiresApproval: true, reasoning: 'Needs approval',
+      selectedAction: {
+        id: 'action-1', decisionId: 'decision-1', actionType: 'create_calendar_event',
+        description: 'Create calendar event', domain: 'calendar', parameters: {},
+        reversible: true, estimatedCostCents: 0, confidence: 'high', reasoning: 'test',
+      },
+      allCandidates: [],
+    });
+    mockCreateReceipts.mockResolvedValue([{ id: 'receipt-1' }]);
+    mockApprovalCreate.mockResolvedValue({ row: { id: 'approval-1' }, created: true });
+
+    const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockEmitReceipt).toHaveBeenCalledWith(expect.objectContaining({ id: 'receipt-1' }), {
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      decisionId: 'decision-1', explanationId: '44444444-4444-4444-8444-444444444444',
+    }, expect.objectContaining({ keyId: expect.any(String) }));
+    expect(mockCreateReceipts).toHaveBeenCalledTimes(1);
+    expect(mockCreateReceipts.mock.invocationCallOrder[0]).toBeLessThan(
+      mockApprovalCreate.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it('stops before approval when the atomic receipt finalization fails', async () => {
+    mockGetProviders.mockResolvedValue([{ provider: 'openai', api_key: 'key', model: 'model', base_url: null }]);
+    mockCreateReceipts.mockResolvedValue(null);
+    const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+    });
+    expect(res.status).toBe(500);
+    expect(mockApprovalCreate).not.toHaveBeenCalled();
+    expect(mockExecutionRepository.createPlan).not.toHaveBeenCalled();
   });
 
   // ---------------------------------------------------------------------
@@ -495,6 +576,36 @@ describe('Events API routes', () => {
   // would run the action a SECOND time (real send-the-email-twice bug for
   // users at trust tiers that auto-execute).
   describe('re-ingestion pipeline short-circuit', () => {
+    it('reruns an otherwise persisted decision when receipt finalization is incomplete', async () => {
+      mockSaveDecision.mockImplementation(async (d: unknown) => ({ decision: d, created: false }));
+      mockGetOutcome.mockResolvedValue({
+        decisionId: 'decision-1', selectedAction: null, autoExecute: false,
+        requiresApproval: false, reasoning: 'Previous partial run',
+      });
+      mockReceiptCaptureComplete.mockResolvedValue(false);
+      const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+        userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+      });
+      expect(res.status).toBe(200);
+      expect(mockEvaluate).toHaveBeenCalled();
+      expect(mockCreateReceipts).toHaveBeenCalled();
+    });
+
+    it('reruns an approval decision when its required approval row is missing', async () => {
+      mockSaveDecision.mockImplementation(async (d: unknown) => ({ decision: d, created: false }));
+      mockGetOutcome.mockResolvedValue({
+        decisionId: 'decision-1', selectedAction: { actionType: 'label_email', description: 'Label' },
+        autoExecute: false, requiresApproval: true, reasoning: 'Previous partial run',
+      });
+      mockApprovalFindByDecisionId.mockResolvedValue(null);
+      const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+        userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+      });
+      expect(res.status).toBe(200);
+      expect(mockEvaluate).toHaveBeenCalled();
+      expect(mockCreateReceipts).toHaveBeenCalled();
+    });
+
     it('skips evaluate / saveCandidates / approvalCreate when a previous outcome is recoverable', async () => {
       mockSaveDecision.mockImplementation(async (d: unknown) => ({
         decision: d,

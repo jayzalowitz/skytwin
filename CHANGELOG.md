@@ -8,8 +8,18 @@ All notable changes to SkyTwin will be documented in this file.
   contract, exact-byte integrity verifier with explicit caller-supplied trust
   roots and provider-specific attestation-policy seam, user-owned
   persistence boundary, authenticated read/delete API, and backup/restore
-  coverage (restored receipts remain explicitly untrusted). This does not yet claim universal workflow coverage or expose a
-  verified-confidential badge; those remain gated on strict provider wiring.
+  coverage (restored receipts remain explicitly untrusted).
+- Added receipt emission to the decision-event ingest LLM boundary. Each completed
+  interpretation, candidate-generation, or draft call is classified as
+  on-device, conventional, verified confidential, verification failure, or
+  explicit local fallback; receipts are linked to the durable explanation and
+  persisted before approval or execution. Conventional/local receipts cannot
+  contain attestation fields, and hosted cost remains explicitly unknown when
+  the provider supplies no exact billing fact. Confidential status requires an
+  independently configured verifier and pinned trust roots; that integration is
+  not enabled by this slice. Receipt hashes cover versioned canonical logical
+  inputs/outputs, not provider HTTP wire payloads. Other LLM-powered surfaces,
+  the receipt detail UI, and tagged confidential evidence remain follow-up work.
 
 ## [0.6.102.0] - 2026-08-27
 

@@ -8,7 +8,15 @@ export type {
   LlmResponse,
   LlmStreamEvent,
   ChatMessage,
+  ConfidentialInferenceVerifier,
+  ConfidentialVerificationResult,
+  InferenceTrace,
+  LlmClientOptions,
+  RejectedConfidentialVerification,
+  TrustedConfidentialVerification,
 } from './types.js';
 export { toMessages, splitSystemAndConversation } from './messages.js';
 export { estimateLlmCostCents, isZeroCostProvider } from './cost.js';
 export { redactPromptPii } from './redact.js';
+export { emitInferenceReceipt } from './inference-receipt-emitter.js';
+export type { ReceiptLinkage, ReceiptSigningKey } from './inference-receipt-emitter.js';
