@@ -32,6 +32,10 @@ describe('Gmail evidence schema', () => {
     expect(migration).toContain('signals_owned_source_key');
     expect(migration).toContain('(user_id, source, connector_account_id, source_signal_id)');
     expect(migration).toContain('signals_gmail_resource_owner_fk');
+    expect(migration).toContain('FOREIGN KEY (resource_ref_id, user_id, connector_account_id)');
+    expect(migration).toContain(
+      'REFERENCES gmail_message_refs (id, user_id, connector_account_id) ON DELETE CASCADE',
+    );
     expect(migration).toContain('connected_accounts_verified_subject_chk');
     expect(migration).toContain("provider_subject_digest ~ '^[0-9a-f]{64}$'");
     expect(migration).toContain('last_observed_inbox BOOL NOT NULL');

@@ -27,7 +27,6 @@ const V1_FIELDS: Record<DecisionReceiptRowArtifactKind, readonly string[]> = {
   ],
   signal: [
     'id', 'user_id', 'source', 'type', 'domain', 'data', 'timestamp', 'retention_until',
-    'source_signal_id', 'connector_account_id', 'resource_ref_id',
   ],
   preference: [
     'id', 'user_id', 'domain', 'key', 'value', 'confidence', 'source', 'evidence',

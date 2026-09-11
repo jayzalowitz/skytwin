@@ -21,7 +21,7 @@ All notable changes to SkyTwin will be documented in this file.
 
 ### Fixed
 
-- Gmail receipt evidence now binds the decision's stable connector source ID to the owned `signals.id` UUID used by receipt references. The v1 signal digest also covers its connector-account and opaque message-reference linkage, so account or target substitution changes the artifact hash.
+- Gmail receipt evidence now binds the decision's stable connector source ID to the owned `signals.id` UUID and exact opaque message reference used by the decision. Connector-account and message-reference ownership remain enforced relationally by the existing composite foreign key; the immutable v1 signal artifact projection is unchanged.
 
 ## [Unreleased] — Restricted Gmail Inbox mutation boundary
 

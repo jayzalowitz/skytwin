@@ -228,7 +228,13 @@ async function linkageIsOwned(
   if (decisionResult.rows.length !== 1 || (!previous && joinedDecisionReceiptArtifactDigest('decision',
     decisionReceiptRowArtifactV1('decision', decisionResult.rows[0]!),
   ) !== content.decision.canonicalHash)) return false;
-  decisionSignalId = decisionResult.rows[0]!['signal_id'];
+  const decisionRow = decisionResult.rows[0]!;
+  decisionSignalId = decisionRow['signal_id'];
+  const rawEvent = decisionRow['raw_event'];
+  const decisionMessageRefId = rawEvent && typeof rawEvent === 'object' && !Array.isArray(rawEvent) &&
+    typeof (rawEvent as Record<string, unknown>)['messageRefId'] === 'string'
+    ? (rawEvent as Record<string, unknown>)['messageRefId']
+    : null;
   const actionId = content.candidateAction?.id ?? content.risk?.candidateActionId;
   if (content.candidateAction && !evaluationPreviouslyValidated && !await artifactMatches(
     client,
@@ -314,17 +320,22 @@ async function linkageIsOwned(
           ref.kind,
           decisionReceiptRowArtifactV1(ref.kind, evidenceRow),
         ) !== ref.canonicalHash) return false;
-    // Connector decisions retain the stable source ID used for ingest
-    // idempotency, while receipt evidence names the owned signals.id UUID.
-    // Bind those namespaces through the durable signal row. Legacy rows that
-    // used the UUID directly remain valid through the first branch.
-    const isDecisionSignal = ref.kind === 'signal' && (
-      decisionSignalId === ref.id ||
-      (typeof evidenceRow['source_signal_id'] === 'string' &&
-        decisionSignalId === evidenceRow['source_signal_id'])
-    );
+    // Legacy decisions can name signals.id directly. Account-bound Gmail
+    // decisions instead retain the stable connector source ID, so bind it to
+    // the opaque target in raw_event through the owned signals row. The
+    // database's composite signal -> gmail_message_refs FK enforces the
+    // matching owner and connector account behind resource_ref_id.
+    const isLegacyDecisionSignal = ref.kind === 'signal' && decisionSignalId === ref.id &&
+      evidenceRow['source_signal_id'] == null && evidenceRow['connector_account_id'] == null &&
+      evidenceRow['resource_ref_id'] == null;
+    const isGmailDecisionSignal = ref.kind === 'signal' && evidenceRow['source'] === 'gmail' &&
+      typeof evidenceRow['source_signal_id'] === 'string' &&
+      evidenceRow['source_signal_id'] === decisionSignalId &&
+      typeof evidenceRow['connector_account_id'] === 'string' &&
+      typeof evidenceRow['resource_ref_id'] === 'string' &&
+      evidenceRow['resource_ref_id'] === decisionMessageRefId;
     const usedByExplanation = containsExactString(explanationEvidence, ref.id) ||
-      (isDecisionSignal &&
+      ((isLegacyDecisionSignal || isGmailDecisionSignal) &&
         containsExactString(explanationEvidence, `raw_${decisionId}`));
     if (!usedByExplanation) return false;
   }
