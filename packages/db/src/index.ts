@@ -151,7 +151,12 @@ export type {
   WatchRow,
   CreateWatchInput,
   WatchRunRow,
-  CreateWatchRunInput,
+  WatchSlotStatus,
+  ClaimedWatchSlot,
+  ClaimNextWatchSlotInput,
+  CompleteWatchSlotInput,
+  FailWatchSlotInput,
+  FailWatchSlotResult,
 } from './repositories/index.js';
 export type {
   RememberPendingSigninInput,

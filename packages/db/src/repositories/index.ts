@@ -284,7 +284,15 @@ export { watchRepository } from './watch-repository.js';
 export type { WatchRow, CreateWatchInput } from './watch-repository.js';
 
 export { watchRunRepository } from './watch-run-repository.js';
-export type { WatchRunRow, CreateWatchRunInput } from './watch-run-repository.js';
+export type {
+  WatchRunRow,
+  WatchSlotStatus,
+  ClaimedWatchSlot,
+  ClaimNextWatchSlotInput,
+  CompleteWatchSlotInput,
+  FailWatchSlotInput,
+  FailWatchSlotResult,
+} from './watch-run-repository.js';
 
 export { preEffectBarrierRepository } from './pre-effect-barrier-repository.js';
 export type {

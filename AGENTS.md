@@ -111,6 +111,7 @@ CI is unaffected (clean dist on every run).
 | `@skytwin/observability` | In-memory metrics collection (latency, success rate, spend) with a ring-buffered rollup that powers the capability acquisition loop dashboards (#210). |
 | `@skytwin/policy-prompts` | Versioned LLM prompt templates with JSON-schema-validated outputs and deterministic fallbacks when no LLM is configured. Used by briefing prose, draft-email generation, and risk profiling (#200). |
 | `@skytwin/registry-client` | Loads the curated MCP registry, knows about each entry's OAuth quirks, and looks services up by keyword. Smithery-augmented when configured. |
+| `@skytwin/routines` | Deterministic parsing, scheduling, and matching for read-only Watches. The worker persists an immutable owner-bound slot before each exact-window signal read; CockroachDB leases and fencing make retries durable without claiming exactly-once external effects. |
 | `@skytwin/evals` | Evaluation framework for measuring decision quality over time. |
 
 ### Apps
