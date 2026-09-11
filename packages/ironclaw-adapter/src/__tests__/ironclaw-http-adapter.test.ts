@@ -94,7 +94,8 @@ describe('RealIronClawAdapter (HTTP)', () => {
       expect(result.status).toBe('completed');
       expect(result.planId).toBe(plan.id);
       expect(result.output).toBeDefined();
-      expect(result.output!['ironclawResponse']).toBe('Successfully archived email msg_123');
+      expect(result.output).not.toHaveProperty('ironclawResponse');
+      expect(result.output!['messageId']).toBe('msg_123');
 
       // Verify the webhook was called correctly
       expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -115,6 +116,7 @@ describe('RealIronClawAdapter (HTTP)', () => {
       expect(body.metadata.message_type).toBe('execute');
       expect(body.metadata.action.type).toBe('archive_email');
       expect(body.metadata.idempotency_key).toBe(plan.id);
+      expect(body.user_id).toBe('user_1');
     });
 
     it('returns failed result when IronClaw returns error status', async () => {
@@ -138,33 +140,43 @@ describe('RealIronClawAdapter (HTTP)', () => {
       const result = await adapter.execute(plan);
 
       expect(result.status).toBe('failed');
-      expect(result.error).toBe('Gmail API returned 403');
+      expect(result.error).toBe('ironclaw_execution_failed');
+      expect(JSON.stringify(result)).not.toContain('Gmail API returned 403');
     });
 
-    it('returns failed result on HTTP error', async () => {
+    it('throws bounded ambiguity on HTTP error without retrying', async () => {
       const adapter = makeAdapter();
 
       fetchMock.mockResolvedValue(
-        new Response('Internal Server Error', { status: 500 }),
+        new Response('SECRET_MARKER Internal Server Error', { status: 500 }),
       );
 
       const plan = await adapter.buildPlan(makeAction());
-      const result = await adapter.execute(plan);
-
-      expect(result.status).toBe('failed');
-      expect(result.error).toContain('500');
+      await expect(adapter.execute(plan)).rejects.toThrow('ironclaw_http_500');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
-    it('returns failed result on network error', async () => {
+    it('throws bounded ambiguity on network error without retrying', async () => {
       const adapter = makeAdapter();
 
       fetchMock.mockRejectedValue(new Error('ECONNREFUSED'));
 
       const plan = await adapter.buildPlan(makeAction());
-      const result = await adapter.execute(plan);
+      await expect(adapter.execute(plan)).rejects.toThrow('ironclaw_transport_error');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
 
-      expect(result.status).toBe('failed');
-      expect(result.error).toContain('ECONNREFUSED');
+    it('throws a bounded error for malformed success JSON without exposing peer bytes', async () => {
+      const adapter = makeAdapter();
+      fetchMock.mockResolvedValueOnce(new Response('SECRET_MARKER', { status: 200 }));
+
+      const plan = await adapter.buildPlan(makeAction());
+      const error = await adapter.execute(plan).catch((caught) => caught);
+
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe('ironclaw_response_invalid');
+      expect(String(error)).not.toContain('SECRET_MARKER');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
     it('sanitizes sensitive parameters in the message', async () => {
@@ -365,7 +377,7 @@ describe('RealIronClawAdapter (HTTP)', () => {
 
       const result = await adapter.rollback('plan_123');
       expect(result.success).toBe(false);
-      expect(result.message).toContain('Connection refused');
+      expect(result.message).toBe('ironclaw_rollback_failed');
     });
   });
 

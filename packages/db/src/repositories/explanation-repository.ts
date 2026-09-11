@@ -60,7 +60,7 @@ export const explanationRepository = {
     decisionId: string,
   ): Promise<ExplanationRecordRow | null> {
     const result = await query<ExplanationRecordRow>(
-      'SELECT * FROM explanation_records WHERE decision_id = $1',
+      'SELECT * FROM explanation_records WHERE decision_id = $1 ORDER BY created_at DESC LIMIT 1',
       [decisionId],
     );
     return result.rows[0] ?? null;

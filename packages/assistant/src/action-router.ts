@@ -4,7 +4,7 @@ import type { ActionIntent } from './intent-classifier.js';
  * Outcome of routing a chat-detected `ActionIntent` through the
  * decision pipeline. Issue #148 v1.
  *
- * Three terminal states map to the chat surface:
+ * Four terminal states map to the chat surface:
  *
  *   - `requires-approval` — the decision engine selected an action but
  *     it needs the user to confirm. The route persists an
@@ -23,6 +23,10 @@ import type { ActionIntent } from './intent-classifier.js';
  *     for this intent. Falls through to the regular LLM chat reply.
  *     This is what happens when the rule-based classifier fired but
  *     the engine doesn't actually know how to handle the situation.
+ *
+ *   - `failed` — a recognized action intent could not cross the durable
+ *     decision/explanation barrier. It must remain a deliberate non-action;
+ *     treating it as ordinary chat would conceal a safety-system outage.
  */
 export type ActionRouteOutcome =
   | {
@@ -41,6 +45,11 @@ export type ActionRouteOutcome =
     }
   | {
       kind: 'no-action';
+    }
+  | {
+      kind: 'failed';
+      /** Fail-closed notice suitable for the chat surface. */
+      reason: string;
     };
 
 /**
@@ -58,10 +67,13 @@ export interface ActionRouter {
    * resulting `ExplanationRecord` + `ApprovalRequest`, and return the
    * chat-surfaceable outcome.
    *
-   * Throws when the underlying decision engine throws (e.g. trust tier
-   * lookup failure). The `AssistantService.routeIntent` caller catches
-   * that and returns `{ kind: 'no-action' }` so the chat falls through
-   * to the LLM reply rather than blowing up the whole turn.
+   * Throws when the underlying decision engine or persistence barrier fails.
+   * The `AssistantService.routeIntent` caller converts that exception to a
+   * fail-closed deliberate non-action; it never falls through to ordinary chat.
    */
-  route(userId: string, intent: ActionIntent): Promise<ActionRouteOutcome>;
+  route(
+    userId: string,
+    intent: ActionIntent,
+    context?: { idempotencyKey?: string },
+  ): Promise<ActionRouteOutcome>;
 }

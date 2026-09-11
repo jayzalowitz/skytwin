@@ -139,6 +139,78 @@ When the system determines it cannot auto-execute (due to risk, confidence, poli
 
 The user can approve, reject, edit, or let the request expire.
 
+#### Durable pre-effect barriers
+
+Assistant approvals, event-ingest automatic actions, memory-derived automatic actions, and approved memory-derived actions must have their
+normalized typed decision artifacts and an
+`ExplanationRecord` durably stored before their first visible effect. The
+admission state lives in `pre_effect_barriers` (migration
+`packages/db/src/migrations/080-pre-effect-barriers.sql`) and is enforced by
+`packages/db/src/repositories/pre-effect-barrier-repository.ts`.
+
+The approval responder prepares the exact adapter route first, re-runs policy
+against that route's adjusted risk, persists a typed outcome and explanation,
+and only then claims the barrier and dispatches the single-use prepared handle.
+An adapter throw is recorded as an unknown external result and is never retried
+automatically. Prepared handles accept only plain structured data (plus valid
+dates); Map, Set, custom-class, cyclic, and other non-canonical containers fail
+before dispatch.
+
+Barrier mutations require both the owning user ID and the barrier ID. Only a
+caller that atomically moves a barrier from `prepared` to `in_progress`
+may invoke the adapter. A second caller receives the existing user-scoped row
+and does not replay the effect. The memory path also appends a terminal
+explanation after a known result, retaining the original statement of intent.
+It selects and builds the exact adapter plan first, then reloads mutable policy
+inputs and evaluates the adapter-adjusted risk at the last safe moment. The
+approved prepared route is dispatched without rerouting or fallback. Preparation
+returns a single-use, router-issued capability backed by a private identity map;
+it contains deep-frozen copies of the plan, action, and adjusted risk and is
+bound to the exact adapter instance. Fabricated, mutated, reused, or stale
+handles (including registry replacement) are rejected before dispatch. Route
+and prepared capabilities are also bound to the owning user and the exact
+trust-profile identity plus its canonical fingerprint, so neither cross-tenant
+reuse nor same-adapter profile replacement can reach dispatch. The
+general execution router may fall back only when plan construction fails before
+dispatch; an `execute` throw is ambiguous and never starts a second adapter.
+
+Every assistant message request requires a client `requestId`. Migration
+`packages/db/src/migrations/077-assistant-message-idempotency.sql` gives the
+first user message a user-scoped unique request identity. HTTP retries reuse
+that message ID as the decision and barrier idempotency key, and reuse an
+already-written approval bubble rather than presenting the same approval twice.
+An unfinished duplicate receives a typed in-progress response; if its durable
+processing lease becomes stale, one later request can atomically adopt it and
+continue with the same message identity.
+This includes ordinary conversation as well as action intents, so new-thread,
+sync, and SSE retries all share the same durable deduplication boundary.
+
+After dispatch, only the `executePrepared` call is treated as ambiguous. A
+known completed/failed adapter result is written to the barrier before terminal
+outcome, explanation, and execution-ledger writes. If one of those later writes
+fails, the barrier retains the known result; the failure cannot overwrite it as
+`unknown` or trigger a second adapter call.
+
+Memory opportunity acquisition itself is a single-winner compare-and-set from
+a retryable status to `processing`. This prevents two workers from creating two
+approvals before the effect barrier exists. A crash after this claim but before
+a terminal disposition leaves the row in `processing`; it is deliberately not
+reclaimed automatically and requires operator reconciliation.
+
+Unattended routine registration is disabled in the public beta. Registration-
+time admission cannot protect executions that happen later inside IronClaw, and
+the current scheduler offers no hook that runs SkyTwin policy plus explanation
+persistence before every occurrence. The API therefore persists a typed blocked
+outcome and explanation, returns unavailable, and never calls `createRoutine`.
+
+This provides durable **at-most-once admission**, not exactly-once delivery.
+The current execution-adapter contract does not accept an idempotency key that
+the remote system promises to honor. A caught error after dispatch marks the
+barrier `unknown`; a process crash can leave it `in_progress`. Both are
+non-replayable, and an operator must reconcile remote state before submitting a
+genuinely new action. Automatically retrying either state could duplicate an
+external effect.
+
 **`escalate_to_user` is a non-executing terminal.** Some candidates are *not* actions to run but a deliberate hand-off to the human: the inbound `SECURITY_ALERT` escalation (Safety Invariant 8), the scope gate's "connect write access" downgrade (#485), and a recognized-but-not-yet-autonomous chat intent (e.g. "decline that meeting" — the intent is understood but the specific event isn't resolved). `PolicyEvaluator.evaluate()` forces `requiresApproval` for **every** `escalate_to_user` regardless of trust tier, risk, autonomy, or provenance, so `autoExecute` (`= !requiresApproval && shouldAutoExecute(...)`) is always false. This is enforced server-side rather than relying on the action happening to be high-risk or untrusted-origin: a HIGH-confidence, reversible, zero-cost escalation on a *trusted* path (a user's own chat message, `user_originated`) would otherwise clear `shouldAutoExecute` and be routed to the execution router, where `escalate_to_user` has no real handler and dead-ends. The Approvals queue renders an escalation as a "tell me what to do" card alongside the alternative candidates the decision considered (`apps/api/src/routes/approvals.ts`).
 
 **Awareness disposition gate (opt-in, `AWARENESS_DISPOSITION_GATE=on`, default off).** At `observer`/`suggest` tier the trust-tier gate forces approval on *every* selected action, so routine awareness -- newsletters, automated notices, the user's own re-ingested sent mail, "no action required" calendar updates -- floods the Approvals queue with cards that aren't decisions. When enabled, the gate records such an outcome as `requiresApproval: false` at write time, so it surfaces as **FYI in the digest** (still visible, still explained) rather than an approval card. It runs on both write paths: the ingest route (`apps/api/src/services/awareness-disposition.ts`) and the memory action loop (`isAwarenessOnlyMemoryAction` in `apps/worker/src/jobs/memory-action-loop.ts`, which additionally skips execution). Both share one predicate (`isPassiveAwarenessShape` in `packages/shared-types/src/awareness-disposition.ts`) so they cannot drift. It is deliberately narrow and never weakens a real gate: it only disposes a **passive, reversible, verified-zero-cost** action (note / acknowledge / label / archive) from awareness-tier or untrusted-external content, and it **never** gates an injection-guard escalation (a set `confirmationLevel`), a non-passive / irreversible / costed action, or human inbound mail. The injection guard (Safety Invariant 8) stays the security boundary; this gate only removes queue noise below it.

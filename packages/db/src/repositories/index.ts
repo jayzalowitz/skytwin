@@ -261,3 +261,13 @@ export type { WatchRow, CreateWatchInput } from './watch-repository.js';
 
 export { watchRunRepository } from './watch-run-repository.js';
 export type { WatchRunRow, CreateWatchRunInput } from './watch-run-repository.js';
+
+export { preEffectBarrierRepository } from './pre-effect-barrier-repository.js';
+export type {
+  PreEffectType,
+  PreEffectBarrierStatus,
+  PreEffectBarrierRow,
+  ReservePreEffectInput,
+  PreparePreEffectInput,
+  TerminalPreEffectWithExplanationInput,
+} from './pre-effect-barrier-repository.js';

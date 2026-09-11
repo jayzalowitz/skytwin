@@ -15,21 +15,33 @@ import {
   TwinRepositoryAdapter,
   PatternRepositoryAdapter,
   policyRepositoryAdapter,
+  preEffectBarrierRepository,
+  explanationRepositoryAdapter,
   withTransaction,
 } from '@skytwin/db';
 import { TwinService } from '@skytwin/twin-model';
-import { PolicyEvaluator } from '@skytwin/policy-engine';
+import { PolicyEvaluator, type PolicyDecision } from '@skytwin/policy-engine';
 import type {
   FeedbackEvent,
   CandidateAction,
   ActionProvenance,
   MemoryActionLoopReport,
   MemoryActionOpportunityStatus,
+  DecisionOutcome,
+  ExplanationRecord,
+  RiskAssessment,
+  RoutingDecision,
 } from '@skytwin/shared-types';
 import { ConfidenceLevel, TrustTier } from '@skytwin/shared-types';
 import { readAutonomy } from '../cost-gate.js';
 import { isValidUserId as isValidUuid } from '../middleware/validate-uuid.js';
 import { getExecutionRouter } from '../execution-setup.js';
+import {
+  AmbiguousExecutionError,
+  EXECUTION_FAILURE_CODES,
+  executionFailureCode,
+  type PreparedExecution,
+} from '@skytwin/execution-router';
 import { recordMcpActionSpend } from '../mcp-action-spend.js';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
 import { bindUserIdParamValidator } from '../middleware/validate-uuid.js';
@@ -57,7 +69,66 @@ function parseActionProvenance(value: unknown): ActionProvenance | undefined {
   return undefined;
 }
 
+function approvalAuditCandidate(action: CandidateAction): CandidateAction {
+  const parameters = { ...action.parameters };
+  delete parameters['accessToken'];
+  return { ...action, parameters };
+}
+
+async function persistMemoryAdmission(
+  userId: string,
+  action: CandidateAction,
+  risk: RiskAssessment,
+  policy: PolicyDecision,
+  routing: RoutingDecision,
+): Promise<ExplanationRecord> {
+  const auditAction = approvalAuditCandidate(action);
+  const outcome: DecisionOutcome = {
+    id: crypto.randomUUID(),
+    decisionId: auditAction.decisionId,
+    selectedAction: auditAction,
+    allCandidates: [auditAction],
+    riskAssessment: risk,
+    allRiskAssessments: [risk],
+    autoExecute: policy.allowed && !policy.requiresApproval,
+    requiresApproval: policy.requiresApproval,
+    reasoning: policy.reason,
+    decidedAt: new Date(),
+    policyVerdicts: {
+      [auditAction.id]: policy.allowed
+        ? policy.requiresApproval ? 'requires-approval' : 'allowed'
+        : 'denied',
+    },
+    confirmationLevel: policy.confirmationLevel,
+  };
+  await decisionRepositoryAdapter.saveOutcome(outcome);
+  return explanationRepositoryAdapter.save({
+    id: crypto.randomUUID(),
+    decisionId: auditAction.decisionId,
+    userId,
+    summary: policy.allowed && !policy.requiresApproval
+      ? `SkyTwin durably admitted the approved memory action through ${routing.selectedAdapter}.`
+      : 'SkyTwin deliberately did not dispatch the approved memory action after its final policy check.',
+    evidenceUsed: [{
+      evidenceId: String(auditAction.parameters['opportunityId'] ?? auditAction.id),
+      source: 'memory_action_approval',
+      summary: `The approved memory opportunity was prepared for ${routing.selectedAdapter}.`,
+      relevance: 'This is the exact approved opportunity and adapter-adjusted risk evaluated immediately before dispatch.',
+    }],
+    preferencesInvoked: [],
+    confidenceReasoning: risk.reasoning,
+    actionRationale: `${auditAction.reasoning} Final policy: ${policy.reason}`,
+    escalationRationale: policy.allowed && !policy.requiresApproval ? undefined : policy.reason,
+    correctionGuidance: 'Review the approval, memory opportunity, and current policy before submitting a new action.',
+    riskTier: risk.overallTier,
+    overallConfidence: auditAction.confidence,
+    capabilityProvenanceNodeId: auditAction.capabilityProvenanceNodeId,
+    createdAt: new Date(),
+  });
+}
+
 interface ApprovalMemoryLedgerInput {
+  userId: string;
   approval: {
     id: string;
     decision_id: string;
@@ -122,6 +193,7 @@ async function markMemoryOpportunityFromApproval(input: ApprovalMemoryLedgerInpu
   try {
     await memoryActionOpportunityRepository.markStatus({
       id: opportunityId,
+      userId: input.userId,
       status,
       report,
       decisionId: input.approval.decision_id,
@@ -131,12 +203,12 @@ async function markMemoryOpportunityFromApproval(input: ApprovalMemoryLedgerInpu
       policyReason: input.policyReason,
       nextStep,
     });
-  } catch (err) {
+  } catch {
     log.warn('Failed to update memory action opportunity after approval response', {
       decisionId: input.approval.decision_id,
       approvalId: input.approval.id,
       opportunityId,
-      error: err instanceof Error ? err.message : String(err),
+      errorCode: 'memory_opportunity_reconciliation_failed',
     });
   }
 }
@@ -146,7 +218,9 @@ function approvalMemoryStatus(
   executionResult?: { status: string } | null,
 ): MemoryActionOpportunityStatus {
   if (action === 'reject') return 'skipped';
-  return executionResult?.status === 'completed' ? 'auto_executed' : 'execution_failed';
+  if (executionResult?.status === 'completed') return 'auto_executed';
+  if (executionResult?.status === 'unknown') return 'execution_unknown';
+  return 'execution_failed';
 }
 
 function approvalMemoryCopy(input: {
@@ -172,6 +246,12 @@ function approvalMemoryCopy(input: {
     return {
       summary: `User approved and SkyTwin executed this memory action: ${input.actionLabel}.`,
       nextStep: 'Monitor feedback and keep the pattern available for future opportunities.',
+    };
+  }
+  if (input.status === 'execution_unknown') {
+    return {
+      summary: `The approved memory action has an unknown external result: ${input.error ?? 'dispatch outcome is ambiguous'}.`,
+      nextStep: 'Reconcile adapter state manually; do not retry this opportunity automatically.',
     };
   }
   return {
@@ -614,47 +694,14 @@ export function createApprovalsRouter(): Router {
         // mutated.
         applyDraftEditOverride(candidateAction, body.editedBody);
 
-        // Run policy check even on approved actions (spend limits, domain
-        // restrictions still apply). That claim was previously false: this
-        // call passed only three arguments, dropping both the risk
-        // assessment and the autonomy settings, so the per-action spend cap
-        // and the domain allow/block lists never ran and risk-keyed policy
-        // rules matched nothing. Both are supplied below.
+        // Normalize credentials/channel before preparation so the immutable
+        // handle contains the exact action that the selected adapter sees.
         const user = await userRepository.findById(body.userId);
         const userTier = user?.trust_tier as TrustTier ?? TrustTier.OBSERVER;
         prepareEmailActionForExecution(candidateAction, user);
         if (user?.ironclaw_channel) {
           candidateAction.parameters['ironclawChannel'] = user.ironclaw_channel;
         }
-        const policies = await policyRepositoryAdapter.getAllPolicies();
-        const policyResult = await policyEvaluator.evaluate(
-          candidateAction,
-          policies,
-          userTier,
-          // Guaranteed non-null on the approve path (the preflight 409'd
-          // above if it was missing), but `?? undefined` keeps the call
-          // total rather than asserting twice.
-          preflightRiskAssessment ?? undefined,
-          readAutonomy(user),
-        );
-
-        if (policyResult && !policyResult.allowed) {
-          await markMemoryOpportunityFromApproval({
-            approval,
-            action: body.action,
-            overrideStatus: 'blocked_by_policy',
-            policyReason: policyResult.reason ?? 'Policy check failed',
-            reason: body.reason,
-          });
-          res.status(403).json({
-            error: 'Action blocked by policy even after approval.',
-            reason: policyResult.reason ?? 'Policy check failed',
-            requestId,
-          });
-          return;
-        }
-
-        // Inject OAuth token if available
         const tokenRow = await oauthRepository.getToken(body.userId, 'google');
         if (tokenRow) {
           candidateAction.parameters['accessToken'] = tokenRow.access_token;
@@ -671,21 +718,141 @@ export function createApprovalsRouter(): Router {
         // Non-null assertion is safe because the early 409 already
         // returned for the null case before any state mutation.
         const riskAssessment = preflightRiskAssessment!;
+        const memoryOpportunityId = memoryOpportunityIdFromAction(storedAction);
+        let admittedAction = candidateAction;
+        let effectiveRisk = riskAssessment;
+        let preparedExecution: PreparedExecution | null = null;
+        let memoryBarrierId: string | null = null;
+        let routing: RoutingDecision | null = null;
 
+        const executionRouter = await getRouter();
+        if (memoryOpportunityId) {
+          const reservation = await preEffectBarrierRepository.reserve({
+            userId: body.userId,
+            effectType: 'memory_execution',
+            idempotencyKey: memoryOpportunityId,
+          });
+          if (!reservation.created) {
+            executionResult = {
+              status: reservation.row.status === 'succeeded' ? 'completed' : 'unknown',
+              error: 'A durable execution admission already exists; automatic replay was suppressed.',
+            };
+            delete candidateAction.parameters['accessToken'];
+            await markMemoryOpportunityFromApproval({
+              userId: body.userId, approval, action: body.action, executionResult, reason: body.reason,
+            });
+            res.status(409).json({ error: 'memory_execution_already_admitted', execution: executionResult });
+            return;
+          }
+          memoryBarrierId = reservation.row.id;
+          routing = await executionRouter.route(candidateAction, riskAssessment, body.userId);
+          preparedExecution = await executionRouter.prepareExecution(
+            candidateAction, routing, body.userId, { approved: true },
+          );
+          routing = preparedExecution.routingDecision;
+          admittedAction = preparedExecution.plan.action;
+          effectiveRisk = routing.modifiedRiskAssessment;
+          await decisionRepositoryAdapter.saveRiskAssessment(effectiveRisk);
+        }
+
+        // Reload mutable admission inputs at the final safe point. Memory
+        // approvals evaluate the adapter-adjusted risk and exact prepared
+        // action; ordinary approvals retain the same mandatory policy gate.
+        const freshUser = await userRepository.findById(body.userId);
+        const policies = await policyRepositoryAdapter.getAllPolicies();
+        const policyResult = await policyEvaluator.evaluate(
+          admittedAction,
+          policies,
+          (freshUser?.trust_tier as TrustTier) ?? userTier,
+          effectiveRisk,
+          readAutonomy(freshUser),
+        );
+
+        if (memoryBarrierId && routing) {
+          const approvedAdmission = { ...policyResult, requiresApproval: false };
+          const explanation = await persistMemoryAdmission(
+            body.userId, admittedAction, effectiveRisk, approvedAdmission, routing,
+          );
+          await preEffectBarrierRepository.markPrepared({
+            id: memoryBarrierId,
+            userId: body.userId,
+            decisionId: admittedAction.decisionId,
+            actionId: admittedAction.id,
+            explanationId: explanation.id,
+            policySnapshot: {
+              allowed: policyResult.allowed,
+              requiresApproval: false,
+              reason: policyResult.reason,
+              selectedAdapter: routing.selectedAdapter,
+              riskModifierApplied: routing.riskModifierApplied,
+              candidate: approvalAuditCandidate(admittedAction),
+              riskAssessment: { ...effectiveRisk, assessedAt: effectiveRisk.assessedAt.toISOString() },
+            },
+          });
+        }
+
+        if (!policyResult.allowed) {
+          if (memoryBarrierId) {
+            await preEffectBarrierRepository.markTerminal(
+              body.userId, memoryBarrierId, 'blocked', {}, policyResult.reason,
+            );
+          }
+          delete candidateAction.parameters['accessToken'];
+          await markMemoryOpportunityFromApproval({
+            userId: body.userId,
+            approval,
+            action: body.action,
+            overrideStatus: 'blocked_by_policy',
+            policyReason: policyResult.reason,
+            reason: body.reason,
+          });
+          res.status(403).json({
+            error: 'Action blocked by policy even after approval.',
+            reason: policyResult.reason,
+            requestId,
+          });
+          return;
+        }
+
+        if (memoryBarrierId) {
+          const claim = await preEffectBarrierRepository.claimPrepared(body.userId, memoryBarrierId);
+          if (!claim) throw new Error('Approved memory execution admission could not be claimed.');
+        }
+
+        let knownMemoryResult = false;
         try {
-          const executionRouter = await getRouter();
           // Approved-execution path: a human moved this through the approval
           // flow (and, for dual-confirmation actions, clicked twice — the
           // confirm-token check above enforces the count). Pass
           // `{ approved: true }` so the router's injection-guard backstop
           // lets the action through; the human already supplied the
           // confirmation the guard demanded.
-          const result = await executionRouter.executeWithRouting(
-            candidateAction,
-            riskAssessment,
-            body.userId,
-            { approved: true },
-          );
+          const result = preparedExecution
+            ? await executionRouter.executePrepared(preparedExecution, body.userId)
+            : await executionRouter.executeWithRouting(
+                candidateAction, riskAssessment, body.userId, { approved: true },
+              );
+
+          executionResult = {
+            status: result.status,
+            adapterUsed: result.output?.['adapter_used'] ?? routing?.selectedAdapter ?? 'unknown',
+            ...(result.status === 'completed'
+              ? {}
+              : { error: EXECUTION_FAILURE_CODES.adapterFailed }),
+          };
+          if (memoryBarrierId) {
+            // The adapter returned a known result. Set this before durable
+            // finalization so a barrier-write failure cannot be mistaken for
+            // a dispatch failure or rewritten as unknown.
+            knownMemoryResult = true;
+            await preEffectBarrierRepository.markTerminal(
+              body.userId,
+              memoryBarrierId,
+              result.status === 'completed' ? 'succeeded' : 'failed',
+              { adapterUsed: executionResult.adapterUsed, resultStatus: result.status },
+              result.status === 'completed' ? undefined : EXECUTION_FAILURE_CODES.adapterFailed,
+            );
+          }
 
           // Persist execution plan + result atomically
           const savedPlan = await withTransaction(async (client) => {
@@ -711,7 +878,7 @@ export function createApprovalsRouter(): Router {
                 plan.id,
                 result.status === 'completed',
                 JSON.stringify(result.output ?? {}),
-                result.error ?? null,
+                result.status === 'completed' ? null : EXECUTION_FAILURE_CODES.adapterFailed,
                 candidateAction.reversible,
               ],
             );
@@ -764,10 +931,30 @@ export function createApprovalsRouter(): Router {
         } catch (execError) {
           // Execution failed after approval was recorded. Log the failure and persist
           // a failed plan so the approval isn't silently orphaned with no execution record.
-          const errMsg = execError instanceof Error ? execError.message : String(execError);
-          log.error(`Execution failed for approval ${requestId}`, { error: errMsg, stack: execError instanceof Error ? execError.stack : undefined });
-
-          try {
+          const failureCode = executionFailureCode(execError);
+          log.error('Execution failed for approval', { requestId, errorCode: failureCode });
+          if (memoryBarrierId && knownMemoryResult) {
+            // The adapter result and terminal barrier are already durable;
+            // a secondary execution-ledger failure cannot rewrite that fact.
+            log.error('Known memory execution result needs ledger reconciliation', {
+              requestId, memoryBarrierId, errorCode: 'execution_ledger_reconciliation_failed',
+            });
+          } else if (memoryBarrierId && execError instanceof AmbiguousExecutionError) {
+            await preEffectBarrierRepository.markTerminal(
+              body.userId, memoryBarrierId, 'unknown', {}, failureCode,
+            );
+            executionResult = {
+              status: 'unknown',
+              adapterUsed: execError.adapterName,
+              error: failureCode,
+            };
+          } else {
+            if (memoryBarrierId) {
+                await preEffectBarrierRepository.markTerminal(
+                body.userId, memoryBarrierId, 'failed', {}, failureCode,
+              );
+            }
+            try {
             const failedPlan = await withTransaction(async (client) => {
               const planResult = await client.query(
                 `INSERT INTO execution_plans (id, decision_id, action_id, status, steps, created_at)
@@ -780,7 +967,7 @@ export function createApprovalsRouter(): Router {
               await client.query(
                 `INSERT INTO execution_results (id, plan_id, success, outputs, error, rollback_available, completed_at)
                  VALUES (gen_random_uuid(), $1, false, '{}', $2, $3, now())`,
-                [plan.id, errMsg, candidateAction.reversible],
+                [plan.id, failureCode, candidateAction.reversible],
               );
               // #324: link even failed plans so the outcome's
               // `execution_plan_id` is populated. The rollback site
@@ -800,9 +987,12 @@ export function createApprovalsRouter(): Router {
             });
 
             executionResult = { status: 'failed', planId: failedPlan.id, error: 'Execution failed' };
-          } catch (persistError) {
-            log.error('Failed to persist execution failure record', { error: persistError instanceof Error ? persistError.message : String(persistError), stack: persistError instanceof Error ? persistError.stack : undefined });
-            executionResult = { status: 'failed', error: 'Execution failed' };
+            } catch {
+              log.error('Failed to persist execution failure record', {
+                errorCode: 'execution_failure_record_persistence_failed',
+              });
+              executionResult = { status: 'failed', error: 'Execution failed' };
+            }
           }
         } finally {
           // Always strip sensitive credentials, even on error paths
@@ -811,6 +1001,7 @@ export function createApprovalsRouter(): Router {
       }
 
       await markMemoryOpportunityFromApproval({
+        userId: body.userId,
         approval,
         action: body.action,
         executionResult,

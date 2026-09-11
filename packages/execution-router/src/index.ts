@@ -1,5 +1,17 @@
-export { ExecutionRouter, NoAdapterError, InvariantViolationError } from './execution-router.js';
-export type { ExecutionContext, RollbackRoutingResult } from './execution-router.js';
+export {
+  ExecutionRouter,
+  NoAdapterError,
+  InvariantViolationError,
+  AmbiguousExecutionError,
+  EXECUTION_FAILURE_CODES,
+  executionFailureCode,
+} from './execution-router.js';
+export type {
+  ExecutionContext,
+  RollbackRoutingResult,
+  PreparedExecution,
+  ExecutionFailureCode,
+} from './execution-router.js';
 
 export {
   AdapterRegistry,

@@ -245,7 +245,7 @@ describe('IronClawHttpClient', () => {
       expect(result.startedAt).toBe(startedAt);
       expect(result.completedAt).toBeDefined();
       expect(result.output!['messageId']).toBe('msg_123');
-      expect(result.output!['ironclawResponse']).toBe('Email archived');
+      expect(result.output).not.toHaveProperty('ironclawResponse');
     });
 
     it('parses failed response with error', () => {
@@ -257,11 +257,14 @@ describe('IronClawHttpClient', () => {
         metadata: {
           status: 'failed',
           error: 'Permission denied',
+          outputs: { providerEcho: 'SECRET_MARKER' },
         },
       }, new Date());
 
       expect(result.status).toBe('failed');
-      expect(result.error).toBe('Permission denied');
+      expect(result.error).toBe('ironclaw_execution_failed');
+      expect(JSON.stringify(result)).not.toContain('Permission denied');
+      expect(JSON.stringify(result)).not.toContain('SECRET_MARKER');
     });
 
     it('infers status from content when metadata has no status', () => {
@@ -542,6 +545,20 @@ describe('IronClawHttpClient', () => {
         client.createRoutine('user_1', '0 9 * * *', { steps: [] }),
       ).rejects.toThrow('routine ID');
     });
+
+    it('dispatches creation only once when the remote result is ambiguous', async () => {
+      const client = makeClient({ maxRetries: 2 });
+      fetchMock
+        .mockResolvedValueOnce(new Response('temporarily unavailable', { status: 503 }))
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ routineId: 'duplicate-if-retried' }), { status: 200 }),
+        );
+
+      await expect(
+        client.createRoutine('user_1', '0 9 * * *', { steps: [] }),
+      ).rejects.toThrow('ironclaw_http_503');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('listRoutines', () => {
@@ -632,10 +649,10 @@ describe('IronClawHttpClient', () => {
       expect(result.startedAt).toBe(startedAt);
       expect(result.completedAt).toBeDefined();
       expect(result.error).toBeUndefined();
-      expect(result.output!['ironclawResponse']).toBe('Email archived successfully');
+      expect(result.output).not.toHaveProperty('ironclawResponse');
       expect(result.output!['ironclawModel']).toBe('openclaw/default');
       expect(result.output!['ironclawUsage']).toEqual({ promptTokens: 100, completionTokens: 25 });
-      expect(result.output!['taskId']).toBe('task_42');
+      expect(result.output).not.toHaveProperty('taskId');
     });
 
     it('parses a failed chat completion response when content contains error', () => {
@@ -648,7 +665,8 @@ describe('IronClawHttpClient', () => {
       }, new Date());
 
       expect(result.status).toBe('failed');
-      expect(result.error).toBe('Error: unable to send the message');
+      expect(result.error).toBe('ironclaw_execution_failed');
+      expect(JSON.stringify(result)).not.toContain('unable to send the message');
     });
   });
 

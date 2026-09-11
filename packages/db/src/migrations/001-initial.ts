@@ -238,6 +238,7 @@ export async function down(): Promise<void> {
     // Base schema tables
     'execution_events',
     'feedback_events',
+    'pre_effect_barriers',
     'explanation_records',
     'execution_results',
     'execution_plans',

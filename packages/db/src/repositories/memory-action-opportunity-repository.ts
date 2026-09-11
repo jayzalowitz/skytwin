@@ -22,6 +22,7 @@ export interface ClaimDueOptions {
 
 export interface MarkMemoryActionOpportunityInput {
   id: string;
+  userId: string;
   status: MemoryActionOpportunityStatus;
   report: MemoryActionLoopReport;
   decisionId?: string;
@@ -37,7 +38,6 @@ const RETRYABLE_STATUSES: MemoryActionOpportunityStatus[] = [
   'suggested',
   'blocked_by_policy',
   'learning_needed',
-  'execution_failed',
 ];
 
 export const memoryActionOpportunityRepository = {
@@ -99,7 +99,8 @@ export const memoryActionOpportunityRepository = {
     const retryAfterHours = Math.max(1, opts.retryAfterHours ?? 24);
     const result = await query<MemoryActionOpportunityRow>(
       `UPDATE memory_action_opportunities
-          SET attempt_count = attempt_count + 1,
+          SET status = 'processing',
+              attempt_count = attempt_count + 1,
               last_attempted_at = now(),
               updated_at = now()
         WHERE id IN (
@@ -117,6 +118,7 @@ export const memoryActionOpportunityRepository = {
              last_suggested_at DESC
            LIMIT $4
           )
+          AND status = ANY($2)
         RETURNING *`,
       [userId, RETRYABLE_STATUSES, retryAfterHours, limit],
     );
@@ -148,20 +150,21 @@ export const memoryActionOpportunityRepository = {
   ): Promise<MemoryActionOpportunitySnapshot | null> {
     const result = await query<MemoryActionOpportunityRow>(
       `UPDATE memory_action_opportunities
-          SET status = $2,
-              last_report = $3,
-              decision_id = COALESCE($4, decision_id),
-              approval_request_id = COALESCE($5, approval_request_id),
-              execution_plan_id = COALESCE($6, execution_plan_id),
-              adapter_name = COALESCE($7, adapter_name),
-              policy_reason = COALESCE($8, policy_reason),
-              route_reason = COALESCE($9, route_reason),
-              next_step = COALESCE($10, next_step),
+          SET status = $3,
+              last_report = $4,
+              decision_id = COALESCE($5, decision_id),
+              approval_request_id = COALESCE($6, approval_request_id),
+              execution_plan_id = COALESCE($7, execution_plan_id),
+              adapter_name = COALESCE($8, adapter_name),
+              policy_reason = COALESCE($9, policy_reason),
+              route_reason = COALESCE($10, route_reason),
+              next_step = COALESCE($11, next_step),
               updated_at = now()
-        WHERE id = $1
+        WHERE id = $1 AND user_id = $2
         RETURNING *`,
       [
         input.id,
+        input.userId,
         input.status,
         JSON.stringify(input.report),
         input.decisionId ?? null,
@@ -261,8 +264,11 @@ function parseStatus(value: string): MemoryActionOpportunityStatus {
   // `noted_awareness` is terminal (deliberately absent from RETRYABLE_STATUSES):
   // a disposed awareness item must not be re-claimed and re-FYI'd every cycle.
   return RETRYABLE_STATUSES.includes(value as MemoryActionOpportunityStatus) ||
+    value === 'processing' ||
     value === 'queued_approval' ||
     value === 'auto_executed' ||
+    value === 'execution_failed' ||
+    value === 'execution_unknown' ||
     value === 'noted_awareness' ||
     value === 'skipped'
     ? value as MemoryActionOpportunityStatus

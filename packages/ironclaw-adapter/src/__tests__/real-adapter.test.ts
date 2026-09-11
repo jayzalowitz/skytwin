@@ -9,7 +9,9 @@ class TestActionHandler implements ActionHandler {
   readonly actionType = 'test_action';
   readonly domain = 'testing';
   canHandle(actionType: string): boolean { return actionType === 'test_action'; }
-  async execute(_step: ExecutionStep): Promise<StepResult> {
+  lastStep: ExecutionStep | undefined;
+  async execute(step: ExecutionStep): Promise<StepResult> {
+    this.lastStep = step;
     return { success: true, output: { test: true } };
   }
   async rollback(_step: ExecutionStep): Promise<StepResult> {
@@ -73,14 +75,16 @@ describe('DirectExecutionAdapter', () => {
 
   it('executes a plan using the handler', async () => {
     const registry = new ActionHandlerRegistry();
-    registry.register(new TestActionHandler());
+    const handler = new TestActionHandler();
+    registry.register(handler);
     const adapter = new DirectExecutionAdapter(registry);
 
-    const plan = await adapter.buildPlan(makeAction());
+    const plan = await adapter.buildPlan(makeAction({ parameters: { userId: 'tenant-a' } }));
     const result = await adapter.execute(plan);
 
     expect(result.status).toBe('completed');
     expect(result.output).toBeDefined();
+    expect(handler.lastStep?.parameters['userId']).toBe('tenant-a');
   });
 
   it('tracks execution status for completed plans', async () => {
@@ -117,9 +121,7 @@ describe('DirectExecutionAdapter', () => {
     const plan = await adapter.buildPlan(makeAction());
     plan.steps[0]!.timeout = 5;
 
-    const result = await adapter.execute(plan);
-    expect(result.status).toBe('failed');
-    expect(result.error).toContain('Step timed out after 5ms');
+    await expect(adapter.execute(plan)).rejects.toThrow('direct_step_timeout_ambiguous');
   });
 
   it('throws when no handler is registered (enables fallback chain)', async () => {

@@ -15,11 +15,13 @@ const log = createLogger('worker:briefing-generator');
  */
 const MEMORY_STATUS_LABEL: Record<MemoryActionOpportunityStatus, string> = {
   suggested: 'suggested',
+  processing: 'being evaluated',
   queued_approval: 'waiting for your OK',
   auto_executed: 'done automatically',
   blocked_by_policy: 'blocked by your rules',
   learning_needed: 'needs a new skill',
   execution_failed: "couldn't complete",
+  execution_unknown: 'needs manual reconciliation',
   noted_awareness: 'noted as FYI',
   skipped: 'skipped',
 };

@@ -11,9 +11,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PolicyDecision } from '@skytwin/policy-engine';
 import type { ExecutionRouter } from '@skytwin/execution-router';
-import type { ActionProvenance, MemoryActionOpportunitySnapshot } from '@skytwin/shared-types';
+import type {
+  ActionProvenance,
+  CandidateAction,
+  MemoryActionOpportunitySnapshot,
+  RiskAssessment,
+  RoutingDecision,
+} from '@skytwin/shared-types';
 
-type RouterStub = Pick<ExecutionRouter, 'route' | 'executeWithRouting'>;
+type RouterStub = Pick<ExecutionRouter, 'route' | 'prepareExecution' | 'executePrepared'>;
 
 // ── Mocks ─────────────────────────────────────────────────────────────────
 
@@ -21,7 +27,8 @@ const {
   mockApprovalRepository,
   mockDecisionRepository,
   mockDecisionRepositoryAdapter,
-  mockExplanationRepository,
+  mockExplanationRepositoryAdapter,
+  mockPreEffectBarrierRepository,
   mockMemoryActionOpportunityRepository,
   mockUserRepository,
   noop,
@@ -41,8 +48,23 @@ const {
       addCandidateAction: vi.fn(async () => undefined),
       recordOutcome: vi.fn(async () => undefined),
     },
-    mockDecisionRepositoryAdapter: { saveRiskAssessment: vi.fn(async () => undefined) },
-    mockExplanationRepository: { create: vi.fn(async () => undefined) },
+    mockDecisionRepositoryAdapter: {
+      saveRiskAssessment: vi.fn(async () => undefined),
+      saveOutcome: vi.fn(async (outcome) => outcome),
+    },
+    mockExplanationRepositoryAdapter: {
+      save: vi.fn(async (record) => ({ ...record, id: 'explanation-1' })),
+    },
+    mockPreEffectBarrierRepository: {
+      reserve: vi.fn(async () => ({
+        row: { id: 'barrier-1', status: 'reserved', decision_id: null, effect_result: {} },
+        created: true,
+      })),
+      markPrepared: vi.fn(async () => ({ status: 'prepared' })),
+      updatePreparedPolicy: vi.fn(async () => ({ status: 'prepared' })),
+      claimPrepared: vi.fn(async () => ({ status: 'in_progress' })),
+      markTerminal: vi.fn(async () => ({ status: 'succeeded' })),
+    },
     mockMemoryActionOpportunityRepository: {
       upsertFromSuggestion: vi.fn(async () => undefined),
       claimDueForUser: vi.fn(async (): Promise<MemoryActionOpportunitySnapshot[]> => []),
@@ -67,7 +89,8 @@ vi.mock('@skytwin/db', () => ({
   decisionRepository: mockDecisionRepository,
   decisionRepositoryAdapter: mockDecisionRepositoryAdapter,
   executionRepository: noop,
-  explanationRepository: mockExplanationRepository,
+  explanationRepositoryAdapter: mockExplanationRepositoryAdapter,
+  preEffectBarrierRepository: mockPreEffectBarrierRepository,
   memoryActionOpportunityRepository: mockMemoryActionOpportunityRepository,
   policyRepositoryAdapter: noop,
   serviceCredentialRepository: noop,
@@ -148,8 +171,48 @@ function runWith(policyDecision: PolicyDecision) {
     fetchBundle: async () => ({ suggestions: [], pagesById: new Map() }),
     policyEvaluator: { evaluate: vi.fn(async () => policyDecision) },
     loadPolicies: async () => [],
-    getExecutionRouter: async () => ({ route: vi.fn(), executeWithRouting: vi.fn() }),
+    getExecutionRouter: async () => ({ route: vi.fn(), prepareExecution: vi.fn(), executePrepared: vi.fn() }),
   });
+}
+
+function autoExecutionRouter(): RouterStub {
+  const route = vi.fn(async (
+    _candidate: CandidateAction,
+    risk: RiskAssessment,
+  ): Promise<RoutingDecision> => ({
+    selectedAdapter: 'direct',
+    reasoning: 'direct ok',
+    fallbackChain: [],
+    riskModifierApplied: 0,
+    modifiedRiskAssessment: risk,
+    trustProfile: {
+      name: 'direct',
+      reversibilityGuarantee: 'partial',
+      authModel: 'none',
+      auditTrail: true,
+      riskModifier: 0,
+    },
+  }));
+  const prepareExecution = vi.fn(async (candidate: CandidateAction, routing: RoutingDecision) => ({
+    selectedAdapter: routing.selectedAdapter,
+    routingDecision: routing,
+    plan: {
+      id: 'prepared-plan-1',
+      decisionId: candidate.decisionId,
+      action: candidate,
+      steps: [],
+      rollbackSteps: [],
+      createdAt: new Date(),
+    },
+  }));
+  const executePrepared = vi.fn(async () => ({
+    status: 'completed' as const,
+    output: {},
+    planId: 'p1',
+    startedAt: new Date(),
+    completedAt: new Date(),
+  }));
+  return { route, prepareExecution, executePrepared };
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────
@@ -187,6 +250,15 @@ describe('runMemoryActionLoopJob — awareness disposition', () => {
     vi.clearAllMocks();
     mockMemoryActionOpportunityRepository.claimDueForUser.mockResolvedValue([]);
     mockMemoryActionOpportunityRepository.listUsersWithDue.mockResolvedValue([]);
+    mockExplanationRepositoryAdapter.save.mockImplementation(async (record) => ({
+      ...record,
+      id: 'explanation-1',
+    }));
+    mockPreEffectBarrierRepository.reserve.mockResolvedValue({
+      row: { id: 'barrier-1', status: 'reserved', decision_id: null, effect_result: {} },
+      created: true,
+    });
+    mockPreEffectBarrierRepository.claimPrepared.mockResolvedValue({ status: 'in_progress' });
   });
   const prev = process.env['AWARENESS_DISPOSITION_GATE'];
   afterEach(() => {
@@ -204,8 +276,8 @@ describe('runMemoryActionLoopJob — awareness disposition', () => {
     expect(summary.approvalsQueued).toBe(0);
     expect(summary.notedAwareness).toBe(1);
     // Outcome recorded as NOT requiring approval → the digest buckets it as FYI.
-    expect(mockDecisionRepository.recordOutcome).toHaveBeenCalledWith(
-      expect.objectContaining({ requiresApproval: false, autoExecuted: false }),
+    expect(mockDecisionRepositoryAdapter.saveOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({ requiresApproval: false, autoExecute: false }),
     );
     expect(mockMemoryActionOpportunityRepository.markStatus).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'noted_awareness' }),
@@ -275,10 +347,7 @@ describe('runMemoryActionLoopJob — awareness disposition', () => {
       fetchBundle: async () => ({ suggestions: [], pagesById: new Map() }),
       policyEvaluator: { evaluate: vi.fn(async () => ({ allowed: true, requiresApproval: false, reason: 'tier allows auto' })) },
       loadPolicies: async () => [],
-      getExecutionRouter: async () => ({
-        route: vi.fn(async () => ({ selectedAdapter: 'direct', reasoning: 'direct ok' })),
-        executeWithRouting: vi.fn(async () => ({ status: 'completed', output: {}, planId: 'p1' })),
-      }) as unknown as RouterStub,
+      getExecutionRouter: async () => autoExecutionRouter(),
     });
 
     expect(summary.notedAwareness).toBe(0);

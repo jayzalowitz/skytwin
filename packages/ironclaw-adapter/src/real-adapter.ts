@@ -114,33 +114,25 @@ export class RealIronClawAdapter implements IronClawEnhancedAdapter {
     this.evictOldPlans();
     this.planStatuses.set(plan.id, 'running');
 
-    try {
-      if (this.client.preferChatCompletions) {
-        const response = await this.client.sendChatCompletion(this.buildExecutionChatMessages(plan));
-        const result = this.client.parseChatExecutionResult(plan.id, response, startedAt);
-        this.planStatuses.set(plan.id, result.status);
-        return result;
-      }
-
-      const message = this.buildExecutionMessage(plan);
-      const response = await this.client.sendMessage(message);
-      if (response.thread_id) {
-        this.planThreads.set(plan.id, response.thread_id);
-      }
-
-      const result = this.client.parseExecutionResult(plan.id, response, startedAt);
+    if (this.client.preferChatCompletions) {
+      const response = await this.client.sendChatCompletion(
+        this.buildExecutionChatMessages(plan),
+        { maxRetries: 0 },
+      );
+      const result = this.client.parseChatExecutionResult(plan.id, response, startedAt);
       this.planStatuses.set(plan.id, result.status);
       return result;
-    } catch (error) {
-      this.planStatuses.set(plan.id, 'failed');
-      return {
-        planId: plan.id,
-        status: 'failed',
-        startedAt,
-        completedAt: new Date(),
-        error: error instanceof Error ? error.message : String(error),
-      };
     }
+
+    const message = this.buildExecutionMessage(plan);
+    const response = await this.client.sendMessage(message, { maxRetries: 0 });
+    if (response.thread_id) {
+      this.planThreads.set(plan.id, response.thread_id);
+    }
+
+    const result = this.client.parseExecutionResult(plan.id, response, startedAt);
+    this.planStatuses.set(plan.id, result.status);
+    return result;
   }
 
   async *executeStreaming(plan: ExecutionPlan): AsyncIterable<ExecutionEvent> {
@@ -152,30 +144,20 @@ export class RealIronClawAdapter implements IronClawEnhancedAdapter {
       payload: { adapter: 'ironclaw', steps: plan.steps.length },
     };
 
-    try {
-      const message = this.buildExecutionMessage(plan, { stream: true });
-      for await (const event of this.client.sendMessageStreaming(message)) {
-        if (event.eventType === 'plan_completed') this.planStatuses.set(plan.id, 'completed');
-        if (event.eventType === 'plan_failed') this.planStatuses.set(plan.id, 'failed');
-        yield event;
-      }
+    const message = this.buildExecutionMessage(plan, { stream: true });
+    for await (const event of this.client.sendMessageStreaming(message, { maxRetries: 0 })) {
+      if (event.eventType === 'plan_completed') this.planStatuses.set(plan.id, 'completed');
+      if (event.eventType === 'plan_failed') this.planStatuses.set(plan.id, 'failed');
+      yield event;
+    }
 
-      if (this.planStatuses.get(plan.id) === 'running') {
-        this.planStatuses.set(plan.id, 'completed');
-        yield {
-          planId: plan.id,
-          eventType: 'plan_completed',
-          timestamp: new Date(),
-          payload: { adapter: 'ironclaw' },
-        };
-      }
-    } catch (error) {
-      this.planStatuses.set(plan.id, 'failed');
+    if (this.planStatuses.get(plan.id) === 'running') {
+      this.planStatuses.set(plan.id, 'completed');
       yield {
         planId: plan.id,
-        eventType: 'plan_failed',
+        eventType: 'plan_completed',
         timestamp: new Date(),
-        payload: { error: error instanceof Error ? error.message : String(error) },
+        payload: { adapter: 'ironclaw' },
       };
     }
   }
@@ -210,12 +192,12 @@ export class RealIronClawAdapter implements IronClawEnhancedAdapter {
     };
 
     try {
-      const response = await this.client.sendMessage(message);
+      const response = await this.client.sendMessage(message, { maxRetries: 0 });
       return this.client.parseRollbackResult(response);
-    } catch (error) {
+    } catch {
       return {
         success: false,
-        message: error instanceof Error ? error.message : String(error),
+        message: 'ironclaw_rollback_failed',
       };
     }
   }

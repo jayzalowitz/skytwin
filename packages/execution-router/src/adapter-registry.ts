@@ -6,8 +6,8 @@ import { isIronClawEnhancedAdapter } from '@skytwin/ironclaw-adapter';
  * Entry in the adapter registry: an adapter implementation paired with its trust profile.
  */
 export interface AdapterEntry {
-  adapter: IronClawAdapter;
-  trustProfile: AdapterTrustProfile;
+  readonly adapter: IronClawAdapter;
+  readonly trustProfile: AdapterTrustProfile;
 }
 
 /**
@@ -62,6 +62,7 @@ export const MCP_HOST_TRUST_PROFILE: AdapterTrustProfile = {
 export class AdapterRegistry {
   private readonly entries = new Map<string, AdapterEntry>();
   private readonly adapterSkills = new Map<string, Set<string>>();
+  private readonly revisions = new Map<string, number>();
 
   /**
    * Register an adapter with its trust profile.
@@ -72,9 +73,13 @@ export class AdapterRegistry {
     trustProfile: AdapterTrustProfile,
     skills?: Set<string>,
   ): void {
-    this.entries.set(name, { adapter, trustProfile });
+    const profile = Object.freeze({ ...trustProfile });
+    this.entries.set(name, Object.freeze({ adapter, trustProfile: profile }));
+    this.revisions.set(name, (this.revisions.get(name) ?? 0) + 1);
     if (skills) {
-      this.adapterSkills.set(name, skills);
+      this.adapterSkills.set(name, new Set(skills));
+    } else {
+      this.adapterSkills.delete(name);
     }
   }
 
@@ -83,6 +88,11 @@ export class AdapterRegistry {
    */
   get(name: string): AdapterEntry | undefined {
     return this.entries.get(name);
+  }
+
+  /** Monotonic registration generation, including skill-declaration changes. */
+  getRevision(name: string): number {
+    return this.revisions.get(name) ?? 0;
   }
 
   /**

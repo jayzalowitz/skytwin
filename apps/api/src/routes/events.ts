@@ -28,9 +28,15 @@ import {
   decisionRepositoryAdapter,
   explanationRepositoryAdapter,
   policyRepositoryAdapter,
+  preEffectBarrierRepository,
 } from '@skytwin/db';
-import type { DecisionContext, ExecutionEvent, RiskAssessment, EpisodicMemory } from '@skytwin/shared-types';
+import type { DecisionContext, DecisionOutcome, ExecutionResult, RiskAssessment, EpisodicMemory } from '@skytwin/shared-types';
 import { parseAutonomySettings, SituationType, TrustTier } from '@skytwin/shared-types';
+import {
+  AmbiguousExecutionError,
+  EXECUTION_FAILURE_CODES,
+  executionFailureCode,
+} from '@skytwin/execution-router';
 import type { AIProviderName } from '@skytwin/shared-types';
 import { LlmClient } from '@skytwin/llm-client';
 import type { ProviderEntry } from '@skytwin/llm-client';
@@ -59,6 +65,23 @@ import {
   isOutboundEmailAction,
   prepareEmailActionForExecution,
 } from '../email-attribution.js';
+
+function eventPolicySnapshot(
+  policy: { allowed: boolean; requiresApproval: boolean; reason: string },
+  action: { actionType: string; reversible: boolean },
+  risk: RiskAssessment,
+  adapter: string,
+): Record<string, unknown> {
+  return {
+    allowed: policy.allowed,
+    requiresApproval: policy.requiresApproval,
+    reason: policy.reason.slice(0, 500),
+    actionType: action.actionType,
+    reversible: action.reversible,
+    riskTier: risk.overallTier,
+    adapter,
+  };
+}
 
 /**
  * Best-effort: write an inbound raw event into the user's MemoryPort as a
@@ -314,15 +337,14 @@ export function createEventsRouter(): Router {
       if (!decisionCreated) {
         const previousOutcome = await decisionRepositoryAdapter.getOutcome(decision.id);
         let recoverable = previousOutcome !== null;
-        let executionTerminal: { status: 'completed' | 'failed'; planId: string } | null = null;
+        let executionTerminal: { status: 'completed' | 'failed' | 'unknown'; planId: string | null } | null = null;
         if (previousOutcome && previousOutcome.autoExecute) {
           const previousExec = await executionRepository.getByDecisionId(decision.id);
           if (!previousExec || !previousExec.result) {
-            // Auto-execute outcome with no terminal execution_result — the
-            // first attempt didn't finish (hung HTTP call, crashed worker,
-            // killed process between createPlan and createResult). Fall
-            // through and let this ingest complete the action.
-            recoverable = false;
+            // Once an auto-execute outcome exists, absence of a known result is
+            // an ambiguous dispatch boundary. Retrying could duplicate an
+            // irreversible effect, so surface terminal-unknown and never replay.
+            executionTerminal = { status: 'unknown', planId: previousExec?.plan.id ?? null };
           } else {
             executionTerminal = {
               status: previousExec.result.success ? 'completed' : 'failed',
@@ -598,12 +620,6 @@ export function createEventsRouter(): Router {
         approvalRequest = approvalResult.row;
         approvalNewlyCreated = approvalResult.created;
       } else if (outcome.autoExecute && outcome.selectedAction) {
-        // Inject OAuth token if available for real execution
-        const tokenRow = await oauthRepository.getToken(userId, 'google');
-        if (tokenRow) {
-          outcome.selectedAction.parameters['accessToken'] = tokenRow.access_token;
-        }
-
         // Risk assessment for routing must be the one the decision-maker
         // actually computed (#371) — never a fresh synthetic one derived
         // from `explanation.riskTier`. The flat enum collapses every
@@ -646,100 +662,225 @@ export function createEventsRouter(): Router {
           approvalRequest = escalationResult.row;
           approvalNewlyCreated = escalationResult.created;
         } else {
-          prepareEmailActionForExecution(outcome.selectedAction, user);
-
-          // Persist the DB execution plan before routing so streaming events can
-          // reference it via execution_events.plan_id.
-          const savedPlan = await executionRepository.createPlan({
-            decisionId: decision.id,
-            actionId: outcome.selectedAction.id,
-            status: 'running',
-            steps: [{ type: outcome.selectedAction.actionType, status: 'pending' }],
+          const barrier = await preEffectBarrierRepository.reserve({
+            userId,
+            effectType: 'event_execution',
+            idempotencyKey: decision.id,
           });
-          outcome.selectedAction.parameters['executionPlanId'] = savedPlan.id;
-          if (user?.ironclaw_channel) {
-            outcome.selectedAction.parameters['ironclawChannel'] = user.ironclaw_channel;
-          }
-
-          // Execute via the trust-ranked execution router (IronClaw > Direct > OpenClaw)
-          const executionRouter = await getRouter();
-          let terminalEvent: ExecutionEvent | null = null;
-          let terminalStatus: 'completed' | 'failed' = 'failed';
-          const stepOutputs: Array<{ stepId?: string; eventType: string; payload: Record<string, unknown> }> = [];
-          let terminalPayload: Record<string, unknown> = {};
-
+          if (!barrier.created) {
+            // A competing or crashed request owns this exact effect. None of
+            // reserved/prepared/in_progress/unknown is safe to auto-replay.
+            const known = barrier.row.status === 'succeeded' || barrier.row.status === 'failed';
+            executionResult = {
+              status: known
+                ? (barrier.row.status === 'succeeded' ? 'completed' : 'failed')
+                : 'unknown',
+              planId: typeof barrier.row.effect_result['planId'] === 'string'
+                ? barrier.row.effect_result['planId']
+                : null,
+              adapterUsed: typeof barrier.row.effect_result['adapterName'] === 'string'
+                ? barrier.row.effect_result['adapterName']
+                : 'unknown',
+            };
+          } else {
+          let savedPlanId: string | null = null;
           try {
-            for await (const event of executionRouter.executeWithRoutingStreaming(
+            // Secrets are attached only after the durable reservation exists.
+            const tokenRow = await oauthRepository.getToken(userId, 'google');
+            if (tokenRow) {
+              outcome.selectedAction.parameters['accessToken'] = tokenRow.access_token;
+            }
+            prepareEmailActionForExecution(outcome.selectedAction, user);
+
+            // Persist the DB execution plan before routing so streaming events can
+            // reference it via execution_events.plan_id.
+            const savedPlan = await executionRepository.createPlan({
+              decisionId: decision.id,
+              actionId: outcome.selectedAction.id,
+              status: 'running',
+              steps: [{ type: outcome.selectedAction.actionType, status: 'pending' }],
+            });
+            savedPlanId = savedPlan.id;
+            outcome.selectedAction.parameters['executionPlanId'] = savedPlan.id;
+            if (user?.ironclaw_channel) {
+              outcome.selectedAction.parameters['ironclawChannel'] = user.ironclaw_channel;
+            }
+
+            // Route and prepare first. The router-issued object is an opaque,
+            // user-bound capability; policy is then re-evaluated against its
+            // adjusted risk and canonical action immediately before dispatch.
+            const executionRouter = await getRouter();
+            const route = await executionRouter.route(
               outcome.selectedAction,
               riskAssessment,
               userId,
-            )) {
-              if (event.payload && Object.keys(event.payload).length > 0) {
-                stepOutputs.push({ stepId: event.stepId, eventType: event.eventType, payload: event.payload });
-              }
-              terminalPayload = event.payload ?? terminalPayload;
-              await executionRepository.createEvent({
-                planId: savedPlan.id,
-                stepId: event.stepId,
-                eventType: event.eventType,
-                payload: event.payload ?? {},
-              });
-              sseManager.emit(userId, 'decision:step', {
-                decisionId: decision.id,
-                actionType: outcome.selectedAction.actionType,
-                description: outcome.selectedAction.description,
-                ...event,
-              });
+            );
+            const prepared = await executionRouter.prepareExecution(
+              outcome.selectedAction,
+              route,
+              userId,
+            );
+            const admittedAction = prepared.plan.action;
+            const effectiveRisk = prepared.routingDecision.modifiedRiskAssessment;
+            await decisionRepositoryAdapter.saveRiskAssessment(effectiveRisk);
 
-              if (event.eventType === 'plan_completed' || event.eventType === 'plan_failed') {
-                terminalEvent = event;
-                terminalStatus = event.eventType === 'plan_completed' ? 'completed' : 'failed';
-              }
-            }
-          } catch (error) {
-            terminalStatus = 'failed';
-            terminalPayload = {
-              error: error instanceof Error ? error.message : String(error),
+            const freshUser = await userRepository.findById(userId);
+            if (!freshUser) throw new Error(EXECUTION_FAILURE_CODES.pipelineFailed);
+            const freshPolicies = await policyRepositoryAdapter.getEnabledPolicies();
+            const finalPolicy = await policyEvaluator.evaluate(
+              admittedAction,
+              freshPolicies,
+              (freshUser.trust_tier as TrustTier) ?? TrustTier.OBSERVER,
+              effectiveRisk,
+              parseAutonomySettings(freshUser.autonomy_settings),
+            );
+            const policySnapshot = eventPolicySnapshot(
+              finalPolicy,
+              admittedAction,
+              effectiveRisk,
+              prepared.selectedAdapter,
+            );
+            const finalOutcome: DecisionOutcome = {
+              ...outcome,
+              selectedAction: admittedAction,
+              riskAssessment: effectiveRisk,
+              autoExecute: finalPolicy.allowed && !finalPolicy.requiresApproval,
+              requiresApproval: finalPolicy.requiresApproval,
+              reasoning: `Final pre-execution policy check: ${finalPolicy.reason}`,
             };
-            terminalEvent = {
-              planId: savedPlan.id,
-              eventType: 'plan_failed',
-              timestamp: new Date(),
-              payload: terminalPayload,
-            };
-            stepOutputs.push({ eventType: 'plan_failed', payload: terminalPayload });
-            await executionRepository.createEvent({
-              planId: savedPlan.id,
-              eventType: 'plan_failed',
-              payload: terminalPayload,
+            await decisionRepositoryAdapter.saveOutcome(finalOutcome);
+            outcome.autoExecute = finalOutcome.autoExecute;
+            outcome.requiresApproval = finalOutcome.requiresApproval;
+            outcome.reasoning = finalOutcome.reasoning;
+            const finalExplanation = await explanationGenerator.generate(decision, finalOutcome, {
+              ...context,
+              trustTier: (freshUser.trust_tier as TrustTier) ?? TrustTier.OBSERVER,
+              autonomySettings: parseAutonomySettings(freshUser.autonomy_settings),
             });
-            sseManager.emit(userId, 'decision:step', {
+            await preEffectBarrierRepository.markPrepared({
+              id: barrier.row.id,
+              userId,
               decisionId: decision.id,
-              actionType: outcome.selectedAction.actionType,
-              description: outcome.selectedAction.description,
-              ...terminalEvent,
+              actionId: admittedAction.id,
+              explanationId: finalExplanation.id,
+              policySnapshot,
             });
-          }
 
-          await executionRepository.updatePlanStatus(savedPlan.id, terminalStatus);
-          const fullOutputs: Record<string, unknown> = {
-            ...terminalPayload,
-            steps: stepOutputs,
-          };
-          await executionRepository.createResult({
-            planId: savedPlan.id,
-            success: terminalStatus === 'completed',
-            outputs: fullOutputs,
-            error: typeof terminalPayload['error'] === 'string' ? terminalPayload['error'] : undefined,
-            rollbackAvailable: outcome.selectedAction.reversible,
-          });
+            if (!finalPolicy.allowed || finalPolicy.requiresApproval) {
+              await preEffectBarrierRepository.markTerminal(
+                userId,
+                barrier.row.id,
+                'blocked',
+                { policy: policySnapshot },
+                'final_policy_blocked',
+              );
+              executionResult = {
+                status: 'failed',
+                planId: savedPlan.id,
+                adapterUsed: prepared.selectedAdapter,
+              };
+              if (finalPolicy.requiresApproval) {
+                const {
+                  accessToken: _omitFinalToken,
+                  rawData: _omitFinalRawData,
+                  ...finalVisibleParameters
+                } = admittedAction.parameters;
+                const finalApproval = await approvalRepository.create({
+                  userId,
+                  decisionId: decision.id,
+                  candidateAction: serializeApprovalCandidate(admittedAction, finalVisibleParameters),
+                  reason: finalOutcome.reasoning,
+                  urgency: decision.urgency,
+                  confirmationLevel: finalPolicy.confirmationLevel === 'dual' ? 'dual' : 'single',
+                });
+                approvalRequest = finalApproval.row;
+                approvalNewlyCreated = finalApproval.created;
+              }
+              await executionRepository.updatePlanStatus(savedPlan.id, 'failed');
+              await executionRepository.createResult({
+                planId: savedPlan.id,
+                success: false,
+                outputs: { code: 'final_policy_blocked' },
+                error: 'final_policy_blocked',
+                rollbackAvailable: false,
+              });
+            } else {
+              const claim = await preEffectBarrierRepository.claimPrepared(userId, barrier.row.id);
+              if (!claim) throw new Error(EXECUTION_FAILURE_CODES.pipelineFailed);
 
-          executionResult = {
-            status: terminalStatus,
-            planId: savedPlan.id,
-            adapterUsed: terminalPayload['adapter_used'] ?? 'unknown',
-          };
+              // No adapter-originated streaming crosses the API/DB boundary.
+              // Only this allowlisted terminal envelope is persisted/emitted.
+              let adapterResult: ExecutionResult | undefined;
+              try {
+                adapterResult = await executionRouter.executePrepared(prepared, userId);
+              } catch (error) {
+                if (!(error instanceof AmbiguousExecutionError)) throw error;
+                executionResult = {
+                  status: 'unknown',
+                  planId: savedPlan.id,
+                  adapterUsed: prepared.selectedAdapter,
+                };
+                await preEffectBarrierRepository.markTerminal(
+                  userId,
+                  barrier.row.id,
+                  'unknown',
+                  { planId: savedPlan.id, adapterName: prepared.selectedAdapter },
+                  EXECUTION_FAILURE_CODES.dispatchAmbiguous,
+                );
+                await executionRepository.updatePlanStatus(savedPlan.id, 'failed');
+                await executionRepository.createEvent({
+                  planId: savedPlan.id,
+                  eventType: 'plan_failed',
+                  payload: { code: EXECUTION_FAILURE_CODES.dispatchAmbiguous },
+                });
+                await executionRepository.createResult({
+                  planId: savedPlan.id,
+                  success: false,
+                  outputs: { code: EXECUTION_FAILURE_CODES.dispatchAmbiguous },
+                  error: EXECUTION_FAILURE_CODES.dispatchAmbiguous,
+                  rollbackAvailable: false,
+                });
+                sseManager.emit(userId, 'decision:execution-unknown', {
+                  decisionId: decision.id,
+                  actionType: admittedAction.actionType,
+                  code: EXECUTION_FAILURE_CODES.dispatchAmbiguous,
+                });
+              }
 
+              if (adapterResult) {
+                const terminalStatus = adapterResult.status === 'completed' ? 'completed' : 'failed';
+                const terminalCode = terminalStatus === 'completed'
+                  ? undefined
+                  : EXECUTION_FAILURE_CODES.adapterFailed;
+                executionResult = {
+                  status: terminalStatus,
+                  planId: savedPlan.id,
+                  adapterUsed: prepared.selectedAdapter,
+                };
+                await preEffectBarrierRepository.markTerminal(
+                  userId,
+                  barrier.row.id,
+                  terminalStatus === 'completed' ? 'succeeded' : 'failed',
+                  {
+                    planId: savedPlan.id,
+                    adapterName: prepared.selectedAdapter,
+                    status: terminalStatus,
+                  },
+                  terminalCode,
+                );
+                await executionRepository.updatePlanStatus(savedPlan.id, terminalStatus);
+                await executionRepository.createEvent({
+                  planId: savedPlan.id,
+                  eventType: terminalStatus === 'completed' ? 'plan_completed' : 'plan_failed',
+                  payload: terminalCode ? { code: terminalCode } : { status: 'completed' },
+                });
+                await executionRepository.createResult({
+                  planId: savedPlan.id,
+                  success: terminalStatus === 'completed',
+                  outputs: terminalCode ? { code: terminalCode } : { status: 'completed' },
+                  error: terminalCode,
+                  rollbackAvailable: admittedAction.reversible,
+                });
           // Record post-execution spend tagged with the action's registry
           // source (#323 AC#3). Only on success — a failed execution
           // shouldn't charge the user's per-app budget. Best-effort: the
@@ -750,18 +891,75 @@ export function createEventsRouter(): Router {
             await recordMcpActionSpend({
               userId,
               decisionId: decision.id,
-              action: outcome.selectedAction,
+              action: admittedAction,
             });
           }
 
           // Notify via SSE
           sseManager.emit(userId, 'decision:executed', {
             decisionId: decision.id,
-            actionType: outcome.selectedAction.actionType,
-            description: outcome.selectedAction.description,
+            actionType: admittedAction.actionType,
+            description: admittedAction.description,
             status: terminalStatus,
-            eventType: terminalEvent?.eventType,
           });
+              }
+            }
+          } catch (error) {
+            if (!executionResult) {
+              const code = executionFailureCode(error);
+              // Before executePrepared, this is definitely pre-dispatch. A
+              // terminal barrier must never exist without a durable typed
+              // explanation: persist a deliberate non-action first, then
+              // atomically attach its owned UUID with the status transition.
+              // If either persistence step fails, let the request fail and
+              // leave the reservation non-terminal for reconciliation.
+              const failureOutcome: DecisionOutcome = {
+                ...outcome,
+                selectedAction: null,
+                riskAssessment: null,
+                autoExecute: false,
+                requiresApproval: false,
+                reasoning: `Execution stopped before dispatch (${code}).`,
+                decidedAt: new Date(),
+              };
+              const failureExplanation = await explanationGenerator.generate(
+                decision,
+                failureOutcome,
+                context,
+              );
+              await preEffectBarrierRepository.markTerminalWithExplanation({
+                id: barrier.row.id,
+                userId,
+                explanationId: failureExplanation.id,
+                decisionId: decision.id,
+                actionId: outcome.selectedAction.id,
+                status: 'failed',
+                effectResult: savedPlanId ? { planId: savedPlanId } : {},
+                failureReason: code,
+              });
+              if (savedPlanId) {
+                await executionRepository.updatePlanStatus(savedPlanId, 'failed');
+                await executionRepository.createEvent({
+                  planId: savedPlanId,
+                  eventType: 'plan_failed',
+                  payload: { code },
+                });
+                await executionRepository.createResult({
+                  planId: savedPlanId,
+                  success: false,
+                  outputs: { code },
+                  error: code,
+                  rollbackAvailable: false,
+                });
+              }
+              executionResult = {
+                status: 'failed',
+                planId: savedPlanId,
+                adapterUsed: 'unknown',
+              };
+            }
+          }
+          }
         } // end if (riskAssessment) — escalation branch above handles null
       }
 

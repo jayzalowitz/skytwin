@@ -1,8 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { buildExecutableActionPlan } from '@skytwin/shared-types';
+import { buildExecutableActionPlan, RiskTier } from '@skytwin/shared-types';
+import { AmbiguousExecutionError, InvariantViolationError } from '@skytwin/execution-router';
 import type {
+  CandidateAction,
   DailyMemorySuggestion,
   MemoryActionOpportunitySnapshot,
+  RiskAssessment,
+  RoutingDecision,
 } from '@skytwin/shared-types';
 
 const {
@@ -11,7 +15,8 @@ const {
   mockDecisionRepository,
   mockDecisionRepositoryAdapter,
   mockApprovalRepository,
-  mockExplanationRepository,
+  mockExplanationRepositoryAdapter,
+  mockPreEffectBarrierRepository,
   mockExecutionRepository,
   mockPolicyRepositoryAdapter,
   mockServiceCredentialRepository,
@@ -33,12 +38,20 @@ const {
   },
   mockDecisionRepositoryAdapter: {
     saveRiskAssessment: vi.fn(),
+    saveOutcome: vi.fn(),
   },
   mockApprovalRepository: {
     create: vi.fn(),
   },
-  mockExplanationRepository: {
-    create: vi.fn(),
+  mockExplanationRepositoryAdapter: {
+    save: vi.fn(),
+  },
+  mockPreEffectBarrierRepository: {
+    reserve: vi.fn(),
+    markPrepared: vi.fn(),
+    updatePreparedPolicy: vi.fn(),
+    claimPrepared: vi.fn(),
+    markTerminal: vi.fn(),
   },
   mockExecutionRepository: {
     createPlan: vi.fn(),
@@ -64,7 +77,8 @@ vi.mock('@skytwin/db', () => ({
   decisionRepository: mockDecisionRepository,
   decisionRepositoryAdapter: mockDecisionRepositoryAdapter,
   approvalRepository: mockApprovalRepository,
-  explanationRepository: mockExplanationRepository,
+  explanationRepositoryAdapter: mockExplanationRepositoryAdapter,
+  preEffectBarrierRepository: mockPreEffectBarrierRepository,
   executionRepository: mockExecutionRepository,
   policyRepositoryAdapter: mockPolicyRepositoryAdapter,
   serviceCredentialRepository: mockServiceCredentialRepository,
@@ -150,7 +164,24 @@ function mockCommon(opportunity = makeOpportunity()) {
   mockDecisionRepository.addCandidateAction.mockResolvedValue({});
   mockDecisionRepository.recordOutcome.mockResolvedValue({});
   mockDecisionRepositoryAdapter.saveRiskAssessment.mockResolvedValue({});
-  mockExplanationRepository.create.mockResolvedValue({});
+  mockDecisionRepositoryAdapter.saveOutcome.mockImplementation(async (outcome) => outcome);
+  mockExplanationRepositoryAdapter.save.mockImplementation(async (record) => ({
+    ...record,
+    id: '55555555-5555-5555-5555-555555555555',
+  }));
+  mockPreEffectBarrierRepository.reserve.mockResolvedValue({
+    row: {
+      id: '66666666-6666-6666-6666-666666666666',
+      status: 'reserved',
+      decision_id: null,
+      effect_result: {},
+    },
+    created: true,
+  });
+  mockPreEffectBarrierRepository.markPrepared.mockResolvedValue({ status: 'prepared' });
+  mockPreEffectBarrierRepository.updatePreparedPolicy.mockResolvedValue({ status: 'prepared' });
+  mockPreEffectBarrierRepository.claimPrepared.mockResolvedValue({ status: 'in_progress' });
+  mockPreEffectBarrierRepository.markTerminal.mockResolvedValue({ status: 'succeeded' });
   mockPolicyRepositoryAdapter.getEnabledPolicies.mockResolvedValue([]);
   mockApprovalRepository.create.mockResolvedValue({
     row: { id: '33333333-3333-3333-3333-333333333333' },
@@ -163,6 +194,52 @@ function mockCommon(opportunity = makeOpportunity()) {
   mockSkillGapRepository.log.mockResolvedValue({
     id: 'skill-gap-1',
   });
+}
+
+function makeRouter(options: { executeError?: Error; riskTier?: RiskAssessment['overallTier'] } = {}) {
+  const route = vi.fn(async (
+    _candidate: CandidateAction,
+    risk: RiskAssessment,
+  ): Promise<RoutingDecision> => ({
+    selectedAdapter: 'direct',
+    fallbackChain: ['ironclaw'],
+    trustProfile: {
+      name: 'direct',
+      reversibilityGuarantee: 'partial',
+      authModel: 'none',
+      auditTrail: true,
+      riskModifier: 0,
+    },
+    riskModifierApplied: 0,
+    modifiedRiskAssessment: {
+      ...risk,
+      overallTier: options.riskTier ?? risk.overallTier,
+      reasoning: `${risk.reasoning} Adapter route: direct.`,
+    },
+    reasoning: 'Direct is the selected immutable route.',
+  }));
+  const prepareExecution = vi.fn(async (candidate: CandidateAction, routing: RoutingDecision) => ({
+    selectedAdapter: routing.selectedAdapter,
+    routingDecision: routing,
+    plan: {
+      id: 'prepared-plan-1',
+      decisionId: candidate.decisionId,
+      action: candidate,
+      steps: [],
+      rollbackSteps: [],
+      createdAt: new Date(),
+    },
+  }));
+  const executePrepared = options.executeError
+    ? vi.fn().mockRejectedValue(options.executeError)
+    : vi.fn().mockResolvedValue({
+        planId: 'direct-plan-1',
+        status: 'completed',
+        startedAt: new Date(),
+        completedAt: new Date(),
+        output: { adapter_used: 'direct', routing_decision: 'direct', fallbacks_attempted: 0 },
+      });
+  return { route, prepareExecution, executePrepared };
 }
 
 describe('runMemoryActionLoopJob', () => {
@@ -265,23 +342,7 @@ describe('runMemoryActionLoopJob', () => {
         reason: 'All policies passed.',
       }),
     };
-    const router = {
-      route: vi.fn().mockResolvedValue({
-        selectedAdapter: 'ironclaw',
-        fallbackChain: ['direct'],
-        trustProfile: {},
-        riskModifierApplied: 0,
-        modifiedRiskAssessment: {},
-        reasoning: 'IronClaw is preferred; Direct can fall back for create_task.',
-      }),
-      executeWithRouting: vi.fn().mockResolvedValue({
-        planId: 'direct-plan-1',
-        status: 'completed',
-        startedAt: new Date(),
-        completedAt: new Date(),
-        output: { adapter_used: 'direct', routing_decision: 'ironclaw', fallbacks_attempted: 1 },
-      }),
-    };
+    const router = makeRouter({ riskTier: RiskTier.HIGH });
 
     const summary = await runMemoryActionLoopJob({
       userIds: ['user-1'],
@@ -298,7 +359,31 @@ describe('runMemoryActionLoopJob', () => {
         costZeroIntent: 'verified_zero',
       }),
     );
-    expect(router.executeWithRouting).toHaveBeenCalledOnce();
+    expect(policyEvaluator.evaluate).toHaveBeenCalledTimes(2);
+    expect(policyEvaluator.evaluate.mock.calls[1]![3]).toEqual(
+      expect.objectContaining({ overallTier: RiskTier.HIGH, reasoning: expect.stringContaining('Adapter route: direct') }),
+    );
+    expect(router.executePrepared).toHaveBeenCalledOnce();
+    expect(router.executePrepared).toHaveBeenCalledWith(
+      expect.objectContaining({ selectedAdapter: 'direct' }),
+      'user-1',
+    );
+    expect(mockExplanationRepositoryAdapter.save.mock.invocationCallOrder[0]).toBeLessThan(
+      router.executePrepared.mock.invocationCallOrder[0]!,
+    );
+    expect(mockPreEffectBarrierRepository.claimPrepared.mock.invocationCallOrder[0]).toBeLessThan(
+      router.executePrepared.mock.invocationCallOrder[0]!,
+    );
+    expect(mockPreEffectBarrierRepository.markPrepared).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: 'user-1',
+        explanationId: '55555555-5555-5555-5555-555555555555',
+        policySnapshot: expect.objectContaining({
+          riskAssessment: expect.objectContaining({ overallTier: RiskTier.HIGH }),
+          routing: expect.objectContaining({ selectedAdapter: 'direct' }),
+        }),
+      }),
+    );
     expect(mockExecutionRepository.createPlan).toHaveBeenCalledWith(
       expect.objectContaining({
         decisionId: '22222222-2222-2222-2222-222222222222',
@@ -316,6 +401,235 @@ describe('runMemoryActionLoopJob', () => {
           summary: expect.stringContaining('direct'),
         }),
       }),
+    );
+  });
+
+  it('blocks before dispatch when adapter-adjusted risk fails the final policy gate', async () => {
+    const opportunity = makeOpportunity('create_task');
+    mockCommon(opportunity);
+    mockUserRepository.findById.mockResolvedValue({
+      id: 'user-1', trust_tier: 'high_autonomy', autonomy_settings: {}, ironclaw_channel: null,
+    });
+    const policyEvaluator = {
+      evaluate: vi.fn()
+        .mockResolvedValueOnce({ allowed: true, requiresApproval: false, reason: 'Base risk allowed.' })
+        .mockResolvedValueOnce({ allowed: false, requiresApproval: false, reason: 'Adjusted risk denied.' }),
+    };
+    const router = makeRouter({ riskTier: RiskTier.HIGH });
+
+    const summary = await runMemoryActionLoopJob({
+      userIds: ['user-1'],
+      fetchBundle: async () => ({ suggestions: [], pagesById: new Map() }),
+      policyEvaluator,
+      loadPolicies: async () => [],
+      getExecutionRouter: async () => router,
+    });
+
+    expect(summary.blocked).toBe(1);
+    expect(policyEvaluator.evaluate.mock.calls[1]![3]).toEqual(
+      expect.objectContaining({ overallTier: RiskTier.HIGH }),
+    );
+    expect(router.prepareExecution).toHaveBeenCalledOnce();
+    expect(router.executePrepared).not.toHaveBeenCalled();
+    expect(mockPreEffectBarrierRepository.markTerminal).toHaveBeenCalledWith(
+      'user-1',
+      '66666666-6666-6666-6666-666666666666',
+      'blocked',
+      expect.objectContaining({
+        finalPolicy: expect.objectContaining({
+          allowed: false,
+          routing: expect.objectContaining({ selectedAdapter: 'direct' }),
+          riskAssessment: expect.objectContaining({ overallTier: RiskTier.HIGH }),
+        }),
+      }),
+      'Adjusted risk denied.',
+    );
+  });
+
+  it('fails closed with zero adapter effects when the intended explanation cannot persist', async () => {
+    const opportunity = makeOpportunity('create_task');
+    mockCommon(opportunity);
+    mockUserRepository.findById.mockResolvedValue({
+      id: 'user-1',
+      trust_tier: 'high_autonomy',
+      autonomy_settings: {},
+      ironclaw_channel: null,
+    });
+    mockExplanationRepositoryAdapter.save.mockRejectedValueOnce(new Error('audit store unavailable'));
+    const policyEvaluator = {
+      evaluate: vi.fn().mockResolvedValue({
+        allowed: true,
+        requiresApproval: false,
+        reason: 'All policies passed.',
+      }),
+    };
+    const router = makeRouter();
+
+    const summary = await runMemoryActionLoopJob({
+      userIds: ['user-1'],
+      fetchBundle: async () => ({ suggestions: [], pagesById: new Map() }),
+      policyEvaluator,
+      loadPolicies: async () => [],
+      getExecutionRouter: async () => router,
+    });
+
+    expect(summary.autoExecuted).toBe(0);
+    expect(router.route).toHaveBeenCalledOnce();
+    expect(router.prepareExecution).toHaveBeenCalledOnce();
+    expect(router.executePrepared).not.toHaveBeenCalled();
+    expect(mockPreEffectBarrierRepository.claimPrepared).not.toHaveBeenCalled();
+  });
+
+  it('does not duplicate an adapter effect after an interrupted in-progress attempt', async () => {
+    const opportunity = makeOpportunity('create_task');
+    mockCommon(opportunity);
+    mockUserRepository.findById.mockResolvedValue({
+      id: 'user-1', trust_tier: 'high_autonomy', autonomy_settings: {}, ironclaw_channel: null,
+    });
+    const policyEvaluator = {
+      evaluate: vi.fn().mockResolvedValue({
+        allowed: true, requiresApproval: false, reason: 'All policies passed.',
+      }),
+    };
+    const router = makeRouter({
+      executeError: new AmbiguousExecutionError('direct', new Error('SECRET_MARKER connection lost after dispatch')),
+    });
+    const deps = {
+      userIds: ['user-1'],
+      fetchBundle: async () => ({ suggestions: [], pagesById: new Map() }),
+      policyEvaluator,
+      loadPolicies: async () => [],
+      getExecutionRouter: async () => router,
+    };
+
+    await runMemoryActionLoopJob(deps);
+    expect(router.executePrepared).toHaveBeenCalledOnce();
+    expect(mockPreEffectBarrierRepository.markTerminal).toHaveBeenCalledWith(
+      'user-1',
+      '66666666-6666-6666-6666-666666666666',
+      'unknown',
+      {},
+      'adapter_dispatch_ambiguous',
+    );
+    expect(mockMemoryActionOpportunityRepository.markStatus).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'execution_unknown' }),
+    );
+    expect(JSON.stringify([
+      mockPreEffectBarrierRepository.markTerminal.mock.calls,
+      mockMemoryActionOpportunityRepository.markStatus.mock.calls,
+      mockExplanationRepositoryAdapter.save.mock.calls,
+    ])).not.toContain('SECRET_MARKER');
+
+    mockPreEffectBarrierRepository.reserve.mockResolvedValueOnce({
+      row: {
+        id: '66666666-6666-6666-6666-666666666666',
+        status: 'unknown',
+        decision_id: '22222222-2222-2222-2222-222222222222',
+        effect_result: {},
+      },
+      created: false,
+    });
+    await runMemoryActionLoopJob(deps);
+    expect(router.executePrepared).toHaveBeenCalledOnce();
+  });
+
+  it('records a prepared-handle invariant failure as known no-dispatch failure', async () => {
+    const opportunity = makeOpportunity('create_task');
+    mockCommon(opportunity);
+    mockUserRepository.findById.mockResolvedValue({
+      id: 'user-1', trust_tier: 'high_autonomy', autonomy_settings: {}, ironclaw_channel: null,
+    });
+    const router = makeRouter({
+      executeError: new InvariantViolationError('prepared adapter was replaced'),
+    });
+
+    await runMemoryActionLoopJob({
+      userIds: ['user-1'],
+      fetchBundle: async () => ({ suggestions: [], pagesById: new Map() }),
+      policyEvaluator: { evaluate: vi.fn().mockResolvedValue({
+        allowed: true, requiresApproval: false, reason: 'All policies passed.',
+      }) },
+      loadPolicies: async () => [],
+      getExecutionRouter: async () => router,
+    });
+
+    expect(mockPreEffectBarrierRepository.markTerminal).toHaveBeenCalledWith(
+      'user-1',
+      '66666666-6666-6666-6666-666666666666',
+      'failed',
+      {},
+      'prepared_execution_invalid',
+    );
+    expect(mockMemoryActionOpportunityRepository.markStatus).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'execution_failed' }),
+    );
+    expect(mockPreEffectBarrierRepository.markTerminal.mock.calls.some((call) => call[2] === 'unknown'))
+      .toBe(false);
+  });
+
+  it('preserves a known succeeded barrier when later execution-ledger persistence fails', async () => {
+    const opportunity = makeOpportunity('create_task');
+    mockCommon(opportunity);
+    mockUserRepository.findById.mockResolvedValue({
+      id: 'user-1', trust_tier: 'high_autonomy', autonomy_settings: {}, ironclaw_channel: null,
+    });
+    const policyEvaluator = {
+      evaluate: vi.fn().mockResolvedValue({
+        allowed: true, requiresApproval: false, reason: 'All policies passed.',
+      }),
+    };
+    const router = makeRouter();
+    mockExecutionRepository.createPlan.mockRejectedValueOnce(new Error('execution ledger unavailable'));
+
+    const summary = await runMemoryActionLoopJob({
+      userIds: ['user-1'],
+      fetchBundle: async () => ({ suggestions: [], pagesById: new Map() }),
+      policyEvaluator,
+      loadPolicies: async () => [],
+      getExecutionRouter: async () => router,
+    });
+
+    expect(summary.autoExecuted).toBe(0);
+    expect(router.executePrepared).toHaveBeenCalledOnce();
+    expect(mockPreEffectBarrierRepository.markTerminal.mock.calls.map((call) => call[2])).toEqual(['succeeded']);
+    expect(mockDecisionRepositoryAdapter.saveOutcome).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not downgrade a known result when terminal explanation fails after outcome persistence', async () => {
+    const opportunity = makeOpportunity('create_task');
+    mockCommon(opportunity);
+    mockUserRepository.findById.mockResolvedValue({
+      id: 'user-1', trust_tier: 'high_autonomy', autonomy_settings: {}, ironclaw_channel: null,
+    });
+    const policyEvaluator = {
+      evaluate: vi.fn().mockResolvedValue({
+        allowed: true, requiresApproval: false, reason: 'All policies passed.',
+      }),
+    };
+    const router = makeRouter();
+    mockExplanationRepositoryAdapter.save
+      .mockImplementationOnce(async (record) => ({
+        ...record,
+        id: '55555555-5555-5555-5555-555555555555',
+      }))
+      .mockRejectedValueOnce(new Error('terminal explanation unavailable'));
+
+    await runMemoryActionLoopJob({
+      userIds: ['user-1'],
+      fetchBundle: async () => ({ suggestions: [], pagesById: new Map() }),
+      policyEvaluator,
+      loadPolicies: async () => [],
+      getExecutionRouter: async () => router,
+    });
+
+    expect(router.executePrepared).toHaveBeenCalledOnce();
+    expect(mockDecisionRepositoryAdapter.saveOutcome).toHaveBeenCalledTimes(2);
+    expect(mockDecisionRepositoryAdapter.saveOutcome).toHaveBeenLastCalledWith(
+      expect.objectContaining({ autoExecute: true, reasoning: expect.stringContaining('Auto-executed') }),
+    );
+    expect(mockPreEffectBarrierRepository.markTerminal.mock.calls.map((call) => call[2])).toEqual(['succeeded']);
+    expect(mockMemoryActionOpportunityRepository.markStatus).not.toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'execution_unknown' }),
     );
   });
 

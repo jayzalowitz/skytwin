@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync, readdirSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { splitSqlStatements, isIdempotentError } from '../migrations/001-initial.js';
 
 describe('splitSqlStatements', () => {
@@ -49,6 +51,29 @@ describe('splitSqlStatements', () => {
     // eats it, leaving an unbalanced quote — must fail loud, not corrupt.
     const sql = "INSERT INTO t (v) VALUES ('a--b');\n";
     expect(() => splitSqlStatements(sql)).toThrow(/unbalanced single-quotes/);
+  });
+});
+
+describe('stacked migration reservations', () => {
+  it('keeps reserved ordinals unique and places pre-effect barriers after the active stack', () => {
+    const migrationDir = fileURLToPath(new URL('../migrations/', import.meta.url));
+    const names = readdirSync(migrationDir);
+    expect(names).toContain('077-assistant-message-idempotency.sql');
+    expect(names).toContain('080-pre-effect-barriers.sql');
+    expect(names).not.toContain('072-assistant-message-idempotency.sql');
+    expect(names).not.toContain('071-pre-effect-barriers.sql');
+
+    const sqlMigrations = names.filter((name) => /^\d{3}-.+\.sql$/.test(name));
+    const ordinals = sqlMigrations.map((name) => name.slice(0, 3));
+    expect(new Set(ordinals).size, `duplicate migration ordinal in: ${sqlMigrations.join(', ')}`)
+      .toBe(ordinals.length);
+  });
+
+  it('enforces a durable explanation for every non-reserved pre-effect state', () => {
+    const migrationDir = fileURLToPath(new URL('../migrations/', import.meta.url));
+    const sql = readFileSync(`${migrationDir}/080-pre-effect-barriers.sql`, 'utf8');
+    expect(sql).toContain('pre_effect_barrier_explanation_required');
+    expect(sql).toContain("CHECK (status = 'reserved' OR explanation_id IS NOT NULL)");
   });
 });
 

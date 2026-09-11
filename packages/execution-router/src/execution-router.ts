@@ -9,6 +9,7 @@ import type {
   SkillGap,
 } from '@skytwin/shared-types';
 import { evaluateInjectionGuard } from '@skytwin/shared-types';
+import type { IronClawAdapter } from '@skytwin/ironclaw-adapter';
 import type { AdapterRegistry } from './adapter-registry.js';
 import { applyAdapterRiskModifier } from './risk-modifier.js';
 import { logSkillGap } from './skill-gap-logger.js';
@@ -41,6 +42,225 @@ export interface RollbackRoutingResult {
   adapterUsed: string | null;
   /** True when no registered adapter could handle the rollback. */
   noAdapter: boolean;
+}
+
+/** Opaque prepared dispatch bound to one previously selected adapter. */
+export interface PreparedExecution {
+  readonly selectedAdapter: string;
+  readonly routingDecision: RoutingDecision;
+  readonly plan: ExecutionPlan;
+}
+
+interface PreparedExecutionBinding {
+  readonly userId: string;
+  readonly adapter: IronClawAdapter;
+  readonly trustProfile: RoutingDecision['trustProfile'];
+  readonly trustProfileFingerprint: string;
+  readonly registryRevision: number;
+  readonly selectedAdapter: string;
+  readonly routingDecision: RoutingDecision;
+  readonly plan: ExecutionPlan;
+  readonly fingerprint: string;
+  readonly mutationAttempted: () => boolean;
+}
+
+interface RoutingDecisionBinding {
+  readonly userId: string;
+  readonly adapter: IronClawAdapter;
+  readonly selectedAdapter: string;
+  readonly trustProfile: RoutingDecision['trustProfile'];
+  readonly trustProfileFingerprint: string;
+  readonly registryRevision: number;
+  readonly actionFingerprint: string;
+  readonly riskFingerprint: string;
+  readonly routingFingerprint: string;
+}
+
+export const EXECUTION_FAILURE_CODES = {
+  adapterFailed: 'adapter_execution_failed',
+  dispatchAmbiguous: 'adapter_dispatch_ambiguous',
+  noAdapter: 'adapter_unavailable',
+  preparedInvalid: 'prepared_execution_invalid',
+  pipelineFailed: 'execution_pipeline_failed',
+} as const;
+
+export type ExecutionFailureCode =
+  (typeof EXECUTION_FAILURE_CODES)[keyof typeof EXECUTION_FAILURE_CODES];
+
+const EXECUTION_EVENT_TYPES = new Set<ExecutionEvent['eventType']>([
+  'plan_started', 'step_started', 'step_completed', 'step_failed', 'plan_completed', 'plan_failed',
+]);
+
+function cloneAndDeepFreeze<T>(value: T, onMutation: () => void): T {
+  assertPreparedValue(value, '$', new WeakSet<object>());
+  const cloneValue = (current: unknown): unknown => {
+    if (current === null || typeof current !== 'object') return current;
+    if (current instanceof Date) return new Date(current.getTime());
+    if (Array.isArray(current)) return current.map((child) => cloneValue(child));
+    const clone = Object.create(Object.getPrototypeOf(current) === null ? null : Object.prototype) as Record<string, unknown>;
+    for (const [key, child] of Object.entries(current)) {
+      Object.defineProperty(clone, key, {
+        value: cloneValue(child),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    }
+    return clone;
+  };
+  const clone = cloneValue(value);
+  const freeze = (current: unknown): unknown => {
+    if (current === null || typeof current !== 'object') return current;
+    if (current instanceof Date) {
+      Object.freeze(current);
+      return new Proxy(current, {
+        get(target, property) {
+          if (typeof property === 'string' && property.startsWith('set')) {
+            return (): never => {
+              onMutation();
+              throw new InvariantViolationError('Prepared execution dates are immutable.');
+            };
+          }
+          const member = Reflect.get(target, property, target) as unknown;
+          return typeof member === 'function' ? member.bind(target) : member;
+        },
+      });
+    }
+    if (Object.isFrozen(current)) return current;
+    const record = current as Record<string, unknown>;
+    for (const [key, child] of Object.entries(record)) {
+      Object.defineProperty(record, key, {
+        value: freeze(child),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    }
+    Object.freeze(current);
+    return current;
+  };
+  return freeze(clone) as T;
+}
+
+function assertPreparedValue(value: unknown, path: string, seen: WeakSet<object>): void {
+  if (value === null) return;
+  if (value === undefined) {
+    throw new InvariantViolationError(`Prepared execution contains unsupported undefined data at ${path}.`);
+  }
+  const kind = typeof value;
+  if (kind === 'string' || kind === 'boolean') return;
+  if (kind === 'number') {
+    if (!Number.isFinite(value) || Object.is(value, -0)) {
+      throw new InvariantViolationError(`Prepared execution contains a non-finite number at ${path}.`);
+    }
+    return;
+  }
+  if (kind !== 'object') {
+    throw new InvariantViolationError(`Prepared execution contains unsupported ${kind} data at ${path}.`);
+  }
+  const object = value as object;
+  if (seen.has(object)) {
+    throw new InvariantViolationError(`Prepared execution contains a cycle at ${path}.`);
+  }
+  seen.add(object);
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) {
+      throw new InvariantViolationError(`Prepared execution contains an invalid Date at ${path}.`);
+    }
+    if (Reflect.ownKeys(value).length > 0) {
+      throw new InvariantViolationError(`Prepared execution contains a decorated Date at ${path}.`);
+    }
+    seen.delete(object);
+    return;
+  }
+  if (Array.isArray(value)) {
+    if (Object.getPrototypeOf(value) !== Array.prototype) {
+      throw new InvariantViolationError(`Prepared execution contains a non-canonical array at ${path}.`);
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const expectedKeys = new Set<string>(['length']);
+    for (let index = 0; index < value.length; index++) {
+      const key = String(index);
+      expectedKeys.add(key);
+      const descriptor = descriptors[key];
+      if (!descriptor || !('value' in descriptor) || !descriptor.enumerable) {
+        throw new InvariantViolationError(`Prepared execution contains a sparse or accessor array entry at ${path}[${index}].`);
+      }
+      assertPreparedValue(descriptor.value, `${path}[${index}]`, seen);
+    }
+    for (const key of Reflect.ownKeys(value)) {
+      if (typeof key !== 'string' || !expectedKeys.has(key)) {
+        throw new InvariantViolationError(`Prepared execution contains a non-canonical array property at ${path}.`);
+      }
+    }
+    seen.delete(object);
+    return;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new InvariantViolationError(`Prepared execution contains a non-plain object at ${path}.`);
+  }
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key !== 'string') {
+      throw new InvariantViolationError(`Prepared execution contains a symbol property at ${path}.`);
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || !('value' in descriptor) || !descriptor.enumerable) {
+      throw new InvariantViolationError(`Prepared execution contains an accessor or hidden property at ${path}.${key}.`);
+    }
+    assertPreparedValue(descriptor.value, `${path}.${key}`, seen);
+  }
+  seen.delete(object);
+}
+
+function canonicalPreparedValue(value: unknown): string {
+  if (value === null) return 'null';
+  if (typeof value === 'string' || typeof value === 'boolean' || typeof value === 'number') {
+    return JSON.stringify(value);
+  }
+  if (value instanceof Date) return `["date",${JSON.stringify(value.toISOString())}]`;
+  if (Array.isArray(value)) {
+    return `["array",[${value.map((child) => canonicalPreparedValue(child)).join(',')}]]`;
+  }
+  const entries = Object.entries(value as Record<string, unknown>)
+    .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
+  return `["object",[${entries.map(([key, child]) =>
+    `[${JSON.stringify(key)},${canonicalPreparedValue(child)}]`).join(',')}]]`;
+}
+
+function preparedValueFingerprint(value: unknown): string {
+  assertPreparedValue(value, '$', new WeakSet<object>());
+  return canonicalPreparedValue(value);
+}
+
+function preparedFingerprint(plan: ExecutionPlan, routingDecision: RoutingDecision): string {
+  return preparedValueFingerprint({ plan, routingDecision });
+}
+
+/**
+ * Bind every adapter-visible action to the authenticated owner supplied by the
+ * caller. The returned object is a detached, deeply immutable copy so neither
+ * caller mutation nor an adapter retaining a reference can change the tenant
+ * after routing or policy admission.
+ */
+function bindExecutionOwner(
+  action: CandidateAction,
+  userId: string,
+  onMutation: () => void = () => undefined,
+): CandidateAction {
+  // Validate before reading or spreading so accessors and exotic containers
+  // cannot run code while the security-boundary copy is being constructed.
+  assertPreparedValue(action, '$.action', new WeakSet<object>());
+  const suppliedUserId = action.parameters['userId'];
+  if (suppliedUserId !== undefined && suppliedUserId !== userId) {
+    throw new InvariantViolationError(
+      'Candidate action userId does not match the execution owner.',
+    );
+  }
+  return cloneAndDeepFreeze({
+    ...action,
+    parameters: { ...action.parameters, userId },
+  }, onMutation);
 }
 
 /**
@@ -77,6 +297,63 @@ export class InvariantViolationError extends Error {
     super(message);
     this.name = 'InvariantViolationError';
   }
+}
+
+/**
+ * The adapter threw after dispatch began. The external result is unknown, so
+ * callers must never retry or fall back automatically.
+ */
+export class AmbiguousExecutionError extends Error {
+  readonly adapterName: string;
+  readonly code = EXECUTION_FAILURE_CODES.dispatchAmbiguous;
+
+  constructor(adapterName: string, _cause?: unknown) {
+    super(EXECUTION_FAILURE_CODES.dispatchAmbiguous);
+    this.name = 'AmbiguousExecutionError';
+    this.adapterName = adapterName;
+  }
+}
+
+/** Stable public/audit code; never serializes the original throwable. */
+export function executionFailureCode(error: unknown): ExecutionFailureCode {
+  if (error instanceof AmbiguousExecutionError) return error.code;
+  if (error instanceof NoAdapterError) return EXECUTION_FAILURE_CODES.noAdapter;
+  if (error instanceof InvariantViolationError) return EXECUTION_FAILURE_CODES.preparedInvalid;
+  return EXECUTION_FAILURE_CODES.pipelineFailed;
+}
+
+function decorateExecutionResult(
+  result: ExecutionResult,
+  adapterName: string,
+  routingAdapter: string,
+  fallbacksAttempted: number,
+  fallbackSkippedReason?: string,
+): ExecutionResult {
+  const status = result.status;
+  let output: Record<string, unknown> = {};
+  if (status === 'completed') {
+    try {
+      output = result.output && typeof result.output === 'object' ? { ...result.output } : {};
+    } catch {
+      // The adapter already returned a known status. Invalid output metadata
+      // must not reinterpret that known result as an ambiguous dispatch.
+      output = {};
+    }
+  }
+  return {
+    planId: result.planId,
+    status,
+    startedAt: result.startedAt,
+    completedAt: result.completedAt,
+    ...(status === 'completed' ? {} : { error: EXECUTION_FAILURE_CODES.adapterFailed }),
+    output: {
+      ...output,
+      adapter_used: adapterName,
+      routing_decision: routingAdapter,
+      fallbacks_attempted: fallbacksAttempted,
+      ...(fallbackSkippedReason ? { fallback_skipped_reason: fallbackSkippedReason } : {}),
+    },
+  };
 }
 
 function assertValidExecutionInputs(
@@ -148,11 +425,13 @@ function assertExecutionPermitted(
  * 2. Sort by trust ranking (ironclaw > direct > openclaw)
  * 3. Apply risk modifier for the selected adapter
  * 4. If irreversible action + adapter has riskModifier > 0, bump risk tier
- * 5. Try primary adapter, fall back through the chain on failure
+ * 5. Fall back only when plan construction proves dispatch never began
  * 6. If no adapter can handle: log a skill gap and throw
  */
 export class ExecutionRouter {
   private readonly registry: AdapterRegistry;
+  private readonly preparedExecutions = new WeakMap<object, PreparedExecutionBinding>();
+  private readonly routingDecisions = new WeakMap<object, RoutingDecisionBinding>();
 
   constructor(registry: AdapterRegistry) {
     this.registry = registry;
@@ -173,15 +452,16 @@ export class ExecutionRouter {
     riskAssessment: RiskAssessment,
     userId: string,
   ): Promise<RoutingDecision> {
-    const capableNames = this.registry.getCapableAdapters(action.actionType);
+    const boundAction = bindExecutionOwner(action, userId);
+    const capableNames = this.registry.getCapableAdapters(boundAction.actionType);
 
     if (capableNames.length === 0) {
       const gap = logSkillGap(
-        action.actionType,
-        action.description,
+        boundAction.actionType,
+        boundAction.description,
         [],
         userId,
-        action.decisionId,
+        boundAction.decisionId,
       );
       throw new NoAdapterError(gap);
     }
@@ -195,11 +475,11 @@ export class ExecutionRouter {
     if (!entry) {
       // Shouldn't happen given the earlier check, but satisfy the type system
       const gap = logSkillGap(
-        action.actionType,
-        action.description,
+        boundAction.actionType,
+        boundAction.description,
         capableNames,
         userId,
-        action.decisionId,
+        boundAction.decisionId,
       );
       throw new NoAdapterError(gap);
     }
@@ -207,7 +487,7 @@ export class ExecutionRouter {
     const modifiedAssessment = applyAdapterRiskModifier(
       riskAssessment,
       entry.trustProfile,
-      !action.reversible,
+      !boundAction.reversible,
     );
 
     const riskModifierApplied = modifiedAssessment.overallTier !== riskAssessment.overallTier
@@ -219,10 +499,10 @@ export class ExecutionRouter {
       capableNames,
       entry.trustProfile,
       riskModifierApplied,
-      action,
+      boundAction,
     );
 
-    return {
+    const routingDecision: RoutingDecision = {
       selectedAdapter: primaryName,
       trustProfile: entry.trustProfile,
       riskModifierApplied,
@@ -230,11 +510,24 @@ export class ExecutionRouter {
       fallbackChain,
       reasoning,
     };
+    this.routingDecisions.set(routingDecision, {
+      userId,
+      adapter: entry.adapter,
+      selectedAdapter: primaryName,
+      trustProfile: entry.trustProfile,
+      trustProfileFingerprint: preparedValueFingerprint(entry.trustProfile),
+      registryRevision: this.registry.getRevision(primaryName),
+      actionFingerprint: preparedValueFingerprint(boundAction),
+      riskFingerprint: preparedValueFingerprint(modifiedAssessment),
+      routingFingerprint: preparedValueFingerprint(routingDecision),
+    });
+    return routingDecision;
   }
 
   /**
    * Route to the best adapter and execute the action.
-   * Falls back through the chain if the primary adapter fails.
+   * Falls back only when the primary adapter cannot build a plan. Once an
+   * execute method is invoked, failures are terminal or ambiguous.
    */
   async executeWithRouting(
     action: CandidateAction,
@@ -244,69 +537,179 @@ export class ExecutionRouter {
   ): Promise<ExecutionResult> {
     assertValidExecutionInputs(action, riskAssessment);
     assertExecutionPermitted(action, context);
-    const routingDecision = await this.route(action, riskAssessment, userId);
+    const boundAction = bindExecutionOwner(action, userId);
+    const routingDecision = await this.route(boundAction, riskAssessment, userId);
 
     const adapterChain = [routingDecision.selectedAdapter, ...routingDecision.fallbackChain];
     const attemptedAdapters: string[] = [];
-    let firstAttemptCompleted = false;
-
     for (const adapterName of adapterChain) {
-      // Guard against duplicate execution: if a previous adapter returned a
-      // non-'completed' status (rather than throwing), the action may have been
-      // partially executed. Only fall back on thrown errors, not on soft failures.
-      if (firstAttemptCompleted) {
-        break;
-      }
-
       attemptedAdapters.push(adapterName);
       const entry = this.registry.get(adapterName);
       if (!entry) {
         continue;
       }
 
+      let plan: ExecutionPlan;
       try {
-        const plan = await entry.adapter.buildPlan(action);
-        const result = await entry.adapter.execute(plan);
-
-        if (result.status === 'completed') {
-          return {
-            ...result,
-            output: {
-              ...result.output,
-              adapter_used: adapterName,
-              routing_decision: routingDecision.selectedAdapter,
-              fallbacks_attempted: attemptedAdapters.length - 1,
-            },
-          };
-        }
-
-        // Adapter returned a non-completed status (partial execution possible).
-        // Do NOT fall through to the next adapter — that risks duplicate actions.
-        firstAttemptCompleted = true;
-        return {
-          ...result,
-          output: {
-            ...result.output,
-            adapter_used: adapterName,
-            routing_decision: routingDecision.selectedAdapter,
-            fallbacks_attempted: attemptedAdapters.length - 1,
-            fallback_skipped_reason: 'previous adapter returned non-completed status, fallback unsafe',
-          },
-        };
+        plan = await entry.adapter.buildPlan(boundAction);
       } catch {
-        // Adapter threw before execution started — safe to try next in chain
+        // Plan construction is the only contractually pre-dispatch operation.
+        // A fallback is safe because execute() was never invoked.
+        continue;
       }
+
+      let result: ExecutionResult;
+      try {
+        result = await entry.adapter.execute(plan);
+      } catch (error) {
+        // execute() may have completed its external effect before throwing.
+        // Never guess and try a second adapter.
+        throw new AmbiguousExecutionError(adapterName, error);
+      }
+
+      if (result.status === 'completed') {
+        return decorateExecutionResult(
+          result, adapterName, routingDecision.selectedAdapter, attemptedAdapters.length - 1,
+        );
+      }
+
+      // Non-completed results may represent partial execution. Do not fall back.
+      return decorateExecutionResult(
+        result,
+        adapterName,
+        routingDecision.selectedAdapter,
+        attemptedAdapters.length - 1,
+        'previous adapter returned non-completed status, fallback unsafe',
+      );
     }
 
-    // All adapters failed (threw errors)
+    // No capable adapter could construct a plan without dispatching.
     const gap = logSkillGap(
-      action.actionType,
-      action.description,
+      boundAction.actionType,
+      boundAction.description,
       attemptedAdapters,
       userId,
-      action.decisionId,
+      boundAction.decisionId,
     );
     throw new NoAdapterError(gap);
+  }
+
+  /**
+   * Build a plan for an already-selected route without dispatching it. This is
+   * the safe seam for a caller to policy-check the adapter-adjusted risk and
+   * persist that exact route before the effect begins.
+   */
+  async prepareExecution(
+    action: CandidateAction,
+    routingDecision: RoutingDecision,
+    userId: string,
+    context?: ExecutionContext,
+  ): Promise<PreparedExecution> {
+    assertValidExecutionInputs(action, routingDecision.modifiedRiskAssessment);
+    assertExecutionPermitted(action, context);
+    let mutationAttempted = false;
+    const noteMutation = (): void => { mutationAttempted = true; };
+    const boundAction = bindExecutionOwner(action, userId, noteMutation);
+    const routeBinding = this.routingDecisions.get(routingDecision);
+    if (!routeBinding) {
+      throw new InvariantViolationError('Routing decision was not issued by this router or was already consumed.');
+    }
+    this.routingDecisions.delete(routingDecision);
+    const entry = this.registry.get(routingDecision.selectedAdapter);
+    if (
+      !entry ||
+      userId !== routeBinding.userId ||
+      this.registry.getRevision(routingDecision.selectedAdapter) !== routeBinding.registryRevision ||
+      !this.registry.canHandle(routingDecision.selectedAdapter, boundAction.actionType) ||
+      entry.adapter !== routeBinding.adapter ||
+      entry.trustProfile !== routeBinding.trustProfile ||
+      preparedValueFingerprint(entry.trustProfile) !== routeBinding.trustProfileFingerprint ||
+      routingDecision.selectedAdapter !== routeBinding.selectedAdapter ||
+      preparedValueFingerprint(boundAction) !== routeBinding.actionFingerprint ||
+      preparedValueFingerprint(routingDecision.modifiedRiskAssessment) !== routeBinding.riskFingerprint ||
+      preparedValueFingerprint(routingDecision) !== routeBinding.routingFingerprint
+    ) {
+      throw new InvariantViolationError('Routing decision or selected adapter changed before preparation.');
+    }
+    // The adapter never receives caller-owned mutable objects. The issued
+    // handle carries deep-frozen copies, while a router-private WeakMap makes
+    // the capability unforgeable and binds it to this exact adapter instance.
+    const immutableInputAction = boundAction;
+    const builtPlan = await entry.adapter.buildPlan(immutableInputAction);
+    const immutablePlan = cloneAndDeepFreeze(builtPlan, noteMutation);
+    if (
+      immutablePlan.decisionId !== immutableInputAction.decisionId ||
+      preparedValueFingerprint(immutablePlan.action) !== preparedValueFingerprint(immutableInputAction)
+    ) {
+      throw new InvariantViolationError('Prepared plan action does not match the risk-assessed candidate.');
+    }
+    const immutableRouting = cloneAndDeepFreeze(routingDecision, noteMutation);
+    const prepared = Object.freeze({
+      selectedAdapter: immutableRouting.selectedAdapter,
+      routingDecision: immutableRouting,
+      plan: immutablePlan,
+    });
+    this.preparedExecutions.set(prepared, {
+      userId,
+      adapter: entry.adapter,
+      trustProfile: entry.trustProfile,
+      trustProfileFingerprint: preparedValueFingerprint(entry.trustProfile),
+      registryRevision: this.registry.getRevision(immutableRouting.selectedAdapter),
+      selectedAdapter: immutableRouting.selectedAdapter,
+      routingDecision: immutableRouting,
+      plan: immutablePlan,
+      fingerprint: preparedFingerprint(immutablePlan, immutableRouting),
+      mutationAttempted: () => mutationAttempted,
+    });
+    return prepared;
+  }
+
+  /** Dispatch exactly once through the adapter instance bound by prepareExecution. */
+  async executePrepared(prepared: PreparedExecution, userId: string): Promise<ExecutionResult> {
+    const binding = this.preparedExecutions.get(prepared);
+    if (!binding) {
+      throw new InvariantViolationError(
+        'Prepared execution handle was not issued by this router or was already consumed.',
+      );
+    }
+    const entry = this.registry.get(binding.selectedAdapter);
+    if (
+      userId !== binding.userId ||
+      !entry ||
+      entry.adapter !== binding.adapter ||
+      entry.trustProfile !== binding.trustProfile ||
+      preparedValueFingerprint(entry.trustProfile) !== binding.trustProfileFingerprint ||
+      this.registry.getRevision(binding.selectedAdapter) !== binding.registryRevision ||
+      !this.registry.canHandle(binding.selectedAdapter, binding.plan.action.actionType) ||
+      binding.plan.action.parameters['userId'] !== binding.userId
+    ) {
+      this.preparedExecutions.delete(prepared);
+      throw new InvariantViolationError(
+        `Prepared adapter "${binding.selectedAdapter}" was removed or replaced before dispatch.`,
+      );
+    }
+    if (
+      prepared.selectedAdapter !== binding.selectedAdapter ||
+      prepared.routingDecision !== binding.routingDecision ||
+      prepared.plan !== binding.plan ||
+      binding.mutationAttempted() ||
+      preparedFingerprint(binding.plan, binding.routingDecision) !== binding.fingerprint
+    ) {
+      this.preparedExecutions.delete(prepared);
+      throw new InvariantViolationError('Prepared execution handle was mutated before dispatch.');
+    }
+    // Consume before invoking the adapter. A completion, failure, or ambiguous
+    // throw can never reuse this capability and duplicate the external effect.
+    this.preparedExecutions.delete(prepared);
+    let result: ExecutionResult;
+    try {
+      result = await binding.adapter.execute(binding.plan);
+    } catch (error) {
+      throw new AmbiguousExecutionError(binding.selectedAdapter, error);
+    }
+    return decorateExecutionResult(
+      result, binding.selectedAdapter, binding.routingDecision.selectedAdapter, 0,
+    );
   }
 
   /**
@@ -369,14 +772,20 @@ export class ExecutionRouter {
 
     try {
       const result = await entry.adapter.rollback(planId);
-      return { result, adapterUsed, noAdapter: false };
-    } catch (err) {
+      return {
+        result: result.success
+          ? { success: true, message: 'adapter_rollback_completed' }
+          : { success: false, message: 'adapter_rollback_failed' },
+        adapterUsed,
+        noAdapter: false,
+      };
+    } catch {
       // Adapter threw mid-rollback — surface as a failed (not "no adapter")
       // result so the caller reports the failure honestly rather than a stub.
       return {
         result: {
           success: false,
-          message: `Rollback via adapter "${adapterUsed}" threw: ${err instanceof Error ? err.message : String(err)}`,
+          message: 'adapter_rollback_failed',
         },
         adapterUsed,
         noAdapter: false,
@@ -397,36 +806,43 @@ export class ExecutionRouter {
   ): AsyncIterable<ExecutionEvent> {
     assertValidExecutionInputs(action, riskAssessment);
     assertExecutionPermitted(action, context);
-    const routingDecision = await this.route(action, riskAssessment, userId);
+    const boundAction = bindExecutionOwner(action, userId);
+    const routingDecision = await this.route(boundAction, riskAssessment, userId);
     const adapterChain = [routingDecision.selectedAdapter, ...routingDecision.fallbackChain];
     const attemptedAdapters: string[] = [];
-    let firstAttemptCompleted = false;
-
     for (const adapterName of adapterChain) {
-      if (firstAttemptCompleted) {
-        break;
-      }
-
       attemptedAdapters.push(adapterName);
       const entry = this.registry.get(adapterName);
       if (!entry) continue;
 
+      let plan: ExecutionPlan;
       try {
-        const plan = await entry.adapter.buildPlan(action);
+        plan = await entry.adapter.buildPlan(boundAction);
+      } catch {
+        // Safe fallback: execute/executeStreaming was never invoked.
+        continue;
+      }
 
-        if (hasStreamingExecution(entry.adapter)) {
+      if (hasStreamingExecution(entry.adapter)) {
+        try {
           let sawTerminalEvent = false;
           for await (const event of entry.adapter.executeStreaming(plan)) {
+            if (!EXECUTION_EVENT_TYPES.has(event.eventType)) {
+              throw new Error(EXECUTION_FAILURE_CODES.adapterFailed);
+            }
             const terminalEvent = event.eventType === 'plan_completed' || event.eventType === 'plan_failed';
             if (terminalEvent) {
               sawTerminalEvent = true;
-              firstAttemptCompleted = true;
             }
 
             yield {
-              ...event,
+              planId: plan.id,
+              eventType: event.eventType,
+              timestamp: event.timestamp instanceof Date ? event.timestamp : new Date(),
               payload: {
-                ...event.payload,
+                ...(event.eventType === 'plan_failed'
+                  ? { error: EXECUTION_FAILURE_CODES.adapterFailed }
+                  : {}),
                 adapter_used: adapterName,
                 routing_decision: routingDecision.selectedAdapter,
                 fallbacks_attempted: attemptedAdapters.length - 1,
@@ -435,7 +851,6 @@ export class ExecutionRouter {
           }
 
           if (sawTerminalEvent) return;
-          firstAttemptCompleted = true;
           yield {
             planId: plan.id,
             eventType: 'plan_completed',
@@ -447,39 +862,48 @@ export class ExecutionRouter {
             },
           };
           return;
+        } catch (error) {
+          throw new AmbiguousExecutionError(adapterName, error);
         }
-
-        const result = await entry.adapter.execute(plan);
-        const status = result.status === 'completed' ? 'plan_completed' : 'plan_failed';
-        firstAttemptCompleted = true;
-
-        yield {
-          planId: result.planId,
-          eventType: status,
-          timestamp: result.completedAt ?? new Date(),
-          payload: {
-            ...result.output,
-            error: result.error,
-            adapter_used: adapterName,
-            routing_decision: routingDecision.selectedAdapter,
-            fallbacks_attempted: attemptedAdapters.length - 1,
-            fallback_skipped_reason: result.status === 'completed'
-              ? undefined
-              : 'previous adapter returned non-completed status, fallback unsafe',
-          },
-        };
-        return;
-      } catch {
-        // Adapter threw before execution started — safe to try next in chain.
       }
+
+      let result: ExecutionResult;
+      try {
+        result = await entry.adapter.execute(plan);
+      } catch (error) {
+        throw new AmbiguousExecutionError(adapterName, error);
+      }
+      const decorated = decorateExecutionResult(
+        result,
+        adapterName,
+        routingDecision.selectedAdapter,
+        attemptedAdapters.length - 1,
+        result.status === 'completed'
+          ? undefined
+          : 'previous adapter returned non-completed status, fallback unsafe',
+      );
+      const status = decorated.status === 'completed' ? 'plan_completed' : 'plan_failed';
+
+      yield {
+        planId: decorated.planId,
+        eventType: status,
+        timestamp: decorated.completedAt ?? new Date(),
+        payload: {
+          ...(decorated.status === 'failed' ? { error: EXECUTION_FAILURE_CODES.adapterFailed } : {}),
+          adapter_used: adapterName,
+          routing_decision: routingDecision.selectedAdapter,
+          fallbacks_attempted: attemptedAdapters.length - 1,
+        },
+      };
+      return;
     }
 
     const gap = logSkillGap(
-      action.actionType,
-      action.description,
+      boundAction.actionType,
+      boundAction.description,
       attemptedAdapters,
       userId,
-      action.decisionId,
+      boundAction.decisionId,
     );
     throw new NoAdapterError(gap);
   }

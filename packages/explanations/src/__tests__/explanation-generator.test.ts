@@ -12,6 +12,25 @@ import {
 } from './fixtures.js';
 
 describe('ExplanationGenerator.generate', () => {
+  it('returns the repository-assigned durable identity', async () => {
+    const persistedId = '11111111-2222-4333-8444-555555555555';
+    const backing = new InMemoryExplanationRepo();
+    const repo = {
+      ...backing,
+      save: async (record: Parameters<InMemoryExplanationRepo['save']>[0]) => ({
+        ...record,
+        id: persistedId,
+      }),
+      getByDecisionId: backing.getByDecisionId.bind(backing),
+      getByUserId: backing.getByUserId.bind(backing),
+    };
+    const generated = await new ExplanationGenerator(repo).generate(
+      makeDecision(), makeOutcome(), makeContext(),
+    );
+
+    expect(generated.id).toBe(persistedId);
+  });
+
   it('builds a record for an auto-executed outcome with no escalation rationale', async () => {
     const repo = new InMemoryExplanationRepo();
     const gen = new ExplanationGenerator(repo);

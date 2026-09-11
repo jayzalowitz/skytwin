@@ -249,7 +249,7 @@ describe('AssistantService.replyStream', () => {
         { type: 'chunk', content: 'Partial ' },
         { type: 'chunk', content: 'reply' },
       ],
-      new Error('mid-stream provider failure'),
+      new Error('SECRET_MARKER mid-stream provider failure'),
     ));
     const service = new AssistantService(llm);
     const events = await collectStream(service.replyStream([{ role: 'user', content: 'hi' }]));
@@ -260,7 +260,7 @@ describe('AssistantService.replyStream', () => {
       {
         type: 'error',
         partialContent: 'Partial reply',
-        message: 'mid-stream provider failure',
+        message: 'assistant_stream_failed',
       },
     ]);
   });
@@ -408,16 +408,23 @@ describe('AssistantService.routeIntent', () => {
     }));
   });
 
-  it('downgrades router throws to null (graceful degradation to chat reply)', async () => {
+  it('turns router throws into a visible fail-closed deliberate non-action', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const router = {
-      route: vi.fn().mockRejectedValue(new Error('decision engine offline')),
+      route: vi.fn().mockRejectedValue(new Error('SECRET_MARKER decision engine offline')),
     };
     const service = new AssistantService(stubLlm(), undefined, null, router);
     const result = await service.routeIntent('user-1', 'archive that email');
-    // Router threw; routeIntent returns null so the route falls through
-    // to the regular LLM chat reply instead of crashing the turn.
-    expect(result).toBeNull();
+    expect(result).toEqual(expect.objectContaining({
+      outcome: {
+        kind: 'failed',
+        reason: expect.stringContaining('Nothing was queued or executed'),
+      },
+    }));
     expect(router.route).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(warning.mock.calls)).not.toContain('SECRET_MARKER');
+    expect(warning).toHaveBeenCalledWith('[assistant.routeIntent] assistant_action_route_failed');
+    warning.mockRestore();
   });
 
   it('passes blocked outcomes through unchanged', async () => {

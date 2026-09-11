@@ -4,11 +4,13 @@ import type { DailyMemorySuggestion } from './daily-memory-suggestions.js';
 
 export type MemoryActionOpportunityStatus =
   | 'suggested'
+  | 'processing'
   | 'queued_approval'
   | 'auto_executed'
   | 'blocked_by_policy'
   | 'learning_needed'
   | 'execution_failed'
+  | 'execution_unknown'
   | 'noted_awareness'
   | 'skipped';
 

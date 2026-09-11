@@ -26,6 +26,7 @@ export const TABLE_NAMES = {
   executionPlans: 'execution_plans',
   executionResults: 'execution_results',
   explanationRecords: 'explanation_records',
+  preEffectBarriers: 'pre_effect_barriers',
   feedbackEvents: 'feedback_events',
   oauthTokens: 'oauth_tokens',
   connectorConfigs: 'connector_configs',

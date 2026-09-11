@@ -118,15 +118,18 @@ export async function createExecutionRouter(): Promise<ExecutionRouter> {
             skills: req.skills,
           });
         }
-        // Notify all connected users
-        sseManager.emitAll('credential:needed', {
+        // Notify only the owner whose prepared action encountered the requirement.
+        sseManager.emit(req.userId, 'credential:needed', {
           adapter: 'openclaw',
           integration: req.integration,
           label: req.integrationLabel,
           description: req.description,
           skills: req.skills,
         });
-        log.info(`OpenClaw needs credentials for "${req.integrationLabel}" — registered requirement`);
+        log.info('OpenClaw credential requirement registered', {
+          userId: req.userId,
+          adapter: 'openclaw',
+        });
       },
     });
     registry.register('openclaw', openclawAdapter, OPENCLAW_TRUST_PROFILE, OPENCLAW_SKILLS);

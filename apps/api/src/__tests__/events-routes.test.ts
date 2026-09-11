@@ -15,6 +15,10 @@ const {
   mockSaveCandidates,
   mockGetOutcome,
   mockSaveOutcome,
+  mockSaveRiskAssessment,
+  mockPolicyEvaluate,
+  mockOauthGet,
+  mockPreEffectBarrier,
 } = vi.hoisted(() => ({
   mockInterpret: vi.fn(),
   mockEvaluate: vi.fn(),
@@ -36,6 +40,16 @@ const {
   mockSaveCandidates: vi.fn(),
   mockGetOutcome: vi.fn(),
   mockSaveOutcome: vi.fn(),
+  mockSaveRiskAssessment: vi.fn(),
+  mockPolicyEvaluate: vi.fn(),
+  mockOauthGet: vi.fn(),
+  mockPreEffectBarrier: {
+    reserve: vi.fn(),
+    markPrepared: vi.fn(),
+    claimPrepared: vi.fn(),
+    markTerminal: vi.fn(),
+    markTerminalWithExplanation: vi.fn(),
+  },
 }));
 
 vi.mock('@skytwin/decision-engine', () => ({
@@ -66,7 +80,9 @@ vi.mock('@skytwin/twin-model', () => ({
 }));
 
 vi.mock('@skytwin/policy-engine', () => ({
-  PolicyEvaluator: vi.fn(),
+  PolicyEvaluator: vi.fn(function PolicyEvaluator() {
+    return { evaluate: mockPolicyEvaluate };
+  }),
 }));
 
 vi.mock('@skytwin/explanations', () => ({
@@ -80,7 +96,7 @@ vi.mock('@skytwin/db', () => ({
     create: mockApprovalCreate,
     findByDecisionId: mockApprovalFindByDecisionId,
   },
-  oauthRepository: { getToken: vi.fn().mockResolvedValue(null) },
+  oauthRepository: { getToken: mockOauthGet },
   executionRepository: mockExecutionRepository,
   userRepository: { findById: vi.fn().mockResolvedValue({ id: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', trust_tier: 'observer', ironclaw_channel: 'skytwin' }) },
   aiProviderRepository: { getEnabledForUser: vi.fn().mockResolvedValue([]) },
@@ -98,6 +114,7 @@ vi.mock('@skytwin/db', () => ({
     saveCandidates: mockSaveCandidates,
     saveOutcome: mockSaveOutcome,
     getOutcome: mockGetOutcome,
+    saveRiskAssessment: mockSaveRiskAssessment,
     // Auto-execute path looks up the persisted RiskAssessment by action
     // id when outcome.riskAssessment is absent. Echo the requested id
     // back as assessment.actionId so the execution-router's
@@ -119,7 +136,8 @@ vi.mock('@skytwin/db', () => ({
     })),
   },
   explanationRepositoryAdapter: { getByDecisionId: vi.fn().mockResolvedValue(null) },
-  policyRepositoryAdapter: {},
+  policyRepositoryAdapter: { getEnabledPolicies: vi.fn().mockResolvedValue([]) },
+  preEffectBarrierRepository: mockPreEffectBarrier,
 }));
 
 vi.mock('@skytwin/llm-client', () => ({
@@ -150,6 +168,7 @@ vi.mock('../sse.js', () => ({
 }));
 
 import { createEventsRouter } from '../routes/events.js';
+import { AmbiguousExecutionError, EXECUTION_FAILURE_CODES } from '@skytwin/execution-router';
 
 function buildApp(): Express {
   const app = express();
@@ -215,6 +234,7 @@ describe('Events API routes', () => {
       allCandidates: [],
     });
     mockGenerate.mockResolvedValue({
+      id: '99999999-9999-4999-8999-999999999999',
       riskTier: 'low',
       summary: 'Low risk',
       overallConfidence: 0.9,
@@ -234,6 +254,39 @@ describe('Events API routes', () => {
     mockGetOutcome.mockResolvedValue(null);
     mockApprovalFindByDecisionId.mockResolvedValue(null);
     mockExecutionRepository.getByDecisionId.mockResolvedValue(null);
+    mockSaveRiskAssessment.mockResolvedValue(undefined);
+    mockPolicyEvaluate.mockResolvedValue({
+      allowed: true,
+      requiresApproval: false,
+      reason: 'Allowed by fresh policy',
+    });
+    mockOauthGet.mockResolvedValue(null);
+    mockPreEffectBarrier.reserve.mockResolvedValue({
+      created: true,
+      row: { id: 'barrier-1', status: 'reserved', effect_result: {} },
+    });
+    mockPreEffectBarrier.markPrepared.mockResolvedValue({ id: 'barrier-1', status: 'prepared' });
+    mockPreEffectBarrier.claimPrepared.mockResolvedValue({ id: 'barrier-1', status: 'in_progress' });
+    mockPreEffectBarrier.markTerminal.mockResolvedValue({ id: 'barrier-1', status: 'succeeded' });
+    mockPreEffectBarrier.markTerminalWithExplanation.mockResolvedValue({
+      id: 'barrier-1', status: 'failed', explanation_id: '99999999-9999-4999-8999-999999999999',
+    });
+    mockGetExecutionRouter.mockResolvedValue({
+      route: vi.fn().mockImplementation(async (_action, risk) => ({
+        selectedAdapter: 'Direct',
+        modifiedRiskAssessment: risk,
+      })),
+      prepareExecution: vi.fn().mockImplementation(async (action, route) => ({
+        selectedAdapter: route.selectedAdapter,
+        routingDecision: route,
+        plan: { action: { ...action, parameters: { ...action.parameters, userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e' } } },
+      })),
+      executePrepared: vi.fn().mockResolvedValue({
+        planId: 'adapter-plan-1',
+        status: 'completed',
+        output: { secret: 'must-not-persist' },
+      }),
+    });
   });
 
   // ---------------------------------------------------------------------
@@ -595,12 +648,7 @@ describe('Events API routes', () => {
       );
     });
 
-    it('falls through when a previous auto-execute outcome exists but no execution_result is recorded (first attempt hung)', async () => {
-      // Critical edge case: outcome row was saved (decision-maker called
-      // saveOutcome) but execution never completed (hung HTTP call,
-      // killed process between createPlan and createResult). Short-
-      // circuiting here would silently abandon the action. The route
-      // must fall through and let this ingest finish the work.
+    it('never replays a previous auto-execute outcome with no known execution result', async () => {
       mockSaveDecision.mockImplementation(async (d: unknown) => ({
         decision: d,
         created: false,
@@ -626,10 +674,11 @@ describe('Events API routes', () => {
       });
 
       expect(res.status).toBe(200);
-      const body = res.body as { reIngested?: boolean };
-      expect(body.reIngested).toBeUndefined();
-      // The full pipeline must have run so the action gets retried.
-      expect(mockEvaluate).toHaveBeenCalled();
+      const body = res.body as { reIngested?: boolean; execution?: { status: string; planId: string } };
+      expect(body.reIngested).toBe(true);
+      expect(body.execution).toEqual({ status: 'unknown', planId: 'plan-prev' });
+      expect(mockEvaluate).not.toHaveBeenCalled();
+      expect(mockGetExecutionRouter).not.toHaveBeenCalled();
     });
 
     it('falls through to the normal pipeline when no previous outcome is recoverable (first attempt crashed before saving)', async () => {
@@ -695,13 +744,11 @@ describe('Events API routes', () => {
     );
   });
 
-  it('marks the execution plan failed when streaming execution throws before a terminal event', async () => {
-    async function* throwingStream() {
-      throw new Error('No adapter can handle action type "create_calendar_event"');
-    }
-    mockGetExecutionRouter.mockResolvedValue({
-      executeWithRoutingStreaming: vi.fn(() => throwingStream()),
-    });
+  it('marks post-dispatch uncertainty terminal unknown with only a public code', async () => {
+    const defaultRouter = await mockGetExecutionRouter();
+    defaultRouter.executePrepared.mockRejectedValue(
+      new AmbiguousExecutionError('Direct', new Error('SECRET_PROVIDER_RESPONSE')),
+    );
 
     const res = await request(buildApp(), 'POST', '/api/events/ingest', {
       userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
@@ -713,17 +760,158 @@ describe('Events API routes', () => {
     expect(mockExecutionRepository.createEvent).toHaveBeenCalledWith(expect.objectContaining({
       planId: 'plan-1',
       eventType: 'plan_failed',
-      payload: expect.objectContaining({
-        error: 'No adapter can handle action type "create_calendar_event"',
-      }),
+      payload: { code: EXECUTION_FAILURE_CODES.dispatchAmbiguous },
     }));
     expect(mockExecutionRepository.updatePlanStatus).toHaveBeenCalledWith('plan-1', 'failed');
     expect(mockExecutionRepository.createResult).toHaveBeenCalledWith(expect.objectContaining({
       planId: 'plan-1',
       success: false,
-      error: 'No adapter can handle action type "create_calendar_event"',
+      error: EXECUTION_FAILURE_CODES.dispatchAmbiguous,
     }));
     const body = res.body as { execution: { status: string; planId: string } };
-    expect(body.execution).toMatchObject({ status: 'failed', planId: 'plan-1' });
+    expect(body.execution).toMatchObject({ status: 'unknown', planId: 'plan-1' });
+    expect(JSON.stringify(mockExecutionRepository.createEvent.mock.calls)).not.toContain('SECRET_PROVIDER_RESPONSE');
+    expect(JSON.stringify(mockSseManager.emit.mock.calls)).not.toContain('SECRET_PROVIDER_RESPONSE');
+  });
+
+  it('rechecks fresh policy after routing and never dispatches when it changes', async () => {
+    mockPolicyEvaluate.mockResolvedValue({
+      allowed: false,
+      requiresApproval: false,
+      reason: 'Fresh policy denied this action',
+    });
+    const executionRouter = await mockGetExecutionRouter();
+
+    const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      source: 'test',
+      type: 'calendar_event',
+    });
+
+    expect(res.status).toBe(200);
+    expect(executionRouter.executePrepared).not.toHaveBeenCalled();
+    expect(mockPreEffectBarrier.markPrepared).toHaveBeenCalledOnce();
+    expect(mockPreEffectBarrier.markPrepared).toHaveBeenCalledWith(expect.objectContaining({
+      explanationId: '99999999-9999-4999-8999-999999999999',
+    }));
+    expect(mockPreEffectBarrier.markTerminal).toHaveBeenCalledWith(
+      'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      'barrier-1',
+      'blocked',
+      expect.anything(),
+      'final_policy_blocked',
+    );
+  });
+
+  it('allows only one concurrent request to claim and dispatch the same event effect', async () => {
+    mockPreEffectBarrier.reserve
+      .mockResolvedValueOnce({ created: true, row: { id: 'barrier-1', status: 'reserved', effect_result: {} } })
+      .mockResolvedValueOnce({ created: false, row: { id: 'barrier-1', status: 'in_progress', effect_result: {} } });
+    const executionRouter = await mockGetExecutionRouter();
+
+    const responses = await Promise.all([
+      request(buildApp(), 'POST', '/api/events/ingest', {
+        userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+      }),
+      request(buildApp(), 'POST', '/api/events/ingest', {
+        userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+      }),
+    ]);
+
+    expect(responses.map((response) => response.status)).toEqual([200, 200]);
+    expect(executionRouter.executePrepared).toHaveBeenCalledTimes(1);
+    expect(mockPreEffectBarrier.claimPrepared).toHaveBeenCalledTimes(1);
+  });
+
+  it('never persists or streams adapter-controlled result fields', async () => {
+    const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      source: 'test',
+      type: 'calendar_event',
+    });
+
+    expect(res.status).toBe(200);
+    expect(JSON.stringify(mockExecutionRepository.createEvent.mock.calls)).not.toContain('must-not-persist');
+    expect(JSON.stringify(mockExecutionRepository.createResult.mock.calls)).not.toContain('must-not-persist');
+    expect(JSON.stringify(mockSseManager.emit.mock.calls)).not.toContain('must-not-persist');
+  });
+
+  it.each([
+    ['token read', async () => {
+      mockOauthGet.mockRejectedValueOnce(new Error('SECRET_TOKEN_READ'));
+    }],
+    ['plan persistence', async () => {
+      mockExecutionRepository.createPlan.mockRejectedValueOnce(new Error('SECRET_PLAN_WRITE'));
+    }],
+    ['route selection', async () => {
+      const executionRouter = await mockGetExecutionRouter();
+      executionRouter.route.mockRejectedValueOnce(new Error('SECRET_ROUTE'));
+    }],
+    ['fresh policy', async () => {
+      mockPolicyEvaluate.mockRejectedValueOnce(new Error('SECRET_POLICY'));
+    }],
+  ])('terminalizes a pre-dispatch %s failure only with its owned explanation', async (
+    _failure,
+    inject,
+  ) => {
+    await inject();
+
+    const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      source: 'test',
+      type: 'calendar_event',
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockPreEffectBarrier.markTerminalWithExplanation).toHaveBeenCalledWith({
+      id: 'barrier-1',
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      explanationId: '99999999-9999-4999-8999-999999999999',
+      decisionId: 'decision-1',
+      actionId: 'action-1',
+      status: 'failed',
+      effectResult: expect.any(Object),
+      failureReason: EXECUTION_FAILURE_CODES.pipelineFailed,
+    });
+    expect(JSON.stringify(mockPreEffectBarrier.markTerminalWithExplanation.mock.calls))
+      .not.toContain('SECRET_');
+  });
+
+  it('recovers a final-explanation failure with a persisted deliberate non-action explanation', async () => {
+    mockGenerate
+      .mockResolvedValueOnce({ id: '11111111-1111-4111-8111-111111111111' })
+      .mockRejectedValueOnce(new Error('SECRET_FINAL_EXPLANATION'))
+      .mockResolvedValueOnce({ id: '22222222-2222-4222-8222-222222222222' });
+
+    const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockPreEffectBarrier.markTerminalWithExplanation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        explanationId: '22222222-2222-4222-8222-222222222222',
+        decisionId: 'decision-1',
+        actionId: 'action-1',
+        status: 'failed',
+      }),
+    );
+  });
+
+  it('leaves the reservation non-terminal when the failure explanation cannot persist', async () => {
+    mockOauthGet.mockRejectedValueOnce(new Error('SECRET_TOKEN_READ'));
+    mockGenerate
+      .mockResolvedValueOnce({ id: '11111111-1111-4111-8111-111111111111' })
+      .mockRejectedValueOnce(new Error('SECRET_EXPLANATION_STORE'));
+
+    const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+    });
+
+    expect(res.status).toBe(500);
+    expect(mockPreEffectBarrier.markTerminalWithExplanation).not.toHaveBeenCalled();
+    expect(mockPreEffectBarrier.markTerminal).not.toHaveBeenCalledWith(
+      expect.anything(), expect.anything(), 'failed', expect.anything(), expect.anything(),
+    );
   });
 });

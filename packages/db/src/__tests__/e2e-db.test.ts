@@ -11,6 +11,8 @@
 
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { Pool } from 'pg';
+import { closePool } from '../connection.js';
+import { preEffectBarrierRepository } from '../repositories/pre-effect-barrier-repository.js';
 
 const E2E = process.env['E2E'] === 'true';
 
@@ -74,6 +76,9 @@ describe.skipIf(!E2E)('E2E: CockroachDB integration', () => {
     // Delete in reverse dependency order so FK constraints are satisfied.
     for (const userId of createdUserIds) {
       try {
+        // Delete barriers before their referenced audit rows: terminal rows
+        // require an explanation, so their SET NULL FKs cannot lead cleanup.
+        await pool.query('DELETE FROM pre_effect_barriers WHERE user_id = $1', [userId]);
         await pool.query('DELETE FROM feedback_events WHERE user_id = $1', [userId]);
         await pool.query(
           `DELETE FROM explanation_records WHERE decision_id IN
@@ -130,6 +135,9 @@ describe.skipIf(!E2E)('E2E: CockroachDB integration', () => {
 
   afterAll(async () => {
     await pool.end();
+    // The repository uses connection.ts's singleton against the same
+    // DATABASE_URL, independently of this fixture pool.
+    await closePool();
   });
 
   // =========================================================================
@@ -290,7 +298,143 @@ describe.skipIf(!E2E)('E2E: CockroachDB integration', () => {
   });
 
   // =========================================================================
-  // c. Approval request — double-respond prevention
+  // c. Pre-effect barrier ownership linkage (real SQL)
+  // =========================================================================
+
+  describe('Pre-effect barrier ownership linkage', () => {
+    it('accepts only exact decision/action/explanation ownership chains', async () => {
+      const owner = await createTestUser('e2e-barrier-owner@test.local', 'Barrier Owner');
+      const peer = await createTestUser('e2e-barrier-peer@test.local', 'Barrier Peer');
+
+      const createDecision = async (userId: string, label: string): Promise<string> => {
+        const row = await sqlOne<{ id: string }>(
+          `INSERT INTO decisions
+             (user_id, situation_type, raw_event, interpreted_situation, domain)
+           VALUES ($1, $2, '{}', '{}', 'test')
+           RETURNING id`,
+          [userId, label],
+        );
+        return row.id;
+      };
+      const createAction = async (decisionId: string, label: string): Promise<string> => {
+        const row = await sqlOne<{ id: string }>(
+          `INSERT INTO candidate_actions
+             (decision_id, action_type, description,
+              predicted_user_preference, risk_assessment)
+           VALUES ($1, 'test_action', $2, 'neutral', '{}')
+           RETURNING id`,
+          [decisionId, label],
+        );
+        return row.id;
+      };
+      const createExplanation = async (decisionId: string, label: string): Promise<string> => {
+        const row = await sqlOne<{ id: string }>(
+          `INSERT INTO explanation_records
+             (decision_id, what_happened, evidence_used, preferences_invoked,
+              confidence_reasoning, action_rationale, correction_guidance)
+           VALUES ($1, $2, '[]', '{}', 'test confidence',
+                   'test rationale', 'test correction')
+           RETURNING id`,
+          [decisionId, label],
+        );
+        return row.id;
+      };
+      const reserve = async (label: string): Promise<string> => {
+        const result = await preEffectBarrierRepository.reserve({
+          userId: owner.id,
+          effectType: 'event_execution',
+          idempotencyKey: `e2e-linkage-${label}`,
+        });
+        expect(result.created).toBe(true);
+        return result.row.id;
+      };
+      const expectReserved = async (id: string): Promise<void> => {
+        const row = await sqlOne<{
+          status: string;
+          decision_id: string | null;
+          action_id: string | null;
+          explanation_id: string | null;
+        }>(
+          `SELECT status, decision_id, action_id, explanation_id
+             FROM pre_effect_barriers WHERE id = $1`,
+          [id],
+        );
+        expect(row).toEqual({
+          status: 'reserved',
+          decision_id: null,
+          action_id: null,
+          explanation_id: null,
+        });
+      };
+
+      const ownedDecision = await createDecision(owner.id, 'barrier_owned');
+      const otherOwnedDecision = await createDecision(owner.id, 'barrier_other_owned');
+      const peerDecision = await createDecision(peer.id, 'barrier_peer');
+      const ownedAction = await createAction(ownedDecision, 'owned action');
+      const otherOwnedAction = await createAction(otherOwnedDecision, 'other owned action');
+      const peerAction = await createAction(peerDecision, 'peer action');
+      const ownedExplanation = await createExplanation(ownedDecision, 'owned explanation');
+      const otherOwnedExplanation = await createExplanation(otherOwnedDecision, 'other owned explanation');
+      const peerExplanation = await createExplanation(peerDecision, 'peer explanation');
+
+      const preparedExact = await reserve('prepared-exact');
+      await expect(preEffectBarrierRepository.markPrepared({
+        id: preparedExact,
+        userId: owner.id,
+        decisionId: ownedDecision,
+        actionId: ownedAction,
+        explanationId: ownedExplanation,
+        policySnapshot: { allowed: true },
+      })).resolves.toMatchObject({ status: 'prepared', action_id: ownedAction });
+
+      for (const mismatch of [
+        { label: 'wrong-decision', actionId: otherOwnedAction, explanationId: otherOwnedExplanation },
+        { label: 'cross-user', actionId: peerAction, explanationId: peerExplanation },
+      ]) {
+        const barrierId = await reserve(`prepared-${mismatch.label}`);
+        await expect(preEffectBarrierRepository.markPrepared({
+          id: barrierId,
+          userId: owner.id,
+          decisionId: ownedDecision,
+          actionId: mismatch.actionId,
+          explanationId: mismatch.explanationId,
+          policySnapshot: { allowed: true },
+        })).rejects.toThrow('not reserved');
+        await expectReserved(barrierId);
+      }
+
+      const terminalExact = await reserve('terminal-exact');
+      await expect(preEffectBarrierRepository.markTerminalWithExplanation({
+        id: terminalExact,
+        userId: owner.id,
+        decisionId: ownedDecision,
+        actionId: ownedAction,
+        explanationId: ownedExplanation,
+        status: 'blocked',
+        failureReason: 'policy_blocked',
+      })).resolves.toMatchObject({ status: 'blocked', action_id: ownedAction });
+
+      for (const mismatch of [
+        { label: 'wrong-decision', actionId: otherOwnedAction, explanationId: otherOwnedExplanation },
+        { label: 'cross-user', actionId: peerAction, explanationId: peerExplanation },
+      ]) {
+        const barrierId = await reserve(`terminal-${mismatch.label}`);
+        await expect(preEffectBarrierRepository.markTerminalWithExplanation({
+          id: barrierId,
+          userId: owner.id,
+          decisionId: ownedDecision,
+          actionId: mismatch.actionId,
+          explanationId: mismatch.explanationId,
+          status: 'failed',
+          failureReason: 'execution_pipeline_failed',
+        })).rejects.toThrow('Owned explanation');
+        await expectReserved(barrierId);
+      }
+    });
+  });
+
+  // =========================================================================
+  // d. Approval request — double-respond prevention
   // =========================================================================
 
   describe('Approval double-respond prevention', () => {

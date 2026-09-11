@@ -255,6 +255,32 @@ CREATE TABLE IF NOT EXISTS explanation_records (
   INDEX (decision_id)
 );
 
+-- Durable admission record for externally visible effects (#653).
+CREATE TABLE IF NOT EXISTS pre_effect_barriers (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  effect_type STRING NOT NULL CHECK (effect_type IN (
+    'assistant_approval', 'event_execution', 'memory_execution', 'routine_registration'
+  )),
+  idempotency_key STRING NOT NULL,
+  status STRING NOT NULL DEFAULT 'reserved' CHECK (status IN (
+    'reserved', 'prepared', 'in_progress', 'succeeded', 'blocked', 'failed', 'unknown'
+  )),
+  decision_id UUID REFERENCES decisions(id) ON DELETE SET NULL,
+  action_id UUID REFERENCES candidate_actions(id) ON DELETE SET NULL,
+  explanation_id UUID REFERENCES explanation_records(id) ON DELETE SET NULL,
+  policy_snapshot JSONB NOT NULL DEFAULT '{}',
+  effect_result JSONB NOT NULL DEFAULT '{}',
+  failure_reason STRING,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT pre_effect_barrier_explanation_required
+    CHECK (status = 'reserved' OR explanation_id IS NOT NULL),
+  UNIQUE (user_id, effect_type, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS pre_effect_barriers_decision_idx
+  ON pre_effect_barriers (decision_id) WHERE decision_id IS NOT NULL;
+
 -- ============================================================================
 -- Feedback
 -- ============================================================================
@@ -412,11 +438,13 @@ CREATE TABLE IF NOT EXISTS memory_action_opportunities (
   status STRING NOT NULL DEFAULT 'suggested'
     CHECK (status IN (
       'suggested',
+      'processing',
       'queued_approval',
       'auto_executed',
       'blocked_by_policy',
       'learning_needed',
       'execution_failed',
+      'execution_unknown',
       'noted_awareness',
       'skipped'
     )),

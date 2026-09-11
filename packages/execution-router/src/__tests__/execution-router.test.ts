@@ -8,7 +8,13 @@ import type {
   RollbackResult,
 } from '@skytwin/shared-types';
 import type { IronClawAdapter } from '@skytwin/ironclaw-adapter';
-import { ExecutionRouter, NoAdapterError, InvariantViolationError } from '../execution-router.js';
+import {
+  AmbiguousExecutionError,
+  ExecutionRouter,
+  NoAdapterError,
+  InvariantViolationError,
+} from '../execution-router.js';
+import type { PreparedExecution } from '../execution-router.js';
 import {
   AdapterRegistry,
   IRONCLAW_TRUST_PROFILE,
@@ -106,8 +112,8 @@ function createMockAdapter(name: string, skills?: Set<string>): IronClawAdapter 
 }
 
 /**
- * Adapter that throws from execute() — simulates failure before execution started.
- * Safe to fall back from because no action was performed.
+ * Adapter that throws from execute(). Dispatch already began, so its result is
+ * ambiguous and must never trigger fallback.
  */
 function createThrowingAdapter(name: string): IronClawAdapter {
   return {
@@ -133,6 +139,16 @@ function createThrowingAdapter(name: string): IronClawAdapter {
     async healthCheck(): Promise<{ healthy: boolean; latencyMs: number }> {
       return { healthy: false, latencyMs: 0 };
     },
+  };
+}
+
+function createBuildThrowingAdapter(name: string): IronClawAdapter {
+  return {
+    async buildPlan(): Promise<ExecutionPlan> { throw new Error(`${name} build failed`); },
+    async execute(): Promise<ExecutionResult> { throw new Error('must not dispatch'); },
+    async getStatus() { return 'failed'; },
+    async rollback(): Promise<RollbackResult> { return { success: false, message: 'not run' }; },
+    async healthCheck() { return { healthy: false, latencyMs: 0 }; },
   };
 }
 
@@ -304,7 +320,96 @@ describe('ExecutionRouter', () => {
     expect(registry.isEnhanced('enhanced')).toBe(true);
   });
 
+  it('allowlists streaming event metadata and drops adapter-controlled payload fields', async () => {
+    const adapter = {
+      ...createMockAdapter('ironclaw'),
+      async *executeStreaming(_plan: ExecutionPlan) {
+        yield {
+          planId: 'SECRET_MARKER_PLAN',
+          stepId: 'SECRET_MARKER_STEP',
+          eventType: 'plan_completed' as const,
+          timestamp: new Date(),
+          payload: { peerText: 'SECRET_MARKER_PAYLOAD' },
+          extra: 'SECRET_MARKER_EXTRA',
+        };
+      },
+    };
+    registry.register('ironclaw', adapter, IRONCLAW_TRUST_PROFILE);
+    const events = [];
+
+    for await (const event of router.executeWithRoutingStreaming(
+      makeAction(), makeRiskAssessment(), 'user-1',
+    )) {
+      events.push(event);
+    }
+
+    expect(events).toHaveLength(1);
+    expect(JSON.stringify(events)).not.toContain('SECRET_MARKER');
+    expect(events[0]?.payload).toEqual(expect.objectContaining({ adapter_used: 'ironclaw' }));
+  });
+
+  it('binds streaming plans to the canonical owner and rejects conflicts before dispatch', async () => {
+    const adapter = {
+      ...createMockAdapter('ironclaw'),
+      async *executeStreaming(_plan: ExecutionPlan) {
+        yield {
+          planId: 'plan-1',
+          eventType: 'plan_completed' as const,
+          timestamp: new Date(),
+          payload: {},
+        };
+      },
+    };
+    const build = vi.spyOn(adapter, 'buildPlan');
+    const executeStreaming = vi.spyOn(adapter, 'executeStreaming');
+    registry.register('ironclaw', adapter, IRONCLAW_TRUST_PROFILE);
+
+    for await (const _event of router.executeWithRoutingStreaming(
+      makeAction(), makeRiskAssessment(), 'tenant-a',
+    )) { /* drain */ }
+    expect(build).toHaveBeenCalledWith(expect.objectContaining({
+      parameters: expect.objectContaining({ userId: 'tenant-a' }),
+    }));
+
+    const conflicting = makeAction({ parameters: { messageId: 'msg-1', userId: 'tenant-b' } });
+    const conflictRisk = makeRiskAssessment({ actionId: conflicting.id });
+    const stream = router.executeWithRoutingStreaming(conflicting, conflictRisk, 'tenant-a');
+    await expect(stream[Symbol.asyncIterator]().next())
+      .rejects.toThrow('does not match the execution owner');
+    expect(executeStreaming).toHaveBeenCalledTimes(1);
+  });
+
   describe('executeWithRouting', () => {
+    it.each(['ironclaw', 'direct'])('binds %s plans to the canonical owner', async (name) => {
+      const adapter = createMockAdapter(name);
+      const build = vi.spyOn(adapter, 'buildPlan');
+      registry.register(
+        name,
+        adapter,
+        name === 'direct' ? DIRECT_TRUST_PROFILE : IRONCLAW_TRUST_PROFILE,
+      );
+
+      await router.executeWithRouting(makeAction(), makeRiskAssessment(), 'tenant-a');
+
+      expect(build).toHaveBeenCalledWith(expect.objectContaining({
+        parameters: expect.objectContaining({ userId: 'tenant-a' }),
+      }));
+    });
+
+    it('rejects a conflicting owner before legacy dispatch', async () => {
+      const adapter = createMockAdapter('ironclaw');
+      const build = vi.spyOn(adapter, 'buildPlan');
+      const execute = vi.spyOn(adapter, 'execute');
+      registry.register('ironclaw', adapter, IRONCLAW_TRUST_PROFILE);
+      const action = makeAction({ parameters: { messageId: 'msg-1', userId: 'tenant-b' } });
+      const risk = makeRiskAssessment({ actionId: action.id });
+
+      await expect(router.executeWithRouting(action, risk, 'tenant-a'))
+        .rejects.toThrow('does not match the execution owner');
+      expect(build).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
+    });
+
     it('executes with the primary adapter on success', async () => {
       registry.register('ironclaw', createMockAdapter('ironclaw'), IRONCLAW_TRUST_PROFILE);
       registry.register('openclaw', createMockAdapter('openclaw', OPENCLAW_SKILLS), OPENCLAW_TRUST_PROFILE, OPENCLAW_SKILLS);
@@ -319,8 +424,39 @@ describe('ExecutionRouter', () => {
       expect(result.output?.['fallbacks_attempted']).toBe(0);
     });
 
-    it('falls back to next adapter when primary throws', async () => {
-      registry.register('ironclaw', createThrowingAdapter('ironclaw'), IRONCLAW_TRUST_PROFILE);
+    it.each(['ironclaw', 'direct'])('binds the canonical owner before %s builds a plan', async (name) => {
+      const adapter = createMockAdapter(name);
+      const build = vi.spyOn(adapter, 'buildPlan');
+      registry.register(
+        name,
+        adapter,
+        name === 'ironclaw' ? IRONCLAW_TRUST_PROFILE : DIRECT_TRUST_PROFILE,
+      );
+
+      await router.executeWithRouting(makeAction(), makeRiskAssessment(), 'tenant-a');
+
+      expect(build).toHaveBeenCalledWith(expect.objectContaining({
+        parameters: expect.objectContaining({ userId: 'tenant-a' }),
+      }));
+    });
+
+    it('rejects a conflicting embedded owner before any legacy dispatch', async () => {
+      const adapter = createMockAdapter('ironclaw');
+      const build = vi.spyOn(adapter, 'buildPlan');
+      const execute = vi.spyOn(adapter, 'execute');
+      registry.register('ironclaw', adapter, IRONCLAW_TRUST_PROFILE);
+
+      await expect(router.executeWithRouting(
+        makeAction({ parameters: { messageId: 'msg-1', userId: 'tenant-b' } }),
+        makeRiskAssessment(),
+        'tenant-a',
+      )).rejects.toThrow('does not match the execution owner');
+      expect(build).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
+    });
+
+    it('falls back only when primary plan construction fails before dispatch', async () => {
+      registry.register('ironclaw', createBuildThrowingAdapter('ironclaw'), IRONCLAW_TRUST_PROFILE);
       registry.register('direct', createMockAdapter('direct'), DIRECT_TRUST_PROFILE);
 
       const action = makeAction();
@@ -333,16 +469,404 @@ describe('ExecutionRouter', () => {
       expect(result.output?.['fallbacks_attempted']).toBe(1);
     });
 
-    it('throws NoAdapterError when all adapters throw', async () => {
+    it('does not fall back when execute throws after dispatch began', async () => {
       registry.register('ironclaw', createThrowingAdapter('ironclaw'), IRONCLAW_TRUST_PROFILE);
-      registry.register('direct', createThrowingAdapter('direct'), DIRECT_TRUST_PROFILE);
+      const direct = createMockAdapter('direct');
+      const directExecute = vi.spyOn(direct, 'execute');
+      registry.register('direct', direct, DIRECT_TRUST_PROFILE);
 
       const action = makeAction();
       const risk = makeRiskAssessment();
 
       await expect(router.executeWithRouting(action, risk, 'user-1')).rejects.toThrow(
-        NoAdapterError,
+        AmbiguousExecutionError,
       );
+      expect(directExecute).not.toHaveBeenCalled();
+    });
+
+    it('throws NoAdapterError when every adapter fails before dispatch', async () => {
+      registry.register('ironclaw', createBuildThrowingAdapter('ironclaw'), IRONCLAW_TRUST_PROFILE);
+      registry.register('direct', createBuildThrowingAdapter('direct'), DIRECT_TRUST_PROFILE);
+      await expect(router.executeWithRouting(makeAction(), makeRiskAssessment(), 'user-1'))
+        .rejects.toThrow(NoAdapterError);
+    });
+
+    it('executes an immutable prepared route without re-routing or fallback', async () => {
+      const primary = createMockAdapter('ironclaw');
+      const fallback = createMockAdapter('direct');
+      const fallbackExecute = vi.spyOn(fallback, 'execute');
+      registry.register('ironclaw', primary, IRONCLAW_TRUST_PROFILE);
+      registry.register('direct', fallback, DIRECT_TRUST_PROFILE);
+      const action = makeAction();
+      const route = await router.route(action, makeRiskAssessment(), 'user-1');
+      const prepared = await router.prepareExecution(action, route, 'user-1');
+
+      const result = await router.executePrepared(prepared, 'user-1');
+
+      expect(result.output?.['adapter_used']).toBe('ironclaw');
+      expect(result.output?.['fallbacks_attempted']).toBe(0);
+      expect(fallbackExecute).not.toHaveBeenCalled();
+    });
+
+    it('rejects a fabricated prepared handle without dispatching', async () => {
+      const primary = createMockAdapter('ironclaw');
+      const execute = vi.spyOn(primary, 'execute');
+      registry.register('ironclaw', primary, IRONCLAW_TRUST_PROFILE);
+      const action = makeAction();
+      const route = await router.route(action, makeRiskAssessment(), 'user-1');
+      const fabricated = {
+        selectedAdapter: 'ironclaw',
+        routingDecision: route,
+        plan: await primary.buildPlan(action),
+      } as PreparedExecution;
+
+      await expect(router.executePrepared(fabricated, 'user-1')).rejects.toThrow(InvariantViolationError);
+      expect(execute).not.toHaveBeenCalled();
+    });
+
+    it('rejects a copied structural routing decision before plan construction', async () => {
+      const primary = createMockAdapter('ironclaw');
+      const buildPlan = vi.spyOn(primary, 'buildPlan');
+      registry.register('ironclaw', primary, IRONCLAW_TRUST_PROFILE);
+      const action = makeAction();
+      const route = await router.route(action, makeRiskAssessment(), 'user-1');
+
+      await expect(router.prepareExecution(action, { ...route }, 'user-1'))
+        .rejects.toThrow('not issued by this router');
+      expect(buildPlan).not.toHaveBeenCalled();
+    });
+
+    it('rejects registry replacement between route and preparation', async () => {
+      const original = createMockAdapter('ironclaw');
+      const replacement = createMockAdapter('replacement');
+      const originalBuild = vi.spyOn(original, 'buildPlan');
+      const replacementBuild = vi.spyOn(replacement, 'buildPlan');
+      registry.register('ironclaw', original, IRONCLAW_TRUST_PROFILE);
+      const action = makeAction();
+      const route = await router.route(action, makeRiskAssessment(), 'user-1');
+
+      registry.register('ironclaw', replacement, IRONCLAW_TRUST_PROFILE);
+      await expect(router.prepareExecution(action, route, 'user-1'))
+        .rejects.toThrow('changed before preparation');
+      expect(originalBuild).not.toHaveBeenCalled();
+      expect(replacementBuild).not.toHaveBeenCalled();
+    });
+
+    it('rejects a plan whose action differs from the risk-assessed candidate', async () => {
+      const primary = createMockAdapter('ironclaw');
+      const execute = vi.spyOn(primary, 'execute');
+      vi.spyOn(primary, 'buildPlan').mockImplementation(async (action) => ({
+        id: 'forged-plan',
+        decisionId: action.decisionId,
+        action: { ...action, parameters: { messageId: 'different-message' } },
+        steps: [],
+        rollbackSteps: [],
+        createdAt: new Date(),
+      }));
+      registry.register('ironclaw', primary, IRONCLAW_TRUST_PROFILE);
+      const action = makeAction();
+      const route = await router.route(action, makeRiskAssessment(), 'user-1');
+
+      await expect(router.prepareExecution(action, route, 'user-1'))
+        .rejects.toThrow('does not match the risk-assessed candidate');
+      expect(execute).not.toHaveBeenCalled();
+    });
+
+    it('rejects mutation of a prepared handle without dispatching', async () => {
+      const primary = createMockAdapter('ironclaw');
+      const execute = vi.spyOn(primary, 'execute');
+      registry.register('ironclaw', primary, IRONCLAW_TRUST_PROFILE);
+      const action = makeAction();
+      const route = await router.route(action, makeRiskAssessment(), 'user-1');
+      const prepared = await router.prepareExecution(action, route, 'user-1');
+
+      // Object.freeze does not disable Date mutator methods. The private
+      // fingerprint check must still catch this deep mutation.
+      expect(() => prepared.plan.createdAt.setTime(prepared.plan.createdAt.getTime() + 1))
+        .toThrow('immutable');
+      await expect(router.executePrepared(prepared, 'user-1')).rejects.toThrow('mutated before dispatch');
+      expect(execute).not.toHaveBeenCalled();
+    });
+
+    it('rejects registry replacement between preparation and dispatch', async () => {
+      const original = createMockAdapter('ironclaw');
+      const replacement = createMockAdapter('replacement');
+      const originalExecute = vi.spyOn(original, 'execute');
+      const replacementExecute = vi.spyOn(replacement, 'execute');
+      registry.register('ironclaw', original, IRONCLAW_TRUST_PROFILE);
+      const action = makeAction();
+      const route = await router.route(action, makeRiskAssessment(), 'user-1');
+      const prepared = await router.prepareExecution(action, route, 'user-1');
+
+      registry.register('ironclaw', replacement, IRONCLAW_TRUST_PROFILE);
+      await expect(router.executePrepared(prepared, 'user-1')).rejects.toThrow('removed or replaced');
+      expect(originalExecute).not.toHaveBeenCalled();
+      expect(replacementExecute).not.toHaveBeenCalled();
+    });
+
+    it('rejects trust-profile replacement on the same adapter before dispatch', async () => {
+      const primary = createMockAdapter('ironclaw');
+      const execute = vi.spyOn(primary, 'execute');
+      registry.register('ironclaw', primary, IRONCLAW_TRUST_PROFILE);
+      const action = makeAction();
+      const route = await router.route(action, makeRiskAssessment(), 'user-1');
+      const prepared = await router.prepareExecution(action, route, 'user-1');
+
+      registry.register('ironclaw', primary, { ...IRONCLAW_TRUST_PROFILE, riskModifier: 1 });
+
+      await expect(router.executePrepared(prepared, 'user-1')).rejects.toThrow('removed or replaced');
+      expect(execute).not.toHaveBeenCalled();
+    });
+
+    it('clones trust profiles so caller mutation cannot change a prepared route', async () => {
+      const primary = createMockAdapter('ironclaw');
+      const execute = vi.spyOn(primary, 'execute');
+      const profile = { ...IRONCLAW_TRUST_PROFILE };
+      registry.register('ironclaw', primary, profile);
+      const action = makeAction();
+      const route = await router.route(action, makeRiskAssessment(), 'user-1');
+      const prepared = await router.prepareExecution(action, route, 'user-1');
+
+      profile.riskModifier = 1;
+
+      await expect(router.executePrepared(prepared, 'user-1')).resolves.toMatchObject({ status: 'completed' });
+      expect(execute).toHaveBeenCalledOnce();
+    });
+
+    it('clones skill declarations and revision-invalidates same-adapter re-registration', async () => {
+      const primary = createMockAdapter('ironclaw');
+      const execute = vi.spyOn(primary, 'execute');
+      const skills = new Set([makeAction().actionType]);
+      registry.register('ironclaw', primary, IRONCLAW_TRUST_PROFILE, skills);
+      skills.clear();
+      const action = makeAction();
+      const route = await router.route(action, makeRiskAssessment(), 'user-1');
+      const prepared = await router.prepareExecution(action, route, 'user-1');
+
+      registry.register('ironclaw', primary, IRONCLAW_TRUST_PROFILE, new Set([action.actionType]));
+
+      await expect(router.executePrepared(prepared, 'user-1')).rejects.toThrow('removed or replaced');
+      expect(execute).not.toHaveBeenCalled();
+    });
+
+    it('rejects a caller-supplied tenant that conflicts with the route owner', async () => {
+      const primary = createMockAdapter('ironclaw');
+      const build = vi.spyOn(primary, 'buildPlan');
+      registry.register('ironclaw', primary, IRONCLAW_TRUST_PROFILE);
+      const action = makeAction({ parameters: { messageId: 'msg-1', userId: 'tenant-b' } });
+
+      await expect(router.route(action, makeRiskAssessment(), 'tenant-a'))
+        .rejects.toThrow('does not match the execution owner');
+      expect(build).not.toHaveBeenCalled();
+    });
+
+    it('rejects cross-tenant preparation and dispatch without executing', async () => {
+      const primary = createMockAdapter('ironclaw');
+      const execute = vi.spyOn(primary, 'execute');
+      registry.register('ironclaw', primary, IRONCLAW_TRUST_PROFILE);
+      const action = makeAction();
+      const firstRoute = await router.route(action, makeRiskAssessment(), 'tenant-a');
+
+      await expect(router.prepareExecution(action, firstRoute, 'tenant-b'))
+        .rejects.toThrow('changed before preparation');
+
+      const secondRoute = await router.route(action, makeRiskAssessment(), 'tenant-a');
+      const prepared = await router.prepareExecution(action, secondRoute, 'tenant-a');
+      await expect(router.executePrepared(prepared, 'tenant-b'))
+        .rejects.toThrow('removed or replaced');
+      expect(execute).not.toHaveBeenCalled();
+    });
+
+    it('copies caller-owned action and risk data and consumes a handle once', async () => {
+      const primary = createMockAdapter('ironclaw');
+      const execute = vi.spyOn(primary, 'execute');
+      registry.register('ironclaw', primary, IRONCLAW_TRUST_PROFILE);
+      const action = makeAction();
+      const risk = makeRiskAssessment();
+      const route = await router.route(action, risk, 'user-1');
+      const prepared = await router.prepareExecution(action, route, 'user-1');
+
+      expect(prepared.plan.action).not.toBe(action);
+      expect(prepared.routingDecision.modifiedRiskAssessment).not.toBe(risk);
+      expect(Object.isFrozen(prepared.plan)).toBe(true);
+      expect(Object.isFrozen(prepared.plan.action)).toBe(true);
+      expect(Object.isFrozen(prepared.plan.action.parameters)).toBe(true);
+      expect(Object.isFrozen(prepared.routingDecision.modifiedRiskAssessment)).toBe(true);
+      action.parameters['messageId'] = 'attacker-mutated';
+      risk.reasoning = 'attacker-mutated';
+      await router.executePrepared(prepared, 'user-1');
+      expect(execute).toHaveBeenCalledWith(expect.objectContaining({
+        action: expect.objectContaining({ parameters: { messageId: 'msg-1', userId: 'user-1' } }),
+      }));
+      expect(prepared.routingDecision.modifiedRiskAssessment.reasoning).toBe('Low risk email action');
+      await expect(router.executePrepared(prepared, 'user-1')).rejects.toThrow('already consumed');
+      expect(execute).toHaveBeenCalledTimes(1);
+    });
+
+    it('preserves canonical own __proto__ data without changing object prototypes', async () => {
+      const primary = createMockAdapter('ironclaw');
+      registry.register('ironclaw', primary, IRONCLAW_TRUST_PROFILE);
+      const parameters: Record<string, unknown> = {};
+      Object.defineProperty(parameters, '__proto__', {
+        value: 'plain-data',
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+      const action = makeAction({ parameters });
+      const route = await router.route(action, makeRiskAssessment(), 'user-1');
+
+      const prepared = await router.prepareExecution(action, route, 'user-1');
+
+      expect(Object.getPrototypeOf(prepared.plan.action.parameters)).toBe(Object.prototype);
+      expect(Object.hasOwn(prepared.plan.action.parameters, '__proto__')).toBe(true);
+      expect(prepared.plan.action.parameters['__proto__']).toBe('plain-data');
+    });
+
+    it.each([
+      ['Map', new Map([['messageId', 'msg-1']])],
+      ['Set', new Set(['msg-1'])],
+      ['undefined value', undefined],
+    ])('rejects a %s in prepared adapter data before dispatch', async (_kind, unsupported) => {
+      const primary = createMockAdapter('ironclaw');
+      const execute = vi.spyOn(primary, 'execute');
+      vi.spyOn(primary, 'buildPlan').mockResolvedValue({
+        id: 'plan-unsupported',
+        decisionId: makeAction().decisionId,
+        action: makeAction({ parameters: { unsupported } }),
+        steps: [],
+        rollbackSteps: [],
+        createdAt: new Date(),
+      });
+      registry.register('ironclaw', primary, IRONCLAW_TRUST_PROFILE);
+      const action = makeAction();
+      const route = await router.route(action, makeRiskAssessment(), 'user-1');
+
+      await expect(router.prepareExecution(action, route, 'user-1'))
+        .rejects.toThrow(InvariantViolationError);
+      expect(execute).not.toHaveBeenCalled();
+    });
+
+    it('rejects arrays with custom own properties before issuing a route', async () => {
+      const primary = createMockAdapter('ironclaw');
+      const execute = vi.spyOn(primary, 'execute');
+      registry.register('ironclaw', primary, IRONCLAW_TRUST_PROFILE);
+      const recipients = ['a@example.com'];
+      Object.defineProperty(recipients, 'metadata', {
+        value: new Map([['secret', 'SECRET_MARKER']]),
+        enumerable: false,
+      });
+      const action = makeAction({ parameters: { recipients } });
+
+      await expect(router.route(action, makeRiskAssessment(), 'user-1'))
+        .rejects.toThrow('non-canonical array property');
+      expect(execute).not.toHaveBeenCalled();
+    });
+
+    it('rejects a Map in caller data even when it is mutated after routing begins', async () => {
+      const primary = createMockAdapter('ironclaw');
+      const execute = vi.spyOn(primary, 'execute');
+      registry.register('ironclaw', primary, IRONCLAW_TRUST_PROFILE);
+      const map = new Map([['messageId', 'msg-1']]);
+      const action = makeAction({ parameters: { map } });
+      map.set('messageId', 'SECRET_MARKER');
+
+      await expect(router.route(action, makeRiskAssessment(), 'user-1'))
+        .rejects.toThrow('non-plain object');
+      expect(execute).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['sparse array', () => new Array(1)],
+      ['array subclass', () => new (class extends Array<string> {})('value')],
+      ['symbol property', () => {
+        const value: Record<PropertyKey, unknown> = { visible: true };
+        value[Symbol('hidden')] = 'SECRET_MARKER';
+        return value;
+      }],
+      ['accessor property', () => {
+        const value: Record<string, unknown> = {};
+        Object.defineProperty(value, 'secret', {
+          enumerable: true,
+          get: () => 'SECRET_MARKER',
+        });
+        return value;
+      }],
+      ['cyclic object', () => {
+        const value: Record<string, unknown> = {};
+        value['self'] = value;
+        return value;
+      }],
+    ])('rejects %s values before plan construction', async (_kind, makeInvalid) => {
+      const primary = createMockAdapter('ironclaw');
+      const buildPlan = vi.spyOn(primary, 'buildPlan');
+      registry.register('ironclaw', primary, IRONCLAW_TRUST_PROFILE);
+
+      await expect(router.route(
+        makeAction({ parameters: { invalid: makeInvalid() } }),
+        makeRiskAssessment(),
+        'user-1',
+      )).rejects.toThrow(InvariantViolationError);
+      expect(buildPlan).not.toHaveBeenCalled();
+    });
+
+    it('does not expose an adapter throwable after dispatch begins', async () => {
+      const primary = createMockAdapter('ironclaw');
+      vi.spyOn(primary, 'execute').mockRejectedValue(new Error('SECRET_MARKER provider echo'));
+      registry.register('ironclaw', primary, IRONCLAW_TRUST_PROFILE);
+      const action = makeAction();
+      const route = await router.route(action, makeRiskAssessment(), 'user-1');
+      const prepared = await router.prepareExecution(action, route, 'user-1');
+
+      const error = await router.executePrepared(prepared, 'user-1').catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(AmbiguousExecutionError);
+      expect((error as Error).message).toBe('adapter_dispatch_ambiguous');
+      expect(JSON.stringify(error)).not.toContain('SECRET_MARKER');
+    });
+
+    it('replaces an adapter-returned failure message with a bounded code', async () => {
+      const primary = createMockAdapter('ironclaw');
+      vi.spyOn(primary, 'execute').mockResolvedValue({
+        planId: 'ironclaw_plan_1',
+        status: 'failed',
+        startedAt: new Date(),
+        completedAt: new Date(),
+        error: 'SECRET_MARKER provider echo',
+        output: { provider_error_detail: 'SECRET_MARKER echoed in output' },
+      });
+      registry.register('ironclaw', primary, IRONCLAW_TRUST_PROFILE);
+      const action = makeAction();
+      const route = await router.route(action, makeRiskAssessment(), 'user-1');
+      const prepared = await router.prepareExecution(action, route, 'user-1');
+
+      const result = await router.executePrepared(prepared, 'user-1');
+      expect(result.error).toBe('adapter_execution_failed');
+      expect(JSON.stringify(result)).not.toContain('SECRET_MARKER');
+    });
+
+    it('preserves a known adapter result when output decoration throws', async () => {
+      const primary = createMockAdapter('ironclaw');
+      const hostileOutput = Object.create(null) as Record<string, unknown>;
+      Object.defineProperty(hostileOutput, 'secret', {
+        enumerable: true,
+        get: () => { throw new Error('SECRET_MARKER decoration failure'); },
+      });
+      vi.spyOn(primary, 'execute').mockResolvedValue({
+        planId: 'ironclaw_plan_1',
+        status: 'completed',
+        startedAt: new Date(),
+        completedAt: new Date(),
+        output: hostileOutput,
+      });
+      registry.register('ironclaw', primary, IRONCLAW_TRUST_PROFILE);
+      const action = makeAction();
+      const route = await router.route(action, makeRiskAssessment(), 'user-1');
+      const prepared = await router.prepareExecution(action, route, 'user-1');
+
+      await expect(router.executePrepared(prepared, 'user-1')).resolves.toMatchObject({
+        status: 'completed',
+        output: { adapter_used: 'ironclaw' },
+      });
     });
 
     it('rollback flows through the selected adapter after execution', async () => {
@@ -482,22 +1006,23 @@ describe('ExecutionRouter', () => {
 
     it('surfaces an adapter-thrown error as a failed (not noAdapter) result', async () => {
       const ironclaw = createMockAdapter('ironclaw');
-      vi.spyOn(ironclaw, 'rollback').mockRejectedValue(new Error('boom'));
+      vi.spyOn(ironclaw, 'rollback').mockRejectedValue(new Error('SECRET_MARKER boom'));
       registry.register('ironclaw', ironclaw, IRONCLAW_TRUST_PROFILE);
 
       const out = await router.rollback('plan-1', 'ironclaw');
 
       expect(out.noAdapter).toBe(false);
       expect(out.result.success).toBe(false);
-      expect(out.result.message).toContain('boom');
+      expect(out.result.message).toBe('adapter_rollback_failed');
+      expect(JSON.stringify(out)).not.toContain('SECRET_MARKER');
       expect(out.adapterUsed).toBe('ironclaw');
     });
 
-    it('reports the adapter\'s own failure (e.g. no rollback steps) verbatim', async () => {
+    it('bounds the adapter\'s own rollback failure', async () => {
       const ironclaw = createMockAdapter('ironclaw');
       vi.spyOn(ironclaw, 'rollback').mockResolvedValue({
         success: false,
-        message: 'This action is not reversible. No rollback steps were defined.',
+        message: 'SECRET_MARKER This action is not reversible.',
       });
       registry.register('ironclaw', ironclaw, IRONCLAW_TRUST_PROFILE);
 
@@ -505,7 +1030,8 @@ describe('ExecutionRouter', () => {
 
       expect(out.noAdapter).toBe(false);
       expect(out.result.success).toBe(false);
-      expect(out.result.message).toContain('not reversible');
+      expect(out.result.message).toBe('adapter_rollback_failed');
+      expect(JSON.stringify(out)).not.toContain('SECRET_MARKER');
     });
   });
 });

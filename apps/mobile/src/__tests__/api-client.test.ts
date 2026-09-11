@@ -100,8 +100,13 @@ class TestApiClient {
     return this.get(`/api/twin/${encodeURIComponent(userId)}`);
   }
 
-  async sendAssistantMessage(userId: string, content: string, threadId?: string) {
-    const body: Record<string, unknown> = { userId, content };
+  async sendAssistantMessage(
+    userId: string,
+    content: string,
+    threadId?: string,
+    requestId = globalThis.crypto.randomUUID(),
+  ) {
+    const body: Record<string, unknown> = { userId, content, requestId };
     if (threadId) body['threadId'] = threadId;
     // 60s override — LLM replies routinely exceed the 10s default.
     return this.request('POST', '/api/assistant/messages', body, 60_000);
@@ -223,20 +228,28 @@ describe('API client request construction', () => {
     const [url, opts] = firstFetchCall();
     expect(url).toBe('http://192.168.1.50:3100/api/assistant/messages');
     expect(opts.method).toBe('POST');
-    expect(firstFetchJsonBody()).toEqual({ userId: 'user-1', content: 'hello twin' });
+    const body = firstFetchJsonBody();
+    expect(body).toEqual({
+      userId: 'user-1', content: 'hello twin', requestId: expect.any(String),
+    });
+    expect(body.requestId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
   });
 
   it('includes threadId only when continuing an existing conversation', async () => {
     mockFetch.mockResolvedValue({ ok: true, json: async () => ({}) });
     await client.sendAssistantMessage('user-1', 'next', 'thread-9');
-    expect(firstFetchJsonBody()).toEqual({ userId: 'user-1', content: 'next', threadId: 'thread-9' });
+    expect(firstFetchJsonBody()).toEqual({
+      userId: 'user-1', content: 'next', threadId: 'thread-9', requestId: expect.any(String),
+    });
   });
 
   it('uses a 60s timeout for assistant messages (LLM replies exceed the 10s default)', async () => {
     mockFetch.mockResolvedValue({ ok: true, json: async () => ({}) });
-    const spy = vi.spyOn(global, 'setTimeout');
+    const spy = vi.spyOn(globalThis, 'setTimeout');
     await client.sendAssistantMessage('user-1', 'hi');
-    expect(spy.mock.calls.some((c) => c[1] === 60_000)).toBe(true);
+    expect(spy.mock.calls.some((call: unknown[]) => call[1] === 60_000)).toBe(true);
     spy.mockRestore();
   });
 });

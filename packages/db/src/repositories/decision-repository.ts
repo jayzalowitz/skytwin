@@ -386,7 +386,7 @@ export const decisionRepository = {
           [id],
         ),
         query<ExplanationRecordRow>(
-          'SELECT * FROM explanation_records WHERE decision_id = $1',
+          'SELECT * FROM explanation_records WHERE decision_id = $1 ORDER BY created_at DESC LIMIT 1',
           [id],
         ),
         query<FeedbackEventRow>(

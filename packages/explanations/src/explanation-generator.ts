@@ -102,8 +102,10 @@ export class ExplanationGenerator {
       createdAt: new Date(),
     };
 
-    await this.repository.save(record);
-    return record;
+    // Persistence owns the durable identity. Repository adapters may replace
+    // the process-local id (for example with a database UUID), and callers
+    // that create foreign-keyed audit barriers must receive that exact row.
+    return this.repository.save(record);
   }
 
   /**

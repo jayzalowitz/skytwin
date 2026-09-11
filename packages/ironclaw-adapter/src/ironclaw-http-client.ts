@@ -139,15 +139,22 @@ export class IronClawHttpClient {
   /**
    * Send a message to IronClaw's webhook endpoint.
    */
-  async sendMessage(message: IronClawMessage): Promise<IronClawResponse> {
-    const response = await this.sendWebhookRequest(message);
-    return (await response.json()) as IronClawResponse;
+  async sendMessage(message: IronClawMessage, opts: { maxRetries?: number } = {}): Promise<IronClawResponse> {
+    const response = await this.sendWebhookRequest(message, opts.maxRetries);
+    try {
+      return (await response.json()) as IronClawResponse;
+    } catch {
+      throw new Error('ironclaw_response_invalid');
+    }
   }
 
   /**
    * Send a webhook request and read IronClaw SSE execution progress.
    */
-  async *sendMessageStreaming(message: IronClawMessage): AsyncIterable<ExecutionEvent> {
+  async *sendMessageStreaming(
+    message: IronClawMessage,
+    opts: { maxRetries?: number } = {},
+  ): AsyncIterable<ExecutionEvent> {
     const streamMessage: IronClawMessage = {
       ...message,
       metadata: {
@@ -155,7 +162,7 @@ export class IronClawHttpClient {
         stream: true,
       },
     };
-    const response = await this.sendWebhookRequest(streamMessage);
+    const response = await this.sendWebhookRequest(streamMessage, opts.maxRetries);
     const planId = this.readPlanId(streamMessage);
     let yielded = false;
 
@@ -201,7 +208,7 @@ export class IronClawHttpClient {
    */
   async sendChatCompletion(
     messages: ChatMessage[],
-    opts: { model?: string; stream?: boolean } = {},
+    opts: { model?: string; stream?: boolean; maxRetries?: number } = {},
   ): Promise<ChatCompletionResponse> {
     const response = await this.fetchWithRetries('chat', `${this.config.apiUrl}/v1/chat/completions`, {
       method: 'POST',
@@ -212,9 +219,14 @@ export class IronClawHttpClient {
         stream: false,
       }),
       signal: AbortSignal.timeout(this.config.timeoutMs),
-    }, 'IronClaw chat completion');
+    }, 'IronClaw chat completion', opts.maxRetries);
 
-    const payload = await response.json() as Record<string, unknown>;
+    let payload: Record<string, unknown>;
+    try {
+      payload = await response.json() as Record<string, unknown>;
+    } catch {
+      throw new Error('ironclaw_response_invalid');
+    }
     return this.parseChatCompletionResponse(payload, opts.model);
   }
 
@@ -339,12 +351,15 @@ export class IronClawHttpClient {
   }
 
   async createRoutine(userId: string, schedule: string, plan: Record<string, unknown>): Promise<{ routineId: string }> {
+    // The remote routine API has no idempotency-key contract. Retrying a POST
+    // after a timeout or 5xx could create a duplicate routine, so dispatch it
+    // exactly once and surface any ambiguous result to the caller.
     const response = await this.fetchWithRetries('routines', `${this.config.apiUrl}/routines`, {
       method: 'POST',
       headers: this.bearerJsonHeaders(),
       body: JSON.stringify({ user_id: userId, schedule, plan }),
       signal: AbortSignal.timeout(this.config.timeoutMs),
-    }, 'IronClaw routine creation');
+    }, 'IronClaw routine creation', 0);
 
     const payload = this.asRecord(await response.json());
     const routineId = this.readString(payload, ['routineId', 'routine_id', 'id']);
@@ -435,7 +450,6 @@ export class IronClawHttpClient {
    */
   parseExecutionResult(planId: string, response: IronClawResponse, startedAt: Date): ExecutionResult {
     const metadata = response.metadata ?? {};
-    const metadataError = this.readString(metadata, ['error']);
     const metadataOutputs = this.asRecord(metadata['outputs']);
     const status = this.parseExecutionStatus(response);
 
@@ -447,15 +461,16 @@ export class IronClawHttpClient {
     };
 
     if (status === 'failed') {
-      result.error = metadataError ?? response.content;
+      result.error = 'ironclaw_execution_failed';
     }
 
-    const hasOutputs = Object.keys(metadataOutputs).length > 0;
-    result.output = {
-      ...(hasOutputs ? metadataOutputs : undefined),
-      ironclawResponse: response.content,
-      ironclawThreadId: response.thread_id,
-    };
+    if (status === 'completed') {
+      const hasOutputs = Object.keys(metadataOutputs).length > 0;
+      result.output = {
+        ...(hasOutputs ? metadataOutputs : undefined),
+        ironclawThreadId: response.thread_id,
+      };
+    }
 
     return result;
   }
@@ -471,13 +486,10 @@ export class IronClawHttpClient {
       status,
       startedAt,
       completedAt: new Date(),
-      error: status === 'failed' ? response.content : undefined,
-      output: {
-        ironclawResponse: response.content,
-        ironclawModel: response.model,
-        ironclawUsage: response.usage,
-        ...response.metadata,
-      },
+      error: status === 'failed' ? 'ironclaw_execution_failed' : undefined,
+      output: status === 'completed'
+        ? { ironclawModel: response.model, ironclawUsage: response.usage }
+        : {},
     };
   }
 
@@ -546,7 +558,7 @@ export class IronClawHttpClient {
 
   // -- Webhook helpers -------------------------------------------------------
 
-  private async sendWebhookRequest(message: IronClawMessage): Promise<Response> {
+  private async sendWebhookRequest(message: IronClawMessage, maxRetries?: number): Promise<Response> {
     const body = JSON.stringify(message);
     const signature = this.sign(body);
 
@@ -559,7 +571,7 @@ export class IronClawHttpClient {
       },
       body,
       signal: AbortSignal.timeout(this.config.timeoutMs),
-    }, 'IronClaw webhook');
+    }, 'IronClaw webhook', maxRetries);
   }
 
   private readPlanId(message: IronClawMessage): string {
@@ -574,12 +586,13 @@ export class IronClawHttpClient {
     url: string,
     init: RequestInit,
     label: string,
+    maxRetries: number = this.config.maxRetries,
   ): Promise<Response> {
     await this.ensureEndpointReady(endpoint);
 
     let lastError: Error | null = null;
 
-    for (let attempt = 0; attempt <= this.config.maxRetries; attempt++) {
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
       if (attempt > 0) {
         await this.delay(attempt * 1000);
       }
@@ -596,8 +609,10 @@ export class IronClawHttpClient {
       }
 
       if (!response.ok) {
-        const errorBody = await response.text().catch(() => '');
-        const error = new Error(`${label} returned HTTP ${response.status}: ${errorBody}`);
+        // Provider bodies are untrusted and may echo credentials or action
+        // content. Drain nothing into the throwable/audit path; the bounded
+        // status code is sufficient for routing and retry classification.
+        const error = new Error(`ironclaw_http_${response.status}`);
 
         if (response.status >= 400 && response.status < 500 && response.status !== 429) {
           this.recordFailure(endpoint);
@@ -613,17 +628,15 @@ export class IronClawHttpClient {
     }
 
     this.recordFailure(endpoint);
-    throw lastError ?? new Error(`${label} request failed after all retries`);
+    throw lastError ?? new Error('ironclaw_transport_error');
   }
 
   private normalizeFetchError(error: unknown, label: string): Error {
     if (error instanceof Error && error.name === 'AbortError') {
-      return new Error(`${label} timed out after ${this.config.timeoutMs}ms`);
+      return new Error('ironclaw_timeout');
     }
-    if (error instanceof Error) {
-      return error;
-    }
-    return new Error(String(error));
+    void label;
+    return new Error('ironclaw_transport_error');
   }
 
   private bearerJsonHeaders(): Record<string, string> {

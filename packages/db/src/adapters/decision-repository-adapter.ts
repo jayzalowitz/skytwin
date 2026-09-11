@@ -97,6 +97,20 @@ function candidateRowToDomain(row: CandidateActionRow): CandidateAction {
     reversible: row.reversible,
     confidence: parseConfidenceLevel(row.predicted_user_preference),
     reasoning: (riskData['reasoning'] as string) ?? '',
+    costZeroIntent:
+      row.parameters['costZeroIntent'] === 'unknown' ? 'unknown'
+        : row.parameters['costZeroIntent'] === 'verified_zero' ? 'verified_zero'
+          : undefined,
+    provenance:
+      row.parameters['provenance'] === 'user_originated' ||
+      row.parameters['provenance'] === 'trusted_context' ||
+      row.parameters['provenance'] === 'untrusted_external'
+        ? row.parameters['provenance']
+        : undefined,
+    capabilityProvenanceNodeId:
+      typeof row.parameters['capabilityProvenanceNodeId'] === 'string'
+        ? row.parameters['capabilityProvenanceNodeId']
+        : undefined,
   };
 }
 
@@ -219,7 +233,13 @@ export const decisionRepositoryAdapter: DecisionRepositoryPort = {
         decisionId: candidate.decisionId,
         actionType: candidate.actionType,
         description: candidate.description,
-        parameters: { ...candidate.parameters, domain: candidate.domain },
+        parameters: {
+          ...candidate.parameters,
+          domain: candidate.domain,
+          costZeroIntent: candidate.costZeroIntent,
+          provenance: candidate.provenance,
+          capabilityProvenanceNodeId: candidate.capabilityProvenanceNodeId,
+        },
         predictedUserPreference: candidate.confidence,
         riskAssessment: { reasoning: candidate.reasoning },
         reversible: candidate.reversible,

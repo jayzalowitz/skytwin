@@ -1,4 +1,5 @@
 import { query, withTransaction } from '../connection.js';
+import { randomUUID } from 'node:crypto';
 
 /**
  * Public message shape returned from the repo. Mirrors the DB row but with
@@ -12,6 +13,7 @@ export interface AssistantMessage {
   content: string;
   createdAt: Date;
   metadata: Record<string, unknown> | null;
+  clientRequestId?: string | null;
 }
 
 export interface AssistantThread {
@@ -37,6 +39,9 @@ interface AssistantMessageRow {
   content: string;
   created_at: Date;
   metadata: Record<string, unknown> | null;
+  client_request_id?: string | null;
+  request_processing_token?: string | null;
+  request_processing_started_at?: Date | null;
 }
 
 function rowToThread(row: AssistantThreadRow): AssistantThread {
@@ -57,6 +62,7 @@ function rowToMessage(row: AssistantMessageRow): AssistantMessage {
     content: row.content,
     createdAt: row.created_at,
     metadata: row.metadata,
+    clientRequestId: row.client_request_id ?? null,
   };
 }
 
@@ -81,11 +87,211 @@ export function deriveThreadTitle(firstMessage: string): string {
  * Threads are per-user (no sharing). Messages are append-only inside a
  * thread; deletion happens at the thread granularity (cascades messages).
  *
- * The repo never enforces ownership — that's the route layer's job (via
- * `requireOwnership` middleware). Repo callers are responsible for passing
- * a `userId` they've already verified the request authenticates against.
+ * Legacy thread CRUD relies on route-layer ownership checks. The idempotent
+ * request-key methods additionally bind every lookup and insert to the owning
+ * user in SQL, because that key is part of the execution safety boundary.
  */
 export const assistantRepository = {
+  /** Atomically create a new thread and its first idempotent user message. */
+  async createThreadWithUserMessage(
+    userId: string,
+    content: string,
+    clientRequestId: string,
+  ): Promise<{ thread: AssistantThread; message: AssistantMessage; created: boolean }> {
+    const processingToken = randomUUID();
+    try {
+      return await withTransaction(async (client) => {
+        const threadResult = await client.query<AssistantThreadRow>(
+          `INSERT INTO assistant_threads (user_id, title)
+           VALUES ($1, $2)
+           RETURNING id, user_id, title, created_at, updated_at`,
+          [userId, deriveThreadTitle(content)],
+        );
+        const thread = rowToThread(threadResult.rows[0]!);
+        const messageResult = await client.query<AssistantMessageRow>(
+          `INSERT INTO assistant_messages
+             (thread_id, role, content, metadata, user_id, client_request_id,
+              request_processing_token, request_processing_started_at)
+           VALUES ($1, 'user', $2, NULL, $3, $4, $5, now())
+           ON CONFLICT (user_id, client_request_id, role) WHERE client_request_id IS NOT NULL
+           DO NOTHING
+           RETURNING id, thread_id, role, content, created_at, metadata, client_request_id,
+                     request_processing_token`,
+          [thread.id, content, userId, clientRequestId, processingToken],
+        );
+        if (!messageResult.rows[0]) throw new Error('assistant_request_already_owned');
+        return { thread, message: rowToMessage(messageResult.rows[0]), created: true };
+      });
+    } catch {
+      const existing = await query<AssistantMessageRow>(
+        `SELECT id, thread_id, role, content, created_at, metadata, client_request_id,
+                request_processing_token
+           FROM assistant_messages
+          WHERE user_id = $1 AND client_request_id = $2 AND role = 'user'`,
+        [userId, clientRequestId],
+      );
+      const row = existing.rows[0];
+      if (!row) throw new Error('assistant_message_append_failed');
+      const thread = await this.getThread(userId, row.thread_id);
+      if (!thread) throw new Error('assistant_message_append_failed');
+      return {
+        thread: thread.thread,
+        message: rowToMessage(row),
+        created: row.request_processing_token === processingToken,
+      };
+    }
+  },
+
+  /** Find the durable user message for a client retry key, scoped to its owner. */
+  async findUserMessageByRequestId(
+    userId: string,
+    clientRequestId: string,
+  ): Promise<AssistantMessage | null> {
+    const result = await query<AssistantMessageRow>(
+      `SELECT id, thread_id, role, content, created_at, metadata, client_request_id
+         FROM assistant_messages
+        WHERE user_id = $1 AND client_request_id = $2 AND role = 'user'`,
+      [userId, clientRequestId],
+    );
+    return result.rows[0] ? rowToMessage(result.rows[0]) : null;
+  },
+
+  async findAssistantMessageByRequestId(
+    userId: string,
+    clientRequestId: string,
+  ): Promise<AssistantMessage | null> {
+    const result = await query<AssistantMessageRow>(
+      `SELECT id, thread_id, role, content, created_at, metadata, client_request_id
+         FROM assistant_messages
+        WHERE user_id = $1 AND client_request_id = $2 AND role = 'assistant'`,
+      [userId, clientRequestId],
+    );
+    return result.rows[0] ? rowToMessage(result.rows[0]) : null;
+  },
+
+  /**
+   * Append a user message once. A retry (including after a lost commit
+   * response) receives the already-committed message and therefore reuses the
+   * same downstream decision/barrier idempotency key.
+   */
+  async appendOrGetUserMessage(
+    userId: string,
+    threadId: string,
+    content: string,
+    clientRequestId: string,
+  ): Promise<{ message: AssistantMessage; created: boolean }> {
+    const processingToken = randomUUID();
+    try {
+      return await withTransaction(async (client) => {
+        const inserted = await client.query<AssistantMessageRow>(
+          `INSERT INTO assistant_messages
+             (thread_id, role, content, metadata, user_id, client_request_id,
+              request_processing_token, request_processing_started_at)
+           SELECT $1, 'user', $2, NULL, $3, $4, $5, now()
+             FROM assistant_threads
+            WHERE id = $1 AND user_id = $3
+           ON CONFLICT (user_id, client_request_id, role) WHERE client_request_id IS NOT NULL
+           DO NOTHING
+           RETURNING id, thread_id, role, content, created_at, metadata, client_request_id,
+                     request_processing_token`,
+          [threadId, content, userId, clientRequestId, processingToken],
+        );
+        const row = inserted.rows[0];
+        if (row) {
+          await client.query(
+            `UPDATE assistant_threads SET updated_at = now() WHERE id = $1 AND user_id = $2`,
+            [threadId, userId],
+          );
+          return { message: rowToMessage(row), created: true };
+        }
+        const existing = await client.query<AssistantMessageRow>(
+          `SELECT id, thread_id, role, content, created_at, metadata, client_request_id,
+                    request_processing_token
+             FROM assistant_messages
+            WHERE user_id = $1 AND client_request_id = $2 AND role = 'user'`,
+          [userId, clientRequestId],
+        );
+        if (!existing.rows[0]) throw new Error('assistant_idempotency_conflict');
+        return {
+          message: rowToMessage(existing.rows[0]),
+          created: existing.rows[0].request_processing_token === processingToken,
+        };
+      });
+    } catch {
+      const existing = await query<AssistantMessageRow>(
+        `SELECT id, thread_id, role, content, created_at, metadata, client_request_id,
+                request_processing_token
+           FROM assistant_messages
+          WHERE user_id = $1 AND client_request_id = $2 AND role = 'user'`,
+        [userId, clientRequestId],
+      );
+      if (existing.rows[0]) return {
+        message: rowToMessage(existing.rows[0]),
+        created: existing.rows[0].request_processing_token === processingToken,
+      };
+      throw new Error('assistant_message_append_failed');
+    }
+  },
+
+  /** Adopt a request whose prior owner stopped before writing a response. */
+  async claimStaleUserMessageRequest(
+    userId: string,
+    clientRequestId: string,
+  ): Promise<boolean> {
+    const processingToken = randomUUID();
+    const result = await query<{ id: string }>(
+      `UPDATE assistant_messages
+          SET request_processing_token = $3, request_processing_started_at = now()
+        WHERE user_id = $1 AND client_request_id = $2 AND role = 'user'
+          AND NOT EXISTS (
+            SELECT 1 FROM assistant_messages response
+             WHERE response.user_id = $1
+               AND response.client_request_id = $2
+               AND response.role = 'assistant'
+          )
+          AND request_processing_started_at < now() - INTERVAL '30 seconds'
+        RETURNING id`,
+      [userId, clientRequestId, processingToken],
+    );
+    return Boolean(result.rows[0]);
+  },
+
+  async appendOrGetAssistantMessage(
+    userId: string,
+    threadId: string,
+    content: string,
+    clientRequestId: string,
+    metadata: Record<string, unknown> | null = null,
+  ): Promise<AssistantMessage> {
+    try {
+      const inserted = await withTransaction(async (client) => {
+        const result = await client.query<AssistantMessageRow>(
+          `INSERT INTO assistant_messages
+             (thread_id, role, content, metadata, user_id, client_request_id)
+           SELECT $1, 'assistant', $2, $3, $4, $5
+             FROM assistant_threads
+            WHERE id = $1 AND user_id = $4
+           ON CONFLICT (user_id, client_request_id, role) WHERE client_request_id IS NOT NULL
+           DO NOTHING
+           RETURNING id, thread_id, role, content, created_at, metadata, client_request_id`,
+          [threadId, content, metadata ? JSON.stringify(metadata) : null, userId, clientRequestId],
+        );
+        if (!result.rows[0]) return null;
+        await client.query(
+          `UPDATE assistant_threads SET updated_at = now() WHERE id = $1 AND user_id = $2`,
+          [threadId, userId],
+        );
+        return rowToMessage(result.rows[0]);
+      });
+      if (inserted) return inserted;
+    } catch {
+      // The insert may have committed before its response was lost.
+    }
+    const existing = await this.findAssistantMessageByRequestId(userId, clientRequestId);
+    if (existing?.threadId === threadId) return existing;
+    throw new Error('assistant_message_append_failed');
+  },
+
   /** Create a new thread, deriving a title from the first user message. */
   async createThread(userId: string, firstMessage: string): Promise<AssistantThread> {
     const result = await query<AssistantThreadRow>(

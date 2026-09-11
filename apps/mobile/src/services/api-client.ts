@@ -19,6 +19,16 @@ interface ApiError {
 
 type ApiResult<T> = ApiSuccess<T> | ApiError;
 
+function createClientRequestId(): string {
+  const platformUuid = globalThis.crypto?.randomUUID;
+  if (platformUuid) return platformUuid.call(globalThis.crypto);
+  // The key is collision resistance for deduplication, not an authenticator.
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (token) => {
+    const value = Math.floor(Math.random() * 16);
+    return (token === 'x' ? value : (value & 0x3) | 0x8).toString(16);
+  });
+}
+
 // -- Response types matching the API routes --
 
 export interface ApprovalRequest {
@@ -487,8 +497,9 @@ export class SkyTwinApiClient {
     userId: string,
     content: string,
     threadId?: string,
+    requestId = createClientRequestId(),
   ): Promise<ApiResult<AssistantSendResponse>> {
-    const body: Record<string, unknown> = { userId, content };
+    const body: Record<string, unknown> = { userId, content, requestId };
     if (threadId) body['threadId'] = threadId;
     return this.request<AssistantSendResponse>('POST', '/api/assistant/messages', body, 60_000);
   }

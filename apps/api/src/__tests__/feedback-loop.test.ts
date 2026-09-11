@@ -18,6 +18,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import express from 'express';
 import type { Express } from 'express';
+import { PolicyEvaluator } from '@skytwin/policy-engine';
+import { AmbiguousExecutionError } from '@skytwin/execution-router';
 
 const {
   fakeApprovalRepo,
@@ -28,6 +30,8 @@ const {
   fakeUserRepo,
   fakeOauthRepo,
   fakeExecutionRouter,
+  fakeBarrierRepo,
+  fakeExplanationRepo,
 } = vi.hoisted(() => ({
   fakeApprovalRepo: {
     findById: vi.fn(),
@@ -58,7 +62,14 @@ const {
   fakeExecutionRouter: {
     executeWithRoutingStreaming: vi.fn(async function* () {}),
     executeWithRouting: vi.fn(),
+    route: vi.fn(),
+    prepareExecution: vi.fn(),
+    executePrepared: vi.fn(),
   },
+  fakeBarrierRepo: {
+    reserve: vi.fn(), markPrepared: vi.fn(), claimPrepared: vi.fn(), markTerminal: vi.fn(),
+  },
+  fakeExplanationRepo: { save: vi.fn() },
 }));
 
 vi.mock('@skytwin/db', () => ({
@@ -84,7 +95,11 @@ vi.mock('@skytwin/db', () => ({
       reasoning: 'test assessment',
       assessedAt: new Date(),
     })),
+    saveRiskAssessment: vi.fn().mockImplementation(async (risk: unknown) => risk),
+    saveOutcome: vi.fn().mockImplementation(async (outcome: unknown) => outcome),
   },
+  explanationRepositoryAdapter: fakeExplanationRepo,
+  preEffectBarrierRepository: fakeBarrierRepo,
   feedbackRepository: fakeFeedbackRepo,
   mempalaceRepository: fakeMempalaceRepo,
   memoryActionOpportunityRepository: fakeMemoryActionOpportunityRepo,
@@ -240,6 +255,30 @@ beforeEach(() => {
     error: 'no execution in test',
     output: {},
   });
+  fakeExecutionRouter.route.mockImplementation(async (_action, risk) => ({
+    selectedAdapter: 'direct', fallbackChain: [], attemptedAdapters: [],
+    adapterTrustProfile: { adapterName: 'direct', trustLevel: 'local', riskModifier: 0 },
+    riskModifierApplied: 0, modifiedRiskAssessment: risk, reasoning: 'test route',
+  }));
+  fakeExecutionRouter.prepareExecution.mockImplementation(async (action, routing) => ({
+    selectedAdapter: routing.selectedAdapter,
+    routingDecision: routing,
+    plan: { id: 'prepared-plan', decisionId: action.decisionId, action, steps: [], rollbackSteps: [], createdAt: new Date() },
+  }));
+  fakeExecutionRouter.executePrepared.mockResolvedValue({
+    planId: 'plan-1', status: 'failed', startedAt: new Date(), completedAt: new Date(),
+    error: 'no execution in test', output: { adapter_used: 'direct' },
+  });
+  fakeBarrierRepo.reserve.mockResolvedValue({
+    row: { id: 'barrier-1', status: 'reserved', effect_result: {} }, created: true,
+  });
+  fakeBarrierRepo.markPrepared.mockResolvedValue({ status: 'prepared' });
+  fakeBarrierRepo.claimPrepared.mockResolvedValue({ status: 'in_progress' });
+  fakeBarrierRepo.markTerminal.mockResolvedValue({ status: 'failed' });
+  fakeExplanationRepo.save.mockImplementation(async (record) => ({
+    ...record,
+    id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+  }));
 });
 
 describe('feedback loop — approval records an episode for memory boost', () => {
@@ -465,6 +504,112 @@ describe('feedback loop — approval records an episode for memory boost', () =>
       }),
     );
     expect(markInput).not.toHaveProperty('routeReason');
+  });
+
+  it('policy-checks and persists the exact adapter-adjusted risk before memory dispatch', async () => {
+    const storedAction = {
+      id: 'aaaaaaaa-bbbb-cccc-dddd-000000000abc', actionType: 'create_task',
+      description: 'Create task from memory', domain: 'tasks',
+      parameters: { opportunityId: '11111111-1111-1111-1111-111111111111' },
+      estimatedCostCents: 0, costZeroIntent: 'verified_zero', reversible: true,
+      confidence: 'moderate', reasoning: 'memory action loop', provenance: 'user_originated',
+    };
+    fakeApprovalRepo.findById.mockResolvedValueOnce({
+      id: 'app-1', user_id: USER_ID, decision_id: 'dec-1', candidate_action: storedAction, status: 'pending',
+    });
+    fakeApprovalRepo.respond.mockResolvedValueOnce({
+      id: 'app-1', user_id: USER_ID, decision_id: 'dec-1', candidate_action: storedAction,
+      status: 'approved', responded_at: new Date(),
+    });
+    fakeExecutionRouter.route.mockImplementationOnce(async (_action, risk) => ({
+      selectedAdapter: 'ironclaw', fallbackChain: [], attemptedAdapters: [],
+      adapterTrustProfile: { adapterName: 'ironclaw', trustLevel: 'verified', riskModifier: 2 },
+      riskModifierApplied: 2,
+      modifiedRiskAssessment: { ...risk, overallTier: 'high', reasoning: 'adapter-adjusted high risk' },
+      reasoning: 'selected exact adapter',
+    }));
+    const evaluate = vi.spyOn(PolicyEvaluator.prototype, 'evaluate').mockResolvedValueOnce({
+      allowed: true, requiresApproval: true, reason: 'Human approval satisfies escalation.',
+    });
+
+    await postJson(buildApp(), '/api/approvals/app-1/respond', { action: 'approve', userId: USER_ID });
+
+    expect(evaluate).toHaveBeenCalledWith(
+      expect.objectContaining({ id: storedAction.id }),
+      expect.any(Array),
+      expect.any(String),
+      expect.objectContaining({ overallTier: 'high', reasoning: 'adapter-adjusted high risk' }),
+      expect.anything(),
+    );
+    expect(fakeBarrierRepo.markPrepared).toHaveBeenCalledBefore(fakeBarrierRepo.claimPrepared);
+    expect(fakeBarrierRepo.markPrepared).toHaveBeenCalledWith(expect.objectContaining({
+      explanationId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+    }));
+    expect(fakeBarrierRepo.claimPrepared).toHaveBeenCalledBefore(fakeExecutionRouter.executePrepared);
+    expect(fakeExecutionRouter.executeWithRouting).not.toHaveBeenCalled();
+  });
+
+  it('records an adapter throw as unknown and does not fabricate a failed dispatch result', async () => {
+    const storedAction = {
+      id: 'aaaaaaaa-bbbb-cccc-dddd-000000000abc', actionType: 'create_task',
+      description: 'Create task from memory', domain: 'tasks',
+      parameters: { opportunityId: '11111111-1111-1111-1111-111111111111' },
+      estimatedCostCents: 0, costZeroIntent: 'verified_zero', reversible: true,
+      confidence: 'moderate', reasoning: 'memory action loop', provenance: 'user_originated',
+    };
+    fakeApprovalRepo.findById.mockResolvedValueOnce({
+      id: 'app-1', user_id: USER_ID, decision_id: 'dec-1', candidate_action: storedAction, status: 'pending',
+    });
+    fakeApprovalRepo.respond.mockResolvedValueOnce({
+      id: 'app-1', user_id: USER_ID, decision_id: 'dec-1', candidate_action: storedAction,
+      status: 'approved', responded_at: new Date(),
+    });
+    fakeExecutionRouter.executePrepared.mockRejectedValueOnce(
+      new AmbiguousExecutionError('direct', new Error('SECRET_MARKER socket closed after dispatch')),
+    );
+
+    const response = await postJson(buildApp(), '/api/approvals/app-1/respond', {
+      action: 'approve', userId: USER_ID,
+    });
+
+    expect(response.status).toBe(200);
+    expect(fakeBarrierRepo.markTerminal).toHaveBeenCalledWith(
+      USER_ID, 'barrier-1', 'unknown', {}, 'adapter_dispatch_ambiguous',
+    );
+    expect(fakeMemoryActionOpportunityRepo.markStatus).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'execution_unknown' }),
+    );
+    expect(JSON.stringify([
+      fakeBarrierRepo.markTerminal.mock.calls,
+      fakeMemoryActionOpportunityRepo.markStatus.mock.calls,
+      fakeExplanationRepo.save.mock.calls,
+    ])).not.toContain('SECRET_MARKER');
+  });
+
+  it('does not dispatch a memory approval when admission explanation persistence fails', async () => {
+    const storedAction = {
+      id: 'aaaaaaaa-bbbb-cccc-dddd-000000000abc', actionType: 'create_task',
+      description: 'Create task from memory', domain: 'tasks',
+      parameters: { opportunityId: '11111111-1111-1111-1111-111111111111' },
+      estimatedCostCents: 0, costZeroIntent: 'verified_zero', reversible: true,
+      confidence: 'moderate', reasoning: 'memory action loop', provenance: 'user_originated',
+    };
+    fakeApprovalRepo.findById.mockResolvedValueOnce({
+      id: 'app-1', user_id: USER_ID, decision_id: 'dec-1', candidate_action: storedAction, status: 'pending',
+    });
+    fakeApprovalRepo.respond.mockResolvedValueOnce({
+      id: 'app-1', user_id: USER_ID, decision_id: 'dec-1', candidate_action: storedAction,
+      status: 'approved', responded_at: new Date(),
+    });
+    fakeExplanationRepo.save.mockRejectedValueOnce(new Error('explanation store unavailable'));
+
+    const response = await postJson(buildApp(), '/api/approvals/app-1/respond', {
+      action: 'approve', userId: USER_ID,
+    });
+
+    expect(response.status).toBe(500);
+    expect(fakeBarrierRepo.claimPrepared).not.toHaveBeenCalled();
+    expect(fakeExecutionRouter.executePrepared).not.toHaveBeenCalled();
   });
 
   it('reject marks the memory action opportunity skipped', async () => {

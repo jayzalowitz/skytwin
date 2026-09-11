@@ -282,12 +282,9 @@ export class DirectExecutionAdapter implements IronClawAdapter {
     try {
       return await Promise.race([
         handler.execute(step),
-        new Promise<StepResult>((resolve) => {
+        new Promise<StepResult>((_resolve, reject) => {
           timer = setTimeout(() => {
-            resolve({
-              success: false,
-              error: `Step timed out after ${timeoutMs}ms`,
-            });
+            reject(new Error('direct_step_timeout_ambiguous'));
           }, timeoutMs);
         }),
       ]);

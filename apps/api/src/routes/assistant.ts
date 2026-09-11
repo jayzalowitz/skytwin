@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { randomUUID } from 'node:crypto';
 import {
   AssistantService,
   ContextBuilder,
@@ -32,6 +33,8 @@ import {
   decisionRepositoryAdapter,
   explanationRepositoryAdapter,
   policyRepositoryAdapter,
+  preEffectBarrierRepository,
+  type AssistantMessage,
 } from '@skytwin/db';
 import { runPrompt } from '@skytwin/policy-prompts';
 import { RegistryClient } from '@skytwin/registry-client';
@@ -306,7 +309,7 @@ function renderOutcomeHint(outcome: Record<string, unknown>): string {
  * one copy is cheaper to reason about than a refactor that hoists the
  * stack to a module-level singleton both routers consume.
  */
-function buildActionRouter(): ActionRouter {
+export function buildActionRouter(): ActionRouter {
   const twinService = new TwinService(
     new TwinRepositoryAdapter(),
     new PatternRepositoryAdapter(),
@@ -336,7 +339,7 @@ function buildActionRouter(): ActionRouter {
   );
 
   return {
-    async route(userId, intent) {
+    async route(userId, intent, routeContext) {
       // Build a synthetic DecisionObject from the chat intent. Mirrors
       // the shape `SituationInterpreter` produces for real signals so
       // downstream code (DecisionMaker + ExplanationGenerator) can't
@@ -349,12 +352,19 @@ function buildActionRouter(): ActionRouter {
       // grounds (it still escalates on action severity — a chat request
       // to "delete everything" is still destructive-shaped).
       const decision: DecisionObject = {
-        id: `chat_intent_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        id: randomUUID(),
         situationType: intent.situationType as SituationType,
         domain: intent.domain,
         urgency: 'medium',
         summary: intent.summary,
-        rawData: { ...intent.rawData, triggerMessage: intent.triggerMessage },
+        rawData: {
+          ...intent.rawData,
+          triggerMessage: intent.triggerMessage,
+          userId,
+          ...(routeContext?.idempotencyKey
+            ? { signalId: `assistant-message:${routeContext.idempotencyKey}` }
+            : {}),
+        },
         interpretedAt: new Date(),
         provenance: 'user_originated',
       };
@@ -395,42 +405,73 @@ function buildActionRouter(): ActionRouter {
       // fires inside `evaluate()`. We do NOT bypass it.
       const outcome = await decisionMaker.evaluate(context);
 
-      // Generate + persist the explanation for audit trail. Safety
-      // Invariant #2: every action (or deliberate non-action) produces
-      // an ExplanationRecord.
-      try {
-        await explanationGenerator.generate(decision, outcome, context);
-      } catch (err) {
-        // Explanation persistence failure shouldn't block the chat
-        // turn — log and continue. The audit-trail loss is the lesser
-        // evil vs. dropping the user's request entirely.
-        log.warn('Failed to persist explanation for chat-driven decision', {
-          userId,
-          decisionId: decision.id,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-
       // No selected action OR every candidate was denied → blocked.
       if (!outcome.selectedAction) {
+        // Deliberate non-actions still require a durable explanation before
+        // their blocked result is returned to the user.
+        await explanationGenerator.generate(decision, outcome, context);
         return {
           kind: 'blocked',
           reason: outcome.reasoning || 'No suitable action could be taken right now.',
         } satisfies ActionRouteOutcome;
       }
 
-      // Auto-execute path is intentionally collapsed into requires-approval
-      // for v1 (see comment at the top of this factory). The selected
-      // action lands in the approval queue regardless of what
-      // `outcome.autoExecute` says.
       const {
         accessToken: _omitToken,
         rawData: _omitRawData,
         ...visibleParameters
       } = (outcome.selectedAction.parameters ?? {}) as Record<string, unknown>;
 
-      const { row: approvalRequest, created: approvalNewlyCreated } =
-        await approvalRepository.create({
+      const { row: barrier, created: barrierCreated } =
+        await preEffectBarrierRepository.reserve({
+          userId,
+          effectType: 'assistant_approval',
+          idempotencyKey: routeContext?.idempotencyKey ?? decision.id,
+        });
+      if (!barrierCreated) {
+        const priorApprovalId = barrier.effect_result['approvalRequestId'];
+        if (barrier.status === 'succeeded' && typeof priorApprovalId === 'string') {
+          return {
+            kind: 'requires-approval',
+            approvalRequestId: priorApprovalId,
+            summary: outcome.selectedAction.description,
+            reasoning: outcome.reasoning,
+          } satisfies ActionRouteOutcome;
+        }
+        throw new Error(
+          `Assistant approval replay suppressed because its pre-effect barrier is ${barrier.status}.`,
+        );
+      }
+
+      // Hard pre-effect barrier: explanation failure propagates before the
+      // approval row or SSE can exist.
+      const explanation = await explanationGenerator.generate(decision, outcome, context);
+      await preEffectBarrierRepository.markPrepared({
+        id: barrier.id,
+        userId,
+        decisionId: decision.id,
+        actionId: outcome.selectedAction.id,
+        explanationId: explanation.id,
+        policySnapshot: {
+          selectedAction: serializeApprovalCandidate(outcome.selectedAction, visibleParameters),
+          selectedRisk: outcome.riskAssessment
+            ? { ...outcome.riskAssessment, assessedAt: outcome.riskAssessment.assessedAt.toISOString() }
+            : null,
+          policyVerdicts: outcome.policyVerdicts ?? {},
+          autoExecute: outcome.autoExecute,
+          requiresApproval: outcome.requiresApproval,
+          confirmationLevel: outcome.confirmationLevel,
+          reasoning: outcome.reasoning,
+        },
+      });
+      const claimed = await preEffectBarrierRepository.claimPrepared(userId, barrier.id);
+      if (!claimed) throw new Error('Assistant approval pre-effect barrier could not be claimed.');
+
+      // Auto-execute path is intentionally collapsed into requires-approval
+      // for v1 (see comment at the top of this factory). The selected
+      // action lands in the approval queue regardless of what
+      // `outcome.autoExecute` says.
+      const approvalInput = {
           userId,
           decisionId: decision.id,
           candidateAction: serializeApprovalCandidate(outcome.selectedAction, visibleParameters),
@@ -440,7 +481,61 @@ function buildActionRouter(): ActionRouter {
           // even a chat-originated request to do something catastrophic takes
           // two token-gated confirmations.
           confirmationLevel: outcome.confirmationLevel === 'dual' ? 'dual' : 'single',
+        } as const;
+      let approvalRequest: Awaited<ReturnType<typeof approvalRepository.findByDecisionId>>;
+      let approvalNewlyCreated = false;
+      let barrierNeedsReconciliation = false;
+      let approvalCreateReconciled = false;
+      try {
+        const createdApproval = await approvalRepository.create(approvalInput);
+        approvalRequest = createdApproval.row;
+        approvalNewlyCreated = createdApproval.created;
+      } catch {
+        // An INSERT may have committed even when its response was lost. The
+        // decision id is the durable, user-owned idempotency identity, so read
+        // it back before saying that nothing was queued or inviting a retry.
+        try {
+          approvalRequest = await approvalRepository.findByDecisionId(decision.id, userId);
+        } catch {
+          approvalRequest = null;
+        }
+        if (!approvalRequest) {
+          log.error('Assistant approval create outcome is unknown', {
+            userId,
+            decisionId: decision.id,
+            errorCode: 'assistant_approval_create_unknown',
+          });
+          return {
+            kind: 'failed',
+            reason: 'I could not confirm whether the approval was queued. Check Approvals before retrying.',
+          } satisfies ActionRouteOutcome;
+        }
+        approvalCreateReconciled = true;
+        log.warn('Recovered assistant approval after an uncertain create response', {
+          userId,
+          decisionId: decision.id,
+          approvalId: approvalRequest.id,
+          errorCode: 'assistant_approval_create_reconciled',
         });
+      }
+      try {
+        await preEffectBarrierRepository.markTerminal(
+          userId,
+          barrier.id,
+          'succeeded',
+          { approvalRequestId: approvalRequest.id },
+        );
+      } catch {
+        // The approval is already durable. Preserve and announce that known
+        // outcome; reporting "nothing queued" would invite an unsafe retry.
+        barrierNeedsReconciliation = true;
+        log.error('Assistant approval barrier needs reconciliation', {
+          userId,
+          decisionId: decision.id,
+          approvalId: approvalRequest.id,
+          errorCode: 'assistant_approval_barrier_reconciliation_required',
+        });
+      }
 
       // Mirror the events.ts SSE emission so the existing approvals page
       // badge updates immediately when a chat creates an approval — but
@@ -451,13 +546,24 @@ function buildActionRouter(): ActionRouter {
       // looking at. Suppression leaves an audit breadcrumb for the same
       // reason as events.ts — operators investigating "why no
       // notification?" can confirm it was recognised and silenced.
-      if (approvalNewlyCreated) {
-        sseManager.emit(userId, 'approval:new', {
-          id: approvalRequest.id,
-          decisionId: decision.id,
-          reason: outcome.reasoning,
-          urgency: decision.urgency,
-        });
+      if (approvalNewlyCreated || approvalCreateReconciled) {
+        try {
+          sseManager.emit(userId, 'approval:new', {
+            id: approvalRequest.id,
+            decisionId: decision.id,
+            reason: outcome.reasoning,
+            urgency: decision.urgency,
+          });
+        } catch {
+          // Notification delivery is secondary to the durable approval.
+          // Never recast the known queued state as a failed/non-action result.
+          log.warn('Assistant approval notification needs reconciliation', {
+            userId,
+            decisionId: decision.id,
+            approvalId: approvalRequest.id,
+            errorCode: 'assistant_approval_sse_failed',
+          });
+        }
       } else {
         log.info('Suppressed approval:new SSE for re-routed assistant intent', {
           userId,
@@ -470,10 +576,75 @@ function buildActionRouter(): ActionRouter {
         kind: 'requires-approval',
         approvalRequestId: approvalRequest.id,
         summary: outcome.selectedAction.description,
-        reasoning: outcome.reasoning,
+        reasoning: barrierNeedsReconciliation
+          ? `${outcome.reasoning} The approval is queued; its audit status needs reconciliation.`
+          : approvalCreateReconciled
+            ? `${outcome.reasoning} The approval is queued and its uncertain create response was reconciled.`
+            : outcome.reasoning,
       } satisfies ActionRouteOutcome;
     },
   };
+}
+
+/**
+ * Persist the assistant bubble after a durable approval is known to exist.
+ * A transaction can commit and still lose its response, so reconcile by the
+ * approval id before returning a synthetic, explicitly non-durable bubble.
+ * Either result preserves the known queued approval instead of turning it
+ * into an HTTP 500 or the false claim that nothing was queued.
+ */
+export async function appendKnownApprovalMessage(
+  userId: string,
+  threadId: string,
+  approvalRequestId: string,
+  content: string,
+  metadata: Record<string, unknown>,
+  requestId: string,
+): Promise<AssistantMessage> {
+  const findExisting = async (): Promise<AssistantMessage | undefined> => {
+    const fetched = await assistantRepository.getThread(userId, threadId);
+    return fetched?.messages.find((message) => {
+      if (message.role !== 'assistant' || !message.metadata) return false;
+      const intentRoute = message.metadata['intentRoute'];
+      return intentRoute !== null && typeof intentRoute === 'object'
+        && (intentRoute as Record<string, unknown>)['approvalRequestId'] === approvalRequestId;
+    });
+  };
+  try {
+    const existing = await findExisting();
+    if (existing) return existing;
+    return await assistantRepository.appendOrGetAssistantMessage(
+      userId, threadId, content, requestId, metadata,
+    );
+  } catch {
+    try {
+      const recovered = await findExisting();
+      if (recovered) return recovered;
+    } catch {
+      // The approval itself remains known and durable even if this secondary
+      // assistant-message read is unavailable.
+    }
+    log.error('Assistant approval message needs reconciliation', {
+      userId,
+      threadId,
+      approvalId: approvalRequestId,
+      errorCode: 'assistant_message_persistence_unknown',
+    });
+    return {
+      id: `reconciliation:${approvalRequestId}`,
+      threadId,
+      role: 'assistant',
+      content,
+      createdAt: new Date(),
+      metadata: {
+        ...metadata,
+        persistence: {
+          status: 'reconciliation_required',
+          errorCode: 'assistant_message_persistence_unknown',
+        },
+      },
+    };
+  }
 }
 
 /**
@@ -498,6 +669,13 @@ function renderActionBubbleContent(intent: ActionIntent, outcome: ActionRouteOut
   if (outcome.kind === 'blocked') {
     return [
       `I can't do that for you right now.`,
+      '',
+      `Reason: ${outcome.reason}`,
+    ].join('\n');
+  }
+  if (outcome.kind === 'failed') {
+    return [
+      'I stopped before taking any action.',
       '',
       `Reason: ${outcome.reason}`,
     ].join('\n');
@@ -549,8 +727,11 @@ async function streamAssistantReply(args: {
   userMessage: unknown;
   res: import('express').Response;
   log: ReturnType<typeof createLogger>;
+  requestId: string;
 }): Promise<void> {
-  const { service, history, enrichment, threadId, isNewThread, userMessage, res, log: logger } = args;
+  const {
+    service, history, enrichment, threadId, isNewThread, userMessage, res, log: logger, requestId,
+  } = args;
 
   // Standard SSE response headers. `X-Accel-Buffering: no` keeps nginx
   // from buffering the stream end-to-end (would defeat the point of
@@ -611,14 +792,11 @@ async function streamAssistantReply(args: {
         // content) so a partial-stream failure earlier doesn't leave a
         // half-message in the DB.
         try {
-          const assistantMessage = await assistantRepository.appendMessage(
-            threadId,
-            'assistant',
-            collectedFullContent,
-            metadata,
+          const assistantMessage = await assistantRepository.appendOrGetAssistantMessage(
+            enrichment.userId, threadId, collectedFullContent, requestId, metadata,
           );
           send('done', assistantMessage);
-        } catch (persistErr) {
+        } catch {
           // Stream completed and the user saw the reply, but we couldn't
           // persist. Log a warning and emit done with a synthetic shape
           // so the client still terminates cleanly. The next thread
@@ -627,7 +805,7 @@ async function streamAssistantReply(args: {
           logger.warn('Assistant message persist failed after stream complete', {
             threadId,
             userId: enrichment.userId,
-            error: persistErr instanceof Error ? persistErr.message : String(persistErr),
+            errorCode: 'assistant_message_persistence_failed',
           });
           send('done', {
             id: null,
@@ -644,8 +822,8 @@ async function streamAssistantReply(args: {
       } else if (event.type === 'error') {
         // Mid-stream failure with partial content already on screen.
         send('error', {
-          message: event.message,
-          partialContent: event.partialContent,
+          message: 'assistant_stream_failed',
+          partialContent: '',
         });
         res.end();
         return;
@@ -659,22 +837,20 @@ async function streamAssistantReply(args: {
       logger.warn('All LLM providers failed for assistant stream', {
         userId: enrichment.userId,
         threadId,
-        attempted: err.attempted,
+        errorCode: 'assistant_providers_failed',
       });
       send('error', {
-        message:
-          'Every configured provider returned an error. Try again in a moment, or check Settings → AI providers.',
+        message: 'assistant_providers_failed',
         partialContent: '',
-        attempted: err.attempted,
       });
     } else {
       logger.error('Unexpected error during assistant stream', {
         userId: enrichment.userId,
         threadId,
-        error: err instanceof Error ? err.message : String(err),
+        errorCode: 'assistant_stream_failed',
       });
       send('error', {
-        message: err instanceof Error ? err.message : 'Unknown error',
+        message: 'assistant_stream_failed',
         partialContent: collectedFullContent,
       });
     }
@@ -715,16 +891,55 @@ export function createAssistantRouter(): Router {
         });
         return;
       }
-      const { userId, content, threadId: providedThreadId } = validation;
-
-      const llm = await buildLlmClientForUser(userId);
-      if (!llm) {
+      const { userId, content, threadId: providedThreadId, requestId } = validation;
+      const retriedUserMessage = await assistantRepository.findUserMessageByRequestId(
+        userId,
+        requestId,
+      );
+      if (retriedUserMessage && (
+        retriedUserMessage.content !== content ||
+        (providedThreadId !== null && retriedUserMessage.threadId !== providedThreadId)
+      )) {
         res.status(409).json({
-          error: 'No AI provider configured',
-          message:
-            'Configure at least one provider in Settings → AI providers before chatting with the assistant.',
+          error: 'requestId was already used for a different message',
+          code: 'assistant_request_id_conflict',
         });
         return;
+      }
+      if (retriedUserMessage) {
+        const priorAssistant = await assistantRepository.findAssistantMessageByRequestId(
+          userId,
+          requestId,
+        );
+        if (priorAssistant) {
+          if (priorAssistant.threadId !== retriedUserMessage.threadId) {
+            res.status(409).json({
+              error: 'requestId was already used for a different thread',
+              code: 'assistant_request_id_conflict',
+            });
+            return;
+          }
+          const replayThread = { id: retriedUserMessage.threadId, isNew: false };
+          if ((req.headers['accept'] ?? '').toString().includes('text/event-stream')) {
+            res.status(200);
+            res.setHeader('Content-Type', 'text/event-stream');
+            res.setHeader('Cache-Control', 'no-cache');
+            res.setHeader('Connection', 'keep-alive');
+            res.setHeader('X-Accel-Buffering', 'no');
+            res.flushHeaders?.();
+            res.write(`event: thread\ndata: ${JSON.stringify(replayThread)}\n\n`);
+            res.write(`event: user\ndata: ${JSON.stringify(retriedUserMessage)}\n\n`);
+            res.write(`event: done\ndata: ${JSON.stringify(priorAssistant)}\n\n`);
+            res.end();
+          } else {
+            res.json({
+              thread: replayThread,
+              userMessage: retriedUserMessage,
+              assistantMessage: priorAssistant,
+            });
+          }
+          return;
+        }
       }
 
       // Resolve the thread: existing one or new one based on the first
@@ -733,7 +948,10 @@ export function createAssistantRouter(): Router {
       // because of an upstream provider outage.
       let threadId: string;
       let isNewThread = false;
-      if (providedThreadId) {
+      let appended: { message: AssistantMessage; created: boolean } | null = null;
+      if (retriedUserMessage) {
+        threadId = retriedUserMessage.threadId;
+      } else if (providedThreadId) {
         const existing = await assistantRepository.getThread(userId, providedThreadId);
         if (!existing) {
           // Don't leak whether the thread exists vs. is owned by another
@@ -743,12 +961,34 @@ export function createAssistantRouter(): Router {
         }
         threadId = existing.thread.id;
       } else {
-        const newThread = await assistantRepository.createThread(userId, content);
-        threadId = newThread.id;
-        isNewThread = true;
+        const created = await assistantRepository.createThreadWithUserMessage(
+          userId,
+          content,
+          requestId,
+        );
+        threadId = created.thread.id;
+        isNewThread = created.created;
+        appended = { message: created.message, created: created.created };
       }
 
-      const userMessage = await assistantRepository.appendMessage(threadId, 'user', content);
+      appended ??= await assistantRepository.appendOrGetUserMessage(
+        userId,
+        threadId,
+        content,
+        requestId,
+      );
+      const userMessage = appended.message;
+      if (!appended.created && userMessage.threadId !== threadId) {
+        if (providedThreadId !== null || userMessage.content !== content) {
+          res.status(409).json({
+            error: 'requestId was already used for a different message',
+            code: 'assistant_request_id_conflict',
+          });
+          return;
+        }
+        threadId = userMessage.threadId;
+        isNewThread = false;
+      }
 
       // Build the prompt history from the persisted thread (gives us the
       // full conversation including the user message we just appended).
@@ -758,6 +998,64 @@ export function createAssistantRouter(): Router {
       // 404 so the client retries with a fresh thread.
       if (!fetched) {
         res.status(404).json({ error: 'Thread vanished mid-request' });
+        return;
+      }
+      if (!appended.created) {
+        const priorAssistant = await assistantRepository.findAssistantMessageByRequestId(
+          userId,
+          requestId,
+        );
+        if (priorAssistant) {
+          if (priorAssistant.threadId !== threadId) {
+            res.status(409).json({
+              error: 'requestId was already used for a different thread',
+              code: 'assistant_request_id_conflict',
+            });
+            return;
+          }
+          const wantsStreamReplay = (req.headers['accept'] ?? '').toString()
+            .includes('text/event-stream');
+          if (wantsStreamReplay) {
+            res.status(200);
+            res.setHeader('Content-Type', 'text/event-stream');
+            res.setHeader('Cache-Control', 'no-cache');
+            res.setHeader('Connection', 'keep-alive');
+            res.setHeader('X-Accel-Buffering', 'no');
+            res.flushHeaders?.();
+            res.write(`event: thread\ndata: ${JSON.stringify({ id: threadId, isNew: false })}\n\n`);
+            res.write(`event: user\ndata: ${JSON.stringify(userMessage)}\n\n`);
+            res.write(`event: done\ndata: ${JSON.stringify(priorAssistant)}\n\n`);
+            res.end();
+          } else {
+            res.json({
+              thread: { id: threadId, isNew: false },
+              userMessage,
+              assistantMessage: priorAssistant,
+            });
+          }
+          return;
+        }
+        const adopted = await assistantRepository.claimStaleUserMessageRequest(
+          userId,
+          requestId,
+        );
+        if (!adopted) {
+          res.status(202).json({
+            status: 'in_progress',
+            code: 'assistant_request_in_progress',
+            thread: { id: threadId, isNew: false },
+            userMessage,
+          });
+          return;
+        }
+      }
+      const llm = await buildLlmClientForUser(userId);
+      if (!llm) {
+        res.status(409).json({
+          error: 'No AI provider configured',
+          message:
+            'Configure at least one provider in Settings → AI providers before chatting with the assistant.',
+        });
         return;
       }
       const history: ChatTurn[] = fetched.messages.map((m) => ({
@@ -777,11 +1075,13 @@ export function createAssistantRouter(): Router {
 
       // Issue #148 v1: try intent classification + routing FIRST. If the
       // user's message is an action intent, the decision pipeline
-      // produces a structured outcome (requires-approval / blocked) and
+      // produces a structured outcome (requires-approval / blocked / failed) and
       // we persist that as the assistant message — no LLM call. Falls
-      // through to the LLM chat path when the message is conversational
-      // (most messages) OR when the router throws (graceful degradation).
-      const intentRoute = await service.routeIntent(userId, content);
+      // through to the LLM chat path only when the message is conversational
+      // (most messages) or the classifier found no executable action.
+      const intentRoute = await service.routeIntent(userId, content, {
+        idempotencyKey: userMessage.id,
+      });
       if (intentRoute && intentRoute.outcome.kind !== 'no-action') {
         const bubbleContent = renderActionBubbleContent(intentRoute.intent, intentRoute.outcome);
         // Metadata records what kind of outcome this was so the web
@@ -797,12 +1097,18 @@ export function createAssistantRouter(): Router {
               : {}),
           },
         };
-        const assistantMessage = await assistantRepository.appendMessage(
-          threadId,
-          'assistant',
-          bubbleContent,
-          actionMetadata,
-        );
+        const assistantMessage = intentRoute.outcome.kind === 'requires-approval'
+          ? await appendKnownApprovalMessage(
+              userId,
+              threadId,
+              intentRoute.outcome.approvalRequestId,
+              bubbleContent,
+              actionMetadata,
+              requestId,
+            )
+          : await assistantRepository.appendOrGetAssistantMessage(
+              userId, threadId, bubbleContent, requestId, actionMetadata,
+            );
 
         // Both sync + SSE paths land here; for SSE we still send the
         // wire shape clients expect (thread + user + done with the
@@ -847,6 +1153,7 @@ export function createAssistantRouter(): Router {
           userMessage,
           res,
           log,
+          requestId,
         });
         return;
       }
@@ -859,24 +1166,28 @@ export function createAssistantRouter(): Router {
           log.warn('All LLM providers failed for assistant request', {
             userId,
             threadId,
-            attempted: err.attempted,
+            errorCode: 'assistant_providers_failed',
           });
           res.status(502).json({
-            error: 'All configured AI providers failed',
-            message:
-              'Every configured provider returned an error. Try again in a moment, or check Settings → AI providers.',
-            attempted: err.attempted,
+            error: 'Assistant generation failed',
+            code: 'assistant_providers_failed',
           });
           return;
         }
-        throw err;
+        log.error('Unexpected assistant generation failure', {
+          userId,
+          threadId,
+          errorCode: 'assistant_generation_failed',
+        });
+        res.status(502).json({
+          error: 'Assistant generation failed',
+          code: 'assistant_generation_failed',
+        });
+        return;
       }
 
-      const assistantMessage = await assistantRepository.appendMessage(
-        threadId,
-        'assistant',
-        reply.content,
-        reply.metadata,
+      const assistantMessage = await assistantRepository.appendOrGetAssistantMessage(
+        userId, threadId, reply.content, requestId, reply.metadata,
       );
 
       res.json({
@@ -1149,9 +1460,9 @@ export function createAssistantRouter(): Router {
             })),
           ...(typeof out.reason === 'string' ? { reason: out.reason } : {}),
         });
-      } catch (err) {
+      } catch {
         log.warn('capability-install-suggestion prompt failed', {
-          error: err instanceof Error ? err.message : String(err),
+          errorCode: 'assistant_capability_suggestion_failed',
         });
         // Fail-soft to the no-suggestion branch; browser heuristic
         // covers user-visible UX.

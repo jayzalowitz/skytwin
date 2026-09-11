@@ -87,12 +87,19 @@ describe('memoryActionOpportunityRepository', () => {
     expect(rows).toHaveLength(1);
     const [sql, params] = mockQuery.mock.calls[0]!;
     expect(sql).toContain('UPDATE memory_action_opportunities');
+    expect(sql).toContain("SET status = 'processing'");
     expect(sql).toContain('attempt_count = attempt_count + 1');
-    expect(sql).toContain('status = ANY($2)');
+    expect(sql.match(/status = ANY\(\$2\)/g)).toHaveLength(2);
     expect(sql).toContain("INTERVAL '1 hour'");
     expect(sql).toContain('RETURNING *');
     expect(params[2]).toBe(12);
     expect(params[3]).toBe(25);
+  });
+
+  it('uses a status-changing compare-and-set so concurrent claimers have one winner', async () => {
+    await memoryActionOpportunityRepository.claimDueForUser(ROW.user_id, { limit: 5 });
+    const [sql] = mockQuery.mock.calls[0]!;
+    expect(sql).toMatch(/SET status = 'processing'[\s\S]+WHERE id IN \([\s\S]+AND status = ANY\(\$2\)[\s\S]+\)[\s\S]+AND status = ANY\(\$2\)/);
   });
 
   it('lists users with retryable due opportunities so old skill gaps resume', async () => {
@@ -138,6 +145,7 @@ describe('memoryActionOpportunityRepository', () => {
 
     const row = await memoryActionOpportunityRepository.markStatus({
       id: ROW.id,
+      userId: ROW.user_id,
       status: 'queued_approval',
       report,
       decisionId: report.decisionId,
@@ -145,9 +153,11 @@ describe('memoryActionOpportunityRepository', () => {
     });
     expect(row?.status).toBe('queued_approval');
     const [sql, params] = mockQuery.mock.calls[0]!;
-    expect(sql).toContain('last_report = $3');
-    expect(params[2]).toBe(JSON.stringify(report));
-    expect(params[3]).toBe(report.decisionId);
+    expect(sql).toContain('last_report = $4');
+    expect(sql).toContain('WHERE id = $1 AND user_id = $2');
+    expect(params[1]).toBe(ROW.user_id);
+    expect(params[3]).toBe(JSON.stringify(report));
+    expect(params[4]).toBe(report.decisionId);
   });
 
   it('returns stored recent reports newest first', async () => {
@@ -180,6 +190,7 @@ describe('memoryActionOpportunityRepository', () => {
     expect(retryable).toContain('suggested');
     expect(retryable).not.toContain('noted_awareness');
     expect(retryable).not.toContain('auto_executed');
+    expect(retryable).not.toContain('processing');
   });
 
   it('round-trips the terminal noted_awareness status (parseStatus does not coerce it to suggested)', async () => {
@@ -196,6 +207,7 @@ describe('memoryActionOpportunityRepository', () => {
     mockQuery.mockResolvedValue({ rows: [{ ...ROW, status: 'noted_awareness', last_report: report }], rowCount: 1 });
     const row = await memoryActionOpportunityRepository.markStatus({
       id: ROW.id,
+      userId: ROW.user_id,
       status: 'noted_awareness',
       report,
     });

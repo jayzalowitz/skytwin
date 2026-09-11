@@ -281,6 +281,14 @@ export type {
   CreateScanInput,
   CreateBriefingInput,
 } from './repositories/index.js';
+export { preEffectBarrierRepository } from './repositories/index.js';
+export type {
+  PreEffectType,
+  PreEffectBarrierStatus,
+  PreEffectBarrierRow,
+  ReservePreEffectInput,
+  PreparePreEffectInput,
+} from './repositories/index.js';
 
 // Adapters
 export {

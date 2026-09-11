@@ -2,6 +2,16 @@ import { KEY_SESSION_TOKEN } from './storage-keys.js';
 
 const API = '/api';
 
+function createClientRequestId() {
+  const platformUuid = globalThis.crypto?.randomUUID?.();
+  if (platformUuid) return platformUuid;
+  // This is a deduplication identity, not an authentication secret.
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (token) => {
+    const value = Math.floor(Math.random() * 16);
+    return (token === 'x' ? value : (value & 0x3) | 0x8).toString(16);
+  });
+}
+
 /**
  * Escape HTML special characters to prevent XSS when inserting into innerHTML.
  */
@@ -670,10 +680,10 @@ export function deleteAssistantThread(threadId, userId) {
   });
 }
 
-export function sendAssistantMessage(userId, content, threadId = null) {
+export function sendAssistantMessage(userId, content, threadId = null, requestId = createClientRequestId()) {
   return fetchJSON(`${API}/assistant/messages`, {
     method: 'POST',
-    body: JSON.stringify({ userId, content, threadId }),
+    body: JSON.stringify({ userId, content, threadId, requestId }),
   });
 }
 
@@ -704,7 +714,7 @@ export async function sendAssistantMessageStream(userId, content, threadId, call
   // aborted; the read loop exits cleanly because reader.read() also
   // rejects. We rethrow AbortError so the caller's catch can distinguish
   // "user-initiated stop" from real network failures.
-  const { signal } = options;
+  const { signal, requestId = createClientRequestId() } = options;
 
   let res;
   try {
@@ -715,7 +725,7 @@ export async function sendAssistantMessageStream(userId, content, threadId, call
         'Accept': 'text/event-stream',
         ...authHeaders(),
       },
-      body: JSON.stringify({ userId, content, threadId }),
+      body: JSON.stringify({ userId, content, threadId, requestId }),
       signal,
     });
   } catch (err) {

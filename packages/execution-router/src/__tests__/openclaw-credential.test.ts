@@ -16,7 +16,7 @@ function makeAction(overrides: Partial<CandidateAction> = {}): CandidateAction {
     actionType: 'social_media_post',
     description: 'Post a tweet about the launch',
     domain: 'social',
-    parameters: { content: 'Hello world', platform: 'twitter' },
+    parameters: { content: 'Hello world', platform: 'twitter', userId: 'user-1' },
     estimatedCostCents: 0,
     reversible: true,
     confidence: ConfidenceLevel.HIGH,
@@ -55,6 +55,27 @@ describe('OpenClawAdapter credential_required handling', () => {
     fetchMock.mockReset();
   });
 
+  it('does not expose a peer response body on HTTP failure', async () => {
+    const adapter = new OpenClawAdapter({ apiUrl: 'http://localhost:9000' });
+    fetchMock.mockResolvedValueOnce(new Response('SECRET_MARKER provider echo', { status: 503 }));
+
+    const result = await adapter.execute(await buildPlanFromAdapter(adapter));
+
+    expect(result.status).toBe('failed');
+    expect(result.error).toBe('openclaw_http_503');
+    expect(JSON.stringify(result)).not.toContain('SECRET_MARKER');
+  });
+
+  it('returns a bounded known failure for an explicit failed 2xx response', async () => {
+    const adapter = new OpenClawAdapter({ apiUrl: 'http://localhost:9000' });
+    fetchMock.mockResolvedValueOnce(jsonResponse({ status: 'failed', error: 'SECRET_MARKER' }));
+
+    const result = await adapter.execute(await buildPlanFromAdapter(adapter));
+
+    expect(result).toMatchObject({ status: 'failed', error: 'openclaw_execution_failed' });
+    expect(JSON.stringify(result)).not.toContain('SECRET_MARKER');
+  });
+
   describe('credential_required in response triggers callback', () => {
     it('calls onCredentialNeeded with the correct shape and returns a failed result', async () => {
       const onCredentialNeeded = vi.fn() as MockFn;
@@ -86,6 +107,7 @@ describe('OpenClawAdapter credential_required handling', () => {
       const requirement = onCredentialNeeded.mock
         .calls[0]![0] as OpenClawCredentialRequirement;
       expect(requirement.integration).toBe('twitter');
+      expect(requirement.userId).toBe('user-1');
       expect(requirement.integrationLabel).toBe('Twitter / X');
       expect(requirement.description).toBe('Post tweets');
       expect(requirement.fields).toHaveLength(1);
@@ -98,11 +120,10 @@ describe('OpenClawAdapter credential_required handling', () => {
 
       // Verify the returned ExecutionResult
       expect(result.status).toBe('failed');
-      expect(result.error).toContain('Credentials needed');
-      expect(result.error).toContain('Twitter / X');
+      expect(result.error).toBe('openclaw_credentials_required');
       expect(result.output).toBeDefined();
       expect(result.output!['credential_required']).toBe(true);
-      expect(result.output!['integration']).toBe('twitter');
+      expect(result.output!['integration']).toBe('social_media_post');
       expect(result.output!['adapter_used']).toBe('openclaw');
     });
 
@@ -151,6 +172,43 @@ describe('OpenClawAdapter credential_required handling', () => {
         optional: true,
       });
       expect(requirement.skills).toEqual(['send_message', 'post_update']);
+    });
+  });
+
+  describe('untrusted credential schema', () => {
+    it.each([
+      { integration: 'github', label: 'GitHub', extra: 'SECRET_MARKER' },
+      { integration: '../SECRET_MARKER', label: 'GitHub' },
+      { integration: 'github', label: 'Bad\u0000SECRET_MARKER' },
+      { integration: 'github', label: 'GitHub', fields: [{ key: 'token', label: 'Token', secret: true, extra: 'SECRET_MARKER' }] },
+      { integration: 'github', label: 'GitHub', fields: Array.from({ length: 21 }, (_, index) => ({ key: `key_${index}`, label: 'Key', secret: true })) },
+      { integration: 'github', label: 'GitHub', fields: [{ key: 'token', label: 'One', secret: true }, { key: 'token', label: 'Two', secret: true }] },
+      { integration: 'github', label: 'GitHub', skills: ['../../SECRET_MARKER'] },
+      { integration: 'github', label: 'GitHub', skills: ['create_issue', 'create_issue'] },
+    ])('rejects malformed or oversized credential metadata without invoking a sink', async (credentialRequired) => {
+      const onCredentialNeeded = vi.fn() as MockFn;
+      const adapter = new OpenClawAdapter({
+        apiUrl: 'http://localhost:9000',
+        onCredentialNeeded,
+      });
+      fetchMock.mockResolvedValueOnce(jsonResponse({ credential_required: credentialRequired }));
+
+      const error = await adapter.execute(await buildPlanFromAdapter(adapter)).catch((caught) => caught);
+
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe('openclaw_response_invalid');
+      expect(String(error)).not.toContain('SECRET_MARKER');
+      expect(onCredentialNeeded).not.toHaveBeenCalled();
+    });
+
+    it('rejects credential notifications when the prepared action has no safe tenant id', async () => {
+      const onCredentialNeeded = vi.fn() as MockFn;
+      const adapter = new OpenClawAdapter({ apiUrl: 'http://localhost:9000', onCredentialNeeded });
+      fetchMock.mockResolvedValueOnce(jsonResponse({ credential_required: {} }));
+      const plan = await buildPlanFromAdapter(adapter, { parameters: { content: 'hello' } });
+
+      await expect(adapter.execute(plan)).rejects.toThrow('openclaw_response_invalid');
+      expect(onCredentialNeeded).not.toHaveBeenCalled();
     });
   });
 
@@ -215,12 +273,12 @@ describe('OpenClawAdapter credential_required handling', () => {
       expect(onCredentialNeeded).toHaveBeenCalledTimes(1);
       expect(result.status).toBe('failed');
       expect(result.output!['credential_required']).toBe(true);
-      expect(result.output!['integration']).toBe('github');
+      expect(result.output!['integration']).toBe('social_media_post');
     });
   });
 
   describe('no callback provided', () => {
-    it('returns a normal completed result when credential_required is present but no callback', async () => {
+    it('fails closed when credential_required is present but no callback', async () => {
       // Create adapter WITHOUT onCredentialNeeded
       const adapter = new OpenClawAdapter({
         apiUrl: 'http://localhost:9000',
@@ -243,16 +301,14 @@ describe('OpenClawAdapter credential_required handling', () => {
       const plan = await buildPlanFromAdapter(adapter);
       const result = await adapter.execute(plan);
 
-      // Without a callback, the credential_required field is ignored and treated
-      // as a normal completed response
-      expect(result.status).toBe('completed');
+      expect(result.status).toBe('failed');
+      expect(result.error).toBe('openclaw_credentials_required');
       expect(result.output).toBeDefined();
       expect(result.output!['adapter_used']).toBe('openclaw');
-      expect(result.output!['stepsCompleted']).toBe(plan.steps.length);
-      expect(result.output!['actionType']).toBe('social_media_post');
+      expect(result.output!['credential_required']).toBe(true);
     });
 
-    it('returns completed even when adapter is created with explicit undefined callback', async () => {
+    it('fails closed when adapter is created with explicit undefined callback', async () => {
       const adapter = new OpenClawAdapter({
         apiUrl: 'http://localhost:9000',
         onCredentialNeeded: undefined,
@@ -272,7 +328,8 @@ describe('OpenClawAdapter credential_required handling', () => {
       const plan = await buildPlanFromAdapter(adapter);
       const result = await adapter.execute(plan);
 
-      expect(result.status).toBe('completed');
+      expect(result.status).toBe('failed');
+      expect(result.error).toBe('openclaw_credentials_required');
     });
   });
 
@@ -304,7 +361,23 @@ describe('OpenClawAdapter credential_required handling', () => {
       expect(result.output).toBeDefined();
       expect(result.output!['adapter_used']).toBe('openclaw');
       expect(result.output!['stepsCompleted']).toBe(1);
-      expect(result.output!['tweetId']).toBe('tweet_abc123');
+      expect(result.output!['tweetId']).toBeUndefined();
+      expect(JSON.stringify(result)).not.toContain('Tweet posted successfully');
+    });
+
+    it.each([
+      [{ status: 'completed', success: false, error: 'SECRET_MARKER' }],
+      [{ status: 'running', output: 'SECRET_MARKER' }],
+      [{ message: 'SECRET_MARKER' }],
+    ])('rejects contradictory or nonconforming 2xx bodies without exposing them', async (body) => {
+      const adapter = new OpenClawAdapter({ apiUrl: 'http://localhost:9000' });
+      fetchMock.mockResolvedValueOnce(jsonResponse(body));
+
+      const error = await adapter.execute(await buildPlanFromAdapter(adapter)).catch((caught) => caught);
+
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe('openclaw_response_invalid');
+      expect(String(error)).not.toContain('SECRET_MARKER');
     });
 
     it('does not trigger on null credential_required', async () => {
@@ -441,7 +514,7 @@ describe('OpenClawAdapter credential_required handling', () => {
       expect(requirement.integration).toBe('some_service');
 
       // error message also falls back
-      expect(result.error).toContain('web_search');
+      expect(result.error).toBe('openclaw_credentials_required');
       expect(result.status).toBe('failed');
     });
 

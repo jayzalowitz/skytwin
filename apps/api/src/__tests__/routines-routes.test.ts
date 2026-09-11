@@ -12,6 +12,9 @@ const {
   mockPolicyRepositoryAdapter,
   mockGetIronClawEnhancedAdapter,
   mockPolicyEvaluator,
+  mockDecisionRepositoryAdapter,
+  mockExplanationRepositoryAdapter,
+  mockPreEffectBarrierRepository,
 } = vi.hoisted(() => ({
   mockUserRepository: {
     findById: vi.fn(),
@@ -23,11 +26,28 @@ const {
   mockPolicyEvaluator: {
     evaluate: vi.fn(),
   },
+  mockDecisionRepositoryAdapter: {
+    saveDecision: vi.fn(),
+    saveCandidates: vi.fn(),
+    saveRiskAssessment: vi.fn(),
+    saveOutcome: vi.fn(),
+  },
+  mockExplanationRepositoryAdapter: { save: vi.fn() },
+  mockPreEffectBarrierRepository: {
+    reserve: vi.fn(),
+    markPrepared: vi.fn(),
+    updatePreparedPolicy: vi.fn(),
+    claimPrepared: vi.fn(),
+    markTerminal: vi.fn(),
+  },
 }));
 
 vi.mock('@skytwin/db', () => ({
   userRepository: mockUserRepository,
   policyRepositoryAdapter: mockPolicyRepositoryAdapter,
+  decisionRepositoryAdapter: mockDecisionRepositoryAdapter,
+  explanationRepositoryAdapter: mockExplanationRepositoryAdapter,
+  preEffectBarrierRepository: mockPreEffectBarrierRepository,
 }));
 
 vi.mock('@skytwin/policy-engine', () => ({
@@ -139,6 +159,26 @@ describe('Routines API routes', () => {
     mockPolicyRepositoryAdapter.getAllPolicies.mockResolvedValue([]);
     mockPolicyEvaluator.evaluate.mockResolvedValue({ allowed: true });
     mockGetIronClawEnhancedAdapter.mockResolvedValue(mockAdapter);
+    mockDecisionRepositoryAdapter.saveDecision.mockImplementation(async (decision) => ({ decision, created: true }));
+    mockDecisionRepositoryAdapter.saveCandidates.mockImplementation(async (candidates) => candidates);
+    mockDecisionRepositoryAdapter.saveRiskAssessment.mockImplementation(async (risk) => risk);
+    mockDecisionRepositoryAdapter.saveOutcome.mockImplementation(async (outcome) => outcome);
+    mockExplanationRepositoryAdapter.save.mockImplementation(async (record) => ({
+      ...record,
+      id: 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee',
+    }));
+    mockPreEffectBarrierRepository.reserve.mockResolvedValue({
+      row: {
+        id: 'ffffffff-ffff-ffff-ffff-ffffffffffff',
+        status: 'reserved',
+        effect_result: {},
+      },
+      created: true,
+    });
+    mockPreEffectBarrierRepository.markPrepared.mockResolvedValue({ status: 'prepared' });
+    mockPreEffectBarrierRepository.updatePreparedPolicy.mockResolvedValue({ status: 'prepared' });
+    mockPreEffectBarrierRepository.claimPrepared.mockResolvedValue({ status: 'in_progress' });
+    mockPreEffectBarrierRepository.markTerminal.mockResolvedValue({ status: 'succeeded' });
 
     mockAdapter.createRoutine.mockResolvedValue({ routineId: 'routine-1' });
     mockAdapter.listRoutines.mockResolvedValue([
@@ -154,29 +194,32 @@ describe('Routines API routes', () => {
   // POST /api/routines
   // =========================================================================
   describe('POST /', () => {
-    it('creates a routine successfully', async () => {
+    it('durably blocks unattended registration until per-run admission exists', async () => {
       const res = await request(app, 'POST', '/api/routines', {
         userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000001',
         schedule: '0 9 * * *',
         plan: validPlan,
       });
 
-      expect(res.status).toBe(201);
-      const body = res.body as { userId: string; schedule: string; routineId: string };
-      expect(body.userId).toBe('aaaaaaaa-bbbb-cccc-dddd-000000000001');
-      expect(body.schedule).toBe('0 9 * * *');
-      expect(body.routineId).toBe('routine-1');
-      expect(mockAdapter.createRoutine).toHaveBeenCalledWith(
+      expect(res.status).toBe(503);
+      expect(res.body).toEqual(expect.objectContaining({
+        error: expect.stringContaining('not available'),
+        reason: expect.stringContaining('runtime policy and explanation admission'),
+      }));
+      expect(mockAdapter.createRoutine).not.toHaveBeenCalled();
+      expect(mockDecisionRepositoryAdapter.saveOutcome).toHaveBeenLastCalledWith(
+        expect.objectContaining({ autoExecute: false, requiresApproval: false }),
+      );
+      expect(mockExplanationRepositoryAdapter.save).toHaveBeenCalledTimes(2);
+      expect(mockPreEffectBarrierRepository.markPrepared).toHaveBeenCalledWith(
+        expect.objectContaining({ explanationId: 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee' }),
+      );
+      expect(mockPreEffectBarrierRepository.markTerminal).toHaveBeenCalledWith(
         'aaaaaaaa-bbbb-cccc-dddd-000000000001',
-        '0 9 * * *',
-        expect.objectContaining({
-          action: expect.objectContaining({
-            actionType: 'send_email',
-            parameters: expect.objectContaining({ userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000001' }),
-          }),
-          steps: [],
-          rollbackSteps: [],
-        }),
+        'ffffffff-ffff-ffff-ffff-ffffffffffff',
+        'blocked',
+        { runtimeAdmission: 'unavailable' },
+        expect.stringContaining('runtime policy and explanation admission'),
       );
     });
 
@@ -207,14 +250,16 @@ describe('Routines API routes', () => {
       expect(checked.reversible).toBe(true);
     });
 
-    it('registers only the normalized action — caller-supplied steps are dropped', async () => {
+    it('persists only the normalized candidate and never dispatches caller-supplied steps', async () => {
       await request(app, 'POST', '/api/routines', {
         userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000001',
         schedule: '0 9 * * *',
         plan: { action: { actionType: 'create_note' }, steps: [{ type: 'shell_exec', cmd: 'rm -rf /' }] },
       });
-      const registered = mockAdapter.createRoutine.mock.calls[0]![2] as { steps: unknown[] };
-      expect(registered.steps).toEqual([]); // the unchecked shell_exec step is not registered
+      expect(mockDecisionRepositoryAdapter.saveCandidates).toHaveBeenCalledWith([
+        expect.objectContaining({ actionType: 'create_note' }),
+      ]);
+      expect(mockAdapter.createRoutine).not.toHaveBeenCalled();
     });
 
     it('returns 400 for missing fields', async () => {
@@ -238,6 +283,44 @@ describe('Routines API routes', () => {
         schedule: '0 9 * * *',
       });
       expect(res3.status).toBe(400);
+    });
+
+    it('fails closed with zero registrations when explanation persistence fails', async () => {
+      mockExplanationRepositoryAdapter.save.mockRejectedValueOnce(new Error('audit store unavailable'));
+
+      const res = await request(app, 'POST', '/api/routines', {
+        userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000001',
+        schedule: '0 9 * * *',
+        plan: { action: { actionType: 'create_note' } },
+      });
+
+      expect(res.status).toBe(500);
+      expect(mockAdapter.createRoutine).not.toHaveBeenCalled();
+      expect(mockPreEffectBarrierRepository.claimPrepared).not.toHaveBeenCalled();
+    });
+
+    it('suppresses replay after a durable runtime-admission block', async () => {
+      const requestBody = {
+        userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000001',
+        schedule: '0 9 * * *',
+        plan: { action: { actionType: 'create_note' } },
+      };
+
+      const first = await request(app, 'POST', '/api/routines', requestBody);
+      expect(first.status).toBe(503);
+      expect(mockAdapter.createRoutine).not.toHaveBeenCalled();
+
+      mockPreEffectBarrierRepository.reserve.mockResolvedValueOnce({
+        row: {
+          id: 'ffffffff-ffff-ffff-ffff-ffffffffffff',
+          status: 'blocked',
+          effect_result: {},
+        },
+        created: false,
+      });
+      const retry = await request(app, 'POST', '/api/routines', requestBody);
+      expect(retry.status).toBe(409);
+      expect(mockAdapter.createRoutine).not.toHaveBeenCalled();
     });
 
     it('returns 400 for invalid cron schedule', async () => {
@@ -328,7 +411,7 @@ describe('Routines API routes', () => {
       expect(evalArgs[4]).toBeDefined(); // autonomySettings (enables the spend hard-limit)
     });
 
-    it('returns 503 when adapter unavailable', async () => {
+    it('does not even resolve the adapter for POST while runtime admission is unavailable', async () => {
       mockGetIronClawEnhancedAdapter.mockResolvedValue(null);
 
       const res = await request(app, 'POST', '/api/routines', {
@@ -339,7 +422,8 @@ describe('Routines API routes', () => {
 
       expect(res.status).toBe(503);
       const body = res.body as { error: string };
-      expect(body.error).toMatch(/unavailable/);
+      expect(body.error).toMatch(/not available/);
+      expect(mockGetIronClawEnhancedAdapter).not.toHaveBeenCalled();
     });
   });
 
