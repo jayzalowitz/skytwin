@@ -43,6 +43,9 @@ function canonicalMutationParameters(input: GmailInboxMutationCommand): string {
     schema: GMAIL_INBOX_MUTATION_CANDIDATE_SCHEMA,
     messageRefId: input.messageRefId,
     operation: input.operation,
+    domain: 'email',
+    costZeroIntent: 'verified_zero',
+    provenance: 'untrusted_external',
   });
 }
 
@@ -191,11 +194,10 @@ export const gmailMessageRefRepository = {
           AND barrier.user_id = $2
           AND barrier.status = 'in_progress'
           AND barrier.effect_type = 'event_execution'
-          AND (
-            ($6 = 'archive' AND candidate.action_type = 'archive_email') OR
-            ($6 = 'restore' AND candidate.action_type = 'restore_email')
-          )
+          AND candidate.action_type = 'archive_email'
           AND candidate.parameters = $4::JSONB
+          AND candidate.reversible = true
+          AND candidate.estimated_cost IS NULL
           AND decision.raw_event->>'messageRefId' = ref.id::STRING
           AND ref.provider = 'google'
           AND account.is_active = true
@@ -209,7 +211,6 @@ export const gmailMessageRefRepository = {
         input.messageRefId,
         canonicalMutationParameters(input),
         GMAIL_MODIFY_SCOPE,
-        input.operation,
       ],
     );
     if (result.rows.length !== 1) return null;
@@ -220,35 +221,4 @@ export const gmailMessageRefRepository = {
     };
   },
 
-  /** Store observation metadata only after the provider state is confirmed. */
-  async recordConfirmedInboxState(input: {
-    userId: string;
-    messageRefId: string;
-    connectorAccountId: string;
-    providerMessageId: string;
-    inbox: boolean;
-    observedAt: Date;
-  }): Promise<boolean> {
-    const result = await query(
-      `UPDATE gmail_message_refs
-          SET last_observed_inbox = CASE
-                WHEN $6 > last_observed_at THEN $4
-                ELSE last_observed_inbox
-              END,
-              last_observed_at = GREATEST(last_observed_at, $6),
-              updated_at = CASE WHEN $6 > last_observed_at THEN now() ELSE updated_at END
-        WHERE id = $1 AND user_id = $2 AND connector_account_id = $3
-          AND provider = 'google' AND provider_message_id = $5
-          AND $6 > last_observed_at`,
-      [
-        input.messageRefId,
-        input.userId,
-        input.connectorAccountId,
-        input.inbox,
-        input.providerMessageId,
-        input.observedAt,
-      ],
-    );
-    return result.rowCount === 1;
-  },
 };

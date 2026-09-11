@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const resolveTargetMock = vi.fn();
-const recordInboxStateMock = vi.fn();
 const refreshIfExpiredMock = vi.fn();
 const tokenStoreConstructorMock = vi.fn();
 
@@ -9,7 +8,6 @@ vi.mock('@skytwin/db', () => ({
   GMAIL_INBOX_MUTATION_CANDIDATE_SCHEMA: 'gmail_inbox_mutation_v1',
   gmailMessageRefRepository: {
     resolveInboxMutationTarget: resolveTargetMock,
-    recordConfirmedInboxState: recordInboxStateMock,
   },
   oauthRepository: { name: 'oauth-repository' },
 }));
@@ -79,7 +77,6 @@ describe('GmailInboxMutationService', () => {
       scopes: [MODIFY_SCOPE],
       provider: 'google',
     });
-    recordInboxStateMock.mockResolvedValue(true);
   });
 
   it('rejects non-canonical commands before any authority or network read', async () => {
@@ -153,7 +150,7 @@ describe('GmailInboxMutationService', () => {
       .mockResolvedValueOnce(jsonResponse({ labelIds: [] }));
     const submitted = { ...command, operation: 'archive' as 'archive' | 'restore' };
 
-    const pending = service(fetchMock).mutate(submitted);
+    const pending = service(fetchMock).mutate(submitted as typeof command);
     submitted.operation = 'restore';
     submitted.messageRefId = '99999999-9999-4999-8999-999999999999';
     releaseFirst?.({
@@ -181,14 +178,6 @@ describe('GmailInboxMutationService', () => {
     await service(fetchMock).mutate(command);
 
     expect(resolveTargetMock).toHaveBeenCalledWith(command);
-    expect(recordInboxStateMock).toHaveBeenCalledWith({
-      userId: command.userId,
-      messageRefId: command.messageRefId,
-      connectorAccountId: target.connector_account_id,
-      providerMessageId: target.provider_message_id,
-      inbox: false,
-      observedAt: expect.any(Date),
-    });
   });
 
   it('does not materialize credentials or call Gmail when admission resolution fails', async () => {
@@ -244,11 +233,10 @@ describe('GmailInboxMutationService', () => {
 
     expect(result).toEqual({
       outcome: 'confirmed', operation: 'archive', inbox: false,
-      effect: 'already_in_state', compensationAvailable: false, observationRecorded: true,
+      effect: 'already_in_state', compensationAvailable: false, observedAt: expect.any(String),
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0]?.[1]?.method).toBe('GET');
-    expect(recordInboxStateMock).toHaveBeenCalledTimes(1);
   });
 
   it('timestamps provider observation before response-body parsing', async () => {
@@ -268,11 +256,12 @@ describe('GmailInboxMutationService', () => {
       const fetchMock = vi.fn().mockResolvedValueOnce(providerResponse);
       admitOnce();
 
-      await service(fetchMock).mutate(command);
+      const result = await service(fetchMock).mutate(command);
 
-      expect(recordInboxStateMock).toHaveBeenCalledWith(expect.objectContaining({
-        observedAt: headersAt,
-      }));
+      expect(result).toMatchObject({
+        outcome: 'confirmed',
+        observedAt: headersAt.toISOString(),
+      });
     } finally {
       vi.useRealTimers();
     }
@@ -288,7 +277,7 @@ describe('GmailInboxMutationService', () => {
 
     expect(result).toEqual({
       outcome: 'confirmed', operation: 'archive', inbox: false,
-      effect: 'changed', compensationAvailable: true, observationRecorded: true,
+      effect: 'changed', compensationAvailable: false, observedAt: expect.any(String),
     });
     const posts = fetchMock.mock.calls.filter((call) => call[1]?.method === 'POST');
     expect(posts).toHaveLength(1);
@@ -300,24 +289,17 @@ describe('GmailInboxMutationService', () => {
     expect(JSON.stringify(result)).not.toContain('secret-access-token');
   });
 
-  it('restores with exactly one POST that adds only INBOX', async () => {
+  it('rejects restore because durable compensation is not part of this boundary', async () => {
     const restore = { ...command, operation: 'restore' as const };
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(jsonResponse({ labelIds: ['STARRED'] }))
-      .mockResolvedValueOnce(jsonResponse({ labelIds: ['INBOX', 'STARRED'] }));
-    admitForPost();
+    const fetchMock = vi.fn();
 
-    const result = await service(fetchMock).mutate(restore);
+    const result = await service(fetchMock).mutate(restore as unknown as typeof command);
 
     expect(result).toEqual({
-      outcome: 'confirmed', operation: 'restore', inbox: true,
-      effect: 'changed', compensationAvailable: false, observationRecorded: true,
+      outcome: 'known_failure', code: 'invalid_command', compensationAvailable: false,
     });
-    const post = fetchMock.mock.calls.find((call) => call[1]?.method === 'POST');
-    expect(JSON.parse(String(post?.[1]?.body))).toEqual({
-      addLabelIds: ['INBOX'], removeLabelIds: [],
-    });
-    expect(resolveTargetMock.mock.calls[1]?.[0]).toEqual(restore);
+    expect(resolveTargetMock).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('revalidates current authority immediately before POST', async () => {
@@ -403,7 +385,7 @@ describe('GmailInboxMutationService', () => {
 
     expect(result).toEqual({
       outcome: 'confirmed', operation: 'archive', inbox: false,
-      effect: 'reconciled', compensationAvailable: false, observationRecorded: true,
+      effect: 'reconciled', compensationAvailable: false, observedAt: expect.any(String),
     });
     expect(fetchMock.mock.calls.filter((call) => call[1]?.method === 'POST')).toHaveLength(1);
     expect(fetchMock.mock.calls.filter((call) => call[1]?.method === 'GET')).toHaveLength(2);
@@ -487,26 +469,15 @@ describe('GmailInboxMutationService', () => {
     expect(signals[2]?.aborted).toBe(false);
   });
 
-  it('preserves confirmed provider truth when the observed-state write is lost', async () => {
+  it('returns provider truth for later primary lifecycle finalization', async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ labelIds: [] }));
     admitOnce();
-    recordInboxStateMock.mockResolvedValueOnce(false);
 
     const result = await service(fetchMock).mutate(command);
 
     expect(result).toEqual({
       outcome: 'confirmed', operation: 'archive', inbox: false,
-      effect: 'already_in_state', compensationAvailable: false, observationRecorded: false,
+      effect: 'already_in_state', compensationAvailable: false, observedAt: expect.any(String),
     });
-  });
-
-  it('preserves confirmed provider truth when the observed-state write throws', async () => {
-    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ labelIds: [] }));
-    admitOnce();
-    recordInboxStateMock.mockRejectedValueOnce(new Error('database unavailable'));
-
-    const result = await service(fetchMock).mutate(command);
-
-    expect(result).toMatchObject({ outcome: 'confirmed', observationRecorded: false });
   });
 });

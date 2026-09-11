@@ -23,7 +23,7 @@ async function reservePort(start: number): Promise<number> {
 }
 
 describe.runIf(cockroachAvailable)('Gmail Inbox mutation binding on CockroachDB', () => {
-  it('enforces the admission matrix and preserves newer observations', async () => {
+  it('enforces the owner-bound archive admission matrix', async () => {
     const sqlPort = await reservePort(21_000 + (process.pid % 4_000));
     const httpPort = await reservePort(41_000 + (process.pid % 4_000));
     const scope = 'https://www.googleapis.com/auth/gmail.modify';
@@ -61,7 +61,7 @@ describe.runIf(cockroachAvailable)('Gmail Inbox mutation binding on CockroachDB'
       );
       CREATE TABLE candidate_actions (
         id UUID PRIMARY KEY, decision_id UUID NOT NULL, action_type STRING NOT NULL,
-        parameters JSONB NOT NULL
+        parameters JSONB NOT NULL, reversible BOOL NOT NULL, estimated_cost DECIMAL
       );
       CREATE TABLE pre_effect_barriers (
         id UUID PRIMARY KEY, user_id UUID NOT NULL, status STRING NOT NULL,
@@ -93,7 +93,8 @@ describe.runIf(cockroachAvailable)('Gmail Inbox mutation binding on CockroachDB'
         ('${decisionId}', '${userId}', 'same-source', '{"messageRefId":"${refA}"}');
       INSERT INTO candidate_actions VALUES
         ('${candidateId}', '${decisionId}', 'archive_email',
-         '{"schema":"gmail_inbox_mutation_v1","messageRefId":"${refA}","operation":"archive"}');
+         '{"schema":"gmail_inbox_mutation_v1","messageRefId":"${refA}","operation":"archive","domain":"email","costZeroIntent":"verified_zero","provenance":"untrusted_external"}',
+         true, NULL);
       INSERT INTO pre_effect_barriers VALUES
         ('${barrierId}', '${userId}', 'in_progress', 'event_execution', '${decisionId}', '${candidateId}');
     `;
@@ -102,7 +103,6 @@ describe.runIf(cockroachAvailable)('Gmail Inbox mutation binding on CockroachDB'
     const resolver = (
       messageRefId: string,
       parametersRefId: string,
-      operation: 'archive' | 'restore' = 'archive',
     ) => `
       SELECT ref.connector_account_id, ref.provider_message_id
         FROM pre_effect_barriers AS barrier
@@ -131,11 +131,9 @@ describe.runIf(cockroachAvailable)('Gmail Inbox mutation binding on CockroachDB'
          AND token.provider = account.provider
        WHERE barrier.id = '${barrierId}' AND barrier.user_id = '${userId}'
          AND barrier.status = 'in_progress' AND barrier.effect_type = 'event_execution'
-         AND (
-           ('${operation}' = 'archive' AND candidate.action_type = 'archive_email') OR
-           ('${operation}' = 'restore' AND candidate.action_type = 'restore_email')
-         )
-         AND candidate.parameters = '{"schema":"gmail_inbox_mutation_v1","messageRefId":"${parametersRefId}","operation":"${operation}"}'::JSONB
+         AND candidate.action_type = 'archive_email'
+         AND candidate.parameters = '{"schema":"gmail_inbox_mutation_v1","messageRefId":"${parametersRefId}","operation":"archive","domain":"email","costZeroIntent":"verified_zero","provenance":"untrusted_external"}'::JSONB
+         AND candidate.reversible = true AND candidate.estimated_cost IS NULL
          AND decision.raw_event->>'messageRefId' = ref.id::STRING
          AND ref.provider = 'google' AND account.is_active = true
          AND account.identity_verified = true
@@ -143,22 +141,7 @@ describe.runIf(cockroachAvailable)('Gmail Inbox mutation binding on CockroachDB'
        LIMIT 2
     `;
     const canonical = (messageRefId: string) =>
-      `'{"schema":"gmail_inbox_mutation_v1","messageRefId":"${messageRefId}","operation":"archive"}'::JSONB`;
-    const observe = (observedAt: string, inbox: boolean) => `
-      UPDATE gmail_message_refs
-         SET last_observed_inbox = CASE
-               WHEN '${observedAt}'::TIMESTAMPTZ > last_observed_at THEN ${inbox}
-               ELSE last_observed_inbox
-             END,
-             last_observed_at = GREATEST(last_observed_at, '${observedAt}'::TIMESTAMPTZ),
-             updated_at = CASE
-               WHEN '${observedAt}'::TIMESTAMPTZ > last_observed_at THEN now()
-               ELSE updated_at
-             END
-       WHERE id = '${refA}' AND user_id = '${userId}' AND connector_account_id = '${accountA}'
-         AND provider = 'google' AND provider_message_id = 'native-a'
-         AND '${observedAt}'::TIMESTAMPTZ > last_observed_at
-    `;
+      `'{"schema":"gmail_inbox_mutation_v1","messageRefId":"${messageRefId}","operation":"archive","domain":"email","costZeroIntent":"verified_zero","provenance":"untrusted_external"}'::JSONB`;
     const verify = `
       SELECT (SELECT count(*) FROM (${resolver(refA, refA)})) = 1 AS canonical_candidate_resolves;
 
@@ -166,28 +149,31 @@ describe.runIf(cockroachAvailable)('Gmail Inbox mutation binding on CockroachDB'
       SELECT (SELECT count(*) FROM (${resolver(refB, refB)})) = 0 AS same_source_cross_account_rejected;
       UPDATE candidate_actions SET parameters = ${canonical(refA)} WHERE id = '${candidateId}';
 
-      UPDATE candidate_actions SET parameters = '{"schema":"gmail_inbox_mutation_v1","messageRefId":"${refA}","operation":"archive","extra":true}'
+      UPDATE candidate_actions SET parameters = '{"schema":"gmail_inbox_mutation_v1","messageRefId":"${refA}","operation":"archive","domain":"email","costZeroIntent":"verified_zero","provenance":"untrusted_external","extra":true}'
        WHERE id = '${candidateId}';
       SELECT (SELECT count(*) FROM (${resolver(refA, refA)})) = 0 AS extra_parameter_rejected;
       UPDATE candidate_actions SET parameters = ${canonical(refA)} WHERE id = '${candidateId}';
 
-      UPDATE candidate_actions SET parameters = '{"schema":"wrong","messageRefId":"${refA}","operation":"archive"}'
+      UPDATE candidate_actions SET parameters = '{"schema":"wrong","messageRefId":"${refA}","operation":"archive","domain":"email","costZeroIntent":"verified_zero","provenance":"untrusted_external"}'
        WHERE id = '${candidateId}';
       SELECT (SELECT count(*) FROM (${resolver(refA, refA)})) = 0 AS wrong_schema_rejected;
       UPDATE candidate_actions SET parameters = ${canonical(refA)} WHERE id = '${candidateId}';
 
-      UPDATE candidate_actions
-         SET parameters = '{"schema":"gmail_inbox_mutation_v1","messageRefId":"${refA}","operation":"restore"}'
-       WHERE id = '${candidateId}';
-      SELECT (SELECT count(*) FROM (${resolver(refA, refA, 'restore')})) = 0
-        AS archive_action_cannot_authorize_restore;
-      UPDATE candidate_actions SET action_type = 'restore_email' WHERE id = '${candidateId}';
-      SELECT (SELECT count(*) FROM (${resolver(refA, refA, 'restore')})) = 1
-        AS restore_action_authorizes_restore;
-      UPDATE candidate_actions SET parameters = ${canonical(refA)} WHERE id = '${candidateId}';
-      SELECT (SELECT count(*) FROM (${resolver(refA, refA)})) = 0
-        AS restore_action_cannot_authorize_archive;
-      UPDATE candidate_actions SET action_type = 'archive_email' WHERE id = '${candidateId}';
+      UPDATE candidate_actions SET parameters = '{"schema":"gmail_inbox_mutation_v1","messageRefId":"${refA}","operation":"archive","domain":"calendar","costZeroIntent":"verified_zero","provenance":"untrusted_external"}' WHERE id = '${candidateId}';
+      SELECT (SELECT count(*) FROM (${resolver(refA, refA)})) = 0 AS wrong_domain_rejected;
+      UPDATE candidate_actions SET parameters = '{"schema":"gmail_inbox_mutation_v1","messageRefId":"${refA}","operation":"archive","domain":"email","costZeroIntent":"unknown","provenance":"untrusted_external"}' WHERE id = '${candidateId}';
+      SELECT (SELECT count(*) FROM (${resolver(refA, refA)})) = 0 AS wrong_cost_intent_rejected;
+      UPDATE candidate_actions SET parameters = '{"schema":"gmail_inbox_mutation_v1","messageRefId":"${refA}","operation":"archive","domain":"email","costZeroIntent":"verified_zero","provenance":"user_originated"}' WHERE id = '${candidateId}';
+      SELECT (SELECT count(*) FROM (${resolver(refA, refA)})) = 0 AS wrong_provenance_rejected;
+      UPDATE candidate_actions SET parameters = '{"schema":"gmail_inbox_mutation_v1","messageRefId":"${refA}","operation":"restore","domain":"email","costZeroIntent":"verified_zero","provenance":"user_originated"}' WHERE id = '${candidateId}';
+      SELECT (SELECT count(*) FROM (${resolver(refA, refA)})) = 0 AS restore_shape_rejected;
+      UPDATE candidate_actions SET parameters = ${canonical(refA)}, action_type = 'restore_email' WHERE id = '${candidateId}';
+      SELECT (SELECT count(*) FROM (${resolver(refA, refA)})) = 0 AS restore_action_rejected;
+      UPDATE candidate_actions SET action_type = 'archive_email', reversible = false WHERE id = '${candidateId}';
+      SELECT (SELECT count(*) FROM (${resolver(refA, refA)})) = 0 AS irreversible_candidate_rejected;
+      UPDATE candidate_actions SET reversible = true, estimated_cost = 1 WHERE id = '${candidateId}';
+      SELECT (SELECT count(*) FROM (${resolver(refA, refA)})) = 0 AS nonzero_cost_candidate_rejected;
+      UPDATE candidate_actions SET estimated_cost = NULL WHERE id = '${candidateId}';
 
       UPDATE pre_effect_barriers SET effect_type = 'memory_execution' WHERE id = '${barrierId}';
       SELECT (SELECT count(*) FROM (${resolver(refA, refA)})) = 0 AS wrong_effect_rejected;
@@ -219,13 +205,6 @@ describe.runIf(cockroachAvailable)('Gmail Inbox mutation binding on CockroachDB'
       UPDATE candidate_actions SET parameters = ${canonical(refA)} WHERE id = '${candidateId}';
       UPDATE decisions SET raw_event = '{"messageRefId":"${refA}"}' WHERE id = '${decisionId}';
 
-      ${observe('2026-09-11T12:59:59.999Z', false)};
-      ${observe('2026-09-11T13:00:00Z', false)};
-      SELECT last_observed_inbox = true AND last_observed_at = '2026-09-11T13:00:00Z'::TIMESTAMPTZ
-        AS stale_equal_preserved FROM gmail_message_refs WHERE id = '${refA}';
-      ${observe('2026-09-11T13:00:00.001Z', false)};
-      SELECT last_observed_inbox = false AND last_observed_at = '2026-09-11T13:00:00.001Z'::TIMESTAMPTZ
-        AS newer_accepted FROM gmail_message_refs WHERE id = '${refA}';
     `;
     const result = spawnSync('cockroach', [
       'demo', '--empty', '--insecure', `--sql-port=${sqlPort}`, `--http-port=${httpPort}`,
@@ -233,6 +212,6 @@ describe.runIf(cockroachAvailable)('Gmail Inbox mutation binding on CockroachDB'
     ], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 });
 
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout.match(/^t$/gm)).toHaveLength(17);
+    expect(result.stdout.match(/^t$/gm)).toHaveLength(19);
   }, 30_000);
 });

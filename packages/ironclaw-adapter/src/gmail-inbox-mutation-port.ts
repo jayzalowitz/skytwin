@@ -65,13 +65,9 @@ function parseCanonicalCommand(value: GmailInboxMutationCommand): Readonly<Gmail
     typeof userId !== 'string' || !UUID.test(userId) ||
     typeof admissionId !== 'string' || !UUID.test(admissionId) ||
     typeof messageRefId !== 'string' || !UUID.test(messageRefId) ||
-    (operation !== 'archive' && operation !== 'restore')
+    operation !== 'archive'
   ) return null;
   return Object.freeze({ userId, admissionId, messageRefId, operation });
-}
-
-function desiredInboxState(operation: GmailInboxMutationCommand['operation']): boolean {
-  return operation === 'restore';
 }
 
 function deterministicClientFailure(status: number): boolean {
@@ -159,7 +155,7 @@ export class GmailInboxMutationService implements GmailInboxMutationPort {
       return { outcome: 'unknown', code: 'preflight_unavailable', compensationAvailable: false };
     }
 
-    const desiredInbox = desiredInboxState(command.operation);
+    const desiredInbox = false;
     const preflightInbox = preflight.inbox;
     if (preflightInbox === null) {
       return { outcome: 'unknown', code: 'preflight_unavailable', compensationAvailable: false };
@@ -167,8 +163,6 @@ export class GmailInboxMutationService implements GmailInboxMutationPort {
     if (preflightInbox === desiredInbox) {
       return this.confirm(
         command,
-        initialTarget,
-        desiredInbox,
         'already_in_state',
         preflight.observedAt!,
       );
@@ -198,9 +192,7 @@ export class GmailInboxMutationService implements GmailInboxMutationPort {
       `${this.messageUrl(currentTarget.providerMessageId)}/modify?fields=id%2ClabelIds`,
       accessToken,
       'POST',
-      command.operation === 'archive'
-        ? { addLabelIds: [], removeLabelIds: ['INBOX'] }
-        : { addLabelIds: ['INBOX'], removeLabelIds: [] },
+      { addLabelIds: [], removeLabelIds: ['INBOX'] },
     );
 
     if (mutation.status !== undefined && deterministicClientFailure(mutation.status)) {
@@ -209,7 +201,7 @@ export class GmailInboxMutationService implements GmailInboxMutationPort {
     if (mutation.ok) {
       const mutatedInbox = mutation.inbox;
       if (mutatedInbox === desiredInbox) {
-        return this.confirm(command, currentTarget, desiredInbox, 'changed', mutation.observedAt!);
+        return this.confirm(command, 'changed', mutation.observedAt!);
       }
     }
 
@@ -226,8 +218,6 @@ export class GmailInboxMutationService implements GmailInboxMutationPort {
       if (reconciledInbox === desiredInbox) {
         return this.confirm(
           command,
-          currentTarget,
-          desiredInbox,
           'reconciled',
           reconciliation.observedAt!,
         );
@@ -243,31 +233,18 @@ export class GmailInboxMutationService implements GmailInboxMutationPort {
 
   private async confirm(
     command: GmailInboxMutationCommand,
-    target: { connectorAccountId: string; providerMessageId: string },
-    inbox: boolean,
     effect: 'changed' | 'already_in_state' | 'reconciled',
     observedAt: Date,
   ): Promise<GmailInboxMutationResult> {
-    let observationRecorded = false;
-    try {
-      observationRecorded = await gmailMessageRefRepository.recordConfirmedInboxState({
-        userId: command.userId,
-        messageRefId: command.messageRefId,
-        connectorAccountId: target.connectorAccountId,
-        providerMessageId: target.providerMessageId,
-        inbox,
-        observedAt,
-      });
-    } catch {
-      observationRecorded = false;
-    }
     return {
       outcome: 'confirmed',
       operation: command.operation,
-      inbox,
+      inbox: false,
       effect,
-      compensationAvailable: command.operation === 'archive' && effect === 'changed',
-      observationRecorded,
+      // Restore is not part of this boundary. Do not advertise theoretical
+      // provider reversibility as an available durable compensation path.
+      compensationAvailable: false,
+      observedAt: observedAt.toISOString(),
     };
   }
 

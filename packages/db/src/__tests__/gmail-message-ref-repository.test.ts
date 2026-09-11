@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { ConfidenceLevel } from '@skytwin/shared-types';
 
 const clientQuery = vi.fn();
 const databaseQuery = vi.fn();
@@ -10,6 +11,7 @@ vi.mock('../connection.js', () => ({
 }));
 
 const { gmailMessageRefRepository } = await import('../repositories/gmail-message-ref-repository.js');
+const { decisionRepositoryAdapter } = await import('../adapters/decision-repository-adapter.js');
 
 const input = {
   userId: '11111111-1111-4111-8111-111111111111',
@@ -158,6 +160,65 @@ const mutationInput = {
 describe('gmailMessageRefRepository Inbox mutation binding', () => {
   beforeEach(() => vi.clearAllMocks());
 
+  it('matches the exact six-key shape written by the production candidate serializer', async () => {
+    const storedParameters = {
+      schema: 'gmail_inbox_mutation_v1',
+      messageRefId: mutationInput.messageRefId,
+      operation: 'archive',
+      domain: 'email',
+      costZeroIntent: 'verified_zero',
+      provenance: 'untrusted_external',
+    };
+    databaseQuery.mockResolvedValueOnce({
+      rows: [{
+        id: '66666666-6666-4666-8666-666666666666',
+        decision_id: '77777777-7777-4777-8777-777777777777',
+        action_type: 'archive_email',
+        description: 'Archive one message.',
+        parameters: storedParameters,
+        predicted_user_preference: ConfidenceLevel.HIGH,
+        risk_assessment: { reasoning: 'Bounded and reversible.' },
+        reversible: true,
+        estimated_cost: null,
+        created_at: new Date(),
+      }],
+      rowCount: 1,
+    });
+
+    await decisionRepositoryAdapter.saveCandidates([{
+      id: '66666666-6666-4666-8666-666666666666',
+      decisionId: '77777777-7777-4777-8777-777777777777',
+      actionType: 'archive_email',
+      description: 'Archive one message.',
+      domain: 'email',
+      parameters: {
+        schema: 'gmail_inbox_mutation_v1',
+        messageRefId: mutationInput.messageRefId,
+        operation: 'archive',
+      },
+      estimatedCostCents: 0,
+      costZeroIntent: 'verified_zero',
+      reversible: true,
+      confidence: ConfidenceLevel.HIGH,
+      reasoning: 'Bounded and reversible.',
+      provenance: 'untrusted_external',
+      capabilityProvenanceNodeId: undefined,
+    }]);
+    const persistedJson = (databaseQuery.mock.calls[0]?.[1] as unknown[])[4];
+    expect(JSON.parse(String(persistedJson))).toEqual(storedParameters);
+
+    databaseQuery.mockResolvedValueOnce({
+      rows: [{
+        connector_account_id: input.connectorAccountId,
+        provider_message_id: input.providerMessageId,
+      }],
+      rowCount: 1,
+    });
+    await gmailMessageRefRepository.resolveInboxMutationTarget(mutationInput);
+    const resolverJson = (databaseQuery.mock.calls[1]?.[1] as unknown[])[3];
+    expect(JSON.parse(String(resolverJson))).toEqual(storedParameters);
+  });
+
   it('requires one exact event admission, canonical candidate, evidence chain, account, and scope', async () => {
     databaseQuery.mockResolvedValueOnce({
       rows: [{
@@ -176,9 +237,10 @@ describe('gmailMessageRefRepository Inbox mutation binding', () => {
     const [sql, params] = databaseQuery.mock.calls[0] as [string, unknown[]];
     expect(sql).toContain("barrier.status = 'in_progress'");
     expect(sql).toContain("barrier.effect_type = 'event_execution'");
-    expect(sql).toContain("$6 = 'archive' AND candidate.action_type = 'archive_email'");
-    expect(sql).toContain("$6 = 'restore' AND candidate.action_type = 'restore_email'");
+    expect(sql).toContain("candidate.action_type = 'archive_email'");
     expect(sql).toContain('candidate.parameters = $4::JSONB');
+    expect(sql).toContain('candidate.reversible = true');
+    expect(sql).toContain('candidate.estimated_cost IS NULL');
     expect(sql).toContain('signal.source_signal_id = decision.signal_id');
     expect(sql).toContain('ref.id = signal.resource_ref_id');
     expect(sql).toContain('ref.source_signal_id = signal.source_signal_id');
@@ -194,9 +256,11 @@ describe('gmailMessageRefRepository Inbox mutation binding', () => {
         schema: 'gmail_inbox_mutation_v1',
         messageRefId: mutationInput.messageRefId,
         operation: 'archive',
+        domain: 'email',
+        costZeroIntent: 'verified_zero',
+        provenance: 'untrusted_external',
       }),
       'https://www.googleapis.com/auth/gmail.modify',
-      'archive',
     ]);
   });
 
@@ -233,46 +297,4 @@ describe('gmailMessageRefRepository Inbox mutation binding', () => {
     await expect(gmailMessageRefRepository.resolveInboxMutationTarget(mutationInput)).resolves.toBeNull();
   });
 
-  it('updates only the exact confirmed owner/account/native binding', async () => {
-    databaseQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 });
-
-    await expect(gmailMessageRefRepository.recordConfirmedInboxState({
-      userId: mutationInput.userId,
-      messageRefId: mutationInput.messageRefId,
-      connectorAccountId: input.connectorAccountId,
-      providerMessageId: input.providerMessageId,
-      inbox: false,
-      observedAt: new Date('2026-09-11T13:00:00.000Z'),
-    })).resolves.toBe(true);
-
-    const [sql, params] = databaseQuery.mock.calls[0] as [string, unknown[]];
-    expect(sql).toContain('WHEN $6 > last_observed_at THEN $4');
-    expect(sql).toContain('GREATEST(last_observed_at, $6)');
-    expect(sql).toContain('AND $6 > last_observed_at');
-    expect(sql).toContain("provider = 'google' AND provider_message_id = $5");
-    expect(params).toEqual([
-      mutationInput.messageRefId,
-      mutationInput.userId,
-      input.connectorAccountId,
-      false,
-      input.providerMessageId,
-      new Date('2026-09-11T13:00:00.000Z'),
-    ]);
-  });
-
-  it.each([
-    ['stale', new Date('2026-09-11T11:59:59.999Z')],
-    ['equal', input.observedAt],
-  ] as const)('does not accept a %s confirmed observation over newer state', async (_label, observedAt) => {
-    databaseQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-
-    await expect(gmailMessageRefRepository.recordConfirmedInboxState({
-      userId: mutationInput.userId,
-      messageRefId: mutationInput.messageRefId,
-      connectorAccountId: input.connectorAccountId,
-      providerMessageId: input.providerMessageId,
-      inbox: false,
-      observedAt,
-    })).resolves.toBe(false);
-  });
 });
