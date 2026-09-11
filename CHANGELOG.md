@@ -1,5 +1,16 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- Added the versioned inference-receipt foundation: a metadata-only signed
+  contract, exact-byte integrity verifier with explicit caller-supplied trust
+  roots and provider-specific attestation-policy seam, user-owned
+  persistence boundary, authenticated read/delete API, and backup/restore
+  coverage (restored receipts remain explicitly untrusted). This does not yet claim universal workflow coverage or expose a
+  verified-confidential badge; those remain gated on strict provider wiring.
+
 ## [0.6.102.0] - 2026-08-27
 
 ### Added
