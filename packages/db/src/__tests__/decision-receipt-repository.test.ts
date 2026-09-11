@@ -301,6 +301,27 @@ describe('decisionReceiptRepository', () => {
     expect(result.success && result.revision.content_digest).toBe(joinedDecisionReceiptContentDigest(content));
   });
 
+  it('uses valid caller-owned root and revision IDs', async () => {
+    installHappyQueries();
+    const callerReceiptId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+    const callerRevisionId = 'bbbbbbbb-cccc-4ddd-8eee-ffffffffffff';
+    const result = await decisionReceiptRepository.appendForUser(userId, {
+      eventKey: eventKey('decision_created'),
+      expectedPreviousDigest: null,
+      content: baseContent(),
+      receiptId: callerReceiptId,
+      revisionId: callerRevisionId,
+    });
+
+    expect(result).toMatchObject({ success: true, revision: { id: callerRevisionId } });
+    const rootInsert = queryMock.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO decision_receipts'));
+    const revisionInsert = queryMock.mock.calls.find(
+      ([sql]) => String(sql).includes('INSERT INTO decision_receipt_revisions'),
+    );
+    expect(rootInsert?.[1]).toEqual([userId, decisionId, callerReceiptId]);
+    expect(revisionInsert?.[1]?.[0]).toBe(callerRevisionId);
+  });
+
   it('appends on a caller-owned transaction without opening a nested transaction', async () => {
     installHappyQueries();
     const client = { query: queryMock } as unknown as PoolClient;

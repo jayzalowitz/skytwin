@@ -104,6 +104,9 @@ export {
   inferenceReceiptRepository,
   decisionReceiptRepository,
   decisionReceiptLifecycleRepository,
+  buildGmailArchiveProposalCandidate,
+  gmailArchiveProposalRepository,
+  GmailArchiveProposalReceiptError,
   feedbackRepository,
 } from './repositories/index.js';
 export type {
@@ -121,6 +124,10 @@ export type {
   AppendDecisionReceiptInput,
   AppendDecisionReceiptResult,
   AppendDecisionReceiptLifecycleInput,
+  GmailArchiveProposalBundle,
+  GmailArchiveProposalRiskInput,
+  PersistGmailArchiveProposalInput,
+  PersistGmailArchiveProposalResult,
   FindDecisionReceiptResult,
   CreateFeedbackInput,
 } from './repositories/index.js';
