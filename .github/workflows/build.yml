@@ -240,6 +240,24 @@ jobs:
           # Skip code signing for CI builds (not notarized)
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
+      - name: Generate macOS dependency SBOM
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          path: apps/desktop/dist-electron
+          format: cyclonedx-json
+          output-file: macos.cdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Upload macOS dependency SBOM
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-sbom-macos
+          path: macos.cdx.json
+          if-no-files-found: error
+
       - name: Upload macOS DMG
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
@@ -347,6 +365,24 @@ jobs:
         # bare `${APP_VERSION}` would NOT — pwsh spells env vars `$env:X`).
         run: pnpm --filter skytwin-desktop run package:win --publish never "--config.extraMetadata.version=${{ env.APP_VERSION }}"
 
+      - name: Generate Windows dependency SBOM
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          path: apps/desktop/dist-electron
+          format: cyclonedx-json
+          output-file: windows.cdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Upload Windows dependency SBOM
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-sbom-windows
+          path: windows.cdx.json
+          if-no-files-found: error
+
       - name: Upload Windows installer
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
@@ -411,6 +447,24 @@ jobs:
         # --config.extraMetadata.version; same reasoning here.
         run: pnpm --filter skytwin-desktop run package:linux --publish never "--config.extraMetadata.version=${{ env.APP_VERSION }}"
         continue-on-error: true
+
+      - name: Generate Linux dependency SBOM
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          path: apps/desktop/dist-electron
+          format: cyclonedx-json
+          output-file: linux.cdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Upload Linux dependency SBOM
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-sbom-linux
+          path: linux.cdx.json
+          if-no-files-found: error
 
       - name: Upload Linux AppImage
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

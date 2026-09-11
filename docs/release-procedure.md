@@ -80,7 +80,7 @@ of these subjects fails the final gate.
 
 How to cut a public SkyTwin release. This is the **current, accurate** flow as of 2026-09-14 — the old `.github/workflows/release.yml` was deleted in #356; **`.github/workflows/build.yml` is now the only publisher** (its `release` job). Source of truth: `.github/workflows/build.yml` (the `release:` job, `if: startsWith(github.ref, 'refs/tags/v')`).
 
-Pairs with [`launch-plan.md`](./launch-plan.md) (what blocks the *first* public launch) and [`launch-readiness-report.md`](./launch-readiness-report.md) (current blocker status).
+Pairs with [`launch-plan.md`](./launch-plan.md) (what blocks the _first_ public launch) and [`launch-readiness-report.md`](./launch-readiness-report.md) (current blocker status).
 
 ---
 
@@ -157,7 +157,7 @@ blocked by design.
 
 ---
 
-## Pre-flight before the FIRST public release
+## Pre-flight before the first public release
 
 The ledger's stop-ship conditions keep the tag job from reaching draft creation until signing, update manifests, and the other required evidence are complete.
 
@@ -172,7 +172,7 @@ Until then, macOS Gatekeeper / Windows SmartScreen warn on first launch (the REA
 
 ### 2. Auto-update manifests now ship — but the path is live only after signing (#370)
 
-`electron-updater` is wired client-side (`apps/desktop/src/auto-update.ts`), and the `release` job **now attaches the `latest-mac.yml` / `latest.yml` / `latest-linux.yml` manifests** electron-updater polls (the remaining code half of #370 — electron-builder generates them under `--publish never`, and the three desktop jobs collect them as artifacts). So an installed app *can* discover the next version. The **user-facing update surface now exists too**: `AutoUpdateController.start()` subscribes to electron-updater's lifecycle events and the dashboard shows a bottom banner (downloading → "Update ready to install" with a Restart-to-update button), plus a "Check for Updates…" menu item for an on-demand poll. A second, separately-fatal half of this is also fixed: the manifests used to be stamped with the frozen `0.3.0` placeholder, so *discovery* could never succeed no matter what was attached. CI now injects a derived version (see [How the desktop app version is derived](#how-the-desktop-app-version-is-derived)).
+`electron-updater` is wired client-side (`apps/desktop/src/auto-update.ts`), and the `release` job **now attaches the `latest-mac.yml` / `latest.yml` / `latest-linux.yml` manifests** electron-updater polls (the remaining code half of #370 — electron-builder generates them under `--publish never`, and the three desktop jobs collect them as artifacts). So an installed app _can_ discover the next version. The **user-facing update surface now exists too**: `AutoUpdateController.start()` subscribes to electron-updater's lifecycle events and the dashboard shows a bottom banner (downloading → "Update ready to install" with a Restart-to-update button), plus a "Check for Updates…" menu item for an on-demand poll. A second, separately-fatal half of this is also fixed: the manifests used to be stamped with the frozen `0.3.0` placeholder, so _discovery_ could never succeed no matter what was attached. CI now injects a derived version (see [How the desktop app version is derived](#how-the-desktop-app-version-is-derived)).
 
 The remaining catch: electron-updater verifies the downloaded update's signature and **refuses an unsigned payload** (fails safe). Until code signing lands (gap 1 / #368 / #359), the banner surfaces "downloading" but the install step can't complete on an unsigned build. The manifests shipping early is harmless — verify with `gh release view <tag> --json assets` that all three `latest*.yml` are attached, and that the asset filenames carry the derived version (e.g. `SkyTwin-0.6.10100-arm64.dmg`), not `0.3.0`.
 
@@ -195,7 +195,7 @@ Bundled Gmail restricted-scope verification is tracked separately in #351.
 
 ### How the desktop app version is derived
 
-electron-builder **rejects** a four-segment version, so `apps/desktop/package.json` cannot simply mirror `VERSION`. It carries a fixed placeholder (`0.3.0`) that exists only so local `pnpm --filter skytwin-desktop package:mac` works with no setup — **do not** hand-bump it. From #31 until this was fixed, that placeholder was also what shipped: electron-builder stamps artifact filenames *and* the `latest*.yml` update manifests from it, so every release published `0.3.0`, and electron-updater's semver compare against an installed `0.3.0` answered "no update available" forever. Auto-update could never fire.
+electron-builder **rejects** a four-segment version, so `apps/desktop/package.json` cannot simply mirror `VERSION`. It carries a fixed placeholder (`0.3.0`) that exists only so local `pnpm --filter skytwin-desktop package:mac` works with no setup — **do not** hand-bump it. From #31 until this was fixed, that placeholder was also what shipped: electron-builder stamps artifact filenames _and_ the `latest*.yml` update manifests from it, so every release published `0.3.0`, and electron-updater's semver compare against an installed `0.3.0` answered "no update available" forever. Auto-update could never fire.
 
 CI now derives a real three-segment version from `VERSION` and injects it at package time:
 
@@ -259,6 +259,6 @@ Confirm all three `latest*.yml` assets point at the signed N+1 artifacts.
 
 ---
 
-## Rollback
+## Upgrade and rollback
 
 A bad release is rolled back by deleting/unpublishing the GitHub Release and the tag; no users are affected until a release is **published** (drafts are private). If a published release regressed, cut the next signed patch tag with the fix — the shipped update manifests let electron-updater pull users forward.
