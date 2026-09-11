@@ -1,5 +1,16 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [Unreleased] — Restricted Gmail Inbox mutation boundary
+
+### Added
+
+- Added an intentionally unregistered Gmail Inbox mutation service for one owner-bound message reference. The service accepts only the versioned canonical archive or restore command, resolves the native Gmail target and account-bound credential behind the repository boundary, and requires an exact in-progress event admission linked to the same owner, decision, candidate, source signal, immutable message reference, verified account, OAuth row, and `gmail.modify` scope. It is exported for the later approval lifecycle but is not registered with an API, worker, router, or generic action handler. See [`gmail-inbox-mutation-port.ts`](./packages/ironclaw-adapter/src/gmail-inbox-mutation-port.ts) and [`gmail-message-ref-repository.ts`](./packages/db/src/repositories/gmail-message-ref-repository.ts).
+- Gmail Inbox changes are bounded to one provider `POST`: archive removes only `INBOX`, while restore adds only `INBOX` and requires its own inert `restore_email` admission type. A preflight read avoids unnecessary writes; an ambiguous response permits one read-only reconciliation and never a second mutation. Confirmed observations use provider-response time and cannot overwrite newer repository state.
+
+### Fixed
+
+- Direct execution rollback now compensates only steps that completed before a known soft failure, in reverse order. Successfully compensated steps are removed from later manual rollback attempts. Thrown, timed-out, missing-handler, failed, and unexecuted steps are never treated as known effects eligible for automatic compensation.
+
 ## [Unreleased] — Durable Watch scheduling
 
 ### Changed

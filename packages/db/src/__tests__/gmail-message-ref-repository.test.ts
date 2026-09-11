@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const clientQuery = vi.fn();
+const databaseQuery = vi.fn();
 
 vi.mock('../connection.js', () => ({
-  query: vi.fn(),
+  query: databaseQuery,
   withTransaction: async (fn: (client: { query: typeof clientQuery }) => Promise<unknown>) =>
     fn({ query: clientQuery }),
 }));
@@ -144,5 +145,134 @@ describe('gmailMessageRefRepository.persistEvidence', () => {
     const result = await gmailMessageRefRepository.persistEvidence(input);
     expect(result).toEqual({ ok: false, error: 'account_not_active' });
     expect(clientQuery).toHaveBeenCalledTimes(1);
+  });
+});
+
+const mutationInput = {
+  userId: input.userId,
+  admissionId: '55555555-5555-4555-8555-555555555555',
+  messageRefId: messageRef().id,
+  operation: 'archive' as const,
+};
+
+describe('gmailMessageRefRepository Inbox mutation binding', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('requires one exact event admission, canonical candidate, evidence chain, account, and scope', async () => {
+    databaseQuery.mockResolvedValueOnce({
+      rows: [{
+        connector_account_id: input.connectorAccountId,
+        provider_message_id: input.providerMessageId,
+      }],
+      rowCount: 1,
+    });
+
+    const result = await gmailMessageRefRepository.resolveInboxMutationTarget(mutationInput);
+
+    expect(result).toEqual({
+      connectorAccountId: input.connectorAccountId,
+      providerMessageId: input.providerMessageId,
+    });
+    const [sql, params] = databaseQuery.mock.calls[0] as [string, unknown[]];
+    expect(sql).toContain("barrier.status = 'in_progress'");
+    expect(sql).toContain("barrier.effect_type = 'event_execution'");
+    expect(sql).toContain("$6 = 'archive' AND candidate.action_type = 'archive_email'");
+    expect(sql).toContain("$6 = 'restore' AND candidate.action_type = 'restore_email'");
+    expect(sql).toContain('candidate.parameters = $4::JSONB');
+    expect(sql).toContain('signal.source_signal_id = decision.signal_id');
+    expect(sql).toContain('ref.id = signal.resource_ref_id');
+    expect(sql).toContain('ref.source_signal_id = signal.source_signal_id');
+    expect(sql).toContain("decision.raw_event->>'messageRefId' = ref.id::STRING");
+    expect(sql).toContain('account.identity_verified = true');
+    expect(sql).toContain('$5 = ANY(account.scopes)');
+    expect(sql).toContain('$5 = ANY(token.scopes)');
+    expect(params).toEqual([
+      mutationInput.admissionId,
+      mutationInput.userId,
+      mutationInput.messageRefId,
+      JSON.stringify({
+        schema: 'gmail_inbox_mutation_v1',
+        messageRefId: mutationInput.messageRefId,
+        operation: 'archive',
+      }),
+      'https://www.googleapis.com/auth/gmail.modify',
+      'archive',
+    ]);
+  });
+
+  it('cannot let a same-user, same-source-id signal from another account choose the target', async () => {
+    databaseQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+    await expect(gmailMessageRefRepository.resolveInboxMutationTarget(mutationInput)).resolves.toBeNull();
+
+    const sql = databaseQuery.mock.calls[0]?.[0] as string;
+    expect(sql).toContain("decision.raw_event->>'messageRefId' = ref.id::STRING");
+    expect(sql).toContain('ref.connector_account_id = signal.connector_account_id');
+    expect(sql).toContain('ref.id = $3');
+  });
+
+  it('rejects a corrupt signal-to-reference source binding', async () => {
+    databaseQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+    await expect(gmailMessageRefRepository.resolveInboxMutationTarget(mutationInput)).resolves.toBeNull();
+
+    expect(databaseQuery.mock.calls[0]?.[0]).toContain(
+      'ref.source_signal_id = signal.source_signal_id',
+    );
+  });
+
+  it('returns no target unless the binding resolves to exactly one row', async () => {
+    databaseQuery
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+      .mockResolvedValueOnce({ rows: [
+        { connector_account_id: input.connectorAccountId, provider_message_id: 'one' },
+        { connector_account_id: input.connectorAccountId, provider_message_id: 'two' },
+      ], rowCount: 2 });
+
+    await expect(gmailMessageRefRepository.resolveInboxMutationTarget(mutationInput)).resolves.toBeNull();
+    await expect(gmailMessageRefRepository.resolveInboxMutationTarget(mutationInput)).resolves.toBeNull();
+  });
+
+  it('updates only the exact confirmed owner/account/native binding', async () => {
+    databaseQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+
+    await expect(gmailMessageRefRepository.recordConfirmedInboxState({
+      userId: mutationInput.userId,
+      messageRefId: mutationInput.messageRefId,
+      connectorAccountId: input.connectorAccountId,
+      providerMessageId: input.providerMessageId,
+      inbox: false,
+      observedAt: new Date('2026-09-11T13:00:00.000Z'),
+    })).resolves.toBe(true);
+
+    const [sql, params] = databaseQuery.mock.calls[0] as [string, unknown[]];
+    expect(sql).toContain('WHEN $6 > last_observed_at THEN $4');
+    expect(sql).toContain('GREATEST(last_observed_at, $6)');
+    expect(sql).toContain('AND $6 > last_observed_at');
+    expect(sql).toContain("provider = 'google' AND provider_message_id = $5");
+    expect(params).toEqual([
+      mutationInput.messageRefId,
+      mutationInput.userId,
+      input.connectorAccountId,
+      false,
+      input.providerMessageId,
+      new Date('2026-09-11T13:00:00.000Z'),
+    ]);
+  });
+
+  it.each([
+    ['stale', new Date('2026-09-11T11:59:59.999Z')],
+    ['equal', input.observedAt],
+  ] as const)('does not accept a %s confirmed observation over newer state', async (_label, observedAt) => {
+    databaseQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+    await expect(gmailMessageRefRepository.recordConfirmedInboxState({
+      userId: mutationInput.userId,
+      messageRefId: mutationInput.messageRefId,
+      connectorAccountId: input.connectorAccountId,
+      providerMessageId: input.providerMessageId,
+      inbox: false,
+      observedAt,
+    })).resolves.toBe(false);
   });
 });

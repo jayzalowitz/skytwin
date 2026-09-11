@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@skytwin/config": "workspace:*",
+    "@skytwin/connectors": "workspace:*",
     "@skytwin/db": "workspace:*",
     "@skytwin/shared-types": "workspace:*"
   },
