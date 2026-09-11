@@ -67,6 +67,7 @@ interface Store {
 let store: Store;
 let decisionInsertIds: string[];
 let signalIsInInbox: boolean;
+let legacyDecisionExists: boolean;
 
 const signal: SignalRow & { authoring_tier: string } = {
   id: signalId,
@@ -90,6 +91,12 @@ function installQueryStore(): void {
     if (sql.includes('FROM signals AS signal')) {
       expect(sql).toContain('ref.last_observed_inbox = true');
       return { rows: signalIsInInbox ? [signal] : [] };
+    }
+    if (sql.includes('FROM decisions AS legacy')) {
+      expect(sql).toContain("legacy.raw_event->>'messageRefId' = $3::STRING");
+      expect(sql).toContain('legacy.signal_id != $4::STRING');
+      expect(params).toEqual([userId, signal.source_signal_id, messageRefId, signalId]);
+      return { rows: legacyDecisionExists ? [{ id: userId }] : [] };
     }
     if (sql.includes('INSERT INTO decisions')) {
       decisionInsertIds.push(String(params[0]));
@@ -233,6 +240,7 @@ describe('gmailArchiveProposalRepository', () => {
     store = { revisions: [] };
     decisionInsertIds = [];
     signalIsInInbox = true;
+    legacyDecisionExists = false;
     vi.clearAllMocks();
     withTransactionMock.mockImplementation(async (fn: (client: PoolClient) => Promise<unknown>) => {
       try {
@@ -538,6 +546,19 @@ describe('gmailArchiveProposalRepository', () => {
       error: 'evidence_not_found',
     });
     expect(queryMock).toHaveBeenCalledTimes(1);
+    expect(appendMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects an owner- and reference-bound legacy decision before proposal writes', async () => {
+    legacyDecisionExists = true;
+
+    await expect(gmailArchiveProposalRepository.persist(input)).resolves.toEqual({
+      ok: false,
+      error: 'idempotency_conflict',
+    });
+    expect(queryMock).toHaveBeenCalledTimes(2);
+    expect(decisionInsertIds).toEqual([]);
+    expect(store).toEqual({ revisions: [] });
     expect(appendMock).not.toHaveBeenCalled();
   });
 

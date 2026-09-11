@@ -52,6 +52,8 @@ describe.runIf(cockroachAvailable)('gmailArchiveProposalRepository on CockroachD
   const secondAccountId = '20000000-0000-4000-8000-000000000002';
   const secondMessageRefId = '30000000-0000-4000-8000-000000000003';
   const secondSignalId = '40000000-0000-4000-8000-000000000003';
+  const legacyMessageRefId = '30000000-0000-4000-8000-000000000004';
+  const legacySignalId = '40000000-0000-4000-8000-000000000004';
   const decisionId = '60000000-0000-4000-8000-000000000001';
   const candidateId = '70000000-0000-4000-8000-000000000001';
   let cockroach: ChildProcess | undefined;
@@ -240,6 +242,70 @@ describe.runIf(cockroachAvailable)('gmailArchiveProposalRepository on CockroachD
     expect(graphCount.rows[0]).toEqual({ decisions: '1', revisions: '3' });
   });
 
+  it('rejects a legacy decision bound to the same owned reference without proposal writes', async () => {
+    const pool = getPool();
+    await pool.query(
+      `INSERT INTO gmail_message_refs (
+         id, user_id, connector_account_id, provider, provider_message_id,
+         provider_thread_id, source_signal_id, authoring_tier,
+         last_observed_inbox, first_observed_at, last_observed_at
+       ) VALUES ($3, $1, $2, 'google', 'legacy-native-message', NULL, 'legacy-owned-source',
+         'inbox_automated', true, '2026-09-11T13:30:00Z', '2026-09-11T13:30:00Z')`,
+      [userId, accountId, legacyMessageRefId],
+    );
+    await pool.query(
+      `INSERT INTO signals (
+         id, user_id, source, type, domain, data, timestamp,
+         source_signal_id, connector_account_id, resource_ref_id
+       ) VALUES ($4, $1, 'gmail', 'email', 'email', '{}', '2026-09-11T13:30:00Z',
+         'legacy-owned-source', $2, $3)`,
+      [userId, accountId, legacyMessageRefId, legacySignalId],
+    );
+    await pool.query(
+      `INSERT INTO decisions (
+         id, user_id, situation_type, raw_event, interpreted_situation,
+         domain, urgency, metadata, signal_id
+       ) VALUES (
+         '60000000-0000-4000-8000-000000000004', $1, 'email_triage', $2, '{}',
+         'email', 'normal', '{}', 'legacy-owned-source'
+       )`,
+      [userId, JSON.stringify({ signalId: 'legacy-owned-source', messageRefId: legacyMessageRefId })],
+    );
+    const countsBefore = await pool.query<Record<string, string>>(
+      `SELECT
+        (SELECT count(*) FROM decisions) AS decisions,
+        (SELECT count(*) FROM candidate_actions) AS candidates,
+        (SELECT count(*) FROM decision_outcomes) AS outcomes,
+        (SELECT count(*) FROM explanation_records) AS explanations,
+        (SELECT count(*) FROM pre_effect_barriers) AS barriers,
+        (SELECT count(*) FROM approval_requests) AS approvals,
+        (SELECT count(*) FROM decision_receipts) AS receipts,
+        (SELECT count(*) FROM decision_receipt_revisions) AS revisions`,
+    );
+
+    const result = await gmailArchiveProposalRepository.persist(buildInput({
+      connectorAccountId: accountId,
+      messageRefId: legacyMessageRefId,
+      signalId: legacySignalId,
+      decisionId: '60000000-0000-4000-8000-000000000005',
+      candidateId: '70000000-0000-4000-8000-000000000005',
+    }));
+    const countsAfter = await pool.query<Record<string, string>>(
+      `SELECT
+        (SELECT count(*) FROM decisions) AS decisions,
+        (SELECT count(*) FROM candidate_actions) AS candidates,
+        (SELECT count(*) FROM decision_outcomes) AS outcomes,
+        (SELECT count(*) FROM explanation_records) AS explanations,
+        (SELECT count(*) FROM pre_effect_barriers) AS barriers,
+        (SELECT count(*) FROM approval_requests) AS approvals,
+        (SELECT count(*) FROM decision_receipts) AS receipts,
+        (SELECT count(*) FROM decision_receipt_revisions) AS revisions`,
+    );
+
+    expect(result).toEqual({ ok: false, error: 'idempotency_conflict' });
+    expect(countsAfter.rows[0]).toEqual(countsBefore.rows[0]);
+  });
+
   it('keeps equal connector source IDs isolated across two owned accounts', async () => {
     const scope = 'https://www.googleapis.com/auth/gmail.modify';
     const pool = getPool();
@@ -279,6 +345,16 @@ describe.runIf(cockroachAvailable)('gmailArchiveProposalRepository on CockroachD
          ('50000000-0000-4000-8000-000000000002', $1, 'google', NULL, NULL,
           now() + INTERVAL '1 hour', ARRAY[$2]::STRING[], 'second@example.test', 'second', $4)`,
       [userId, scope, accountId, secondAccountId],
+    );
+    await pool.query(
+      `INSERT INTO decisions (
+         id, user_id, situation_type, raw_event, interpreted_situation,
+         domain, urgency, metadata, signal_id
+       ) VALUES (
+         '60000000-0000-4000-8000-000000000006', $1, 'email_triage', $2, '{}',
+         'email', 'normal', '{}', 'owned-source'
+       )`,
+      [userId, JSON.stringify({ signalId: 'owned-source', messageRefId })],
     );
 
     const second = await gmailArchiveProposalRepository.persist(buildInput({
@@ -351,6 +427,6 @@ describe.runIf(cockroachAvailable)('gmailArchiveProposalRepository on CockroachD
       error: 'evidence_not_found',
     });
     const decisions = await getPool().query<{ count: string }>('SELECT count(*) FROM decisions');
-    expect(decisions.rows[0]?.count).toBe('3');
+    expect(decisions.rows[0]?.count).toBe('5');
   });
 });

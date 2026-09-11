@@ -419,6 +419,24 @@ async function loadBoundSignal(
   return result.rows.length === 1 ? result.rows[0]! : null;
 }
 
+async function hasBoundLegacyDecision(
+  client: PoolClient,
+  input: PersistGmailArchiveProposalInput,
+  signal: BoundGmailSignalRow,
+): Promise<boolean> {
+  const result = await client.query<{ id: string }>(
+    `SELECT legacy.id
+       FROM decisions AS legacy
+      WHERE legacy.user_id = $1
+        AND legacy.signal_id = $2
+        AND legacy.raw_event->>'messageRefId' = $3::STRING
+        AND legacy.signal_id != $4::STRING
+      LIMIT 1`,
+    [input.userId, signal.source_signal_id, input.messageRefId, signal.id],
+  );
+  return result.rows.length !== 0;
+}
+
 function exactCandidateMatches(
   row: CandidateActionRow,
   expected: CandidateAction,
@@ -790,6 +808,9 @@ async function persistInTransaction(
 ): Promise<PersistGmailArchiveProposalResult> {
   const signal = await loadBoundSignal(client, input);
   if (!signal || !signal.source_signal_id) return { ok: false, error: 'evidence_not_found' };
+  if (await hasBoundLegacyDecision(client, input, signal)) {
+    return { ok: false, error: 'idempotency_conflict' };
+  }
   const result = await insertFreshBundle(client, input, signal, ids);
   if (!result) return { ok: false, error: 'idempotency_conflict' };
   return {
