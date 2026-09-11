@@ -104,7 +104,7 @@ function installQueryStore(): void {
       store.decision = {
         id: String(params[0]), user_id: String(params[1]), situation_type: 'email_triage',
         raw_event: JSON.parse(String(params[2])), interpreted_situation: JSON.parse(String(params[3])),
-        domain: 'email', urgency: 'normal', metadata: JSON.parse(String(params[4])),
+        domain: 'email', urgency: 'medium', metadata: JSON.parse(String(params[4])),
         signal_id: String(params[5]), created_at: observedAt,
       };
       return { rows: [store.decision] };
@@ -155,7 +155,7 @@ function installQueryStore(): void {
     if (sql.includes('INSERT INTO approval_requests')) {
       store.approval = {
         id: String(params[0]), user_id: String(params[1]), decision_id: String(params[2]),
-        candidate_action: JSON.parse(String(params[3])), reason: String(params[4]), urgency: 'normal',
+        candidate_action: JSON.parse(String(params[3])), reason: String(params[4]), urgency: 'medium',
         status: 'pending', requested_at: requestedAt, expires_at: expiresAt, responded_at: null,
         response: null, batch_id: null, confirmation_level: 'single', first_confirmed_at: null,
         confirmation_token: null,
@@ -272,6 +272,7 @@ describe('gmailArchiveProposalRepository', () => {
     expect(Object.keys(store.candidate?.parameters ?? {})).toHaveLength(6);
     expect(store.decision).toMatchObject({
       id: candidate.decisionId,
+      urgency: 'medium',
       signal_id: signalId,
       raw_event: { signalId, messageRefId },
     });
@@ -303,7 +304,9 @@ describe('gmailArchiveProposalRepository', () => {
       status: 'blocked', effect_type: 'event_execution', idempotency_key: store.decision?.id,
       effect_result: { proposalOnly: true, dispatched: false },
     });
-    expect(store.approval).toMatchObject({ status: 'pending', confirmation_level: 'single' });
+    expect(store.approval).toMatchObject({
+      status: 'pending', urgency: 'medium', confirmation_level: 'single',
+    });
     expect(store.revisions.map((revision) => [revision.stage, revision.disposition])).toEqual([
       ['decision_recorded', 'pending'],
       ['policy_evaluated', 'requires_approval'],
@@ -395,6 +398,8 @@ describe('gmailArchiveProposalRepository', () => {
     if (first.ok && replay.ok) {
       expect(replay.proposal.candidate.id).toBe(first.proposal.candidate.id);
       expect(replay.proposal.approval.id).toBe(first.proposal.approval.id);
+      expect(replay.proposal.decision.urgency).toBe('medium');
+      expect(replay.proposal.approval.urgency).toBe('medium');
     }
   });
 

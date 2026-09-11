@@ -506,7 +506,7 @@ function exactDecisionMatches(row: DecisionRow, signal: BoundGmailSignalRow, mes
     },
     interpreted_situation: { summary: 'An Inbox message may be archived.' },
     domain: 'email',
-    urgency: 'normal',
+    urgency: 'medium',
     metadata: { proposalOnly: true },
     signal_id: signal.id,
   };
@@ -592,7 +592,7 @@ async function loadExistingBundle(
       barrier.failure_reason !== 'proposal_only_boundary' ||
       approval.status !== 'pending' || approval.decision_id !== decision.id ||
       !sameCanonical(approval.candidate_action, approvalCandidate(expectedCandidate)) ||
-      approval.reason !== PROPOSAL_REASON || approval.urgency !== 'normal' ||
+      approval.reason !== PROPOSAL_REASON || approval.urgency !== 'medium' ||
       approval.confirmation_level !== 'single' || approval.responded_at !== null) return null;
   if (approval.response !== null || approval.batch_id !== null || approval.first_confirmed_at !== null ||
       approval.confirmation_token !== null ||
@@ -640,7 +640,7 @@ async function insertFreshBundle(
     `INSERT INTO decisions (
        id, user_id, situation_type, raw_event, interpreted_situation,
        domain, urgency, metadata, signal_id
-     ) VALUES ($1, $2, 'email_triage', $3, $4, 'email', 'normal', $5, $6)
+     ) VALUES ($1, $2, 'email_triage', $3, $4, 'email', 'medium', $5, $6)
      ON CONFLICT DO NOTHING
      RETURNING *`,
     [
@@ -743,7 +743,7 @@ async function insertFreshBundle(
        id, user_id, decision_id, candidate_action, reason, urgency, status,
        requested_at, expires_at, confirmation_level
      ) VALUES (
-       $1, $2, $3, $4, $5, 'normal', 'pending', now(),
+       $1, $2, $3, $4, $5, 'medium', 'pending', now(),
        now() + ($6::INT8 * INTERVAL '1 millisecond'), 'single'
      )
      RETURNING *`,

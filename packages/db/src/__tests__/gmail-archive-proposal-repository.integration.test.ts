@@ -157,12 +157,16 @@ describe.runIf(cockroachAvailable)('gmailArchiveProposalRepository on CockroachD
     expect(replay).toMatchObject({ ok: true, created: false });
     if (!first.ok || !replay.ok) return;
     expect(replay.proposal.decision.id).toBe(first.proposal.decision.id);
+    expect(replay.proposal.decision.urgency).toBe('medium');
+    expect(replay.proposal.approval.urgency).toBe('medium');
     expect(first.proposal.decision).toMatchObject({
       id: decisionId,
+      urgency: 'medium',
       signal_id: signalId,
       raw_event: { signalId, messageRefId },
     });
     expect(first.proposal.candidate.id).toBe(candidateId);
+    expect(first.proposal.approval.urgency).toBe('medium');
     expect(JSON.stringify(first.proposal.revisions)).not.toContain('owned-source');
     expect(first.proposal.candidate.parameters).toEqual({
       schema: 'gmail_inbox_mutation_v1',
