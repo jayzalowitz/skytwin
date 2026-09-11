@@ -95,6 +95,7 @@ export class ProactiveEvaluator {
         allRiskAssessments: [],
         autoExecute: response.wouldAutoExecute,
         requiresApproval: !response.wouldAutoExecute,
+        blockCodes: [],
         reasoning: response.reasoning,
         decidedAt: new Date(),
       };

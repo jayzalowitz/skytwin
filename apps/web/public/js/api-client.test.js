@@ -7,7 +7,13 @@ import {
   KEY_TOUR_MODE,
   KEY_USER_ID,
 } from './storage-keys.js';
-import { endSampleSimulation, fetchJSON, startDemoSession } from './api-client.js';
+import {
+  endSampleSimulation,
+  fetchJSON,
+  fetchPendingSignin,
+  getGoogleAuthUrl,
+  startDemoSession,
+} from './api-client.js';
 
 const source = readFileSync(new URL('./api-client.js', import.meta.url), 'utf8');
 
@@ -107,6 +113,30 @@ describe('api client', () => {
     expect(fetchMock.mock.calls[0][1]).toMatchObject({
       method: 'DELETE',
       headers: { Authorization: 'Bearer expired-sample-token' },
+    });
+  });
+
+  it('keeps the raw OAuth handoff capability out of request targets', async () => {
+    const raw = '550e8400-e29b-41d4-a716-446655440000';
+    const digest = 'a'.repeat(64);
+    const fetchMock = vi.fn().mockImplementation(async () => new Response('{}', {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await getGoogleAuthUrl(null, { newUser: true, pendingKeyDigest: digest });
+    await fetchPendingSignin(raw);
+
+    const authorizeTarget = String(fetchMock.mock.calls[0]?.[0]);
+    const redeemTarget = String(fetchMock.mock.calls[1]?.[0]);
+    expect(authorizeTarget).toContain(`pendingKeyDigest=${digest}`);
+    expect(authorizeTarget).not.toContain(raw);
+    expect(redeemTarget).toBe('/api/oauth/google/pending');
+    expect(redeemTarget).not.toContain(raw);
+    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({
+      method: 'POST',
+      body: JSON.stringify({ pendingKey: raw }),
     });
   });
 

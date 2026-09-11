@@ -49,6 +49,7 @@ function outcome(over: Partial<DecisionOutcome> = {}): DecisionOutcome {
     riskAssessment: null,
     autoExecute: false,
     requiresApproval: true,
+    blockCodes: [],
     reasoning: 'observer tier forces approval',
     decidedAt: new Date(),
     ...over,

@@ -31,6 +31,7 @@ function decisionRow(over: Record<string, unknown> = {}) {
     requires_approval: true,
     auto_executed: false,
     escalation_reason: 'untrusted_origin',
+    block_codes: [],
     confidence: 0.8,
     selected_action_desc: null,
     selected_action_type: null,
@@ -41,9 +42,27 @@ function decisionRow(over: Record<string, unknown> = {}) {
 describe('buildLiveDigest', () => {
   beforeEach(() => mockQuery.mockReset());
 
-  it('returns null when the user has no decisions (cold start)', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [] });
-    expect(await buildLiveDigest('u1')).toBeNull();
+  it('returns a structured cold start when the user has no content or connectors', async () => {
+    mockQuery
+      .mockResolvedValueOnce({ rows: [] }) // decisions
+      .mockResolvedValueOnce({ rows: [] }) // memory suggestions
+      .mockResolvedValueOnce({ rows: [] }); // oauth tokens
+    const digest = await buildLiveDigest('u1');
+    expect(digest.todos).toEqual([]);
+    expect(digest.topics).toEqual([]);
+    expect(digest.coverage!.coldStart).toBe(true);
+    expect(digest.coverage!.connected).toEqual([]);
+  });
+
+  it('returns empty-quiet rather than cold-start when a connector has no items', async () => {
+    mockQuery
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ provider: 'google', scopes: [] }] });
+    const digest = await buildLiveDigest('u1');
+    expect(digest.todos).toEqual([]);
+    expect(digest.topics).toEqual([]);
+    expect(digest.coverage!.coldStart).toBe(false);
   });
 
   it('returns a memory-only digest when recent memory has a novel older connection', async () => {
@@ -131,6 +150,10 @@ describe('buildLiveDigest', () => {
     const d = await buildLiveDigest('u1');
     expect(d).not.toBeNull();
     expect(d!.todos).toHaveLength(1);
+    // Packaged sample/local-source data can have decisions without an OAuth
+    // account. The web consumer contract must render the item ahead of this
+    // coverage-only cold flag (see twin-briefing.test.js).
+    expect(d!.coverage?.coldStart).toBe(true);
 
     const todo = d!.todos[0]!;
     // Title comes from toSignalText (the real subject), not the generic summary.
@@ -149,6 +172,45 @@ describe('buildLiveDigest', () => {
     // Actionable, not system labels: the real snippet + a recommended step.
     expect(todo.body).toBe('A sign-in from a new device.');
     expect(todo.detail?.suggestedAction).toMatch(/security settings/i);
+  });
+
+  it('preserves canonical block codes alongside human explanations for the web action seam', async () => {
+    mockQuery
+      .mockResolvedValueOnce({
+        rows: [decisionRow({
+          requires_approval: true,
+          escalation_reason: 'Selected "Connect write access" but requires approval.',
+          block_codes: ['missing_write_scope:gmail.send'],
+        })],
+      })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    const digest = await buildLiveDigest('u1');
+    const detail = digest.todos[0]?.detail;
+    expect(detail?.blockedReasonCodes).toEqual(['missing_write_scope:gmail.send']);
+    expect(detail?.whyNotAutoExecuted).toEqual([
+      "I don't have permission to do this for you yet",
+    ]);
+  });
+
+  it('keeps code-shaped legacy escalation prose out of the web action seam', async () => {
+    mockQuery
+      .mockResolvedValueOnce({
+        rows: [decisionRow({
+          requires_approval: true,
+          escalation_reason: 'missing_write_scope:gmail.send',
+          block_codes: [],
+        })],
+      })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    const detail = (await buildLiveDigest('u1')).todos[0]?.detail;
+    expect(detail?.whyNotAutoExecuted).toEqual([
+      "I don't have permission to do this for you yet",
+    ]);
+    expect(detail?.blockedReasonCodes).toEqual([]);
   });
 
   it('derives a clean suggested step from the selected action TYPE', async () => {

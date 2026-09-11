@@ -19,18 +19,17 @@
 --
 -- This table is the per-flow handoff: the client generates a UUIDv4
 -- pendingKey (122 random bits — 6 nibbles are version/variant) before
--- opening the OAuth URL, threads it through the HMAC-signed state,
--- /callback writes the resulting userId here, and the desktop wizard
--- polls `GET /api/oauth/google/pending/:key` (DELETE...RETURNING —
--- consume-on-read) until the row appears.
+-- opening the OAuth URL. Only its domain-separated digest crosses the
+-- authorize URL, signed state, and this table. The client redeems the raw
+-- capability with `POST /api/oauth/google/pending`. Migration
+-- 079 adds the session identity used to make redemption idempotent across a
+-- lost success response; the row remains redeemable only for this table's
+-- five-minute TTL.
 --
 -- Schema notes.
---   pending_key   Client-generated random opaque token (crypto.randomUUID
---                 in v4 form). Server validates the UUIDv4 shape before
---                 trusting it. NOT a credential — the key is unguessable
---                 by an attacker, and the worst case if leaked is a 5-min
---                 window in which someone could learn that <email> just
---                 finished signing in.
+--   pending_key   Legacy column name. Migration 059 initially stored the raw
+--                 UUID; migration 079 purges those five-minute rows. Current
+--                 code stores only the domain-separated SHA-256 digest.
 --   user_id       The user we just created or matched on /callback.
 --   account_email Verified Google email (also persisted in oauth_tokens;
 --                 redundant for fast read on the poll endpoint).

@@ -2,6 +2,7 @@ import type {
   DecisionContext,
   DecisionObject,
   DecisionOutcome,
+  DecisionBlockCode,
   CandidateAction,
   RiskAssessment,
   ActionPolicy,
@@ -196,6 +197,7 @@ export class DecisionMaker {
         allRiskAssessments: [],
         autoExecute: false,
         requiresApproval: true,
+        blockCodes: [],
         reasoning: 'No candidate actions could be generated. Escalating to user.',
         decidedAt: new Date(),
       };
@@ -242,6 +244,7 @@ export class DecisionMaker {
     let requiresApproval = true;
     let confirmationLevel: DecisionOutcome['confirmationLevel'];
     let reasoning = '';
+    let blockCodes: DecisionBlockCode[] = [];
     let lastBlockedReason = '';
 
     for (const { candidate, assessment } of scoredCandidates) {
@@ -279,6 +282,18 @@ export class DecisionMaker {
         confirmationLevel = policyDecision.confirmationLevel;
         autoExecute = !policyDecision.requiresApproval &&
           this.shouldAutoExecute(candidate, context.trustTier, policies);
+        if (
+          policyDecision.requiresApproval &&
+          candidate.actionType === 'escalate_to_user' &&
+          candidate.parameters['reason'] === 'missing_write_scope'
+        ) {
+          const requiredScope = candidate.parameters['requiredScope'];
+          blockCodes = [
+            typeof requiredScope === 'string' && requiredScope.length > 0
+              ? `missing_write_scope:${requiredScope}`
+              : 'missing_write_scope',
+          ];
+        }
         reasoning = autoExecute
           ? `Selected "${candidate.description}" for auto-execution. ${policyDecision.reason}`
           : policyDecision.requiresApproval
@@ -311,6 +326,7 @@ export class DecisionMaker {
         .filter((a): a is RiskAssessment => a !== undefined),
       autoExecute,
       requiresApproval: selectedAction ? requiresApproval : true,
+      blockCodes,
       reasoning,
       decidedAt: new Date(),
       policyVerdicts,

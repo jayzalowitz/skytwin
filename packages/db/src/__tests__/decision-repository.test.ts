@@ -71,6 +71,7 @@ function fakeOutcomeRow(overrides: Partial<{
   selected_action_id: string | null;
   auto_executed: boolean;
   requires_approval: boolean;
+  block_codes: string[];
   escalation_reason: string | null;
   explanation: string;
   confidence: number;
@@ -82,6 +83,7 @@ function fakeOutcomeRow(overrides: Partial<{
     selected_action_id: overrides.selected_action_id ?? 'ca-001',
     auto_executed: overrides.auto_executed ?? false,
     requires_approval: overrides.requires_approval ?? true,
+    block_codes: overrides.block_codes ?? [],
     escalation_reason: overrides.escalation_reason ?? null,
     explanation: overrides.explanation ?? 'Action requires user review',
     confidence: overrides.confidence ?? 0.85,
@@ -541,6 +543,7 @@ describe('decisionRepository', () => {
         selectedActionId: 'ca-001',
         autoExecuted: false,
         requiresApproval: true,
+        blockCodes: ['missing_write_scope:gmail.send'],
         escalationReason: 'High cost',
         explanation: 'Action requires user review',
         confidence: 0.85,
@@ -556,6 +559,7 @@ describe('decisionRepository', () => {
         'ca-001',
         false,
         true,
+        JSON.stringify(['missing_write_scope:gmail.send']),
         'High cost',
         'Action requires user review',
         0.85,
@@ -577,6 +581,7 @@ describe('decisionRepository', () => {
         null,           // selectedActionId
         false,          // autoExecuted
         false,          // requiresApproval
+        JSON.stringify([]), // blockCodes
         null,           // escalationReason
         'Auto decision',
         0.95,

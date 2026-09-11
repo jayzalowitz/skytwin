@@ -32,6 +32,7 @@ import {
 } from '@skytwin/decision-engine';
 import {
   buildDailyMemorySuggestions,
+  isDecisionBlockCode,
   type DailyMemorySuggestion,
   type DailyMemorySuggestionPage,
 } from '@skytwin/shared-types';
@@ -69,6 +70,7 @@ interface DecisionDigestRow {
   requires_approval: boolean | null;
   auto_executed: boolean | null;
   escalation_reason: string | null;
+  block_codes: unknown;
   confidence: number | null;
   selected_action_desc: string | null;
   selected_action_type: string | null;
@@ -485,16 +487,17 @@ function commitmentTodosFor(
 }
 
 /**
- * Build the structured digest for a user from their recent decisions. Returns
- * null when the user has no decisions (caller falls back to prose / empty).
+ * Build the structured digest for a user, including coverage when there are no
+ * decisions yet. An empty digest is meaningful: it distinguishes a connected,
+ * quiet account from a true zero-connector cold start.
  */
-export async function buildLiveDigest(userId: string): Promise<LiveDigest | null> {
+export async function buildLiveDigest(userId: string): Promise<LiveDigest> {
   const decisions = await query<DecisionDigestRow>(
     `SELECT d.id,
             d.raw_event,
             (d.interpreted_situation->>'summary') AS summary,
             d.domain, d.urgency, d.situation_type, d.created_at,
-            o.requires_approval, o.auto_executed, o.escalation_reason, o.confidence,
+            o.requires_approval, o.auto_executed, o.escalation_reason, o.block_codes, o.confidence,
             sel.description AS selected_action_desc,
             sel.action_type AS selected_action_type
      FROM decisions d
@@ -511,7 +514,6 @@ export async function buildLiveDigest(userId: string): Promise<LiveDigest | null
   let memorySuggestions: DailyMemorySuggestion[] = [];
   if (!hasDecisions) {
     memorySuggestions = await fetchDailyMemorySuggestions(userId);
-    if (memorySuggestions.length === 0 && watchRuns.length === 0) return null;
   }
 
   // Per-sender pin/hide overrides (#270/#485) from the canonical
@@ -571,15 +573,15 @@ export async function buildLiveDigest(userId: string): Promise<LiveDigest | null
 
     const actionRequired = needsYou(r);
     const urgency = normalizeUrgency(r.urgency);
-    // Honest "why not auto-run": the engine's real escalation reason if it has
-    // one, else the trust-tier gate ONLY when it genuinely required approval.
-    // A to-do that's escalate-only by nature (security/RSVP) but wasn't
-    // approval-gated gets no fabricated reason ("Set aside for your review").
-    const blockedReasons = r.escalation_reason
+    // Machine-readable action selection is sourced only from guard-validated
+    // block_codes. Historical escalation_reason text remains display-only: it
+    // may resemble a code, but must never create a "Grant access" affordance.
+    const persistedBlockCodes = Array.isArray(r.block_codes)
+      ? r.block_codes.filter(isDecisionBlockCode)
+      : [];
+    const humanBlockedReasons = r.escalation_reason
       ? [r.escalation_reason]
-      : r.requires_approval === true
-        ? ['trust_tier:observer']
-        : [];
+      : [];
 
     const sourceType = sourceLabel(signalText.source);
     // Meaningful source ref: who/what it came from (sender, organizer, file),
@@ -610,7 +612,8 @@ export async function buildLiveDigest(userId: string): Promise<LiveDigest | null
         suggestedAction: suggestedActionFor(r) ?? undefined,
         occurredAt: occurredAtIso,
         requiresApproval: actionRequired,
-        blockedReasons,
+        blockedReasonCodes: persistedBlockCodes,
+        humanBlockedReasons,
         sourceRefs: [sender ?? SOURCE_FRIENDLY[sourceType] ?? sourceType],
       }),
     );

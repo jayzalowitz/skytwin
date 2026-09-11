@@ -132,6 +132,7 @@ export {
   oauthRepository,
   oauthPkcePendingRepository,
   oauthPendingSigninRepository,
+  PendingSigninCollisionError,
   approvalRepository,
   patternRepository,
   executionRepository,
@@ -157,7 +158,6 @@ export type {
 } from './repositories/index.js';
 export type {
   RememberPendingSigninInput,
-  ConsumedPendingSignin,
 } from './repositories/index.js';
 export type {
   CreateExecutionPlanInput,

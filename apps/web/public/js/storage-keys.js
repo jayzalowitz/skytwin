@@ -35,7 +35,11 @@ export const KEY_TOUR_MODE = 'skytwin_tour_mode';
  * payloads gracefully.
  */
 export const KEY_ONBOARDING_STATE = 'skytwin_onboarding_state';
-export const ONBOARDING_STATE_VERSION = 1;
+export const ONBOARDING_STATE_VERSION = 2;
+/** Non-secret reasoning preference waiting for an authenticated settings write. */
+export const KEY_ONBOARDING_REASONING_CHOICE = 'skytwin_onboarding_reasoning_choice';
+/** Safe in-app route requested before unauthenticated onboarding forced root. */
+export const KEY_ONBOARDING_RETURN_HASH = 'skytwin_onboarding_return_hash';
 
 // ── Notification opt-in ───────────────────────────────────────────────
 

@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { createHmac, timingSafeEqual, randomUUID } from 'crypto';
+import { createHash, createHmac, timingSafeEqual } from 'crypto';
 import { createLogger } from '@skytwin/core';
 import { loadConfig } from '@skytwin/config';
 import { withTransaction } from '@skytwin/db';
@@ -9,6 +9,7 @@ import {
   oauthRepository,
   oauthPkcePendingRepository,
   oauthPendingSigninRepository,
+  PendingSigninCollisionError,
   serviceCredentialRepository,
   userRepository,
 } from '@skytwin/db';
@@ -34,6 +35,8 @@ import { requireOwnership } from '../middleware/require-ownership.js';
 const STATE_SECRET = process.env['SESSION_SECRET'] ?? 'skytwin-dev-secret';
 const STATE_TTL_MS = 10 * 60 * 1000; // 10 minutes — plenty for the consent screen
 const STATE_VERSION = 'v2';
+const PENDING_CAPABILITY_DIGEST_DOMAIN = 'skytwin:oauth-pending-capability:v1';
+const PENDING_SESSION_TOKEN_DOMAIN = 'skytwin:oauth-pending-session:v1';
 
 /**
  * Rate limit for the public /google/authorize?newUser=true path. Anyone can
@@ -147,6 +150,29 @@ export function _newUserRateLimitBucketCountForTests(): number {
 }
 
 /**
+ * Derive a stable bearer for the pending capability's short idempotency
+ * window. The raw token is never stored; after the pending row expires the
+ * endpoint can no longer disclose it, while a lost HTTP response can be
+ * retried and receive the same already-minted session.
+ */
+export function derivePendingSessionToken(pendingKey: string): string {
+  return createHmac('sha256', STATE_SECRET)
+    .update(`${PENDING_SESSION_TOKEN_DOMAIN}:${pendingKey}`)
+    .digest('base64url');
+}
+
+/**
+ * One-way database identity for a client-held pending capability. Keeping the
+ * domain in the preimage prevents this digest from being reused as an identity
+ * in another protocol that happens to hash the same UUID.
+ */
+export function derivePendingCapabilityDigest(pendingKey: string): string {
+  return createHash('sha256')
+    .update(`${PENDING_CAPABILITY_DIGEST_DOMAIN}:${pendingKey}`)
+    .digest('hex');
+}
+
+/**
  * Google's userinfo response. We don't depend on the Google SDK so this is
  * just the fields we read after a successful token exchange.
  */
@@ -237,16 +263,10 @@ interface ParsedState {
   /** Dashboard hash route to land on post-callback, or null for the default `#/`. */
   nextHash: string | null;
   /**
-   * Client-generated pollable handoff key for desktop new-user flows.
-   * `/callback` writes the resulting userId + scopes to
-   * `oauth_pending_signin` keyed by this value so the desktop wizard
-   * can poll `GET /api/oauth/google/pending/:key` and auto-advance.
-   *
-   * Format is validated up-front (UUID4) so an attacker can't smuggle a
-   * shaped string that misroutes the polling endpoint. Null for any
-   * non-desktop flow.
+   * Domain-separated digest of the client-held capability. The raw UUID is
+   * never placed in OAuth state, a request target, SQL, logs, or durable state.
    */
-  pendingKey: string | null;
+  pendingKeyDigest: string | null;
 }
 
 /**
@@ -269,6 +289,10 @@ export const NEXT_HASH_ROUTES: Record<string, string> = {
 const UUID_V4_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 export function isValidPendingKey(value: string): boolean {
   return UUID_V4_RE.test(value);
+}
+const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
+export function isValidPendingKeyDigest(value: string): boolean {
+  return SHA256_HEX_RE.test(value);
 }
 
 function signStatePayload(payload: string, expiresAtMs: number): string {
@@ -323,22 +347,19 @@ function parseSignedState(state: string): ParsedState {
   // lookup) so a value like `constructor` or `__proto__` can't reach the
   // inherited Object property and slip past the truthy check.
   let nextHash: string | null = null;
-  // Decode `key=<uuid>` tag — the pendingKey for the desktop newUser
-  // poll handoff. UUID-shape re-validated on read so a tampered tag
-  // can't write a non-UUID value into `oauth_pending_signin` (the
-  // table column is TEXT for portability; the constraint lives in
-  // application code).
-  let pendingKey: string | null = null;
+  // Decode only a one-way digest. The raw capability never crosses the OAuth
+  // provider redirect and therefore cannot leak through request targets.
+  let pendingKeyDigest: string | null = null;
   for (const t of rawTags) {
     if (t.startsWith('next=')) {
       const candidate = t.slice('next='.length);
       if (Object.prototype.hasOwnProperty.call(NEXT_HASH_ROUTES, candidate)) {
         nextHash = NEXT_HASH_ROUTES[candidate] ?? null;
       }
-    } else if (t.startsWith('key=')) {
-      const candidate = t.slice('key='.length);
-      if (isValidPendingKey(candidate)) {
-        pendingKey = candidate;
+    } else if (t.startsWith('key_digest=')) {
+      const candidate = t.slice('key_digest='.length);
+      if (isValidPendingKeyDigest(candidate)) {
+        pendingKeyDigest = candidate;
       }
     }
   }
@@ -347,7 +368,7 @@ function parseSignedState(state: string): ParsedState {
     desktop: tags.has('desktop'),
     newAccount: tags.has('new'),
     nextHash,
-    pendingKey,
+    pendingKeyDigest,
   };
 }
 
@@ -628,7 +649,7 @@ export function createOAuthRouter(): Router {
   // All OAuth management endpoints require an authenticated user except:
   //   - /google/callback                  public (browser redirect from Google)
   //   - /google/authorize?newUser=true    public (sign-in-with-Google)
-  //   - /google/pending/:key              public (desktop newUser poll)
+  //   - POST /google/pending              public (newUser capability redeem)
   // For the new-user flow there's no session yet, so requiring sessionAuth
   // would 401 before the user could even start consenting. The pending-key
   // endpoint is gated by the unguessable random key — see the route's
@@ -636,7 +657,7 @@ export function createOAuthRouter(): Router {
   const isPublicOAuthPath = (req: { path: string; query: Record<string, unknown> }): boolean => {
     if (req.path === '/google/callback') return true;
     if (req.path === '/google/authorize' && req.query['newUser'] === 'true') return true;
-    if (req.path.startsWith('/google/pending/')) return true;
+    if (req.path === '/google/pending') return true;
     // The Microsoft callback is a browser redirect from Microsoft with no
     // session. It's safe to be public: it acts only on the HMAC-signed state
     // (which binds the flow to the user who started the authenticated
@@ -769,12 +790,13 @@ export function createOAuthRouter(): Router {
       const nextTagValue = nextQuery && Object.prototype.hasOwnProperty.call(NEXT_HASH_ROUTES, nextQuery)
         ? nextQuery
         : undefined;
-      // Pollable handoff key for desktop new-user flows. Validated to
-      // UUIDv4 shape up-front; anything else is dropped silently so a
-      // malformed query param can't poison state.
-      const pendingKeyQuery = typeof req.query['pendingKey'] === 'string' ? req.query['pendingKey'] : undefined;
-      const pendingKey = pendingKeyQuery && isValidPendingKey(pendingKeyQuery)
-        ? pendingKeyQuery
+      // Only the capability digest crosses this request target and the OAuth
+      // state round-trip. The raw capability stays in client session storage.
+      const pendingKeyDigestQuery = typeof req.query['pendingKeyDigest'] === 'string'
+        ? req.query['pendingKeyDigest']
+        : undefined;
+      const pendingKeyDigest = pendingKeyDigestQuery && isValidPendingKeyDigest(pendingKeyDigestQuery)
+        ? pendingKeyDigestQuery
         : undefined;
 
       let stateHead: string;
@@ -793,7 +815,7 @@ export function createOAuthRouter(): Router {
       if (desktop) tags.push('desktop');
       if (newAccount) tags.push('new');
       if (nextTagValue) tags.push(`next=${nextTagValue}`);
-      if (pendingKey) tags.push(`key=${pendingKey}`);
+      if (pendingKeyDigest) tags.push(`key_digest=${pendingKeyDigest}`);
 
       const payload = [stateHead, ...tags].join('|');
       const state = signStatePayload(payload, Date.now() + STATE_TTL_MS);
@@ -926,8 +948,7 @@ export function createOAuthRouter(): Router {
         }
       }
 
-      // Persist tokens keyed on (user, provider, account_email).
-      await oauthRepository.saveTokenForAccount({
+      const tokenInput = {
         userId,
         provider: 'google',
         accountEmail,
@@ -936,7 +957,31 @@ export function createOAuthRouter(): Router {
         refreshToken: tokenSet.refreshToken,
         expiresAt: tokenSet.expiresAt,
         scopes: tokenSet.scopes,
-      });
+      } as const;
+
+      // A pending capability is the sole authenticated handoff for new-user
+      // browser/desktop flows. Persist it in the SAME transaction as the OAuth
+      // token so the callback can never report a connected account that the
+      // client has no way to claim. Any pending-row failure rolls back the
+      // token write and fails the callback visibly.
+      if (parsed.pendingKeyDigest) {
+        await withTransaction(async (client) => {
+          await oauthRepository.saveTokenForAccount(tokenInput, client);
+          await oauthPendingSigninRepository.remember({
+            pendingKeyDigest: parsed.pendingKeyDigest!,
+            userId,
+            accountEmail,
+            scopes: Array.isArray(tokenSet.scopes) ? tokenSet.scopes : [],
+            nextHash: parsed.nextHash,
+            expiresAt: new Date(Date.now() + PENDING_SIGNIN_TTL_MS),
+          }, client);
+        });
+        void oauthPendingSigninRepository.sweepExpired().catch(() => {
+          log.warn('Failed to sweep expired oauth pending sign-ins');
+        });
+      } else {
+        await oauthRepository.saveTokenForAccount(tokenInput);
+      }
 
       // Profile sync (#486): capture the user's language (Google locale) and
       // timezone (primary calendar) so the briefing prose is in their language
@@ -974,56 +1019,15 @@ export function createOAuthRouter(): Router {
         });
       }
 
-      // If the desktop client supplied a pendingKey (per-flow handoff
-      // token), record the completion so the wizard can poll for it.
-      // The system browser will show the static "close this tab" HTML
-      // below; the Electron app, which has no other way to learn about
-      // the user that /callback just created, polls
-      // GET /api/oauth/google/pending/:key.
-      if (parsed.pendingKey) {
-        try {
-          // remember() now fires a best-effort sweepExpired internally;
-          // the explicit caller-side sweep that used to live here was
-          // removed to avoid double-sweeping (was consuming two pool
-          // connections per OAuth callback under burst).
-          await oauthPendingSigninRepository.remember({
-            pendingKey: parsed.pendingKey,
-            userId,
-            accountEmail,
-            scopes: Array.isArray(tokenSet.scopes) ? tokenSet.scopes : [],
-            nextHash: parsed.nextHash,
-            expiresAt: new Date(Date.now() + PENDING_SIGNIN_TTL_MS),
-          });
-        } catch (err) {
-          // Pending-signin is a best-effort UX bridge. If the write
-          // fails (table missing on a half-migrated deploy, transient
-          // CRDB hiccup, etc.) the user still has a fully-functional
-          // token row from the saveTokenForAccount call above and a
-          // newly-created user — but the wizard's 5-min poll will
-          // time out with the confusing "we didn't see your Google
-          // sign-in" message even though OAuth succeeded. Log so the
-          // operator can correlate the wizard timeout with a real
-          // DB failure rather than chasing a phantom Google issue.
-          // Truncate the key — even though it's 5-min-lived, logs may
-          // ship to long-term aggregators (Datadog/Loki) and we don't
-          // want a 5-minute secret landing in a 30-day index. 8 hex
-          // chars (32 bits) are enough to correlate the wizard timeout
-          // with the failed write at-a-glance; not enough to redeem.
-          log.warn('Failed to write oauth_pending_signin row', {
-            userId,
-            accountEmail,
-            pendingKeyPrefix: `${parsed.pendingKey.slice(0, 8)}…`,
-            error: err instanceof Error ? err.message : String(err),
-          });
-        }
-      }
-
-      if (parsed.desktop) {
+      // A pending capability is completed by the original page's in-memory
+      // poller (desktop or browser). Never redirect this popup/system-browser
+      // callback into a second unauthenticated dashboard instance.
+      if (parsed.pendingKeyDigest) {
         res.send(`<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>SkyTwin</title>
-<style>body{font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#09090b;color:#fafafa}
+<style>body{font-family:Geist,ui-sans-serif,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#0E0F13;color:#ECEDF1}
 .card{text-align:center;padding:2rem}.check{font-size:3rem;margin-bottom:1rem}</style></head>
-<body><div class="card"><div class="check">&#10003;</div><h2>Google account connected</h2><p>${accountEmail} is now linked. You can close this tab and return to SkyTwin.</p></div></body></html>`);
+<body><div class="card"><div class="check">&#10003;</div><h2>Google account connected</h2><p>You can close this window and return to SkyTwin.</p></div></body></html>`);
         return;
       }
 
@@ -1049,6 +1053,10 @@ export function createOAuthRouter(): Router {
       // The dashboard hash router reads the bit before `?` as the route.
       res.redirect(`${webBase}/?${topLevel}${hashRoute}?${hashQuery}`);
     } catch (error) {
+      if (error instanceof PendingSigninCollisionError) {
+        res.status(409).json({ error: error.code });
+        return;
+      }
       next(error);
     }
   });
@@ -1191,12 +1199,11 @@ export function createOAuthRouter(): Router {
   });
 
   /**
-   * GET /api/oauth/google/pending/:key
+   * POST /api/oauth/google/pending
    *
-   * Pollable handoff endpoint for the desktop new-user flow. The
-   * Electron wizard generates a UUIDv4 before opening the system
-   * browser, passes it to /authorize as `?pendingKey=…`, and polls
-   * here until /callback writes the resulting userId.
+   * Pollable handoff endpoint for the new-user flow. The client retains the
+   * raw UUID capability locally, sends only its digest to /authorize, and
+   * redeems the raw value in this no-store POST body.
    *
    * **Security model.** Possession of the pendingKey IS the
    * authorization. The endpoint:
@@ -1207,9 +1214,11 @@ export function createOAuthRouter(): Router {
    *      itself, returning a fresh token. The wizard stashes the
    *      token; subsequent API calls flow through `Authorization:
    *      Bearer …` exactly like the QR-paired mobile flow.
-   *   2. Is consume-on-read (DELETE...RETURNING + an explicit
-   *      expires_at >= NOW() predicate). A leaked key can only be
-   *      redeemed once; an expired key returns 404 deterministically.
+   *   2. Keeps a bounded idempotency window. The first read locks the
+   *      pending row and mints one session; retries return the same
+   *      server-derived bearer until the five-minute pending TTL expires.
+   *      This survives a lost success response without extending the
+   *      capability's disclosure window or replaying OAuth.
    *   3. Is per-IP rate-limited (same bucket as `?newUser=true`) to
    *      keep brute-force / DoS attempts off the table.
    *
@@ -1219,14 +1228,18 @@ export function createOAuthRouter(): Router {
    *   - the row has expired (user took >5 min)
    *   - the key was malformed (validated up-front; surfaced as 404 so
    *     this endpoint can't be used as a key-shape oracle)
-   *   - the key was already consumed by a previous request
+   *   - the capability has expired or its linked session is no longer valid
    *
-   * Public — no sessionAuth, by design — the desktop client has no
+   * Public — no sessionAuth, by design — the client has no
    * session yet for a new user. The key's unguessability IS the
    * authorization.
    */
-  router.get('/google/pending/:key', async (req, res, next) => {
+  router.post('/google/pending', async (req, res, next) => {
     try {
+      // Both the pre-callback 404 and the success body are capability/session
+      // state and must never be cached by a browser or intermediary.
+      res.set('Cache-Control', 'no-store');
+      res.set('Pragma', 'no-cache');
       const ip = req.ip ?? req.socket.remoteAddress ?? 'unknown';
       // Use the dedicated pending-poll bucket — sharing the
       // ?newUser=true bucket's tight 5/minute cap would 429 the
@@ -1243,7 +1256,7 @@ export function createOAuthRouter(): Router {
         return;
       }
 
-      const { key } = req.params;
+      const key = typeof req.body?.pendingKey === 'string' ? req.body.pendingKey : undefined;
       if (!key || !isValidPendingKey(key)) {
         // Same 404 shape as not-yet / expired / already-consumed so
         // this endpoint isn't a key-shape oracle.
@@ -1251,49 +1264,70 @@ export function createOAuthRouter(): Router {
         return;
       }
 
-      // Atomically consume the pending row AND mint the session in
-      // one transaction. Without this, a session.create() failure
-      // after consume() would leave the user stranded — no session,
-      // no recoverable pending row. The transaction rolls back the
-      // DELETE on any downstream error so the user can retry.
-      const rawToken = `${randomUUID()}-${randomUUID()}`;
+      // Atomically lock the pending row and bind it to one session in a single
+      // transaction. Without this, a session creation failure could leave the
+      // user stranded; retaining the row for its short TTL also lets a lost
+      // success response recover the same session on retry.
+      const rawToken = derivePendingSessionToken(key);
       const tokenHash = hashToken(rawToken);
-      const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+      const pendingKeyDigest = derivePendingCapabilityDigest(key);
 
       const handoff = await withTransaction(async (client) => {
         const now = new Date();
-        // Same shape as oauthPendingSigninRepository.consume — duplicated
-        // here so it can share the transaction client.
-        const consumeResult = await client.query<{
+        // Lock the capability row for single-winner session creation, but keep
+        // it until its short TTL so a lost response can retrieve the exact
+        // same bearer/session without replaying OAuth.
+        const pendingResult = await client.query<{
           user_id: string;
           account_email: string;
           scopes: unknown;
           next_hash: string | null;
           expires_at: Date;
+          session_id: string | null;
         }>(
-          `DELETE FROM oauth_pending_signin
+          `SELECT user_id, account_email, scopes, next_hash, expires_at, session_id
+             FROM oauth_pending_signin
             WHERE pending_key = $1
               AND expires_at >= $2
-           RETURNING user_id, account_email, scopes, next_hash, expires_at`,
-          [key, now],
+            FOR UPDATE`,
+          [pendingKeyDigest, now],
         );
-        const row = consumeResult.rows[0];
+        const row = pendingResult.rows[0];
         if (!row) return null;
 
-        // Same shape as sessionRepository.create — duplicated here for
-        // the same reason. If this INSERT throws, the transaction rolls
-        // back and the pending row stays put for a retry.
-        await client.query(
-          `INSERT INTO sessions (user_id, token_hash, device_name, expires_at)
-           VALUES ($1, $2, $3, $4)`,
-          [row.user_id, tokenHash, 'Desktop', expiresAt],
-        );
+        let sessionExpiresAt: Date;
+        if (row.session_id) {
+          const existing = await client.query<{ expires_at: Date }>(
+            `SELECT expires_at FROM sessions
+              WHERE id = $1 AND user_id = $2 AND token_hash = $3
+                AND revoked = false AND expires_at >= $4`,
+            [row.session_id, row.user_id, tokenHash, now],
+          );
+          const existingSession = existing.rows[0];
+          if (!existingSession) return null;
+          sessionExpiresAt = existingSession.expires_at;
+        } else {
+          sessionExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+          const inserted = await client.query<{ id: string }>(
+            `INSERT INTO sessions (user_id, token_hash, device_name, expires_at)
+             VALUES ($1, $2, $3, $4)
+             RETURNING id`,
+            [row.user_id, tokenHash, 'OAuth handoff', sessionExpiresAt],
+          );
+          const sessionId = inserted.rows[0]?.id;
+          if (!sessionId) throw new Error('pending sign-in session insert returned no id');
+          await client.query(
+            'UPDATE oauth_pending_signin SET session_id = $1 WHERE pending_key = $2',
+            [sessionId, pendingKeyDigest],
+          );
+        }
 
         return {
           userId: row.user_id,
           accountEmail: row.account_email,
           scopes: Array.isArray(row.scopes) ? (row.scopes as string[]) : [],
           nextHash: row.next_hash,
+          sessionExpiresAt,
         };
       });
 
@@ -1305,7 +1339,7 @@ export function createOAuthRouter(): Router {
       res.json({
         connected: true,
         sessionToken: rawToken,
-        sessionExpiresAt: expiresAt.toISOString(),
+        sessionExpiresAt: handoff.sessionExpiresAt.toISOString(),
         userId: handoff.userId,
         accountEmail: handoff.accountEmail,
         scopes: handoff.scopes,

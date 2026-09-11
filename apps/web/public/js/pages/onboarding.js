@@ -1,1408 +1,519 @@
 /**
- * First-run wizard — issue #181.
+ * Briefing-first onboarding.
  *
- * State machine:
- *   welcome → email_choice / computer_choice / about_me_choice
- *   about_me_choice → recipe_preview (via LLM or deterministic 3-question form)
- *   email_choice    → recipe_preview
- *   computer_choice → (idle-miner poll) → recipe_preview
- *   recipe_preview  → installing
- *   installing      → complete
- *
- * Singleton delegator: all click handling lives in handleOnboardingClick(),
- * wired ONCE with a _wizardListenerWired guard and gated on
- * window.location.hash === '' || '#/' (the overlay is always shown at root).
- *
- * No inline event handlers anywhere in this file — only data-action attributes.
+ * The first run asks only three questions: which data to begin with, where
+ * reasoning may run, and the initial authority. Choices are kept in a small,
+ * versioned local resume record until this flow completes. API keys, tokens,
+ * source contents, and provider endpoints are never written to that record.
  */
 
 import {
-  createUser,
-  fetchJSON,
+  escapeHtml,
   fetchDemoInfo,
   startDemoSession,
-  previewDemoDecision,
-  fetchOnboardingState,
-  postOnboardingDialogue,
-  postDeterministicPick,
-  postOnboardingComplete,
-  installCapabilityRecipe,
-  fetchCapabilityDependencyGraph,
-  fetchLocalModelRecommendation,
-  escapeHtml,
+  updateReasoningMode,
 } from '../api-client.js';
 import {
-  KEY_USER_ID,
-  KEY_SESSION_TOKEN,
   KEY_ONBOARDED,
-  KEY_TOUR_MODE,
+  KEY_ONBOARDING_REASONING_CHOICE,
+  KEY_ONBOARDING_RETURN_HASH,
   KEY_ONBOARDING_STATE,
+  KEY_SESSION_TOKEN,
+  KEY_TOUR_MODE,
+  KEY_USER_ID,
   ONBOARDING_STATE_VERSION,
 } from '../storage-keys.js';
+import { startGoogleSignIn } from '../google-signin.js';
 
-/**
- * Persist the in-flight wizard state to localStorage (#390). Called
- * on every `transitionTo` so a tab-close mid-wizard can resume from
- * the same screen on next load. Stores only what's needed to re-enter
- * — the screen name, the LLM-provider flag, and the picked recipe.
- * Conversational answers and the dependency graph are NOT persisted;
- * the resume drops the user back at the screen, not mid-question.
- */
-function saveOnboardingState() {
-  if (!_wizardState) return;
-  try {
-    localStorage.setItem(
-      KEY_ONBOARDING_STATE,
-      JSON.stringify({
-        v: ONBOARDING_STATE_VERSION,
-        screen: _wizardState.screen,
-        hasLlmProvider: _wizardState.hasLlmProvider,
-        recipeSlug: _wizardState.recipeSlug,
-        savedAt: new Date().toISOString(),
-      }),
-    );
-  } catch { /* private mode etc. */ }
+export const ONBOARDING_SCREENS = Object.freeze([
+  'data_source',
+  'reasoning',
+  'autonomy',
+  'complete',
+  'connecting',
+  'error',
+]);
+
+const RESUMABLE_SCREENS = new Set(['data_source', 'reasoning', 'autonomy']);
+const DATA_SOURCES = new Set(['sample', 'connect']);
+const REASONING_CHOICES = new Set(['not_configured', 'bring_your_own_provider']);
+
+let _listenerWired = false;
+let _onComplete = null;
+let _state = null;
+
+export function initialOnboardingState(userId = '') {
+  return {
+    screen: 'data_source',
+    dataSource: null,
+    reasoningMode: null,
+    autonomy: 'observer',
+    userId,
+    retryScreen: 'data_source',
+    errorMessage: '',
+  };
 }
 
-function loadOnboardingState() {
+/** Validate persisted data field-by-field; unknown or stale shapes reset safely. */
+export function parseOnboardingResumeState(raw, userId = '') {
   try {
-    const raw = localStorage.getItem(KEY_ONBOARDING_STATE);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    if (!parsed || parsed.v !== ONBOARDING_STATE_VERSION) return null;
-    if (typeof parsed.screen !== 'string') return null;
-    return parsed;
-  } catch { return null; }
+    const value = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    if (!value || typeof value !== 'object' || value.v !== ONBOARDING_STATE_VERSION) return null;
+    if (!RESUMABLE_SCREENS.has(value.screen)) return null;
+    const dataSource = DATA_SOURCES.has(value.dataSource) ? value.dataSource : null;
+    const reasoningMode = dataSource === 'connect' && REASONING_CHOICES.has(value.reasoningMode)
+      ? value.reasoningMode
+      : null;
+    if (value.screen !== 'data_source' && !dataSource) return null;
+    if (value.screen === 'autonomy' && dataSource === 'connect' && !reasoningMode) return null;
+    return {
+      ...initialOnboardingState(userId),
+      screen: value.screen,
+      dataSource,
+      reasoningMode,
+    };
+  } catch {
+    return null;
+  }
 }
 
-function clearOnboardingState() {
+function readResumeState(userId) {
+  try {
+    return parseOnboardingResumeState(localStorage.getItem(KEY_ONBOARDING_STATE), userId);
+  } catch {
+    return null;
+  }
+}
+
+function saveResumeState() {
+  if (!_state || !RESUMABLE_SCREENS.has(_state.screen)) return;
+  try {
+    localStorage.setItem(KEY_ONBOARDING_STATE, JSON.stringify({
+      v: ONBOARDING_STATE_VERSION,
+      screen: _state.screen,
+      dataSource: _state.dataSource,
+      reasoningMode: _state.reasoningMode,
+    }));
+  } catch { /* Storage may be unavailable; the in-memory flow still works. */ }
+}
+
+function clearResumeState() {
   try { localStorage.removeItem(KEY_ONBOARDING_STATE); } catch { /* noop */ }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Module-level state (singleton — one wizard per browser tab)
-// ─────────────────────────────────────────────────────────────────────────────
-
-let _wizardListenerWired = false;
-let _onCompleteCallback = null;   // set by renderOnboarding
-let _wizardState = null;          // { screen, userId, hasLlmProvider, history, recipeSlug, recommendedRegistryIds, firstRunChoice }
-
-// The three real entry paths users can take from the welcome screen. We
-// stash the chosen path on _wizardState.firstRunChoice so every
-// finishWizard/postOnboardingComplete site below can record the correct
-// value — previously every call hard-coded 'about-me', which mis-recorded
-// telemetry for email and computer users.
-function recordFirstRunChoice(choice) {
-  if (_wizardState) _wizardState.firstRunChoice = choice;
-}
-function getFirstRunChoice() {
-  return (_wizardState && _wizardState.firstRunChoice) || 'about-me';
+function currentUserId() {
+  try { return localStorage.getItem(KEY_USER_ID) || ''; } catch { return ''; }
 }
 
-function isOnWizard() {
-  // The wizard overlay is shown at the root hash (empty or '#/').
-  const h = (window.location.hash || '').split('?')[0];
-  return h === '' || h === '#/' || h === '#';
-}
+const SAFE_RETURN_HASH = /^#\/(?:[a-z0-9][a-z0-9/-]*)?(?:\?[^\s#]*)?$/i;
 
-function getCurrentUserId() {
-  return localStorage.getItem(KEY_USER_ID) || '';
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Singleton listener — attached once
-// ─────────────────────────────────────────────────────────────────────────────
-
-function ensureWizardListener() {
-  if (_wizardListenerWired || typeof document === 'undefined') return;
-  _wizardListenerWired = true;
-  document.addEventListener('click', handleOnboardingClick);
-}
-
-async function handleOnboardingClick(e) {
-  // Guard: only fire when the wizard overlay is visible
-  const overlay = document.getElementById('onboarding-overlay');
-  if (!overlay || overlay.style.display === 'none') return;
-
-  const target = e.target instanceof HTMLElement ? e.target.closest('[data-action]') : null;
-  if (!target) return;
-
-  const action = target.dataset.action;
-  const userId = getCurrentUserId();
-
-  switch (action) {
-    // ── Resume gate (#390) ──────────────────────────────────────────────────
-    case 'onboarding-resume': {
-      const screen = target.dataset.screen;
-      if (screen && _wizardState) {
-        await transitionTo(screen);
-      } else {
-        // Lost state somehow — fall back to a clean start.
-        clearOnboardingState();
-        await transitionTo('welcome');
-      }
-      break;
-    }
-    case 'onboarding-restart':
-      clearOnboardingState();
-      if (_wizardState) {
-        // Reset every wizard-accumulated field so the welcome screen
-        // doesn't render under stale state. Mirror the shape of the
-        // initial allocation in `renderOnboarding` — adding a field
-        // there means adding a reset here.
-        _wizardState.recipeSlug = null;
-        _wizardState.history = [];
-        _wizardState.recommendedRegistryIds = [];
-        _wizardState.rationale = '';
-        _wizardState.firstRunChoice = undefined;
-      }
-      // Also drop the deterministic-path scratch state held in module
-      // scope so a "Start over" from anywhere in the about-me flow
-      // doesn't replay prior answers.
-      _detAnswers = {};
-      _detStep = 0;
-      await transitionTo('welcome');
-      break;
-
-    // ── Welcome screen ──────────────────────────────────────────────────────
-    case 'onb-choose-email':
-      recordFirstRunChoice('email');
-      transitionTo('email_choice');
-      break;
-    case 'onb-choose-computer':
-      recordFirstRunChoice('computer');
-      transitionTo('computer_choice');
-      break;
-    case 'onb-choose-about-me':
-      recordFirstRunChoice('about-me');
-      transitionTo('about_me_choice');
-      break;
-
-    // ── Shared "back to welcome" ────────────────────────────────────────────
-    case 'onb-back-welcome':
-      transitionTo('welcome');
-      break;
-
-    // ── Email choice ────────────────────────────────────────────────────────
-    case 'onb-email-google': {
-      const btn = target;
-      btn.disabled = true;
-      btn.textContent = 'Redirecting…';
-      try {
-        const { startGoogleSignIn } = await import('../google-signin.js');
-        // After Google consent, deep-link straight into the Gmail
-        // walkthrough. The bundled OAuth client only carries Calendar +
-        // identity scopes today; Gmail is gated behind the BYO setup at
-        // /#/connect-gmail and the user shouldn't have to discover the
-        // follow-up CTA on the dashboard themselves. The connect-gmail
-        // page no-ops gracefully if Gmail is already wired up.
-        //
-        // Desktop newUser flow: startGoogleSignIn generates a UUIDv4
-        // pendingKey, threads it through state, and polls for the
-        // resulting userId once /callback writes the handoff row.
-        // onComplete fires when the poll resolves — we set the userId
-        // in localStorage and drop the user on the deep-link route
-        // exactly as the web redirect would have.
-        const result = await startGoogleSignIn({
-          newUser: true,
-          next: 'connect-gmail',
-          onComplete: (completion) => {
-            if (completion.connected && completion.userId) {
-              // The pending endpoint mints the session — store the
-              // token first so subsequent API calls authenticate.
-              // Without it, the dashboard would 401 the moment the
-              // wizard lands on the deep-link route.
-              if (completion.sessionToken) {
-                localStorage.setItem(KEY_SESSION_TOKEN, completion.sessionToken);
-              }
-              localStorage.setItem(KEY_USER_ID, completion.userId);
-              // Mark onboarding complete + tear down the wizard overlay so
-              // the dashboard underneath becomes the active surface. Without
-              // these three lines the modal stays mounted on top of the
-              // deep-link route, the user can't reach the page they were
-              // sent to, and a reload re-opens first-run onboarding because
-              // KEY_ONBOARDED is unset. Mirrors the tour-mode path (see
-              // 'onb-start-tour' case below) which does the same dance.
-              localStorage.setItem(KEY_ONBOARDED, 'true');
-              if (_wizardState) _wizardState.userId = completion.userId;
-              if (typeof window.skyTwinSetUserId === 'function') {
-                window.skyTwinSetUserId(completion.userId);
-              }
-              hideWizard();
-              window.location.hash = completion.nextHash || '#/connect-gmail';
-              return;
-            }
-            // Timeout (5 min) — let the user retry rather than sitting
-            // on a frozen button. The pending row has either expired
-            // or the user closed the browser tab without consenting.
-            const retryBtn = document.querySelector('[data-action="onb-email-google"]');
-            if (retryBtn instanceof HTMLButtonElement) {
-              retryBtn.disabled = false;
-              retryBtn.textContent = 'Continue with Google';
-            }
-            showWizardError("We didn't see your Google sign-in come through. Try again, or use email below.");
-          },
-        });
-        if (result.status === 'redirecting') return;
-        if (result.status === 'polling') {
-          // Desktop: OAuth opened in the system browser; pendingKey
-          // poll is running in the background and will fire
-          // onComplete above when /callback writes the handoff row.
-          // The button stays disabled with "Waiting for Google…" as
-          // the active status — the wizard auto-advances when the
-          // poll resolves.
-          btn.textContent = 'Waiting for Google…';
-          hideWizardError();
-          return;
-        }
-        // status === 'error'. If the server tagged the failure as a
-        // missing-config code (NO_GOOGLE_CLIENT_CONFIGURED — this
-        // SkyTwin build has no bundled OAuth client), bounce the user
-        // straight into the connect-gmail wizard. That same five-step
-        // walkthrough sets up their OAuth client, which then lets the
-        // bundled flow work on retry.
-        if (result.code === 'NO_GOOGLE_CLIENT_CONFIGURED') {
-          // Re-enable the button before the hashchange so a router that
-          // synchronously re-renders the wizard doesn't leave it stuck
-          // on "Redirecting…".
-          btn.disabled = false;
-          btn.textContent = 'Continue with Google';
-          window.location.hash = result.help || '#/connect-gmail';
-          return;
-        }
-        throw new Error(result.error || 'No authorize URL returned');
-      } catch (err) {
-        showWizardError(
-          err.message?.includes('credentials')
-            ? 'Google API key not configured — use email below or set it up in Settings.'
-            : (err.message || 'Could not start Google sign-in.'),
-        );
-        btn.disabled = false;
-        btn.textContent = 'Continue with Google';
-      }
-      break;
-    }
-    case 'onb-email-submit': {
-      const emailInput = document.getElementById('onb-email-input');
-      const nameInput = document.getElementById('onb-name-input');
-      if (!emailInput) break;
-      const email = emailInput.value.trim();
-      const name = (nameInput ? nameInput.value.trim() : '') || email.split('@')[0];
-      if (!email || !email.includes('@')) {
-        showWizardError('Please enter a valid email address.');
-        break;
-      }
-      hideWizardError();
-      const btn = target;
-      btn.disabled = true;
-      btn.textContent = 'Setting up…';
-      try {
-        const result = await createUser(email, name, 'suggest');
-        const newUserId = result.user.id || email;
-        localStorage.setItem(KEY_USER_ID, newUserId);
-        if (_wizardState) _wizardState.userId = newUserId;
-        // Email path goes straight to recipe preview via about-me LLM/deterministic
-        transitionTo('about_me_choice');
-      } catch (err) {
-        showWizardError(err.message || 'Something went wrong. Please try again.');
-        btn.disabled = false;
-        btn.textContent = 'Continue';
-      }
-      break;
-    }
-
-    // ── Computer / idle-miner choice ────────────────────────────────────────
-    case 'onb-enable-idle-miner': {
-      const btn = target;
-      btn.disabled = true;
-      btn.textContent = 'Enabling…';
-      try {
-        await postOnboardingComplete(userId || getCurrentUserId(), 'computer');
-        transitionTo('idle_miner_poll');
-      } catch (err) {
-        showWizardError(err.message || 'Could not enable idle miner.');
-        btn.disabled = false;
-        btn.textContent = 'Enable and continue';
-      }
-      break;
-    }
-    case 'onb-skip-idle-miner':
-      transitionTo('welcome');
-      break;
-
-    // ── About-me conversational ─────────────────────────────────────────────
-    case 'onb-send-chat': {
-      const input = document.getElementById('onb-chat-input');
-      if (!input) break;
-      const text = input.value.trim();
-      if (!text) break;
-      input.value = '';
-      await handleChatSend(text);
-      break;
-    }
-    case 'onb-deterministic-answer': {
-      const answer = target.dataset.answer;
-      const questionKey = target.dataset.questionKey;
-      if (answer && questionKey) {
-        await handleDeterministicAnswer(questionKey, answer);
-      }
-      break;
-    }
-
-    // ── Recipe preview ──────────────────────────────────────────────────────
-    case 'onb-install-recipe': {
-      const slug = target.dataset.slug;
-      if (slug) {
-        await handleInstallRecipe(slug, target);
-      }
-      break;
-    }
-    case 'onb-skip-recipe':
-      await finishWizard(userId || getCurrentUserId(), getFirstRunChoice(), undefined);
-      break;
-
-    // ── Complete ────────────────────────────────────────────────────────────
-    case 'onb-go-dashboard':
-      hideWizard();
-      break;
-
-    // ── Modal dismiss (Esc / X / Skip) ──────────────────────────────────────
-    case 'onb-dismiss-modal':
-      if (typeof window.skyTwinDismissOnboarding === 'function') {
-        window.skyTwinDismissOnboarding();
-      }
-      break;
-
-    // ── "Change" the auto-picked private AI → Settings (AI + local brain) ────
-    case 'onb-open-ai-settings':
-      if (typeof window.skyTwinDismissOnboarding === 'function') {
-        window.skyTwinDismissOnboarding();
-      }
-      window.location.hash = '#/settings';
-      break;
-
-    // ── Tour mode ───────────────────────────────────────────────────────────
-    case 'onb-start-tour': {
-      try {
-        const info = await fetchDemoInfo();
-        if (info?.available && info?.userId) {
-          const session = await startDemoSession();
-          if (!session?.token || session.userId !== info.userId) {
-            throw new Error('Sample session could not be verified.');
-          }
-          localStorage.setItem(KEY_TOUR_MODE, '1');
-          localStorage.setItem(KEY_USER_ID, info.userId);
-          // 'sample' (not 'true') so the chrome can tell sample-mode
-          // users apart from completed-onboarding users for the
-          // P2 "Sample profile mode" banner work. needsOnboarding()
-          // treats any non-null value as "no modal".
-          localStorage.setItem(KEY_ONBOARDED, 'sample');
-          hideWizard();
-          if (typeof window.skyTwinSetUserId === 'function') {
-            window.skyTwinSetUserId(info.userId);
-          }
-          // Start with the isolated interactive loop. The rest of the
-          // fictional profile stays available through normal navigation.
-          window.location.hash = '#/sample';
-        } else {
-          showWizardError(
-            'Sample profile is not loaded on this server. Run pnpm db:seed to enable it.',
-          );
-        }
-      } catch {
-        showWizardError('Sample profile not available.');
-      }
-      break;
-    }
+export function rememberOnboardingReturnHash(hash) {
+  if (typeof hash !== 'string' || hash === '#/' || !SAFE_RETURN_HASH.test(hash)) return false;
+  try {
+    localStorage.setItem(KEY_ONBOARDING_RETURN_HASH, hash);
+    return true;
+  } catch {
+    return false;
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Screen renderers
-// ─────────────────────────────────────────────────────────────────────────────
+export function consumeOnboardingReturnHash(fallback = '#/connect-gmail') {
+  try {
+    const value = localStorage.getItem(KEY_ONBOARDING_RETURN_HASH);
+    localStorage.removeItem(KEY_ONBOARDING_RETURN_HASH);
+    return value && SAFE_RETURN_HASH.test(value) ? value : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function savePendingReasoningChoice(choice) {
+  try {
+    if (choice === 'bring_your_own_provider') {
+      localStorage.setItem(KEY_ONBOARDING_REASONING_CHOICE, choice);
+    } else {
+      localStorage.removeItem(KEY_ONBOARDING_REASONING_CHOICE);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Apply the only canonical active choice after a session exists. */
+export async function applyPendingReasoningChoice(userId) {
+  let choice = null;
+  try { choice = localStorage.getItem(KEY_ONBOARDING_REASONING_CHOICE); } catch {
+    throw new Error('Reasoning preference storage is unavailable.');
+  }
+  if (choice !== 'bring_your_own_provider') return true;
+  await updateReasoningMode(userId, choice);
+  try { localStorage.removeItem(KEY_ONBOARDING_REASONING_CHOICE); } catch { /* applied server-side */ }
+  return true;
+}
+
+/**
+ * Finalize the browser OAuth handoff in the only safe order: establish the
+ * authenticated identity, durably apply the chosen reasoning boundary, then
+ * mark onboarding complete. A failed boundary write intentionally leaves the
+ * session and pending choice in place for an authenticated retry.
+ */
+export async function completePendingGoogleOnboarding(completion) {
+  if (!completion?.sessionToken || !completion?.userId) {
+    throw new Error('The secure sign-in handoff was incomplete.');
+  }
+  localStorage.setItem(KEY_SESSION_TOKEN, completion.sessionToken);
+  localStorage.setItem(KEY_USER_ID, completion.userId);
+  await applyPendingReasoningChoice(completion.userId);
+  localStorage.setItem(KEY_ONBOARDED, 'true');
+  return completion.userId;
+}
+
+function isOnOnboardingRoute() {
+  const hash = (window.location.hash || '').split('?')[0];
+  return hash === '' || hash === '#' || hash === '#/';
+}
+
+function overlayIsVisible() {
+  const overlay = document.getElementById('onboarding-overlay');
+  return !!overlay && overlay.style.display !== 'none';
+}
+
+export function focusOnboardingContent(container) {
+  const target = container?.querySelector?.('[data-onboarding-focus]');
+  if (!target || typeof target.focus !== 'function') return false;
+  target.focus({ preventScroll: true });
+  return true;
+}
 
 function renderContent(html) {
-  const el = document.getElementById('onboarding-content');
-  if (el) el.innerHTML = html;
-}
-
-function showWizardError(msg) {
-  const el = document.getElementById('onb-wizard-error');
-  if (el) {
-    el.textContent = msg;
-    el.style.display = 'block';
-  }
-}
-
-function hideWizardError() {
-  const el = document.getElementById('onb-wizard-error');
-  if (el) el.style.display = 'none';
-}
-
-// ── Welcome ──────────────────────────────────────────────────────────────────
-
-function renderWelcome() {
-  renderContent(`
-    <button class="onb-close-x" data-action="onb-dismiss-modal" type="button"
-            aria-label="Dismiss onboarding">×</button>
-
-    <div id="onb-wizard-error" style="color:var(--danger);font-size:0.85rem;margin-bottom:0.75rem;display:none;"></div>
-
-    <div class="onboarding-title" style="font-size:1.4rem;font-weight:700;margin-bottom:0.5rem;">
-      Meet your digital twin
-    </div>
-    <div class="onboarding-desc" style="margin-bottom:1.25rem;">
-      SkyTwin learns how you make decisions and handles routine ones on your behalf.
-      How would you like to start?
-    </div>
-
-    <!-- Two clear ways to start — the wall of options was overwhelming for
-         non-technical first-runs (user feedback). Everything else (tell-about-
-         yourself, the not-yet-wired computer observer) moved into a collapsed
-         "More ways to start" so the primary path is obvious. -->
-    <div style="display:flex;flex-direction:column;gap:0.6rem;margin-bottom:1rem;">
-      <button class="btn btn-primary btn-lg" style="text-align:left;display:flex;align-items:center;gap:0.75rem;"
-              data-action="onb-choose-email">
-        <span style="font-size:1.2rem;">✉</span>
-        <div>
-          <div style="font-weight:600;">Connect your email</div>
-          <div style="font-size:0.78rem;opacity:0.8;">Link Gmail so your twin can start from your real inbox.</div>
-        </div>
-      </button>
-
-      <button id="onb-tour-button" class="btn btn-outline btn-lg" disabled
-              style="text-align:left;display:flex;align-items:center;gap:0.75rem;width:100%;"
-              data-action="onb-start-tour"
-              title="Sample profile not seeded — run pnpm db:seed">
-        <span style="font-size:1.2rem;" aria-hidden="true">🧭</span>
-        <div>
-          <div style="font-weight:600;">Just show me around</div>
-          <div id="onb-tour-subtext" style="font-size:0.78rem;opacity:0.7;">Checking sample profile…</div>
-        </div>
-      </button>
-    </div>
-
-    <!-- Private-AI reassurance: the app auto-picks the best local model for this
-         computer (filled in async below), so a non-technical user never has to
-         choose a model or paste an API key. "Change" opens Settings → AI. -->
-    <div id="onb-ai-line" style="font-size:0.76rem;color:var(--text-muted);background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:0.55rem 0.7rem;margin-bottom:0.85rem;display:flex;align-items:center;gap:0.5rem;">
-      <span aria-hidden="true">🔒</span>
-      <span id="onb-ai-text">Your AI runs privately on this computer — checking what fits best…</span>
-    </div>
-
-    <details style="margin-bottom:0.5rem;">
-      <summary style="cursor:pointer;font-size:0.82rem;color:var(--text-muted);">More ways to start</summary>
-      <div style="display:flex;flex-direction:column;gap:0.6rem;margin-top:0.6rem;">
-        <button class="btn btn-outline" style="text-align:left;display:flex;align-items:center;gap:0.75rem;"
-                data-action="onb-choose-about-me">
-          <span style="font-size:1.1rem;">💬</span>
-          <div>
-            <div style="font-weight:600;">Tell SkyTwin about yourself</div>
-            <div style="font-size:0.76rem;opacity:0.8;">Answer a few quick questions so your twin knows where to start.</div>
-          </div>
-        </button>
-        <div style="font-size:0.74rem;color:var(--text-muted);padding:0 0.25rem;">
-          💻 Learning from the apps on your computer is coming soon —
-          track it on <a href="https://github.com/jayzalowitz/skytwin/issues/389" target="_blank" rel="noopener">issue #389</a>.
-        </div>
-      </div>
-    </details>
-
-    <div style="margin-top:0.75rem;text-align:center;">
-      <button class="btn-link" data-action="onb-dismiss-modal" type="button"
-              style="font-size:0.82rem;color:var(--text-muted);background:none;border:none;cursor:pointer;padding:0;">
-        Skip for now
-      </button>
-    </div>
-  `);
-
-  // Auto-pick the best local model for this machine and reassure the user it's
-  // handled. Best-effort: if the probe fails, keep the generic private line.
-  fetchLocalModelRecommendation()
-    .then((rec) => {
-      const el = document.getElementById('onb-ai-text');
-      if (!el) return;
-      if (rec?.model) {
-        el.innerHTML =
-          `Your AI runs privately on this computer — we'll use <strong>${escapeHtml(rec.model.displayName)}</strong> ` +
-          `(~${escapeHtml(String(rec.downloadGB))} GB), picked to fit your machine. ` +
-          `<button class="btn-link" data-action="onb-open-ai-settings" type="button" ` +
-          `style="font-size:0.76rem;color:var(--iris);background:none;border:none;cursor:pointer;padding:0;">Change</button>`;
-      } else if (rec?.reason) {
-        el.textContent = rec.reason;
-      }
-    })
-    .catch(() => { /* keep the generic private-by-default line */ });
-
-  // Tour CTA is rendered disabled with "Checking…" copy; resolved state
-  // depends on the demo seed being present. When available: enable +
-  // promo copy. When absent or the request fails: keep disabled with a
-  // helpful "not loaded" message so the user knows the button exists
-  // and what to do about it (#363 Fix 1).
-  const updateTourButton = (available) => {
-    const btn = document.getElementById('onb-tour-button');
-    const sub = document.getElementById('onb-tour-subtext');
-    if (!btn || !sub) return;
-    if (available) {
-      btn.disabled = false;
-      btn.removeAttribute('title');
-      sub.textContent = 'See a fully populated twin in action — no sign-in needed.';
-      sub.style.opacity = '0.8';
-    } else {
-      btn.disabled = true;
-      btn.setAttribute('title', 'Sample profile not seeded — run pnpm db:seed');
-      sub.textContent = 'Demo profile not loaded on this server.';
-      sub.style.opacity = '0.6';
-    }
-  };
-
-  fetchDemoInfo()
-    .then((info) => updateTourButton(!!info?.available))
-    .catch(() => updateTourButton(false));
-}
-
-// ── Email choice ──────────────────────────────────────────────────────────────
-
-function renderEmailChoice() {
-  renderContent(`
-    <div id="onb-wizard-error" style="color:var(--danger);font-size:0.85rem;margin-bottom:0.75rem;display:none;"></div>
-    <div class="onboarding-title" style="font-size:1.2rem;font-weight:700;margin-bottom:0.5rem;">Sign in to get started</div>
-    <div class="onboarding-desc" style="margin-bottom:1rem;">
-      Connect with Google so your twin can see your email and calendar from day one.
-    </div>
-
-    <button class="btn btn-primary btn-lg" style="width:100%;display:flex;align-items:center;justify-content:center;gap:0.5rem;margin-bottom:1rem;"
-            data-action="onb-email-google">
-      <span style="font-weight:700;">G</span>
-      <span>Continue with Google</span>
-    </button>
-
-    <details style="margin-bottom:1rem;">
-      <summary style="cursor:pointer;color:var(--text-muted);font-size:0.85rem;">Use an email address instead</summary>
-      <div style="margin-top:0.75rem;padding:0.75rem;border:1px solid var(--border);border-radius:var(--radius-sm);">
-        <div class="form-group">
-          <label style="font-size:0.85rem;">Your name</label>
-          <input class="form-input" id="onb-name-input" type="text" placeholder="Jane">
-        </div>
-        <div class="form-group">
-          <label style="font-size:0.85rem;">Your email</label>
-          <input class="form-input" id="onb-email-input" type="email" placeholder="you@example.com">
-        </div>
-        <button class="btn btn-outline" style="width:100%;margin-top:0.5rem;" data-action="onb-email-submit">
-          Continue with email
-        </button>
-      </div>
-    </details>
-
-    <button class="btn-link" data-action="onb-back-welcome"
-            style="font-size:0.82rem;color:var(--text-muted);background:none;border:none;cursor:pointer;padding:0;">
-      ← Back
-    </button>
-  `);
-}
-
-// ── Computer / idle-miner choice ──────────────────────────────────────────────
-
-function renderComputerChoice() {
-  renderContent(`
-    <div id="onb-wizard-error" style="color:var(--danger);font-size:0.85rem;margin-bottom:0.75rem;display:none;"></div>
-    <div class="onboarding-title" style="font-size:1.2rem;font-weight:700;margin-bottom:0.5rem;">
-      Let SkyTwin learn what you work on
-    </div>
-    <div class="onboarding-desc" style="margin-bottom:1rem;">
-      During idle time, SkyTwin can scan the code projects on this machine to learn which tools and
-      technologies you work with — so it can suggest capabilities that fit your work. It runs locally,
-      never uploads your data, and never reads your file contents or any natural-language text.
-    </div>
-
-    <div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:0.75rem;margin-bottom:1rem;font-size:0.85rem;">
-      <div style="font-weight:600;margin-bottom:0.4rem;">What it reads (project metadata only)</div>
-      <ul style="margin:0;padding-left:1.2rem;line-height:1.7;">
-        <li>Project names and the technologies they use — from manifest files like package.json, pyproject.toml, Cargo.toml, and go.mod</li>
-        <li>Dependency names only — never versions, descriptions, or your source code</li>
-        <li>Your git remote URL and the name and email in your git config</li>
-      </ul>
-      <div style="margin-top:0.6rem;font-size:0.78rem;color:var(--text-muted);">
-        It never watches your screen, open apps, window titles, or browsing. Choose “Not now” to skip this step.
-      </div>
-    </div>
-
-    <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
-      <button class="btn btn-primary" data-action="onb-enable-idle-miner">
-        Enable and continue
-      </button>
-      <button class="btn btn-outline" data-action="onb-skip-idle-miner" style="color:var(--text-muted);">
-        Not now
-      </button>
-    </div>
-
-    <div style="margin-top:0.75rem;">
-      <button class="btn-link" data-action="onb-back-welcome"
-              style="font-size:0.82rem;color:var(--text-muted);background:none;border:none;cursor:pointer;padding:0;">
-        ← Back
-      </button>
-    </div>
-  `);
-}
-
-// ── Idle-miner KPI poll (stretch goal D) ─────────────────────────────────────
-
-async function renderIdleMinerPoll() {
-  renderContent(`
-    <div id="onb-wizard-error" style="color:var(--danger);font-size:0.85rem;margin-bottom:0.75rem;display:none;"></div>
-    <div class="onboarding-title" style="font-size:1.2rem;font-weight:700;margin-bottom:0.5rem;">
-      Learning what you work on…
-    </div>
-    <div class="onboarding-desc" style="margin-bottom:1rem;">
-      SkyTwin is scanning your code projects for the tools you use. This usually takes under 60 seconds.
-    </div>
-    <div id="onb-poll-status" style="text-align:center;padding:1.5rem 0;color:var(--text-muted);">
-      <div class="loading" style="margin-bottom:0.5rem;"></div>
-      Looking for your first project signal…
-    </div>
-    <div id="onb-poll-result" style="display:none;"></div>
-    <div id="onb-poll-actions" style="margin-top:1rem;display:none;">
-      <button class="btn btn-primary" data-action="onb-install-recipe" data-slug="">Install suggested recipe</button>
-      <button class="btn btn-outline" data-action="onb-skip-recipe" style="margin-left:0.5rem;">Skip for now</button>
-    </div>
-    <div id="onb-poll-timeout" style="display:none;margin-top:1rem;">
-      <div style="font-size:0.85rem;color:var(--text-muted);margin-bottom:0.5rem;">
-        Still scanning — I'll keep looking in the background. Let's continue to the dashboard.
-      </div>
-      <button class="btn btn-primary" data-action="onb-go-dashboard">Continue to dashboard</button>
-    </div>
-  `);
-
-  const userId = getCurrentUserId();
-  if (!userId) {
-    transitionTo('complete');
-    return;
-  }
-
-  // Poll for suggestions every 5s, up to 60s
-  const MAX_POLLS = 12;
-  const INTERVAL_MS = 5000;
-
-  for (let i = 0; i < MAX_POLLS; i++) {
-    await new Promise((r) => setTimeout(r, INTERVAL_MS));
-
-    try {
-      const data = await fetchJSON(`/api/capabilities/suggestions?userId=${encodeURIComponent(userId)}`);
-      const suggestions = data.suggestions ?? [];
-      if (suggestions.length > 0) {
-        const first = suggestions[0];
-        const statusEl = document.getElementById('onb-poll-status');
-        const resultEl = document.getElementById('onb-poll-result');
-        const actionsEl = document.getElementById('onb-poll-actions');
-        if (statusEl) statusEl.style.display = 'none';
-        if (resultEl) {
-          resultEl.innerHTML = `
-            <div style="padding:0.75rem;border-left:3px solid var(--accent);background:var(--bg-card);border-radius:var(--radius-sm);">
-              <div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:0.25rem;">I noticed you use</div>
-              <div style="font-weight:600;font-size:1rem;">${escapeHtml(first.display_name || first.registry_id || 'an app')}</div>
-              <div style="font-size:0.82rem;margin-top:0.25rem;">${escapeHtml(first.reason_summary || '')}</div>
-            </div>
-          `;
-          resultEl.style.display = 'block';
-        }
-        // Set the recipe slug on the install button
-        if (actionsEl) {
-          const installBtn = actionsEl.querySelector('[data-action="onb-install-recipe"]');
-          if (installBtn) {
-            installBtn.dataset.slug = 'productivity-pack'; // best default for idle-miner path
-          }
-          actionsEl.style.display = 'flex';
-          actionsEl.style.gap = '0.5rem';
-          actionsEl.style.flexWrap = 'wrap';
-        }
-        if (_wizardState) {
-          _wizardState.recipeSlug = 'productivity-pack';
-          _wizardState.recommendedRegistryIds = [];
-        }
-        return;
-      }
-    } catch {
-      // keep polling
-    }
-  }
-
-  // Timeout
-  const statusEl = document.getElementById('onb-poll-status');
-  const timeoutEl = document.getElementById('onb-poll-timeout');
-  if (statusEl) statusEl.style.display = 'none';
-  if (timeoutEl) timeoutEl.style.display = 'block';
-}
-
-// ── About-me (conversational or deterministic) ────────────────────────────────
-
-function renderAboutMeConversational() {
-  if (!_wizardState) return;
-  _wizardState.history = [];
-
-  renderContent(`
-    <div id="onb-wizard-error" style="color:var(--danger);font-size:0.85rem;margin-bottom:0.75rem;display:none;"></div>
-    <div class="onboarding-title" style="font-size:1.2rem;font-weight:700;margin-bottom:0.5rem;">
-      Tell me about yourself
-    </div>
-    <div class="onboarding-desc" style="margin-bottom:0.75rem;font-size:0.85rem;">
-      I'll ask a few questions to figure out which capabilities will help you most.
-    </div>
-    <div id="onb-chat-history" style="min-height:120px;max-height:260px;overflow-y:auto;display:flex;flex-direction:column;gap:0.5rem;margin-bottom:0.75rem;padding:0.5rem;background:var(--bg);border-radius:var(--radius-sm);border:1px solid var(--border);">
-    </div>
-    <div style="display:flex;gap:0.4rem;">
-      <input class="form-input" id="onb-chat-input" type="text" placeholder="Type your answer…" style="flex:1;">
-      <button class="btn btn-primary" data-action="onb-send-chat">Send</button>
-    </div>
-    <div style="margin-top:0.75rem;">
-      <button class="btn-link" data-action="onb-back-welcome"
-              style="font-size:0.82rem;color:var(--text-muted);background:none;border:none;cursor:pointer;padding:0;">
-        ← Back
-      </button>
-    </div>
-  `);
-
-  // Kick off the first question
-  kickConversation();
-}
-
-async function kickConversation() {
-  const userId = getCurrentUserId();
-  if (!userId || !_wizardState) return;
-
-  addChatBubble('assistant', '…');
-  try {
-    const resp = await postOnboardingDialogue(userId, [], {});
-    removeTypingBubble();
-    if (resp.kind === 'question') {
-      addChatBubble('assistant', resp.question);
-      _wizardState.history.push({ role: 'assistant', content: resp.question });
-    } else if (resp.kind === 'final') {
-      handleFinalRecommendation(resp);
-    }
-  } catch {
-    removeTypingBubble();
-    addChatBubble('assistant', 'What do you do for work?');
-    if (_wizardState) {
-      _wizardState.history.push({ role: 'assistant', content: 'What do you do for work?' });
-    }
-  }
-}
-
-async function handleChatSend(text) {
-  if (!_wizardState) return;
-  const userId = getCurrentUserId();
-  if (!userId) return;
-
-  addChatBubble('user', text);
-  _wizardState.history.push({ role: 'user', content: text });
-
-  addChatBubble('assistant', '…');
-
-  try {
-    const resp = await postOnboardingDialogue(userId, _wizardState.history, {});
-    removeTypingBubble();
-
-    if (resp.kind === 'question') {
-      addChatBubble('assistant', resp.question);
-      _wizardState.history.push({ role: 'assistant', content: resp.question });
-    } else if (resp.kind === 'final') {
-      handleFinalRecommendation(resp);
-    }
-  } catch {
-    removeTypingBubble();
-    addChatBubble('assistant', 'Got it — let me figure out a good setup for you.');
-    setTimeout(() => handleFinalFromHistory(), 500);
-  }
-}
-
-function handleFinalFromHistory() {
-  if (!_wizardState) return;
-  const slug = 'productivity-pack';
-  _wizardState.recipeSlug = slug;
-  _wizardState.recommendedRegistryIds = [];
-  transitionTo('recipe_preview');
-}
-
-function handleFinalRecommendation(resp) {
-  if (!_wizardState) return;
-  _wizardState.recipeSlug = resp.recipeSlug;
-  _wizardState.recommendedRegistryIds = resp.recommendedRegistryIds ?? [];
-  _wizardState.rationale = resp.rationale ?? '';
-  transitionTo('recipe_preview');
-}
-
-function addChatBubble(role, text) {
-  const container = document.getElementById('onb-chat-history');
+  const container = document.getElementById('onboarding-content');
   if (!container) return;
-  const isTyping = text === '…';
-  const bubble = document.createElement('div');
-  bubble.style.cssText = `
-    max-width:80%;
-    padding:0.5rem 0.75rem;
-    border-radius:0.75rem;
-    font-size:0.85rem;
-    line-height:1.5;
-    align-self:${role === 'user' ? 'flex-end' : 'flex-start'};
-    background:${role === 'user' ? 'var(--accent)' : 'var(--bg-card)'};
-    color:${role === 'user' ? '#fff' : 'var(--text)'};
-    border:${role === 'assistant' ? '1px solid var(--border)' : 'none'};
-  `;
-  if (isTyping) {
-    bubble.id = 'onb-typing-bubble';
-    bubble.textContent = '…';
-  } else {
-    bubble.textContent = text;
+  container.innerHTML = html;
+  queueMicrotask(() => focusOnboardingContent(container));
+}
+
+function progress(step) {
+  return `<p class="onboarding-step" aria-label="Step ${step} of 3">Step ${step} of 3</p>`;
+}
+
+function closeButton() {
+  return '<button class="onb-close-x" data-action="onb-dismiss" type="button" aria-label="Dismiss onboarding">×</button>';
+}
+
+export function renderDataSourceScreen(state = initialOnboardingState()) {
+  const sampleSelected = state.dataSource === 'sample';
+  const connectSelected = state.dataSource === 'connect';
+  return `
+    ${closeButton()}
+    ${progress(1)}
+    <h1 id="onboarding-title" class="onboarding-title onboarding-voice" tabindex="-1" data-onboarding-focus>Start with a briefing</h1>
+    <p class="onboarding-desc">Choose fictional sample data or sign in before connecting your own source.</p>
+    <fieldset class="onboarding-options">
+      <legend>What data should this briefing use?</legend>
+      <label class="onboarding-option${sampleSelected ? ' is-selected' : ''}">
+        <input type="radio" name="data-source" value="sample" ${sampleSelected ? 'checked' : ''}>
+        <span><strong>Use the sample</strong><small>Fictional packaged data in a disposable, read-only session.</small></span>
+      </label>
+      <label class="onboarding-option${connectSelected ? ' is-selected' : ''}">
+        <input type="radio" name="data-source" value="connect" ${connectSelected ? 'checked' : ''}>
+        <span><strong>Connect my data</strong><small>${state.userId ? 'Continue with your signed-in profile, then choose a source.' : 'Sign in with Google first. New profiles begin in Just watch; returning profiles keep their current authority.'}</small></span>
+      </label>
+    </fieldset>
+    <div class="onboarding-actions">
+      <button class="btn btn-primary" type="button" data-action="onb-next" ${state.dataSource ? '' : 'disabled'}>Continue</button>
+    </div>`;
+}
+
+function statusItem(label, value, detail) {
+  return `<li><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong><small>${escapeHtml(detail)}</small></li>`;
+}
+
+export function renderReasoningScreen(state) {
+  const sample = state.dataSource === 'sample';
+  const notConfigured = state.reasoningMode === 'not_configured';
+  const conventional = state.reasoningMode === 'bring_your_own_provider';
+  return `
+    ${closeButton()}
+    ${progress(2)}
+    <h1 id="onboarding-title" class="onboarding-title onboarding-voice" tabindex="-1" data-onboarding-focus>Choose where reasoning may run</h1>
+    ${sample ? `
+      <p class="onboarding-desc">The sample uses fixed deterministic results. It does not call a model provider.</p>
+      <ul class="onboarding-status-list" aria-label="Sample reasoning status">
+        ${statusItem('Reasoning', 'Deterministic sample', 'No provider request')}
+        ${statusItem('External inference', 'None', 'The packaged sample uses fixed results through the local app service')}
+      </ul>` : `
+      <p class="onboarding-desc">This is a setup preference, not permission to send a prompt. Provider mode is saved only after sign-in; deciding later leaves your current settings unchanged.</p>
+      <fieldset class="onboarding-options">
+        <legend>Reasoning mode</legend>
+        <label class="onboarding-option is-unavailable" aria-disabled="true">
+          <input type="radio" name="reasoning-mode" value="on_device" disabled>
+          <span><strong>On this device — unavailable</strong><small>No verified local model is installed by this setup flow yet.</small></span>
+        </label>
+        <label class="onboarding-option${conventional ? ' is-selected' : ''}">
+          <input type="radio" name="reasoning-mode" value="bring_your_own_provider" ${conventional ? 'checked' : ''}>
+          <span><strong>A provider I configure</strong><small>After sign-in, save provider mode. Prompts are sent only after you configure a provider; an external network connection and that provider's retention terms then apply. No confidential-computing guarantee is made.</small></span>
+        </label>
+        <label class="onboarding-option is-unavailable" aria-disabled="true">
+          <input type="radio" name="reasoning-mode" value="verified_private_cloud" disabled>
+          <span><strong>Verified private cloud — unavailable</strong><small>This requires a verifier-owned confidential adapter that is not available in this build.</small></span>
+        </label>
+        <label class="onboarding-option${notConfigured ? ' is-selected' : ''}">
+          <input type="radio" name="reasoning-mode" value="not_configured" ${notConfigured ? 'checked' : ''}>
+          <span><strong>Decide after connecting</strong><small>This preview makes no settings change. No model provider is configured or contacted during onboarding.</small></span>
+        </label>
+      </fieldset>`}
+    <div class="onboarding-actions">
+      <button class="btn btn-outline" type="button" data-action="onb-back">Back</button>
+      <button class="btn btn-primary" type="button" data-action="onb-next" ${!sample && !state.reasoningMode ? 'disabled' : ''}>Continue</button>
+    </div>`;
+}
+
+export function renderAutonomyScreen(state) {
+  const sample = state.dataSource === 'sample';
+  const signedIn = !!state.userId;
+  return `
+    ${closeButton()}
+    ${progress(3)}
+    <h1 id="onboarding-title" class="onboarding-title onboarding-voice" tabindex="-1" data-onboarding-focus>Choose the starting authority</h1>
+    <p class="onboarding-desc">Every new profile starts in Just watch. Returning profiles keep their current authority after sign-in.</p>
+    <fieldset class="onboarding-options">
+      <legend>Initial autonomy</legend>
+      <label class="onboarding-option is-selected">
+        <input type="radio" name="autonomy" value="observer" checked>
+        <span><strong>${sample || !signedIn ? 'Just watch for a new profile' : 'Current profile unchanged'}</strong><small>${sample ? 'The sample cannot write or execute anything.' : signedIn ? 'Onboarding does not change the authority of an existing signed-in profile.' : 'A new profile may observe and explain, but cannot write or execute actions.'}</small></span>
+      </label>
+    </fieldset>
+    <div class="onboarding-authority" role="status">
+      <span>${sample || !signedIn ? 'New-profile authority' : 'Authority change'}</span><strong>${sample || !signedIn ? 'Just watch' : 'None'}</strong><small>${sample || !signedIn ? 'Writes allowed: no' : 'Your current authority remains in effect'}</small>
+    </div>
+    <div class="onboarding-actions">
+      <button class="btn btn-outline" type="button" data-action="onb-back">Back</button>
+      <button class="btn btn-primary" type="button" data-action="onb-next">Review</button>
+    </div>`;
+}
+
+export function renderCompleteScreen(state) {
+  const sample = state.dataSource === 'sample';
+  const reasoning = sample
+    ? ['Deterministic sample', 'No external inference or provider request']
+    : state.reasoningMode === 'bring_your_own_provider'
+      ? ['Provider-mode preference', 'Saved only after authenticated sign-in; no provider or prompt is configured here']
+      : ['Decide later', 'Preview only; onboarding will not change reasoning settings'];
+  return `
+    ${closeButton()}
+    <h1 id="onboarding-title" class="onboarding-title onboarding-voice" tabindex="-1" data-onboarding-focus>Your starting boundaries</h1>
+    <p class="onboarding-desc">Review these before continuing. You can revisit reasoning settings later.</p>
+    <dl class="onboarding-summary">
+      <div><dt>Data</dt><dd>${sample ? 'Fictional packaged sample' : 'Verified Google sign-in first; source connection next'}</dd></div>
+      <div><dt>Reasoning</dt><dd>${escapeHtml(reasoning[0])}<small>${escapeHtml(reasoning[1])}</small></dd></div>
+      <div><dt>Autonomy</dt><dd>${sample || !state.userId ? 'New profiles: Just watch' : 'Existing authority unchanged'}<small>${sample || !state.userId ? 'No write or execution authority' : 'Onboarding does not change your current tier'}</small></dd></div>
+    </dl>
+    <div class="onboarding-actions">
+      <button class="btn btn-outline" type="button" data-action="onb-back">Back</button>
+      <button class="btn btn-primary" type="button" data-action="onb-finish">${sample ? 'Open sample briefing' : state.userId ? 'Continue to connect' : 'Sign in with Google'}</button>
+    </div>`;
+}
+
+export function renderErrorScreen(message) {
+  return `
+    ${closeButton()}
+    <section class="onboarding-error-card" role="alert">
+      <h1 id="onboarding-title" class="onboarding-title" tabindex="-1" data-onboarding-focus>Setup paused</h1>
+      <p>${escapeHtml(message || 'This step could not be completed.')}</p>
+      <button class="btn btn-outline" type="button" data-action="onb-retry">Retry</button>
+    </section>`;
+}
+
+function renderConnectingScreen() {
+  return `
+    ${closeButton()}
+    <section class="onboarding-connecting" role="status" aria-live="polite">
+      <h1 id="onboarding-title" class="onboarding-title" tabindex="-1" data-onboarding-focus>Finish sign-in in your browser</h1>
+      <p>SkyTwin is waiting for the verified sign-in. Your choices remain a preview until the authenticated handoff completes.</p>
+    </section>`;
+}
+
+function renderScreen() {
+  if (!_state) return;
+  if (_state.screen === 'data_source') renderContent(renderDataSourceScreen(_state));
+  else if (_state.screen === 'reasoning') renderContent(renderReasoningScreen(_state));
+  else if (_state.screen === 'autonomy') renderContent(renderAutonomyScreen(_state));
+  else if (_state.screen === 'complete') renderContent(renderCompleteScreen(_state));
+  else if (_state.screen === 'connecting') renderContent(renderConnectingScreen());
+  else renderContent(renderErrorScreen(_state.errorMessage));
+}
+
+function transition(screen) {
+  if (!_state || !ONBOARDING_SCREENS.includes(screen)) return;
+  _state.screen = screen;
+  saveResumeState();
+  renderScreen();
+}
+
+function fail(message, retryScreen) {
+  if (!_state) return;
+  _state.errorMessage = message;
+  _state.retryScreen = retryScreen;
+  transition('error');
+}
+
+function closeWizard() {
+  clearResumeState();
+  window.skyTwinHideOnboarding?.();
+}
+
+async function advance() {
+  if (!_state) return;
+  if (_state.screen === 'data_source') {
+    if (!_state.dataSource) return;
+    if (_state.dataSource === 'sample') _state.reasoningMode = null;
+    transition('reasoning');
+  } else if (_state.screen === 'reasoning') {
+    if (_state.dataSource !== 'sample' && !_state.reasoningMode) return;
+    transition('autonomy');
+  } else if (_state.screen === 'autonomy') {
+    _state.autonomy = 'observer';
+    transition('complete');
   }
-  container.appendChild(bubble);
-  container.scrollTop = container.scrollHeight;
 }
 
-function removeTypingBubble() {
-  document.getElementById('onb-typing-bubble')?.remove();
+function goBack() {
+  if (!_state) return;
+  if (_state.screen === 'reasoning') transition('data_source');
+  else if (_state.screen === 'autonomy') transition('reasoning');
+  else if (_state.screen === 'complete') transition('autonomy');
 }
 
-// ── Deterministic 3-question form ─────────────────────────────────────────────
-
-const DET_QUESTIONS = [
-  {
-    key: 'work',
-    text: 'What do you do for work?',
-    options: [
-      { value: 'software_engineer', label: 'Software engineer' },
-      { value: 'designer', label: 'Designer' },
-      { value: 'journalist', label: 'Journalist / writer' },
-      { value: 'parent', label: 'Parent / caregiver' },
-      { value: 'student', label: 'Student' },
-      { value: 'other', label: 'Something else' },
-    ],
-  },
-  {
-    key: 'notes_app',
-    text: 'Which notes or docs app do you use most?',
-    options: [
-      { value: 'notion', label: 'Notion' },
-      { value: 'obsidian', label: 'Obsidian' },
-      { value: 'apple_notes', label: 'Apple Notes' },
-      { value: 'paper', label: 'Paper / pen' },
-      { value: 'none', label: 'None / not sure' },
-    ],
-  },
-  {
-    key: 'primary_tool',
-    text: 'Which tool do you spend the most time in?',
-    options: [
-      { value: 'github', label: 'GitHub' },
-      { value: 'linear', label: 'Linear' },
-      { value: 'slack', label: 'Slack' },
-      { value: 'notion', label: 'Notion' },
-      { value: 'gmail', label: 'Gmail' },
-      { value: 'calendar', label: 'Calendar' },
-      { value: 'none', label: 'None of the above' },
-    ],
-  },
-];
-
-let _detAnswers = {};
-let _detStep = 0;
-
-function renderDeterministicStep() {
-  if (!_wizardState) return;
-  const q = DET_QUESTIONS[_detStep];
-  if (!q) {
-    // All answered — fetch pick
-    submitDeterministicPick();
-    return;
-  }
-
-  const progress = `${_detStep + 1} of ${DET_QUESTIONS.length}`;
-  renderContent(`
-    <div id="onb-wizard-error" style="color:var(--danger);font-size:0.85rem;margin-bottom:0.75rem;display:none;"></div>
-    <div class="onboarding-step" style="font-size:0.78rem;color:var(--text-muted);margin-bottom:0.5rem;">Question ${progress}</div>
-    <div class="onboarding-title" style="font-size:1.2rem;font-weight:700;margin-bottom:0.75rem;">${escapeHtml(q.text)}</div>
-    <div style="display:flex;flex-direction:column;gap:0.4rem;">
-      ${q.options.map((opt) => `
-        <button class="btn btn-outline" style="text-align:left;"
-                data-action="onb-deterministic-answer"
-                data-question-key="${escapeHtml(q.key)}"
-                data-answer="${escapeHtml(opt.value)}">
-          ${escapeHtml(opt.label)}
-        </button>
-      `).join('')}
-    </div>
-    <div style="margin-top:0.75rem;">
-      <button class="btn-link" data-action="onb-back-welcome"
-              style="font-size:0.82rem;color:var(--text-muted);background:none;border:none;cursor:pointer;padding:0;">
-        ← Back
-      </button>
-    </div>
-  `);
-}
-
-async function handleDeterministicAnswer(questionKey, answer) {
-  _detAnswers[questionKey] = answer;
-  _detStep++;
-
-  if (_detStep >= DET_QUESTIONS.length) {
-    // Show a brief "working" message
-    renderContent(`
-      <div style="text-align:center;padding:2rem 0;color:var(--text-muted);">
-        <div class="loading" style="margin-bottom:0.75rem;"></div>
-        Finding the right setup…
-      </div>
-    `);
-    await submitDeterministicPick();
-  } else {
-    renderDeterministicStep();
-  }
-}
-
-async function submitDeterministicPick() {
-  if (!_wizardState) return;
-  const userId = getCurrentUserId();
-  if (!userId) {
-    transitionTo('welcome');
-    return;
-  }
-  try {
-    const result = await postDeterministicPick(userId, _detAnswers);
-    _wizardState.recipeSlug = result.recipeSlug;
-    _wizardState.recommendedRegistryIds = result.recommendedRegistryIds ?? [];
-    transitionTo('recipe_preview');
-  } catch {
-    _wizardState.recipeSlug = 'productivity-pack';
-    _wizardState.recommendedRegistryIds = [];
-    transitionTo('recipe_preview');
-  }
-}
-
-// ── Recipe preview (with D3 dependency graph) ─────────────────────────────────
-
-const RECIPE_META = {
-  'developer-pack': {
-    displayName: 'Developer pack',
-    description: 'GitHub, Linear, Notion, Slack, filesystem, Git, and SQLite.',
-    category: 'developer',
-  },
-  'productivity-pack': {
-    displayName: 'Productivity pack',
-    description: 'Gmail, Google Calendar, Notion, and Slack.',
-    category: 'productivity',
-  },
-  'travel-pack': {
-    displayName: 'Travel pack',
-    description: 'Booking, Expedia, and flight search — coming soon.',
-    category: 'lifestyle',
-  },
-  'research-pack': {
-    displayName: 'Research pack',
-    description: 'Brave Search, Exa semantic search, and Fetch.',
-    category: 'developer',
-  },
-};
-
-async function renderRecipePreview() {
-  if (!_wizardState) return;
-  const slug = _wizardState.recipeSlug || 'productivity-pack';
-  const meta = RECIPE_META[slug] || { displayName: slug, description: '', category: '' };
-
-  renderContent(`
-    <div id="onb-wizard-error" style="color:var(--danger);font-size:0.85rem;margin-bottom:0.75rem;display:none;"></div>
-    <div class="onboarding-title" style="font-size:1.2rem;font-weight:700;margin-bottom:0.25rem;">
-      Here's what I'd suggest
-    </div>
-    <div class="onboarding-desc" style="margin-bottom:0.75rem;font-size:0.85rem;">
-      ${escapeHtml(_wizardState.rationale || `The ${escapeHtml(meta.displayName)} covers the tools most people in your situation use.`)}
-    </div>
-
-    <div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:0.75rem;margin-bottom:0.75rem;">
-      <div style="font-weight:600;font-size:1rem;margin-bottom:0.2rem;">${escapeHtml(meta.displayName)}</div>
-      <div style="font-size:0.82rem;color:var(--text-muted);margin-bottom:0.6rem;">${escapeHtml(meta.description)}</div>
-      <div style="font-size:0.75rem;color:var(--text-dim);">
-        ${(_wizardState.recommendedRegistryIds ?? []).length} capabilities included
-      </div>
-    </div>
-
-    <div id="onb-dep-graph" style="margin-bottom:0.75rem;">
-      <div style="font-size:0.8rem;color:var(--text-muted);text-align:center;padding:0.5rem 0;">
-        Loading capability graph…
-      </div>
-    </div>
-
-    <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
-      <button class="btn btn-primary" data-action="onb-install-recipe" data-slug="${escapeHtml(slug)}">
-        Install this bundle
-      </button>
-      <button class="btn btn-outline" data-action="onb-skip-recipe" style="color:var(--text-muted);">
-        Skip for now
-      </button>
-    </div>
-  `);
-
-  // Load the D3 dependency graph async — non-blocking
-  loadDependencyGraph(getCurrentUserId());
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// D3 dependency graph (deliverable E)
-// ─────────────────────────────────────────────────────────────────────────────
-
-async function loadDependencyGraph(userId) {
-  const container = document.getElementById('onb-dep-graph');
-  if (!container) return;
-
-  // Load D3 from CDN if not already present
-  if (!window.d3) {
+async function finish() {
+  if (!_state) return;
+  if (_state.dataSource === 'sample') {
     try {
-      await loadScript('https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js');
-    } catch {
-      container.innerHTML = `<div style="font-size:0.78rem;color:var(--text-muted);text-align:center;">Dependency graph unavailable offline.</div>`;
+      const info = await fetchDemoInfo();
+      if (!info?.available || !info.userId) throw new Error('The packaged sample is not ready.');
+      const session = await startDemoSession();
+      if (!session?.token || session.userId !== info.userId) throw new Error('The sample session could not be verified.');
+      localStorage.setItem(KEY_TOUR_MODE, '1');
+      localStorage.setItem(KEY_USER_ID, info.userId);
+      localStorage.setItem(KEY_ONBOARDED, 'sample');
+      try { localStorage.removeItem(KEY_ONBOARDING_RETURN_HASH); } catch { /* noop */ }
+      closeWizard();
+      _onComplete?.(info.userId);
+      window.location.hash = '#/briefing';
+    } catch (error) {
+      fail(error?.friendlyMessage || error?.message || 'The packaged sample is not available.', 'complete');
+    }
+    return;
+  }
+
+  if (!savePendingReasoningChoice(_state.reasoningMode)) {
+    fail('This browser could not preserve your reasoning preference for the authenticated handoff.', 'complete');
+    return;
+  }
+
+  const finishAuthenticated = async (userId, sessionToken = null) => {
+    if (sessionToken) localStorage.setItem(KEY_SESSION_TOKEN, sessionToken);
+    localStorage.setItem(KEY_USER_ID, userId);
+    _state.userId = userId;
+    try {
+      await applyPendingReasoningChoice(userId);
+    } catch (error) {
+      fail(
+        error?.friendlyMessage || error?.message ||
+          'You are signed in, but the reasoning preference could not be saved. Try again.',
+        'complete',
+      );
       return;
     }
-  }
-
-  let graphData;
-  try {
-    graphData = await fetchCapabilityDependencyGraph(userId);
-  } catch {
-    container.innerHTML = `<div style="font-size:0.78rem;color:var(--text-muted);text-align:center;">Could not load graph.</div>`;
-    return;
-  }
-
-  const nodes = graphData.nodes ?? [];
-  const edges = graphData.edges ?? [];
-  if (nodes.length === 0) {
-    container.innerHTML = `<div style="font-size:0.78rem;color:var(--text-muted);text-align:center;">No capability data yet.</div>`;
-    return;
-  }
-
-  renderD3Graph(container, nodes, edges);
-}
-
-function loadScript(src) {
-  return new Promise((resolve, reject) => {
-    const existing = document.querySelector(`script[src="${src}"]`);
-    if (existing) { resolve(); return; }
-    const s = document.createElement('script');
-    s.src = src;
-    s.onload = resolve;
-    s.onerror = reject;
-    document.head.appendChild(s);
-  });
-}
-
-function renderD3Graph(container, nodes, edges) {
-  const d3 = window.d3;
-  if (!d3) return;
-
-  const W = Math.min(container.clientWidth || 320, 400);
-  const H = 200;
-
-  container.innerHTML = '';
-
-  const svg = d3.select(container)
-    .append('svg')
-    .attr('width', W)
-    .attr('height', H)
-    .style('background', 'var(--bg)')
-    .style('border-radius', 'var(--radius-sm)');
-
-  const sim = d3.forceSimulation(nodes)
-    .force('link', d3.forceLink(edges).id((d) => d.id).distance(50))
-    .force('charge', d3.forceManyBody().strength(-80))
-    .force('center', d3.forceCenter(W / 2, H / 2))
-    .force('collision', d3.forceCollide(18));
-
-  const link = svg.append('g')
-    .selectAll('line')
-    .data(edges)
-    .join('line')
-    .attr('stroke', 'var(--border)')
-    .attr('stroke-width', 1.5);
-
-  const node = svg.append('g')
-    .selectAll('circle')
-    .data(nodes)
-    .join('circle')
-    .attr('r', (d) => d.id.startsWith('server:') ? 10 : 6)
-    .attr('fill', (d) => d.installed ? 'var(--accent)' : 'var(--border)')
-    .attr('stroke', 'var(--bg-card)')
-    .attr('stroke-width', 1.5);
-
-  const label = svg.append('g')
-    .selectAll('text')
-    .data(nodes)
-    .join('text')
-    .text((d) => d.label)
-    .attr('font-size', 9)
-    .attr('fill', 'var(--text-muted)')
-    .attr('text-anchor', 'middle')
-    .attr('dy', (d) => d.id.startsWith('server:') ? 22 : 18);
-
-  sim.on('tick', () => {
-    link
-      .attr('x1', (d) => d.source.x)
-      .attr('y1', (d) => d.source.y)
-      .attr('x2', (d) => d.target.x)
-      .attr('y2', (d) => d.target.y);
-    node
-      .attr('cx', (d) => d.x)
-      .attr('cy', (d) => d.y);
-    label
-      .attr('x', (d) => d.x)
-      .attr('y', (d) => d.y);
-  });
-}
-
-// ── Installing ────────────────────────────────────────────────────────────────
-
-async function handleInstallRecipe(slug, btn) {
-  if (btn) { btn.disabled = true; btn.textContent = 'Installing…'; }
-  transitionTo('installing');
-
-  const userId = getCurrentUserId();
-
-  try {
-    const { jobs } = await installCapabilityRecipe(userId, slug);
-    const count = jobs?.length ?? 0;
-    await postOnboardingComplete(userId, getFirstRunChoice(), slug);
-    renderInstallComplete(slug, count);
-  } catch (err) {
-    renderContent(`
-      <div id="onb-wizard-error" style="color:var(--danger);font-size:0.85rem;margin-bottom:0.75rem;display:block;">
-        Install failed: ${escapeHtml(err?.message || 'unknown error')}
-      </div>
-      <button class="btn btn-primary" data-action="onb-go-dashboard">Continue to dashboard anyway</button>
-    `);
-  }
-}
-
-function renderInstalling() {
-  renderContent(`
-    <div style="text-align:center;padding:2rem 0;color:var(--text-muted);">
-      <div class="loading" style="margin-bottom:0.75rem;"></div>
-      Setting up your capabilities…
-    </div>
-  `);
-}
-
-function renderInstallComplete(slug, count) {
-  const meta = RECIPE_META[slug] || { displayName: slug };
-  renderContent(`
-    <div id="onb-wizard-error" style="display:none;"></div>
-    <div style="text-align:center;padding:1rem 0 0.5rem;">
-      <div style="font-size:2.5rem;margin-bottom:0.5rem;">&#10003;</div>
-      <div class="onboarding-title" style="font-size:1.2rem;font-weight:700;margin-bottom:0.4rem;">
-        ${escapeHtml(meta.displayName)} queued
-      </div>
-      <div class="onboarding-desc" style="font-size:0.85rem;margin-bottom:1.25rem;">
-        ${count} capability${count !== 1 ? 's' : ''} ${count > 0 ? 'will be installed — some need OAuth authorisation which will happen when you first use them.' : 'queued.'}
-      </div>
-      <button class="btn btn-primary btn-lg" data-action="onb-go-dashboard">Go to dashboard</button>
-    </div>
-  `);
-}
-
-// ── Complete ──────────────────────────────────────────────────────────────────
-
-async function finishWizard(userId, choice, recipeSlug) {
-  try {
-    await postOnboardingComplete(userId, choice, recipeSlug);
-  } catch {
-    // non-fatal — wizard still completes
-  }
-  localStorage.setItem(KEY_ONBOARDED, 'true');
-  if (userId) localStorage.setItem(KEY_USER_ID, userId);
-  // Wizard completed cleanly — drop the resume token (#390) so the
-  // next first-run visit (e.g. after a delete-my-data flow) starts
-  // at screen 1, not at whatever screen this user happened to end on.
-  clearOnboardingState();
-  hideWizard();
-  if (typeof _onCompleteCallback === 'function') {
-    _onCompleteCallback(userId);
-  }
-}
-
-function hideWizard() {
-  const overlay = document.getElementById('onboarding-overlay');
-  if (overlay) overlay.style.display = 'none';
-  // Preserve any existing marker — the tour-mode handler writes
-  // `KEY_ONBOARDED='sample'` immediately before calling hideWizard(),
-  // and a blanket overwrite to 'true' here would clobber that marker
-  // before the chrome banner work (P2 follow-up) ever sees it. Only
-  // promote the "never onboarded" null state to 'true' here.
-  if (!localStorage.getItem(KEY_ONBOARDED)) {
     localStorage.setItem(KEY_ONBOARDED, 'true');
-  }
-  // Drop the resume token whenever the wizard goes away (#390 Copilot).
-  // hideWizard() is the chokepoint for every "wizard is done" path —
-  // OAuth completion, tour-mode start, X/Skip dismiss, finishWizard
-  // (which already clears explicitly but harmless to double-clear),
-  // and the install-complete "Continue to dashboard" button. Without
-  // this, a hideWizard() that didn't route through finishWizard()
-  // left a stale resume token behind that would re-prompt on the next
-  // first-run visit.
-  clearOnboardingState();
-  // Tear down the document-level Esc listener that showOnboarding()
-  // installed (lives in app.js, exposed via window). Without this the
-  // listener leaks past every wizard-complete path that doesn't go
-  // through the X / Skip / Esc dismiss flow (e.g. the OAuth completion
-  // and the "Continue to dashboard" button).
-  if (typeof window.skyTwinTeardownOnboardingEsc === 'function') {
-    window.skyTwinTeardownOnboardingEsc();
-  }
-  if (typeof _onCompleteCallback === 'function') {
-    _onCompleteCallback(getCurrentUserId());
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// State machine transitions
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Screens that are safely resumable on next visit. `installing` is a
- * spinner-only screen mid-side-effect; `complete` is post-finish.
- * Persisting either would resume the user onto a meaningless render
- * with no source state behind it, so we skip the save (#390 Copilot).
- */
-const NON_RESUMABLE_SCREENS = new Set(['installing', 'complete']);
-
-async function transitionTo(screen) {
-  if (!_wizardState) return;
-  _wizardState.screen = screen;
-  if (NON_RESUMABLE_SCREENS.has(screen)) {
-    // We're past the point a resume can recover from; the saved state
-    // for an earlier screen stays in place until finishWizard() or
-    // hideWizard() clears it. Don't overwrite with a non-resumable
-    // screen name.
-  } else {
-    saveOnboardingState();
-  }
-
-  switch (screen) {
-    case 'welcome':
-      renderWelcome();
-      break;
-    case 'email_choice':
-      renderEmailChoice();
-      break;
-    case 'computer_choice':
-      renderComputerChoice();
-      break;
-    case 'idle_miner_poll':
-      await renderIdleMinerPoll();
-      break;
-    case 'about_me_choice':
-      if (_wizardState.hasLlmProvider) {
-        renderAboutMeConversational();
-      } else {
-        _detAnswers = {};
-        _detStep = 0;
-        renderDeterministicStep();
-      }
-      break;
-    case 'recipe_preview':
-      await renderRecipePreview();
-      break;
-    case 'installing':
-      renderInstalling();
-      break;
-    case 'complete':
-      await finishWizard(getCurrentUserId(), getFirstRunChoice(), _wizardState.recipeSlug);
-      break;
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Public entry point — called from app.js
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Render the first-run wizard.
- *
- * @param {HTMLElement} container  - The #onboarding-content element
- * @param {Function}    onComplete - Called with (userId) when the wizard finishes
- */
-export async function renderOnboarding(container, onComplete) {
-  ensureWizardListener();
-  _onCompleteCallback = onComplete;
-
-  // Initialise wizard state
-  _wizardState = {
-    screen: 'welcome',
-    userId: getCurrentUserId(),
-    hasLlmProvider: false,
-    history: [],
-    recipeSlug: null,
-    recommendedRegistryIds: [],
-    rationale: '',
+    const destination = consumeOnboardingReturnHash('#/connect-gmail');
+    closeWizard();
+    _onComplete?.(userId);
+    window.location.hash = destination;
   };
 
-  // Fetch onboarding state from the API to determine LLM availability
-  const userId = getCurrentUserId();
-  if (userId) {
-    try {
-      const state = await fetchOnboardingState(userId);
-      _wizardState.hasLlmProvider = state.hasLlmProvider ?? false;
-      // If they've already completed onboarding, close the wizard
-      if (!state.isFirstRun) {
-        clearOnboardingState();
-        hideWizard();
-        return;
-      }
-    } catch {
-      // Non-fatal — proceed with defaults (deterministic path)
-      _wizardState.hasLlmProvider = false;
-    }
-  }
-
-  // Resume path (#390). A tab-close mid-wizard leaves a
-  // KEY_ONBOARDING_STATE payload behind; rather than dropping the
-  // user back at screen 1 every time, show a "Resume where you left
-  // off?" gate. Welcome screen is the only one we treat as
-  // "not worth resuming" — if they only saw the welcome card, jump
-  // straight back to it.
-  const saved = loadOnboardingState();
-  if (saved && saved.screen && saved.screen !== 'welcome') {
-    if (typeof saved.hasLlmProvider === 'boolean') {
-      _wizardState.hasLlmProvider = saved.hasLlmProvider;
-    }
-    if (typeof saved.recipeSlug === 'string') {
-      _wizardState.recipeSlug = saved.recipeSlug;
-    }
-    renderResumePrompt(saved.screen, saved.savedAt);
+  // A user who already has a verified local session can apply the preference
+  // directly. Never infer identity from a typed email or a public user lookup.
+  const existingUserId = currentUserId();
+  let existingToken = '';
+  try { existingToken = localStorage.getItem(KEY_SESSION_TOKEN) || ''; } catch { /* noop */ }
+  if (existingUserId && existingToken) {
+    await finishAuthenticated(existingUserId);
     return;
   }
 
-  transitionTo('welcome');
+  try {
+    const result = await startGoogleSignIn({
+      newUser: true,
+      next: 'connect-gmail',
+      onComplete: async (completion) => {
+        if (!completion?.connected || !completion.userId || !completion.sessionToken) {
+          fail('The verified sign-in did not complete. Try again.', 'complete');
+          return;
+        }
+        await finishAuthenticated(completion.userId, completion.sessionToken);
+      },
+    });
+    if (result.status === 'polling') {
+      transition('connecting');
+      return;
+    }
+    if (result.status === 'redirecting') return;
+    fail(result.error || 'Google sign-in could not be started.', 'complete');
+  } catch (error) {
+    fail(error?.friendlyMessage || error?.message || 'Google sign-in could not be started.', 'complete');
+  }
 }
 
-/**
- * Resume gate shown on next visit when a prior wizard run was
- * interrupted mid-flow (#390). Two paths: Resume → transitionTo the
- * saved screen; Start over → clear the saved state and go back to
- * the welcome screen. Click delegation lives in `ensureWizardListener`.
- */
-function renderResumePrompt(savedScreen, savedAt) {
-  const friendlyScreen = ({
-    email_choice: 'Choose your email setup',
-    computer_choice: 'Choose your sign-in path',
-    idle_miner_poll: 'Scanning for apps',
-    about_me_choice: 'About-you questions',
-    recipe_preview: 'Confirm what to install',
-    installing: 'Installing your starter kit',
-  })[savedScreen] || 'Onboarding';
-  const when = savedAt
-    ? ` (last seen ${escapeHtml(new Date(savedAt).toLocaleString())})`
-    : '';
-  renderContent(`
-    <div class="onboarding-title" style="font-size:1.3rem;font-weight:700;margin-bottom:0.5rem;">Pick up where you left off?</div>
-    <div class="onboarding-desc" style="margin-bottom:1rem;">
-      Looks like you stopped at <strong>${escapeHtml(friendlyScreen)}</strong>${when}. Want to resume, or start over?
-    </div>
-    <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
-      <button class="btn btn-primary" data-action="onboarding-resume" data-screen="${escapeHtml(savedScreen)}">Resume</button>
-      <button class="btn btn-outline" data-action="onboarding-restart">Start over</button>
-    </div>
-  `);
+function handleChoice(event) {
+  if (!_state || !isOnOnboardingRoute() || !overlayIsVisible()) return;
+  const input = event.target instanceof HTMLInputElement ? event.target : null;
+  if (!input || input.type !== 'radio') return;
+  if (input.name === 'data-source' && DATA_SOURCES.has(input.value)) {
+    _state.dataSource = input.value;
+    if (input.value === 'sample') {
+      _state.reasoningMode = null;
+    }
+    saveResumeState();
+    document.querySelectorAll('input[name="data-source"]').forEach((radio) => {
+      radio.closest('.onboarding-option')?.classList.toggle('is-selected', radio === input);
+    });
+    const next = document.querySelector('[data-action="onb-next"]');
+    if (next instanceof HTMLButtonElement) next.disabled = false;
+  } else if (input.name === 'reasoning-mode' && REASONING_CHOICES.has(input.value)) {
+    _state.reasoningMode = input.value;
+    saveResumeState();
+    document.querySelectorAll('input[name="reasoning-mode"]').forEach((radio) => {
+      radio.closest('.onboarding-option')?.classList.toggle('is-selected', radio === input);
+    });
+    const next = document.querySelector('[data-action="onb-next"]');
+    if (next instanceof HTMLButtonElement) next.disabled = false;
+  }
+}
+
+async function handleClick(event) {
+  if (!isOnOnboardingRoute() || !overlayIsVisible()) return;
+  const target = event.target instanceof Element ? event.target.closest('[data-action]') : null;
+  if (!target) return;
+  const action = target.getAttribute('data-action');
+  if (action === 'onb-next') await advance();
+  else if (action === 'onb-back') goBack();
+  else if (action === 'onb-finish') await finish();
+  else if (action === 'onb-retry') transition(_state?.retryScreen || 'data_source');
+  else if (action === 'onb-dismiss') window.skyTwinDismissOnboarding?.();
+}
+
+function ensureListeners() {
+  if (_listenerWired || typeof document === 'undefined') return;
+  _listenerWired = true;
+  document.addEventListener('click', handleClick);
+  document.addEventListener('change', handleChoice);
+}
+
+/** Entry point used by app.js. */
+export async function renderOnboarding(_container, onComplete) {
+  ensureListeners();
+  _onComplete = onComplete;
+  _state = readResumeState(currentUserId()) || initialOnboardingState(currentUserId());
+  renderScreen();
 }

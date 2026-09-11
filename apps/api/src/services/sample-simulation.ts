@@ -360,6 +360,7 @@ function decisionParts(
     allRiskAssessments: [assessment],
     autoExecute: false,
     requiresApproval: policy.requiresApproval,
+    blockCodes: [],
     reasoning:
       entry.id === 'untrusted-document'
         ? `${policy.reason} The simulation contains this proposal and offers no approval command.`

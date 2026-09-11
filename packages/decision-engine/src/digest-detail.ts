@@ -8,7 +8,7 @@
  * so the UI stays dumb. Pure + testable.
  */
 
-import type { ActionProvenance } from '@skytwin/shared-types';
+import type { ActionProvenance, DecisionBlockCode } from '@skytwin/shared-types';
 
 export interface DigestItemDetailInput {
   provenance?: ActionProvenance;
@@ -18,8 +18,10 @@ export interface DigestItemDetailInput {
   domain?: string | null;
   sourceRefs: string[];
   requiresApproval?: boolean;
-  /** Machine block codes, e.g. 'missing_write_scope:gmail.send', 'trust_tier:observer'. */
-  blockedReasons?: string[];
+  /** Guard-validated machine codes persisted with the decision outcome. */
+  blockedReasonCodes?: DecisionBlockCode[];
+  /** Display-only legacy prose. Never use this field to select an action. */
+  humanBlockedReasons?: string[];
   explanation?: string | null;
   /**
    * Explicit "why this urgency" string. When provided it overrides the
@@ -44,6 +46,12 @@ export interface DigestItemDetail {
   urgencyReason: string;
   sourceRefs: string[];
   whyNotAutoExecuted: string[];
+  /**
+   * Canonical machine-readable policy/scope codes. Kept separate from the
+   * human explanation above so presentation code never has to reverse-parse
+   * prose in order to choose a safe affordance.
+   */
+  blockedReasonCodes: DecisionBlockCode[];
   explanation: string | null;
   /** The twin's recommended next step (actionable), if known. */
   suggestedAction: string | null;
@@ -96,12 +104,16 @@ export function buildDigestItemDetail(input: DigestItemDetailInput): DigestItemD
       ? `Deadline: "${input.deadlinePhrase}"`
       : `Default for ${input.domain ?? 'this kind of item'}`);
 
-  const whyNotAutoExecuted =
-    input.requiresApproval && input.blockedReasons && input.blockedReasons.length > 0
-      ? input.blockedReasons.map(humanizeBlockReason)
-      : input.requiresApproval
-        ? ['Set aside for your review']
-        : [];
+  const whyNotAutoExecuted = input.requiresApproval
+    ? input.blockedReasonCodes && input.blockedReasonCodes.length > 0
+      ? input.blockedReasonCodes.map(humanizeBlockReason)
+      : input.humanBlockedReasons && input.humanBlockedReasons.length > 0
+        ? input.humanBlockedReasons.map(humanizeBlockReason)
+        : ['Set aside for your review']
+    : [];
+  const blockedReasonCodes = input.requiresApproval
+    ? [...(input.blockedReasonCodes ?? [])]
+    : [];
 
   return {
     provenanceLabel: provenanceLabel(input.provenance),
@@ -109,6 +121,7 @@ export function buildDigestItemDetail(input: DigestItemDetailInput): DigestItemD
     urgencyReason,
     sourceRefs: input.sourceRefs,
     whyNotAutoExecuted,
+    blockedReasonCodes,
     explanation: input.explanation ?? null,
     suggestedAction: input.suggestedAction?.trim() || null,
     occurredAt: input.occurredAt ?? null,

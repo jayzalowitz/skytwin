@@ -102,27 +102,34 @@ export function createTwinBriefingsRouter(): Router {
       // render rather than 500ing the briefing endpoint.
       const stored = (briefing as { structured_payload?: unknown } | null)
         ?.structured_payload;
+      let liveDigestFailed = false;
       const liveDigest = stored
         ? null
         : await buildLiveDigest(userId).catch((e) => {
+            liveDigestFailed = true;
             log.warn('live digest build failed', { userId, error: String(e) });
             return null;
           });
+      // A stored briefing remains a truthful prose fallback when the live fold
+      // is temporarily unavailable. With no stored row, however, returning
+      // `{ briefing: null }` would mislabel a failed read as an empty account
+      // and make the designed error state unreachable.
+      if (liveDigestFailed && !briefing) {
+        res.status(503).json({
+          error: 'Twin briefing is temporarily unavailable.',
+          code: 'LIVE_DIGEST_UNAVAILABLE',
+        });
+        return;
+      }
       const structured = stored ?? liveDigest;
 
       let briefingWithStructured: unknown = null;
       if (briefing) {
         briefingWithStructured = { ...briefing, structured: structured ?? null };
-      } else if (
-        liveDigest &&
-        (liveDigest.todos.length ||
-          liveDigest.topics.length ||
-          (liveDigest.memorySuggestions?.length ?? 0) > 0 ||
-          (liveDigest.watchRuns?.length ?? 0) > 0)
-      ) {
-        // No stored briefing row yet, but we can render live parity from
-        // decisions. Synthesize a minimal briefing envelope carrying the
-        // structured digest; prose is null so the UI renders the digest only.
+      } else if (liveDigest) {
+        // No stored briefing row yet. The live envelope is still meaningful
+        // when its item lists are empty because coverage distinguishes a quiet
+        // connected account from a zero-connector cold start.
         briefingWithStructured = {
           id: 'live',
           user_id: userId,

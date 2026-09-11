@@ -111,6 +111,24 @@ describe('oauthRepository (multi-account)', () => {
         ['gmail.readonly'],
       ]);
     });
+
+    it('uses the supplied transaction client', async () => {
+      const row = fakeRow({ account_email: 'work@example.com' });
+      const clientQuery = vi.fn().mockResolvedValue({ rows: [row], rowCount: 1 });
+
+      await oauthRepository.saveTokenForAccount({
+        userId: 'user-1',
+        provider: 'google',
+        accountEmail: 'work@example.com',
+        accessToken: 'access-1',
+        refreshToken: 'refresh-1',
+        expiresAt: row.expires_at,
+        scopes: [],
+      }, { query: clientQuery } as never);
+
+      expect(clientQuery).toHaveBeenCalledOnce();
+      expect(mockQuery).not.toHaveBeenCalled();
+    });
   });
 
   describe('deleteAccount', () => {

@@ -528,7 +528,7 @@ export function fetchBriefing(userId) {
   return fetchJSON(`${API}/v1/briefings/${encodeURIComponent(userId)}`);
 }
 
-export function getGoogleAuthUrl(userId, { desktop = false, newUser = false, next = null, pendingKey = null, include = null } = {}) {
+export function getGoogleAuthUrl(userId, { desktop = false, newUser = false, next = null, pendingKeyDigest = null, include = null } = {}) {
   // Fail fast on the client instead of sending `userId=null` and getting
   // back an opaque 400 "Missing userId" from the server.
   if (!newUser && !userId) {
@@ -541,10 +541,10 @@ export function getGoogleAuthUrl(userId, { desktop = false, newUser = false, nex
   // `next` deep-link target — server whitelists the value, so passing an
   // unknown one is harmless (it gets dropped at the server side).
   if (next) params.set('next', next);
-  // `pendingKey` — UUIDv4 generated client-side. Server re-validates the
-  // shape before threading it through signed state. Lets the desktop
-  // newUser wizard poll for the just-created userId.
-  if (pendingKey) params.set('pendingKey', pendingKey);
+  // Only a one-way, domain-separated digest crosses a request target or the
+  // OAuth redirect. The raw capability remains only in the sign-in call's
+  // in-memory closure and is redeemed through a no-store POST body.
+  if (pendingKeyDigest) params.set('pendingKeyDigest', pendingKeyDigest);
   // Optional scope-tier opt-in. Today the only accepted value is 'gmail',
   // which adds gmail.readonly + gmail.modify to the requested scope list
   // when (and only when) the caller has user-supplied OAuth credentials.
@@ -560,7 +560,10 @@ export function getGoogleAuthUrl(userId, { desktop = false, newUser = false, nex
  * for this key, or throws ApiError(kind:'not-found') if not yet.
  */
 export function fetchPendingSignin(pendingKey) {
-  return fetchJSON(`${API}/oauth/google/pending/${encodeURIComponent(pendingKey)}`);
+  return fetchJSON(`${API}/oauth/google/pending`, {
+    method: 'POST',
+    body: JSON.stringify({ pendingKey }),
+  });
 }
 
 export function disconnectProvider(provider, userId) {
@@ -646,6 +649,13 @@ export function saveAIProviders(userId, providers, reasoningMode) {
   return fetchJSON(`${API}/settings/${userId}/ai`, {
     method: 'PUT',
     body: JSON.stringify({ providers, reasoningMode }),
+  });
+}
+
+export function updateReasoningMode(userId, mode) {
+  return fetchJSON(`${API}/settings/${encodeURIComponent(userId)}/ai/reasoning-mode`, {
+    method: 'PUT',
+    body: JSON.stringify({ mode }),
   });
 }
 

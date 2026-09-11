@@ -52,9 +52,11 @@ export type {
   CandidateAction,
   RiskAssessment,
   DimensionAssessment,
+  DecisionBlockCode,
   DecisionOutcome,
   PolicyVerdict,
 } from './decision.js';
+export { isDecisionBlockCode } from './decision.js';
 
 export type {
   ActionProvenance,

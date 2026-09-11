@@ -38,10 +38,10 @@ export { accessLogRepository } from './access-log-repository.js';
 export type { AccessLogRow, RecordAccessInput } from './access-log-repository.js';
 export {
   oauthPendingSigninRepository,
+  PendingSigninCollisionError,
 } from './oauth-pending-signin-repository.js';
 export type {
   RememberPendingSigninInput,
-  ConsumedPendingSignin,
 } from './oauth-pending-signin-repository.js';
 export { approvalRepository } from './approval-repository.js';
 export { patternRepository } from './pattern-repository.js';

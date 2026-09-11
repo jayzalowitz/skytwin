@@ -11,7 +11,7 @@ import type { Express } from 'express';
 
 // ── Mocks (vi.hoisted so factories run before vi.mock) ─────────────────────
 
-const { mockBriefingRepository, mockLifebookRepository } = vi.hoisted(() => ({
+const { mockBriefingRepository, mockLifebookRepository, mockQuery } = vi.hoisted(() => ({
   mockBriefingRepository: {
     create: vi.fn(),
     getLatestForUser: vi.fn(),
@@ -29,11 +29,14 @@ const { mockBriefingRepository, mockLifebookRepository } = vi.hoisted(() => ({
   mockLifebookRepository: {
     listVisible: vi.fn().mockResolvedValue([]),
   },
+  mockQuery: vi.fn().mockResolvedValue({ rows: [] }),
 }));
 
 vi.mock('@skytwin/db', () => ({
   briefingRepository: mockBriefingRepository,
   lifebookRepository: mockLifebookRepository,
+  watchRunRepository: { listRecentForUser: vi.fn().mockResolvedValue([]) },
+  query: mockQuery,
 }));
 
 // ── Import after mocks ─────────────────────────────────────────────────────
@@ -103,7 +106,10 @@ async function req(
 // ── Tests ──────────────────────────────────────────────────────────────────
 
 describe('GET /api/twin-briefings/latest', () => {
-  beforeEach(() => { vi.clearAllMocks(); });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockQuery.mockReset().mockResolvedValue({ rows: [] });
+  });
 
   it('returns the latest briefing for the authenticated user', async () => {
     mockBriefingRepository.getLatestForUser.mockResolvedValue(BRIEFING_ROW);
@@ -116,13 +122,18 @@ describe('GET /api/twin-briefings/latest', () => {
     expect(mockBriefingRepository.getLatestForUser).toHaveBeenCalledWith(USER_ID, undefined);
   });
 
-  it('returns { briefing: null } when no briefing exists', async () => {
+  it('returns a structured cold-start briefing when no stored briefing exists', async () => {
     mockBriefingRepository.getLatestForUser.mockResolvedValue(null);
 
     const { status, body } = await req(buildApp(), 'GET', '/api/twin-briefings/latest');
 
     expect(status).toBe(200);
-    expect((body as { briefing: null }).briefing).toBeNull();
+    expect(body).toMatchObject({
+      briefing: {
+        id: 'live',
+        structured: { coverage: { coldStart: true } },
+      },
+    });
   });
 
   it('passes cadence query param to the repository', async () => {

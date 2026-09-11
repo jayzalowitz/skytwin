@@ -68,8 +68,9 @@ describe('onboarding capability copy', () => {
     expect(onboardingSource).not.toContain('first app signal');
   });
 
-  it('describes the project-metadata scan it actually performs', () => {
-    expect(onboardingSource).toContain('scanning your code projects');
-    expect(onboardingSource).toContain('project metadata only');
+  it('offers only the sample or an explicit source-connection path', () => {
+    expect(onboardingSource).toContain('Use the sample');
+    expect(onboardingSource).toContain('Connect my data');
+    expect(onboardingSource).not.toContain('scanning your code projects');
   });
 });

@@ -3,7 +3,7 @@
  *
  * Coverage:
  *   1. 400 when userId is missing
- *   2. No global briefing + no per-Lifebook briefings → { briefing: null, sections: [] }
+ *   2. No content or connectors → structured live cold-start envelope
  *   3. Global briefing present + sections empty (new user) → returns briefing, sections: []
  *   4. Sections ordered by visible-Lifebook importance, ONLY for Lifebooks
  *      with a matching per-domain briefing (no empty-section slots)
@@ -21,11 +21,13 @@ const {
   mockGetLatestPerLifebook,
   mockListVisible,
   mockListRecentWatchRuns,
+  mockQuery,
 } = vi.hoisted(() => ({
   mockGetLatest: vi.fn(),
   mockGetLatestPerLifebook: vi.fn(),
   mockListVisible: vi.fn(),
   mockListRecentWatchRuns: vi.fn().mockResolvedValue([]),
+  mockQuery: vi.fn().mockResolvedValue({ rows: [] }),
 }));
 
 vi.mock('@skytwin/db', () => ({
@@ -43,10 +45,9 @@ vi.mock('@skytwin/db', () => ({
   watchRunRepository: {
     listRecentForUser: mockListRecentWatchRuns,
   },
-  // buildLiveDigest (twin-briefings /latest) queries decisions; an empty
-  // result makes it return null so these tests exercise the prose/sections
-  // path without the live digest.
-  query: vi.fn().mockResolvedValue({ rows: [] }),
+  // buildLiveDigest queries decisions, memory, and coverage. Empty results now
+  // deliberately produce a structured cold-start envelope.
+  query: mockQuery,
 }));
 
 import { createTwinBriefingsRouter } from '../routes/twin-briefings.js';
@@ -125,12 +126,15 @@ beforeEach(() => {
 });
 
 describe('GET /api/twin-briefings/latest — #320 sections fold', () => {
+  beforeEach(() => {
+    mockQuery.mockReset().mockResolvedValue({ rows: [] });
+  });
   it('returns 400 when userId is missing', async () => {
     const res = await request(buildApp(), 'GET', '/api/twin-briefings/latest');
     expect(res.status).toBe(400);
   });
 
-  it('returns { briefing: null, sections: [] } when nothing exists', async () => {
+  it('returns a structured cold-start envelope when nothing exists', async () => {
     mockGetLatest.mockResolvedValue(null);
     mockGetLatestPerLifebook.mockResolvedValue([]);
     mockListVisible.mockResolvedValue([]);
@@ -141,7 +145,49 @@ describe('GET /api/twin-briefings/latest — #320 sections fold', () => {
       `/api/twin-briefings/latest?userId=${USER_ID}`,
     );
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ briefing: null, sections: [] });
+    const body = res.body as {
+      briefing: { id: string; structured: { coverage: { coldStart: boolean } } };
+      sections: unknown[];
+    };
+    expect(body.briefing.id).toBe('live');
+    expect(body.briefing.structured.coverage.coldStart).toBe(true);
+    expect(body.sections).toEqual([]);
+  });
+
+  it('returns a typed non-200 error when the live digest fails without a prose fallback', async () => {
+    mockGetLatest.mockResolvedValue(null);
+    mockGetLatestPerLifebook.mockResolvedValue([]);
+    mockListVisible.mockResolvedValue([]);
+    mockQuery.mockRejectedValueOnce(new Error('database unavailable'));
+
+    const res = await request(
+      buildApp(),
+      'GET',
+      `/api/twin-briefings/latest?userId=${USER_ID}`,
+    );
+    expect(res.status).toBe(503);
+    expect(res.body).toEqual({
+      error: 'Twin briefing is temporarily unavailable.',
+      code: 'LIVE_DIGEST_UNAVAILABLE',
+    });
+  });
+
+  it('keeps a stored prose briefing as the fallback when the live digest fails', async () => {
+    mockGetLatest.mockResolvedValue(fakeBriefing(null));
+    mockGetLatestPerLifebook.mockResolvedValue([]);
+    mockListVisible.mockResolvedValue([]);
+    mockQuery.mockRejectedValueOnce(new Error('database unavailable'));
+
+    const res = await request(
+      buildApp(),
+      'GET',
+      `/api/twin-briefings/latest?userId=${USER_ID}`,
+    );
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      briefing: { prose_markdown: 'Prose for global', structured: null },
+      sections: [],
+    });
   });
 
   it('returns global briefing + empty sections when no per-Lifebook briefings exist', async () => {

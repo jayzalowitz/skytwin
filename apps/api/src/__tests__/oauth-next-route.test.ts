@@ -5,6 +5,7 @@ import {
   _parseSignedStateForTests,
   _stateTtlMsForTests,
   isValidPendingKey,
+  isValidPendingKeyDigest,
 } from '../routes/oauth.js';
 
 /**
@@ -111,28 +112,27 @@ describe('OAuth post-callback next= routing', () => {
     });
   });
 
-  it('state round-trip with key=<uuid> decodes the pendingKey', () => {
+  it('state round-trip carries only the capability digest', () => {
     const expiresAt = Date.now() + _stateTtlMsForTests;
-    const uuid = '550e8400-e29b-41d4-a716-446655440000';
-    const state = _signStatePayloadForTests(`new|desktop|key=${uuid}`, expiresAt);
+    const digest = 'a'.repeat(64);
+    const state = _signStatePayloadForTests(`new|desktop|key_digest=${digest}`, expiresAt);
 
     const parsed = _parseSignedStateForTests(state);
 
     expect(parsed.userId).toBeNull();
     expect(parsed.desktop).toBe(true);
-    expect(parsed.pendingKey).toBe(uuid);
+    expect(parsed.pendingKeyDigest).toBe(digest);
   });
 
-  it('state round-trip with a malformed key= tag drops pendingKey to null', () => {
-    // The /authorize handler validates UUID shape up-front, but
-    // parseSignedState re-validates so a tampered or rolled-back state
-    // can't write a non-UUID into oauth_pending_signin.
+  it('state round-trip drops a malformed digest', () => {
     const expiresAt = Date.now() + _stateTtlMsForTests;
-    const state = _signStatePayloadForTests('new|desktop|key=not-a-uuid', expiresAt);
+    const state = _signStatePayloadForTests('new|desktop|key_digest=not-a-digest', expiresAt);
 
     const parsed = _parseSignedStateForTests(state);
 
-    expect(parsed.pendingKey).toBeNull();
+    expect(parsed.pendingKeyDigest).toBeNull();
+    expect(isValidPendingKeyDigest('a'.repeat(64))).toBe(true);
+    expect(isValidPendingKeyDigest('A'.repeat(64))).toBe(false);
   });
 
   it('flipping a bit in the state breaks signature verification', () => {
