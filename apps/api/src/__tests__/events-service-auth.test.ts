@@ -53,6 +53,11 @@ const { savedEnv, mocks, SERVICE_TOKEN, TEST_USER_ID } = vi.hoisted(() => {
       userFindById: vi.fn(),
       oauthGetToken: vi.fn(),
       executionCreatePlan: vi.fn(),
+      executionCreateEvent: vi.fn(),
+      executionUpdatePlanStatus: vi.fn(),
+      executionCreateResult: vi.fn(),
+      executionGetByDecisionId: vi.fn(),
+      inferenceCreateMany: vi.fn(),
       resolveUserLlmClient: vi.fn(),
       getMemoryPortForUser: vi.fn(),
       getExecutionRouter: vi.fn(),
@@ -76,24 +81,29 @@ afterAll(() => {
   }
 });
 
-vi.mock('@skytwin/decision-engine', () => ({
-  SituationInterpreter: vi.fn(function SituationInterpreter() {
-    return { interpret: mocks.interpret };
-  }),
-  DecisionMaker: vi.fn(function DecisionMaker() {
-    return { evaluate: mocks.evaluate };
-  }),
-  LlmSituationStrategy: vi.fn(),
-  LlmCandidateGenerator: vi.fn(),
-  FallbackSituationStrategy: vi.fn(),
-  FallbackCandidateGenerator: vi.fn(),
-  RuleBasedCandidateGenerator: vi.fn(),
-  SenderAwareCandidateGenerator: vi.fn(),
-  CompositeCandidateGenerator: vi.fn(),
-  gmailArchiveProposalEnabled: () =>
-    process.env['SKYTWIN_GMAIL_ARCHIVE_ENABLED'] === 'true',
-  buildGmailArchiveProposal: mocks.buildArchiveProposal,
-}));
+vi.mock('@skytwin/decision-engine', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@skytwin/decision-engine')>();
+  return {
+    ...actual,
+    SituationInterpreter: vi.fn(function SituationInterpreter() {
+      return { interpret: mocks.interpret };
+    }),
+    DecisionMaker: vi.fn(function DecisionMaker() {
+      return { evaluate: mocks.evaluate };
+    }),
+    LlmSituationStrategy: vi.fn(),
+    LlmCandidateGenerator: vi.fn(),
+    FallbackSituationStrategy: vi.fn(),
+    FallbackCandidateGenerator: vi.fn(),
+    RuleBasedCandidateGenerator: vi.fn(),
+    SenderAwareCandidateGenerator: vi.fn(),
+    CompositeCandidateGenerator: vi.fn(),
+    gmailArchiveProposalEnabled: () =>
+      process.env['SKYTWIN_GMAIL_ARCHIVE_ENABLED'] === 'true',
+    buildGmailArchiveProposal: mocks.buildArchiveProposal,
+    __realBuildGmailArchiveProposal: actual.buildGmailArchiveProposal,
+  };
+});
 
 vi.mock('@skytwin/twin-model', () => ({
   TwinService: vi.fn(function TwinService() {
@@ -140,10 +150,10 @@ vi.mock('@skytwin/db', () => ({
   gmailArchiveProposalRepository: { persist: mocks.persistArchiveProposal },
   executionRepository: {
     createPlan: mocks.executionCreatePlan,
-    createEvent: vi.fn().mockResolvedValue({}),
-    updatePlanStatus: vi.fn().mockResolvedValue({}),
-    createResult: vi.fn().mockResolvedValue({}),
-    getByDecisionId: vi.fn().mockResolvedValue(null),
+    createEvent: mocks.executionCreateEvent,
+    updatePlanStatus: mocks.executionUpdatePlanStatus,
+    createResult: mocks.executionCreateResult,
+    getByDecisionId: mocks.executionGetByDecisionId,
   },
   userRepository: {
     findById: mocks.userFindById,
@@ -156,7 +166,7 @@ vi.mock('@skytwin/db', () => ({
   },
   inferenceReceiptRepository: {
     isCompleteForDecision: mocks.isReceiptComplete,
-    createManyForUser: vi.fn().mockResolvedValue([]),
+    createManyForUser: mocks.inferenceCreateMany,
   },
   reasoningModeRepository: {
     getOrCreateForUser: vi.fn().mockResolvedValue({ mode: 'on_device', requires_confirmation: false }),
@@ -201,6 +211,13 @@ import { createEventsRouter } from '../routes/events.js';
 import { sessionAuth } from '../middleware/session-auth.js';
 import { requireOwnership } from '../middleware/require-ownership.js';
 import { requestContext } from '../middleware/request-context.js';
+import * as decisionEngineModule from '@skytwin/decision-engine';
+
+const realBuildGmailArchiveProposal = (
+  decisionEngineModule as unknown as {
+    __realBuildGmailArchiveProposal: typeof decisionEngineModule.buildGmailArchiveProposal;
+  }
+).__realBuildGmailArchiveProposal;
 
 /**
  * Mirrors `app.use('/api/events', sessionAuth, requireOwnership, requestContext,
@@ -277,7 +294,7 @@ function proposalPersistenceResult(created: boolean): Record<string, unknown> {
         id: '55555555-5555-4555-8555-555555555555',
         situation_type: 'email_triage',
         domain: 'email',
-        urgency: 'normal',
+        urgency: 'medium',
       },
       candidate: {
         id: '44444444-4444-4444-8444-444444444444',
@@ -312,9 +329,15 @@ function expectNoOrdinaryPipelineCalls(): void {
     mocks.saveCandidates,
     mocks.saveOutcome,
     mocks.approvalCreate,
+    mocks.approvalFindByDecisionId,
     mocks.userFindById,
     mocks.oauthGetToken,
     mocks.executionCreatePlan,
+    mocks.executionCreateEvent,
+    mocks.executionUpdatePlanStatus,
+    mocks.executionCreateResult,
+    mocks.executionGetByDecisionId,
+    mocks.inferenceCreateMany,
     mocks.resolveUserLlmClient,
     mocks.getMemoryPortForUser,
     mocks.getExecutionRouter,
@@ -369,6 +392,11 @@ describe('/api/events/ingest behind the production auth chain', () => {
     });
     mocks.oauthGetToken.mockResolvedValue(null);
     mocks.executionCreatePlan.mockResolvedValue({ id: 'plan-1' });
+    mocks.executionCreateEvent.mockResolvedValue({});
+    mocks.executionUpdatePlanStatus.mockResolvedValue({});
+    mocks.executionCreateResult.mockResolvedValue({});
+    mocks.executionGetByDecisionId.mockResolvedValue(null);
+    mocks.inferenceCreateMany.mockResolvedValue([]);
     mocks.resolveUserLlmClient.mockResolvedValue({ state: 'unavailable' });
     mocks.getMemoryPortForUser.mockResolvedValue({
       port: { recordSignal: vi.fn().mockResolvedValue(undefined) },
@@ -379,47 +407,7 @@ describe('/api/events/ingest behind the production auth chain', () => {
     mocks.twinGetPatterns.mockResolvedValue([]);
     mocks.twinGetTraits.mockResolvedValue([]);
     mocks.twinGetTemporalProfile.mockResolvedValue({});
-    mocks.buildArchiveProposal.mockReturnValue({
-      ok: true,
-      proposal: {
-        candidate: {
-          id: '44444444-4444-4444-8444-444444444444',
-          decisionId: '55555555-5555-4555-8555-555555555555',
-          actionType: 'archive_email',
-          description: 'Propose moving this message out of the Inbox.',
-          domain: 'email',
-          parameters: {
-            schema: 'gmail_inbox_mutation_v1',
-            messageRefId: '22222222-2222-4222-8222-222222222222',
-            operation: 'archive',
-          },
-          estimatedCostCents: 0,
-          costZeroIntent: 'verified_zero',
-          reversible: true,
-          confidence: 'moderate',
-          reasoning: 'Owned Inbox reference.',
-          provenance: 'untrusted_external',
-        },
-        riskAssessment: {
-          actionId: '44444444-4444-4444-8444-444444444444',
-          overallTier: 'moderate',
-          dimensions: Object.fromEntries([
-            'reversibility',
-            'financial_impact',
-            'legal_sensitivity',
-            'privacy_sensitivity',
-            'relationship_sensitivity',
-            'operational_risk',
-          ].map((dimension) => [dimension, {
-            tier: 'moderate',
-            score: 0.5,
-            reasoning: `Reviewed ${dimension}.`,
-          }])),
-          reasoning: 'Explicit confirmation is required.',
-          assessedAt: new Date('2026-09-11T12:00:00.000Z'),
-        },
-      },
-    });
+    mocks.buildArchiveProposal.mockImplementation(realBuildGmailArchiveProposal);
     mocks.persistArchiveProposal.mockResolvedValue(proposalPersistenceResult(true));
     mocks.persistEvidence.mockResolvedValue({
       ok: true,
@@ -528,6 +516,7 @@ describe('/api/events/ingest behind the production auth chain', () => {
       decision: {
         id: '55555555-5555-4555-8555-555555555555',
         situationType: 'email_triage',
+        urgency: 'medium',
       },
       outcome: {
         selectedAction: { actionType: 'archive_email' },
@@ -556,8 +545,17 @@ describe('/api/events/ingest behind the production auth chain', () => {
       }),
     });
     const persistenceInput = mocks.persistArchiveProposal.mock.calls[0]![0] as Record<string, unknown>;
-    const builderResult = mocks.buildArchiveProposal.mock.results[0]!.value as Record<string, unknown>;
-    expect(persistenceInput['proposal']).toBe(builderResult['proposal']);
+    const builderResult = mocks.buildArchiveProposal.mock.results[0]!.value as {
+      proposal: {
+        candidate: { id: string };
+        riskAssessment: { actionId: string; dimensions: Record<string, unknown> };
+      };
+    };
+    expect(persistenceInput['proposal']).toBe(builderResult.proposal);
+    expect(builderResult.proposal.riskAssessment.actionId).toBe(
+      builderResult.proposal.candidate.id,
+    );
+    expect(Object.keys(builderResult.proposal.riskAssessment.dimensions)).toHaveLength(6);
     expect(mocks.findBySignalId).toHaveBeenCalledWith(
       TEST_USER_ID,
       'sig-account-message-conflict',
@@ -692,7 +690,10 @@ describe('/api/events/ingest behind the production auth chain', () => {
       domain: 'email',
       urgency: 'low',
       summary: 'Prior Gmail decision',
-      rawData: { signalId: 'sig-account-message-conflict' },
+      rawData: {
+        signalId: 'sig-account-message-conflict',
+        messageRefId: '22222222-2222-4222-8222-222222222222',
+      },
       interpretedAt: new Date('2026-09-11T11:00:00.000Z'),
     });
     mocks.getOutcome.mockResolvedValue({
@@ -713,6 +714,39 @@ describe('/api/events/ingest behind the production auth chain', () => {
     expect(mocks.buildArchiveProposal).not.toHaveBeenCalled();
     expect(mocks.persistArchiveProposal).not.toHaveBeenCalled();
     expect(mocks.sseEmit).not.toHaveBeenCalled();
+    expectNoOrdinaryPipelineCalls();
+  });
+
+  it('does not replay a legacy response bound to another linked account', async () => {
+    process.env['SKYTWIN_GMAIL_ARCHIVE_ENABLED'] = 'true';
+    mocks.findBySignalId.mockResolvedValue({
+      id: '99999999-9999-4999-8999-999999999999',
+      situationType: 'email_triage',
+      domain: 'email',
+      urgency: 'low',
+      summary: 'A different account decision',
+      rawData: {
+        signalId: 'sig-account-message-conflict',
+        messageRefId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      },
+      interpretedAt: new Date('2026-09-11T11:00:00.000Z'),
+    });
+
+    const res = await post({ 'X-SkyTwin-Service-Token': SERVICE_TOKEN });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      decision: { id: '55555555-5555-4555-8555-555555555555' },
+      approval: { status: 'pending' },
+    });
+    expect(res.body).not.toHaveProperty('reIngested');
+    expect(mocks.getOutcome).not.toHaveBeenCalled();
+    expect(mocks.isReceiptComplete).not.toHaveBeenCalled();
+    expect(mocks.persistArchiveProposal).toHaveBeenCalledWith(expect.objectContaining({
+      connectorAccountId: '11111111-1111-4111-8111-111111111111',
+      messageRefId: '22222222-2222-4222-8222-222222222222',
+      signalId: '33333333-3333-4333-8333-333333333333',
+    }));
     expectNoOrdinaryPipelineCalls();
   });
 

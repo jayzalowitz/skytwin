@@ -516,6 +516,10 @@ export function createEventsRouter(): Router {
           res.status(409).json({ error: persisted.error });
           return;
         }
+        const canonicalSourceSignalId = persisted.signal.source_signal_id;
+        if (typeof canonicalSourceSignalId !== 'string' || canonicalSourceSignalId.length === 0) {
+          throw new Error('Persisted Gmail evidence is missing its connector signal identifier');
+        }
         // Interpretation always sees the immutable canonical signal row. On a
         // replay, modified request fields cannot alter the decision input even
         // though the request reached us before the idempotency lookup.
@@ -528,7 +532,7 @@ export function createEventsRouter(): Router {
           // Preserve the existing disabled-path interpretation contract. The
           // gated proposal repository uses signals.id separately so its
           // receipts do not include this connector source identifier.
-          signalId: sourceSignalId,
+          signalId: canonicalSourceSignalId,
           authoringTier: persisted.messageRef.authoring_tier,
           receivedAt: persisted.signal.timestamp.toISOString(),
           observedAt: persisted.messageRef.first_observed_at.toISOString(),
@@ -542,9 +546,12 @@ export function createEventsRouter(): Router {
           if (decisionRepositoryAdapter.findBySignalId) {
             const previous = await decisionRepositoryAdapter.findBySignalId(
               userId,
-              sourceSignalId,
+              canonicalSourceSignalId,
             );
-            if (previous) {
+            // Connector signal identifiers are not globally unique across
+            // linked accounts. Only replay a legacy response when it is bound
+            // to the same repository-issued message reference.
+            if (previous?.rawData['messageRefId'] === persisted.messageRef.id) {
               const recovered = await recoverCompletedIngest(userId, previous);
               if (recovered) {
                 res.json(recovered);
