@@ -116,7 +116,7 @@ describe('getLlmClientFromConfigFresh', () => {
     expect(client).not.toBeNull();
   });
 
-  it('requires an explicit mode for a mixed local and remote fallback chain', () => {
+  it('rejects a mixed local and remote chain even when a mode is explicit', () => {
     const mixed: Record<string, string | undefined> = {
       OLLAMA_BASE_URL: 'http://localhost:11434',
       ANTHROPIC_API_KEY: 'key',
@@ -125,11 +125,15 @@ describe('getLlmClientFromConfigFresh', () => {
     expect(getLlmClientFromConfigFresh({
       ...mixed,
       SKYTWIN_REASONING_MODE: 'bring_your_own_provider',
-    })).not.toBeNull();
+    })).toBeNull();
     expect(getLlmClientFromConfigFresh({
       ...mixed,
       SKYTWIN_REASONING_MODE: 'on_device',
     })).toBeNull();
+    expect(getLlmClientFromConfigFresh({
+      ANTHROPIC_API_KEY: 'key',
+      SKYTWIN_REASONING_MODE: 'bring_your_own_provider',
+    })).not.toBeNull();
   });
 
   it('fails closed on an unknown explicit mode', () => {
