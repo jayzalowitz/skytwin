@@ -16,10 +16,10 @@ import { DEFAULT_POLICIES } from './default-policies.js';
  * satisfy this contract at composition time.
  */
 export interface PolicyRepositoryPort {
-  getAllPolicies(): Promise<ActionPolicy[]>;
-  getEnabledPolicies(): Promise<ActionPolicy[]>;
-  getPolicy(policyId: string): Promise<ActionPolicy | null>;
-  getPoliciesByDomain(domain: string): Promise<ActionPolicy[]>;
+  getAllPolicies(userId: string): Promise<ActionPolicy[]>;
+  getEnabledPolicies(userId: string): Promise<ActionPolicy[]>;
+  getPolicy(policyId: string, userId: string): Promise<ActionPolicy | null>;
+  getPoliciesByDomain(domain: string, userId: string): Promise<ActionPolicy[]>;
   savePolicy(policy: ActionPolicy): Promise<ActionPolicy>;
   updatePolicy(policy: ActionPolicy): Promise<ActionPolicy>;
   deletePolicy(policyId: string): Promise<void>;
@@ -372,8 +372,8 @@ export class PolicyEvaluator {
   /**
    * Load all enabled policies from the repository, combined with built-in ones.
    */
-  async loadPolicies(): Promise<ActionPolicy[]> {
-    const userPolicies = await this.repository.getEnabledPolicies();
+  async loadPolicies(userId: string): Promise<ActionPolicy[]> {
+    const userPolicies = await this.repository.getEnabledPolicies(userId);
     return [...DEFAULT_POLICIES, ...userPolicies];
   }
 

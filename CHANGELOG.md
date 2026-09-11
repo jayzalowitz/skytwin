@@ -1,5 +1,11 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [Unreleased] — Owner-scoped policy loading
+
+### Fixed
+
+- User decision, approval, routine, event, and memory-action policy evaluation now loads only the policy rows owned by that user. Repository reads require an explicit owner ID and no longer fall back to a process-wide policy set.
+
 ## [Unreleased] — Restricted Gmail Inbox mutation boundary
 
 ### Added

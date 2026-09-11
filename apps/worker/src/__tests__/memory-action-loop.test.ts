@@ -257,6 +257,7 @@ describe('runMemoryActionLoopJob', () => {
         reason: 'Suggest trust tier requires approval for all actions.',
       }),
     };
+    const loadPolicies = vi.fn().mockResolvedValue([]);
 
     const summary = await runMemoryActionLoopJob({
       userIds: ['user-1'],
@@ -274,10 +275,11 @@ describe('runMemoryActionLoopJob', () => {
         ]),
       }),
       policyEvaluator,
-      loadPolicies: async () => [],
+      loadPolicies,
     });
 
     expect(summary.approvalsQueued).toBe(1);
+    expect(loadPolicies).toHaveBeenCalledWith('user-1');
     expect(mockApprovalRepository.create).toHaveBeenCalledWith(
       expect.objectContaining({
         userId: 'user-1',

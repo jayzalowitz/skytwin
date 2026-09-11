@@ -42,34 +42,40 @@ function toDomain(row: ActionPolicyRow): ActionPolicy {
  * by delegating to the concrete `policyRepository` (from @skytwin/db) and
  * raw SQL where needed.
  *
- * The port's `getAllPolicies` / `getEnabledPolicies` / `getPoliciesByDomain`
- * are user-agnostic (system-wide), so we query directly rather than going
- * through `policyRepository.getPoliciesForUser`.
+ * Every read is owner-scoped. Evaluation callers must supply the same user ID
+ * that owns the decision or action being checked; there is no implicit
+ * system-wide fallback.
  */
 export const policyRepositoryAdapter: PolicyRepositoryPort = {
-  async getAllPolicies(): Promise<ActionPolicy[]> {
+  async getAllPolicies(userId: string): Promise<ActionPolicy[]> {
     const result = await query<ActionPolicyRow>(
-      'SELECT * FROM action_policies ORDER BY priority DESC',
+      'SELECT * FROM action_policies WHERE user_id = $1 ORDER BY priority DESC',
+      [userId],
     );
     return result.rows.map(toDomain);
   },
 
-  async getEnabledPolicies(): Promise<ActionPolicy[]> {
+  async getEnabledPolicies(userId: string): Promise<ActionPolicy[]> {
     const result = await query<ActionPolicyRow>(
-      'SELECT * FROM action_policies WHERE is_active = true ORDER BY priority DESC',
+      'SELECT * FROM action_policies WHERE user_id = $1 AND is_active = true ORDER BY priority DESC',
+      [userId],
     );
     return result.rows.map(toDomain);
   },
 
-  async getPolicy(policyId: string): Promise<ActionPolicy | null> {
-    const row = await policyRepository.findById(policyId);
+  async getPolicy(policyId: string, userId: string): Promise<ActionPolicy | null> {
+    const result = await query<ActionPolicyRow>(
+      'SELECT * FROM action_policies WHERE id = $1 AND user_id = $2',
+      [policyId, userId],
+    );
+    const row = result.rows[0];
     return row ? toDomain(row) : null;
   },
 
-  async getPoliciesByDomain(domain: string): Promise<ActionPolicy[]> {
+  async getPoliciesByDomain(domain: string, userId: string): Promise<ActionPolicy[]> {
     const result = await query<ActionPolicyRow>(
-      'SELECT * FROM action_policies WHERE domain = $1 AND is_active = true ORDER BY priority DESC',
-      [domain],
+      'SELECT * FROM action_policies WHERE domain = $1 AND user_id = $2 AND is_active = true ORDER BY priority DESC',
+      [domain, userId],
     );
     return result.rows.map(toDomain);
   },

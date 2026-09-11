@@ -117,7 +117,7 @@ export interface MemoryActionLoopJobDeps {
   now?: Date;
   fetchBundle?: (userId: string, maxSuggestions: number) => Promise<DailyMemorySuggestionBundle>;
   policyEvaluator?: Pick<PolicyEvaluator, 'evaluate'>;
-  loadPolicies?: () => Promise<ActionPolicy[]>;
+  loadPolicies?: (userId: string) => Promise<ActionPolicy[]>;
   getExecutionRouter?: () => Promise<Pick<ExecutionRouter, 'route' | 'prepareExecution' | 'executePrepared'>>;
 }
 
@@ -268,7 +268,9 @@ async function processOpportunity(
   }
 
   const policyEvaluator = deps.policyEvaluator ?? new PolicyEvaluator(policyRepositoryAdapter);
-  const policies = deps.loadPolicies ? await deps.loadPolicies() : await policyRepositoryAdapter.getEnabledPolicies();
+  const policies = deps.loadPolicies
+    ? await deps.loadPolicies(userId)
+    : await policyRepositoryAdapter.getEnabledPolicies(userId);
   const policyDecision = await policyEvaluator.evaluate(
     candidate,
     policies,
@@ -426,8 +428,8 @@ async function executeAllowedOpportunity(
     if (!freshUser) throw new Error('User disappeared before execution.');
     const evaluator = deps.policyEvaluator ?? new PolicyEvaluator(policyRepositoryAdapter);
     const freshPolicies = deps.loadPolicies
-      ? await deps.loadPolicies()
-      : await policyRepositoryAdapter.getEnabledPolicies();
+      ? await deps.loadPolicies(userId)
+      : await policyRepositoryAdapter.getEnabledPolicies(userId);
     finalPolicy = await evaluator.evaluate(
       admittedCandidate,
       freshPolicies,
