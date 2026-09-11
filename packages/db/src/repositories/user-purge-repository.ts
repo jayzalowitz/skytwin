@@ -48,6 +48,15 @@ const DELETE_PLAN: ReadonlyArray<{ table: string; sql: string }> = [
   //       (FK via non-user-id columns — would block the user delete
   //       cascade if left in place)
   {
+    table: 'decision_receipt_revisions',
+    sql: `DELETE FROM decision_receipt_revisions WHERE receipt_id IN
+            (SELECT id FROM decision_receipts WHERE user_id = $1)`,
+  },
+  {
+    table: 'decision_receipts',
+    sql: 'DELETE FROM decision_receipts WHERE user_id = $1',
+  },
+  {
     table: 'execution_results',
     sql: `DELETE FROM execution_results WHERE plan_id IN
             (SELECT ep.id FROM execution_plans ep
@@ -91,6 +100,10 @@ const DELETE_PLAN: ReadonlyArray<{ table: string; sql: string }> = [
     sql: `DELETE FROM knowledge_triples
            WHERE user_id = $1
               OR entity_id IN (SELECT id FROM knowledge_entities WHERE user_id = $1)`,
+  },
+  {
+    table: 'preference_history',
+    sql: 'DELETE FROM preference_history WHERE user_id = $1',
   },
 
   // ── 2. Final DELETE on the users row.

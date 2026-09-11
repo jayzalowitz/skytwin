@@ -296,6 +296,37 @@ export interface InferenceReceiptRow {
   created_at: Date;
 }
 
+export interface DecisionReceiptRow {
+  id: string;
+  user_id: string;
+  decision_id: string;
+  created_at: Date;
+}
+
+export interface DecisionReceiptRevisionRow {
+  id: string;
+  receipt_id: string;
+  /** Repository APIs normalize Cockroach INT8 strings to a safe integer. */
+  sequence: number;
+  event_key: import('@skytwin/shared-types').DecisionReceiptEventKey;
+  previous_digest: string | null;
+  content_digest: string;
+  revision_digest: string;
+  stage: import('@skytwin/shared-types').DecisionReceiptStage;
+  disposition: import('@skytwin/shared-types').DecisionReceiptDisposition;
+  content: import('@skytwin/shared-types').JoinedDecisionReceiptContentV1;
+  trusted: boolean;
+  candidate_action_id: string | null;
+  barrier_id: string | null;
+  explanation_id: string | null;
+  approval_request_id: string | null;
+  execution_plan_id: string | null;
+  execution_result_id: string | null;
+  execution_disposition: 'succeeded' | 'failed' | 'unknown' | null;
+  correction_of_revision_id: string | null;
+  created_at: Date;
+}
+
 // ============================================================================
 // Feedback
 // ============================================================================
