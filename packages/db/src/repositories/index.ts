@@ -20,6 +20,8 @@ export type { CreatePolicyInput, UpdatePolicyInput } from './policy-repository.j
 
 export { explanationRepository } from './explanation-repository.js';
 export type { CreateExplanationInput } from './explanation-repository.js';
+export { inferenceReceiptRepository } from './inference-receipt-repository.js';
+export type { CreateInferenceReceiptInput } from './inference-receipt-repository.js';
 
 export { feedbackRepository } from './feedback-repository.js';
 export type { CreateFeedbackInput } from './feedback-repository.js';

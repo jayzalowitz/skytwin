@@ -151,6 +151,25 @@ export type {
   EvidenceReference,
   PreferenceReference,
 } from './explanation.js';
+export {
+  receiptSealPayload,
+  sha256Hex,
+  signInferenceReceipt,
+  verifyInferenceReceiptExport,
+} from './inference-receipt.js';
+export type {
+  AttestationVerificationInput,
+  InferenceCostV1,
+  InferenceFallbackV1,
+  InferenceReasoningMode,
+  InferenceReceiptExportV1,
+  InferenceReceiptStatus,
+  InferenceReceiptV1,
+  ReceiptSignatureV1,
+  ReceiptVerificationCode,
+  ReceiptVerificationResult,
+  ReceiptVerificationOptions,
+} from './inference-receipt.js';
 
 export type {
   ExecutionPlan,

@@ -285,6 +285,17 @@ export interface ExplanationRecordRow {
   created_at: Date;
 }
 
+export interface InferenceReceiptRow {
+  id: string;
+  version: number;
+  decision_id: string;
+  explanation_id: string;
+  status: string;
+  receipt: unknown;
+  trusted: boolean;
+  created_at: Date;
+}
+
 // ============================================================================
 // Feedback
 // ============================================================================
