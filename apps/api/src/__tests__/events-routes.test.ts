@@ -83,7 +83,17 @@ vi.mock('@skytwin/db', () => ({
   oauthRepository: { getToken: vi.fn().mockResolvedValue(null) },
   executionRepository: mockExecutionRepository,
   userRepository: { findById: vi.fn().mockResolvedValue({ id: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', trust_tier: 'observer', ironclaw_channel: 'skytwin' }) },
-  aiProviderRepository: { getEnabledForUser: vi.fn().mockResolvedValue([]) },
+  aiProviderRepository: {
+    getReasoningSnapshotForUser: vi.fn().mockResolvedValue({
+      providers: [],
+      reasoningMode: { mode: 'on_device', requires_confirmation: false },
+    }),
+  },
+  reasoningModeRepository: {
+    getOrCreateForUser: vi.fn().mockResolvedValue({
+      mode: 'on_device', requires_confirmation: false,
+    }),
+  },
   emailLabelRepository: {
     topLabelsForSender: vi.fn().mockResolvedValue([]),
     topLabelsForListId: vi.fn().mockResolvedValue([]),

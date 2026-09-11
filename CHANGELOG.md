@@ -96,6 +96,18 @@ All notable changes to SkyTwin will be documented in this file.
 - **The interface no longer treats a verified model artifact as proof of a working local runtime.** Onboarding recommends the artifact without claiming local inference is ready, while Settings labels download completion as artifact verification and states that a compatible llama.cpp runtime remains separate.
 - **The encryption inventory remains fail-closed after the migration documentation update.** Migration 039 now describes the actual checkpoint and boot-reconciliation contract, and the reviewed SQL-corpus digest advances over the combined 94-table, 877-column schema after migration 073.
 
+## [Unreleased] — Explicit reasoning boundaries
+
+### Added
+
+- **Reasoning location is now a persisted policy, not an inference from a provider name.** Each user chooses `on_device` or `bring_your_own_provider`; the `verified_private_cloud` state exists but remains unavailable until a verifier-owned confidential adapter ships. Provider saves, tests, fallback, and every user-scoped API composition path enforce the same boundary. Legacy local, hosted, mixed, disabled, custom-endpoint, and empty chains are classified deterministically; ambiguous chains require confirmation.
+- **Every normalized model result carries privacy and execution provenance.** Metadata records execution/network/confidentiality/retention capabilities, pricing source and freshness, a SkyTwin invocation ID, verification state, receipt linkage, and a sanitized ordered fallback path. Custom endpoints never inherit an official provider's terms or a confidential-computing label.
+
+### Changed
+
+- **Unattended inference fails closed when provider price is unknown, stale, invalid, or unbounded.** Interactive requests can use an explicitly selected provider; background decision and briefing work skips unpriced providers and stays inside the selected location boundary. Draft generation also evaluates every possible fallback rather than assuming the cheapest configured provider will answer.
+- **Provider-chain and reasoning-mode updates are atomic.** Both records are written in one CockroachDB transaction. CI executes the legacy migration twice against a real CockroachDB fixture matrix, and downloads the pinned test binary only after verifying its published SHA-256.
+
 ## [0.6.102.0] - 2026-08-27
 
 ### Added
