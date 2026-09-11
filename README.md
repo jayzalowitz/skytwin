@@ -277,6 +277,7 @@ packages/
   ironclaw-adapter/               Execution adapter with HMAC auth, retries, circuit breaker
   execution-router/               Adapter selection, fallback chains, risk modifiers, plugin discovery
   llm-client/                     Unified LLM client — Anthropic / OpenAI / Google / Ollama / embedded
+  near-confidential/              Fail-closed contract for verified confidential inference (provider not yet enabled)
   embedded-llm/                   Local-first: llama.cpp text, whisper.cpp STT, Piper TTS — spawn-based
   explanations/                   Human-readable explanation generation
   connectors/                     Gmail / Google Calendar / Outlook mail+calendar / mock connectors with OAuth, stamps AuthoringTier

@@ -30,6 +30,10 @@ All notable changes to SkyTwin will be documented in this file.
 The Pages site was the project's public face and two of its load-bearing claims were wrong in opposite directions: it showed broken images to everyone who visited, and it promised an encryption guarantee the code does not deliver. The deck exists to make the safety argument legible, which only works if the pages around it are accurate.
 ## [Unreleased] — CI unblock
 
+### Added
+
+- **A fail-closed boundary for strict confidential inference.** `@skytwin/near-confidential` defines client-nonce attestation, signer/TLS-SPKI/report-data bindings, channel-scoped signature retrieval, pinned policy, immutable exact-byte verification, and typed failures needed before this can become a selectable provider. The default transport sends no prompts: Node's ordinary `fetch` path cannot prove that attestation and inference share one TLS connection, and no packaged verifier has been approved yet. See `docs/confidential-inference.md`.
+
 ### Fixed
 - **Three claims in the rewritten policy were themselves inaccurate (codex review); all corrected before merge.**
   - The replacement text still implied that setting a vault passphrase encrypts OAuth tokens. It does not: every grant is written by `oauthRepository.saveTokenForAccount`, which stores `access_token` / `refresh_token` in plaintext columns, and the API's unlock only populates its own in-process key cache. The policy now states plainly that token encryption is implemented but **not active in the shipping app**, and tells users to rely on full-disk encryption.

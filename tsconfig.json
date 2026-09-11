@@ -40,6 +40,7 @@
       "@skytwin/memory-hybrid": ["./packages/memory-hybrid/src"],
       "@skytwin/memory-mempalace": ["./packages/memory-mempalace/src"],
       "@skytwin/memory-port": ["./packages/memory-port/src"],
+      "@skytwin/near-confidential": ["./packages/near-confidential/src"],
       "@skytwin/observability": ["./packages/observability/src"],
       "@skytwin/policy-engine": ["./packages/policy-engine/src"],
       "@skytwin/registry-client": ["./packages/registry-client/src"],
