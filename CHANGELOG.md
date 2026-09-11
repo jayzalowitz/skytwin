@@ -1,5 +1,17 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [Unreleased] — Source-key runtime composition
+
+### Added
+
+- Recovery-wrapped per-user source keys now use the CockroachDB source-key registry in production desktop composition instead of an Electron JSON store. API and worker children receive process-scoped broker capabilities and can request only explicit owner grants after session authentication or database-backed worker discovery.
+- Vault owner grants now expire in the Electron broker; worker rediscovery atomically replaces the parent-owned grant set so removed users cannot survive a lost per-user revoke. Failed reconciliation or API revoke clears child authority and propagates failure. Lock and unlock bound in-flight draining, terminate unhealthy children, and lock zeroes the root key in guaranteed cleanup; unlocks synchronize the next generation.
+- Recovery-wrapper initialization retains failed-cleanup state for retry, and broker responses are validated against the pending owner and exact result shape.
+
+### Security scope
+
+- Source-field migration is still disabled. This runtime composition does not make an at-rest encryption claim; the deletion-intent consumer and source-column cutover remain required follow-ups.
+
 ## [0.6.102.0] - 2026-08-27
 
 ### Added

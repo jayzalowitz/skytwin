@@ -30,6 +30,7 @@ describe('sourceKeyRegistryRepository', () => {
     mockQuery.mockResolvedValueOnce({ rows: [{ user_id: input.user_id }], rowCount: 1 });
     expect(await sourceKeyRegistryRepository.createInitial(input)).toBe(true);
     expect(mockQuery.mock.calls[0]![0]).toContain('ON CONFLICT (user_id, key_version) DO NOTHING');
+    expect(mockQuery.mock.calls[0]![0]).toContain('WHERE user_id = $1 AND retired_at IS NULL');
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
     expect(await sourceKeyRegistryRepository.createInitial(input)).toBe(false);
   });
@@ -39,5 +40,12 @@ describe('sourceKeyRegistryRepository', () => {
     await sourceKeyRegistryRepository.requestDeletion(input.user_id);
     expect(mockQuery.mock.calls[0]![0]).toContain('UPSERT INTO source_key_deletion_intents');
     expect(mockQuery.mock.calls[0]![1]).toEqual([input.user_id]);
+  });
+
+  it('deletes only an exact active version during failed initialization rollback', async () => {
+    mockQuery.mockResolvedValue({ rows: [], rowCount: 1 });
+    expect(await sourceKeyRegistryRepository.deleteVersion(input.user_id, 1)).toBe(true);
+    expect(mockQuery.mock.calls[0]![0]).toContain('user_id = $1 AND key_version = $2 AND retired_at IS NULL');
+    expect(mockQuery.mock.calls[0]![1]).toEqual([input.user_id, 1]);
   });
 });

@@ -10,12 +10,12 @@ export type VaultFailureCode = 'vault_uninitialized' | 'vault_locked' | 'vault_b
 export interface BrokerContext { userId: string; purpose: BrokerPurpose; table: string; column: string; rowId: string }
 export interface BrokerEnvelope { magic: 'skytwin-envelope'; version: 2; algorithm: 'aes-256-gcm'; ownerKind: 'user'; purpose: BrokerPurpose; keyVersion: number; iv: string; tag: string; ciphertext: string }
 export interface WrappedUserKey { magic: 'skytwin-user-key'; wrapperVersion: 1; userId: string; keyVersion: number; algorithm: 'aes-256-gcm'; kdf: typeof KDF & { salt: string }; iv: string; tag: string; ciphertext: string; canary: BrokerEnvelope }
-export interface WrappedKeyStore { get(userId: string): WrappedUserKey | undefined | Promise<WrappedUserKey | undefined>; set(userId: string, value: WrappedUserKey): void | Promise<void>; delete(userId: string): void | Promise<void> }
+export interface WrappedKeyStore { get(userId: string): WrappedUserKey | undefined | Promise<WrappedUserKey | undefined>; set(userId: string, value: WrappedUserKey): void | Promise<void>; delete(userId: string): void | Promise<void>; commit?(userId: string): void | Promise<void>; rollbackPending?(userId: string): void | Promise<void> }
 export interface WrappedKeyValueStore { get(key: string): WrappedUserKey | undefined; set(key: string, value: WrappedUserKey): void; delete(key: string): void }
 export interface DeviceWrapperStore { get(userId: string): string | undefined; set(userId: string, ciphertext: string): void; delete(userId: string): void }
 export interface DeviceProtectionPort { isEncryptionAvailable(): boolean; encryptString(value: string): Buffer; decryptString(value: Buffer): string; getSelectedStorageBackend?(): string }
 export interface BrokerRequest { type: 'skytwin:vault:request'; requestId: string; capability: string; generation: number; operation: 'encrypt' | 'decrypt' | 'state'; context: BrokerContext; plaintext?: string; envelope?: BrokerEnvelope }
-export interface BrokerResponse { type: 'skytwin:vault:response'; requestId: string; generation: number; result: { success: true; state: 'locked' | 'unlocked' | 'uninitialized' } | { success: true; envelope: BrokerEnvelope } | { success: true; plaintext: string } | { success: false; error: VaultFailureCode } }
+export interface BrokerResponse { type: 'skytwin:vault:response'; requestId: string; generation: number; contextUserId: string; result: { success: true; state: 'locked' | 'unlocked' | 'uninitialized' } | { success: true; envelope: BrokerEnvelope } | { success: true; plaintext: string } | { success: false; error: VaultFailureCode } }
 
 interface Field { purpose: BrokerPurpose; table: string; column: string }
 const COMMON: readonly Field[] = [
@@ -26,7 +26,8 @@ const COMMON: readonly Field[] = [
 ];
 const ROLE_FIELDS: Record<BrokerRole, readonly Field[]> = { api: [...COMMON, { purpose: 'oauth_transient', table: 'oauth_pending_signins', column: 'code_verifier' }], worker: COMMON };
 interface Unlocked { key: Buffer; keyVersion: number; expiresAt: number }
-interface Binding { role: BrokerRole; capability: Buffer; users: ReadonlySet<string>; inFlight: Map<string, number> }
+interface LockAck { userId: string; generation: number; finish: () => void }
+interface Binding { role: BrokerRole; capability: Buffer; users: Map<string, number | null>; inFlight: Map<string, number>; lockAcks: Map<string, LockAck> }
 
 const validId = (v: unknown, max = 512): v is string => typeof v === 'string' && v.length >= 1 && v.length <= max && /^[A-Za-z0-9_.-]+$/.test(v);
 export const isValidVaultUserId = (v: unknown): v is string => typeof v === 'string' && v.length >= 8 && v.length <= 128 && /^[A-Za-z0-9_-]+$/.test(v);
@@ -60,13 +61,15 @@ export class DesktopKeyBroker {
     this.initializing.add(userId);
     const root = randomBytes(KEY_BYTES), salt = randomBytes(SALT_BYTES); let wrap: Buffer | null = null, wrote = false;
     try {
+      await this.store.rollbackPending?.(userId);
       if (await this.store.get(userId)) return { success: false, error: 'already_initialized' };
       wrap = await wrappingKey(passphrase, salt); const iv = randomBytes(IV_BYTES), cipher = createCipheriv('aes-256-gcm', wrap, iv); cipher.setAAD(wrapperAad(userId, 1)); const ciphertext = Buffer.concat([cipher.update(root), cipher.final()]);
       const cc: BrokerContext = { userId, purpose: 'oauth', table: 'oauth_tokens', column: 'access_token', rowId: 'vault-canary' };
       const record: WrappedUserKey = { magic: 'skytwin-user-key', wrapperVersion: 1, userId, keyVersion: 1, algorithm: 'aes-256-gcm', kdf: { ...KDF, salt: salt.toString('base64') }, iv: iv.toString('base64'), tag: cipher.getAuthTag().toString('base64'), ciphertext: ciphertext.toString('base64'), canary: this.encryptWith(root, cc, 1, 'skytwin-canary').envelope };
       await this.store.set(userId, record); wrote = true; const reread = await this.store.get(userId); const check = reread && await this.unwrap(userId, passphrase, reread);
-      if (!check) { await this.store.delete(userId); return { success: false, error: 'ciphertext_invalid' }; } check.fill(0); await this.cache(userId, root, 1, operationEpoch); return { success: true };
-    } catch { if (wrote) await this.store.delete(userId); return { success: false, error: 'ciphertext_invalid' }; } finally { this.initializing.delete(userId); wrap?.fill(0); root.fill(0); salt.fill(0); }
+      if (!check) { await this.rollbackInitialization(userId); return { success: false, error: 'ciphertext_invalid' }; }
+      check.fill(0); await this.store.commit?.(userId); await this.cache(userId, root, 1, operationEpoch); return { success: true };
+    } catch { if (wrote) await this.rollbackInitialization(userId); return { success: false, error: 'ciphertext_invalid' }; } finally { this.initializing.delete(userId); wrap?.fill(0); root.fill(0); salt.fill(0); }
   }
   async unlock(userId: string, passphrase: string): Promise<{ success: true; generation: number } | { success: false; error: VaultFailureCode }> {
     if (!isValidVaultUserId(userId) || passphrase.length > 1024) return { success: false, error: 'ciphertext_invalid' }; const operationEpoch = this.operationEpoch(userId); const record = await this.store.get(userId); if (!record) return { success: false, error: 'vault_uninitialized' };
@@ -104,8 +107,15 @@ export class DesktopKeyBroker {
     const previous = this.lockTails.get(userId) ?? Promise.resolve();
     const current = previous.catch(() => undefined).then(async () => {
       const timer = this.timers.get(userId); if (timer) clearTimeout(timer); this.timers.delete(userId);
-      while ([...this.children.values()].some(x => (x.inFlight.get(userId) ?? 0) > 0)) await new Promise<void>(r => setTimeout(r, 1));
-      const old = this.unlocked.get(userId); this.unlocked.delete(userId); this.generations.set(userId, this.generation(userId) + 1); old?.key.fill(0);
+      const nextGeneration = this.generation(userId) + 1;
+      try {
+        await Promise.all([...this.children.entries()].filter(([, binding]) => binding.users.has(userId)).map(([child, binding]) => this.requestLockAck(child, binding, userId, nextGeneration)));
+        const deadline = Date.now() + 1_000;
+        while ([...this.children.values()].some(x => (x.inFlight.get(userId) ?? 0) > 0) && Date.now() < deadline) await new Promise<void>(r => setTimeout(r, 1));
+        for (const [child, binding] of this.children) if ((binding.inFlight.get(userId) ?? 0) > 0) this.detachChild(child, binding, true);
+      } finally {
+        const old = this.unlocked.get(userId); this.unlocked.delete(userId); this.generations.set(userId, nextGeneration); old?.key.fill(0);
+      }
     });
     this.lockTails.set(userId, current);
     try { await current; return { success: true, generation: this.generation(userId) }; }
@@ -117,8 +127,79 @@ export class DesktopKeyBroker {
   async state(userId: string): Promise<'locked' | 'unlocked' | 'uninitialized'> { return !await this.store.get(userId) ? 'uninitialized' : this.active(userId) ? 'unlocked' : 'locked'; }
   encrypt(c: BrokerContext, plaintext: string): { success: true; envelope: BrokerEnvelope } | { success: false; error: VaultFailureCode } { if (!validContext(c) || Buffer.byteLength(plaintext) > MAX_SECRET_BYTES) return { success: false, error: 'ciphertext_invalid' }; const a = this.active(c.userId); return a ? this.encryptWith(a.key, c, a.keyVersion, plaintext) : { success: false, error: 'vault_locked' }; }
   decrypt(c: BrokerContext, e: BrokerEnvelope): { success: true; plaintext: string } | { success: false; error: VaultFailureCode } { if (!validContext(c)) return { success: false, error: 'ciphertext_invalid' }; const a = this.active(c.userId); return a ? this.decryptWith(a.key, c, a.keyVersion, e) : { success: false, error: 'vault_locked' }; }
-  attachChild(child: ChildProcess, role: BrokerRole, authorizedUsers: ReadonlySet<string>): void { const capability = randomBytes(KEY_BYTES); this.children.set(child, { role, capability, users: authorizedUsers, inFlight: new Map() }); child.send?.({ type: 'skytwin:vault:capability', capability: capability.toString('base64'), role }); child.on('message', m => { void this.handle(child, m); }); child.once('exit', () => { capability.fill(0); this.children.delete(child); }); }
-  private async handle(child: ChildProcess, raw: unknown): Promise<void> { if (!raw || typeof raw !== 'object') return; const q = raw as Partial<BrokerRequest>; if (q.type !== 'skytwin:vault:request' || !validId(q.requestId, 128)) return; const binding = this.children.get(child), cap = b64(q.capability, KEY_BYTES, KEY_BYTES); const deny = (error: VaultFailureCode) => child.send?.({ type: 'skytwin:vault:response', requestId: q.requestId, generation: q.generation ?? -1, result: { success: false, error } }); if (!binding || !cap || !timingSafeEqual(cap, binding.capability) || !validContext(q.context) || !binding.users.has(q.context.userId) || (this.lockDepth.get(q.context.userId) ?? 0) > 0) { deny('vault_broker_unavailable'); return; } const requestUserId = q.context.userId; binding.inFlight.set(requestUserId, (binding.inFlight.get(requestUserId) ?? 0) + 1); try { if (q.operation === 'state') { child.send?.({ type: 'skytwin:vault:response', requestId: q.requestId, generation: this.generation(requestUserId), result: { success: true, state: await this.state(requestUserId) } }); return; } if (q.generation !== this.generation(requestUserId) || !ROLE_FIELDS[binding.role].some(f => f.purpose === q.context!.purpose && f.table === q.context!.table && f.column === q.context!.column)) { deny('vault_locked'); return; } const result = q.operation === 'encrypt' && typeof q.plaintext === 'string' ? this.encrypt(q.context, q.plaintext) : q.operation === 'decrypt' && q.envelope ? this.decrypt(q.context, q.envelope) : { success: false as const, error: 'ciphertext_invalid' as const }; child.send?.({ type: 'skytwin:vault:response', requestId: q.requestId, generation: this.generation(requestUserId), result }); } finally { const remaining = (binding.inFlight.get(requestUserId) ?? 1) - 1; if (remaining === 0) binding.inFlight.delete(requestUserId); else binding.inFlight.set(requestUserId, remaining); } }
+  attachChild(child: ChildProcess, role: BrokerRole, authorizedUsers: ReadonlySet<string>): void { const capability = randomBytes(KEY_BYTES); const binding: Binding = { role, capability, users: new Map([...authorizedUsers].map(id => [id, null])), inFlight: new Map(), lockAcks: new Map() }; this.children.set(child, binding); child.send?.({ type: 'skytwin:vault:capability', capability: capability.toString('base64'), role }); child.on('message', m => { void this.handle(child, m); }); child.once('exit', () => { this.detachChild(child, binding, false); }); }
+  private async handle(child: ChildProcess, raw: unknown): Promise<void> {
+    if (!raw || typeof raw !== 'object') return;
+    const q = raw as Record<string, unknown>, binding = this.children.get(child), cap = b64(q['capability'], KEY_BYTES, KEY_BYTES);
+    if (!binding || !cap || !timingSafeEqual(cap, binding.capability)) return;
+    if (q['type'] === 'skytwin:vault:lock-ack' && validId(q['lockId'], 128) && isValidVaultUserId(q['userId']) && Number.isSafeInteger(q['generation'])) {
+      const expected = binding.lockAcks.get(q['lockId']);
+      if (expected?.userId === q['userId'] && expected.generation === q['generation']) expected.finish();
+      return;
+    }
+    if (q['type'] === 'skytwin:vault:grant' && validId(q['requestId'], 128) && isValidVaultUserId(q['userId'])) {
+      const expectedAuthentication = binding.role === 'api' ? 'session' : 'service';
+      const expiry = q['expiresAt'];
+      const allowedExpiry = binding.role === 'worker' ? expiry === null : Number.isSafeInteger(expiry) && Number(expiry) > Date.now();
+      const allowed = q['role'] === binding.role && q['authentication'] === expectedAuthentication && allowedExpiry;
+      if (allowed) binding.users.set(q['userId'], binding.role === 'api' ? Number(expiry) : null);
+      const userId = q['userId'];
+      child.send?.({ type: 'skytwin:vault:response', requestId: q['requestId'], contextUserId: userId, generation: this.generation(userId), result: allowed ? { success: true, state: await this.state(userId) } : { success: false, error: 'vault_broker_unavailable' } });
+      return;
+    }
+    if (q['type'] === 'skytwin:vault:revoke' && validId(q['requestId'], 128) && isValidVaultUserId(q['userId'])) {
+      const expectedAuthentication = binding.role === 'api' ? 'session' : 'service';
+      const allowed = q['role'] === binding.role && q['authentication'] === expectedAuthentication;
+      if (allowed) binding.users.delete(q['userId']);
+      const userId = q['userId'];
+      child.send?.({ type: 'skytwin:vault:response', requestId: q['requestId'], contextUserId: userId, generation: this.generation(userId), result: allowed ? { success: true, state: 'locked' } : { success: false, error: 'vault_broker_unavailable' } });
+      return;
+    }
+    if (q['type'] === 'skytwin:vault:reconcile' && validId(q['requestId'], 128) && q['role'] === 'worker' && binding.role === 'worker' && q['authentication'] === 'service' && Array.isArray(q['userIds'])) {
+      const userIds = q['userIds'];
+      const allowed = userIds.length <= 10_000 && userIds.every(isValidVaultUserId) && new Set(userIds).size === userIds.length;
+      if (allowed) binding.users = new Map((userIds as string[]).map(id => [id, null]));
+      child.send?.({ type: 'skytwin:vault:response', requestId: q['requestId'], contextUserId: 'worker-set', generation: 0, result: allowed ? { success: true, state: 'locked' } : { success: false, error: 'vault_broker_unavailable' } });
+      return;
+    }
+    const request = q as unknown as Partial<BrokerRequest>;
+    if (request.type !== 'skytwin:vault:request' || !validId(request.requestId, 128)) return;
+    const contextUserId = validContext(request.context) ? request.context.userId : '';
+    const deny = (error: VaultFailureCode) => child.send?.({ type: 'skytwin:vault:response', requestId: request.requestId, contextUserId, generation: contextUserId ? this.generation(contextUserId) : -1, result: { success: false, error } });
+    if (!validContext(request.context) || !this.hasActiveGrant(binding, request.context.userId) || (this.lockDepth.get(request.context.userId) ?? 0) > 0) { deny('vault_broker_unavailable'); return; }
+    const requestUserId = request.context.userId; binding.inFlight.set(requestUserId, (binding.inFlight.get(requestUserId) ?? 0) + 1);
+    try {
+      if (request.operation === 'state') { child.send?.({ type: 'skytwin:vault:response', requestId: request.requestId, contextUserId: requestUserId, generation: this.generation(requestUserId), result: { success: true, state: await this.state(requestUserId) } }); return; }
+      if (request.generation !== this.generation(requestUserId) || !ROLE_FIELDS[binding.role].some(f => f.purpose === request.context!.purpose && f.table === request.context!.table && f.column === request.context!.column)) { deny('vault_locked'); return; }
+      const result = request.operation === 'encrypt' && typeof request.plaintext === 'string' ? this.encrypt(request.context, request.plaintext) : request.operation === 'decrypt' && request.envelope ? this.decrypt(request.context, request.envelope) : { success: false as const, error: 'ciphertext_invalid' as const };
+      child.send?.({ type: 'skytwin:vault:response', requestId: request.requestId, contextUserId: requestUserId, generation: this.generation(requestUserId), result });
+    } finally { const remaining = (binding.inFlight.get(requestUserId) ?? 1) - 1; if (remaining === 0) binding.inFlight.delete(requestUserId); else binding.inFlight.set(requestUserId, remaining); }
+  }
+  private requestLockAck(child: ChildProcess, binding: Binding, userId: string, generation: number): Promise<void> {
+    const lockId = randomBytes(16).toString('hex');
+    return new Promise(resolve => {
+      let settled = false;
+      const finish = (): void => { if (settled) return; settled = true; clearTimeout(timer); binding.lockAcks.delete(lockId); resolve(); };
+      const timer = setTimeout(() => { this.detachChild(child, binding, true); finish(); }, 1_000);
+      binding.lockAcks.set(lockId, { userId, generation, finish });
+      try { if (child.send?.({ type: 'skytwin:vault:lock', lockId, userId, generation }) === false) throw new Error('IPC send rejected'); }
+      catch { this.detachChild(child, binding, true); finish(); }
+    });
+  }
+  private detachChild(child: ChildProcess, binding: Binding, terminate: boolean): void {
+    if (this.children.get(child) !== binding) return;
+    this.children.delete(child); binding.capability.fill(0);
+    for (const ack of binding.lockAcks.values()) ack.finish();
+    if (terminate) { try { child.kill(); } catch { /* already gone */ } }
+  }
+  private hasActiveGrant(binding: Binding, userId: string): boolean {
+    if (!binding.users.has(userId)) return false;
+    const expiry = binding.users.get(userId); if (expiry !== null && expiry !== undefined && expiry <= Date.now()) { binding.users.delete(userId); return false; }
+    return true;
+  }
+  private async rollbackInitialization(userId: string): Promise<void> {
+    try { await this.store.delete(userId); } catch { /* retained by the store for a later retry */ }
+  }
   private encryptWith(root: Buffer, c: BrokerContext, v: number, plaintext: string): { success: true; envelope: BrokerEnvelope } { const key = dek(root, c, v); try { const iv = randomBytes(IV_BYTES), cipher = createCipheriv('aes-256-gcm', key, iv); cipher.setAAD(envelopeAad(c, v)); const ciphertext = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]); return { success: true, envelope: { magic: 'skytwin-envelope', version: 2, algorithm: 'aes-256-gcm', ownerKind: 'user', purpose: c.purpose, keyVersion: v, iv: iv.toString('base64'), tag: cipher.getAuthTag().toString('base64'), ciphertext: ciphertext.toString('base64') } }; } finally { key.fill(0); } }
   private decryptWith(root: Buffer, c: BrokerContext, v: number, e: BrokerEnvelope): { success: true; plaintext: string } | { success: false; error: VaultFailureCode } { if (e?.magic !== 'skytwin-envelope' || e.version !== 2 || e.algorithm !== 'aes-256-gcm' || e.ownerKind !== 'user' || e.purpose !== c.purpose || e.keyVersion !== v) return { success: false, error: 'key_version_unavailable' }; const iv = b64(e.iv, IV_BYTES, IV_BYTES), tag = b64(e.tag, TAG_BYTES, TAG_BYTES), text = b64(e.ciphertext, undefined); if (!iv || !tag || !text) return { success: false, error: 'ciphertext_invalid' }; const key = dek(root, c, v); try { const decipher = createDecipheriv('aes-256-gcm', key, iv); decipher.setAAD(envelopeAad(c, v)); decipher.setAuthTag(tag); return { success: true, plaintext: Buffer.concat([decipher.update(text), decipher.final()]).toString('utf8') }; } catch { return { success: false, error: 'ciphertext_invalid' }; } finally { key.fill(0); } }
   private async unwrap(userId: string, passphrase: string, r: WrappedUserKey): Promise<Buffer | null> { if (r.magic !== 'skytwin-user-key' || r.wrapperVersion !== 1 || r.userId !== userId || r.algorithm !== 'aes-256-gcm' || r.kdf?.algorithm !== KDF.algorithm || r.kdf.N !== KDF.N || r.kdf.r !== KDF.r || r.kdf.p !== KDF.p || r.kdf.maxmem !== KDF.maxmem) return null; const salt = b64(r.kdf.salt, SALT_BYTES, SALT_BYTES), iv = b64(r.iv, IV_BYTES, IV_BYTES), tag = b64(r.tag, TAG_BYTES, TAG_BYTES), text = b64(r.ciphertext, KEY_BYTES, KEY_BYTES); if (!salt || !iv || !tag || !text) return null; let key: Buffer | null = null; try { key = await wrappingKey(passphrase, salt); const decipher = createDecipheriv('aes-256-gcm', key, iv); decipher.setAAD(wrapperAad(userId, r.keyVersion)); decipher.setAuthTag(tag); const root = Buffer.concat([decipher.update(text), decipher.final()]); return root.length === KEY_BYTES ? root : null; } catch { return null; } finally { key?.fill(0); salt.fill(0); } }
@@ -130,11 +211,14 @@ export class DesktopKeyBroker {
     const current = previous.catch(() => undefined).then(async () => {
       if (this.operationEpoch(userId) !== operationEpoch) return;
       const timer = this.timers.get(userId); if (timer) clearTimeout(timer); this.timers.delete(userId);
-      while ([...this.children.values()].some(x => (x.inFlight.get(userId) ?? 0) > 0)) await new Promise<void>(r => setTimeout(r, 1));
+      const deadline = Date.now() + 1_000;
+      while ([...this.children.values()].some(x => (x.inFlight.get(userId) ?? 0) > 0) && Date.now() < deadline) await new Promise<void>(r => setTimeout(r, 1));
+      for (const [child, binding] of this.children) if ((binding.inFlight.get(userId) ?? 0) > 0) this.detachChild(child, binding, true);
       if (this.operationEpoch(userId) !== operationEpoch) return;
       const old = this.unlocked.get(userId); old?.key.fill(0);
       this.unlocked.set(userId, { key: Buffer.from(source), keyVersion, expiresAt: this.now() + this.ttlMs });
       this.generations.set(userId, this.generation(userId) + 1);
+      for (const [child, binding] of this.children) if (this.hasActiveGrant(binding, userId)) child.send?.({ type: 'skytwin:vault:generation', userId, generation: this.generation(userId) });
       const nextTimer = setTimeout(() => { void this.lock(userId); }, this.ttlMs); nextTimer.unref?.(); this.timers.set(userId, nextTimer); installed = true;
     });
     this.lockTails.set(userId, current);

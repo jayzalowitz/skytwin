@@ -29,3 +29,12 @@ export type { EncryptResult } from './envelope.js';
 
 export { KeyCache } from './key-cache.js';
 export type { KeyCacheOptions } from './key-cache.js';
+export { VaultBrokerClient } from './broker-client.js';
+export type {
+  VaultBrokerContext,
+  VaultBrokerEnvelope,
+  VaultBrokerFailure,
+  VaultBrokerPurpose,
+  VaultBrokerResult,
+  VaultBrokerRole,
+} from './broker-client.js';

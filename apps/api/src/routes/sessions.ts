@@ -8,6 +8,7 @@ import {
   issuePairingToken,
   consumePairingToken,
 } from '../pairing-token-store.js';
+import { apiVaultBroker } from '../vault-broker-client.js';
 
 const SESSION_DURATION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
@@ -178,6 +179,12 @@ export function createSessionsRouter(): Router {
       }
 
       await sessionRepository.revoke(sessionId);
+      const remaining = await sessionRepository.findActiveByUser(body.userId);
+      const revoked = await apiVaultBroker.revokeAuthenticatedOwner(body.userId);
+      if (revoked && remaining.length > 0) {
+        const latestExpiry = new Date(Math.max(...remaining.map(session => new Date(session.expires_at).getTime())));
+        await apiVaultBroker.grantAuthenticatedOwner(body.userId, latestExpiry);
+      }
       res.json({ revoked: true });
     } catch (error) {
       next(error);

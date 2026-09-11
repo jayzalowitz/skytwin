@@ -28,10 +28,23 @@ export const sourceKeyRegistryRepository = {
     const result = await query(
       `INSERT INTO user_source_key_registry
         (user_id, key_version, wrapper_version, algorithm, kdf_record, recovery_wrapper)
-       VALUES ($1, $2, $3, $4, $5, $6)
+       SELECT $1, $2, $3, $4, $5, $6
+        WHERE NOT EXISTS (
+          SELECT 1 FROM user_source_key_registry
+           WHERE user_id = $1 AND retired_at IS NULL
+        )
        ON CONFLICT (user_id, key_version) DO NOTHING
        RETURNING user_id`,
       [input.user_id, input.key_version, input.wrapper_version, input.algorithm, input.kdf_record, input.recovery_wrapper],
+    );
+    return result.rowCount === 1;
+  },
+
+  /** Roll back only the exact version just created by a failed self-test. */
+  async deleteVersion(userId: string, keyVersion: number): Promise<boolean> {
+    const result = await query(
+      'DELETE FROM user_source_key_registry WHERE user_id = $1 AND key_version = $2 AND retired_at IS NULL',
+      [userId, keyVersion],
     );
     return result.rowCount === 1;
   },
