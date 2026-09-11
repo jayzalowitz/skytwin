@@ -175,7 +175,7 @@ export const gmailMessageRefRepository = {
          JOIN signals AS signal
            ON signal.user_id = decision.user_id
           AND signal.source = 'gmail'
-          AND signal.source_signal_id = decision.signal_id
+          AND (signal.id::STRING = decision.signal_id OR signal.source_signal_id = decision.signal_id)
          JOIN gmail_message_refs AS ref
            ON ref.id = signal.resource_ref_id
           AND ref.id = $3
@@ -202,8 +202,8 @@ export const gmailMessageRefRepository = {
           AND ref.provider = 'google'
           AND account.is_active = true
           AND account.identity_verified = true
-          AND $5 = ANY(account.scopes)
-          AND $5 = ANY(token.scopes)
+          AND $5::STRING = ANY(account.scopes)
+          AND $5::STRING = ANY(token.scopes)
         LIMIT 2`,
       [
         input.admissionId,

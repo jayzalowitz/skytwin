@@ -635,6 +635,27 @@ describe('decisionReceiptRepository', () => {
     expect(queryMock.mock.calls.some(([sql]) => String(sql).includes('FROM signals WHERE'))).toBe(true);
   });
 
+  it('binds opaque Gmail signal UUID decisions to their owned receipt evidence', async () => {
+    const scenario = gmailPolicyScenario({}, { signal_id: eventId });
+    installHappyQueries({
+      ...scenario.rows,
+      decision: scenario.decision,
+      signal: scenario.signal,
+      existingRoot: scenario.root,
+      existingRevisions: [scenario.previous],
+    });
+
+    await expect(decisionReceiptRepository.appendForUserInTransaction(
+      { query: queryMock } as unknown as PoolClient,
+      userId,
+      {
+        eventKey: eventKey('gmail_opaque_signal'),
+        expectedPreviousDigest: scenario.previousDigest,
+        content: scenario.content,
+      },
+    )).resolves.toMatchObject({ success: true, created: true, revision: { sequence: 2 } });
+  });
+
   it.each([
     ['cross-account signal with the same source ID', {
       connector_account_id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',

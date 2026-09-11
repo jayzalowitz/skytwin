@@ -114,7 +114,7 @@ describe.runIf(cockroachAvailable)('Gmail Inbox mutation binding on CockroachDB'
         JOIN signals AS signal
           ON signal.user_id = decision.user_id
          AND signal.source = 'gmail'
-         AND signal.source_signal_id = decision.signal_id
+         AND (signal.id::STRING = decision.signal_id OR signal.source_signal_id = decision.signal_id)
         JOIN gmail_message_refs AS ref
           ON ref.id = signal.resource_ref_id
          AND ref.id = '${messageRefId}'

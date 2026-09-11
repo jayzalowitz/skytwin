@@ -161,23 +161,53 @@ function completeRisk(
   };
 }
 
+function ownDataSnapshot(
+  value: unknown,
+  expectedKeys: readonly string[],
+): Record<string, unknown> | null {
+  try {
+    if (!value || typeof value !== 'object' || Array.isArray(value) ||
+        Object.getPrototypeOf(value) !== Object.prototype ||
+        Object.getOwnPropertySymbols(value).length !== 0) return null;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const names = Object.getOwnPropertyNames(descriptors).sort();
+    if (names.join(',') !== [...expectedKeys].sort().join(',')) return null;
+    const snapshot: Record<string, unknown> = {};
+    for (const key of expectedKeys) {
+      const descriptor = descriptors[key];
+      if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, 'value') ||
+          descriptor.enumerable !== true) return null;
+      snapshot[key] = descriptor.value;
+    }
+    return snapshot;
+  } catch {
+    // Revoked/throwing proxies and hostile reflection traps fail closed.
+    return null;
+  }
+}
+
+function dateSnapshot(value: unknown): Date | null {
+  try {
+    if (!(value instanceof Date) || Object.getPrototypeOf(value) !== Date.prototype ||
+        Object.getOwnPropertyNames(value).length !== 0 ||
+        Object.getOwnPropertySymbols(value).length !== 0) return null;
+    const epoch = value.getTime();
+    return Number.isFinite(epoch) ? new Date(epoch) : null;
+  } catch {
+    return null;
+  }
+}
+
 function snapshotRisk(value: unknown): GmailArchiveProposalRiskInput | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  const record = value as Record<string, unknown>;
-  if (Object.keys(record).sort().join(',') !== 'assessedAt,dimensions,overallTier,reasoning' ||
-      !Object.values(RiskTier).includes(record['overallTier'] as RiskTier) ||
-      typeof record['reasoning'] !== 'string' || record['reasoning'].length === 0 ||
-      !(record['assessedAt'] instanceof Date) || !Number.isFinite(record['assessedAt'].getTime()) ||
-      !record['dimensions'] || typeof record['dimensions'] !== 'object' ||
-      Array.isArray(record['dimensions'])) return null;
-  const dimensions = record['dimensions'] as Record<string, unknown>;
-  if (Object.keys(dimensions).sort().join(',') !== Object.values(RiskDimension).sort().join(',')) return null;
+  const record = ownDataSnapshot(value, ['overallTier', 'dimensions', 'reasoning', 'assessedAt']);
+  if (!record || !Object.values(RiskTier).includes(record['overallTier'] as RiskTier) ||
+      typeof record['reasoning'] !== 'string' || record['reasoning'].length === 0) return null;
+  const dimensions = ownDataSnapshot(record['dimensions'], Object.values(RiskDimension));
+  if (!dimensions) return null;
   const copied = {} as Record<RiskDimension, DimensionAssessment>;
   for (const dimension of Object.values(RiskDimension)) {
-    const raw = dimensions[dimension];
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
-    const item = raw as Record<string, unknown>;
-    if (Object.keys(item).sort().join(',') !== 'reasoning,score,tier' ||
+    const item = ownDataSnapshot(dimensions[dimension], ['tier', 'score', 'reasoning']);
+    if (!item ||
         !Object.values(RiskTier).includes(item['tier'] as RiskTier) ||
         typeof item['score'] !== 'number' || !Number.isFinite(item['score']) ||
         item['score'] < 0 || item['score'] > 1 ||
@@ -188,11 +218,30 @@ function snapshotRisk(value: unknown): GmailArchiveProposalRiskInput | null {
       reasoning: item['reasoning'],
     };
   }
+  const assessedAt = dateSnapshot(record['assessedAt']);
+  if (!assessedAt) return null;
   return Object.freeze({
     overallTier: record['overallTier'] as RiskTier,
     dimensions: Object.freeze(copied),
     reasoning: record['reasoning'],
-    assessedAt: new Date(record['assessedAt'].getTime()),
+    assessedAt,
+  });
+}
+
+function snapshotInput(value: unknown): Readonly<PersistGmailArchiveProposalInput> | null {
+  const record = ownDataSnapshot(value, [
+    'userId', 'connectorAccountId', 'messageRefId', 'signalId', 'riskAssessment',
+  ]);
+  if (!record || ![record['userId'], record['connectorAccountId'], record['messageRefId'], record['signalId']]
+    .every((id) => typeof id === 'string' && UUID.test(id))) return null;
+  const riskAssessment = snapshotRisk(record['riskAssessment']);
+  if (!riskAssessment) return null;
+  return Object.freeze({
+    userId: record['userId'] as string,
+    connectorAccountId: record['connectorAccountId'] as string,
+    messageRefId: record['messageRefId'] as string,
+    signalId: record['signalId'] as string,
+    riskAssessment,
   });
 }
 
@@ -353,7 +402,7 @@ function exactDecisionMatches(row: DecisionRow, signal: BoundGmailSignalRow, mes
     raw_event: {
       source: 'gmail',
       type: signal.type,
-      signalId: signal.source_signal_id,
+      signalId: signal.id,
       messageRefId,
       authoringTier: signal.authoring_tier,
     },
@@ -361,7 +410,7 @@ function exactDecisionMatches(row: DecisionRow, signal: BoundGmailSignalRow, mes
     domain: 'email',
     urgency: 'normal',
     metadata: { proposalOnly: true },
-    signal_id: signal.source_signal_id,
+    signal_id: signal.id,
   };
   return decisionReceiptRowArtifactRefV1('decision', { ...row }).canonicalHash ===
     decisionReceiptRowArtifactRefV1('decision', expected).canonicalHash;
@@ -501,19 +550,19 @@ async function insertFreshBundle(
       JSON.stringify({
         source: 'gmail',
         type: signal.type,
-        signalId: signal.source_signal_id,
+        signalId: signal.id,
         messageRefId: input.messageRefId,
         authoringTier: signal.authoring_tier,
       }),
       JSON.stringify({ summary: 'An Inbox message may be archived.' }),
       JSON.stringify({ proposalOnly: true }),
-      signal.source_signal_id,
+      signal.id,
     ],
   );
   if (!decisionResult.rows[0]) {
     const existing = await client.query<DecisionRow>(
       'SELECT * FROM decisions WHERE user_id = $1 AND signal_id = $2',
-      [input.userId, signal.source_signal_id],
+      [input.userId, signal.id],
     );
     if (existing.rows.length !== 1) return null;
     return loadExistingBundle(client, input, existing.rows[0]!, signal);
@@ -663,13 +712,8 @@ async function persistInTransaction(
 
 export const gmailArchiveProposalRepository = {
   async persist(input: PersistGmailArchiveProposalInput): Promise<PersistGmailArchiveProposalResult> {
-    if (![input.userId, input.connectorAccountId, input.messageRefId, input.signalId]
-      .every((value) => typeof value === 'string' && UUID.test(value))) {
-      return { ok: false, error: 'invalid_input' };
-    }
-    const riskAssessment = snapshotRisk(input.riskAssessment);
-    if (!riskAssessment) return { ok: false, error: 'invalid_input' };
-    const snapshot = Object.freeze({ ...input, riskAssessment });
+    const snapshot = snapshotInput(input);
+    if (!snapshot) return { ok: false, error: 'invalid_input' };
     const ids = preallocateIds();
     let lastError: unknown;
     for (let attempt = 0; attempt < 3; attempt += 1) {

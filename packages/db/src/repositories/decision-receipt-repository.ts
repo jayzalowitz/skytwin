@@ -300,9 +300,9 @@ async function linkageIsOwned(
           ref.kind,
           decisionReceiptRowArtifactV1(ref.kind, evidenceRow),
         ) !== ref.canonicalHash) return false;
-    // Legacy decisions can name signals.id directly. Account-bound Gmail
-    // decisions instead retain the stable connector source ID, so bind it to
-    // the opaque target in raw_event through the owned signals row. The
+    // Decisions may name signals.id directly. Earlier account-bound Gmail
+    // decisions retained the stable connector source ID, so accept both while
+    // binding either form to the opaque target through the owned signals row. The
     // database's composite signal -> gmail_message_refs FK enforces the
     // matching owner and connector account behind resource_ref_id.
     const isLegacyDecisionSignal = ref.kind === 'signal' && decisionSignalId === ref.id &&
@@ -310,7 +310,7 @@ async function linkageIsOwned(
       evidenceRow['resource_ref_id'] == null;
     const isGmailDecisionSignal = ref.kind === 'signal' && evidenceRow['source'] === 'gmail' &&
       typeof evidenceRow['source_signal_id'] === 'string' &&
-      evidenceRow['source_signal_id'] === decisionSignalId &&
+      (ref.id === decisionSignalId || evidenceRow['source_signal_id'] === decisionSignalId) &&
       typeof evidenceRow['connector_account_id'] === 'string' &&
       typeof evidenceRow['resource_ref_id'] === 'string' &&
       evidenceRow['resource_ref_id'] === decisionMessageRefId;

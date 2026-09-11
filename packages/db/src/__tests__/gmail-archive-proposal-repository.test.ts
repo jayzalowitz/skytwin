@@ -18,6 +18,7 @@ import type {
   SignalRow,
 } from '../types.js';
 import type { PreEffectBarrierRow } from '../repositories/pre-effect-barrier-repository.js';
+import type { PersistGmailArchiveProposalInput } from '../repositories/gmail-archive-proposal-repository.js';
 
 const { appendMock, queryMock, withTransactionMock } = vi.hoisted(() => ({
   appendMock: vi.fn(),
@@ -255,6 +256,10 @@ describe('gmailArchiveProposalRepository', () => {
       provenance: 'untrusted_external',
     });
     expect(Object.keys(store.candidate?.parameters ?? {})).toHaveLength(6);
+    expect(store.decision).toMatchObject({
+      signal_id: signalId,
+      raw_event: { signalId, messageRefId },
+    });
     expect(store.candidate).toMatchObject({
       action_type: 'archive_email', reversible: true, estimated_cost: null,
     });
@@ -389,5 +394,75 @@ describe('gmailArchiveProposalRepository', () => {
     });
     expect(queryMock).toHaveBeenCalledTimes(1);
     expect(appendMock).not.toHaveBeenCalled();
+  });
+
+  it.each<[string, () => unknown]>([
+    ['null input', () => null],
+    ['top-level extra key', () => ({ ...input, extra: true })],
+    ['top-level symbol', () => Object.assign({ ...input }, { [Symbol('hidden')]: true })],
+    ['top-level accessor', () => Object.defineProperty({ ...input }, 'userId', {
+      enumerable: true,
+      get: () => { throw new Error('accessor must not be invoked'); },
+    })],
+    ['null risk', () => ({ ...input, riskAssessment: null })],
+    ['risk extra key', () => ({ ...input, riskAssessment: { ...riskAssessment, extra: true } })],
+    ['risk accessor', () => ({
+      ...input,
+      riskAssessment: Object.defineProperty({ ...riskAssessment }, 'reasoning', {
+        enumerable: true,
+        get: () => riskAssessment.reasoning,
+      }),
+    })],
+    ['dimensions symbol', () => ({
+      ...input,
+      riskAssessment: {
+        ...riskAssessment,
+        dimensions: Object.assign({ ...riskAssessment.dimensions }, { [Symbol('hidden')]: true }),
+      },
+    })],
+    ['dimensions extra key', () => ({
+      ...input,
+      riskAssessment: {
+        ...riskAssessment,
+        dimensions: { ...riskAssessment.dimensions, extra: riskAssessment.dimensions.reversibility },
+      },
+    })],
+    ['dimension accessor', () => ({
+      ...input,
+      riskAssessment: {
+        ...riskAssessment,
+        dimensions: {
+          ...riskAssessment.dimensions,
+          reversibility: Object.defineProperty(
+            { ...riskAssessment.dimensions.reversibility },
+            'score',
+            { enumerable: true, get: () => 0.1 },
+          ),
+        },
+      },
+    })],
+    ['bad date', () => ({
+      ...input,
+      riskAssessment: { ...riskAssessment, assessedAt: new Date(Number.NaN) },
+    })],
+    ['throwing proxy', () => new Proxy({ ...input }, {
+      ownKeys: () => { throw new Error('hostile reflection'); },
+    })],
+    ['revoked proxy', () => {
+      const revoked = Proxy.revocable({ ...input }, {});
+      revoked.revoke();
+      return revoked.proxy;
+    }],
+  ])('rejects %s without opening a transaction', async (_label, factory) => {
+    const invalid = factory();
+
+    await expect(gmailArchiveProposalRepository.persist(
+      invalid as PersistGmailArchiveProposalInput,
+    )).resolves.toEqual({
+      ok: false,
+      error: 'invalid_input',
+    });
+    expect(withTransactionMock).not.toHaveBeenCalled();
+    expect(queryMock).not.toHaveBeenCalled();
   });
 });
