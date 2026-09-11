@@ -38,6 +38,9 @@ function signal(over: Partial<SignalRow> = {}): SignalRow {
     timestamp: new Date('2026-07-05T07:00:00Z'),
     retention_until: new Date('2026-08-05T00:00:00Z'),
     created_at: new Date('2026-07-05T07:00:00Z'),
+    source_signal_id: null,
+    connector_account_id: null,
+    resource_ref_id: null,
     ...over,
   };
 }

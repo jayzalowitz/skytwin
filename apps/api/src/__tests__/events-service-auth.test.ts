@@ -44,6 +44,7 @@ const { savedEnv, mocks, SERVICE_TOKEN, TEST_USER_ID } = vi.hoisted(() => {
       approvalFindByDecisionId: vi.fn(),
       findByTokenHash: vi.fn(),
       runWithRequestContext: vi.fn(),
+      persistEvidence: vi.fn(),
     },
   };
 });
@@ -108,6 +109,7 @@ vi.mock('@skytwin/db', () => ({
     findByDecisionId: mocks.approvalFindByDecisionId,
   },
   oauthRepository: { getToken: vi.fn().mockResolvedValue(null) },
+  gmailMessageRefRepository: { persistEvidence: mocks.persistEvidence },
   executionRepository: {
     createPlan: vi.fn().mockResolvedValue({ id: 'plan-1' }),
     createEvent: vi.fn().mockResolvedValue({}),
@@ -190,6 +192,7 @@ function buildApp(): Express {
 
 async function post(
   headers: Record<string, string>,
+  body?: Record<string, unknown>,
 ): Promise<{ status: number; body: unknown }> {
   const app = buildApp();
   return new Promise((resolve, reject) => {
@@ -203,7 +206,23 @@ async function post(
       fetch(`http://127.0.0.1:${addr.port}/api/events/ingest`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...headers },
-        body: JSON.stringify({ userId: TEST_USER_ID, source: 'gmail', type: 'email_received' }),
+        body: JSON.stringify(body ?? {
+          userId: TEST_USER_ID,
+          source: 'gmail',
+          type: 'email_received',
+          signalId: 'sig-account-message-1',
+          connectorEvidence: {
+            kind: 'gmail_message',
+            connectorAccountId: '11111111-1111-4111-8111-111111111111',
+            provider: 'google',
+            providerMessageId: 'message-1',
+            providerThreadId: 'thread-1',
+            authoringTier: 'inbox_personal',
+            observedInInbox: true,
+            observedAt: '2026-09-11T12:00:00.000Z',
+            messageTimestamp: '2026-09-11T11:00:00.000Z',
+          },
+        }),
       })
         .then(async (res) => {
           const json = await res.json().catch(() => null);
@@ -246,6 +265,26 @@ describe('/api/events/ingest behind the production auth chain', () => {
     mocks.saveOutcome.mockImplementation(async (o: unknown) => o);
     mocks.getOutcome.mockResolvedValue(null);
     mocks.approvalFindByDecisionId.mockResolvedValue(null);
+    mocks.persistEvidence.mockResolvedValue({
+      ok: true,
+      created: true,
+      messageRef: {
+        id: '22222222-2222-4222-8222-222222222222',
+        authoring_tier: 'inbox_automated',
+        first_observed_at: new Date('2026-09-11T12:00:00.000Z'),
+      },
+      signal: {
+        id: '33333333-3333-4333-8333-333333333333',
+        type: 'email_received',
+        source_signal_id: 'sig-account-message-conflict',
+        timestamp: new Date('2026-09-11T11:00:00.000Z'),
+        data: {
+          authoringTier: 'inbox_automated',
+          receivedAt: '2026-09-11T11:00:00.000Z',
+          observedAt: '2026-09-11T12:00:00.000Z',
+        },
+      },
+    });
   });
 
   it('rejects an unauthenticated loopback POST (the packaged-build regression)', async () => {
@@ -261,6 +300,52 @@ describe('/api/events/ingest behind the production auth chain', () => {
     expect(res.status).toBeGreaterThanOrEqual(200);
     expect(res.status).toBeLessThan(300);
     expect(mocks.interpret).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses the service envelope tier/time and removes provider ids before interpretation', async () => {
+    const res = await post({ 'X-SkyTwin-Service-Token': SERVICE_TOKEN }, {
+      userId: TEST_USER_ID,
+      source: 'gmail',
+      type: 'email_received',
+      signalId: 'sig-account-message-conflict',
+      authoringTier: 'user_sent_originated',
+      receivedAt: '2030-01-01T00:00:00.000Z',
+      messageId: 'flat-message-id',
+      emailId: 'flat-email-id',
+      threadId: 'flat-thread-id',
+      connectorEvidence: {
+        kind: 'gmail_message',
+        connectorAccountId: '11111111-1111-4111-8111-111111111111',
+        provider: 'google',
+        providerMessageId: 'provider-message-id',
+        providerThreadId: 'provider-thread-id',
+        authoringTier: 'inbox_automated',
+        observedInInbox: true,
+        observedAt: '2026-09-11T12:00:00.000Z',
+        messageTimestamp: '2026-09-11T11:00:00.000Z',
+      },
+    });
+
+    expect(res.status).toBe(200);
+    const persisted = mocks.persistEvidence.mock.calls[0]![0] as Record<string, unknown>;
+    expect(persisted['authoringTier']).toBe('inbox_automated');
+    expect(persisted['observedAt']).toEqual(new Date('2026-09-11T12:00:00.000Z'));
+    expect(persisted['signalTimestamp']).toEqual(new Date('2026-09-11T11:00:00.000Z'));
+    expect(persisted['signalData']).toMatchObject({
+      authoringTier: 'inbox_automated',
+      receivedAt: '2026-09-11T11:00:00.000Z',
+      observedAt: '2026-09-11T12:00:00.000Z',
+    });
+    const interpreted = mocks.interpret.mock.calls[0]![0] as Record<string, unknown>;
+    expect(interpreted).toMatchObject({
+      authoringTier: 'inbox_automated',
+      receivedAt: '2026-09-11T11:00:00.000Z',
+      observedAt: '2026-09-11T12:00:00.000Z',
+      messageRefId: '22222222-2222-4222-8222-222222222222',
+    });
+    expect(interpreted).not.toHaveProperty('messageId');
+    expect(interpreted).not.toHaveProperty('emailId');
+    expect(interpreted).not.toHaveProperty('threadId');
   });
 
   it('rejects a WRONG token from loopback', async () => {

@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { validateEventIngest } from '../validators/event-ingest.js';
+import {
+  validateEventIngest,
+  validateGmailConnectorEvidence,
+} from '../validators/event-ingest.js';
 
 const VALID_UID = 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e';
 
@@ -202,5 +205,40 @@ describe('validateEventIngest', () => {
         expect(fields).toEqual(['data', 'trustTier', 'urgency', 'userId']);
       }
     });
+  });
+});
+
+describe('validateGmailConnectorEvidence', () => {
+  const valid = {
+    kind: 'gmail_message',
+    connectorAccountId: '11111111-1111-4111-8111-111111111111',
+    provider: 'google',
+    providerMessageId: 'message-1',
+    providerThreadId: null,
+    authoringTier: 'inbox_personal',
+    observedInInbox: true,
+    observedAt: '2026-09-11T12:00:00.000Z',
+    messageTimestamp: '2026-09-11T11:00:00.000Z',
+  };
+
+  it('accepts the exact canonical service envelope', () => {
+    expect(validateGmailConnectorEvidence(valid)).toMatchObject({ ok: true });
+  });
+
+  it('rejects extra provider response or secret-shaped fields', () => {
+    expect(validateGmailConnectorEvidence({ ...valid, accessToken: 'secret' }))
+      .toEqual({ ok: false, message: 'connectorEvidence has an invalid shape' });
+  });
+
+  it('rejects unknown provenance tiers and non-canonical timestamps', () => {
+    expect(validateGmailConnectorEvidence({ ...valid, authoringTier: 'trusted' }))
+      .toMatchObject({ ok: false });
+    expect(validateGmailConnectorEvidence({ ...valid, observedAt: '2026-09-11' }))
+      .toMatchObject({ ok: false });
+  });
+
+  it('rejects an empty non-null provider thread id before persistence', () => {
+    expect(validateGmailConnectorEvidence({ ...valid, providerThreadId: '' }))
+      .toEqual({ ok: false, message: 'connectorEvidence.providerThreadId is invalid' });
   });
 });

@@ -42,6 +42,7 @@ export type {
   CredentialVaultMetaRow,
   UserRow,
   ConnectedAccountRow,
+  GmailMessageRefRow,
   TwinProfileRow,
   TwinProfileVersionRow,
   PreferenceRow,
@@ -124,6 +125,9 @@ export type {
 
 export {
   oauthRepository,
+  OAuthAccountBindingConflictError,
+  connectedAccountRepository,
+  gmailMessageRefRepository,
   oauthPkcePendingRepository,
   oauthPendingSigninRepository,
   approvalRepository,
@@ -162,6 +166,11 @@ export type {
 } from './repositories/index.js';
 
 export { signalRepository, proposalRepository, skillGapRepository, proactiveScanRepository } from './repositories/index.js';
+export type {
+  PersistGmailEvidenceInput,
+  PersistGmailEvidenceResult,
+  PersistConnectorSignalInput,
+} from './repositories/index.js';
 
 export { trustTierAuditRepository, spendRepository, domainAutonomyRepository, escalationTriggerRepository, preferenceHistoryRepository, sessionRepository, mempalaceRepository, serviceCredentialRepository, credentialRequirementRepository, aiProviderRepository, ironClawToolRepository, forwardedSignalsRepository, connectorCursorRepository, emailLabelRepository, assistantRepository, deriveThreadTitle, appSuggestionRepository, memoryActionOpportunityRepository, mcpServerRepository, riskProfileRepository, provenanceRepository, briefingRepository } from './repositories/index.js';
 export { reasoningModeRepository } from './repositories/index.js';

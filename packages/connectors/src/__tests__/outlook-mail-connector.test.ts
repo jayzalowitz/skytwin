@@ -78,6 +78,30 @@ describe('OutlookMailConnector', () => {
     await expect(conn.connect()).rejects.toThrow();
   });
 
+  it('loads and saves delta links through the bound connector account', async () => {
+    const get = vi.fn(async () => null);
+    const save = vi.fn(async () => undefined);
+    const getForAccount = vi.fn(async () => 'BOUND-OLD');
+    const saveForAccount = vi.fn(async () => undefined);
+    const cursor: CursorStore = { get, save, getForAccount, saveForAccount };
+    fetchMock.mockResolvedValueOnce(res(200, { value: [], '@odata.deltaLink': 'BOUND-NEW' }));
+    const conn = new OutlookMailConnector(
+      'user-1', makeStubStore(VALID_TOKEN), cursor, 'account-1',
+    );
+
+    await conn.connect();
+    await conn.poll();
+
+    expect(getForAccount).toHaveBeenCalledWith(
+      'user-1', 'account-1', 'outlook', 'delta_link',
+    );
+    expect(saveForAccount).toHaveBeenCalledWith(
+      'user-1', 'account-1', 'outlook', 'delta_link', 'BOUND-NEW',
+    );
+    expect(get).not.toHaveBeenCalled();
+    expect(save).not.toHaveBeenCalled();
+  });
+
   it('bootstraps from a fresh inbox delta and emits one signal per message', async () => {
     fetchMock.mockResolvedValueOnce(
       res(200, { value: [gmsg({ id: 'a' }), gmsg({ id: 'b' })], '@odata.deltaLink': 'DELTA1' }),

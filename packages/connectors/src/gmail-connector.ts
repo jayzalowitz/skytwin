@@ -1,4 +1,5 @@
 import type { SignalConnector, RawSignal, SignalHandler } from './connector-interface.js';
+import { createHash } from 'node:crypto';
 import type { OAuthTokenStore } from './oauth/token-store.js';
 import { withRetry, RetryableHttpError, parseRetryAfter, normalizeSenderAddress } from '@skytwin/core';
 import {
@@ -31,6 +32,23 @@ interface GmailMessage {
 export interface CursorStore {
   get(userId: string, provider: string, kind: string): Promise<string | null>;
   save(userId: string, provider: string, kind: string, value: string): Promise<void>;
+  getForAccount?(
+    userId: string,
+    connectorAccountId: string,
+    provider: string,
+    kind: string,
+  ): Promise<string | null>;
+  saveForAccount?(
+    userId: string,
+    connectorAccountId: string,
+    provider: string,
+    kind: string,
+    value: string,
+  ): Promise<void>;
+}
+
+export interface GmailAccountBinding {
+  connectorAccountId: string;
 }
 
 /**
@@ -71,6 +89,7 @@ const HISTORY_ID_KIND = 'history_id';
  */
 export class GmailConnector implements SignalConnector {
   readonly name = 'gmail';
+  readonly connectorAccountId?: string;
 
   private handlers: SignalHandler[] = [];
   private connected = false;
@@ -78,6 +97,7 @@ export class GmailConnector implements SignalConnector {
   private readonly tokenStore: OAuthTokenStore;
   private readonly cursorStore: CursorStore | null;
   private readonly labelObserver: LabelObserver | null;
+  private readonly accountBinding: GmailAccountBinding | null;
   /** In-memory mirror of the persisted cursor for the current session. */
   private historyId: string | null = null;
   /**
@@ -93,11 +113,14 @@ export class GmailConnector implements SignalConnector {
     tokenStore: OAuthTokenStore,
     cursorStore: CursorStore | null = null,
     labelObserver: LabelObserver | null = null,
+    accountBinding: GmailAccountBinding | null = null,
   ) {
     this.userId = userId;
     this.tokenStore = tokenStore;
     this.cursorStore = cursorStore;
     this.labelObserver = labelObserver;
+    this.accountBinding = accountBinding;
+    this.connectorAccountId = accountBinding?.connectorAccountId;
   }
 
   async connect(): Promise<void> {
@@ -106,7 +129,19 @@ export class GmailConnector implements SignalConnector {
       throw new Error('No Google OAuth token available. User must authorize first.');
     }
     if (this.cursorStore) {
-      this.historyId = await this.cursorStore.get(this.userId, 'gmail', HISTORY_ID_KIND);
+      if (this.accountBinding) {
+        if (!this.cursorStore.getForAccount || !this.cursorStore.saveForAccount) {
+          throw new Error('Account-bound Gmail requires an account-bound cursor store.');
+        }
+        this.historyId = await this.cursorStore.getForAccount(
+          this.userId,
+          this.accountBinding.connectorAccountId,
+          'gmail',
+          HISTORY_ID_KIND,
+        );
+      } else {
+        this.historyId = await this.cursorStore.get(this.userId, 'gmail', HISTORY_ID_KIND);
+      }
     }
     this.connected = true;
   }
@@ -366,7 +401,20 @@ export class GmailConnector implements SignalConnector {
     this.pendingHistoryId = null;
     if (this.cursorStore) {
       try {
-        await this.cursorStore.save(this.userId, 'gmail', HISTORY_ID_KIND, historyId);
+        if (this.accountBinding) {
+          if (!this.cursorStore.saveForAccount) {
+            throw new Error('Account-bound Gmail requires an account-bound cursor store.');
+          }
+          await this.cursorStore.saveForAccount(
+            this.userId,
+            this.accountBinding.connectorAccountId,
+            'gmail',
+            HISTORY_ID_KIND,
+            historyId,
+          );
+        } else {
+          await this.cursorStore.save(this.userId, 'gmail', HISTORY_ID_KIND, historyId);
+        }
       } catch (err) {
         console.warn(
           `[gmail] Failed to persist history cursor for ${this.userId}:`,
@@ -418,8 +466,9 @@ export class GmailConnector implements SignalConnector {
       const response = await this.gmailGet(url, accessToken, 'detail');
       return response.json() as Promise<GmailMessage>;
     } catch (error) {
+      const resourceDigest = createHash('sha256').update(messageId).digest('hex').slice(0, 16);
       console.warn(
-        `[gmail] Error fetching message ${messageId}:`,
+        `[gmail] Error fetching message ref ${resourceDigest}:`,
         error instanceof Error ? error.message : String(error),
       );
       return null;
@@ -452,31 +501,56 @@ export class GmailConnector implements SignalConnector {
       listId,
     });
 
+    const messageTimestamp = new Date(parseInt(message.internalDate, 10));
+    const signalId = this.accountBinding
+      ? `sig_gmail_${createHash('sha256')
+          .update(this.accountBinding.connectorAccountId)
+          .update('\0')
+          .update(message.id)
+          .digest('hex')}`
+      : `sig_gmail_${message.id}`;
     return {
-      id: `sig_gmail_${message.id}`,
+      id: signalId,
       source: 'gmail',
       type,
       data: {
-        messageId: message.id,
-        threadId: message.threadId,
+        // Legacy in-process callers still receive raw targets. Account-bound
+        // production ingest keeps provider ids exclusively in the trusted
+        // evidence envelope and repository boundary.
+        ...(this.accountBinding ? {} : {
+          messageId: message.id,
+          threadId: message.threadId,
+        }),
         from,
-        // Persist the raw header fields used by the classifier so the
-        // tier-backfill worker (#251 follow-up) can reclassify any page
-        // that's missing `authoringTier` without re-fetching from Gmail.
-        // Cheap — these are short strings already pulled into memory.
+        // Persist only the derived booleans for potentially capability-bearing
+        // headers. In-Reply-To and List-Unsubscribe can contain addresses or
+        // bearer-style URLs and must not cross the connector boundary raw.
         to: toRaw,
         cc: ccRaw,
-        inReplyTo,
-        listUnsubscribe,
+        hasInReplyTo: inReplyTo.length > 0,
+        hasListUnsubscribe: listUnsubscribe.length > 0,
         subject,
         snippet: message.snippet,
         labels: message.labelIds,
         listId,
         authoringTier,
-        receivedAt: new Date(parseInt(message.internalDate, 10)).toISOString(),
+        receivedAt: messageTimestamp.toISOString(),
         requiresResponse: type === 'work_email' || type === 'meeting_invite',
       },
-      timestamp: new Date(parseInt(message.internalDate, 10)),
+      timestamp: messageTimestamp,
+      connectorEvidence: this.accountBinding
+        ? {
+            kind: 'gmail_message',
+            connectorAccountId: this.accountBinding.connectorAccountId,
+            provider: 'google',
+            providerMessageId: message.id,
+            providerThreadId: message.threadId || null,
+            authoringTier,
+            observedInInbox: message.labelIds.includes('INBOX'),
+            observedAt: new Date().toISOString(),
+            messageTimestamp: messageTimestamp.toISOString(),
+          }
+        : undefined,
     };
   }
 
@@ -580,4 +654,3 @@ export function parseListId(raw: string): string {
   // Some senders ship the bare identifier with no angle brackets.
   return raw.trim().toLowerCase();
 }
-

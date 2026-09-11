@@ -88,6 +88,7 @@ describe('DbTokenStore — lazy vault migration', () => {
       encryption_iv: null,
       encryption_tag: null,
       encryption_key_version: 1,
+      credential_revision: '11111111-1111-4111-8111-111111111111',
     });
 
     const result = await store.getToken('user-1', 'google');
@@ -106,8 +107,11 @@ describe('DbTokenStore — lazy vault migration', () => {
       iv: Buffer;
       tag: Buffer;
       keyVersion: number;
-    }];
+      expiresAt: Date;
+    }, string];
     expect(call[0]).toBe('row-id-001');
+    expect(call[2]).toBe('11111111-1111-4111-8111-111111111111');
+    expect(call[1].expiresAt).toEqual(EXPIRES_AT);
     // Packed buffers should be at least IV_LENGTH + TAG_LENGTH + 1 bytes
     expect(call[1].encryptedAccessToken.length).toBeGreaterThan(IV_LENGTH + TAG_LENGTH);
     expect(call[1].encryptedRefreshToken.length).toBeGreaterThan(IV_LENGTH + TAG_LENGTH);

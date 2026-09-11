@@ -3,6 +3,7 @@ import {
   fetchMicrosoftUserInfo,
   resolveMicrosoftEnvConfig,
   providerSupportsRevoke,
+  validateProviderSubject,
 } from '../routes/oauth.js';
 
 /**
@@ -69,6 +70,17 @@ describe('providerSupportsRevoke (token-leak guard for disconnect)', () => {
     expect(providerSupportsRevoke('slack')).toBe(false);
     expect(providerSupportsRevoke('')).toBe(false);
   });
+});
+
+describe('validateProviderSubject', () => {
+  it('normalizes a bounded non-empty provider subject', () => {
+    expect(validateProviderSubject('  stable-subject  ')).toBe('stable-subject');
+  });
+
+  it.each([null, undefined, '', '   ', 'bad\u0000subject', 'x'.repeat(513)])(
+    'rejects malformed upstream identity %p',
+    (value) => expect(validateProviderSubject(value)).toBeNull(),
+  );
 });
 
 describe('fetchMicrosoftUserInfo', () => {

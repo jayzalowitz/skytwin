@@ -29,7 +29,16 @@ export type {
 export { feedbackRepository } from './feedback-repository.js';
 export type { CreateFeedbackInput } from './feedback-repository.js';
 
-export { oauthRepository } from './oauth-repository.js';
+export { oauthRepository, OAuthAccountBindingConflictError } from './oauth-repository.js';
+export {
+  connectedAccountRepository,
+  digestProviderSubject,
+  canonicalizeScopes,
+} from './connected-account-repository.js';
+export type {
+  VerifiedConnectedAccountInput,
+  UnverifiedConnectedAccountInput,
+} from './connected-account-repository.js';
 export { oauthPkcePendingRepository } from './oauth-pkce-pending-repository.js';
 export { connectorHealthRepository } from './connector-health-repository.js';
 export type { ConnectorHealthRow } from './connector-health-repository.js';
@@ -63,7 +72,12 @@ export type {
 } from './execution-repository.js';
 
 export { signalRepository } from './signal-repository.js';
-export type { CreateSignalInput } from './signal-repository.js';
+export type { CreateSignalInput, PersistConnectorSignalInput } from './signal-repository.js';
+export { gmailMessageRefRepository } from './gmail-message-ref-repository.js';
+export type {
+  PersistGmailEvidenceInput,
+  PersistGmailEvidenceResult,
+} from './gmail-message-ref-repository.js';
 
 export { proposalRepository } from './proposal-repository.js';
 export type { CreateProposalInput } from './proposal-repository.js';

@@ -1,5 +1,17 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [Unreleased] — Account-bound connector evidence
+
+### Added
+
+- Gmail observations now persist an owner-scoped message reference alongside the signal. Provider message and thread IDs remain in the repository boundary; downstream event payloads carry only an opaque message-reference UUID and a stable signal hash. Replayed observations return the original canonical signal instead of creating a second interpretation target. See [`gmail-message-ref-repository.ts`](./packages/db/src/repositories/gmail-message-ref-repository.ts) and [`gmail-connector.ts`](./packages/connectors/src/gmail-connector.ts).
+- OAuth credentials, polling cursors, worker circuit breakers, and connector-health rows are now keyed by a stable connected-account identity. OAuth callbacks verify the provider subject before activating that identity, and credential refreshes use a revision compare-and-swap so disconnect, reconnect, refresh, and lazy encryption cannot overwrite one another. See [`oauth-repository.ts`](./packages/db/src/repositories/oauth-repository.ts) and [`db-token-store.ts`](./packages/connectors/src/oauth/db-token-store.ts).
+
+### Changed
+
+- Existing Google and Microsoft grants created before migration 082 are intentionally paused and reported as `identity_verification_required`. Reconnecting verifies the provider subject and restores account-scoped polling; the worker will not infer ownership from a legacy display email. See [`082-gmail-evidence-foundation.sql`](./packages/db/src/migrations/082-gmail-evidence-foundation.sql).
+- Normal session-ingest Gmail payloads remain untrusted external input even when they resemble connector envelopes. Only the connector-authenticated ingest path can attach a verified connected account and durable message reference; nested authority-shaped fields are stripped at the boundary. See [`event-ingest.ts`](./apps/api/src/validators/event-ingest.ts) and [`events.ts`](./apps/api/src/routes/events.ts).
+
 ## [Unreleased] — Pre-effect audit barriers
 
 ### Fixed

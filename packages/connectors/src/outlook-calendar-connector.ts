@@ -90,6 +90,7 @@ interface GraphDeltaPage {
  */
 export class OutlookCalendarConnector implements SignalConnector {
   readonly name = 'outlook_calendar';
+  readonly connectorAccountId?: string;
 
   private handlers: SignalHandler[] = [];
   private connected = false;
@@ -98,10 +99,16 @@ export class OutlookCalendarConnector implements SignalConnector {
   private readonly tokenStore: OAuthTokenStore;
   private readonly cursorStore: CursorStore | null;
 
-  constructor(userId: string, tokenStore: OAuthTokenStore, cursorStore: CursorStore | null = null) {
+  constructor(
+    userId: string,
+    tokenStore: OAuthTokenStore,
+    cursorStore: CursorStore | null = null,
+    connectorAccountId?: string,
+  ) {
     this.userId = userId;
     this.tokenStore = tokenStore;
     this.cursorStore = cursorStore;
+    this.connectorAccountId = connectorAccountId;
   }
 
   async connect(): Promise<void> {
@@ -110,7 +117,19 @@ export class OutlookCalendarConnector implements SignalConnector {
       throw new Error('No Microsoft OAuth token available. User must authorize first.');
     }
     if (this.cursorStore) {
-      this.deltaLink = await this.cursorStore.get(this.userId, 'outlook_calendar', DELTA_LINK_KIND);
+      if (this.connectorAccountId) {
+        if (!this.cursorStore.getForAccount || !this.cursorStore.saveForAccount) {
+          throw new Error('Account-bound Outlook Calendar requires an account-bound cursor store.');
+        }
+        this.deltaLink = await this.cursorStore.getForAccount(
+          this.userId,
+          this.connectorAccountId,
+          'outlook_calendar',
+          DELTA_LINK_KIND,
+        );
+      } else {
+        this.deltaLink = await this.cursorStore.get(this.userId, 'outlook_calendar', DELTA_LINK_KIND);
+      }
     }
     this.connected = true;
   }
@@ -210,7 +229,20 @@ export class OutlookCalendarConnector implements SignalConnector {
     this.deltaLink = link;
     if (this.cursorStore) {
       try {
-        await this.cursorStore.save(this.userId, 'outlook_calendar', DELTA_LINK_KIND, link);
+        if (this.connectorAccountId) {
+          if (!this.cursorStore.saveForAccount) {
+            throw new Error('Account-bound Outlook Calendar requires an account-bound cursor store.');
+          }
+          await this.cursorStore.saveForAccount(
+            this.userId,
+            this.connectorAccountId,
+            'outlook_calendar',
+            DELTA_LINK_KIND,
+            link,
+          );
+        } else {
+          await this.cursorStore.save(this.userId, 'outlook_calendar', DELTA_LINK_KIND, link);
+        }
       } catch (err) {
         console.warn(
           `[outlook-calendar] Failed to persist delta cursor for ${this.userId}:`,

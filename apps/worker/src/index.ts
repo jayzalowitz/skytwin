@@ -53,6 +53,12 @@ import {
 import { extractErrorCode } from './oauth-error-code.js';
 import { recordPermanentOAuthFailure } from './oauth-circuit.js';
 import { DeadLetterTracker } from './dead-letter.js';
+import { buildSignalIngestPayload } from './signal-ingest-payload.js';
+import {
+  connectorHealthName,
+  connectorRuntimeKey,
+  sameConnectorTopology,
+} from './connector-runtime-key.js';
 
 const config = loadConfig();
 const log = createLogger('worker');
@@ -67,7 +73,7 @@ const deadLetterTracker = new DeadLetterTracker();
 /** Resolved dead-letter rows are GC'd after 30 days (#407). */
 const DEAD_LETTER_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
-/** Per-user circuit breakers to skip users with persistent failures. */
+/** Per-account connector breakers; one revoked mailbox must not suspend peers. */
 const userCircuitBreakers = new Map<string, CircuitBreaker>();
 
 /**
@@ -98,6 +104,25 @@ const gmailCursorStore: CursorStore = {
   },
   async save(userId, provider, kind, value) {
     await connectorCursorRepository.save(userId, provider, kind, value);
+  },
+  async getForAccount(userId, connectorAccountId, provider, kind) {
+    const row = await connectorCursorRepository.getForAccount(
+      userId,
+      connectorAccountId,
+      provider,
+      kind,
+    );
+    return row?.cursor_value ?? null;
+  },
+  async saveForAccount(userId, connectorAccountId, provider, kind, value) {
+    const row = await connectorCursorRepository.saveForAccount(
+      userId,
+      connectorAccountId,
+      provider,
+      kind,
+      value,
+    );
+    if (!row) throw new Error('Connector account is inactive or not owned by this user.');
   },
 };
 
@@ -162,16 +187,16 @@ const signalDeduper = new SignalDeduper({
   },
 });
 
-function getCircuitBreaker(userId: string): CircuitBreaker {
-  let breaker = userCircuitBreakers.get(userId);
+function getCircuitBreaker(runtimeKey: string): CircuitBreaker {
+  let breaker = userCircuitBreakers.get(runtimeKey);
   if (!breaker) {
-    breaker = new CircuitBreaker(`user:${userId}`, {
+    breaker = new CircuitBreaker(`connector:${runtimeKey}`, {
       failureThreshold: 3,
       resetTimeoutMs: 300_000,   // 5 minutes
       backoffMultiplier: 2,
       maxResetTimeoutMs: 1_200_000, // 20 minutes
     });
-    userCircuitBreakers.set(userId, breaker);
+    userCircuitBreakers.set(runtimeKey, breaker);
   }
   return breaker;
 }
@@ -200,13 +225,7 @@ interface UserConnectors {
  */
 async function forwardSignalToApi(signal: RawSignal, userId: string): Promise<void> {
   const url = `${config.apiBaseUrl}/api/events/ingest`;
-  const body = JSON.stringify({
-    ...signal.data,
-    source: signal.source,
-    type: signal.type,
-    signalId: signal.id,
-    userId,
-  });
+  const body = JSON.stringify(buildSignalIngestPayload(signal, userId));
 
   await withRetry(async () => {
     const resp = await fetch(url, {
@@ -236,26 +255,19 @@ function markSignalForwarded(signal: RawSignal, userId: string): void {
   signalDeduper.mark(signal, userId);
 }
 
-/**
- * Poll connectors for a single user, guarded by per-user circuit breaker.
- */
+/** Poll each connector through its account-isolated circuit breaker. */
 async function pollUser(userConnectors: UserConnectors): Promise<void> {
-  const breaker = getCircuitBreaker(userConnectors.userId);
-
-  if (!breaker.canExecute()) {
-    log.warn(`Skipping user ${userConnectors.userId} — circuit open, retry in ${Math.round(breaker.getTimeUntilRetryMs() / 1000)}s`, {
-      retryInMs: breaker.getTimeUntilRetryMs(),
-    });
-    return;
-  }
-
-  let hadFailure = false;
-
   for (const connector of userConnectors.connectors) {
-    // Per-connector flag so the heal at the bottom of this iteration
-    // reflects THIS connector's outcome, not the loop-wide state. A
-    // failing Gmail must not block the success heal for a working
-    // Calendar (#377).
+    const runtimeKey = connectorRuntimeKey(userConnectors.userId, connector);
+    const healthName = connectorHealthName(connector);
+    const breaker = getCircuitBreaker(runtimeKey);
+    if (!breaker.canExecute()) {
+      log.warn(`Skipping ${healthName} for user ${userConnectors.userId} — circuit open`, {
+        retryInMs: breaker.getTimeUntilRetryMs(),
+      });
+      continue;
+    }
+
     let thisConnectorFailed = false;
     try {
       const signals = await connector.poll();
@@ -274,7 +286,6 @@ async function pollUser(userConnectors: UserConnectors): Promise<void> {
       // (or not at all — it is optional on the interface).
       await connector.commitCursor?.();
     } catch (error) {
-      hadFailure = true;
       thisConnectorFailed = true;
 
       if (error instanceof OAuthRefreshError && error.permanent) {
@@ -290,7 +301,7 @@ async function pollUser(userConnectors: UserConnectors): Promise<void> {
         try {
           await connectorHealthRepository.upsert({
             userId: userConnectors.userId,
-            connectorName: connector.name,
+            connectorName: healthName,
             status: 'needs_reauth',
             errorCode: extractErrorCode(error.message) ?? 'invalid_grant',
             lastFailureAt: new Date(),
@@ -298,29 +309,28 @@ async function pollUser(userConnectors: UserConnectors): Promise<void> {
         } catch (writeErr) {
           log.warn('connector_health upsert failed (needs_reauth) — continuing', {
             userId: userConnectors.userId,
-            connector: connector.name,
+            connector: healthName,
             error: writeErr instanceof Error ? writeErr.message : String(writeErr),
           });
         }
         // Force-open circuit immediately — no point retrying a revoked token.
         recordPermanentOAuthFailure(breaker);
-        return;
+        continue;
       }
 
       log.error(`Error polling ${connector.name} for user ${userConnectors.userId}`, {
         error: error instanceof Error ? error.message : String(error),
       });
+      breaker.recordFailure();
     }
 
-    // Per-connector success heals the row (#377). Keyed on
-    // thisConnectorFailed (not the loop-wide hadFailure) so a working
-    // Calendar isn't stuck in 'needs_reauth' because Gmail failed in
-    // the same cycle.
+    // Per-connector success heals only this account's row (#377), so a
+    // working mailbox cannot close a sibling account's reauth warning.
     if (!thisConnectorFailed) {
       try {
         await connectorHealthRepository.upsert({
           userId: userConnectors.userId,
-          connectorName: connector.name,
+          connectorName: healthName,
           status: 'connected',
           errorCode: null,
           lastSuccessAt: new Date(),
@@ -328,17 +338,12 @@ async function pollUser(userConnectors: UserConnectors): Promise<void> {
       } catch (writeErr) {
         log.warn('connector_health upsert failed (connected) — continuing', {
           userId: userConnectors.userId,
-          connector: connector.name,
+          connector: healthName,
           error: writeErr instanceof Error ? writeErr.message : String(writeErr),
         });
       }
+      breaker.recordSuccess();
     }
-  }
-
-  if (hadFailure) {
-    breaker.recordFailure();
-  } else {
-    breaker.recordSuccess();
   }
 
   // Opportunistic email_label_signals prune. Throttled internally to once
@@ -445,21 +450,22 @@ async function connectUserConnectors(discovered: UserConnectors[]): Promise<User
   const connectedUsers: UserConnectors[] = [];
 
   for (const uc of discovered) {
-    const breaker = getCircuitBreaker(uc.userId);
-    if (!breaker.canExecute()) {
-      log.warn(`Skipping connector startup for user ${uc.userId} — circuit open, retry in ${Math.round(breaker.getTimeUntilRetryMs() / 1000)}s`, {
-        retryInMs: breaker.getTimeUntilRetryMs(),
-      });
-      continue;
-    }
-
     const connected: SignalConnector[] = [];
-    let permanentOAuthFailure = false;
     for (const connector of uc.connectors) {
+      const runtimeKey = connectorRuntimeKey(uc.userId, connector);
+      const healthName = connectorHealthName(connector);
+      const breaker = getCircuitBreaker(runtimeKey);
+      if (!breaker.canExecute()) {
+        log.warn(`Skipping connector startup for ${healthName} user ${uc.userId} — circuit open`, {
+          retryInMs: breaker.getTimeUntilRetryMs(),
+        });
+        continue;
+      }
       try {
         await connector.connect();
         connected.push(connector);
         log.info(`Connected: ${connector.name} for user ${uc.userId}`);
+        breaker.recordSuccess();
       } catch (error) {
         if (error instanceof OAuthRefreshError && error.permanent) {
           log.error(`Permanent OAuth failure for user ${uc.userId} on ${connector.name} — user must re-authorize`, {
@@ -469,7 +475,7 @@ async function connectUserConnectors(discovered: UserConnectors[]): Promise<User
           try {
             await connectorHealthRepository.upsert({
               userId: uc.userId,
-              connectorName: connector.name,
+              connectorName: healthName,
               status: 'needs_reauth',
               errorCode: extractErrorCode(error.message) ?? 'invalid_grant',
               lastFailureAt: new Date(),
@@ -477,13 +483,12 @@ async function connectUserConnectors(discovered: UserConnectors[]): Promise<User
           } catch (writeErr) {
             log.warn('connector_health upsert failed (needs_reauth) — continuing', {
               userId: uc.userId,
-              connector: connector.name,
+              connector: healthName,
               error: writeErr instanceof Error ? writeErr.message : String(writeErr),
             });
           }
           recordPermanentOAuthFailure(breaker);
-          permanentOAuthFailure = true;
-          break;
+          continue;
         }
 
         log.error(`Error connecting ${connector.name} for user ${uc.userId}`, {
@@ -495,13 +500,6 @@ async function connectUserConnectors(discovered: UserConnectors[]): Promise<User
 
     if (connected.length > 0) {
       connectedUsers.push({ userId: uc.userId, connectors: connected });
-      // Do NOT credit success when a connector hit a permanent OAuth failure:
-      // recordSuccess() would close the circuit forceOpen() just opened, undoing
-      // the permanent-failure protection (#595 review). The open circuit still
-      // gates polling for the successfully-connected connectors until re-auth.
-      if (!permanentOAuthFailure) {
-        breaker.recordSuccess();
-      }
     }
   }
 
@@ -533,8 +531,10 @@ async function discoverUsers(): Promise<UserConnectors[]> {
     const result: UserConnectors[] = [];
     for (const [userId, userTokenList] of userTokens) {
       const connectors: SignalConnector[] = [];
-      const hasGoogle = userTokenList.some((t) => t.provider === 'google');
-      const hasMicrosoft = userTokenList.some((t) => t.provider === 'microsoft');
+      const googleTokens = userTokenList.filter((t) => t.provider === 'google');
+      const microsoftTokens = userTokenList.filter((t) => t.provider === 'microsoft');
+      const hasGoogle = googleTokens.length > 0;
+      const hasMicrosoft = microsoftTokens.length > 0;
 
       if (hasGoogle && googleConfig === undefined) googleConfig = await resolveGoogleConfig();
       if (hasMicrosoft && microsoftConfig === undefined) microsoftConfig = await resolveMicrosoftConfig();
@@ -546,11 +546,12 @@ async function discoverUsers(): Promise<UserConnectors[]> {
       const usableGoogle = hasGoogle && !!googleConfig;
       const usableMicrosoft = hasMicrosoft && !!microsoftConfig;
 
-      if (usableGoogle || usableMicrosoft) {
+      const createBoundTokenStore = (connectorAccountId: string) => {
         const tokenStore = new DbTokenStore(
           oauthRepository,
           googleConfig ?? undefined,
           microsoftConfig ?? undefined,
+          connectorAccountId,
         );
         tokenStore.setKeyCache(workerKeyCache);
         // Audit-log every credential-vault decryption (#393). The sink writes
@@ -560,13 +561,50 @@ async function discoverUsers(): Promise<UserConnectors[]> {
           { recordAccess: (input) => accessLogRepository.record(input) },
           'worker',
         );
-        if (usableGoogle) {
-          connectors.push(new GmailConnector(userId, tokenStore, gmailCursorStore, gmailLabelObserver));
-          connectors.push(new GoogleCalendarConnector(userId, tokenStore, gmailCursorStore));
+        return tokenStore;
+      };
+
+      if (usableGoogle) {
+        for (const token of googleTokens) {
+          const tokenStore = createBoundTokenStore(token.connector_account_id);
+          connectors.push(new GmailConnector(
+            userId,
+            tokenStore,
+            gmailCursorStore,
+            gmailLabelObserver,
+            { connectorAccountId: token.connector_account_id },
+          ));
         }
-        if (usableMicrosoft) {
-          connectors.push(new OutlookMailConnector(userId, tokenStore, gmailCursorStore));
-          connectors.push(new OutlookCalendarConnector(userId, tokenStore, gmailCursorStore));
+        // Calendar has not moved to account-specific cursors in this slice.
+        // Keep one stable, explicitly-bound calendar connector rather than
+        // silently selecting the most recently updated Google credential.
+        const firstGoogle = googleTokens[0];
+        if (firstGoogle) {
+          connectors.push(new GoogleCalendarConnector(
+            userId,
+            createBoundTokenStore(firstGoogle.connector_account_id),
+            gmailCursorStore,
+            'primary',
+            firstGoogle.connector_account_id,
+          ));
+        }
+      }
+      if (usableMicrosoft) {
+        const firstMicrosoft = microsoftTokens[0];
+        if (firstMicrosoft) {
+          const tokenStore = createBoundTokenStore(firstMicrosoft.connector_account_id);
+          connectors.push(new OutlookMailConnector(
+            userId,
+            tokenStore,
+            gmailCursorStore,
+            firstMicrosoft.connector_account_id,
+          ));
+          connectors.push(new OutlookCalendarConnector(
+            userId,
+            tokenStore,
+            gmailCursorStore,
+            firstMicrosoft.connector_account_id,
+          ));
         }
       }
 
@@ -1066,13 +1104,12 @@ async function main(): Promise<void> {
     // When no users are tracked yet, check every cycle so first-time
     // connections are picked up within one poll interval (~10s).
     if (userConnectors.length === 0 || pollCount % 10 === 0) {
-      const newUserConnectors = await connectUserConnectors(await discoverUsers());
+      const discoveredUserConnectors = await discoverUsers();
       const oldUserIds = new Set(userConnectors.map((uc) => uc.userId));
-      const newUserIds = new Set(newUserConnectors.map((uc) => uc.userId));
-      const usersChanged = oldUserIds.size !== newUserIds.size
-        || [...oldUserIds].some((id) => !newUserIds.has(id));
-      if (usersChanged) {
-        log.info(`User set changed: ${[...oldUserIds].join(',')} → ${[...newUserIds].join(',')}`);
+      const newUserIds = new Set(discoveredUserConnectors.map((uc) => uc.userId));
+      if (!sameConnectorTopology(userConnectors, discoveredUserConnectors)) {
+        log.info(`Connector topology changed for users: ${[...oldUserIds].join(',')} → ${[...newUserIds].join(',')}`);
+        const newUserConnectors = await connectUserConnectors(discoveredUserConnectors);
         // Disconnect old connectors
         for (const uc of userConnectors) {
           for (const connector of uc.connectors) {
@@ -1081,10 +1118,14 @@ async function main(): Promise<void> {
         }
         userConnectors = newUserConnectors;
 
-        // Prune circuit breakers and signal dedupe maps for users no longer tracked
-        for (const userId of userCircuitBreakers.keys()) {
-          if (!newUserIds.has(userId)) {
-            userCircuitBreakers.delete(userId);
+        // Prune account-scoped breakers and per-user signal dedupe state.
+        const activeRuntimeKeys = new Set(
+          newUserConnectors.flatMap((uc) => uc.connectors.map((connector) =>
+            connectorRuntimeKey(uc.userId, connector))),
+        );
+        for (const runtimeKey of userCircuitBreakers.keys()) {
+          if (!activeRuntimeKeys.has(runtimeKey)) {
+            userCircuitBreakers.delete(runtimeKey);
           }
         }
         signalDeduper.pruneUsers(newUserIds);

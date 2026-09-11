@@ -29,6 +29,7 @@ import {
   policyRepositoryAdapter,
   preEffectBarrierRepository,
   inferenceReceiptRepository,
+  gmailMessageRefRepository,
 } from '@skytwin/db';
 import type {
   DecisionContext,
@@ -63,7 +64,10 @@ import { recordMcpActionSpend } from '../mcp-action-spend.js';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
 import { bindUserIdParamValidator } from '../middleware/validate-uuid.js';
 import { sseManager } from '../sse.js';
-import { validateEventIngest } from '../validators/event-ingest.js';
+import {
+  validateEventIngest,
+  validateGmailConnectorEvidence,
+} from '../validators/event-ingest.js';
 import { getMemoryPortForUser } from '../memory-setup.js';
 import type { DecisionObject as _DecisionObject } from '@skytwin/shared-types';
 import {
@@ -72,6 +76,66 @@ import {
   prepareEmailActionForExecution,
 } from '../email-attribution.js';
 import { resolveUserLlmClient } from '../lib/user-llm-client.js';
+
+const GMAIL_SIGNAL_DATA_KEYS = [
+  'from',
+  'to',
+  'cc',
+  'hasInReplyTo',
+  'hasListUnsubscribe',
+  'subject',
+  'snippet',
+  'labels',
+  'listId',
+  'authoringTier',
+  'receivedAt',
+  'observedAt',
+  'requiresResponse',
+] as const;
+const GMAIL_INTERPRETATION_KEYS = new Set<string>([
+  ...GMAIL_SIGNAL_DATA_KEYS,
+  'userId',
+  'source',
+  'type',
+  'signalId',
+  'urgency',
+]);
+const UNTRUSTED_GMAIL_AUTHORITY_KEYS = new Set([
+  'messageId',
+  'emailId',
+  'threadId',
+  'messageRefId',
+  'connectorAccountId',
+  'providerMessageId',
+  'providerThreadId',
+  'sourceSignalId',
+  'resourceRefId',
+  'observedInInbox',
+  'connectorEvidence',
+  'authoringTier',
+]);
+
+/** Keep Watch evidence useful without persisting bodies, secrets, or raw responses. */
+function sanitizedGmailSignalData(event: Record<string, unknown>): Record<string, unknown> {
+  const data: Record<string, unknown> = {};
+  for (const key of GMAIL_SIGNAL_DATA_KEYS) {
+    if (event[key] !== undefined) data[key] = event[key];
+  }
+  return data;
+}
+
+function stripProviderTargetIds(value: unknown, depth = 0): unknown {
+  if (depth > 8) return null;
+  if (value === null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.map((item) => stripProviderTargetIds(item, depth + 1));
+  const clean: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    if (!UNTRUSTED_GMAIL_AUTHORITY_KEYS.has(key)) {
+      clean[key] = stripProviderTargetIds(child, depth + 1);
+    }
+  }
+  return clean;
+}
 
 function eventPolicySnapshot(
   policy: { allowed: boolean; requiresApproval: boolean; reason: string },
@@ -373,6 +437,106 @@ export function createEventsRouter(): Router {
       }
       const rawEvent = validation.event;
       const userId = validation.userId;
+
+      // connectorEvidence is authority-bearing only on the loopback service
+      // credential path. A human session presenting the same JSON shape must
+      // not be able to bind an arbitrary provider resource to their account.
+      const presentedEvidence = rawEvent['connectorEvidence'];
+      delete rawEvent['connectorEvidence'];
+      // messageRefId is always repository-derived. Ignore any caller value so
+      // it cannot survive into interpretation/candidate generation.
+      delete rawEvent['messageRefId'];
+
+      if (presentedEvidence !== undefined && req.serviceAuthenticated !== true) {
+        res.status(400).json({ error: 'connectorEvidence is service-authenticated metadata' });
+        return;
+      }
+
+      const normalizedSource = typeof rawEvent['source'] === 'string'
+        ? rawEvent['source'].trim().toLowerCase()
+        : '';
+      if (req.serviceAuthenticated !== true) {
+        // Connector-derived authoring tiers are authority-bearing regardless
+        // of the source spelling. A normal session may still submit an event,
+        // but it cannot promote itself by placing a user_sent_* tier at the
+        // top level or in the envelope shape read by SituationInterpreter.
+        delete rawEvent['authoringTier'];
+        const nestedData = rawEvent['data'];
+        if (nestedData && typeof nestedData === 'object' && !Array.isArray(nestedData)) {
+          const cleanData = { ...(nestedData as Record<string, unknown>) };
+          delete cleanData['authoringTier'];
+          rawEvent['data'] = cleanData;
+        }
+      }
+
+      if (req.serviceAuthenticated === true && normalizedSource === 'gmail') {
+        const evidenceValidation = validateGmailConnectorEvidence(presentedEvidence);
+        const sourceSignalId = rawEvent['signalId'];
+        if (!evidenceValidation.ok) {
+          res.status(400).json({ error: evidenceValidation.message });
+          return;
+        }
+        if (
+          typeof sourceSignalId !== 'string' ||
+          sourceSignalId.length < 1 ||
+          sourceSignalId.length > 2048
+        ) {
+          res.status(400).json({ error: 'Account-bound Gmail ingest requires a valid signalId' });
+          return;
+        }
+        const evidence = evidenceValidation.evidence;
+        rawEvent['source'] = 'gmail';
+        // The signed service envelope is authoritative for provenance and
+        // observation time. A conflicting flat payload cannot upgrade an
+        // inbound message to a user-authored tier or skew Watch windows.
+        rawEvent['authoringTier'] = evidence.authoringTier;
+        rawEvent['receivedAt'] = evidence.messageTimestamp.toISOString();
+        rawEvent['observedAt'] = evidence.observedAt.toISOString();
+        for (const key of Object.keys(rawEvent)) {
+          if (!GMAIL_INTERPRETATION_KEYS.has(key)) delete rawEvent[key];
+        }
+        const persisted = await gmailMessageRefRepository.persistEvidence({
+          userId,
+          connectorAccountId: evidence.connectorAccountId,
+          sourceSignalId,
+          providerMessageId: evidence.providerMessageId,
+          providerThreadId: evidence.providerThreadId,
+          authoringTier: evidence.authoringTier,
+          observedInInbox: evidence.observedInInbox,
+          observedAt: evidence.observedAt,
+          signalTimestamp: evidence.messageTimestamp,
+          signalType: typeof rawEvent['type'] === 'string' ? rawEvent['type'] : 'email',
+          signalData: sanitizedGmailSignalData(rawEvent),
+        });
+        if (!persisted.ok) {
+          res.status(409).json({ error: persisted.error });
+          return;
+        }
+        // Interpretation always sees the immutable canonical signal row. On a
+        // replay, modified request fields cannot alter the decision input even
+        // though the request reached us before the idempotency lookup.
+        for (const key of Object.keys(rawEvent)) delete rawEvent[key];
+        Object.assign(rawEvent, sanitizedGmailSignalData(persisted.signal.data), {
+          userId,
+          source: 'gmail',
+          type: persisted.signal.type,
+          signalId: persisted.signal.source_signal_id,
+          authoringTier: persisted.messageRef.authoring_tier,
+          receivedAt: persisted.signal.timestamp.toISOString(),
+          observedAt: persisted.messageRef.first_observed_at.toISOString(),
+          messageRefId: persisted.messageRef.id,
+        });
+      } else if (presentedEvidence !== undefined) {
+        res.status(400).json({ error: 'connectorEvidence is only valid for Gmail signals' });
+        return;
+      } else if (normalizedSource === 'gmail') {
+        // Human/session callers cannot assert connector provenance. Preserve
+        // the content event for backwards compatibility, but force the least-
+        // trusted Gmail tier and recursively remove provider mutation targets.
+        const stripped = stripProviderTargetIds(rawEvent) as Record<string, unknown>;
+        for (const key of Object.keys(rawEvent)) delete rawEvent[key];
+        Object.assign(rawEvent, stripped, { source: 'gmail', authoringTier: 'inbox_automated' });
+      }
 
       // A completed duplicate must short-circuit before any LLM-backed
       // interpretation. The later saveDecision check remains the race-loser

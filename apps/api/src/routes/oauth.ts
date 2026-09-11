@@ -7,6 +7,7 @@ import { withTransaction } from '@skytwin/db';
 const log = createLogger('api:oauth');
 import {
   oauthRepository,
+  OAuthAccountBindingConflictError,
   oauthPkcePendingRepository,
   oauthPendingSigninRepository,
   serviceCredentialRepository,
@@ -156,6 +157,16 @@ interface GoogleUserInfo {
   verified_email?: boolean;
   name?: string;
   picture?: string;
+}
+
+/** Runtime boundary for provider userinfo subjects (TS casts are not validation). */
+export function validateProviderSubject(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const subject = raw.trim();
+  if (subject.length < 1 || subject.length > 512 || /[\u0000-\u001f\u007f]/.test(subject)) {
+    return null;
+  }
+  return subject;
 }
 
 async function fetchGoogleUserInfo(accessToken: string): Promise<GoogleUserInfo> {
@@ -869,13 +880,17 @@ export function createOAuthRouter(): Router {
       // optionally materialize a user.
       const userInfo = await fetchGoogleUserInfo(tokenSet.accessToken);
       const accountEmail = typeof userInfo.email === 'string' ? userInfo.email.trim() : '';
-      const accountProviderId = userInfo.id;
+      const accountProviderId = validateProviderSubject(userInfo.id);
 
       if (!accountEmail) {
         res.status(502).json({
           error:
             'Google userinfo did not include an email. Ensure the authorize URL requests "openid email".',
         });
+        return;
+      }
+      if (!accountProviderId) {
+        res.status(502).json({ error: 'Google userinfo did not include a valid stable account subject.' });
         return;
       }
       // Treat the email as identity only if Google says it's verified —
@@ -1049,6 +1064,10 @@ export function createOAuthRouter(): Router {
       // The dashboard hash router reads the bit before `?` as the route.
       res.redirect(`${webBase}/?${topLevel}${hashRoute}?${hashQuery}`);
     } catch (error) {
+      if (error instanceof OAuthAccountBindingConflictError) {
+        res.status(409).json({ error: error.code });
+        return;
+      }
       next(error);
     }
   });
@@ -1155,10 +1174,15 @@ export function createOAuthRouter(): Router {
       const tokenSet = await microsoftOAuth.exchangeCode(config, code, codeVerifier);
       const userInfo = await fetchMicrosoftUserInfo(tokenSet.accessToken);
       const accountEmail = userInfo.email.trim();
+      const accountProviderId = validateProviderSubject(userInfo.id);
       if (!accountEmail) {
         res.status(502).json({
           error: 'Microsoft Graph /me returned no mail or userPrincipalName — cannot key the account.',
         });
+        return;
+      }
+      if (!accountProviderId) {
+        res.status(502).json({ error: 'Microsoft Graph /me did not include a valid stable account subject.' });
         return;
       }
 
@@ -1174,7 +1198,7 @@ export function createOAuthRouter(): Router {
         userId,
         provider: 'microsoft',
         accountEmail,
-        accountProviderId: userInfo.id,
+        accountProviderId,
         accessToken: tokenSet.accessToken,
         refreshToken: tokenSet.refreshToken,
         expiresAt: tokenSet.expiresAt,
@@ -1186,6 +1210,10 @@ export function createOAuthRouter(): Router {
       const hashQuery = new URLSearchParams({ connected: 'microsoft', account: accountEmail }).toString();
       res.redirect(`${webBase}/?${topLevel}#/?${hashQuery}`);
     } catch (error) {
+      if (error instanceof OAuthAccountBindingConflictError) {
+        res.status(409).json({ error: error.code });
+        return;
+      }
       next(error);
     }
   });

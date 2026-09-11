@@ -84,6 +84,12 @@ export interface BackupData {
   twinProfileVersions: TwinProfileVersionRow[];
   preferences: PreferenceRow[];
   decisions: DecisionBundle[];
+  /**
+   * Connector identities, OAuth credentials, cursors, raw signals, and Gmail
+   * message references are intentionally excluded. They are installation-local
+   * operational evidence and provider targets are invalid without a live,
+   * freshly-authorized account binding on the restore destination.
+   */
 }
 
 export type CollectBackupResult =
