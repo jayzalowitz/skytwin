@@ -6,6 +6,7 @@ import {
   type FederationPeerRow,
 } from '@skytwin/db';
 import nacl from 'tweetnacl';
+import { classifyWorkerFailure } from '../content-free-error.js';
 
 const log = createLogger('worker:federation-sync');
 
@@ -45,7 +46,7 @@ export interface FederationSyncDeps {
    * Override the HTTP transport (for tests). Receives `(url, opts)` and
    * returns `{ ok, status }`. The default uses the global `fetch`.
    */
-  fetcher?: (url: string, opts: RequestInit) => Promise<{ ok: boolean; status: number; text(): Promise<string> }>;
+  fetcher?: (url: string, opts: RequestInit) => Promise<{ ok: boolean; status: number }>;
   /** Override the peer-row updater (for tests). */
   markSyncResult?: typeof federationPeerRepository.markSyncResult;
 }
@@ -144,7 +145,6 @@ const defaultFetcher: NonNullable<FederationSyncDeps['fetcher']> = async (url, o
   return {
     ok: res.ok,
     status: res.status,
-    text: () => res.text(),
   };
 };
 
@@ -186,24 +186,27 @@ export async function runFederationSyncJob(deps: FederationSyncDeps = {}): Promi
         }),
       });
       if (!res.ok) {
-        const body = await res.text().catch(() => '');
-        const errMsg = `peer responded ${res.status}: ${body.slice(0, 200)}`;
-        await markSyncResult({ peerId: peer.id, status: 'failed', error: errMsg });
+        const errorCode = classifyWorkerFailure({ status: res.status });
+        await markSyncResult({ peerId: peer.id, status: 'failed', error: errorCode });
         failed++;
-        log.warn('Federation peer push failed', { peerId: peer.id, status: res.status });
+        log.warn('Federation peer push failed', {
+          peerId: peer.id,
+          status: res.status,
+          errorCode,
+        });
         continue;
       }
       await markSyncResult({ peerId: peer.id, status: 'ok' });
       pushed++;
     } catch (err) {
       failed++;
-      const msg = err instanceof Error ? err.message : String(err);
+      const errorCode = classifyWorkerFailure(err);
       try {
-        await markSyncResult({ peerId: peer.id, status: 'failed', error: msg });
+        await markSyncResult({ peerId: peer.id, status: 'failed', error: errorCode });
       } catch {
         /* swallow — telemetry only */
       }
-      log.warn('Federation peer push errored', { peerId: peer.id, error: msg });
+      log.warn('Federation peer push errored', { peerId: peer.id, errorCode });
     }
   }
 

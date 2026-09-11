@@ -1,5 +1,10 @@
 import { createLogger } from '@skytwin/core';
-import { workerDeadLetterRepository } from '@skytwin/db';
+import {
+  workerDeadLetterRepository,
+  type WorkerDeadLetterErrorCode,
+  type WorkerDeadLetterJobCode,
+} from '@skytwin/db';
+import { classifyWorkerFailure } from './content-free-error.js';
 
 const log = createLogger('worker:dead-letter');
 
@@ -14,7 +19,7 @@ const log = createLogger('worker:dead-letter');
  *
  * `DeadLetterTracker` adds a per-job consecutive-failure counter. When a
  * job's failure streak reaches `maxRetries`, the tracker writes one row
- * to `worker_dead_letter` capturing the final error + attempt count, then
+ * to `worker_dead_letter` capturing a stable error code + attempt count, then
  * resets the streak so the table isn't spammed with a row per tick. A
  * subsequent success clears the streak — a job that recovers on its own
  * never reaches the DLQ.
@@ -36,18 +41,44 @@ export interface DeadLetterTrackerOptions {
    * touch the DB. Defaults to the real repository.
    */
   record?: (input: {
-    jobName: string;
-    errorMessage: string;
+    jobName: WorkerDeadLetterJobCode;
+    errorCode: WorkerDeadLetterErrorCode;
     attempts: number;
-    context?: unknown;
   }) => Promise<unknown>;
+}
+
+/** Map an arbitrary failure to a bounded, content-free operational code. */
+export function classifyDeadLetterError(error: unknown): WorkerDeadLetterErrorCode {
+  return classifyWorkerFailure(error);
+}
+
+/**
+ * Log a scheduled-job failure without forwarding throwable text. Keeping this
+ * next to the classifier gives every fire-and-forget DLQ callsite one bounded
+ * logging path rather than five chances to reintroduce raw user/source text.
+ */
+export function logDeadLetterJobFailure(
+  jobName: WorkerDeadLetterJobCode,
+  error: unknown,
+): void {
+  log.warn('Scheduled job failed', {
+    jobName,
+    errorCode: classifyDeadLetterError(error),
+  });
+}
+
+/** Log DLQ-retention failures without forwarding database error text. */
+export function logDeadLetterPurgeFailure(error: unknown): void {
+  log.warn('worker_dead_letter purge failed — continuing', {
+    errorCode: classifyDeadLetterError(error),
+  });
 }
 
 export class DeadLetterTracker {
   private readonly maxRetries: number;
   private readonly record: NonNullable<DeadLetterTrackerOptions['record']>;
   /** Per-job consecutive-failure streak. */
-  private readonly failureStreaks = new Map<string, number>();
+  private readonly failureStreaks = new Map<WorkerDeadLetterJobCode, number>();
 
   constructor(opts: DeadLetterTrackerOptions = {}) {
     this.maxRetries = Math.max(1, opts.maxRetries ?? 3);
@@ -67,9 +98,8 @@ export class DeadLetterTracker {
    * caller can branch on a defined result if it cares.
    */
   async run<T>(
-    jobName: string,
+    jobName: WorkerDeadLetterJobCode,
     fn: () => Promise<T>,
-    context?: unknown,
   ): Promise<T | undefined> {
     try {
       const result = await fn();
@@ -78,39 +108,35 @@ export class DeadLetterTracker {
       this.failureStreaks.delete(jobName);
       return result;
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const errorCode = classifyDeadLetterError(err);
       const attempts = (this.failureStreaks.get(jobName) ?? 0) + 1;
       this.failureStreaks.set(jobName, attempts);
 
       if (attempts >= this.maxRetries) {
         log.error(
-          `Job "${jobName}" failed ${attempts}x consecutively — dead-lettering`,
-          { error: message },
+          'Scheduled job exhausted its retry budget; dead-lettering',
+          { jobName, attempts, maxRetries: this.maxRetries, errorCode },
         );
         try {
           await this.record({
             jobName,
-            errorMessage: message,
+            errorCode,
             attempts,
-            context,
           });
         } catch (recordErr) {
           // DLQ write failed — log and swallow. The worker keeps running;
           // we simply lose the operator-visible record this once.
           log.error('Failed to write dead-letter row — continuing', {
             jobName,
-            error:
-              recordErr instanceof Error
-                ? recordErr.message
-                : String(recordErr),
+            errorCode: classifyDeadLetterError(recordErr),
           });
         }
         // Reset so we don't write a row every tick once over threshold.
         this.failureStreaks.delete(jobName);
       } else {
         log.warn(
-          `Job "${jobName}" failed (${attempts}/${this.maxRetries}) — will retry next cycle`,
-          { error: message },
+          'Scheduled job failed and will retry next cycle',
+          { jobName, attempts, maxRetries: this.maxRetries, errorCode },
         );
       }
       return undefined;
@@ -127,38 +153,37 @@ export class DeadLetterTracker {
    * Like `run()`, this never throws: a DLQ write failure is logged and
    * swallowed.
    */
-  async recordOutcome(jobName: string, error: unknown, context?: unknown): Promise<void> {
+  async recordOutcome(jobName: WorkerDeadLetterJobCode, error: unknown): Promise<void> {
     if (error === null || error === undefined) {
       this.failureStreaks.delete(jobName);
       return;
     }
-    const message = error instanceof Error ? error.message : String(error);
+    const errorCode = classifyDeadLetterError(error);
     const attempts = (this.failureStreaks.get(jobName) ?? 0) + 1;
     this.failureStreaks.set(jobName, attempts);
 
     if (attempts >= this.maxRetries) {
       log.error(
-        `Job "${jobName}" failed ${attempts}x consecutively — dead-lettering`,
-        { error: message },
+        'Scheduled job exhausted its retry budget; dead-lettering',
+        { jobName, attempts, maxRetries: this.maxRetries, errorCode },
       );
       try {
-        await this.record({ jobName, errorMessage: message, attempts, context });
+        await this.record({ jobName, errorCode, attempts });
       } catch (recordErr) {
         log.error('Failed to write dead-letter row — continuing', {
           jobName,
-          error:
-            recordErr instanceof Error ? recordErr.message : String(recordErr),
+          errorCode: classifyDeadLetterError(recordErr),
         });
       }
       this.failureStreaks.delete(jobName);
     }
-    // Below threshold: streak already incremented; the caller logged its
-    // own warn (it has job-specific context). Stay quiet to avoid double-
-    // logging the same failure.
+    // Below threshold: streak already incremented; the caller emitted the
+    // bounded job/error codes. Stay quiet to avoid double-logging the same
+    // failure.
   }
 
   /** Current consecutive-failure streak for a job (0 if none). Test/diagnostic. */
-  getFailureStreak(jobName: string): number {
+  getFailureStreak(jobName: WorkerDeadLetterJobCode): number {
     return this.failureStreaks.get(jobName) ?? 0;
   }
 }

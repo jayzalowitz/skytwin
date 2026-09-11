@@ -4,6 +4,7 @@ import { runPrompt } from '@skytwin/policy-prompts';
 import type { LlmClient } from '@skytwin/llm-client';
 import type { MemoryActionLoopReport, MemoryActionOpportunityStatus } from '@skytwin/shared-types';
 import { fetchDailyMemorySuggestions } from './memory-suggestions.js';
+import { classifyWorkerFailure } from '../content-free-error.js';
 
 const log = createLogger('worker:briefing-generator');
 
@@ -461,7 +462,7 @@ async function generateBriefingProse(
       }
     } catch (err) {
       log.warn('briefing-prose prompt failed, using templated fallback', {
-        error: err instanceof Error ? err.message : String(err),
+        errorCode: classifyWorkerFailure(err),
       });
     }
   }
@@ -476,7 +477,7 @@ export async function runBriefingGeneratorJob(
 ): Promise<void> {
   const cadence = deps.cadence ?? 'daily';
   const { llmClient } = deps;
-  log.info(`Running briefing generator (cadence=${cadence})`);
+  log.info('Running briefing generator', { cadence });
 
   let userIds: string[];
   if (deps.userIds && deps.userIds.length > 0) {
@@ -490,7 +491,7 @@ export async function runBriefingGeneratorJob(
     return;
   }
 
-  log.info(`Briefing generator: generating for ${userIds.length} user(s)`);
+  log.info('Briefing generator: generating for active users', { userCount: userIds.length });
   let generated = 0;
   let perDomainGenerated = 0;
   let failed = 0;
@@ -535,14 +536,13 @@ export async function runBriefingGeneratorJob(
     } catch (err) {
       failed++;
       log.warn('Failed to generate briefing for user', {
-        error: err instanceof Error ? err.message : String(err),
+        userId,
+        errorCode: classifyWorkerFailure(err),
       });
     }
   }
 
-  log.info(
-    `Briefing generator complete: ${generated} global, ${perDomainGenerated} per-Lifebook, ${failed} failed`,
-  );
+  log.info('Briefing generator complete', { generated, perDomainGenerated, failed });
 }
 
 /**
@@ -568,7 +568,7 @@ async function emitPerDomainBriefings(
   } catch (err) {
     log.warn('Could not load lifebooks for per-domain briefings; skipping', {
       userId,
-      error: err instanceof Error ? err.message : String(err),
+      errorCode: classifyWorkerFailure(err),
     });
     return 0;
   }
@@ -611,8 +611,7 @@ async function emitPerDomainBriefings(
     } catch (err) {
       log.warn('Per-domain briefing failed for one lifebook; continuing', {
         userId,
-        domain: lb.domain_name,
-        error: err instanceof Error ? err.message : String(err),
+        errorCode: classifyWorkerFailure(err),
       });
     }
   }

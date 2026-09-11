@@ -1,0 +1,3719 @@
+{
+  "schemaVersion": 1,
+  "status": "ownership-gate-implemented-encryption-not-implemented",
+  "asOfMigration": "076-installation-ownership-and-content-free-dlq.sql",
+  "integrationNote": "This encryption-only branch intentionally excludes the separate 072-reasoning-mode-settings.sql, 074-inference-receipts.sql, and 075-inference-receipt-completion.sql migrations. Regenerate and review this inventory atomically when those branches first share a cumulative schema base.",
+  "sourceSchema": [
+    "packages/db/src/schemas/schema.sql",
+    "packages/db/src/migrations/*.sql"
+  ],
+  "migrationRunner": "packages/db/src/migrations/001-initial.ts",
+  "adr": "docs/adr/0001-local-source-field-encryption-boundary.md",
+  "warning": "This inventory records current exposure and the accepted target boundary. It is not evidence that source-field encryption is implemented or launch-ready.",
+  "tables": [
+    {
+      "table": "access_log",
+      "owner": "user",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "locally_exposed_or_excluded",
+        "auditedCallsites": [
+          "packages/db/src/repositories/access-log-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "action",
+            "actor",
+            "id",
+            "occurred_at",
+            "request_id",
+            "resource_id",
+            "resource_type",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "accuracy_metrics",
+      "owner": "user",
+      "boundary": {
+        "current": "no_runtime_sql_found",
+        "target": "locally_exposed_or_excluded",
+        "auditedCallsites": []
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "accuracy_rate",
+            "approved_by_user",
+            "auto_executed",
+            "corrected_by_user",
+            "created_at",
+            "domain",
+            "id",
+            "period_end",
+            "period_start",
+            "rejected_by_user",
+            "total_decisions",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "action_policies",
+      "owner": "user",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/adapters/policy-repository-adapter.ts",
+          "packages/db/src/repositories/policy-repository.ts",
+          "packages/db/src/repositories/user-repository.ts",
+          "packages/db/src/seeds/seed.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": ["created_at", "id", "is_active", "priority", "user_id"],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "deferred_source",
+          "columns": ["domain", "name", "rules"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-3-activity-and-conversation",
+          "rationale": "User-authored, provider-originated, or learned source data is in the decided boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "ai_provider_settings",
+      "owner": "user",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/repositories/ai-provider-repository.ts",
+          "packages/db/src/seeds/demo-showcase.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "encrypted_source",
+          "columns": ["api_key", "base_url"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-1-secrets-and-portable-config",
+          "rationale": "Credential, identity, configuration, or highest-value source data selected for the first applicable migration slice.",
+          "searchableDerivatives": []
+        },
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "created_at",
+            "enabled",
+            "id",
+            "model",
+            "priority",
+            "provider",
+            "updated_at",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "app_suggestions",
+      "owner": "user",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/repositories/app-suggestion-repository.ts",
+          "packages/db/src/seeds/demo-showcase.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "confidence_score",
+            "created_at",
+            "evidence_count",
+            "evidence_kinds_distinct",
+            "first_evidence_at",
+            "id",
+            "last_evidence_at",
+            "push_notified_at",
+            "registry_id",
+            "snoozed_until",
+            "status",
+            "updated_at",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "deferred_source",
+          "columns": ["display_name", "evidence_sources", "reason_summary"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-5-remaining-user-content",
+          "rationale": "User-authored, provider-originated, or learned source data is in the decided boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "approval_requests",
+      "owner": "user",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/repositories/approval-repository.ts",
+          "packages/db/src/repositories/user-repository.ts",
+          "packages/db/src/seeds/demo-showcase.ts",
+          "packages/db/src/seeds/seed.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "batch_id",
+            "confirmation_level",
+            "decision_id",
+            "expires_at",
+            "first_confirmed_at",
+            "id",
+            "requested_at",
+            "responded_at",
+            "status",
+            "urgency",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "encrypted_source",
+          "columns": [
+            "candidate_action",
+            "confirmation_token",
+            "reason",
+            "response"
+          ],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-1-secrets-and-portable-config",
+          "rationale": "Credential, identity, configuration, or highest-value source data selected for the first applicable migration slice.",
+          "searchableDerivatives": []
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "assistant_messages",
+      "owner": "user_child",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/repositories/assistant-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "deferred_source",
+          "columns": ["content", "metadata"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-3-activity-and-conversation",
+          "rationale": "User-authored, provider-originated, or learned source data is in the decided boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        },
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": ["created_at", "id", "role", "thread_id"],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "User ownership resolves through a parent record; repository access must preserve that join and scope."
+    },
+    {
+      "table": "assistant_threads",
+      "owner": "user",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/repositories/assistant-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": ["created_at", "id", "updated_at", "user_id"],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "deferred_source",
+          "columns": ["title"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-3-activity-and-conversation",
+          "rationale": "User-authored, provider-originated, or learned source data is in the decided boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "behavioral_patterns",
+      "owner": "user",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/repositories/pattern-repository.ts",
+          "packages/db/src/seeds/demo-showcase.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "confidence",
+            "first_observed_at",
+            "frequency",
+            "id",
+            "last_observed_at",
+            "pattern_type",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "deferred_source",
+          "columns": [
+            "description",
+            "metadata",
+            "observed_action",
+            "trigger_config"
+          ],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-2-twin-state",
+          "rationale": "User-authored, provider-originated, or learned source data is in the decided boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "brain_embedding_jobs",
+      "owner": "user",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/memory-gbrain-crdb-adapter/src/repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "attempts",
+            "completed_at",
+            "enqueued_at",
+            "id",
+            "leased_until",
+            "page_id",
+            "status",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "encrypted_source",
+          "columns": ["error"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-1-secrets-and-portable-config",
+          "rationale": "Credential, identity, configuration, or highest-value source data selected for the first applicable migration slice.",
+          "searchableDerivatives": []
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "brain_entities",
+      "owner": "user",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "locally_exposed_or_excluded",
+        "auditedCallsites": [
+          "packages/memory-gbrain-crdb-adapter/src/repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_derivative",
+          "columns": ["attributes", "entity_type", "name"],
+          "currentProtection": "Locally readable derived value or index.",
+          "targetProtection": "Remain locally readable for retrieval; rebuildable from encrypted source and disclosed as leakage.",
+          "migrationStage": "disclosed-local-derivative",
+          "rationale": "Search or graph operations require direct comparison; this derivative does not inherit the source-field encryption guarantee."
+        },
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": ["first_seen_at", "id", "last_seen_at", "user_id"],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "brain_episodes",
+      "owner": "user",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/memory-gbrain-crdb-adapter/src/repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": ["ended_at", "id", "started_at", "user_id"],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "deferred_source",
+          "columns": ["metadata", "summary", "wing"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-4-memory-sources",
+          "rationale": "User-authored, provider-originated, or learned source data is in the decided boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "brain_pages",
+      "owner": "user",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "apps/api/src/services/live-digest.ts",
+          "apps/worker/src/jobs/memory-suggestions.ts",
+          "packages/db/src/seeds/demo-showcase.ts",
+          "packages/memory-gbrain-crdb-adapter/src/repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "encrypted_source",
+          "columns": [
+            "content",
+            "content_encrypted",
+            "metadata",
+            "metadata_encrypted",
+            "title",
+            "title_encrypted"
+          ],
+          "currentProtection": "Plaintext-compatible schema with optional AES-256-GCM sibling columns; production key delivery and complete migration are not wired.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-4-memory-sources",
+          "rationale": "Credential, identity, configuration, or highest-value source data selected for the first applicable migration slice.",
+          "searchableDerivatives": [
+            "brain_pages.content_tsv",
+            "brain_pages.embedding"
+          ],
+          "operationalDependencies": [
+            {
+              "jsonPath": "metadata.authoringTier",
+              "currentUsage": "SQL filtering, tier backfill, and retrieval weighting read this JSON key directly.",
+              "targetResolution": "Project to a typed locally_exposed_metadata column before encrypting metadata; disclose that authoring tier remains readable."
+            },
+            {
+              "jsonPath": "metadata.fromAddress",
+              "currentUsage": "Case-normalized equality lookup links memory pages to sender and relationship state.",
+              "targetResolution": "Replace plaintext equality with a versioned, purpose-keyed HMAC lookup entry; source address remains only in the encrypted metadata envelope."
+            },
+            {
+              "jsonPath": "metadata.userOverride",
+              "currentUsage": "SQL filters and pin/hide updates read this JSON key directly.",
+              "targetResolution": "Project to a typed locally_exposed_metadata column before encrypting metadata; disclose that pin/hide state remains readable."
+            }
+          ]
+        },
+        {
+          "classification": "locally_exposed_derivative",
+          "columns": [
+            "content_tsv",
+            "embedding",
+            "embedding_dim",
+            "embedding_model"
+          ],
+          "currentProtection": "Locally readable derived value or index.",
+          "targetProtection": "Remain locally readable for retrieval; rebuildable from encrypted source and disclosed as leakage.",
+          "migrationStage": "disclosed-local-derivative",
+          "rationale": "Search or graph operations require direct comparison; this derivative does not inherit the source-field encryption guarantee."
+        },
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "created_at",
+            "encryption_key_version",
+            "id",
+            "source",
+            "source_ref",
+            "updated_at",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "brain_settings",
+      "owner": "user",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/memory-gbrain-crdb-adapter/src/repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "backend",
+            "hybrid_notification_dismissed",
+            "tier_calibration",
+            "tier_weighting",
+            "updated_at",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "deferred_source",
+          "columns": ["routing"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-4-memory-sources",
+          "rationale": "User-authored, provider-originated, or learned source data is in the proposed boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "brain_signals",
+      "owner": "user",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/memory-gbrain-crdb-adapter/src/repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "deferred_source",
+          "columns": ["data"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-4-memory-sources",
+          "rationale": "User-authored, provider-originated, or learned source data is in the decided boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        },
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "id",
+            "recorded_at",
+            "signal_timestamp",
+            "source",
+            "type",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "brain_triples",
+      "owner": "user",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "locally_exposed_or_excluded",
+        "auditedCallsites": [
+          "packages/memory-gbrain-crdb-adapter/src/repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": ["created_at", "id", "user_id", "valid_from", "valid_to"],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "locally_exposed_derivative",
+          "columns": ["evidence", "object", "predicate", "subject"],
+          "currentProtection": "Locally readable derived value or index.",
+          "targetProtection": "Remain locally readable for retrieval; rebuildable from encrypted source and disclosed as leakage.",
+          "migrationStage": "disclosed-local-derivative",
+          "rationale": "Search or graph operations require direct comparison; this derivative does not inherit the source-field encryption guarantee."
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "briefings",
+      "owner": "user",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/repositories/proactive-scan-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": ["created_at", "email_sent", "id", "scan_id", "user_id"],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "deferred_source",
+          "columns": ["items"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-3-activity-and-conversation",
+          "rationale": "User-authored, provider-originated, or learned source data is in the decided boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "candidate_actions",
+      "owner": "user_child",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "apps/api/src/services/live-digest.ts",
+          "packages/db/src/adapters/decision-repository-adapter.ts",
+          "packages/db/src/backup/backup.ts",
+          "packages/db/src/repositories/decision-repository.ts",
+          "packages/db/src/repositories/user-purge-repository.ts",
+          "packages/db/src/repositories/user-repository.ts",
+          "packages/db/src/seeds/demo-showcase.ts",
+          "packages/db/src/seeds/seed.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "action_type",
+            "created_at",
+            "decision_id",
+            "estimated_cost",
+            "id",
+            "reversible"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "deferred_source",
+          "columns": [
+            "description",
+            "parameters",
+            "predicted_user_preference",
+            "risk_assessment"
+          ],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-3-activity-and-conversation",
+          "rationale": "User-authored, provider-originated, or learned source data is in the decided boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        }
+      ],
+      "ownershipNotes": "User ownership resolves through a parent record; repository access must preserve that join and scope."
+    },
+    {
+      "table": "capability_provenance_edges",
+      "owner": "user_child",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "locally_exposed_or_excluded",
+        "auditedCallsites": [
+          "apps/api/src/routes/capabilities.ts",
+          "apps/worker/src/jobs/federation-sync.ts",
+          "packages/db/src/repositories/provenance-repository.ts",
+          "packages/db/src/seeds/demo-showcase.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": ["edge_type", "from_node_id", "to_node_id"],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "User ownership resolves through a parent record; repository access must preserve that join and scope."
+    },
+    {
+      "table": "capability_provenance_nodes",
+      "owner": "user",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "apps/api/src/routes/about-me.ts",
+          "apps/api/src/routes/capabilities.ts",
+          "apps/worker/src/jobs/briefing-generator.ts",
+          "apps/worker/src/jobs/dormancy-check.ts",
+          "apps/worker/src/jobs/promotion-eligibility-check.ts",
+          "packages/db/src/repositories/execution-repository.ts",
+          "packages/db/src/repositories/provenance-repository.ts",
+          "packages/db/src/seeds/demo-showcase.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "created_at",
+            "id",
+            "node_type",
+            "occurred_at",
+            "ref_id",
+            "ref_table",
+            "server_id",
+            "user_id",
+            "wing_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "deferred_source",
+          "columns": ["payload"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-5-remaining-user-content",
+          "rationale": "User-authored, provider-originated, or learned source data is in the decided boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "connected_accounts",
+      "owner": "user",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": ["packages/db/src/repositories/user-repository.ts"]
+      },
+      "groups": [
+        {
+          "classification": "deferred_source",
+          "columns": ["account_id"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-5-remaining-user-content",
+          "rationale": "User-authored, provider-originated, or learned source data is in the decided boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        },
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "connected_at",
+            "id",
+            "is_active",
+            "provider",
+            "scopes",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "connector_configs",
+      "owner": "user",
+      "boundary": {
+        "current": "no_runtime_sql_found",
+        "target": "user_broker_gateway",
+        "auditedCallsites": []
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "connector_type",
+            "created_at",
+            "enabled",
+            "id",
+            "last_sync_at",
+            "provider",
+            "updated_at",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "encrypted_source",
+          "columns": ["sync_cursor"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-1-secrets-and-portable-config",
+          "rationale": "Credential, identity, configuration, or highest-value source data selected for the first applicable migration slice.",
+          "searchableDerivatives": []
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "connector_cursors",
+      "owner": "user",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/repositories/connector-cursor-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": ["cursor_kind", "provider", "updated_at", "user_id"],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "encrypted_source",
+          "columns": ["cursor_value"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-1-secrets-and-portable-config",
+          "rationale": "Credential, identity, configuration, or highest-value source data selected for the first applicable migration slice.",
+          "searchableDerivatives": []
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "connector_health",
+      "owner": "user",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "locally_exposed_or_excluded",
+        "auditedCallsites": [
+          "packages/db/src/repositories/connector-health-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "connector_name",
+            "error_code",
+            "last_failure_at",
+            "last_success_at",
+            "status",
+            "updated_at",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "credential_requirements",
+      "owner": "installation",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "installation_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/repositories/credential-requirement-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "encrypted_source",
+          "columns": [
+            "adapter",
+            "description",
+            "field_key",
+            "field_label",
+            "field_placeholder",
+            "integration",
+            "integration_label",
+            "skills"
+          ],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Installation-owned, IRK-purpose-derived versioned AES-256-GCM envelope with authenticated installation/row/table/column context.",
+          "migrationStage": "installation-ownership-complete-encryption-pending",
+          "rationale": "Adapter- and request-provided credential prompts can reveal private integration names, secret field names, and deployment capabilities.",
+          "searchableDerivatives": []
+        },
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": ["created_at", "id", "installation_id", "is_optional", "is_secret"],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "Installation ownership is enforced through the stable installation_identity singleton and repository joins. Reset cascades deletion while locked; capability requirements must then be rediscovered. Source fields remain plaintext until the installation broker encryption slice."
+    },
+    {
+      "table": "cross_domain_traits",
+      "owner": "user",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/repositories/pattern-repository.ts",
+          "packages/db/src/seeds/demo-showcase.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "confidence",
+            "created_at",
+            "evidence_count",
+            "id",
+            "updated_at",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "deferred_source",
+          "columns": ["description", "supporting_domains", "trait_name"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-2-twin-state",
+          "rationale": "User-authored, provider-originated, or learned source data is in the decided boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "decision_outcomes",
+      "owner": "user_child",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "apps/api/src/routes/approvals.ts",
+          "apps/api/src/routes/capabilities.ts",
+          "apps/api/src/services/live-digest.ts",
+          "packages/db/src/backup/backup.ts",
+          "packages/db/src/repositories/decision-repository.ts",
+          "packages/db/src/repositories/execution-repository.ts",
+          "packages/db/src/repositories/user-purge-repository.ts",
+          "packages/db/src/repositories/user-repository.ts",
+          "packages/db/src/seeds/demo-showcase.ts",
+          "packages/db/src/seeds/seed.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "auto_executed",
+            "confidence",
+            "created_at",
+            "decision_id",
+            "execution_plan_id",
+            "id",
+            "requires_approval",
+            "selected_action_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "deferred_source",
+          "columns": ["escalation_reason", "explanation"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-3-activity-and-conversation",
+          "rationale": "User-authored, provider-originated, or learned source data is in the decided boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        }
+      ],
+      "ownershipNotes": "User ownership resolves through a parent record; repository access must preserve that join and scope."
+    },
+    {
+      "table": "decisions",
+      "owner": "user",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "apps/api/src/routes/capabilities.ts",
+          "apps/api/src/services/live-digest.ts",
+          "packages/db/src/backup/backup.ts",
+          "packages/db/src/repositories/decision-repository.ts",
+          "packages/db/src/repositories/explanation-repository.ts",
+          "packages/db/src/repositories/user-purge-repository.ts",
+          "packages/db/src/repositories/user-repository.ts",
+          "packages/db/src/seeds/demo-showcase.ts",
+          "packages/db/src/seeds/seed.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "created_at",
+            "domain",
+            "id",
+            "signal_id",
+            "situation_type",
+            "source",
+            "urgency",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "deferred_source",
+          "columns": ["interpreted_situation", "metadata", "raw_event"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-3-activity-and-conversation",
+          "rationale": "User-authored, provider-originated, or learned source data is in the decided boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "domain_autonomy_policies",
+      "owner": "user",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "locally_exposed_or_excluded",
+        "auditedCallsites": [
+          "packages/db/src/repositories/domain-autonomy-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "created_at",
+            "domain",
+            "id",
+            "max_spend_per_action_cents",
+            "trust_tier",
+            "updated_at",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "draft_email_calls",
+      "owner": "user",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "locally_exposed_or_excluded",
+        "auditedCallsites": [
+          "packages/db/src/repositories/draft-email-calls-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "called_at",
+            "decision_id",
+            "estimated_cost_cents",
+            "id",
+            "provider",
+            "succeeded",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "draft_email_eval_runs",
+      "owner": "user",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/repositories/draft-email-eval-runs-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "corpus_size",
+            "id",
+            "length_score",
+            "passed",
+            "ran_at",
+            "topical_score",
+            "user_id",
+            "voice_score"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "deferred_source",
+          "columns": ["notes", "thresholds"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-5-remaining-user-content",
+          "rationale": "User-authored, provider-originated, or learned source data is in the decided boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "dxt_exports",
+      "owner": "user",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/repositories/dxt-export-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "encrypted_source",
+          "columns": ["artifact_blob"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-1-secrets-and-portable-config",
+          "rationale": "Credential, identity, configuration, or highest-value source data selected for the first applicable migration slice.",
+          "searchableDerivatives": []
+        },
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "artifact_sha256",
+            "exported_at",
+            "id",
+            "server_id",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "dxt_imports",
+      "owner": "user",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/repositories/dxt-import-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "encrypted_source",
+          "columns": ["artifact_blob", "error_message"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-1-secrets-and-portable-config",
+          "rationale": "Credential, identity, configuration, or highest-value source data selected for the first applicable migration slice.",
+          "searchableDerivatives": []
+        },
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "artifact_sha256",
+            "id",
+            "imported_at",
+            "installed_at",
+            "installed_server_id",
+            "registry_id",
+            "rejected_at",
+            "source_instance_id",
+            "status",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "email_label_signals",
+      "owner": "user",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/repositories/email-label-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": ["count", "first_seen_at", "last_seen_at", "user_id"],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "deferred_source",
+          "columns": ["label", "list_id", "sender"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-5-remaining-user-content",
+          "rationale": "User-authored, provider-originated, or learned source data is in the decided boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "entity_codes",
+      "owner": "user",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "locally_exposed_or_excluded",
+        "auditedCallsites": [
+          "packages/db/src/repositories/mempalace-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_derivative",
+          "columns": ["code", "entity_id", "full_name"],
+          "currentProtection": "Locally readable derived value or index.",
+          "targetProtection": "Remain locally readable for retrieval; rebuildable from encrypted source and disclosed as leakage.",
+          "migrationStage": "disclosed-local-derivative",
+          "rationale": "Search or graph operations require direct comparison; this derivative does not inherit the source-field encryption guarantee."
+        },
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": ["id", "user_id"],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "episodic_memories",
+      "owner": "user",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "apps/api/src/routes/onboarding.ts",
+          "packages/db/src/repositories/mempalace-repository.ts",
+          "packages/db/src/seeds/seed.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "deferred_source",
+          "columns": [
+            "action_taken",
+            "context_snapshot",
+            "feedback_detail",
+            "outcome",
+            "situation_summary"
+          ],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-4-memory-sources",
+          "rationale": "User-authored, provider-originated, or learned source data is in the decided boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        },
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "created_at",
+            "decision_id",
+            "domain",
+            "drawer_ids",
+            "feedback_type",
+            "id",
+            "signal_ids",
+            "situation_type",
+            "updated_at",
+            "user_id",
+            "utility_score"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "escalation_triggers",
+      "owner": "user",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/repositories/escalation-trigger-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "deferred_source",
+          "columns": ["conditions"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-3-activity-and-conversation",
+          "rationale": "User-authored, provider-originated, or learned source data is in the decided boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        },
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": ["created_at", "enabled", "id", "trigger_type", "user_id"],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "eval_runs",
+      "owner": "user",
+      "boundary": {
+        "current": "no_runtime_sql_found",
+        "target": "user_broker_gateway",
+        "auditedCallsites": []
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "failed",
+            "id",
+            "pass_rate",
+            "passed",
+            "run_at",
+            "suite_id",
+            "total",
+            "twin_version",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "deferred_source",
+          "columns": ["full_report", "improvements", "regressions"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-5-remaining-user-content",
+          "rationale": "User-authored, provider-originated, or learned source data is in the decided boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "execution_events",
+      "owner": "user_child",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/repositories/execution-repository.ts",
+          "packages/db/src/repositories/user-purge-repository.ts",
+          "packages/db/src/repositories/user-repository.ts",
+          "packages/db/src/seeds/seed.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": ["created_at", "event_type", "id", "plan_id", "step_id"],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "deferred_source",
+          "columns": ["payload"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-3-activity-and-conversation",
+          "rationale": "User-authored, provider-originated, or learned source data is in the decided boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        }
+      ],
+      "ownershipNotes": "User ownership resolves through a parent record; repository access must preserve that join and scope."
+    },
+    {
+      "table": "execution_plans",
+      "owner": "user_child",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "apps/api/src/routes/approvals.ts",
+          "packages/db/src/repositories/execution-repository.ts",
+          "packages/db/src/repositories/user-purge-repository.ts",
+          "packages/db/src/repositories/user-repository.ts",
+          "packages/db/src/seeds/seed.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "action_id",
+            "created_at",
+            "decision_id",
+            "id",
+            "status",
+            "updated_at"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "deferred_source",
+          "columns": ["steps"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-3-activity-and-conversation",
+          "rationale": "User-authored, provider-originated, or learned source data is in the decided boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        }
+      ],
+      "ownershipNotes": "User ownership resolves through a parent record; repository access must preserve that join and scope."
+    },
+    {
+      "table": "execution_results",
+      "owner": "user_child",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "apps/api/src/routes/approvals.ts",
+          "packages/db/src/repositories/execution-repository.ts",
+          "packages/db/src/repositories/user-purge-repository.ts",
+          "packages/db/src/repositories/user-repository.ts",
+          "packages/db/src/seeds/seed.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "adapter_used",
+            "completed_at",
+            "id",
+            "plan_id",
+            "rollback_available",
+            "success"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "deferred_source",
+          "columns": ["error", "outputs"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-3-activity-and-conversation",
+          "rationale": "User-authored, provider-originated, or learned source data is in the decided boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        }
+      ],
+      "ownershipNotes": "User ownership resolves through a parent record; repository access must preserve that join and scope."
+    },
+    {
+      "table": "explanation_records",
+      "owner": "user_child",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/backup/backup.ts",
+          "packages/db/src/repositories/decision-repository.ts",
+          "packages/db/src/repositories/explanation-repository.ts",
+          "packages/db/src/repositories/user-purge-repository.ts",
+          "packages/db/src/repositories/user-repository.ts",
+          "packages/db/src/seeds/demo-showcase.ts",
+          "packages/db/src/seeds/seed.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "deferred_source",
+          "columns": [
+            "action_rationale",
+            "confidence_reasoning",
+            "correction_guidance",
+            "escalation_rationale",
+            "evidence_used",
+            "preferences_invoked",
+            "what_happened"
+          ],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-3-activity-and-conversation",
+          "rationale": "User-authored, provider-originated, or learned source data is in the decided boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        },
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "capability_provenance_node_id",
+            "created_at",
+            "decision_id",
+            "id",
+            "type"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "User ownership resolves through a parent record; repository access must preserve that join and scope."
+    },
+    {
+      "table": "external_agent_tokens",
+      "owner": "user",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/repositories/external-agent-token-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "id",
+            "issued_at",
+            "last_used_at",
+            "revoked_at",
+            "scope",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "one_way_secret",
+          "columns": ["token_hash"],
+          "currentProtection": "One-way digest or password-derived verifier; original secret is not stored in this column.",
+          "targetProtection": "Retain one-way representation and domain separation; never treat it as encrypted recoverable data.",
+          "migrationStage": "retain-one-way",
+          "rationale": "Authentication or integrity comparison does not require recovering the original value."
+        },
+        {
+          "classification": "deferred_source",
+          "columns": ["agent_name"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-5-remaining-user-content",
+          "rationale": "User-authored, provider-originated, or learned source data is in the proposed boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "federation_pairing_codes",
+      "owner": "user",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/repositories/federation-peer-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "created_at",
+            "expires_at",
+            "id",
+            "local_public_key",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "encrypted_source",
+          "columns": ["local_secret_key", "pairing_code"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-1-secrets-and-portable-config",
+          "rationale": "Credential, identity, configuration, or highest-value source data selected for the first applicable migration slice.",
+          "searchableDerivatives": []
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "federation_peers",
+      "owner": "user",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "apps/worker/src/jobs/federation-sync.ts",
+          "packages/db/src/repositories/federation-peer-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "encrypted_source",
+          "columns": [
+            "endpoint_url",
+            "label",
+            "last_sync_error",
+            "local_secret_key"
+          ],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-1-secrets-and-portable-config",
+          "rationale": "Credential, identity, configuration, or highest-value source data selected for the first applicable migration slice.",
+          "searchableDerivatives": []
+        },
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "id",
+            "last_sync_at",
+            "last_sync_status",
+            "local_public_key",
+            "paired_at",
+            "peer_public_key",
+            "unpaired_at",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "feedback_events",
+      "owner": "user",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/adapters/twin-repository-adapter.ts",
+          "packages/db/src/repositories/decision-repository.ts",
+          "packages/db/src/repositories/feedback-repository.ts",
+          "packages/db/src/repositories/user-repository.ts",
+          "packages/db/src/seeds/demo-showcase.ts",
+          "packages/db/src/seeds/seed.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "created_at",
+            "decision_id",
+            "id",
+            "type",
+            "undo_step_id",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "deferred_source",
+          "columns": ["data", "undo_reasoning"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-3-activity-and-conversation",
+          "rationale": "User-authored, provider-originated, or learned source data is in the decided boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "forwarded_signals",
+      "owner": "user",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "locally_exposed_or_excluded",
+        "auditedCallsites": [
+          "packages/db/src/repositories/forwarded-signals-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": ["forwarded_at", "signal_key", "user_id"],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "fs_file_index",
+      "owner": "user_child",
+      "boundary": {
+        "current": "no_runtime_sql_found",
+        "target": "user_broker_gateway",
+        "auditedCallsites": []
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_derivative",
+          "columns": ["content_hash"],
+          "currentProtection": "Locally readable derived value or index.",
+          "targetProtection": "Remain locally readable for retrieval; rebuildable from encrypted source and disclosed as leakage.",
+          "migrationStage": "disclosed-local-derivative",
+          "rationale": "Search or graph operations require direct comparison; this derivative does not inherit the source-field encryption guarantee."
+        },
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": ["last_seen_at", "mime_type", "root_id", "size_bytes"],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "deferred_source",
+          "columns": ["relative_path", "skipped_reason"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-5-remaining-user-content",
+          "rationale": "User-authored, provider-originated, or learned source data is in the decided boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        }
+      ],
+      "ownershipNotes": "User ownership resolves through a parent record; repository access must preserve that join and scope."
+    },
+    {
+      "table": "fs_scan_roots",
+      "owner": "user",
+      "boundary": {
+        "current": "no_runtime_sql_found",
+        "target": "user_broker_gateway",
+        "auditedCallsites": []
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "bytes_today",
+            "bytes_total",
+            "created_at",
+            "enabled",
+            "files_total",
+            "id",
+            "last_scan_at",
+            "last_scan_completed",
+            "rolling_day_started_at",
+            "source",
+            "updated_at",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "deferred_source",
+          "columns": ["resume_cursor", "root_path"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-5-remaining-user-content",
+          "rationale": "User-authored, provider-originated, or learned source data is in the decided boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "installation_identity",
+      "owner": "installation",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "locally_exposed_or_excluded",
+        "auditedCallsites": [
+          "packages/db/src/repositories/credential-requirement-repository.ts",
+          "packages/db/src/repositories/installation-identity-repository.ts",
+          "packages/db/src/repositories/ironclaw-tool-repository.ts",
+          "packages/db/src/repositories/service-credential-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": ["created_at", "installation_id", "singleton"],
+          "currentProtection": "Locally readable installation identifier, singleton guard, and creation timestamp.",
+          "targetProtection": "Remain locally readable so ownership routing and identifier-based deletion work while user vaults are locked.",
+          "migrationStage": "installation-ownership-complete",
+          "rationale": "This record is non-secret ownership metadata, not an installation root key or wrapping secret."
+        }
+      ],
+      "ownershipNotes": "Exactly one durable identity owns installation-local capability and credential rows. A compare-and-swap reset deletes owned rows by cascade before minting a replacement."
+    },
+    {
+      "table": "ironclaw_tools",
+      "owner": "installation",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "installation_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/repositories/ironclaw-tool-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "encrypted_source",
+          "columns": [
+            "action_types",
+            "description",
+            "requires_credentials",
+            "tool_name"
+          ],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Installation-owned, IRK-purpose-derived versioned AES-256-GCM envelope with authenticated installation/row/table/column context.",
+          "migrationStage": "installation-ownership-complete-encryption-pending",
+          "rationale": "Dynamically discovered tool names, descriptions, action shapes, and credential requirement identifiers can reveal private installation capabilities.",
+          "searchableDerivatives": []
+        },
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": ["discovered_at", "id", "installation_id"],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "Installation ownership is enforced through the stable installation_identity singleton and repository joins. Reset cascades deletion while locked; tools must then be rediscovered. Source fields remain plaintext until the installation broker encryption slice."
+    },
+    {
+      "table": "knowledge_entities",
+      "owner": "user",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "locally_exposed_or_excluded",
+        "auditedCallsites": [
+          "apps/worker/src/jobs/domain-extraction.ts",
+          "packages/db/src/repositories/mempalace-repository.ts",
+          "packages/db/src/repositories/user-purge-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_derivative",
+          "columns": ["aliases", "entity_type", "name", "properties"],
+          "currentProtection": "Locally readable derived value or index.",
+          "targetProtection": "Remain locally readable for retrieval; rebuildable from encrypted source and disclosed as leakage.",
+          "migrationStage": "disclosed-local-derivative",
+          "rationale": "Search or graph operations require direct comparison; this derivative does not inherit the source-field encryption guarantee."
+        },
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": ["created_at", "id", "updated_at", "user_id"],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "knowledge_triples",
+      "owner": "user",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "locally_exposed_or_excluded",
+        "auditedCallsites": [
+          "apps/worker/src/jobs/domain-extraction.ts",
+          "packages/db/src/repositories/mempalace-repository.ts",
+          "packages/db/src/repositories/user-purge-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "confidence",
+            "extracted_at",
+            "id",
+            "source_closet_id",
+            "source_drawer_id",
+            "user_id",
+            "valid_from",
+            "valid_to"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "locally_exposed_derivative",
+          "columns": ["object", "predicate", "subject"],
+          "currentProtection": "Locally readable derived value or index.",
+          "targetProtection": "Remain locally readable for retrieval; rebuildable from encrypted source and disclosed as leakage.",
+          "migrationStage": "disclosed-local-derivative",
+          "rationale": "Search or graph operations require direct comparison; this derivative does not inherit the source-field encryption guarantee."
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "lifebooks",
+      "owner": "user",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/repositories/lifebook-repository.ts",
+          "packages/db/src/repositories/provenance-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "detected_at",
+            "hidden_at",
+            "id",
+            "importance",
+            "last_seen_at",
+            "user_id",
+            "wing_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "deferred_source",
+          "columns": [
+            "domain_name",
+            "metadata",
+            "sample_signals",
+            "suggested_capabilities"
+          ],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-4-memory-sources",
+          "rationale": "User-authored, provider-originated, or learned source data is in the decided boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": [],
+          "operationalDependencies": [
+            {
+              "jsonPath": "metadata.importanceOverride.{value,setAt,decayDays}",
+              "currentUsage": "The lifebook repository computes effective importance and expiry from these JSON keys in SQL.",
+              "targetResolution": "Require unlock, decrypt the bounded per-user lifebook set, and compute effective importance in the authorized process before metadata encryption is enforced."
+            }
+          ]
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "mcp_server_changelogs",
+      "owner": "user_child",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/repositories/mcp-server-changelog-repository.ts",
+          "packages/db/src/seeds/demo-showcase.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "deferred_source",
+          "columns": ["raw_text"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-5-remaining-user-content",
+          "rationale": "A connected server's external changelog can contain private deployment details and is not guaranteed to be public registry data.",
+          "searchableDerivatives": [
+            "mcp_server_changelogs.last_known_destructive_skills",
+            "mcp_server_changelogs.last_seen_skills"
+          ]
+        },
+        {
+          "classification": "locally_exposed_derivative",
+          "columns": ["last_known_destructive_skills", "last_seen_skills"],
+          "currentProtection": "Locally readable derived value or index.",
+          "targetProtection": "Remain locally readable for capability-delta safety checks and disclose the installed-skill leakage.",
+          "migrationStage": "disclosed-local-derivative",
+          "rationale": "Capability change detection compares these skill-name sets without decrypting the source changelog."
+        },
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": ["current_version", "fetched_at", "server_id"],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "User ownership resolves through the parent mcp_servers row."
+    },
+    {
+      "table": "mcp_server_metrics",
+      "owner": "user_child",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "locally_exposed_or_excluded",
+        "auditedCallsites": [
+          "packages/db/src/repositories/mcp-server-metrics-repository.ts",
+          "packages/db/src/seeds/demo-showcase.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "bucket_duration",
+            "bucket_started_at",
+            "bytes_in",
+            "bytes_out",
+            "invocations_failed",
+            "invocations_total",
+            "latency_p50_ms",
+            "latency_p95_ms",
+            "latency_p99_ms",
+            "server_id",
+            "spend_cents"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "User ownership resolves through a parent record; repository access must preserve that join and scope."
+    },
+    {
+      "table": "mcp_server_skills",
+      "owner": "user_child",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "apps/api/src/routes/capabilities.ts",
+          "packages/db/src/repositories/mcp-server-repository.ts",
+          "packages/db/src/seeds/demo-showcase.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "deferred_source",
+          "columns": ["input_schema", "output_schema", "skill_description"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-5-remaining-user-content",
+          "rationale": "Tool schemas and descriptions originate from a user-connected server and can disclose private capabilities or data shapes.",
+          "searchableDerivatives": ["mcp_server_skills.skill_name"]
+        },
+        {
+          "classification": "locally_exposed_derivative",
+          "columns": ["skill_name"],
+          "currentProtection": "Locally readable derived value or index.",
+          "targetProtection": "Remain locally readable for tool routing and capability safety checks; disclose installed-capability leakage.",
+          "migrationStage": "disclosed-local-derivative",
+          "rationale": "Tool routing and destructive-skill opt-in use the cached name without decrypting descriptive source."
+        },
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "estimated_cost_cents",
+            "id",
+            "is_destructive",
+            "is_irreversible",
+            "last_synced_at",
+            "server_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "User ownership resolves through the parent mcp_servers row."
+    },
+    {
+      "table": "mcp_servers",
+      "owner": "user",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "apps/api/src/routes/about-me.ts",
+          "apps/api/src/routes/capabilities.ts",
+          "apps/api/src/routes/dxt.ts",
+          "apps/worker/src/jobs/briefing-generator.ts",
+          "apps/worker/src/jobs/domain-extraction.ts",
+          "packages/db/src/repositories/mcp-server-changelog-repository.ts",
+          "packages/db/src/repositories/mcp-server-repository.ts",
+          "packages/db/src/repositories/promotion-offers-repository.ts",
+          "packages/db/src/seeds/demo-showcase.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "encrypted_source",
+          "columns": ["args", "command", "display_name", "env", "url"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-1-secrets-and-portable-config",
+          "rationale": "Credential, identity, configuration, or highest-value source data selected for the first applicable migration slice.",
+          "searchableDerivatives": []
+        },
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "auto_promote_paused_until",
+            "created_at",
+            "health_status",
+            "id",
+            "installed_at",
+            "last_active_at",
+            "last_health_check_at",
+            "oauth_provider",
+            "oauth_token_id",
+            "per_app_daily_spend_cents",
+            "per_app_irreversible_requires_approval",
+            "per_app_monthly_rollover",
+            "per_app_monthly_spend_cents",
+            "per_app_spend_per_action_cents",
+            "registry_id",
+            "status",
+            "transport",
+            "trust_tier",
+            "uninstalled_at",
+            "updated_at",
+            "user_id",
+            "zero_trust_mode"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "memory_action_opportunities",
+      "owner": "user",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/repositories/memory-action-opportunity-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "deferred_source",
+          "columns": [
+            "action_label",
+            "action_plan",
+            "last_report",
+            "memory_refs",
+            "next_step",
+            "policy_reason",
+            "reason",
+            "route_reason",
+            "source_refs",
+            "suggested_action",
+            "title"
+          ],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-3-activity-and-conversation",
+          "rationale": "User-authored, provider-originated, or learned source data is in the decided boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        },
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "action_type",
+            "adapter_name",
+            "approval_request_id",
+            "attempt_count",
+            "confidence",
+            "created_at",
+            "decision_id",
+            "execution_plan_id",
+            "fingerprint",
+            "id",
+            "last_attempted_at",
+            "last_suggested_at",
+            "novelty",
+            "provenance",
+            "source_types",
+            "status",
+            "suggestion_id",
+            "updated_at",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "memory_closets",
+      "owner": "user",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/repositories/mempalace-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "deferred_source",
+          "columns": ["compressed_content", "source_drawer_ids"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-4-memory-sources",
+          "rationale": "User-authored, provider-originated, or learned source data is in the decided boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        },
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "created_at",
+            "drawer_count",
+            "id",
+            "room_id",
+            "token_count",
+            "user_id",
+            "wing_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "memory_drawers",
+      "owner": "user",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "apps/worker/src/jobs/domain-extraction.ts",
+          "packages/db/src/repositories/mempalace-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "deferred_source",
+          "columns": ["content", "metadata", "source_id"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-4-memory-sources",
+          "rationale": "User-authored, provider-originated, or learned source data is in the decided boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        },
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "created_at",
+            "hall",
+            "id",
+            "room_id",
+            "source_type",
+            "updated_at",
+            "user_id",
+            "wing_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "memory_rooms",
+      "owner": "user_child",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/repositories/mempalace-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "created_at",
+            "drawer_count",
+            "id",
+            "updated_at",
+            "wing_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "deferred_source",
+          "columns": ["description", "halls", "name"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-4-memory-sources",
+          "rationale": "User-authored, provider-originated, or learned source data is in the decided boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        }
+      ],
+      "ownershipNotes": "User ownership resolves through a parent record; repository access must preserve that join and scope."
+    },
+    {
+      "table": "memory_tunnels",
+      "owner": "user",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/repositories/mempalace-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "deferred_source",
+          "columns": ["connected_room_ids", "connected_wing_ids", "topic"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-4-memory-sources",
+          "rationale": "User-authored, provider-originated, or learned source data is in the decided boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        },
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": ["created_at", "id", "strength", "updated_at", "user_id"],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "memory_wings",
+      "owner": "user",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "apps/worker/src/jobs/domain-extraction.ts",
+          "packages/db/src/repositories/mempalace-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "created_at",
+            "drawer_count",
+            "id",
+            "updated_at",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "deferred_source",
+          "columns": ["description", "domains", "name"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-4-memory-sources",
+          "rationale": "User-authored, provider-originated, or learned source data is in the decided boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "model_downloads",
+      "owner": "user",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/repositories/model-download-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "bytes_downloaded",
+            "completed_at",
+            "id",
+            "model_id",
+            "paused_at",
+            "sha256_expected",
+            "started_at",
+            "status",
+            "total_bytes",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "deferred_source",
+          "columns": ["error", "target_path"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-5-remaining-user-content",
+          "rationale": "User-authored, provider-originated, or learned source data is in the decided boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "oauth_pending_signin",
+      "owner": "user",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "apps/api/src/routes/oauth.ts",
+          "packages/db/src/repositories/oauth-pending-signin-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "encrypted_source",
+          "columns": ["account_email", "pending_key"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-1-secrets-and-portable-config",
+          "rationale": "Credential, identity, configuration, or highest-value source data selected for the first applicable migration slice.",
+          "searchableDerivatives": []
+        },
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "created_at",
+            "expires_at",
+            "next_hash",
+            "scopes",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "oauth_pkce_pending",
+      "owner": "installation",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "installation_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/repositories/oauth-pkce-pending-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "encrypted_source",
+          "columns": ["code_verifier", "state"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Installation-owned, purpose-scoped versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-1-secrets-and-portable-config",
+          "rationale": "Credential, identity, configuration, or highest-value source data selected for the first applicable migration slice.",
+          "searchableDerivatives": []
+        },
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": ["created_at", "expires_at"],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "installation-scoped transient authentication"
+    },
+    {
+      "table": "oauth_tokens",
+      "owner": "user",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "apps/api/src/routes/capabilities.ts",
+          "apps/api/src/services/live-digest.ts",
+          "packages/db/src/repositories/oauth-repository.ts",
+          "packages/db/src/seeds/demo-showcase.ts",
+          "packages/db/src/seeds/seed.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "encrypted_source",
+          "columns": [
+            "access_token",
+            "encrypted_access_token",
+            "encrypted_refresh_token",
+            "refresh_token"
+          ],
+          "currentProtection": "Plaintext-compatible schema with optional AES-256-GCM sibling columns; production key delivery and complete migration are not wired.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-1-secrets-and-portable-config",
+          "rationale": "Credential, identity, configuration, or highest-value source data selected for the first applicable migration slice.",
+          "searchableDerivatives": []
+        },
+        {
+          "classification": "encrypted_source",
+          "columns": ["account_email", "account_provider_id"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-1-secrets-and-portable-config",
+          "rationale": "Credential, identity, configuration, or highest-value source data selected for the first applicable migration slice.",
+          "searchableDerivatives": []
+        },
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "created_at",
+            "encryption_iv",
+            "encryption_key_version",
+            "encryption_tag",
+            "expires_at",
+            "id",
+            "provider",
+            "scopes",
+            "updated_at",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "pending_skill_opt_ins",
+      "owner": "user_child",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "locally_exposed_or_excluded",
+        "auditedCallsites": [
+          "packages/db/src/repositories/mcp-server-changelog-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_derivative",
+          "columns": ["skill_name"],
+          "currentProtection": "Locally readable derived value or index.",
+          "targetProtection": "Remain locally readable for destructive-skill approval routing; disclose installed-capability leakage.",
+          "migrationStage": "disclosed-local-derivative",
+          "rationale": "The pending opt-in workflow must identify the exact new skill without decrypting a changelog."
+        },
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "accepted_at",
+            "changelog_version",
+            "detected_at",
+            "id",
+            "rejected_at",
+            "server_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "User ownership resolves through a parent record; repository access must preserve that join and scope."
+    },
+    {
+      "table": "preference_history",
+      "owner": "user",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/repositories/preference-history-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "attribution_id",
+            "attribution_type",
+            "changed_at",
+            "id",
+            "new_confidence",
+            "preference_id",
+            "previous_confidence",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "deferred_source",
+          "columns": ["new_value", "previous_value"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-2-twin-state",
+          "rationale": "User-authored, provider-originated, or learned source data is in the decided boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "preference_proposals",
+      "owner": "user",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/repositories/proposal-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "confidence",
+            "created_at",
+            "detected_at",
+            "expires_at",
+            "id",
+            "responded_at",
+            "status",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "deferred_source",
+          "columns": ["domain", "key", "supporting_evidence", "value"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-2-twin-state",
+          "rationale": "User-authored, provider-originated, or learned source data is in the decided boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "preferences",
+      "owner": "user",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/adapters/twin-repository-adapter.ts",
+          "packages/db/src/backup/backup.ts",
+          "packages/db/src/repositories/user-repository.ts",
+          "packages/db/src/seeds/seed.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "confidence",
+            "created_at",
+            "encryption_key_version",
+            "id",
+            "source",
+            "updated_at",
+            "user_id",
+            "version"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "encrypted_source",
+          "columns": ["domain", "key"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-2-twin-state",
+          "rationale": "Credential, identity, configuration, or highest-value source data selected for the first applicable migration slice.",
+          "searchableDerivatives": []
+        },
+        {
+          "classification": "encrypted_source",
+          "columns": [
+            "evidence",
+            "evidence_encrypted",
+            "value",
+            "value_encrypted"
+          ],
+          "currentProtection": "Plaintext-compatible schema with optional AES-256-GCM sibling columns; production key delivery and complete migration are not wired.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-2-twin-state",
+          "rationale": "Credential, identity, configuration, or highest-value source data selected for the first applicable migration slice.",
+          "searchableDerivatives": []
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "proactive_scans",
+      "owner": "user",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "locally_exposed_or_excluded",
+        "auditedCallsites": [
+          "packages/db/src/repositories/proactive-scan-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "completed_at",
+            "id",
+            "items_auto_executed",
+            "items_found",
+            "items_queued_approval",
+            "scan_type",
+            "started_at",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "promotion_offers",
+      "owner": "user",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/repositories/promotion-offers-repository.ts",
+          "packages/db/src/seeds/demo-showcase.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "approved_count",
+            "current_tier",
+            "decisions_observed_count",
+            "id",
+            "offered_at",
+            "proposed_tier",
+            "responded_at",
+            "response",
+            "server_id",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "deferred_source",
+          "columns": ["reason"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-5-remaining-user-content",
+          "rationale": "User-authored, provider-originated, or learned source data is in the decided boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "recovery_codes",
+      "owner": "user",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "locally_exposed_or_excluded",
+        "auditedCallsites": [
+          "packages/db/src/repositories/recovery-code-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "one_way_secret",
+          "columns": ["code_hash"],
+          "currentProtection": "One-way digest or password-derived verifier; original secret is not stored in this column.",
+          "targetProtection": "Retain one-way representation and domain separation; never treat it as encrypted recoverable data.",
+          "migrationStage": "retain-one-way",
+          "rationale": "Authentication or integrity comparison does not require recovering the original value."
+        },
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": ["created_at", "id", "used_at", "used_for", "user_id"],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "service_credentials",
+      "owner": "installation",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "installation_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/repositories/service-credential-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "created_at",
+            "id",
+            "installation_id",
+            "ironclaw_synced_at",
+            "service",
+            "updated_at"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "encrypted_source",
+          "columns": ["credential_key", "credential_value", "label"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Installation-owned, IRK-purpose-derived versioned AES-256-GCM envelope with authenticated installation/row/table/column context.",
+          "migrationStage": "installation-ownership-complete-encryption-pending",
+          "rationale": "Installation service credential source; never portable across installations or users.",
+          "searchableDerivatives": []
+        }
+      ],
+      "ownershipNotes": "Installation ownership is enforced through the stable installation_identity singleton and repository joins. Reset cascades deletion while locked; credentials must then be reconfigured. Source fields remain plaintext until the installation broker encryption slice and remain excluded from portable backup."
+    },
+    {
+      "table": "sessions",
+      "owner": "user",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "apps/api/src/routes/oauth.ts",
+          "packages/db/src/repositories/session-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "created_at",
+            "expires_at",
+            "id",
+            "last_active_at",
+            "revoked",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "one_way_secret",
+          "columns": ["token_hash"],
+          "currentProtection": "One-way digest or password-derived verifier; original secret is not stored in this column.",
+          "targetProtection": "Retain one-way representation and domain separation; never treat it as encrypted recoverable data.",
+          "migrationStage": "retain-one-way",
+          "rationale": "Authentication or integrity comparison does not require recovering the original value."
+        },
+        {
+          "classification": "deferred_source",
+          "columns": ["device_name"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-5-remaining-user-content",
+          "rationale": "User-authored, provider-originated, or learned source data is in the proposed boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "signals",
+      "owner": "user",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/repositories/signal-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "created_at",
+            "domain",
+            "id",
+            "retention_until",
+            "source",
+            "timestamp",
+            "type",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "deferred_source",
+          "columns": ["data"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-3-activity-and-conversation",
+          "rationale": "User-authored, provider-originated, or learned source data is in the decided boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "skill_gap_log",
+      "owner": "user",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/repositories/skill-gap-repository.ts",
+          "packages/db/src/seeds/seed.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "deferred_source",
+          "columns": [
+            "action_description",
+            "attempted_adapters",
+            "ironclaw_issue_url"
+          ],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-5-remaining-user-content",
+          "rationale": "User-authored, provider-originated, or learned source data is in the decided boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        },
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "action_type",
+            "decision_id",
+            "id",
+            "logged_at",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "source_key_deletion_intents",
+      "owner": "user",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "locally_exposed_or_excluded",
+        "auditedCallsites": [
+          "packages/db/src/repositories/source-key-registry-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": ["device_wrapper_deleted_at", "requested_at", "user_id"],
+          "currentProtection": "Locally readable deletion intent identifiers and timestamps.",
+          "targetProtection": "Remain locally readable so deletion can finish while the user vault is locked.",
+          "migrationStage": "source-key-broker-foundation",
+          "rationale": "A non-secret retry marker coordinates deletion across the database and device wrapper store."
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id; the marker contains no key or source payload."
+    },
+    {
+      "table": "spend_records",
+      "owner": "user",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "locally_exposed_or_excluded",
+        "auditedCallsites": ["packages/db/src/repositories/spend-repository.ts"]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "action_id",
+            "actual_cost_cents",
+            "decision_id",
+            "estimated_cost_cents",
+            "id",
+            "reconciled_at",
+            "recorded_at",
+            "registry_id",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "trust_tier_audit",
+      "owner": "user",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/repositories/trust-tier-audit-repository.ts",
+          "packages/db/src/seeds/demo-showcase.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "created_at",
+            "direction",
+            "id",
+            "new_tier",
+            "old_tier",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "deferred_source",
+          "columns": ["evidence", "trigger_reason"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-5-remaining-user-content",
+          "rationale": "User-authored, provider-originated, or learned source data is in the decided boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "twin_briefings",
+      "owner": "user",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/repositories/briefing-repository.ts",
+          "packages/db/src/seeds/demo-showcase.ts",
+          "packages/db/src/seeds/seed.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "cadence",
+            "generated_at",
+            "id",
+            "llm_cost_cents",
+            "llm_provider",
+            "read_at",
+            "source_event_count",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "deferred_source",
+          "columns": ["domain_name", "prose_markdown"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-3-activity-and-conversation",
+          "rationale": "User-authored, provider-originated, or learned source data is in the decided boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "twin_exports",
+      "owner": "user",
+      "boundary": {
+        "current": "no_runtime_sql_found",
+        "target": "locally_exposed_or_excluded",
+        "auditedCallsites": []
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": ["exported_at", "format", "id", "user_id"],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "twin_profile_versions",
+      "owner": "user_child",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/backup/backup.ts",
+          "packages/db/src/repositories/twin-repository.ts",
+          "packages/db/src/repositories/user-purge-repository.ts",
+          "packages/db/src/repositories/user-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "deferred_source",
+          "columns": ["changed_fields", "reason", "snapshot"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-2-twin-state",
+          "rationale": "User-authored, provider-originated, or learned source data is in the decided boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        },
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": ["created_at", "id", "profile_id", "version"],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "User ownership resolves through a parent record; repository access must preserve that join and scope."
+    },
+    {
+      "table": "twin_profiles",
+      "owner": "user",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/backup/backup.ts",
+          "packages/db/src/repositories/draft-email-eval-runs-repository.ts",
+          "packages/db/src/repositories/twin-repository.ts",
+          "packages/db/src/repositories/user-purge-repository.ts",
+          "packages/db/src/repositories/user-repository.ts",
+          "packages/db/src/seeds/demo-fixture.ts",
+          "packages/db/src/seeds/demo-showcase.ts",
+          "packages/db/src/seeds/seed.ts",
+          "packages/db/src/seeds/upsert.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "encrypted_source",
+          "columns": [
+            "communication_style",
+            "communication_style_encrypted",
+            "domain_heuristics",
+            "domain_heuristics_encrypted",
+            "inferences",
+            "inferences_encrypted",
+            "preferences",
+            "preferences_encrypted",
+            "risk_tolerance",
+            "risk_tolerance_encrypted",
+            "routines",
+            "routines_encrypted",
+            "spend_norms",
+            "spend_norms_encrypted"
+          ],
+          "currentProtection": "Plaintext-compatible schema with optional AES-256-GCM sibling columns; production key delivery and complete migration are not wired.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-2-twin-state",
+          "rationale": "Credential, identity, configuration, or highest-value source data selected for the first applicable migration slice.",
+          "searchableDerivatives": []
+        },
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "created_at",
+            "drafts_daily_call_cap",
+            "drafts_enabled",
+            "drafts_eval_passed_at",
+            "encryption_key_version",
+            "id",
+            "updated_at",
+            "user_id",
+            "version"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "encrypted_source",
+          "columns": ["temporal_profile"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-2-twin-state",
+          "rationale": "Credential, identity, configuration, or highest-value source data selected for the first applicable migration slice.",
+          "searchableDerivatives": []
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "user_credential_vault_meta",
+      "owner": "user",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "locally_exposed_or_excluded",
+        "auditedCallsites": [
+          "packages/db/src/repositories/credential-vault-meta-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "created_at",
+            "current_key_version",
+            "passphrase_salt",
+            "rotated_at",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "one_way_secret",
+          "columns": ["passphrase_hash"],
+          "currentProtection": "One-way digest or password-derived verifier; original secret is not stored in this column.",
+          "targetProtection": "Retain one-way representation and domain separation; never treat it as encrypted recoverable data.",
+          "migrationStage": "retain-one-way",
+          "rationale": "Authentication or integrity comparison does not require recovering the original value."
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "user_onboarding_state",
+      "owner": "user",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/repositories/onboarding-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "completed_at",
+            "created_at",
+            "is_first_run",
+            "updated_at",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "deferred_source",
+          "columns": ["first_run_choice", "selected_recipe_slug"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-2-twin-state",
+          "rationale": "User-authored, provider-originated, or learned source data is in the proposed boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "user_risk_profiles",
+      "owner": "user",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/repositories/risk-profile-repository.ts",
+          "packages/db/src/seeds/demo-showcase.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "created_at",
+            "last_interpreted_at",
+            "last_model_version",
+            "updated_at",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "deferred_source",
+          "columns": ["interpreted_caps", "profile_text"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-2-twin-state",
+          "rationale": "User-authored, provider-originated, or learned source data is in the decided boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "user_source_key_registry",
+      "owner": "user",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/repositories/source-key-registry-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "algorithm",
+            "created_at",
+            "kdf_record",
+            "key_version",
+            "retired_at",
+            "user_id",
+            "wrapper_version"
+          ],
+          "currentProtection": "Locally readable algorithm, KDF parameters/salt, versions, owner, and lifecycle timestamps.",
+          "targetProtection": "Remain locally readable to select and verify the wrapping method before unlock; disclose password-guessing metadata.",
+          "migrationStage": "source-key-broker-foundation",
+          "rationale": "Key-routing and KDF metadata are not source plaintext or an unwrapped data key."
+        },
+        {
+          "classification": "encrypted_source",
+          "columns": ["recovery_wrapper"],
+          "currentProtection": "Authenticated passphrase-wrapped random user root key; no plaintext root key is stored in CockroachDB.",
+          "targetProtection": "Retain a versioned authenticated wrapper bound to the user and root-key version.",
+          "migrationStage": "source-key-broker-foundation",
+          "rationale": "Recoverable root-key material must remain ciphertext and may be decrypted only by the packaged key broker.",
+          "searchableDerivatives": []
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id with cascade deletion. This registry protects key material but does not imply application source fields are encrypted."
+    },
+    {
+      "table": "users",
+      "owner": "user",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/backup/backup.ts",
+          "packages/db/src/repositories/oauth-repository.ts",
+          "packages/db/src/repositories/trust-tier-audit-repository.ts",
+          "packages/db/src/repositories/user-purge-repository.ts",
+          "packages/db/src/repositories/user-repository.ts",
+          "packages/db/src/repositories/vacation-mode-repository.ts",
+          "packages/db/src/seeds/demo-fixture.ts",
+          "packages/db/src/seeds/demo-showcase.ts",
+          "packages/db/src/seeds/seed.ts",
+          "packages/db/src/seeds/upsert.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "deferred_source",
+          "columns": [
+            "autonomy_settings",
+            "email",
+            "ironclaw_channel",
+            "language",
+            "name",
+            "timezone"
+          ],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-2-twin-state",
+          "rationale": "User-authored, provider-originated, or learned source data is in the decided boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        },
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "created_at",
+            "id",
+            "is_demo",
+            "trust_tier",
+            "updated_at",
+            "vacation_mode_until"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "Root user row; id is the owner identifier."
+    },
+    {
+      "table": "watch_runs",
+      "owner": "user",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/repositories/watch-run-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "deferred_source",
+          "columns": ["action", "matched_refs", "summary"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-3-activity-and-conversation",
+          "rationale": "User-authored, provider-originated, or learned source data is in the decided boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        },
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": ["id", "matched_count", "ran_at", "user_id", "watch_id"],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "watches",
+      "owner": "user",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": ["packages/db/src/repositories/watch-repository.ts"]
+      },
+      "groups": [
+        {
+          "classification": "deferred_source",
+          "columns": ["action", "filter", "name", "source_text"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-3-activity-and-conversation",
+          "rationale": "User-authored, provider-originated, or learned source data is in the decided boundary but scheduled after the first safe slices.",
+          "searchableDerivatives": []
+        },
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "cadence",
+            "created_at",
+            "day_of_week",
+            "hour_of_day",
+            "id",
+            "last_run_at",
+            "next_run_at",
+            "status",
+            "updated_at",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "worker_dead_letter",
+      "owner": "system_global",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "content_free_global",
+        "auditedCallsites": [
+          "packages/db/src/repositories/worker-dead-letter-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "attempts",
+            "dead_lettered_at",
+            "error_code",
+            "id",
+            "job_name",
+            "resolved_at",
+            "status"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "The global DLQ is content-free. Migration 076 permanently removes legacy raw error/context columns; runtime persistence accepts stable codes only. Cadence replay re-reads live state, so no user payload is retained or relocated."
+    }
+  ]
+}

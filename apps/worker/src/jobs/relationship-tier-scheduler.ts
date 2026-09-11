@@ -28,6 +28,7 @@
 
 import { createLogger } from '@skytwin/core';
 import { runRelationshipTierBackfillJob } from './relationship-tier-backfill.js';
+import { classifyWorkerFailure } from '../content-free-error.js';
 
 const log = createLogger('relationship-tier-scheduler');
 
@@ -57,10 +58,14 @@ export const RELATIONSHIP_TIER_BACKFILL_USER_TIMEOUT_MS = 5 * 60 * 1000;
  * scheduler so the queue keeps moving. The orphaned SQL completes
  * eventually and its result is discarded.
  */
-async function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+class RelationshipTierTimeoutError extends Error {
+  readonly code = 'timeout';
+}
+
+async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | null = null;
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    timer = setTimeout(() => reject(new RelationshipTierTimeoutError()), ms);
   });
   try {
     return await Promise.race([p, timeout]);
@@ -106,17 +111,16 @@ export async function runRelationshipTierBackfillBatch(
         await withTimeout(
           runRelationshipTierBackfillJob(userId),
           timeoutMs,
-          `relationship-tier backfill user=${userId}`,
         );
         summary.succeeded++;
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (msg.includes('timed out')) {
+        const errorCode = classifyWorkerFailure(err);
+        if (err instanceof RelationshipTierTimeoutError) {
           summary.timedOut++;
-          log.warn('relationship-tier backfill timed out for user', { userId, msg });
+          log.warn('relationship-tier backfill timed out for user', { userId, errorCode });
         } else {
           summary.failed++;
-          log.warn('relationship-tier backfill failed for user', { userId, msg });
+          log.warn('relationship-tier backfill failed for user', { userId, errorCode });
         }
       }
     }

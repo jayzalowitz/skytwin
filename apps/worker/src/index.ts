@@ -52,8 +52,13 @@ import {
 } from './jobs/watch-scheduler.js';
 import { extractErrorCode } from './oauth-error-code.js';
 import { recordPermanentOAuthFailure } from './oauth-circuit.js';
-import { DeadLetterTracker } from './dead-letter.js';
+import {
+  DeadLetterTracker,
+  logDeadLetterJobFailure,
+  logDeadLetterPurgeFailure,
+} from './dead-letter.js';
 import { grantWorkerOwners } from './vault-broker-client.js';
+import { classifyWorkerFailure } from './content-free-error.js';
 
 const config = loadConfig();
 const log = createLogger('worker');
@@ -127,7 +132,9 @@ const pruneLabelSignalsForUser = createPruneThrottle(
     const result = await emailLabelRepository.pruneStaleSignals(userId);
     const total = result.deletedStale + result.deletedOverCap;
     if (total > 0) {
-      log.info(`Pruned ${total} email_label_signals rows for user ${userId}`, {
+      log.info('Pruned stale email label signals', {
+        userId,
+        deletedTotal: total,
         deletedStale: result.deletedStale,
         deletedOverCap: result.deletedOverCap,
       });
@@ -135,8 +142,9 @@ const pruneLabelSignalsForUser = createPruneThrottle(
     return total;
   },
   (userId, err) => {
-    log.warn(`email_label_signals prune failed for user ${userId}`, {
-      error: err instanceof Error ? err.message : String(err),
+    log.warn('Email label signal prune failed', {
+      userId,
+      errorCode: classifyWorkerFailure(err),
     });
   },
 );
@@ -154,11 +162,10 @@ const signalDeduper = new SignalDeduper({
       await forwardedSignalsRepository.mark(userId, signalKey);
     },
   },
-  onPersistenceError: (err, userId, signalKey) => {
+  onPersistenceError: (err, userId, _signalKey) => {
     log.warn('Failed to persist signal dedupe entry', {
       userId,
-      signalKey,
-      error: err instanceof Error ? err.message : String(err),
+      errorCode: classifyWorkerFailure(err),
     });
   },
 });
@@ -226,7 +233,12 @@ async function forwardSignalToApi(signal: RawSignal, userId: string): Promise<vo
     return resp;
   }, { maxRetries: 2, baseDelayMs: 500 });
 
-  log.info(`Forwarded signal ${signal.id} (${signal.source}/${signal.type}) for user ${userId}`);
+  log.info('Forwarded signal to API', {
+    signalId: signal.id,
+    signalSource: signal.source,
+    signalType: signal.type,
+    userId,
+  });
 }
 
 function hasForwardedSignal(signal: RawSignal, userId: string): boolean {
@@ -244,7 +256,8 @@ async function pollUser(userConnectors: UserConnectors): Promise<void> {
   const breaker = getCircuitBreaker(userConnectors.userId);
 
   if (!breaker.canExecute()) {
-    log.warn(`Skipping user ${userConnectors.userId} — circuit open, retry in ${Math.round(breaker.getTimeUntilRetryMs() / 1000)}s`, {
+    log.warn('Skipping user poll because circuit is open', {
+      userId: userConnectors.userId,
       retryInMs: breaker.getTimeUntilRetryMs(),
     });
     return;
@@ -279,8 +292,11 @@ async function pollUser(userConnectors: UserConnectors): Promise<void> {
       thisConnectorFailed = true;
 
       if (error instanceof OAuthRefreshError && error.permanent) {
-        log.error(`Permanent OAuth failure for user ${userConnectors.userId} on ${connector.name} — user must re-authorize`, {
-          error: error.message,
+        const oauthErrorCode = extractErrorCode(error.statusCode) ?? 'invalid_grant';
+        log.error('Permanent OAuth failure requires re-authorization', {
+          userId: userConnectors.userId,
+          connector: connector.name,
+          errorCode: oauthErrorCode,
           statusCode: error.statusCode,
         });
         // Record the needs-reauth state so the dashboard banner can
@@ -293,14 +309,14 @@ async function pollUser(userConnectors: UserConnectors): Promise<void> {
             userId: userConnectors.userId,
             connectorName: connector.name,
             status: 'needs_reauth',
-            errorCode: extractErrorCode(error.message) ?? 'invalid_grant',
+            errorCode: oauthErrorCode,
             lastFailureAt: new Date(),
           });
         } catch (writeErr) {
           log.warn('connector_health upsert failed (needs_reauth) — continuing', {
             userId: userConnectors.userId,
             connector: connector.name,
-            error: writeErr instanceof Error ? writeErr.message : String(writeErr),
+            errorCode: classifyWorkerFailure(writeErr),
           });
         }
         // Force-open circuit immediately — no point retrying a revoked token.
@@ -308,8 +324,10 @@ async function pollUser(userConnectors: UserConnectors): Promise<void> {
         return;
       }
 
-      log.error(`Error polling ${connector.name} for user ${userConnectors.userId}`, {
-        error: error instanceof Error ? error.message : String(error),
+      log.error('Connector poll failed', {
+        userId: userConnectors.userId,
+        connector: connector.name,
+        errorCode: classifyWorkerFailure(error),
       });
     }
 
@@ -330,7 +348,7 @@ async function pollUser(userConnectors: UserConnectors): Promise<void> {
         log.warn('connector_health upsert failed (connected) — continuing', {
           userId: userConnectors.userId,
           connector: connector.name,
-          error: writeErr instanceof Error ? writeErr.message : String(writeErr),
+          errorCode: classifyWorkerFailure(writeErr),
         });
       }
     }
@@ -366,7 +384,7 @@ async function resolveGoogleConfig(): Promise<GoogleOAuthConfig | null> {
       }
     } catch (error) {
       log.warn('Could not load Google OAuth credentials from DB', {
-        error: error instanceof Error ? error.message : String(error),
+        errorCode: classifyWorkerFailure(error),
       });
     }
   }
@@ -422,7 +440,7 @@ async function resolveMicrosoftConfig(): Promise<MicrosoftOAuthConfig | null> {
     if (dbCreds['redirect_uri'] && redirectUri === DEFAULT_REDIRECT) redirectUri = dbCreds['redirect_uri'];
   } catch (error) {
     log.warn('Could not load Microsoft OAuth credentials from DB', {
-      error: error instanceof Error ? error.message : String(error),
+      errorCode: classifyWorkerFailure(error),
     });
   }
 
@@ -448,7 +466,8 @@ async function connectUserConnectors(discovered: UserConnectors[]): Promise<User
   for (const uc of discovered) {
     const breaker = getCircuitBreaker(uc.userId);
     if (!breaker.canExecute()) {
-      log.warn(`Skipping connector startup for user ${uc.userId} — circuit open, retry in ${Math.round(breaker.getTimeUntilRetryMs() / 1000)}s`, {
+      log.warn('Skipping connector startup because circuit is open', {
+        userId: uc.userId,
         retryInMs: breaker.getTimeUntilRetryMs(),
       });
       continue;
@@ -460,11 +479,14 @@ async function connectUserConnectors(discovered: UserConnectors[]): Promise<User
       try {
         await connector.connect();
         connected.push(connector);
-        log.info(`Connected: ${connector.name} for user ${uc.userId}`);
+        log.info('Connected user connector', { connector: connector.name, userId: uc.userId });
       } catch (error) {
         if (error instanceof OAuthRefreshError && error.permanent) {
-          log.error(`Permanent OAuth failure for user ${uc.userId} on ${connector.name} — user must re-authorize`, {
-            error: error.message,
+          const oauthErrorCode = extractErrorCode(error.statusCode) ?? 'invalid_grant';
+          log.error('Permanent OAuth failure requires re-authorization', {
+            userId: uc.userId,
+            connector: connector.name,
+            errorCode: oauthErrorCode,
             statusCode: error.statusCode,
           });
           try {
@@ -472,14 +494,14 @@ async function connectUserConnectors(discovered: UserConnectors[]): Promise<User
               userId: uc.userId,
               connectorName: connector.name,
               status: 'needs_reauth',
-              errorCode: extractErrorCode(error.message) ?? 'invalid_grant',
+              errorCode: oauthErrorCode,
               lastFailureAt: new Date(),
             });
           } catch (writeErr) {
             log.warn('connector_health upsert failed (needs_reauth) — continuing', {
               userId: uc.userId,
               connector: connector.name,
-              error: writeErr instanceof Error ? writeErr.message : String(writeErr),
+              errorCode: classifyWorkerFailure(writeErr),
             });
           }
           recordPermanentOAuthFailure(breaker);
@@ -487,8 +509,10 @@ async function connectUserConnectors(discovered: UserConnectors[]): Promise<User
           break;
         }
 
-        log.error(`Error connecting ${connector.name} for user ${uc.userId}`, {
-          error: error instanceof Error ? error.message : String(error),
+        log.error('Connector connection failed', {
+          connector: connector.name,
+          userId: uc.userId,
+          errorCode: classifyWorkerFailure(error),
         });
         breaker.recordFailure();
       }
@@ -579,7 +603,7 @@ async function discoverUsers(): Promise<UserConnectors[]> {
     return result;
   } catch (error) {
     log.error('Error discovering users', {
-      error: error instanceof Error ? error.message : String(error),
+      errorCode: classifyWorkerFailure(error),
     });
     return [];
   }
@@ -620,10 +644,10 @@ async function refreshIronClawToolsIfDue(force = false): Promise<void> {
       actionTypes: tool.actionTypes,
       requiresCredentials: tool.requiresCredentials,
     })));
-    log.info(`Refreshed ${tools.length} IronClaw tool manifest(s)`);
+    log.info('Refreshed IronClaw tool manifests', { toolCount: tools.length });
   } catch (error) {
     log.warn('IronClaw tool refresh failed', {
-      error: error instanceof Error ? error.message : String(error),
+      errorCode: classifyWorkerFailure(error),
     });
   }
 }
@@ -633,8 +657,8 @@ async function refreshIronClawToolsIfDue(force = false): Promise<void> {
  */
 async function main(): Promise<void> {
   log.info('Starting SkyTwin worker...');
-  log.info(`API base URL: ${config.apiBaseUrl}`);
-  log.info(`Poll interval: ${config.workerPollIntervalMs}ms`);
+  log.info('Worker API endpoint configured', { configured: config.apiBaseUrl.length > 0 });
+  log.info('Worker poll interval configured', { pollIntervalMs: config.workerPollIntervalMs });
 
   // Hydrate the dedup window from the persistent ledger before we start
   // polling, so already-forwarded signals are recognised on the very first
@@ -649,14 +673,14 @@ async function main(): Promise<void> {
         forwardedAt: r.forwarded_at,
       })),
     );
-    log.info(`Hydrated dedupe ledger: ${rows.length} entries`);
+    log.info('Hydrated signal dedupe ledger', { entryCount: rows.length });
 
     // Best-effort GC of expired rows so the table doesn't grow unbounded.
     const removed = await forwardedSignalsRepository.gcOlderThan(DEFAULT_TTL_MS);
-    if (removed > 0) log.info(`GC'd ${removed} expired forwarded_signals rows`);
+    if (removed > 0) log.info('Removed expired forwarded signal rows', { removedCount: removed });
   } catch (error) {
     log.warn('Could not hydrate dedupe ledger — proceeding with empty state', {
-      error: error instanceof Error ? error.message : String(error),
+      errorCode: classifyWorkerFailure(error),
     });
   }
 
@@ -673,7 +697,7 @@ async function main(): Promise<void> {
   if (userConnectors.length === 0) {
     log.info('No users with connected accounts yet — waiting for first connection');
   } else {
-    log.info(`Tracking ${userConnectors.length} user(s)`);
+    log.info('Tracking connected users', { userCount: userConnectors.length });
   }
   await refreshIronClawToolsIfDue(true);
 
@@ -875,7 +899,9 @@ async function main(): Promise<void> {
         .then((batchSummary) => {
           log.info('Relationship-tier backfill batch complete', {
             users: userIds.length,
-            ...batchSummary,
+            succeeded: batchSummary.succeeded,
+            failed: batchSummary.failed,
+            timedOut: batchSummary.timedOut,
           });
           // #407: success clears the failure streak.
           void deadLetterTracker.recordOutcome('relationship-tier-backfill', null);
@@ -884,9 +910,7 @@ async function main(): Promise<void> {
           // Scheduler-level failure (per-user errors are caught inside
           // the batch helper). Revert the timestamp so the next cycle
           // retries immediately rather than waiting another 24h.
-          log.warn('Relationship-tier backfill batch failed', {
-            error: err instanceof Error ? err.message : String(err),
-          });
+          logDeadLetterJobFailure('relationship-tier-backfill', err);
           lastRelationshipTierBackfillAt = previousLastAt;
           // #407: feed the failure streak so a persistently broken batch
           // lands in the DLQ after the retry budget.
@@ -911,14 +935,24 @@ async function main(): Promise<void> {
       void runMemoryActionLoopJob()
         .then((summary) => {
           if (summary.attempted > 0 || summary.opportunitiesUpserted > 0) {
-            log.info('Memory action loop tick complete', { ...summary, reports: summary.reports.length });
+            log.info('Memory action loop tick complete', {
+              users: summary.users,
+              opportunitiesUpserted: summary.opportunitiesUpserted,
+              attempted: summary.attempted,
+              approvalsQueued: summary.approvalsQueued,
+              autoExecuted: summary.autoExecuted,
+              notedAwareness: summary.notedAwareness,
+              blocked: summary.blocked,
+              learningNeeded: summary.learningNeeded,
+              executionFailed: summary.executionFailed,
+              skipped: summary.skipped,
+              reports: summary.reports.length,
+            });
           }
           void deadLetterTracker.recordOutcome('memory-action-loop', null);
         })
         .catch((err) => {
-          log.warn('Memory action loop failed', {
-            error: err instanceof Error ? err.message : String(err),
-          });
+          logDeadLetterJobFailure('memory-action-loop', err);
           lastMemoryActionLoopAt = previousLastAt;
           void deadLetterTracker.recordOutcome('memory-action-loop', err);
         })
@@ -948,13 +982,9 @@ async function main(): Promise<void> {
           void deadLetterTracker.recordOutcome('briefing-generator-daily', null);
         })
         .catch((err) => {
-          log.warn('Daily briefing generator failed', {
-            error: err instanceof Error ? err.message : String(err),
-          });
+          logDeadLetterJobFailure('briefing-generator-daily', err);
           lastBriefingDailyAt = previousLastAt;
-          void deadLetterTracker.recordOutcome('briefing-generator-daily', err, {
-            cadence: 'daily',
-          });
+          void deadLetterTracker.recordOutcome('briefing-generator-daily', err);
         })
         .finally(() => {
           briefingDailyInFlight = false;
@@ -973,13 +1003,9 @@ async function main(): Promise<void> {
           void deadLetterTracker.recordOutcome('briefing-generator-weekly', null);
         })
         .catch((err) => {
-          log.warn('Weekly briefing generator failed', {
-            error: err instanceof Error ? err.message : String(err),
-          });
+          logDeadLetterJobFailure('briefing-generator-weekly', err);
           lastBriefingWeeklyAt = previousLastAt;
-          void deadLetterTracker.recordOutcome('briefing-generator-weekly', err, {
-            cadence: 'weekly',
-          });
+          void deadLetterTracker.recordOutcome('briefing-generator-weekly', err);
         })
         .finally(() => {
           briefingWeeklyInFlight = false;
@@ -1001,14 +1027,16 @@ async function main(): Promise<void> {
       void runPromotionEligibilityCheckJob()
         .then((summary) => {
           if (summary.offered > 0 || summary.alreadyPending > 0) {
-            log.info('Promotion eligibility tick complete', { ...summary });
+            log.info('Promotion eligibility tick complete', {
+              evaluated: summary.evaluated,
+              offered: summary.offered,
+              alreadyPending: summary.alreadyPending,
+            });
           }
           void deadLetterTracker.recordOutcome('promotion-eligibility-check', null);
         })
         .catch((err) => {
-          log.warn('Promotion eligibility check failed', {
-            error: err instanceof Error ? err.message : String(err),
-          });
+          logDeadLetterJobFailure('promotion-eligibility-check', err);
           lastPromotionEligibilityAt = previousLastAt;
           void deadLetterTracker.recordOutcome('promotion-eligibility-check', err);
         })
@@ -1022,13 +1050,12 @@ async function main(): Promise<void> {
       try {
         const expired = await approvalRepository.expirePending();
         if (expired > 0) {
-          console.info(`[worker] Expired ${expired} stale approval request(s)`);
+          console.info('Expired stale approval requests', { expiredCount: expired });
         }
       } catch (error) {
-        console.error(
-          '[worker] Error expiring approvals:',
-          error instanceof Error ? error.message : error,
-        );
+        log.error('Error expiring approvals', {
+          errorCode: classifyWorkerFailure(error),
+        });
       }
       // Clean up expired escalations — separate try/catch so expiry failures
       // don't block cleanup and vice versa
@@ -1036,13 +1063,16 @@ async function main(): Promise<void> {
         try {
           const cleaned = await approvalRepository.deleteStaleEscalations(uc.userId);
           if (cleaned > 0) {
-            console.info(`[worker] Cleaned ${cleaned} stale escalation(s) for user ${uc.userId}`);
+            console.info('Cleaned stale user escalations', {
+              cleanedCount: cleaned,
+              userId: uc.userId,
+            });
           }
         } catch (error) {
-          console.error(
-            `[worker] Error cleaning stale escalations for user ${uc.userId}:`,
-            error instanceof Error ? error.message : error,
-          );
+          log.error('Error cleaning stale escalations for user', {
+            userId: uc.userId,
+            errorCode: classifyWorkerFailure(error),
+          });
         }
       }
 
@@ -1055,12 +1085,10 @@ async function main(): Promise<void> {
           DEAD_LETTER_RETENTION_MS,
         );
         if (purged > 0) {
-          log.info(`Purged ${purged} resolved worker_dead_letter row(s)`);
+          log.info('Purged resolved worker dead-letter rows', { purgedCount: purged });
         }
       } catch (error) {
-        log.warn('worker_dead_letter purge failed — continuing', {
-          error: error instanceof Error ? error.message : String(error),
-        });
+        logDeadLetterPurgeFailure(error);
       }
     }
 
@@ -1075,7 +1103,10 @@ async function main(): Promise<void> {
       const usersChanged = oldUserIds.size !== newUserIds.size
         || [...oldUserIds].some((id) => !newUserIds.has(id));
       if (usersChanged) {
-        log.info(`User set changed: ${[...oldUserIds].join(',')} → ${[...newUserIds].join(',')}`);
+        log.info('Tracked user set changed', {
+          oldUserCount: oldUserIds.size,
+          newUserCount: newUserIds.size,
+        });
         // Disconnect old connectors
         for (const uc of userConnectors) {
           for (const connector of uc.connectors) {
@@ -1104,7 +1135,7 @@ async function main(): Promise<void> {
   for (const uc of userConnectors) {
     for (const connector of uc.connectors) {
       await connector.disconnect();
-      log.info(`Disconnected: ${connector.name} for user ${uc.userId}`);
+      log.info('Disconnected user connector', { connector: connector.name, userId: uc.userId });
     }
   }
   log.info('Worker stopped.');
@@ -1123,6 +1154,6 @@ process.on('SIGTERM', () => {
 
 // Start the worker
 void main().catch((error) => {
-  log.error('Fatal error', { error: error instanceof Error ? error.message : String(error) });
+  log.error('Fatal error', { errorCode: classifyWorkerFailure(error) });
   process.exit(1);
 });

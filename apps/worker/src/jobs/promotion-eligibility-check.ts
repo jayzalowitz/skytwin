@@ -8,6 +8,7 @@ import {
 import { TrustTierEngine } from '@skytwin/policy-engine';
 import { PROMOTION_THRESHOLDS } from '@skytwin/shared-types';
 import type { TrustTier } from '@skytwin/shared-types';
+import { classifyWorkerFailure } from '../content-free-error.js';
 
 const log = createLogger('worker:promotion-eligibility-check');
 
@@ -149,13 +150,11 @@ export async function runPromotionEligibilityCheckJob(): Promise<PromotionEligib
     } catch (err) {
       log.warn('Error checking promotion eligibility for server', {
         serverId: server.id,
-        error: err instanceof Error ? err.message : String(err),
+        errorCode: classifyWorkerFailure(err),
       });
     }
   }
 
-  log.info(
-    `Promotion eligibility check complete: ${offered} new offer(s), ${alreadyPending} already pending, ${evaluated} evaluated`,
-  );
+  log.info('Promotion eligibility check complete', { offered, alreadyPending, evaluated });
   return { evaluated, offered, alreadyPending };
 }

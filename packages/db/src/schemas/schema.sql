@@ -274,8 +274,22 @@ CREATE TABLE IF NOT EXISTS feedback_events (
 -- Service Credentials & IronClaw Integration
 -- ============================================================================
 
+-- One durable owner for data that belongs to this installation rather than to
+-- an individual user. The singleton key makes a second active installation
+-- identity impossible inside one database. Device reset rotates the UUID only
+-- after deleting installation-owned rows; no source key is needed to do so.
+CREATE TABLE IF NOT EXISTS installation_identity (
+  singleton BOOL PRIMARY KEY DEFAULT true CHECK (singleton),
+  installation_id UUID NOT NULL UNIQUE DEFAULT gen_random_uuid(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+INSERT INTO installation_identity (singleton)
+VALUES (true)
+ON CONFLICT (singleton) DO NOTHING;
+
 CREATE TABLE IF NOT EXISTS service_credentials (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  installation_id UUID NOT NULL,
   service STRING NOT NULL,
   credential_key STRING NOT NULL,
   credential_value STRING NOT NULL,
@@ -283,12 +297,16 @@ CREATE TABLE IF NOT EXISTS service_credentials (
   ironclaw_synced_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  UNIQUE (service, credential_key)
+  CONSTRAINT service_credentials_installation_fk
+    FOREIGN KEY (installation_id) REFERENCES installation_identity(installation_id) ON DELETE CASCADE,
+  CONSTRAINT service_credentials_installation_key_uq
+    UNIQUE (installation_id, service, credential_key)
 );
-CREATE INDEX idx_service_credentials_service ON service_credentials (service);
+CREATE INDEX idx_service_credentials_service ON service_credentials (installation_id, service);
 
 CREATE TABLE IF NOT EXISTS credential_requirements (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  installation_id UUID NOT NULL,
   adapter STRING NOT NULL,
   integration STRING NOT NULL,
   integration_label STRING NOT NULL,
@@ -300,10 +318,13 @@ CREATE TABLE IF NOT EXISTS credential_requirements (
   is_optional BOOLEAN NOT NULL DEFAULT false,
   skills STRING[] NOT NULL DEFAULT ARRAY[]::STRING[],
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  UNIQUE (adapter, integration, field_key)
+  CONSTRAINT credential_requirements_installation_fk
+    FOREIGN KEY (installation_id) REFERENCES installation_identity(installation_id) ON DELETE CASCADE,
+  CONSTRAINT credential_requirements_installation_key_uq
+    UNIQUE (installation_id, adapter, integration, field_key)
 );
-CREATE INDEX idx_credential_requirements_adapter ON credential_requirements (adapter);
-CREATE INDEX idx_credential_requirements_integration ON credential_requirements (integration);
+CREATE INDEX idx_credential_requirements_adapter ON credential_requirements (installation_id, adapter);
+CREATE INDEX idx_credential_requirements_integration ON credential_requirements (installation_id, integration);
 
 CREATE TABLE IF NOT EXISTS ai_provider_settings (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -322,13 +343,18 @@ CREATE INDEX idx_ai_provider_settings_user ON ai_provider_settings (user_id, pri
 
 CREATE TABLE IF NOT EXISTS ironclaw_tools (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  tool_name STRING NOT NULL UNIQUE,
+  installation_id UUID NOT NULL,
+  tool_name STRING NOT NULL,
   description STRING,
   action_types STRING[] NOT NULL DEFAULT '{}',
   requires_credentials STRING[] NOT NULL DEFAULT '{}',
-  discovered_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  discovered_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT ironclaw_tools_installation_fk
+    FOREIGN KEY (installation_id) REFERENCES installation_identity(installation_id) ON DELETE CASCADE,
+  CONSTRAINT ironclaw_tools_installation_name_uq
+    UNIQUE (installation_id, tool_name)
 );
-CREATE INDEX IF NOT EXISTS idx_ironclaw_tools_discovered ON ironclaw_tools (discovered_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ironclaw_tools_discovered ON ironclaw_tools (installation_id, discovered_at DESC);
 
 CREATE TABLE IF NOT EXISTS lifebooks (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

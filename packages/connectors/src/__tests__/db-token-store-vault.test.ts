@@ -192,6 +192,8 @@ describe('DbTokenStore — lazy vault migration', () => {
   });
 
   it('lazyMigrationFailureCounter increments when updateEncrypted throws (observability hook)', async () => {
+    const marker = 'provider-secret-marker-7f3c';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const { lazyMigrationFailureCounter } = await import('../oauth/db-token-store.js');
     const startingCount = lazyMigrationFailureCounter.count;
 
@@ -211,7 +213,7 @@ describe('DbTokenStore — lazy vault migration', () => {
       encryption_key_version: 1,
     });
 
-    repo.updateEncrypted.mockRejectedValueOnce(new Error('DB connection lost'));
+    repo.updateEncrypted.mockRejectedValueOnce(new Error(marker));
 
     // The caller still gets the plaintext (Case 2 returns before the fire-and-forget resolves)
     const result = await store.getToken('user-1', 'google');
@@ -222,6 +224,9 @@ describe('DbTokenStore — lazy vault migration', () => {
     await new Promise((r) => setTimeout(r, 20));
 
     expect(lazyMigrationFailureCounter.count).toBe(startingCount + 1);
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(marker);
+    expect(JSON.stringify(warn.mock.calls)).toContain('operation_failed');
+    warn.mockRestore();
   });
 });
 

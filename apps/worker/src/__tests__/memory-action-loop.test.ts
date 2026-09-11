@@ -319,6 +319,66 @@ describe('runMemoryActionLoopJob', () => {
     );
   });
 
+  it('persists only a bounded code when adapter execution fails', async () => {
+    const marker = 'PRIVATE-ADAPTER-FAILURE-MARKER';
+    const opportunity = makeOpportunity('create_task');
+    mockCommon(opportunity);
+    mockUserRepository.findById.mockResolvedValue({
+      id: 'user-1',
+      trust_tier: 'high_autonomy',
+      autonomy_settings: {},
+      ironclaw_channel: null,
+    });
+    const policyEvaluator = {
+      evaluate: vi.fn().mockResolvedValue({
+        allowed: true,
+        requiresApproval: false,
+        reason: 'All policies passed.',
+      }),
+    };
+    const router = {
+      route: vi.fn().mockResolvedValue({
+        selectedAdapter: 'ironclaw',
+        fallbackChain: [],
+        trustProfile: {},
+        riskModifierApplied: 0,
+        modifiedRiskAssessment: {},
+        reasoning: 'Bounded routing decision.',
+      }),
+      executeWithRouting: vi.fn().mockResolvedValue({
+        planId: 'failed-plan-1',
+        status: 'failed',
+        startedAt: new Date(),
+        completedAt: new Date(),
+        error: marker,
+        output: { adapter_used: marker, remote_error_body: marker },
+      }),
+    };
+
+    const summary = await runMemoryActionLoopJob({
+      userIds: ['user-1'],
+      fetchBundle: async () => ({ suggestions: [], pagesById: new Map() }),
+      policyEvaluator,
+      loadPolicies: async () => [],
+      getExecutionRouter: async () => router,
+    });
+
+    expect(summary.executionFailed).toBe(1);
+    expect(mockExecutionRepository.createResult).toHaveBeenCalledWith(
+      expect.objectContaining({
+        success: false,
+        error: 'job_failed',
+        outputs: { adapter_plan_id: 'failed-plan-1' },
+      }),
+    );
+    expect(JSON.stringify([
+      mockDecisionRepository.recordOutcome.mock.calls,
+      mockExplanationRepository.create.mock.calls,
+      mockExecutionRepository.createResult.mock.calls,
+      mockMemoryActionOpportunityRepository.markStatus.mock.calls,
+    ])).not.toContain(marker);
+  });
+
   it('marks outbound email memory actions irreversible before policy evaluation', async () => {
     const opportunity = makeOpportunity('draft_email');
     mockCommon(opportunity);

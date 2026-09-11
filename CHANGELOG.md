@@ -7,10 +7,29 @@ All notable changes to SkyTwin will be documented in this file.
 - Recovery-wrapped per-user source keys now use the CockroachDB source-key registry in production desktop composition instead of an Electron JSON store. API and worker children receive process-scoped broker capabilities and can request only explicit owner grants after session authentication or database-backed worker discovery.
 - Vault owner grants now expire in the Electron broker; worker rediscovery atomically replaces the parent-owned grant set so removed users cannot survive a lost per-user revoke. Failed reconciliation or API revoke clears child authority and propagates failure. Lock and unlock bound in-flight draining, terminate unhealthy children, and lock zeroes the root key in guaranteed cleanup; unlocks synchronize the next generation.
 - Recovery-wrapper initialization retains failed-cleanup state for retry, and broker responses are validated against the pending owner and exact result shape.
+- **An accepted, implementation-ready source-field encryption contract.** ADR
+  0001 defines key custody, locked behavior, context-bound envelopes,
+  crash-safe migration and rotation, backup/restore, deletion after key loss,
+  the intentionally readable search-derivative boundary, and the supported
+  desktop-beta scope. A machine-readable inventory classifies every column
+  across every live table. A supplemental scanner records the current SQL
+  literal/template callsites it recognizes and rejects unsupported dynamic SQL
+  shapes when they occur in scanned files; it is not a complete program-analysis
+  inventory. The validator currently derives 94 tables and 877 columns from the
+  cumulative schema. `pnpm check:encryption-inventory` fails on schema drift,
+  classification drift, invalid ownership/boundary values, or weakened critical
+  credential and dead-letter invariants. This is a reviewed design contract;
+  encryption claims remain blocked until the implementation and packaged
+  verification gates in the ADR pass.
+- Installation-local service credentials, dynamic credential requirements, and discovered execution tools now carry a stable database ownership identifier. Every repository operation is scoped to that singleton owner, and a transactional compare-and-swap reset can cascade-delete unusable installation data without unlocking a user vault.
+
+### Changed
+
+- The process-global worker dead-letter queue and the audited scheduler, connector, token-store, OAuth, and API fallback failure paths now log stable error codes instead of throwable text. Migration 076 discards legacy raw errors and job contexts; cadence replay re-reads live state, so no user payload is retained or relocated. Source-contract checks are defense-in-depth over the named modules and representative indirections, not a semantic proof over arbitrary JavaScript.
 
 ### Security scope
 
-- Source-field migration is still disabled. This runtime composition does not make an at-rest encryption claim; the deletion-intent consumer and source-column cutover remain required follow-ups.
+- Source-field migration is still disabled. Installation ownership and dead-letter redaction do not make an at-rest encryption claim; the installation root key, deletion-intent consumer, protected repository gateways, and source-column cutover remain required follow-ups.
 
 ## [0.6.102.0] - 2026-08-27
 
@@ -657,7 +676,7 @@ The Pages site was the project's public face and two of its load-bearing claims 
 
 - **Six routes consolidated on the shared UUID regex.** `apps/api/src/routes/{memory-config,capabilities,dxt,external-agents,twin-briefings,assistant}.ts`. Each had its own local `const UUID_REGEX = /^[0-9a-f]{8}.../i;` — a divergence between any two of them would mean a UUID accepted by one route was rejected by another. All six now import `UUID_REGEX` from `middleware/validate-uuid.ts`. One source of truth.
 
-- **Global error handler hardened.** `apps/api/src/index.ts`. Pre-fix, the response body included `err.message` whenever `NODE_ENV === 'development'` — and development is exactly where strangers first see the product. The handler now always returns `{ error: 'internal_error', message: 'Something went wrong on our end.' }` regardless of `NODE_ENV`. Full detail (message + stack) continues to land in server logs via `log.error()`. Defense-in-depth: any future pg leak that slips past the route-layer validator still can't reach the client.
+- **Global error handler hardened.** `apps/api/src/index.ts`. Pre-fix, the response body included `err.message` whenever `NODE_ENV === 'development'` — and development is exactly where strangers first see the product. The handler now always returns `{ error: 'internal_error', message: 'Something went wrong on our end.' }` regardless of `NODE_ENV`; its server log is also bounded to an allowlisted operational code rather than message/stack content. Defense-in-depth: any future pg or provider leak that slips past a subsystem boundary cannot reach this client or log surface.
 
 - **Pre-existing tests updated to use valid UUIDs.** `apps/api/src/__tests__/{promotion-offers-routes,routines-routes,settings-ironclaw-channel}.test.ts` used `'user-1'` / `'u-1'` as test user IDs — exactly the leaky path #367 closes. Updated to canonical UUIDs. New test suites: `validate-uuid.test.ts` (13 tests) and `error-handler.test.ts` (3 tests) cover the middleware + handler contracts. Full API suite: 713 passing, 24 skipped.
 

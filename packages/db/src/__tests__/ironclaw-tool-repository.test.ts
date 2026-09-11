@@ -82,8 +82,11 @@ describe('ironClawToolRepository', () => {
 
       const [sql, params] = mockQuery.mock.calls[0]!;
       // Verify parameterized placeholders for two tools (4 params each)
-      expect(sql).toContain('($1, $2, $3, $4, now())');
-      expect(sql).toContain('($5, $6, $7, $8, now())');
+      expect(sql).toContain(
+        '(VALUES ($1::STRING, $2::STRING, $3::STRING[], $4::STRING[]), ' +
+        '($5::STRING, $6::STRING, $7::STRING[], $8::STRING[]))',
+      );
+      expect(sql).toContain('owner.installation_id');
       expect(params).toEqual([
         'send_email',
         'Send an email via Gmail',
@@ -110,7 +113,7 @@ describe('ironClawToolRepository', () => {
       ]);
 
       const [sql] = mockQuery.mock.calls[0]!;
-      expect(sql).toContain('ON CONFLICT (tool_name) DO UPDATE SET');
+      expect(sql).toContain('ON CONFLICT (installation_id, tool_name) DO UPDATE SET');
       expect(sql).toContain('description = EXCLUDED.description');
       expect(sql).toContain('action_types = EXCLUDED.action_types');
       expect(sql).toContain('requires_credentials = EXCLUDED.requires_credentials');
@@ -144,6 +147,15 @@ describe('ironClawToolRepository', () => {
       expect(params![1]).toBeNull();
       expect(params![5]).toBeNull();
     });
+
+    it('fails closed when no installation owner exists', async () => {
+      mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
+      await expect(ironClawToolRepository.upsertMany([{
+        toolName: 'send_email',
+        actionTypes: ['email.send'],
+        requiresCredentials: ['gmail_oauth'],
+      }])).rejects.toThrow('installation_identity_unavailable');
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -161,9 +173,8 @@ describe('ironClawToolRepository', () => {
       const result = await ironClawToolRepository.getAll();
 
       expect(result).toEqual(rows);
-      expect(mockQuery).toHaveBeenCalledWith(
-        'SELECT * FROM ironclaw_tools ORDER BY tool_name',
-      );
+      expect(mockQuery.mock.calls[0]![0]).toContain('JOIN installation_identity AS owner');
+      expect(mockQuery.mock.calls[0]![0]).toContain('ORDER BY tool.tool_name');
     });
   });
 

@@ -9,6 +9,7 @@ import {
   splitAddressList,
   type AuthoringTier,
 } from '@skytwin/connectors';
+import { classifyWorkerFailure } from '../content-free-error.js';
 
 const log = createLogger('tier-backfill');
 
@@ -81,7 +82,7 @@ export async function runTierBackfillJob(
     pages = await findPagesMissingAuthoringTier(scope, batchSize);
   } catch (err) {
     log.warn('findPagesMissingAuthoringTier failed; skipping pass', {
-      reason: err instanceof Error ? err.message : String(err),
+      errorCode: classifyWorkerFailure(err),
     });
     return summary;
   }
@@ -118,13 +119,19 @@ export async function runTierBackfillJob(
       log.warn('tier backfill: updatePageMetadata failed', {
         pageId: row.page_id,
         userId: row.user_id,
-        error: err instanceof Error ? err.message : String(err),
+        errorCode: classifyWorkerFailure(err),
       });
     }
   }
 
   if (summary.attempted > 0) {
-    log.info('tier backfill pass complete', { ...summary });
+    log.info('tier backfill pass complete', {
+      attempted: summary.attempted,
+      copiedFromSignal: summary.copiedFromSignal,
+      reclassified: summary.reclassified,
+      unreclassifiable: summary.unreclassifiable,
+      failed: summary.failed,
+    });
   }
   return summary;
 }

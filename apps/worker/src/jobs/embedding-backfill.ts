@@ -9,6 +9,7 @@ import {
   updatePageEmbedding,
   pendingEmbeddingJobs,
 } from '@skytwin/memory-gbrain-crdb-adapter';
+import { classifyWorkerFailure } from '../content-free-error.js';
 
 const log = createLogger('embedding-backfill');
 
@@ -95,7 +96,7 @@ export async function runEmbeddingBackfillJob(
   for (let i = 0; i < batchSize; i++) {
     const job = await leaseEmbeddingJob().catch((err) => {
       log.warn('leaseEmbeddingJob failed; skipping cycle', {
-        error: err instanceof Error ? err.message : String(err),
+        errorCode: classifyWorkerFailure(err),
       });
       return null;
     });
@@ -109,15 +110,15 @@ export async function runEmbeddingBackfillJob(
       succeeded++;
     } catch (err) {
       failed++;
-      const message = err instanceof Error ? err.message : String(err);
+      const errorCode = classifyWorkerFailure(err);
       log.warn('embedding job failed; will retry until attempts exhausted', {
         jobId: job.id,
-        error: message,
+        errorCode,
       });
-      await markJobFailed(job.id, message).catch((markErr) => {
+      await markJobFailed(job.id, errorCode).catch((markErr) => {
         log.error('markJobFailed itself failed', {
           jobId: job.id,
-          error: markErr instanceof Error ? markErr.message : String(markErr),
+          errorCode: classifyWorkerFailure(markErr),
         });
       });
     }

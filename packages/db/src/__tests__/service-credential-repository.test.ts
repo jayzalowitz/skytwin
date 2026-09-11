@@ -60,10 +60,9 @@ describe('serviceCredentialRepository', () => {
       const result = await serviceCredentialRepository.getByService('openai');
 
       expect(result).toEqual(rows);
-      expect(mockQuery).toHaveBeenCalledWith(
-        'SELECT * FROM service_credentials WHERE service = $1 ORDER BY credential_key',
-        ['openai'],
-      );
+      expect(mockQuery.mock.calls[0]![0]).toContain('JOIN installation_identity AS owner');
+      expect(mockQuery.mock.calls[0]![0]).toContain('credential.service = $1');
+      expect(mockQuery.mock.calls[0]![1]).toEqual(['openai']);
     });
 
     it('returns empty array when no credentials exist for service', async () => {
@@ -72,10 +71,8 @@ describe('serviceCredentialRepository', () => {
       const result = await serviceCredentialRepository.getByService('unknown');
 
       expect(result).toEqual([]);
-      expect(mockQuery).toHaveBeenCalledWith(
-        'SELECT * FROM service_credentials WHERE service = $1 ORDER BY credential_key',
-        ['unknown'],
-      );
+      expect(mockQuery.mock.calls[0]![0]).toContain('JOIN installation_identity AS owner');
+      expect(mockQuery.mock.calls[0]![1]).toEqual(['unknown']);
     });
   });
 
@@ -91,10 +88,9 @@ describe('serviceCredentialRepository', () => {
       const result = await serviceCredentialRepository.get('openai', 'api_key');
 
       expect(result).toEqual(row);
-      expect(mockQuery).toHaveBeenCalledWith(
-        'SELECT * FROM service_credentials WHERE service = $1 AND credential_key = $2',
-        ['openai', 'api_key'],
-      );
+      expect(mockQuery.mock.calls[0]![0]).toContain('JOIN installation_identity AS owner');
+      expect(mockQuery.mock.calls[0]![0]).toContain('credential.credential_key = $2');
+      expect(mockQuery.mock.calls[0]![1]).toEqual(['openai', 'api_key']);
     });
 
     it('returns null when no row exists', async () => {
@@ -103,10 +99,8 @@ describe('serviceCredentialRepository', () => {
       const result = await serviceCredentialRepository.get('openai', 'missing');
 
       expect(result).toBeNull();
-      expect(mockQuery).toHaveBeenCalledWith(
-        'SELECT * FROM service_credentials WHERE service = $1 AND credential_key = $2',
-        ['openai', 'missing'],
-      );
+      expect(mockQuery.mock.calls[0]![0]).toContain('JOIN installation_identity AS owner');
+      expect(mockQuery.mock.calls[0]![1]).toEqual(['openai', 'missing']);
     });
   });
 
@@ -130,7 +124,9 @@ describe('serviceCredentialRepository', () => {
 
       const [sql, params] = mockQuery.mock.calls[0]!;
       expect(sql).toContain('INSERT INTO service_credentials');
-      expect(sql).toContain('ON CONFLICT (service, credential_key) DO UPDATE SET');
+      expect(sql).toContain('SELECT installation_id');
+      expect(sql).toContain('FROM installation_identity');
+      expect(sql).toContain('ON CONFLICT (installation_id, service, credential_key) DO UPDATE SET');
       expect(sql).toContain('credential_value = EXCLUDED.credential_value');
       expect(sql).toContain('label = COALESCE(EXCLUDED.label, service_credentials.label)');
       expect(sql).toContain('updated_at = now()');
@@ -151,6 +147,15 @@ describe('serviceCredentialRepository', () => {
       const [_sql, params] = mockQuery.mock.calls[0]!;
       expect(params).toEqual(['slack', 'token', 'xoxb-test', null]);
     });
+
+    it('fails closed when no installation owner exists', async () => {
+      mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
+      await expect(serviceCredentialRepository.upsert({
+        service: 'openai',
+        credentialKey: 'api_key',
+        credentialValue: 'secret',
+      })).rejects.toThrow('installation_identity_unavailable');
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -164,10 +169,9 @@ describe('serviceCredentialRepository', () => {
       const result = await serviceCredentialRepository.delete('openai', 'api_key');
 
       expect(result).toBe(true);
-      expect(mockQuery).toHaveBeenCalledWith(
-        'DELETE FROM service_credentials WHERE service = $1 AND credential_key = $2',
-        ['openai', 'api_key'],
-      );
+      expect(mockQuery.mock.calls[0]![0]).toContain('USING installation_identity AS owner');
+      expect(mockQuery.mock.calls[0]![0]).toContain('owner.installation_id = credential.installation_id');
+      expect(mockQuery.mock.calls[0]![1]).toEqual(['openai', 'api_key']);
     });
 
     it('returns false when no row was found to delete', async () => {
@@ -201,9 +205,8 @@ describe('serviceCredentialRepository', () => {
       const result = await serviceCredentialRepository.listServices();
 
       expect(result).toEqual(['gmail', 'openai', 'slack']);
-      expect(mockQuery).toHaveBeenCalledWith(
-        'SELECT DISTINCT service FROM service_credentials ORDER BY service',
-      );
+      expect(mockQuery.mock.calls[0]![0]).toContain('JOIN installation_identity AS owner');
+      expect(mockQuery.mock.calls[0]![0]).toContain('SELECT DISTINCT credential.service');
     });
 
     it('returns empty array when no services exist', async () => {
@@ -231,9 +234,8 @@ describe('serviceCredentialRepository', () => {
       const result = await serviceCredentialRepository.getAll();
 
       expect(result).toEqual(rows);
-      expect(mockQuery).toHaveBeenCalledWith(
-        'SELECT * FROM service_credentials ORDER BY service, credential_key',
-      );
+      expect(mockQuery.mock.calls[0]![0]).toContain('JOIN installation_identity AS owner');
+      expect(mockQuery.mock.calls[0]![0]).toContain('ORDER BY credential.service');
     });
 
     it('returns empty array when no credentials exist', async () => {
@@ -264,10 +266,8 @@ describe('serviceCredentialRepository', () => {
         org_id: 'org-123',
       });
       // getAsMap delegates to getByService
-      expect(mockQuery).toHaveBeenCalledWith(
-        'SELECT * FROM service_credentials WHERE service = $1 ORDER BY credential_key',
-        ['openai'],
-      );
+      expect(mockQuery.mock.calls[0]![0]).toContain('JOIN installation_identity AS owner');
+      expect(mockQuery.mock.calls[0]![1]).toEqual(['openai']);
     });
 
     it('returns empty object when service has no credentials', async () => {

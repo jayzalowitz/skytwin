@@ -2,6 +2,7 @@ import { createLogger } from '@skytwin/core';
 import { lifebookRepository, mempalaceRepository, query } from '@skytwin/db';
 import { runPrompt } from '@skytwin/policy-prompts';
 import type { LlmClient } from '@skytwin/llm-client';
+import { classifyWorkerFailure } from '../content-free-error.js';
 
 const log = createLogger('worker:domain-extraction');
 
@@ -228,8 +229,7 @@ export async function extractDomainsForUser(
     } catch (err) {
       log.warn('Failed to persist domain', {
         userId,
-        domainName: d.domainName,
-        error: err instanceof Error ? err.message : String(err),
+        errorCode: classifyWorkerFailure(err),
       });
     }
   }
@@ -275,7 +275,7 @@ export async function runDomainExtractionJob(deps: DomainExtractionDeps = {}): P
       failed++;
       log.warn('Domain extraction failed for user', {
         userId,
-        error: err instanceof Error ? err.message : String(err),
+        errorCode: classifyWorkerFailure(err),
       });
     }
   }

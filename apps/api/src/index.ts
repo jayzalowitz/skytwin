@@ -58,6 +58,7 @@ import { getExecutionRouter } from './execution-setup.js';
 import { startMdnsAdvertisement, stopMdnsAdvertisement } from './mdns.js';
 import { closePool, mcpServerMetricsRepository } from '@skytwin/db';
 import { MetricsRollupService, sharedMetricsCollector } from '@skytwin/observability';
+import { createGlobalErrorHandler } from './global-error-handler.js';
 
 const config = loadConfig();
 
@@ -373,23 +374,9 @@ app.use('/api/promotion-offers', sessionAuth, requestContext, createPromotionOff
 // route-layer UUID validator catching malformed `:userId` segments before
 // they reach pg, any future code path that lands a bad string in a pg
 // query must not leak the driver's "could not parse … as type uuid"
-// message — or any other internal — to the client. Full detail goes to
-// server-side logs; the response always carries a safe generic message,
-// regardless of NODE_ENV (pre-fix, dev mode leaked `err.message`).
-app.use(
-  (
-    err: Error & { code?: unknown },
-    _req: express.Request,
-    res: express.Response,
-    _next: express.NextFunction,
-  ) => {
-    log.error('Unhandled error', { message: err.message, stack: err.stack });
-    res.status(500).json({
-      error: 'internal_error',
-      message: 'Something went wrong on our end.',
-    });
-  },
-);
+// message — or any other internal — to either the client or the global log
+// sink. The response is generic and the log carries only a bounded code.
+app.use(createGlobalErrorHandler(log));
 
 // Start server with a DB probe + 30s hang detector (#378).
 //

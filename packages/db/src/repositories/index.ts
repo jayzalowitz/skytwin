@@ -27,8 +27,14 @@ export type { ConnectorHealthRow } from './connector-health-repository.js';
 export { workerDeadLetterRepository } from './worker-dead-letter-repository.js';
 export type {
   WorkerDeadLetterRow,
+  WorkerDeadLetterJobCode,
+  WorkerDeadLetterErrorCode,
   WorkerDeadLetterStatus,
   RecordDeadLetterInput,
+} from './worker-dead-letter-repository.js';
+export {
+  WORKER_DEAD_LETTER_JOB_CODES,
+  WORKER_DEAD_LETTER_ERROR_CODES,
 } from './worker-dead-letter-repository.js';
 export { userPurgeRepository } from './user-purge-repository.js';
 export type { PurgeUserResult } from './user-purge-repository.js';
@@ -263,4 +269,8 @@ export { watchRunRepository } from './watch-run-repository.js';
 export type { WatchRunRow, CreateWatchRunInput } from './watch-run-repository.js';
 
 export { sourceKeyRegistryRepository } from './source-key-registry-repository.js';
+export {
+  installationIdentityRepository,
+  type InstallationIdentityRow,
+} from './installation-identity-repository.js';
 export type { SourceKeyRegistryRow } from './source-key-registry-repository.js';

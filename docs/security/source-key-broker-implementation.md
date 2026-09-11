@@ -48,7 +48,32 @@ The deletion-intent consumer and source-field migration remain release
 blockers. In particular, this composition does not route OAuth, provider, MCP,
 federation, cursor, or DXT source columns through the new client yet.
 
-Consequently, the public privacy policy remains unchanged: source fields are
-not represented as encrypted at rest. Passing unit tests for this kernel is
+Migration 076 establishes the separate installation-ownership prerequisite.
+`service_credentials`, `credential_requirements`, and `ironclaw_tools` now carry
+one non-null stable `installation_id`, and their repositories join every
+read/write/delete to the singleton owner. A database-side compare-and-swap reset
+cascade-deletes those rows and can run while user vaults are locked. The future
+installation root key and OS-wrapper deletion must be composed around this
+operation before a device-reset surface is exposed.
+
+The same migration makes `worker_dead_letter` content-free by permanently
+discarding legacy `error_message` and `context` values. Runtime DLQ persistence
+and the audited scheduled-job failure paths use stable job and error codes. The
+source-contract test covers the worker entrypoint, discovered job modules,
+current direct sinks, and representative indirections as defense-in-depth; it is
+not semantic proof over arbitrary JavaScript wrappers.
+Replay is cadence-driven and re-reads live state, so no user-owned payload table
+is needed.
+
+This encryption-only branch does not include the separate reasoning-mode and
+inference-receipt migrations numbered 072, 074, and 075. The field inventory
+must be regenerated against their cumulative schema when those branches first
+land together; pulling those unrelated tables into this ownership gate would
+hide, rather than resolve, the integration obligation.
+
+These ownership and redaction controls do not encrypt the remaining credential
+and capability source fields. Consequently, the public privacy policy remains
+unchanged: source fields are not represented as encrypted at rest. Passing
+unit tests for this kernel is
 design and implementation evidence only, not packaged-platform or coverage
 evidence.

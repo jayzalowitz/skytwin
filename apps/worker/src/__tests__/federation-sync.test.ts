@@ -139,7 +139,9 @@ describe('runFederationSyncJob', () => {
   });
 
   it('marks failed when peer returns non-2xx', async () => {
-    const fetcher = vi.fn().mockResolvedValue({ ok: false, status: 503, text: async () => 'down' });
+    const marker = 'PRIVATE-PEER-RESPONSE-MARKER';
+    const readBody = vi.fn(async () => marker);
+    const fetcher = vi.fn().mockResolvedValue({ ok: false, status: 503, text: readBody });
     const markSyncResult = vi.fn();
     const result = await runFederationSyncJob({
       peers: [SAMPLE_PEER],
@@ -149,13 +151,16 @@ describe('runFederationSyncJob', () => {
     expect(result.pushed).toBe(0);
     expect(result.failed).toBe(1);
     expect(markSyncResult).toHaveBeenCalledWith(
-      expect.objectContaining({ peerId: 'peer-1', status: 'failed' }),
+      { peerId: 'peer-1', status: 'failed', error: 'network_unavailable' },
     );
+    expect(readBody).not.toHaveBeenCalled();
+    expect(JSON.stringify(markSyncResult.mock.calls)).not.toContain(marker);
   });
 
   it('absorbs network errors and continues with the next peer', async () => {
+    const marker = 'PRIVATE-PEER-EXCEPTION-MARKER';
     const fetcher = vi.fn()
-      .mockRejectedValueOnce(new Error('connection refused'))
+      .mockRejectedValueOnce(Object.assign(new Error(marker), { code: 'ECONNREFUSED' }))
       .mockResolvedValueOnce({ ok: true, status: 200, text: async () => '' });
     const markSyncResult = vi.fn();
 
@@ -168,8 +173,10 @@ describe('runFederationSyncJob', () => {
     expect(result.pushed).toBe(1);
     expect(result.failed).toBe(1);
     const calls = markSyncResult.mock.calls.map((c) => c[0]);
-    expect(calls.some((c) => c.peerId === 'peer-1' && c.status === 'failed')).toBe(true);
+    expect(calls.some((c) => c.peerId === 'peer-1' && c.status === 'failed' &&
+      c.error === 'network_unavailable')).toBe(true);
     expect(calls.some((c) => c.peerId === 'peer-2' && c.status === 'ok')).toBe(true);
+    expect(JSON.stringify(calls)).not.toContain(marker);
   });
 
   it('skips peers without an endpoint_url', async () => {

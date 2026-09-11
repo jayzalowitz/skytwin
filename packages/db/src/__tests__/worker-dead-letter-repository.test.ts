@@ -13,9 +13,8 @@ const { workerDeadLetterRepository } = await import(
 const ROW = {
   id: '11111111-1111-1111-1111-111111111111',
   job_name: 'embedding-backfill',
-  error_message: 'CRDB unreachable',
+  error_code: 'database_unavailable' as const,
   attempts: 3,
-  context: { batchSize: 25 },
   status: 'pending' as const,
   dead_lettered_at: new Date('2026-06-14T12:00:00Z'),
   resolved_at: null,
@@ -28,47 +27,46 @@ describe('workerDeadLetterRepository', () => {
   });
 
   describe('record', () => {
-    it('inserts job_name + error + attempts and serializes context to JSON', async () => {
+    it('inserts only stable job/error codes and attempts', async () => {
       mockQuery.mockResolvedValue({ rows: [ROW], rowCount: 1 });
       const row = await workerDeadLetterRepository.record({
         jobName: 'embedding-backfill',
-        errorMessage: 'CRDB unreachable',
+        errorCode: 'database_unavailable',
         attempts: 3,
-        context: { batchSize: 25 },
       });
       const [sql, args] = mockQuery.mock.calls[0]!;
       expect(sql).toContain('INSERT INTO worker_dead_letter');
       expect(sql).toContain('RETURNING');
-      expect(args).toEqual([
-        'embedding-backfill',
-        'CRDB unreachable',
-        3,
-        JSON.stringify({ batchSize: 25 }),
-      ]);
+      expect(sql).not.toContain('error_message');
+      expect(sql).not.toContain('context');
+      expect(args).toEqual(['embedding-backfill', 'database_unavailable', 3]);
       expect(row).toEqual(ROW);
     });
 
-    it('defaults attempts to 1 and context to null when omitted', async () => {
+    it('defaults attempts to 1', async () => {
       mockQuery.mockResolvedValue({ rows: [ROW], rowCount: 1 });
       await workerDeadLetterRepository.record({
         jobName: 'domain-extraction',
-        errorMessage: 'LLM timeout',
+        errorCode: 'timeout',
       });
       const [, args] = mockQuery.mock.calls[0]!;
       expect(args[2]).toBe(1); // attempts default
-      expect(args[3]).toBeNull(); // context default
     });
 
-    it('does not double-encode a context that is already an object', async () => {
-      mockQuery.mockResolvedValue({ rows: [ROW], rowCount: 1 });
-      await workerDeadLetterRepository.record({
-        jobName: 'briefing-generator-daily',
-        errorMessage: 'boom',
-        context: { cadence: 'daily' },
-      });
-      const [, args] = mockQuery.mock.calls[0]!;
-      // Single JSON.stringify, not nested-quoted.
-      expect(args[3]).toBe('{"cadence":"daily"}');
+    it('rejects free-form values before SQL can persist them', async () => {
+      await expect(workerDeadLetterRepository.record({
+        jobName: 'user 123 failed' as 'embedding-backfill',
+        errorCode: 'job_failed',
+      })).rejects.toThrow('worker_dead_letter_code_invalid');
+      expect(mockQuery).not.toHaveBeenCalled();
+    });
+
+    it('rejects identifier-shaped values that are not declared operational codes', async () => {
+      await expect(workerDeadLetterRepository.record({
+        jobName: 'customer_123' as 'embedding-backfill',
+        errorCode: 'private_detail' as 'job_failed',
+      })).rejects.toThrow('worker_dead_letter_code_invalid');
+      expect(mockQuery).not.toHaveBeenCalled();
     });
   });
 
@@ -77,6 +75,9 @@ describe('workerDeadLetterRepository', () => {
       mockQuery.mockResolvedValue({ rows: [ROW], rowCount: 1 });
       await workerDeadLetterRepository.list();
       const [sql, args] = mockQuery.mock.calls[0]!;
+      expect(sql).toContain('error_code');
+      expect(sql).not.toContain('error_message');
+      expect(sql).not.toContain('context');
       expect(sql).toContain("status = $1");
       expect(sql).toContain('ORDER BY dead_lettered_at DESC');
       expect(args[0]).toBe('pending');

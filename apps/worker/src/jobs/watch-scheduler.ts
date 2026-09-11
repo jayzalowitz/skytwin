@@ -8,6 +8,7 @@ import {
 import type { SignalRow } from '@skytwin/db';
 import type { Watch } from '@skytwin/shared-types';
 import { computeNextRun, matchesFilter, type MatchableSignal } from '@skytwin/routines';
+import { classifyWorkerFailure } from '../content-free-error.js';
 
 const log = createLogger('worker:watch-scheduler');
 
@@ -183,11 +184,12 @@ export async function runWatchSchedulerJob(deps: WatchSchedulerDeps = {}): Promi
         fired += 1;
       }
     } catch (err) {
-      log.error(`Watch ${watch.id} failed to run`, {
-        error: err instanceof Error ? err.message : String(err),
+      log.error('Watch failed to run', {
+        watchId: watch.id,
+        errorCode: classifyWorkerFailure(err),
       });
     }
   }
 
-  if (fired > 0) log.info(`Watch scheduler: ${fired} of ${due.length} due watch(es) produced a run`);
+  if (fired > 0) log.info('Watch scheduler produced runs', { fired, due: due.length });
 }

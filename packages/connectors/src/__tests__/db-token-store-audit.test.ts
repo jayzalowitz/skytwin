@@ -133,10 +133,12 @@ describe('DbTokenStore — audit log (#393)', () => {
   });
 
   it('returns the decrypted token even when the audit sink rejects (logging miss != deny)', async () => {
+    const marker = 'provider-secret-marker-7f3c';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const key = makeKey();
     store.setKeyCache(createMockKeyCache(key));
     const failingPort: AuditLogPort = {
-      recordAccess: () => Promise.reject(new Error('CRDB pool exhausted')),
+      recordAccess: () => Promise.reject(new Error(marker)),
     };
     store.setAuditLog(failingPort, 'worker');
 
@@ -157,13 +159,18 @@ describe('DbTokenStore — audit log (#393)', () => {
     expect(result?.accessToken).toBe('ya29.recover');
     // Give the unhandled-rejection guard a tick to surface.
     await new Promise((r) => setTimeout(r, 5));
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(marker);
+    expect(JSON.stringify(warn.mock.calls)).toContain('operation_failed');
+    warn.mockRestore();
   });
 
   it('returns the decrypted token even when the audit sink throws synchronously', async () => {
+    const marker = 'provider-secret-marker-7f3c';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const key = makeKey();
     store.setKeyCache(createMockKeyCache(key));
     const throwingPort: AuditLogPort = {
-      recordAccess: () => { throw new Error('sync boom'); },
+      recordAccess: () => { throw new Error(marker); },
     };
     store.setAuditLog(throwingPort, 'worker');
 
@@ -182,6 +189,9 @@ describe('DbTokenStore — audit log (#393)', () => {
 
     const result = await store.getToken('user-1', 'google');
     expect(result?.accessToken).toBe('ya29.surv');
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(marker);
+    expect(JSON.stringify(warn.mock.calls)).toContain('operation_failed');
+    warn.mockRestore();
   });
 
   it('no-ops cleanly when no audit port is attached at all (backwards compat)', async () => {
