@@ -11,7 +11,7 @@ All notable changes to SkyTwin will be documented in this file.
 ### Fixed
 
 - Approval first-confirmation, single-response, and batch-response transitions now require `expires_at > now()` in their atomic database updates. A route read made before expiry can no longer mint a confirmation token or resolve an approval after its consent window closes.
-- The web service worker no longer queues approval writes for offline replay. Approval responses are sent only while online, preserving their time-bound user context instead of delivering a deferred click after reconnection.
+- The web service worker no longer queues approval responses for offline replay. It also revalidates existing queue records before network access, dropping responses persisted by an older worker while leaving unrelated approval maintenance requests unchanged. Approval responses are sent only while online, preserving their time-bound user context instead of delivering a deferred click after reconnection.
 
 ## [Unreleased] — Restricted Gmail Inbox mutation boundary
 

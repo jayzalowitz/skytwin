@@ -67,8 +67,11 @@ const NON_REPLAYABLE_PREFIXES = Object.freeze([
   '/api/assistant/messages', // streamed; replay would duplicate a turn
   '/api/sessions/pair',      // single-use pairing tokens
   '/api/oauth',              // OAuth handshakes are time-sensitive
-  '/api/approvals/',         // consent transitions must happen online, once
 ]);
+
+// Express routes are case-insensitive unless the application opts in to
+// case-sensitive routing, so the offline policy must match the same surface.
+const APPROVAL_RESPONSE_PATH = /^\/api\/approvals\/[^/]+\/respond\/?$/i;
 
 /**
  * Decide how the worker should handle a request.
@@ -129,7 +132,20 @@ export function isPrecached(pathname) {
 
 /** True when a mutating API path is safe to queue + replay later. */
 export function isReplayable(pathname) {
-  return !NON_REPLAYABLE_PREFIXES.some((p) => pathname.startsWith(p));
+  return !APPROVAL_RESPONSE_PATH.test(pathname) &&
+    !NON_REPLAYABLE_PREFIXES.some((p) => pathname.startsWith(p));
+}
+
+/**
+ * Revalidate a persisted queue record against the current routing policy.
+ * This drops writes queued by an older worker version when their endpoint is
+ * later classified as time-sensitive or otherwise unsafe to replay.
+ */
+export function shouldReplayQueuedWrite(write, origin) {
+  return classifyRequest(
+    { method: write?.method, url: write?.url },
+    origin,
+  ) === 'queueable-write';
 }
 
 /**
