@@ -8,7 +8,7 @@ All notable changes to SkyTwin will be documented in this file.
 
 ### Changed
 
-- New account-bound Gmail decisions use the repository-owned signal UUID as their idempotency key, keeping connector source IDs out of decision receipts and allowing equal source IDs on two owned accounts. Disabled-path ingestion still checks the older connector-source key so existing decisions are recovered without duplication.
+- Gated proposal decisions use the repository-owned signal UUID as their idempotency key, keeping connector source IDs out of their receipts and allowing equal source IDs on two owned accounts. Disabled-path ingestion retains its existing connector-source contract and also recovers proposal UUIDs, so changing the gate does not duplicate completed work.
 
 ## [Unreleased] — Proposal-only Inbox boundary
 

@@ -64,6 +64,7 @@ const { savedEnv, mocks, SERVICE_TOKEN, TEST_USER_ID } = vi.hoisted(() => {
       twinGetTraits: vi.fn(),
       twinGetTemporalProfile: vi.fn(),
       policyEvaluate: vi.fn(),
+      isReceiptComplete: vi.fn(),
     },
   };
 });
@@ -154,7 +155,7 @@ vi.mock('@skytwin/db', () => ({
     }),
   },
   inferenceReceiptRepository: {
-    isCompleteForDecision: vi.fn().mockResolvedValue(false),
+    isCompleteForDecision: mocks.isReceiptComplete,
     createManyForUser: vi.fn().mockResolvedValue([]),
   },
   reasoningModeRepository: {
@@ -304,7 +305,6 @@ function proposalPersistenceResult(created: boolean): Record<string, unknown> {
 
 function expectNoOrdinaryPipelineCalls(): void {
   for (const mock of [
-    mocks.findBySignalId,
     mocks.interpret,
     mocks.evaluate,
     mocks.generate,
@@ -361,6 +361,7 @@ describe('/api/events/ingest behind the production auth chain', () => {
     mocks.getOutcome.mockResolvedValue(null);
     mocks.approvalFindByDecisionId.mockResolvedValue(null);
     mocks.findBySignalId.mockResolvedValue(null);
+    mocks.isReceiptComplete.mockResolvedValue(false);
     mocks.userFindById.mockResolvedValue({
       id: TEST_USER_ID,
       trust_tier: 'observer',
@@ -402,7 +403,18 @@ describe('/api/events/ingest behind the production auth chain', () => {
         riskAssessment: {
           actionId: '44444444-4444-4444-8444-444444444444',
           overallTier: 'moderate',
-          dimensions: {},
+          dimensions: Object.fromEntries([
+            'reversibility',
+            'financial_impact',
+            'legal_sensitivity',
+            'privacy_sensitivity',
+            'relationship_sensitivity',
+            'operational_risk',
+          ].map((dimension) => [dimension, {
+            tier: 'moderate',
+            score: 0.5,
+            reasoning: `Reviewed ${dimension}.`,
+          }])),
           reasoning: 'Explicit confirmation is required.',
           assessedAt: new Date('2026-09-11T12:00:00.000Z'),
         },
@@ -487,7 +499,7 @@ describe('/api/events/ingest behind the production auth chain', () => {
       receivedAt: '2026-09-11T11:00:00.000Z',
       observedAt: '2026-09-11T12:00:00.000Z',
       messageRefId: '22222222-2222-4222-8222-222222222222',
-      signalId: '33333333-3333-4333-8333-333333333333',
+      signalId: 'sig-account-message-conflict',
     });
     expect(interpreted).not.toHaveProperty('messageId');
     expect(interpreted).not.toHaveProperty('emailId');
@@ -533,6 +545,23 @@ describe('/api/events/ingest behind the production auth chain', () => {
       signalId: '33333333-3333-4333-8333-333333333333',
       proposal: expect.any(Object),
     }));
+    expect(mocks.buildArchiveProposal).toHaveBeenCalledWith({
+      decision: expect.objectContaining({
+        situationType: 'email_triage',
+        domain: 'email',
+        provenance: 'untrusted_external',
+        rawData: {
+          messageRefId: '22222222-2222-4222-8222-222222222222',
+        },
+      }),
+    });
+    const persistenceInput = mocks.persistArchiveProposal.mock.calls[0]![0] as Record<string, unknown>;
+    const builderResult = mocks.buildArchiveProposal.mock.results[0]!.value as Record<string, unknown>;
+    expect(persistenceInput['proposal']).toBe(builderResult['proposal']);
+    expect(mocks.findBySignalId).toHaveBeenCalledWith(
+      TEST_USER_ID,
+      'sig-account-message-conflict',
+    );
     expect(mocks.sseEmit).toHaveBeenCalledTimes(1);
     expect(mocks.sseEmit).toHaveBeenCalledWith(TEST_USER_ID, 'approval:new', expect.objectContaining({
       id: '88888888-8888-4888-8888-888888888888',
@@ -632,7 +661,7 @@ describe('/api/events/ingest behind the production auth chain', () => {
     expectNoOrdinaryPipelineCalls();
   });
 
-  it('finishes an incomplete legacy Gmail decision in its original duplicate namespace', async () => {
+  it('does not send an incomplete gated proposal through the ordinary path after disabling the gate', async () => {
     mocks.findBySignalId
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce({
@@ -647,14 +676,44 @@ describe('/api/events/ingest behind the production auth chain', () => {
 
     const res = await post({ 'X-SkyTwin-Service-Token': SERVICE_TOKEN });
 
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(409);
     expect(mocks.findBySignalId.mock.calls.map((call) => call[1])).toEqual([
-      '33333333-3333-4333-8333-333333333333',
       'sig-account-message-conflict',
+      '33333333-3333-4333-8333-333333333333',
     ]);
-    expect(mocks.interpret).toHaveBeenCalledWith(expect.objectContaining({
-      signalId: 'sig-account-message-conflict',
-    }));
+    expect(mocks.interpret).not.toHaveBeenCalled();
+  });
+
+  it('returns the prior durable response when the gate is enabled for a legacy decision', async () => {
+    process.env['SKYTWIN_GMAIL_ARCHIVE_ENABLED'] = 'true';
+    mocks.findBySignalId.mockResolvedValue({
+      id: '99999999-9999-4999-8999-999999999999',
+      situationType: 'email_triage',
+      domain: 'email',
+      urgency: 'low',
+      summary: 'Prior Gmail decision',
+      rawData: { signalId: 'sig-account-message-conflict' },
+      interpretedAt: new Date('2026-09-11T11:00:00.000Z'),
+    });
+    mocks.getOutcome.mockResolvedValue({
+      selectedAction: null,
+      autoExecute: false,
+      requiresApproval: false,
+      reasoning: 'Previously handled.',
+    });
+    mocks.isReceiptComplete.mockResolvedValue(true);
+
+    const res = await post({ 'X-SkyTwin-Service-Token': SERVICE_TOKEN });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      decision: { id: '99999999-9999-4999-8999-999999999999' },
+      reIngested: true,
+    });
+    expect(mocks.buildArchiveProposal).not.toHaveBeenCalled();
+    expect(mocks.persistArchiveProposal).not.toHaveBeenCalled();
+    expect(mocks.sseEmit).not.toHaveBeenCalled();
+    expectNoOrdinaryPipelineCalls();
   });
 
   it('rejects a WRONG token from loopback', async () => {

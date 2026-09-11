@@ -440,7 +440,7 @@ export function createEventsRouter(): Router {
       }
       const rawEvent = validation.event;
       const userId = validation.userId;
-      let legacyGmailSourceSignalId: string | null = null;
+      let gmailOwnedSignalId: string | null = null;
 
       // connectorEvidence is authority-bearing only on the loopback service
       // credential path. A human session presenting the same JSON shape must
@@ -520,15 +520,15 @@ export function createEventsRouter(): Router {
         // replay, modified request fields cannot alter the decision input even
         // though the request reached us before the idempotency lookup.
         for (const key of Object.keys(rawEvent)) delete rawEvent[key];
-        legacyGmailSourceSignalId = persisted.signal.source_signal_id;
+        gmailOwnedSignalId = persisted.signal.id;
         Object.assign(rawEvent, sanitizedGmailSignalData(persisted.signal.data), {
           userId,
           source: 'gmail',
           type: persisted.signal.type,
-          // New decisions use the repository-owned signal UUID. Connector
-          // source IDs remain behind the evidence boundary and are consulted
-          // only as a backward-compatible duplicate key below.
-          signalId: persisted.signal.id,
+          // Preserve the existing disabled-path interpretation contract. The
+          // gated proposal repository uses signals.id separately so its
+          // receipts do not include this connector source identifier.
+          signalId: sourceSignalId,
           authoringTier: persisted.messageRef.authoring_tier,
           receivedAt: persisted.signal.timestamp.toISOString(),
           observedAt: persisted.messageRef.first_observed_at.toISOString(),
@@ -536,6 +536,24 @@ export function createEventsRouter(): Router {
         });
 
         if (gmailArchiveProposalEnabled() && persisted.messageRef.last_observed_inbox === true) {
+          // A signal evaluated before this rollout keeps its prior durable
+          // response. Do not manufacture a second decision graph merely
+          // because the proposal gate changed between observations.
+          if (decisionRepositoryAdapter.findBySignalId) {
+            const previous = await decisionRepositoryAdapter.findBySignalId(
+              userId,
+              sourceSignalId,
+            );
+            if (previous) {
+              const recovered = await recoverCompletedIngest(userId, previous);
+              if (recovered) {
+                res.json(recovered);
+                return;
+              }
+              res.status(409).json({ error: 'idempotency_conflict' });
+              return;
+            }
+          }
           // Build exclusively from repository-issued identifiers. This branch
           // deliberately returns before ordinary interpretation, LLM setup,
           // policy execution, credentials, routing, memory writes, or spend.
@@ -630,7 +648,7 @@ export function createEventsRouter(): Router {
         ? rawEvent['signalId']
         : '';
       if (signalId && decisionRepositoryAdapter.findBySignalId) {
-        const duplicateKeys = [signalId, legacyGmailSourceSignalId]
+        const duplicateKeys = [signalId, gmailOwnedSignalId]
           .filter((value, index, values): value is string =>
             typeof value === 'string' && value.length > 0 && values.indexOf(value) === index);
         for (const duplicateKey of duplicateKeys) {
@@ -641,11 +659,12 @@ export function createEventsRouter(): Router {
             res.json(recovered);
             return;
           }
-          // Finish an incomplete legacy decision in its original idempotency
-          // namespace instead of creating a second decision under signals.id.
+          // An incomplete gated proposal must not fall into the ordinary
+          // decision pipeline. The proposal graph is atomic, so this state
+          // indicates corruption or an incompatible historical row.
           if (duplicateKey !== signalId) {
-            rawEvent['signalId'] = duplicateKey;
-            signalId = duplicateKey;
+            res.status(409).json({ error: 'idempotency_conflict' });
+            return;
           }
           break;
         }
