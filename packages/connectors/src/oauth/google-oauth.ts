@@ -110,8 +110,10 @@ export async function exchangeCode(
   });
 
   if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Google OAuth token exchange failed: ${response.status} ${errorText}`);
+    throw Object.assign(
+      new Error(`Google OAuth token exchange failed: ${response.status}`),
+      { statusCode: response.status },
+    );
   }
 
   const data = await response.json() as {
@@ -138,9 +140,9 @@ export class OAuthRefreshError extends Error {
   readonly statusCode: number;
   readonly permanent: boolean;
 
-  constructor(statusCode: number, detail: string) {
+  constructor(statusCode: number, _providerDetail?: string) {
     const permanent = statusCode === 400 || statusCode === 401 || statusCode === 403;
-    super(`Google OAuth token refresh failed (${permanent ? 'permanent' : 'transient'}): ${statusCode} ${detail}`);
+    super(`Google OAuth token refresh failed (${permanent ? 'permanent' : 'transient'}): ${statusCode}`);
     this.name = 'OAuthRefreshError';
     this.statusCode = statusCode;
     this.permanent = permanent;
@@ -172,8 +174,7 @@ export async function refreshAccessToken(
   });
 
   if (!response.ok) {
-    const errorText = await response.text();
-    throw new OAuthRefreshError(response.status, errorText);
+    throw new OAuthRefreshError(response.status);
   }
 
   const data = await response.json() as {
@@ -201,7 +202,9 @@ export async function revokeToken(token: string): Promise<void> {
   });
 
   if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Google OAuth token revocation failed: ${response.status} ${errorText}`);
+    throw Object.assign(
+      new Error(`Google OAuth token revocation failed: ${response.status}`),
+      { statusCode: response.status },
+    );
   }
 }

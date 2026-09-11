@@ -1,7 +1,7 @@
 import type { SignalConnector, RawSignal, SignalHandler } from './connector-interface.js';
 import type { OAuthTokenStore } from './oauth/token-store.js';
 import { parseListId, type CursorStore } from './gmail-connector.js';
-import { withRetry, RetryableHttpError, parseRetryAfter } from '@skytwin/core';
+import { withRetry, RetryableHttpError, parseRetryAfter, operationalFailureMeta } from '@skytwin/core';
 import { classifyEmailAuthoringTier, isAutomatedSender, type AuthoringTier } from './authoring-tier.js';
 
 const GRAPH_API = 'https://graph.microsoft.com/v1.0';
@@ -195,8 +195,8 @@ export class OutlookMailConnector implements SignalConnector {
         await this.cursorStore.save(this.userId, 'outlook', DELTA_LINK_KIND, link);
       } catch (err) {
         console.warn(
-          `[outlook] Failed to persist delta cursor for ${this.userId}:`,
-          err instanceof Error ? err.message : String(err),
+          '[outlook] Failed to persist delta cursor',
+          { userId: this.userId, ...operationalFailureMeta(err) },
         );
       }
     }

@@ -105,6 +105,20 @@ describe('google-oauth PKCE support', () => {
     it('throws when neither secret nor verifier is supplied', async () => {
       await expect(exchangeCode(pkceConfig, 'auth-code')).rejects.toThrow(/clientSecret.*codeVerifier/);
     });
+
+    it('does not read or forward a failed provider response body', async () => {
+      const marker = 'provider-secret-marker-7f3c';
+      const text = vi.fn(async () => marker);
+      fetchSpy.mockResolvedValueOnce({ ok: false, status: 400, text } as unknown as Response);
+
+      const error = await exchangeCode(pkceConfig, 'bad-code', 'verifier').catch(
+        (caught: unknown) => caught,
+      );
+      expect(text).not.toHaveBeenCalled();
+      expect(String(error)).toContain('token exchange failed: 400');
+      expect(String(error)).not.toContain(marker);
+      expect((error as Error).stack).not.toContain(marker);
+    });
   });
 
   describe('refreshAccessToken', () => {
@@ -137,6 +151,20 @@ describe('google-oauth PKCE support', () => {
       );
       const body = (fetchSpy.mock.calls[0]![1] as RequestInit).body as URLSearchParams;
       expect(body.get('client_secret')).toBe('keep');
+    });
+
+    it('does not read or forward a failed refresh response body', async () => {
+      const marker = 'provider-secret-marker-7f3c';
+      const text = vi.fn(async () => marker);
+      fetchSpy.mockResolvedValueOnce({ ok: false, status: 401, text } as unknown as Response);
+
+      const error = await refreshAccessToken(
+        { clientId: 'public.apps', clientSecret: '', redirectUri: 'http://127.0.0.1/cb' },
+        'refresh-token',
+      ).catch((caught: unknown) => caught);
+      expect(text).not.toHaveBeenCalled();
+      expect(String(error)).not.toContain(marker);
+      expect((error as Error).stack).not.toContain(marker);
     });
   });
 });

@@ -101,7 +101,13 @@ These are non-negotiable, deterministic, and only change via deploy:
   Preferences, twin profiles and memory pages are in the same position: migration
   `066` added the columns, but `setPreferenceVaultKeyProvider()` has no production
   caller, so `resolveKey` returns plaintext mode. This is a rail we intend to hold,
-  not one we hold yet; `docs/privacy.html` states the same thing to users.
+  not one we hold yet; `docs/privacy.html` states the same thing to users. The
+  proposed implementation and locked-state contract is recorded in
+  [`ADR 0001`](./adr/0001-local-source-field-encryption-boundary.md); the ADR and
+  its field inventory now track a source-key broker foundation, explicit
+  installation ownership, and dead-letter redaction. Those prerequisites do not
+  route these source fields through encryption and therefore do not change this
+  status.
 - Database schema migrations: only via deploy with explicit migration file
 
 Any future change here is a deliberate engineering decision, not a runtime option.

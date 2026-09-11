@@ -2,6 +2,7 @@ import { createLogger } from '@skytwin/core';
 import { mcpServerRepository, appSuggestionRepository, query } from '@skytwin/db';
 import { runPrompt } from '@skytwin/policy-prompts';
 import type { LlmClient } from '@skytwin/llm-client';
+import { classifyWorkerFailure } from '../content-free-error.js';
 
 const log = createLogger('worker:dormancy-check');
 
@@ -118,10 +119,10 @@ async function markDormantAndSuggest(
       });
       suggestionCreated = true;
     } catch (err) {
-      log.warn(`Failed to upsert dormancy suggestion for server ${server.id}`, {
+      log.warn('Failed to upsert dormancy suggestion for server', {
+        serverId: server.id,
         userId: server.user_id,
-        registryId: server.registry_id,
-        error: err instanceof Error ? err.message : String(err),
+        errorCode: classifyWorkerFailure(err),
       });
     }
   }
@@ -151,14 +152,16 @@ export async function runDormancyCheckJob(deps: DormancyCheckJobDeps = {}): Prom
   const thresholdDate = new Date(Date.now() - thresholdDays * 24 * 60 * 60 * 1000);
   const { llmClient } = deps;
 
-  log.info(`Running dormancy check (threshold: ${thresholdDays} days ago = ${thresholdDate.toISOString()})`);
+  log.info('Running dormancy check', {
+    thresholdDays, thresholdDate: thresholdDate.toISOString(),
+  });
 
   let inactiveServers;
   try {
     inactiveServers = await mcpServerRepository.getInactiveSince(thresholdDate);
   } catch (err) {
     log.error('Failed to query inactive servers for dormancy check', {
-      error: err instanceof Error ? err.message : String(err),
+      errorCode: classifyWorkerFailure(err),
     });
     return;
   }
@@ -168,7 +171,7 @@ export async function runDormancyCheckJob(deps: DormancyCheckJobDeps = {}): Prom
     return;
   }
 
-  log.info(`Dormancy check: ${inactiveServers.length} server(s) eligible`);
+    log.info('Dormancy check: servers eligible', { serverCount: inactiveServers.length });
 
   let markedDormant = 0;
   let suggestionsCreated = 0;
@@ -213,16 +216,16 @@ export async function runDormancyCheckJob(deps: DormancyCheckJobDeps = {}): Prom
               if (d) markedDormant++;
               if (s) suggestionsCreated++;
             } else {
-              log.info(`Dormancy check: LLM kept server active`, {
+              log.info('Dormancy check: LLM kept server active', {
                 serverId: server.id,
-                reasoning: judgment.output.reasoning,
               });
             }
             continue; // LLM handled this server
           }
         } catch (err) {
-          log.warn(`Dormancy LLM judgment failed for server ${server.id}, using deterministic fallback`, {
-            error: err instanceof Error ? err.message : String(err),
+          log.warn('Dormancy LLM judgment failed for server, using deterministic fallback', {
+            serverId: server.id,
+            errorCode: classifyWorkerFailure(err),
           });
           // fall through to deterministic
         }
@@ -241,14 +244,12 @@ export async function runDormancyCheckJob(deps: DormancyCheckJobDeps = {}): Prom
         if (s) suggestionsCreated++;
       }
     } catch (err) {
-      log.error(`Failed to process server ${server.id} in dormancy check`, {
-        error: err instanceof Error ? err.message : String(err),
+      log.error('Failed to process server in dormancy check', {
+        serverId: server.id,
+        errorCode: classifyWorkerFailure(err),
       });
     }
   }
 
-  log.info(
-    `Dormancy check complete: ${markedDormant} server(s) marked dormant, ${suggestionsCreated} suggestion(s) created`,
-    { markedDormant, suggestionsCreated },
-  );
+  log.info('Dormancy check complete', { markedDormant, suggestionsCreated });
 }

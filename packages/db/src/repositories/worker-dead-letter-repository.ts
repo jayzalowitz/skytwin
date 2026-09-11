@@ -7,32 +7,57 @@ import { query } from '../connection.js';
  *   'discarded' — operator dismissed it as not worth replaying
  */
 export type WorkerDeadLetterStatus = 'pending' | 'replayed' | 'discarded';
+export const WORKER_DEAD_LETTER_JOB_CODES = [
+  'briefing-generator-daily',
+  'briefing-generator-weekly',
+  'capability-inference',
+  'changelog-poll',
+  'domain-extraction',
+  'embedding-backfill',
+  'federation-sync',
+  'memory-action-loop',
+  'metrics-rollup',
+  'promotion-eligibility-check',
+  'relationship-tier-backfill',
+  'tier-backfill',
+  'unknown-job',
+  'watch-scheduler',
+] as const;
+export type WorkerDeadLetterJobCode = typeof WORKER_DEAD_LETTER_JOB_CODES[number];
+
+export const WORKER_DEAD_LETTER_ERROR_CODES = [
+  'broker_unavailable',
+  'configuration_invalid',
+  'database_unavailable',
+  'job_failed',
+  'legacy_redacted',
+  'network_unavailable',
+  'rate_limited',
+  'timeout',
+  'vault_locked',
+] as const;
+export type WorkerDeadLetterErrorCode =
+  typeof WORKER_DEAD_LETTER_ERROR_CODES[number];
+
+const STABLE_JOB_CODES = new Set<string>(WORKER_DEAD_LETTER_JOB_CODES);
+const STABLE_ERROR_CODES = new Set<string>(WORKER_DEAD_LETTER_ERROR_CODES);
 
 /** A single dead-lettered worker job. See migration 065 for rationale. */
 export interface WorkerDeadLetterRow {
   id: string;
-  job_name: string;
-  error_message: string;
+  job_name: WorkerDeadLetterJobCode;
+  error_code: WorkerDeadLetterErrorCode;
   attempts: number;
-  /**
-   * Arbitrary job input snapshot (e.g. `{ cadence: 'daily' }`,
-   * `{ userId: '…' }`). `null` for jobs that take no input. Typed as
-   * `unknown` rather than a concrete shape because the worker writes
-   * heterogeneous job contexts here; consumers narrow at read time.
-   */
-  context: unknown;
   status: WorkerDeadLetterStatus;
   dead_lettered_at: Date;
   resolved_at: Date | null;
 }
 
 export interface RecordDeadLetterInput {
-  jobName: string;
-  errorMessage: string;
+  jobName: WorkerDeadLetterJobCode;
+  errorCode: WorkerDeadLetterErrorCode;
   /** Number of attempts that were made before dead-lettering. Defaults to 1. */
   attempts?: number;
-  /** Optional JSON-serializable snapshot of the job's input. */
-  context?: unknown;
 }
 
 /**
@@ -40,34 +65,32 @@ export interface RecordDeadLetterInput {
  *
  * The worker wraps each global background job in a retry counter
  * (`runWithDeadLetter` in apps/worker). After the job exceeds its
- * retry budget, the worker calls `record()` once with the final error
+ * retry budget, the worker calls `record()` once with a stable error code
  * and the accumulated attempt count. An operator inspects the queue
  * via the admin API (`/api/admin/dead-letter`) and resolves each row
  * (`replayed` or `discarded`).
  *
- * NOT user-scoped — these are process-global jobs with no single owner
- * user. `context` may name a user when one applies, but the row's
- * identity is `(job_name, dead_lettered_at)`.
+ * NOT user-scoped — these are process-global jobs with no single owner.
+ * The table deliberately stores no raw error or job-input payload. Replay is
+ * cadence-driven and re-reads live source-of-truth state, so retaining a
+ * user-derived context would add exposure without enabling recovery.
  */
 export const workerDeadLetterRepository = {
   /**
-   * Record a dead-lettered job. Returns the inserted row so the worker
-   * can log its id. `context` is serialized to JSONB via the driver's
-   * parameter binding (pass a plain object, not a pre-stringified blob)
-   * — stringifying ourselves would double-encode it.
+   * Record a dead-lettered job. Both strings must be stable identifiers, not
+   * messages. Rejecting free-form shapes here backstops the content-free
+   * database constraint before SQL is attempted.
    */
   async record(input: RecordDeadLetterInput): Promise<WorkerDeadLetterRow> {
+    if (!STABLE_JOB_CODES.has(input.jobName) || !STABLE_ERROR_CODES.has(input.errorCode)) {
+      throw new Error('worker_dead_letter_code_invalid');
+    }
     const result = await query<WorkerDeadLetterRow>(
-      `INSERT INTO worker_dead_letter (job_name, error_message, attempts, context)
-       VALUES ($1, $2, $3, $4)
-       RETURNING id, job_name, error_message, attempts, context,
+      `INSERT INTO worker_dead_letter (job_name, error_code, attempts)
+       VALUES ($1, $2, $3)
+       RETURNING id, job_name, error_code, attempts,
                  status, dead_lettered_at, resolved_at`,
-      [
-        input.jobName,
-        input.errorMessage,
-        input.attempts ?? 1,
-        input.context === undefined ? null : JSON.stringify(input.context),
-      ],
+      [input.jobName, input.errorCode, input.attempts ?? 1],
     );
     // RETURNING always yields exactly one row for a single-row INSERT.
     return result.rows[0]!;
@@ -103,7 +126,7 @@ export const workerDeadLetterRepository = {
 
     const whereClause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
     const result = await query<WorkerDeadLetterRow>(
-      `SELECT id, job_name, error_message, attempts, context,
+      `SELECT id, job_name, error_code, attempts,
               status, dead_lettered_at, resolved_at
          FROM worker_dead_letter
          ${whereClause}
@@ -117,7 +140,7 @@ export const workerDeadLetterRepository = {
   /** Fetch a single row by id, or null if it doesn't exist. */
   async findById(id: string): Promise<WorkerDeadLetterRow | null> {
     const result = await query<WorkerDeadLetterRow>(
-      `SELECT id, job_name, error_message, attempts, context,
+      `SELECT id, job_name, error_code, attempts,
               status, dead_lettered_at, resolved_at
          FROM worker_dead_letter
         WHERE id = $1`,
@@ -140,7 +163,7 @@ export const workerDeadLetterRepository = {
       `UPDATE worker_dead_letter
           SET status = $2, resolved_at = now()
         WHERE id = $1 AND status = 'pending'
-      RETURNING id, job_name, error_message, attempts, context,
+      RETURNING id, job_name, error_code, attempts,
                 status, dead_lettered_at, resolved_at`,
       [id, status],
     );

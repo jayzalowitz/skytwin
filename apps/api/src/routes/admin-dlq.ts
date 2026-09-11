@@ -39,9 +39,8 @@ const VALID_RESOLUTIONS: ReadonlySet<string> = new Set(['replayed', 'discarded']
 interface DeadLetterDTO {
   id: string;
   jobName: string;
-  errorMessage: string;
+  errorCode: string;
   attempts: number;
-  context: unknown;
   status: WorkerDeadLetterStatus;
   deadLetteredAt: string;
   resolvedAt: string | null;
@@ -51,9 +50,8 @@ function rowToDTO(row: WorkerDeadLetterRow): DeadLetterDTO {
   return {
     id: row.id,
     jobName: row.job_name,
-    errorMessage: row.error_message,
+    errorCode: row.error_code,
     attempts: row.attempts,
-    context: row.context,
     status: row.status,
     deadLetteredAt: row.dead_lettered_at.toISOString(),
     resolvedAt: row.resolved_at ? row.resolved_at.toISOString() : null,

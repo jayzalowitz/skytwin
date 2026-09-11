@@ -68,6 +68,7 @@ import {
   getUsersWithRecentMemory,
   type DailyMemorySuggestionBundle,
 } from './memory-suggestions.js';
+import { classifyWorkerFailure } from '../content-free-error.js';
 
 const log = createLogger('worker:memory-action-loop');
 
@@ -174,7 +175,7 @@ export async function runMemoryActionLoopJob(
     } catch (err) {
       log.warn('Memory action loop failed for user; continuing', {
         userId,
-        error: err instanceof Error ? err.message : String(err),
+        errorCode: classifyWorkerFailure(err),
       });
     }
   }
@@ -354,13 +355,18 @@ async function executeAllowedOpportunity(
     const router = await getRouter();
     const routing = await router.route(candidate, riskAssessment, userId);
     const result = await router.executeWithRouting(candidate, riskAssessment, userId);
-    const adapterName = adapterUsedFromResult(result.output) ?? routing.selectedAdapter;
+    const adapterName = result.status === 'completed'
+      ? adapterUsedFromResult(result.output) ?? routing.selectedAdapter
+      : routing.selectedAdapter;
+    const executionErrorCode = result.status === 'completed'
+      ? undefined
+      : classifyWorkerFailure(result.error);
     await recordOutcomeAndExplanation(candidate, riskAssessment, {
       autoExecuted: result.status === 'completed',
       requiresApproval: false,
       reason: result.status === 'completed'
         ? `Auto-executed after policy passed. ${policyDecision.reason}`
-        : `Execution did not complete. ${result.error ?? 'Unknown adapter failure.'}`,
+        : `Execution did not complete (${executionErrorCode}).`,
     });
     const plan = await executionRepository.createPlan({
       decisionId: candidate.decisionId,
@@ -371,8 +377,10 @@ async function executeAllowedOpportunity(
     await executionRepository.createResult({
       planId: plan.id,
       success: result.status === 'completed',
-      outputs: { ...(result.output ?? {}), adapter_plan_id: result.planId },
-      error: result.error,
+      outputs: result.status === 'completed'
+        ? { ...(result.output ?? {}), adapter_plan_id: result.planId }
+        : { adapter_plan_id: result.planId },
+      error: executionErrorCode,
       rollbackAvailable: candidate.reversible,
     });
 
@@ -383,7 +391,7 @@ async function executeAllowedOpportunity(
       status,
       result.status === 'completed'
         ? `SkyTwin executed this memory action through ${adapterName}.`
-        : `SkyTwin tried ${adapterName}, but execution failed: ${result.error ?? 'unknown error'}.`,
+        : `SkyTwin tried ${adapterName}, but execution failed (${executionErrorCode}).`,
       result.status === 'completed'
         ? 'Monitor feedback and keep the memory pattern available for future opportunities.'
         : 'Retry after adapter health or credentials are fixed.',
@@ -408,30 +416,31 @@ async function executeAllowedOpportunity(
     return report;
   } catch (err) {
     const isGap = err instanceof NoAdapterError;
+    const errorCode = isGap ? 'configuration_invalid' : classifyWorkerFailure(err);
     await recordOutcomeAndExplanation(candidate, riskAssessment, {
       autoExecuted: false,
       requiresApproval: false,
       reason: isGap
-        ? err.message
-        : `Execution failed before completion: ${err instanceof Error ? err.message : String(err)}`,
+        ? 'No configured adapter can handle this action.'
+        : `Execution failed before completion (${errorCode}).`,
     });
     const status: MemoryActionOpportunityStatus = isGap ? 'learning_needed' : 'execution_failed';
     if (isGap) {
-      await logMemorySkillGap(userId, opportunity, candidate.decisionId, err.message);
+      await logMemorySkillGap(userId, opportunity, candidate.decisionId, errorCode);
     }
     const report = buildReport(
       opportunity,
       status,
       isGap
         ? `No configured adapter can handle ${candidate.actionType} yet.`
-        : `Execution failed before completion: ${err instanceof Error ? err.message : String(err)}`,
+        : `Execution failed before completion (${errorCode}).`,
       isGap
         ? `Connect or teach an OpenClaw/IronClaw skill for ${candidate.actionType}, then retry.`
         : 'Retry after the adapter error is resolved.',
       deps.now,
       {
         decisionId: candidate.decisionId,
-        routeReason: err instanceof Error ? err.message : String(err),
+        routeReason: errorCode,
       },
     );
     await memoryActionOpportunityRepository.markStatus({
@@ -479,7 +488,7 @@ async function logMemorySkillGap(
       userId,
       opportunityId: opportunity.id,
       actionType: opportunity.actionType,
-      error: err instanceof Error ? err.message : String(err),
+      errorCode: classifyWorkerFailure(err),
     });
   }
 }

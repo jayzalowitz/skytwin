@@ -8,6 +8,7 @@ import type { SignalRow } from '@skytwin/db';
 import { RegistryClient } from '@skytwin/registry-client';
 import { CapabilityInferenceEngine } from '@skytwin/capability-engine';
 import type { SignalLike } from '@skytwin/capability-engine';
+import { classifyWorkerFailure } from '../content-free-error.js';
 
 const log = createLogger('worker:capability-inference');
 
@@ -119,12 +120,12 @@ export async function runCapabilityInferenceJob(
     users = await userRepository.findAll();
   } catch (err) {
     log.error('Failed to load users for capability inference', {
-      error: err instanceof Error ? err.message : String(err),
+      errorCode: classifyWorkerFailure(err),
     });
     return;
   }
 
-  log.info(`Running capability inference for ${users.length} user(s)`);
+  log.info('Running capability inference', { userCount: users.length });
   let totalSuggestions = 0;
   let totalSkipped = 0;
 
@@ -188,18 +189,20 @@ export async function runCapabilityInferenceJob(
       totalSkipped += userSkipped;
 
       if (userSuggestions > 0 || userSkipped > 0) {
-        log.info(`User ${user.id}: ${userSuggestions} suggestion(s) upserted, ${userSkipped} skipped`);
+        log.info('Capability inference user complete', {
+          userId: user.id, suggestions: userSuggestions, skipped: userSkipped,
+        });
       }
     } catch (err) {
-      log.error(`Capability inference failed for user ${user.id}`, {
-        error: err instanceof Error ? err.message : String(err),
+      log.error('Capability inference failed for user', {
+        userId: user.id,
+        errorCode: classifyWorkerFailure(err),
       });
     }
   }
 
-  log.info(
-    `Capability inference complete: ${totalSuggestions} suggestion(s) upserted, ${totalSkipped} skipped`,
-    { users: users.length, totalSuggestions, totalSkipped },
-  );
+  log.info('Capability inference complete', {
+    users: users.length, totalSuggestions, totalSkipped,
+  });
 
 }

@@ -1,18 +1,11 @@
 /**
- * Pluck the Google `error` field out of an OAuthRefreshError message
- * (e.g. `"invalid_grant"`, `"unauthorized_client"`) so the dashboard
- * banner can render conditional copy ("revoked" vs "client misconfig").
- * Returns null when the message has no recognisable code so the
- * caller can default to a safe fallback.
- *
- * The OAuthRefreshError message format (see
- * `packages/connectors/src/oauth/google-oauth.ts`) is:
- *   `Google OAuth token refresh failed (permanent|transient): <status> <body>`
- * where `<body>` is the raw response text from Google's token endpoint —
- * usually JSON like `{"error":"invalid_grant","error_description":"..."}`.
- * We parse the `"error":"<code>"` JSON field out of that body.
+ * Classify a permanent Google OAuth refresh failure from status metadata only.
+ * Provider response bodies are deliberately unavailable at this boundary.
  */
-export function extractErrorCode(message: string): string | null {
-  const match = message.match(/"error"\s*:\s*"([a-z_]+)"/i);
-  return match?.[1] ?? null;
+export type OAuthRefreshFailureCode = 'invalid_grant' | 'unauthorized_client';
+
+export function extractErrorCode(statusCode: number): OAuthRefreshFailureCode | null {
+  if (statusCode === 401) return 'unauthorized_client';
+  if (statusCode === 400 || statusCode === 403) return 'invalid_grant';
+  return null;
 }

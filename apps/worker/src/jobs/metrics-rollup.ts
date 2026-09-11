@@ -1,6 +1,7 @@
 import { createLogger } from '@skytwin/core';
 import { mcpServerMetricsRepository } from '@skytwin/db';
 import { MetricsRollupService, sharedMetricsCollector } from '@skytwin/observability';
+import { classifyWorkerFailure } from '../content-free-error.js';
 
 const log = createLogger('worker:metrics-rollup');
 
@@ -30,11 +31,11 @@ export async function runMetricsRollupJob(
   try {
     const written = await svc.rollup();
     if (written > 0) {
-      log.info(`Metrics rollup: flushed ${written} server bucket(s) to DB`);
+      log.info('Metrics rollup flushed server buckets', { written });
     }
   } catch (err) {
     log.warn('Metrics rollup job failed', {
-      error: err instanceof Error ? err.message : String(err),
+      errorCode: classifyWorkerFailure(err),
     });
   }
 }

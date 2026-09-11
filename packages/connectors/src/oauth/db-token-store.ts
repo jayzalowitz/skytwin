@@ -5,7 +5,7 @@ import { refreshAccessToken } from './google-oauth.js';
 import type { MicrosoftOAuthConfig } from './microsoft-oauth.js';
 import { refreshAccessToken as refreshMicrosoftAccessToken } from './microsoft-oauth.js';
 import { encrypt, decrypt, IV_LENGTH, TAG_LENGTH } from '@skytwin/credential-vault';
-import { createLogger } from '@skytwin/core';
+import { createLogger, operationalFailureMeta } from '@skytwin/core';
 
 const log = createLogger('connectors:db-token-store');
 
@@ -256,7 +256,7 @@ export class DbTokenStore implements OAuthTokenStore {
               log.warn('Audit-log recordAccess failed', {
                 userId,
                 provider,
-                error: err instanceof Error ? err.message : String(err),
+                ...operationalFailureMeta(err),
               });
             });
           }
@@ -264,7 +264,7 @@ export class DbTokenStore implements OAuthTokenStore {
           log.warn('Audit-log recordAccess threw synchronously', {
             userId,
             provider,
-            error: err instanceof Error ? err.message : String(err),
+            ...operationalFailureMeta(err),
           });
         }
       }
@@ -297,7 +297,7 @@ export class DbTokenStore implements OAuthTokenStore {
             userId,
             provider,
             rowId,
-            error: err instanceof Error ? err.message : String(err),
+            ...operationalFailureMeta(err),
           });
         });
       }

@@ -38,6 +38,7 @@
     "desktop:build:linux": "pnpm build && pnpm --filter skytwin-desktop package:linux",
     "desktop:build:all": "pnpm build && pnpm --filter skytwin-desktop package:all",
     "test:e2e": "./bin/skytwin-e2e-test",
+    "check:encryption-inventory": "node --test scripts/security/validate-encryption-field-inventory.test.mjs && node scripts/security/validate-encryption-field-inventory.mjs",
     "demo:record": "cd scripts/demo && pnpm record",
     "demo:narrate": "cd scripts/demo && pnpm narrate",
     "demo:install": "cd scripts/demo && pnpm install --ignore-workspace && pnpm exec playwright install chromium"

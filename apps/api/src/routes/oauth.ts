@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { createHmac, timingSafeEqual, randomUUID } from 'crypto';
-import { createLogger } from '@skytwin/core';
+import { createLogger, operationalFailureMeta } from '@skytwin/core';
 import { loadConfig } from '@skytwin/config';
 import { withTransaction } from '@skytwin/db';
 
@@ -163,7 +163,7 @@ async function fetchGoogleUserInfo(accessToken: string): Promise<GoogleUserInfo>
     headers: { Authorization: `Bearer ${accessToken}` },
   });
   if (!res.ok) {
-    throw new Error(`Google userinfo failed: ${res.status} ${res.statusText}`);
+    throw Object.assign(new Error(`Google userinfo failed: ${res.status}`), { status: res.status });
   }
   return res.json() as Promise<GoogleUserInfo>;
 }
@@ -187,7 +187,7 @@ export async function fetchMicrosoftUserInfo(accessToken: string): Promise<Micro
     headers: { Authorization: `Bearer ${accessToken}` },
   });
   if (!res.ok) {
-    throw new Error(`Microsoft Graph /me failed: ${res.status} ${res.statusText}`);
+    throw Object.assign(new Error(`Microsoft Graph /me failed: ${res.status}`), { status: res.status });
   }
   const data = (await res.json()) as {
     id: string;
@@ -970,7 +970,7 @@ export function createOAuthRouter(): Router {
         log.warn('Google profile sync failed; language/timezone left unset', {
           userId,
           accountEmail,
-          error: err instanceof Error ? err.message : String(err),
+          ...operationalFailureMeta(err),
         });
       }
 
@@ -1013,7 +1013,7 @@ export function createOAuthRouter(): Router {
             userId,
             accountEmail,
             pendingKeyPrefix: `${parsed.pendingKey.slice(0, 8)}…`,
-            error: err instanceof Error ? err.message : String(err),
+            ...operationalFailureMeta(err),
           });
         }
       }

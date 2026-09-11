@@ -6,6 +6,7 @@ import {
   getRecentPages,
   type RelationshipTier,
 } from '@skytwin/memory-gbrain-crdb-adapter';
+import { classifyWorkerFailure } from '../content-free-error.js';
 
 const log = createLogger('relationship-tier-backfill');
 
@@ -71,7 +72,7 @@ export async function runRelationshipTierBackfillJob(
   } catch (err) {
     log.warn('computeBidirectionalThreadCounts failed; skipping user', {
       userId,
-      reason: err instanceof Error ? err.message : String(err),
+      errorCode: classifyWorkerFailure(err),
     });
     return summary;
   }
@@ -86,7 +87,7 @@ export async function runRelationshipTierBackfillJob(
   } catch (err) {
     log.warn('getRecentPages failed; skipping user', {
       userId,
-      reason: err instanceof Error ? err.message : String(err),
+      errorCode: classifyWorkerFailure(err),
     });
     return summary;
   }
@@ -123,7 +124,7 @@ export async function runRelationshipTierBackfillJob(
       log.warn('relationship-tier backfill: updatePageMetadata failed', {
         userId,
         pageId: page.id,
-        error: err instanceof Error ? err.message : String(err),
+        errorCode: classifyWorkerFailure(err),
       });
     }
   }
@@ -131,7 +132,9 @@ export async function runRelationshipTierBackfillJob(
   if (summary.attempted > 0) {
     log.info('relationship-tier backfill pass complete', {
       userId,
-      ...summary,
+      attempted: summary.attempted,
+      updated: summary.updated,
+      failed: summary.failed,
     });
   }
   return summary;

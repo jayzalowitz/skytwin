@@ -25,6 +25,12 @@ export { normalizeSenderAddress } from './email-normalize.js';
 
 export { formatMoney, type FormatMoneyOptions } from './format-money.js';
 
+export {
+  classifyOperationalFailure,
+  operationalFailureMeta,
+  type OperationalFailureCode,
+} from './content-free-error.js';
+
 /**
  * Generate a new UUID.
  */

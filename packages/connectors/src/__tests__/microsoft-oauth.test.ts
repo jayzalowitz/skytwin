@@ -143,8 +143,14 @@ describe('microsoft-oauth', () => {
     });
 
     it('throws on a non-OK token response', async () => {
-      fetchMock.mockResolvedValue({ ok: false, status: 400, text: async () => 'invalid_grant' });
-      await expect(exchangeCode(baseConfig, 'bad', 'v')).rejects.toThrow(/token exchange failed: 400/);
+      const marker = 'provider-secret-marker-7f3c';
+      const text = vi.fn(async () => marker);
+      fetchMock.mockResolvedValue({ ok: false, status: 400, text });
+      const error = await exchangeCode(baseConfig, 'bad', 'v').catch((caught: unknown) => caught);
+      expect(text).not.toHaveBeenCalled();
+      expect(String(error)).toMatch(/token exchange failed: 400/);
+      expect(String(error)).not.toContain(marker);
+      expect((error as Error).stack).not.toContain(marker);
     });
   });
 
@@ -189,10 +195,15 @@ describe('microsoft-oauth', () => {
     });
 
     it('classifies a 401 as permanent (re-auth required)', async () => {
-      fetchMock.mockResolvedValue({ ok: false, status: 401, text: async () => 'invalid_grant' });
+      const marker = 'provider-secret-marker-7f3c';
+      const text = vi.fn(async () => marker);
+      fetchMock.mockResolvedValue({ ok: false, status: 401, text });
       const err = await refreshAccessToken(baseConfig, 'rt').catch((e: unknown) => e);
+      expect(text).not.toHaveBeenCalled();
       expect(err).toBeInstanceOf(MicrosoftOAuthRefreshError);
       expect((err as MicrosoftOAuthRefreshError).permanent).toBe(true);
+      expect(String(err)).not.toContain(marker);
+      expect((err as Error).stack).not.toContain(marker);
     });
 
     it('classifies a 503 as transient (retry-worthy)', async () => {

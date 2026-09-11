@@ -29,9 +29,11 @@ export const credentialRequirementRepository = {
   async register(input: RegisterCredentialRequirementInput): Promise<CredentialRequirementRow> {
     const result = await query<CredentialRequirementRow>(
       `INSERT INTO credential_requirements
-         (adapter, integration, integration_label, description, field_key, field_label, field_placeholder, is_secret, is_optional, skills)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-       ON CONFLICT (adapter, integration, field_key) DO UPDATE SET
+         (installation_id, adapter, integration, integration_label, description, field_key, field_label, field_placeholder, is_secret, is_optional, skills)
+       SELECT installation_id, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
+         FROM installation_identity
+        WHERE singleton = true
+       ON CONFLICT (installation_id, adapter, integration, field_key) DO UPDATE SET
          integration_label = EXCLUDED.integration_label,
          description = COALESCE(EXCLUDED.description, credential_requirements.description),
          field_label = EXCLUDED.field_label,
@@ -53,7 +55,9 @@ export const credentialRequirementRepository = {
         input.skills,
       ],
     );
-    return result.rows[0]!;
+    const row = result.rows[0];
+    if (!row) throw new Error('installation_identity_unavailable');
+    return row;
   },
 
   /**
@@ -61,7 +65,13 @@ export const credentialRequirementRepository = {
    */
   async getByAdapter(adapter: string): Promise<CredentialRequirementRow[]> {
     const result = await query<CredentialRequirementRow>(
-      'SELECT * FROM credential_requirements WHERE adapter = $1 ORDER BY integration, field_key',
+      `SELECT requirement.*
+         FROM credential_requirements AS requirement
+         JOIN installation_identity AS owner
+           ON owner.singleton = true
+          AND owner.installation_id = requirement.installation_id
+        WHERE requirement.adapter = $1
+        ORDER BY requirement.integration, requirement.field_key`,
       [adapter],
     );
     return result.rows;
@@ -72,7 +82,13 @@ export const credentialRequirementRepository = {
    */
   async getByIntegration(integration: string): Promise<CredentialRequirementRow[]> {
     const result = await query<CredentialRequirementRow>(
-      'SELECT * FROM credential_requirements WHERE integration = $1 ORDER BY adapter, field_key',
+      `SELECT requirement.*
+         FROM credential_requirements AS requirement
+         JOIN installation_identity AS owner
+           ON owner.singleton = true
+          AND owner.installation_id = requirement.installation_id
+        WHERE requirement.integration = $1
+        ORDER BY requirement.adapter, requirement.field_key`,
       [integration],
     );
     return result.rows;
@@ -83,7 +99,12 @@ export const credentialRequirementRepository = {
    */
   async getAll(): Promise<CredentialRequirementRow[]> {
     const result = await query<CredentialRequirementRow>(
-      'SELECT * FROM credential_requirements ORDER BY adapter, integration, field_key',
+      `SELECT requirement.*
+         FROM credential_requirements AS requirement
+         JOIN installation_identity AS owner
+           ON owner.singleton = true
+          AND owner.installation_id = requirement.installation_id
+        ORDER BY requirement.adapter, requirement.integration, requirement.field_key`,
     );
     return result.rows;
   },
@@ -94,7 +115,13 @@ export const credentialRequirementRepository = {
    */
   async getBySkill(skill: string): Promise<CredentialRequirementRow[]> {
     const result = await query<CredentialRequirementRow>(
-      'SELECT * FROM credential_requirements WHERE $1 = ANY(skills) ORDER BY adapter, integration',
+      `SELECT requirement.*
+         FROM credential_requirements AS requirement
+         JOIN installation_identity AS owner
+           ON owner.singleton = true
+          AND owner.installation_id = requirement.installation_id
+        WHERE $1 = ANY(requirement.skills)
+        ORDER BY requirement.adapter, requirement.integration`,
       [skill],
     );
     return result.rows;
@@ -134,7 +161,13 @@ export const credentialRequirementRepository = {
    */
   async delete(adapter: string, integration: string, fieldKey: string): Promise<boolean> {
     const result = await query(
-      'DELETE FROM credential_requirements WHERE adapter = $1 AND integration = $2 AND field_key = $3',
+      `DELETE FROM credential_requirements AS requirement
+        USING installation_identity AS owner
+        WHERE owner.singleton = true
+          AND owner.installation_id = requirement.installation_id
+          AND requirement.adapter = $1
+          AND requirement.integration = $2
+          AND requirement.field_key = $3`,
       [adapter, integration, fieldKey],
     );
     return (result.rowCount ?? 0) > 0;
@@ -145,7 +178,12 @@ export const credentialRequirementRepository = {
    */
   async deleteIntegration(adapter: string, integration: string): Promise<number> {
     const result = await query(
-      'DELETE FROM credential_requirements WHERE adapter = $1 AND integration = $2',
+      `DELETE FROM credential_requirements AS requirement
+        USING installation_identity AS owner
+        WHERE owner.singleton = true
+          AND owner.installation_id = requirement.installation_id
+          AND requirement.adapter = $1
+          AND requirement.integration = $2`,
       [adapter, integration],
     );
     return result.rowCount ?? 0;

@@ -7,23 +7,25 @@
  * `NODE_ENV=development`. The handler now always returns a safe generic
  * body regardless of NODE_ENV.
  *
- * We assert the contract by constructing a tiny Express app with the
- * same handler shape used in `apps/api/src/index.ts:255-275`. The
- * handler under test is small enough to inline here rather than
- * importing — `index.ts` runs side-effects at import time (server
- * listen, config load, mDNS, etc.) that would make a test import
- * heavy and fragile.
+ * We assert the contract against the exported middleware factory used by
+ * `apps/api/src/index.ts`; importing the entrypoint itself would start the
+ * server and other process-level side effects.
  */
 
 import { describe, it, expect } from 'vitest';
 import express, { type Express } from 'express';
+import type { Logger } from '@skytwin/core';
+import { createGlobalErrorHandler } from '../global-error-handler.js';
 
 /**
  * Builds an app with the same error-handler contract as the one in
  * `apps/api/src/index.ts`. If we ever change the handler shape there,
  * this fixture must change in lockstep — that's the point.
  */
-function buildAppWithThrowingRoute(thrower: () => never): Express {
+function buildAppWithThrowingRoute(
+  thrower: () => never,
+  logger: Pick<Logger, 'error'> = { error: () => undefined },
+): Express {
   const app = express();
   app.use(express.json());
   app.get('/boom', (_req, _res, next) => {
@@ -33,23 +35,7 @@ function buildAppWithThrowingRoute(thrower: () => never): Express {
       next(err);
     }
   });
-  app.use(
-    (
-      err: Error & { code?: unknown },
-      _req: express.Request,
-      res: express.Response,
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      _next: express.NextFunction,
-    ) => {
-      // Same shape as index.ts. Real handler also calls log.error;
-      // we skip that here so the test doesn't need a logger.
-      void err;
-      res.status(500).json({
-        error: 'internal_error',
-        message: 'Something went wrong on our end.',
-      });
-    },
-  );
+  app.use(createGlobalErrorHandler(logger));
   return app;
 }
 
@@ -122,5 +108,27 @@ describe('global error handler (#367)', () => {
     });
     expect(res.text).not.toMatch(/ABC123/);
     expect(res.text).not.toMatch(/secret/i);
+  });
+
+  it('does not send provider-controlled messages, bodies, or stacks to the logger', async () => {
+    const marker = 'provider-secret-marker-7f3c';
+    const logCalls: unknown[] = [];
+    const app = buildAppWithThrowingRoute(
+      () => {
+        throw Object.assign(new Error(marker), {
+          stack: `stack:${marker}`,
+          body: marker,
+          response: { body: marker },
+          statusCode: 502,
+        });
+      },
+      { error: (...args: unknown[]) => { logCalls.push(args); } },
+    );
+
+    await httpGet(app, '/boom');
+    expect(logCalls).toEqual([
+      ['Unhandled API request error', { errorCode: 'upstream_unavailable' }],
+    ]);
+    expect(JSON.stringify(logCalls)).not.toContain(marker);
   });
 });

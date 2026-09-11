@@ -142,8 +142,10 @@ export async function exchangeCode(
   });
 
   if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Microsoft OAuth token exchange failed: ${response.status} ${errorText}`);
+    throw Object.assign(
+      new Error(`Microsoft OAuth token exchange failed: ${response.status}`),
+      { statusCode: response.status },
+    );
   }
 
   const data = (await response.json()) as {
@@ -181,10 +183,10 @@ export class MicrosoftOAuthRefreshError extends Error {
   readonly statusCode: number;
   readonly permanent: boolean;
 
-  constructor(statusCode: number, detail: string) {
+  constructor(statusCode: number, _providerDetail?: string) {
     const permanent = statusCode === 400 || statusCode === 401 || statusCode === 403;
     super(
-      `Microsoft OAuth token refresh failed (${permanent ? 'permanent' : 'transient'}): ${statusCode} ${detail}`,
+      `Microsoft OAuth token refresh failed (${permanent ? 'permanent' : 'transient'}): ${statusCode}`,
     );
     this.name = 'MicrosoftOAuthRefreshError';
     this.statusCode = statusCode;
@@ -217,8 +219,7 @@ export async function refreshAccessToken(
   });
 
   if (!response.ok) {
-    const errorText = await response.text();
-    throw new MicrosoftOAuthRefreshError(response.status, errorText);
+    throw new MicrosoftOAuthRefreshError(response.status);
   }
 
   const data = (await response.json()) as {

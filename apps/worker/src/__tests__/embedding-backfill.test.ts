@@ -104,14 +104,15 @@ describe('runEmbeddingBackfillJob — happy path', () => {
 
 describe('runEmbeddingBackfillJob — failure handling', () => {
   it('marks job failed when embedding throws and continues with the next', async () => {
+    const marker = 'PRIVATE-EMBEDDING-SOURCE-MARKER';
     const failingEmbed = {
       model: 'fail',
       dim: 4,
       embed: vi.fn(async () => {
-        throw new Error('rate limited');
+        throw Object.assign(new Error(marker), { status: 429 });
       }),
       embedBatch: vi.fn(async () => {
-        throw new Error('rate limited');
+        throw Object.assign(new Error(marker), { status: 429 });
       }),
     };
     const queue = [
@@ -127,6 +128,9 @@ describe('runEmbeddingBackfillJob — failure handling', () => {
     expect(summary.succeeded).toBe(0);
     expect(summary.failed).toBe(2);
     expect(mockMarkFailed).toHaveBeenCalledTimes(2);
+    expect(mockMarkFailed).toHaveBeenNthCalledWith(1, 'a', 'rate_limited');
+    expect(mockMarkFailed).toHaveBeenNthCalledWith(2, 'b', 'rate_limited');
+    expect(JSON.stringify(mockMarkFailed.mock.calls)).not.toContain(marker);
     expect(mockMarkDone).not.toHaveBeenCalled();
   });
 

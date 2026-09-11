@@ -8,6 +8,10 @@
 export { getPool, query, withTransaction, healthCheck, closePool, getPoolStats } from './connection.js';
 export type { DatabaseConfig } from './connection.js';
 export { sourceKeyRegistryRepository } from './repositories/source-key-registry-repository.js';
+export {
+  installationIdentityRepository,
+  type InstallationIdentityRow,
+} from './repositories/installation-identity-repository.js';
 export type { SourceKeyRegistryRow } from './repositories/source-key-registry-repository.js';
 
 // Request-scoped context (#408): AsyncLocalStorage carries the authoritative
@@ -130,6 +134,8 @@ export {
 export type {
   ConnectorHealthRow,
   WorkerDeadLetterRow,
+  WorkerDeadLetterJobCode,
+  WorkerDeadLetterErrorCode,
   WorkerDeadLetterStatus,
   RecordDeadLetterInput,
   PurgeUserResult,
@@ -139,6 +145,10 @@ export type {
   CreateWatchInput,
   WatchRunRow,
   CreateWatchRunInput,
+} from './repositories/index.js';
+export {
+  WORKER_DEAD_LETTER_JOB_CODES,
+  WORKER_DEAD_LETTER_ERROR_CODES,
 } from './repositories/index.js';
 export type {
   RememberPendingSigninInput,

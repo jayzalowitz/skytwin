@@ -687,6 +687,7 @@ export interface OauthPendingSigninRow {
 
 export interface ServiceCredentialRow {
   id: string;
+  installation_id: string;
   service: string;
   credential_key: string;
   credential_value: string;
@@ -698,6 +699,7 @@ export interface ServiceCredentialRow {
 
 export interface CredentialRequirementRow {
   id: string;
+  installation_id: string;
   adapter: string;
   integration: string;
   integration_label: string;
@@ -713,6 +715,7 @@ export interface CredentialRequirementRow {
 
 export interface IronClawToolRow {
   id: string;
+  installation_id: string;
   tool_name: string;
   description: string | null;
   action_types: string[];

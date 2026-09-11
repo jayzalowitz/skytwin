@@ -1,7 +1,7 @@
 import type { SignalConnector, RawSignal, SignalHandler } from './connector-interface.js';
 import type { OAuthTokenStore } from './oauth/token-store.js';
 import type { CursorStore } from './gmail-connector.js';
-import { withRetry, RetryableHttpError, parseRetryAfter } from '@skytwin/core';
+import { withRetry, RetryableHttpError, parseRetryAfter, operationalFailureMeta } from '@skytwin/core';
 import { classifyCalendarAuthoringTier } from './calendar-authoring-tier.js';
 
 const SYNC_TOKEN_KIND = 'sync_token';
@@ -85,8 +85,8 @@ export class GoogleCalendarConnector implements SignalConnector {
         await this.cursorStore.save(this.userId, 'google_calendar', SYNC_TOKEN_KIND, token);
       } catch (err) {
         console.warn(
-          `[google-calendar] Failed to persist sync token for ${this.userId}:`,
-          err instanceof Error ? err.message : String(err),
+          '[google-calendar] Failed to persist sync token',
+          { userId: this.userId, ...operationalFailureMeta(err) },
         );
       }
     }

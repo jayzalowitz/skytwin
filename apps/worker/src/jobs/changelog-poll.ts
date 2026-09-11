@@ -3,6 +3,7 @@ import { McpHost, isDestructiveSkill } from '@skytwin/mcp-host';
 import { mcpServerChangelogRepository, mcpServerRepository } from '@skytwin/db';
 import type { McpServerRow } from '@skytwin/db';
 import type { McpServerConfig } from '@skytwin/mcp-host';
+import { classifyWorkerFailure } from '../content-free-error.js';
 
 const log = createLogger('worker:changelog-poll');
 
@@ -48,21 +49,20 @@ export async function runChangelogPollJob(deps: ChangelogPollDeps = {}): Promise
     servers = await serverRepo.listActive();
   } catch (err) {
     log.warn('Changelog poll: could not list active servers', {
-      error: err instanceof Error ? err.message : String(err),
+      errorCode: classifyWorkerFailure(err),
     });
     return;
   }
 
-  log.info(`Changelog poll: processing ${servers.length} active server(s)`);
+  log.info('Changelog poll: processing active servers', { serverCount: servers.length });
 
   for (const server of servers) {
     try {
       await pollServerChangelog(server, repo, deps.mcpHostFactory);
     } catch (err) {
-      log.warn(`Changelog poll: error processing server ${server.id}`, {
+      log.warn('Changelog poll: error processing server', {
         serverId: server.id,
-        displayName: server.display_name,
-        error: err instanceof Error ? err.message : String(err),
+        errorCode: classifyWorkerFailure(err),
       });
     }
   }
@@ -80,7 +80,9 @@ async function pollServerChangelog(
   if (existing) {
     const ageMs = Date.now() - new Date(existing.fetched_at).getTime();
     if (ageMs < CHANGELOG_REFRESH_MIN_MS) {
-      log.info(`Changelog poll: skipping ${server.display_name} (fetched ${Math.round(ageMs / 3600_000)}h ago)`);
+      log.info('Changelog poll: skipping recently fetched server', {
+        serverId: server.id, ageHours: Math.round(ageMs / 3600_000),
+      });
       return;
     }
   }
@@ -105,7 +107,10 @@ async function pollServerChangelog(
   try {
     const installResult = await host.installServer(config);
     if (!installResult.success) {
-      log.info(`Changelog poll: could not connect to ${server.display_name}: ${installResult.error}`);
+      log.info('Changelog poll: could not connect to server', {
+        serverId: server.id,
+        errorCode: classifyWorkerFailure(installResult.error),
+      });
       return;
     }
     installed = true;
@@ -128,7 +133,7 @@ async function pollServerChangelog(
 
     // Create opt-in prompts for newly discovered destructive skills
     for (const skillName of newDestructiveSkills) {
-      log.info(`Changelog poll: new destructive skill detected on ${server.display_name}: ${skillName}`);
+      log.info('Changelog poll: new destructive skill detected', { serverId: server.id });
       await repo.addPendingOptIn(server.id, skillName, changelog?.currentVersion);
     }
 
@@ -140,7 +145,8 @@ async function pollServerChangelog(
       lastKnownDestructiveSkills: currentDestructive,
     });
 
-    log.info(`Changelog poll: updated ${server.display_name}`, {
+    log.info('Changelog poll: updated server', {
+      serverId: server.id,
       version: changelog?.currentVersion ?? 'unknown',
       skills: currentSkills.length,
       newDestructive: newDestructiveSkills.length,

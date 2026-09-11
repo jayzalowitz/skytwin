@@ -1,6 +1,12 @@
 import type { SignalConnector, RawSignal, SignalHandler } from './connector-interface.js';
 import type { OAuthTokenStore } from './oauth/token-store.js';
-import { withRetry, RetryableHttpError, parseRetryAfter, normalizeSenderAddress } from '@skytwin/core';
+import {
+  withRetry,
+  RetryableHttpError,
+  parseRetryAfter,
+  normalizeSenderAddress,
+  operationalFailureMeta,
+} from '@skytwin/core';
 import {
   classifyEmailAuthoringTier,
   isAutomatedSender,
@@ -215,7 +221,8 @@ export class GmailConnector implements SignalConnector {
     } catch (err) {
       if (err instanceof RetryableHttpError) {
         console.warn(
-          `[gmail] Transient bootstrap list failure (${url}): ${err.message}`,
+          '[gmail] Transient bootstrap list failure',
+          operationalFailureMeta(err),
         );
         return [];
       }
@@ -369,8 +376,8 @@ export class GmailConnector implements SignalConnector {
         await this.cursorStore.save(this.userId, 'gmail', HISTORY_ID_KIND, historyId);
       } catch (err) {
         console.warn(
-          `[gmail] Failed to persist history cursor for ${this.userId}:`,
-          err instanceof Error ? err.message : String(err),
+          '[gmail] Failed to persist history cursor',
+          { userId: this.userId, ...operationalFailureMeta(err) },
         );
       }
     }
@@ -419,8 +426,8 @@ export class GmailConnector implements SignalConnector {
       return response.json() as Promise<GmailMessage>;
     } catch (error) {
       console.warn(
-        `[gmail] Error fetching message ${messageId}:`,
-        error instanceof Error ? error.message : String(error),
+        '[gmail] Error fetching message',
+        { messageId, ...operationalFailureMeta(error) },
       );
       return null;
     }
@@ -513,8 +520,8 @@ export class GmailConnector implements SignalConnector {
       await this.labelObserver.recordObservations(this.userId, observations);
     } catch (err) {
       console.warn(
-        `[gmail] Failed to record label observations for ${this.userId}:`,
-        err instanceof Error ? err.message : String(err),
+        '[gmail] Failed to record label observations',
+        { userId: this.userId, ...operationalFailureMeta(err) },
       );
     }
   }
@@ -580,4 +587,3 @@ export function parseListId(raw: string): string {
   // Some senders ship the bare identifier with no angle brackets.
   return raw.trim().toLowerCase();
 }
-

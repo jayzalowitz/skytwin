@@ -81,11 +81,10 @@ describe('credentialRequirementRepository', () => {
 
       const [sql, params] = mockQuery.mock.calls[0]!;
       expect(sql).toContain('INSERT INTO credential_requirements');
-      expect(sql).toContain(
-        '(adapter, integration, integration_label, description, field_key, field_label, field_placeholder, is_secret, is_optional, skills)',
-      );
-      expect(sql).toContain('VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)');
-      expect(sql).toContain('ON CONFLICT (adapter, integration, field_key) DO UPDATE SET');
+      expect(sql).toContain('(installation_id, adapter, integration, integration_label');
+      expect(sql).toContain('FROM installation_identity');
+      expect(sql).toContain('ON CONFLICT (installation_id, adapter, integration, field_key)');
+      expect(sql).toContain('SELECT installation_id, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10');
       expect(sql).toContain('integration_label = EXCLUDED.integration_label');
       expect(sql).toContain(
         'description = COALESCE(EXCLUDED.description, credential_requirements.description)',
@@ -144,6 +143,18 @@ describe('credentialRequirementRepository', () => {
         ['tweet'],
       ]);
     });
+
+    it('fails closed when no installation owner exists', async () => {
+      mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
+      await expect(credentialRequirementRepository.register({
+        adapter: 'openclaw',
+        integration: 'twitter',
+        integrationLabel: 'Twitter / X',
+        fieldKey: 'api_key',
+        fieldLabel: 'API Key',
+        skills: ['tweet'],
+      })).rejects.toThrow('installation_identity_unavailable');
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -161,10 +172,9 @@ describe('credentialRequirementRepository', () => {
       const result = await credentialRequirementRepository.getByAdapter('openclaw');
 
       expect(result).toEqual(rows);
-      expect(mockQuery).toHaveBeenCalledWith(
-        'SELECT * FROM credential_requirements WHERE adapter = $1 ORDER BY integration, field_key',
-        ['openclaw'],
-      );
+      expect(mockQuery.mock.calls[0]![0]).toContain('JOIN installation_identity AS owner');
+      expect(mockQuery.mock.calls[0]![0]).toContain('requirement.adapter = $1');
+      expect(mockQuery.mock.calls[0]![1]).toEqual(['openclaw']);
     });
 
     it('returns empty array when adapter has no requirements', async () => {
@@ -191,10 +201,9 @@ describe('credentialRequirementRepository', () => {
       const result = await credentialRequirementRepository.getByIntegration('twitter');
 
       expect(result).toEqual(rows);
-      expect(mockQuery).toHaveBeenCalledWith(
-        'SELECT * FROM credential_requirements WHERE integration = $1 ORDER BY adapter, field_key',
-        ['twitter'],
-      );
+      expect(mockQuery.mock.calls[0]![0]).toContain('JOIN installation_identity AS owner');
+      expect(mockQuery.mock.calls[0]![0]).toContain('requirement.integration = $1');
+      expect(mockQuery.mock.calls[0]![1]).toEqual(['twitter']);
     });
 
     it('returns empty array when integration has no requirements', async () => {
@@ -222,9 +231,8 @@ describe('credentialRequirementRepository', () => {
       const result = await credentialRequirementRepository.getAll();
 
       expect(result).toEqual(rows);
-      expect(mockQuery).toHaveBeenCalledWith(
-        'SELECT * FROM credential_requirements ORDER BY adapter, integration, field_key',
-      );
+      expect(mockQuery.mock.calls[0]![0]).toContain('JOIN installation_identity AS owner');
+      expect(mockQuery.mock.calls[0]![0]).toContain('ORDER BY requirement.adapter');
     });
 
     it('returns empty array when no requirements exist', async () => {
@@ -250,10 +258,9 @@ describe('credentialRequirementRepository', () => {
       const result = await credentialRequirementRepository.getBySkill('tweet');
 
       expect(result).toEqual(rows);
-      expect(mockQuery).toHaveBeenCalledWith(
-        'SELECT * FROM credential_requirements WHERE $1 = ANY(skills) ORDER BY adapter, integration',
-        ['tweet'],
-      );
+      expect(mockQuery.mock.calls[0]![0]).toContain('JOIN installation_identity AS owner');
+      expect(mockQuery.mock.calls[0]![0]).toContain('$1 = ANY(requirement.skills)');
+      expect(mockQuery.mock.calls[0]![1]).toEqual(['tweet']);
     });
 
     it('returns empty array when no requirements match the skill', async () => {
@@ -349,10 +356,9 @@ describe('credentialRequirementRepository', () => {
       );
 
       expect(result).toBe(true);
-      expect(mockQuery).toHaveBeenCalledWith(
-        'DELETE FROM credential_requirements WHERE adapter = $1 AND integration = $2 AND field_key = $3',
-        ['openclaw', 'twitter', 'api_key'],
-      );
+      expect(mockQuery.mock.calls[0]![0]).toContain('USING installation_identity AS owner');
+      expect(mockQuery.mock.calls[0]![0]).toContain('owner.installation_id = requirement.installation_id');
+      expect(mockQuery.mock.calls[0]![1]).toEqual(['openclaw', 'twitter', 'api_key']);
     });
 
     it('returns false when no requirement was found to delete', async () => {
@@ -394,10 +400,9 @@ describe('credentialRequirementRepository', () => {
       );
 
       expect(result).toBe(3);
-      expect(mockQuery).toHaveBeenCalledWith(
-        'DELETE FROM credential_requirements WHERE adapter = $1 AND integration = $2',
-        ['openclaw', 'twitter'],
-      );
+      expect(mockQuery.mock.calls[0]![0]).toContain('USING installation_identity AS owner');
+      expect(mockQuery.mock.calls[0]![0]).toContain('owner.installation_id = requirement.installation_id');
+      expect(mockQuery.mock.calls[0]![1]).toEqual(['openclaw', 'twitter']);
     });
 
     it('returns 0 when no requirements existed for the integration', async () => {
