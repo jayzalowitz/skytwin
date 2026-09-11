@@ -6,6 +6,7 @@ import {
   joinedDecisionReceiptRevisionDigest,
   type JoinedDecisionReceiptContentV1,
 } from '@skytwin/shared-types';
+import type { PoolClient } from 'pg';
 
 const { queryMock } = vi.hoisted(() => ({ queryMock: vi.fn() }));
 vi.mock('../connection.js', () => ({
@@ -14,7 +15,11 @@ vi.mock('../connection.js', () => ({
 }));
 
 import { decisionReceiptRepository } from '../repositories/decision-receipt-repository.js';
-import { decisionReceiptRowArtifactV1 } from '../repositories/decision-receipt-artifacts.js';
+import {
+  decisionReceiptRowArtifactRefV1,
+  decisionReceiptRowArtifactV1,
+  decisionReceiptRowEvidenceRefV1,
+} from '../repositories/decision-receipt-artifacts.js';
 
 const userId = '11111111-1111-4111-8111-111111111111';
 const decisionId = '22222222-2222-4222-8222-222222222222';
@@ -61,10 +66,12 @@ function installHappyQueries(options: {
   explanation?: Record<string, unknown>;
   barrier?: Record<string, unknown>;
   existingRoot?: Record<string, unknown>;
+  decision?: Record<string, unknown>;
+  signal?: Record<string, unknown>;
 } = {}): void {
   queryMock.mockImplementation(async (rawSql: string, params: unknown[] = []) => {
     const sql = String(rawSql);
-    if (sql.includes('FROM decisions WHERE')) return { rows: [decisionRow] };
+    if (sql.includes('FROM decisions WHERE')) return { rows: [options.decision ?? decisionRow] };
     if (sql.includes('SELECT risk_assessment FROM candidate_actions')) {
       return { rows: options.candidate ? [{ risk_assessment: options.candidate['risk_assessment'] }] : [] };
     }
@@ -80,6 +87,12 @@ function installHappyQueries(options: {
     }
     if (sql.includes('FROM execution_plans')) {
       return { rows: options.executionPlan ? [options.executionPlan] : [] };
+    }
+    if (sql.includes('count(*)') && sql.includes('FROM signals')) {
+      return { rows: [{ count: options.signal ? '1' : '0' }] };
+    }
+    if (sql.includes('FROM signals WHERE')) {
+      return { rows: options.signal ? [options.signal] : [] };
     }
     if (sql.includes('FROM decision_receipts receipt')) {
       return { rows: options.existingRoot ? [options.existingRoot] : [] };
@@ -202,6 +215,16 @@ describe('decisionReceiptRepository', () => {
     });
     expect(result).toMatchObject({ success: true, created: true, revision: { sequence: 1 } });
     expect(result.success && result.revision.content_digest).toBe(joinedDecisionReceiptContentDigest(content));
+  });
+
+  it('appends on a caller-owned transaction without opening a nested transaction', async () => {
+    installHappyQueries();
+    const client = { query: queryMock } as unknown as PoolClient;
+    const result = await decisionReceiptRepository.appendForUserInTransaction(client, userId, {
+      eventKey: eventKey('decision_created'), expectedPreviousDigest: null, content: baseContent(),
+    });
+    expect(result).toMatchObject({ success: true, created: true, revision: { sequence: 1 } });
+    expect(queryMock).toHaveBeenCalled();
   });
 
   it('replays an immutable event without revalidating mutable source rows', async () => {
@@ -472,6 +495,50 @@ describe('decisionReceiptRepository', () => {
     })).resolves.toEqual({ success: false, code: 'linkage_mismatch' });
   });
 
+  it('binds Gmail source IDs to the owned signal UUID used by receipt evidence', async () => {
+    const sourceSignalId = 'sig_gmail_opaque_source';
+    const gmailDecision = { ...decisionRow, signal_id: sourceSignalId };
+    const policySnapshot = { allowed: true, requiresApproval: false, policyIds: [] };
+    const rows = chainRows(policySnapshot, 'prepared');
+    rows.explanation['evidence_used'] = [{ evidenceId: `raw_${decisionId}` }];
+    const signal = {
+      id: eventId, user_id: userId, source: 'gmail', type: 'email', domain: 'email', data: {},
+      timestamp: instant, retention_until: instant,
+      source_signal_id: sourceSignalId,
+      connector_account_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      resource_ref_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    };
+    const plan = {
+      id: planId, decision_id: decisionId, action_id: actionId,
+      status: 'pending', steps: [], created_at: instant, updated_at: instant,
+    };
+    installHappyQueries({ ...rows, decision: gmailDecision, signal, executionPlan: plan });
+    const content = actionableContent('execution_admitted', policySnapshot, 'prepared');
+    const evidenceRef = decisionReceiptRowEvidenceRefV1('signal', signal);
+    const explanationRef = decisionReceiptRowArtifactRefV1('explanation', rows.explanation);
+    content.decision = decisionReceiptRowArtifactRefV1('decision', gmailDecision);
+    content.explanation = explanationRef;
+    content.evidence = [evidenceRef];
+    content.policyEvaluations = [{
+      ...content.policyEvaluations[0]!, explanation: explanationRef, evidence: [evidenceRef],
+    }];
+
+    await expect(decisionReceiptRepository.appendForUserInTransaction(
+      { query: queryMock } as unknown as PoolClient,
+      userId,
+      { eventKey: eventKey('gmail_signal'), expectedPreviousDigest: null, content },
+    )).resolves.toEqual({ success: false, code: 'chain_conflict' });
+    expect(queryMock.mock.calls.some(([sql]) => String(sql).includes('FROM signals WHERE'))).toBe(true);
+
+    gmailDecision.signal_id = 'sig_gmail_other_source';
+    content.decision = decisionReceiptRowArtifactRefV1('decision', gmailDecision);
+    await expect(decisionReceiptRepository.appendForUserInTransaction(
+      { query: queryMock } as unknown as PoolClient,
+      userId,
+      { eventKey: eventKey('gmail_signal_mismatch'), expectedPreviousDigest: null, content },
+    )).resolves.toEqual({ success: false, code: 'linkage_mismatch' });
+  });
+
   it('binds execution status into the server-derived artifact hash', async () => {
     const policySnapshot = { allowed: true, requiresApproval: false, policyIds: [] };
     const rows = chainRows(policySnapshot, 'prepared');
@@ -515,5 +582,25 @@ describe('decision receipt artifact v1 projections', () => {
       id: actionId, user_id: userId, source: 'test', type: 'test', domain: 'test', data: {},
       timestamp: instant.toISOString(), retention_until: instant.toISOString(),
     }));
+  });
+
+  it('binds account and opaque resource linkage in Gmail signal projections', () => {
+    const base = {
+      id: eventId, user_id: userId, source: 'gmail', type: 'email', domain: 'email', data: {},
+      timestamp: instant, retention_until: instant, source_signal_id: 'sig_gmail_source',
+      connector_account_id: actionId, resource_ref_id: barrierId,
+    };
+    const original = joinedDecisionReceiptArtifactDigest(
+      'signal', decisionReceiptRowArtifactV1('signal', base),
+    );
+    expect(original).not.toBe(joinedDecisionReceiptArtifactDigest(
+      'signal', decisionReceiptRowArtifactV1('signal', { ...base, resource_ref_id: approvalId }),
+    ));
+    expect(decisionReceiptRowEvidenceRefV1('signal', base)).toMatchObject({
+      id: eventId, kind: 'signal', canonicalHash: original,
+    });
+    expect(decisionReceiptRowArtifactRefV1('inference_completion', {
+      decision_id: decisionId, explanation_id: explanationId, completed_at: instant,
+    })).toMatchObject({ id: decisionId, canonicalHash: expect.stringMatching(/^[0-9a-f]{64}$/) });
   });
 });

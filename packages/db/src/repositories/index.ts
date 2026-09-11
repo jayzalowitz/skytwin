@@ -25,6 +25,15 @@ export type {
   AppendDecisionReceiptResult,
   FindDecisionReceiptResult,
 } from './decision-receipt-repository.js';
+export {
+  buildDecisionRecordedReceiptContentV1,
+  decisionReceiptLifecycleRepository,
+} from './decision-receipt-lifecycle.js';
+export type { AppendDecisionReceiptLifecycleInput } from './decision-receipt-lifecycle.js';
+export {
+  decisionReceiptRowArtifactRefV1,
+  decisionReceiptRowEvidenceRefV1,
+} from './decision-receipt-artifacts.js';
 
 export { feedbackRepository } from './feedback-repository.js';
 export type { CreateFeedbackInput } from './feedback-repository.js';
