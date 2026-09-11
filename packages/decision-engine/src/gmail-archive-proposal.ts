@@ -83,10 +83,13 @@ function parseDecision(input: unknown):
   const inputDescriptors = plainDataDescriptors(input);
   if (!inputDescriptors) return { ok: false, error: 'invalid_input' };
   const inputKeys = Reflect.ownKeys(inputDescriptors);
+  if (inputKeys.some((key) => typeof key !== 'string')) {
+    return { ok: false, error: 'invalid_input' };
+  }
+  const sortedInputKeys = (inputKeys as string[]).sort();
   if (
-    inputKeys.length !== INPUT_KEYS.length ||
-    inputKeys.some((key) => typeof key !== 'string') ||
-    (inputKeys as string[]).sort().some((key, index) => key !== INPUT_KEYS[index])
+    sortedInputKeys.length !== INPUT_KEYS.length ||
+    sortedInputKeys.some((key, index) => key !== INPUT_KEYS[index])
   ) {
     return { ok: false, error: 'invalid_input' };
   }
