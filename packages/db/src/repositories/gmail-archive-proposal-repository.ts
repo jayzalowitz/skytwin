@@ -39,7 +39,8 @@ import type { PreEffectBarrierRow } from './pre-effect-barrier-repository.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const APPROVAL_WINDOW_MS = 24 * 60 * 60 * 1_000;
-const PROPOSAL_REASON = 'Review is required. This build records the proposal without enabling execution.';
+export const GMAIL_ARCHIVE_PROPOSAL_REASON =
+  'Review is required. This build records the proposal without enabling execution.';
 const CANDIDATE_DESCRIPTION = 'Archive this Inbox message';
 const CANDIDATE_REASONING = 'The owned Inbox signal is eligible for a reversible archive proposal.';
 
@@ -329,14 +330,14 @@ function policySnapshot(candidateId: string, risk: Record<string, unknown>): Rec
     mode: 'proposal_only',
     allowed: true,
     requiresApproval: true,
-    reason: PROPOSAL_REASON,
+    reason: GMAIL_ARCHIVE_PROPOSAL_REASON,
     policyIds: [],
     candidateActionId: candidateId,
     riskAssessment: risk,
   };
 }
 
-function policyAndApprovalContents(rows: {
+export function buildGmailArchiveProposalReceiptContents(rows: {
   decision: DecisionRow;
   candidate: CandidateActionRow;
   explanation: ExplanationRecordRow;
@@ -574,15 +575,16 @@ async function loadExistingBundle(
       !storedRiskMatches(expectedRisk, input.proposal.riskAssessment, candidate.id) ||
       !exactCandidateMatches(candidate, expectedCandidate, expectedRisk) ||
       outcome.selected_action_id !== candidate.id || outcome.auto_executed || !outcome.requires_approval ||
-      outcome.execution_plan_id !== null || outcome.escalation_reason !== PROPOSAL_REASON ||
-      outcome.explanation !== PROPOSAL_REASON || outcome.confidence !== confidenceForRisk(expectedRisk['overallTier']) ||
+      outcome.execution_plan_id !== null || outcome.escalation_reason !== GMAIL_ARCHIVE_PROPOSAL_REASON ||
+      outcome.explanation !== GMAIL_ARCHIVE_PROPOSAL_REASON ||
+      outcome.confidence !== confidenceForRisk(expectedRisk['overallTier']) ||
       explanation.decision_id !== decision.id ||
       explanation.what_happened !== 'Prepared a review-only Inbox archive proposal; no external action was attempted.' ||
       !sameCanonical(explanation.evidence_used, expectedEvidence) ||
       !sameCanonical(explanation.preferences_invoked, []) ||
       explanation.confidence_reasoning !== String(expectedRisk['reasoning']) ||
       explanation.action_rationale !== expectedCandidate.reasoning ||
-      explanation.escalation_rationale !== PROPOSAL_REASON ||
+      explanation.escalation_rationale !== GMAIL_ARCHIVE_PROPOSAL_REASON ||
       explanation.correction_guidance !== 'Review the proposal. This build does not turn approval into execution.' ||
       explanation.capability_provenance_node_id !== null ||
       barrier.status !== 'blocked' || barrier.decision_id !== decision.id || barrier.action_id !== candidate.id ||
@@ -592,13 +594,13 @@ async function loadExistingBundle(
       barrier.failure_reason !== 'proposal_only_boundary' ||
       approval.status !== 'pending' || approval.decision_id !== decision.id ||
       !sameCanonical(approval.candidate_action, approvalCandidate(expectedCandidate)) ||
-      approval.reason !== PROPOSAL_REASON || approval.urgency !== 'medium' ||
+      approval.reason !== GMAIL_ARCHIVE_PROPOSAL_REASON || approval.urgency !== 'medium' ||
       approval.confirmation_level !== 'single' || approval.responded_at !== null) return null;
   if (approval.response !== null || approval.batch_id !== null || approval.first_confirmed_at !== null ||
       approval.confirmation_token !== null ||
       approval.expires_at.getTime() - approval.requested_at.getTime() !== APPROVAL_WINDOW_MS) return null;
 
-  const contents = policyAndApprovalContents({
+  const contents = buildGmailArchiveProposalReceiptContents({
     decision, candidate, explanation, barrier, approval, signal,
   });
   const revisions = revisionsResult.rows;
@@ -692,7 +694,13 @@ async function insertFreshBundle(
        escalation_reason, explanation, confidence
      ) VALUES ($1, $2, $3, false, true, $4, $4, $5)
      RETURNING *`,
-    [ids.outcome, decision.id, candidateRow.id, PROPOSAL_REASON, confidenceForRisk(risk['overallTier'])],
+    [
+      ids.outcome,
+      decision.id,
+      candidateRow.id,
+      GMAIL_ARCHIVE_PROPOSAL_REASON,
+      confidenceForRisk(risk['overallTier']),
+    ],
   );
   const explanationResult = await client.query<ExplanationRecordRow>(
     `INSERT INTO explanation_records (
@@ -713,7 +721,7 @@ async function insertFreshBundle(
       }]),
       String(risk['reasoning']),
       candidate.reasoning,
-      PROPOSAL_REASON,
+      GMAIL_ARCHIVE_PROPOSAL_REASON,
       'Review the proposal. This build does not turn approval into execution.',
     ],
   );
@@ -752,12 +760,12 @@ async function insertFreshBundle(
       input.userId,
       decision.id,
       JSON.stringify(approvalCandidate(candidate)),
-      PROPOSAL_REASON,
+      GMAIL_ARCHIVE_PROPOSAL_REASON,
       APPROVAL_WINDOW_MS,
     ],
   );
   const approval = approvalResult.rows[0]!;
-  const contents = policyAndApprovalContents({
+  const contents = buildGmailArchiveProposalReceiptContents({
     decision,
     candidate: candidateRow,
     explanation,

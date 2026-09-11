@@ -107,6 +107,7 @@ export {
   buildGmailArchiveProposalCandidate,
   gmailArchiveProposalRepository,
   GmailArchiveProposalReceiptError,
+  gmailArchiveApprovalResponseRepository,
   feedbackRepository,
 } from './repositories/index.js';
 export type {
@@ -128,6 +129,9 @@ export type {
   GmailArchiveProposal,
   PersistGmailArchiveProposalInput,
   PersistGmailArchiveProposalResult,
+  GmailArchiveApprovalResponseBundle,
+  RespondGmailArchiveApprovalInput,
+  RespondGmailArchiveApprovalResult,
   FindDecisionReceiptResult,
   CreateFeedbackInput,
 } from './repositories/index.js';
