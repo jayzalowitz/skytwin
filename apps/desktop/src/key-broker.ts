@@ -142,9 +142,16 @@ interface BrokerCapabilityMessage {
   role: BrokerRole;
 }
 
+interface BrokerGenerationMessage {
+  type: 'skytwin:vault:generation';
+  userId: string;
+  generation: number;
+}
+
 export interface BrokerResponse {
   type: 'skytwin:vault:response';
   requestId: string;
+  contextUserId: string;
   generation: number;
   result:
     | { success: true; state: VaultState }
@@ -195,7 +202,7 @@ interface PendingLockAck {
 interface Binding {
   role: BrokerRole;
   capability: Buffer;
-  users: ReadonlySet<string>;
+  users: Map<string, number | null>;
   inFlight: Map<string, number>;
   lockAcks: Map<string, PendingLockAck>;
 }
@@ -804,7 +811,9 @@ export class DesktopKeyBroker {
 
   attachChild(child: ChildProcess, role: BrokerRole, authorizedUsers: ReadonlySet<string>): void {
     const capability = randomBytes(KEY_BYTES);
-    const users = new Set([...authorizedUsers].filter(isValidVaultUserId));
+    const users = new Map(
+      [...authorizedUsers].filter(isValidVaultUserId).map(userId => [userId, null] as const),
+    );
     const previous = this.children.get(child);
     if (previous) {
       previous.capability.fill(0);
@@ -832,6 +841,7 @@ export class DesktopKeyBroker {
         this.safeSend(child, {
           type: 'skytwin:vault:response',
           requestId: 'invalid-request',
+          contextUserId: '',
           generation: -1,
           result: { success: false, error: 'vault_broker_unavailable' },
         });
@@ -856,6 +866,81 @@ export class DesktopKeyBroker {
         ) pending.finish();
         return;
       }
+      if (
+        raw['type'] === 'skytwin:vault:grant'
+        && validId(raw['requestId'], 128)
+        && isValidVaultUserId(raw['userId'])
+      ) {
+        const requestId = raw['requestId'];
+        const userId = raw['userId'];
+        const expectedAuthentication = binding.role === 'api' ? 'session' : 'service';
+        const expiresAt = raw['expiresAt'];
+        const validExpiry = binding.role === 'worker'
+          ? expiresAt === null
+          : Number.isSafeInteger(expiresAt) && Number(expiresAt) > this.now();
+        const allowed = raw['role'] === binding.role
+          && raw['authentication'] === expectedAuthentication
+          && validExpiry;
+        if (allowed) binding.users.set(userId, binding.role === 'api' ? Number(expiresAt) : null);
+        this.safeSend(child, {
+          type: 'skytwin:vault:response',
+          requestId,
+          contextUserId: userId,
+          generation: this.generation(userId),
+          result: allowed
+            ? await this.state(userId)
+            : { success: false, error: 'vault_broker_unavailable' },
+        });
+        return;
+      }
+      if (
+        raw['type'] === 'skytwin:vault:revoke'
+        && validId(raw['requestId'], 128)
+        && isValidVaultUserId(raw['userId'])
+      ) {
+        const requestId = raw['requestId'];
+        const userId = raw['userId'];
+        const expectedAuthentication = binding.role === 'api' ? 'session' : 'service';
+        const allowed = raw['role'] === binding.role
+          && raw['authentication'] === expectedAuthentication;
+        if (allowed) binding.users.delete(userId);
+        this.safeSend(child, {
+          type: 'skytwin:vault:response',
+          requestId,
+          contextUserId: userId,
+          generation: this.generation(userId),
+          result: allowed
+            ? { success: true, state: 'locked' }
+            : { success: false, error: 'vault_broker_unavailable' },
+        });
+        return;
+      }
+      if (
+        raw['type'] === 'skytwin:vault:reconcile'
+        && validId(raw['requestId'], 128)
+        && raw['role'] === 'worker'
+        && binding.role === 'worker'
+        && raw['authentication'] === 'service'
+        && Array.isArray(raw['userIds'])
+      ) {
+        const userIds = raw['userIds'];
+        const allowed = userIds.length <= 10_000
+          && userIds.every(isValidVaultUserId)
+          && new Set(userIds).size === userIds.length;
+        if (allowed) {
+          binding.users = new Map((userIds as string[]).map(userId => [userId, null]));
+        }
+        this.safeSend(child, {
+          type: 'skytwin:vault:response',
+          requestId: raw['requestId'],
+          contextUserId: 'worker-set',
+          generation: 0,
+          result: allowed
+            ? { success: true, state: 'locked' }
+            : { success: false, error: 'vault_broker_unavailable' },
+        });
+        return;
+      }
       if (raw['type'] !== 'skytwin:vault:request' || !validId(raw['requestId'], 128)) return;
       const requestId = raw['requestId'];
       const context = raw['context'];
@@ -863,12 +948,13 @@ export class DesktopKeyBroker {
       const deny = (error: VaultFailureCode) => this.safeSend(child, {
         type: 'skytwin:vault:response',
         requestId,
+        contextUserId: validContext(context) ? context.userId : '',
         generation: typeof requestGeneration === 'number' ? requestGeneration : -1,
         result: { success: false, error },
       });
       if (
         !validContext(context)
-        || !binding.users.has(context.userId)
+        || !this.hasActiveGrant(binding, context.userId)
         || (this.lockDepth.get(context.userId) ?? 0) > 0
       ) {
         deny('vault_broker_unavailable');
@@ -882,6 +968,7 @@ export class DesktopKeyBroker {
           this.safeSend(child, {
             type: 'skytwin:vault:response',
             requestId,
+            contextUserId: userId,
             generation: this.generation(userId),
             result,
           });
@@ -905,6 +992,7 @@ export class DesktopKeyBroker {
         this.safeSend(child, {
           type: 'skytwin:vault:response',
           requestId,
+          contextUserId: userId,
           generation: this.generation(userId),
           result,
         });
@@ -1035,6 +1123,11 @@ export class DesktopKeyBroker {
         expiresAt: this.now() + this.ttlMs,
       });
       this.generations.set(userId, this.generation(userId) + 1);
+      const generation = this.generation(userId);
+      for (const [child, binding] of this.children) {
+        if (!this.hasActiveGrant(binding, userId)) continue;
+        this.safeSend(child, { type: 'skytwin:vault:generation', userId, generation });
+      }
       const nextTimer = setTimeout(() => {
         void this.lock(userId).catch(() => undefined);
       }, this.ttlMs);
@@ -1062,6 +1155,16 @@ export class DesktopKeyBroker {
     }
     const results = await Promise.all(waits);
     return results.every(Boolean);
+  }
+
+  private hasActiveGrant(binding: Binding, userId: string): boolean {
+    if (!binding.users.has(userId)) return false;
+    const expiresAt = binding.users.get(userId);
+    if (expiresAt !== null && expiresAt !== undefined && expiresAt <= this.now()) {
+      binding.users.delete(userId);
+      return false;
+    }
+    return true;
   }
 
   private async waitForChildLock(
@@ -1153,7 +1256,7 @@ export class DesktopKeyBroker {
 
   private safeSend(
     child: ChildProcess,
-    message: BrokerResponse | BrokerLockRequest | BrokerCapabilityMessage,
+    message: BrokerResponse | BrokerLockRequest | BrokerCapabilityMessage | BrokerGenerationMessage,
   ): boolean {
     try {
       if (child.connected === false || !child.send) return false;

@@ -2,6 +2,7 @@ import { createHmac, timingSafeEqual } from 'crypto';
 import type { Request, Response, NextFunction } from 'express';
 import { sessionRepository } from '@skytwin/db';
 import { createLogger } from '@skytwin/core';
+import { apiVaultBroker } from '../vault-broker-client.js';
 
 const log = createLogger('api:auth');
 
@@ -214,6 +215,10 @@ export async function sessionAuth(
   // Attach identity to request
   req.authenticatedUserId = session.user_id;
   req.authenticatedSessionId = session.id;
+
+  // The broker accepts this owner only after the API has verified the human
+  // session. Failure leaves vault access closed and must not weaken HTTP auth.
+  await apiVaultBroker.grantAuthenticatedOwner(session.user_id, new Date(session.expires_at));
 
   // Auto-refresh if within 1 day of expiry
   const timeUntilExpiry = new Date(session.expires_at).getTime() - Date.now();

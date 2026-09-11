@@ -39,7 +39,7 @@ export const sessionRepository = {
   async findActiveByUser(userId: string): Promise<SessionRow[]> {
     const result = await query<SessionRow>(
       `SELECT * FROM sessions
-       WHERE user_id = $1 AND revoked = false
+       WHERE user_id = $1 AND revoked = false AND expires_at > now()
        ORDER BY last_active_at DESC`,
       [userId],
     );

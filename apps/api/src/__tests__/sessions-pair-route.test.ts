@@ -17,6 +17,7 @@ const mockSessionRepository = {
   findByTokenHash: vi.fn(),
   revoke: vi.fn(),
 };
+const mockVaultBroker = { revokeAuthenticatedOwner: vi.fn(), grantAuthenticatedOwner: vi.fn() };
 
 vi.mock('@skytwin/db', () => ({
   sessionRepository: mockSessionRepository,
@@ -30,6 +31,7 @@ vi.mock('../middleware/session-auth.js', () => ({
 vi.mock('../middleware/require-ownership.js', () => ({
   requireOwnership: (_req: express.Request, _res: express.Response, next: express.NextFunction) => next(),
 }));
+vi.mock('../vault-broker-client.js', () => ({ apiVaultBroker: mockVaultBroker }));
 
 const { createSessionsRouter } = await import('../routes/sessions.js');
 const { __resetPairingTokenStoreForTests } = await import('../pairing-token-store.js');
@@ -43,7 +45,7 @@ function makeApp(): Express {
 
 async function request(
   app: Express,
-  method: 'POST',
+  method: 'POST' | 'DELETE',
   path: string,
   body?: unknown,
 ): Promise<{ status: number; body: Record<string, unknown> }> {
@@ -78,6 +80,23 @@ beforeEach(() => {
     user_id: 'user-1',
     device_name: 'Phone',
     expires_at: new Date('2027-01-01T00:00:00Z'),
+  });
+  mockVaultBroker.revokeAuthenticatedOwner.mockResolvedValue(true);
+  mockVaultBroker.grantAuthenticatedOwner.mockResolvedValue(true);
+});
+
+describe('DELETE /api/sessions/:sessionId', () => {
+  it('revokes broker ownership when the final active session is removed', async () => {
+    mockSessionRepository.findActiveByUser.mockResolvedValueOnce([{ id: 'session-1' }]).mockResolvedValueOnce([]);
+    const { status } = await request(makeApp(), 'DELETE', '/api/sessions/session-1', { userId: 'user-1' });
+    expect(status).toBe(200); expect(mockVaultBroker.revokeAuthenticatedOwner).toHaveBeenCalledWith('user-1');
+  });
+
+  it('keeps the broker grant while another active session remains', async () => {
+    mockSessionRepository.findActiveByUser.mockResolvedValueOnce([{ id: 'session-1' }, { id: 'session-2' }]).mockResolvedValueOnce([{ id: 'session-2', expires_at: new Date(Date.now() + 60_000) }]);
+    const { status } = await request(makeApp(), 'DELETE', '/api/sessions/session-1', { userId: 'user-1' });
+    expect(status).toBe(200); expect(mockVaultBroker.revokeAuthenticatedOwner).toHaveBeenCalledWith('user-1');
+    expect(mockVaultBroker.grantAuthenticatedOwner).toHaveBeenCalledWith('user-1', expect.any(Date));
   });
 });
 

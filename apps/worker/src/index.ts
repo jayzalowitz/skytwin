@@ -53,6 +53,7 @@ import {
 import { extractErrorCode } from './oauth-error-code.js';
 import { recordPermanentOAuthFailure } from './oauth-circuit.js';
 import { DeadLetterTracker } from './dead-letter.js';
+import { grantWorkerOwners } from './vault-broker-client.js';
 
 const config = loadConfig();
 const log = createLogger('worker');
@@ -668,6 +669,7 @@ async function main(): Promise<void> {
 
   // Discover users and set up connectors
   let userConnectors = await connectUserConnectors(await discoverUsers());
+  await grantWorkerOwners(userConnectors.map(({ userId }) => userId));
   if (userConnectors.length === 0) {
     log.info('No users with connected accounts yet — waiting for first connection');
   } else {
@@ -1067,6 +1069,7 @@ async function main(): Promise<void> {
     // connections are picked up within one poll interval (~10s).
     if (userConnectors.length === 0 || pollCount % 10 === 0) {
       const newUserConnectors = await connectUserConnectors(await discoverUsers());
+      await grantWorkerOwners(newUserConnectors.map(({ userId }) => userId));
       const oldUserIds = new Set(userConnectors.map((uc) => uc.userId));
       const newUserIds = new Set(newUserConnectors.map((uc) => uc.userId));
       const usersChanged = oldUserIds.size !== newUserIds.size

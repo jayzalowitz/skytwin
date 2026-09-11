@@ -120,8 +120,9 @@ function normalizeRow(raw: RawSourceKeyRegistryRow): SourceKeyRegistryRow {
   });
 }
 
-// Deliberately absent from both DB barrels. Future runtime composition must
-// wrap this sensitive leaf in a narrow, owner-bound gateway.
+// Exported through the package root only for the Electron-owned recovery-wrapper
+// gateway. Every operation validates the owner and wrapper shape, and rollback
+// is bound to the complete value created by the failed initialization attempt.
 export const sourceKeyRegistryRepository = {
   async getCurrent(userId: string): Promise<SourceKeyRegistryRow | null> {
     validateUserId(userId);

@@ -206,6 +206,94 @@ describe('DesktopKeyBroker', () => {
     expect(child.sent.at(-1)).toMatchObject({ result: { success: false, error: 'vault_broker_unavailable' } });
   });
 
+  it('accepts owner grants only from the capability-bound role and authentication class', async () => {
+    const broker = new DesktopKeyBroker(new MemoryStore());
+    await broker.initialize(context.userId, 'correct horse battery staple');
+    const child = new FakeChild();
+    broker.attachChild(child as unknown as ChildProcess, 'api', new Set());
+    const capability = (child.sent[0] as { capability: string }).capability;
+    child.emit('message', {
+      type: 'skytwin:vault:grant', requestId: 'bad', capability,
+      role: 'worker', authentication: 'service', userId: context.userId, expiresAt: null,
+    });
+    await tick();
+    expect(child.sent.at(-1)).toMatchObject({ result: { success: false } });
+    child.emit('message', {
+      type: 'skytwin:vault:grant', requestId: 'good', capability,
+      role: 'api', authentication: 'session', userId: context.userId,
+      expiresAt: Date.now() + 60_000,
+    });
+    await tick();
+    expect(child.sent.at(-1)).toMatchObject({
+      contextUserId: context.userId,
+      result: { success: true, state: 'unlocked' },
+    });
+  });
+
+  it('revokes an owner and denies subsequent requests', async () => {
+    const broker = new DesktopKeyBroker(new MemoryStore());
+    await broker.initialize(context.userId, 'correct horse battery staple');
+    const child = new FakeChild();
+    broker.attachChild(child as unknown as ChildProcess, 'api', new Set([context.userId]));
+    const capability = (child.sent[0] as { capability: string }).capability;
+    child.emit('message', {
+      type: 'skytwin:vault:revoke', requestId: 'revoke', capability,
+      role: 'api', authentication: 'session', userId: context.userId,
+    });
+    await tick();
+    child.emit('message', {
+      type: 'skytwin:vault:request', requestId: 'after', capability,
+      generation: 1, operation: 'state', context,
+    });
+    await tick();
+    expect(child.sent.find(value => (value as { requestId?: string }).requestId === 'after'))
+      .toMatchObject({ result: { success: false, error: 'vault_broker_unavailable' } });
+  });
+
+  it('enforces API grant expiry in the parent broker on every request', async () => {
+    let now = 1_000;
+    const broker = new DesktopKeyBroker(new MemoryStore(), { now: () => now });
+    await broker.initialize(context.userId, 'correct horse battery staple');
+    const child = new FakeChild();
+    broker.attachChild(child as unknown as ChildProcess, 'api', new Set());
+    const capability = (child.sent[0] as { capability: string }).capability;
+    child.emit('message', {
+      type: 'skytwin:vault:grant', requestId: 'grant', capability,
+      role: 'api', authentication: 'session', userId: context.userId, expiresAt: 1_100,
+    });
+    await tick();
+    now = 1_101;
+    child.emit('message', {
+      type: 'skytwin:vault:request', requestId: 'after-expiry', capability,
+      generation: 1, operation: 'state', context,
+    });
+    await tick();
+    expect(child.sent.at(-1)).toMatchObject({
+      requestId: 'after-expiry',
+      result: { success: false, error: 'vault_broker_unavailable' },
+    });
+  });
+
+  it('atomically replaces the worker owner set at the parent authority boundary', async () => {
+    const broker = new DesktopKeyBroker(new MemoryStore());
+    await broker.initialize(context.userId, 'correct horse battery staple');
+    const child = new FakeChild();
+    broker.attachChild(child as unknown as ChildProcess, 'worker', new Set([context.userId]));
+    const capability = (child.sent[0] as { capability: string }).capability;
+    child.emit('message', {
+      type: 'skytwin:vault:reconcile', requestId: 'replace', capability,
+      role: 'worker', authentication: 'service', userIds: ['user-0002'],
+    });
+    await tick();
+    child.emit('message', {
+      type: 'skytwin:vault:request', requestId: 'removed', capability,
+      generation: 1, operation: 'state', context,
+    });
+    await tick();
+    expect(child.sent.find(value => (value as { requestId?: string }).requestId === 'removed'))
+      .toMatchObject({ result: { success: false, error: 'vault_broker_unavailable' } });
+  });
+
   it('keeps admission closed until overlapping locks for that user finish', async () => {
     const broker = new DesktopKeyBroker(new MemoryStore()); await broker.initialize(context.userId, 'correct horse battery staple');
     const child = new FakeChild(); broker.attachChild(child as unknown as ChildProcess, 'api', new Set([context.userId]));

@@ -4,6 +4,13 @@ All notable changes to SkyTwin will be documented in this file.
 
 ### Added
 
+- **The source-key runtime is composed behind process capabilities.** Desktop
+  stores passphrase-wrapped per-user recovery keys in CockroachDB, gives the API
+  and worker separate ephemeral broker capabilities, and accepts owner grants
+  only after session authentication or worker database discovery. Parent-owned
+  API grants expire with their sessions; worker reconciliation replaces the
+  entire authorized-owner set. Lock and unlock use bounded child acknowledgement
+  and proven child termination before changing key availability.
 - **An accepted, implementation-ready source-field encryption contract.** ADR
   0001 defines key custody, locked behavior, context-bound envelopes,
   crash-safe migration and rotation, backup/restore, deletion after key loss,
@@ -18,6 +25,9 @@ All notable changes to SkyTwin will be documented in this file.
 
 ### Fixed (post-/review)
 
+- **Initialization rollback is bound to the exact recovery wrapper.** A failed
+  read-back self-test can delete only the row value created by that attempt, so
+  cleanup cannot remove a concurrent or replacement wrapper.
 - **Remembered vault passphrases now retain verifiable storage provenance.**
   New desktop records carry a format version and the exact secure OS backend
   that encrypted them. Startup deletes every legacy untagged, unsupported, or
@@ -25,6 +35,12 @@ All notable changes to SkyTwin will be documented in this file.
   passphrase persisted by Linux `basic_text` cannot survive the hardened
   boundary. The credential-vault plaintext warning also uses the design
   system's security-alert color.
+
+### Security scope
+
+- Source-field migration remains disabled. This runtime composition does not
+  make an at-rest encryption claim; source-column cutover and durable device
+  deletion-intent processing remain follow-up work.
 
 ## [0.6.102.0] - 2026-08-27
 
