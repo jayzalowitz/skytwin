@@ -113,4 +113,11 @@ describe('policyRepositoryAdapter', () => {
 
     await expect(policyRepositoryAdapter.getPolicy('policy-1', 'other-user')).resolves.toBeNull();
   });
+
+  it('fails before querying when an owner ID is empty', async () => {
+    await expect(policyRepositoryAdapter.getEnabledPolicies('')).rejects.toThrow(
+      'Policy reads require a non-empty owner ID.',
+    );
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
 });

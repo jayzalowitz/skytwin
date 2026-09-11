@@ -37,6 +37,13 @@ function toDomain(row: ActionPolicyRow): ActionPolicy {
   };
 }
 
+function requireOwnerId(userId: string): string {
+  if (typeof userId !== 'string' || userId.trim().length === 0) {
+    throw new Error('Policy reads require a non-empty owner ID.');
+  }
+  return userId;
+}
+
 /**
  * Adapter that implements `PolicyRepositoryPort` (from @skytwin/policy-engine)
  * by delegating to the concrete `policyRepository` (from @skytwin/db) and
@@ -48,34 +55,38 @@ function toDomain(row: ActionPolicyRow): ActionPolicy {
  */
 export const policyRepositoryAdapter: PolicyRepositoryPort = {
   async getAllPolicies(userId: string): Promise<ActionPolicy[]> {
+    const ownerId = requireOwnerId(userId);
     const result = await query<ActionPolicyRow>(
       'SELECT * FROM action_policies WHERE user_id = $1 ORDER BY priority DESC',
-      [userId],
+      [ownerId],
     );
     return result.rows.map(toDomain);
   },
 
   async getEnabledPolicies(userId: string): Promise<ActionPolicy[]> {
+    const ownerId = requireOwnerId(userId);
     const result = await query<ActionPolicyRow>(
       'SELECT * FROM action_policies WHERE user_id = $1 AND is_active = true ORDER BY priority DESC',
-      [userId],
+      [ownerId],
     );
     return result.rows.map(toDomain);
   },
 
   async getPolicy(policyId: string, userId: string): Promise<ActionPolicy | null> {
+    const ownerId = requireOwnerId(userId);
     const result = await query<ActionPolicyRow>(
       'SELECT * FROM action_policies WHERE id = $1 AND user_id = $2',
-      [policyId, userId],
+      [policyId, ownerId],
     );
     const row = result.rows[0];
     return row ? toDomain(row) : null;
   },
 
   async getPoliciesByDomain(domain: string, userId: string): Promise<ActionPolicy[]> {
+    const ownerId = requireOwnerId(userId);
     const result = await query<ActionPolicyRow>(
       'SELECT * FROM action_policies WHERE domain = $1 AND user_id = $2 AND is_active = true ORDER BY priority DESC',
-      [domain, userId],
+      [domain, ownerId],
     );
     return result.rows.map(toDomain);
   },
