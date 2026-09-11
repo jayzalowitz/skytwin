@@ -45,6 +45,12 @@ export type {
   PersistGmailArchiveProposalInput,
   PersistGmailArchiveProposalResult,
 } from './gmail-archive-proposal-repository.js';
+export { gmailArchiveApprovalResponseRepository } from './gmail-archive-approval-response-repository.js';
+export type {
+  GmailArchiveApprovalResponseBundle,
+  RespondGmailArchiveApprovalInput,
+  RespondGmailArchiveApprovalResult,
+} from './gmail-archive-approval-response-repository.js';
 
 export { feedbackRepository } from './feedback-repository.js';
 export type { CreateFeedbackInput } from './feedback-repository.js';
