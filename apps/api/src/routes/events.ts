@@ -20,7 +20,6 @@ import {
   oauthRepository,
   executionRepository,
   userRepository,
-  aiProviderRepository,
   emailLabelRepository,
   mempalaceRepository,
   TwinRepositoryAdapter,
@@ -29,18 +28,25 @@ import {
   explanationRepositoryAdapter,
   policyRepositoryAdapter,
   preEffectBarrierRepository,
+  inferenceReceiptRepository,
 } from '@skytwin/db';
-import type { DecisionContext, DecisionOutcome, ExecutionResult, RiskAssessment, EpisodicMemory } from '@skytwin/shared-types';
+import type {
+  DecisionContext,
+  DecisionOutcome,
+  ExecutionResult,
+  RiskAssessment,
+  EpisodicMemory,
+} from '@skytwin/shared-types';
 import { parseAutonomySettings, SituationType, TrustTier } from '@skytwin/shared-types';
 import {
   AmbiguousExecutionError,
   EXECUTION_FAILURE_CODES,
   executionFailureCode,
 } from '@skytwin/execution-router';
-import type { AIProviderName } from '@skytwin/shared-types';
-import { LlmClient } from '@skytwin/llm-client';
-import type { ProviderEntry } from '@skytwin/llm-client';
+import { emitInferenceReceipt } from '@skytwin/llm-client';
+import type { InferenceTrace, ReceiptSigningKey } from '@skytwin/llm-client';
 import { createLogger } from '@skytwin/core';
+import { generateKeyPairSync } from 'node:crypto';
 
 const log = createLogger('api:events');
 import { WorkflowHandlerRegistry } from '../workflows/registry.js';
@@ -65,6 +71,7 @@ import {
   isOutboundEmailAction,
   prepareEmailActionForExecution,
 } from '../email-attribution.js';
+import { resolveUserLlmClient } from '../lib/user-llm-client.js';
 
 function eventPolicySnapshot(
   policy: { allowed: boolean; requiresApproval: boolean; reason: string },
@@ -113,24 +120,165 @@ async function recordSignalToMemory(
 }
 
 /**
+ * Return the durable response for a completed prior ingestion, or null when
+ * the prior pipeline still needs recovery. This is safe to call before LLM
+ * composition/interpretation, which prevents a duplicate signal from making
+ * a new provider call whose trace could never be linked to a new decision.
+ */
+async function recoverCompletedIngest(
+  userId: string,
+  decision: _DecisionObject,
+  raceLoserTraces: readonly InferenceTrace[] = [],
+): Promise<Record<string, unknown> | null> {
+  const [previousOutcome, receiptCaptureComplete] = await Promise.all([
+    decisionRepositoryAdapter.getOutcome(decision.id),
+    inferenceReceiptRepository.isCompleteForDecision(userId, decision.id),
+  ]);
+  let recoverable = previousOutcome !== null && receiptCaptureComplete;
+  let executionTerminal: {
+    status: 'completed' | 'failed' | 'unknown';
+    planId: string | null;
+  } | null = null;
+  const previousApproval = previousOutcome?.requiresApproval
+    ? await approvalRepository.findByDecisionId(decision.id, userId)
+    : null;
+  if (previousOutcome?.requiresApproval) recoverable = recoverable && previousApproval !== null;
+  if (previousOutcome?.autoExecute) {
+    const previousExec = await executionRepository.getByDecisionId(decision.id);
+    if (!previousExec?.result) {
+      // A durable auto-execute outcome without a known result has crossed the
+      // dispatch boundary. Receipt repair may still be needed, but rerunning
+      // the decision pipeline could duplicate an irreversible remote effect.
+      executionTerminal = {
+        status: 'unknown',
+        planId: previousExec?.plan.id ?? null,
+      };
+      recoverable = true;
+    } else {
+      executionTerminal = {
+        status: previousExec.result.success ? 'completed' : 'failed',
+        planId: previousExec.plan.id,
+      };
+    }
+  }
+  if (!recoverable || !previousOutcome) return null;
+
+  const previousExplanation = await explanationRepositoryAdapter.getByDecisionId(decision.id);
+  if (raceLoserTraces.length > 0) {
+    if (!previousExplanation) {
+      throw new Error('Duplicate inference traces cannot be linked without a durable explanation');
+    }
+    await persistInferenceTraces(
+      userId,
+      decision.id,
+      previousExplanation.id,
+      raceLoserTraces,
+    );
+  }
+  log.info('Suppressed pipeline for re-ingested signal', {
+    userId,
+    decisionId: decision.id,
+    hadApproval: previousApproval !== null,
+    hadExplanation: previousExplanation !== null,
+    requiredApproval: previousOutcome.requiresApproval,
+    autoExecuted: previousOutcome.autoExecute,
+    executionStatus: executionTerminal?.status ?? null,
+  });
+  return {
+    decision: {
+      id: decision.id,
+      situationType: decision.situationType,
+      domain: decision.domain,
+      urgency: decision.urgency,
+      summary: decision.summary,
+    },
+    outcome: {
+      selectedAction: previousOutcome.selectedAction
+        ? {
+            actionType: previousOutcome.selectedAction.actionType,
+            description: previousOutcome.selectedAction.description,
+          }
+        : null,
+      autoExecute: previousOutcome.autoExecute,
+      requiresApproval: previousOutcome.requiresApproval,
+      reasoning: previousOutcome.reasoning,
+    },
+    explanation: previousExplanation
+      ? {
+          summary: previousExplanation.summary,
+          riskTier: previousExplanation.riskTier,
+          confidence: previousExplanation.overallConfidence,
+        }
+      : null,
+    execution: executionTerminal,
+    approval: previousApproval
+      ? { id: previousApproval.id, status: previousApproval.status }
+      : null,
+    reIngested: true,
+  };
+}
+
+/**
  * Create the events router for ingesting raw events.
  */
-/**
- * Build an LlmClient from the user's enabled AI provider settings.
- * Returns null if the user has no enabled providers.
- */
-async function buildLlmClientForUser(userId: string): Promise<LlmClient | null> {
-  const rows = await aiProviderRepository.getEnabledForUser(userId);
-  if (rows.length === 0) return null;
+let receiptSigningKey: ReceiptSigningKey | undefined;
 
-  const providers: ProviderEntry[] = rows.map((r: { provider: string; api_key: string; model: string; base_url: string | null }) => ({
-    name: r.provider as AIProviderName,
-    apiKey: r.api_key,
-    model: r.model,
-    baseUrl: r.base_url ?? undefined,
-  }));
+function getReceiptSigningKey(): ReceiptSigningKey {
+  if (receiptSigningKey) return receiptSigningKey;
+  const encodedPrivate = process.env['SKYTWIN_RECEIPT_PRIVATE_KEY_BASE64'];
+  const encodedPublic = process.env['SKYTWIN_RECEIPT_PUBLIC_KEY_BASE64'];
+  const configuredKeyId = process.env['SKYTWIN_RECEIPT_KEY_ID'];
+  if ((encodedPrivate || encodedPublic || configuredKeyId) &&
+      !(encodedPrivate && encodedPublic && configuredKeyId)) {
+    throw new Error('Receipt signing configuration requires key ID, public key, and private key together');
+  }
+  if (encodedPrivate && encodedPublic && configuredKeyId) {
+    receiptSigningKey = {
+      keyId: configuredKeyId,
+      privateKeyPem: Buffer.from(encodedPrivate, 'base64').toString('utf8'),
+      publicKeyPem: Buffer.from(encodedPublic, 'base64').toString('utf8'),
+    };
+    return receiptSigningKey;
+  }
+  const pair = generateKeyPairSync('ed25519');
+  receiptSigningKey = {
+    keyId: `ephemeral-${crypto.randomUUID()}`,
+    privateKeyPem: pair.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString(),
+    publicKeyPem: pair.publicKey.export({ type: 'spki', format: 'pem' }).toString(),
+  };
+  return receiptSigningKey;
+}
 
-  return new LlmClient(providers, userId);
+async function persistInferenceTraces(
+  userId: string,
+  decisionId: string,
+  explanationId: string,
+  traces: readonly InferenceTrace[],
+): Promise<void> {
+  const signingKey = getReceiptSigningKey();
+  const inputs = traces.map((trace) => {
+    // Confidential mode is currently fail-closed at the sole client
+    // composition root until a verifier-owned adapter is configured.
+    if (trace.execution.reasoningMode === 'verified_private_cloud' || trace.verification) {
+      throw new Error('Confidential receipt emission is not configured for decision events');
+    }
+    const bundle = emitInferenceReceipt(trace, {
+      userId,
+      decisionId,
+      explanationId,
+    }, signingKey);
+    return {
+      bundle,
+      trustedRecorderKeys: new Map([[signingKey.keyId, signingKey.publicKeyPem]]),
+    };
+  });
+  const persisted = await inferenceReceiptRepository.createManyForUser(userId, inputs, {
+    decisionId,
+    explanationId,
+  });
+  if (!persisted || persisted.length !== inputs.length) {
+    throw new Error('Inference receipts could not be persisted; decision execution stopped');
+  }
 }
 
 export function createEventsRouter(): Router {
@@ -226,8 +374,33 @@ export function createEventsRouter(): Router {
       const rawEvent = validation.event;
       const userId = validation.userId;
 
+      // A completed duplicate must short-circuit before any LLM-backed
+      // interpretation. The later saveDecision check remains the race-loser
+      // backstop for concurrent first ingestions.
+      const signalId = typeof rawEvent['signalId'] === 'string' &&
+        rawEvent['signalId'].trim().length > 0
+        ? rawEvent['signalId']
+        : '';
+      if (signalId && decisionRepositoryAdapter.findBySignalId) {
+        const existingDecision = await decisionRepositoryAdapter.findBySignalId(userId, signalId);
+        if (existingDecision) {
+          const recovered = await recoverCompletedIngest(userId, existingDecision);
+          if (recovered) {
+            res.json(recovered);
+            return;
+          }
+        }
+      }
+
       // 0. Build per-user LLM client and strategies (or fall back to rule-based)
-      const llmClient = await buildLlmClientForUser(userId);
+      const traces: InferenceTrace[] = [];
+      const llmResolution = await resolveUserLlmClient(userId, {
+        onInferenceTrace: (trace) => traces.push(trace),
+      });
+      const receiptAwareLlm = llmResolution.state === 'ready'
+        ? { client: llmResolution.client, traces }
+        : null;
+      const llmClient = receiptAwareLlm?.client ?? null;
 
       let interpreter: SituationInterpreter;
       let decisionMaker: DecisionMaker;
@@ -335,86 +508,14 @@ export function createEventsRouter(): Router {
       //      no-op anyway, so this case is always safe to short-circuit
       //      regardless of approval-row state.
       if (!decisionCreated) {
-        const previousOutcome = await decisionRepositoryAdapter.getOutcome(decision.id);
-        let recoverable = previousOutcome !== null;
-        let executionTerminal: { status: 'completed' | 'failed' | 'unknown'; planId: string | null } | null = null;
-        if (previousOutcome && previousOutcome.autoExecute) {
-          const previousExec = await executionRepository.getByDecisionId(decision.id);
-          if (!previousExec || !previousExec.result) {
-            // Once an auto-execute outcome exists, absence of a known result is
-            // an ambiguous dispatch boundary. Retrying could duplicate an
-            // irreversible effect, so surface terminal-unknown and never replay.
-            executionTerminal = { status: 'unknown', planId: previousExec?.plan.id ?? null };
-          } else {
-            executionTerminal = {
-              status: previousExec.result.success ? 'completed' : 'failed',
-              planId: previousExec.plan.id,
-            };
-          }
-        }
-
-        if (recoverable && previousOutcome) {
-          const [previousApproval, previousExplanation] = await Promise.all([
-            previousOutcome.requiresApproval
-              ? approvalRepository.findByDecisionId(decision.id, userId)
-              : Promise.resolve(null),
-            // Refetch the persisted explanation so the short-circuit
-            // response carries the same `{ summary, riskTier, confidence }`
-            // shape the first-time response did, instead of a null that
-            // would make the endpoint's contract branch-dependent.
-            explanationRepositoryAdapter.getByDecisionId(decision.id),
-          ]);
-          log.info('Suppressed pipeline for re-ingested signal', {
-            userId,
-            decisionId: decision.id,
-            hadApproval: previousApproval !== null,
-            hadExplanation: previousExplanation !== null,
-            requiredApproval: previousOutcome.requiresApproval,
-            autoExecuted: previousOutcome.autoExecute,
-            executionStatus: executionTerminal?.status ?? null,
-          });
-          res.json({
-            decision: {
-              id: decision.id,
-              situationType: decision.situationType,
-              domain: decision.domain,
-              urgency: decision.urgency,
-              summary: decision.summary,
-            },
-            outcome: {
-              selectedAction: previousOutcome.selectedAction
-                ? {
-                    actionType: previousOutcome.selectedAction.actionType,
-                    description: previousOutcome.selectedAction.description,
-                  }
-                : null,
-              autoExecute: previousOutcome.autoExecute,
-              requiresApproval: previousOutcome.requiresApproval,
-              reasoning: previousOutcome.reasoning,
-            },
-            explanation: previousExplanation
-              ? {
-                  summary: previousExplanation.summary,
-                  riskTier: previousExplanation.riskTier,
-                  confidence: previousExplanation.overallConfidence,
-                }
-              : null,
-            // Execution surfaces the persisted terminal status when the
-            // previous run was auto-execute. For non-autoExecute outcomes
-            // there is no plan to reference, so it's null.
-            execution: executionTerminal,
-            approval: previousApproval
-              ? { id: previousApproval.id, status: previousApproval.status }
-              : null,
-            reIngested: true,
-          });
+        const recovered = await recoverCompletedIngest(userId, decision, traces);
+        if (recovered) {
+          res.json(recovered);
           return;
         }
         log.info('Re-ingestion with incomplete previous attempt; running pipeline to completion', {
           userId,
           decisionId: decision.id,
-          previousOutcomePresent: previousOutcome !== null,
-          previousOutcomeAutoExecute: previousOutcome?.autoExecute ?? null,
         });
       }
 
@@ -526,6 +627,17 @@ export function createEventsRouter(): Router {
         decision,
         outcome,
         context,
+      );
+
+      // An LLM-backed decision cannot proceed to approval or execution until
+      // every completed inference has a receipt linked to its real explanation.
+      // The repository inserts the batch atomically and derives ownership from
+      // the decision; raw inference bytes are verified here but never stored.
+      await persistInferenceTraces(
+        userId,
+        decision.id,
+        explanation.id,
+        receiptAwareLlm?.traces ?? [],
       );
 
       // 8b. Persist candidate actions so alternatives are available for approval UI

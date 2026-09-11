@@ -11,17 +11,15 @@ import {
   type ActionIntent,
   type MemorySource,
 } from '@skytwin/assistant';
-import { LlmClient, AllProvidersFailedError } from '@skytwin/llm-client';
+import { AllProvidersFailedError } from '@skytwin/llm-client';
 import { serializeApprovalCandidate } from './approval-candidate.js';
-import type { ProviderEntry } from '@skytwin/llm-client';
-import type { AIProviderName, DecisionContext, DecisionObject } from '@skytwin/shared-types';
+import type { DecisionContext, DecisionObject } from '@skytwin/shared-types';
 import { SituationType, TrustTier } from '@skytwin/shared-types';
 import { TwinService } from '@skytwin/twin-model';
 import { DecisionMaker } from '@skytwin/decision-engine';
 import { PolicyEvaluator } from '@skytwin/policy-engine';
 import { ExplanationGenerator } from '@skytwin/explanations';
 import {
-  aiProviderRepository,
   approvalRepository,
   assistantRepository,
   emailLabelRepository,
@@ -43,33 +41,9 @@ import { createLogger } from '@skytwin/core';
 import { sseManager } from '../sse.js';
 import { validateAssistantMessage } from '../validators/assistant-message.js';
 import { getMemoryPortForUser } from '../memory-setup.js';
+import { resolveUserLlmClient } from '../lib/user-llm-client.js';
 
 const log = createLogger('api:assistant');
-
-/**
- * Build an LlmClient from the user's enabled AI providers. Returns null if
- * the user has no providers configured — the route turns that into a 409
- * response so the dashboard can prompt them to set one up.
- *
- * Mirrors `events.ts:buildLlmClientForUser` deliberately. We could share
- * the helper but events.ts also does its own per-request branching and
- * cross-importing the helper would couple the two routes. One copy is
- * cheaper to reason about than one shared utility with two callers in
- * different files. Issue #135 phase 1.
- */
-async function buildLlmClientForUser(userId: string): Promise<LlmClient | null> {
-  const rows = await aiProviderRepository.getEnabledForUser(userId);
-  if (rows.length === 0) return null;
-  const providers: ProviderEntry[] = rows.map(
-    (r: { provider: string; api_key: string; model: string; base_url: string | null }) => ({
-      name: r.provider as AIProviderName,
-      apiKey: r.api_key,
-      model: r.model,
-      baseUrl: r.base_url ?? undefined,
-    }),
-  );
-  return new LlmClient(providers, userId);
-}
 
 /**
  * UUID validator for path params. The `requireOwnership` middleware already
@@ -942,6 +916,20 @@ export function createAssistantRouter(): Router {
         }
       }
 
+      const llmResolution = await resolveUserLlmClient(userId);
+      const llm = llmResolution.client;
+      if (!llm) {
+        const blocked = llmResolution.state !== 'no_provider';
+        res.status(409).json({
+          error: blocked ? 'AI provider blocked by reasoning-location policy' : 'No AI provider configured',
+          code: llmResolution.state,
+          message: blocked
+            ? `${llmResolution.reason}. Review Settings → AI brain.`
+            : 'Configure at least one provider in Settings → AI brain before chatting with the assistant.',
+        });
+        return;
+      }
+
       // Resolve the thread: existing one or new one based on the first
       // user message. We persist the user message FIRST so it's durable
       // even if the LLM call fails — the user shouldn't lose their input
@@ -1048,15 +1036,6 @@ export function createAssistantRouter(): Router {
           });
           return;
         }
-      }
-      const llm = await buildLlmClientForUser(userId);
-      if (!llm) {
-        res.status(409).json({
-          error: 'No AI provider configured',
-          message:
-            'Configure at least one provider in Settings → AI providers before chatting with the assistant.',
-        });
-        return;
       }
       const history: ChatTurn[] = fetched.messages.map((m) => ({
         role: m.role,
@@ -1339,13 +1318,16 @@ export function createAssistantRouter(): Router {
         return;
       }
 
-      const llmClient = await buildLlmClientForUser(userId);
+      const llmResolution = await resolveUserLlmClient(userId);
+      const llmClient = llmResolution.client;
       if (!llmClient) {
         // No LLM configured — browser falls through to its heuristic.
         res.json({
           intentDetected: false,
           suggestions: [],
-          reason: 'no_llm_configured',
+          reason: llmResolution.state === 'no_provider'
+            ? 'no_llm_configured'
+            : llmResolution.state,
         });
         return;
       }
@@ -1425,13 +1407,14 @@ export function createAssistantRouter(): Router {
           },
           user: { userId },
           llmClient,
+          invocationKind: 'interactive',
         });
 
         if (result.fellBackToDeterministic) {
           res.json({
             intentDetected: false,
             suggestions: [],
-            reason: 'no_llm_configured',
+            reason: 'provider_unavailable',
           });
           return;
         }
@@ -1464,12 +1447,12 @@ export function createAssistantRouter(): Router {
         log.warn('capability-install-suggestion prompt failed', {
           errorCode: 'assistant_capability_suggestion_failed',
         });
-        // Fail-soft to the no-suggestion branch; browser heuristic
-        // covers user-visible UX.
+        // Fail-soft to the no-suggestion branch while preserving the actual
+        // failure class; the browser heuristic covers user-visible UX.
         res.json({
           intentDetected: false,
           suggestions: [],
-          reason: 'no_llm_configured',
+          reason: 'prompt_failed',
         });
       }
     } catch (err) {

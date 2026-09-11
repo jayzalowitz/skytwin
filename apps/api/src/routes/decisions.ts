@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { decisionRepository, explanationRepository } from '@skytwin/db';
+import { decisionRepository, explanationRepository, inferenceReceiptRepository } from '@skytwin/db';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
 import { bindUserIdParamValidator } from '../middleware/validate-uuid.js';
 
@@ -141,6 +141,56 @@ export function createDecisionsRouter(): Router {
           createdAt: explanation.created_at,
         },
       });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /** Metadata-only receipt. Exact inference bytes are never returned here. */
+  router.get('/:decisionId/receipt', async (req, res, next) => {
+    try {
+      const userId = req.authenticatedUserId;
+      const decisionId = req.params['decisionId'];
+      if (!userId) {
+        res.status(401).json({ error: 'Authentication required' });
+        return;
+      }
+      if (!decisionId) {
+        res.status(400).json({ error: 'Missing decisionId parameter' });
+        return;
+      }
+      const row = await inferenceReceiptRepository.findByDecisionForUser(userId, decisionId);
+      if (!row) {
+        res.status(404).json({ error: 'Inference receipt not found' });
+        return;
+      }
+      res.json({
+        receipt: row.receipt,
+        persistenceTrust: row.trusted === false ? 'imported_unverified' : 'trusted',
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.delete('/:decisionId/receipt', async (req, res, next) => {
+    try {
+      const userId = req.authenticatedUserId;
+      const decisionId = req.params['decisionId'];
+      if (!userId) {
+        res.status(401).json({ error: 'Authentication required' });
+        return;
+      }
+      if (!decisionId) {
+        res.status(400).json({ error: 'Missing decisionId parameter' });
+        return;
+      }
+      const deleted = await inferenceReceiptRepository.deleteByDecisionForUser(userId, decisionId);
+      if (!deleted) {
+        res.status(404).json({ error: 'Inference receipt not found' });
+        return;
+      }
+      res.status(204).send();
     } catch (error) {
       next(error);
     }

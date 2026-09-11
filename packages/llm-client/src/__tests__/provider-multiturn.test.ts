@@ -226,6 +226,30 @@ describe('Ollama provider — switched to /api/chat', () => {
     expect(captured[0]!.body.messages).toEqual([{ role: 'user', content: 'hello' }]);
   });
 
+  it('uses hardened no-redirect transport for the canonical default endpoint', async () => {
+    let redirectTargetReceivedPrompt = false;
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input) === 'http://127.0.0.1:17777/target') {
+        redirectTargetReceivedPrompt = Boolean(init?.body);
+        return new Response(JSON.stringify({ message: { content: 'unsafe' } }), { status: 200 });
+      }
+      return new Response('', {
+        status: 307,
+        headers: { Location: 'http://127.0.0.1:17777/target' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(ollamaGenerate('', 'llama-test', 'private prompt'))
+      .rejects.toThrow('Redirects are not allowed');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:11434/api/chat',
+      expect.objectContaining({ redirect: 'manual', dispatcher: expect.any(Object) }),
+    );
+    expect(redirectTargetReceivedPrompt).toBe(false);
+  });
+
   it('passes a multi-turn ChatMessage[] through unchanged', async () => {
     const { spy, captured } = captureFetch({ message: { content: 'ok' } });
     vi.stubGlobal('fetch', spy);

@@ -55,6 +55,7 @@ export type {
   ExecutionEventRow,
   MemoryActionOpportunityRow,
   ExplanationRecordRow,
+  InferenceReceiptRow,
   FeedbackEventRow,
   OAuthTokenRow,
   SignalRow,
@@ -85,6 +86,7 @@ export type {
   CredentialRequirementRow,
   IronClawToolRow,
   AIProviderSettingsRow,
+  ReasoningModeSettingsRow,
   OauthPkcePendingRow,
   OauthPendingSigninRow,
 } from './types.js';
@@ -96,6 +98,7 @@ export {
   decisionRepository,
   policyRepository,
   explanationRepository,
+  inferenceReceiptRepository,
   feedbackRepository,
 } from './repositories/index.js';
 export type {
@@ -108,6 +111,7 @@ export type {
   CreatePolicyInput,
   UpdatePolicyInput,
   CreateExplanationInput,
+  CreateInferenceReceiptInput,
   CreateFeedbackInput,
 } from './repositories/index.js';
 
@@ -153,6 +157,7 @@ export type {
 export { signalRepository, proposalRepository, skillGapRepository, proactiveScanRepository } from './repositories/index.js';
 
 export { trustTierAuditRepository, spendRepository, domainAutonomyRepository, escalationTriggerRepository, preferenceHistoryRepository, sessionRepository, mempalaceRepository, serviceCredentialRepository, credentialRequirementRepository, aiProviderRepository, ironClawToolRepository, forwardedSignalsRepository, connectorCursorRepository, emailLabelRepository, assistantRepository, deriveThreadTitle, appSuggestionRepository, memoryActionOpportunityRepository, mcpServerRepository, riskProfileRepository, provenanceRepository, briefingRepository } from './repositories/index.js';
+export { reasoningModeRepository } from './repositories/index.js';
 export type { AppSuggestionRow, UpsertPendingSuggestionInput } from './repositories/index.js';
 export type {
   ClaimDueOptions,
