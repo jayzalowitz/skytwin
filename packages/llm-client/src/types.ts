@@ -1,4 +1,60 @@
-import type { AIProviderName } from '@skytwin/shared-types';
+import type {
+  AIProviderName,
+  InferenceFallbackV1,
+  InferenceReceiptStatus,
+  InferenceReasoningMode,
+  ReceiptSignatureV1,
+} from '@skytwin/shared-types';
+
+export interface TrustedConfidentialVerification {
+  outcome: 'verified';
+  inferenceId?: string;
+  attestationPolicyVersion: string;
+  verifierVersion: string;
+  evidence: Uint8Array;
+  measurementIdentity: string;
+  responseSignature: ReceiptSignatureV1;
+  verifiedAt: string;
+  freshUntil: string;
+}
+
+export interface RejectedConfidentialVerification {
+  outcome: 'verification_failed' | 'verification_unavailable' | 'verification_stale';
+  verifierVersion: string;
+  reason: string;
+}
+
+export type ConfidentialVerificationResult =
+  | TrustedConfidentialVerification
+  | RejectedConfidentialVerification;
+
+export interface ConfidentialInferenceVerifier {
+  verify(input: {
+    provider: AIProviderName;
+    model: string;
+    endpointIdentity: string;
+    request: Uint8Array;
+    response: Uint8Array;
+  }): Promise<ConfidentialVerificationResult>;
+}
+
+/** Canonical logical input/output bytes and provider facts captured by one client instance. */
+export interface InferenceTrace {
+  id: string;
+  reasoningMode: InferenceReasoningMode;
+  status: InferenceReceiptStatus;
+  provider: AIProviderName;
+  model: string;
+  endpointIdentity: string;
+  request: Uint8Array;
+  response: Uint8Array;
+  cost: { basis: 'exact'; currency: string; amountMinor: number } | { basis: 'unknown' };
+  createdAt: string;
+  verifierVersion: string;
+  fallback?: InferenceFallbackV1;
+  verification?: TrustedConfidentialVerification;
+  verificationFailureReason?: string;
+}
 
 /**
  * Configuration for a single provider in the chain.
@@ -8,6 +64,15 @@ export interface ProviderEntry {
   apiKey: string;
   model: string;
   baseUrl?: string;
+  /** Defaults to on-device for embedded/Ollama and conventional cloud otherwise. */
+  reasoningMode?: InferenceReasoningMode;
+  /** Required for verified-confidential entries. Unverified responses are never returned. */
+  confidentialVerifier?: ConfidentialInferenceVerifier;
+}
+
+export interface LlmClientOptions {
+  onInferenceTrace?: (trace: InferenceTrace) => void;
+  now?: () => Date;
 }
 
 /**

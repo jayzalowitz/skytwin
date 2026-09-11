@@ -92,6 +92,67 @@ describe('LlmClient', () => {
       expect(mockOpenaiGenerate).not.toHaveBeenCalled();
     });
 
+    it('emits a conventional trace with exact logical bytes and unknown hosted cost', async () => {
+      const { LlmClient } = await freshImport();
+      mockOpenaiGenerate.mockResolvedValue('cloud response');
+      const traces: import('../types.js').InferenceTrace[] = [];
+      const client = new LlmClient([openaiProvider], 'receipt-user', {
+        onInferenceTrace: (trace) => traces.push(trace),
+        now: () => new Date('2026-09-10T00:00:00.000Z'),
+      });
+      await client.generate('private prompt', { maxTokens: 12 });
+      expect(traces).toHaveLength(1);
+      expect(traces[0]).toMatchObject({
+        reasoningMode: 'conventional_cloud', status: 'conventional',
+        endpointIdentity: 'https://api.openai.com', cost: { basis: 'unknown' },
+      });
+      expect(Buffer.from(traces[0]!.request).toString()).toBe(
+        JSON.stringify({ prompt: 'private prompt', maxTokens: 12 }),
+      );
+      expect(Buffer.from(traces[0]!.response).toString()).toBe('cloud response');
+      expect(traces[0]).not.toHaveProperty('verification');
+    });
+
+    it('records zero-cost on-device inference without attestation fields', async () => {
+      const { LlmClient } = await freshImport();
+      mockOllamaGenerate.mockResolvedValue('local response');
+      const traces: import('../types.js').InferenceTrace[] = [];
+      const client = new LlmClient([{ name: 'ollama', apiKey: '', model: 'local' }], 'local-user', {
+        onInferenceTrace: (trace) => traces.push(trace),
+      });
+      await client.generate('prompt');
+      expect(traces[0]).toMatchObject({
+        reasoningMode: 'on_device', status: 'on_device',
+        cost: { basis: 'exact', currency: 'USD', amountMinor: 0 },
+      });
+      expect(traces[0]).not.toHaveProperty('verification');
+    });
+
+    it('rejects unverified confidential output and records explicit local fallback', async () => {
+      const { LlmClient } = await freshImport();
+      mockOpenaiGenerate.mockResolvedValue('unverified secret result');
+      mockOllamaGenerate.mockResolvedValue('safe local result');
+      const traces: import('../types.js').InferenceTrace[] = [];
+      const verifier = {
+        verify: vi.fn().mockResolvedValue({
+          outcome: 'verification_failed' as const,
+          verifierVersion: 'near-v1', reason: 'response binding did not match',
+        }),
+      };
+      const client = new LlmClient([
+        { ...openaiProvider, reasoningMode: 'verified_confidential', confidentialVerifier: verifier },
+        { name: 'ollama', apiKey: '', model: 'local' },
+      ], 'fallback-user', { onInferenceTrace: (trace) => traces.push(trace) });
+      const result = await client.generate('prompt');
+      expect(result.content).toBe('safe local result');
+      expect(traces.map((item) => item.status)).toEqual(['verification_failed', 'local_fallback']);
+      expect(traces[1]!.fallback).toEqual({
+        origin: 'verified_confidential', destination: 'on_device',
+        reason: 'response binding did not match',
+      });
+      expect(traces[0]).not.toHaveProperty('verification');
+    });
+
     it('passes prompt and options to the provider', async () => {
       const { LlmClient } = await freshImport();
       mockAnthropicGenerate.mockResolvedValue('ok');
