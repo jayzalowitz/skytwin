@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, powerMonitor, safeStorage, shell, type Tray } from 'electron';
+import { app, BrowserWindow, ipcMain, powerMonitor, safeStorage, shell, type Tray, type IpcMainInvokeEvent } from 'electron';
 import Store from 'electron-store';
 import { promises as fs } from 'fs';
 import { join } from 'path';
@@ -27,8 +27,30 @@ import {
   setCrashReportsEnabled,
 } from './desktop-preferences.js';
 import { reportCrash } from './crash-reporter.js';
+import {
+  DesktopKeyBroker,
+  type DeviceWrapperStore,
+  isValidVaultUserId,
+  PersistentWrappedKeyStore,
+  type WrappedKeyValueStore,
+  type WrappedUserKey,
+} from './key-broker.js';
+import { installVaultNavigationGuards, VaultRendererAuthorizer } from './vault-renderer-security.js';
 
-const serviceManager = new ServiceManager();
+// This store contains passphrase-wrapped random root keys, never passphrases or
+// plaintext root keys. Source-field migration remains disabled until the
+// broker boundary has completed its packaged verification gate.
+const wrappedKeyStore = new PersistentWrappedKeyStore(new Store<Record<string, WrappedUserKey>>({
+  name: 'skytwin-wrapped-user-keys',
+}) as unknown as WrappedKeyValueStore);
+const deviceKeyStore = new Store<Record<string, string>>({
+  name: 'skytwin-device-user-keys',
+}) as unknown as DeviceWrapperStore;
+const keyBroker = new DesktopKeyBroker(wrappedKeyStore, {
+  deviceProtection: safeStorage,
+  deviceStore: deviceKeyStore,
+});
+const serviceManager = new ServiceManager(keyBroker);
 
 // OS-keychain-backed "remember my vault passphrase on this device" store (#401).
 // Persists the safeStorage-encrypted passphrase ciphertext in the OS userData
@@ -95,6 +117,10 @@ function createMainWindow(): BrowserWindow {
       contextIsolation: true,
     },
   });
+
+  // The preload carries privileged local APIs. Never retain it after a
+  // navigation away from the loopback dashboard.
+  installVaultNavigationGuards(win.webContents);
 
   // Restore maximized state
   if (saved.isMaximized) {
@@ -420,6 +446,60 @@ ipcMain.handle('vault-passphrase-has', (_event, userId: string) => {
 
 ipcMain.handle('vault-passphrase-forget', (_event, userId: string) => {
   if (typeof userId === 'string' && userId !== '') passphraseVault.forget(userId);
+});
+
+// Per-user key custody controls. Results are content-free; passphrases are
+// accepted by Electron main and are never forwarded through child env/argv.
+const vaultRendererAuthorizer = new VaultRendererAuthorizer(async (userId, sessionToken) => {
+  try {
+    const response = await fetch(`http://127.0.0.1:3100/api/users/${encodeURIComponent(userId)}`, {
+      headers: { authorization: `Bearer ${sessionToken}` }, signal: AbortSignal.timeout(3_000),
+    });
+    return response.ok;
+  } catch { return false; }
+});
+async function trustedVaultCall(event: IpcMainInvokeEvent, userId: unknown, sessionToken: unknown, expensive = false): Promise<boolean> {
+  if (!isValidVaultUserId(userId)) return false;
+  return vaultRendererAuthorizer.authorize(event.sender.id, event.senderFrame?.url, userId, sessionToken, expensive);
+}
+
+ipcMain.handle('source-vault-initialize', async (event, userId: string, sessionToken: string, passphrase: string) => {
+  if (!await trustedVaultCall(event, userId, sessionToken, true) || typeof passphrase !== 'string') {
+    return { success: false, error: 'invalid_passphrase' as const };
+  }
+  return keyBroker.initialize(userId, passphrase);
+});
+ipcMain.handle('source-vault-unlock', async (event, userId: string, sessionToken: string, passphrase: string) => {
+  if (!await trustedVaultCall(event, userId, sessionToken, true) || typeof passphrase !== 'string') {
+    return { success: false, error: 'ciphertext_invalid' as const };
+  }
+  return keyBroker.unlock(userId, passphrase);
+});
+ipcMain.handle('source-vault-lock', async (event, userId: string, sessionToken: string) => {
+  if (!await trustedVaultCall(event, userId, sessionToken)) return { success: false, error: 'vault_uninitialized' as const };
+  return keyBroker.lock(userId);
+});
+ipcMain.handle('source-vault-state', async (event, userId: string, sessionToken: string) => {
+  if (!await trustedVaultCall(event, userId, sessionToken)) return 'uninitialized';
+  return keyBroker.state(userId);
+});
+ipcMain.handle('source-vault-remember-device', async (event, userId: string, sessionToken: string) => {
+  if (!await trustedVaultCall(event, userId, sessionToken)) return { success: false, error: 'vault_broker_unavailable' as const };
+  return keyBroker.rememberDevice(userId);
+});
+ipcMain.handle('source-vault-unlock-device', async (event, userId: string, sessionToken: string) => {
+  if (!await trustedVaultCall(event, userId, sessionToken)) return { success: false, error: 'vault_broker_unavailable' as const };
+  return keyBroker.unlockFromDevice(userId);
+});
+ipcMain.handle('source-vault-forget-device', async (event, userId: string, sessionToken: string) => {
+  if (!await trustedVaultCall(event, userId, sessionToken)) return { success: false };
+  keyBroker.forgetDevice(userId); return { success: true };
+});
+
+app.on('web-contents-created', (_event, contents) => {
+  contents.once('destroyed', () => {
+    vaultRendererAuthorizer.release(contents.id);
+  });
 });
 
 app.on('open-file', (event, filePath) => {
