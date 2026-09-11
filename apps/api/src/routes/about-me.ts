@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { query } from '@skytwin/db';
 import { createLogger } from '@skytwin/core';
 import { runPrompt } from '@skytwin/policy-prompts';
-import { getLlmClientFromConfig } from '../lib/llm-client-factory.js';
+import { buildUserLlmClient } from '../lib/user-llm-client.js';
 
 const log = createLogger('api:about-me');
 
@@ -168,7 +168,7 @@ export function createAboutMeRouter(): Router {
       }
 
       const userFacts = await aggregateUserFacts(userId);
-      const llmClient = getLlmClientFromConfig();
+      const llmClient = await buildUserLlmClient(userId);
       if (llmClient) {
         try {
           // Only call the LLM if we have meaningful facts to portrait
@@ -184,6 +184,7 @@ export function createAboutMeRouter(): Router {
               inputs: { memory_facts: userFacts },
               user: { userId },
               llmClient,
+              invocationKind: 'interactive',
             });
 
             if (

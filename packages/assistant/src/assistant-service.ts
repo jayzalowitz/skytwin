@@ -246,6 +246,7 @@ export class AssistantService {
       // outputs. Tunable per-request once the route exposes options.
       temperature: 0.7,
       maxTokens: 800,
+      invocationKind: 'interactive',
     });
 
     return {
@@ -296,6 +297,7 @@ export class AssistantService {
         systemPrompt,
         temperature: 0.7,
         maxTokens: 800,
+        invocationKind: 'interactive',
       })) {
         if (event.type === 'chunk') {
           collected.push(event.content);

@@ -205,6 +205,7 @@ export async function down(): Promise<void> {
   const pool = getPool();
 
   const dropOrder = [
+    'reasoning_mode_settings',
     // Added by migration 012 (mempalace)
     'entity_codes',
     'episodic_memories',

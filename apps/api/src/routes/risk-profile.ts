@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { riskProfileRepository } from '@skytwin/db';
 import { createLogger } from '@skytwin/core';
 import { runPrompt } from '@skytwin/policy-prompts';
-import { getLlmClientFromConfig } from '../lib/llm-client-factory.js';
+import { buildUserLlmClient } from '../lib/user-llm-client.js';
 
 const log = createLogger('api:risk-profile');
 
@@ -41,9 +41,9 @@ interface RiskProfileInterpretationOutput {
 async function interpretProfileText(
   userId: string,
   profileText: string,
-): Promise<Record<string, unknown>> {
-  const llmClient = getLlmClientFromConfig();
-  if (!llmClient || !profileText.trim()) return {};
+): Promise<{ interpretedCaps: Record<string, unknown>; usedLlm: boolean }> {
+  const llmClient = await buildUserLlmClient(userId);
+  if (!llmClient || !profileText.trim()) return { interpretedCaps: {}, usedLlm: false };
 
   try {
     // Template expects {{risk_profile_text}}, not {{profileText}}.
@@ -52,18 +52,22 @@ async function interpretProfileText(
       inputs: { risk_profile_text: profileText },
       user: { userId },
       llmClient,
+      invocationKind: 'interactive',
     });
 
-    if (result.fellBackToDeterministic) return {};
+    if (result.fellBackToDeterministic) return { interpretedCaps: {}, usedLlm: false };
 
     // Return the output cast to Record<string, unknown> for storage
-    return (result.output as Record<string, unknown>) ?? {};
+    return {
+      interpretedCaps: (result.output as Record<string, unknown>) ?? {},
+      usedLlm: true,
+    };
   } catch (err) {
     log.warn('risk-profile-interpretation prompt failed, using empty caps', {
       userId,
       error: err instanceof Error ? err.message : String(err),
     });
-    return {};
+    return { interpretedCaps: {}, usedLlm: false };
   }
 }
 
@@ -135,8 +139,9 @@ export function createRiskProfileRouter(): Router {
       await riskProfileRepository.upsert({ userId, profileText });
 
       // Step 2: I: risk-profile-interpretation — adaptive path with {} fallback.
-      const interpretedCaps = await interpretProfileText(userId, profileText);
-      const modelVersion = getLlmClientFromConfig() ? 'adaptive-v1' : 'stub-v0';
+      const interpretation = await interpretProfileText(userId, profileText);
+      const interpretedCaps = interpretation.interpretedCaps;
+      const modelVersion = interpretation.usedLlm ? 'adaptive-v1' : 'stub-v0';
 
       const updatedRow = await riskProfileRepository.updateInterpretedCaps({
         userId,
@@ -189,9 +194,9 @@ export function createRiskProfileRouter(): Router {
         return;
       }
 
-      const interpretedCaps = await interpretProfileText(userId, profileText);
-      const llmClient = getLlmClientFromConfig();
-      const modelVersion = llmClient ? 'adaptive-v1' : 'stub-v0';
+      const interpretation = await interpretProfileText(userId, profileText);
+      const interpretedCaps = interpretation.interpretedCaps;
+      const modelVersion = interpretation.usedLlm ? 'adaptive-v1' : 'stub-v0';
 
       await riskProfileRepository.updateInterpretedCaps({
         userId,
@@ -199,11 +204,11 @@ export function createRiskProfileRouter(): Router {
         modelVersion,
       });
 
-      log.info('Risk profile reinterpreted', { userId, hasLlm: llmClient !== null });
+      log.info('Risk profile reinterpreted', { userId, hasLlm: interpretation.usedLlm });
       res.json({
-        status: llmClient ? 'ok' : 'no_llm',
+        status: interpretation.usedLlm ? 'ok' : 'no_llm',
         interpretedCaps,
-        message: llmClient
+        message: interpretation.usedLlm
           ? 'Profile re-interpreted successfully.'
           : 'No LLM provider configured. Stored empty caps.',
       });

@@ -20,7 +20,6 @@ import {
   oauthRepository,
   executionRepository,
   userRepository,
-  aiProviderRepository,
   emailLabelRepository,
   mempalaceRepository,
   TwinRepositoryAdapter,
@@ -31,9 +30,6 @@ import {
 } from '@skytwin/db';
 import type { DecisionContext, ExecutionEvent, RiskAssessment, EpisodicMemory } from '@skytwin/shared-types';
 import { parseAutonomySettings, SituationType, TrustTier } from '@skytwin/shared-types';
-import type { AIProviderName } from '@skytwin/shared-types';
-import { LlmClient } from '@skytwin/llm-client';
-import type { ProviderEntry } from '@skytwin/llm-client';
 import { createLogger } from '@skytwin/core';
 
 const log = createLogger('api:events');
@@ -59,6 +55,7 @@ import {
   isOutboundEmailAction,
   prepareEmailActionForExecution,
 } from '../email-attribution.js';
+import { buildUserLlmClient } from '../lib/user-llm-client.js';
 
 /**
  * Best-effort: write an inbound raw event into the user's MemoryPort as a
@@ -92,24 +89,6 @@ async function recordSignalToMemory(
 /**
  * Create the events router for ingesting raw events.
  */
-/**
- * Build an LlmClient from the user's enabled AI provider settings.
- * Returns null if the user has no enabled providers.
- */
-async function buildLlmClientForUser(userId: string): Promise<LlmClient | null> {
-  const rows = await aiProviderRepository.getEnabledForUser(userId);
-  if (rows.length === 0) return null;
-
-  const providers: ProviderEntry[] = rows.map((r: { provider: string; api_key: string; model: string; base_url: string | null }) => ({
-    name: r.provider as AIProviderName,
-    apiKey: r.api_key,
-    model: r.model,
-    baseUrl: r.base_url ?? undefined,
-  }));
-
-  return new LlmClient(providers, userId);
-}
-
 export function createEventsRouter(): Router {
   const router = Router();
   bindUserIdParamValidator(router);
@@ -204,7 +183,7 @@ export function createEventsRouter(): Router {
       const userId = validation.userId;
 
       // 0. Build per-user LLM client and strategies (or fall back to rule-based)
-      const llmClient = await buildLlmClientForUser(userId);
+      const llmClient = await buildUserLlmClient(userId);
 
       let interpreter: SituationInterpreter;
       let decisionMaker: DecisionMaker;

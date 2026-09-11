@@ -46,6 +46,9 @@ vi.mock('@skytwin/db', () => ({
   aiProviderRepository: {
     getEnabledForUser: vi.fn(),
   },
+  reasoningModeRepository: {
+    getOrCreateForUser: vi.fn().mockResolvedValue({ mode: 'on_device', requires_confirmation: false }),
+  },
   provenanceRepository: {
     writeNode: mockWriteNode,
   },

@@ -44,6 +44,23 @@ vi.mock('@skytwin/db', () => ({
   },
   aiProviderRepository: {
     getEnabledForUser: mockGetEnabledProviders,
+    getReasoningSnapshotForUser: vi.fn(async () => {
+      const providers = await mockGetEnabledProviders();
+      return {
+        providers: providers.map((provider: { enabled?: boolean }) => ({
+          ...provider,
+          enabled: provider.enabled ?? true,
+        })),
+        reasoningMode: {
+          mode: 'bring_your_own_provider', requires_confirmation: false,
+        },
+      };
+    }),
+  },
+  reasoningModeRepository: {
+    getOrCreateForUser: vi.fn().mockResolvedValue({
+      mode: 'bring_your_own_provider', requires_confirmation: false,
+    }),
   },
 }));
 
@@ -57,9 +74,9 @@ vi.mock('@skytwin/llm-client', async () => {
   );
   return {
     ...actual,
-    LlmClient: vi.fn(function LlmClient() {
+    LlmClient: Object.assign(vi.fn(function LlmClient() {
       return {};
-    }),
+    }), { forReasoningMode: vi.fn(() => ({})) }),
   };
 });
 
@@ -246,6 +263,9 @@ describe('GET /api/lifebooks/:userId/:domainName/layout — #319', () => {
       lab_result: 1,
       calendar_event: 1,
     });
+    expect(mockRunPrompt).toHaveBeenCalledWith(
+      expect.objectContaining({ invocationKind: 'interactive' }),
+    );
   });
 
   it('returns generic layout with source=deterministic_fallback when runPrompt falls back', async () => {
