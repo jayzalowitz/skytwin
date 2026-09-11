@@ -6,12 +6,9 @@ import type { Express } from 'express';
 // Mocks — vi.hoisted runs before vi.mock factories execute.
 // ---------------------------------------------------------------------------
 
-const {
-  mockUserRepository,
-  mockWhatWouldIDo,
-} = vi.hoisted(() => ({
+const { mockUserRepository, mockWhatWouldIDo } = vi.hoisted(() => ({
   mockUserRepository: {
-    findById: vi.fn(),
+    findDemoById: vi.fn(),
   },
   mockWhatWouldIDo: vi.fn(),
 }));
@@ -38,6 +35,7 @@ vi.mock('@skytwin/policy-engine', () => ({
 }));
 
 import { createDemoRouter, _resetDemoCacheForTests } from '../routes/demo.js';
+import { verifyDemoSession } from '../auth/demo-session.js';
 
 const DEMO_USER_ID = 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d';
 
@@ -45,9 +43,16 @@ function buildApp(): Express {
   const app = express();
   app.use(express.json());
   app.use('/api/v1/demo', createDemoRouter());
-  app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-    res.status(500).json({ error: err.message });
-  });
+  app.use(
+    (
+      err: Error,
+      _req: express.Request,
+      res: express.Response,
+      _next: express.NextFunction,
+    ) => {
+      res.status(500).json({ error: err.message });
+    },
+  );
   return app;
 }
 
@@ -67,7 +72,10 @@ async function request(
         return;
       }
       const url = `http://127.0.0.1:${addr.port}${path}`;
-      const headers: Record<string, string> = { 'Content-Type': 'application/json', ...extraHeaders };
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        ...extraHeaders,
+      };
       const options: RequestInit = { method, headers };
       if (body !== undefined) options.body = JSON.stringify(body);
 
@@ -75,11 +83,16 @@ async function request(
         .then(async (res) => {
           const json = await res.json().catch(() => null);
           const respHeaders: Record<string, string> = {};
-          res.headers.forEach((v, k) => { respHeaders[k] = v; });
+          res.headers.forEach((v, k) => {
+            respHeaders[k] = v;
+          });
           server.close();
           resolve({ status: res.status, body: json, headers: respHeaders });
         })
-        .catch((err) => { server.close(); reject(err); });
+        .catch((err) => {
+          server.close();
+          reject(err);
+        });
     });
   });
 }
@@ -105,51 +118,120 @@ const SUCCESSFUL_PREDICTION = {
 
 describe('demo routes', () => {
   beforeEach(() => {
-    mockUserRepository.findById.mockReset();
+    mockUserRepository.findDemoById.mockReset();
     mockWhatWouldIDo.mockReset();
     _resetDemoCacheForTests();
-    // Default to dev-bypass active so requests from the test client
-    // (loopback) reach the protected branches by default.
-    process.env['SKYTWIN_DEV_AUTH_BYPASS'] = 'true';
     delete process.env['DEMO_PREVIEW_DISABLED'];
   });
 
   afterEach(() => {
-    delete process.env['SKYTWIN_DEV_AUTH_BYPASS'];
     delete process.env['DEMO_PREVIEW_DISABLED'];
   });
 
   // ── /info ──────────────────────────────────────────────────────────
 
   describe('GET /info', () => {
-    it('returns { available: true, userId } when seed exists and dev bypass is active', async () => {
-      mockUserRepository.findById.mockResolvedValueOnce(SEEDED_USER);
+    it('returns { available: true, userId } when the seed exists', async () => {
+      mockUserRepository.findDemoById.mockResolvedValueOnce(SEEDED_USER);
       const res = await request(buildApp(), 'GET', '/api/v1/demo/info');
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ available: true, userId: DEMO_USER_ID });
     });
 
     it('does NOT leak email or name', async () => {
-      mockUserRepository.findById.mockResolvedValueOnce(SEEDED_USER);
+      mockUserRepository.findDemoById.mockResolvedValueOnce(SEEDED_USER);
       const res = await request(buildApp(), 'GET', '/api/v1/demo/info');
       expect(res.body).not.toHaveProperty('email');
       expect(res.body).not.toHaveProperty('name');
     });
 
     it('returns { available: false } when seed is missing', async () => {
-      mockUserRepository.findById.mockResolvedValueOnce(null);
+      mockUserRepository.findDemoById.mockResolvedValueOnce(null);
       const res = await request(buildApp(), 'GET', '/api/v1/demo/info');
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ available: false });
     });
 
-    it('returns { available: false } when dev bypass is disabled (production-like)', async () => {
+    it('remains available when the broad dev bypass is disabled (production-like)', async () => {
       process.env['SKYTWIN_DEV_AUTH_BYPASS'] = 'false';
-      // findById should never be reached because the gate hides the demo first.
-      mockUserRepository.findById.mockResolvedValueOnce(SEEDED_USER);
+      mockUserRepository.findDemoById.mockResolvedValueOnce(SEEDED_USER);
       const res = await request(buildApp(), 'GET', '/api/v1/demo/info');
       expect(res.status).toBe(200);
-      expect(res.body).toEqual({ available: false });
+      expect(res.body).toEqual({ available: true, userId: DEMO_USER_ID });
+    });
+
+    it('does not advertise local sample availability to a remote peer', async () => {
+      const app = buildApp();
+      app.set('trust proxy', true);
+      const res = await request(app, 'GET', '/api/v1/demo/info', undefined, {
+        'X-Forwarded-For': '203.0.113.8',
+      });
+      expect(res.status).toBe(403);
+      expect(mockUserRepository.findDemoById).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── /session ───────────────────────────────────────────────────────
+
+  describe('POST /session', () => {
+    it('issues a signed, expiring credential bound to the sample user', async () => {
+      mockUserRepository.findDemoById.mockResolvedValueOnce(SEEDED_USER);
+      const res = await request(buildApp(), 'POST', '/api/v1/demo/session');
+      expect(res.status).toBe(201);
+      const body = res.body as {
+        token: string;
+        userId: string;
+        expiresAt: string;
+      };
+      expect(body.userId).toBe(DEMO_USER_ID);
+      expect(verifyDemoSession(body.token)).toBe(true);
+      expect(new Date(body.expiresAt).getTime()).toBeGreaterThan(Date.now());
+    });
+
+    it('returns 404 rather than issuing a credential when the fixture is absent', async () => {
+      mockUserRepository.findDemoById.mockResolvedValueOnce(null);
+      const res = await request(buildApp(), 'POST', '/api/v1/demo/session');
+      expect(res.status).toBe(404);
+      expect(res.body).toMatchObject({
+        error: expect.stringMatching(/not available/i),
+      });
+    });
+
+    it('does not mint from a stale positive info cache after readiness is revoked', async () => {
+      mockUserRepository.findDemoById
+        .mockResolvedValueOnce(SEEDED_USER)
+        .mockResolvedValueOnce(null);
+      expect(
+        (await request(buildApp(), 'GET', '/api/v1/demo/info')).status,
+      ).toBe(200);
+      const res = await request(buildApp(), 'POST', '/api/v1/demo/session');
+      expect(res.status).toBe(404);
+    });
+
+    it('keeps the packaged credential issuer on the local device', async () => {
+      const app = buildApp();
+      app.set('trust proxy', true);
+      const res = await request(
+        app,
+        'POST',
+        '/api/v1/demo/session',
+        undefined,
+        { 'X-Forwarded-For': '203.0.113.8' },
+      );
+      expect(res.status).toBe(403);
+      expect(mockUserRepository.findDemoById).not.toHaveBeenCalled();
+    });
+
+    it('rate-limits repeated local credential issuance', async () => {
+      mockUserRepository.findDemoById.mockResolvedValue(SEEDED_USER);
+      const app = buildApp();
+      for (let index = 0; index < 12; index += 1) {
+        const issued = await request(app, 'POST', '/api/v1/demo/session');
+        expect(issued.status).toBe(201);
+      }
+      const limited = await request(app, 'POST', '/api/v1/demo/session');
+      expect(limited.status).toBe(429);
+      expect(limited.headers['retry-after']).toBeDefined();
     });
   });
 
@@ -159,7 +241,9 @@ describe('demo routes', () => {
     it('returns the canned recipe library (>=6 recipes, #405)', async () => {
       const res = await request(buildApp(), 'GET', '/api/v1/demo/recipes');
       expect(res.status).toBe(200);
-      const body = res.body as { recipes: Array<{ slug: string; situation: string }> };
+      const body = res.body as {
+        recipes: Array<{ slug: string; situation: string }>;
+      };
       expect(Array.isArray(body.recipes)).toBe(true);
       expect(body.recipes.length).toBeGreaterThanOrEqual(6);
     });
@@ -181,11 +265,11 @@ describe('demo routes', () => {
     });
 
     it('is reachable without a seeded demo user (static, no DB read)', async () => {
-      // findById must never be consulted for the recipe library.
-      mockUserRepository.findById.mockResolvedValue(null);
+      // The fixture lookup must never be consulted for the recipe library.
+      mockUserRepository.findDemoById.mockResolvedValue(null);
       const res = await request(buildApp(), 'GET', '/api/v1/demo/recipes');
       expect(res.status).toBe(200);
-      expect(mockUserRepository.findById).not.toHaveBeenCalled();
+      expect(mockUserRepository.findDemoById).not.toHaveBeenCalled();
     });
   });
 
@@ -199,13 +283,17 @@ describe('demo routes', () => {
     });
 
     it('returns 400 when situation is empty string', async () => {
-      const res = await request(buildApp(), 'POST', '/api/v1/demo/preview', { situation: '   ' });
+      const res = await request(buildApp(), 'POST', '/api/v1/demo/preview', {
+        situation: '   ',
+      });
       expect(res.status).toBe(400);
     });
 
     it('returns 400 when situation exceeds 600 chars', async () => {
       const long = 'x'.repeat(601);
-      const res = await request(buildApp(), 'POST', '/api/v1/demo/preview', { situation: long });
+      const res = await request(buildApp(), 'POST', '/api/v1/demo/preview', {
+        situation: long,
+      });
       expect(res.status).toBe(400);
       expect((res.body as any).error).toMatch(/too long|600/i);
     });
@@ -214,12 +302,14 @@ describe('demo routes', () => {
       // Build the app FIRST (env is read at request time, not router-create time).
       const app = buildApp();
       process.env['DEMO_PREVIEW_DISABLED'] = '1';
-      const res = await request(app, 'POST', '/api/v1/demo/preview', { situation: 'test' });
+      const res = await request(app, 'POST', '/api/v1/demo/preview', {
+        situation: 'test',
+      });
       expect(res.status).toBe(503);
     });
 
     it('returns 404 when seed user is missing', async () => {
-      mockUserRepository.findById.mockResolvedValue(null);
+      mockUserRepository.findDemoById.mockResolvedValue(null);
       const res = await request(buildApp(), 'POST', '/api/v1/demo/preview', {
         situation: 'A recruiter just emailed me.',
       });
@@ -228,7 +318,7 @@ describe('demo routes', () => {
     });
 
     it('returns 200 with prediction body on happy path', async () => {
-      mockUserRepository.findById.mockResolvedValue(SEEDED_USER);
+      mockUserRepository.findDemoById.mockResolvedValue(SEEDED_USER);
       mockWhatWouldIDo.mockResolvedValueOnce(SUCCESSFUL_PREDICTION);
       const res = await request(buildApp(), 'POST', '/api/v1/demo/preview', {
         situation: 'A recruiter just emailed me about a senior role.',
@@ -238,40 +328,59 @@ describe('demo routes', () => {
         predictedAction: { actionType: 'archive_email' },
         confidence: 'high',
         wouldAutoExecute: true,
-        previewRateLimit: { remaining: expect.any(Number), windowMs: 5 * 60 * 1000 },
+        previewRateLimit: {
+          remaining: expect.any(Number),
+          windowMs: 5 * 60 * 1000,
+        },
       });
     });
 
     it('rate-limits after 20 requests from same IP and returns Retry-After header', async () => {
-      mockUserRepository.findById.mockResolvedValue(SEEDED_USER);
+      mockUserRepository.findDemoById.mockResolvedValue(SEEDED_USER);
       mockWhatWouldIDo.mockResolvedValue(SUCCESSFUL_PREDICTION);
       const app = buildApp();
       app.set('trust proxy', true);
       const clientIp = { 'X-Forwarded-For': '203.0.113.20' };
       // Burn the bucket — 20 requests should succeed, the 21st should 429.
       for (let i = 0; i < 20; i++) {
-        const ok = await request(app, 'POST', '/api/v1/demo/preview', { situation: 'ping' }, clientIp);
+        const ok = await request(
+          app,
+          'POST',
+          '/api/v1/demo/preview',
+          { situation: 'ping' },
+          clientIp,
+        );
         expect(ok.status).toBe(200);
       }
-      const limited = await request(app, 'POST', '/api/v1/demo/preview', { situation: 'ping' }, clientIp);
+      const limited = await request(
+        app,
+        'POST',
+        '/api/v1/demo/preview',
+        { situation: 'ping' },
+        clientIp,
+      );
       expect(limited.status).toBe(429);
       expect(limited.headers['retry-after']).toBeDefined();
       expect(parseInt(limited.headers['retry-after']!, 10)).toBeGreaterThan(0);
     });
 
     it('rejects malformed JSON situation type without burning the bucket', async () => {
-      mockUserRepository.findById.mockResolvedValue(SEEDED_USER);
+      mockUserRepository.findDemoById.mockResolvedValue(SEEDED_USER);
       mockWhatWouldIDo.mockResolvedValue(SUCCESSFUL_PREDICTION);
       const app = buildApp();
       // Send 5 malformed requests (number instead of string) — these should
       // fail validation BEFORE consuming the rate limit.
       for (let i = 0; i < 5; i++) {
-        const bad = await request(app, 'POST', '/api/v1/demo/preview', { situation: 12345 });
+        const bad = await request(app, 'POST', '/api/v1/demo/preview', {
+          situation: 12345,
+        });
         expect(bad.status).toBe(400);
       }
       // Should still have full 20-request budget for legitimate calls.
       for (let i = 0; i < 20; i++) {
-        const ok = await request(app, 'POST', '/api/v1/demo/preview', { situation: 'ping' });
+        const ok = await request(app, 'POST', '/api/v1/demo/preview', {
+          situation: 'ping',
+        });
         expect(ok.status).toBe(200);
       }
     });

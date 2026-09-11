@@ -8,6 +8,7 @@ import type {
   UserQueryOptions,
   DecisionWithContext,
 } from '../types.js';
+import type { DecisionBlockCode } from '@skytwin/shared-types';
 
 /**
  * Input for creating a decision record.
@@ -46,6 +47,7 @@ export interface CreateOutcomeInput {
   selectedActionId?: string | null;
   autoExecuted?: boolean;
   requiresApproval?: boolean;
+  blockCodes?: DecisionBlockCode[];
   escalationReason?: string | null;
   explanation: string;
   confidence: number;
@@ -318,13 +320,14 @@ export const decisionRepository = {
     const result = await query<DecisionOutcomeRow>(
       `INSERT INTO decision_outcomes (
         decision_id, selected_action_id, auto_executed,
-        requires_approval, escalation_reason, explanation, confidence
+        requires_approval, block_codes, escalation_reason, explanation, confidence
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
       ON CONFLICT (decision_id) DO UPDATE SET
         selected_action_id = EXCLUDED.selected_action_id,
         auto_executed = EXCLUDED.auto_executed,
         requires_approval = EXCLUDED.requires_approval,
+        block_codes = EXCLUDED.block_codes,
         escalation_reason = EXCLUDED.escalation_reason,
         explanation = EXCLUDED.explanation,
         confidence = EXCLUDED.confidence
@@ -334,6 +337,7 @@ export const decisionRepository = {
         input.selectedActionId ?? null,
         input.autoExecuted ?? false,
         input.requiresApproval ?? false,
+        JSON.stringify(input.blockCodes ?? []),
         input.escalationReason ?? null,
         input.explanation,
         input.confidence,

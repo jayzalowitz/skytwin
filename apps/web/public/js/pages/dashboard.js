@@ -190,6 +190,8 @@ function renderDashboardDigest(s, briefing) {
   const topicCount = (Array.isArray(s.topics) ? s.topics : [])
     .reduce((n, g) => n + (Array.isArray(g.items) ? g.items.length : 0), 0);
   const handled = typeof s.handledCount === 'number' ? s.handledCount : null;
+  const memoryCount = Array.isArray(s.memorySuggestions) ? s.memorySuggestions.length : 0;
+  const watchCount = Array.isArray(s.watchRuns) ? s.watchRuns.length : 0;
   const need = todos.length;
   const isUnread = !briefing.read_at;
 
@@ -217,7 +219,9 @@ function renderDashboardDigest(s, briefing) {
     </li>`).join('');
 
   const voice = need === 0
-    ? "You're all caught up."
+    ? topicCount === 0 && (memoryCount + watchCount) > 0
+      ? `${memoryCount + watchCount} ${memoryCount + watchCount === 1 ? 'update is' : 'updates are'} ready in your full briefing.`
+      : "You're all caught up."
     : need === 1 ? 'One thing needs you.' : `${need} things need you.`;
 
   return `
@@ -234,6 +238,8 @@ function renderDashboardDigest(s, briefing) {
         ${handled !== null ? `<span class="done">✓ ${handled} handled on my own</span><span class="sep"></span>` : ''}
         <span><b>${need}</b> need you</span><span class="sep"></span>
         <span><b>${topicCount}</b> to catch up on</span>
+        ${memoryCount ? `<span class="sep"></span><span><b>${memoryCount}</b> from memory</span>` : ''}
+        ${watchCount ? `<span class="sep"></span><span><b>${watchCount}</b> from Watches</span>` : ''}
       </p>
       ${need ? `<div class="digest-heading">To-dos <span class="count">· ${need}</span></div>
         <ul class="digest-todos">${todoRows}</ul>` : ''}
@@ -251,13 +257,29 @@ function renderDashboardDigest(s, briefing) {
  * prose. Returns '' when there is neither (new user; connect heroes show).
  *
  * @param {object|null} briefing - TwinBriefingRow from /api/twin-briefings/latest
+ * @param {'loading'|'ready'|'error'} state - request state
  */
-function renderTwinBriefingWidget(briefing) {
+export function renderTwinBriefingWidget(briefing, state = 'ready') {
+  if (state === 'loading') {
+    return `<section class="card dashboard-briefing-state" aria-busy="true" aria-label="Loading briefing"><div class="digest-skel"><div class="sk voice"></div><div class="sk row"></div><div class="sk row"></div></div></section>`;
+  }
+  if (state === 'error') {
+    return `<section class="card dashboard-briefing-state" role="alert"><h2 class="card-title">Briefing unavailable</h2><p class="card-subtitle">The briefing could not be loaded.</p><a class="btn btn-outline btn-sm" href="#/briefing">Open briefing and retry</a></section>`;
+  }
   if (!briefing) return '';
 
   // Structured digest takes priority — it is the product's primary surface.
   const s = briefing.structured;
-  if (s && ((Array.isArray(s.todos) && s.todos.length) || (Array.isArray(s.topics) && s.topics.length))) {
+  const hasStructuredContent = !!s && (
+    (Array.isArray(s.todos) && s.todos.length > 0) ||
+    (Array.isArray(s.topics) && s.topics.length > 0) ||
+    (Array.isArray(s.memorySuggestions) && s.memorySuggestions.length > 0) ||
+    (Array.isArray(s.watchRuns) && s.watchRuns.length > 0)
+  );
+  if (s?.coverage?.coldStart && !hasStructuredContent) {
+    return `<section class="card dashboard-briefing-state"><h2 class="dashboard-briefing-voice">Connect a source and I'll start your briefing.</h2><p class="card-subtitle">Choose what the twin may read before anything appears here.</p><a class="btn btn-primary btn-sm" href="#/setup">Connect a source</a></section>`;
+  }
+  if (hasStructuredContent) {
     return renderDashboardDigest(s, briefing);
   }
 
@@ -381,6 +403,7 @@ function formatDashboardTime(d) {
 }
 
 export async function renderDashboard(container, userId) {
+  container.innerHTML = renderTwinBriefingWidget(null, 'loading');
   // Fast-changing data — refetched on every render because SSE updates
   // and user action move them around constantly.
   // Slow-changing data — wrapped in slowFetch so a 4s first-scan tick or
@@ -399,7 +422,7 @@ export async function renderDashboard(container, userId) {
     slowFetch(`oauth-google-${userId}`, fetchOAuthStatus, [userId, 'google']),
     slowFetch('creds-status', fetchCredentialsStatus, []),
     fetchBriefing(userId),
-    fetchLatestTwinBriefing(userId, 'daily').catch(() => null),
+    fetchLatestTwinBriefing(userId, 'daily'),
     slowFetch(`lifebooks-${userId}`, fetchLifebooks, [userId]),
   ]);
 
@@ -431,6 +454,7 @@ export async function renderDashboard(container, userId) {
 
   // Twin Briefing widget (issue #177): the latest daily briefing prose.
   const _twinBriefing = twinBriefingData?.status === 'fulfilled' ? twinBriefingData.value?.briefing : null;
+  const _twinBriefingState = twinBriefingData?.status === 'rejected' ? 'error' : 'ready';
 
   // Your Lifebooks (#193 Child 1): top 5 detected life domains.
   const lifebooks = (lifebooksData?.status === 'fulfilled' && Array.isArray(lifebooksData.value?.lifebooks))
@@ -548,7 +572,7 @@ export async function renderDashboard(container, userId) {
     ${renderJustConnectedCelebration({ justConnectedProvider, justConnectedAccount, recentDecisionsCount: recentDecisions.length, learnedCount: learn?.totalPreferences ?? 0 })}
     ${sinceLastVisit && !tourMode ? renderSinceLastVisit(sinceLastVisit) : ''}
     ${showBrainPrompt ? renderBrainPrompt() : ''}
-    ${renderTwinBriefingWidget(_twinBriefing)}
+    ${renderTwinBriefingWidget(_twinBriefing, _twinBriefingState)}
     ${tourMode ? '' : renderConnectGoogleHero({ googleConnected, googleSystemConfigured, userId })}
     ${tourMode ? '' : renderConnectGmailHero({ googleConnected, googleScopes: googleOAuth.status === 'fulfilled' ? (googleOAuth.value?.scopes ?? []) : [] })}
     ${renderAskTwinWidget({ userId, tourMode })}

@@ -1,6 +1,13 @@
-import { KEY_SESSION_TOKEN } from './storage-keys.js';
+import {
+  KEY_DEMO_SESSION_EXPIRES_AT,
+  KEY_SESSION_TOKEN,
+  KEY_TOUR_MODE,
+  KEY_USER_ID,
+} from './storage-keys.js';
 
 const API = '/api';
+const DEMO_USER_ID = 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d';
+let demoSessionPromise = null;
 
 /**
  * Escape HTML special characters to prevent XSS when inserting into innerHTML.
@@ -164,7 +171,22 @@ async function classifyHttpError(res) {
  * branch on `err.kind` rather than parsing `err.message`. Use
  * `renderApiError(err, retry)` for a consistent visual treatment.
  */
-export async function fetchJSON(url, options = {}) {
+export async function fetchJSON(url, options = {}, demoRenewed = false) {
+  const sampleExpiry = Date.parse(
+    localStorage.getItem(KEY_DEMO_SESSION_EXPIRES_AT) ?? '',
+  );
+  if (
+    !demoRenewed &&
+    url !== `${API}/v1/demo/session` &&
+    localStorage.getItem(KEY_TOUR_MODE) === '1' &&
+    localStorage.getItem(KEY_USER_ID) === DEMO_USER_ID &&
+    Number.isFinite(sampleExpiry) &&
+    sampleExpiry <= Date.now()
+  ) {
+    await startDemoSession();
+    return fetchJSON(url, options, true);
+  }
+
   let res;
   try {
     res = await fetch(url, {
@@ -183,6 +205,16 @@ export async function fetchJSON(url, options = {}) {
   }
 
   if (!res.ok) {
+    if (
+      res.status === 401 &&
+      !demoRenewed &&
+      url !== `${API}/v1/demo/session` &&
+      localStorage.getItem(KEY_TOUR_MODE) === '1' &&
+      localStorage.getItem(KEY_USER_ID) === DEMO_USER_ID
+    ) {
+      await startDemoSession();
+      return fetchJSON(url, options, true);
+    }
     const apiErr = await classifyHttpError(res);
     if (apiErr.kind === 'offline') markApiOffline();
     throw apiErr;
@@ -419,6 +451,37 @@ export function fetchDemoInfo() {
   return fetchJSON(`${API}/v1/demo/info`);
 }
 
+export async function startDemoSession() {
+  if (demoSessionPromise) return demoSessionPromise;
+  demoSessionPromise = (async () => {
+    const session = await fetchJSON(`${API}/v1/demo/session`, { method: 'POST' });
+    const expiresAtMs = Date.parse(session?.expiresAt ?? '');
+    if (
+      typeof session?.token !== 'string' ||
+      session.token.length === 0 ||
+      session?.userId !== DEMO_USER_ID ||
+      !Number.isFinite(expiresAtMs) ||
+      expiresAtMs <= Date.now()
+    ) {
+      localStorage.removeItem(KEY_SESSION_TOKEN);
+      localStorage.removeItem(KEY_DEMO_SESSION_EXPIRES_AT);
+      localStorage.removeItem(KEY_TOUR_MODE);
+      if (localStorage.getItem(KEY_USER_ID) === DEMO_USER_ID) {
+        localStorage.removeItem(KEY_USER_ID);
+      }
+      throw new Error('Sample session response was invalid.');
+    }
+    localStorage.setItem(KEY_SESSION_TOKEN, session.token);
+    localStorage.setItem(KEY_DEMO_SESSION_EXPIRES_AT, session.expiresAt);
+    return session;
+  })();
+  try {
+    return await demoSessionPromise;
+  } finally {
+    demoSessionPromise = null;
+  }
+}
+
 export function previewDemoDecision(situation) {
   return fetchJSON(`${API}/v1/demo/preview`, {
     method: 'POST',
@@ -432,6 +495,28 @@ export function fetchDemoRecipes() {
   return fetchJSON(`${API}/v1/demo/recipes`);
 }
 
+export function fetchSampleSimulation() {
+  return fetchJSON(`${API}/v1/demo/simulation`);
+}
+
+export function sendSampleSimulationCommand(command) {
+  return fetchJSON(`${API}/v1/demo/simulation/commands`, {
+    method: 'POST',
+    body: JSON.stringify(command),
+  });
+}
+
+export async function endSampleSimulation() {
+  const token = localStorage.getItem(KEY_SESSION_TOKEN);
+  if (!token) return null;
+  const res = await fetch(`${API}/v1/demo/simulation`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw await classifyHttpError(res);
+  return null;
+}
+
 export function askTwin(userId, situation, opts = {}) {
   return fetchJSON(`${API}/v1/twin/ask/${encodeURIComponent(userId)}`, {
     method: 'POST',
@@ -443,7 +528,7 @@ export function fetchBriefing(userId) {
   return fetchJSON(`${API}/v1/briefings/${encodeURIComponent(userId)}`);
 }
 
-export function getGoogleAuthUrl(userId, { desktop = false, newUser = false, next = null, pendingKey = null, include = null } = {}) {
+export function getGoogleAuthUrl(userId, { desktop = false, newUser = false, next = null, pendingKeyDigest = null, include = null } = {}) {
   // Fail fast on the client instead of sending `userId=null` and getting
   // back an opaque 400 "Missing userId" from the server.
   if (!newUser && !userId) {
@@ -456,10 +541,10 @@ export function getGoogleAuthUrl(userId, { desktop = false, newUser = false, nex
   // `next` deep-link target — server whitelists the value, so passing an
   // unknown one is harmless (it gets dropped at the server side).
   if (next) params.set('next', next);
-  // `pendingKey` — UUIDv4 generated client-side. Server re-validates the
-  // shape before threading it through signed state. Lets the desktop
-  // newUser wizard poll for the just-created userId.
-  if (pendingKey) params.set('pendingKey', pendingKey);
+  // Only a one-way, domain-separated digest crosses a request target or the
+  // OAuth redirect. The raw capability remains only in the sign-in call's
+  // in-memory closure and is redeemed through a no-store POST body.
+  if (pendingKeyDigest) params.set('pendingKeyDigest', pendingKeyDigest);
   // Optional scope-tier opt-in. Today the only accepted value is 'gmail',
   // which adds gmail.readonly + gmail.modify to the requested scope list
   // when (and only when) the caller has user-supplied OAuth credentials.
@@ -475,7 +560,10 @@ export function getGoogleAuthUrl(userId, { desktop = false, newUser = false, nex
  * for this key, or throws ApiError(kind:'not-found') if not yet.
  */
 export function fetchPendingSignin(pendingKey) {
-  return fetchJSON(`${API}/oauth/google/pending/${encodeURIComponent(pendingKey)}`);
+  return fetchJSON(`${API}/oauth/google/pending`, {
+    method: 'POST',
+    body: JSON.stringify({ pendingKey }),
+  });
 }
 
 export function disconnectProvider(provider, userId) {
@@ -561,6 +649,13 @@ export function saveAIProviders(userId, providers, reasoningMode) {
   return fetchJSON(`${API}/settings/${userId}/ai`, {
     method: 'PUT',
     body: JSON.stringify({ providers, reasoningMode }),
+  });
+}
+
+export function updateReasoningMode(userId, mode) {
+  return fetchJSON(`${API}/settings/${encodeURIComponent(userId)}/ai/reasoning-mode`, {
+    method: 'PUT',
+    body: JSON.stringify({ mode }),
   });
 }
 

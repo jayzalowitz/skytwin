@@ -1,7 +1,12 @@
 import { createHmac, timingSafeEqual } from 'crypto';
 import type { Request, Response, NextFunction } from 'express';
-import { sessionRepository } from '@skytwin/db';
+import { sessionRepository, userRepository } from '@skytwin/db';
 import { createLogger } from '@skytwin/core';
+import {
+  DEMO_USER_ID,
+  isDemoReadRequest,
+  verifyDemoSession,
+} from '../auth/demo-session.js';
 
 const log = createLogger('api:auth');
 
@@ -19,6 +24,8 @@ declare global {
        * loopback address. Never set for a human session.
        */
       serviceAuthenticated?: boolean;
+      /** True only for a signed, read-only session bound to the sample profile. */
+      demoAuthenticated?: boolean;
     }
   }
 }
@@ -134,6 +141,38 @@ export async function sessionAuth(
   res: Response,
   next: NextFunction,
 ): Promise<void> {
+  const authHeader = req.headers['authorization'];
+  const query = req.query ?? {};
+  const queryToken = typeof query['token'] === 'string' ? query['token'] : undefined;
+  const bearerToken = authHeader?.startsWith('Bearer ')
+    ? authHeader.slice(7)
+    : undefined;
+  const token = bearerToken ?? queryToken;
+
+  // A valid sample principal always takes the restricted path, including in
+  // local development where the broad bypass would otherwise erase its
+  // read-only identity.
+  if (token && verifyDemoSession(token)) {
+    if (!isDemoReadRequest(req.method, req.originalUrl ?? req.url)) {
+      res.status(403).json({
+        error: 'Sample mode is read-only',
+        message: 'Start your own twin to make changes.',
+      });
+      return;
+    }
+    // Revalidate the database marker on every request. A signed credential
+    // must not outlive reassignment or loss of readiness at the reserved UUID.
+    const demoUser = await userRepository.findDemoById(DEMO_USER_ID);
+    if (!demoUser) {
+      res.status(401).json({ error: 'Sample session is no longer available.' });
+      return;
+    }
+    req.authenticatedUserId = DEMO_USER_ID;
+    req.demoAuthenticated = true;
+    next();
+    return;
+  }
+
   // Dev-only localhost bypass (must be explicitly enabled or NODE_ENV=development)
   if (DEV_AUTH_BYPASS && isLocalhost(req)) {
     if (!bypassWarned) {
@@ -146,14 +185,6 @@ export async function sessionAuth(
     next();
     return;
   }
-
-  const authHeader = req.headers['authorization'];
-  const query = req.query ?? {};
-  const queryToken = typeof query['token'] === 'string' ? query['token'] : undefined;
-  const bearerToken = authHeader?.startsWith('Bearer ')
-    ? authHeader.slice(7)
-    : undefined;
-  const token = bearerToken ?? queryToken;
 
   // Loopback service credential (worker / idle-miner). Deliberately narrower
   // than the human session path: header-only (never `?token=`), and only from

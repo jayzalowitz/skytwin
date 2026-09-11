@@ -143,6 +143,35 @@ export interface DimensionAssessment {
 }
 
 /**
+ * Stable machine-readable reasons why a selected action did not auto-run.
+ * Human explanation text remains in `DecisionOutcome.reasoning`; consumers
+ * must never parse that prose to decide which remediation to offer.
+ */
+export type DecisionBlockCode =
+  | 'missing_write_scope'
+  | `missing_write_scope:${string}`
+  | `trust_tier:${string}`
+  | 'policy_denied'
+  | 'spend_limit'
+  | 'untrusted_external';
+
+/** Runtime guard for JSON/backup/database boundaries. */
+export function isDecisionBlockCode(value: unknown): value is DecisionBlockCode {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 512) return false;
+  if (value === 'missing_write_scope' || value === 'policy_denied' ||
+      value === 'spend_limit' || value === 'untrusted_external') return true;
+  if (value.startsWith('missing_write_scope:')) {
+    const scope = value.slice('missing_write_scope:'.length);
+    return /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(scope);
+  }
+  if (value.startsWith('trust_tier:')) {
+    return new Set(['observer', 'suggest', 'low_autonomy', 'moderate_autonomy', 'high_autonomy'])
+      .has(value.slice('trust_tier:'.length));
+  }
+  return false;
+}
+
+/**
  * The outcome of the decision engine's evaluation.
  */
 export interface DecisionOutcome {
@@ -194,6 +223,12 @@ export interface DecisionOutcome {
   allRiskAssessments?: RiskAssessment[];
   autoExecute: boolean;
   requiresApproval: boolean;
+  /**
+   * Stable policy/scope codes, persisted independently from human prose.
+   * Optional only for legacy/synthetic outcomes; the real DecisionMaker
+   * always populates it (including an empty array).
+   */
+  blockCodes?: DecisionBlockCode[];
   reasoning: string;
   decidedAt: Date;
   /**

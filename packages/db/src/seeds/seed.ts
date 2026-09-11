@@ -13,7 +13,7 @@ async function seed(): Promise<void> {
     // 1. Create a sample user with autonomy settings
     // ========================================================================
     const userResult = await client.query(
-      `INSERT INTO users (id, email, name, trust_tier, autonomy_settings)
+      `INSERT INTO users (id, email, name, trust_tier, autonomy_settings, is_demo, demo_ready)
        VALUES (
          'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d',
          'alex@example.com',
@@ -23,13 +23,17 @@ async function seed(): Promise<void> {
          -- "Handle most things" (50-approval threshold), which is the story the
          -- demo wants — moderate_autonomy renders a flat "Maximum trust" dead-end.
          'low_autonomy',
-         $1
+         $1,
+         true,
+         true
        )
        ON CONFLICT (id) DO UPDATE SET
          email = EXCLUDED.email,
          name = EXCLUDED.name,
          trust_tier = EXCLUDED.trust_tier,
          autonomy_settings = EXCLUDED.autonomy_settings,
+         is_demo = EXCLUDED.is_demo,
+         demo_ready = EXCLUDED.demo_ready,
          updated_at = now()
        RETURNING id`,
       [

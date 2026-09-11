@@ -20,7 +20,6 @@ export interface ServiceStatus {
   cockroach: ProcessState;
   overall: 'healthy' | 'degraded' | 'failed';
 }
-
 interface ManagedProcess {
   process: ChildProcess | null;
   status: ProcessState;
@@ -89,6 +88,7 @@ export class ServiceManager {
   private onExtractProgress: ((progress: ExtractionProgress) => void) | null = null;
   private healthCheckTimer: ReturnType<typeof setInterval> | null = null;
   private paused = false;
+  private sampleBootstrapAllowedThisLaunch = false;
 
   setStatusHandler(handler: (status: ServiceStatus) => void): void {
     this.onStatusChange = handler;
@@ -430,6 +430,104 @@ export class ServiceManager {
     }
   }
 
+  /**
+   * Provision the account-free sample only for a packaged build using its
+   * bundled loopback database. The database module enforces the same boundary
+   * again before writing and refuses reserved-ID collisions with real users.
+   */
+  private async provisionPackagedSample(): Promise<void> {
+    if (!app.isPackaged) return;
+
+    const embeddedRoot = await this.ensureEmbeddedRoot();
+    const moduleSymlink = join(
+      embeddedRoot,
+      'api',
+      'node_modules',
+      '@skytwin',
+      'db',
+      'dist',
+      'seeds',
+      'packaged-sample.js',
+    );
+    if (!existsSync(moduleSymlink)) {
+      console.warn('[sample] Packaged sample module is missing:', moduleSymlink);
+      return;
+    }
+
+    try {
+      const moduleUrl = pathToFileURL(realpathSync(moduleSymlink)).href;
+      const nativeImport = new Function('p', 'return import(p)') as (p: string) => Promise<{
+        provisionPackagedSample: (env: {
+          desktopMode: string | undefined;
+          nodeEnv: string | undefined;
+          databaseUrl: string | undefined;
+          packaged: boolean;
+        }) => Promise<{ created: boolean; userId: string }>;
+      }>;
+      const mod = await nativeImport(moduleUrl);
+      const env = this.getEnv();
+      const result = await mod.provisionPackagedSample({
+        packaged: app.isPackaged,
+        desktopMode: env['DESKTOP_MODE'],
+        nodeEnv: env['NODE_ENV'],
+        databaseUrl: env['DATABASE_URL'],
+      });
+      // Retry the versioned fixture on every healthy launch. Each synthetic
+      // signal carries a stable signalId, so the normal ingest dedupe path
+      // resumes partial bootstraps without duplicating decisions or approvals.
+      this.sampleBootstrapAllowedThisLaunch = true;
+      console.log(
+        result.created
+          ? '[sample] Reserved sample identity provisioned.'
+          : '[sample] Sample identity already present.',
+      );
+    } catch (err) {
+      // Sample availability must not prevent owners from opening their local
+      // twin. The guard and transaction fail closed before touching real data.
+      console.error('[sample] Provisioning skipped:', err);
+    }
+  }
+
+  /** Populate a newly-created sample through the authenticated API boundary. */
+  private async ingestPackagedSample(): Promise<void> {
+    if (!app.isPackaged || !this.sampleBootstrapAllowedThisLaunch) return;
+
+    const embeddedRoot = await this.ensureEmbeddedRoot();
+    const moduleSymlink = join(
+      embeddedRoot,
+      'api',
+      'node_modules',
+      '@skytwin',
+      'db',
+      'dist',
+      'seeds',
+      'packaged-sample.js',
+    );
+    try {
+      const moduleUrl = pathToFileURL(realpathSync(moduleSymlink)).href;
+      const nativeImport = new Function('p', 'return import(p)') as (p: string) => Promise<{
+        ingestPackagedSampleSignals: (options: {
+          apiUrl: string;
+          serviceToken: string;
+        }) => Promise<{ ingested: number; total: number }>;
+        markPackagedSampleReady: () => Promise<void>;
+      }>;
+      const mod = await nativeImport(moduleUrl);
+      const env = this.getEnv();
+      const result = await mod.ingestPackagedSampleSignals({
+        apiUrl: env['API_BASE_URL'] ?? 'http://127.0.0.1:3100',
+        serviceToken: env['SKYTWIN_SERVICE_TOKEN'] ?? '',
+      });
+      if (result.ingested !== result.total) {
+        throw new Error(`Expected ${result.total} sample signals, ingested ${result.ingested}.`);
+      }
+      await mod.markPackagedSampleReady();
+      console.log(`[sample] Ingested ${result.ingested}/${result.total} sample signals.`);
+    } catch (err) {
+      console.error('[sample] Signal ingestion incomplete:', err);
+    }
+  }
+
   async startAll(): Promise<void> {
     this.paused = false;
     // Extract the bundled embedded apps tarball before anything else so
@@ -460,7 +558,8 @@ export class ServiceManager {
       // otherwise API hits "relation does not exist" on first query and
       // crashlooks until restart-backoff exhausts.
       if (this.cockroachStatus === 'running') {
-        await this.runMigrations();
+        const migrated = await this.runMigrations();
+        if (migrated) await this.provisionPackagedSample();
       }
     }
     await this.startApi();
@@ -468,6 +567,7 @@ export class ServiceManager {
     if (apiReady) {
       this.api.restartCount = 0;
       this.api.failureTimestamps = [];
+      await this.ingestPackagedSample();
     }
     await this.startWeb();
     await this.startWorker();

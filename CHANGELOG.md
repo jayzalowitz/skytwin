@@ -1,5 +1,18 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [Unreleased] — Account-free interactive sample
+
+### Added
+
+- **Packaged desktop builds can initialize and open a synthetic sample profile without enabling the development authentication bypass.** A short-lived credential is fixed to the reserved `is_demo` identity and an explicit read allowlist; it cannot enumerate users, read credentials or settings, invoke inference-bearing Lifebook layout routes, mutate state, or execute actions. Clean packaged installs provision only against the bundled loopback database and ingest fictional signals through the authenticated event boundary with stable deduplication IDs.
+- **The account-free tour now includes a separate, interactive simulation loop.** A visitor can approve, reject, or correct fixed fictional proposals, inspect the real policy and explanation results, and see a session-local preference change the next focus-block prediction. Simulation commands are loopback-only, accept a closed command catalog, keep bounded in-memory state keyed to the signed sample credential, and terminate before any database, connector, provider, credential, or execution adapter. Reset, expiry, and exit discard the state; an untrusted shell-shaped proposal is visibly contained with no approval path. See [#630](https://github.com/jayzalowitz/skytwin/issues/630) and [#633](https://github.com/jayzalowitz/skytwin/issues/633).
+
+### Fixed (post-review)
+
+- **Sample access now fails closed while its fixture is incomplete.** Startup clears a database-backed readiness marker before ingest, reasserts observer trust with a zero automatic-spend limit, and exposes the reserved identity only after every fictional signal is present. Each sample request revalidates both the identity and readiness marker.
+- **Loopback restrictions now survive the dashboard proxy boundary.** The web server rejects remote peers before forwarding sample-info, session, or simulation requests to the local API, and the API derives locality from the direct socket when no trusted proxy address is present.
+- **Expired simulations cannot return a late asynchronous result.** The simulation checks its signed deadline both before creating state and after policy/explanation work. Exit may present the original signed credential solely to delete the state bound to that credential; it cannot read, renew, or mutate the simulation.
+
 ## [Unreleased] — Explicit reasoning boundaries and receipts
 
 ### Added

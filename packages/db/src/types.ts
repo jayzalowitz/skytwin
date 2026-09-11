@@ -136,6 +136,7 @@ export interface DecisionOutcomeRow {
   selected_action_id: string | null;
   auto_executed: boolean;
   requires_approval: boolean;
+  block_codes: string[];
   escalation_reason: string | null;
   explanation: string;
   confidence: number;
@@ -688,6 +689,7 @@ export interface OauthPendingSigninRow {
   account_email: string;
   scopes: string[];
   next_hash: string | null;
+  session_id: string | null;
   expires_at: Date;
   created_at: Date;
 }

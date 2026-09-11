@@ -52,9 +52,11 @@ export type {
   CandidateAction,
   RiskAssessment,
   DimensionAssessment,
+  DecisionBlockCode,
   DecisionOutcome,
   PolicyVerdict,
 } from './decision.js';
+export { isDecisionBlockCode } from './decision.js';
 
 export type {
   ActionProvenance,
@@ -258,7 +260,20 @@ export type {
 
 export type {
   DemoInfoResponse,
+  DemoSessionResponse,
   DemoPreviewResponse,
+  SampleSimulationCommand,
+  SampleSimulationActionType,
+  SampleSimulationCommandType,
+  SampleSimulationCorrectionOption,
+  SampleSimulationExplanation,
+  SampleSimulationLearning,
+  SampleSimulationPolicyResult,
+  SampleSimulationPrediction,
+  SampleSimulationProposal,
+  SampleSimulationProposalId,
+  SampleSimulationStateResponse,
+  SampleSimulationStatus,
 } from './demo.js';
 
 export type {

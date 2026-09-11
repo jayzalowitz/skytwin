@@ -143,6 +143,48 @@ describe('DecisionMaker', () => {
     });
   });
 
+  describe('durable policy block codes', () => {
+    it('carries a real scope-gated candidate code into the saved outcome', async () => {
+      const twinService = createMockTwinService({ preferences: [] });
+      const policyEvaluator = createMockPolicyEvaluator({
+        allowed: true,
+        requiresApproval: true,
+        reason: 'Write access is missing.',
+      });
+      const decisionRepo = createMockDecisionRepository();
+      const candidateGenerator = {
+        generate: vi.fn().mockResolvedValue([{
+          id: 'send-1',
+          decisionId: 'dec-send',
+          actionType: 'send_reply',
+          description: 'Send the reply',
+          domain: 'email',
+          parameters: { to: 'person@example.com' },
+          estimatedCostCents: 0,
+          reversible: false,
+          confidence: ConfidenceLevel.HIGH,
+          reasoning: 'A reply is appropriate.',
+        }]),
+      };
+      const dm = new DecisionMaker(
+        twinService as never,
+        policyEvaluator as never,
+        decisionRepo as never,
+        candidateGenerator,
+      );
+
+      const context = createContext(TrustTier.HIGH_AUTONOMY, createEmailDecision({ id: 'dec-send' }));
+      context.grantedScopes = [];
+      const outcome = await dm.evaluate(context);
+
+      expect(outcome.selectedAction?.actionType).toBe('escalate_to_user');
+      expect(outcome.blockCodes).toEqual(['missing_write_scope:gmail.send']);
+      expect(decisionRepo.saveOutcome).toHaveBeenLastCalledWith(
+        expect.objectContaining({ blockCodes: ['missing_write_scope:gmail.send'] }),
+      );
+    });
+  });
+
   describe('Low-risk action on trusted user', () => {
     it('should auto-execute a low-risk action for a trusted user', async () => {
       const twinService = createMockTwinService({

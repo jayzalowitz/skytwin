@@ -27,7 +27,7 @@
  */
 
 import { query, withTransaction } from '../connection.js';
-import type { InferenceReceiptV1 } from '@skytwin/shared-types';
+import { isDecisionBlockCode, type InferenceReceiptV1 } from '@skytwin/shared-types';
 import { twinRepository } from '../repositories/twin-repository.js';
 import { userRepository } from '../repositories/user-repository.js';
 import type {
@@ -509,16 +509,17 @@ export async function restoreBackup(value: unknown): Promise<RestoreBackupResult
         await client.query(
           `INSERT INTO decision_outcomes (
              id, decision_id, selected_action_id, auto_executed,
-             requires_approval, escalation_reason, explanation, confidence,
-             execution_plan_id, created_at
+             requires_approval, block_codes, escalation_reason, explanation,
+             confidence, execution_plan_id, created_at
            )
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
           [
             o.id,
             o.decision_id,
             o.selected_action_id ?? null,
             o.auto_executed,
             o.requires_approval,
+            JSON.stringify(Array.isArray(o.block_codes) ? o.block_codes.filter(isDecisionBlockCode) : []),
             o.escalation_reason ?? null,
             o.explanation,
             o.confidence,

@@ -16,7 +16,7 @@
  * post-render side effects); this file owns presentation.
  */
 
-import { askTwin, escapeHtml, fetchDemoRecipes } from '../api-client.js';
+import { askTwin, endSampleSimulation, escapeHtml, fetchDemoRecipes } from '../api-client.js';
 import { dismissTierLadderIntro } from '../components/tier-ladder-intro.js';
 import {
   KEY_USER_ID,
@@ -24,6 +24,8 @@ import {
   KEY_TOUR_MODE,
   KEY_NOTIF_DISMISSED,
   KEY_NOTIF_ASKED,
+  KEY_SESSION_TOKEN,
+  KEY_DEMO_SESSION_EXPIRES_AT,
   clearKeysForSuffix,
 } from '../storage-keys.js';
 
@@ -496,6 +498,7 @@ export function renderTourBanner() {
       </div>
       <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
         <button class="btn btn-primary btn-sm" data-action="exit-tour">Start my own setup</button>
+        <a class="btn btn-outline btn-sm" href="#/sample">Try the interactive sample</a>
         <a class="btn btn-outline btn-sm" href="#/decisions">See what Alex's twin has been doing</a>
         <a class="btn btn-outline btn-sm" href="#/twin">See what it learned about Alex</a>
       </div>
@@ -503,7 +506,12 @@ export function renderTourBanner() {
   `;
 }
 
-export function skyTwinExitTour() {
+export async function skyTwinExitTour() {
+  try {
+    await endSampleSimulation();
+  } catch {
+    // An expired/offline credential already makes server-side state unusable.
+  }
   // Hard-cleanup everything the tour wrote so a future tour starts
   // fresh (no stale "first decision" toast, no stale tier celebration,
   // no stale notification dismissal). Sweeps both the fixed-name flags
@@ -515,6 +523,8 @@ export function skyTwinExitTour() {
     KEY_ONBOARDED,
     KEY_NOTIF_DISMISSED,
     KEY_NOTIF_ASKED,
+    KEY_SESSION_TOKEN,
+    KEY_DEMO_SESSION_EXPIRES_AT,
   ]);
   window.location.reload();
 }
@@ -706,7 +716,7 @@ export function initDashboardGlobals() {
   // Hash-route gate: the SPA reuses one #page-content container across
   // routes, so without this check our data-action names would collide
   // with data-action="connect-google" on settings.js and similar.
-  document.addEventListener('click', (ev) => {
+  document.addEventListener('click', async (ev) => {
     const hash = (window.location.hash || '').split('?')[0] || '#/';
     if (hash !== '#/' && hash !== '#') return;
     const target = ev.target instanceof Element ? ev.target : null;
@@ -747,7 +757,7 @@ export function initDashboardGlobals() {
       const uid = askInput?.getAttribute('data-user-id');
       if (uid && situation) handleTryRecipe(uid, situation);
     } else if (action === 'exit-tour') {
-      skyTwinExitTour();
+      await skyTwinExitTour();
     } else if (action === 'connect-google') {
       const uid = el.getAttribute('data-user-id');
       if (uid) handleConnectGoogleFromDashboard(uid);

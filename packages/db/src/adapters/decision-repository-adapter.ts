@@ -5,7 +5,7 @@ import type {
   CandidateAction,
   RiskAssessment,
 } from '@skytwin/shared-types';
-import { ConfidenceLevel, RiskTier, SituationType } from '@skytwin/shared-types';
+import { ConfidenceLevel, RiskTier, SituationType, isDecisionBlockCode } from '@skytwin/shared-types';
 import { decisionRepository } from '../repositories/index.js';
 import { query } from '../connection.js';
 import type {
@@ -106,6 +106,9 @@ function outcomeRowToDomain(
   allCandidates: CandidateAction[],
   riskAssessment: RiskAssessment | null,
 ): DecisionOutcome {
+  const blockCodes = Array.isArray(row.block_codes)
+    ? row.block_codes.filter(isDecisionBlockCode)
+    : [];
   return {
     id: row.id,
     decisionId: row.decision_id,
@@ -114,6 +117,7 @@ function outcomeRowToDomain(
     riskAssessment,
     autoExecute: row.auto_executed,
     requiresApproval: row.requires_approval,
+    blockCodes,
     reasoning: row.escalation_reason ?? row.explanation,
     decidedAt: row.created_at,
   };
@@ -172,6 +176,7 @@ export const decisionRepositoryAdapter: DecisionRepositoryPort = {
       selectedActionId: outcome.selectedAction?.id ?? null,
       autoExecuted: outcome.autoExecute,
       requiresApproval: outcome.requiresApproval,
+      blockCodes: outcome.blockCodes ?? [],
       escalationReason: outcome.requiresApproval ? outcome.reasoning : null,
       explanation: outcome.reasoning,
       confidence: outcome.riskAssessment

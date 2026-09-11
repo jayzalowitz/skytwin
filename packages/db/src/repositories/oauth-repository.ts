@@ -65,9 +65,8 @@ export const oauthRepository = {
     refreshToken: string;
     expiresAt: Date;
     scopes: string[];
-  }): Promise<OAuthTokenRow> {
-    const result = await query<OAuthTokenRow>(
-      `INSERT INTO oauth_tokens (
+  }, client?: PoolClient): Promise<OAuthTokenRow> {
+    const sql = `INSERT INTO oauth_tokens (
          user_id, provider, account_email, account_provider_id,
          access_token, refresh_token, expires_at, scopes
        )
@@ -79,18 +78,20 @@ export const oauthRepository = {
          expires_at = EXCLUDED.expires_at,
          scopes = EXCLUDED.scopes,
          updated_at = now()
-       RETURNING *`,
-      [
-        input.userId,
-        input.provider,
-        input.accountEmail,
-        input.accountProviderId ?? null,
-        input.accessToken,
-        input.refreshToken,
-        input.expiresAt,
-        input.scopes,
-      ],
-    );
+       RETURNING *`;
+    const params = [
+      input.userId,
+      input.provider,
+      input.accountEmail,
+      input.accountProviderId ?? null,
+      input.accessToken,
+      input.refreshToken,
+      input.expiresAt,
+      input.scopes,
+    ];
+    const result = client
+      ? await client.query<OAuthTokenRow>(sql, params)
+      : await query<OAuthTokenRow>(sql, params);
     return result.rows[0]!;
   },
 

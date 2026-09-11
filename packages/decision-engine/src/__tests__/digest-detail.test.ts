@@ -33,11 +33,15 @@ describe('buildDigestItemDetail (spec 14)', () => {
   it('humanizes why-not-auto-executed block reasons', () => {
     const d = buildDigestItemDetail({
       requiresApproval: true,
-      blockedReasons: ['missing_write_scope:gmail.send', 'trust_tier:observer'],
+      blockedReasonCodes: ['missing_write_scope:gmail.send', 'trust_tier:observer'],
       sourceRefs: [],
     });
     expect(d.whyNotAutoExecuted[0]).toMatch(/don't have permission/i);
     expect(d.whyNotAutoExecuted[1]).toMatch(/check with you before/i);
+    expect(d.blockedReasonCodes).toEqual([
+      'missing_write_scope:gmail.send',
+      'trust_tier:observer',
+    ]);
     // No internal jargon leaks to the user.
     expect(d.whyNotAutoExecuted.join(' ')).not.toMatch(/trust_tier|observer|scope/i);
   });
@@ -49,7 +53,13 @@ describe('buildDigestItemDetail (spec 14)', () => {
   });
 
   it('whyNotAutoExecuted is empty when the item would auto-run', () => {
-    expect(buildDigestItemDetail({ requiresApproval: false, sourceRefs: [] }).whyNotAutoExecuted).toEqual([]);
+    const detail = buildDigestItemDetail({
+      requiresApproval: false,
+      blockedReasonCodes: ['missing_write_scope:gmail.send'],
+      sourceRefs: [],
+    });
+    expect(detail.whyNotAutoExecuted).toEqual([]);
+    expect(detail.blockedReasonCodes).toEqual([]);
   });
 
   it('passes through source refs and explanation', () => {

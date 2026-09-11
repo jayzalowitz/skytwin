@@ -6,6 +6,7 @@
  */
 import {
   fetchLatestTwinBriefing,
+  fetchSettings,
   listTwinBriefings,
   markBriefingRead,
   escapeHtml,
@@ -13,7 +14,7 @@ import {
   wireApiRetry,
 } from '../api-client.js';
 import { showToast } from '../toast.js';
-import { KEY_USER_ID } from '../storage-keys.js';
+import { KEY_TOUR_MODE, KEY_USER_ID } from '../storage-keys.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Singleton delegator guard — see CLAUDE.md "Frontend Event Handling".
@@ -22,6 +23,66 @@ import { KEY_USER_ID } from '../storage-keys.js';
 let _briefingListenerWired = false;
 let _container = null;
 let _activeCadence = 'daily';
+let _boundaryStatus = null;
+
+const AUTONOMY_LABELS = Object.freeze({
+  observer: 'Just watch',
+  suggest: 'Ask me first',
+  low_autonomy: 'Handle small stuff',
+  moderate_autonomy: 'Handle most things',
+  high_autonomy: 'Full autopilot',
+});
+
+function isSampleMode() {
+  try { return localStorage.getItem(KEY_TOUR_MODE) === '1'; } catch { return false; }
+}
+
+export function deriveBoundaryStatus(settings, sample = false) {
+  if (sample) {
+    return {
+      reasoning: 'Deterministic sample',
+      network: 'No external inference request',
+      autonomy: 'Just watch',
+    };
+  }
+  if (!settings) {
+    return { reasoning: 'Status unavailable', network: 'Status unavailable', autonomy: 'Status unavailable' };
+  }
+  const mode = settings.reasoningMode?.mode;
+  const providers = Array.isArray(settings.aiProviders)
+    ? settings.aiProviders.filter((provider) => provider?.enabled !== false)
+    : [];
+  const external = providers.some((provider) => provider?.privacy?.networkScope === 'external');
+  const reasoning = mode === 'on_device'
+    ? 'On this device'
+    : mode === 'bring_your_own_provider'
+      ? providers.length > 0 ? 'Configured provider' : 'Provider mode selected'
+      : mode === 'verified_private_cloud'
+        ? 'Verified private cloud'
+        : 'Not configured';
+  const network = mode === 'bring_your_own_provider' && providers.length > 0
+    ? 'External network'
+    : external
+      ? 'External network configured'
+      : providers.length > 0
+        ? 'Local or loopback only'
+        : 'No active provider';
+  return {
+    reasoning,
+    network,
+    autonomy: AUTONOMY_LABELS[settings.trustTier] || 'Status unavailable',
+  };
+}
+
+export function renderBoundaryStatus(status) {
+  if (!status) return '';
+  const items = [
+    ['Reasoning', status.reasoning],
+    ['Network', status.network],
+    ['Autonomy', status.autonomy],
+  ];
+  return `<dl class="briefing-boundaries" aria-label="Current boundaries">${items.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join('')}</dl>`;
+}
 
 function getCurrentUserId() {
   return localStorage.getItem(KEY_USER_ID) || '';
@@ -177,7 +238,7 @@ function detailPanel(detail) {
   if (typeof detail.confidencePct === 'number')
     rows.push(`<div><span class="dd-k">how sure I am</span> ${escapeHtml(sureWord(detail.confidencePct))} (${detail.confidencePct}%)</div>`);
   if (Array.isArray(detail.whyNotAutoExecuted) && detail.whyNotAutoExecuted.length)
-    rows.push(`<div><span class="dd-k">why I'm asking you</span> ${detail.whyNotAutoExecuted.map((r) => escapeHtml(String(r))).join('; ')}</div>`);
+    rows.push(`<div><span class="dd-k">why I'm asking you</span> ${detail.whyNotAutoExecuted.map((r) => escapeHtml(humanizeBlockReason(r))).join('; ')}</div>`);
   // "Written by" only when YOU wrote it (notable). For inbound items the sender
   // already shows it came from someone else — no redundant row.
   if (detail.provenanceLabel && /from you/i.test(detail.provenanceLabel))
@@ -185,20 +246,44 @@ function detailPanel(detail) {
   return rows.length ? `<div class="digest-detail">${rows.join('')}</div>` : '';
 }
 
+export function humanizeBlockReason(reason) {
+  const raw = String(reason || '');
+  const code = raw.split(':')[0];
+  const known = {
+    missing_write_scope: 'This source has not granted write access',
+    'trust_tier': 'Your current trust level requires review',
+    policy_denied: 'A policy blocked this action',
+    spend_limit: 'This action exceeds a spend limit',
+    untrusted_external: 'This action came from an untrusted external source',
+  };
+  return known[code] || raw.replace(/[_:]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+export function hasMissingWriteScope(detail) {
+  return !!detail && Array.isArray(detail.blockedReasonCodes) &&
+    detail.blockedReasonCodes.some((reason) => String(reason).split(':')[0] === 'missing_write_scope');
+}
+
+export function deadlineClass(deadline, now = Date.now()) {
+  if (!deadline) return '';
+  const timestamp = Date.parse(String(deadline));
+  return Number.isFinite(timestamp) && timestamp < now ? ' is-overdue' : '';
+}
+
 // Inline action zone (the "it can act" thesis). Primary actions come from the
 // payload (item.actions) when the act layer is wired; security + scope-blocked
 // states derive from what we know today; Snooze is the universal default.
-function renderActions(t) {
+export function renderActions(t) {
   const d = t.detail;
-  const scopeBlocked = d && Array.isArray(d.whyNotAutoExecuted) && d.whyNotAutoExecuted.some((r) => /permission|scope/i.test(r));
+  const scopeBlocked = hasMissingWriteScope(d);
   const acts = [];
   if (t.kind === 'security') {
     acts.push(`<button class="digest-act primary" data-action="row-action" data-act="verify">Verify in app</button>`);
   } else {
-    if (Array.isArray(t.actions)) {
-      for (const a of t.actions) acts.push(`<button class="digest-act primary" data-action="row-action" data-act="${escapeHtml(a.id || '')}">${escapeHtml(a.label || '')}</button>`);
-    } else if (scopeBlocked) {
+    if (scopeBlocked) {
       acts.push(`<button class="digest-act grant" data-action="row-action" data-act="grant">Grant access</button>`);
+    } else if (Array.isArray(t.actions)) {
+      t.actions.forEach((a, index) => acts.push(`<button class="digest-act${index === 0 ? ' primary' : ''}" data-action="row-action" data-act="${escapeHtml(a.id || '')}">${escapeHtml(a.label || '')}</button>`));
     }
     acts.push(`<button class="digest-act" data-action="row-action" data-act="snooze">Snooze</button>`);
   }
@@ -215,7 +300,7 @@ function renderTodoRow(t) {
       <div class="digest-todo-body">
         <div>
           <span class="digest-todo-text">${escapeHtml(t.text || '')}</span>
-          ${t.deadline ? `<span class="digest-deadline">${escapeHtml(String(t.deadline))}</span>` : ''}
+          ${t.deadline ? `<span class="digest-deadline${deadlineClass(t.deadline)}">${escapeHtml(String(t.deadline))}</span>` : ''}
           ${renderSource(t.sourceType)}
           ${renderCite(t.signalRefs)}
           ${detailToggle(t.detail)}
@@ -319,14 +404,14 @@ function renderCoveragePanel(coverage) {
 }
 
 // Cold-start: zero connectors → the PRIMARY surface, not a buried panel (DESIGN.md).
-function renderColdStart(coverage) {
+export function renderColdStart(coverage) {
   const sources = ['Gmail', 'Calendar', 'Files'];
   return `
     <div class="digest-state">
       <p class="digest-voice">Connect a source and I'll start your briefing.</p>
       <p class="sub">I read your signals, surface what needs you, and handle the rest under your rules.</p>
       <div class="digest-coldstart-sources">
-        ${sources.map((s) => `<button class="digest-act primary" data-action="connect-source" data-source="${escapeHtml(s)}">Connect ${escapeHtml(s)}</button>`).join('')}
+        ${sources.map((s, index) => `<button class="digest-act${index === 0 ? ' primary' : ''}" data-action="connect-source" data-source="${escapeHtml(s)}">Connect ${escapeHtml(s)}</button>`).join('')}
       </div>
     </div>`;
 }
@@ -335,15 +420,19 @@ function renderColdStart(coverage) {
  * Render the structured digest (DESIGN.md). Returns '' when there's no structured
  * payload (caller falls back to prose). Handles cold-start + empty-quiet states.
  */
-function renderDigestSection(structured) {
+export function renderDigestSection(structured) {
   if (!structured) return '';
-  if (structured.coverage?.coldStart) return renderColdStart(structured.coverage);
-
   const todoList = structured.todos || [];
   const topicList = structured.topics || [];
   const memoryList = structured.memorySuggestions || [];
   const watchRuns = structured.watchRuns || [];
-  if (!todoList.length && !topicList.length && !memoryList.length && !watchRuns.length) {
+  const hasDigestContent = todoList.length || topicList.length || memoryList.length || watchRuns.length;
+  // A packaged sample and non-OAuth local sources can contain real digest
+  // content without an oauth_tokens row. Content is stronger evidence than
+  // connector coverage: never replace it with the empty cold-start prompt.
+  if (structured.coverage?.coldStart && !hasDigestContent) return renderColdStart(structured.coverage);
+
+  if (!hasDigestContent) {
     return `<section class="digest"><p class="digest-voice">You're all caught up.</p><p class="muted">Nothing needs you right now.</p></section>`;
   }
   const powerOn = isPowerView();
@@ -390,7 +479,7 @@ function renderDigestSection(structured) {
   `;
 }
 
-function renderProseSection(briefing) {
+export function renderProseSection(briefing) {
   const el = document.getElementById('briefing-prose');
   if (!el) return;
 
@@ -419,6 +508,8 @@ function renderProseSection(briefing) {
               style="font-size: 0.78rem;">Mark as read</button>`
         : ''}
     </div>
+    ${renderBoundaryStatus(_boundaryStatus)}
+    ${isSampleMode() ? '<p class="sample-briefing-link"><a href="#/sample">Try a fictional decision</a></p>' : ''}
     ${digestHtml}
     ${
       digestHtml
@@ -455,7 +546,12 @@ async function renderBriefingTab(userId, cadence) {
     </div>`;
 
   try {
-    const data = await fetchLatestTwinBriefing(userId, cadence);
+    const sample = isSampleMode();
+    const [data, settings] = await Promise.all([
+      fetchLatestTwinBriefing(userId, cadence),
+      sample ? Promise.resolve(null) : fetchSettings(userId).catch(() => null),
+    ]);
+    _boundaryStatus = deriveBoundaryStatus(settings, sample);
     const briefing = data?.briefing;
     // #320: per-Lifebook sections folded into the same response.
     // Always an array — empty when no per-Lifebook briefings exist
@@ -536,7 +632,10 @@ export async function renderTwinBriefing(container) {
       </div>
 
       <div id="briefing-tab-content">
-        <p class="muted">Loading…</p>
+        <div class="digest-skel" aria-busy="true" aria-label="Loading briefing">
+          <div class="sk voice"></div>
+          <div class="sk row"></div><div class="sk row"></div><div class="sk row"></div>
+        </div>
       </div>
     </section>
   `;

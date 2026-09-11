@@ -10,7 +10,11 @@ import { renderConnectGmail } from './pages/connect-gmail.js';
 import { renderAssistant } from './pages/assistant.js';
 import { renderSearch } from './pages/search.js';
 import { renderWatches } from './pages/watches.js';
-import { renderOnboarding } from './pages/onboarding.js';
+import {
+  consumeOnboardingReturnHash,
+  rememberOnboardingReturnHash,
+  renderOnboarding,
+} from './pages/onboarding.js';
 import { renderCapabilities } from './pages/capabilities.js';
 import { renderCapabilityDetail } from './pages/capability-detail.js';
 import { renderCapabilitiesAudit } from './pages/capabilities-audit.js';
@@ -22,6 +26,7 @@ import { renderDxtImports } from './pages/dxt-imports.js';
 import { renderProvenanceGraph } from './pages/provenance-graph.js';
 import { renderMemorySettings } from './pages/memory-settings.js';
 import { renderLifebook } from './pages/lifebook.js';
+import { initSampleGlobals, renderSample } from './pages/sample.js';
 import { renderGlobalPauseButton } from './components/global-pause-button.js';
 import { wireDesktopUpdateBanner } from './components/desktop-update-banner.js';
 import { fetchPendingApprovals, fetchHealth, fetchUser, listUsers, escapeHtml, isApiKnownOffline, fetchJSON } from './api-client.js';
@@ -56,6 +61,7 @@ const routes = {
   '/credential-vault': { title: 'Credential Vault', render: renderCredentialVault },
   '/dxt/imports': { title: 'DXT Imports', render: renderDxtImports },
   '/memory-settings': { title: 'Memory backend', render: renderMemorySettings },
+  '/sample': { title: 'Interactive sample', render: renderSample },
 };
 
 /**
@@ -80,6 +86,61 @@ function needsOnboarding() {
  * want to record a particular dismiss reason should write KEY_ONBOARDED
  * BEFORE calling this — hideOnboarding does not touch localStorage.
  */
+let _onboardingEscHandler = null;
+let _onboardingPreviousFocus = null;
+let _onboardingBackgroundState = [];
+
+function setOnboardingIsolation(active) {
+  const overlay = document.getElementById('onboarding-overlay');
+  if (!overlay) return;
+  if (active) {
+    if (_onboardingBackgroundState.length > 0) return;
+    _onboardingBackgroundState = [...document.body.children]
+      .filter((node) => node !== overlay)
+      .map((node) => ({
+        node,
+        inert: node.hasAttribute('inert'),
+        ariaHidden: node.getAttribute('aria-hidden'),
+      }));
+    for (const item of _onboardingBackgroundState) {
+      item.node.setAttribute('inert', '');
+      item.node.setAttribute('aria-hidden', 'true');
+    }
+    return;
+  }
+  for (const item of _onboardingBackgroundState) {
+    if (!item.inert) item.node.removeAttribute('inert');
+    if (item.ariaHidden === null) item.node.removeAttribute('aria-hidden');
+    else item.node.setAttribute('aria-hidden', item.ariaHidden);
+  }
+  _onboardingBackgroundState = [];
+}
+
+function trapOnboardingFocus(event, overlay) {
+  if (event.key !== 'Tab') return;
+  const focusable = [...overlay.querySelectorAll(
+    'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
+  )].filter((node) => !node.hasAttribute('hidden'));
+  if (focusable.length === 0) {
+    event.preventDefault();
+    overlay.focus?.();
+    return;
+  }
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  const active = document.activeElement;
+  if (!overlay.contains(active)) {
+    event.preventDefault();
+    first.focus();
+  } else if (event.shiftKey && (active === first || active?.hasAttribute?.('data-onboarding-focus'))) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && active === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
 function hideOnboarding() {
   const overlay = document.getElementById('onboarding-overlay');
   if (overlay) overlay.style.display = 'none';
@@ -87,10 +148,16 @@ function hideOnboarding() {
     document.removeEventListener('keydown', _onboardingEscHandler);
     _onboardingEscHandler = null;
   }
+  setOnboardingIsolation(false);
+  const restoreTarget = _onboardingPreviousFocus;
+  _onboardingPreviousFocus = null;
+  queueMicrotask(() => {
+    if (restoreTarget?.isConnected && typeof restoreTarget.focus === 'function') {
+      restoreTarget.focus({ preventScroll: true });
+    }
+  });
   updateConnectionStatus();
 }
-
-let _onboardingEscHandler = null;
 
 /**
  * Dismiss the modal as "skipped" — user pressed Esc, the X button, or
@@ -99,11 +166,13 @@ let _onboardingEscHandler = null;
  */
 function dismissOnboardingAsSkipped() {
   localStorage.setItem(KEY_ONBOARDED, 'skipped');
+  consumeOnboardingReturnHash('#/');
   hideOnboarding();
   navigate();
 }
 
 window.skyTwinDismissOnboarding = dismissOnboardingAsSkipped;
+window.skyTwinHideOnboarding = hideOnboarding;
 
 /**
  * Tear down the modal's Esc listener WITHOUT touching localStorage or
@@ -124,15 +193,18 @@ window.skyTwinTeardownOnboardingEsc = () => {
  */
 function showOnboarding() {
   const overlay = document.getElementById('onboarding-overlay');
+  if (overlay.style.display === 'none') _onboardingPreviousFocus = document.activeElement;
   overlay.style.display = 'flex';
+  setOnboardingIsolation(true);
 
   // Esc-to-dismiss. Wired once per show, torn down by hideOnboarding so
   // the listener doesn't leak across modal lifecycles. Singleton-guarded
   // via the module-level handle.
   if (!_onboardingEscHandler) {
     _onboardingEscHandler = (e) => {
-      if (e.key !== 'Escape') return;
       if (overlay.style.display === 'none') return;
+      trapOnboardingFocus(e, overlay);
+      if (e.key !== 'Escape') return;
       e.preventDefault();
       dismissOnboardingAsSkipped();
     };
@@ -663,6 +735,11 @@ function navigate() {
     // it so a dismissed user has a way back into the sign-in flow.
     // Without this re-open path, pressing Esc/X/Skip on the first visit
     // would permanently lock the user out of the only sign-in surface.
+    if (needsOnboarding() && hash !== '/') {
+      rememberOnboardingReturnHash(`#${hashRaw}`);
+      window.location.hash = '#/';
+      return;
+    }
     container.innerHTML = `
       <div class="signin-placeholder">
         <p style="margin:0 0 1rem 0;">Sign in to see your decisions.</p>
@@ -678,7 +755,9 @@ function navigate() {
     return;
   }
 
-  container.innerHTML = '<div class="loading">Loading...</div>';
+  container.innerHTML = (hash === '/' || hash === '/briefing')
+    ? '<div class="digest-skel" aria-busy="true" aria-label="Loading briefing"><div class="sk voice"></div><div class="sk row"></div><div class="sk row"></div><div class="sk row"></div></div>'
+    : '<div class="loading">Loading...</div>';
 
   route.render(container, currentUserId).catch(err => {
     container.innerHTML = `<div class="error-banner">${escapeHtml(err.message)}</div>`;
@@ -883,6 +962,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   // Wire dashboard event handlers + document-level delegators.
   // Idempotent so re-running this in tests is safe.
   initDashboardGlobals();
+  initSampleGlobals();
   wireDxtDropAndOpen();
 
   // Mount the always-visible Pause-everything safety button (#190).
@@ -961,6 +1041,21 @@ window.addEventListener('DOMContentLoaded', async () => {
   // the param so reloads stay sticky. Useful when a Google OAuth callback or
   // the user-switcher dropdown lands here.
   if (mobileUserId) {
+    const existingSession = localStorage.getItem(KEY_SESSION_TOKEN);
+    if (!existingSession) {
+      // The callback/query userId is informational, never a credential. A web
+      // signup must arrive through the one-time pending exchange above; an
+      // existing-user OAuth flow already has its session in localStorage.
+      localStorage.removeItem(KEY_USER_ID);
+      currentUserId = '';
+      window.history.replaceState({}, '', window.location.pathname + '#/');
+      showToast('Sign-in could not be verified. Please start the secure sign-in again.', {
+        kind: 'error',
+        durationMs: 8000,
+      });
+      navigate();
+      return;
+    }
     localStorage.setItem(KEY_USER_ID, mobileUserId);
     localStorage.setItem(KEY_ONBOARDED, 'true');
     currentUserId = mobileUserId;
@@ -1018,7 +1113,7 @@ async function bootWithVerifiedUser() {
       // that would 403 the next user.
       clearAllSkyTwinKeys();
       currentUserId = '';
-      showOnboarding();
+      navigate();
       return;
     }
     // Transient network / server error — don't force re-onboarding over

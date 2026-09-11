@@ -134,6 +134,7 @@ CREATE TABLE IF NOT EXISTS decision_outcomes (
   selected_action_id UUID REFERENCES candidate_actions(id),
   auto_executed BOOL NOT NULL DEFAULT false,
   requires_approval BOOL NOT NULL DEFAULT false,
+  block_codes JSONB NOT NULL DEFAULT '[]'::JSONB,
   escalation_reason STRING,
   explanation STRING NOT NULL,
   confidence FLOAT NOT NULL,

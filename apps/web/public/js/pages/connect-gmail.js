@@ -353,9 +353,8 @@ async function submitCredentials() {
       },
     });
     if (result.status === 'redirecting' || result.status === 'polling') {
-      // Web: startGoogleSignIn just assigned window.location.href.
-      // Desktop: openExternal already fired and the poll is running.
-      // Either way, the wizard's job is done.
+      // New-user browser and desktop flows keep polling in the original
+      // page; existing-user browser flows retain the full-page redirect.
       clearWizardState();
       return;
     }

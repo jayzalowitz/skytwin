@@ -40,6 +40,7 @@ function mkOutcome(overrides: Partial<DecisionOutcome>): DecisionOutcome {
     riskAssessment: null,
     autoExecute: false,
     requiresApproval: true,
+    blockCodes: [],
     reasoning: 'test',
     decidedAt: new Date(),
     ...overrides,

@@ -8,6 +8,8 @@
 
 import { getGoogleAuthUrl, fetchOAuthStatus, fetchPendingSignin } from './api-client.js';
 
+const PENDING_CAPABILITY_DIGEST_DOMAIN = 'skytwin:oauth-pending-capability:v1';
+
 export function isDesktopApp() {
   return !!(typeof window !== 'undefined'
     && window.skytwinDesktop?.isDesktop
@@ -45,6 +47,16 @@ function generatePendingKey() {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
+/** Derive the public identity for a client-held pending capability. */
+export async function derivePendingCapabilityDigest(pendingKey) {
+  if (typeof crypto === 'undefined' || !crypto.subtle || typeof TextEncoder === 'undefined') {
+    throw new Error('Web Crypto API unavailable: cannot protect the sign-in capability.');
+  }
+  const input = new TextEncoder().encode(`${PENDING_CAPABILITY_DIGEST_DOMAIN}:${pendingKey}`);
+  const digest = await crypto.subtle.digest('SHA-256', input);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
 /**
  * Start a Google sign-in flow.
  *
@@ -59,10 +71,10 @@ function generatePendingKey() {
  * @param {string|null} [opts.next]     Dashboard deep-link to land on post-callback (e.g. 'connect-gmail'). Server whitelists the value.
  * @param {string|null} [opts.include]  Scope-tier opt-in (currently only 'gmail'). When set, the connect-gmail wizard's BYO OAuth path can request the restricted Gmail scopes on the user's own client.
  * @param {(result: { connected: boolean, sessionToken?: string|null, userId?: string, accountEmail?: string, scopes?: string[], nextHash?: string|null }) => void} [opts.onComplete]
- *     Desktop only — called when polling resolves (existing-user or
- *     newUser flow). `{ connected: false }` on timeout. For the newUser
+ *     Called when polling resolves (desktop existing-user or either new-user
+ *     flow). `{ connected: false }` on timeout. For the newUser
  *     pendingKey flow, `sessionToken` is the 7-day session minted by
- *     `/api/oauth/google/pending/:key` — callers must store it under
+ *     `POST /api/oauth/google/pending` — callers must store it under
  *     `KEY_SESSION_TOKEN` so subsequent API calls authenticate. The
  *     existing-user `pollUntilConnected` path doesn't set it (the
  *     caller is already signed in via QR pairing or web redirect).
@@ -76,21 +88,47 @@ export async function startGoogleSignIn({ userId = null, newUser = false, next =
       error: 'No signed-in user. Sign in first, then connect Google.',
     };
   }
-  // Desktop newUser flows need a pollable pendingKey so the wizard can
-  // learn the just-created userId from /callback. Generated client-side
-  // (crypto.randomUUID), validated to UUIDv4 shape server-side. Web
-  // flows don't need this — the post-callback redirect carries the
-  // userId in the URL.
-  const pendingKey = desktop && newUser ? generatePendingKey() : null;
+  if (newUser && typeof onComplete !== 'function') {
+    return { status: 'error', error: 'Secure sign-in needs a completion handler.' };
+  }
+
+  // Browser activation is lost at the first await. Open the small holding
+  // window synchronously, then sever its opener before any cross-origin
+  // navigation. The original page retains the raw capability only in this
+  // call's closure and polls the POST endpoint itself.
+  let authPopup = null;
+  if (newUser && !desktop) {
+    authPopup = window.open('', 'skytwin-google-signin', 'popup=yes,width=520,height=720');
+    if (!authPopup) {
+      return {
+        status: 'error',
+        code: 'POPUP_BLOCKED',
+        error: 'Allow pop-ups for SkyTwin, then try Google sign-in again.',
+      };
+    }
+    try {
+      authPopup.opener = null;
+    } catch {
+      authPopup.close();
+      return { status: 'error', error: 'Could not isolate the Google sign-in window.' };
+    }
+  }
+
+  let pendingKey = null;
   let data;
   try {
+    pendingKey = newUser ? generatePendingKey() : null;
+    const pendingKeyDigest = pendingKey
+      ? await derivePendingCapabilityDigest(pendingKey)
+      : null;
     // Both branches go through getGoogleAuthUrl -> fetchJSON so error
     // handling (ApiError, friendlyMessage, offline detection) stays
     // consistent with the rest of the codebase.
     data = newUser
-      ? await getGoogleAuthUrl(null, { desktop, newUser: true, next, pendingKey, include })
+      ? await getGoogleAuthUrl(null, { desktop, newUser: true, next, pendingKeyDigest, include })
       : await getGoogleAuthUrl(userId, { desktop, next, include });
   } catch (err) {
+    authPopup?.close();
     // Surface the structured server code (e.g. NO_GOOGLE_CLIENT_CONFIGURED)
     // so callers can route to the right setup card instead of just
     // showing a generic error message.
@@ -102,6 +140,7 @@ export async function startGoogleSignIn({ userId = null, newUser = false, next =
     };
   }
   if (!data?.url) {
+    authPopup?.close();
     return { status: 'error', error: 'No authorize URL returned.' };
   }
 
@@ -119,6 +158,18 @@ export async function startGoogleSignIn({ userId = null, newUser = false, next =
     return { status: 'polling' };
   }
 
+  if (pendingKey && authPopup) {
+    try {
+      authPopup.location.replace(data.url);
+    } catch {
+      authPopup.close();
+      return { status: 'error', error: 'Could not open the Google sign-in page.' };
+    }
+    pollUntilPendingResolved(pendingKey, onComplete, authPopup);
+    return { status: 'polling' };
+  }
+
+  // Existing-user browser flows retain their established full-page redirect.
   window.location.href = data.url;
   return { status: 'redirecting' };
 }
@@ -164,7 +215,7 @@ function pollUntilConnected(userId, onComplete) {
   _activePollHandle = handle;
 }
 
-function pollUntilPendingResolved(pendingKey, onComplete) {
+function pollUntilPendingResolved(pendingKey, onComplete, authPopup = null) {
   if (_activePollHandle !== null) {
     clearInterval(_activePollHandle);
     _activePollHandle = null;
@@ -180,6 +231,7 @@ function pollUntilPendingResolved(pendingKey, onComplete) {
     pollCount++;
     if (pollCount >= maxPolls) {
       stop();
+      authPopup?.close();
       onComplete({ connected: false });
       return;
     }
@@ -187,11 +239,17 @@ function pollUntilPendingResolved(pendingKey, onComplete) {
       const result = await fetchPendingSignin(pendingKey);
       if (result && result.connected) {
         stop();
+        // Close the browser holding window before handing control back to the
+        // caller. The callback page is intentionally passive, so the original
+        // authenticated page owns both completion and popup lifecycle.
+        authPopup?.close();
         // The pending endpoint mints a session in-process and returns
         // the token — the wizard becomes that user without ever having
         // to call the unauthenticated `POST /api/sessions` shim. The
-        // pendingKey IS the credential; consume-on-read makes it
-        // one-shot.
+        // pendingKey IS a short-lived credential. It travels only in the POST
+        // body; request targets, OAuth state, logs, and SQL use its digest. The server retains its
+        // handoff only for the five-minute retry window so a lost success
+        // response returns the same session rather than minting another one.
         onComplete({
           connected: true,
           sessionToken: typeof result.sessionToken === 'string' ? result.sessionToken : null,

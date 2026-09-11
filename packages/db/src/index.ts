@@ -36,6 +36,19 @@ export {
   type DemoGuardResult,
 } from './seeds/demo-guard.js';
 
+export {
+  assertPackagedSampleSafe,
+  provisionPackagedSample,
+  provisionPackagedSampleWithClient,
+  ingestPackagedSampleSignals,
+  markPackagedSampleReady,
+  markPackagedSampleReadyWithClient,
+  type PackagedSampleEnvironment,
+  type PackagedSampleGuardResult,
+  type PackagedSampleProvisionResult,
+  type PackagedSampleIngestResult,
+} from './seeds/packaged-sample.js';
+
 // Row types
 export type {
   OAuthTokenRowWithEncrypted,
@@ -119,6 +132,7 @@ export {
   oauthRepository,
   oauthPkcePendingRepository,
   oauthPendingSigninRepository,
+  PendingSigninCollisionError,
   approvalRepository,
   patternRepository,
   executionRepository,
@@ -144,7 +158,6 @@ export type {
 } from './repositories/index.js';
 export type {
   RememberPendingSigninInput,
-  ConsumedPendingSignin,
 } from './repositories/index.js';
 export type {
   CreateExecutionPlanInput,

@@ -1,21 +1,18 @@
 import { query } from '../connection.js';
+import type { PoolClient } from 'pg';
 
 /**
- * Pending-completion handoff for desktop new-user OAuth flows
- * (`oauth_pending_signin`, migration 059). The desktop wizard
- * generates a UUID before opening the system browser; /callback
- * writes the resulting userId here; the wizard polls `consume()` and
- * advances on hit.
+ * Pending-completion handoff for new-user OAuth flows. `pending_key` is a
+ * legacy column name: it stores only the domain-separated SHA-256 digest of
+ * the client-held capability, never the capability itself.
  *
- * Semantics mirror `oauth-pkce-pending-repository`:
- *   - `remember()` upserts on pending_key. A re-issued key (same
- *     wizard click, different OAuth round-trip) overwrites.
- *   - `consume()` is DELETE...RETURNING so a leaked key can only be
- *     redeemed once.
- *   - `sweepExpired()` called best-effort on every remember().
+ * Rows are immutable and insert-only. A digest collision is a typed failure;
+ * it must never transfer an OAuth result or an already-bound session to a
+ * different callback. Redemption retains the row for its bounded TTL so a
+ * lost success response returns the same session identity.
  */
 export interface RememberPendingSigninInput {
-  pendingKey: string;
+  pendingKeyDigest: string;
   userId: string;
   accountEmail: string;
   scopes: string[];
@@ -23,86 +20,46 @@ export interface RememberPendingSigninInput {
   expiresAt: Date;
 }
 
-export interface ConsumedPendingSignin {
-  userId: string;
-  accountEmail: string;
-  scopes: string[];
-  nextHash: string | null;
+const PENDING_KEY_DIGEST_RE = /^[0-9a-f]{64}$/;
+
+export class PendingSigninCollisionError extends Error {
+  readonly code = 'oauth_pending_signin_collision';
+
+  constructor() {
+    super('Pending OAuth handoff already exists');
+    this.name = 'PendingSigninCollisionError';
+  }
 }
 
 export const oauthPendingSigninRepository = {
-  async remember(input: RememberPendingSigninInput): Promise<void> {
-    await query(
-      `INSERT INTO oauth_pending_signin
+  async remember(input: RememberPendingSigninInput, client?: PoolClient): Promise<void> {
+    if (!PENDING_KEY_DIGEST_RE.test(input.pendingKeyDigest)) {
+      throw new TypeError('pendingKeyDigest must be a lowercase SHA-256 digest');
+    }
+    const sql = `INSERT INTO oauth_pending_signin
          (pending_key, user_id, account_email, scopes, next_hash, expires_at)
        VALUES ($1, $2, $3, $4, $5, $6)
-       ON CONFLICT (pending_key) DO UPDATE SET
-         user_id = EXCLUDED.user_id,
-         account_email = EXCLUDED.account_email,
-         scopes = EXCLUDED.scopes,
-         next_hash = EXCLUDED.next_hash,
-         expires_at = EXCLUDED.expires_at`,
-      [
-        input.pendingKey,
-        input.userId,
-        input.accountEmail,
-        JSON.stringify(input.scopes),
-        input.nextHash,
-        input.expiresAt,
-      ],
-    );
-    // Best-effort sweep. The header docstring promises this, and without
-    // it the table grows monotonically as users abandon mid-flight OAuth
-    // (close the consent tab, kill the wizard, hit the 5-min poll
-    // timeout). Sweep failures are logged (not swallowed) so operators
-    // can see if the table is growing because cleanup is broken — empty
-    // catch was the original sin. Called by explicit reference instead
-    // of `this` so a future destructuring caller (`const { remember } = repo`)
-    // doesn't TypeError on `this.sweepExpired`.
-    oauthPendingSigninRepository.sweepExpired().catch((err) => {
-      // eslint-disable-next-line no-console
-      console.warn('[oauth-pending-signin] sweepExpired failed (housekeeping, primary write succeeded):', err);
-    });
-  },
+       ON CONFLICT (pending_key) DO NOTHING
+       RETURNING pending_key`;
+    const params = [
+      input.pendingKeyDigest,
+      input.userId,
+      input.accountEmail,
+      JSON.stringify(input.scopes),
+      input.nextHash,
+      input.expiresAt,
+    ];
+    const result = client
+      ? await client.query<{ pending_key: string }>(sql, params)
+      : await query<{ pending_key: string }>(sql, params);
+    if (!result.rows[0]) throw new PendingSigninCollisionError();
 
-  /**
-   * Consume-on-read. Returns null if the row doesn't exist or has expired
-   * — the desktop wizard treats both the same way (keep polling, or time
-   * out after its own 5-minute window).
-   *
-   * The DELETE's WHERE includes `expires_at >= $now` so an expired row
-   * is NOT deleted on read — `sweepExpired()` is the only path that
-   * removes expired rows, and it runs from /callback's `remember()`.
-   * Without this predicate, a poll that arrives 1ms past the TTL would
-   * destroy the row, and any subsequent legitimate poll from the same
-   * wizard (network jitter, tab discarded then restored) would 404 even
-   * though the OAuth round-trip succeeded.
-   */
-  async consume(
-    pendingKey: string,
-    now: Date = new Date(),
-  ): Promise<ConsumedPendingSignin | null> {
-    const result = await query<{
-      user_id: string;
-      account_email: string;
-      scopes: unknown;
-      next_hash: string | null;
-      expires_at: Date;
-    }>(
-      `DELETE FROM oauth_pending_signin
-        WHERE pending_key = $1
-          AND expires_at >= $2
-       RETURNING user_id, account_email, scopes, next_hash, expires_at`,
-      [pendingKey, now],
-    );
-    const row = result.rows[0];
-    if (!row) return null;
-    return {
-      userId: row.user_id,
-      accountEmail: row.account_email,
-      scopes: Array.isArray(row.scopes) ? (row.scopes as string[]) : [],
-      nextHash: row.next_hash,
-    };
+    if (client) return;
+    oauthPendingSigninRepository.sweepExpired().catch(() => {
+      // Stable text only: database errors may include bound values.
+      // eslint-disable-next-line no-console
+      console.warn('[oauth-pending-signin] expired-row sweep failed');
+    });
   },
 
   async sweepExpired(now: Date = new Date()): Promise<number> {
