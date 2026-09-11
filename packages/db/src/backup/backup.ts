@@ -27,20 +27,32 @@
  */
 
 import { query, withTransaction } from '../connection.js';
-import type { InferenceReceiptV1 } from '@skytwin/shared-types';
-import { twinRepository } from '../repositories/twin-repository.js';
-import { userRepository } from '../repositories/user-repository.js';
+import {
+  joinedDecisionReceiptArtifactDigest,
+  joinedDecisionReceiptContentDigest,
+  joinedDecisionReceiptRevisionDigest,
+  isDecisionReceiptEventKey,
+  preservesJoinedDecisionReceiptLinks,
+  normalizeDecisionReceiptSequence,
+  verifyJoinedDecisionReceiptChain,
+  type InferenceReceiptV1,
+} from '@skytwin/shared-types';
 import type {
   CandidateActionRow,
   DecisionOutcomeRow,
   DecisionRow,
+  DecisionReceiptRevisionRow,
+  DecisionReceiptRow,
   ExplanationRecordRow,
+  ExecutionPlanRow,
   InferenceReceiptRow,
   PreferenceRow,
   TwinProfileRow,
   TwinProfileVersionRow,
   UserRow,
 } from '../types.js';
+import type { PoolClient } from 'pg';
+import { decisionReceiptRowArtifactV1 } from '../repositories/decision-receipt-artifacts.js';
 
 /** Bumped when the JSON shape changes in a non-back-compatible way. */
 export const BACKUP_SCHEMA_VERSION = 1;
@@ -51,8 +63,15 @@ export interface DecisionBundle {
   candidateActions: CandidateActionRow[];
   outcome: DecisionOutcomeRow | null;
   explanations: ExplanationRecordRow[];
+  /** Sanitized plan metadata needed by decision_outcomes.execution_plan_id. */
+  executionPlans?: ExecutionPlanRow[];
   /** Optional so schema-v1 backups produced before receipts remain restorable. */
   inferenceReceipts?: InferenceReceiptRow[];
+  /** Optional so backups created before migration 081 remain restorable. */
+  joinedReceipt?: {
+    root: DecisionReceiptRow;
+    revisions: DecisionReceiptRevisionRow[];
+  };
 }
 
 /** The full exported payload for one user. */
@@ -69,7 +88,7 @@ export interface BackupData {
 
 export type CollectBackupResult =
   | { success: true; data: BackupData }
-  | { success: false; reason: 'user_not_found'; message: string };
+  | { success: false; reason: 'user_not_found' | 'inconsistent_snapshot'; message: string };
 
 export interface RestoreSummary {
   /** Per-table inserted-row counts. */
@@ -95,21 +114,22 @@ const DECISION_PAGE_SIZE = 500;
  * expected outcome for `skytwin-backup export --user <stale-id>`.
  */
 export async function collectBackup(userId: string): Promise<CollectBackupResult> {
-  const user = await userRepository.findById(userId);
-  if (!user) {
-    return {
-      success: false,
-      reason: 'user_not_found',
-      message: `no user with id ${userId}`,
-    };
-  }
+  return withTransaction(async (client) => {
+    const user = (await client.query<UserRow>('SELECT * FROM users WHERE id = $1', [userId])).rows[0];
+    if (!user) {
+      return {
+        success: false as const,
+        reason: 'user_not_found' as const,
+        message: `no user with id ${userId}`,
+      };
+    }
 
-  const twinProfile = await twinRepository.getProfile(userId);
-  // getProfileHistory caps at `limit`; pull the full history explicitly so a
-  // backup never silently drops old versions.
-  const twinProfileVersions = twinProfile
-    ? (
-        await query<TwinProfileVersionRow>(
+    const twinProfile = (await client.query<TwinProfileRow>(
+      'SELECT * FROM twin_profiles WHERE user_id = $1', [userId],
+    )).rows[0] ?? null;
+    const twinProfileVersions = twinProfile
+      ? (
+        await client.query<TwinProfileVersionRow>(
           `SELECT * FROM twin_profile_versions
             WHERE profile_id = $1
             ORDER BY version ASC`,
@@ -118,18 +138,16 @@ export async function collectBackup(userId: string): Promise<CollectBackupResult
       ).rows
     : [];
 
-  const preferences = (
-    await query<PreferenceRow>(
+    const preferences = (
+    await client.query<PreferenceRow>(
       'SELECT * FROM preferences WHERE user_id = $1 ORDER BY created_at ASC',
       [userId],
     )
   ).rows;
 
-  const decisions = await collectDecisions(userId);
+    const decisions = await collectDecisions(client, userId);
 
-  return {
-    success: true,
-    data: {
+    const data: BackupData = {
       schemaVersion: BACKUP_SCHEMA_VERSION,
       exportedAt: new Date().toISOString(),
       user,
@@ -137,18 +155,27 @@ export async function collectBackup(userId: string): Promise<CollectBackupResult
       twinProfileVersions,
       preferences,
       decisions,
-    },
-  };
+    };
+    const problems = validateBackupData(data);
+    if (problems.length > 0) {
+      return {
+        success: false as const,
+        reason: 'inconsistent_snapshot' as const,
+        message: `backup snapshot failed validation: ${problems.join('; ')}`,
+      };
+    }
+    return { success: true as const, data };
+  });
 }
 
-async function collectDecisions(userId: string): Promise<DecisionBundle[]> {
+async function collectDecisions(client: PoolClient, userId: string): Promise<DecisionBundle[]> {
   // Walk decisions in pages by created_at so a user with a long history
   // doesn't pull an unbounded result set into one query.
   const allDecisions: DecisionRow[] = [];
   let offset = 0;
   for (;;) {
     const page = (
-      await query<DecisionRow>(
+      await client.query<DecisionRow>(
         `SELECT * FROM decisions
           WHERE user_id = $1
           ORDER BY created_at ASC, id ASC
@@ -165,22 +192,38 @@ async function collectDecisions(userId: string): Promise<DecisionBundle[]> {
 
   const decisionIds = allDecisions.map((d) => d.id);
 
-  const actions = await query<CandidateActionRow>(
+  const actions = await client.query<CandidateActionRow>(
     'SELECT * FROM candidate_actions WHERE decision_id = ANY($1) ORDER BY created_at ASC',
     [decisionIds],
   );
-  const outcomes = await query<DecisionOutcomeRow>(
+  const outcomes = await client.query<DecisionOutcomeRow>(
     'SELECT * FROM decision_outcomes WHERE decision_id = ANY($1)',
     [decisionIds],
   );
-  const explanations = await query<ExplanationRecordRow>(
+  const explanations = await client.query<ExplanationRecordRow>(
     'SELECT * FROM explanation_records WHERE decision_id = ANY($1) ORDER BY created_at ASC',
     [decisionIds],
   );
-  const receipts = await query<InferenceReceiptRow>(
+  const executionPlans = await client.query<ExecutionPlanRow>(
+    `SELECT id, decision_id, action_id, status, '[]'::JSONB AS steps, created_at, updated_at
+       FROM execution_plans WHERE decision_id = ANY($1) ORDER BY created_at ASC`,
+    [decisionIds],
+  );
+  const receipts = await client.query<InferenceReceiptRow>(
     'SELECT * FROM inference_receipts WHERE decision_id = ANY($1) ORDER BY created_at ASC',
     [decisionIds],
   );
+  const joinedRoots = await client.query<DecisionReceiptRow>(
+    'SELECT * FROM decision_receipts WHERE decision_id = ANY($1) ORDER BY created_at ASC',
+    [decisionIds],
+  );
+  const joinedRevisions = joinedRoots.rows.length === 0
+    ? { rows: [] as DecisionReceiptRevisionRow[] }
+    : await client.query<DecisionReceiptRevisionRow>(
+        `SELECT * FROM decision_receipt_revisions
+          WHERE receipt_id = ANY($1) ORDER BY receipt_id ASC, sequence ASC`,
+        [joinedRoots.rows.map((root) => root.id)],
+      );
 
   const actionsByDecision = groupBy<CandidateActionRow, string>(
     actions.rows,
@@ -194,16 +237,32 @@ async function collectDecisions(userId: string): Promise<DecisionBundle[]> {
     receipts.rows,
     (r) => r.decision_id,
   );
+  const plansByDecision = groupBy<ExecutionPlanRow, string>(executionPlans.rows, (row) => row.decision_id);
+  const joinedRootByDecision = new Map(joinedRoots.rows.map((root) => [root.decision_id, root]));
+  const joinedRevisionsByRoot = groupBy<DecisionReceiptRevisionRow, string>(
+    joinedRevisions.rows,
+    (revision) => revision.receipt_id,
+  );
   const outcomeByDecision = new Map<string, DecisionOutcomeRow>();
   for (const o of outcomes.rows) outcomeByDecision.set(o.decision_id, o);
 
-  return allDecisions.map((decision) => ({
-    decision,
-    candidateActions: actionsByDecision.get(decision.id) ?? [],
-    outcome: outcomeByDecision.get(decision.id) ?? null,
-    explanations: explanationsByDecision.get(decision.id) ?? [],
-    inferenceReceipts: receiptsByDecision.get(decision.id) ?? [],
-  }));
+  return allDecisions.map((decision) => {
+    const joinedRoot = joinedRootByDecision.get(decision.id);
+    return {
+      decision,
+      candidateActions: actionsByDecision.get(decision.id) ?? [],
+      outcome: outcomeByDecision.get(decision.id) ?? null,
+      explanations: explanationsByDecision.get(decision.id) ?? [],
+      executionPlans: plansByDecision.get(decision.id) ?? [],
+      inferenceReceipts: receiptsByDecision.get(decision.id) ?? [],
+      ...(joinedRoot ? {
+        joinedReceipt: {
+          root: joinedRoot,
+          revisions: joinedRevisionsByRoot.get(joinedRoot.id) ?? [],
+        },
+      } : {}),
+    };
+  });
 }
 
 function groupBy<T, K>(rows: T[], keyOf: (row: T) => K): Map<K, T[]> {
@@ -224,6 +283,7 @@ function groupBy<T, K>(rows: T[], keyOf: (row: T) => K): Map<K, T[]> {
  * empty means it passed.
  */
 export function validateBackupData(value: unknown): string[] {
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
   const problems: string[] = [];
   if (typeof value !== 'object' || value === null) {
     return ['payload is not an object'];
@@ -238,6 +298,7 @@ export function validateBackupData(value: unknown): string[] {
   if (!Array.isArray(data.preferences)) problems.push('preferences is not an array');
   if (!Array.isArray(data.decisions)) problems.push('decisions is not an array');
   else {
+    const archiveCandidateIds = new Set<string>();
     for (const [index, bundle] of data.decisions.entries()) {
       if (!bundle || typeof bundle !== 'object' || !bundle.decision || typeof bundle.decision.id !== 'string') {
         problems.push(`decisions[${index}] is malformed`);
@@ -251,6 +312,41 @@ export function validateBackupData(value: unknown): string[] {
       }
       if (!Array.isArray(bundle.explanations)) {
         problems.push(`decisions[${index}].explanations is not an array`);
+      }
+      if (bundle.executionPlans !== undefined && !Array.isArray(bundle.executionPlans)) {
+        problems.push(`decisions[${index}].executionPlans is not an array`);
+      }
+      const plans = Array.isArray(bundle.executionPlans) ? bundle.executionPlans : [];
+      const planIds = new Set(plans.map((plan) => plan && typeof plan === 'object' ? plan.id : undefined));
+      const candidateRows = Array.isArray(bundle.candidateActions) ? bundle.candidateActions : [];
+      const candidateIds = new Set(candidateRows
+        .filter((action) => action && typeof action === 'object')
+        .map((action) => action.id));
+      if (candidateRows.some((action) => !action || typeof action !== 'object' ||
+          !uuid.test(action.id) || action.decision_id !== bundle.decision.id ||
+          archiveCandidateIds.has(action.id)) || candidateIds.size !== candidateRows.length) {
+        problems.push(`decisions[${index}] has inconsistent candidate linkage`);
+      }
+      for (const action of candidateRows) {
+        if (action && typeof action === 'object' && typeof action.id === 'string') {
+          archiveCandidateIds.add(action.id);
+        }
+      }
+      if (plans.some((plan) => !plan || typeof plan !== 'object' ||
+          !uuid.test(plan.id) || plan.decision_id !== bundle.decision.id ||
+          !Array.isArray(plan.steps) || plan.steps.length !== 0 ||
+          (plan.action_id !== null && !candidateIds.has(plan.action_id))) ||
+          planIds.size !== plans.length ||
+          (bundle.outcome?.execution_plan_id && !planIds.has(bundle.outcome.execution_plan_id))) {
+        problems.push(`decisions[${index}] has inconsistent execution linkage`);
+      }
+      if (bundle.outcome !== null && (!bundle.outcome || typeof bundle.outcome !== 'object' ||
+          !uuid.test(bundle.outcome.id) || bundle.outcome.decision_id !== bundle.decision.id ||
+          (bundle.outcome.selected_action_id !== null &&
+            !candidateIds.has(bundle.outcome.selected_action_id)) ||
+          (bundle.outcome.execution_plan_id !== null &&
+            !planIds.has(bundle.outcome.execution_plan_id)))) {
+        problems.push(`decisions[${index}] has inconsistent outcome linkage`);
       }
       if (bundle.inferenceReceipts !== undefined && !Array.isArray(bundle.inferenceReceipts)) {
         problems.push(`decisions[${index}].inferenceReceipts is not an array`);
@@ -272,6 +368,152 @@ export function validateBackupData(value: unknown): string[] {
             signed.status !== receipt.status) {
           problems.push(`decisions[${index}].inferenceReceipts[${receiptIndex}] has inconsistent linkage`);
         }
+      }
+      if (bundle.joinedReceipt !== undefined) {
+        if (!bundle.joinedReceipt || typeof bundle.joinedReceipt !== 'object' ||
+            !bundle.joinedReceipt.root || typeof bundle.joinedReceipt.root !== 'object' ||
+            !Array.isArray(bundle.joinedReceipt.revisions) ||
+            bundle.joinedReceipt.revisions.length === 0) {
+          problems.push(`decisions[${index}].joinedReceipt is malformed`);
+          continue;
+        }
+        const { root, revisions } = bundle.joinedReceipt;
+        if (!uuid.test(root.id) || root.user_id !== data.user?.id ||
+            root.decision_id !== bundle.decision.id) {
+          problems.push(`decisions[${index}].joinedReceipt.root has inconsistent ownership`);
+        }
+        if (!verifyJoinedDecisionReceiptChain({
+          receiptId: root.id,
+          decisionId: bundle.decision.id,
+          userId: String(data.user?.id),
+          revisions,
+        })) {
+          problems.push(`decisions[${index}].joinedReceipt failed chain verification`);
+        }
+        const eventKeys = new Set<string>();
+        const priorRevisionDigests = new Map<string, string>();
+        const candidateById = new Map(candidateRows
+          .filter((row) => row && typeof row === 'object')
+          .map((row) => [row.id, row]));
+        const explanationById = new Map(explanations.map((row) => [row.id, row]));
+        const inferenceById = new Map(receipts.map((row) => [row.id, row]));
+        const planById = new Map(plans.map((row) => [row.id, row]));
+        const decisionHash = joinedDecisionReceiptArtifactDigest(
+          'decision', decisionReceiptRowArtifactV1(
+            'decision', bundle.decision as unknown as Record<string, unknown>,
+          ),
+        );
+        let priorDigest: string | null = null;
+        let priorContent: DecisionReceiptRevisionRow['content'] | null = null;
+        for (const [revisionIndex, revision] of revisions.entries()) {
+          if (!revision || typeof revision !== 'object' ||
+              !uuid.test(revision.id) || !uuid.test(revision.receipt_id) ||
+              !revision.content || typeof revision.content !== 'object') {
+            problems.push(`decisions[${index}].joinedReceipt.revisions[${revisionIndex}] is malformed`);
+            continue;
+          }
+          let computed = '';
+          let computedRevision = '';
+          const sequence = normalizeDecisionReceiptSequence(revision.sequence);
+          try {
+            if (sequence === null) throw new TypeError('invalid receipt sequence');
+            computed = joinedDecisionReceiptContentDigest(revision.content);
+            computedRevision = joinedDecisionReceiptRevisionDigest({
+              revisionId: revision.id,
+              receiptId: root.id,
+              decisionId: bundle.decision.id,
+              userId: String(data.user?.id),
+              sequence,
+              eventKey: revision.event_key,
+              previousDigest: priorDigest,
+              contentDigest: computed,
+            });
+          } catch {
+            problems.push(`decisions[${index}].joinedReceipt.revisions[${revisionIndex}] has invalid content`);
+          }
+          const correctionId = revision.content?.correctionOfRevision?.id;
+          if (revision.receipt_id !== root.id || sequence !== revisionIndex + 1 ||
+              revision.previous_digest !== priorDigest || revision.content_digest !== computed ||
+              revision.revision_digest !== computedRevision ||
+              revision.content?.decision?.id !== bundle.decision.id ||
+              revision.content?.decision?.canonicalHash !== decisionHash ||
+              (revisionIndex === 0 && revision.content.stage !== 'decision_recorded') ||
+              (priorContent !== null && !preservesJoinedDecisionReceiptLinks(priorContent, revision.content)) ||
+              !isDecisionReceiptEventKey(revision.event_key) || eventKeys.has(revision.event_key) ||
+              typeof revision.trusted !== 'boolean' ||
+              revision.stage !== revision.content?.stage ||
+              revision.disposition !== revision.content?.disposition ||
+              revision.candidate_action_id !== (revision.content?.candidateAction?.id ?? null) ||
+              revision.barrier_id !== (revision.content?.barrier?.id ?? null) ||
+              revision.explanation_id !== (revision.content?.explanation?.id ?? null) ||
+              revision.approval_request_id !== (revision.content?.approvalRequest?.id ?? null) ||
+              revision.execution_plan_id !== (revision.content?.executionPlan?.id ?? null) ||
+              revision.execution_result_id !== (revision.content?.executionResult?.id ?? null) ||
+              revision.execution_disposition !== (revision.content?.executionDisposition ?? null) ||
+              revision.correction_of_revision_id !== (correctionId ?? null) ||
+              (correctionId !== undefined &&
+                priorRevisionDigests.get(correctionId) !== revision.content.correctionOfRevision?.canonicalHash)) {
+            problems.push(`decisions[${index}].joinedReceipt.revisions[${revisionIndex}] has inconsistent chain`);
+          }
+          eventKeys.add(revision.event_key);
+          priorRevisionDigests.set(revision.id, revision.revision_digest);
+          priorDigest = revision.revision_digest;
+          priorContent = revision.content;
+        }
+        const tail = revisions[revisions.length - 1]?.content;
+        if (tail?.candidateAction) {
+          const row = candidateById.get(tail.candidateAction.id);
+          if (!row || joinedDecisionReceiptArtifactDigest(
+            'candidate_action', decisionReceiptRowArtifactV1(
+              'candidate_action', row as unknown as Record<string, unknown>,
+            ),
+          ) !== tail.candidateAction.canonicalHash) {
+            problems.push(`decisions[${index}].joinedReceipt has inconsistent candidate snapshot`);
+          }
+        }
+        for (const evaluation of tail?.policyEvaluations ?? []) {
+          const row = explanationById.get(evaluation.explanation.id);
+          if (!row || joinedDecisionReceiptArtifactDigest(
+            'explanation', decisionReceiptRowArtifactV1(
+              'explanation', row as unknown as Record<string, unknown>,
+            ),
+          ) !== evaluation.explanation.canonicalHash) {
+            problems.push(`decisions[${index}].joinedReceipt has inconsistent explanation snapshot`);
+            break;
+          }
+        }
+        for (const ref of tail?.inference.receipts ?? []) {
+          const row = inferenceById.get(ref.id);
+          // User-deleted inference bytes are intentionally absent; the joined
+          // chain retains their commitment. Any row still present must match.
+          if (row && joinedDecisionReceiptArtifactDigest('inference_receipt', row.receipt) !== ref.canonicalHash) {
+            problems.push(`decisions[${index}].joinedReceipt has inconsistent inference snapshot`);
+            break;
+          }
+        }
+        if (tail?.executionPlan) {
+          const row = planById.get(tail.executionPlan.id);
+          const planSnapshot = row ? {
+            version: 1 as const,
+            status: row.status,
+            decisionId: row.decision_id,
+            candidateActionId: row.action_id,
+            createdAt: new Date(row.created_at).toISOString(),
+            updatedAt: new Date(row.updated_at).toISOString(),
+          } : null;
+          if (!planSnapshot || joinedDecisionReceiptArtifactDigest(
+            'execution_plan', planSnapshot,
+          ) !== tail.executionPlan.canonicalHash) {
+            problems.push(`decisions[${index}].joinedReceipt has inconsistent execution-plan snapshot`);
+          }
+        }
+        // Barrier, approval, result, feedback, and preference-history source
+        // rows are intentionally absent from the portable archive. The first
+        // four retain allowlisted immutable snapshots/digests; preference
+        // history additionally commits to old/new value hashes without
+        // exporting those values. Restored revisions remain permanently
+        // untrusted, integrity-only historical archive entries; this format
+        // has no promotion or source-revalidation path.
       }
     }
   }
@@ -311,21 +553,16 @@ export async function restoreBackup(value: unknown): Promise<RestoreBackupResult
     };
   }
 
-  const existing = await userRepository.findById(data.user.id);
-  if (existing) {
-    return {
-      success: false,
-      reason: 'user_exists',
-      message: `user ${data.user.id} already exists; restore targets a fresh install — purge the user first`,
+  for (let attempt = 0; ; attempt += 1) {
+    const counts: Record<string, number> = {};
+    const bump = (table: string, n = 1): void => {
+      counts[table] = (counts[table] ?? 0) + n;
     };
-  }
-
-  const counts: Record<string, number> = {};
-  const bump = (table: string, n = 1): void => {
-    counts[table] = (counts[table] ?? 0) + n;
-  };
-
-  await withTransaction(async (client) => {
+    let restored: boolean;
+    try {
+      restored = await withTransaction(async (client) => {
+        const existing = await client.query('SELECT id FROM users WHERE id = $1 FOR UPDATE', [data.user.id]);
+        if (existing.rows[0]) return false;
     const u = data.user;
     await client.query(
       `INSERT INTO users (id, email, name, trust_tier, autonomy_settings, ironclaw_channel, created_at, updated_at)
@@ -502,6 +739,16 @@ export async function restoreBackup(value: unknown): Promise<RestoreBackupResult
         bump('inference_receipts');
       }
 
+      for (const plan of bundle.executionPlans ?? []) {
+        await client.query(
+          `INSERT INTO execution_plans
+             (id, decision_id, action_id, status, steps, created_at, updated_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+          [plan.id, plan.decision_id, plan.action_id, plan.status,
+            JSON.stringify(plan.steps ?? []), plan.created_at, plan.updated_at],
+        );
+        bump('execution_plans');
+      }
       // Outcome FKs the (optional) selected candidate action, so it must be
       // inserted after the actions above.
       if (bundle.outcome) {
@@ -528,9 +775,69 @@ export async function restoreBackup(value: unknown): Promise<RestoreBackupResult
         );
         bump('decision_outcomes');
       }
-    }
-  });
 
-  const total = Object.values(counts).reduce((sum, n) => sum + n, 0);
-  return { success: true, summary: { counts, total } };
+      if (bundle.joinedReceipt) {
+        const { root, revisions } = bundle.joinedReceipt;
+        await client.query(
+          `INSERT INTO decision_receipts (id, user_id, decision_id, created_at)
+           VALUES ($1, $2, $3, $4)`,
+          [root.id, root.user_id, root.decision_id, root.created_at],
+        );
+        bump('decision_receipts');
+        for (const revision of revisions) {
+          await client.query(
+            `INSERT INTO decision_receipt_revisions (
+               id, receipt_id, sequence, event_key, previous_digest, content_digest,
+               revision_digest, stage, disposition, content, trusted, candidate_action_id, barrier_id,
+               explanation_id, approval_request_id, execution_plan_id,
+               execution_result_id, execution_disposition, correction_of_revision_id, created_at
+             ) VALUES (
+               $1,$2,$3,$4,$5,$6,$7,$8,$9,$10::JSONB,false,$11,$12,$13,$14,$15,$16,$17,$18,$19
+             )`,
+            [revision.id, revision.receipt_id,
+              normalizeDecisionReceiptSequence(revision.sequence)!, revision.event_key,
+              revision.previous_digest, revision.content_digest, revision.revision_digest,
+              revision.stage, revision.disposition, JSON.stringify(revision.content),
+              revision.candidate_action_id, revision.barrier_id,
+              revision.explanation_id, revision.approval_request_id,
+              revision.execution_plan_id, revision.execution_result_id,
+              revision.execution_disposition, revision.correction_of_revision_id,
+              revision.created_at],
+          );
+          bump('decision_receipt_revisions');
+        }
+      }
+    }
+        return true;
+      });
+    } catch (error) {
+      const code = typeof error === 'object' && error !== null && 'code' in error
+        ? (error as { code?: unknown }).code : undefined;
+      if (code === '40001' && attempt < 2) continue;
+      if (code !== '23505') throw error;
+
+      // A unique violation is `user_exists` only when the conflicting primary
+      // key is now demonstrably the archive owner. Email or nested-artifact
+      // collisions are malformed/incompatible backup data, not proof that the
+      // requested user already existed.
+      const sameId = await query('SELECT id FROM users WHERE id = $1', [data.user.id]);
+      if (!sameId.rows[0]) {
+        return {
+          success: false,
+          reason: 'invalid_data',
+          message: 'backup restore encountered a conflicting unique artifact',
+        };
+      }
+      restored = false;
+    }
+    if (!restored) {
+      return {
+        success: false,
+        reason: 'user_exists',
+        message: `user ${data.user.id} already exists; restore targets a fresh install — purge the user first`,
+      };
+    }
+    const total = Object.values(counts).reduce((sum, n) => sum + n, 0);
+    return { success: true, summary: { counts, total } };
+  }
 }

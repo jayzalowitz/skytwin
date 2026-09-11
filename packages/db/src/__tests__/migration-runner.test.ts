@@ -55,6 +55,16 @@ describe('splitSqlStatements', () => {
 });
 
 describe('stacked migration reservations', () => {
+  it('drops inference completion before receipt rows during initial rollback', () => {
+    const source = readFileSync(fileURLToPath(new URL('../migrations/001-initial.ts', import.meta.url)), 'utf8');
+    const completion = source.indexOf("'inference_receipt_completions'");
+    const receipts = source.indexOf("'inference_receipts'");
+    const explanations = source.indexOf("'explanation_records'");
+    expect(completion).toBeGreaterThan(-1);
+    expect(receipts).toBeGreaterThan(completion);
+    expect(explanations).toBeGreaterThan(receipts);
+  });
+
   it('keeps reserved ordinals unique and places pre-effect barriers after the active stack', () => {
     const migrationDir = fileURLToPath(new URL('../migrations/', import.meta.url));
     const names = readdirSync(migrationDir);

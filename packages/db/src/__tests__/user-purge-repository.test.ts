@@ -69,6 +69,7 @@ describe('userPurgeRepository.purgeUser', () => {
       candidate_actions: 11,
       twin_profile_versions: 1,
       knowledge_triples: 0,
+      preference_history: 2,
       users: 1,
     });
 
@@ -79,7 +80,8 @@ describe('userPurgeRepository.purgeUser', () => {
     expect(result.counts['candidate_actions']).toBe(11);
     expect(result.counts['users']).toBe(1);
     // Total sums every table's count (including the user row itself).
-    expect(result.total).toBe(3 + 5 + 2 + 7 + 4 + 11 + 1 + 0 + 1);
+    expect(result.counts['preference_history']).toBe(2);
+    expect(result.total).toBe(3 + 5 + 2 + 7 + 4 + 11 + 1 + 0 + 2 + 1);
   });
 
   it('returns userExisted=false when the final DELETE FROM users hit zero rows', async () => {
@@ -120,6 +122,9 @@ describe('userPurgeRepository.purgeUser', () => {
       indexOf('DELETE FROM execution_plans'),
     );
     expect(indexOf('DELETE FROM twin_profile_versions')).toBeLessThan(
+      indexOf('DELETE FROM users'),
+    );
+    expect(indexOf('DELETE FROM preference_history')).toBeLessThan(
       indexOf('DELETE FROM users'),
     );
   });

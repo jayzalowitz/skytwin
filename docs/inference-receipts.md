@@ -106,8 +106,9 @@ application-level encrypted; operators should use full-disk encryption, as
 documented in the privacy policy. They cascade-delete with their decision or
 user and can be explicitly deleted atomically through the authenticated decision receipt
 route. User backups include the canonical receipt metadata and restores keep it
-linked to the restored explanation, but restored rows are explicitly marked
-`imported_unverified` until a trust-aware verification process promotes them.
+linked to the restored explanation. Restored inference and joined decision
+receipt rows remain untrusted, integrity-only historical metadata. No import
+promotion or source-revalidation path is implemented.
 Standalone verification exports are more
 sensitive because they contain the exact supplied request and response bytes;
 users should protect or delete those files according to their own retention

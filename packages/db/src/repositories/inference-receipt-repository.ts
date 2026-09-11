@@ -29,18 +29,32 @@ export const inferenceReceiptRepository = {
       verifyAttestation: input.verifyAttestation,
     });
     if (!verification.valid || !verification.trusted) return null;
-    const result = await query<InferenceReceiptRow>(
-      `INSERT INTO inference_receipts (id, version, decision_id, explanation_id, status, receipt, trusted)
-       SELECT $2, $3, d.id, er.id, $6, $7::JSONB, true
-       FROM decisions d
-       JOIN explanation_records er ON er.decision_id = d.id
-       WHERE d.user_id = $1 AND d.id = $4 AND er.id = $5
-         AND $1 = $8 AND $4 = $9 AND $5 = $10
-       RETURNING *`,
-      [userId, receipt.id, receipt.version, receipt.decisionId, receipt.explanationId,
-        receipt.status, JSON.stringify(receipt), receipt.userId, receipt.decisionId, receipt.explanationId],
-    );
-    return result.rows[0] ?? null;
+    return withTransaction(async (client) => {
+      // Serialize single-call writes with completion. Once the completion row
+      // is committed, the inference set for this decision is immutable.
+      const ownedDecision = await client.query(
+        'SELECT id FROM decisions WHERE id = $2 AND user_id = $1 FOR UPDATE',
+        [userId, receipt.decisionId],
+      );
+      if (!ownedDecision.rows[0]) return null;
+      const completion = await client.query(
+        'SELECT 1 FROM inference_receipt_completions WHERE decision_id = $1',
+        [receipt.decisionId],
+      );
+      if (completion.rows[0]) return null;
+      const result = await client.query<InferenceReceiptRow>(
+        `INSERT INTO inference_receipts (id, version, decision_id, explanation_id, status, receipt, trusted)
+         SELECT $2, $3, d.id, er.id, $6, $7::JSONB, true
+         FROM decisions d
+         JOIN explanation_records er ON er.decision_id = d.id
+         WHERE d.user_id = $1 AND d.id = $4 AND er.id = $5
+           AND $1 = $8 AND $4 = $9 AND $5 = $10
+         RETURNING *`,
+        [userId, receipt.id, receipt.version, receipt.decisionId, receipt.explanationId,
+          receipt.status, JSON.stringify(receipt), receipt.userId, receipt.decisionId, receipt.explanationId],
+      );
+      return result.rows[0] ?? null;
+    });
   },
 
   /** Persist all calls linked to one explanation atomically, or persist none. */
@@ -66,6 +80,27 @@ export const inferenceReceiptRepository = {
     })) return null;
 
     return withTransaction(async (client) => {
+      const ownedDecision = await client.query(
+        'SELECT id FROM decisions WHERE id = $2 AND user_id = $1 FOR UPDATE',
+        [userId, completion.decisionId],
+      );
+      if (!ownedDecision.rows[0]) return null;
+
+      // Claim completion before inserting any calls. ON CONFLICT DO NOTHING
+      // makes finalization insert-only; throwing rolls back this marker and
+      // every receipt written by the batch.
+      const completed = await client.query(
+        `INSERT INTO inference_receipt_completions (decision_id, explanation_id)
+         SELECT d.id, er.id
+         FROM decisions d
+         JOIN explanation_records er ON er.decision_id = d.id
+         WHERE d.user_id = $1 AND d.id = $2 AND er.id = $3
+         ON CONFLICT (decision_id) DO NOTHING
+         RETURNING decision_id`,
+        [userId, completion.decisionId, completion.explanationId],
+      );
+      if (!completed.rows[0]) throw new Error('Inference receipt set is already finalized or not owned');
+
       const rows: InferenceReceiptRow[] = [];
       for (const { input } of verified) {
         const receipt = input.bundle.receipt;
@@ -83,19 +118,6 @@ export const inferenceReceiptRepository = {
         if (!result.rows[0]) throw new Error('Inference receipt linkage was not persisted');
         rows.push(result.rows[0]);
       }
-      const completed = await client.query(
-        `INSERT INTO inference_receipt_completions (decision_id, explanation_id)
-         SELECT d.id, er.id
-         FROM decisions d
-         JOIN explanation_records er ON er.decision_id = d.id
-         WHERE d.user_id = $1 AND d.id = $2 AND er.id = $3
-         ON CONFLICT (decision_id) DO UPDATE SET
-           explanation_id = EXCLUDED.explanation_id,
-           completed_at = now()
-         RETURNING decision_id`,
-        [userId, completion.decisionId, completion.explanationId],
-      );
-      if (!completed.rows[0]) throw new Error('Inference receipt completion was not persisted');
       return rows;
     });
   },

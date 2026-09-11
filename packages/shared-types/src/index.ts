@@ -149,6 +149,47 @@ export type {
   ReasoningMode,
 } from './reasoning-mode.js';
 
+export {
+  canonicalJoinedDecisionReceiptContent,
+  buildDecisionReceiptEventKey,
+  isDecisionReceiptEventKey,
+  isJoinedDecisionReceiptTransition,
+  preservesJoinedDecisionReceiptLinks,
+  joinedDecisionReceiptArtifactDigest,
+  joinedDecisionReceiptContentDigest,
+  joinedDecisionReceiptRevisionDigest,
+  normalizeDecisionReceiptSequence,
+  verifyJoinedDecisionReceiptChain,
+  validateJoinedDecisionReceiptContent,
+} from './joined-decision-receipt.js';
+export type {
+  DecisionReceiptArtifactRef,
+  DecisionReceiptArtifactKind,
+  DecisionReceiptApprovalRef,
+  DecisionReceiptApprovalSnapshotV1,
+  DecisionReceiptBarrierRef,
+  DecisionReceiptBarrierSnapshotV1,
+  DecisionReceiptDigest,
+  DecisionReceiptEventKey,
+  DecisionReceiptDisposition,
+  DecisionReceiptEvidenceRef,
+  DecisionReceiptExecutionPlanRef,
+  DecisionReceiptExecutionPlanSnapshotV1,
+  DecisionReceiptExecutionResultRef,
+  DecisionReceiptExecutionResultSnapshotV1,
+  DecisionReceiptInferenceSet,
+  DecisionReceiptPolicyRef,
+  DecisionReceiptPolicyEvaluationV1,
+  DecisionReceiptPreferenceHistoryRef,
+  DecisionReceiptPreferenceHistorySnapshotV1,
+  DecisionReceiptCorrectionV1,
+  DecisionReceiptRiskRef,
+  DecisionReceiptStage,
+  JoinedDecisionReceiptContentV1,
+  DecisionReceiptRevisionDigestInput,
+  DecisionReceiptChainRevisionV1,
+} from './joined-decision-receipt.js';
+
 export type {
   ActionPolicy,
   PolicyRule,
