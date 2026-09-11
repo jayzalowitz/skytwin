@@ -34,6 +34,13 @@ All notable changes to SkyTwin will be documented in this file.
   schema now permits at most one receipt per decision, matching the singular
   owner-scoped API.
 
+- **Decision-event inference now produces durable receipt batches before
+  approval or action execution.** Interpretation, candidate-generation, and
+  draft calls share a receipt-aware client; canonical logical request/response
+  hashes and runtime-location metadata are linked to the durable explanation.
+  Hosted cost remains unknown without exact provider billing facts, and the
+  confidential verifier remains deliberately unwired.
+
 ## [Unreleased] — Local encryption boundary
 
 ### Added

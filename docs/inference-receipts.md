@@ -9,25 +9,40 @@ documents. Several identifier and reason fields are free-form strings, however,
 so integrators must not place source content or secrets in them. The contract
 cannot determine whether an arbitrary string contains sensitive content.
 
-This first slice provides the contract, a repository create boundary that
-requires caller-supplied recorder trust roots, owner-scoped read/delete
-repository and API paths, backup/restore support, and a developer/library
-verifier. No production composition root configures recorder keys or calls the
-create boundary yet. Automatic receipt creation, a product export route, and
-the receipt detail UI remain gated on the strict confidential-provider
-integration. Until those land, absence of a receipt must be displayed as
-unavailable and must never be inferred as a privacy outcome. The receipt enum
-names are contract vocabulary, not a currently wired mapping from the Settings
-reasoning selector.
+The decision-event ingest path captures every completed call made through its
+receipt-aware `LlmClient` and persists the resulting batch after the real
+`ExplanationRecord` exists but before approval creation or action execution. A
+decision may have multiple receipts because interpretation, candidate
+generation, and drafting can be separate calls. The metadata API returns the
+latest receipt; the repository and backup format retain the complete set.
+Other application LLM clients, the receipt detail UI, and a product export route
+remain future work. Absence of a receipt must be displayed as unavailable and
+must never be inferred as a privacy outcome.
+
+On-device and conventional calls are classified from their configured runtime
+mode. Hosted costs remain `unknown` until provider usage or billing identifiers
+are available; local runtime cost is exactly zero. The decision-event path does
+not configure a confidential verifier, so it cannot emit or display a trusted
+`verified_confidential` result. That result requires caller-pinned recorder and
+provider roots plus a provider-specific attestation verifier.
+
+For a stable recorder identity, configure `SKYTWIN_RECEIPT_KEY_ID`,
+`SKYTWIN_RECEIPT_PRIVATE_KEY_BASE64`, and
+`SKYTWIN_RECEIPT_PUBLIC_KEY_BASE64` together. With none configured, the API
+creates a process-local Ed25519 identity. Its receipts remain
+integrity-checkable using the embedded key, but the recorder identity is not
+stable across restarts and must not be presented as release-pinned.
 
 ## Independent verification
 
-An export bundle contains the canonical signed receipt plus the exact request,
-response, and (for confidential verification) minimum evidence bytes. The
-product does not create or export this bundle in this slice: the receipt GET
-route cannot be used as verifier input. Integrators and developers
-can construct a bundle against the versioned library contract and run the
-verifier from a built source checkout without starting the API or web UI:
+An export bundle contains the canonical signed receipt plus the canonical
+logical request, response, and (for confidential verification) minimum evidence
+bytes. These are provider-neutral application-boundary values, not HTTP
+payloads, headers, raw response bodies, or transport transcripts. The product
+does not export this bundle in this slice: the receipt GET route cannot be used
+as verifier input. Integrators and developers can construct a bundle against
+the versioned library contract and run the verifier from a built source checkout
+without starting the API or web UI:
 
 ```bash
 pnpm --filter @skytwin/db... build
@@ -90,10 +105,12 @@ canonical receipt metadata; restore verifies its self-contained metadata seal
 and exact linkage before writing it. Because an embedded key is not an identity
 trust root, restored rows are marked `imported_unverified`. This slice has no
 trust-aware promotion workflow, so they remain untrusted after restore.
-Standalone verification bundles are more sensitive because they contain the
-exact supplied request and response bytes. The product does not emit those
-bundles yet; integrators who create them should protect or delete the files
-according to their own retention needs.
+Canonical logical input/output and verification-evidence bytes exist only
+while the route validates and inserts receipt metadata; they are not written to
+the receipt table. Standalone verification bundles are more sensitive because
+they contain the supplied request and response bytes. The product does not
+export those bundles yet; integrators who create them should protect or delete
+the files according to their own retention needs.
 
 ## Security boundary
 

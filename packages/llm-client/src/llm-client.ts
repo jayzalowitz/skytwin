@@ -8,6 +8,9 @@ import type {
   ProviderStreamFn,
   LlmStreamEvent,
   ChatMessage,
+  InferenceTrace,
+  LlmClientOptions,
+  ConfidentialVerificationResult,
 } from './types.js';
 import {
   generate as anthropicGenerate,
@@ -85,6 +88,45 @@ interface ChainEntry {
   circuitBreaker: CircuitBreaker;
 }
 
+const DEFAULT_ENDPOINTS: Record<AIProviderName, string> = {
+  anthropic: 'https://api.anthropic.com',
+  openai: 'https://api.openai.com',
+  google: 'https://generativelanguage.googleapis.com',
+  ollama: 'http://127.0.0.1:11434',
+  embedded: 'local://embedded',
+};
+
+function endpointIdentity(provider: ProviderEntry): string {
+  const raw = provider.baseUrl ?? DEFAULT_ENDPOINTS[provider.name];
+  try {
+    const url = new URL(raw);
+    return `${url.protocol}//${url.host}${url.pathname.replace(/\/$/, '')}`;
+  } catch {
+    return raw;
+  }
+}
+
+function canonicalLogicalInputBytes(
+  prompt: string | ChatMessage[],
+  options: GenerateOptions,
+): Uint8Array {
+  // This is a versioned, provider-neutral logical input representation. It is
+  // not the exact HTTP body: adapters apply defaults and wire translations.
+  return Buffer.from(JSON.stringify({
+    prompt,
+    ...(options.systemPrompt === undefined ? {} : { systemPrompt: options.systemPrompt }),
+    ...(options.temperature === undefined ? {} : { temperature: options.temperature }),
+    ...(options.maxTokens === undefined ? {} : { maxTokens: options.maxTokens }),
+  }), 'utf8');
+}
+
+function modeFor(provider: ProviderEntry): InferenceTrace['reasoningMode'] {
+  if (provider.reasoningMode) return provider.reasoningMode;
+  return provider.name === 'embedded' || provider.name === 'ollama'
+    ? 'on_device'
+    : 'conventional_cloud';
+}
+
 /**
  * Thrown when all providers in the chain have failed or have open circuits.
  */
@@ -105,8 +147,10 @@ export class AllProvidersFailedError extends Error {
  */
 export class LlmClient {
   private readonly chain: ChainEntry[];
+  private readonly options: LlmClientOptions;
 
-  constructor(providers: ProviderEntry[], userId?: string) {
+  constructor(providers: ProviderEntry[], userId?: string, options: LlmClientOptions = {}) {
+    this.options = options;
     const cbOwner = userId ?? 'shared';
     this.chain = providers.map((p) => ({
       provider: p,
@@ -128,6 +172,7 @@ export class LlmClient {
    */
   async generate(prompt: string | ChatMessage[], options: GenerateOptions = {}): Promise<LlmResponse> {
     const attempted: string[] = [];
+    let confidentialFallbackReason: string | undefined;
 
     for (const entry of this.chain) {
       const { provider, generateFn, circuitBreaker } = entry;
@@ -147,6 +192,14 @@ export class LlmClient {
           prompt,
           { ...options, baseUrl: provider.baseUrl },
         );
+        const recorded = await this.recordSuccessfulInference(
+          provider, prompt, options, content, confidentialFallbackReason,
+        );
+        if (!recorded.accepted) {
+          confidentialFallbackReason = recorded.failureReason;
+          circuitBreaker.recordFailure();
+          continue;
+        }
         circuitBreaker.recordSuccess();
 
         return {
@@ -191,6 +244,7 @@ export class LlmClient {
     options: GenerateOptions = {},
   ): AsyncIterable<LlmStreamEvent> {
     const attempted: string[] = [];
+    let confidentialFallbackReason: string | undefined;
 
     for (const entry of this.chain) {
       const { provider, streamFn, circuitBreaker } = entry;
@@ -213,14 +267,33 @@ export class LlmClient {
           { ...options, baseUrl: provider.baseUrl },
         )) {
           if (chunk.length === 0) continue;
-          firstChunkSeen = true;
           collected.push(chunk);
-          yield { type: 'chunk', content: chunk };
+          // Confidential output is buffered until its verifier accepts the
+          // response binding. Streaming it first would disclose unverified
+          // output and make a strict failure impossible to retract.
+          if (modeFor(provider) !== 'verified_confidential') {
+            firstChunkSeen = true;
+            yield { type: 'chunk', content: chunk };
+          }
+        }
+        const content = collected.join('');
+        const recorded = await this.recordSuccessfulInference(
+          provider, prompt, options, content, confidentialFallbackReason,
+        );
+        if (!recorded.accepted) {
+          confidentialFallbackReason = recorded.failureReason;
+          circuitBreaker.recordFailure();
+          continue;
+        }
+        if (modeFor(provider) === 'verified_confidential') {
+          for (const chunk of collected) {
+            if (chunk.length > 0) yield { type: 'chunk', content: chunk };
+          }
         }
         circuitBreaker.recordSuccess();
         yield {
           type: 'done',
-          content: collected.join(''),
+          content,
           provider: provider.name,
           model: provider.model,
           latencyMs: Date.now() - start,
@@ -242,6 +315,82 @@ export class LlmClient {
     }
 
     throw new AllProvidersFailedError(attempted);
+  }
+
+  private async recordSuccessfulInference(
+    provider: ProviderEntry,
+    prompt: string | ChatMessage[],
+    options: GenerateOptions,
+    content: string,
+    fallbackReason?: string,
+  ): Promise<{ accepted: boolean; failureReason?: string }> {
+    const mode = modeFor(provider);
+    const request = canonicalLogicalInputBytes(prompt, options);
+    const response = Buffer.from(content, 'utf8');
+    const endpoint = endpointIdentity(provider);
+    let verification: ConfidentialVerificationResult | undefined;
+
+    if (mode === 'verified_confidential') {
+      try {
+        verification = provider.confidentialVerifier
+          ? await provider.confidentialVerifier.verify({
+              provider: provider.name,
+              model: provider.model,
+              endpointIdentity: endpoint,
+              request,
+              response,
+            })
+          : {
+              outcome: 'verification_unavailable',
+              verifierVersion: 'unconfigured',
+              reason: 'No confidential verifier was configured for this provider.',
+            };
+      } catch (error) {
+        verification = {
+          outcome: 'verification_unavailable',
+          verifierVersion: 'verifier-error',
+          reason: error instanceof Error ? error.message : 'Confidential verifier failed.',
+        };
+      }
+    }
+
+    const status: InferenceTrace['status'] = mode === 'on_device'
+      ? fallbackReason ? 'local_fallback' : 'on_device'
+      : mode === 'conventional_cloud'
+        ? 'conventional'
+        : verification?.outcome ?? 'verification_unavailable';
+
+    const trace: InferenceTrace = {
+      id: crypto.randomUUID(),
+      reasoningMode: mode,
+      status,
+      provider: provider.name,
+      model: provider.model,
+      endpointIdentity: endpoint,
+      request,
+      response,
+      cost: mode === 'on_device'
+        ? { basis: 'exact', currency: 'USD', amountMinor: 0 }
+        : { basis: 'unknown' },
+      createdAt: (this.options.now?.() ?? new Date()).toISOString(),
+      verifierVersion: verification?.verifierVersion ?? 'skytwin-llm-boundary-v1',
+      ...(mode === 'on_device' && fallbackReason ? {
+        fallback: {
+          origin: 'verified_confidential' as const,
+          destination: 'on_device' as const,
+          reason: fallbackReason,
+        },
+      } : {}),
+      ...(verification?.outcome === 'verified' ? { verification } : {}),
+      ...(verification && verification.outcome !== 'verified'
+        ? { verificationFailureReason: verification.reason }
+        : {}),
+    };
+    this.options.onInferenceTrace?.(trace);
+    if (mode !== 'verified_confidential' || verification?.outcome === 'verified') {
+      return { accepted: true };
+    }
+    return { accepted: false, failureReason: verification?.reason ?? 'Confidential verification failed.' };
   }
 
   /**
