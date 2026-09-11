@@ -1,8 +1,10 @@
 import type { ChatMessage, GenerateOptions } from '../types.js';
 import { toMessages } from '../messages.js';
-import { validateBaseUrl } from '../url-validation.js';
-
-const DEFAULT_URL = 'http://localhost:11434';
+import {
+  DEFAULT_OLLAMA_BASE_URL,
+  fetchCustomProviderUrl,
+  type SafeProviderFetch,
+} from '../url-validation.js';
 
 /**
  * Ollama provider. Issue #149: switched from `/api/generate` (which takes
@@ -21,10 +23,10 @@ export async function generate(
   prompt: string | ChatMessage[],
   options: GenerateOptions & { baseUrl?: string } = {},
 ): Promise<string> {
-  const baseUrl = options.baseUrl || DEFAULT_URL;
-  if (options.baseUrl) validateBaseUrl(options.baseUrl, 'ollama');
+  const baseUrl = options.baseUrl || DEFAULT_OLLAMA_BASE_URL;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 30_000);
+  let customFetch: SafeProviderFetch | undefined;
 
   try {
     // System prompt is supplied either via options.systemPrompt (legacy
@@ -39,7 +41,8 @@ export async function generate(
     }
     messages.push(...inputMessages);
 
-    const res = await fetch(`${baseUrl}/api/chat`, {
+    const requestUrl = `${baseUrl}/api/chat`;
+    const requestInit = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -52,7 +55,9 @@ export async function generate(
         },
       }),
       signal: controller.signal,
-    });
+    } satisfies RequestInit;
+    customFetch = await fetchCustomProviderUrl(requestUrl, 'ollama', requestInit);
+    const res = customFetch.response;
 
     if (!res.ok) {
       const body = await res.text().catch(() => '');
@@ -67,5 +72,6 @@ export async function generate(
     return data.message?.content ?? '';
   } finally {
     clearTimeout(timeout);
+    await customFetch?.close();
   }
 }

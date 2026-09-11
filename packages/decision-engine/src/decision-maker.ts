@@ -47,6 +47,8 @@ export interface DecisionRepositoryPort {
    * not decisions.
    */
   saveDecision(decision: DecisionObject): Promise<{ decision: DecisionObject; created: boolean }>;
+  /** Optional fast-path used before expensive interpretation on idempotent signal ingestion. */
+  findBySignalId?(userId: string, signalId: string): Promise<DecisionObject | null>;
   getDecision(decisionId: string): Promise<DecisionObject | null>;
   saveOutcome(outcome: DecisionOutcome): Promise<DecisionOutcome>;
   getOutcome(decisionId: string): Promise<DecisionOutcome | null>;

@@ -7,8 +7,12 @@ input and output bytes,
 cost basis, and verification or fallback outcome. It does not store prompts,
 responses, credentials, chain-of-thought, or complete attestation documents.
 
-The decision-event ingest path captures every completed call made through its
-receipt-aware `LlmClient` instance and persists the resulting batch after the real `ExplanationRecord`
+The decision-event ingest path calls `resolveUserLlmClient` once to read the
+persisted reasoning mode and enabled provider chain in one database snapshot,
+install the receipt trace sink, and construct the mode-scoped `LlmClient`.
+Legacy or unconfirmed modes, incompatible providers, and empty chains produce
+no client and therefore make zero provider calls. It captures every completed
+call made through that resolved instance and persists the resulting batch after the real `ExplanationRecord`
 exists but before approval creation or action execution. A decision may have
 multiple receipts because interpretation, candidate generation, and drafting
 can be separate calls. The metadata API currently returns the latest receipt;
@@ -16,18 +20,33 @@ the repository and backup format retain the complete set. The receipt detail UI
 remains future work; absence of a receipt must be displayed as unavailable and
 must never be inferred as a privacy outcome.
 
-On-device and conventional calls are classified from their configured runtime
-mode. Hosted costs remain `unknown` until provider usage/billing identifiers are
+The receipt stores the requested `ReasoningMode` separately from its observed
+execution class. Location, network scope, confidentiality, verification state,
+and sanitized fallback attempts come from typed `ProviderExecutionMetadata`
+created at the provider boundary; provider names, endpoint strings, and caller
+labels are not receipt evidence. A loopback Ollama endpoint is on-device, while
+a remote Ollama endpoint is conventional external execution. No provider chain
+may cross the selected mode boundary. The default Ollama endpoint uses the same
+canonical loopback identity and DNS-pinned, redirect-disabled transport as an
+explicit endpoint. Trailing-dot localhost forms normalize to local; a DNS alias
+that resolves to loopback is rejected before its prompt is sent. Hosted costs remain `unknown` until provider usage/billing identifiers are
 available; local runtime cost is exactly zero. Conventional and local records
 cannot carry attestation fields. The decision-event integration does not yet
-configure a confidential verifier, so it cannot emit or display
-`verified_confidential`. The lower-level contract requires an independently
+configure a confidential verifier, so `verified_private_cloud` is fail-closed
+and cannot emit or display a `verified_confidential` execution class. The lower-level contract requires an independently
 configured verifier and pinned provider trust roots; neither may be derived
 from keys or evidence returned by the verifier. Failed, unavailable, or stale
-verification is captured by a receipt-aware client, and a later local success
-is a separate local-fallback trace. Other application LLM clients (including
+verification has distinct receipt statuses in the versioned contract; no
+confidential execution adapter is enabled in the current decision path. Other application LLM clients (including
 assistant, Lifebooks, and adaptive setup flows) are not covered by this slice
 and must not be presented as receipt-backed.
+
+Signal idempotency is checked before the receipt-aware client is constructed,
+so an already-complete duplicate makes no new provider call. The database
+uniqueness constraint remains the concurrent-ingest backstop; if two first
+ingestions race and the losing request has already produced an interpretation
+trace, that trace is finalized against the winner's durable explanation before
+the recovered response returns.
 
 For a stable recorder identity, configure `SKYTWIN_RECEIPT_KEY_ID`,
 `SKYTWIN_RECEIPT_PRIVATE_KEY_BASE64`, and
@@ -60,7 +79,8 @@ flag, missing trust roots fail closed. The command exits
 non-zero unless the recorder is trusted or the caller explicitly selects
 `--integrity-only`, so automation cannot silently confuse the two. It checks the
 request, response, and evidence hashes; the provider response signature;
-verification freshness; reasoning-mode/status consistency; and a recorder seal
+verification freshness; requested-mode, execution-class, and status consistency;
+the typed execution path (including failed and circuit-open attempts); and a recorder seal
 covering every receipt field. Changing model, endpoint, user/decision linkage,
 fallback, cost, timestamp, hashes, or signature invalidates the result.
 

@@ -557,10 +557,10 @@ export function fetchAISettings(userId) {
   return fetchSettings(userId).then(s => s?.aiProviders ?? []);
 }
 
-export function saveAIProviders(userId, providers) {
+export function saveAIProviders(userId, providers, reasoningMode) {
   return fetchJSON(`${API}/settings/${userId}/ai`, {
     method: 'PUT',
-    body: JSON.stringify({ providers }),
+    body: JSON.stringify({ providers, reasoningMode }),
   });
 }
 
@@ -839,9 +839,8 @@ export function snoozeCapabilitySuggestion(id, userId, untilDays = 7) {
  * an assistant reply that exposed a capability gap. Returns
  * `{ intentDetected, suggestions: [{registryId, displayName, reason, confidence}], reason? }`.
  *
- * When the user has no LLM configured, the server returns
- * `{ intentDetected: false, suggestions: [], reason: 'no_llm_configured' }`
- * — the caller should fall back to its keyword heuristic.
+ * When generation is unavailable, `reason` distinguishes missing
+ * configuration from provider/prompt failure so the UI can remain truthful.
  */
 export function requestInstallSuggestion(userId, userMessage, assistantReply) {
   return fetchJSON(`${API}/assistant/install-suggestion?userId=${encodeURIComponent(userId)}`, {

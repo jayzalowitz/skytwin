@@ -14,8 +14,24 @@ const linkage = { userId: 'user', decisionId: 'decision', explanationId: 'explan
 
 function trace(overrides: Partial<InferenceTrace> = {}): InferenceTrace {
   return {
-    id: 'receipt', reasoningMode: 'conventional_cloud', status: 'conventional',
-    provider: 'openai', model: 'model', endpointIdentity: 'https://api.openai.com',
+    id: 'receipt', status: 'conventional',
+    execution: {
+      reasoningMode: 'bring_your_own_provider', provider: 'openai', model: 'model',
+      request: { invocationId: 'invocation', providerRequestId: null },
+      capabilities: {
+        executionLocation: 'remote_service', networkScope: 'external',
+        confidentiality: 'provider_standard', attestationPolicy: 'not_applicable',
+        retention: { classification: 'provider_terms', summary: 'Provider terms apply.', policyUrl: null },
+        modalities: ['text'],
+        pricing: { kind: 'unknown', unit: 'nano_usd', source: 'unknown', reason: 'not_reported' },
+      },
+      verificationStatus: 'not_applicable',
+      executionPath: [{ provider: 'openai', executionLocation: 'remote_service',
+        networkScope: 'external', confidentiality: 'provider_standard', outcome: 'succeeded' }],
+      costBasis: { pricing: { kind: 'unknown', unit: 'nano_usd', source: 'unknown', reason: 'not_reported' }, inputTokens: null, outputTokens: null },
+      receiptId: null,
+    },
+    endpointIdentity: 'https://api.openai.com',
     request: Buffer.from('request'), response: Buffer.from('response'),
     cost: { basis: 'unknown' }, createdAt: '2026-09-10T00:00:00.000Z',
     verifierVersion: 'boundary-v1', ...overrides,
@@ -26,7 +42,8 @@ describe('emitInferenceReceipt', () => {
   it('emits conventional metadata without attestation claims', () => {
     const bundle = emitInferenceReceipt(trace(), linkage, recorderKey);
     expect(bundle.receipt).toMatchObject({
-      reasoningMode: 'conventional_cloud', status: 'conventional', cost: { basis: 'unknown' },
+      reasoningMode: 'bring_your_own_provider', executionClass: 'conventional_cloud',
+      status: 'conventional', cost: { basis: 'unknown' },
     });
     expect(bundle.receipt).not.toHaveProperty('evidenceSha256');
     expect(verifyInferenceReceiptExport(bundle, {
@@ -36,7 +53,7 @@ describe('emitInferenceReceipt', () => {
 
   it('never allows verified status without a trusted verifier result', () => {
     expect(() => emitInferenceReceipt(trace({
-      reasoningMode: 'verified_confidential', status: 'verified',
+      status: 'verified',
     }), linkage, recorderKey)).toThrow(/trusted verifier result/);
   });
 
@@ -46,7 +63,23 @@ describe('emitInferenceReceipt', () => {
     const response = Buffer.from('verified response');
     const evidence = Buffer.from('attestation evidence');
     const bundle = emitInferenceReceipt(trace({
-      reasoningMode: 'verified_confidential', status: 'verified', response,
+      status: 'verified', response,
+      execution: {
+        reasoningMode: 'verified_private_cloud', provider: 'near-private', model: 'model',
+        request: { invocationId: 'invocation', providerRequestId: 'provider-request' },
+        capabilities: {
+          executionLocation: 'remote_service', networkScope: 'external',
+          confidentiality: 'attested_tee', attestationPolicy: 'required',
+          retention: { classification: 'provider_declared', summary: 'Attested execution.', policyUrl: null },
+          modalities: ['text'],
+          pricing: { kind: 'unknown', unit: 'nano_usd', source: 'unknown', reason: 'not_reported' },
+        },
+        verificationStatus: 'verified',
+        executionPath: [{ provider: 'near-private', executionLocation: 'remote_service',
+          networkScope: 'external', confidentiality: 'attested_tee', outcome: 'succeeded' }],
+        costBasis: { pricing: { kind: 'unknown', unit: 'nano_usd', source: 'unknown', reason: 'not_reported' }, inputTokens: null, outputTokens: null },
+        receiptId: null,
+      },
       verifierVersion: 'near-verifier-v1',
       verification: {
         outcome: 'verified', attestationPolicyVersion: 'near-policy-v1',

@@ -8,7 +8,7 @@ import { TrustTierEngine } from '@skytwin/policy-engine';
 import type { TrustTier } from '@skytwin/shared-types';
 import { PROMOTION_THRESHOLDS } from '@skytwin/shared-types';
 import { runPrompt } from '@skytwin/policy-prompts';
-import { getLlmClientFromConfig } from '../lib/llm-client-factory.js';
+import { resolveUserLlmClient } from '../lib/user-llm-client.js';
 import { getExecutionRouter } from '../execution-setup.js';
 // SSE event constants — imported for re-export and for use in callers that
 // wire the promotion ceremony (e.g. promotion-eligibility-check.ts).
@@ -1114,7 +1114,8 @@ export function createCapabilitiesRouter(): Router {
       }
 
       // Adaptive path: ask the LLM for personalised recipe recommendations.
-      const llmClient = getLlmClientFromConfig();
+      const llmResolution = await resolveUserLlmClient(userId);
+      const llmClient = llmResolution.client;
       if (llmClient) {
         try {
           // Build a lightweight registry summary so the prompt has context.
@@ -1145,6 +1146,7 @@ export function createCapabilitiesRouter(): Router {
             },
             user: { userId },
             llmClient,
+            invocationKind: 'interactive',
           });
 
           if (!result.fellBackToDeterministic && Array.isArray(result.output) && result.output.length > 0) {
@@ -1207,7 +1209,8 @@ export function createCapabilitiesRouter(): Router {
         ? (body.installedRegistryIds as unknown[]).filter((x): x is string => typeof x === 'string')
         : [];
 
-      const llmClient = getLlmClientFromConfig();
+      const llmResolution = await resolveUserLlmClient(userId);
+      const llmClient = llmResolution.client;
       if (llmClient) {
         try {
           // Template expects {{user_message}}, {{installed_capabilities}},
@@ -1225,21 +1228,39 @@ export function createCapabilitiesRouter(): Router {
             },
             user: { userId },
             llmClient,
+            invocationKind: 'interactive',
           });
 
           if (!result.fellBackToDeterministic) {
             return res.json(result.output);
           }
+          return res.json({
+            action: 'unknown',
+            candidate_capabilities: [],
+            confidence: 0,
+            reason: 'provider_unavailable',
+          });
         } catch (err) {
           log.warn('reverse-capability-intent prompt failed, using deterministic fallback', {
             error: err instanceof Error ? err.message : String(err),
+          });
+          return res.json({
+            action: 'unknown',
+            candidate_capabilities: [],
+            confidence: 0,
+            reason: 'prompt_failed',
           });
         }
       }
 
       // Deterministic fallback: heuristic match against installed registry.
       // v1: no heuristic — return unknown. The LLM path is the value add here.
-      res.json({ action: 'unknown', candidate_capabilities: [], confidence: 0 });
+      res.json({
+        action: 'unknown',
+        candidate_capabilities: [],
+        confidence: 0,
+        reason: llmResolution.state,
+      });
     } catch (err) {
       next(err);
     }

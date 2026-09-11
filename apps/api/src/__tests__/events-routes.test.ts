@@ -15,6 +15,8 @@ const {
   mockSaveCandidates,
   mockGetOutcome,
   mockSaveOutcome,
+  mockFindBySignalId,
+  mockGetExplanation,
   mockGetProviders,
   mockCreateReceipts,
   mockReceiptCaptureComplete,
@@ -41,6 +43,8 @@ const {
   mockSaveCandidates: vi.fn(),
   mockGetOutcome: vi.fn(),
   mockSaveOutcome: vi.fn(),
+  mockFindBySignalId: vi.fn(),
+  mockGetExplanation: vi.fn(),
   mockGetProviders: vi.fn(),
   mockCreateReceipts: vi.fn(),
   mockReceiptCaptureComplete: vi.fn(),
@@ -94,10 +98,20 @@ vi.mock('@skytwin/db', () => ({
   oauthRepository: { getToken: vi.fn().mockResolvedValue(null) },
   executionRepository: mockExecutionRepository,
   userRepository: { findById: vi.fn().mockResolvedValue({ id: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', trust_tier: 'observer', ironclaw_channel: 'skytwin' }) },
-  aiProviderRepository: { getEnabledForUser: mockGetProviders },
+  aiProviderRepository: {
+    getReasoningSnapshotForUser: vi.fn().mockResolvedValue({
+      providers: [],
+      reasoningMode: { mode: 'on_device', requires_confirmation: false },
+    }),
+  },
   inferenceReceiptRepository: {
     createManyForUser: mockCreateReceipts,
     isCompleteForDecision: mockReceiptCaptureComplete,
+  },
+  reasoningModeRepository: {
+    getOrCreateForUser: vi.fn().mockResolvedValue({
+      mode: 'on_device', requires_confirmation: false,
+    }),
   },
   emailLabelRepository: {
     topLabelsForSender: vi.fn().mockResolvedValue([]),
@@ -109,6 +123,7 @@ vi.mock('@skytwin/db', () => ({
   TwinRepositoryAdapter: vi.fn(),
   PatternRepositoryAdapter: vi.fn(),
   decisionRepositoryAdapter: {
+    findBySignalId: mockFindBySignalId,
     saveDecision: mockSaveDecision,
     saveCandidates: mockSaveCandidates,
     saveOutcome: mockSaveOutcome,
@@ -133,13 +148,26 @@ vi.mock('@skytwin/db', () => ({
       assessedAt: new Date(),
     })),
   },
-  explanationRepositoryAdapter: { getByDecisionId: vi.fn().mockResolvedValue(null) },
+  explanationRepositoryAdapter: { getByDecisionId: mockGetExplanation },
   policyRepositoryAdapter: {},
 }));
 
 vi.mock('@skytwin/llm-client', () => ({
-  LlmClient: mockLlmClient,
   emitInferenceReceipt: mockEmitReceipt,
+}));
+
+vi.mock('../lib/user-llm-client.js', () => ({
+  resolveUserLlmClient: vi.fn(async (
+    userId: string,
+    options: { onInferenceTrace?: (trace: unknown) => void },
+  ) => {
+    const providers = await mockGetProviders();
+    if (providers.length === 0) {
+      return { state: 'no_provider', client: null, reason: 'test has no provider' };
+    }
+    const client = mockLlmClient(providers, userId, options);
+    return { state: 'ready', client };
+  }),
 }));
 
 vi.mock('../workflows/registry.js', () => ({
@@ -247,6 +275,8 @@ describe('Events API routes', () => {
     }));
     mockSaveCandidates.mockResolvedValue([]);
     mockSaveOutcome.mockImplementation(async (o: unknown) => o);
+    mockFindBySignalId.mockResolvedValue(null);
+    mockGetExplanation.mockResolvedValue(null);
     mockGetOutcome.mockResolvedValue(null);
     mockApprovalFindByDecisionId.mockResolvedValue(null);
     mockExecutionRepository.getByDecisionId.mockResolvedValue(null);
@@ -267,8 +297,26 @@ describe('Events API routes', () => {
       options: { onInferenceTrace: (trace: unknown) => void },
     ) {
       options.onInferenceTrace({
-        id: 'receipt-1', reasoningMode: 'conventional_cloud', status: 'conventional',
-        provider: 'openai', model: 'model', endpointIdentity: 'https://api.openai.com',
+        id: 'receipt-1', status: 'conventional',
+        execution: {
+          reasoningMode: 'bring_your_own_provider', provider: 'openai', model: 'model',
+          request: { invocationId: 'invocation-1', providerRequestId: null },
+          capabilities: {
+            executionLocation: 'remote_service', networkScope: 'external',
+            confidentiality: 'provider_standard', attestationPolicy: 'not_applicable',
+            retention: { classification: 'provider_terms', summary: 'test', policyUrl: null },
+            modalities: ['text'],
+            pricing: { kind: 'unknown', unit: 'nano_usd', source: 'unknown', reason: 'not_reported' },
+          },
+          verificationStatus: 'not_applicable',
+          executionPath: [{
+            provider: 'openai', executionLocation: 'remote_service', networkScope: 'external',
+            confidentiality: 'provider_standard', outcome: 'succeeded',
+          }],
+          costBasis: { pricing: { kind: 'unknown', unit: 'nano_usd', source: 'unknown', reason: 'not_reported' }, inputTokens: null, outputTokens: null },
+          receiptId: null,
+        },
+        endpointIdentity: 'https://api.openai.com',
         request: Buffer.from('request'), response: Buffer.from('response'),
         cost: { basis: 'unknown' }, createdAt: '2026-09-10T00:00:00.000Z',
         verifierVersion: 'boundary-v1',
@@ -315,6 +363,25 @@ describe('Events API routes', () => {
     expect(res.status).toBe(500);
     expect(mockApprovalCreate).not.toHaveBeenCalled();
     expect(mockExecutionRepository.createPlan).not.toHaveBeenCalled();
+  });
+
+  it('persists the receipt completion batch before auto-execution begins', async () => {
+    mockGenerate.mockResolvedValue({
+      id: '44444444-4444-4444-8444-444444444444',
+      riskTier: 'low', summary: 'Low risk', overallConfidence: 0.9,
+    });
+    const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+    });
+    expect(res.status).toBe(200);
+    expect(mockCreateReceipts).toHaveBeenCalledWith(
+      'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      [],
+      { decisionId: 'decision-1', explanationId: '44444444-4444-4444-8444-444444444444' },
+    );
+    expect(mockCreateReceipts.mock.invocationCallOrder[0]).toBeLessThan(
+      mockExecutionRepository.createPlan.mock.invocationCallOrder[0]!,
+    );
   });
 
   // ---------------------------------------------------------------------
@@ -576,6 +643,96 @@ describe('Events API routes', () => {
   // would run the action a SECOND time (real send-the-email-twice bug for
   // users at trust tiers that auto-execute).
   describe('re-ingestion pipeline short-circuit', () => {
+    it('short-circuits a completed duplicate before constructing a trace-producing client', async () => {
+      mockFindBySignalId.mockResolvedValue({
+        id: 'decision-1', situationType: 'calendar_conflict', domain: 'calendar',
+        urgency: 'medium', summary: 'Schedule meeting', rawData: {}, interpretedAt: new Date(),
+      });
+      mockGetOutcome.mockResolvedValue({
+        decisionId: 'decision-1', selectedAction: null, autoExecute: false,
+        requiresApproval: false, reasoning: 'Already complete',
+      });
+      mockReceiptCaptureComplete.mockResolvedValue(true);
+      mockGetProviders.mockResolvedValue([
+        { provider: 'openai', api_key: 'key', model: 'model', base_url: null },
+      ]);
+      const wouldBeTrace = vi.fn();
+      mockLlmClient.mockImplementation(function TraceProducingClient(
+        _providers: unknown,
+        _userId: unknown,
+        options: { onInferenceTrace?: (trace: unknown) => void },
+      ) {
+        options.onInferenceTrace?.({ id: 'unreceipted-duplicate-trace' });
+        wouldBeTrace();
+        return { hasProviders: true };
+      });
+
+      const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+        userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+        signalId: 'sig-duplicate', source: 'gmail', type: 'email',
+      });
+
+      expect(res.status).toBe(200);
+      expect((res.body as { reIngested: boolean }).reIngested).toBe(true);
+      expect(mockFindBySignalId).toHaveBeenCalledWith(
+        'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', 'sig-duplicate',
+      );
+      expect(mockLlmClient).not.toHaveBeenCalled();
+      expect(wouldBeTrace).not.toHaveBeenCalled();
+      expect(mockInterpret).not.toHaveBeenCalled();
+      expect(mockSaveDecision).not.toHaveBeenCalled();
+      expect(mockCreateReceipts).not.toHaveBeenCalled();
+    });
+
+    it('durably finalizes a concurrent race-loser trace before returning the recovered decision', async () => {
+      mockSaveDecision.mockImplementation(async (d: unknown) => ({ decision: d, created: false }));
+      mockGetOutcome.mockResolvedValue({
+        decisionId: 'decision-1', selectedAction: null, autoExecute: false,
+        requiresApproval: false, reasoning: 'Winner completed first',
+      });
+      mockReceiptCaptureComplete.mockResolvedValue(true);
+      mockGetExplanation.mockResolvedValue({
+        id: '44444444-4444-4444-8444-444444444444',
+        summary: 'Winner explanation', riskTier: 'low', overallConfidence: 0.9,
+      });
+      mockGetProviders.mockResolvedValue([
+        { provider: 'openai', api_key: 'key', model: 'model', base_url: null },
+      ]);
+      mockLlmClient.mockImplementation(function TraceProducingClient(
+        _providers: unknown,
+        _userId: unknown,
+        options: { onInferenceTrace?: (trace: unknown) => void },
+      ) {
+        options.onInferenceTrace?.({
+          id: 'race-trace', status: 'conventional',
+          execution: { reasoningMode: 'bring_your_own_provider' },
+        });
+        return { hasProviders: true };
+      });
+      mockCreateReceipts.mockResolvedValue([{ id: 'race-trace' }]);
+
+      const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+        userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+        signalId: 'sig-race', source: 'gmail', type: 'email',
+      });
+
+      expect(res.status).toBe(200);
+      expect(mockEmitReceipt).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'race-trace' }),
+        {
+          userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+          decisionId: 'decision-1',
+          explanationId: '44444444-4444-4444-8444-444444444444',
+        },
+        expect.any(Object),
+      );
+      expect(mockCreateReceipts).toHaveBeenCalledTimes(1);
+      expect((res.body as { reIngested: boolean }).reIngested).toBe(true);
+      expect(mockEvaluate).not.toHaveBeenCalled();
+      expect(mockApprovalCreate).not.toHaveBeenCalled();
+      expect(mockExecutionRepository.createPlan).not.toHaveBeenCalled();
+    });
+
     it('reruns an otherwise persisted decision when receipt finalization is incomplete', async () => {
       mockSaveDecision.mockImplementation(async (d: unknown) => ({ decision: d, created: false }));
       mockGetOutcome.mockResolvedValue({

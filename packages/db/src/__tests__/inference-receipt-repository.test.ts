@@ -29,7 +29,12 @@ function fixture(): InferenceReceiptExportV1 {
       userId: '22222222-2222-4222-8222-222222222222',
       decisionId: '33333333-3333-4333-8333-333333333333',
       explanationId: '44444444-4444-4444-8444-444444444444',
-      reasoningMode: 'conventional_cloud', provider: 'provider', model: 'model',
+      reasoningMode: 'bring_your_own_provider', executionClass: 'conventional_cloud',
+      executionLocation: 'remote_service', networkScope: 'external',
+      confidentiality: 'provider_standard', verificationStatus: 'not_applicable',
+      executionPath: [{ provider: 'provider', executionLocation: 'remote_service',
+        networkScope: 'external', confidentiality: 'provider_standard', outcome: 'succeeded' }],
+      provider: 'provider', model: 'model',
       endpointIdentity: 'https://provider.example', requestSha256: sha256Hex(request),
       responseSha256: sha256Hex(response), verifierVersion: '1', cost: { basis: 'unknown' },
       status: 'conventional', createdAt: '2026-09-10T00:00:00.000Z',
@@ -57,7 +62,11 @@ describe('inferenceReceiptRepository', () => {
     const { seal: _seal, ...base } = value.receipt;
     value.evidenceBase64 = evidence.toString('base64');
     value.receipt = signInferenceReceipt({
-      ...base, reasoningMode: 'verified_confidential', status: 'verified',
+      ...base, reasoningMode: 'verified_private_cloud', executionClass: 'verified_confidential',
+      confidentiality: 'attested_tee', verificationStatus: 'verified',
+      executionPath: [{ provider: 'provider', executionLocation: 'remote_service',
+        networkScope: 'external', confidentiality: 'attested_tee', outcome: 'succeeded' }],
+      status: 'verified',
       evidenceSha256: sha256Hex(evidence), attestationPolicyVersion: 'policy-1',
       measurementIdentity: 'measurement-1', verifiedAt: '2026-09-10T00:00:00.000Z',
       freshUntil: '2026-09-11T00:00:00.000Z',
@@ -82,6 +91,14 @@ describe('inferenceReceiptRepository', () => {
     expect(sql).toContain('$7::JSONB, true');
     expect(args[0]).toBe(bundle.receipt.userId);
     expect(args[7]).toBe(bundle.receipt.userId);
+    expect(JSON.parse(args[6] as string)).toMatchObject({
+      reasoningMode: 'bring_your_own_provider',
+      executionClass: 'conventional_cloud',
+      executionLocation: 'remote_service',
+      networkScope: 'external',
+      confidentiality: 'provider_standard',
+      executionPath: [{ provider: 'provider', outcome: 'succeeded' }],
+    });
   });
 
   it('returns null when linked rows do not belong to the authenticated user', async () => {

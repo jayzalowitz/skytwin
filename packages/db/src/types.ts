@@ -748,6 +748,14 @@ export interface AIProviderSettingsRow {
   updated_at: Date;
 }
 
+export interface ReasoningModeSettingsRow {
+  user_id: string;
+  mode: import('@skytwin/shared-types').ReasoningMode | null;
+  requires_confirmation: boolean;
+  created_at: Date;
+  updated_at: Date;
+}
+
 /**
  * Represents the full decision context including related records.
  */

@@ -1,6 +1,6 @@
 All notable changes to SkyTwin will be documented in this file.
 
-## [Unreleased]
+## [Unreleased] — Explicit reasoning boundaries and receipts
 
 ### Added
 
@@ -20,6 +20,23 @@ All notable changes to SkyTwin will be documented in this file.
   not enabled by this slice. Receipt hashes cover versioned canonical logical
   inputs/outputs, not provider HTTP wire payloads. Other LLM-powered surfaces,
   the receipt detail UI, and tagged confidential evidence remain follow-up work.
+
+- **Reasoning location is now a persisted policy, not an inference from a provider name.** Each user chooses `on_device` or `bring_your_own_provider`; the `verified_private_cloud` state exists but remains unavailable until a verifier-owned confidential adapter ships. Provider saves, tests, fallback, and every user-scoped API composition path enforce the same boundary. Legacy local, hosted, mixed, disabled, custom-endpoint, and empty chains are classified deterministically; ambiguous chains require confirmation.
+- **Every normalized model result carries privacy and execution provenance.** Metadata records execution/network/confidentiality/retention capabilities, pricing source and freshness, a SkyTwin invocation ID, verification state, receipt linkage, and a sanitized ordered fallback path. Custom endpoints never inherit an official provider's terms or a confidential-computing label.
+- **Decision receipts now consume that same execution provenance.** The persisted
+  requested mode remains distinct from the observed execution class, failed,
+  circuit-open, and unavailable-price attempts remain in the sanitized path,
+  and the exact receipt batch is durable before approval or execution begins.
+
+### Changed
+
+- **Unattended inference fails closed when provider price is unknown, stale, invalid, or unbounded.** Interactive requests can use an explicitly selected provider; background decision and briefing work skips unpriced providers and stays inside the selected location boundary. Draft generation also evaluates every possible fallback rather than assuming the cheapest configured provider will answer.
+- **Provider-chain and reasoning-mode updates are atomic.** Both records are written in one CockroachDB transaction. CI executes the legacy migration twice against a real CockroachDB fixture matrix, and downloads the pinned test binary only after verifying its published SHA-256.
+
+### Fixed (post-/review)
+
+- **Default Ollama calls now use the same DNS-pinned, no-redirect transport as configured endpoints.** Policy classification, transport checks, and receipt identity share the canonical `127.0.0.1` endpoint. Trailing-dot localhost forms remain local, while DNS aliases resolving to loopback fail closed instead of being admitted as remote BYO endpoints.
+- **Completed duplicate signals short-circuit before LLM composition or interpretation.** A concurrent first-ingest race loser durably links any already-produced interpretation traces to the winner's explanation before returning, so recoverable re-ingestion cannot leave an unreceipted provider call.
 
 ## [0.6.102.0] - 2026-08-27
 

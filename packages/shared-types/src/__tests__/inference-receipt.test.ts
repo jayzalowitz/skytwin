@@ -23,7 +23,17 @@ function bundle(): InferenceReceiptExportV1 {
     userId: '22222222-2222-4222-8222-222222222222',
     decisionId: '33333333-3333-4333-8333-333333333333',
     explanationId: '44444444-4444-4444-8444-444444444444',
-    reasoningMode: 'verified_confidential' as const,
+    reasoningMode: 'verified_private_cloud' as const,
+    executionClass: 'verified_confidential' as const,
+    executionLocation: 'remote_service' as const,
+    networkScope: 'external' as const,
+    confidentiality: 'attested_tee' as const,
+    verificationStatus: 'verified' as const,
+    executionPath: [{
+      provider: 'strict-provider', executionLocation: 'remote_service' as const,
+      networkScope: 'external' as const, confidentiality: 'attested_tee' as const,
+      outcome: 'succeeded' as const,
+    }],
     provider: 'strict-provider', model: 'model-v1', endpointIdentity: 'https://provider.example/v1',
     requestSha256: sha256Hex(request), responseSha256: sha256Hex(response),
     inferenceId: 'inf-1', attestationPolicyVersion: 'policy-1', verifierVersion: 'verifier-1',
@@ -63,7 +73,13 @@ function conventionalBundle(): InferenceReceiptExportV1 {
     verifiedAt: _verifiedAt, freshUntil: _freshUntil, ...base } = value.receipt;
   delete value.evidenceBase64;
   value.receipt = signInferenceReceipt({
-    ...base, reasoningMode: 'conventional_cloud', status: 'conventional', cost: { basis: 'unknown' },
+    ...base,
+    reasoningMode: 'bring_your_own_provider', executionClass: 'conventional_cloud',
+    executionLocation: 'remote_service', networkScope: 'external',
+    confidentiality: 'provider_standard', verificationStatus: 'not_applicable',
+    executionPath: [{ provider: 'strict-provider', executionLocation: 'remote_service',
+      networkScope: 'external', confidentiality: 'provider_standard', outcome: 'succeeded' }],
+    status: 'conventional', cost: { basis: 'unknown' },
   }, { keyId: 'recorder-1', privateKeyPem: privatePem(recorder.privateKey), publicKeyPem: pem(recorder.publicKey) });
   return value;
 }
@@ -148,10 +164,27 @@ describe('verifyInferenceReceiptExport', () => {
   it('does not permit a conventional inference to claim verified status', () => {
     const value = bundle();
     const { seal: _seal, ...unsigned } = value.receipt;
-    value.receipt = signInferenceReceipt({ ...unsigned, reasoningMode: 'conventional_cloud' }, {
+    value.receipt = signInferenceReceipt({ ...unsigned, reasoningMode: 'bring_your_own_provider' }, {
       keyId: 'recorder-1', privateKeyPem: privatePem(recorder.privateKey), publicKeyPem: pem(recorder.publicKey),
     });
     expect(verifyInferenceReceiptExport(value).code).toBe('INVALID_RECEIPT');
+  });
+
+  it('rejects a cross-mode attempt hidden in a conventional execution path', () => {
+    const value = conventionalBundle();
+    const { seal: _seal, ...unsigned } = value.receipt;
+    value.receipt = signInferenceReceipt({
+      ...unsigned,
+      executionPath: [
+        { provider: 'ollama', executionLocation: 'on_device', networkScope: 'loopback',
+          confidentiality: 'device_local', outcome: 'failed' },
+        ...unsigned.executionPath,
+      ],
+    }, {
+      keyId: 'recorder-1', privateKeyPem: privatePem(recorder.privateKey),
+      publicKeyPem: pem(recorder.publicKey),
+    });
+    expect(verifyInferenceReceiptExport(value, trustedOptions()).code).toBe('INVALID_RECEIPT');
   });
 
   it.each([
@@ -159,11 +192,12 @@ describe('verifyInferenceReceiptExport', () => {
     ['conventional', 'conventional_cloud'], ['verification_failed', 'verified_confidential'],
     ['verification_unavailable', 'verified_confidential'], ['verification_stale', 'verified_confidential'],
     ['local_fallback', 'on_device'],
-  ] as const)('enforces the reasoning-mode matrix for %s', (status, expectedMode) => {
+  ] as const)('enforces the execution-class matrix for %s', (status, expectedClass) => {
     const value = bundle();
     const { seal: _seal, ...unsigned } = value.receipt;
     value.receipt = signInferenceReceipt({
-      ...unsigned, status, reasoningMode: expectedMode === 'on_device' ? 'conventional_cloud' : 'on_device',
+      ...unsigned, status,
+      executionClass: expectedClass === 'on_device' ? 'conventional_cloud' : 'on_device',
     }, { keyId: 'recorder-1', privateKeyPem: privatePem(recorder.privateKey), publicKeyPem: pem(recorder.publicKey) });
     expect(verifyInferenceReceiptExport(value, trustedOptions()).code).toBe('INVALID_RECEIPT');
   });
@@ -200,13 +234,10 @@ describe('verifyInferenceReceiptExport', () => {
     'rejects verified-only metadata on non-verified status %s', (status) => {
       const value = conventionalBundle();
       const { seal: _seal, ...unsigned } = value.receipt;
-      const reasoningMode = status === 'on_device' || status === 'local_fallback'
-        ? 'on_device' as const
-        : status === 'conventional' ? 'conventional_cloud' as const : 'verified_confidential' as const;
       value.receipt = signInferenceReceipt({
-        ...unsigned, status, reasoningMode, attestationPolicyVersion: 'misleading-policy',
+        ...unsigned, status, attestationPolicyVersion: 'misleading-policy',
         ...(status === 'local_fallback'
-          ? { fallback: { origin: 'verified_confidential' as const, destination: 'on_device' as const, reason: 'fallback' } }
+          ? { fallback: { origin: 'verified_private_cloud' as const, destination: 'on_device' as const, reason: 'fallback' } }
           : {}),
       }, { keyId: 'recorder-1', privateKeyPem: privatePem(recorder.privateKey), publicKeyPem: pem(recorder.publicKey) });
       expect(verifyInferenceReceiptExport(value, trustedOptions()).code).toBe('INVALID_RECEIPT');
@@ -217,13 +248,48 @@ describe('verifyInferenceReceiptExport', () => {
     ['on_device', 'on_device'], ['conventional', 'conventional_cloud'],
     ['verification_failed', 'verified_confidential'], ['verification_unavailable', 'verified_confidential'],
     ['verification_stale', 'verified_confidential'], ['local_fallback', 'on_device'],
-  ] as const)('accepts the exact non-verified schema for %s', (status, reasoningMode) => {
+  ] as const)('accepts the exact non-verified schema for %s', (status, _executionClass) => {
     const value = conventionalBundle();
     const { seal: _seal, ...unsigned } = value.receipt;
+    const execution = status === 'on_device' || status === 'local_fallback'
+      ? {
+          reasoningMode: status === 'local_fallback' ? 'verified_private_cloud' as const : 'on_device' as const,
+          executionClass: 'on_device' as const,
+          executionLocation: 'on_device' as const,
+          networkScope: 'loopback' as const,
+          confidentiality: 'device_local' as const,
+          verificationStatus: 'not_applicable' as const,
+          executionPath: [{ provider: 'strict-provider', executionLocation: 'on_device' as const,
+            networkScope: 'loopback' as const, confidentiality: 'device_local' as const,
+            outcome: 'succeeded' as const }],
+        }
+      : status === 'conventional'
+        ? {
+            reasoningMode: 'bring_your_own_provider' as const,
+            executionClass: 'conventional_cloud' as const,
+            executionLocation: 'remote_service' as const,
+            networkScope: 'external' as const,
+            confidentiality: 'provider_standard' as const,
+            verificationStatus: 'not_applicable' as const,
+            executionPath: [{ provider: 'strict-provider', executionLocation: 'remote_service' as const,
+              networkScope: 'external' as const, confidentiality: 'provider_standard' as const,
+              outcome: 'succeeded' as const }],
+          }
+        : {
+            reasoningMode: 'verified_private_cloud' as const,
+            executionClass: 'verified_confidential' as const,
+            executionLocation: 'remote_service' as const,
+            networkScope: 'external' as const,
+            confidentiality: 'attested_tee' as const,
+            verificationStatus: status === 'verification_failed' ? 'failed' as const : 'required_missing' as const,
+            executionPath: [{ provider: 'strict-provider', executionLocation: 'remote_service' as const,
+              networkScope: 'external' as const, confidentiality: 'attested_tee' as const,
+              outcome: 'succeeded' as const }],
+          };
     value.receipt = signInferenceReceipt({
-      ...unsigned, status, reasoningMode,
+      ...unsigned, status, ...execution,
       ...(status === 'local_fallback'
-        ? { fallback: { origin: 'verified_confidential' as const, destination: 'on_device' as const, reason: 'fallback' } }
+        ? { fallback: { origin: 'verified_private_cloud' as const, destination: 'on_device' as const, reason: 'fallback' } }
         : {}),
     }, { keyId: 'recorder-1', privateKeyPem: privatePem(recorder.privateKey), publicKeyPem: pem(recorder.publicKey) });
     expect(verifyInferenceReceiptExport(value, trustedOptions())).toMatchObject({

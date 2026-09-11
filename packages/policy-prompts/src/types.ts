@@ -44,6 +44,7 @@ export interface RunPromptOptions {
   llmClient: LlmClient;
   cache?: PromptCache;
   budgetTracker?: BudgetTracker;
+  invocationKind?: 'interactive' | 'unattended';
 }
 
 export interface RunResult<T = unknown> {

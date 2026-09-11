@@ -129,6 +129,26 @@ export type {
   ExecutionRuntimeVersionSummary,
 } from './execution-runtime-versions.js';
 
+export { REASONING_MODES, parseReasoningMode } from './reasoning-mode.js';
+export type {
+  ProviderAttestationPolicy,
+  ProviderConfidentiality,
+  ProviderExecutionLocation,
+  ProviderExecutionMetadata,
+  ProviderExecutionAttempt,
+  ProviderCostBasis,
+  ProviderModality,
+  ProviderNetworkScope,
+  ProviderPriceKind,
+  ProviderPricingCapability,
+  ProviderPrivacyCapabilities,
+  ProviderRequestIdentity,
+  ProviderRetentionClass,
+  ProviderRetentionDisclosure,
+  ProviderVerificationStatus,
+  ReasoningMode,
+} from './reasoning-mode.js';
+
 export type {
   ActionPolicy,
   PolicyRule,
@@ -161,7 +181,7 @@ export type {
   AttestationVerificationInput,
   InferenceCostV1,
   InferenceFallbackV1,
-  InferenceReasoningMode,
+  InferenceExecutionClass,
   InferenceReceiptExportV1,
   InferenceReceiptStatus,
   InferenceReceiptV1,

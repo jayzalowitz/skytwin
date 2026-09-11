@@ -2,7 +2,7 @@ import type {
   AIProviderName,
   InferenceFallbackV1,
   InferenceReceiptStatus,
-  InferenceReasoningMode,
+  ProviderExecutionMetadata,
   ReceiptSignatureV1,
 } from '@skytwin/shared-types';
 
@@ -41,10 +41,8 @@ export interface ConfidentialInferenceVerifier {
 /** Canonical logical input/output bytes and provider facts captured by one client instance. */
 export interface InferenceTrace {
   id: string;
-  reasoningMode: InferenceReasoningMode;
   status: InferenceReceiptStatus;
-  provider: AIProviderName;
-  model: string;
+  execution: ProviderExecutionMetadata;
   endpointIdentity: string;
   request: Uint8Array;
   response: Uint8Array;
@@ -64,10 +62,6 @@ export interface ProviderEntry {
   apiKey: string;
   model: string;
   baseUrl?: string;
-  /** Defaults to on-device for embedded/Ollama and conventional cloud otherwise. */
-  reasoningMode?: InferenceReasoningMode;
-  /** Required for verified-confidential entries. Unverified responses are never returned. */
-  confidentialVerifier?: ConfidentialInferenceVerifier;
 }
 
 export interface LlmClientOptions {
@@ -83,6 +77,8 @@ export interface GenerateOptions {
   maxTokens?: number;
   systemPrompt?: string;
   timeoutMs?: number;
+  /** User-present calls may use explicitly selected providers with unknown price. */
+  invocationKind?: 'interactive' | 'unattended';
 }
 
 /**
@@ -93,6 +89,8 @@ export interface LlmResponse {
   provider: AIProviderName;
   model: string;
   latencyMs: number;
+  /** Additive provenance for routing, spend and future receipt persistence. */
+  execution: ProviderExecutionMetadata;
 }
 
 /**
@@ -138,7 +136,14 @@ export type ProviderGenerateFn = (
  */
 export type LlmStreamEvent =
   | { type: 'chunk'; content: string }
-  | { type: 'done'; content: string; provider: AIProviderName; model: string; latencyMs: number };
+  | {
+    type: 'done';
+    content: string;
+    provider: AIProviderName;
+    model: string;
+    latencyMs: number;
+    execution: ProviderExecutionMetadata;
+  };
 
 /**
  * Provider-level streaming function signature. Returns an async iterable

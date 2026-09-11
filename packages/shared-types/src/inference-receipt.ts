@@ -1,6 +1,15 @@
 import { createHash, sign, verify } from 'node:crypto';
+import type {
+  ProviderConfidentiality,
+  ProviderExecutionAttempt,
+  ProviderExecutionLocation,
+  ProviderNetworkScope,
+  ProviderVerificationStatus,
+  ReasoningMode,
+} from './reasoning-mode.js';
 
-export type InferenceReasoningMode =
+/** What actually executed, distinct from the user's routing policy. */
+export type InferenceExecutionClass =
   | 'on_device'
   | 'verified_confidential'
   | 'conventional_cloud';
@@ -15,7 +24,7 @@ export type InferenceReceiptStatus =
   | 'local_fallback';
 
 export interface InferenceFallbackV1 {
-  origin: 'verified_confidential';
+  origin: 'verified_private_cloud';
   destination: 'on_device';
   reason: string;
 }
@@ -44,7 +53,15 @@ export interface InferenceReceiptV1 {
   userId: string;
   decisionId: string;
   explanationId: string;
-  reasoningMode: InferenceReasoningMode;
+  /** Persisted user-selected routing policy used for this invocation. */
+  reasoningMode: ReasoningMode;
+  /** Observed execution class, derived from typed provider capabilities. */
+  executionClass: InferenceExecutionClass;
+  executionLocation: ProviderExecutionLocation;
+  networkScope: ProviderNetworkScope;
+  confidentiality: ProviderConfidentiality;
+  verificationStatus: ProviderVerificationStatus;
+  executionPath: readonly ProviderExecutionAttempt[];
   provider: string;
   model: string;
   endpointIdentity: string;
@@ -178,7 +195,16 @@ function fail(code: ReceiptVerificationCode, receiptId?: string): ReceiptVerific
   return { valid: false, trusted: false, code, receiptId };
 }
 
-const MODES = new Set<InferenceReasoningMode>(['on_device', 'verified_confidential', 'conventional_cloud']);
+const MODES = new Set<ReasoningMode>(['on_device', 'verified_private_cloud', 'bring_your_own_provider']);
+const EXECUTION_CLASSES = new Set<InferenceExecutionClass>(['on_device', 'verified_confidential', 'conventional_cloud']);
+const EXECUTION_LOCATIONS = new Set<ProviderExecutionLocation>(['on_device', 'remote_service']);
+const NETWORK_SCOPES = new Set<ProviderNetworkScope>(['none', 'loopback', 'external']);
+const CONFIDENTIALITIES = new Set<ProviderConfidentiality>([
+  'device_local', 'provider_standard', 'operator_declared', 'attested_tee',
+]);
+const VERIFICATION_STATUSES = new Set<ProviderVerificationStatus>([
+  'not_applicable', 'required_missing', 'verified', 'failed',
+]);
 const STATUSES = new Set<InferenceReceiptStatus>(['on_device', 'verified', 'conventional', 'verification_failed', 'verification_unavailable', 'verification_stale', 'local_fallback']);
 function validCost(cost: unknown): cost is InferenceCostV1 {
   if (!cost || typeof cost !== 'object') return false;
@@ -202,6 +228,8 @@ function validSignature(value: unknown): value is ReceiptSignatureV1 {
 
 function validShape(receipt: InferenceReceiptV1): boolean {
   const allowed = new Set(['version', 'id', 'userId', 'decisionId', 'explanationId', 'reasoningMode',
+    'executionClass', 'executionLocation', 'networkScope', 'confidentiality', 'verificationStatus',
+    'executionPath',
     'provider', 'model', 'endpointIdentity', 'requestSha256', 'responseSha256', 'inferenceId',
     'attestationPolicyVersion', 'verifierVersion', 'evidenceSha256', 'measurementIdentity',
     'responseSignature', 'verifiedAt', 'freshUntil', 'fallback', 'cost', 'status', 'createdAt', 'seal']);
@@ -212,12 +240,41 @@ function validShape(receipt: InferenceReceiptV1): boolean {
     receipt.measurementIdentity, receipt.verifiedAt, receipt.freshUntil];
   return strings.every((v) => typeof v === 'string' && v.length > 0) &&
     optionalStrings.every((v) => v === undefined || (typeof v === 'string' && v.length > 0)) &&
-    MODES.has(receipt.reasoningMode) && STATUSES.has(receipt.status) && validCost(receipt.cost) &&
+    MODES.has(receipt.reasoningMode) && EXECUTION_CLASSES.has(receipt.executionClass) &&
+    EXECUTION_LOCATIONS.has(receipt.executionLocation) && NETWORK_SCOPES.has(receipt.networkScope) &&
+    CONFIDENTIALITIES.has(receipt.confidentiality) &&
+    VERIFICATION_STATUSES.has(receipt.verificationStatus) &&
+    validExecutionPath(receipt.executionPath, receipt.provider) &&
+    STATUSES.has(receipt.status) && validCost(receipt.cost) &&
     validSignature(receipt.seal) && (receipt.responseSignature === undefined || validSignature(receipt.responseSignature)) &&
     (receipt.fallback === undefined || (Object.keys(receipt.fallback).every((key) => ['origin', 'destination', 'reason'].includes(key)) &&
-      receipt.fallback.origin === 'verified_confidential' && receipt.fallback.destination === 'on_device' &&
+      receipt.fallback.origin === 'verified_private_cloud' && receipt.fallback.destination === 'on_device' &&
       typeof receipt.fallback.reason === 'string' && receipt.fallback.reason.length > 0)) &&
     Number.isFinite(new Date(receipt.createdAt).getTime());
+}
+
+function validExecutionPath(value: unknown, finalProvider: string): value is readonly ProviderExecutionAttempt[] {
+  if (!Array.isArray(value) || value.length === 0) return false;
+  let successes = 0;
+  for (const item of value) {
+    if (!item || typeof item !== 'object') return false;
+    const attempt = item as Record<string, unknown>;
+    if (!Object.keys(attempt).every((key) => [
+      'provider', 'executionLocation', 'networkScope', 'confidentiality', 'outcome',
+    ].includes(key))) return false;
+    if (typeof attempt['provider'] !== 'string' || attempt['provider'].length === 0 ||
+        !EXECUTION_LOCATIONS.has(attempt['executionLocation'] as ProviderExecutionLocation) ||
+        !NETWORK_SCOPES.has(attempt['networkScope'] as ProviderNetworkScope) ||
+        !CONFIDENTIALITIES.has(attempt['confidentiality'] as ProviderConfidentiality) ||
+        !['succeeded', 'failed', 'circuit_open', 'price_unavailable'].includes(String(attempt['outcome']))) {
+      return false;
+    }
+    if (attempt['outcome'] === 'succeeded') {
+      successes += 1;
+      if (attempt['provider'] !== finalProvider || item !== value[value.length - 1]) return false;
+    }
+  }
+  return successes === 1;
 }
 
 const VERIFIED_ONLY_FIELDS = [
@@ -227,15 +284,49 @@ const VERIFIED_ONLY_FIELDS = [
 
 function validStatusShape(receipt: InferenceReceiptV1, evidenceBase64: unknown): boolean {
   if (receipt.status === 'verified') {
-    return receipt.reasoningMode === 'verified_confidential' && receipt.fallback === undefined &&
+    return receipt.reasoningMode === 'verified_private_cloud' &&
+      receipt.executionClass === 'verified_confidential' &&
+      receipt.executionLocation === 'remote_service' && receipt.networkScope === 'external' &&
+      receipt.confidentiality === 'attested_tee' && receipt.verificationStatus === 'verified' &&
+      receipt.executionPath.every((attempt) => attempt.executionLocation === 'remote_service' &&
+        attempt.networkScope === 'external' && attempt.confidentiality === 'attested_tee') &&
+      receipt.fallback === undefined &&
       VERIFIED_ONLY_FIELDS.every((field) => receipt[field] !== undefined) &&
       typeof evidenceBase64 === 'string' && evidenceBase64.length > 0;
   }
   if (VERIFIED_ONLY_FIELDS.some((field) => receipt[field] !== undefined) || evidenceBase64 !== undefined) return false;
   if (receipt.status === 'local_fallback') {
-    return receipt.reasoningMode === 'on_device' && receipt.fallback !== undefined;
+    return receipt.reasoningMode === 'verified_private_cloud' &&
+      receipt.executionClass === 'on_device' && receipt.executionLocation === 'on_device' &&
+      receipt.networkScope !== 'external' && receipt.confidentiality === 'device_local' &&
+      receipt.verificationStatus === 'not_applicable' && receipt.fallback !== undefined;
   }
-  return receipt.fallback === undefined;
+  if (receipt.fallback !== undefined) return false;
+  if (receipt.status === 'on_device') {
+    return receipt.reasoningMode === 'on_device' && receipt.executionClass === 'on_device' &&
+      receipt.executionLocation === 'on_device' &&
+      receipt.networkScope !== 'external' && receipt.confidentiality === 'device_local' &&
+      receipt.verificationStatus === 'not_applicable' &&
+      receipt.executionPath.every((attempt) => attempt.executionLocation === 'on_device' &&
+        attempt.networkScope !== 'external' && attempt.confidentiality === 'device_local');
+  }
+  if (receipt.status === 'conventional') {
+    return receipt.reasoningMode === 'bring_your_own_provider' &&
+      receipt.executionClass === 'conventional_cloud' && receipt.executionLocation === 'remote_service' &&
+      receipt.networkScope === 'external' &&
+      (receipt.confidentiality === 'provider_standard' || receipt.confidentiality === 'operator_declared') &&
+      receipt.verificationStatus === 'not_applicable' &&
+      receipt.executionPath.every((attempt) => attempt.executionLocation === 'remote_service' &&
+        attempt.networkScope === 'external' &&
+        (attempt.confidentiality === 'provider_standard' ||
+          attempt.confidentiality === 'operator_declared'));
+  }
+  return receipt.reasoningMode === 'verified_private_cloud' &&
+    receipt.executionClass === 'verified_confidential' && receipt.executionLocation === 'remote_service' &&
+    receipt.networkScope === 'external' && receipt.confidentiality === 'attested_tee' &&
+    receipt.executionPath.every((attempt) => attempt.executionLocation === 'remote_service' &&
+      attempt.networkScope === 'external' && attempt.confidentiality === 'attested_tee') &&
+    (receipt.verificationStatus === 'failed' || receipt.verificationStatus === 'required_missing');
 }
 
 function isSha256(value: unknown): value is string {
@@ -283,12 +374,12 @@ function verifyExport(
     return fail('SEAL_SIGNATURE_INVALID', receipt.id);
   }
 
-  const expectedMode: Record<InferenceReceiptStatus, InferenceReasoningMode> = {
+  const expectedClass: Record<InferenceReceiptStatus, InferenceExecutionClass> = {
     on_device: 'on_device', conventional: 'conventional_cloud', verified: 'verified_confidential',
     verification_failed: 'verified_confidential', verification_unavailable: 'verified_confidential',
     verification_stale: 'verified_confidential', local_fallback: 'on_device',
   };
-  if (expectedMode[receipt.status] !== receipt.reasoningMode) return fail('INVALID_RECEIPT', receipt.id);
+  if (expectedClass[receipt.status] !== receipt.executionClass) return fail('INVALID_RECEIPT', receipt.id);
   if (!validStatusShape(receipt, bundle.evidenceBase64)) return fail('INVALID_RECEIPT', receipt.id);
   if (receipt.status === 'verified') {
     if (!bundle.evidenceBase64 || !receipt.evidenceSha256 || !receipt.attestationPolicyVersion ||

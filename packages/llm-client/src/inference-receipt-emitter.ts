@@ -4,6 +4,7 @@ import {
   type InferenceReceiptExportV1,
 } from '@skytwin/shared-types';
 import type { InferenceTrace } from './types.js';
+import { executionClassForMetadata } from './provider-privacy.js';
 
 export interface ReceiptLinkage {
   userId: string;
@@ -39,9 +40,15 @@ export function emitInferenceReceipt(
     version: 1,
     id: trace.id,
     ...linkage,
-    reasoningMode: trace.reasoningMode,
-    provider: trace.provider,
-    model: trace.model,
+    reasoningMode: trace.execution.reasoningMode,
+    executionClass: executionClassForMetadata(trace.execution),
+    executionLocation: trace.execution.capabilities.executionLocation,
+    networkScope: trace.execution.capabilities.networkScope,
+    confidentiality: trace.execution.capabilities.confidentiality,
+    verificationStatus: trace.execution.verificationStatus,
+    executionPath: trace.execution.executionPath,
+    provider: trace.execution.provider,
+    model: trace.execution.model,
     endpointIdentity: trace.endpointIdentity,
     requestSha256: sha256Hex(trace.request),
     responseSha256: sha256Hex(trace.response),

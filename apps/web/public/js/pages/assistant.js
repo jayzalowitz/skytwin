@@ -426,8 +426,8 @@ function renderError(err) {
 //      reason, confidence }[]` with model-judged suggestions and
 //      "this is a capability gap" vs "this is a policy refusal /
 //      not-a-tool-action" disambiguation built into the prompt.
-//   2. Heuristic fallback — when the server signals `no_llm_configured`
-//      (the user hasn't set up any AI provider), OR when the fetch
+//   2. Heuristic fallback — when the server reports no configured provider
+//      or a provider/prompt failure, OR when the fetch
 //      itself fails, fall through to the keyword scan + service-name
 //      hint table below. Demo flows still work without an LLM:
 //        - "create a Linear issue"   → no Linear installed → "Connect Linear"
@@ -544,7 +544,7 @@ function renderInstallAffordances(suggestions, container, leadIn) {
 
 /**
  * Heuristic fallback (legacy): keyword scan + service-name hint table.
- * Used when the LLM endpoint signals `no_llm_configured` OR when the
+ * Used when the LLM endpoint reports no provider/prompt availability OR when the
  * fetch itself fails. Same shape as the original v1 detector, lifted
  * unchanged so demo flows keep working without an LLM provider.
  */
@@ -574,7 +574,7 @@ async function checkReverseCapabilityFlow(userMessage, replyText, container) {
     // hint table. Confidence-gated to >=0.5 so low-confidence guesses
     // don't surface as "Connect X" buttons that lead nowhere useful.
     const result = await requestInstallSuggestion(userId, userMessage, replyText);
-    if (result?.reason === 'no_llm_configured') {
+    if (['no_llm_configured', 'provider_unavailable', 'prompt_failed'].includes(result?.reason)) {
       runHeuristicReverseCapability(userMessage, replyText, container);
       return;
     }

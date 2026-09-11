@@ -1,5 +1,11 @@
 import { CircuitBreaker } from '@skytwin/core';
-import type { AIProviderName } from '@skytwin/shared-types';
+import { randomUUID } from 'node:crypto';
+import type {
+  AIProviderName,
+  ProviderExecutionAttempt,
+  ProviderExecutionMetadata,
+  ReasoningMode,
+} from '@skytwin/shared-types';
 import type {
   ProviderEntry,
   GenerateOptions,
@@ -10,7 +16,6 @@ import type {
   ChatMessage,
   InferenceTrace,
   LlmClientOptions,
-  ConfidentialVerificationResult,
 } from './types.js';
 import {
   generate as anthropicGenerate,
@@ -20,6 +25,13 @@ import { generate as openaiGenerate } from './providers/openai.js';
 import { generate as googleGenerate } from './providers/google.js';
 import { generate as ollamaGenerate } from './providers/ollama.js';
 import { generate as embeddedGenerate } from './providers/embedded.js';
+import {
+  isPricingUsableForUnattended,
+  inferenceStatusForExecution,
+  providerPrivacyCapabilities,
+  providersForReasoningMode,
+} from './provider-privacy.js';
+import { DEFAULT_OLLAMA_BASE_URL } from './url-validation.js';
 
 const PROVIDER_FNS: Record<AIProviderName, ProviderGenerateFn> = {
   anthropic: anthropicGenerate,
@@ -92,7 +104,7 @@ const DEFAULT_ENDPOINTS: Record<AIProviderName, string> = {
   anthropic: 'https://api.anthropic.com',
   openai: 'https://api.openai.com',
   google: 'https://generativelanguage.googleapis.com',
-  ollama: 'http://127.0.0.1:11434',
+  ollama: DEFAULT_OLLAMA_BASE_URL,
   embedded: 'local://embedded',
 };
 
@@ -120,23 +132,18 @@ function canonicalLogicalInputBytes(
   }), 'utf8');
 }
 
-function modeFor(provider: ProviderEntry): InferenceTrace['reasoningMode'] {
-  if (provider.reasoningMode) return provider.reasoningMode;
-  return provider.name === 'embedded' || provider.name === 'ollama'
-    ? 'on_device'
-    : 'conventional_cloud';
-}
-
 /**
  * Thrown when all providers in the chain have failed or have open circuits.
  */
 export class AllProvidersFailedError extends Error {
   readonly attempted: string[];
+  readonly executionPath: readonly ProviderExecutionAttempt[];
 
-  constructor(attempted: string[]) {
+  constructor(attempted: string[], executionPath: readonly ProviderExecutionAttempt[] = []) {
     super(`All LLM providers failed: ${attempted.join(', ')}`);
     this.name = 'AllProvidersFailedError';
     this.attempted = attempted;
+    this.executionPath = executionPath;
   }
 }
 
@@ -148,16 +155,80 @@ export class AllProvidersFailedError extends Error {
 export class LlmClient {
   private readonly chain: ChainEntry[];
   private readonly options: LlmClientOptions;
+  private readonly reasoningMode: ReasoningMode;
 
-  constructor(providers: ProviderEntry[], userId?: string, options: LlmClientOptions = {}) {
-    this.options = options;
+  private constructor(
+    providers: ProviderEntry[],
+    userId: string | undefined,
+    reasoningMode: ReasoningMode,
+    options: LlmClientOptions = {},
+  ) {
     const cbOwner = userId ?? 'shared';
+    this.reasoningMode = reasoningMode;
+    this.options = options;
     this.chain = providers.map((p) => ({
       provider: p,
       generateFn: PROVIDER_FNS[p.name],
       streamFn: PROVIDER_STREAM_FNS[p.name],
       circuitBreaker: getCircuitBreaker(cbOwner, p.name),
     }));
+  }
+
+  /** Construct a chain only after enforcing its explicit location boundary. */
+  static forReasoningMode(
+    mode: unknown,
+    providers: readonly ProviderEntry[],
+    userId?: string,
+    options: LlmClientOptions = {},
+  ): LlmClient {
+    const scoped = providersForReasoningMode(mode, providers);
+    return new LlmClient(scoped.providers, userId, scoped.mode, options);
+  }
+
+  private executionAttempt(
+    provider: ProviderEntry,
+    outcome: ProviderExecutionAttempt['outcome'],
+  ): ProviderExecutionAttempt {
+    const capabilities = providerPrivacyCapabilities(provider);
+    return {
+      provider: provider.name,
+      executionLocation: capabilities.executionLocation,
+      networkScope: capabilities.networkScope,
+      confidentiality: capabilities.confidentiality,
+      outcome,
+    };
+  }
+
+  private executionMetadata(
+    provider: ProviderEntry,
+    invocationId: string,
+    executionPath: readonly ProviderExecutionAttempt[],
+  ): ProviderExecutionMetadata {
+    const capabilities = providerPrivacyCapabilities(provider);
+    return {
+      reasoningMode: this.reasoningMode,
+      provider: provider.name,
+      model: provider.model,
+      request: { invocationId, providerRequestId: null },
+      capabilities,
+      verificationStatus: capabilities.attestationPolicy === 'required'
+        ? 'required_missing'
+        : 'not_applicable',
+      executionPath,
+      costBasis: {
+        pricing: capabilities.pricing,
+        inputTokens: null,
+        outputTokens: null,
+      },
+      receiptId: null,
+    };
+  }
+
+  private canRunUnattended(provider: ProviderEntry, nowMs = Date.now()): boolean {
+    return isPricingUsableForUnattended(
+      providerPrivacyCapabilities(provider).pricing,
+      nowMs,
+    );
   }
 
   /**
@@ -172,19 +243,26 @@ export class LlmClient {
    */
   async generate(prompt: string | ChatMessage[], options: GenerateOptions = {}): Promise<LlmResponse> {
     const attempted: string[] = [];
-    let confidentialFallbackReason: string | undefined;
+    const executionPath: ProviderExecutionAttempt[] = [];
+    const invocationId = randomUUID();
 
     for (const entry of this.chain) {
       const { provider, generateFn, circuitBreaker } = entry;
 
+      if (options.invocationKind !== 'interactive' && !this.canRunUnattended(provider)) {
+        attempted.push(`${provider.name}(price-unavailable)`);
+        executionPath.push(this.executionAttempt(provider, 'price_unavailable'));
+        continue;
+      }
+
       if (!circuitBreaker.canExecute()) {
         attempted.push(`${provider.name}(circuit-open)`);
+        executionPath.push(this.executionAttempt(provider, 'circuit_open'));
         continue;
       }
 
       attempted.push(provider.name);
       const start = Date.now();
-
       try {
         const content = await generateFn(
           provider.apiKey,
@@ -192,31 +270,32 @@ export class LlmClient {
           prompt,
           { ...options, baseUrl: provider.baseUrl },
         );
-        const recorded = await this.recordSuccessfulInference(
-          provider, prompt, options, content, confidentialFallbackReason,
-        );
-        if (!recorded.accepted) {
-          confidentialFallbackReason = recorded.failureReason;
-          circuitBreaker.recordFailure();
-          continue;
-        }
         circuitBreaker.recordSuccess();
+        executionPath.push(this.executionAttempt(provider, 'succeeded'));
+        const execution = this.executionMetadata(
+          provider,
+          invocationId,
+          executionPath.slice(),
+        );
+        this.recordSuccessfulInference(provider, prompt, options, content, execution);
 
         return {
           content,
           provider: provider.name,
           model: provider.model,
           latencyMs: Date.now() - start,
+          execution,
         };
       } catch (err) {
         circuitBreaker.recordFailure();
+        executionPath.push(this.executionAttempt(provider, 'failed'));
         console.warn(
           `[llm] ${provider.name} failed (${Date.now() - start}ms): ${err instanceof Error ? err.message : String(err)}`,
         );
       }
     }
 
-    throw new AllProvidersFailedError(attempted);
+    throw new AllProvidersFailedError(attempted, executionPath);
   }
 
   /**
@@ -244,13 +323,21 @@ export class LlmClient {
     options: GenerateOptions = {},
   ): AsyncIterable<LlmStreamEvent> {
     const attempted: string[] = [];
-    let confidentialFallbackReason: string | undefined;
+    const executionPath: ProviderExecutionAttempt[] = [];
+    const invocationId = randomUUID();
 
     for (const entry of this.chain) {
       const { provider, streamFn, circuitBreaker } = entry;
 
+      if (options.invocationKind !== 'interactive' && !this.canRunUnattended(provider)) {
+        attempted.push(`${provider.name}(price-unavailable)`);
+        executionPath.push(this.executionAttempt(provider, 'price_unavailable'));
+        continue;
+      }
+
       if (!circuitBreaker.canExecute()) {
         attempted.push(`${provider.name}(circuit-open)`);
+        executionPath.push(this.executionAttempt(provider, 'circuit_open'));
         continue;
       }
 
@@ -267,40 +354,31 @@ export class LlmClient {
           { ...options, baseUrl: provider.baseUrl },
         )) {
           if (chunk.length === 0) continue;
+          firstChunkSeen = true;
           collected.push(chunk);
-          // Confidential output is buffered until its verifier accepts the
-          // response binding. Streaming it first would disclose unverified
-          // output and make a strict failure impossible to retract.
-          if (modeFor(provider) !== 'verified_confidential') {
-            firstChunkSeen = true;
-            yield { type: 'chunk', content: chunk };
-          }
+          yield { type: 'chunk', content: chunk };
         }
         const content = collected.join('');
-        const recorded = await this.recordSuccessfulInference(
-          provider, prompt, options, content, confidentialFallbackReason,
-        );
-        if (!recorded.accepted) {
-          confidentialFallbackReason = recorded.failureReason;
-          circuitBreaker.recordFailure();
-          continue;
-        }
-        if (modeFor(provider) === 'verified_confidential') {
-          for (const chunk of collected) {
-            if (chunk.length > 0) yield { type: 'chunk', content: chunk };
-          }
-        }
         circuitBreaker.recordSuccess();
+        executionPath.push(this.executionAttempt(provider, 'succeeded'));
+        const execution = this.executionMetadata(
+          provider,
+          invocationId,
+          executionPath.slice(),
+        );
+        this.recordSuccessfulInference(provider, prompt, options, content, execution);
         yield {
           type: 'done',
           content,
           provider: provider.name,
           model: provider.model,
           latencyMs: Date.now() - start,
+          execution,
         };
         return;
       } catch (err) {
         circuitBreaker.recordFailure();
+        executionPath.push(this.executionAttempt(provider, 'failed'));
         if (firstChunkSeen) {
           // Re-throw — caller already saw partial output, can't silently
           // re-try a different provider without producing duplicate text.
@@ -314,103 +392,60 @@ export class LlmClient {
       }
     }
 
-    throw new AllProvidersFailedError(attempted);
+    throw new AllProvidersFailedError(attempted, executionPath);
   }
 
-  private async recordSuccessfulInference(
+  private recordSuccessfulInference(
     provider: ProviderEntry,
     prompt: string | ChatMessage[],
     options: GenerateOptions,
     content: string,
-    fallbackReason?: string,
-  ): Promise<{ accepted: boolean; failureReason?: string }> {
-    const mode = modeFor(provider);
+    execution: ProviderExecutionMetadata,
+  ): void {
     const request = canonicalLogicalInputBytes(prompt, options);
     const response = Buffer.from(content, 'utf8');
-    const endpoint = endpointIdentity(provider);
-    let verification: ConfidentialVerificationResult | undefined;
-
-    if (mode === 'verified_confidential') {
-      try {
-        verification = provider.confidentialVerifier
-          ? await provider.confidentialVerifier.verify({
-              provider: provider.name,
-              model: provider.model,
-              endpointIdentity: endpoint,
-              request,
-              response,
-            })
-          : {
-              outcome: 'verification_unavailable',
-              verifierVersion: 'unconfigured',
-              reason: 'No confidential verifier was configured for this provider.',
-            };
-      } catch (error) {
-        verification = {
-          outcome: 'verification_unavailable',
-          verifierVersion: 'verifier-error',
-          reason: error instanceof Error ? error.message : 'Confidential verifier failed.',
-        };
-      }
-    }
-
-    const status: InferenceTrace['status'] = mode === 'on_device'
-      ? fallbackReason ? 'local_fallback' : 'on_device'
-      : mode === 'conventional_cloud'
-        ? 'conventional'
-        : verification?.outcome ?? 'verification_unavailable';
+    const capabilities = execution.capabilities;
+    const status: InferenceTrace['status'] = inferenceStatusForExecution(execution);
 
     const trace: InferenceTrace = {
-      id: crypto.randomUUID(),
-      reasoningMode: mode,
+      id: randomUUID(),
       status,
-      provider: provider.name,
-      model: provider.model,
-      endpointIdentity: endpoint,
+      execution,
+      endpointIdentity: endpointIdentity(provider),
       request,
       response,
-      cost: mode === 'on_device'
+      cost: capabilities.pricing.kind === 'zero'
         ? { basis: 'exact', currency: 'USD', amountMinor: 0 }
         : { basis: 'unknown' },
       createdAt: (this.options.now?.() ?? new Date()).toISOString(),
-      verifierVersion: verification?.verifierVersion ?? 'skytwin-llm-boundary-v1',
-      ...(mode === 'on_device' && fallbackReason ? {
-        fallback: {
-          origin: 'verified_confidential' as const,
-          destination: 'on_device' as const,
-          reason: fallbackReason,
-        },
-      } : {}),
-      ...(verification?.outcome === 'verified' ? { verification } : {}),
-      ...(verification && verification.outcome !== 'verified'
-        ? { verificationFailureReason: verification.reason }
-        : {}),
+      verifierVersion: 'skytwin-llm-boundary-v1',
     };
     this.options.onInferenceTrace?.(trace);
-    if (mode !== 'verified_confidential' || verification?.outcome === 'verified') {
-      return { accepted: true };
-    }
-    return { accepted: false, failureReason: verification?.reason ?? 'Confidential verification failed.' };
   }
 
   /**
    * Test a single provider by generating a trivial response.
    */
-  static async testProvider(provider: ProviderEntry): Promise<{ latencyMs: number; model: string }> {
-    const generateFn = PROVIDER_FNS[provider.name];
+  static async testProviderForReasoningMode(
+    mode: unknown,
+    provider: ProviderEntry,
+  ): Promise<{ latencyMs: number; model: string }> {
+    const scoped = providersForReasoningMode(mode, [provider]);
+    const admitted = scoped.providers[0]!;
+    const generateFn = PROVIDER_FNS[admitted.name];
     if (!generateFn) {
-      throw new Error(`Unknown provider: ${provider.name}`);
+      throw new Error(`Unknown provider: ${admitted.name}`);
     }
 
     const start = Date.now();
     await generateFn(
-      provider.apiKey,
-      provider.model,
+      admitted.apiKey,
+      admitted.model,
       'Respond with exactly: OK',
-      { maxTokens: 10, temperature: 0, baseUrl: provider.baseUrl },
+      { maxTokens: 10, temperature: 0, baseUrl: admitted.baseUrl },
     );
 
-    return { latencyMs: Date.now() - start, model: provider.model };
+    return { latencyMs: Date.now() - start, model: admitted.model };
   }
 
   /**

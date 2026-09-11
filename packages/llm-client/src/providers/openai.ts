@@ -1,6 +1,6 @@
 import type { ChatMessage, GenerateOptions } from '../types.js';
 import { toMessages } from '../messages.js';
-import { validateBaseUrl } from '../url-validation.js';
+import { fetchCustomProviderUrl, type SafeProviderFetch } from '../url-validation.js';
 
 const DEFAULT_URL = 'https://api.openai.com';
 
@@ -11,9 +11,9 @@ export async function generate(
   options: GenerateOptions & { baseUrl?: string } = {},
 ): Promise<string> {
   const baseUrl = options.baseUrl || DEFAULT_URL;
-  if (options.baseUrl) validateBaseUrl(options.baseUrl, 'openai');
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 30_000);
+  let customFetch: SafeProviderFetch | undefined;
 
   try {
     // OpenAI's chat-completion API is already message-array native, so
@@ -31,7 +31,8 @@ export async function generate(
     }
     messages.push(...inputMessages);
 
-    const res = await fetch(`${baseUrl}/v1/chat/completions`, {
+    const requestUrl = `${baseUrl}/v1/chat/completions`;
+    const requestInit = {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -44,7 +45,11 @@ export async function generate(
         temperature: options.temperature ?? 0.3,
       }),
       signal: controller.signal,
-    });
+    } satisfies RequestInit;
+    customFetch = options.baseUrl
+      ? await fetchCustomProviderUrl(requestUrl, 'openai', requestInit)
+      : undefined;
+    const res = customFetch?.response ?? await fetch(requestUrl, requestInit);
 
     if (!res.ok) {
       const body = await res.text().catch(() => '');
@@ -55,5 +60,6 @@ export async function generate(
     return data.choices[0]?.message?.content ?? '';
   } finally {
     clearTimeout(timeout);
+    await customFetch?.close();
   }
 }

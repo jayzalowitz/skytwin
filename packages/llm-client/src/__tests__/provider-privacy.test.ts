@@ -1,0 +1,135 @@
+import { describe, expect, it } from 'vitest';
+import type { ProviderEntry } from '../types.js';
+import {
+  isPricingUsableForUnattended,
+  providerPrivacyCapabilities,
+  providersForReasoningMode,
+} from '../provider-privacy.js';
+
+const embedded: ProviderEntry = { name: 'embedded', apiKey: '', model: 'managed' };
+const ollama: ProviderEntry = {
+  name: 'ollama', apiKey: '', model: 'qwen', baseUrl: 'http://127.0.0.1:11434',
+};
+const openai: ProviderEntry = { name: 'openai', apiKey: 'secret', model: 'gpt' };
+
+describe('provider privacy capabilities', () => {
+  it('derives local boundaries from concrete local adapters', () => {
+    expect(providerPrivacyCapabilities(embedded)).toMatchObject({
+      executionLocation: 'on_device',
+      networkScope: 'none',
+      confidentiality: 'device_local',
+      pricing: { kind: 'zero' },
+    });
+    expect(providerPrivacyCapabilities(ollama)).toMatchObject({
+      executionLocation: 'on_device',
+      networkScope: 'loopback',
+      confidentiality: 'device_local',
+      pricing: { kind: 'zero' },
+    });
+  });
+
+  it('does not infer confidential computing or zero cost from a custom URL', () => {
+    const custom = { ...openai, baseUrl: 'https://private.example/v1' };
+    expect(providerPrivacyCapabilities(custom)).toMatchObject({
+      executionLocation: 'remote_service',
+      networkScope: 'external',
+      confidentiality: 'operator_declared',
+      attestationPolicy: 'not_applicable',
+      pricing: { kind: 'unknown' },
+      retention: { classification: 'provider_declared', policyUrl: null },
+    });
+  });
+
+  it('classifies a remotely hosted Ollama endpoint as a conventional remote service', () => {
+    const remoteOllama = { ...ollama, baseUrl: 'https://ollama.example' };
+    expect(providerPrivacyCapabilities(remoteOllama)).toMatchObject({
+      executionLocation: 'remote_service',
+      networkScope: 'external',
+      confidentiality: 'operator_declared',
+      pricing: { kind: 'unknown' },
+    });
+  });
+
+  it('normalizes a trailing-dot localhost endpoint to the local policy boundary', () => {
+    const trailingDot = { ...ollama, baseUrl: 'http://localhost.:11434' };
+    expect(providerPrivacyCapabilities(trailingDot)).toMatchObject({
+      executionLocation: 'on_device', networkScope: 'loopback', confidentiality: 'device_local',
+    });
+    expect(() => providersForReasoningMode('bring_your_own_provider', [trailingDot]))
+      .toThrow(expect.objectContaining({ code: 'cross_mode_provider' }));
+    expect(providersForReasoningMode('on_device', [trailingDot]).providers).toEqual([trailingDot]);
+  });
+});
+
+describe('unattended pricing policy', () => {
+  const now = Date.parse('2026-09-10T12:00:00Z');
+  const fixed = {
+    kind: 'fixed' as const,
+    unit: 'nano_usd' as const,
+    source: 'static_registry' as const,
+    inputNanoUsdPerMillionTokens: 1,
+    outputNanoUsdPerMillionTokens: 2,
+    checkedAt: '2026-09-10T11:00:00Z',
+    expiresAt: null,
+  };
+
+  it('accepts local zero pricing and well-formed bounded pricing', () => {
+    expect(isPricingUsableForUnattended({
+      kind: 'zero', unit: 'nano_usd', source: 'local_runtime',
+    }, now)).toBe(true);
+    expect(isPricingUsableForUnattended(fixed, now)).toBe(true);
+    expect(isPricingUsableForUnattended({
+      ...fixed, kind: 'dynamic', source: 'provider_catalog',
+      expiresAt: '2026-09-10T13:00:00Z',
+    }, now)).toBe(true);
+  });
+
+  it('rejects unknown, invalid, stale, and unbounded dynamic pricing', () => {
+    expect(isPricingUsableForUnattended({
+      kind: 'unknown', unit: 'nano_usd', source: 'unknown', reason: 'not_reported',
+    }, now)).toBe(false);
+    expect(isPricingUsableForUnattended({ ...fixed, checkedAt: 'not-a-date' }, now)).toBe(false);
+    expect(isPricingUsableForUnattended({ ...fixed, expiresAt: 'not-a-date' }, now)).toBe(false);
+    expect(isPricingUsableForUnattended({ ...fixed, expiresAt: '2026-09-10T12:00:00Z' }, now)).toBe(false);
+    expect(isPricingUsableForUnattended({
+      ...fixed, kind: 'dynamic', source: 'provider_catalog', expiresAt: null,
+    }, now)).toBe(false);
+  });
+});
+
+describe('reasoning-mode provider policy', () => {
+  it('admits an explicitly local-only chain', () => {
+    expect(providersForReasoningMode('on_device', [embedded, ollama])).toEqual({
+      mode: 'on_device', providers: [embedded, ollama],
+    });
+  });
+
+  it('rejects remote and non-loopback providers in on-device mode', () => {
+    expect(() => providersForReasoningMode('on_device', [embedded, openai]))
+      .toThrow(expect.objectContaining({ code: 'cross_mode_provider' }));
+    expect(() => providersForReasoningMode('on_device', [{
+      ...ollama, baseUrl: 'https://ollama.example',
+    }])).toThrow(expect.objectContaining({ code: 'non_loopback_local_endpoint' }));
+  });
+
+  it('fails closed for unknown modes, empty chains and unverified private-cloud adapters', () => {
+    expect(() => providersForReasoningMode('ON_DEVICE', [embedded]))
+      .toThrow(expect.objectContaining({ code: 'unknown_mode' }));
+    expect(() => providersForReasoningMode('on_device', []))
+      .toThrow(expect.objectContaining({ code: 'no_providers' }));
+    expect(() => providersForReasoningMode('verified_private_cloud', [openai]))
+      .toThrow(expect.objectContaining({ code: 'verification_adapter_required' }));
+  });
+
+  it('admits conventional providers only under the explicit bring-your-own mode', () => {
+    expect(providersForReasoningMode('bring_your_own_provider', [openai])).toEqual({
+      mode: 'bring_your_own_provider', providers: [openai],
+    });
+    const remoteOllama = { ...ollama, baseUrl: 'https://ollama.example' };
+    expect(providersForReasoningMode('bring_your_own_provider', [remoteOllama])).toEqual({
+      mode: 'bring_your_own_provider', providers: [remoteOllama],
+    });
+    expect(() => providersForReasoningMode('bring_your_own_provider', [ollama]))
+      .toThrow(expect.objectContaining({ code: 'cross_mode_provider' }));
+  });
+});

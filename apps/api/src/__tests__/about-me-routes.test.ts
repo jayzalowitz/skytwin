@@ -27,6 +27,10 @@ vi.mock('@skytwin/core', () => ({
   }),
 }));
 
+vi.mock('../lib/user-llm-client.js', () => ({
+  buildUserLlmClient: vi.fn().mockResolvedValue(null),
+}));
+
 import { createAboutMeRouter } from '../routes/about-me.js';
 
 // ---------------------------------------------------------------------------
