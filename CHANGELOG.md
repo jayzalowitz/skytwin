@@ -5,6 +5,15 @@ All notable changes to SkyTwin will be documented in this file.
 ### Added
 
 - Added a database-only response boundary for canonical Gmail Inbox archive approvals. It locks and verifies the owner-bound proposal graph, requires pending unexpired consent using database time, records the approved or rejected r4 receipt revision, and on approval reserves a distinct unlinked `event_execution` barrier keyed by the approval UUID in the same transaction. The proposal barrier remains permanently blocked; fresh policy evaluation, preparation, execution planning, credentials, routing, and provider access remain outside this boundary.
+- The authenticated approval endpoint now routes only the exact canonical Inbox archive shape into that boundary. Malformed reserved shapes remain blocked before generic approval side effects, and exact replays return the original recorded response without implying execution.
+
+### Changed
+
+- The approvals dashboard describes this bounded response as recorded consent and states that no mailbox change occurred. It does not claim learning or refresh trust progress for this workflow.
+
+### Fixed (post-review)
+
+- Canonical Inbox archive cards now use record-only language throughout their pending actions, explanatory details, notes, and resolved history. Generic approval workflows keep their existing execution and learning guidance.
 
 ## [Unreleased] — Gated Inbox proposal persistence
 
