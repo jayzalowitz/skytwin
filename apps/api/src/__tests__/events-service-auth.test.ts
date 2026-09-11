@@ -121,6 +121,10 @@ vi.mock('@skytwin/db', () => ({
       .mockResolvedValue({ id: TEST_USER_ID, trust_tier: 'observer', ironclaw_channel: 'skytwin' }),
   },
   aiProviderRepository: { getEnabledForUser: vi.fn().mockResolvedValue([]) },
+  inferenceReceiptRepository: {
+    isCompleteForDecision: vi.fn().mockResolvedValue(false),
+    createManyForUser: vi.fn().mockResolvedValue([]),
+  },
   emailLabelRepository: {
     topLabelsForSender: vi.fn().mockResolvedValue([]),
     topLabelsForListId: vi.fn().mockResolvedValue([]),
