@@ -6,6 +6,33 @@ import { showToast } from '../toast.js';
 import { formatMoney } from '../format.js';
 
 const PENDING_PAGE_SIZE = 10;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/**
+ * Presentation-only recognition of the public canonical Inbox archive shape.
+ * Server-side classifiers and repository checks remain the authority boundary;
+ * this helper only selects truthful copy for rows the API already returned.
+ */
+function isCanonicalGmailArchiveConsentView(action) {
+  if (!action || typeof action !== 'object' || Array.isArray(action)) return false;
+  const parameters = action.parameters;
+  if (!parameters || typeof parameters !== 'object' || Array.isArray(parameters)) return false;
+  const parameterKeys = Object.keys(parameters).sort();
+  return action.actionType === 'archive_email' &&
+    action.domain === 'email' &&
+    action.estimatedCostCents === 0 &&
+    action.costZeroIntent === 'verified_zero' &&
+    action.reversible === true &&
+    action.confidence === 'moderate' &&
+    action.provenance === 'untrusted_external' &&
+    parameterKeys.length === 3 &&
+    parameterKeys[0] === 'messageRefId' &&
+    parameterKeys[1] === 'operation' &&
+    parameterKeys[2] === 'schema' &&
+    parameters.schema === 'gmail_inbox_mutation_v1' &&
+    typeof parameters.messageRefId === 'string' && UUID.test(parameters.messageRefId) &&
+    parameters.operation === 'archive';
+}
 
 // Held in module scope so the "Show more" button can re-render the pending
 // list without re-fetching. Reset on every full renderApprovals() call.
@@ -52,6 +79,8 @@ export async function renderApprovals(container, userId) {
   }
 
   const pending = pendingData.value.approvals ?? [];
+  const includesGmailArchiveConsent = pending.some((approval) =>
+    isCanonicalGmailArchiveConsentView(approval.candidateAction));
   const rawHistory = historyData.status === 'fulfilled' ? (historyData.value.approvals ?? []) : [];
   const prog = progressData.status === 'fulfilled' ? progressData.value : null;
 
@@ -91,22 +120,29 @@ export async function renderApprovals(container, userId) {
           <button class="btn btn-outline btn-sm" data-action="dismiss-intro" data-key="${escapeHtml(firstApprovalIntroKey)}" style="padding: 0.15rem 0.5rem; font-size: 0.7rem;">Got it</button>
         </div>
         <div class="card-subtitle" style="line-height: 1.65;">
-          Each card below is a call I want to make on your behalf. I'll show you the email or invite that
-          triggered it, what I'd do, and why. <strong>Yes, do it</strong> approves and I'll handle it; <strong>Not this time</strong>
-          tells me to skip — and if you add a reason, I learn so the next one of these comes out right.
-          Every yes nudges your trust level up, so eventually I'll just handle this kind of thing on my own.
+          ${includesGmailArchiveConsent
+            ? `Each card explains what needs your response and what that response records. Some review-only
+               steps do not change the connected service or train the twin; the card will say so explicitly.`
+            : `Each card below is a call I want to make on your behalf. I'll show you the email or invite that
+               triggered it, what I'd do, and why. <strong>Yes, do it</strong> approves and I'll handle it; <strong>Not this time</strong>
+               tells me to skip — and if you add a reason, I learn so the next one of these comes out right.
+               Every yes nudges your trust level up, so eventually I'll just handle this kind of thing on my own.`}
         </div>
       </div>
     ` : ''}
 
     <div class="card" style="border-left: 3px solid var(--primary);">
       <div class="card-header">
-        <span class="card-title">${pending.length > 0 ? 'I want to handle these — OK?' : 'Needs your OK'}</span>
+        <span class="card-title">${pending.length > 0
+          ? includesGmailArchiveConsent ? 'These need your review' : 'I want to handle these — OK?'
+          : 'Needs your OK'}</span>
         <span class="badge ${pending.length > 0 ? 'badge-warning' : 'badge-success'}">${pending.length} waiting</span>
       </div>
       <div class="card-subtitle">
         ${pending.length > 0
-          ? 'Your call. I\'ll explain the why on each one — say yes if it sounds right, or tell me why not so I learn for next time.'
+          ? includesGmailArchiveConsent
+            ? 'Review each card and choose the response you want recorded. Review-only cards state clearly when no connected-service change occurs.'
+            : 'Your call. I\'ll explain the why on each one — say yes if it sounds right, or tell me why not so I learn for next time.'
           : 'Nothing\'s waiting on you right now.'}
       </div>
     </div>
@@ -295,6 +331,7 @@ function renderSignalContext(ctx) {
 
 function renderStandardCard(a, action) {
   const isDual = a.confirmationLevel === 'dual';
+  const isGmailArchiveConsent = isCanonicalGmailArchiveConsentView(action);
   return `
     <div class="approval-reason">
       ${explainReason(action, a.reason)}
@@ -308,10 +345,10 @@ function renderStandardCard(a, action) {
     <div class="approval-actions">
       ${isDual
         ? `<button class="btn btn-warning btn-sm" data-action="approval-dual" data-step="1" data-request-id="${escapeHtml(a.id)}" data-user-id="${escapeHtml(a.userId || '')}">Confirm — step 1 of 2</button>`
-        : `<button class="btn btn-success btn-sm" data-action="approval" data-decision="approve" data-request-id="${escapeHtml(a.id)}" data-user-id="${escapeHtml(a.userId || '')}">Yes, do it</button>`
+        : `<button class="btn btn-success btn-sm" data-action="approval" data-decision="approve" data-request-id="${escapeHtml(a.id)}" data-user-id="${escapeHtml(a.userId || '')}">${isGmailArchiveConsent ? 'Record approval' : 'Yes, do it'}</button>`
       }
-      <button class="btn btn-outline btn-sm" data-action="approval" data-decision="reject" data-request-id="${escapeHtml(a.id)}" data-user-id="${escapeHtml(a.userId || '')}">Not this time</button>
-      <input class="form-input" id="reason-${escapeHtml(a.id)}" placeholder="Tell me why so I learn (optional)" style="flex: 1; font-size: 0.8rem;">
+      <button class="btn btn-outline btn-sm" data-action="approval" data-decision="reject" data-request-id="${escapeHtml(a.id)}" data-user-id="${escapeHtml(a.userId || '')}">${isGmailArchiveConsent ? 'Record rejection' : 'Not this time'}</button>
+      <input class="form-input" id="reason-${escapeHtml(a.id)}" placeholder="${isGmailArchiveConsent ? 'Add a note (optional)' : 'Tell me why so I learn (optional)'}" style="flex: 1; font-size: 0.8rem;">
     </div>
   `;
 }
@@ -503,6 +540,18 @@ function cleanAltLabel(description, actionType) {
 function renderActionDetails(action) {
   if (!action || !action.actionType) return '';
 
+  if (isCanonicalGmailArchiveConsentView(action)) {
+    return `
+      <details class="action-details" style="margin: 0.5rem 0; font-size: 0.82rem;">
+        <summary style="cursor: pointer; color: var(--text-dim); font-weight: 500;">What this records</summary>
+        <div style="margin-top: 0.4rem; padding: 0.5rem 0.75rem; border-left: 2px solid var(--border); display: flex; flex-direction: column; gap: 0.25rem;">
+          <span class="detail-step"><strong>Record:</strong> Your approval or rejection of this Inbox archive proposal.</span>
+          <span class="detail-reasoning">No mailbox change is made at this step.</span>
+        </div>
+      </details>
+    `;
+  }
+
   const lines = [];
 
   // Describe the concrete execution step
@@ -584,6 +633,10 @@ function describeExecutionStep(action) {
 function describeAction(action) {
   if (!action) return 'Action pending review';
 
+  if (isCanonicalGmailArchiveConsentView(action)) {
+    return 'Review Inbox archive proposal';
+  }
+
   // For escalations, show a clean subject instead of the raw "Escalate to user:" prefix
   if (action.actionType === 'escalate_to_user') {
     return escapeHtml(extractEscalationSubject(action));
@@ -615,6 +668,21 @@ function describeAction(action) {
 function renderHistoryDetails(a) {
   const action = a.candidateAction || {};
   if (!action.actionType) return '';
+
+  if (isCanonicalGmailArchiveConsentView(action)) {
+    const statusNote = a.status === 'approved' ? 'Approval recorded' :
+      a.status === 'rejected' ? 'Rejection recorded' :
+      a.status === 'expired' ? 'Expired — no response recorded' : 'Response status unavailable';
+    return `
+      <details style="font-size: 0.78rem; margin-top: 0.25rem; color: var(--text-dim);">
+        <summary style="cursor: pointer;">What was recorded</summary>
+        <div style="padding: 0.3rem 0.5rem 0.3rem 0.75rem; border-left: 2px solid var(--border); margin-top: 0.2rem;">
+          <div>${statusNote}</div>
+          <div style="margin-top: 0.2rem; font-style: italic;">Mailbox unchanged</div>
+        </div>
+      </details>
+    `;
+  }
 
   const isEscalation = action.actionType === 'escalate_to_user';
 
@@ -671,6 +739,10 @@ function renderHistoryDetails(a) {
 
 function explainReason(action, reason) {
   if (reason) return escapeHtml(reason);
+
+  if (isCanonicalGmailArchiveConsentView(action)) {
+    return 'Review this Inbox archive proposal. This step records only your response.';
+  }
 
   const explanations = {
     archive_email: 'I noticed you usually archive emails like this. Want me to handle it?',

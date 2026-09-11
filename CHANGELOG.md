@@ -11,6 +11,10 @@ All notable changes to SkyTwin will be documented in this file.
 
 - The approvals dashboard describes this bounded response as recorded consent and states that no mailbox change occurred. It does not claim learning or refresh trust progress for this workflow.
 
+### Fixed (post-review)
+
+- Canonical Inbox archive cards now use record-only language throughout their pending actions, explanatory details, notes, and resolved history. Generic approval workflows keep their existing execution and learning guidance.
+
 ## [Unreleased] — Gated Inbox proposal persistence
 
 ### Added
