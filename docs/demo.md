@@ -62,10 +62,10 @@ start.
 - **"Connect your email"** — real Gmail + Calendar OAuth. Use this if you
   want to see the live pipeline against your own data.
 
-Under those two, a one-line "your AI runs privately on this computer — we'll
-use `<model>`" reassures a non-technical visitor that the local model is
-already picked for their machine (RAM- and disk-aware); "Change" opens
-Settings → AI. Everything else (tell-SkyTwin-about-yourself, the not-yet-wired
+Under those two, the app recommends a maintained local model for the machine
+(RAM-, architecture-, and disk-aware); "Change" opens Settings → AI. The model
+is downloaded only when the user starts it, and local inference still requires
+a compatible llama.cpp runtime. Everything else (tell-SkyTwin-about-yourself, the not-yet-wired
 computer observer) is tucked under "More ways to start" so the first screen
 isn't a wall of options.
 

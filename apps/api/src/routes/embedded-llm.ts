@@ -1,22 +1,22 @@
-import { Router, type Request, type Response } from 'express';
+import { Router, type Request, type Response } from "express";
 import {
   MODEL_REGISTRY,
   checkForUpgrade,
   recommendDefault,
   type RamBracket,
-} from '@skytwin/embedded-llm';
-import { modelDownloadRepository, type ModelDownloadRow } from '@skytwin/db';
+} from "@skytwin/embedded-llm";
+import { modelDownloadRepository, type ModelDownloadRow } from "@skytwin/db";
 import {
   bindUserIdParamOwnership,
   requireOwnership,
-} from '../middleware/require-ownership.js';
-import { bindUserIdParamValidator } from '../middleware/validate-uuid.js';
+} from "../middleware/require-ownership.js";
+import { bindUserIdParamValidator } from "../middleware/validate-uuid.js";
 import {
   cancelDownload,
   pauseDownload,
   resolveModelDir,
   startDownload,
-} from '../embedded-llm/downloader.js';
+} from "../embedded-llm/downloader.js";
 
 /**
  * Fetch a download row and enforce that the authenticated user owns
@@ -33,14 +33,14 @@ async function loadOwnedDownload(
 ): Promise<ModelDownloadRow | null> {
   const row = await modelDownloadRepository.findById(id);
   if (!row) {
-    res.status(404).json({ error: 'download not found' });
+    res.status(404).json({ error: "download not found" });
     return null;
   }
   const authUserId = req.authenticatedUserId;
   if (authUserId !== undefined && authUserId !== row.user_id) {
     res.status(403).json({
-      error: 'Forbidden',
-      message: 'You do not have access to this resource.',
+      error: "Forbidden",
+      message: "You do not have access to this resource.",
     });
     return null;
   }
@@ -76,25 +76,32 @@ export function createEmbeddedLlmRouter(): Router {
 
   // ── Catalog (AC#5) ────────────────────────────────────────────
 
-  router.get('/registry', (_req, res) => {
+  router.get("/registry", (_req, res) => {
     res.json({ models: MODEL_REGISTRY });
   });
 
-  router.get('/upgrade-check', (req, res) => {
-    const currentId = req.query['currentId'];
-    if (typeof currentId !== 'string' || currentId.length === 0) {
-      res.status(400).json({ error: 'currentId query param required' });
+  router.get("/upgrade-check", (req, res) => {
+    const currentId = req.query["currentId"];
+    if (typeof currentId !== "string" || currentId.length === 0) {
+      res.status(400).json({ error: "currentId query param required" });
       return;
     }
     const upgrade = checkForUpgrade(currentId);
     res.json({ upgrade });
   });
 
-  router.get('/recommend-default', (req, res) => {
-    const bracket = req.query['bracket'];
-    const valid: ReadonlyArray<RamBracket> = ['4gb', '8gb', '16gb', '32gb-plus'];
-    if (typeof bracket !== 'string' || !valid.includes(bracket as RamBracket)) {
-      res.status(400).json({ error: 'bracket must be one of 4gb / 8gb / 16gb / 32gb-plus' });
+  router.get("/recommend-default", (req, res) => {
+    const bracket = req.query["bracket"];
+    const valid: ReadonlyArray<RamBracket> = [
+      "4gb",
+      "8gb",
+      "16gb",
+      "32gb-plus",
+    ];
+    if (typeof bracket !== "string" || !valid.includes(bracket as RamBracket)) {
+      res
+        .status(400)
+        .json({ error: "bracket must be one of 4gb / 8gb / 16gb / 32gb-plus" });
       return;
     }
     const model = recommendDefault(bracket as RamBracket);
@@ -103,21 +110,21 @@ export function createEmbeddedLlmRouter(): Router {
 
   // ── Downloader (AC#2) ─────────────────────────────────────────
 
-  router.get('/model-dir', (_req, res) => {
+  router.get("/model-dir", (_req, res) => {
     res.json({ modelDir: resolveModelDir() });
   });
 
-  router.post('/downloads/start', requireOwnership, async (req, res, next) => {
+  router.post("/downloads/start", requireOwnership, async (req, res, next) => {
     try {
       const body = req.body as Record<string, unknown>;
-      const userId = body['userId'];
-      const modelId = body['modelId'];
-      if (typeof userId !== 'string' || userId.length === 0) {
-        res.status(400).json({ error: 'userId required' });
+      const userId = body["userId"];
+      const modelId = body["modelId"];
+      if (typeof userId !== "string" || userId.length === 0) {
+        res.status(400).json({ error: "userId required" });
         return;
       }
-      if (typeof modelId !== 'string' || modelId.length === 0) {
-        res.status(400).json({ error: 'modelId required' });
+      if (typeof modelId !== "string" || modelId.length === 0) {
+        res.status(400).json({ error: "modelId required" });
         return;
       }
       try {
@@ -132,6 +139,20 @@ export function createEmbeddedLlmRouter(): Router {
           res.status(404).json({ error: msg });
           return;
         }
+        if (
+          typeof err === "object" &&
+          err !== null &&
+          (err as { code?: unknown }).code === "insufficient_disk"
+        ) {
+          const details =
+            (err as { details?: Record<string, unknown> }).details ?? {};
+          res.status(507).json({
+            error: "insufficient_disk",
+            requiredBytes: details["requiredBytes"],
+            availableBytes: details["availableBytes"],
+          });
+          return;
+        }
         throw err;
       }
     } catch (err) {
@@ -139,10 +160,13 @@ export function createEmbeddedLlmRouter(): Router {
     }
   });
 
-  router.get('/downloads/user/:userId', async (req, res, next) => {
+  router.get("/downloads/user/:userId", async (req, res, next) => {
     try {
       const { userId } = req.params;
-      if (!userId) { res.status(400).json({ error: 'userId required' }); return; }
+      if (!userId) {
+        res.status(400).json({ error: "userId required" });
+        return;
+      }
       const rows = await modelDownloadRepository.listForUser(userId);
       res.json({ downloads: rows.map(rowToJson) });
     } catch (err) {
@@ -150,10 +174,13 @@ export function createEmbeddedLlmRouter(): Router {
     }
   });
 
-  router.get('/downloads/:id', async (req, res, next) => {
+  router.get("/downloads/:id", async (req, res, next) => {
     try {
       const { id } = req.params;
-      if (!id) { res.status(400).json({ error: 'id required' }); return; }
+      if (!id) {
+        res.status(400).json({ error: "id required" });
+        return;
+      }
       const row = await loadOwnedDownload(req, res, id);
       if (!row) return;
       res.json({ download: rowToJson(row) });
@@ -162,10 +189,13 @@ export function createEmbeddedLlmRouter(): Router {
     }
   });
 
-  router.post('/downloads/:id/pause', async (req, res, next) => {
+  router.post("/downloads/:id/pause", async (req, res, next) => {
     try {
       const { id } = req.params;
-      if (!id) { res.status(400).json({ error: 'id required' }); return; }
+      if (!id) {
+        res.status(400).json({ error: "id required" });
+        return;
+      }
       const row = await loadOwnedDownload(req, res, id);
       if (!row) return;
       const ok = await pauseDownload(id);
@@ -175,26 +205,35 @@ export function createEmbeddedLlmRouter(): Router {
     }
   });
 
-  router.post('/downloads/:id/resume', async (req, res, next) => {
+  router.post("/downloads/:id/resume", async (req, res, next) => {
     try {
       const { id } = req.params;
-      if (!id) { res.status(400).json({ error: 'id required' }); return; }
+      if (!id) {
+        res.status(400).json({ error: "id required" });
+        return;
+      }
       const row = await loadOwnedDownload(req, res, id);
       if (!row) return;
       // Resume re-runs `startDownload` for this row's (userId, modelId).
       // The function's idempotent-on-active-row behavior picks up the
       // existing row and continues from `bytes_downloaded`.
       const result = await startDownload(row.user_id, row.model_id);
-      res.json({ download: rowToJson(result.download), resumed: result.resumed });
+      res.json({
+        download: rowToJson(result.download),
+        resumed: result.resumed,
+      });
     } catch (err) {
       next(err);
     }
   });
 
-  router.post('/downloads/:id/cancel', async (req, res, next) => {
+  router.post("/downloads/:id/cancel", async (req, res, next) => {
     try {
       const { id } = req.params;
-      if (!id) { res.status(400).json({ error: 'id required' }); return; }
+      if (!id) {
+        res.status(400).json({ error: "id required" });
+        return;
+      }
       const row = await loadOwnedDownload(req, res, id);
       if (!row) return;
       const ok = await cancelDownload(id);
@@ -221,12 +260,13 @@ interface DownloadJson {
   percent: number;
 }
 
-function rowToJson(r: import('@skytwin/db').ModelDownloadRow): DownloadJson {
+function rowToJson(r: import("@skytwin/db").ModelDownloadRow): DownloadJson {
   const totalBytes = Number(r.total_bytes);
   const bytesDownloaded = Number(r.bytes_downloaded);
-  const percent = totalBytes > 0
-    ? Math.min(100, Math.round((bytesDownloaded / totalBytes) * 100))
-    : 0;
+  const percent =
+    totalBytes > 0
+      ? Math.min(100, Math.round((bytesDownloaded / totalBytes) * 100))
+      : 0;
   return {
     id: r.id,
     modelId: r.model_id,

@@ -1,10 +1,19 @@
 import { spawn } from 'node:child_process';
-import { existsSync, readdirSync, statSync } from 'node:fs';
+import {
+  closeSync,
+  constants,
+  existsSync,
+  fstatSync,
+  openSync,
+  readdirSync,
+  statSync,
+} from 'node:fs';
 import { basename, join } from 'node:path';
 import type {
   EmbeddedTextCapabilities,
   EmbeddedTextPort,
 } from './text-port.js';
+import { computeFileDescriptorSha256 } from './managed-model-store.js';
 
 export interface LlamaCppBackendOptions {
   binaryPath: string;
@@ -12,6 +21,8 @@ export interface LlamaCppBackendOptions {
   contextWindow?: number;
   timeoutMs?: number;
   threads?: number;
+  verifiedModel?: { exactBytes: number; sha256: string };
+  spawnProcess?: typeof spawn;
 }
 
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -23,12 +34,16 @@ export class LlamaCppTextBackend implements EmbeddedTextPort {
   private readonly modelPath: string;
   private readonly timeoutMs: number;
   private readonly threads: number | null;
+  private readonly verifiedModel: LlamaCppBackendOptions['verifiedModel'];
+  private readonly spawnProcess: typeof spawn;
 
   constructor(opts: LlamaCppBackendOptions) {
     this.binaryPath = opts.binaryPath;
     this.modelPath = opts.modelPath;
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.threads = opts.threads ?? null;
+    this.verifiedModel = opts.verifiedModel;
+    this.spawnProcess = opts.spawnProcess ?? spawn;
     this.capabilities = {
       available: true,
       modelName: basename(opts.modelPath),
@@ -40,6 +55,9 @@ export class LlamaCppTextBackend implements EmbeddedTextPort {
     prompt: string,
     opts: { maxTokens?: number; temperature?: number } = {},
   ): Promise<string> {
+    const verifiedIdentity = this.verifiedModel
+      ? verifyModelForLaunch(this.modelPath, this.verifiedModel)
+      : null;
     const maxTokens = opts.maxTokens ?? 512;
     const temperature = opts.temperature ?? 0.7;
     const args = [
@@ -56,7 +74,21 @@ export class LlamaCppTextBackend implements EmbeddedTextPort {
     }
 
     return new Promise((resolve, reject) => {
-      const child = spawn(this.binaryPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+      const child = this.spawnProcess(this.binaryPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+      if (verifiedIdentity !== null) {
+        try {
+          const after = statSync(this.modelPath, { bigint: true });
+          if (after.dev !== verifiedIdentity.dev || after.ino !== verifiedIdentity.ino) {
+            child.kill('SIGKILL');
+            reject(new Error('managed model changed at the runtime launch boundary'));
+            return;
+          }
+        } catch {
+          child.kill('SIGKILL');
+          reject(new Error('managed model became unavailable at the runtime launch boundary'));
+          return;
+        }
+      }
       let stdout = '';
       let stderr = '';
       let settled = false;
@@ -92,6 +124,35 @@ export class LlamaCppTextBackend implements EmbeddedTextPort {
     });
   }
 }
+
+function verifyModelForLaunch(
+  path: string,
+  expected: { exactBytes: number; sha256: string },
+): { dev: bigint; ino: bigint } {
+  const fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  try {
+    const before = fstatSync(fd, { bigint: true });
+    if (!before.isFile() || before.nlink !== 1n || Number(before.size) !== expected.exactBytes) {
+      throw new Error('managed model identity check failed before runtime launch');
+    }
+    // Hash the descriptor already subjected to the no-follow and identity
+    // checks. Reopening the pathname here would introduce a second race.
+    const actual = computeFileDescriptorSha256(fd);
+    const after = fstatSync(fd, { bigint: true });
+    if (
+      actual !== expected.sha256 ||
+      after.size !== before.size ||
+      after.mtimeNs !== before.mtimeNs ||
+      after.ctimeNs !== before.ctimeNs
+    ) {
+      throw new Error('managed model integrity check failed before runtime launch');
+    }
+    return { dev: before.dev, ino: before.ino };
+  } finally {
+    closeSync(fd);
+  }
+}
+
 
 function stripEndOfTextMarker(text: string): string {
   return text

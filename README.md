@@ -142,8 +142,10 @@ Every path produces an explanation. Every outcome feeds back into the twin. The 
 
 Grab the installer for your OS, double-click, and you're in. No terminal, Docker,
 Ollama, or `.env` is required to open the app. CockroachDB ships inside the bundle
-as a hash-verified native binary. A local model and the `llama.cpp` runtime do not:
-local inference requires both, while a cloud provider remains an explicit opt-in.
+as a hash-verified native binary. A local model and the `llama.cpp` runtime are not
+bundled: SkyTwin recommends a maintained artifact for the machine and downloads it
+only after the user starts the install. A compatible runtime remains a separate
+prerequisite, while a cloud provider remains an explicit opt-in.
 
 > **Release boundary:** published installers currently predate the guarded,
 > account-free sample session in this source tree. Check the release notes for
@@ -180,10 +182,7 @@ To stop later: `cd ~/skytwin && ./bin/skytwin-dev --stop`.
 **The first 60 seconds in a development/source run:**
 1. The dashboard opens. Type any situation into "Ask your twin" — the agent reasons out loud and explains what it would do, with confidence and alternatives. No accounts connected yet, no signals required.
 2. After `pnpm db:seed`, click **"Just show me around"** on the welcome screen to skip OAuth and use the development demo seed. Alex has recent decisions, a daily briefing, four pending approvals, "What I've learned", Capabilities, Search, and a trust bar climbing toward "handle most things". The development seed also includes Pat (a power user) and Carol (a brand-new user), so the dev "Switch user" button tells three stories. This development path can exercise mock approval actions; it is separate from the packaged build's read-only data authority and isolated, non-persistent simulation.
-3. The welcome screen recommends a local model from the machine's RAM and free
-   disk. That recommendation does not install the model or `llama.cpp` runtime;
-   current source still requires those local components or an explicitly configured
-   cloud provider. "Change" opens Settings → AI (and the local memory backend).
+3. The welcome screen recommends a local model from the machine's RAM, architecture, and free disk. The current maintained catalog contains one pinned Qwen2.5 1.5B Instruct Q4_K_M artifact (about 1.0 GiB). The artifact is downloaded on request and must pass exact-size, SHA-256, registry, and runtime-compatibility checks before automatic discovery will load it. A compatible llama.cpp binary remains a separate prerequisite. "Change" opens Settings → AI (and the local memory backend).
 4. Want to look around first? Press **Esc**, click the **×** in the modal corner, or hit **Skip for now** — the dashboard chrome stays navigable behind the modal, and a "Sign in" button on the placeholder gets you back into the wizard whenever you're ready.
 5. When you're ready to wire up your own, the in-app walkthrough handles the Google API setup in about 5 minutes — paste your client ID, click "Save and connect now," and you're at Google's sign-in.
 
@@ -199,6 +198,7 @@ The defaults give you a working SkyTwin without any LLM API keys or Docker. Powe
 | `SKYTWIN_DEV_SKIP_PORT_PREFLIGHT=1` | Bypass the `pnpm dev` port preflight. Use only when you intentionally want Turbo to try starting even though a required dev port is already listening. |
 | `SKYTWIN_WITH_OLLAMA=true` | Install Ollama + pull the gemma4 model (~9.6GB). Without this opt-in, local inference requires a separately installed `llama.cpp` binary and compatible model. |
 | `SKYTWIN_DISABLE_EMBEDDED=1` | Skip the embedded LLM provider in the API's provider chain. Pair with hosted-only keys (e.g. `ANTHROPIC_API_KEY`) for reproducible evaluation runs. |
+| `SKYTWIN_LLAMA_MODEL=/path/model.gguf` | Opt into a user-managed model path. This explicit override bypasses the managed-model manifest and registry checks; the user is responsible for the artifact's provenance and compatibility. |
 | `SKYTWIN_CRDB_VERSION` | Pin a non-default CockroachDB version. Refresh the hash tables in `bin/skytwin-db` and `apps/desktop/scripts/build-single-binary.sh` together. |
 
 ### Manual setup
