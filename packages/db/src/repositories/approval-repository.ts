@@ -262,7 +262,9 @@ export const approvalRepository = {
 
   /**
    * Respond to multiple approval requests at once.
-   * Only updates unexpired requests owned by the given userId and still pending.
+   * Only updates unexpired generic requests owned by the given userId and still
+   * pending. Dedicated archive and malformed stored actions are excluded by the
+   * same UPDATE, and any one-time confirmation token is cleared on resolution.
    * Returns the updated rows.
    */
   async batchRespond(
@@ -278,9 +280,12 @@ export const approvalRepository = {
 
     const result = await query<ApprovalRequestRow>(
       `UPDATE approval_requests
-       SET status = $1, responded_at = now(), response = $2
+       SET status = $1, responded_at = now(), response = $2, confirmation_token = NULL
        WHERE id IN (${placeholders}) AND status = 'pending' AND user_id = $3
          AND expires_at > now()
+         AND jsonb_typeof(candidate_action) = 'object'
+         AND jsonb_typeof(candidate_action->'actionType') = 'string'
+         AND candidate_action->>'actionType' <> 'archive_email'
        RETURNING *`,
       [
         status,

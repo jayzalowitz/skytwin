@@ -6378,6 +6378,25 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       malformed.approval.id, owner.ownerUserId,
     )).resolves.toBeNull();
 
+    const generic = await createProposal(255, owner.ownerUserId, owner.ownerAccountId);
+    await getPool().query(
+      `UPDATE approval_requests
+          SET candidate_action = jsonb_set(candidate_action, '{actionType}', '"label_email"'),
+              confirmation_level = 'dual'
+        WHERE id = $1`,
+      [generic.approval.id],
+    );
+    await expect(approvalRepository.recordFirstConfirmation(
+      generic.approval.id, owner.ownerUserId,
+    )).resolves.toEqual(expect.any(String));
+    await expect(approvalRepository.batchRespond(
+      [changed.approval.id, malformed.approval.id, generic.approval.id],
+      'approve',
+      owner.ownerUserId,
+    )).resolves.toEqual([
+      expect.objectContaining({ id: generic.approval.id, status: 'approved' }),
+    ]);
+
     const stored = await getPool().query<{
       id: string;
       status: string;
@@ -6385,11 +6404,19 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       confirmation_token: string | null;
     }>(
       `SELECT id, status, responded_at, confirmation_token
-         FROM approval_requests WHERE id IN ($1, $2) ORDER BY id`,
-      [changed.approval.id, malformed.approval.id],
+         FROM approval_requests WHERE id IN ($1, $2, $3) ORDER BY id`,
+      [changed.approval.id, malformed.approval.id, generic.approval.id],
     );
-    expect(stored.rows).toHaveLength(2);
-    expect(stored.rows.every((row) => row.status === 'pending' &&
-      row.responded_at === null && row.confirmation_token === null)).toBe(true);
+    const storedById = new Map(stored.rows.map((row) => [row.id, row]));
+    expect(storedById.get(changed.approval.id)).toMatchObject({
+      status: 'pending', responded_at: null, confirmation_token: null,
+    });
+    expect(storedById.get(malformed.approval.id)).toMatchObject({
+      status: 'pending', responded_at: null, confirmation_token: null,
+    });
+    expect(storedById.get(generic.approval.id)).toMatchObject({
+      status: 'approved', confirmation_token: null,
+    });
+    expect(storedById.get(generic.approval.id)?.responded_at).toBeInstanceOf(Date);
   }, 120_000);
 });
