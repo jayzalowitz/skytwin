@@ -44,6 +44,7 @@ import {
   gmailArchiveRecoveryLeaseRepository,
   gmailArchiveRecoveryLeaseTestHooks,
 } from '../repositories/gmail-archive-recovery-lease-repository.js';
+import { gmailArchiveRecoveryCandidateRepository } from '../repositories/gmail-archive-recovery-candidate-repository.js';
 import { gmailInboxObservationTargetRepository } from '../repositories/gmail-inbox-observation-target-repository.js';
 import {
   reconcileRecordedGmailArchiveObservationInTransaction,
@@ -6578,5 +6579,164 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       [newerPlanId, fixture.decision.id],
     );
     await expectNoQualifiedPlan();
+  }, 120_000);
+
+  it('applies the recovery selector index on real CockroachDB', async () => {
+    const indexes = await getPool().query<{
+      index_name: string;
+      storing: boolean;
+      implicit: boolean;
+    }>('SHOW INDEXES FROM pre_effect_barriers');
+    const rows = indexes.rows.filter(
+      (row) => row.index_name === 'pre_effect_barriers_gmail_archive_recovery_scan_idx',
+    );
+    expect(rows.length).toBeGreaterThan(0);
+    const create = await getPool().query<{ create_statement: string }>(
+      'SHOW CREATE TABLE pre_effect_barriers',
+    );
+    const statement = create.rows[0]?.create_statement ?? '';
+    const normalizedStatement = statement.replaceAll(':::STRING', '');
+    expect(statement).toContain('pre_effect_barriers_gmail_archive_recovery_scan_idx');
+    expect(statement).toContain('STORING (user_id, idempotency_key, status)');
+    expect(normalizedStatement).toContain("WHERE (effect_type = 'event_execution') AND (status IN ('reserved', 'prepared', 'in_progress'))");
+  });
+
+  it('discovers bounded owner-paired recovery hints after connector deletion and skips older corruption', async () => {
+    const disconnectedOwner = await seedRecoveryOwner(70);
+    const secondOwner = await seedRecoveryOwner(71);
+    const corruptOwner = await seedRecoveryOwner(72);
+    const terminalOwner = await seedRecoveryOwner(73);
+
+    const disconnected = await createPreparedProposal(
+      700,
+      disconnectedOwner.ownerUserId,
+      disconnectedOwner.ownerAccountId,
+    );
+    const second = await createProposal(701, secondOwner.ownerUserId, secondOwner.ownerAccountId);
+    await expect(gmailArchiveApprovalResponseRepository.respond({
+      userId: secondOwner.ownerUserId,
+      approvalId: second.approval.id,
+      action: 'approve',
+    })).resolves.toMatchObject({ ok: true, created: true });
+    const corrupt = await createPreparedProposal(
+      702,
+      corruptOwner.ownerUserId,
+      corruptOwner.ownerAccountId,
+    );
+    const terminal = await createPreparedProposal(
+      703,
+      terminalOwner.ownerUserId,
+      terminalOwner.ownerAccountId,
+    );
+
+    await getPool().query(
+      'DELETE FROM connected_accounts WHERE id = $1 AND user_id = $2',
+      [disconnectedOwner.ownerAccountId, disconnectedOwner.ownerUserId],
+    );
+    await getPool().query(
+      `UPDATE candidate_actions SET parameters = '{}'::JSONB WHERE id = $1`,
+      [corrupt.proposal.candidate.id],
+    );
+    await getPool().query(
+      `UPDATE pre_effect_barriers SET status = 'failed'
+        WHERE user_id = $1 AND effect_type = 'event_execution' AND idempotency_key = $2`,
+      [terminalOwner.ownerUserId, terminal.proposal.approval.id],
+    );
+
+    for (const [timestamp, ownerId, approvalId] of [
+      ['1989-01-01T00:00:00.000Z', corruptOwner.ownerUserId, corrupt.proposal.approval.id],
+      ['1990-01-01T00:00:00.000Z', disconnectedOwner.ownerUserId, disconnected.proposal.approval.id],
+      ['1990-01-02T00:00:00.000Z', secondOwner.ownerUserId, second.approval.id],
+      ['1988-01-01T00:00:00.000Z', terminalOwner.ownerUserId, terminal.proposal.approval.id],
+    ] as const) {
+      await getPool().query(
+        `UPDATE pre_effect_barriers SET created_at = $3, updated_at = $3
+          WHERE user_id = $1 AND effect_type = 'event_execution' AND idempotency_key = $2`,
+        [ownerId, approvalId, timestamp],
+      );
+    }
+
+    const listed = await gmailArchiveRecoveryCandidateRepository.list({ limit: 2 });
+    expect(listed).toEqual({
+      ok: true,
+      candidates: [
+        {
+          userId: disconnectedOwner.ownerUserId,
+          approvalId: disconnected.proposal.approval.id,
+        },
+        { userId: secondOwner.ownerUserId, approvalId: second.approval.id },
+      ],
+    });
+    expect(Object.isFrozen(listed)).toBe(true);
+    if (listed.ok) {
+      expect(Object.isFrozen(listed.candidates)).toBe(true);
+      expect(listed.candidates.every(Object.isFrozen)).toBe(true);
+      expect(listed.candidates.every((candidate) =>
+        Object.keys(candidate).sort().join(',') === 'approvalId,userId')).toBe(true);
+      expect(listed.candidates).not.toContainEqual({
+        userId: corruptOwner.ownerUserId,
+        approvalId: corrupt.proposal.approval.id,
+      });
+      expect(listed.candidates).not.toContainEqual({
+        userId: terminalOwner.ownerUserId,
+        approvalId: terminal.proposal.approval.id,
+      });
+    }
+    await getPool().query(
+      `UPDATE pre_effect_barriers
+          SET created_at = statement_timestamp(), updated_at = statement_timestamp()
+        WHERE user_id IN ($1, $2)
+          AND effect_type = 'event_execution'
+          AND idempotency_key IN ($3, $4)`,
+      [
+        disconnectedOwner.ownerUserId,
+        secondOwner.ownerUserId,
+        disconnected.proposal.approval.id,
+        second.approval.id,
+      ],
+    );
+  }, 120_000);
+
+  it('discovers in-progress work but skips its live lease so later owners are not starved', async () => {
+    const firstOwner = await seedRecoveryOwner(74);
+    const laterOwner = await seedRecoveryOwner(75);
+    const first = await createPreparedProposal(
+      704,
+      firstOwner.ownerUserId,
+      firstOwner.ownerAccountId,
+    );
+    const later = await createPreparedProposal(
+      705,
+      laterOwner.ownerUserId,
+      laterOwner.ownerAccountId,
+    );
+    await expect(gmailArchiveClaimRepository.claim({
+      userId: firstOwner.ownerUserId,
+      approvalId: first.proposal.approval.id,
+    })).resolves.toMatchObject({ ok: true, claimed: true });
+    for (const [timestamp, ownerId, approvalId] of [
+      ['1991-01-01T00:00:00.000Z', firstOwner.ownerUserId, first.proposal.approval.id],
+      ['1991-01-02T00:00:00.000Z', laterOwner.ownerUserId, later.proposal.approval.id],
+    ] as const) {
+      await getPool().query(
+        `UPDATE pre_effect_barriers SET updated_at = $3
+          WHERE user_id = $1 AND effect_type = 'event_execution' AND idempotency_key = $2`,
+        [ownerId, approvalId, timestamp],
+      );
+    }
+
+    await expect(gmailArchiveRecoveryCandidateRepository.list({ limit: 1 })).resolves.toEqual({
+      ok: true,
+      candidates: [{ userId: firstOwner.ownerUserId, approvalId: first.proposal.approval.id }],
+    });
+    await expect(gmailArchiveRecoveryLeaseRepository.acquire({
+      userId: firstOwner.ownerUserId,
+      approvalId: first.proposal.approval.id,
+      leaseMs: 300_000,
+    })).resolves.toMatchObject({ ok: true, status: 'acquired' });
+    await expect(gmailArchiveRecoveryCandidateRepository.list({ limit: 1 })).resolves.toEqual({
+      ok: true,
+      candidates: [{ userId: laterOwner.ownerUserId, approvalId: later.proposal.approval.id }],
+    });
   }, 120_000);
 });
