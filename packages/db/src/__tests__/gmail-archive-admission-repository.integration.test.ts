@@ -495,6 +495,58 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     expect(durable.rows[0]).toEqual({ plans: '2', revisions: '6' });
   });
 
+  it('rejects untrusted approval and preparation receipt revisions', async () => {
+    const approvalProposal = await createProposal(31);
+    const approvalInput = {
+      approvalId: approvalProposal.approval.id,
+      userId,
+      action: 'approve' as const,
+    };
+    await gmailArchiveApprovalResponseRepository.respond(approvalInput);
+    await getPool().query(
+      `UPDATE decision_receipt_revisions SET trusted = false
+        WHERE receipt_id = $1 AND sequence = 4`,
+      [approvalProposal.receipt.id],
+    );
+    await expect(gmailArchiveApprovalResponseRepository.respond(approvalInput)).resolves.toEqual({
+      ok: false,
+      error: 'idempotency_conflict',
+    });
+    await expect(gmailArchivePreparationRepository.prepare({
+      userId,
+      approvalId: approvalProposal.approval.id,
+    })).resolves.toEqual({ ok: false, error: 'idempotency_conflict' });
+
+    const preparedProposal = await createProposal(32);
+    await gmailArchiveApprovalResponseRepository.respond({
+      approvalId: preparedProposal.approval.id,
+      userId,
+      action: 'approve',
+    });
+    await expect(gmailArchivePreparationRepository.prepare({
+      userId,
+      approvalId: preparedProposal.approval.id,
+    })).resolves.toMatchObject({ ok: true, created: true });
+    await getPool().query(
+      `UPDATE decision_receipt_revisions SET trusted = false
+        WHERE receipt_id = $1 AND sequence = 5`,
+      [preparedProposal.receipt.id],
+    );
+    await expect(gmailArchivePreparationRepository.prepare({
+      userId,
+      approvalId: preparedProposal.approval.id,
+    })).resolves.toEqual({ ok: false, error: 'idempotency_conflict' });
+    await getPool().query(
+      `UPDATE decision_receipt_revisions SET trusted = CASE sequence WHEN 5 THEN true ELSE false END
+        WHERE receipt_id = $1 AND sequence IN (5, 6)`,
+      [preparedProposal.receipt.id],
+    );
+    await expect(gmailArchivePreparationRepository.prepare({
+      userId,
+      approvalId: preparedProposal.approval.id,
+    })).resolves.toEqual({ ok: false, error: 'idempotency_conflict' });
+  });
+
   it('uses current owner policy and autonomy state to block without a plan', async () => {
     const proposal = await createProposal(21);
     await gmailArchiveApprovalResponseRepository.respond({
@@ -566,6 +618,89 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       `UPDATE users SET trust_tier = 'observer', autonomy_settings = '{}', updated_at = now() WHERE id = $1`,
       [userId],
     );
+  });
+
+  it('rejects foreign outcome links for reserved and blocked preparations without new artifacts', async () => {
+    const artifactCounts = async (decisionId: string, approvalId: string) => {
+      const result = await getPool().query<{
+        barriers: string;
+        explanations: string;
+        plans: string;
+        revisions: string;
+      }>(`SELECT
+        (SELECT count(*) FROM pre_effect_barriers WHERE decision_id = $1 OR idempotency_key = $2) AS barriers,
+        (SELECT count(*) FROM execution_plans WHERE decision_id = $1) AS plans,
+        (SELECT count(*) FROM explanation_records WHERE decision_id = $1) AS explanations,
+        (SELECT count(*) FROM decision_receipt_revisions revision
+          JOIN decision_receipts receipt ON receipt.id = revision.receipt_id
+         WHERE receipt.decision_id = $1) AS revisions`, [decisionId, approvalId]);
+      return result.rows[0]!;
+    };
+    const donor = await createProposal(33);
+    await gmailArchiveApprovalResponseRepository.respond({
+      approvalId: donor.approval.id,
+      userId,
+      action: 'approve',
+    });
+    const donorPreparation = await gmailArchivePreparationRepository.prepare({
+      userId,
+      approvalId: donor.approval.id,
+    });
+    expect(donorPreparation).toMatchObject({ ok: true, created: true });
+    if (!donorPreparation.ok || !donorPreparation.preparation.plan) return;
+
+    const reserved = await createProposal(34);
+    await gmailArchiveApprovalResponseRepository.respond({
+      approvalId: reserved.approval.id,
+      userId,
+      action: 'approve',
+    });
+    await getPool().query(
+      'UPDATE decision_outcomes SET execution_plan_id = $1 WHERE decision_id = $2',
+      [donorPreparation.preparation.plan.id, reserved.decision.id],
+    );
+    const reservedBefore = await artifactCounts(reserved.decision.id, reserved.approval.id);
+    expect(reservedBefore).toEqual({ barriers: '2', explanations: '1', plans: '0', revisions: '4' });
+    await expect(gmailArchivePreparationRepository.prepare({
+      userId,
+      approvalId: reserved.approval.id,
+    })).resolves.toEqual({ ok: false, error: 'idempotency_conflict' });
+    await expect(artifactCounts(reserved.decision.id, reserved.approval.id)).resolves.toEqual(reservedBefore);
+
+    const blocked = await createProposal(35);
+    await gmailArchiveApprovalResponseRepository.respond({
+      approvalId: blocked.approval.id,
+      userId,
+      action: 'approve',
+    });
+    const policyId = id('99', 35);
+    await getPool().query(
+      `INSERT INTO action_policies (id, user_id, name, domain, rules, priority, is_active)
+       VALUES ($1, $2, 'Block archive replay', 'email', $3, 500, true)`,
+      [policyId, userId, JSON.stringify([{
+        id: 'block-archive-replay',
+        policyId,
+        condition: { field: 'actionType', operator: 'eq', value: 'archive_email' },
+        effect: 'deny',
+        reason: 'Archive is disabled.',
+      }])],
+    );
+    await expect(gmailArchivePreparationRepository.prepare({
+      userId,
+      approvalId: blocked.approval.id,
+    })).resolves.toMatchObject({ ok: true, created: true, preparation: { status: 'blocked' } });
+    await getPool().query('DELETE FROM action_policies WHERE id = $1', [policyId]);
+    await getPool().query(
+      'UPDATE decision_outcomes SET execution_plan_id = $1 WHERE decision_id = $2',
+      [donorPreparation.preparation.plan.id, blocked.decision.id],
+    );
+    const before = await artifactCounts(blocked.decision.id, blocked.approval.id);
+    expect(before).toEqual({ barriers: '2', explanations: '2', plans: '0', revisions: '5' });
+    await expect(gmailArchivePreparationRepository.prepare({
+      userId,
+      approvalId: blocked.approval.id,
+    })).resolves.toEqual({ ok: false, error: 'idempotency_conflict' });
+    await expect(artifactCounts(blocked.decision.id, blocked.approval.id)).resolves.toEqual(before);
   });
 
   it('does not prepare when current Inbox or account eligibility is absent', async () => {

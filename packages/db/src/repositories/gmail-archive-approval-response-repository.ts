@@ -15,6 +15,7 @@ import { withTransaction } from '../connection.js';
 import type {
   ApprovalRequestRow,
   CandidateActionRow,
+  DecisionOutcomeRow,
   DecisionReceiptRevisionRow,
   DecisionReceiptRow,
   DecisionRow,
@@ -63,6 +64,7 @@ export interface GmailArchiveApprovalCanonicalState {
   approval: ApprovalRequestRow;
   decision: DecisionRow;
   candidate: CandidateActionRow;
+  outcome: DecisionOutcomeRow;
   explanation: ExplanationRecordRow;
   signal: SignalRow;
   proposalBarrier: PreEffectBarrierRow;
@@ -195,7 +197,8 @@ export function canonicalGmailArchiveApprovalContent(
   disposition: 'requires_approval' | 'approved' | 'rejected',
 ): JoinedDecisionReceiptContentV1 | null {
   const expectedLength = disposition === 'requires_approval' ? 3 : 4;
-  if (state.revisions.length !== expectedLength) return null;
+  if (state.revisions.length !== expectedLength ||
+      state.revisions.some((revision) => revision.trusted !== true)) return null;
   if (!verifyJoinedDecisionReceiptChain({
     receiptId: state.receipt.id,
     decisionId: state.decision.id,
@@ -222,8 +225,7 @@ export function canonicalGmailArchiveApprovalContent(
   ];
   if (state.revisions.slice(0, 3).some((revision, index) =>
     revision.event_key !== expectedEventKeys[index] ||
-    revision.content_digest !== joinedDecisionReceiptContentDigest(expectedPrefix[index]!) ||
-    revision.trusted !== true
+    revision.content_digest !== joinedDecisionReceiptContentDigest(expectedPrefix[index]!)
   )) return null;
   if (disposition !== 'requires_approval' &&
       state.revisions[3]?.event_key !==
@@ -311,14 +313,15 @@ export async function loadCanonicalGmailArchiveApprovalState(
   );
   if (evidence.rows.length !== 1) return null;
   const signal = evidence.rows[0]!;
-  const outcome = await client.query<{ count: string }>(
-    `SELECT count(*)::STRING AS count FROM decision_outcomes
+  const outcomes = await client.query<DecisionOutcomeRow>(
+    `SELECT * FROM decision_outcomes
       WHERE decision_id = $1 AND selected_action_id = $2
-        AND auto_executed = false AND requires_approval = true
-        AND ($3::BOOL OR execution_plan_id IS NULL)`,
-    [decision.id, candidate.id, options.allowExecutionPlan === true],
+        AND auto_executed = false AND requires_approval = true`,
+    [decision.id, candidate.id],
   );
-  if (outcome.rows[0]?.count !== '1') return null;
+  if (outcomes.rows.length !== 1) return null;
+  const outcome = outcomes.rows[0]!;
+  if (options.allowExecutionPlan !== true && outcome.execution_plan_id !== null) return null;
   const barriers = await client.query<PreEffectBarrierRow>(
     `SELECT * FROM pre_effect_barriers
       WHERE user_id = $1 AND decision_id = $2 AND action_id = $3
@@ -352,6 +355,7 @@ export async function loadCanonicalGmailArchiveApprovalState(
     approval,
     decision,
     candidate,
+    outcome,
     explanation,
     signal,
     proposalBarrier,

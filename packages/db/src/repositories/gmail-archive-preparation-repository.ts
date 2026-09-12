@@ -483,22 +483,22 @@ async function loadReplay(
   )).rows;
   let plan: ExecutionPlanRow | null = null;
   if (barrier.status === 'prepared') {
-    const plans = await client.query<ExecutionPlanRow & { linked_plan_id: string | null }>(
-      `SELECT plan.*, outcome.execution_plan_id AS linked_plan_id
-         FROM decision_outcomes AS outcome
-         JOIN execution_plans AS plan ON plan.decision_id = outcome.decision_id
-        WHERE outcome.decision_id = $1`,
+    const plans = await client.query<ExecutionPlanRow>(
+      'SELECT * FROM execution_plans WHERE decision_id = $1',
       [state.decision.id],
     );
     if (plans.rows.length !== 1) return { ok: false, error: 'idempotency_conflict' };
     plan = plans.rows[0]!;
-    if (plans.rows[0]?.linked_plan_id !== plan.id || plan.action_id !== state.candidate.id ||
+    if (state.outcome.execution_plan_id !== plan.id || plan.action_id !== state.candidate.id ||
         plan.status !== 'pending' ||
         joinedDecisionReceiptArtifactDigest('policy', plan.steps) !==
           joinedDecisionReceiptArtifactDigest('policy', planSteps(candidate))) {
       return { ok: false, error: 'idempotency_conflict' };
     }
   } else {
+    if (state.outcome.execution_plan_id !== null) {
+      return { ok: false, error: 'idempotency_conflict' };
+    }
     const planCount = await client.query<{ count: string }>(
       'SELECT count(*)::STRING AS count FROM execution_plans WHERE decision_id = $1',
       [state.decision.id],
@@ -509,12 +509,14 @@ async function loadReplay(
   const expectedLast = plan
     ? { ...r5, stage: 'execution_admitted' as const, disposition: 'pending' as const, executionPlan: executionPlanRef(plan) }
     : r5;
-  if (revisions.length !== expectedLength || !verifyJoinedDecisionReceiptChain({
-    receiptId: state.receipt.id,
-    decisionId: state.decision.id,
-    userId: input.userId,
-    revisions,
-  }) || revisions[4]?.event_key !== buildDecisionReceiptEventKey('policy_evaluated', barrier.id) ||
+  if (revisions.length !== expectedLength ||
+      revisions.some((revision) => revision.trusted !== true) ||
+      !verifyJoinedDecisionReceiptChain({
+        receiptId: state.receipt.id,
+        decisionId: state.decision.id,
+        userId: input.userId,
+        revisions,
+      }) || revisions[4]?.event_key !== buildDecisionReceiptEventKey('policy_evaluated', barrier.id) ||
       revisions[4]?.content_digest !== joinedDecisionReceiptContentDigest(r5) ||
       (plan && (revisions[5]?.event_key !== buildDecisionReceiptEventKey('execution_admitted', plan.id) ||
         revisions[5]?.content_digest !== joinedDecisionReceiptContentDigest(expectedLast)))) {
@@ -559,6 +561,10 @@ async function transition(
   const barrier = barriers.rows[0]!;
   if (!exactReservedBarrier(barrier, input)) {
     return loadReplay(client, input, state, barrier, approved);
+  }
+
+  if (state.outcome.execution_plan_id !== null) {
+    return { ok: false, error: 'idempotency_conflict' };
   }
 
   const preexistingPlanCount = await client.query<{ count: string }>(
