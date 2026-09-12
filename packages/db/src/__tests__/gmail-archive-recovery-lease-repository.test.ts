@@ -57,6 +57,7 @@ const permit = {
   ...fence,
   observationAttemptId: '66666666-6666-4666-8666-666666666666',
   authorizedAt: '2026-09-12T12:05:00.000Z',
+  leaseExpiresAt: '2026-09-12T12:10:00.000Z',
   deadlineAt: '2026-09-12T12:07:30.000Z',
 };
 
@@ -86,7 +87,7 @@ function recoveryLeaseRow(overrides: Record<string, unknown> = {}) {
     generation: String(fence.generation),
     acquired_at: new Date('2026-09-12T12:04:00.000Z'),
     renewed_at: new Date('2026-09-12T12:04:00.000Z'),
-    expires_at: new Date('2026-09-12T12:04:30.000Z'),
+    expires_at: new Date(permit.leaseExpiresAt),
     observation_state: 'evidence_recorded',
     observation_attempt_id: permit.observationAttemptId,
     observation_authorized_at: new Date(permit.authorizedAt),
@@ -267,6 +268,21 @@ describe('gmailArchiveRecoveryLeaseRepository boundary', () => {
     for (const value of corpus) {
       expect(gmailArchiveRecoveryLeaseConsumerTestHooks.snapshotFence(value)).toEqual(
         gmailArchiveRecoveryLeaseTestHooks.snapshotFence(value),
+      );
+    }
+  });
+
+  it('keeps issuer and consumer permit parsers in exact parity', () => {
+    const corpus: unknown[] = [
+      permit,
+      { ...permit, extra: true },
+      { ...permit, observationAttemptId: 'invalid' },
+      { ...permit, leaseExpiresAt: permit.authorizedAt },
+      { ...permit, deadlineAt: '2026-09-12T12:07:29.999Z' },
+    ];
+    for (const value of corpus) {
+      expect(gmailArchiveRecoveryLeaseConsumerTestHooks.snapshotPermit(value)).toEqual(
+        gmailArchiveRecoveryLeaseTestHooks.snapshotPermit(value),
       );
     }
   });

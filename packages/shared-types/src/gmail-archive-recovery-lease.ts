@@ -57,6 +57,8 @@ export type AcquireGmailArchiveRecoveryLeaseResult =
 export interface GmailArchiveRecoveryObservationPermit extends GmailArchiveRecoveryLeaseFence {
   observationAttemptId: string;
   authorizedAt: string;
+  /** Exact expiry of the lease generation that authorized this observation. */
+  leaseExpiresAt: string;
   deadlineAt: string;
 }
 

@@ -1,6 +1,7 @@
 import { readFile, readdir } from 'node:fs/promises';
 import { describe, expect, expectTypeOf, it, vi } from 'vitest';
 import type {
+  GmailArchiveRecoveryLeaseRepository,
   GmailInboxMutationCommand,
   GmailInboxObservationBinding,
   GmailInboxObservationCommand,
@@ -8,11 +9,13 @@ import type {
   GmailInboxObservationUnavailableCode,
 } from '@skytwin/shared-types';
 import {
+  GmailArchiveRecoveryObservationCoordinator,
   GmailInboxObservationService,
   gmailInboxObservationLimits,
   type GmailInboxObservationCredentialRequest,
   type GmailInboxObservationCredentialsPort,
   type GmailInboxObservationTargetResolver,
+  type GmailArchiveRecoveryObservationTargetResolver,
 } from '../gmail-inbox-observation-port.js';
 
 const MODIFY_SCOPE = 'https://www.googleapis.com/auth/gmail.modify';
@@ -56,6 +59,7 @@ function fixture(options: {
   const resolve = options.resolve ?? vi.fn().mockResolvedValue(target);
   const materialize = options.materialize ?? vi.fn().mockResolvedValue({
     accessToken: 'secret-access-token',
+    credentialRevision: target.credentialRevision,
     scopes: [MODIFY_SCOPE],
   });
   const service = new GmailInboxObservationService({
@@ -252,10 +256,11 @@ describe('GmailInboxObservationService', () => {
     ['throw', vi.fn().mockRejectedValue(new Error('secret token detail'))],
     ['missing', vi.fn().mockResolvedValue(null)],
     ['wrong scope', vi.fn().mockResolvedValue({
-      accessToken: 'token', scopes: ['gmail.readonly'],
+      accessToken: 'token', credentialRevision: target.credentialRevision, scopes: ['gmail.readonly'],
     })],
     ['extra secret field', vi.fn().mockResolvedValue({
-      accessToken: 'token', scopes: [MODIFY_SCOPE], refreshToken: 'must-not-flow',
+      accessToken: 'token', credentialRevision: target.credentialRevision,
+      scopes: [MODIFY_SCOPE], refreshToken: 'must-not-flow',
     })],
   ])('returns a secret-free credential failure for %s', async (_name, materialize) => {
     const { fetchMock, service } = fixture({ materialize });
@@ -549,10 +554,239 @@ describe('GmailInboxObservationService', () => {
     const roots = [
       new URL('../../../../apps/api/', import.meta.url),
       new URL('../../../../apps/worker/', import.meta.url),
+      new URL('../../../../apps/desktop/', import.meta.url),
       new URL('../../../execution-router/', import.meta.url),
     ];
     const runtimeSources = (await Promise.all(roots.map(sourceFilesBelow))).flat().join('\n');
     expect(runtimeSources).not.toContain('GmailInboxObservationService');
     expect(runtimeSources).not.toContain('DbGmailInboxObservationCredentials');
+    expect(runtimeSources).not.toContain('GmailArchiveRecoveryObservationCoordinator');
+  });
+});
+
+const recoveryFence = {
+  userId: command.userId,
+  approvalId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+  admissionId: command.admissionId,
+  messageRefId: command.messageRefId,
+  workKind: 'observe_dispatch' as const,
+  barrierStatus: 'in_progress' as const,
+  attemptPhase: 'dispatch_may_have_started' as const,
+  phaseChangedAt: '2026-09-12T12:00:00.123456Z',
+  leaseToken: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+  generation: 4,
+};
+const recoveryPermit = {
+  ...recoveryFence,
+  observationAttemptId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+  authorizedAt: '2026-09-12T12:05:00.000Z',
+  leaseExpiresAt: '2026-09-12T12:10:00.000Z',
+  deadlineAt: '2026-09-12T12:07:30.000Z',
+};
+const recoverySelection = {
+  connectorAccountId: target.connectorAccountId,
+  credentialRevision: target.credentialRevision,
+  providerMessageId: target.providerMessageId,
+};
+
+function recoveryFixture(options: {
+  begin?: ReturnType<typeof vi.fn>;
+  record?: ReturnType<typeof vi.fn>;
+  resolveInitial?: ReturnType<typeof vi.fn>;
+  resolveFinal?: ReturnType<typeof vi.fn>;
+  materialize?: ReturnType<typeof vi.fn>;
+  fetch?: ReturnType<typeof vi.fn>;
+} = {}) {
+  const begin = options.begin ?? vi.fn().mockResolvedValue({
+    ok: true, status: 'permitted', permit: recoveryPermit,
+  });
+  const record = options.record ?? vi.fn().mockResolvedValue({
+    ok: true, recorded: true,
+  });
+  const resolveInitial = options.resolveInitial ?? vi.fn().mockResolvedValue(recoverySelection);
+  const resolveFinal = options.resolveFinal ?? vi.fn().mockResolvedValue(recoverySelection);
+  const materialize = options.materialize ?? vi.fn().mockResolvedValue({
+    accessToken: 'secret-access-token',
+    credentialRevision: target.credentialRevision,
+    scopes: [MODIFY_SCOPE],
+  });
+  const fetchMock = options.fetch ?? vi.fn().mockResolvedValue(jsonResponse({
+    id: recoverySelection.providerMessageId, labelIds: ['INBOX'],
+  }));
+  const leaseRepository = {
+    beginObservation: begin,
+    recordObservation: record,
+  } as unknown as GmailArchiveRecoveryLeaseRepository;
+  const targetResolver = {
+    resolveInitial,
+    resolveFinal,
+  } as unknown as GmailArchiveRecoveryObservationTargetResolver;
+  const credentials = {
+    materialize,
+  } as unknown as GmailInboxObservationCredentialsPort;
+  const coordinator = new GmailArchiveRecoveryObservationCoordinator({
+    leaseRepository,
+    targetResolver,
+    credentials,
+    fetch: fetchMock as unknown as (input: string, init?: RequestInit) => Promise<Response>,
+    timeoutMs: 1_000,
+  });
+  return {
+    begin, record, resolveInitial, resolveFinal, materialize, fetchMock,
+    coordinator, leaseRepository, targetResolver, credentials,
+  };
+}
+
+describe('GmailArchiveRecoveryObservationCoordinator', () => {
+  it('consumes the permit before every dependency and records capability-free evidence', async () => {
+    const events: string[] = [];
+    const fixture = recoveryFixture({
+      begin: vi.fn(async () => { events.push('begin'); return {
+        ok: true, status: 'permitted', permit: recoveryPermit,
+      }; }),
+      resolveInitial: vi.fn(async () => { events.push('initial'); return recoverySelection; }),
+      materialize: vi.fn(async () => { events.push('credential'); return {
+        accessToken: 'secret-access-token', credentialRevision: target.credentialRevision,
+        scopes: [MODIFY_SCOPE],
+      }; }),
+      resolveFinal: vi.fn(async () => { events.push('final'); return recoverySelection; }),
+      fetch: vi.fn(async () => { events.push('get'); return jsonResponse({
+        id: recoverySelection.providerMessageId, labelIds: ['INBOX'],
+      }); }),
+      record: vi.fn(async () => { events.push('record'); return { ok: true, recorded: true }; }),
+    });
+
+    const result = await fixture.coordinator.observe(recoveryFence);
+
+    expect(events).toEqual(['begin', 'initial', 'credential', 'final', 'get', 'record']);
+    expect(result).toMatchObject({ status: 'evidence_recorded', evidence: {
+      kind: 'mailbox_observed', inbox: true, binding,
+    } });
+    const serialized = JSON.stringify(result);
+    for (const secret of [
+      recoveryPermit.leaseToken, recoveryPermit.observationAttemptId,
+      recoveryPermit.approvalId, recoveryPermit.authorizedAt, recoveryPermit.deadlineAt,
+      recoveryPermit.leaseExpiresAt, target.connectorAccountId, target.credentialRevision,
+      target.providerMessageId, 'secret-access-token', 'labelIds',
+    ]) expect(serialized).not.toContain(secret);
+  });
+
+  it.each([
+    'disconnect', 'account', 'message ref', 'provider', 'account scope', 'token scope',
+    'credential revision', 'barrier', 'lease token', 'lease generation', 'attempt',
+    'authorization time', 'lease expiry', 'deadline', 'state',
+  ])('performs zero GETs when final authority rejects a %s change', async () => {
+    const fixture = recoveryFixture({ resolveFinal: vi.fn().mockResolvedValue(null) });
+    await expect(fixture.coordinator.observe(recoveryFence)).resolves.toMatchObject({
+      status: 'evidence_recorded',
+      evidence: { kind: 'mailbox_observation_unavailable', code: 'not_observable' },
+    });
+    expect(fixture.fetchMock).not.toHaveBeenCalled();
+    expect(fixture.record).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes the exact initial selection and actually materialized revision to final authority', async () => {
+    const refreshedRevision = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    const fixture = recoveryFixture({
+      materialize: vi.fn().mockResolvedValue({
+        accessToken: 'refreshed-bearer', credentialRevision: refreshedRevision,
+        scopes: [MODIFY_SCOPE],
+      }),
+    });
+    await fixture.coordinator.observe(recoveryFence);
+    expect(fixture.resolveFinal).toHaveBeenCalledWith({
+      permit: recoveryPermit,
+      selection: recoverySelection,
+      credentialRevision: refreshedRevision,
+    });
+    expect(Object.isFrozen(fixture.resolveFinal.mock.calls[0]?.[0])).toBe(true);
+  });
+
+  it.each([
+    ['initial throw', { resolveInitial: vi.fn().mockRejectedValue(new Error('db')) }],
+    ['initial missing', { resolveInitial: vi.fn().mockResolvedValue(null) }],
+    ['credential throw', { materialize: vi.fn().mockRejectedValue(new Error('oauth')) }],
+    ['credential mismatch', { materialize: vi.fn().mockResolvedValue({
+      accessToken: 'x', credentialRevision: 'invalid', scopes: [MODIFY_SCOPE],
+    }) }],
+    ['final throw', { resolveFinal: vi.fn().mockRejectedValue(new Error('db')) }],
+  ] as const)('records one unavailable fact after begin on %s', async (_name, options) => {
+    const fixture = recoveryFixture(options);
+    const result = await fixture.coordinator.observe(recoveryFence);
+    expect(result).toMatchObject({
+      status: 'evidence_recorded',
+      evidence: { kind: 'mailbox_observation_unavailable', binding },
+    });
+    expect(fixture.record).toHaveBeenCalledTimes(1);
+    expect(fixture.fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('never begins or gets again after record conflict, commit uncertainty, or re-entry', async () => {
+    const begin = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 'permitted', permit: recoveryPermit })
+      .mockResolvedValue({ ok: true, status: 'already_started', permit: null });
+    const fixture = recoveryFixture({
+      begin,
+      record: vi.fn().mockResolvedValue({ ok: false, error: 'commit_unverified' }),
+    });
+    await expect(fixture.coordinator.observe(recoveryFence)).resolves.toMatchObject({
+      status: 'evidence_unverified',
+    });
+    await expect(fixture.coordinator.observe(recoveryFence)).resolves.toEqual({
+      status: 'not_permitted',
+    });
+    expect(fixture.fetchMock).toHaveBeenCalledTimes(1);
+    expect(fixture.record).toHaveBeenCalledTimes(1);
+    expect(begin).toHaveBeenCalledTimes(2);
+  });
+
+  it('invokes at most one GET when timeout and evidence persistence both fail', async () => {
+    const fetchMock = vi.fn((_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new Error('timeout')));
+    }));
+    const fixture = recoveryFixture({
+      fetch: fetchMock,
+      record: vi.fn().mockRejectedValue(new Error('commit outcome unknown')),
+    });
+    const coordinator = new GmailArchiveRecoveryObservationCoordinator({
+      leaseRepository: fixture.leaseRepository,
+      targetResolver: fixture.targetResolver,
+      credentials: fixture.credentials,
+      fetch: fetchMock as unknown as (input: string, init?: RequestInit) => Promise<Response>,
+      timeoutMs: 5,
+    });
+    await expect(coordinator.observe(recoveryFence)).resolves.toMatchObject({
+      status: 'evidence_unverified',
+      evidence: { kind: 'mailbox_observation_unavailable' },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fixture.record).toHaveBeenCalledTimes(1);
+  });
+
+  it('binds injected method references against post-construction dependency swaps', async () => {
+    const fixture = recoveryFixture();
+    const swapped = vi.fn();
+    fixture.leaseRepository.beginObservation = swapped;
+    fixture.leaseRepository.recordObservation = swapped;
+    fixture.targetResolver.resolveInitial = swapped;
+    fixture.targetResolver.resolveFinal = swapped;
+    fixture.credentials.materialize = swapped;
+    await fixture.coordinator.observe(recoveryFence);
+    expect(swapped).not.toHaveBeenCalled();
+    expect(fixture.fetchMock).toHaveBeenCalledTimes(1);
+    expect(fixture.record).toHaveBeenCalledTimes(1);
+  });
+
+  it('has no asynchronous gap between final authority and provider invocation', async () => {
+    const source = await readFile(
+      new URL('../gmail-inbox-observation-port.ts', import.meta.url),
+      'utf8',
+    );
+    const boundary = source.slice(
+      source.indexOf('let finalSelection:'),
+      source.indexOf('const result = await providerRequest;'),
+    );
+    expect(boundary.match(/await /g)).toHaveLength(1);
+    expect(boundary).toContain('const providerRequest = requestGmailInbox(');
   });
 });

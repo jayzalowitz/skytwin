@@ -2,6 +2,7 @@ import type {
   GmailArchiveAttemptPhase,
   GmailArchiveRecoveryLeaseFence,
   GmailArchiveRecoveryObservationEvidence,
+  GmailArchiveRecoveryObservationPermit,
   GmailArchiveRecoveryWorkKind,
 } from '@skytwin/shared-types';
 import type { PoolClient } from 'pg';
@@ -148,6 +149,34 @@ export function snapshotGmailArchiveRecoveryLeaseFence(
   });
 }
 
+function snapshotObservationPermit(
+  value: unknown,
+): Readonly<GmailArchiveRecoveryObservationPermit> | null {
+  const permit = ownData(value, [
+    ...FENCE_KEYS, 'authorizedAt', 'deadlineAt', 'leaseExpiresAt', 'observationAttemptId',
+  ]);
+  if (!permit) return null;
+  const fenceInput: Record<string, unknown> = {};
+  for (const key of FENCE_KEYS) fenceInput[key] = permit[key];
+  const fence = snapshotGmailArchiveRecoveryLeaseFence(fenceInput);
+  if (!fence || fence.workKind !== 'observe_dispatch' ||
+      typeof permit['observationAttemptId'] !== 'string' ||
+      !UUID.test(permit['observationAttemptId']) ||
+      !validExternalTimestamp(permit['authorizedAt']) ||
+      !validExternalTimestamp(permit['deadlineAt']) ||
+      !validExternalTimestamp(permit['leaseExpiresAt']) ||
+      Date.parse(permit['authorizedAt']) >= Date.parse(permit['leaseExpiresAt']) ||
+      Date.parse(permit['deadlineAt']) - Date.parse(permit['authorizedAt']) !==
+        GMAIL_ARCHIVE_RECOVERY_OBSERVATION_DEADLINE_SECONDS * 1_000) return null;
+  return Object.freeze({
+    ...fence,
+    observationAttemptId: permit['observationAttemptId'],
+    authorizedAt: permit['authorizedAt'],
+    leaseExpiresAt: permit['leaseExpiresAt'],
+    deadlineAt: permit['deadlineAt'],
+  });
+}
+
 function snapshotBinding(value: unknown): Readonly<{
   userId: string;
   admissionId: string;
@@ -200,6 +229,7 @@ function snapshotEvidence(
 export const gmailArchiveRecoveryLeaseConsumerTestHooks = {
   snapshotEvidence,
   snapshotFence: snapshotGmailArchiveRecoveryLeaseFence,
+  snapshotPermit: snapshotObservationPermit,
 };
 
 function evidenceEnvelope(evidence: Readonly<GmailArchiveRecoveryObservationEvidence>) {

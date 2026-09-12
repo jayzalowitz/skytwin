@@ -261,7 +261,9 @@ function sameEvidence(
 }
 
 function snapshotPermit(value: unknown): Readonly<GmailArchiveRecoveryObservationPermit> | null {
-  const permit = ownData(value, [...FENCE_KEYS, 'authorizedAt', 'deadlineAt', 'observationAttemptId']);
+  const permit = ownData(value, [
+    ...FENCE_KEYS, 'authorizedAt', 'deadlineAt', 'leaseExpiresAt', 'observationAttemptId',
+  ]);
   if (!permit) return null;
   const fenceValues: Record<string, unknown> = {};
   for (const key of FENCE_KEYS) fenceValues[key] = permit[key];
@@ -271,11 +273,15 @@ function snapshotPermit(value: unknown): Readonly<GmailArchiveRecoveryObservatio
       !UUID.test(permit['observationAttemptId']) ||
       !validExternalTimestamp(permit['authorizedAt']) ||
       !validExternalTimestamp(permit['deadlineAt']) ||
-      Date.parse(permit['authorizedAt']) > Date.parse(permit['deadlineAt'])) return null;
+      !validExternalTimestamp(permit['leaseExpiresAt']) ||
+      Date.parse(permit['authorizedAt']) >= Date.parse(permit['leaseExpiresAt']) ||
+      Date.parse(permit['deadlineAt']) - Date.parse(permit['authorizedAt']) !==
+        GMAIL_ARCHIVE_RECOVERY_OBSERVATION_DEADLINE_SECONDS * 1_000) return null;
   return Object.freeze({
     ...fence,
     observationAttemptId: permit['observationAttemptId'],
     authorizedAt: permit['authorizedAt'],
+    leaseExpiresAt: permit['leaseExpiresAt'],
     deadlineAt: permit['deadlineAt'],
   });
 }
@@ -329,6 +335,7 @@ async function liveCapability(
          observation_state = 'started' AND observation_attempt_id = $11::UUID AND
          observation_authorized_at = $12::TIMESTAMPTZ AND
          observation_deadline_at = $13::TIMESTAMPTZ AND
+         expires_at = $14::TIMESTAMPTZ AND
          expires_at > statement_timestamp() AND
          observation_deadline_at > statement_timestamp()
        WHEN observation_state = 'started' THEN
@@ -354,6 +361,7 @@ async function liveCapability(
       permit?.observationAttemptId ?? null,
       permit?.authorizedAt ?? null,
       permit?.deadlineAt ?? null,
+      permit?.leaseExpiresAt ?? null,
     ],
   )).rows[0];
   return row?.live === true;
@@ -942,6 +950,7 @@ async function beginTransition(
           ...fence,
           observationAttemptId,
           authorizedAt: row.observation_authorized_at.toISOString(),
+          leaseExpiresAt: row.expires_at.toISOString(),
           deadlineAt: row.observation_deadline_at.toISOString(),
         }),
       };
@@ -976,6 +985,7 @@ async function beginTransition(
     ...fence,
     observationAttemptId,
     authorizedAt: updated.observation_authorized_at.toISOString(),
+    leaseExpiresAt: updated.expires_at.toISOString(),
     deadlineAt: updated.observation_deadline_at.toISOString(),
   });
   return { ok: true, status: 'permitted', permit };
@@ -1005,6 +1015,7 @@ async function recordTransition(
   const row = await loadExactLease(client, input.permit);
   if (!row || row.observation_attempt_id !== input.permit.observationAttemptId ||
       row.observation_authorized_at?.toISOString() !== input.permit.authorizedAt ||
+      row.expires_at.toISOString() !== input.permit.leaseExpiresAt ||
       row.observation_deadline_at?.toISOString() !== input.permit.deadlineAt) {
     return { ok: false, error: 'stale_lease' };
   }
@@ -1046,6 +1057,10 @@ async function recordTransition(
       WHERE admission_id = $1 AND user_id = $2 AND lease_token = $3
         AND generation = $4::INT8 AND observation_state = 'started'
         AND observation_attempt_id = $6 AND
+            observation_authorized_at = $8::TIMESTAMPTZ AND
+            observation_deadline_at = $9::TIMESTAMPTZ AND
+            expires_at = $10::TIMESTAMPTZ AND
+            expires_at > $7::TIMESTAMPTZ AND
             observation_deadline_at > $7::TIMESTAMPTZ
       RETURNING admission_id`,
     [
@@ -1053,6 +1068,9 @@ async function recordTransition(
       input.permit.generation, JSON.stringify(evidenceEnvelope(input.evidence)),
       input.permit.observationAttemptId,
       requestTime,
+      input.permit.authorizedAt,
+      input.permit.deadlineAt,
+      input.permit.leaseExpiresAt,
     ],
   );
   return updated.rows.length === 1
