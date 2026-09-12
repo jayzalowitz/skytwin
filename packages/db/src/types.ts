@@ -76,6 +76,19 @@ export interface TwinProfileVersionRow {
   created_at: Date;
 }
 
+export interface TwinFeedbackApplicationRow {
+  id: string;
+  feedback_event_id: string;
+  user_id: string;
+  decision_id: string;
+  profile_id: string;
+  input_profile_version: number;
+  output_profile_version: number;
+  changed: boolean;
+  output_digest: string;
+  applied_at: Date;
+}
+
 // ============================================================================
 // Preferences
 // ============================================================================

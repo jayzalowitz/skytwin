@@ -59,7 +59,8 @@ CREATE TABLE IF NOT EXISTS twin_profiles (
   -- the cost / opt-in gates.
   drafts_eval_passed_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT twin_profiles_id_user_id_idx UNIQUE (id, user_id)
 );
 
 CREATE TABLE IF NOT EXISTS twin_profile_versions (
@@ -70,7 +71,7 @@ CREATE TABLE IF NOT EXISTS twin_profile_versions (
   changed_fields STRING[] NOT NULL DEFAULT '{}',
   reason STRING,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  INDEX (profile_id, version DESC)
+  CONSTRAINT twin_profile_versions_profile_version_idx UNIQUE (profile_id, version)
 );
 
 -- ============================================================================
@@ -439,8 +440,36 @@ CREATE TABLE IF NOT EXISTS feedback_events (
     REFERENCES approval_requests (id, user_id, decision_id) ON DELETE CASCADE,
   INDEX (user_id, created_at DESC),
   INDEX (decision_id),
+  CONSTRAINT feedback_events_id_owner_decision_idx UNIQUE (id, user_id, decision_id),
   UNIQUE INDEX feedback_events_approval_request_unique_idx (approval_request_id)
     WHERE approval_request_id IS NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS twin_feedback_applications (
+  id UUID PRIMARY KEY,
+  feedback_event_id UUID NOT NULL,
+  user_id UUID NOT NULL,
+  decision_id UUID NOT NULL,
+  profile_id UUID NOT NULL,
+  input_profile_version INT NOT NULL,
+  output_profile_version INT NOT NULL,
+  changed BOOL NOT NULL,
+  output_digest STRING NOT NULL,
+  applied_at TIMESTAMPTZ NOT NULL,
+  CONSTRAINT twin_feedback_applications_feedback_unique UNIQUE (feedback_event_id),
+  CONSTRAINT twin_feedback_applications_feedback_owner_decision_fk
+    FOREIGN KEY (feedback_event_id, user_id, decision_id)
+    REFERENCES feedback_events (id, user_id, decision_id) ON DELETE CASCADE,
+  CONSTRAINT twin_feedback_applications_profile_owner_fk
+    FOREIGN KEY (profile_id, user_id) REFERENCES twin_profiles (id, user_id),
+  CONSTRAINT twin_feedback_applications_versions_chk CHECK (
+    input_profile_version > 0 AND
+    ((changed = true AND output_profile_version = input_profile_version + 1) OR
+     (changed = false AND output_profile_version = input_profile_version))
+  ),
+  CONSTRAINT twin_feedback_applications_digest_chk CHECK (
+    output_digest ~ '^[0-9a-f]{64}$'
+  )
 );
 
 -- ============================================================================
