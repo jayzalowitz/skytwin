@@ -24,7 +24,11 @@ import {
 } from './gmail-archive-approval-response-repository.js';
 import { loadGmailArchivePreparationReplay } from './gmail-archive-preparation-repository.js';
 import { queryAbandonedGmailArchiveInTransaction } from './gmail-archive-recovery-repository.js';
-import { GMAIL_ARCHIVE_RECOVERY_GRACE_SECONDS } from './gmail-archive-recovery-policy.js';
+import {
+  GMAIL_ARCHIVE_RECOVERY_GRACE_SECONDS,
+  GMAIL_ARCHIVE_RECOVERY_OBSERVATION_DEADLINE_SECONDS,
+} from './gmail-archive-recovery-policy.js';
+export { GMAIL_ARCHIVE_RECOVERY_OBSERVATION_DEADLINE_SECONDS } from './gmail-archive-recovery-policy.js';
 import { exactClaimedGmailArchiveReceipt } from './gmail-archive-claim-integrity.js';
 import {
   exactGmailArchiveApprovedPrefix,
@@ -41,7 +45,6 @@ import type { PreEffectBarrierRow } from './pre-effect-barrier-repository.js';
  */
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const OBSERVATION_EVIDENCE_SCHEMA = 'gmail_archive_recovery_observation_v1';
-export const GMAIL_ARCHIVE_RECOVERY_OBSERVATION_DEADLINE_SECONDS = 150;
 const MIN_LEASE_MS = 1_000;
 const MAX_LEASE_MS = 5 * 60 * 1_000;
 
@@ -604,6 +607,8 @@ function validLeaseObservationState(
   if (!row.observation_attempt_id || !UUID.test(row.observation_attempt_id) ||
       !row.observation_authorized_at || !row.observation_deadline_at ||
       row.observation_authorized_at.getTime() > row.observation_deadline_at.getTime() ||
+      row.observation_deadline_at.getTime() - row.observation_authorized_at.getTime() !==
+        GMAIL_ARCHIVE_RECOVERY_OBSERVATION_DEADLINE_SECONDS * 1_000 ||
       row.observation_authorized_at.getTime() < Date.parse(phaseChangedAt)) return false;
   if (row.observation_state === 'started') return evidence === null;
   if (row.observation_state !== 'evidence_recorded' || !evidence ||

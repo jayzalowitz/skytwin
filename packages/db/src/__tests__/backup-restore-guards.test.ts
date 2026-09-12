@@ -643,6 +643,12 @@ describe('validateBackupData', () => {
       const evidence = envelope['evidence'] as Record<string, unknown>;
       evidence['observedAt'] = new Date(Date.parse(terminalAt) + 1).toISOString();
     }],
+    ['pre-phase observation', (envelope: Record<string, unknown>) => {
+      const evidence = envelope['evidence'] as Record<string, unknown>;
+      evidence['observedAt'] = new Date(
+        Date.parse(envelope['phaseChangedAt'] as string) - 1,
+      ).toISOString();
+    }],
     ['wrong owner binding', (envelope: Record<string, unknown>) => {
       const evidence = envelope['evidence'] as Record<string, unknown>;
       const binding = evidence['binding'] as Record<string, unknown>;

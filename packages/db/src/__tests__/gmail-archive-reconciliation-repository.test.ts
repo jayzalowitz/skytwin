@@ -44,6 +44,21 @@ const unavailable = {
   code: 'observation_unavailable' as const,
 };
 const phaseChangedAt = '2026-09-12T11:50:00.000Z';
+const recovery = {
+  fence: {
+    userId: command.userId,
+    approvalId: '77777777-7777-4777-8777-777777777777',
+    admissionId: command.admissionId,
+    messageRefId: command.messageRefId,
+    workKind: 'observe_dispatch' as const,
+    barrierStatus: 'in_progress' as const,
+    attemptPhase: 'dispatch_may_have_started' as const,
+    phaseChangedAt,
+    leaseToken: '88888888-8888-4888-8888-888888888888',
+    generation: 3,
+  },
+  observationAttemptId: '99999999-9999-4999-8999-999999999999',
+};
 const stable = {
   explanationId: '44444444-4444-4444-8444-444444444444',
   resultId: '55555555-5555-4555-8555-555555555555',
@@ -54,10 +69,13 @@ const stable = {
 function input(evidence: GmailArchiveReconciliationEvidence = observedOutsideInbox) {
   return {
     command,
-    phase: 'dispatch_may_have_started' as const,
-    phaseChangedAt,
+    recovery,
     evidence,
   };
+}
+
+function envelopeInput(evidence: GmailArchiveReconciliationEvidence = observedOutsideInbox) {
+  return { phase: 'dispatch_may_have_started' as const, phaseChangedAt, evidence };
 }
 
 async function sourceFilesBelow(directory: URL): Promise<string[]> {
@@ -85,9 +103,22 @@ describe('gmailArchiveReconciliationRepository boundary', () => {
     { ...input(), command: { ...command, userId: 'invalid' } },
     { ...input(), command: { ...command, admissionId: 'invalid' } },
     { ...input(), command: { ...command, messageRefId: 'invalid' } },
-    { ...input(), phase: 'pre_dispatch' },
+    { ...input(), recovery: { ...recovery, fence: {
+      ...recovery.fence,
+      workKind: 'reconcile_pre_dispatch',
+      attemptPhase: 'pre_dispatch',
+    } } },
     { ...input(interrupted), phase: 'dispatch_may_have_started' },
-    { ...input(), phaseChangedAt: 'not-an-instant' },
+    { ...input(), recovery: { ...recovery, observationAttemptId: null } },
+    { ...input(), recovery: { ...recovery, observationAttemptId: 'invalid' } },
+    { ...input(), recovery: { ...recovery, fence: {
+      ...recovery.fence,
+      phaseChangedAt: 'not-an-instant',
+    } } },
+    { ...input(), recovery: { ...recovery, fence: {
+      ...recovery.fence,
+      userId: command.admissionId,
+    } } },
     { ...input({ ...observedOutsideInbox, extra: true } as never) },
     { ...input({ ...observedOutsideInbox, observedAt: 'not-an-instant' }) },
     { ...input({ ...observedOutsideInbox, binding: undefined } as never) },
@@ -157,7 +188,7 @@ describe('gmailArchiveReconciliationRepository boundary', () => {
   it.each([observedOutsideInbox, observedInInbox, unavailable])(
     'keeps every dispatch-started evidence case causal-unknown: $kind',
     (evidence) => {
-      const envelope = buildGmailArchiveReconciliationTerminalEnvelope(input(evidence));
+      const envelope = buildGmailArchiveReconciliationTerminalEnvelope(envelopeInput(evidence));
       expect(envelope).toMatchObject({
         schema: 'gmail_archive_reconciliation_terminal_v1',
         attemptPhase: 'dispatch_may_have_started',
@@ -167,6 +198,9 @@ describe('gmailArchiveReconciliationRepository boundary', () => {
       });
       expect(envelope).not.toHaveProperty('effect');
       expect(envelope).not.toHaveProperty('success');
+      expect(envelope).not.toHaveProperty('leaseToken');
+      expect(envelope).not.toHaveProperty('generation');
+      expect(envelope).not.toHaveProperty('observationAttemptId');
       expect(parseGmailArchiveReconciliationTerminalEnvelope(envelope)).toEqual(envelope);
       expect(parseGmailArchiveReconciliationExplanationEvidence([envelope])).toEqual(envelope);
     },
@@ -193,20 +227,24 @@ describe('gmailArchiveReconciliationRepository boundary', () => {
 
   it('describes an observation as state at its observation time, not timeless current state', () => {
     const semantics = gmailArchiveReconciliationExplanationSemantics(
-      buildGmailArchiveReconciliationTerminalEnvelope(input(observedOutsideInbox)),
+      buildGmailArchiveReconciliationTerminalEnvelope(envelopeInput(observedOutsideInbox)),
     );
     expect(semantics.confidenceReasoning).toContain('mailbox state at the observation time');
     expect(semantics.confidenceReasoning).not.toContain('establish current state');
   });
 
   it('rejects tampered envelopes and non-exact explanation arrays', () => {
-    const envelope = buildGmailArchiveReconciliationTerminalEnvelope(input());
+    const envelope = buildGmailArchiveReconciliationTerminalEnvelope(envelopeInput());
     for (const value of [
       { ...envelope, extra: true },
       { ...envelope, outcome: 'succeeded' },
       { ...envelope, code: 'remote_outcome_unknown' },
       { ...envelope, evidence: interrupted },
       { ...envelope, phaseChangedAt: 'invalid' },
+      {
+        ...envelope,
+        evidence: { ...observedOutsideInbox, observedAt: '2026-09-12T11:49:59.999Z' },
+      },
     ]) expect(parseGmailArchiveReconciliationTerminalEnvelope(value)).toBeNull();
     expect(parseGmailArchiveReconciliationExplanationEvidence([])).toBeNull();
     expect(parseGmailArchiveReconciliationExplanationEvidence([envelope, envelope])).toBeNull();
@@ -231,6 +269,10 @@ describe('gmailArchiveReconciliationRepository boundary', () => {
       () => stable,
     );
     submitted.command = { ...command, messageRefId: stable.resultId };
+    submitted.recovery = {
+      ...recovery,
+      fence: { ...recovery.fence, leaseToken: stable.resultId },
+    };
     if (submitted.evidence.kind !== 'mailbox_observed') throw new Error('test setup');
     (submitted.evidence.binding as { userId: string }).userId = stable.resultId;
     await expect(pending).resolves.toEqual({ ok: false, error: 'not_ready' });
@@ -244,6 +286,8 @@ describe('gmailArchiveReconciliationRepository boundary', () => {
     expect(first.snapshot).toEqual(input());
     expect(Object.isFrozen(first.snapshot)).toBe(true);
     expect(Object.isFrozen(first.snapshot.command)).toBe(true);
+    expect(Object.isFrozen(first.snapshot.recovery)).toBe(true);
+    expect(Object.isFrozen(first.snapshot.recovery.fence)).toBe(true);
     expect(Object.isFrozen(first.snapshot.evidence)).toBe(true);
     if (first.snapshot.evidence.kind !== 'mailbox_observed') throw new Error('test setup');
     expect(Object.isFrozen(first.snapshot.evidence.binding)).toBe(true);
@@ -253,19 +297,41 @@ describe('gmailArchiveReconciliationRepository boundary', () => {
     expect(queryMock).toHaveBeenCalledWith('SELECT now() AS persisted_at');
   });
 
-  it('does not retry non-restart failures', async () => {
+  it.each(['08006', '40003'])('maps ambiguous %s commits and does not retry them', async (code) => {
     withTransactionMock.mockImplementation(async (callback) => callback({}));
     await expect(gmailArchiveReconciliationTestHooks.reconcileWithTransition(
       input(unavailable),
       async () => {
-        throw Object.assign(new Error('connection'), { code: '08006' });
+        throw Object.assign(new Error('connection'), { code });
       },
       () => stable,
-    )).rejects.toMatchObject({ code: '08006' });
+    )).resolves.toEqual({ ok: false, error: 'commit_unverified' });
     expect(withTransactionMock).toHaveBeenCalledTimes(1);
   });
 
-  it('rejects evidence after DB persistence but does not compare independent clock lower bounds', async () => {
+  it('exhausts 40001 retries without treating a serialization failure as commit ambiguity', async () => {
+    withTransactionMock.mockImplementation(async (callback) => callback({}));
+    const error = Object.assign(new Error('restart exhausted'), { code: '40001' });
+    await expect(gmailArchiveReconciliationTestHooks.reconcileWithTransition(
+      input(unavailable),
+      async () => { throw error; },
+      () => stable,
+    )).rejects.toBe(error);
+    expect(withTransactionMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not mask an ordinary database failure as commit ambiguity', async () => {
+    withTransactionMock.mockImplementation(async (callback) => callback({}));
+    const error = Object.assign(new Error('constraint'), { code: '23514' });
+    await expect(gmailArchiveReconciliationTestHooks.reconcileWithTransition(
+      input(unavailable),
+      async () => { throw error; },
+      () => stable,
+    )).rejects.toBe(error);
+    expect(withTransactionMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects observations outside the phase-to-persistence window', async () => {
     await expect(gmailArchiveReconciliationTestHooks.reconcileWithTransition(
       input({ ...observedOutsideInbox, observedAt: '2026-09-12T12:00:02.000Z' }),
       async () => ({ ok: false, error: 'not_ready' }),
@@ -273,12 +339,12 @@ describe('gmailArchiveReconciliationRepository boundary', () => {
     )).resolves.toEqual({ ok: false, error: 'invalid_input' });
     expect(withTransactionMock).not.toHaveBeenCalled();
 
-    withTransactionMock.mockImplementation(async (callback) => callback({}));
     await expect(gmailArchiveReconciliationTestHooks.reconcileWithTransition(
       input({ ...observedOutsideInbox, observedAt: '2026-09-12T11:40:00.000Z' }),
       async () => ({ ok: false, error: 'not_ready' }),
       () => stable,
-    )).resolves.toEqual({ ok: false, error: 'not_ready' });
+    )).resolves.toEqual({ ok: false, error: 'invalid_input' });
+    expect(withTransactionMock).not.toHaveBeenCalled();
   });
 
   it('does not allocate a terminal graph before the stable DB time clears grace', async () => {
@@ -297,6 +363,7 @@ describe('gmailArchiveReconciliationRepository boundary', () => {
     expect(Object.keys(command).sort()).toEqual([
       'admissionId', 'messageRefId', 'operation', 'userId',
     ]);
+    expect(Object.keys(input()).sort()).toEqual(['command', 'evidence', 'recovery']);
   });
 
   it('contains no provider, credential, observation, gate, router, API, worker, or network call', async () => {
@@ -325,7 +392,9 @@ describe('gmailArchiveReconciliationRepository boundary', () => {
     const roots = [
       new URL('../../../../apps/api/', import.meta.url),
       new URL('../../../../apps/worker/', import.meta.url),
+      new URL('../../../../apps/desktop/', import.meta.url),
       new URL('../../../execution-router/', import.meta.url),
+      new URL('../../../ironclaw-adapter/', import.meta.url),
     ];
     const runtimeSources = (await Promise.all(roots.map(sourceFilesBelow))).flat().join('\n');
     expect(runtimeSources).not.toContain('gmailArchiveReconciliationRepository');
