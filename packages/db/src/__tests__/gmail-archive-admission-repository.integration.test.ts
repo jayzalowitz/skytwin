@@ -4051,6 +4051,50 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     expect(durable.rows[0]).toEqual({ leases: '1', revisions: '6' });
   }, 120_000);
 
+  it('rejects microsecond attempt anchors on the recorded-observation bridge', async () => {
+    const { fixture, permit } = await permittedObservationTarget(224);
+    await expect(gmailArchiveRecoveryLeaseRepository.recordObservation({
+      permit,
+      evidence: {
+        kind: 'mailbox_observation_unavailable',
+        binding: mutationBinding(fixture.command),
+        code: 'observation_unavailable',
+      },
+    })).resolves.toMatchObject({ ok: true });
+    const microsecondAnchor = permit.phaseChangedAt.replace(
+      /(\.\d{3})Z$/,
+      (_match, fraction: string) => `${fraction}456Z`,
+    );
+    expect(microsecondAnchor).not.toBe(permit.phaseChangedAt);
+    await getPool().query(
+      `UPDATE pre_effect_barriers SET updated_at = $2::TIMESTAMPTZ WHERE id = $1`,
+      [fixture.command.admissionId, microsecondAnchor],
+    );
+    await getPool().query(
+      `UPDATE gmail_archive_recovery_leases
+          SET phase_changed_at = $2::TIMESTAMPTZ
+        WHERE admission_id = $1`,
+      [fixture.command.admissionId, microsecondAnchor],
+    );
+    await expect(gmailArchiveRecordedObservationReconciliationRepository
+      .reconcileRecordedObservation({
+        ...recoveryFence(permit),
+        phaseChangedAt: microsecondAnchor,
+      })).resolves.toEqual({ ok: false, error: 'idempotency_conflict' });
+    await expect(gmailArchiveRecordedObservationReconciliationRepository
+      .reconcileRecordedObservation(recoveryFence(permit)))
+      .resolves.toEqual({ ok: false, error: 'idempotency_conflict' });
+    const durable = await getPool().query<{ leases: string; revisions: string }>(`SELECT
+      (SELECT count(*)::STRING FROM gmail_archive_recovery_leases
+        WHERE admission_id = $1) AS leases,
+      (SELECT count(*)::STRING FROM decision_receipt_revisions
+        WHERE receipt_id = $2) AS revisions`, [
+      fixture.command.admissionId,
+      fixture.prepared.receipt.id,
+    ]);
+    expect(durable.rows[0]).toEqual({ leases: '1', revisions: '6' });
+  }, 120_000);
+
   it('rejects cross-owner, wrong admission, wrong message, phase, timestamp, and cross-schema replay', async () => {
     const authority = await createClaimedProposal(124);
     const phaseChangedAt = await ageClaimedAttempt(authority.command.admissionId);

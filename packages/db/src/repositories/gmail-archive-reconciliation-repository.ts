@@ -193,16 +193,13 @@ function canonicalDbPhaseTimestamp(value: unknown): string | null {
 function exactReconciliationPhaseAnchor(
   databaseTimestamp: unknown,
   driverTimestamp: Date,
-  immutableReceiptTimestamp: unknown,
   fenceTimestamp: string,
 ): boolean {
   const canonical = canonicalDbPhaseTimestamp(databaseTimestamp);
-  if (!canonical || canonical !== fenceTimestamp) return false;
-  // Millisecond DB values are represented exactly by the driver. Any finer
-  // precision must instead be present in immutable receipt truth; otherwise a
-  // truncated Date could make a changed anchor hash like the admitted row.
-  return canonical === driverTimestamp.toISOString() ||
-    canonical === immutableReceiptTimestamp;
+  // Claim and dispatch writers are millisecond-canonical. Comparing both DB
+  // text and the driver value rejects hidden microsecond drift while generic
+  // fence parsers remain able to represent database timestamps losslessly.
+  return canonical === fenceTimestamp && driverTimestamp.toISOString() === fenceTimestamp;
 }
 
 function snapshotCommand(value: unknown): Readonly<GmailArchiveReconciliationCommand> | null {
@@ -835,7 +832,6 @@ async function transition(
       !exactReconciliationPhaseAnchor(
         barrier.updated_at_text,
         barrier.updated_at,
-        state.revisions[5]?.content.barrier?.snapshot.updatedAt,
         fence.phaseChangedAt,
       ) ||
       !gmailArchiveReconciliationEvidenceAllowedForPhase(input.evidence, phase)) {
@@ -1001,7 +997,6 @@ export async function reconcileRecordedGmailArchiveObservationInTransaction(
       !exactReconciliationPhaseAnchor(
         barrier.updated_at_text,
         barrier.updated_at,
-        state.revisions[5]?.content.barrier?.snapshot.updatedAt,
         fence.phaseChangedAt,
       )) {
     return { ok: false, error: 'idempotency_conflict' };

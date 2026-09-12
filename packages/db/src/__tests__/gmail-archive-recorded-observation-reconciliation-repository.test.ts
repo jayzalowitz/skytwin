@@ -180,26 +180,23 @@ describe('gmailArchiveRecordedObservationReconciliationRepository', () => {
     expect(withTransactionMock).not.toHaveBeenCalled();
   });
 
-  it('rejects hidden DB microsecond anchor drift unless immutable receipt truth carries it', () => {
+  it('requires both DB text and driver time to equal a millisecond-canonical attempt anchor', () => {
     const driverTimestamp = new Date('2026-09-12T11:50:00.123Z');
     expect(gmailArchiveReconciliationTestHooks.exactReconciliationPhaseAnchor(
       '2026-09-12 11:50:00.123',
       driverTimestamp,
-      '2026-09-12T11:40:00.000Z',
       '2026-09-12T11:50:00.123Z',
     )).toBe(true);
     expect(gmailArchiveReconciliationTestHooks.exactReconciliationPhaseAnchor(
       '2026-09-12 11:50:00.123456',
       driverTimestamp,
-      '2026-09-12T11:40:00.000Z',
       '2026-09-12T11:50:00.123456Z',
     )).toBe(false);
     expect(gmailArchiveReconciliationTestHooks.exactReconciliationPhaseAnchor(
       '2026-09-12 11:50:00.123456',
       driverTimestamp,
-      '2026-09-12T11:50:00.123456Z',
-      '2026-09-12T11:50:00.123456Z',
-    )).toBe(true);
+      '2026-09-12T11:50:00.123Z',
+    )).toBe(false);
   });
 
   it.each(['08006', '40003'])('maps ambiguous %s commits without retry', async (code) => {
