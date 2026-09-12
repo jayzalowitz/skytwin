@@ -6623,11 +6623,24 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
   });
 
   it('wraps past a finite upper bound so a delayed older hint survives a continuous tail', async () => {
-    const delayedOwner = await seedRecoveryOwner(75);
-    const corruptOwner = await seedRecoveryOwner(76);
-    const healthyOwner = await seedRecoveryOwner(77);
+    // This file deliberately retains durable fixtures across tests. Neutralize
+    // all earlier nonterminal anchors before asserting an exact global order;
+    // later fixtures do not exist yet and are therefore unaffected.
+    await getPool().query(
+      `UPDATE pre_effect_barriers
+          SET created_at = statement_timestamp(), updated_at = statement_timestamp()
+        WHERE effect_type = 'event_execution'
+          AND status IN ('reserved', 'prepared', 'in_progress')`,
+    );
+
+    // Keep these identities outside every other seedRecoveryOwner suffix in
+    // this integration file so even a failed assertion cannot collide later.
+    const delayedOwner = await seedRecoveryOwner(900);
+    const corruptOwner = await seedRecoveryOwner(901);
+    const healthyOwner = await seedRecoveryOwner(902);
     const corrupt: Array<{ approvalId: string; barrierId: string; candidateId: string }> = [];
 
+    try {
     const delayed = await createProposal(
       1999,
       delayedOwner.ownerUserId,
@@ -6823,15 +6836,17 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       }],
     });
 
-    await getPool().query(
-      `UPDATE pre_effect_barriers
-          SET created_at = statement_timestamp(), updated_at = statement_timestamp()
-        WHERE id = ANY($1::UUID[])`,
-      [[...corrupt.map((candidate) => candidate.barrierId),
-        delayedResponse.response.reservedBarrier.id,
-        healthyResponse.response.reservedBarrier.id,
-        tailResponse.response.reservedBarrier.id]],
-    );
+    } finally {
+      // Restore every anchor owned by this test to not-due using the DB clock,
+      // including partial setup if an assertion throws before the tail exists.
+      await getPool().query(
+        `UPDATE pre_effect_barriers
+            SET created_at = statement_timestamp(), updated_at = statement_timestamp()
+          WHERE effect_type = 'event_execution'
+            AND user_id = ANY($1::UUID[])`,
+        [[delayedOwner.ownerUserId, corruptOwner.ownerUserId, healthyOwner.ownerUserId]],
+      );
+    }
   }, 300_000);
 
   it('does not emit a cross-owner barrier-to-approval link', async () => {
