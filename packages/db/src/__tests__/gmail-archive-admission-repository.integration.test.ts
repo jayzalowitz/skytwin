@@ -6423,6 +6423,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
 
   it('resolves only an owner/action-bound completed reversible rollback report target', async () => {
     const owner = await seedRecoveryOwner(25);
+    const otherOwner = await seedRecoveryOwner(26);
     const fixture = await createProposal(256, owner.ownerUserId, owner.ownerAccountId);
     const planId = id('88', 256);
     const resultId = id('89', 256);
@@ -6498,10 +6499,10 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
 
     await getPool().query(
       'UPDATE capability_provenance_nodes SET user_id = $2 WHERE id = $1',
-      [provenanceId, otherUserId],
+      [provenanceId, otherOwner.ownerUserId],
     );
     await expect(executionRepository.getRollbackTargetsByServer({
-      ...input, userId: otherUserId,
+      ...input, userId: otherOwner.ownerUserId,
     })).resolves.toEqual([expect.objectContaining({
       actionId: fixture.candidate.id,
       actionType: null,
