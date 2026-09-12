@@ -659,6 +659,8 @@ export async function loadVerifiedGmailArchiveFeedbackApplication(
   input: Readonly<ApplyGmailArchiveApprovalFeedbackInput>,
   source: GmailArchiveApprovalCanonicalState,
 ): Promise<VerifiedGmailArchiveFeedbackApplication | null> {
+  if (!UUID.test(input.feedbackEventId) || !UUID.test(input.userId) ||
+      source.approval.user_id !== input.userId) return null;
   const feedbackRows = await loadFeedback(client, input, true);
   const result = await inspectLoadedGmailArchiveFeedbackApplication(
     client, input, source, feedbackRows,
