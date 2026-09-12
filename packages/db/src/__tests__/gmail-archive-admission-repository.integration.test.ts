@@ -61,6 +61,7 @@ import {
 } from '../repositories/gmail-archive-terminalization-repository.js';
 import {
   gmailArchiveTerminalStatusRepository,
+  gmailArchiveTerminalStatusTestHooks,
 } from '../repositories/gmail-archive-terminal-status-repository.js';
 import {
   buildGmailArchiveProposalCandidate,
@@ -4231,6 +4232,161 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       userId,
       approvalId: corrupted.proposal.approval.id,
     })).resolves.toEqual({ ok: false, error: 'integrity_conflict' });
+  }, 120_000);
+
+  it('rejects reserved continuations, orphan plans, and cross-owner approval aliases', async () => {
+    const continued = await createProposal(236);
+    const continuedApproval = await gmailArchiveApprovalResponseRepository.respond({
+      userId,
+      approvalId: continued.approval.id,
+      action: 'approve',
+    });
+    if (!continuedApproval.ok) throw new Error('Reserved continuation fixture was not approved.');
+    const approvedRevision = continuedApproval.response.revisions[3];
+    if (!approvedRevision) throw new Error('Reserved continuation fixture omitted r4.');
+    await getPool().query(
+      `INSERT INTO decision_receipt_revisions (
+         id, receipt_id, sequence, event_key, previous_digest, content_digest,
+         revision_digest, stage, disposition, content, trusted,
+         candidate_action_id, barrier_id, explanation_id, approval_request_id,
+         execution_plan_id, execution_result_id, execution_disposition,
+         correction_of_revision_id, created_at
+       ) SELECT $1, receipt_id, 5, $2, revision_digest, content_digest,
+                $3, 'feedback_recorded', 'approved', content, false,
+                candidate_action_id, barrier_id, explanation_id, approval_request_id,
+                NULL, NULL, NULL, NULL, created_at
+           FROM decision_receipt_revisions
+          WHERE id = $4`,
+      [
+        id('94', 236),
+        `feedback_recorded:${id('95', 236)}`,
+        'f'.repeat(64),
+        approvedRevision.id,
+      ],
+    );
+    await expect(gmailArchiveTerminalStatusRepository.read({
+      userId,
+      approvalId: continued.approval.id,
+    })).resolves.toEqual({ ok: false, error: 'integrity_conflict' });
+
+    const orphaned = await createProposal(237);
+    const orphanedApproval = await gmailArchiveApprovalResponseRepository.respond({
+      userId,
+      approvalId: orphaned.approval.id,
+      action: 'approve',
+    });
+    if (!orphanedApproval.ok) throw new Error('Orphan-plan fixture was not approved.');
+    await getPool().query(
+      `INSERT INTO execution_plans (id, decision_id, action_id, status, steps)
+       VALUES ($1, $2, $3, 'pending', $4)`,
+      [id('88', 237), orphaned.decision.id, orphaned.candidate.id, JSON.stringify([])],
+    );
+    await expect(gmailArchiveTerminalStatusRepository.read({
+      userId,
+      approvalId: orphaned.approval.id,
+    })).resolves.toEqual({ ok: false, error: 'integrity_conflict' });
+
+    await expect(gmailArchiveTerminalStatusRepository.read({
+      userId: otherUserId,
+      approvalId: orphaned.approval.id,
+    })).resolves.toEqual({ ok: false, error: 'not_found' });
+  }, 120_000);
+
+  it('reads a terminal snapshot without contending with the mutation validator lock', async () => {
+    const fixture = await createClaimedProposal(238, userId, accountId, true);
+    const input = {
+      command: fixture.command,
+      result: {
+        outcome: 'known_failure' as const,
+        code: 'remote_rejected' as const,
+        compensationAvailable: false as const,
+        binding: mutationBinding(fixture.command),
+      },
+    };
+    const first = await gmailArchiveTerminalizationRepository.terminalize(input);
+    if (!first.ok) throw new Error('Terminal reader lock fixture did not terminalize.');
+
+    let releaseReplay!: () => void;
+    let replayLocked!: () => void;
+    const resumeReplay = new Promise<void>((resolve) => { releaseReplay = resolve; });
+    const replayPaused = new Promise<void>((resolve) => { replayLocked = resolve; });
+    const reader = gmailArchiveTerminalStatusTestHooks.readWithTransition(
+      { userId, approvalId: fixture.proposal.approval.id },
+      gmailArchiveTerminalStatusTestHooks.readTransition,
+      pauseTransactionAfterQuery(
+        /FROM execution_plans WHERE decision_id = \$1 ORDER BY id ASC(?! FOR UPDATE)/,
+        replayLocked,
+        resumeReplay,
+      ),
+    );
+    await within(replayPaused, 5_000);
+
+    // The reader is paused after its plain plan SELECT. A default replay can still
+    // take FOR UPDATE locks and finish, proving the reader retained no row lock.
+    await expect(within(gmailArchiveTerminalizationRepository.terminalize(input), 5_000))
+      .resolves.toMatchObject({ ok: true, created: false });
+    releaseReplay();
+    await expect(within(reader, 5_000)).resolves.toEqual({
+      ok: true,
+      status: 'terminal',
+      terminal: {
+        disposition: 'failed',
+        receiptRevisionId: first.terminalization.revision.id,
+        recordedAt: first.terminalization.revision.created_at.toISOString(),
+      },
+    });
+  }, 120_000);
+
+  it('rejects sub-millisecond corruption in visible revisions and terminal artifacts', async () => {
+    const blocked = await createPolicyBlockedProposal(239);
+    const blockedRevision = blocked.blocked.revisions[4];
+    if (!blockedRevision) throw new Error('Blocked precision fixture omitted r5.');
+    await getPool().query(
+      `UPDATE decision_receipt_revisions
+          SET created_at = created_at + INTERVAL '1 microsecond'
+        WHERE id = $1`,
+      [blockedRevision.id],
+    );
+    await expect(gmailArchiveTerminalStatusRepository.read({
+      userId,
+      approvalId: blocked.proposal.approval.id,
+    })).resolves.toEqual({ ok: false, error: 'integrity_conflict' });
+
+    const fixture = await createClaimedProposal(240, userId, accountId, true);
+    const terminalized = await gmailArchiveTerminalizationRepository.terminalize({
+      command: fixture.command,
+      result: {
+        outcome: 'known_failure',
+        code: 'remote_rejected',
+        compensationAvailable: false,
+        binding: mutationBinding(fixture.command),
+      },
+    });
+    if (!terminalized.ok) throw new Error('Terminal precision fixture did not terminalize.');
+    const authority = { userId, approvalId: fixture.proposal.approval.id };
+    await getPool().query(
+      `UPDATE decision_receipt_revisions
+          SET created_at = created_at + INTERVAL '1 microsecond'
+        WHERE id = $1`,
+      [terminalized.terminalization.revision.id],
+    );
+    await expect(gmailArchiveTerminalStatusRepository.read(authority))
+      .resolves.toEqual({ ok: false, error: 'integrity_conflict' });
+
+    await getPool().query(
+      `UPDATE decision_receipt_revisions
+          SET created_at = created_at - INTERVAL '1 microsecond'
+        WHERE id = $1`,
+      [terminalized.terminalization.revision.id],
+    );
+    await getPool().query(
+      `UPDATE pre_effect_barriers
+          SET updated_at = updated_at + INTERVAL '1 microsecond'
+        WHERE id = $1`,
+      [terminalized.terminalization.barrier.id],
+    );
+    await expect(gmailArchiveTerminalStatusRepository.read(authority))
+      .resolves.toEqual({ ok: false, error: 'integrity_conflict' });
   }, 120_000);
 
   it('retains the lease and graph on stale or conflicting dispatch proofs', async () => {

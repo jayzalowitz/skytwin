@@ -76,7 +76,6 @@ export interface GmailArchiveApprovalCanonicalState {
 
 export interface LoadCanonicalGmailArchiveApprovalStateOptions {
   allowExecutionPlan?: boolean;
-  lockRows?: boolean;
 }
 
 interface LockedApprovalRow extends ApprovalRequestRow {
@@ -266,12 +265,13 @@ export function canonicalGmailArchiveApprovalContent(
   return content;
 }
 
-export async function loadCanonicalGmailArchiveApprovalState(
+async function loadCanonicalGmailArchiveApprovalStateWithLockMode(
   client: PoolClient,
   input: RespondGmailArchiveApprovalInput,
   options: LoadCanonicalGmailArchiveApprovalStateOptions = {},
+  lockRows = true,
 ): Promise<GmailArchiveApprovalCanonicalState | null> {
-  const lock = options.lockRows === false ? '' : ' FOR UPDATE';
+  const lock = lockRows ? ' FOR UPDATE' : '';
   const lockedApproval = (await client.query<LockedApprovalRow>(
     `SELECT approval.*, approval.expires_at > now() AS unexpired
        FROM approval_requests AS approval
@@ -375,6 +375,23 @@ export async function loadCanonicalGmailArchiveApprovalState(
     revisions,
     unexpired: lockedApproval!.unexpired,
   };
+}
+
+export async function loadCanonicalGmailArchiveApprovalState(
+  client: PoolClient,
+  input: RespondGmailArchiveApprovalInput,
+  options: LoadCanonicalGmailArchiveApprovalStateOptions = {},
+): Promise<GmailArchiveApprovalCanonicalState | null> {
+  return loadCanonicalGmailArchiveApprovalStateWithLockMode(client, input, options, true);
+}
+
+/** DB-internal SELECT-only canonical graph load for the unwired status reader. */
+export async function loadCanonicalGmailArchiveApprovalStateReadOnly(
+  client: PoolClient,
+  input: RespondGmailArchiveApprovalInput,
+  options: LoadCanonicalGmailArchiveApprovalStateOptions = {},
+): Promise<GmailArchiveApprovalCanonicalState | null> {
+  return loadCanonicalGmailArchiveApprovalStateWithLockMode(client, input, options, false);
 }
 
 function exactReservedBarrier(

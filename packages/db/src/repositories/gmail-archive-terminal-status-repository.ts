@@ -3,14 +3,16 @@ import { withTransaction } from '../connection.js';
 import type { DecisionReceiptRevisionRow } from '../types.js';
 import {
   canonicalGmailArchiveApprovalContent,
-  loadCanonicalGmailArchiveApprovalState,
+  loadCanonicalGmailArchiveApprovalStateReadOnly,
 } from './gmail-archive-approval-response-repository.js';
 import {
   exactReservedGmailArchiveBarrier,
   loadGmailArchivePreparationReplay,
 } from './gmail-archive-preparation-repository.js';
 import { queryAbandonedGmailArchiveInTransaction } from './gmail-archive-recovery-repository.js';
-import { validateStoredGmailArchiveTerminalGraph } from './gmail-archive-reconciliation-repository.js';
+import {
+  validateStoredGmailArchiveTerminalGraphReadOnly,
+} from './gmail-archive-reconciliation-repository.js';
 import {
   exactGmailArchiveApprovedPrefix,
   loadGmailArchiveStableState,
@@ -48,25 +50,29 @@ export interface GmailArchiveTerminalStatusReaderPort {
 type Transaction = <T>(callback: (client: PoolClient) => Promise<T>) => Promise<T>;
 
 interface ReaderDependencies {
-  loadApprovalState: typeof loadCanonicalGmailArchiveApprovalState;
+  loadApprovalState: typeof loadCanonicalGmailArchiveApprovalStateReadOnly;
   canonicalApprovalContent: typeof canonicalGmailArchiveApprovalContent;
   exactReservedBarrier: typeof exactReservedGmailArchiveBarrier;
   loadPreparationReplay: typeof loadGmailArchivePreparationReplay;
   queryRecovery: typeof queryAbandonedGmailArchiveInTransaction;
   loadTerminalState: typeof loadGmailArchiveStableState;
   exactApprovedPrefix: typeof exactGmailArchiveApprovedPrefix;
-  validateTerminalGraph: typeof validateStoredGmailArchiveTerminalGraph;
+  validateTerminalGraph: typeof validateStoredGmailArchiveTerminalGraphReadOnly;
+  canonicalBlockedTimestamps: typeof canonicalBlockedTimestamps;
+  canonicalTerminalTimestamps: typeof canonicalTerminalTimestamps;
 }
 
 const dependencies: Readonly<ReaderDependencies> = Object.freeze({
-  loadApprovalState: loadCanonicalGmailArchiveApprovalState,
+  loadApprovalState: loadCanonicalGmailArchiveApprovalStateReadOnly,
   canonicalApprovalContent: canonicalGmailArchiveApprovalContent,
   exactReservedBarrier: exactReservedGmailArchiveBarrier,
   loadPreparationReplay: loadGmailArchivePreparationReplay,
   queryRecovery: queryAbandonedGmailArchiveInTransaction,
   loadTerminalState: loadGmailArchiveStableState,
   exactApprovedPrefix: exactGmailArchiveApprovedPrefix,
-  validateTerminalGraph: validateStoredGmailArchiveTerminalGraph,
+  validateTerminalGraph: validateStoredGmailArchiveTerminalGraphReadOnly,
+  canonicalBlockedTimestamps,
+  canonicalTerminalTimestamps,
 });
 
 function ownData(value: unknown, keys: readonly string[]): Record<string, unknown> | null {
@@ -118,6 +124,75 @@ function exactDataObject(value: unknown): Record<string, unknown> | null {
   } catch {
     return null;
   }
+}
+
+function uuidField(value: unknown, field: string): string | null {
+  const data = exactDataObject(value);
+  const candidate = data?.[field];
+  return typeof candidate === 'string' && UUID.test(candidate) ? candidate : null;
+}
+
+async function canonicalBlockedTimestamps(client: PoolClient, value: unknown): Promise<boolean> {
+  const preparation = exactDataObject(value);
+  const barrierId = uuidField(preparation?.['barrier'], 'id');
+  const explanationId = uuidField(preparation?.['explanation'], 'id');
+  const revisions = preparation?.['revisions'];
+  const revisionId = Array.isArray(revisions) ? uuidField(revisions[4], 'id') : null;
+  if (!barrierId || !explanationId || !revisionId) return false;
+  const row = (await client.query<{
+    barrier: boolean;
+    explanation: boolean;
+    revision: boolean;
+  }>(`SELECT
+      COALESCE((SELECT updated_at = date_trunc('milliseconds', updated_at)
+        FROM pre_effect_barriers WHERE id = $1), false) AS barrier,
+      COALESCE((SELECT created_at = date_trunc('milliseconds', created_at)
+        FROM explanation_records WHERE id = $2), false) AS explanation,
+      COALESCE((SELECT created_at = date_trunc('milliseconds', created_at)
+        FROM decision_receipt_revisions WHERE id = $3), false) AS revision`, [
+    barrierId,
+    explanationId,
+    revisionId,
+  ])).rows[0];
+  return row?.barrier === true && row.explanation === true && row.revision === true;
+}
+
+async function canonicalTerminalTimestamps(client: PoolClient, value: unknown): Promise<boolean> {
+  const terminal = exactDataObject(value);
+  const barrierId = uuidField(terminal?.['barrier'], 'id');
+  const planId = uuidField(terminal?.['plan'], 'id');
+  const explanationId = uuidField(terminal?.['executionExplanation'], 'id');
+  const revisionId = uuidField(terminal?.['revision'], 'id');
+  const rawResult = terminal?.['executionResult'];
+  const resultId = rawResult === null ? null : uuidField(rawResult, 'id');
+  if (!barrierId || !planId || !explanationId || !revisionId ||
+      (rawResult !== null && !resultId)) return false;
+  const row = (await client.query<{
+    barrier: boolean;
+    explanation: boolean;
+    plan: boolean;
+    result: boolean;
+    revision: boolean;
+  }>(`SELECT
+      COALESCE((SELECT updated_at = date_trunc('milliseconds', updated_at)
+        FROM pre_effect_barriers WHERE id = $1), false) AS barrier,
+      COALESCE((SELECT updated_at = date_trunc('milliseconds', updated_at)
+        FROM execution_plans WHERE id = $2), false) AS plan,
+      COALESCE((SELECT created_at = date_trunc('milliseconds', created_at)
+        FROM explanation_records WHERE id = $3), false) AS explanation,
+      COALESCE((SELECT created_at = date_trunc('milliseconds', created_at)
+        FROM decision_receipt_revisions WHERE id = $4), false) AS revision,
+      CASE WHEN $5::UUID IS NULL THEN true ELSE COALESCE((SELECT
+        completed_at = date_trunc('milliseconds', completed_at)
+        FROM execution_results WHERE id = $5), false) END AS result`, [
+    barrierId,
+    planId,
+    explanationId,
+    revisionId,
+    resultId,
+  ])).rows[0];
+  return row?.barrier === true && row.plan === true && row.explanation === true &&
+    row.revision === true && row.result === true;
 }
 
 function visibleTerminal(
@@ -173,16 +248,36 @@ async function readTransition(
       action: 'approve',
     }, {
       allowExecutionPlan: barrier.status !== 'reserved',
-      lockRows: false,
     });
     if (!state) return integrityConflict();
+    if (barrier.status === 'reserved' && state.revisions.length !== 4) {
+      return integrityConflict();
+    }
     const approved = readerDependencies.canonicalApprovalContent({
       ...state,
       revisions: state.revisions.slice(0, 4),
     }, 'approved');
     if (!approved) return integrityConflict();
     if (barrier.status === 'reserved') {
-      return readerDependencies.exactReservedBarrier(barrier, input)
+      if (!readerDependencies.exactReservedBarrier(barrier, input)) {
+        return integrityConflict();
+      }
+      const counts = (await client.query<{
+        approvals: string;
+        barriers: string;
+        explanations: string;
+        plans: string;
+      }>(`SELECT
+          (SELECT count(*) FROM approval_requests WHERE decision_id = $1) AS approvals,
+          (SELECT count(*) FROM pre_effect_barriers
+            WHERE decision_id = $1 OR id = $2) AS barriers,
+          (SELECT count(*) FROM explanation_records WHERE decision_id = $1) AS explanations,
+          (SELECT count(*) FROM execution_plans WHERE decision_id = $1) AS plans`, [
+        state.decision.id,
+        barrier.id,
+      ])).rows[0];
+      return counts?.approvals === '1' && counts.barriers === '2' &&
+        counts.explanations === '1' && counts.plans === '0'
         ? notTerminal()
         : integrityConflict();
     }
@@ -203,6 +298,9 @@ async function readTransition(
     const r5: DecisionReceiptRevisionRow | undefined = Array.isArray(revisions)
       ? revisions[4] as DecisionReceiptRevisionRow | undefined
       : undefined;
+    if (!await readerDependencies.canonicalBlockedTimestamps(client, replayData?.['preparation'])) {
+      return integrityConflict();
+    }
     return visibleTerminal('blocked', r5) ?? integrityConflict();
   }
 
@@ -231,10 +329,12 @@ async function readTransition(
       state,
       barrier,
       approved,
-      { lockRows: false },
     );
     const terminalData = exactDataObject(terminal);
     if (terminalData?.['status'] !== barrier.status) return integrityConflict();
+    if (!await readerDependencies.canonicalTerminalTimestamps(client, terminal)) {
+      return integrityConflict();
+    }
     return visibleTerminal(barrier.status, terminalData['revision']) ?? integrityConflict();
   }
 

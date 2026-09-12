@@ -146,10 +146,6 @@ export interface GmailArchiveTerminalizationStableValues {
   persistedAt: string;
 }
 
-export interface GmailArchiveTerminalValidationOptions {
-  readonly lockRows?: boolean;
-}
-
 export type GmailArchiveTerminalizationTransition = (
   client: PoolClient,
   input: Readonly<TerminalizeGmailArchiveInput>,
@@ -1026,15 +1022,14 @@ async function exactTerminalReplay(
   };
 }
 
-/** Validate the exact r7 terminal graph plus any trusted, valid continuation. */
-export async function validateStoredGmailArchiveTerminal(
+async function validateStoredGmailArchiveTerminalWithLockMode(
   client: PoolClient,
   authority: TerminalAuthority,
   state: GmailArchiveTerminalStableState,
   barrier: PreEffectBarrierRow,
   approved: JoinedDecisionReceiptContentV1,
   expectedResult?: GmailInboxMutationResult,
-  options: GmailArchiveTerminalValidationOptions = {},
+  lockRows = true,
 ): Promise<GmailArchiveTerminalizationBundle | null> {
   let result: StoredGmailArchiveMutationResult | undefined = expectedResult;
   if (!result) {
@@ -1055,7 +1050,46 @@ export async function validateStoredGmailArchiveTerminal(
     state,
     barrier,
     approved,
-    options.lockRows !== false,
+    lockRows,
+  );
+}
+
+/** Validate the exact r7 terminal graph plus any trusted, valid continuation. */
+export async function validateStoredGmailArchiveTerminal(
+  client: PoolClient,
+  authority: TerminalAuthority,
+  state: GmailArchiveTerminalStableState,
+  barrier: PreEffectBarrierRow,
+  approved: JoinedDecisionReceiptContentV1,
+  expectedResult?: GmailInboxMutationResult,
+): Promise<GmailArchiveTerminalizationBundle | null> {
+  return validateStoredGmailArchiveTerminalWithLockMode(
+    client,
+    authority,
+    state,
+    barrier,
+    approved,
+    expectedResult,
+    true,
+  );
+}
+
+/** DB-internal SELECT-only validator used by the unwired status reader. */
+export async function validateStoredGmailArchiveTerminalReadOnly(
+  client: PoolClient,
+  authority: TerminalAuthority,
+  state: GmailArchiveTerminalStableState,
+  barrier: PreEffectBarrierRow,
+  approved: JoinedDecisionReceiptContentV1,
+): Promise<GmailArchiveTerminalizationBundle | null> {
+  return validateStoredGmailArchiveTerminalWithLockMode(
+    client,
+    authority,
+    state,
+    barrier,
+    approved,
+    undefined,
+    false,
   );
 }
 

@@ -43,13 +43,21 @@ function revision(disposition: 'blocked' | 'succeeded' | 'failed' | 'unknown') {
 
 function clientWithBarriers(rows: unknown[]) {
   return {
-    query: vi.fn().mockResolvedValue({ rows }),
+    query: vi.fn().mockImplementation(async (text: string) => text.includes('SELECT count(*)')
+      ? {
+          rows: [{ approvals: '1', barriers: '2', explanations: '1', plans: '0' }],
+        }
+      : { rows }),
   } as unknown as PoolClient;
 }
 
 function dependencySet(overrides: Record<string, unknown> = {}) {
   return {
-    loadApprovalState: vi.fn().mockResolvedValue({ canonical: true, revisions: [] }),
+    loadApprovalState: vi.fn().mockResolvedValue({
+      canonical: true,
+      decision: { id: '55555555-5555-4555-8555-555555555555' },
+      revisions: [{}, {}, {}, {}],
+    }),
     canonicalApprovalContent: vi.fn().mockReturnValue({ approved: true }),
     exactReservedBarrier: vi.fn().mockReturnValue(true),
     loadPreparationReplay: vi.fn().mockResolvedValue({
@@ -79,6 +87,8 @@ function dependencySet(overrides: Record<string, unknown> = {}) {
       executionExplanation: {},
       revision: revision('succeeded'),
     }),
+    canonicalBlockedTimestamps: vi.fn().mockResolvedValue(true),
+    canonicalTerminalTimestamps: vi.fn().mockResolvedValue(true),
     ...overrides,
   };
 }
@@ -197,7 +207,7 @@ describe('gmailArchiveTerminalStatusRepository', () => {
     expect(dependencies.loadApprovalState).toHaveBeenCalledWith(
       expect.anything(),
       { ...input, action: 'approve' },
-      { allowExecutionPlan: true, lockRows: false },
+      { allowExecutionPlan: true },
     );
   });
 
@@ -237,10 +247,40 @@ describe('gmailArchiveTerminalStatusRepository', () => {
         expect.anything(),
         expect.objectContaining({ status: disposition }),
         expect.anything(),
-        { lockRows: false },
       );
     },
   );
+
+  it('requires an exact reserved graph with four revisions and no execution plan', async () => {
+    const extraRevision = dependencySet({
+      loadApprovalState: vi.fn().mockResolvedValue({
+        canonical: true,
+        decision: { id: '55555555-5555-4555-8555-555555555555' },
+        revisions: [{}, {}, {}, {}, {}],
+      }),
+    });
+    await expect(gmailArchiveTerminalStatusTestHooks.readTransition(
+      clientWithBarriers([barrier('reserved')]),
+      input,
+      extraRevision as never,
+    )).resolves.toEqual({ ok: false, error: 'integrity_conflict' });
+
+    const orphanPlanClient = clientWithBarriers([barrier('reserved')]);
+    (orphanPlanClient.query as ReturnType<typeof vi.fn>).mockImplementation(
+      async (text: string) => text.includes('SELECT count(*)')
+        ? { rows: [{ approvals: '1', barriers: '2', explanations: '1', plans: '1' }] }
+        : { rows: [barrier('reserved')] },
+    );
+    await expect(gmailArchiveTerminalStatusTestHooks.readTransition(
+      orphanPlanClient,
+      input,
+      dependencySet() as never,
+    )).resolves.toEqual({ ok: false, error: 'integrity_conflict' });
+    expect(orphanPlanClient.query).toHaveBeenLastCalledWith(
+      expect.stringMatching(/execution_plans[\s\S]+decision_id = \$1/),
+      ['55555555-5555-4555-8555-555555555555', barrier('reserved').id],
+    );
+  });
 
   it.each(['reserved', 'prepared', 'in_progress'] as const)(
     'returns no visible disposition for a validated %s graph',
@@ -315,6 +355,19 @@ describe('gmailArchiveTerminalStatusRepository', () => {
     expect(statusGetter).not.toHaveBeenCalled();
   });
 
+  it('fails closed when exact terminal artifact timestamps are not millisecond-canonical', async () => {
+    for (const [status, overrides] of [
+      ['blocked', { canonicalBlockedTimestamps: vi.fn().mockResolvedValue(false) }],
+      ['succeeded', { canonicalTerminalTimestamps: vi.fn().mockResolvedValue(false) }],
+    ] as const) {
+      await expect(gmailArchiveTerminalStatusTestHooks.readTransition(
+        clientWithBarriers([barrier(status)]),
+        input,
+        dependencySet(overrides) as never,
+      )).resolves.toEqual({ ok: false, error: 'integrity_conflict' });
+    }
+  });
+
   it('retries the complete snapshot transaction twice for 40001 only', async () => {
     const restart = Object.assign(new Error('restart'), { code: '40001' });
     const transition = vi.fn()
@@ -368,6 +421,9 @@ describe('gmailArchiveTerminalStatusRepository', () => {
       expect(barrel).not.toContain('gmail-archive-terminal-status-repository');
       expect(barrel).not.toContain('GmailArchiveTerminalStatusReaderPort');
       expect(barrel).not.toContain('ReadGmailArchiveTerminalStatusResult');
+      expect(barrel).not.toContain('validateStoredGmailArchiveTerminalReadOnly');
+      expect(barrel).not.toContain('validateStoredGmailArchiveTerminalGraphReadOnly');
+      expect(barrel).not.toContain('loadCanonicalGmailArchiveApprovalStateReadOnly');
     }
     const roots = [
       new URL('../../../../apps/api/', import.meta.url),
