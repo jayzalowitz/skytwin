@@ -5,6 +5,7 @@ import type { PoolClient } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { RiskAssessor } from '@skytwin/decision-engine';
 import {
+  buildDecisionReceiptEventKey,
   joinedDecisionReceiptContentDigest,
   joinedDecisionReceiptRevisionDigest,
   verifyJoinedDecisionReceiptChain,
@@ -41,6 +42,7 @@ import {
 import {
   canonicalGmailArchiveCandidate,
   gmailArchivePreparationRepository,
+  gmailArchivePreparationTestHooks,
 } from '../repositories/gmail-archive-preparation-repository.js';
 import {
   gmailArchiveClaimRepository,
@@ -330,6 +332,20 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     return result.rows[0]!;
   }
 
+  async function ensureApprovalFeedbackApplied(ownerUserId: string, approvalId: string) {
+    const feedback = await getPool().query<{ id: string }>(
+      'SELECT id FROM feedback_events WHERE approval_request_id = $1 AND user_id = $2',
+      [approvalId, ownerUserId],
+    );
+    if (feedback.rows.length !== 1) throw new Error('Expected one canonical approval feedback event.');
+    const feedbackEventId = feedback.rows[0]!.id;
+    await expect(applyGmailArchiveApprovalFeedbackOnce({
+      userId: ownerUserId,
+      feedbackEventId,
+    })).resolves.toMatchObject({ ok: true });
+    return { feedbackEventId };
+  }
+
   async function createPreparedProposal(
     suffix: number,
     ownerUserId = userId,
@@ -342,6 +358,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       action: 'approve',
     });
     expect(approved).toMatchObject({ ok: true, response: { reservedBarrier: { status: 'reserved' } } });
+    await ensureApprovalFeedbackApplied(ownerUserId, proposal.approval.id);
     const prepared = await gmailArchivePreparationRepository.prepare({
       userId: ownerUserId,
       approvalId: proposal.approval.id,
@@ -372,6 +389,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       action: 'approve',
     });
     expect(approved).toMatchObject({ ok: true, response: { reservedBarrier: { status: 'reserved' } } });
+    await ensureApprovalFeedbackApplied(ownerUserId, proposal.approval.id);
     const policyId = id('99', suffix);
     await getPool().query(
       `INSERT INTO action_policies (id, user_id, name, domain, rules, priority, is_active)
@@ -1083,6 +1101,22 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     });
     expect(approved).toMatchObject({ ok: true, response: { reservedBarrier: { status: 'reserved' } } });
 
+    await expect(gmailArchivePreparationRepository.prepare({
+      userId,
+      approvalId: proposal.approval.id,
+    })).resolves.toEqual({ ok: false, error: 'not_ready' });
+    await expect(artifactCounts(proposal.decision.id, proposal.approval.id)).resolves.toEqual({
+      barriers: '2', explanations: '1', plans: '0', revisions: '4',
+    });
+    await ensureApprovalFeedbackApplied(userId, proposal.approval.id);
+    const application = await getPool().query<{ changed: boolean }>(
+      `SELECT application.changed FROM twin_feedback_applications application
+        JOIN feedback_events feedback ON feedback.id = application.feedback_event_id
+       WHERE feedback.approval_request_id = $1`,
+      [proposal.approval.id],
+    );
+    expect(application.rows).toEqual([{ changed: false }]);
+
     const [first, concurrent] = await Promise.all([
       gmailArchivePreparationRepository.prepare({ userId, approvalId: proposal.approval.id }),
       gmailArchivePreparationRepository.prepare({ userId, approvalId: proposal.approval.id }),
@@ -1176,6 +1210,111 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     }
   }, 120_000);
 
+  it('rolls back a 40001 preparation attempt and retries with stable artifact IDs', async () => {
+    const owner = await seedRecoveryOwner(961);
+    const proposal = await createProposal(4024, owner.ownerUserId, owner.ownerAccountId);
+    const response = await gmailArchiveApprovalResponseRepository.respond({
+      userId: owner.ownerUserId,
+      approvalId: proposal.approval.id,
+      action: 'approve',
+    });
+    if (!response.ok) throw new Error('Preparation retry fixture was not approved.');
+    await ensureApprovalFeedbackApplied(owner.ownerUserId, proposal.approval.id);
+
+    let attempts = 0;
+    const seenIds: Array<{
+      explanation: string;
+      plan: string;
+      policyRevision: string;
+      admissionRevision: string;
+    }> = [];
+    const prepared = await gmailArchivePreparationTestHooks.prepareWithTransition(
+      { userId: owner.ownerUserId, approvalId: proposal.approval.id },
+      async (client, input, ids) => {
+        attempts += 1;
+        seenIds.push({ ...ids });
+        const result = await gmailArchivePreparationTestHooks.transition(client, input, ids);
+        if (attempts === 1) {
+          expect(result).toMatchObject({ ok: true, created: true });
+          throw Object.assign(new Error('restart after preparation writes'), { code: '40001' });
+        }
+        return result;
+      },
+    );
+
+    expect(prepared).toMatchObject({
+      ok: true,
+      created: true,
+      preparation: { status: 'prepared', plan: { status: 'pending' } },
+    });
+    expect(attempts).toBe(2);
+    expect(seenIds).toHaveLength(2);
+    expect(seenIds[1]).toEqual(seenIds[0]);
+    if (!prepared.ok || prepared.preparation.status !== 'prepared' || !prepared.preparation.plan) return;
+    expect(prepared.preparation.explanation.id).toBe(seenIds[0]!.explanation);
+    expect(prepared.preparation.plan.id).toBe(seenIds[0]!.plan);
+    expect(prepared.preparation.revisions.at(-2)?.id).toBe(seenIds[0]!.policyRevision);
+    expect(prepared.preparation.revisions.at(-1)?.id).toBe(seenIds[0]!.admissionRevision);
+    await expect(artifactCounts(proposal.decision.id, proposal.approval.id)).resolves.toEqual({
+      barriers: '2', explanations: '2', plans: '1', revisions: '6',
+    });
+  }, 120_000);
+
+  it('treats missing committed approval feedback as conflict before preparation effects', async () => {
+    const owner = await seedRecoveryOwner(957);
+    const proposal = await createProposal(4020, owner.ownerUserId, owner.ownerAccountId);
+    const response = await gmailArchiveApprovalResponseRepository.respond({
+      userId: owner.ownerUserId,
+      approvalId: proposal.approval.id,
+      action: 'approve',
+    });
+    expect(response).toMatchObject({ ok: true });
+    await getPool().query(
+      'DELETE FROM feedback_events WHERE approval_request_id = $1',
+      [proposal.approval.id],
+    );
+    await expect(gmailArchivePreparationRepository.prepare({
+      userId: owner.ownerUserId,
+      approvalId: proposal.approval.id,
+    })).resolves.toEqual({ ok: false, error: 'idempotency_conflict' });
+    await expect(artifactCounts(proposal.decision.id, proposal.approval.id)).resolves.toEqual({
+      barriers: '2', explanations: '1', plans: '0', revisions: '4',
+    });
+  }, 120_000);
+
+  it('fails closed on a legacy prepared graph whose application marker is absent', async () => {
+    const owner = await seedRecoveryOwner(958);
+    let approvalIdForCleanup: string | null = null;
+    try {
+      const fixture = await createPreparedProposal(
+        4021, owner.ownerUserId, owner.ownerAccountId,
+      );
+      approvalIdForCleanup = fixture.proposal.approval.id;
+      await getPool().query(
+        `DELETE FROM twin_feedback_applications application
+          WHERE EXISTS (SELECT 1 FROM feedback_events feedback
+            WHERE feedback.id = application.feedback_event_id
+              AND feedback.approval_request_id = $1)`,
+        [fixture.proposal.approval.id],
+      );
+      await expect(gmailArchivePreparationRepository.prepare({
+        userId: owner.ownerUserId,
+        approvalId: fixture.proposal.approval.id,
+      })).resolves.toEqual({ ok: false, error: 'not_ready' });
+      await expect(artifactCounts(
+        fixture.proposal.decision.id,
+        fixture.proposal.approval.id,
+      )).resolves.toEqual({ barriers: '2', explanations: '2', plans: '1', revisions: '6' });
+    } finally {
+      if (approvalIdForCleanup) {
+        await getPool().query(
+          'DELETE FROM feedback_events WHERE approval_request_id = $1',
+          [approvalIdForCleanup],
+        );
+      }
+    }
+  }, 120_000);
+
   it('rejects an orphan plan before first preparation without adding artifacts', async () => {
     const proposal = await createProposal(27);
     await gmailArchiveApprovalResponseRepository.respond({
@@ -1183,6 +1322,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       userId,
       action: 'approve',
     });
+    await ensureApprovalFeedbackApplied(userId, proposal.approval.id);
     await getPool().query(
       `INSERT INTO execution_plans (id, decision_id, action_id, status, steps)
        VALUES ($1, $2, $3, 'pending', $4)`,
@@ -1212,6 +1352,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       userId,
       action: 'approve',
     });
+    await ensureApprovalFeedbackApplied(userId, proposal.approval.id);
     const prepared = await gmailArchivePreparationRepository.prepare({
       userId,
       approvalId: proposal.approval.id,
@@ -1265,6 +1406,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       userId,
       action: 'approve',
     });
+    await ensureApprovalFeedbackApplied(userId, preparedProposal.approval.id);
     await expect(gmailArchivePreparationRepository.prepare({
       userId,
       approvalId: preparedProposal.approval.id,
@@ -1296,6 +1438,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       userId,
       action: 'approve',
     });
+    await ensureApprovalFeedbackApplied(userId, proposal.approval.id);
     const policyId = id('99', 21);
     await getPool().query(
       `INSERT INTO action_policies (id, user_id, name, domain, rules, priority, is_active)
@@ -1369,6 +1512,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       userId,
       action: 'approve',
     });
+    await ensureApprovalFeedbackApplied(userId, donor.approval.id);
     const donorPreparation = await gmailArchivePreparationRepository.prepare({
       userId,
       approvalId: donor.approval.id,
@@ -1389,6 +1533,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       userId,
       action: 'approve',
     });
+    await ensureApprovalFeedbackApplied(userId, reserved.approval.id);
     await getPool().query(
       'UPDATE decision_outcomes SET execution_plan_id = $1 WHERE decision_id = $2',
       [donorPreparation.preparation.plan.id, reserved.decision.id],
@@ -1407,6 +1552,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       userId,
       action: 'approve',
     });
+    await ensureApprovalFeedbackApplied(userId, blocked.approval.id);
     const policyId = id('99', 35);
     await getPool().query(
       `INSERT INTO action_policies (id, user_id, name, domain, rules, priority, is_active)
@@ -1448,6 +1594,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
         userId,
         action: 'approve',
       });
+      await ensureApprovalFeedbackApplied(userId, proposal.approval.id);
       await getPool().query(mutate, [mutate.includes('connected_accounts') ? accountId : proposal.messageRefId]);
       const result = await gmailArchivePreparationRepository.prepare({
         userId,
@@ -1478,6 +1625,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
         userId,
         action: 'approve',
       });
+      await ensureApprovalFeedbackApplied(userId, proposal.approval.id);
       const accountColumn = table === 'connected_accounts' ? 'id' : 'connector_account_id';
       await getPool().query(`UPDATE ${table} SET scopes = ARRAY[]::STRING[] WHERE ${accountColumn} = $1`, [accountId]);
       await expect(gmailArchivePreparationRepository.prepare({
@@ -1498,6 +1646,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       userId,
       action: 'approve',
     });
+    await ensureApprovalFeedbackApplied(userId, proposal.approval.id);
     await getPool().query('DELETE FROM oauth_tokens WHERE connector_account_id = $1', [accountId]);
     try {
       await expect(gmailArchivePreparationRepository.prepare({
@@ -1523,6 +1672,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       userId,
       action: 'approve',
     });
+    await ensureApprovalFeedbackApplied(userId, proposal.approval.id);
     await expect(gmailArchivePreparationRepository.prepare({
       userId: otherUserId,
       approvalId: proposal.approval.id,
@@ -5387,6 +5537,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     if (!approved.ok || !approved.response.reservedBarrier) {
       throw new Error('Concurrent preparation fixture was not reserved.');
     }
+    await ensureApprovalFeedbackApplied(ownerUserId, proposal.approval.id);
     await setRecoveryAnchor(approved.response.reservedBarrier.id, 'created_at');
 
     let releaseRecovery!: () => void;
@@ -5704,6 +5855,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       action: 'approve',
     });
     if (!approved.ok || !approved.response.reservedBarrier) throw new Error('Forward-stage reserve failed.');
+    await ensureApprovalFeedbackApplied(ownerUserId, proposal.approval.id);
     await setRecoveryAnchor(approved.response.reservedBarrier.id, 'created_at');
     const reservedLease = await gmailArchiveRecoveryLeaseRepository.acquire({
       userId: ownerUserId,
@@ -7383,12 +7535,40 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     ]);
 
     await getPool().query(
+      `UPDATE twin_feedback_applications
+          SET applied_at = applied_at + INTERVAL '1 microsecond'
+        WHERE feedback_event_id = $1`,
+      [response.response.feedback.id],
+    );
+    await expect(gmailArchivePreparationRepository.prepare({
+      userId: owner.ownerUserId,
+      approvalId: proposal.approval.id,
+    })).resolves.toEqual({ ok: false, error: 'idempotency_conflict' });
+    await getPool().query(
+      `UPDATE twin_feedback_applications
+          SET applied_at = applied_at - INTERVAL '1 microsecond'
+        WHERE feedback_event_id = $1`,
+      [response.response.feedback.id],
+    );
+    await expect(applyGmailArchiveApprovalFeedbackOnce(input)).resolves.toMatchObject({
+      ok: true,
+      created: false,
+    });
+
+    await getPool().query(
       `UPDATE twin_feedback_applications SET output_digest = $2 WHERE feedback_event_id = $1`,
       [response.response.feedback.id, 'b'.repeat(64)],
     );
     await expect(applyGmailArchiveApprovalFeedbackOnce(input)).resolves.toEqual({
       ok: false,
       error: 'integrity_conflict',
+    });
+    await expect(gmailArchivePreparationRepository.prepare({
+      userId: owner.ownerUserId,
+      approvalId: proposal.approval.id,
+    })).resolves.toEqual({ ok: false, error: 'idempotency_conflict' });
+    await expect(artifactCounts(proposal.decision.id, proposal.approval.id)).resolves.toEqual({
+      barriers: '2', explanations: '1', plans: '0', revisions: '4',
     });
     await expect(applyGmailArchiveApprovalFeedbackOnce({
       userId: userId,
@@ -7445,6 +7625,60 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       created: true,
       application: { changed: true, inputProfileVersion: 1, outputProfileVersion: 2 },
     });
+  }, 120_000);
+
+  it('never observes partial feedback application state during preparation', async () => {
+    for (const [suffix, rollBack] of [[4022, false], [4023, true]] as const) {
+      const owner = await seedRecoveryOwner(959 + (suffix - 4022));
+      const proposal = await createProposal(suffix, owner.ownerUserId, owner.ownerAccountId);
+      const response = await gmailArchiveApprovalResponseRepository.respond({
+        userId: owner.ownerUserId,
+        approvalId: proposal.approval.id,
+        action: 'approve',
+      });
+      if (!response.ok) throw new Error('Application interleaving fixture was not approved.');
+      let release!: () => void;
+      let applicationPaused!: () => void;
+      const resume = new Promise<void>((resolve) => { release = resolve; });
+      const paused = new Promise<void>((resolve) => { applicationPaused = resolve; });
+      const applying = gmailArchiveFeedbackApplicationTestHooks.applyWithTransition(
+        { userId: owner.ownerUserId, feedbackEventId: response.response.feedback.id },
+        gmailArchiveFeedbackApplicationTestHooks.transition,
+        withTransaction,
+        {
+          afterProfileWrite: async () => {
+            applicationPaused();
+            await resume;
+            if (rollBack) throw new Error('forced application rollback');
+          },
+        },
+      );
+      await within(paused, 5_000);
+      let preparationSettled = false;
+      const preparing = gmailArchivePreparationRepository.prepare({
+        userId: owner.ownerUserId,
+        approvalId: proposal.approval.id,
+      }).finally(() => { preparationSettled = true; });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(preparationSettled).toBe(false);
+      release();
+      if (rollBack) {
+        await expect(applying).rejects.toThrow('forced application rollback');
+        await expect(within(preparing, 10_000)).resolves.toEqual({
+          ok: false,
+          error: 'not_ready',
+        });
+      } else {
+        await expect(within(Promise.all([applying, preparing]), 10_000)).resolves.toEqual([
+          expect.objectContaining({ ok: true, created: true }),
+          expect.objectContaining({
+            ok: true,
+            created: true,
+            preparation: expect.objectContaining({ status: 'prepared' }),
+          }),
+        ]);
+      }
+    }
   }, 120_000);
 
   it('serializes two different feedback events on one profile without lost updates', async () => {
@@ -7523,6 +7757,15 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     );
     expect(durable.rows[0]).toEqual({ profiles: '1', versions: '0', applications: '1' });
 
+    await expect(gmailArchivePreparationRepository.prepare({
+      userId: owner.ownerUserId,
+      approvalId: proposal.approval.id,
+    })).resolves.toMatchObject({
+      ok: true,
+      created: true,
+      preparation: { status: 'prepared' },
+    });
+
     const page = await gmailArchiveFeedbackApplicationRepository.listPending({ limit: 25 });
     expect(page).toMatchObject({ ok: true });
     if (!page.ok) throw new Error('Pending selector failed.');
@@ -7569,17 +7812,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     ownerUserId: string,
     approvalId: string,
   ): Promise<{ feedbackEventId: string }> {
-    const feedback = await getPool().query<{ id: string }>(
-      'SELECT id FROM feedback_events WHERE approval_request_id = $1 AND user_id = $2',
-      [approvalId, ownerUserId],
-    );
-    if (feedback.rows.length !== 1) throw new Error('Expected one canonical approval feedback event.');
-    const feedbackEventId = feedback.rows[0]!.id;
-    await expect(applyGmailArchiveApprovalFeedbackOnce({
-      userId: ownerUserId,
-      feedbackEventId,
-    })).resolves.toMatchObject({ ok: true, created: true });
-    return { feedbackEventId };
+    return ensureApprovalFeedbackApplied(ownerUserId, approvalId);
   }
 
   it('finalizes rejected feedback once under concurrent replay and preserves rejection truth', async () => {
@@ -7670,11 +7903,47 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       created: true,
       finalization: { revision: { sequence: 6, disposition: 'blocked' } },
     });
+    if (!finalized.ok) throw new Error('Blocked feedback receipt finalization failed.');
     await expect(finalizeGmailArchiveFeedbackReceipt(input)).resolves.toMatchObject({
       ok: true,
       created: false,
       finalization: { revision: { sequence: 6, disposition: 'blocked' } },
     });
+    await expect(gmailArchiveTerminalStatusRepository.read({
+      userId: owner.ownerUserId,
+      approvalId: blocked.proposal.approval.id,
+    })).resolves.toMatchObject({
+      ok: true,
+      status: 'terminal',
+      terminal: {
+        disposition: 'blocked',
+        receiptRevisionId: blocked.blocked.revisions[4]!.id,
+      },
+    });
+    const continuation = finalized.finalization.revision;
+    const wrongEventKey = buildDecisionReceiptEventKey(
+      'feedback_recorded', id('91', 4099),
+    );
+    const wrongRevisionDigest = joinedDecisionReceiptRevisionDigest({
+      revisionId: continuation.id,
+      receiptId: continuation.receipt_id,
+      decisionId: blocked.proposal.decision.id,
+      userId: owner.ownerUserId,
+      sequence: continuation.sequence,
+      eventKey: wrongEventKey,
+      previousDigest: continuation.previous_digest,
+      contentDigest: continuation.content_digest,
+    });
+    await getPool().query(
+      `UPDATE decision_receipt_revisions
+          SET event_key = $2, revision_digest = $3
+        WHERE id = $1`,
+      [continuation.id, wrongEventKey, wrongRevisionDigest],
+    );
+    await expect(gmailArchiveTerminalStatusRepository.read({
+      userId: owner.ownerUserId,
+      approvalId: blocked.proposal.approval.id,
+    })).resolves.toEqual({ ok: false, error: 'integrity_conflict' });
   }, 120_000);
 
   it.each([

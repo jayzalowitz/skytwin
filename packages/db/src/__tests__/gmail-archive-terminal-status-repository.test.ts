@@ -209,6 +209,14 @@ describe('gmailArchiveTerminalStatusRepository', () => {
       { ...input, action: 'approve' },
       { allowExecutionPlan: true },
     );
+    expect(dependencies.loadPreparationReplay).toHaveBeenCalledWith(
+      expect.anything(),
+      input,
+      expect.anything(),
+      expect.objectContaining({ status: 'blocked' }),
+      expect.anything(),
+      { allowSingleFeedbackContinuation: true },
+    );
   });
 
   it.each(['succeeded', 'failed', 'unknown'] as const)(

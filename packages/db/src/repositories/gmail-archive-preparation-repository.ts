@@ -818,7 +818,7 @@ async function prepareWithTransition(
 }
 
 /** Narrow non-root-exported seam for transaction retry tests. */
-export const gmailArchivePreparationTestHooks = { prepareWithTransition };
+export const gmailArchivePreparationTestHooks = { prepareWithTransition, transition };
 
 export const gmailArchivePreparationRepository = {
   async prepare(input: PrepareGmailArchiveInput): Promise<PrepareGmailArchiveResult> {
