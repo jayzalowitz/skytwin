@@ -43,10 +43,10 @@ export interface ExecutionPlanWithResult {
  * #324: this is the materialized output of the
  * `capability_provenance_nodes → decision_outcomes → execution_plans →
  * execution_results` join the `regret` endpoint needs. `executionPlanId` is the
- * real plan ID `IronClawAdapter.rollback(planId)` acts on (NULL when no outcome
- * links to a plan yet); `adapterUsed` is the adapter that executed the plan
- * (read from `execution_results.outputs.adapter_used`) so rollback can route
- * back to the SAME adapter that performed the action.
+ * exact completed plan ID (NULL when the validated graph is absent);
+ * `adapterUsed` identifies the adapter recorded on its successful reversible
+ * result. This is report metadata only until a durable rollback lifecycle owns
+ * any future dispatch.
  */
 export interface RollbackTarget {
   /** The provenance node's `ref_id` — the candidate action id. */
@@ -57,7 +57,9 @@ export interface RollbackTarget {
    * cannot authorize generic rollback dispatch.
    */
   readonly actionType: string | null;
-  /** Raw provenance payload (carries `reversible` + `irreversibleReason`). */
+  /** Reversibility from the exactly bound candidate row, never provenance JSON. */
+  readonly reversible: boolean | null;
+  /** Raw provenance payload; presentation metadata only. */
   readonly payload: Record<string, unknown> | null;
   readonly occurredAt: Date;
   /** Real execution plan id resolved via the #324 FK, or NULL if unlinked. */
@@ -197,10 +199,9 @@ export const executionRepository = {
    *
    * Walks `capability_provenance_nodes` (the server↔action attribution) and,
    * for each `action` node, resolves the real execution plan via the #324
-   * `decision_outcomes.execution_plan_id` FK plus the adapter that executed it
-   * via `execution_results.outputs->>'adapter_used'`. The `regret` endpoint
-   * uses this to dispatch `IronClawAdapter.rollback(planId)` through the
-   * execution router, targeting the SAME adapter that ran the action.
+   * `decision_outcomes.execution_plan_id` FK plus the successful reversible
+   * result's recorded adapter. The `regret` endpoint uses this for a truthful
+   * report only; it does not authorize or dispatch a rollback.
    *
    * The lateral subquery also binds the candidate identity/type through its
    * owner-scoped decision and requires the current outcome plan to identify
@@ -221,21 +222,21 @@ export const executionRepository = {
       execution_plan_id: string | null;
       adapter_used: string | null;
       action_type: string | null;
+      reversible: boolean | null;
     }>(
       `SELECT pn.ref_id,
               pn.payload,
               pn.occurred_at,
               link.execution_plan_id,
               link.action_type,
-              (SELECT er.outputs->>'adapter_used'
-                 FROM execution_results er
-                WHERE er.plan_id = link.execution_plan_id
-                ORDER BY er.completed_at DESC
-                LIMIT 1) AS adapter_used
+              link.reversible,
+              link.adapter_used
          FROM capability_provenance_nodes pn
          LEFT JOIN LATERAL (
                 SELECT plan.id AS execution_plan_id,
-                       candidate.action_type
+                       candidate.action_type,
+                       candidate.reversible,
+                       result.outputs->>'adapter_used' AS adapter_used
                   FROM candidate_actions candidate
                   JOIN decisions decision
                     ON decision.id = candidate.decision_id
@@ -247,7 +248,14 @@ export const executionRepository = {
                     ON plan.id = doc.execution_plan_id
                    AND plan.decision_id = decision.id
                    AND plan.action_id = candidate.id
+                   AND plan.status = 'completed'
+                  JOIN execution_results result
+                    ON result.plan_id = plan.id
+                   AND result.success = true
+                   AND result.rollback_available = true
+                   AND nullif(result.outputs->>'adapter_used', '') IS NOT NULL
                  WHERE candidate.id::STRING = pn.ref_id
+                 ORDER BY result.completed_at DESC, result.id DESC
                  LIMIT 1
               ) link ON true
         WHERE pn.server_id = $1
@@ -261,6 +269,7 @@ export const executionRepository = {
     return Object.freeze(result.rows.map((row) => Object.freeze({
       actionId: row.ref_id,
       actionType: row.action_type,
+      reversible: row.reversible,
       payload: row.payload,
       occurredAt: row.occurred_at,
       executionPlanId: row.execution_plan_id,

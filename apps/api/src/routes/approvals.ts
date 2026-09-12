@@ -683,21 +683,20 @@ export function createApprovalsRouter(): Router {
       let executionResult: { status: string; planId?: string; adapterUsed?: unknown; error?: string } | null = null;
       if (body.action === 'approve') {
         const storedAction = approval.candidate_action as Record<string, unknown>;
-        // Preserve the original candidate id so the persisted
-        // RiskAssessment lookup below can find the assessment the
-        // decision-maker actually computed for THIS candidate (#371).
-        // Pre-fix, this generated a fresh UUID and the lookup always
-        // missed, forcing the synthetic LOW assessment fabrication that
-        // is the bug. Fall back to a fresh UUID only if the stored id
-        // is missing or non-UUID (e.g. legacy rows from before this
-        // PR or in-memory candidate ids like "cand_123_archive" that
-        // never persisted an assessment).
-        const storedId = storedAction['id'];
-        const originalCandidateId = typeof storedId === 'string' && isValidUuid(storedId)
-          ? storedId
-          : null;
+        // Preserve the original candidate id so both the persisted
+        // RiskAssessment and execution ledger identify the candidate the
+        // decision-maker actually assessed (#371).
+        // The approve preflight above resolved the persisted risk assessment
+        // through this exact candidate id before mutating the approval. Reuse
+        // that frozen identity for both dispatch and its durable ledger graph;
+        // reparsing a mutable response row here would create a second source
+        // of authority for execution-plan rollback.
+        const originalCandidateId = preflightCandidateId;
+        if (!originalCandidateId) {
+          throw new Error('Approved execution candidate identity was not validated at preflight.');
+        }
         const candidateAction: CandidateAction = {
-          id: originalCandidateId ?? crypto.randomUUID(),
+          id: originalCandidateId,
           decisionId: approval.decision_id,
           actionType: (storedAction['actionType'] as string) ?? 'unknown',
           description: (storedAction['description'] as string) ?? '',
@@ -882,14 +881,16 @@ export function createApprovalsRouter(): Router {
             );
           }
 
-          // Persist execution plan + result atomically
+          // Persist execution plan + result atomically. The candidate id is
+          // the exact UUID validated during approval preflight.
           const savedPlan = await withTransaction(async (client) => {
             const planResult = await client.query(
               `INSERT INTO execution_plans (id, decision_id, action_id, status, steps, created_at)
-               VALUES (gen_random_uuid(), $1, NULL, $2, $3, now())
+               VALUES (gen_random_uuid(), $1, $2, $3, $4, now())
                RETURNING *`,
               [
                 approval.decision_id,
+                originalCandidateId,
                 result.status === 'completed' ? 'completed' : 'failed',
                 JSON.stringify(result.output?.['stepsCompleted']
                   ? [{ type: candidateAction.actionType, status: result.status }]
@@ -986,22 +987,25 @@ export function createApprovalsRouter(): Router {
             const failedPlan = await withTransaction(async (client) => {
               const planResult = await client.query(
                 `INSERT INTO execution_plans (id, decision_id, action_id, status, steps, created_at)
-                 VALUES (gen_random_uuid(), $1, NULL, 'failed', $2, now())
+                 VALUES (gen_random_uuid(), $1, $2, 'failed', $3, now())
                  RETURNING *`,
-                [approval.decision_id, JSON.stringify([{ type: candidateAction.actionType, status: 'error' }])],
+                [
+                  approval.decision_id,
+                  originalCandidateId,
+                  JSON.stringify([{ type: candidateAction.actionType, status: 'error' }]),
+                ],
               );
               const plan = planResult.rows[0];
               if (!plan) throw new Error('Failed to persist failed execution plan');
               await client.query(
                 `INSERT INTO execution_results (id, plan_id, success, outputs, error, rollback_available, completed_at)
-                 VALUES (gen_random_uuid(), $1, false, '{}', $2, $3, now())`,
-                [plan.id, failureCode, candidateAction.reversible],
+                 VALUES (gen_random_uuid(), $1, false, '{}', $2, false, now())`,
+                [plan.id, failureCode],
               );
               // #324: link even failed plans so the outcome's
-              // `execution_plan_id` is populated. The rollback site
-              // still reads `success` from `execution_results` before
-              // attempting rollback, so a failed plan link doesn't
-              // accidentally trigger rollback of nothing. "Latest
+              // `execution_plan_id` is populated. The rollback report
+              // requires a successful, rollback-enabled result, so a
+              // failed plan link never becomes a rollback target. "Latest
               // plan wins" — overwrite to match backfill + read
               // semantics; same duplication note as the success path
               // applies.
