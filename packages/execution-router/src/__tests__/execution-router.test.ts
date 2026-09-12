@@ -969,7 +969,9 @@ describe('ExecutionRouter', () => {
       registry.register('ironclaw', ironclaw, IRONCLAW_TRUST_PROFILE);
       registry.register('openclaw', openclaw, OPENCLAW_TRUST_PROFILE, OPENCLAW_SKILLS);
 
-      const out = await router.rollback('plan-1', 'ironclaw');
+      const out = await router.rollback('plan-1', 'ironclaw', {
+        actionId: 'action-1', actionType: 'label_email',
+      });
 
       expect(out.result.success).toBe(true);
       expect(out.adapterUsed).toBe('ironclaw');
@@ -986,7 +988,9 @@ describe('ExecutionRouter', () => {
       const directSpy = vi.spyOn(direct, 'rollback');
       registry.register('direct', direct, DIRECT_TRUST_PROFILE);
 
-      const out = await router.rollback('plan-1', 'ironclaw');
+      const out = await router.rollback('plan-1', 'ironclaw', {
+        actionId: 'action-1', actionType: 'label_email',
+      });
 
       expect(out.noAdapter).toBe(true);
       expect(out.result.success).toBe(false);
@@ -1009,7 +1013,9 @@ describe('ExecutionRouter', () => {
       vi.spyOn(ironclaw, 'rollback').mockRejectedValue(new Error('SECRET_MARKER boom'));
       registry.register('ironclaw', ironclaw, IRONCLAW_TRUST_PROFILE);
 
-      const out = await router.rollback('plan-1', 'ironclaw');
+      const out = await router.rollback('plan-1', 'ironclaw', {
+        actionId: 'action-1', actionType: 'label_email',
+      });
 
       expect(out.noAdapter).toBe(false);
       expect(out.result.success).toBe(false);
@@ -1026,12 +1032,58 @@ describe('ExecutionRouter', () => {
       });
       registry.register('ironclaw', ironclaw, IRONCLAW_TRUST_PROFILE);
 
-      const out = await router.rollback('plan-1', 'ironclaw');
+      const out = await router.rollback('plan-1', 'ironclaw', {
+        actionId: 'action-1', actionType: 'label_email',
+      });
 
       expect(out.noAdapter).toBe(false);
       expect(out.result.success).toBe(false);
       expect(out.result.message).toBe('adapter_rollback_failed');
       expect(JSON.stringify(out)).not.toContain('SECRET_MARKER');
+    });
+
+    it('never sends a legacy archive rollback to any generic adapter', async () => {
+      const adapters = [
+        ['ironclaw', createMockAdapter('ironclaw'), IRONCLAW_TRUST_PROFILE],
+        ['openclaw', createMockAdapter('openclaw', OPENCLAW_SKILLS), OPENCLAW_TRUST_PROFILE],
+        ['direct', createMockAdapter('direct'), DIRECT_TRUST_PROFILE],
+      ] as const;
+      for (const [name, adapter, profile] of adapters) {
+        const rollback = vi.spyOn(adapter, 'rollback');
+        registry.register(name, adapter, profile);
+        await expect(router.rollback(`plan-${name}`, name, {
+          actionId: `action-${name}`,
+          actionType: 'archive_email',
+        })).resolves.toMatchObject({
+          result: { success: false, message: 'rollback_action_reserved' },
+          adapterUsed: name,
+          noAdapter: false,
+        });
+        expect(rollback).not.toHaveBeenCalled();
+      }
+    });
+
+    it('requires an inspectable immutable action identity before adapter rollback', async () => {
+      const ironclaw = createMockAdapter('ironclaw');
+      const rollback = vi.spyOn(ironclaw, 'rollback');
+      registry.register('ironclaw', ironclaw, IRONCLAW_TRUST_PROFILE);
+
+      await expect(router.rollback('plan-1', 'ironclaw')).resolves.toMatchObject({
+        result: { success: false, message: 'rollback_action_identity_invalid' },
+        noAdapter: false,
+      });
+      const getter = vi.fn(() => 'archive_email');
+      const hostile = Object.defineProperty({ actionId: 'action-1' }, 'actionType', {
+        enumerable: true,
+        get: getter,
+      });
+      await expect(router.rollback('plan-1', 'ironclaw', hostile as never))
+        .resolves.toMatchObject({
+          result: { success: false, message: 'rollback_action_identity_invalid' },
+          noAdapter: false,
+        });
+      expect(getter).not.toHaveBeenCalled();
+      expect(rollback).not.toHaveBeenCalled();
     });
   });
 });

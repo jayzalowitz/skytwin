@@ -47,6 +47,12 @@ export interface RollbackRoutingResult {
   noAdapter: boolean;
 }
 
+/** Immutable DB-resolved action identity required before generic rollback. */
+export interface RollbackActionIdentity {
+  readonly actionId: string;
+  readonly actionType: string;
+}
+
 /** Opaque prepared dispatch bound to one previously selected adapter. */
 export interface PreparedExecution {
   readonly selectedAdapter: string;
@@ -435,6 +441,28 @@ function assertGenericExecutionActionAllowed(action: unknown): asserts action is
   }
 }
 
+function snapshotRollbackActionIdentity(value: unknown): Readonly<RollbackActionIdentity> | null {
+  try {
+    if (!value || typeof value !== 'object' || Array.isArray(value) ||
+        Object.getPrototypeOf(value) !== Object.prototype ||
+        Object.getOwnPropertySymbols(value).length !== 0) return null;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const names = Object.getOwnPropertyNames(descriptors).sort();
+    if (names.length !== 2 || names[0] !== 'actionId' || names[1] !== 'actionType') return null;
+    const actionId = descriptors['actionId'];
+    const actionType = descriptors['actionType'];
+    if (!actionId || !Object.prototype.hasOwnProperty.call(actionId, 'value') ||
+        actionId.enumerable !== true || typeof actionId.value !== 'string' ||
+        actionId.value.length === 0 ||
+        !actionType || !Object.prototype.hasOwnProperty.call(actionType, 'value') ||
+        actionType.enumerable !== true || typeof actionType.value !== 'string' ||
+        actionType.value.length === 0) return null;
+    return Object.freeze({ actionId: actionId.value, actionType: actionType.value });
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Execution router that selects the best adapter for a given action,
  * applies adapter-specific risk modifiers, and executes with fallback.
@@ -764,7 +792,12 @@ export class ExecutionRouter {
   async rollback(
     planId: string,
     adapterUsed: string | null | undefined,
+    actionIdentity?: RollbackActionIdentity,
   ): Promise<RollbackRoutingResult> {
+    // Snapshot caller-owned identity before any adapter can observe it. The
+    // argument remains optional at the type boundary for older callers, but an
+    // absent, hostile, or malformed binding can never authorize dispatch.
+    const boundActionIdentity = snapshotRollbackActionIdentity(actionIdentity);
     // Only an adapter that actually executed the plan can roll it back, and the
     // only reliable record of that is the persisted adapter name. An absent or
     // unrecognized name fails safe — never fall back to a different adapter.
@@ -792,6 +825,20 @@ export class ExecutionRouter {
         },
         adapterUsed,
         noAdapter: true,
+      };
+    }
+
+    const classification = classifyGmailArchiveGenericAction(boundActionIdentity);
+    if (!boundActionIdentity || classification.kind !== 'other') {
+      return {
+        result: {
+          success: false,
+          message: classification.kind === 'archive'
+            ? 'rollback_action_reserved'
+            : 'rollback_action_identity_invalid',
+        },
+        adapterUsed,
+        noAdapter: false,
       };
     }
 
