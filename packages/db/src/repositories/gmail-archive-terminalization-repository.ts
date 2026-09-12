@@ -4,6 +4,7 @@ import {
   joinedDecisionReceiptArtifactDigest,
   joinedDecisionReceiptContentDigest,
   verifyJoinedDecisionReceiptChain,
+  type GmailArchiveAttemptPhase,
   type GmailInboxMutationCommand,
   type GmailInboxMutationResult,
   type JoinedDecisionReceiptContentV1,
@@ -38,6 +39,7 @@ import {
   exactClaimedGmailArchiveReceipt,
   type GmailArchiveClaimAuthority,
 } from './gmail-archive-claim-integrity.js';
+import { snapshotGmailArchiveAttemptState } from './gmail-archive-attempt-state.js';
 import { canonicalGmailArchiveCandidate } from './gmail-archive-preparation-repository.js';
 import { GMAIL_ARCHIVE_PROPOSAL_REASON } from './gmail-archive-proposal-repository.js';
 import type { PreEffectBarrierRow } from './pre-effect-barrier-repository.js';
@@ -54,11 +56,11 @@ const KNOWN_FAILURE_CODES = [
 
 type KnownFailureCode = (typeof KNOWN_FAILURE_CODES)[number];
 type TerminalDisposition = 'succeeded' | 'failed' | 'unknown';
-const TERMINAL_RESULT_SCHEMA = 'gmail_archive_terminal_result_v1';
+const TERMINAL_RESULT_SCHEMA_V1 = 'gmail_archive_terminal_result_v1';
+const TERMINAL_RESULT_SCHEMA_V2 = 'gmail_archive_terminal_result_v2';
 
-export type GmailArchiveTerminalResultEnvelope =
+type GmailArchiveTerminalResultPayload =
   | {
-      schema: typeof TERMINAL_RESULT_SCHEMA;
       outcome: 'confirmed';
       operation: 'archive';
       inbox: false;
@@ -67,21 +69,31 @@ export type GmailArchiveTerminalResultEnvelope =
       observedAt: string;
     }
   | {
-      schema: typeof TERMINAL_RESULT_SCHEMA;
       outcome: 'known_failure';
       code: KnownFailureCode;
       compensationAvailable: false;
     }
   | {
-      schema: typeof TERMINAL_RESULT_SCHEMA;
       outcome: 'unknown';
       code: 'remote_outcome_unknown';
       compensationAvailable: false;
     };
 
+export type GmailArchiveTerminalResultEnvelope =
+  | ({ schema: typeof TERMINAL_RESULT_SCHEMA_V1 } & GmailArchiveTerminalResultPayload)
+  | ({
+      schema: typeof TERMINAL_RESULT_SCHEMA_V2;
+      attemptPhase: GmailArchiveAttemptPhase;
+    } & GmailArchiveTerminalResultPayload);
+
 export interface TerminalizeGmailArchiveInput {
   command: GmailInboxMutationCommand;
   result: GmailInboxMutationResult;
+}
+
+export interface GmailArchiveTerminalEvidence {
+  result: Readonly<GmailInboxMutationResult>;
+  attemptPhase: GmailArchiveAttemptPhase | null;
 }
 
 type TerminalAuthority = GmailArchiveClaimAuthority;
@@ -210,13 +222,17 @@ function snapshotCommand(value: unknown): Readonly<GmailInboxMutationCommand> | 
 }
 
 /** Secret-free canonical envelope committed by the v2 terminal explanation. */
-export function buildGmailArchiveTerminalResultEnvelope(
+function buildTerminalResultEnvelope(
   value: GmailInboxMutationResult,
+  attemptPhase: GmailArchiveAttemptPhase | null,
 ): GmailArchiveTerminalResultEnvelope {
   const result = snapshotMutationResult(value);
   if (!result) throw new TypeError('cannot build a terminal envelope from an invalid result');
+  const header = attemptPhase === null
+    ? { schema: TERMINAL_RESULT_SCHEMA_V1 as const }
+    : { schema: TERMINAL_RESULT_SCHEMA_V2 as const, attemptPhase };
   return result.outcome === 'confirmed' ? {
-    schema: TERMINAL_RESULT_SCHEMA,
+    ...header,
     outcome: result.outcome,
     operation: result.operation,
     inbox: result.inbox,
@@ -224,46 +240,91 @@ export function buildGmailArchiveTerminalResultEnvelope(
     compensationAvailable: result.compensationAvailable,
     observedAt: result.observedAt,
   } : result.outcome === 'known_failure' ? {
-    schema: TERMINAL_RESULT_SCHEMA,
+    ...header,
     outcome: result.outcome,
     code: result.code,
     compensationAvailable: result.compensationAvailable,
   } : {
-    schema: TERMINAL_RESULT_SCHEMA,
+    ...header,
     outcome: result.outcome,
     code: result.code,
     compensationAvailable: result.compensationAvailable,
   };
 }
 
+/** Build the phase-bound envelope used by every newly terminalized attempt. */
+export function buildGmailArchiveTerminalResultEnvelope(
+  value: GmailInboxMutationResult,
+  attemptPhase: GmailArchiveAttemptPhase,
+): GmailArchiveTerminalResultEnvelope {
+  return buildTerminalResultEnvelope(value, attemptPhase);
+}
+
 /** Strict parser for the result evidence retained in terminal explanations. */
 export function parseGmailArchiveTerminalResultEnvelope(
   value: unknown,
 ): Readonly<GmailInboxMutationResult> | null {
+  return parseGmailArchiveTerminalEvidence(value)?.result ?? null;
+}
+
+/** Strict parser retaining the durable attempt boundary carried by v2. */
+export function parseGmailArchiveTerminalEvidence(
+  value: unknown,
+): Readonly<GmailArchiveTerminalEvidence> | null {
+  const confirmedV2 = ownData(value, [
+    'attemptPhase', 'compensationAvailable', 'effect', 'inbox', 'observedAt',
+    'operation', 'outcome', 'schema',
+  ]);
+  if (confirmedV2?.['schema'] === TERMINAL_RESULT_SCHEMA_V2) {
+    const attemptPhase = confirmedV2['attemptPhase'];
+    const { schema: _schema, attemptPhase: _attemptPhase, ...result } = confirmedV2;
+    const parsed = snapshotMutationResult(result);
+    if (!parsed || (attemptPhase !== 'pre_dispatch' && attemptPhase !== 'dispatch_may_have_started')) return null;
+    return Object.freeze({ result: parsed, attemptPhase });
+  }
+  const failureV2 = ownData(value, [
+    'attemptPhase', 'code', 'compensationAvailable', 'outcome', 'schema',
+  ]);
+  if (failureV2?.['schema'] === TERMINAL_RESULT_SCHEMA_V2) {
+    const attemptPhase = failureV2['attemptPhase'];
+    const { schema: _schema, attemptPhase: _attemptPhase, ...result } = failureV2;
+    const parsed = snapshotMutationResult(result);
+    if (!parsed || (attemptPhase !== 'pre_dispatch' && attemptPhase !== 'dispatch_may_have_started')) return null;
+    return Object.freeze({ result: parsed, attemptPhase });
+  }
   const confirmed = ownData(value, [
     'compensationAvailable', 'effect', 'inbox', 'observedAt', 'operation', 'outcome', 'schema',
   ]);
-  if (confirmed?.['schema'] === TERMINAL_RESULT_SCHEMA) {
+  if (confirmed?.['schema'] === TERMINAL_RESULT_SCHEMA_V1) {
     const { schema: _schema, ...result } = confirmed;
-    return snapshotMutationResult(result);
+    const parsed = snapshotMutationResult(result);
+    return parsed ? Object.freeze({ result: parsed, attemptPhase: null }) : null;
   }
   const failure = ownData(value, ['code', 'compensationAvailable', 'outcome', 'schema']);
-  if (failure?.['schema'] !== TERMINAL_RESULT_SCHEMA) return null;
+  if (failure?.['schema'] !== TERMINAL_RESULT_SCHEMA_V1) return null;
   const { schema: _schema, ...result } = failure;
-  return snapshotMutationResult(result);
+  const parsed = snapshotMutationResult(result);
+  return parsed ? Object.freeze({ result: parsed, attemptPhase: null }) : null;
 }
 
 /** Exact one-envelope explanation evidence retained by terminal receipt v2. */
 export function parseGmailArchiveTerminalExplanationEvidence(
   value: unknown,
 ): Readonly<GmailInboxMutationResult> | null {
+  return parseGmailArchiveTerminalExplanationBinding(value)?.result ?? null;
+}
+
+/** Exact one-envelope explanation evidence including the attempt boundary. */
+export function parseGmailArchiveTerminalExplanationBinding(
+  value: unknown,
+): Readonly<GmailArchiveTerminalEvidence> | null {
   try {
     if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype ||
         value.length !== 1 || Object.getOwnPropertySymbols(value).length !== 0 ||
         Object.keys(value).length !== 1 || Object.keys(value)[0] !== '0') return null;
     const item = Object.getOwnPropertyDescriptor(value, '0');
     if (!item || !Object.prototype.hasOwnProperty.call(item, 'value') || !item.enumerable) return null;
-    return parseGmailArchiveTerminalResultEnvelope(item.value);
+    return parseGmailArchiveTerminalEvidence(item.value);
   } catch {
     return null;
   }
@@ -289,12 +350,29 @@ function disposition(result: GmailInboxMutationResult): TerminalDisposition {
     result.outcome === 'known_failure' ? 'failed' : 'unknown';
 }
 
-function effectResult(result: GmailInboxMutationResult): Record<string, unknown> {
-  return buildGmailArchiveTerminalResultEnvelope(result);
+function effectResult(
+  result: GmailInboxMutationResult,
+  attemptPhase: GmailArchiveAttemptPhase,
+): Record<string, unknown> {
+  return buildGmailArchiveTerminalResultEnvelope(result, attemptPhase);
 }
 
 function failureReason(result: GmailInboxMutationResult): string | null {
   return result.outcome === 'confirmed' ? null : result.code;
+}
+
+export function gmailArchiveResultAllowedForAttemptPhase(
+  result: GmailInboxMutationResult,
+  attemptPhase: GmailArchiveAttemptPhase,
+): boolean {
+  if (result.outcome === 'unknown') return attemptPhase === 'dispatch_may_have_started';
+  if (result.outcome === 'confirmed') {
+    return result.effect === 'already_in_state'
+      ? attemptPhase === 'pre_dispatch'
+      : attemptPhase === 'dispatch_may_have_started';
+  }
+  if (result.code === 'remote_rejected' || result.code === 'admission_unavailable') return true;
+  return attemptPhase === 'pre_dispatch';
 }
 
 export interface GmailArchiveTerminalExplanationSemantics {
@@ -348,6 +426,7 @@ function terminalExplanation(input: {
   barrier: PreEffectBarrierRow;
   plan: ExecutionPlanRow;
   result: GmailInboxMutationResult;
+  attemptPhase: GmailArchiveAttemptPhase | null;
 }): ExplanationRecordRow {
   const semantics = gmailArchiveTerminalExplanationSemantics(input.result);
   const policyIds = Array.isArray(input.barrier.policy_snapshot['policyIds'])
@@ -357,7 +436,7 @@ function terminalExplanation(input: {
     id: input.id,
     decision_id: input.state.decision.id,
     what_happened: semantics.whatHappened,
-    evidence_used: [buildGmailArchiveTerminalResultEnvelope(input.result)],
+    evidence_used: [buildTerminalResultEnvelope(input.result, input.attemptPhase)],
     preferences_invoked: [...policyIds].sort(),
     confidence_reasoning: semantics.confidenceReasoning,
     action_rationale: `Record the terminal state of the explicitly approved Gmail Inbox archive. Preserved policy rationale: ${input.state.approval.candidate_action['reasoning'] as string}. Policy snapshot: ${joinedDecisionReceiptArtifactDigest('policy', input.barrier.policy_snapshot)}.`,
@@ -611,6 +690,7 @@ async function exactBaseline(
 function exactExecutionResult(
   row: ExecutionResultRow,
   result: GmailInboxMutationResult,
+  attemptPhase: GmailArchiveAttemptPhase | null,
   plan: ExecutionPlanRow,
   terminalAt: Date,
 ): boolean {
@@ -618,11 +698,11 @@ function exactExecutionResult(
       row.completed_at.getTime() !== terminalAt.getTime()) return false;
   if (result.outcome === 'confirmed') {
     return row.success === true && row.error === null &&
-      sameCanonical(row.outputs, buildGmailArchiveTerminalResultEnvelope(result));
+      sameCanonical(row.outputs, buildTerminalResultEnvelope(result, attemptPhase));
   }
   return result.outcome === 'known_failure' && row.success === false &&
     row.error === result.code &&
-    sameCanonical(row.outputs, buildGmailArchiveTerminalResultEnvelope(result));
+    sameCanonical(row.outputs, buildTerminalResultEnvelope(result, attemptPhase));
 }
 
 async function exactTerminalReplay(
@@ -634,8 +714,11 @@ async function exactTerminalReplay(
   approved: JoinedDecisionReceiptContentV1,
 ): Promise<GmailArchiveTerminalizationBundle | null> {
   const expectedDisposition = disposition(result);
-  if (barrier.status !== expectedDisposition || !sameCanonical(barrier.effect_result, effectResult(result)) ||
+  const retainedBarrier = parseGmailArchiveTerminalEvidence(barrier.effect_result);
+  if (!retainedBarrier || !sameCanonical(retainedBarrier.result, result) ||
+      barrier.status !== expectedDisposition ||
       barrier.failure_reason !== failureReason(result)) return null;
+  const attemptPhase = retainedBarrier.attemptPhase;
   const plans = (await client.query<ExecutionPlanRow>(
     'SELECT * FROM execution_plans WHERE decision_id = $1 ORDER BY id ASC FOR UPDATE',
     [state.decision.id],
@@ -684,7 +767,7 @@ async function exactTerminalReplay(
   )).rows[0];
   const terminalAt = r7.created_at;
   const executionResult = results[0] ?? null;
-  const retainedResult = parseGmailArchiveTerminalExplanationEvidence(
+  const retainedEvidence = parseGmailArchiveTerminalExplanationBinding(
     executionExplanation?.evidence_used,
   );
   if (!executionExplanation || barrier.updated_at.getTime() !== terminalAt.getTime() ||
@@ -692,8 +775,10 @@ async function exactTerminalReplay(
       executionExplanation.created_at.getTime() !== terminalAt.getTime() ||
       (result.outcome === 'confirmed' &&
         Date.parse(result.observedAt) > terminalAt.getTime()) ||
-      !retainedResult || !sameCanonical(retainedResult, result) ||
-      (executionResult && !exactExecutionResult(executionResult, result, plan, terminalAt))) {
+      !retainedEvidence || retainedEvidence.attemptPhase !== attemptPhase ||
+      !sameCanonical(retainedEvidence.result, result) ||
+      (attemptPhase !== null && !gmailArchiveResultAllowedForAttemptPhase(result, attemptPhase)) ||
+      (executionResult && !exactExecutionResult(executionResult, result, attemptPhase, plan, terminalAt))) {
     return null;
   }
   const expectedExplanation = terminalExplanation({
@@ -703,6 +788,7 @@ async function exactTerminalReplay(
     barrier,
     plan,
     result,
+    attemptPhase,
   });
   if (decisionReceiptRowArtifactRefV1('explanation', { ...executionExplanation }).canonicalHash !==
       decisionReceiptRowArtifactRefV1('explanation', { ...expectedExplanation }).canonicalHash) {
@@ -811,6 +897,10 @@ async function transition(
       : { ok: false, error: 'idempotency_conflict' };
   }
   if (barrier.status !== 'in_progress') return { ok: false, error: 'not_ready' };
+  const attemptState = snapshotGmailArchiveAttemptState(barrier.effect_result);
+  if (!attemptState || !gmailArchiveResultAllowedForAttemptPhase(input.result, attemptState.phase)) {
+    return { ok: false, error: 'idempotency_conflict' };
+  }
   const plans = (await client.query<ExecutionPlanRow>(
     'SELECT * FROM execution_plans WHERE decision_id = $1 ORDER BY id ASC FOR UPDATE',
     [state.decision.id],
@@ -843,7 +933,7 @@ async function transition(
   }
   const terminalStatus = disposition(input.result);
   const terminalPlanStatus = terminalStatus === 'succeeded' ? 'completed' : 'failed';
-  const expectedEffectResult = effectResult(input.result);
+  const expectedEffectResult = effectResult(input.result, attemptState.phase);
   const expectedFailureReason = failureReason(input.result);
   const explanation = terminalExplanation({
     id: stable.explanationId,
@@ -852,6 +942,7 @@ async function transition(
     barrier,
     plan,
     result: input.result,
+    attemptPhase: attemptState.phase,
   });
   const insertedExplanation = (await client.query<ExplanationRecordRow>(
     `INSERT INTO explanation_records (
@@ -881,7 +972,7 @@ async function transition(
       WHERE id = $1 AND user_id = $2 AND idempotency_key = $3
         AND effect_type = 'event_execution' AND status = 'in_progress'
         AND decision_id = $8 AND action_id = $9 AND explanation_id = $10
-        AND policy_snapshot = $11::JSONB AND effect_result = '{}'::JSONB
+        AND policy_snapshot = $11::JSONB AND effect_result = $12::JSONB
         AND failure_reason IS NULL
       RETURNING *`,
     [
@@ -896,6 +987,7 @@ async function transition(
       state.candidate.id,
       barrier.explanation_id,
       JSON.stringify(barrier.policy_snapshot),
+      JSON.stringify(attemptState),
     ],
   )).rows[0];
   if (!terminalBarrier) fail({ ok: false, error: 'idempotency_conflict' });
@@ -930,6 +1022,7 @@ async function transition(
     if (!executionResult || !exactExecutionResult(
       executionResult,
       input.result,
+      attemptState.phase,
       terminalPlan,
       new Date(stable.persistedAt),
     )) fail({ ok: false, error: 'idempotency_conflict' });

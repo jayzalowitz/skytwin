@@ -24,6 +24,7 @@ import {
   loadCanonicalGmailArchiveApprovalState,
   type GmailArchiveApprovalCanonicalState,
 } from './gmail-archive-approval-response-repository.js';
+import { gmailArchiveAttemptState, snapshotGmailArchiveAttemptState } from './gmail-archive-attempt-state.js';
 import {
   buildGmailArchivePostApprovalPolicySnapshot,
   canonicalGmailArchiveCandidate,
@@ -179,10 +180,13 @@ async function classifyNonPrepared(
       'SELECT * FROM explanation_records WHERE id = $1 AND decision_id = $2',
       [barrier.explanation_id, state.decision.id],
     )).rows[0];
-  if (plans.length !== 1 || state.outcome.execution_plan_id !== plans[0]!.id ||
+  const attempt = snapshotGmailArchiveAttemptState(barrier.effect_result);
+  if (!attempt || plans.length !== 1 || state.outcome.execution_plan_id !== plans[0]!.id ||
       plans[0]!.action_id !== state.candidate.id || plans[0]!.status !== 'in_progress' ||
       !policyExplanation ||
-      !exactClaimedGmailArchiveReceipt(input, state, barrier, plans[0]!, policyExplanation, approved) ||
+      !exactClaimedGmailArchiveReceipt(
+        input, state, { ...barrier, effect_result: {} }, plans[0]!, policyExplanation, approved,
+      ) ||
       await hasExecutionAttempt(client, plans[0]!.id)) {
     return { ok: false, error: 'idempotency_conflict' };
   }
@@ -273,7 +277,7 @@ async function claimPreparedPair(
   }
   const updatedBarrier = (await client.query<PreEffectBarrierRow>(
     `UPDATE pre_effect_barriers
-        SET status = 'in_progress', updated_at = now()
+        SET status = 'in_progress', effect_result = $8::JSONB, updated_at = now()
       WHERE id = $1 AND user_id = $2 AND effect_type = 'event_execution'
         AND idempotency_key = $3 AND status = 'prepared'
         AND decision_id = $4 AND action_id = $5 AND explanation_id = $6
@@ -288,6 +292,7 @@ async function claimPreparedPair(
       state.candidate.id,
       barrier.explanation_id,
       JSON.stringify(policySnapshot),
+      JSON.stringify(gmailArchiveAttemptState('pre_dispatch')),
     ],
   )).rows[0];
   if (!updatedBarrier) fail({ ok: false, error: 'idempotency_conflict' });

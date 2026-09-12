@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const resolveTargetMock = vi.fn();
 const refreshIfExpiredMock = vi.fn();
 const tokenStoreConstructorMock = vi.fn();
+const dispatchGateEnterMock = vi.fn();
 
 vi.mock('@skytwin/db', () => ({
   GMAIL_INBOX_MUTATION_CANDIDATE_SCHEMA: 'gmail_inbox_mutation_v1',
@@ -50,6 +51,7 @@ function jsonResponse(value: unknown, status = 200): Response {
 function service(fetchMock: ReturnType<typeof vi.fn>, timeoutMs = 1_000) {
   return new GmailInboxMutationService({
     googleOAuthConfig: { clientId: 'client', clientSecret: '', redirectUri: 'http://localhost' },
+    dispatchGate: { enter: dispatchGateEnterMock },
     fetch: fetchMock as unknown as (input: string, init?: RequestInit) => Promise<Response>,
     timeoutMs,
   });
@@ -77,6 +79,7 @@ describe('GmailInboxMutationService', () => {
       scopes: [MODIFY_SCOPE],
       provider: 'google',
     });
+    dispatchGateEnterMock.mockResolvedValue({ status: 'entered' });
   });
 
   it('rejects non-canonical commands before any authority or network read', async () => {

@@ -155,7 +155,7 @@ describe('gmailArchiveTerminalizationRepository boundary', () => {
   it.each([confirmed, knownFailure, unknown])(
     'round-trips the exact secret-free terminal envelope for $outcome',
     (result) => {
-      const envelope = buildGmailArchiveTerminalResultEnvelope(result);
+      const envelope = buildGmailArchiveTerminalResultEnvelope(result, 'dispatch_may_have_started');
       expect(parseGmailArchiveTerminalResultEnvelope(envelope)).toEqual(result);
       expect(parseGmailArchiveTerminalExplanationEvidence([envelope])).toEqual(result);
       expect(parseGmailArchiveTerminalResultEnvelope({ ...envelope, extra: true })).toBeNull();
