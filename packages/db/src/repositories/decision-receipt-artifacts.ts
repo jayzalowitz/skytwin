@@ -7,8 +7,12 @@ import {
   type DecisionReceiptBarrierRef,
   type DecisionReceiptBarrierSnapshotV1,
   type DecisionReceiptEvidenceRef,
+  type DecisionReceiptExecutionPlanRef,
+  type DecisionReceiptExecutionPlanSnapshotV1,
+  type DecisionReceiptExecutionResultRef,
+  type DecisionReceiptExecutionResultSnapshotV1,
 } from '@skytwin/shared-types';
-import type { ApprovalRequestRow } from '../types.js';
+import type { ApprovalRequestRow, ExecutionPlanRow, ExecutionResultRow } from '../types.js';
 import type { PreEffectBarrierRow } from './pre-effect-barrier-repository.js';
 
 export type DecisionReceiptRowArtifactKind = Extract<
@@ -141,6 +145,45 @@ export function decisionReceiptBarrierRefV1(
   return {
     id: row.id,
     canonicalHash: joinedDecisionReceiptArtifactDigest('barrier', snapshot),
+    snapshot,
+  };
+}
+
+/** Canonical execution-plan snapshot/reference derived from a database row. */
+export function decisionReceiptExecutionPlanRefV1(
+  row: ExecutionPlanRow,
+): DecisionReceiptExecutionPlanRef {
+  const snapshot: DecisionReceiptExecutionPlanSnapshotV1 = {
+    version: 1,
+    status: row.status as DecisionReceiptExecutionPlanSnapshotV1['status'],
+    decisionId: row.decision_id,
+    candidateActionId: row.action_id,
+    createdAt: isoInstant(row.created_at),
+    updatedAt: isoInstant(row.updated_at),
+  };
+  return {
+    id: row.id,
+    canonicalHash: joinedDecisionReceiptArtifactDigest('execution_plan', snapshot),
+    snapshot,
+  };
+}
+
+/** Canonical execution-result snapshot/reference derived from a database row. */
+export function decisionReceiptExecutionResultRefV1(
+  row: ExecutionResultRow,
+  outcome: DecisionReceiptExecutionResultSnapshotV1['outcome'],
+): DecisionReceiptExecutionResultRef {
+  const snapshot: DecisionReceiptExecutionResultSnapshotV1 = {
+    version: 1,
+    planId: row.plan_id,
+    success: row.success,
+    outcome,
+    rollbackAvailable: row.rollback_available,
+    completedAt: isoInstant(row.completed_at),
+  };
+  return {
+    id: row.id,
+    canonicalHash: joinedDecisionReceiptArtifactDigest('execution_result', snapshot),
     snapshot,
   };
 }

@@ -15,6 +15,7 @@ import {
   joinedDecisionReceiptArtifactDigest,
   joinedDecisionReceiptContentDigest,
   joinedDecisionReceiptRevisionDigest,
+  type DecisionReceiptEventKey,
   type JoinedDecisionReceiptContent,
   type JoinedDecisionReceiptContentV1,
   type JoinedDecisionReceiptContentV2,
@@ -114,10 +115,21 @@ function terminalReceiptPayload(): {
     created_at: now,
   };
   const executionExplanation = {
-    id: executionExplanationId, decision_id: decisionId, what_happened: 'Remote outcome is unknown',
-    evidence_used: [], preferences_invoked: [], confidence_reasoning: 'No terminal response',
-    action_rationale: 'The admitted action was dispatched', escalation_rationale: 'Review provider state',
-    correction_guidance: 'Confirm the message state', capability_provenance_node_id: null,
+    id: executionExplanationId, decision_id: decisionId,
+    what_happened: 'The mutation POST outcome remains unknown after the confirming read.',
+    evidence_used: [{
+      schema: 'gmail_archive_terminal_result_v1',
+      outcome: 'unknown',
+      code: 'remote_outcome_unknown',
+      compensationAvailable: false,
+    }], preferences_invoked: [],
+    confidence_reasoning:
+      'The execution port returned remote_outcome_unknown after one POST and one inconclusive confirming read.',
+    action_rationale: 'The admitted action was dispatched',
+    escalation_rationale: 'Terminal classification: remote_outcome_unknown.',
+    correction_guidance:
+      'Reconcile the mailbox state before considering any new archive request; automated restore and compensation are unavailable.',
+    capability_provenance_node_id: null,
     created_at: now,
   };
   const policySnapshot = { allowed: true, requiresApproval: false, policyIds: [] };
@@ -405,6 +417,53 @@ describe('validateBackupData', () => {
 
     expect(validateBackupData(payload)).toContain(
       'decisions[0].joinedReceipt has inconsistent execution explanation snapshot',
+    );
+  });
+
+  it('retains and verifies the canonical terminal result envelope', () => {
+    const { payload, executionExplanation } = terminalReceiptPayload();
+    expect(validateBackupData(payload)).toEqual([]);
+    expect(executionExplanation['evidence_used']).toEqual([{
+      schema: 'gmail_archive_terminal_result_v1',
+      outcome: 'unknown',
+      code: 'remote_outcome_unknown',
+      compensationAvailable: false,
+    }]);
+    (executionExplanation['evidence_used'] as Array<Record<string, unknown>>)[0]!['code'] =
+      'remote_rejected';
+    expect(validateBackupData(payload)).toContain(
+      'decisions[0].joinedReceipt has inconsistent execution explanation snapshot',
+    );
+  });
+
+  it('rejects malformed Gmail terminal evidence after an internally consistent rehash', () => {
+    const { payload, executionExplanation } = terminalReceiptPayload();
+    const bundle = (payload['decisions'] as Array<Record<string, unknown>>)[0]!;
+    const revisions = (bundle['joinedReceipt'] as {
+      revisions: Array<Record<string, unknown>>;
+    }).revisions;
+    const terminal = revisions.at(-1)!;
+    const content = terminal['content'] as JoinedDecisionReceiptContentV2;
+    delete (executionExplanation['evidence_used'] as Array<Record<string, unknown>>)[0]!
+      ['compensationAvailable'];
+    content.executionExplanation.canonicalHash = joinedDecisionReceiptArtifactDigest(
+      'explanation',
+      decisionReceiptRowArtifactV1('explanation', executionExplanation),
+    );
+    terminal['content_digest'] = joinedDecisionReceiptContentDigest(content);
+    terminal['revision_digest'] = joinedDecisionReceiptRevisionDigest({
+      revisionId: terminal['id'] as string,
+      receiptId: terminal['receipt_id'] as string,
+      decisionId: (bundle['decision'] as Record<string, unknown>)['id'] as string,
+      userId: ((payload['user'] as Record<string, unknown>)['id']) as string,
+      sequence: terminal['sequence'] as number,
+      eventKey: terminal['event_key'] as DecisionReceiptEventKey,
+      previousDigest: terminal['previous_digest'] as string,
+      contentDigest: terminal['content_digest'] as string,
+    });
+
+    expect(validateBackupData(payload)).toContain(
+      'decisions[0].joinedReceipt has invalid Gmail terminal explanation',
     );
   });
 

@@ -1,5 +1,11 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [Unreleased] — Gmail archive terminal records
+
+### Added
+
+- Added a database-only terminalization boundary for a claimed Gmail Inbox archive command. It atomically records a confirmed, known-failure, or unknown effect across the admission barrier, linked plan, safe result row where applicable, a distinct terminal explanation, and the v2 r7 joined receipt revision. Exact response-loss replay returns the retained state; changed commands, changed results, mixed graphs, and untrusted receipt chains fail closed. The canonical secret-free result envelope is committed by the terminal explanation, while provider access and crash reconciliation remain outside this boundary.
+
 ## [Unreleased] — Gmail archive execution claims
 
 ### Added

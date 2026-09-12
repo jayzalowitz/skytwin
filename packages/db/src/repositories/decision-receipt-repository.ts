@@ -53,12 +53,22 @@ export interface AppendDecisionReceiptInput {
   /** Optional caller-owned IDs keep whole-transaction retries byte-stable. */
   receiptId?: string;
   revisionId?: string;
+  /** Optional caller-owned timestamp keeps whole-transaction retries stable. */
+  createdAt?: string;
 }
 
 const SHA256 = /^[0-9a-f]{64}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-function normalizeRevisionRow(
+function isCanonicalIsoInstant(value: string): boolean {
+  try {
+    return new Date(value).toISOString() === value;
+  } catch {
+    return false;
+  }
+}
+
+export function normalizeDecisionReceiptRevisionRow(
   row: DecisionReceiptRevisionRow | undefined,
 ): DecisionReceiptRevisionRow | null {
   if (!row) return null;
@@ -74,7 +84,7 @@ async function loadVerifiedRetainedChain(
     'SELECT * FROM decision_receipt_revisions WHERE receipt_id = $1 ORDER BY sequence ASC',
     [receipt.id],
   )).rows;
-  const normalized = raw.map((revision) => normalizeRevisionRow(revision));
+  const normalized = raw.map((revision) => normalizeDecisionReceiptRevisionRow(revision));
   if (normalized.some((revision) => revision === null)) return null;
   const revisions = normalized as DecisionReceiptRevisionRow[];
   if (revisions.some((revision) => !revision.trusted)) return null;
@@ -645,9 +655,10 @@ async function appendTransaction(
          id, receipt_id, sequence, event_key, previous_digest, content_digest, revision_digest,
          stage, disposition, content, trusted, candidate_action_id, barrier_id,
          explanation_id, approval_request_id, execution_plan_id,
-         execution_result_id, execution_disposition, correction_of_revision_id
+         execution_result_id, execution_disposition, correction_of_revision_id, created_at
        ) VALUES (
-         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10::JSONB, true, $11, $12, $13, $14, $15, $16, $17, $18
+         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10::JSONB, true, $11, $12, $13, $14, $15, $16, $17, $18,
+         COALESCE($19::TIMESTAMPTZ, now())
        ) RETURNING *`,
       [revisionId, root.id, previousSequence + 1, input.eventKey,
         previous?.revision_digest ?? null, contentDigest, revisionDigest, input.content.stage,
@@ -655,9 +666,10 @@ async function appendTransaction(
         input.content.candidateAction?.id ?? null, input.content.barrier?.id ?? null,
         input.content.explanation?.id ?? null, input.content.approvalRequest?.id ?? null,
         input.content.executionPlan?.id ?? null, input.content.executionResult?.id ?? null,
-        input.content.executionDisposition ?? null, input.content.correctionOfRevision?.id ?? null],
+        input.content.executionDisposition ?? null, input.content.correctionOfRevision?.id ?? null,
+        input.createdAt ?? null],
     )).rows[0]!;
-    const inserted = normalizeRevisionRow(insertedRaw);
+    const inserted = normalizeDecisionReceiptRevisionRow(insertedRaw);
     if (!inserted) throw new TypeError('database returned an invalid receipt sequence');
     return { success: true, created: true, receipt: root, revision: inserted };
   };
@@ -671,7 +683,8 @@ function validateAppendInput(
   if (!UUID.test(userId) || !isDecisionReceiptEventKey(input.eventKey) ||
       (input.expectedPreviousDigest !== null && !SHA256.test(input.expectedPreviousDigest)) ||
       (input.receiptId !== undefined && !UUID.test(input.receiptId)) ||
-      (input.revisionId !== undefined && !UUID.test(input.revisionId))) {
+      (input.revisionId !== undefined && !UUID.test(input.revisionId)) ||
+      (input.createdAt !== undefined && !isCanonicalIsoInstant(input.createdAt))) {
     return null;
   }
   try {
@@ -736,7 +749,7 @@ export const decisionReceiptRepository = {
         'SELECT * FROM decision_receipt_revisions WHERE receipt_id = $1 ORDER BY sequence ASC',
         [receipt.id],
       )).rows;
-      const revisions = rawRevisions.map((revision) => normalizeRevisionRow(revision));
+      const revisions = rawRevisions.map((revision) => normalizeDecisionReceiptRevisionRow(revision));
       if (revisions.some((revision) => revision === null)) {
         return { success: false, code: 'verification_failed' };
       }

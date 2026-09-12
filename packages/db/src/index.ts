@@ -110,6 +110,10 @@ export {
   gmailArchiveApprovalResponseRepository,
   gmailArchivePreparationRepository,
   gmailArchiveClaimRepository,
+  gmailArchiveTerminalizationRepository,
+  buildGmailArchiveTerminalResultEnvelope,
+  parseGmailArchiveTerminalExplanationEvidence,
+  parseGmailArchiveTerminalResultEnvelope,
   feedbackRepository,
 } from './repositories/index.js';
 export type {
@@ -139,6 +143,10 @@ export type {
   PrepareGmailArchiveResult,
   ClaimPreparedGmailArchiveInput,
   ClaimPreparedGmailArchiveResult,
+  GmailArchiveTerminalResultEnvelope,
+  GmailArchiveTerminalizationBundle,
+  TerminalizeGmailArchiveInput,
+  TerminalizeGmailArchiveResult,
   FindDecisionReceiptResult,
   CreateFeedbackInput,
 } from './repositories/index.js';

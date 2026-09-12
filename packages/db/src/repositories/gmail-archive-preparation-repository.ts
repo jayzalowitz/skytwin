@@ -163,7 +163,7 @@ export function canonicalStoredGmailArchiveRisk(
 
 /** DB-internal canonical projection shared with the later execution lifecycle. */
 export function canonicalGmailArchiveCandidate(
-  state: GmailArchiveApprovalCanonicalState,
+  state: Pick<GmailArchiveApprovalCanonicalState, 'approval' | 'candidate' | 'decision'>,
 ): CandidateAction | null {
   const stored = state.approval.candidate_action;
   const parameters = ownData(stored['parameters'], ['messageRefId', 'operation', 'schema']);

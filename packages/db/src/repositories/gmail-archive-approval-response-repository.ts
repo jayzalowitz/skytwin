@@ -28,6 +28,7 @@ import {
   decisionReceiptRowArtifactRefV1,
 } from './decision-receipt-artifacts.js';
 import { decisionReceiptLifecycleRepository } from './decision-receipt-lifecycle.js';
+import { normalizeDecisionReceiptRevisionRow } from './decision-receipt-repository.js';
 import {
   buildGmailArchiveProposalReceiptContents,
   GMAIL_ARCHIVE_PROPOSAL_REASON,
@@ -148,7 +149,8 @@ function exactRisk(value: unknown, candidateId: string): boolean {
   });
 }
 
-function canonicalCandidateMatches(
+/** Exact stable candidate/message identity shared with post-effect lifecycles. */
+export function canonicalGmailArchiveCandidateMessageRef(
   approval: ApprovalRequestRow,
   candidate: CandidateActionRow,
 ): string | null {
@@ -291,7 +293,7 @@ export async function loadCanonicalGmailArchiveApprovalState(
     [candidateId, decision.id],
   )).rows[0];
   if (!candidate) return null;
-  const messageRefId = canonicalCandidateMatches(approval, candidate);
+  const messageRefId = canonicalGmailArchiveCandidateMessageRef(approval, candidate);
   const rawEvent = decision.raw_event;
   if (!messageRefId ||
       !exactKeys(rawEvent, ['source', 'type', 'signalId', 'messageRefId', 'authoringTier']) ||
@@ -348,10 +350,13 @@ export async function loadCanonicalGmailArchiveApprovalState(
     [input.userId, decision.id],
   )).rows[0];
   if (!receipt) return null;
-  const revisions = (await client.query<DecisionReceiptRevisionRow>(
+  const rawRevisions = (await client.query<DecisionReceiptRevisionRow>(
     'SELECT * FROM decision_receipt_revisions WHERE receipt_id = $1 ORDER BY sequence ASC',
     [receipt.id],
   )).rows;
+  const normalizedRevisions = rawRevisions.map(normalizeDecisionReceiptRevisionRow);
+  if (normalizedRevisions.some((revision) => revision === null)) return null;
+  const revisions = normalizedRevisions as DecisionReceiptRevisionRow[];
   return {
     approval,
     decision,

@@ -53,6 +53,10 @@ import type {
 } from '../types.js';
 import type { PoolClient } from 'pg';
 import { decisionReceiptRowArtifactV1 } from '../repositories/decision-receipt-artifacts.js';
+import {
+  gmailArchiveTerminalExplanationSemantics,
+  parseGmailArchiveTerminalExplanationEvidence,
+} from '../repositories/gmail-archive-terminalization-repository.js';
 
 /** Bumped when the JSON shape changes in a non-back-compatible way. */
 export const BACKUP_SCHEMA_VERSION = 1;
@@ -512,6 +516,26 @@ export function validateBackupData(value: unknown): string[] {
             problems.push(
               `decisions[${index}].joinedReceipt has inconsistent execution explanation snapshot`,
             );
+          }
+          const terminalCandidate = tail.candidateAction?.id
+            ? candidateById.get(tail.candidateAction.id)
+            : undefined;
+          if (terminalCandidate?.action_type === 'archive_email') {
+            const result = parseGmailArchiveTerminalExplanationEvidence(row?.evidence_used);
+            const expectedDisposition = result?.outcome === 'confirmed' ? 'succeeded'
+              : result?.outcome === 'known_failure' ? 'failed'
+                : result?.outcome === 'unknown' ? 'unknown' : null;
+            const semantics = result ? gmailArchiveTerminalExplanationSemantics(result) : null;
+            if (!row || !result || expectedDisposition !== tail.executionDisposition ||
+                expectedDisposition !== tail.disposition ||
+                row.what_happened !== semantics?.whatHappened ||
+                row.confidence_reasoning !== semantics?.confidenceReasoning ||
+                row.escalation_rationale !== semantics?.escalationRationale ||
+                row.correction_guidance !== semantics?.correctionGuidance) {
+              problems.push(
+                `decisions[${index}].joinedReceipt has invalid Gmail terminal explanation`,
+              );
+            }
           }
         }
         for (const ref of tail?.inference.receipts ?? []) {
