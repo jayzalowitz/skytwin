@@ -360,11 +360,15 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     };
   }
 
-  async function createPolicyBlockedProposal(suffix: number) {
-    const proposal = await createProposal(suffix);
+  async function createPolicyBlockedProposal(
+    suffix: number,
+    ownerUserId = userId,
+    ownerAccountId = accountId,
+  ) {
+    const proposal = await createProposal(suffix, ownerUserId, ownerAccountId);
     const approved = await gmailArchiveApprovalResponseRepository.respond({
       approvalId: proposal.approval.id,
-      userId,
+      userId: ownerUserId,
       action: 'approve',
     });
     expect(approved).toMatchObject({ ok: true, response: { reservedBarrier: { status: 'reserved' } } });
@@ -372,7 +376,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     await getPool().query(
       `INSERT INTO action_policies (id, user_id, name, domain, rules, priority, is_active)
        VALUES ($1, $2, 'Block archive claim', 'email', $3, 500, true)`,
-      [policyId, userId, JSON.stringify([{
+      [policyId, ownerUserId, JSON.stringify([{
         id: `block-archive-claim-${suffix}`,
         policyId,
         condition: { field: 'actionType', operator: 'eq', value: 'archive_email' },
@@ -382,7 +386,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     );
     try {
       const blocked = await gmailArchivePreparationRepository.prepare({
-        userId,
+        userId: ownerUserId,
         approvalId: proposal.approval.id,
       });
       expect(blocked).toMatchObject({
@@ -7631,9 +7635,21 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
   }, 120_000);
 
   it('finalizes only a canonical post-policy blocked approval and rolls the append back atomically', async () => {
-    const blocked = await createPolicyBlockedProposal(4001);
-    const { feedbackEventId } = await applyFeedbackFor(userId, blocked.proposal.approval.id);
-    const input = { userId, approvalId: blocked.proposal.approval.id, feedbackEventId };
+    const owner = await seedRecoveryOwner(956);
+    const blocked = await createPolicyBlockedProposal(
+      4001,
+      owner.ownerUserId,
+      owner.ownerAccountId,
+    );
+    const { feedbackEventId } = await applyFeedbackFor(
+      owner.ownerUserId,
+      blocked.proposal.approval.id,
+    );
+    const input = {
+      userId: owner.ownerUserId,
+      approvalId: blocked.proposal.approval.id,
+      feedbackEventId,
+    };
     await expect(gmailArchiveFeedbackReceiptTestHooks.finalizeWithTransition(
       input,
       gmailArchiveFeedbackReceiptTestHooks.transition,
