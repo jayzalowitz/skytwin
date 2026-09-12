@@ -447,6 +447,7 @@ export async function loadGmailArchivePreparationReplay(
   state: GmailArchiveApprovalCanonicalState,
   barrier: PreEffectBarrierRow,
   approved: JoinedDecisionReceiptContentV1,
+  options: { readonly allowSingleFeedbackContinuation?: boolean } = {},
 ): Promise<PrepareGmailArchiveResult> {
   if ((barrier.status !== 'prepared' && barrier.status !== 'blocked') ||
       barrier.decision_id !== state.decision.id || barrier.action_id !== state.candidate.id ||
@@ -515,7 +516,11 @@ export async function loadGmailArchivePreparationReplay(
   const expectedLast = plan
     ? { ...r5, stage: 'execution_admitted' as const, disposition: 'pending' as const, executionPlan: executionPlanRef(plan) }
     : r5;
-  if (revisions.length !== expectedLength ||
+  const continuationOkay = options.allowSingleFeedbackContinuation === true &&
+    revisions.length === expectedLength + 1 &&
+    revisions[expectedLength]?.content.version === 3 &&
+    revisions[expectedLength]?.stage === 'feedback_recorded';
+  if ((revisions.length !== expectedLength && !continuationOkay) ||
       revisions.some((revision) => revision.trusted !== true) ||
       !verifyJoinedDecisionReceiptChain({
         receiptId: state.receipt.id,
