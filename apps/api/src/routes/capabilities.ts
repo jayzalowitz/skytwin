@@ -6,10 +6,12 @@ import { createLogger } from '@skytwin/core';
 import { RegistryClient } from '@skytwin/registry-client';
 import { TrustTierEngine } from '@skytwin/policy-engine';
 import type { TrustTier } from '@skytwin/shared-types';
-import { PROMOTION_THRESHOLDS } from '@skytwin/shared-types';
+import {
+  classifyGmailArchiveGenericAction,
+  PROMOTION_THRESHOLDS,
+} from '@skytwin/shared-types';
 import { runPrompt } from '@skytwin/policy-prompts';
 import { resolveUserLlmClient } from '../lib/user-llm-client.js';
-import { getExecutionRouter } from '../execution-setup.js';
 // SSE event constants — imported for re-export and for use in callers that
 // wire the promotion ceremony (e.g. promotion-eligibility-check.ts).
 // sseManager and SSE_CAPABILITY_PROMOTION_OFFERED are imported here so they
@@ -22,6 +24,46 @@ void _SSE_CAP_PROMO;
 const log = createLogger('api:capabilities');
 
 import { UUID_REGEX } from '../middleware/validate-uuid.js';
+
+interface RegretActionIdentity {
+  readonly actionId: string;
+  readonly actionType: string;
+}
+
+function snapshotRegretActionIdentity(value: unknown): Readonly<RegretActionIdentity> | null {
+  try {
+    if (!value || typeof value !== 'object' || Array.isArray(value) ||
+        Object.getPrototypeOf(value) !== Object.prototype ||
+        Object.getOwnPropertySymbols(value).length !== 0) return null;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const actionId = descriptors['actionId'];
+    const actionType = descriptors['actionType'];
+    if (!actionId || !Object.prototype.hasOwnProperty.call(actionId, 'value') ||
+        actionId.enumerable !== true || typeof actionId.value !== 'string' ||
+        actionId.value.length === 0 ||
+        !actionType || !Object.prototype.hasOwnProperty.call(actionType, 'value') ||
+        actionType.enumerable !== true || typeof actionType.value !== 'string' ||
+        actionType.value.length === 0) return null;
+    return Object.freeze({ actionId: actionId.value, actionType: actionType.value });
+  } catch {
+    return null;
+  }
+}
+
+function snapshotIrreversibleReason(value: unknown): string | null {
+  try {
+    if (!value || typeof value !== 'object' || Array.isArray(value) ||
+        Object.getPrototypeOf(value) !== Object.prototype ||
+        Object.getOwnPropertySymbols(value).length !== 0) return null;
+    const descriptor = Object.getOwnPropertyDescriptor(value, 'irreversibleReason');
+    return descriptor && Object.prototype.hasOwnProperty.call(descriptor, 'value') &&
+      descriptor.enumerable === true && typeof descriptor.value === 'string'
+      ? descriptor.value
+      : null;
+  } catch {
+    return null;
+  }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PII redaction helper — shared by audit (#183), provenance-graph (#184), and
@@ -343,7 +385,7 @@ async function writeProvenanceNode(opts: {
  * Endpoints (all under /api/capabilities/…):
  *
  *   POST /:id/uninstall     — soft-delete; optionally revoke OAuth + drop signals
- *   POST /:id/regret        — attempt rollback of actions executed via this server
+ *   POST /:id/regret        — inspect rollback availability (report-only)
  *   POST /:id/time-machine  — replay a decision without this server (read-only)
  *   POST /:id/rehearse      — show what would have auto-executed if trust tier were higher
  *
@@ -619,24 +661,39 @@ export function createCapabilitiesRouter(): Router {
       // Resolve rollback targets via the #324 join repo method:
       // capability_provenance_nodes (server↔action attribution) →
       // decision_outcomes.execution_plan_id (the #324 FK) → the real plan ID,
-      // plus the adapter that executed it (execution_results.adapter_used) so
-      // rollback routes back to the SAME adapter. The duplication-safe LIMIT-1
-      // subquery + lateral join live in the repo method now (was an inline
-      // query here before #324's adapter wiring landed).
+      // plus the successful reversible result's recorded adapter. This is a
+      // report-only read; no row returned here authorizes remote rollback.
       const targets = await executionRepository.getRollbackTargetsByServer({
         serverId: id,
         userId,
         since: sinceDate,
       });
+      const seenTargets = new Set<string>();
+      const boundTargets = targets.map((target) => {
+        const actionIdentity = snapshotRegretActionIdentity(target);
+        return Object.freeze({
+          target,
+          actionIdentity,
+          irreversibleReason: snapshotIrreversibleReason(target.payload),
+          classification: classifyGmailArchiveGenericAction(actionIdentity),
+        });
+      }).filter(({ target, actionIdentity }) => {
+        const key = JSON.stringify([
+          actionIdentity?.actionId ?? target.actionId,
+          target.executionPlanId,
+        ]);
+        if (seenTargets.has(key)) return false;
+        seenTargets.add(key);
+        return true;
+      });
 
-      // Result enum:
-      //   - 'rolled_back'      — adapter.rollback(planId) succeeded.
-      //   - 'rollback_failed'  — the adapter ran but reported failure (e.g.
-      //                          the plan had no rollback steps, or the
-      //                          executing adapter is no longer registered).
-      //   - 'no_plan_linkage'  — the #324 FK lookup returned NULL; no plan to
-      //                          target, so nothing to dispatch. Honest
-      //                          reporting beats claiming a rollback happened.
+      // Result enum. Generic rollback dispatch is deliberately unavailable
+      // until it has a durable at-most-once admission/terminal lifecycle.
+      // `rolled_back` remains in the response union for compatibility but is
+      // never emitted by this endpoint while dispatch is disabled.
+      //   - 'rollback_failed'  — rollback was not dispatched.
+      //   - 'no_plan_linkage'  — no completed, successful, rollback-enabled
+      //                          plan/result report qualified.
       const undone: Array<{
         actionId: string;
         planId: string | null;
@@ -646,34 +703,29 @@ export function createCapabilitiesRouter(): Router {
       }> = [];
       const irreversible: Array<{ actionId: string; reason: string }> = [];
 
-      // Resolve the execution router once for the whole batch. If it can't be
-      // constructed (no adapters configured), treat every reversible action as
-      // a rollback failure rather than throwing the whole request — the user
-      // still gets an honest per-action report.
-      let router: Awaited<ReturnType<typeof getExecutionRouter>> | null = null;
-      let routerError: string | null = null;
-      const hasReversibleTarget = targets.some(
-        (t) => (t.payload?.['reversible'] === true) && t.executionPlanId,
-      );
-      if (hasReversibleTarget) {
-        try {
-          router = await getExecutionRouter();
-        } catch (err) {
-          routerError = err instanceof Error ? err.message : String(err);
-          log.warn('Execution router unavailable for regret rollback', { serverId: id, error: routerError });
-        }
-      }
+      for (const { target, actionIdentity, irreversibleReason, classification } of boundTargets) {
+        const reversible = target.reversible === true;
 
-      for (const target of targets) {
-        const payload = target.payload;
-        const reversible = payload?.['reversible'] === true;
+        // Dedicated archive rollback must never re-enter a generic adapter,
+        // including legacy rows that predate archive quarantine. Missing or
+        // malformed action identity also carries no rollback authority.
+        if (!actionIdentity || classification.kind !== 'other') {
+          undone.push({
+            actionId: actionIdentity?.actionId ?? target.actionId,
+            planId: target.executionPlanId,
+            adapterUsed: target.adapterUsed,
+            result: 'rollback_failed',
+            message: classification.kind === 'archive'
+              ? 'Archive rollback is reserved for its dedicated execution lifecycle.'
+              : 'Rollback action identity could not be validated.',
+          });
+          continue;
+        }
 
         if (!reversible) {
           irreversible.push({
             actionId: target.actionId,
-            reason: typeof payload?.['irreversibleReason'] === 'string'
-              ? payload['irreversibleReason']
-              : 'Action was marked irreversible at execution time',
+            reason: irreversibleReason ?? 'Action was marked irreversible at execution time',
           });
           continue;
         }
@@ -688,60 +740,15 @@ export function createCapabilitiesRouter(): Router {
           continue;
         }
 
-        // Dispatch the rollback through the execution router, targeting the
-        // adapter that executed the plan (#324).
-        if (!router) {
-          undone.push({
-            actionId: target.actionId,
-            planId: target.executionPlanId,
-            adapterUsed: target.adapterUsed,
-            result: 'rollback_failed',
-            message: routerError
-              ? `Execution router unavailable: ${routerError}`
-              : 'Execution router unavailable',
-          });
-          continue;
-        }
-
-        const rollback = await router.rollback(target.executionPlanId, target.adapterUsed);
-
+        // Report only. Repeating this HTTP request must never repeat a remote
+        // rollback, so no router or adapter is constructed here.
         undone.push({
           actionId: target.actionId,
           planId: target.executionPlanId,
-          adapterUsed: rollback.adapterUsed,
-          result: rollback.result.success ? 'rolled_back' : 'rollback_failed',
-          message: rollback.result.message,
+          adapterUsed: target.adapterUsed,
+          result: 'rollback_failed',
+          message: 'Generic rollback is unavailable until durable rollback admission is enabled.',
         });
-
-        // Audit trail (Safety Invariant #2): record every rollback attempt as
-        // a provenance node so the reversal is explainable. A rollback is the
-        // user reversing an action — recorded under the existing 'feedback'
-        // node type (no schema change) with a descriptive payload.
-        try {
-          await writeProvenanceNode({
-            userId,
-            nodeType: 'feedback',
-            refTable: 'execution_plans',
-            refId: target.executionPlanId,
-            serverId: id,
-            payload: {
-              kind: 'rollback',
-              actionId: target.actionId,
-              adapterUsed: rollback.adapterUsed,
-              success: rollback.result.success,
-              message: rollback.result.message,
-              withinHours,
-            },
-          });
-        } catch (auditErr) {
-          // Audit write failure must not mask a successful rollback — log and
-          // continue. The rollback result is still reported to the caller.
-          log.warn('Failed to write rollback provenance node', {
-            serverId: id,
-            planId: target.executionPlanId,
-            error: auditErr instanceof Error ? auditErr.message : String(auditErr),
-          });
-        }
       }
 
       res.json({ undone, irreversible });

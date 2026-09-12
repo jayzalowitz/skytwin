@@ -11,6 +11,7 @@ import type { ExplanationGenerator } from '@skytwin/explanations';
 import type { IronClawAdapter } from '@skytwin/ironclaw-adapter';
 import { userRepository } from '@skytwin/db';
 import { createLogger } from '@skytwin/core';
+import { snapshotGenericWorkflowAction } from './gmail-archive-quarantine.js';
 
 const log = createLogger('api:workflow:email-triage');
 
@@ -50,7 +51,7 @@ export interface EmailTriageResult {
  * 3. TwinService retrieves relevant preferences
  * 4. DecisionMaker evaluates (generates candidates, assesses risk, checks policies)
  * 5. PolicyEngine validates (done inside DecisionMaker)
- * 6. If approved: IronClaw adapter executes (archive, draft reply, etc.)
+ * 6. If approved: the selected generic adapter executes (for example, draft reply)
  * 7. ExplanationGenerator creates audit record
  * 8. All state persisted to DB (done by services internally)
  */
@@ -120,11 +121,12 @@ export async function processEmailEvent(
   let executionResult: ExecutionResult | null = null;
 
   if (outcome.autoExecute && outcome.selectedAction) {
+    const executableAction = snapshotGenericWorkflowAction(outcome.selectedAction);
     log.info(
-      `Auto-executing: ${outcome.selectedAction.actionType} - ${outcome.selectedAction.description}`,
+      `Auto-executing: ${executableAction.actionType} - ${executableAction.description}`,
     );
 
-    const plan = await ironclawAdapter.buildPlan(outcome.selectedAction);
+    const plan = await ironclawAdapter.buildPlan(executableAction);
     executionResult = await ironclawAdapter.execute(plan);
 
     log.info(

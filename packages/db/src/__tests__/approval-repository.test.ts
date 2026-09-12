@@ -259,6 +259,9 @@ describe('approvalRepository', () => {
       // Expiry is evaluated by the database in this same UPDATE. A stale API
       // read must not mint a first-confirmation token after the consent window.
       expect(sql).toContain('expires_at > now()');
+      expect(sql).toContain("jsonb_typeof(candidate_action) = 'object'");
+      expect(sql).toContain("jsonb_typeof(candidate_action->'actionType') = 'string'");
+      expect(sql).toContain("candidate_action->>'actionType' <> 'archive_email'");
       expect(sql).toContain("confirmation_level = 'dual'");
       // Strictly single-shot: the `first_confirmed_at IS NULL` guard means a
       // token is minted exactly once per request. Re-calling never re-mints,
@@ -362,6 +365,9 @@ describe('approvalRepository', () => {
       expect(sql).toContain("status = 'pending'");
       expect(sql).toContain('AND user_id = $4');
       expect(sql).toContain('AND expires_at > now()');
+      expect(sql).toContain("jsonb_typeof(candidate_action) = 'object'");
+      expect(sql).toContain("jsonb_typeof(candidate_action->'actionType') = 'string'");
+      expect(sql).toContain("candidate_action->>'actionType' <> 'archive_email'");
       expect(sql).toContain('RETURNING *');
       expect(params![0]).toBe('approved');
       expect(params![2]).toBe('ar-001');
@@ -527,6 +533,10 @@ describe('approvalRepository', () => {
       expect(sql).toContain("AND status = 'pending'");
       expect(sql).toContain('AND user_id = $3');
       expect(sql).toContain('AND expires_at > now()');
+      expect(sql).toContain("jsonb_typeof(candidate_action) = 'object'");
+      expect(sql).toContain("jsonb_typeof(candidate_action->'actionType') = 'string'");
+      expect(sql).toContain("candidate_action->>'actionType' <> 'archive_email'");
+      expect(sql).toContain('confirmation_token = NULL');
       expect(sql).toContain('RETURNING *');
       expect(params).toEqual([
         'approved',
@@ -563,7 +573,7 @@ describe('approvalRepository', () => {
       ]);
     });
 
-    it('only affects pending, unexpired approvals using the database clock', async () => {
+    it('only affects pending, unexpired generic approvals using the database clock', async () => {
       mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
 
       await approvalRepository.batchRespond(['ar-001'], 'approve', 'user-1');
@@ -572,6 +582,10 @@ describe('approvalRepository', () => {
       expect(sql).toContain("AND status = 'pending'");
       expect(sql).toContain('AND user_id = $3');
       expect(sql).toContain('AND expires_at > now()');
+      expect(sql).toContain("jsonb_typeof(candidate_action) = 'object'");
+      expect(sql).toContain("jsonb_typeof(candidate_action->'actionType') = 'string'");
+      expect(sql).toContain("candidate_action->>'actionType' <> 'archive_email'");
+      expect(sql).toContain('confirmation_token = NULL');
     });
   });
 

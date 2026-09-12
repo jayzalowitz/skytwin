@@ -10,6 +10,7 @@ import type { TwinService } from '@skytwin/twin-model';
 import type { ExplanationGenerator } from '@skytwin/explanations';
 import type { IronClawAdapter } from '@skytwin/ironclaw-adapter';
 import { userRepository } from '@skytwin/db';
+import { snapshotGenericWorkflowAction } from './gmail-archive-quarantine.js';
 
 /**
  * Common dependencies shared by all workflow handlers.
@@ -115,7 +116,8 @@ export async function genericWorkflowHandler(
 
   let executionResult: ExecutionResult | null = null;
   if (outcome.autoExecute && outcome.selectedAction) {
-    const plan = await deps.ironclawAdapter.buildPlan(outcome.selectedAction);
+    const executableAction = snapshotGenericWorkflowAction(outcome.selectedAction);
+    const plan = await deps.ironclawAdapter.buildPlan(executableAction);
     executionResult = await deps.ironclawAdapter.execute(plan);
   }
 

@@ -1,9 +1,10 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ExecutionStep } from '@skytwin/shared-types';
 import {
   SKYTWIN_EMAIL_ATTRIBUTION_TEXT,
 } from '@skytwin/shared-types';
 import { EmailActionHandler } from '../handlers/email-action-handler.js';
+import type { CredentialProvider } from '../credential-provider.js';
 
 function makeStep(overrides: Partial<ExecutionStep> = {}): ExecutionStep {
   return {
@@ -134,5 +135,62 @@ describe('EmailActionHandler outbound sends', () => {
     expect(mime).toContain('To: alex@example.com Bcc: injected@example.com');
     expect(mime).toContain('Subject: Hello Injected: bad');
     expect(mime).toContain(SKYTWIN_EMAIL_ATTRIBUTION_TEXT);
+  });
+});
+
+describe('EmailActionHandler Gmail archive quarantine', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('does not advertise archive_email', () => {
+    expect(new EmailActionHandler().canHandle('archive_email')).toBe(false);
+    expect(new EmailActionHandler().canHandle('label_email')).toBe(true);
+  });
+
+  it.each([
+    { type: 'archive_email', parameters: { actionType: 'archive_email' } },
+    { type: 'archive_email', parameters: { actionType: 'label_email' } },
+    { type: 'label_email', parameters: { actionType: 'archive_email' } },
+  ])('refuses mixed archive execution before credentials or network: %o', async (mixed) => {
+    const getAccessToken = vi.fn(async () => ({ success: true, accessToken: 'secret' } as const));
+    const credentialProvider: CredentialProvider = { getAccessToken };
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const result = await new EmailActionHandler(credentialProvider).execute(makeStep({
+      type: mixed.type,
+      parameters: { ...mixed.parameters, userId: 'user-1', emailId: 'provider-id' },
+    }));
+    expect(result).toEqual({
+      success: false,
+      error: 'archive_email is reserved for its dedicated lifecycle',
+    });
+    expect(getAccessToken).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { type: 'rollback_archive_email', originalActionType: 'archive_email' },
+    { type: 'archive_email', originalActionType: 'label_email' },
+    { type: 'label_email', originalActionType: 'archive_email' },
+  ])('refuses mixed archive rollback before credentials or network: %o', async (mixed) => {
+    const getAccessToken = vi.fn(async () => ({ success: true, accessToken: 'secret' } as const));
+    const credentialProvider: CredentialProvider = { getAccessToken };
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const result = await new EmailActionHandler(credentialProvider).rollback(makeStep({
+      type: mixed.type,
+      parameters: {
+        originalActionType: mixed.originalActionType,
+        userId: 'user-1',
+        emailId: 'provider-id',
+      },
+    }));
+    expect(result).toEqual({
+      success: false,
+      error: 'archive_email rollback requires its dedicated lifecycle',
+    });
+    expect(getAccessToken).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

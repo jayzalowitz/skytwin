@@ -108,12 +108,18 @@ export {
   buildExecutableActionPlan,
   IRONCLAW_CORE_ACTION_TYPES,
   OPENCLAW_ACTION_TYPES,
+  ReservedActionCapabilityError,
 } from './action-capabilities.js';
 export type {
   ActionPlanReadiness,
   ExecutableActionPlan,
   ExecutionAdapterName,
 } from './action-capabilities.js';
+
+export { classifyGmailArchiveGenericAction } from './gmail-archive-quarantine.js';
+export type {
+  GmailArchiveGenericActionClassification,
+} from './gmail-archive-quarantine.js';
 
 export {
   EXECUTION_RUNTIME_VERSION_CHECKED_AT,

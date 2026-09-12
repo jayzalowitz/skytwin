@@ -8,7 +8,12 @@ import type {
   ExplanationRecord,
   RiskAssessment,
 } from '@skytwin/shared-types';
-import { TrustTier, ConfidenceLevel, SituationType } from '@skytwin/shared-types';
+import {
+  classifyGmailArchiveGenericAction,
+  TrustTier,
+  ConfidenceLevel,
+  SituationType,
+} from '@skytwin/shared-types';
 import { PolicyEvaluator, type PolicyDecision } from '@skytwin/policy-engine';
 import { RiskAssessor } from '@skytwin/decision-engine';
 import {
@@ -41,7 +46,6 @@ const FREE_ROUTINE_ACTION_TYPES = new Set<string>([
   'set_reminder',
   'snooze_reminder',
   'label_email',
-  'archive_email',
   'acknowledge',
   'dismiss',
 ]);
@@ -71,9 +75,19 @@ export function createRoutinesRouter(): Router {
         return;
       }
 
-      // Validate plan has a well-formed action
-      if (!plan.action || !plan.action.actionType) {
+      // Scheduled archive execution belongs exclusively to the dedicated
+      // approval/recovery lifecycle. Keep an explicit boundary guard even
+      // while all routine registration is disabled so later reactivation
+      // cannot silently route it through generic policy or scheduling.
+      const actionClassification = classifyGmailArchiveGenericAction(plan.action);
+      if (actionClassification.kind === 'invalid') {
         res.status(400).json({ error: 'Plan must include an action with an actionType.' });
+        return;
+      }
+      if (actionClassification.kind === 'archive') {
+        res.status(409).json({
+          error: 'archive_email is reserved for its dedicated execution lifecycle.',
+        });
         return;
       }
 

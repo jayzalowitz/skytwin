@@ -253,6 +253,23 @@ describe('Routines API routes', () => {
       expect(checked.reversible).toBe(true);
     });
 
+    it('rejects archive_email before generic routine admission', async () => {
+      const res = await request(app, 'POST', '/api/routines', {
+        userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000001',
+        schedule: '0 9 * * *',
+        plan: { action: { actionType: 'archive_email' } },
+      });
+
+      expect(res).toEqual({
+        status: 409,
+        body: { error: 'archive_email is reserved for its dedicated execution lifecycle.' },
+      });
+      expect(mockUserRepository.findById).not.toHaveBeenCalled();
+      expect(mockPolicyEvaluator.evaluate).not.toHaveBeenCalled();
+      expect(mockPreEffectBarrierRepository.reserve).not.toHaveBeenCalled();
+      expect(mockGetIronClawEnhancedAdapter).not.toHaveBeenCalled();
+    });
+
     it('persists only the normalized candidate and never dispatches caller-supplied steps', async () => {
       await request(app, 'POST', '/api/routines', {
         userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000001',

@@ -585,18 +585,49 @@ async function handleDetailRehearse(serverId, userId, daysBack, btn) {
   }
 }
 
+export function summarizeRegretResults(undone, irreversible) {
+  const summary = {
+    reportedRolledBack: 0,
+    unavailable: 0,
+    noPlanLinkage: 0,
+    irreversible: Array.isArray(irreversible) ? irreversible.length : 0,
+    messages: [],
+  };
+  if (!Array.isArray(undone)) return summary;
+  for (const entry of undone) {
+    if (!entry || typeof entry !== 'object') {
+      summary.unavailable += 1;
+      continue;
+    }
+    if (entry.result === 'rolled_back') summary.reportedRolledBack += 1;
+    else if (entry.result === 'no_plan_linkage') summary.noPlanLinkage += 1;
+    else summary.unavailable += 1;
+    if (typeof entry.message === 'string' && entry.message) summary.messages.push(entry.message);
+  }
+  return summary;
+}
+
+export function renderRegretMessageList(messages) {
+  return Array.isArray(messages) && messages.length > 0
+    ? `<ul>${messages.map((message) => `<li>${escapeHtml(message)}</li>`).join('')}</ul>`
+    : '';
+}
+
 async function handleDetailRegret(serverId, userId, withinHours) {
-  if (!confirm(`Roll back reversible actions from this capability in the last ${withinHours}h?`)) return;
+  if (!confirm(`Review rollback availability for this capability in the last ${withinHours}h?`)) return;
   const resultEl = document.getElementById('capability-action-result');
   try {
     const { undone, irreversible } = await regretCapability(serverId, userId, withinHours);
+    const summary = summarizeRegretResults(undone, irreversible);
+    const details = renderRegretMessageList(summary.messages);
     if (resultEl) {
       resultEl.innerHTML = `<div class="card" style="border-left: 3px solid var(--warning);">
         <div class="card-header"><span class="card-title">Regret results</span></div>
-        <div class="card-subtitle">Rolled back: ${undone?.length ?? 0} · Could not undo: ${irreversible?.length ?? 0} (irreversible)</div>
+        <div class="card-subtitle">Reported rolled back: ${summary.reportedRolledBack} · Rollback unavailable: ${summary.unavailable} · No verified plan: ${summary.noPlanLinkage} · Irreversible: ${summary.irreversible}</div>
+        ${details}
       </div>`;
     }
-    showToast('Regret complete.', { kind: 'success' });
+    showToast('Rollback availability report complete; no new reversal is implied.', { kind: 'warning' });
   } catch (err) {
     if (resultEl) resultEl.innerHTML = `<div class="error-banner">${escapeHtml(err.friendlyMessage || err.message)}</div>`;
   }

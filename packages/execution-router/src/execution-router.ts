@@ -8,7 +8,10 @@ import type {
   RoutingDecision,
   SkillGap,
 } from '@skytwin/shared-types';
-import { evaluateInjectionGuard } from '@skytwin/shared-types';
+import {
+  classifyGmailArchiveGenericAction,
+  evaluateInjectionGuard,
+} from '@skytwin/shared-types';
 import type { IronClawAdapter } from '@skytwin/ironclaw-adapter';
 import type { AdapterRegistry } from './adapter-registry.js';
 import { applyAdapterRiskModifier } from './risk-modifier.js';
@@ -42,6 +45,12 @@ export interface RollbackRoutingResult {
   adapterUsed: string | null;
   /** True when no registered adapter could handle the rollback. */
   noAdapter: boolean;
+}
+
+/** Immutable DB-resolved action identity required before generic rollback. */
+export interface RollbackActionIdentity {
+  readonly actionId: string;
+  readonly actionType: string;
 }
 
 /** Opaque prepared dispatch bound to one previously selected adapter. */
@@ -401,6 +410,7 @@ function assertExecutionPermitted(
   action: CandidateAction,
   context?: ExecutionContext,
 ): void {
+  assertGenericExecutionActionAllowed(action);
   const verdict = evaluateInjectionGuard(action);
   if (verdict.escalate && !context?.approved) {
     throw new InvariantViolationError(
@@ -413,6 +423,43 @@ function assertExecutionPermitted(
         `action through with autoExecute — that upstream bug must be fixed. ` +
         `Safety Invariant #1.`,
     );
+  }
+}
+
+/** The dedicated Gmail archive lifecycle is never a generic router skill. */
+function assertGenericExecutionActionAllowed(action: unknown): asserts action is CandidateAction {
+  if (!action) {
+    throw new InvariantViolationError('ExecutionRouter called without a CandidateAction.');
+  }
+  const classification = classifyGmailArchiveGenericAction(action);
+  if (classification.kind !== 'other') {
+    throw new InvariantViolationError(
+      classification.kind === 'archive'
+        ? 'The archive_email action is reserved for its dedicated execution lifecycle.'
+        : 'The generic execution action could not be inspected safely.',
+    );
+  }
+}
+
+function snapshotRollbackActionIdentity(value: unknown): Readonly<RollbackActionIdentity> | null {
+  try {
+    if (!value || typeof value !== 'object' || Array.isArray(value) ||
+        Object.getPrototypeOf(value) !== Object.prototype ||
+        Object.getOwnPropertySymbols(value).length !== 0) return null;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const names = Object.getOwnPropertyNames(descriptors).sort();
+    if (names.length !== 2 || names[0] !== 'actionId' || names[1] !== 'actionType') return null;
+    const actionId = descriptors['actionId'];
+    const actionType = descriptors['actionType'];
+    if (!actionId || !Object.prototype.hasOwnProperty.call(actionId, 'value') ||
+        actionId.enumerable !== true || typeof actionId.value !== 'string' ||
+        actionId.value.length === 0 ||
+        !actionType || !Object.prototype.hasOwnProperty.call(actionType, 'value') ||
+        actionType.enumerable !== true || typeof actionType.value !== 'string' ||
+        actionType.value.length === 0) return null;
+    return Object.freeze({ actionId: actionId.value, actionType: actionType.value });
+  } catch {
+    return null;
   }
 }
 
@@ -452,7 +499,9 @@ export class ExecutionRouter {
     riskAssessment: RiskAssessment,
     userId: string,
   ): Promise<RoutingDecision> {
+    assertGenericExecutionActionAllowed(action);
     const boundAction = bindExecutionOwner(action, userId);
+    assertGenericExecutionActionAllowed(boundAction);
     const capableNames = this.registry.getCapableAdapters(boundAction.actionType);
 
     if (capableNames.length === 0) {
@@ -535,6 +584,7 @@ export class ExecutionRouter {
     userId: string,
     context?: ExecutionContext,
   ): Promise<ExecutionResult> {
+    assertGenericExecutionActionAllowed(action);
     assertValidExecutionInputs(action, riskAssessment);
     assertExecutionPermitted(action, context);
     const boundAction = bindExecutionOwner(action, userId);
@@ -605,11 +655,13 @@ export class ExecutionRouter {
     userId: string,
     context?: ExecutionContext,
   ): Promise<PreparedExecution> {
+    assertGenericExecutionActionAllowed(action);
     assertValidExecutionInputs(action, routingDecision.modifiedRiskAssessment);
     assertExecutionPermitted(action, context);
     let mutationAttempted = false;
     const noteMutation = (): void => { mutationAttempted = true; };
     const boundAction = bindExecutionOwner(action, userId, noteMutation);
+    assertGenericExecutionActionAllowed(boundAction);
     const routeBinding = this.routingDecisions.get(routingDecision);
     if (!routeBinding) {
       throw new InvariantViolationError('Routing decision was not issued by this router or was already consumed.');
@@ -672,6 +724,7 @@ export class ExecutionRouter {
         'Prepared execution handle was not issued by this router or was already consumed.',
       );
     }
+    assertGenericExecutionActionAllowed(binding.plan.action);
     const entry = this.registry.get(binding.selectedAdapter);
     if (
       userId !== binding.userId ||
@@ -739,7 +792,12 @@ export class ExecutionRouter {
   async rollback(
     planId: string,
     adapterUsed: string | null | undefined,
+    actionIdentity?: RollbackActionIdentity,
   ): Promise<RollbackRoutingResult> {
+    // Snapshot caller-owned identity before any adapter can observe it. The
+    // argument remains optional at the type boundary for older callers, but an
+    // absent, hostile, or malformed binding can never authorize dispatch.
+    const boundActionIdentity = snapshotRollbackActionIdentity(actionIdentity);
     // Only an adapter that actually executed the plan can roll it back, and the
     // only reliable record of that is the persisted adapter name. An absent or
     // unrecognized name fails safe — never fall back to a different adapter.
@@ -767,6 +825,20 @@ export class ExecutionRouter {
         },
         adapterUsed,
         noAdapter: true,
+      };
+    }
+
+    const classification = classifyGmailArchiveGenericAction(boundActionIdentity);
+    if (!boundActionIdentity || classification.kind !== 'other') {
+      return {
+        result: {
+          success: false,
+          message: classification.kind === 'archive'
+            ? 'rollback_action_reserved'
+            : 'rollback_action_identity_invalid',
+        },
+        adapterUsed,
+        noAdapter: false,
       };
     }
 
@@ -804,6 +876,7 @@ export class ExecutionRouter {
     userId: string,
     context?: ExecutionContext,
   ): AsyncIterable<ExecutionEvent> {
+    assertGenericExecutionActionAllowed(action);
     assertValidExecutionInputs(action, riskAssessment);
     assertExecutionPermitted(action, context);
     const boundAction = bindExecutionOwner(action, userId);
