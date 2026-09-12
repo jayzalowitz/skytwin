@@ -245,18 +245,22 @@ export const executionRepository = {
                    AND doc.selected_action_id = candidate.id
                   LEFT JOIN LATERAL (
                     SELECT plan.id AS execution_plan_id,
-                           result.outputs->>'adapter_used' AS adapter_used
+                           latest_result.outputs->>'adapter_used' AS adapter_used
                       FROM execution_plans plan
-                      JOIN execution_results result
-                        ON result.plan_id = plan.id
-                       AND result.success = true
-                       AND result.rollback_available = true
-                       AND nullif(result.outputs->>'adapter_used', '') IS NOT NULL
+                      JOIN LATERAL (
+                        SELECT result.*
+                          FROM execution_results result
+                         WHERE result.plan_id = plan.id
+                         ORDER BY result.completed_at DESC, result.id DESC
+                         LIMIT 1
+                      ) latest_result ON true
                      WHERE plan.id = doc.execution_plan_id
                        AND plan.decision_id = decision.id
                        AND plan.action_id = candidate.id
                        AND plan.status = 'completed'
-                     ORDER BY result.completed_at DESC, result.id DESC
+                       AND latest_result.success = true
+                       AND latest_result.rollback_available = true
+                       AND nullif(latest_result.outputs->>'adapter_used', '') IS NOT NULL
                      LIMIT 1
                   ) qualified ON true
                  WHERE candidate.id = pn.ref_id
@@ -266,7 +270,7 @@ export const executionRepository = {
           AND pn.node_type = 'action'
           AND pn.occurred_at >= $2
           AND pn.user_id = $3
-        ORDER BY pn.occurred_at DESC`,
+        ORDER BY pn.occurred_at DESC, pn.id DESC`,
       [input.serverId, input.since, input.userId],
     );
 
