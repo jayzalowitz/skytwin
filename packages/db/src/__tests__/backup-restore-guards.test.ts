@@ -467,6 +467,42 @@ describe('validateBackupData', () => {
     );
   });
 
+  it('rejects a phase-incompatible v2 terminal envelope after an internally consistent rehash', () => {
+    const { payload, executionExplanation } = terminalReceiptPayload();
+    const bundle = (payload['decisions'] as Array<Record<string, unknown>>)[0]!;
+    const revisions = (bundle['joinedReceipt'] as {
+      revisions: Array<Record<string, unknown>>;
+    }).revisions;
+    const terminal = revisions.at(-1)!;
+    const content = terminal['content'] as JoinedDecisionReceiptContentV2;
+    executionExplanation['evidence_used'] = [{
+      schema: 'gmail_archive_terminal_result_v2',
+      attemptPhase: 'pre_dispatch',
+      outcome: 'unknown',
+      code: 'remote_outcome_unknown',
+      compensationAvailable: false,
+    }];
+    content.executionExplanation.canonicalHash = joinedDecisionReceiptArtifactDigest(
+      'explanation',
+      decisionReceiptRowArtifactV1('explanation', executionExplanation),
+    );
+    terminal['content_digest'] = joinedDecisionReceiptContentDigest(content);
+    terminal['revision_digest'] = joinedDecisionReceiptRevisionDigest({
+      revisionId: terminal['id'] as string,
+      receiptId: terminal['receipt_id'] as string,
+      decisionId: (bundle['decision'] as Record<string, unknown>)['id'] as string,
+      userId: (payload['user'] as Record<string, unknown>)['id'] as string,
+      sequence: terminal['sequence'] as number,
+      eventKey: terminal['event_key'] as DecisionReceiptEventKey,
+      previousDigest: terminal['previous_digest'] as string,
+      contentDigest: terminal['content_digest'] as string,
+    });
+
+    expect(validateBackupData(payload)).toContain(
+      'decisions[0].joinedReceipt has invalid Gmail terminal explanation',
+    );
+  });
+
   it('reports a malformed v2 tail with missing inference instead of throwing', () => {
     const { payload } = terminalReceiptPayload();
     const bundle = (payload['decisions'] as Array<Record<string, unknown>>)[0]!;

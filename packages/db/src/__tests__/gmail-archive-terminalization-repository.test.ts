@@ -10,9 +10,11 @@ vi.mock('../connection.js', () => ({ query: queryMock, withTransaction: withTran
 
 const {
   buildGmailArchiveTerminalResultEnvelope,
+  gmailArchiveResultAllowedForAttemptPhase,
   gmailArchiveTerminalizationRepository,
   gmailArchiveTerminalizationTestHooks,
   parseGmailArchiveTerminalExplanationEvidence,
+  parseGmailArchiveTerminalExplanationBinding,
   parseGmailArchiveTerminalResultEnvelope,
 } = await import('../repositories/gmail-archive-terminalization-repository.js');
 
@@ -158,11 +160,49 @@ describe('gmailArchiveTerminalizationRepository boundary', () => {
       const envelope = buildGmailArchiveTerminalResultEnvelope(result, 'dispatch_may_have_started');
       expect(parseGmailArchiveTerminalResultEnvelope(envelope)).toEqual(result);
       expect(parseGmailArchiveTerminalExplanationEvidence([envelope])).toEqual(result);
+      expect(parseGmailArchiveTerminalExplanationBinding([envelope])).toEqual({
+        result,
+        attemptPhase: 'dispatch_may_have_started',
+      });
       expect(parseGmailArchiveTerminalResultEnvelope({ ...envelope, extra: true })).toBeNull();
       expect(parseGmailArchiveTerminalExplanationEvidence([])).toBeNull();
       expect(parseGmailArchiveTerminalExplanationEvidence([envelope, envelope])).toBeNull();
     },
   );
+
+  it('enforces the exact result-to-attempt phase matrix', () => {
+    const already = { ...confirmed, effect: 'already_in_state' as const };
+    const preflight = { ...knownFailure, code: 'preflight_unavailable' as const };
+    const admissionUnavailable = { ...knownFailure, code: 'admission_unavailable' as const };
+    expect(gmailArchiveResultAllowedForAttemptPhase(already, 'pre_dispatch')).toBe(true);
+    expect(gmailArchiveResultAllowedForAttemptPhase(already, 'dispatch_may_have_started')).toBe(false);
+    expect(gmailArchiveResultAllowedForAttemptPhase(confirmed, 'pre_dispatch')).toBe(false);
+    expect(gmailArchiveResultAllowedForAttemptPhase(confirmed, 'dispatch_may_have_started')).toBe(true);
+    expect(gmailArchiveResultAllowedForAttemptPhase(preflight, 'pre_dispatch')).toBe(true);
+    expect(gmailArchiveResultAllowedForAttemptPhase(preflight, 'dispatch_may_have_started')).toBe(false);
+    expect(gmailArchiveResultAllowedForAttemptPhase(unknown, 'pre_dispatch')).toBe(false);
+    expect(gmailArchiveResultAllowedForAttemptPhase(unknown, 'dispatch_may_have_started')).toBe(true);
+    expect(gmailArchiveResultAllowedForAttemptPhase(admissionUnavailable, 'pre_dispatch')).toBe(true);
+    expect(gmailArchiveResultAllowedForAttemptPhase(
+      admissionUnavailable,
+      'dispatch_may_have_started',
+    )).toBe(true);
+  });
+
+  it('retains strict historical v1 parsing without accepting a missing v2 attempt phase', () => {
+    const legacy = {
+      schema: 'gmail_archive_terminal_result_v1',
+      ...unknown,
+    };
+    expect(parseGmailArchiveTerminalExplanationBinding([legacy])).toEqual({
+      result: unknown,
+      attemptPhase: null,
+    });
+    expect(parseGmailArchiveTerminalResultEnvelope({
+      schema: 'gmail_archive_terminal_result_v2',
+      ...unknown,
+    })).toBeNull();
+  });
 
   it('snapshots command/result and reuses stable IDs and time across bounded 40001 retries', async () => {
     withTransactionMock.mockImplementation(async (callback) => callback({}));

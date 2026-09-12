@@ -279,7 +279,8 @@ export function parseGmailArchiveTerminalEvidence(
     const attemptPhase = confirmedV2['attemptPhase'];
     const { schema: _schema, attemptPhase: _attemptPhase, ...result } = confirmedV2;
     const parsed = snapshotMutationResult(result);
-    if (!parsed || (attemptPhase !== 'pre_dispatch' && attemptPhase !== 'dispatch_may_have_started')) return null;
+    if (!parsed || (attemptPhase !== 'pre_dispatch' && attemptPhase !== 'dispatch_may_have_started') ||
+        !gmailArchiveResultAllowedForAttemptPhase(parsed, attemptPhase)) return null;
     return Object.freeze({ result: parsed, attemptPhase });
   }
   const failureV2 = ownData(value, [
@@ -289,7 +290,8 @@ export function parseGmailArchiveTerminalEvidence(
     const attemptPhase = failureV2['attemptPhase'];
     const { schema: _schema, attemptPhase: _attemptPhase, ...result } = failureV2;
     const parsed = snapshotMutationResult(result);
-    if (!parsed || (attemptPhase !== 'pre_dispatch' && attemptPhase !== 'dispatch_may_have_started')) return null;
+    if (!parsed || (attemptPhase !== 'pre_dispatch' && attemptPhase !== 'dispatch_may_have_started') ||
+        !gmailArchiveResultAllowedForAttemptPhase(parsed, attemptPhase)) return null;
     return Object.freeze({ result: parsed, attemptPhase });
   }
   const confirmed = ownData(value, [

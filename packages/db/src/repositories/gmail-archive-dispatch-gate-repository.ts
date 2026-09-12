@@ -102,8 +102,7 @@ async function transition(
   }
   if (barrier.status !== 'in_progress') return { status: 'not_admitted' };
   const attempt = snapshotGmailArchiveAttemptState(barrier.effect_result);
-  if (attempt?.phase === 'dispatch_may_have_started') return { status: 'not_admitted' };
-  if (attempt?.phase !== 'pre_dispatch' || barrier.failure_reason !== null) return { status: 'conflict' };
+  if (!attempt || barrier.failure_reason !== null) return { status: 'conflict' };
 
   const plans = (await client.query<ExecutionPlanRow>(
     'SELECT * FROM execution_plans WHERE decision_id = $1 ORDER BY id ASC FOR UPDATE',
@@ -132,6 +131,7 @@ async function transition(
         policyExplanation,
         approved as JoinedDecisionReceiptContentV1,
       )) return { status: 'conflict' };
+  if (attempt.phase === 'dispatch_may_have_started') return { status: 'not_admitted' };
 
   const entered = (await client.query<PreEffectBarrierRow>(
     `UPDATE pre_effect_barriers

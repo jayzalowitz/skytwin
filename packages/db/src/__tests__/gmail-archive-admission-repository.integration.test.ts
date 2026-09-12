@@ -20,10 +20,14 @@ import {
   gmailArchiveClaimRepository,
   gmailArchiveClaimTestHooks,
 } from '../repositories/gmail-archive-claim-repository.js';
-import { gmailArchiveDispatchGateRepository } from '../repositories/gmail-archive-dispatch-gate-repository.js';
+import {
+  gmailArchiveDispatchGateRepository,
+  gmailArchiveDispatchGateTestHooks,
+} from '../repositories/gmail-archive-dispatch-gate-repository.js';
 import {
   gmailArchiveTerminalizationRepository,
   gmailArchiveTerminalizationTestHooks,
+  parseGmailArchiveTerminalExplanationBinding,
   parseGmailArchiveTerminalExplanationEvidence,
 } from '../repositories/gmail-archive-terminalization-repository.js';
 import {
@@ -1026,6 +1030,85 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     });
   }, 120_000);
 
+  it('admits exactly one concurrent dispatch gate and preserves the exact durable phase', async () => {
+    const fixture = await createClaimedProposal(64);
+    const results = await Promise.all([
+      gmailArchiveDispatchGateRepository.enter(fixture.command),
+      gmailArchiveDispatchGateRepository.enter(fixture.command),
+    ]);
+    expect(results.filter((result) => result.status === 'entered')).toHaveLength(1);
+    expect(results.filter((result) => result.status === 'not_admitted')).toHaveLength(1);
+    await expect(gmailArchiveDispatchGateRepository.enter(fixture.command)).resolves.toEqual({
+      status: 'not_admitted',
+    });
+    const durable = await getPool().query<{ status: string; effect_result: Record<string, unknown> }>(
+      'SELECT status, effect_result FROM pre_effect_barriers WHERE id = $1',
+      [fixture.command.admissionId],
+    );
+    expect(durable.rows[0]).toEqual({
+      status: 'in_progress',
+      effect_result: {
+        schema: 'gmail_archive_attempt_v1',
+        phase: 'dispatch_may_have_started',
+      },
+    });
+  }, 120_000);
+
+  it('rolls back a 40001 dispatch transition and retries the whole gate transaction', async () => {
+    const fixture = await createClaimedProposal(69);
+    let attempts = 0;
+    const result = await gmailArchiveDispatchGateTestHooks.enterWithTransition(
+      fixture.command,
+      async (client, command) => {
+        const entered = await gmailArchiveDispatchGateTestHooks.transition(client, command);
+        attempts += 1;
+        if (attempts === 1) {
+          expect(entered).toEqual({ status: 'entered' });
+          const inside = await client.query<{ phase: string }>(
+            `SELECT effect_result->>'phase' AS phase FROM pre_effect_barriers WHERE id = $1`,
+            [fixture.command.admissionId],
+          );
+          expect(inside.rows[0]?.phase).toBe('dispatch_may_have_started');
+          throw Object.assign(new Error('restart after dispatch CAS'), { code: '40001' });
+        }
+        return entered;
+      },
+    );
+    expect(result).toEqual({ status: 'entered' });
+    expect(attempts).toBe(2);
+  }, 120_000);
+
+  it('rejects legacy marker-free and receipt-tampered dispatch attempts', async () => {
+    const legacy = await createClaimedProposal(65);
+    await getPool().query(
+      `UPDATE pre_effect_barriers SET effect_result = '{}'::JSONB WHERE id = $1`,
+      [legacy.command.admissionId],
+    );
+    await expect(gmailArchiveDispatchGateRepository.enter(legacy.command)).resolves.toEqual({
+      status: 'conflict',
+    });
+    await expect(gmailArchiveClaimRepository.claim({
+      userId,
+      approvalId: legacy.proposal.approval.id,
+    })).resolves.toEqual({ ok: false, error: 'idempotency_conflict' });
+
+    const tampered = await createClaimedProposal(66);
+    await getPool().query(
+      'UPDATE decision_receipt_revisions SET trusted = false WHERE receipt_id = $1 AND sequence = 6',
+      [tampered.prepared.receipt.id],
+    );
+    await expect(gmailArchiveDispatchGateRepository.enter(tampered.command)).resolves.toEqual({
+      status: 'conflict',
+    });
+    const unchanged = await getPool().query<{ effect_result: Record<string, unknown> }>(
+      'SELECT effect_result FROM pre_effect_barriers WHERE id = $1',
+      [tampered.command.admissionId],
+    );
+    expect(unchanged.rows[0]?.effect_result).toEqual({
+      schema: 'gmail_archive_attempt_v1', phase: 'pre_dispatch',
+    });
+  }, 120_000);
+
   it('fails closed on cross-owner, mixed, and incomplete terminal states', async () => {
     const crossOwner = await createPreparedProposal(41);
     await expect(gmailArchiveClaimRepository.claim({
@@ -1389,6 +1472,9 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     expect(parseGmailArchiveTerminalExplanationEvidence(
       terminalized.terminalization.executionExplanation.evidence_used,
     )).toEqual(result);
+    expect(parseGmailArchiveTerminalExplanationBinding(
+      terminalized.terminalization.executionExplanation.evidence_used,
+    )?.attemptPhase).toBe(effect === 'already_in_state' ? 'pre_dispatch' : 'dispatch_may_have_started');
     if (effect === 'already_in_state') {
       expect(terminalized.terminalization.executionExplanation.what_happened).toContain('no mutation POST');
     }
@@ -1442,6 +1528,23 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     })).resolves.toEqual({ ok: false, error: 'idempotency_conflict' });
   }, 120_000);
 
+  it('rejects terminal results that contradict the durable dispatch phase', async () => {
+    const beforeDispatch = await createClaimedProposal(67);
+    await expect(gmailArchiveTerminalizationRepository.terminalize({
+      command: beforeDispatch.command,
+      result: {
+        outcome: 'confirmed', operation: 'archive', inbox: false, effect: 'changed',
+        compensationAvailable: false, observedAt: new Date(Date.now() - 1_000).toISOString(),
+      },
+    })).resolves.toEqual({ ok: false, error: 'idempotency_conflict' });
+
+    const afterDispatch = await createClaimedProposal(68, userId, accountId, true);
+    await expect(gmailArchiveTerminalizationRepository.terminalize({
+      command: afterDispatch.command,
+      result: { outcome: 'known_failure', code: 'preflight_unavailable', compensationAvailable: false },
+    })).resolves.toEqual({ ok: false, error: 'idempotency_conflict' });
+  }, 120_000);
+
   it.each([
     'invalid_command',
     'not_admitted',
@@ -1489,6 +1592,9 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     expect(parseGmailArchiveTerminalExplanationEvidence(
       terminalized.terminalization.executionExplanation.evidence_used,
     )).toEqual(result);
+    expect(parseGmailArchiveTerminalExplanationBinding(
+      terminalized.terminalization.executionExplanation.evidence_used,
+    )?.attemptPhase).toBe('pre_dispatch');
     if (code === 'remote_rejected') {
       expect(terminalized.terminalization.executionExplanation.what_happened)
         .not.toContain('before any mutation');
@@ -1527,6 +1633,9 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     expect(parseGmailArchiveTerminalExplanationEvidence(
       terminalized.terminalization.executionExplanation.evidence_used,
     )).toEqual(result);
+    expect(parseGmailArchiveTerminalExplanationBinding(
+      terminalized.terminalization.executionExplanation.evidence_used,
+    )?.attemptPhase).toBe('dispatch_may_have_started');
     const resultCount = await getPool().query<{ count: string }>(
       'SELECT count(*)::STRING AS count FROM execution_results WHERE plan_id = $1',
       [fixture.prepared.plan.id],
