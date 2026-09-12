@@ -6,6 +6,10 @@ All notable changes to SkyTwin will be documented in this file.
 
 - Added a database-only single-winner claim for prepared Gmail Inbox archives. The claim revalidates the exact owner-bound approval, evidence, current Inbox/account/scope state, immutable admission receipt, execution plan, and current policy snapshot before atomically advancing both the pre-effect barrier and plan to `in_progress`. Only the committed winner receives a frozen opaque archive command; replays, terminal states, policy drift, mixed state, and ambiguous commits issue no command. The claim does not append a receipt, read credential secrets, contact a provider, or register an execution route.
 
+### Fixed (post-/review)
+
+- Claim replay now reports a terminal workflow only for the complete policy-blocked graph already produced by the preparation lifecycle. Incomplete, mixed, execution-shaped, result-bearing, or event-bearing graphs fail closed until a later lifecycle defines their exact terminal receipt.
+
 ## [Unreleased] — Gmail archive approval responses
 
 ### Added

@@ -186,6 +186,16 @@ async function loadPlans(client: PoolClient, decisionId: string): Promise<Execut
   )).rows;
 }
 
+async function hasExecutionAttempt(client: PoolClient, planId: string): Promise<boolean> {
+  const counts = await client.query<{ results: string; events: string }>(
+    `SELECT
+       (SELECT count(*) FROM execution_results WHERE plan_id = $1) AS results,
+       (SELECT count(*) FROM execution_events WHERE plan_id = $1) AS events`,
+    [planId],
+  );
+  return counts.rows[0]?.results !== '0' || counts.rows[0]?.events !== '0';
+}
+
 async function classifyNonPrepared(
   client: PoolClient,
   input: ClaimPreparedGmailArchiveInput,
@@ -204,8 +214,21 @@ async function classifyNonPrepared(
     }
     return { ok: true, claimed: false, state: 'not_ready', command: null };
   }
-  if (['blocked', 'succeeded', 'failed', 'unknown'].includes(barrier.status)) {
+  if (barrier.status === 'blocked') {
+    if (!exactBarrierIdentity(barrier, input, state)) {
+      return { ok: false, error: 'idempotency_conflict' };
+    }
+    const replay = await loadGmailArchivePreparationReplay(client, input, state, barrier, approved);
+    if (!replay.ok || replay.preparation.status !== 'blocked' || replay.preparation.plan !== null) {
+      return { ok: false, error: 'idempotency_conflict' };
+    }
     return { ok: true, claimed: false, state: 'terminal', command: null };
+  }
+  // No Gmail terminalizer is part of the v1 r6 lifecycle yet. Until that
+  // boundary defines and persists an exact r7 graph, execution-shaped terminal
+  // barrier states are corruption rather than proof of a completed workflow.
+  if (['succeeded', 'failed', 'unknown'].includes(barrier.status)) {
+    return { ok: false, error: 'idempotency_conflict' };
   }
   if (barrier.status !== 'in_progress' || !exactBarrierIdentity(barrier, input, state)) {
     return { ok: false, error: 'idempotency_conflict' };
@@ -213,7 +236,8 @@ async function classifyNonPrepared(
   const plans = await loadPlans(client, state.decision.id);
   if (plans.length !== 1 || state.outcome.execution_plan_id !== plans[0]!.id ||
       plans[0]!.action_id !== state.candidate.id || plans[0]!.status !== 'in_progress' ||
-      !exactClaimedAdmissionReceipt(input, state, barrier, plans[0]!, approved)) {
+      !exactClaimedAdmissionReceipt(input, state, barrier, plans[0]!, approved) ||
+      await hasExecutionAttempt(client, plans[0]!.id)) {
     return { ok: false, error: 'idempotency_conflict' };
   }
   return { ok: true, claimed: false, state: 'in_progress', command: null };
@@ -402,13 +426,7 @@ async function transition(
     return { ok: false, error: 'policy_stale' };
   }
 
-  const attemptCounts = await client.query<{ results: string; events: string }>(
-    `SELECT
-       (SELECT count(*) FROM execution_results WHERE plan_id = $1) AS results,
-       (SELECT count(*) FROM execution_events WHERE plan_id = $1) AS events`,
-    [plan.id],
-  );
-  if (attemptCounts.rows[0]?.results !== '0' || attemptCounts.rows[0]?.events !== '0') {
+  if (await hasExecutionAttempt(client, plan.id)) {
     return { ok: false, error: 'idempotency_conflict' };
   }
 

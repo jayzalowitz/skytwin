@@ -6,9 +6,18 @@ import { verifyJoinedDecisionReceiptChain } from '@skytwin/shared-types';
 import { closePool, getPool, withTransaction } from '../connection.js';
 import { decisionReceiptLifecycleRepository } from '../repositories/decision-receipt-lifecycle.js';
 import { up } from '../migrations/001-initial.js';
-import { gmailArchiveApprovalResponseRepository } from '../repositories/gmail-archive-approval-response-repository.js';
-import { gmailArchivePreparationRepository } from '../repositories/gmail-archive-preparation-repository.js';
-import { gmailArchiveClaimRepository } from '../repositories/gmail-archive-claim-repository.js';
+import {
+  gmailArchiveApprovalResponseRepository,
+  loadCanonicalGmailArchiveApprovalState,
+} from '../repositories/gmail-archive-approval-response-repository.js';
+import {
+  canonicalGmailArchiveCandidate,
+  gmailArchivePreparationRepository,
+} from '../repositories/gmail-archive-preparation-repository.js';
+import {
+  gmailArchiveClaimRepository,
+  gmailArchiveClaimTestHooks,
+} from '../repositories/gmail-archive-claim-repository.js';
 import {
   buildGmailArchiveProposalCandidate,
   gmailArchiveProposalRepository,
@@ -166,6 +175,45 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       proposal,
       prepared: { ...prepared.preparation, plan: prepared.preparation.plan },
     };
+  }
+
+  async function createPolicyBlockedProposal(suffix: number) {
+    const proposal = await createProposal(suffix);
+    const approved = await gmailArchiveApprovalResponseRepository.respond({
+      approvalId: proposal.approval.id,
+      userId,
+      action: 'approve',
+    });
+    expect(approved).toMatchObject({ ok: true, response: { reservedBarrier: { status: 'reserved' } } });
+    const policyId = id('99', suffix);
+    await getPool().query(
+      `INSERT INTO action_policies (id, user_id, name, domain, rules, priority, is_active)
+       VALUES ($1, $2, 'Block archive claim', 'email', $3, 500, true)`,
+      [policyId, userId, JSON.stringify([{
+        id: `block-archive-claim-${suffix}`,
+        policyId,
+        condition: { field: 'actionType', operator: 'eq', value: 'archive_email' },
+        effect: 'deny',
+        reason: 'Archive is disabled.',
+      }])],
+    );
+    try {
+      const blocked = await gmailArchivePreparationRepository.prepare({
+        userId,
+        approvalId: proposal.approval.id,
+      });
+      expect(blocked).toMatchObject({
+        ok: true,
+        created: true,
+        preparation: { status: 'blocked', plan: null },
+      });
+      if (!blocked.ok || blocked.preparation.status !== 'blocked') {
+        throw new Error('Claim fixture did not produce a policy-blocked graph.');
+      }
+      return { proposal, blocked: blocked.preparation };
+    } finally {
+      await getPool().query('DELETE FROM action_policies WHERE id = $1', [policyId]);
+    }
   }
 
   it('atomically records approval and reserves a distinct, non-executable barrier', async () => {
@@ -929,7 +977,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     });
   }, 120_000);
 
-  it('fails closed on cross-owner, mixed, and terminal states', async () => {
+  it('fails closed on cross-owner, mixed, and incomplete terminal states', async () => {
     const crossOwner = await createPreparedProposal(41);
     await expect(gmailArchiveClaimRepository.claim({
       userId: otherUserId,
@@ -953,17 +1001,167 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     );
     expect(mixedState.rows[0]).toEqual({ barrier: 'prepared', plan: 'in_progress' });
 
-    const terminal = await createPreparedProposal(43);
+    const incompleteTerminal = await createPreparedProposal(43);
     await getPool().query(
       `UPDATE pre_effect_barriers
           SET status = 'blocked', effect_result = '{"dispatched":false}', failure_reason = 'stopped_before_claim'
         WHERE id = $1`,
-      [terminal.prepared.barrier.id],
+      [incompleteTerminal.prepared.barrier.id],
     );
     await expect(gmailArchiveClaimRepository.claim({
       userId,
-      approvalId: terminal.proposal.approval.id,
+      approvalId: incompleteTerminal.proposal.approval.id,
+    })).resolves.toEqual({ ok: false, error: 'idempotency_conflict' });
+  }, 120_000);
+
+  it('recognizes only the complete policy-blocked terminal graph', async () => {
+    const legitimate = await createPolicyBlockedProposal(54);
+    const legitimateInput = { userId, approvalId: legitimate.proposal.approval.id };
+    await expect(gmailArchiveClaimRepository.claim({
+      ...legitimateInput,
     })).resolves.toEqual({ ok: true, claimed: false, state: 'terminal', command: null });
+
+    await getPool().query(
+      'UPDATE pre_effect_barriers SET action_id = NULL WHERE id = $1',
+      [legitimate.blocked.barrier.id],
+    );
+    await expect(gmailArchiveClaimRepository.claim(legitimateInput)).resolves.toEqual({
+      ok: false,
+      error: 'idempotency_conflict',
+    });
+    await getPool().query(
+      'UPDATE pre_effect_barriers SET action_id = $2 WHERE id = $1',
+      [legitimate.blocked.barrier.id, legitimate.proposal.candidate.id],
+    );
+
+    await getPool().query(
+      `UPDATE pre_effect_barriers SET policy_snapshot = jsonb_set(policy_snapshot, '{allowed}', 'true')
+        WHERE id = $1`,
+      [legitimate.blocked.barrier.id],
+    );
+    await expect(gmailArchiveClaimRepository.claim(legitimateInput)).resolves.toEqual({
+      ok: false,
+      error: 'idempotency_conflict',
+    });
+    await getPool().query(
+      'UPDATE pre_effect_barriers SET policy_snapshot = $2::JSONB WHERE id = $1',
+      [legitimate.blocked.barrier.id, JSON.stringify(legitimate.blocked.barrier.policy_snapshot)],
+    );
+
+    await getPool().query(
+      `UPDATE explanation_records SET what_happened = 'tampered' WHERE id = $1`,
+      [legitimate.blocked.explanation.id],
+    );
+    await expect(gmailArchiveClaimRepository.claim(legitimateInput)).resolves.toEqual({
+      ok: false,
+      error: 'idempotency_conflict',
+    });
+    await getPool().query(
+      'UPDATE explanation_records SET what_happened = $2 WHERE id = $1',
+      [legitimate.blocked.explanation.id, legitimate.blocked.explanation.what_happened],
+    );
+    await expect(gmailArchiveClaimRepository.claim(legitimateInput)).resolves.toEqual({
+      ok: true,
+      claimed: false,
+      state: 'terminal',
+      command: null,
+    });
+
+    const wrongResult = await createPolicyBlockedProposal(55);
+    await getPool().query(
+      `UPDATE pre_effect_barriers SET effect_result = '{"dispatched":true}' WHERE id = $1`,
+      [wrongResult.blocked.barrier.id],
+    );
+    await expect(gmailArchiveClaimRepository.claim({
+      userId,
+      approvalId: wrongResult.proposal.approval.id,
+    })).resolves.toEqual({ ok: false, error: 'idempotency_conflict' });
+
+    const extraPlan = await createPolicyBlockedProposal(56);
+    await getPool().query(
+      `INSERT INTO execution_plans (id, decision_id, action_id, status, steps)
+       VALUES ($1, $2, $3, 'pending', '[]')`,
+      [id('88', 56), extraPlan.proposal.decision.id, extraPlan.proposal.candidate.id],
+    );
+    await expect(gmailArchiveClaimRepository.claim({
+      userId,
+      approvalId: extraPlan.proposal.approval.id,
+    })).resolves.toEqual({ ok: false, error: 'idempotency_conflict' });
+
+    const receiptTamper = await createPolicyBlockedProposal(57);
+    await getPool().query(
+      `UPDATE decision_receipt_revisions SET trusted = false
+        WHERE receipt_id = $1 AND sequence = 5`,
+      [receiptTamper.blocked.receipt.id],
+    );
+    await expect(gmailArchiveClaimRepository.claim({
+      userId,
+      approvalId: receiptTamper.proposal.approval.id,
+    })).resolves.toEqual({ ok: false, error: 'idempotency_conflict' });
+  }, 120_000);
+
+  it.each(['succeeded', 'failed', 'unknown'] as const)(
+    'rejects an unproven %s barrier without a canonical terminal receipt',
+    async (status) => {
+      const suffix = status === 'succeeded' ? 58 : status === 'failed' ? 59 : 60;
+      const fixture = await createPreparedProposal(suffix);
+      await getPool().query(
+        `UPDATE pre_effect_barriers SET status = $2,
+           effect_result = '{"dispatched":true}', failure_reason = NULL
+         WHERE id = $1`,
+        [fixture.prepared.barrier.id, status],
+      );
+      await expect(gmailArchiveClaimRepository.claim({
+        userId,
+        approvalId: fixture.proposal.approval.id,
+      })).resolves.toEqual({ ok: false, error: 'idempotency_conflict' });
+    },
+    120_000,
+  );
+
+  it('rolls back a real transaction when the plan CAS misses after the barrier CAS', async () => {
+    const fixture = await createPreparedProposal(61);
+    const input = { userId, approvalId: fixture.proposal.approval.id };
+    let barrierCasRows: number | undefined;
+    let planCasRows: number | undefined;
+    const result = await gmailArchiveClaimTestHooks.claimWithTransition(input, async (client, snapshot) => {
+      const state = await loadCanonicalGmailArchiveApprovalState(client, {
+        ...snapshot,
+        action: 'approve',
+      }, { allowExecutionPlan: true });
+      const candidate = state ? canonicalGmailArchiveCandidate(state) : null;
+      if (!state || !candidate) throw new Error('Missing canonical claim fixture.');
+      const observedClient = new Proxy(client, {
+        get(target, property, receiver) {
+          if (property !== 'query') return Reflect.get(target, property, receiver);
+          return async (sql: string, parameters?: unknown[]) => {
+            const queryResult = await target.query(sql, parameters);
+            if (sql.includes('UPDATE pre_effect_barriers')) barrierCasRows = queryResult.rows.length;
+            if (sql.includes('UPDATE execution_plans AS plan')) planCasRows = queryResult.rows.length;
+            return queryResult;
+          };
+        },
+      });
+      await gmailArchiveClaimTestHooks.claimPreparedPair(
+        observedClient,
+        snapshot,
+        state,
+        fixture.prepared.barrier,
+        { ...fixture.prepared.plan, id: id('88', 61) },
+        candidate,
+        fixture.prepared.barrier.policy_snapshot,
+      );
+      throw new Error('A missing plan must not pass the second CAS.');
+    });
+    expect(result).toEqual({ ok: false, error: 'idempotency_conflict' });
+    expect({ barrierCasRows, planCasRows }).toEqual({ barrierCasRows: 1, planCasRows: 0 });
+    const durable = await getPool().query<{ barrier: string; plan: string }>(
+      `SELECT barrier.status AS barrier, plan.status AS plan
+         FROM pre_effect_barriers AS barrier, execution_plans AS plan
+        WHERE barrier.id = $1 AND plan.id = $2`,
+      [fixture.prepared.barrier.id, fixture.prepared.plan.id],
+    );
+    expect(durable.rows[0]).toEqual({ barrier: 'prepared', plan: 'pending' });
   }, 120_000);
 
   it('keeps preparation unclaimed when current policy or operator-pause authority changes', async () => {
@@ -1079,6 +1277,32 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     await expect(gmailArchiveClaimRepository.claim({
       userId,
       approvalId: attempted.proposal.approval.id,
+    })).resolves.toEqual({ ok: false, error: 'idempotency_conflict' });
+
+    const eventBeforeClaim = await createPreparedProposal(62);
+    await getPool().query(
+      `INSERT INTO execution_events (id, plan_id, event_type, payload)
+       VALUES ($1, $2, 'started', '{}')`,
+      [id('88', 62), eventBeforeClaim.prepared.plan.id],
+    );
+    await expect(gmailArchiveClaimRepository.claim({
+      userId,
+      approvalId: eventBeforeClaim.proposal.approval.id,
+    })).resolves.toEqual({ ok: false, error: 'idempotency_conflict' });
+
+    const eventAfterClaim = await createPreparedProposal(63);
+    await expect(gmailArchiveClaimRepository.claim({
+      userId,
+      approvalId: eventAfterClaim.proposal.approval.id,
+    })).resolves.toMatchObject({ ok: true, claimed: true });
+    await getPool().query(
+      `INSERT INTO execution_events (id, plan_id, event_type, payload)
+       VALUES ($1, $2, 'started', '{}')`,
+      [id('88', 63), eventAfterClaim.prepared.plan.id],
+    );
+    await expect(gmailArchiveClaimRepository.claim({
+      userId,
+      approvalId: eventAfterClaim.proposal.approval.id,
     })).resolves.toEqual({ ok: false, error: 'idempotency_conflict' });
   }, 120_000);
 });
