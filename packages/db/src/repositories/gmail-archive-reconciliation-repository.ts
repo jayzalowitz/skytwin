@@ -190,6 +190,21 @@ function canonicalDbPhaseTimestamp(value: unknown): string | null {
   }
 }
 
+function exactReconciliationPhaseAnchor(
+  databaseTimestamp: unknown,
+  driverTimestamp: Date,
+  immutableReceiptTimestamp: unknown,
+  fenceTimestamp: string,
+): boolean {
+  const canonical = canonicalDbPhaseTimestamp(databaseTimestamp);
+  if (!canonical || canonical !== fenceTimestamp) return false;
+  // Millisecond DB values are represented exactly by the driver. Any finer
+  // precision must instead be present in immutable receipt truth; otherwise a
+  // truncated Date could make a changed anchor hash like the admitted row.
+  return canonical === driverTimestamp.toISOString() ||
+    canonical === immutableReceiptTimestamp;
+}
+
 function snapshotCommand(value: unknown): Readonly<GmailArchiveReconciliationCommand> | null {
   const command = ownData(value, ['admissionId', 'messageRefId', 'operation', 'userId']);
   if (!command || typeof command['userId'] !== 'string' || !UUID.test(command['userId']) ||
@@ -817,7 +832,12 @@ async function transition(
   if (barrier.status !== 'in_progress') return { ok: false, error: 'not_ready' };
   const attempt = snapshotGmailArchiveAttemptState(barrier.effect_result);
   if (!attempt || attempt.phase !== phase ||
-      canonicalDbPhaseTimestamp(barrier.updated_at_text) !== fence.phaseChangedAt ||
+      !exactReconciliationPhaseAnchor(
+        barrier.updated_at_text,
+        barrier.updated_at,
+        state.revisions[5]?.content.barrier?.snapshot.updatedAt,
+        fence.phaseChangedAt,
+      ) ||
       !gmailArchiveReconciliationEvidenceAllowedForPhase(input.evidence, phase)) {
     return { ok: false, error: 'idempotency_conflict' };
   }
@@ -978,7 +998,12 @@ export async function reconcileRecordedGmailArchiveObservationInTransaction(
   if (barrier.status !== 'in_progress') return { ok: false, error: 'not_ready' };
   const attempt = snapshotGmailArchiveAttemptState(barrier.effect_result);
   if (!attempt || attempt.phase !== 'dispatch_may_have_started' ||
-      canonicalDbPhaseTimestamp(barrier.updated_at_text) !== fence.phaseChangedAt) {
+      !exactReconciliationPhaseAnchor(
+        barrier.updated_at_text,
+        barrier.updated_at,
+        state.revisions[5]?.content.barrier?.snapshot.updatedAt,
+        fence.phaseChangedAt,
+      )) {
     return { ok: false, error: 'idempotency_conflict' };
   }
   const due = (await client.query<{ due: boolean }>(
@@ -1135,6 +1160,7 @@ async function reconcileWithTransition(
 
 /** Narrow seams for validation, rollback, and Cockroach retry tests. */
 export const gmailArchiveReconciliationTestHooks = {
+  exactReconciliationPhaseAnchor,
   reconcileWithTransition,
   transition,
 };

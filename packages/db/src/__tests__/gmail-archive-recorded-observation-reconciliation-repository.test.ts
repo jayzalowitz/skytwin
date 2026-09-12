@@ -18,6 +18,9 @@ const {
 const { consumeRecordedGmailArchiveObservationInTransaction } = await import(
   '../repositories/gmail-archive-recovery-lease-consumer.js'
 );
+const { gmailArchiveReconciliationTestHooks } = await import(
+  '../repositories/gmail-archive-reconciliation-repository.js'
+);
 
 const fence = {
   userId: '11111111-1111-4111-8111-111111111111',
@@ -175,6 +178,28 @@ describe('gmailArchiveRecordedObservationReconciliationRepository', () => {
         withTransactionMock,
       )).resolves.toEqual({ ok: false, error: 'not_ready' });
     expect(withTransactionMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects hidden DB microsecond anchor drift unless immutable receipt truth carries it', () => {
+    const driverTimestamp = new Date('2026-09-12T11:50:00.123Z');
+    expect(gmailArchiveReconciliationTestHooks.exactReconciliationPhaseAnchor(
+      '2026-09-12 11:50:00.123',
+      driverTimestamp,
+      '2026-09-12T11:40:00.000Z',
+      '2026-09-12T11:50:00.123Z',
+    )).toBe(true);
+    expect(gmailArchiveReconciliationTestHooks.exactReconciliationPhaseAnchor(
+      '2026-09-12 11:50:00.123456',
+      driverTimestamp,
+      '2026-09-12T11:40:00.000Z',
+      '2026-09-12T11:50:00.123456Z',
+    )).toBe(false);
+    expect(gmailArchiveReconciliationTestHooks.exactReconciliationPhaseAnchor(
+      '2026-09-12 11:50:00.123456',
+      driverTimestamp,
+      '2026-09-12T11:50:00.123456Z',
+      '2026-09-12T11:50:00.123456Z',
+    )).toBe(true);
   });
 
   it.each(['08006', '40003'])('maps ambiguous %s commits without retry', async (code) => {
