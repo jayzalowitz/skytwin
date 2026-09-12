@@ -191,7 +191,7 @@ async function resolvePermitInTransaction(
        FROM gmail_archive_recovery_leases AS lease
        JOIN pre_effect_barriers AS barrier
          ON barrier.id = lease.admission_id AND barrier.user_id = lease.user_id
-        AND barrier.idempotency_key = lease.approval_id
+        AND barrier.idempotency_key = lease.approval_id::STRING
        JOIN candidate_actions AS candidate ON candidate.id = barrier.action_id
        JOIN decisions AS decision
          ON decision.id = barrier.decision_id AND decision.id = candidate.decision_id

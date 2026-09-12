@@ -83,6 +83,7 @@ describe('permit-bound Gmail Inbox observation target', () => {
       { selection, credentialRevision },
     )).resolves.toEqual(resolvedSelection);
     const [sql, args] = (queryClient.query as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    expect(sql).toContain('barrier.idempotency_key = lease.approval_id::STRING');
     expect(sql).toContain("lease.observation_state = 'started'");
     expect(sql).toContain('lease.expires_at > statement_timestamp()');
     expect(sql).toContain('lease.observation_deadline_at > statement_timestamp()');
@@ -208,6 +209,7 @@ describe('permit-bound Gmail Inbox observation target', () => {
     );
     expect(source).not.toMatch(/\b(?:INSERT|UPDATE|DELETE|UPSERT|FOR UPDATE)\b/i);
     for (const fragment of [
+      'barrier.idempotency_key = lease.approval_id::STRING',
       'lease.approval_id = $3', 'lease.message_ref_id = $4', 'lease.lease_token = $9',
       'lease.generation = $10::INT8', 'lease.observation_attempt_id = $11',
       'lease.observation_authorized_at = $12::TIMESTAMPTZ',

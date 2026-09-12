@@ -4903,7 +4903,8 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       `UPDATE gmail_archive_recovery_leases
           SET acquired_at = statement_timestamp() - INTERVAL '2 minutes',
               renewed_at = statement_timestamp() - INTERVAL '1 minute',
-              expires_at = statement_timestamp() + INTERVAL '500 milliseconds'
+              expires_at = date_trunc('milliseconds', statement_timestamp()) +
+                INTERVAL '500 milliseconds'
         WHERE admission_id = $1
         RETURNING expires_at`,
       [dispatch.command.admissionId],
@@ -4932,13 +4933,13 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     releaseLease();
     await leaseHolder;
     const beginResult = await waitingBegin;
-    expect(beginResult).toEqual({ ok: false, error: 'stale_lease' });
+    expect(beginResult).toEqual({ ok: true, status: 'evidence_recorded', permit: null });
     const state = await getPool().query<{ observation_state: string }>(
       `SELECT observation_state
          FROM gmail_archive_recovery_leases WHERE admission_id = $1`,
       [dispatch.command.admissionId],
     );
-    expect(state.rows[0]?.observation_state).toBe('not_started');
+    expect(state.rows[0]?.observation_state).toBe('evidence_recorded');
 
     const recordOwner = await seedRecoveryOwner(17);
     const recordDispatch = await createClaimedProposal(
