@@ -145,7 +145,7 @@ describe('executionRepository.getRollbackTargetsByServer — #324 rollback join'
     expect(sql).toContain("plan.status = 'completed'");
     expect(sql).toContain('result.success = true');
     expect(sql).toContain('result.rollback_available = true');
-    expect(sql).toContain("nullif(result.outputs->>'adapter_used', '') IS NOT NULL");
+    expect(sql).toContain("nullif(latest_result.outputs->>'adapter_used', '') IS NOT NULL");
     expect(sql).toContain('ORDER BY result.completed_at DESC, result.id DESC');
     expect(sql).toContain('ORDER BY pn.occurred_at DESC, pn.id DESC');
     expect(sql).toContain('candidate.id = pn.ref_id');
