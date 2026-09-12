@@ -44,10 +44,15 @@ import {
 } from '../repositories/gmail-archive-recovery-lease-repository.js';
 import { gmailInboxObservationTargetRepository } from '../repositories/gmail-inbox-observation-target-repository.js';
 import {
+  reconcileRecordedGmailArchiveObservationInTransaction,
   gmailArchiveReconciliationRepository,
   gmailArchiveReconciliationTestHooks,
   parseGmailArchiveReconciliationExplanationEvidence,
 } from '../repositories/gmail-archive-reconciliation-repository.js';
+import {
+  gmailArchiveRecordedObservationReconciliationRepository,
+  gmailArchiveRecordedObservationReconciliationTestHooks,
+} from '../repositories/gmail-archive-recorded-observation-reconciliation-repository.js';
 import {
   gmailArchiveTerminalizationRepository,
   gmailArchiveTerminalizationTestHooks,
@@ -3659,6 +3664,421 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     120_000,
   );
 
+  it('derives recorded observation evidence and terminalizes it without caller proof material', async () => {
+    const { fixture, permit } = await permittedObservationTarget(216);
+    const evidence = {
+      kind: 'mailbox_observed' as const,
+      binding: mutationBinding(fixture.command),
+      inbox: false,
+      observedAt: new Date().toISOString(),
+    };
+    await expect(gmailArchiveRecoveryLeaseRepository.recordObservation({ permit, evidence }))
+      .resolves.toMatchObject({ ok: true, evidence });
+    const result = await gmailArchiveRecordedObservationReconciliationRepository
+      .reconcileRecordedObservation(recoveryFence(permit));
+    expect(result).toEqual({ ok: true, reconciled: true });
+    expect(result).not.toHaveProperty('evidence');
+    expect(result).not.toHaveProperty('observationAttemptId');
+    expect(result).not.toHaveProperty('leaseToken');
+    const durable = await getPool().query<{
+      barrier_status: string;
+      leases: string;
+      revisions: string;
+      results: string;
+    }>(`SELECT
+      (SELECT status FROM pre_effect_barriers WHERE id = $1) AS barrier_status,
+      (SELECT count(*)::STRING FROM gmail_archive_recovery_leases
+        WHERE admission_id = $1) AS leases,
+      (SELECT count(*)::STRING FROM decision_receipt_revisions
+        WHERE receipt_id = $2) AS revisions,
+      (SELECT count(*)::STRING FROM execution_results
+        WHERE plan_id = $3) AS results`, [
+      fixture.command.admissionId,
+      fixture.prepared.receipt.id,
+      fixture.prepared.plan.id,
+    ]);
+    expect(durable.rows[0]).toEqual({
+      barrier_status: 'unknown',
+      leases: '0',
+      revisions: '7',
+      results: '0',
+    });
+    await expect(gmailArchiveRecordedObservationReconciliationRepository
+      .reconcileRecordedObservation(recoveryFence(permit)))
+      .resolves.toEqual({ ok: true, reconciled: false, state: 'reconciliation_replay' });
+    await expect(gmailArchiveRecordedObservationReconciliationRepository
+      .reconcileRecordedObservation({
+        ...recoveryFence(permit),
+        phaseChangedAt: new Date(Date.parse(permit.phaseChangedAt) - 1).toISOString(),
+      })).resolves.toEqual({ ok: false, error: 'idempotency_conflict' });
+  }, 120_000);
+
+  it('fails stale or unfinished recorded observation fences without terminal writes', async () => {
+    const recorded = await permittedObservationTarget(217);
+    const evidence = {
+      kind: 'mailbox_observation_unavailable' as const,
+      binding: mutationBinding(recorded.fixture.command),
+      code: 'observation_unavailable' as const,
+    };
+    await expect(gmailArchiveRecoveryLeaseRepository.recordObservation({
+      permit: recorded.permit,
+      evidence,
+    })).resolves.toMatchObject({ ok: true });
+    await expect(gmailArchiveRecordedObservationReconciliationRepository
+      .reconcileRecordedObservation({
+        ...recoveryFence(recorded.permit),
+        generation: recorded.permit.generation + 1,
+      })).resolves.toEqual({ ok: false, error: 'stale_lease' });
+    await expect(gmailArchiveRecordedObservationReconciliationRepository
+      .reconcileRecordedObservation({
+        ...recoveryFence(recorded.permit),
+        messageRefId: id('99', 217),
+      })).resolves.toEqual({ ok: false, error: 'idempotency_conflict' });
+    await expect(artifactCounts(
+      recorded.fixture.proposal.decision.id,
+      recorded.fixture.proposal.approval.id,
+    )).resolves.toEqual({ barriers: '2', explanations: '2', plans: '1', revisions: '6' });
+
+    const started = await permittedObservationTarget(218);
+    await expect(gmailArchiveRecordedObservationReconciliationRepository
+      .reconcileRecordedObservation(recoveryFence(started.permit)))
+      .resolves.toEqual({ ok: false, error: 'not_ready' });
+    const retained = await getPool().query<{ state: string; revisions: string }>(`SELECT
+      (SELECT observation_state FROM gmail_archive_recovery_leases
+        WHERE admission_id = $1) AS state,
+      (SELECT count(*)::STRING FROM decision_receipt_revisions
+        WHERE receipt_id = $2) AS revisions`, [
+      started.fixture.command.admissionId,
+      started.fixture.prepared.receipt.id,
+    ]);
+    expect(retained.rows[0]).toEqual({ state: 'started', revisions: '6' });
+  }, 120_000);
+
+  it('accepts expired retained evidence and distinguishes an ordinary terminal winner', async () => {
+    const expired = await permittedObservationTarget(219);
+    await expect(gmailArchiveRecoveryLeaseRepository.recordObservation({
+      permit: expired.permit,
+      evidence: {
+        kind: 'mailbox_observation_unavailable',
+        binding: mutationBinding(expired.fixture.command),
+        code: 'observation_unavailable',
+      },
+    })).resolves.toMatchObject({ ok: true });
+    await getPool().query(
+      `UPDATE gmail_archive_recovery_leases
+          SET acquired_at = statement_timestamp() - INTERVAL '3 seconds',
+              renewed_at = statement_timestamp() - INTERVAL '2 seconds',
+              expires_at = statement_timestamp() - INTERVAL '1 second'
+        WHERE admission_id = $1`,
+      [expired.fixture.command.admissionId],
+    );
+    await expect(gmailArchiveRecordedObservationReconciliationRepository
+      .reconcileRecordedObservation(recoveryFence(expired.permit)))
+      .resolves.toEqual({ ok: true, reconciled: true });
+
+    const ordinary = await permittedObservationTarget(220);
+    await expect(gmailArchiveRecoveryLeaseRepository.recordObservation({
+      permit: ordinary.permit,
+      evidence: {
+        kind: 'mailbox_observation_unavailable',
+        binding: mutationBinding(ordinary.fixture.command),
+        code: 'observation_unavailable',
+      },
+    })).resolves.toMatchObject({ ok: true });
+    await expect(gmailArchiveTerminalizationRepository.terminalize({
+      command: ordinary.fixture.command,
+      result: {
+        outcome: 'unknown',
+        code: 'remote_outcome_unknown',
+        compensationAvailable: false,
+        binding: mutationBinding(ordinary.fixture.command),
+      },
+    })).resolves.toMatchObject({ ok: true, created: true });
+    await expect(gmailArchiveRecordedObservationReconciliationRepository
+      .reconcileRecordedObservation(recoveryFence(ordinary.permit)))
+      .resolves.toEqual({ ok: true, reconciled: false, state: 'already_terminal' });
+  }, 120_000);
+
+  it('serializes concurrent recorded-evidence reconciliation with one terminal write', async () => {
+    const { fixture, permit } = await permittedObservationTarget(221);
+    await expect(gmailArchiveRecoveryLeaseRepository.recordObservation({
+      permit,
+      evidence: {
+        kind: 'mailbox_observation_unavailable',
+        binding: mutationBinding(fixture.command),
+        code: 'observation_unavailable',
+      },
+    })).resolves.toMatchObject({ ok: true });
+    const results = await Promise.all(Array.from(
+      { length: 20 },
+      () => gmailArchiveRecordedObservationReconciliationRepository
+        .reconcileRecordedObservation(recoveryFence(permit)),
+    ));
+    expect(results.filter((result) => result.ok && result.reconciled)).toHaveLength(1);
+    expect(results.filter(
+      (result) => result.ok && !result.reconciled &&
+        result.state === 'reconciliation_replay',
+    )).toHaveLength(19);
+    await expect(artifactCounts(
+      fixture.proposal.decision.id,
+      fixture.proposal.approval.id,
+    )).resolves.toEqual({ barriers: '2', explanations: '3', plans: '1', revisions: '7' });
+  }, 120_000);
+
+  it('rolls back a 40001 after terminal writes and rereads retained evidence on retry', async () => {
+    const { fixture, permit } = await permittedObservationTarget(222);
+    await expect(gmailArchiveRecoveryLeaseRepository.recordObservation({
+      permit,
+      evidence: {
+        kind: 'mailbox_observation_unavailable',
+        binding: mutationBinding(fixture.command),
+        code: 'observation_unavailable',
+      },
+    })).resolves.toMatchObject({ ok: true });
+    const persistedAt = new Date().toISOString();
+    const retryStable = {
+      explanationId: id('91', 222),
+      resultId: id('92', 222),
+      revisionId: id('93', 222),
+      persistedAt,
+    };
+    let attempts = 0;
+    const result = await gmailArchiveRecordedObservationReconciliationTestHooks
+      .reconcileRecordedObservationWithTransition(
+        recoveryFence(permit),
+        async (client, frozenFence, frozenStable) => {
+          const transitioned = await reconcileRecordedGmailArchiveObservationInTransaction(
+            client,
+            frozenFence,
+            frozenStable,
+          );
+          attempts += 1;
+          if (attempts === 1) {
+            expect(transitioned).toEqual({ ok: true, reconciled: true });
+            const inside = await client.query<{ leases: string; revisions: string }>(`SELECT
+              (SELECT count(*)::STRING FROM gmail_archive_recovery_leases
+                WHERE admission_id = $1) AS leases,
+              (SELECT count(*)::STRING FROM decision_receipt_revisions
+                WHERE receipt_id = $2) AS revisions`, [
+              fixture.command.admissionId,
+              fixture.prepared.receipt.id,
+            ]);
+            expect(inside.rows[0]).toEqual({ leases: '0', revisions: '7' });
+            throw Object.assign(new Error('restart after writes'), { code: '40001' });
+          }
+          return transitioned;
+        },
+        () => retryStable,
+        async () => persistedAt,
+      );
+    expect(result).toEqual({ ok: true, reconciled: true });
+    expect(attempts).toBe(2);
+    await expect(artifactCounts(
+      fixture.proposal.decision.id,
+      fixture.proposal.approval.id,
+    )).resolves.toEqual({ barriers: '2', explanations: '3', plans: '1', revisions: '7' });
+  }, 120_000);
+
+  it('does not deadlock a concurrent observation record and barrier-first reconciliation', async () => {
+    const { fixture, permit } = await permittedObservationTarget(223);
+    const evidence = {
+      kind: 'mailbox_observation_unavailable' as const,
+      binding: mutationBinding(fixture.command),
+      code: 'observation_unavailable' as const,
+    };
+    const [recorded, firstReconciliation] = await Promise.all([
+      gmailArchiveRecoveryLeaseRepository.recordObservation({ permit, evidence }),
+      gmailArchiveRecordedObservationReconciliationRepository
+        .reconcileRecordedObservation(recoveryFence(permit)),
+    ]);
+    expect(recorded).toMatchObject({ ok: true });
+    if (!firstReconciliation.ok || !firstReconciliation.reconciled) {
+      expect(firstReconciliation).toEqual({ ok: false, error: 'not_ready' });
+      await expect(gmailArchiveRecordedObservationReconciliationRepository
+        .reconcileRecordedObservation(recoveryFence(permit)))
+        .resolves.toEqual({ ok: true, reconciled: true });
+    }
+    const durable = await getPool().query<{ status: string; leases: string }>(`SELECT
+      (SELECT status FROM pre_effect_barriers WHERE id = $1) AS status,
+      (SELECT count(*)::STRING FROM gmail_archive_recovery_leases
+        WHERE admission_id = $1) AS leases`, [fixture.command.admissionId]);
+    expect(durable.rows[0]).toEqual({ status: 'unknown', leases: '0' });
+  }, 120_000);
+
+  it('serializes reconciliation behind an observation record holding the barrier and lease', async () => {
+    const { fixture, permit } = await permittedObservationTarget(225);
+    const evidence = {
+      kind: 'mailbox_observation_unavailable' as const,
+      binding: mutationBinding(fixture.command),
+      code: 'observation_unavailable' as const,
+    };
+    let releaseRecord!: () => void;
+    let recordLocked!: () => void;
+    const resumeRecord = new Promise<void>((resolve) => { releaseRecord = resolve; });
+    const recordPaused = new Promise<void>((resolve) => { recordLocked = resolve; });
+    const record = gmailArchiveRecoveryLeaseTestHooks.recordWithTransition(
+      { permit, evidence },
+      gmailArchiveRecoveryLeaseTestHooks.recordTransition,
+      pauseTransactionAfterQuery(
+        /FROM gmail_archive_recovery_leases AS lease WHERE admission_id = \$1 AND user_id = \$2 FOR UPDATE/,
+        recordLocked,
+        resumeRecord,
+      ),
+    );
+    await within(recordPaused, 5_000);
+    let reconciliationSettled = false;
+    const reconciliation = gmailArchiveRecordedObservationReconciliationRepository
+      .reconcileRecordedObservation(recoveryFence(permit))
+      .finally(() => { reconciliationSettled = true; });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(reconciliationSettled).toBe(false);
+    releaseRecord();
+    const [recorded, reconciled] = await within(Promise.all([
+      record,
+      reconciliation,
+    ]), 20_000);
+    expect(recorded).toMatchObject({ ok: true, recorded: true });
+    expect(reconciled).toEqual({ ok: true, reconciled: true });
+    await expect(artifactCounts(
+      fixture.proposal.decision.id,
+      fixture.proposal.approval.id,
+    )).resolves.toEqual({ barriers: '2', explanations: '3', plans: '1', revisions: '7' });
+  }, 120_000);
+
+  it('lets a barrier-first not-ready reconciliation release recording before a final reconcile', async () => {
+    const { fixture, permit } = await permittedObservationTarget(226);
+    const evidence = {
+      kind: 'mailbox_observation_unavailable' as const,
+      binding: mutationBinding(fixture.command),
+      code: 'observation_unavailable' as const,
+    };
+    const persistedAtRow = (await getPool().query<{ persisted_at: Date }>(
+      'SELECT now() AS persisted_at',
+    )).rows[0];
+    if (!persistedAtRow) throw new Error('Recorded reconciliation clock was unavailable.');
+    const persistedAt = persistedAtRow.persisted_at.toISOString();
+    let releaseReconciliation!: () => void;
+    let barrierLocked!: () => void;
+    const resumeReconciliation = new Promise<void>((resolve) => {
+      releaseReconciliation = resolve;
+    });
+    const reconciliationPaused = new Promise<void>((resolve) => { barrierLocked = resolve; });
+    const firstReconciliation = gmailArchiveRecordedObservationReconciliationTestHooks
+      .reconcileRecordedObservationWithTransition(
+        recoveryFence(permit),
+        reconcileRecordedGmailArchiveObservationInTransaction,
+        () => ({
+          explanationId: id('91', 226),
+          resultId: id('92', 226),
+          revisionId: id('93', 226),
+          persistedAt,
+        }),
+        async () => persistedAt,
+        pauseTransactionAfterQuery(
+          /FROM pre_effect_barriers AS barrier WHERE barrier.id = \$1 AND barrier.user_id = \$2 .*FOR UPDATE/,
+          barrierLocked,
+          resumeReconciliation,
+        ),
+      );
+    await within(reconciliationPaused, 5_000);
+    let recordSettled = false;
+    const record = gmailArchiveRecoveryLeaseRepository.recordObservation({ permit, evidence })
+      .finally(() => { recordSettled = true; });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(recordSettled).toBe(false);
+    releaseReconciliation();
+    const [notReady, recorded] = await within(Promise.all([
+      firstReconciliation,
+      record,
+    ]), 20_000);
+    expect(notReady).toEqual({ ok: false, error: 'not_ready' });
+    expect(recorded).toMatchObject({ ok: true, recorded: true });
+    await expect(gmailArchiveRecordedObservationReconciliationRepository
+      .reconcileRecordedObservation(recoveryFence(permit)))
+      .resolves.toEqual({ ok: true, reconciled: true });
+    await expect(artifactCounts(
+      fixture.proposal.decision.id,
+      fixture.proposal.approval.id,
+    )).resolves.toEqual({ barriers: '2', explanations: '3', plans: '1', revisions: '7' });
+  }, 120_000);
+
+  it('reports a valid phase-less legacy terminal with the minimal terminal control state', async () => {
+    const { fixture, permit } = await permittedObservationTarget(227);
+    await expect(gmailArchiveRecoveryLeaseRepository.recordObservation({
+      permit,
+      evidence: {
+        kind: 'mailbox_observation_unavailable',
+        binding: mutationBinding(fixture.command),
+        code: 'observation_unavailable',
+      },
+    })).resolves.toMatchObject({ ok: true, recorded: true });
+    const terminalized = await gmailArchiveTerminalizationRepository.terminalize({
+      command: fixture.command,
+      result: {
+        outcome: 'unknown',
+        code: 'remote_outcome_unknown',
+        compensationAvailable: false,
+        binding: mutationBinding(fixture.command),
+      },
+    });
+    if (!terminalized.ok) throw new Error('Legacy terminal fixture failed to terminalize.');
+    const legacyEnvelope = {
+      schema: 'gmail_archive_terminal_result_v1' as const,
+      outcome: 'unknown' as const,
+      code: 'remote_outcome_unknown' as const,
+      compensationAvailable: false as const,
+    };
+    const legacyBarrier = {
+      ...terminalized.terminalization.barrier,
+      effect_result: legacyEnvelope,
+    };
+    const legacyExplanation = {
+      ...terminalized.terminalization.executionExplanation,
+      evidence_used: [legacyEnvelope],
+    };
+    const priorContent = terminalized.terminalization.revision.content;
+    if (priorContent.version !== 2) throw new Error('Legacy terminal receipt fixture was invalid.');
+    const legacyContent: JoinedDecisionReceiptContentV2 = {
+      ...priorContent,
+      barrier: decisionReceiptBarrierRefV1(legacyBarrier),
+      executionExplanation: decisionReceiptRowArtifactRefV1(
+        'explanation',
+        { ...legacyExplanation },
+      ),
+    };
+    const contentDigest = joinedDecisionReceiptContentDigest(legacyContent);
+    const revision = terminalized.terminalization.revision;
+    const revisionDigest = joinedDecisionReceiptRevisionDigest({
+      revisionId: revision.id,
+      receiptId: revision.receipt_id,
+      decisionId: fixture.proposal.decision.id,
+      userId,
+      sequence: revision.sequence,
+      eventKey: revision.event_key,
+      previousDigest: revision.previous_digest,
+      contentDigest,
+    });
+    await withTransaction(async (client) => {
+      await client.query(
+        'UPDATE pre_effect_barriers SET effect_result = $2::JSONB WHERE id = $1',
+        [fixture.command.admissionId, JSON.stringify(legacyEnvelope)],
+      );
+      await client.query(
+        'UPDATE explanation_records SET evidence_used = $2::JSONB WHERE id = $1',
+        [legacyExplanation.id, JSON.stringify([legacyEnvelope])],
+      );
+      await client.query(
+        `UPDATE decision_receipt_revisions
+            SET content = $2::JSONB, content_digest = $3, revision_digest = $4
+          WHERE id = $1`,
+        [revision.id, JSON.stringify(legacyContent), contentDigest, revisionDigest],
+      );
+    });
+    await expect(gmailArchiveRecordedObservationReconciliationRepository
+      .reconcileRecordedObservation(recoveryFence(permit)))
+      .resolves.toEqual({ ok: true, reconciled: false, state: 'terminal' });
+  }, 120_000);
+
   it('retains the lease and graph on stale or conflicting dispatch proofs', async () => {
     const owner = await seedRecoveryOwner(30);
     const fixture = await createClaimedProposal(
@@ -3799,6 +4219,50 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     const durable = await getPool().query<{ leases: string; revisions: string }>(`SELECT
       (SELECT count(*)::STRING FROM gmail_archive_recovery_leases WHERE admission_id = $1) AS leases,
       (SELECT count(*)::STRING FROM decision_receipt_revisions WHERE receipt_id = $2) AS revisions`, [
+      fixture.command.admissionId,
+      fixture.prepared.receipt.id,
+    ]);
+    expect(durable.rows[0]).toEqual({ leases: '1', revisions: '6' });
+  }, 120_000);
+
+  it('rejects microsecond attempt anchors on the recorded-observation bridge', async () => {
+    const { fixture, permit } = await permittedObservationTarget(224);
+    await expect(gmailArchiveRecoveryLeaseRepository.recordObservation({
+      permit,
+      evidence: {
+        kind: 'mailbox_observation_unavailable',
+        binding: mutationBinding(fixture.command),
+        code: 'observation_unavailable',
+      },
+    })).resolves.toMatchObject({ ok: true });
+    const microsecondAnchor = permit.phaseChangedAt.replace(
+      /(\.\d{3})Z$/,
+      (_match, fraction: string) => `${fraction}456Z`,
+    );
+    expect(microsecondAnchor).not.toBe(permit.phaseChangedAt);
+    await getPool().query(
+      `UPDATE pre_effect_barriers SET updated_at = $2::TIMESTAMPTZ WHERE id = $1`,
+      [fixture.command.admissionId, microsecondAnchor],
+    );
+    await getPool().query(
+      `UPDATE gmail_archive_recovery_leases
+          SET phase_changed_at = $2::TIMESTAMPTZ
+        WHERE admission_id = $1`,
+      [fixture.command.admissionId, microsecondAnchor],
+    );
+    await expect(gmailArchiveRecordedObservationReconciliationRepository
+      .reconcileRecordedObservation({
+        ...recoveryFence(permit),
+        phaseChangedAt: microsecondAnchor,
+      })).resolves.toEqual({ ok: false, error: 'idempotency_conflict' });
+    await expect(gmailArchiveRecordedObservationReconciliationRepository
+      .reconcileRecordedObservation(recoveryFence(permit)))
+      .resolves.toEqual({ ok: false, error: 'idempotency_conflict' });
+    const durable = await getPool().query<{ leases: string; revisions: string }>(`SELECT
+      (SELECT count(*)::STRING FROM gmail_archive_recovery_leases
+        WHERE admission_id = $1) AS leases,
+      (SELECT count(*)::STRING FROM decision_receipt_revisions
+        WHERE receipt_id = $2) AS revisions`, [
       fixture.command.admissionId,
       fixture.prepared.receipt.id,
     ]);
