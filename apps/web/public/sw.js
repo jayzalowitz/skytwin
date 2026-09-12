@@ -21,7 +21,8 @@
  * writes verbatim with their OWN session token. It never synthesizes,
  * mutates, or re-targets a request, and it skips OAuth / pairing / stream
  * endpoints. It is not a new action source — it is a deferred send of an
- * action the user already took while the connection was down.
+ * action the user already took while the connection was down. Time-bound
+ * approval responses are excluded from the queue and must complete online.
  */
 
 import {
@@ -31,6 +32,7 @@ import {
   classifyRequest,
   serializeWrite,
   decideReplayOutcome,
+  shouldReplayQueuedWrite,
 } from '/js/pwa/sw-policy.js';
 
 const QUEUE_DB = 'skytwin-write-queue';
@@ -222,6 +224,20 @@ async function replayQueue() {
   writes.sort((a, b) => a.queuedAt - b.queuedAt);
 
   for (const write of writes) {
+    // Re-apply the current safety policy before network access. A previous
+    // worker version may have queued an endpoint that is no longer replayable
+    // (notably a time-bound approval response).
+    if (!shouldReplayQueuedWrite(write, self.location.origin)) {
+      await queueDelete(write.id);
+      await broadcast({
+        type: 'write-dropped',
+        id: write.id,
+        url: write.url,
+        reason: 'non-replayable',
+      });
+      continue;
+    }
+
     let result;
     try {
       const res = await fetch(write.url, {

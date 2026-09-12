@@ -256,6 +256,9 @@ describe('approvalRepository', () => {
       const [sql, params] = mockQuery.mock.calls[0]!;
       expect(sql).toContain('UPDATE approval_requests');
       expect(sql).toContain("status = 'pending'");
+      // Expiry is evaluated by the database in this same UPDATE. A stale API
+      // read must not mint a first-confirmation token after the consent window.
+      expect(sql).toContain('expires_at > now()');
       expect(sql).toContain("confirmation_level = 'dual'");
       // Strictly single-shot: the `first_confirmed_at IS NULL` guard means a
       // token is minted exactly once per request. Re-calling never re-mints,
@@ -348,7 +351,7 @@ describe('approvalRepository', () => {
   // -----------------------------------------------------------------------
 
   describe('respond', () => {
-    it('includes AND status = \'pending\' in WHERE clause to prevent double-response', async () => {
+    it('atomically requires a pending, unexpired approval to prevent stale or double responses', async () => {
       const row = fakeApprovalRow({ status: 'approved' });
       mockQuery.mockResolvedValue({ rows: [row], rowCount: 1 });
 
@@ -358,6 +361,7 @@ describe('approvalRepository', () => {
       // This is the critical safety check -- only pending approvals can be responded to
       expect(sql).toContain("status = 'pending'");
       expect(sql).toContain('AND user_id = $4');
+      expect(sql).toContain('AND expires_at > now()');
       expect(sql).toContain('RETURNING *');
       expect(params![0]).toBe('approved');
       expect(params![2]).toBe('ar-001');
@@ -522,6 +526,7 @@ describe('approvalRepository', () => {
       expect(sql).toContain('WHERE id IN ($4, $5, $6)');
       expect(sql).toContain("AND status = 'pending'");
       expect(sql).toContain('AND user_id = $3');
+      expect(sql).toContain('AND expires_at > now()');
       expect(sql).toContain('RETURNING *');
       expect(params).toEqual([
         'approved',
@@ -558,7 +563,7 @@ describe('approvalRepository', () => {
       ]);
     });
 
-    it('only affects pending approvals (includes status = pending in WHERE)', async () => {
+    it('only affects pending, unexpired approvals using the database clock', async () => {
       mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
 
       await approvalRepository.batchRespond(['ar-001'], 'approve', 'user-1');
@@ -566,6 +571,7 @@ describe('approvalRepository', () => {
       const [sql] = mockQuery.mock.calls[0]!;
       expect(sql).toContain("AND status = 'pending'");
       expect(sql).toContain('AND user_id = $3');
+      expect(sql).toContain('AND expires_at > now()');
     });
   });
 

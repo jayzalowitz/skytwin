@@ -59,6 +59,8 @@ const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
  *     stream POST would produce a duplicate assistant turn.
  *   - auth/session exchange — a stale pairing token is single-use and
  *     replaying it produces a confusing "already used" error.
+ *   - approval responses — consent is time-bound and contextual; an offline
+ *     click must never be queued and delivered after that context expires.
  * Matched as path prefixes (after the leading /api).
  */
 const NON_REPLAYABLE_PREFIXES = Object.freeze([
@@ -66,6 +68,10 @@ const NON_REPLAYABLE_PREFIXES = Object.freeze([
   '/api/sessions/pair',      // single-use pairing tokens
   '/api/oauth',              // OAuth handshakes are time-sensitive
 ]);
+
+// Express routes are case-insensitive unless the application opts in to
+// case-sensitive routing, so the offline policy must match the same surface.
+const APPROVAL_RESPONSE_PATH = /^\/api\/approvals\/[^/]+\/respond\/?$/i;
 
 /**
  * Decide how the worker should handle a request.
@@ -126,7 +132,20 @@ export function isPrecached(pathname) {
 
 /** True when a mutating API path is safe to queue + replay later. */
 export function isReplayable(pathname) {
-  return !NON_REPLAYABLE_PREFIXES.some((p) => pathname.startsWith(p));
+  return !APPROVAL_RESPONSE_PATH.test(pathname) &&
+    !NON_REPLAYABLE_PREFIXES.some((p) => pathname.startsWith(p));
+}
+
+/**
+ * Revalidate a persisted queue record against the current routing policy.
+ * This drops writes queued by an older worker version when their endpoint is
+ * later classified as time-sensitive or otherwise unsafe to replay.
+ */
+export function shouldReplayQueuedWrite(write, origin) {
+  return classifyRequest(
+    { method: write?.method, url: write?.url },
+    origin,
+  ) === 'queueable-write';
 }
 
 /**

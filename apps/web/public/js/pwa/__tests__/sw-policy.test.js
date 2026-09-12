@@ -3,6 +3,7 @@ import {
   classifyRequest,
   isPrecached,
   isReplayable,
+  shouldReplayQueuedWrite,
   serializeWrite,
   decideReplayOutcome,
   PRECACHE_URLS,
@@ -49,7 +50,7 @@ describe('classifyRequest', () => {
     }
   });
 
-  it('does NOT queue OAuth / pairing / stream writes (non-replayable)', () => {
+  it('does NOT queue OAuth / pairing / stream / approval writes (non-replayable)', () => {
     expect(
       classifyRequest({ method: 'POST', url: `${ORIGIN}/api/sessions/pair/consume` }, ORIGIN),
     ).toBe('passthrough');
@@ -59,6 +60,18 @@ describe('classifyRequest', () => {
     expect(
       classifyRequest({ method: 'POST', url: `${ORIGIN}/api/assistant/messages` }, ORIGIN),
     ).toBe('passthrough');
+    expect(
+      classifyRequest(
+        { method: 'POST', url: `${ORIGIN}/api/approvals/req-1/respond` },
+        ORIGIN,
+      ),
+    ).toBe('passthrough');
+    expect(
+      classifyRequest(
+        { method: 'POST', url: `${ORIGIN}/api/approvals/u1/cleanup-escalations` },
+        ORIGIN,
+      ),
+    ).toBe('queueable-write');
   });
 
   it('never intercepts cross-origin requests', () => {
@@ -97,13 +110,43 @@ describe('precache list', () => {
 describe('isReplayable', () => {
   it('allows ordinary mutating endpoints', () => {
     expect(isReplayable('/api/feedback')).toBe(true);
-    expect(isReplayable('/api/approvals/req-1/respond')).toBe(true);
     expect(isReplayable('/api/twin/u1/preferences')).toBe(true);
   });
   it('blocks single-use / streamed / time-sensitive endpoints', () => {
     expect(isReplayable('/api/oauth/google/disconnect')).toBe(false);
     expect(isReplayable('/api/sessions/pair/consume')).toBe(false);
     expect(isReplayable('/api/assistant/messages')).toBe(false);
+    expect(isReplayable('/api/approvals/req-1/respond')).toBe(false);
+    expect(isReplayable('/api/approvals/req-1/respond/')).toBe(false);
+    expect(isReplayable('/api/Approvals/req-1/Respond')).toBe(false);
+    expect(isReplayable('/api/approvals/u1/cleanup-escalations')).toBe(true);
+    expect(isReplayable('/api/approvals/expire-sweep')).toBe(true);
+    expect(isReplayable('/api/approvals/req-1/respond/extra')).toBe(true);
+  });
+});
+
+describe('shouldReplayQueuedWrite', () => {
+  it('drops approval responses persisted by an older worker before network replay', () => {
+    expect(shouldReplayQueuedWrite({
+      method: 'POST',
+      url: `${ORIGIN}/api/approvals/req-1/respond`,
+    }, ORIGIN)).toBe(false);
+    expect(shouldReplayQueuedWrite({
+      method: 'POST',
+      url: `${ORIGIN}/api/Approvals/req-1/Respond`,
+    }, ORIGIN)).toBe(false);
+  });
+
+  it('retains ordinary queued writes and rejects malformed or cross-origin records', () => {
+    expect(shouldReplayQueuedWrite({
+      method: 'POST',
+      url: `${ORIGIN}/api/feedback`,
+    }, ORIGIN)).toBe(true);
+    expect(shouldReplayQueuedWrite({ method: 'POST', url: 'http://[' }, ORIGIN)).toBe(false);
+    expect(shouldReplayQueuedWrite({
+      method: 'POST',
+      url: 'https://example.test/api/feedback',
+    }, ORIGIN)).toBe(false);
   });
 });
 
