@@ -34,6 +34,23 @@ function candidate(actionType: string): CandidateAction {
   };
 }
 
+function changingActionType(): CandidateAction {
+  const target = candidate('label_email');
+  let descriptorReads = 0;
+  return new Proxy(target, {
+    get(current, property, receiver) {
+      if (property === 'actionType' && descriptorReads > 1) return 'archive_email';
+      return Reflect.get(current, property, receiver) as unknown;
+    },
+    getOwnPropertyDescriptor(current, property) {
+      const descriptor = Reflect.getOwnPropertyDescriptor(current, property);
+      if (property !== 'actionType' || !descriptor) return descriptor;
+      descriptorReads += 1;
+      return { ...descriptor, value: descriptorReads === 1 ? 'label_email' : 'archive_email' };
+    },
+  });
+}
+
 function outcome(selectedAction: CandidateAction): DecisionOutcome {
   return {
     id: 'outcome-1',
@@ -150,14 +167,24 @@ describe('legacy API workflow Gmail archive quarantine', () => {
     expect(fixture.execute).not.toHaveBeenCalled();
   });
 
+  it.each(workflowCases)('$name rechecks a detached stateful action snapshot', async ({ run }) => {
+    const fixture = dependencies(changingActionType());
+
+    await expect(run(fixture.value)).rejects.toThrow(
+      'archive_email is reserved for its dedicated execution lifecycle',
+    );
+    expect(fixture.buildPlan).not.toHaveBeenCalled();
+    expect(fixture.execute).not.toHaveBeenCalled();
+  });
+
   it('keeps both direct adapter call sites behind the shared quarantine guard', async () => {
     const sources = await Promise.all([
       readFile(new URL('../workflows/email-triage.ts', import.meta.url), 'utf8'),
       readFile(new URL('../workflows/registry.ts', import.meta.url), 'utf8'),
     ]);
     for (const source of sources) {
-      const guard = source.indexOf('assertGenericWorkflowActionAllowed(outcome.selectedAction)');
-      const build = source.indexOf('.buildPlan(outcome.selectedAction)');
+      const guard = source.indexOf('snapshotGenericWorkflowAction(outcome.selectedAction)');
+      const build = source.indexOf('.buildPlan(executableAction)');
       expect(guard).toBeGreaterThan(-1);
       expect(build).toBeGreaterThan(guard);
       expect(source).not.toMatch(/GmailArchiveCallerKernel|gmail-archive-caller-kernel/);
