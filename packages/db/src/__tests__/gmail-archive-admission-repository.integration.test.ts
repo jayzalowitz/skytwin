@@ -1,12 +1,22 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:net';
+import type { PoolClient } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { RiskAssessor } from '@skytwin/decision-engine';
-import { verifyJoinedDecisionReceiptChain, type JoinedDecisionReceiptContentV2 } from '@skytwin/shared-types';
+import {
+  joinedDecisionReceiptContentDigest,
+  joinedDecisionReceiptRevisionDigest,
+  verifyJoinedDecisionReceiptChain,
+  type JoinedDecisionReceiptContent,
+  type JoinedDecisionReceiptContentV2,
+} from '@skytwin/shared-types';
 import { closePool, getPool, withTransaction } from '../connection.js';
 import { collectBackup, restoreBackup, validateBackupData } from '../backup/backup.js';
 import { decisionReceiptLifecycleRepository } from '../repositories/decision-receipt-lifecycle.js';
-import { decisionReceiptRowArtifactRefV1 } from '../repositories/decision-receipt-artifacts.js';
+import {
+  decisionReceiptBarrierRefV1,
+  decisionReceiptRowArtifactRefV1,
+} from '../repositories/decision-receipt-artifacts.js';
 import { up } from '../migrations/001-initial.js';
 import {
   gmailArchiveApprovalResponseRepository,
@@ -25,6 +35,10 @@ import {
   gmailArchiveDispatchGateTestHooks,
 } from '../repositories/gmail-archive-dispatch-gate-repository.js';
 import { gmailArchiveRecoveryRepository } from '../repositories/gmail-archive-recovery-repository.js';
+import {
+  gmailArchiveRecoveryLeaseRepository,
+  gmailArchiveRecoveryLeaseTestHooks,
+} from '../repositories/gmail-archive-recovery-lease-repository.js';
 import { gmailInboxObservationTargetRepository } from '../repositories/gmail-inbox-observation-target-repository.js';
 import {
   gmailArchiveReconciliationRepository,
@@ -42,6 +56,7 @@ import {
   gmailArchiveProposalRepository,
 } from '../repositories/gmail-archive-proposal-repository.js';
 import { gmailMessageRefRepository } from '../repositories/gmail-message-ref-repository.js';
+import type { PreEffectBarrierRow } from '../repositories/pre-effect-barrier-repository.js';
 
 const cockroachAvailable = spawnSync('cockroach', ['version'], { encoding: 'utf8' }).status === 0;
 const userId = '11000000-0000-4000-8000-000000000001';
@@ -82,6 +97,49 @@ function id(prefix: string, suffix: number): string {
   return `${prefix}000000-0000-4000-8000-${String(suffix).padStart(12, '0')}`;
 }
 
+async function within<T>(operation: Promise<T>, milliseconds: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error('concurrent operation timed out')), milliseconds);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function pauseTransactionAfterQuery(
+  pattern: RegExp,
+  onPaused: () => void,
+  resume: Promise<void>,
+) {
+  return async <T>(callback: (client: PoolClient) => Promise<T>): Promise<T> =>
+    withTransaction(async (client) => {
+      let paused = false;
+      const wrapped = new Proxy(client, {
+        get(target, property, receiver): unknown {
+          if (property !== 'query') {
+            const value: unknown = Reflect.get(target, property, receiver);
+            return typeof value === 'function' ? value.bind(target) : value;
+          }
+          return async (text: string, values?: unknown[]) => {
+            const result = await target.query(text, values);
+            if (!paused && pattern.test(text.replace(/\s+/g, ' '))) {
+              paused = true;
+              onPaused();
+              await resume;
+            }
+            return result;
+          };
+        },
+      });
+      return callback(wrapped);
+    });
+}
+
 describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repositories on CockroachDB', () => {
   let cockroach: ChildProcess | undefined;
   let previousDatabaseUrl: string | undefined;
@@ -113,6 +171,18 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
          ARRAY[$3]::STRING[], 'owner@example.test', 'owner', $4)`,
       [ownerUserId, ownerTokenId, gmailModifyScope, ownerAccountId],
     );
+  }
+
+  async function seedRecoveryOwner(suffix: number) {
+    const ownerUserId = id('11', 100 + suffix);
+    const ownerAccountId = id('22', 100 + suffix);
+    await seedOwner(
+      ownerUserId,
+      ownerAccountId,
+      id('55', 100 + suffix),
+      `recovery-${suffix}@example.test`,
+    );
+    return { ownerUserId, ownerAccountId };
   }
 
   beforeAll(async () => {
@@ -301,6 +371,32 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     };
   }
 
+  function recoveryFence(lease: {
+    userId: string;
+    approvalId: string;
+    admissionId: string;
+    messageRefId: string;
+    workKind: 'resume_preparation' | 'resume_claim' | 'reconcile_pre_dispatch' | 'observe_dispatch';
+    barrierStatus: 'reserved' | 'prepared' | 'in_progress';
+    attemptPhase: 'pre_dispatch' | 'dispatch_may_have_started' | null;
+    phaseChangedAt: string;
+    leaseToken: string;
+    generation: number;
+  }) {
+    return {
+      userId: lease.userId,
+      approvalId: lease.approvalId,
+      admissionId: lease.admissionId,
+      messageRefId: lease.messageRefId,
+      workKind: lease.workKind,
+      barrierStatus: lease.barrierStatus,
+      attemptPhase: lease.attemptPhase,
+      phaseChangedAt: lease.phaseChangedAt,
+      leaseToken: lease.leaseToken,
+      generation: lease.generation,
+    };
+  }
+
   async function currentMutationTarget(command: Parameters<
     typeof gmailMessageRefRepository.resolveInboxMutationTarget
   >[0]) {
@@ -326,6 +422,82 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     const changedAt = aged.rows[0]?.updated_at;
     if (!changedAt) throw new Error('Claimed attempt was not aged.');
     return changedAt.toISOString();
+  }
+
+  async function setRecoveryAnchor(
+    admissionId: string,
+    column: 'created_at' | 'updated_at',
+    timestamp = '2026-09-12T12:00:00.123456Z',
+  ): Promise<void> {
+    await getPool().query(
+      `UPDATE pre_effect_barriers SET ${column} = $2::TIMESTAMPTZ WHERE id = $1`,
+      [admissionId, timestamp],
+    );
+    if (column === 'updated_at') await rehashPreparedBarrierAnchor(admissionId);
+  }
+
+  async function rehashPreparedBarrierAnchor(admissionId: string): Promise<void> {
+    const barrier = (await getPool().query<PreEffectBarrierRow>(
+      'SELECT * FROM pre_effect_barriers WHERE id = $1',
+      [admissionId],
+    )).rows[0];
+    if (!barrier || barrier.status !== 'prepared' || !barrier.decision_id) return;
+    const receipt = (await getPool().query<{ id: string; user_id: string }>(
+      'SELECT id, user_id FROM decision_receipts WHERE decision_id = $1',
+      [barrier.decision_id],
+    )).rows[0];
+    if (!receipt) throw new Error('Prepared receipt was not found for anchor rewrite.');
+    const revisions = (await getPool().query<{
+      id: string;
+      sequence: string;
+      event_key: string;
+      revision_digest: string;
+      content: JoinedDecisionReceiptContent;
+    }>(
+      `SELECT id, sequence, event_key, revision_digest, content
+         FROM decision_receipt_revisions
+        WHERE receipt_id = $1 ORDER BY sequence ASC`,
+      [receipt.id],
+    )).rows;
+    const barrierRef = decisionReceiptBarrierRefV1(barrier);
+    let previousDigest: string | null = null;
+    for (const revision of revisions) {
+      const sequence = Number(revision.sequence);
+      let content = revision.content;
+      if (sequence >= 5) {
+        const mutable = structuredClone(revision.content) as unknown as Record<string, unknown>;
+        mutable['barrier'] = barrierRef;
+        const evaluations = mutable['policyEvaluations'];
+        if (Array.isArray(evaluations)) {
+          for (const evaluation of evaluations) {
+            if (evaluation && typeof evaluation === 'object' &&
+                ((evaluation as Record<string, unknown>)['barrier'] as { id?: unknown } | undefined)
+                  ?.id === admissionId) {
+              (evaluation as Record<string, unknown>)['barrier'] = barrierRef;
+            }
+          }
+        }
+        content = mutable as unknown as JoinedDecisionReceiptContent;
+      }
+      const contentDigest = joinedDecisionReceiptContentDigest(content);
+      const revisionDigest = joinedDecisionReceiptRevisionDigest({
+        revisionId: revision.id,
+        receiptId: receipt.id,
+        decisionId: barrier.decision_id,
+        userId: receipt.user_id,
+        sequence,
+        eventKey: revision.event_key as Parameters<typeof joinedDecisionReceiptRevisionDigest>[0]['eventKey'],
+        previousDigest,
+        contentDigest,
+      });
+      await getPool().query(
+        `UPDATE decision_receipt_revisions
+            SET previous_digest = $2, content_digest = $3, revision_digest = $4, content = $5::JSONB
+          WHERE id = $1`,
+        [revision.id, previousDigest, contentDigest, revisionDigest, JSON.stringify(content)],
+      );
+      previousDigest = revisionDigest;
+    }
   }
 
   it('atomically records approval and reserves a distinct, non-executable barrier', async () => {
@@ -3177,5 +3349,977 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
         code: 'not_observable',
       },
     });
+  }, 120_000);
+
+  it('classifies and leases each canonical recovery stage with its exact DB anchor', async () => {
+    const { ownerUserId, ownerAccountId } = await seedRecoveryOwner(1);
+    const reservedProposal = await createProposal(150, ownerUserId, ownerAccountId);
+    const approved = await gmailArchiveApprovalResponseRepository.respond({
+      approvalId: reservedProposal.approval.id,
+      userId: ownerUserId,
+      action: 'approve',
+    });
+    expect(approved).toMatchObject({ ok: true, response: { reservedBarrier: { status: 'reserved' } } });
+    if (!approved.ok || !approved.response.reservedBarrier) throw new Error('Reserved lease fixture failed.');
+    await setRecoveryAnchor(approved.response.reservedBarrier.id, 'created_at');
+
+    const prepared = await createPreparedProposal(151, ownerUserId, ownerAccountId);
+    await setRecoveryAnchor(prepared.prepared.barrier.id, 'updated_at');
+    const preDispatch = await createClaimedProposal(152, ownerUserId, ownerAccountId);
+    await setRecoveryAnchor(
+      preDispatch.command.admissionId,
+      'updated_at',
+      '2026-09-12T12:00:00.123Z',
+    );
+    const dispatch = await createClaimedProposal(153, ownerUserId, ownerAccountId, true);
+    await setRecoveryAnchor(
+      dispatch.command.admissionId,
+      'updated_at',
+      '2026-09-12T12:00:00.123Z',
+    );
+
+    const cases = [
+      [reservedProposal.approval.id, 'resume_preparation', 'reserved', null, '2026-09-12T12:00:00.123456Z'],
+      [prepared.proposal.approval.id, 'resume_claim', 'prepared', null, '2026-09-12T12:00:00.123456Z'],
+      [preDispatch.proposal.approval.id, 'reconcile_pre_dispatch', 'in_progress', 'pre_dispatch', '2026-09-12T12:00:00.123Z'],
+      [dispatch.proposal.approval.id, 'observe_dispatch', 'in_progress', 'dispatch_may_have_started', '2026-09-12T12:00:00.123Z'],
+    ] as const;
+    for (const [approvalId, workKind, barrierStatus, attemptPhase, phaseChangedAt] of cases) {
+      const acquired = await gmailArchiveRecoveryLeaseRepository.acquire({
+        userId: ownerUserId,
+        approvalId,
+        leaseMs: 60_000,
+      });
+      if (!acquired.ok) {
+        throw new Error(`Recovery lease acquire failed for ${workKind} (${approvalId}): ${acquired.error}`);
+      }
+      expect(acquired).toMatchObject({
+        ok: true,
+        status: 'acquired',
+        created: true,
+        lease: {
+          workKind,
+          barrierStatus,
+          attemptPhase,
+          phaseChangedAt,
+          generation: 1,
+        },
+      });
+    }
+  }, 120_000);
+
+  it('shares preparation lock order with reserved recovery acquisition', async () => {
+    const { ownerUserId, ownerAccountId } = await seedRecoveryOwner(18);
+    const proposal = await createProposal(172, ownerUserId, ownerAccountId);
+    const approved = await gmailArchiveApprovalResponseRepository.respond({
+      approvalId: proposal.approval.id,
+      userId: ownerUserId,
+      action: 'approve',
+    });
+    if (!approved.ok || !approved.response.reservedBarrier) {
+      throw new Error('Concurrent preparation fixture was not reserved.');
+    }
+    await setRecoveryAnchor(approved.response.reservedBarrier.id, 'created_at');
+
+    let releaseRecovery!: () => void;
+    let authorityLocked!: () => void;
+    const resumeRecovery = new Promise<void>((resolve) => { releaseRecovery = resolve; });
+    const recoveryPaused = new Promise<void>((resolve) => { authorityLocked = resolve; });
+    const acquisition = gmailArchiveRecoveryLeaseTestHooks.acquireWithTransition(
+      {
+        userId: ownerUserId,
+        approvalId: proposal.approval.id,
+        leaseMs: 60_000,
+      },
+      gmailArchiveRecoveryLeaseTestHooks.acquireTransition,
+      pauseTransactionAfterQuery(
+        /FROM decision_receipts WHERE user_id = \$1 AND decision_id = \$2 FOR UPDATE/,
+        authorityLocked,
+        resumeRecovery,
+      ),
+    );
+    await within(recoveryPaused, 5_000);
+    const preparation = gmailArchivePreparationRepository.prepare({
+      userId: ownerUserId,
+      approvalId: proposal.approval.id,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    releaseRecovery();
+    const [acquired, prepared] = await within(Promise.all([
+      acquisition,
+      preparation,
+    ]), 20_000);
+
+    expect(prepared).toMatchObject({
+      ok: true,
+      preparation: { status: 'prepared' },
+    });
+    expect(acquired).toMatchObject({ ok: true });
+    if (!acquired.ok || (acquired.status !== 'acquired' && acquired.status !== 'not_due')) {
+      throw new Error('Reserved recovery returned an unexpected concurrent result.');
+    }
+    const barrier = await getPool().query<{ status: string }>(
+      'SELECT status FROM pre_effect_barriers WHERE id = $1',
+      [approved.response.reservedBarrier.id],
+    );
+    expect(barrier.rows[0]?.status).toBe('prepared');
+  }, 120_000);
+
+  it('shares claim lock order with prepared recovery acquisition', async () => {
+    const { ownerUserId, ownerAccountId } = await seedRecoveryOwner(19);
+    const fixture = await createPreparedProposal(173, ownerUserId, ownerAccountId);
+    await setRecoveryAnchor(fixture.prepared.barrier.id, 'updated_at');
+
+    let releaseRecovery!: () => void;
+    let authorityLocked!: () => void;
+    const resumeRecovery = new Promise<void>((resolve) => { releaseRecovery = resolve; });
+    const recoveryPaused = new Promise<void>((resolve) => { authorityLocked = resolve; });
+    const acquisition = gmailArchiveRecoveryLeaseTestHooks.acquireWithTransition(
+      {
+        userId: ownerUserId,
+        approvalId: fixture.proposal.approval.id,
+        leaseMs: 60_000,
+      },
+      gmailArchiveRecoveryLeaseTestHooks.acquireTransition,
+      pauseTransactionAfterQuery(
+        /FROM decision_receipts WHERE user_id = \$1 AND decision_id = \$2 FOR UPDATE/,
+        authorityLocked,
+        resumeRecovery,
+      ),
+    );
+    await within(recoveryPaused, 5_000);
+    const claim = gmailArchiveClaimRepository.claim({
+      userId: ownerUserId,
+      approvalId: fixture.proposal.approval.id,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    releaseRecovery();
+    const [acquired, claimed] = await within(Promise.all([
+      acquisition,
+      claim,
+    ]), 20_000);
+
+    expect(claimed).toMatchObject({ ok: true, claimed: true });
+    expect(acquired).toMatchObject({ ok: true });
+    if (!acquired.ok || (acquired.status !== 'acquired' && acquired.status !== 'not_due')) {
+      throw new Error('Prepared recovery returned an unexpected concurrent result.');
+    }
+    const barrier = await getPool().query<{ status: string }>(
+      'SELECT status FROM pre_effect_barriers WHERE id = $1',
+      [fixture.prepared.barrier.id],
+    );
+    expect(barrier.rows[0]?.status).toBe('in_progress');
+  }, 120_000);
+
+  it('has one concurrent holder and one fresh observation permit', async () => {
+    const { ownerUserId, ownerAccountId } = await seedRecoveryOwner(2);
+    const fixture = await createClaimedProposal(154, ownerUserId, ownerAccountId, true);
+    await setRecoveryAnchor(
+      fixture.command.admissionId,
+      'updated_at',
+      '2026-09-12T12:00:00.123Z',
+    );
+    const input = {
+      userId: ownerUserId,
+      approvalId: fixture.proposal.approval.id,
+      leaseMs: 60_000,
+    };
+    const acquisitions = await Promise.all(
+      Array.from({ length: 50 }, () => gmailArchiveRecoveryLeaseRepository.acquire(input)),
+    );
+    const winners = acquisitions.filter((result) => result.ok && result.status === 'acquired');
+    if (winners.length === 0) {
+      throw new Error(`No lease winner: ${JSON.stringify([...new Set(acquisitions.map((result) =>
+        result.ok ? result.status : result.error))])}`);
+    }
+    expect(winners).toHaveLength(1);
+    expect(acquisitions.filter((result) => result.ok && result.status === 'busy')).toHaveLength(49);
+    const winner = winners[0];
+    if (!winner?.ok || winner.status !== 'acquired') throw new Error('Lease concurrency had no winner.');
+
+    const begins = await Promise.all(
+      Array.from({ length: 50 }, () =>
+        gmailArchiveRecoveryLeaseRepository.beginObservation(recoveryFence(winner.lease))),
+    );
+    const permits = begins.filter((result) => result.ok && result.status === 'permitted');
+    expect(permits).toHaveLength(1);
+    expect(begins.filter((result) => result.ok && result.status === 'already_started')).toHaveLength(49);
+    const permitted = permits[0];
+    if (!permitted?.ok || permitted.status !== 'permitted') throw new Error('No observation permit.');
+
+    const barrierBefore = await getPool().query<{ updated_at: string }>(
+      'SELECT updated_at::STRING FROM pre_effect_barriers WHERE id = $1',
+      [fixture.command.admissionId],
+    );
+    await getPool().query(
+      `UPDATE gmail_archive_recovery_leases
+          SET acquired_at = date_trunc('milliseconds', now() - INTERVAL '2 minutes'),
+              renewed_at = date_trunc('milliseconds', now() - INTERVAL '1 minute'),
+              expires_at = date_trunc('milliseconds', now() - INTERVAL '1 second')
+        WHERE admission_id = $1`,
+      [fixture.command.admissionId],
+    );
+    await expect(gmailArchiveRecoveryLeaseRepository.acquire(input)).resolves.toEqual({
+      ok: true,
+      status: 'busy',
+      lease: null,
+    });
+    const unavailableEvidence = {
+      kind: 'mailbox_observation_unavailable' as const,
+      binding: mutationBinding(fixture.command),
+      code: 'observation_unavailable' as const,
+    };
+    await expect(gmailArchiveRecoveryLeaseRepository.recordObservation({
+      permit: permitted.permit,
+      evidence: unavailableEvidence,
+    })).resolves.toMatchObject({ ok: true, recorded: true });
+    await expect(gmailArchiveRecoveryLeaseRepository.recordObservation({
+      permit: permitted.permit,
+      evidence: unavailableEvidence,
+    })).resolves.toEqual({ ok: true, recorded: false, evidence: unavailableEvidence });
+    await expect(gmailArchiveRecoveryLeaseRepository.recordObservation({
+      permit: permitted.permit,
+      evidence: { ...unavailableEvidence, code: 'credentials_unavailable' },
+    })).resolves.toEqual({ ok: false, error: 'evidence_conflict' });
+    const preserved = await gmailArchiveRecoveryLeaseRepository.acquire(input);
+    expect(preserved).toMatchObject({
+      ok: true,
+      status: 'acquired',
+      created: false,
+      lease: {
+        generation: 2,
+        observationState: 'evidence_recorded',
+        observationAttemptId: permitted.permit.observationAttemptId,
+        observationAuthorizedAt: permitted.permit.authorizedAt,
+        observationDeadlineAt: permitted.permit.deadlineAt,
+        evidence: unavailableEvidence,
+      },
+    });
+    if (!preserved.ok || preserved.status !== 'acquired') throw new Error('Evidence was not retained.');
+    await expect(gmailArchiveRecoveryLeaseRepository.beginObservation(
+      recoveryFence(preserved.lease),
+    )).resolves.toEqual({ ok: true, status: 'evidence_recorded', permit: null });
+    const barrierAfter = await getPool().query<{ updated_at: string }>(
+      'SELECT updated_at::STRING FROM pre_effect_barriers WHERE id = $1',
+      [fixture.command.admissionId],
+    );
+    expect(barrierAfter.rows[0]?.updated_at).toBe(barrierBefore.rows[0]?.updated_at);
+  }, 120_000);
+
+  it('fences expired observations by recording unavailable instead of issuing another permit', async () => {
+    const { ownerUserId, ownerAccountId } = await seedRecoveryOwner(3);
+    const fixture = await createClaimedProposal(155, ownerUserId, ownerAccountId, true);
+    await setRecoveryAnchor(
+      fixture.command.admissionId,
+      'updated_at',
+      '2026-09-12T12:00:00.123Z',
+    );
+    const acquired = await gmailArchiveRecoveryLeaseRepository.acquire({
+      userId: ownerUserId,
+      approvalId: fixture.proposal.approval.id,
+      leaseMs: 60_000,
+    });
+    if (!acquired.ok || acquired.status !== 'acquired') throw new Error('Takeover lease failed.');
+    const begun = await gmailArchiveRecoveryLeaseRepository.beginObservation(recoveryFence(acquired.lease));
+    if (!begun.ok || begun.status !== 'permitted') throw new Error('Takeover permit failed.');
+    await getPool().query(
+      `UPDATE gmail_archive_recovery_leases
+          SET acquired_at = date_trunc('milliseconds', now() - INTERVAL '4 minutes'),
+              renewed_at = date_trunc('milliseconds', now()),
+              expires_at = date_trunc('milliseconds', now() + INTERVAL '1 minute'),
+              observation_authorized_at = date_trunc('milliseconds', now() - INTERVAL '4 minutes'),
+              observation_deadline_at = date_trunc('milliseconds', now() - INTERVAL '3 minutes')
+        WHERE admission_id = $1`,
+      [fixture.command.admissionId],
+    );
+
+    const takeover = await gmailArchiveRecoveryLeaseRepository.acquire({
+      userId: ownerUserId,
+      approvalId: fixture.proposal.approval.id,
+      leaseMs: 60_000,
+    });
+    expect(takeover).toMatchObject({
+      ok: true,
+      status: 'acquired',
+      created: false,
+      lease: {
+        generation: 2,
+        observationState: 'evidence_recorded',
+        evidence: {
+          kind: 'mailbox_observation_unavailable',
+          code: 'observation_unavailable',
+        },
+      },
+    });
+    if (!takeover.ok || takeover.status !== 'acquired') throw new Error('Takeover did not acquire.');
+    await expect(gmailArchiveRecoveryLeaseRepository.beginObservation(recoveryFence(takeover.lease))).resolves.toEqual({
+      ok: true,
+      status: 'evidence_recorded',
+      permit: null,
+    });
+    await expect(gmailArchiveRecoveryLeaseRepository.recordObservation({
+      permit: begun.permit,
+      evidence: {
+        kind: 'mailbox_observation_unavailable',
+        binding: mutationBinding(fixture.command),
+        code: 'observation_unavailable',
+      },
+    })).resolves.toEqual({ ok: false, error: 'stale_lease' });
+  }, 120_000);
+
+  it('uses DB clock at the grace boundary and keeps stable IDs across a real 40001 rollback', async () => {
+    const { ownerUserId, ownerAccountId } = await seedRecoveryOwner(4);
+    const notDue = await createClaimedProposal(156, ownerUserId, ownerAccountId);
+    await getPool().query(
+      `UPDATE pre_effect_barriers
+          SET updated_at = date_trunc('milliseconds', now() - INTERVAL '299.5 seconds')
+        WHERE id = $1`,
+      [notDue.command.admissionId],
+    );
+    await expect(gmailArchiveRecoveryLeaseRepository.acquire({
+      userId: ownerUserId,
+      approvalId: notDue.proposal.approval.id,
+      leaseMs: 60_000,
+    })).resolves.toEqual({ ok: true, status: 'not_due', lease: null });
+
+    const retried = await createPreparedProposal(157, ownerUserId, ownerAccountId);
+    await setRecoveryAnchor(retried.prepared.barrier.id, 'updated_at');
+    let attempts = 0;
+    const result = await gmailArchiveRecoveryLeaseTestHooks.acquireWithTransition(
+      { userId: ownerUserId, approvalId: retried.proposal.approval.id, leaseMs: 60_000 },
+      async (client, input, leaseToken) => {
+        const acquired = await gmailArchiveRecoveryLeaseTestHooks.acquireTransition(
+          client,
+          input,
+          leaseToken,
+        );
+        attempts += 1;
+        if (attempts === 1) throw Object.assign(new Error('forced restart'), { code: '40001' });
+        return acquired;
+      },
+    );
+    expect(result).toMatchObject({ ok: true, status: 'acquired', created: true });
+    expect(attempts).toBe(2);
+    const rows = await getPool().query<{ count: string; tokens: string }>(
+      `SELECT count(*)::STRING AS count, count(DISTINCT lease_token)::STRING AS tokens
+         FROM gmail_archive_recovery_leases WHERE admission_id = $1`,
+      [retried.prepared.barrier.id],
+    );
+    expect(rows.rows[0]).toEqual({ count: '1', tokens: '1' });
+  }, 120_000);
+
+  it('repurposes active leases across valid forward stages and fences the old generation', async () => {
+    const { ownerUserId, ownerAccountId } = await seedRecoveryOwner(6);
+    const proposal = await createProposal(160, ownerUserId, ownerAccountId);
+    const approved = await gmailArchiveApprovalResponseRepository.respond({
+      approvalId: proposal.approval.id,
+      userId: ownerUserId,
+      action: 'approve',
+    });
+    if (!approved.ok || !approved.response.reservedBarrier) throw new Error('Forward-stage reserve failed.');
+    await setRecoveryAnchor(approved.response.reservedBarrier.id, 'created_at');
+    const reservedLease = await gmailArchiveRecoveryLeaseRepository.acquire({
+      userId: ownerUserId,
+      approvalId: proposal.approval.id,
+      leaseMs: 300_000,
+    });
+    if (!reservedLease.ok || reservedLease.status !== 'acquired') throw new Error('Reserve lease failed.');
+
+    const prepared = await gmailArchivePreparationRepository.prepare({
+      userId: ownerUserId,
+      approvalId: proposal.approval.id,
+    });
+    if (!prepared.ok || prepared.preparation.status !== 'prepared') throw new Error('Forward prepare failed.');
+    await setRecoveryAnchor(prepared.preparation.barrier.id, 'updated_at');
+    const preparedLease = await gmailArchiveRecoveryLeaseRepository.acquire({
+      userId: ownerUserId,
+      approvalId: proposal.approval.id,
+      leaseMs: 300_000,
+    });
+    expect(preparedLease).toMatchObject({
+      ok: true,
+      status: 'acquired',
+      created: false,
+      lease: { workKind: 'resume_claim', generation: 2 },
+    });
+    await expect(gmailArchiveRecoveryLeaseRepository.renew(
+      recoveryFence(reservedLease.lease),
+      60_000,
+    )).resolves.toMatchObject({ ok: true, status: 'not_due', lease: null });
+
+    const claimed = await gmailArchiveClaimRepository.claim({
+      userId: ownerUserId,
+      approvalId: proposal.approval.id,
+    });
+    if (!claimed.ok || !claimed.claimed) throw new Error('Forward claim failed.');
+    await setRecoveryAnchor(claimed.command.admissionId, 'updated_at', '2026-09-12T12:00:00.123Z');
+    const preLease = await gmailArchiveRecoveryLeaseRepository.acquire({
+      userId: ownerUserId,
+      approvalId: proposal.approval.id,
+      leaseMs: 300_000,
+    });
+    expect(preLease).toMatchObject({
+      ok: true,
+      status: 'acquired',
+      created: false,
+      lease: { workKind: 'reconcile_pre_dispatch', generation: 3 },
+    });
+    if (!preLease.ok || preLease.status !== 'acquired') throw new Error('Pre-dispatch lease failed.');
+    await expect(enterDispatchGate(claimed.command)).resolves.toEqual({ status: 'entered' });
+    await setRecoveryAnchor(claimed.command.admissionId, 'updated_at', '2026-09-12T12:00:00.456Z');
+    const dispatchLease = await gmailArchiveRecoveryLeaseRepository.acquire({
+      userId: ownerUserId,
+      approvalId: proposal.approval.id,
+      leaseMs: 300_000,
+    });
+    expect(dispatchLease).toMatchObject({
+      ok: true,
+      status: 'acquired',
+      created: false,
+      lease: { workKind: 'observe_dispatch', generation: 4 },
+    });
+    await expect(gmailArchiveRecoveryLeaseRepository.beginObservation(
+      recoveryFence(preLease.lease),
+    )).resolves.toEqual({ ok: false, error: 'invalid_input' });
+  }, 120_000);
+
+  it('renews without changing the barrier anchor and formats it identically outside UTC', async () => {
+    const { ownerUserId, ownerAccountId } = await seedRecoveryOwner(7);
+    const prepared = await createPreparedProposal(161, ownerUserId, ownerAccountId);
+    await setRecoveryAnchor(prepared.prepared.barrier.id, 'updated_at');
+    const acquired = await withTransaction(async (client) => {
+      await client.query("SET LOCAL TIME ZONE 'America/Los_Angeles'");
+      return gmailArchiveRecoveryLeaseTestHooks.acquireTransition(
+        client,
+        { userId: ownerUserId, approvalId: prepared.proposal.approval.id, leaseMs: 60_000 },
+        id('aa', 161),
+      );
+    });
+    expect(acquired).toMatchObject({
+      ok: true,
+      status: 'acquired',
+      lease: { phaseChangedAt: '2026-09-12T12:00:00.123456Z' },
+    });
+    if (!acquired.ok || acquired.status !== 'acquired') throw new Error('Timezone lease failed.');
+    const before = await getPool().query<{ updated_at: string }>(
+      'SELECT updated_at::STRING FROM pre_effect_barriers WHERE id = $1',
+      [prepared.prepared.barrier.id],
+    );
+    await expect(gmailArchiveRecoveryLeaseRepository.renew(
+      recoveryFence(acquired.lease),
+      120_000,
+    )).resolves.toMatchObject({ ok: true, status: 'acquired', created: false });
+    const after = await getPool().query<{ updated_at: string }>(
+      'SELECT updated_at::STRING FROM pre_effect_barriers WHERE id = $1',
+      [prepared.prepared.barrier.id],
+    );
+    expect(after.rows[0]?.updated_at).toBe(before.rows[0]?.updated_at);
+  }, 120_000);
+
+  it('keeps operational leases independent of connector evidence and creates none for terminal work', async () => {
+    const { ownerUserId, ownerAccountId } = await seedRecoveryOwner(8);
+    const prepared = await createPreparedProposal(162, ownerUserId, ownerAccountId);
+    await setRecoveryAnchor(prepared.prepared.barrier.id, 'updated_at');
+    const acquired = await gmailArchiveRecoveryLeaseRepository.acquire({
+      userId: ownerUserId,
+      approvalId: prepared.proposal.approval.id,
+      leaseMs: 60_000,
+    });
+    expect(acquired).toMatchObject({ ok: true, status: 'acquired' });
+    if (!acquired.ok || acquired.status !== 'acquired') throw new Error('Backup lease was not acquired.');
+    const backupWithLease = await collectBackup(ownerUserId);
+    expect(backupWithLease).toMatchObject({ success: true });
+    if (!backupWithLease.success) throw new Error('Backup with operational lease failed.');
+    expect(JSON.stringify(backupWithLease.data)).not.toContain(acquired.lease.leaseToken);
+    await getPool().query('DELETE FROM connected_accounts WHERE id = $1 AND user_id = $2', [
+      ownerAccountId,
+      ownerUserId,
+    ]);
+    const retained = await getPool().query<{ count: string }>(
+      'SELECT count(*)::STRING AS count FROM gmail_archive_recovery_leases WHERE admission_id = $1',
+      [prepared.prepared.barrier.id],
+    );
+    expect(retained.rows[0]?.count).toBe('1');
+
+    const terminalOwner = await seedRecoveryOwner(9);
+    const terminal = await createClaimedProposal(
+      163,
+      terminalOwner.ownerUserId,
+      terminalOwner.ownerAccountId,
+    );
+    const terminalized = await gmailArchiveTerminalizationRepository.terminalize({
+      command: terminal.command,
+      result: {
+        outcome: 'known_failure',
+        code: 'preflight_unavailable',
+        compensationAvailable: false,
+        binding: mutationBinding(terminal.command),
+      },
+    });
+    expect(terminalized).toMatchObject({ ok: true, created: true });
+    await expect(gmailArchiveRecoveryLeaseRepository.acquire({
+      userId: terminalOwner.ownerUserId,
+      approvalId: terminal.proposal.approval.id,
+      leaseMs: 60_000,
+    })).resolves.toEqual({ ok: true, status: 'terminal', lease: null });
+    const absent = await getPool().query<{ count: string }>(
+      'SELECT count(*)::STRING AS count FROM gmail_archive_recovery_leases WHERE admission_id = $1',
+      [terminal.command.admissionId],
+    );
+    expect(absent.rows[0]?.count).toBe('0');
+  }, 120_000);
+
+  it('acquires reserved, prepared, and dispatch recovery after connector evidence is gone', async () => {
+    const reservedOwner = await seedRecoveryOwner(12);
+    const reservedProposal = await createProposal(
+      166,
+      reservedOwner.ownerUserId,
+      reservedOwner.ownerAccountId,
+    );
+    const reservedApproval = await gmailArchiveApprovalResponseRepository.respond({
+      approvalId: reservedProposal.approval.id,
+      userId: reservedOwner.ownerUserId,
+      action: 'approve',
+    });
+    if (!reservedApproval.ok || !reservedApproval.response.reservedBarrier) {
+      throw new Error('Detached reserved fixture failed.');
+    }
+    await setRecoveryAnchor(reservedApproval.response.reservedBarrier.id, 'created_at');
+    await getPool().query('DELETE FROM connected_accounts WHERE id = $1 AND user_id = $2', [
+      reservedOwner.ownerAccountId,
+      reservedOwner.ownerUserId,
+    ]);
+    await getPool().query('DELETE FROM signals WHERE id = $1 AND user_id = $2', [
+      id('44', 166),
+      reservedOwner.ownerUserId,
+    ]);
+    await expect(gmailArchiveRecoveryLeaseRepository.acquire({
+      userId: reservedOwner.ownerUserId,
+      approvalId: reservedProposal.approval.id,
+      leaseMs: 60_000,
+    })).resolves.toMatchObject({
+      ok: true,
+      status: 'acquired',
+      lease: { workKind: 'resume_preparation' },
+    });
+
+    const preparedOwner = await seedRecoveryOwner(13);
+    const prepared = await createPreparedProposal(
+      167,
+      preparedOwner.ownerUserId,
+      preparedOwner.ownerAccountId,
+    );
+    await setRecoveryAnchor(prepared.prepared.barrier.id, 'updated_at');
+    await getPool().query('DELETE FROM connected_accounts WHERE id = $1 AND user_id = $2', [
+      preparedOwner.ownerAccountId,
+      preparedOwner.ownerUserId,
+    ]);
+    await getPool().query('DELETE FROM signals WHERE id = $1 AND user_id = $2', [
+      id('44', 167),
+      preparedOwner.ownerUserId,
+    ]);
+    await expect(gmailArchiveRecoveryLeaseRepository.acquire({
+      userId: preparedOwner.ownerUserId,
+      approvalId: prepared.proposal.approval.id,
+      leaseMs: 60_000,
+    })).resolves.toMatchObject({
+      ok: true,
+      status: 'acquired',
+      lease: { workKind: 'resume_claim' },
+    });
+
+    const { ownerUserId, ownerAccountId } = await seedRecoveryOwner(10);
+    const fixture = await createClaimedProposal(164, ownerUserId, ownerAccountId, true);
+    await setRecoveryAnchor(
+      fixture.command.admissionId,
+      'updated_at',
+      '2026-09-12T12:00:00.123Z',
+    );
+    await getPool().query('DELETE FROM connected_accounts WHERE id = $1 AND user_id = $2', [
+      ownerAccountId,
+      ownerUserId,
+    ]);
+    await getPool().query('DELETE FROM signals WHERE id = $1 AND user_id = $2', [
+      id('44', 164),
+      ownerUserId,
+    ]);
+
+    const acquired = await gmailArchiveRecoveryLeaseRepository.acquire({
+      userId: ownerUserId,
+      approvalId: fixture.proposal.approval.id,
+      leaseMs: 60_000,
+    });
+    expect(acquired).toMatchObject({
+      ok: true,
+      status: 'acquired',
+      created: true,
+      lease: { workKind: 'observe_dispatch', phaseChangedAt: '2026-09-12T12:00:00.123Z' },
+    });
+    if (!acquired.ok || acquired.status !== 'acquired') throw new Error('Detached recovery lease failed.');
+    const begun = await gmailArchiveRecoveryLeaseRepository.beginObservation(
+      recoveryFence(acquired.lease),
+    );
+    expect(begun).toMatchObject({ ok: true, status: 'permitted' });
+    if (!begun.ok || begun.status !== 'permitted') throw new Error('Detached observation was not permitted.');
+    await expect(gmailArchiveRecoveryLeaseRepository.recordObservation({
+      permit: begun.permit,
+      evidence: {
+        kind: 'mailbox_observation_unavailable',
+        binding: mutationBinding(fixture.command),
+        code: 'not_observable',
+      },
+    })).resolves.toMatchObject({ ok: true, recorded: true });
+    const providerRows = await getPool().query<{
+      accounts: string;
+      refs: string;
+      signals: string;
+      tokens: string;
+    }>(`SELECT
+      (SELECT count(*)::STRING FROM connected_accounts WHERE user_id IN ($1, $2, $3)) AS accounts,
+      (SELECT count(*)::STRING FROM gmail_message_refs WHERE user_id IN ($1, $2, $3)) AS refs,
+      (SELECT count(*)::STRING FROM signals WHERE user_id IN ($1, $2, $3)) AS signals,
+      (SELECT count(*)::STRING FROM oauth_tokens WHERE user_id IN ($1, $2, $3)) AS tokens`, [
+      reservedOwner.ownerUserId,
+      preparedOwner.ownerUserId,
+      ownerUserId,
+    ]);
+    expect(providerRows.rows[0]).toEqual({ accounts: '0', refs: '0', signals: '0', tokens: '0' });
+  }, 120_000);
+
+  it('turns an expired same-attempt begin retry into unavailable evidence', async () => {
+    const { ownerUserId, ownerAccountId } = await seedRecoveryOwner(11);
+    const fixture = await createClaimedProposal(165, ownerUserId, ownerAccountId, true);
+    await setRecoveryAnchor(
+      fixture.command.admissionId,
+      'updated_at',
+      '2026-09-12T12:00:00.123Z',
+    );
+    const acquired = await gmailArchiveRecoveryLeaseRepository.acquire({
+      userId: ownerUserId,
+      approvalId: fixture.proposal.approval.id,
+      leaseMs: 300_000,
+    });
+    if (!acquired.ok || acquired.status !== 'acquired') throw new Error('Retry lease failed.');
+    let attempts = 0;
+    let firstPermitId: string | null = null;
+    const retried = await gmailArchiveRecoveryLeaseTestHooks.beginWithTransition(
+      recoveryFence(acquired.lease),
+      gmailArchiveRecoveryLeaseTestHooks.beginTransition,
+      async (callback) => {
+        const result = await withTransaction(callback);
+        attempts += 1;
+        if (attempts === 1) {
+          const started = await getPool().query<{ observation_attempt_id: string }>(
+            `SELECT observation_attempt_id
+               FROM gmail_archive_recovery_leases WHERE admission_id = $1`,
+            [fixture.command.admissionId],
+          );
+          firstPermitId = started.rows[0]?.observation_attempt_id ?? null;
+          await getPool().query(
+            `UPDATE gmail_archive_recovery_leases
+                SET observation_authorized_at = date_trunc('milliseconds', now() - INTERVAL '4 minutes'),
+                    observation_deadline_at = date_trunc('milliseconds', now() - INTERVAL '3 minutes')
+              WHERE admission_id = $1`,
+            [fixture.command.admissionId],
+          );
+          throw Object.assign(new Error('ambiguous retry after write'), { code: '40001' });
+        }
+        return result;
+      },
+    );
+    expect(attempts).toBe(2);
+    expect(firstPermitId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(retried).toEqual({ ok: true, status: 'evidence_recorded', permit: null });
+    const stored = await getPool().query<{
+      observation_attempt_id: string;
+      observation_evidence: unknown;
+    }>(
+      `SELECT observation_attempt_id, observation_evidence
+         FROM gmail_archive_recovery_leases WHERE admission_id = $1`,
+      [fixture.command.admissionId],
+    );
+    expect(stored.rows[0]).toMatchObject({
+      observation_attempt_id: firstPermitId,
+      observation_evidence: {
+        schema: 'gmail_archive_recovery_observation_v1',
+        evidence: { kind: 'mailbox_observation_unavailable', code: 'observation_unavailable' },
+      },
+    });
+    await expect(gmailArchiveRecoveryLeaseRepository.beginObservation(
+      recoveryFence(acquired.lease),
+    )).resolves.toEqual({ ok: true, status: 'evidence_recorded', permit: null });
+  }, 120_000);
+
+  it('samples wall-clock time after barrier and lease lock contention', async () => {
+    const acquireOwner = await seedRecoveryOwner(14);
+    const prepared = await createPreparedProposal(
+      168,
+      acquireOwner.ownerUserId,
+      acquireOwner.ownerAccountId,
+    );
+    await setRecoveryAnchor(prepared.prepared.barrier.id, 'updated_at');
+    let releaseBarrier!: () => void;
+    let barrierLocked!: () => void;
+    const barrierRelease = new Promise<void>((resolve) => { releaseBarrier = resolve; });
+    const barrierReady = new Promise<void>((resolve) => { barrierLocked = resolve; });
+    const barrierHolder = withTransaction(async (client) => {
+      await client.query('SELECT id FROM pre_effect_barriers WHERE id = $1 FOR UPDATE', [
+        prepared.prepared.barrier.id,
+      ]);
+      barrierLocked();
+      await barrierRelease;
+    });
+    await barrierReady;
+    const waitingAcquire = gmailArchiveRecoveryLeaseRepository.acquire({
+      userId: acquireOwner.ownerUserId,
+      approvalId: prepared.proposal.approval.id,
+      leaseMs: 1_000,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    releaseBarrier();
+    await barrierHolder;
+    const acquired = await waitingAcquire;
+    expect(acquired).toMatchObject({ ok: true });
+    const liveLease = await getPool().query<{
+      acquired_at: Date;
+      db_now: Date;
+      expires_at: Date;
+      live: boolean;
+    }>(
+      `SELECT acquired_at, expires_at, clock_timestamp() AS db_now,
+              expires_at > clock_timestamp() AS live
+         FROM gmail_archive_recovery_leases WHERE admission_id = $1`,
+      [prepared.prepared.barrier.id],
+    );
+    if (acquired.ok && acquired.status === 'acquired') {
+      expect(liveLease.rows[0]?.live).toBe(true);
+    } else {
+      expect(acquired).toEqual({ ok: true, status: 'busy', lease: null });
+      expect(liveLease.rows[0]?.live).toBe(false);
+    }
+
+    const beginOwner = await seedRecoveryOwner(15);
+    const dispatch = await createClaimedProposal(
+      169,
+      beginOwner.ownerUserId,
+      beginOwner.ownerAccountId,
+      true,
+    );
+    await setRecoveryAnchor(
+      dispatch.command.admissionId,
+      'updated_at',
+      '2026-09-12T12:00:00.123Z',
+    );
+    const dispatchLease = await gmailArchiveRecoveryLeaseRepository.acquire({
+      userId: beginOwner.ownerUserId,
+      approvalId: dispatch.proposal.approval.id,
+      leaseMs: 60_000,
+    });
+    if (!dispatchLease.ok || dispatchLease.status !== 'acquired') {
+      throw new Error('Contended begin lease failed.');
+    }
+    const expiringLease = await getPool().query<{ expires_at: Date }>(
+      `UPDATE gmail_archive_recovery_leases
+          SET acquired_at = statement_timestamp() - INTERVAL '2 minutes',
+              renewed_at = statement_timestamp() - INTERVAL '1 minute',
+              expires_at = statement_timestamp() + INTERVAL '500 milliseconds'
+        WHERE admission_id = $1
+        RETURNING expires_at`,
+      [dispatch.command.admissionId],
+    );
+    const expiresAt = expiringLease.rows[0]?.expires_at;
+    if (!expiresAt) throw new Error('Contended begin lease was not shortened.');
+    let releaseLease!: () => void;
+    let leaseLocked!: () => void;
+    const leaseRelease = new Promise<void>((resolve) => { releaseLease = resolve; });
+    const leaseReady = new Promise<void>((resolve) => { leaseLocked = resolve; });
+    const leaseHolder = withTransaction(async (client) => {
+      await client.query('SELECT admission_id FROM gmail_archive_recovery_leases WHERE admission_id = $1 FOR UPDATE', [
+        dispatch.command.admissionId,
+      ]);
+      leaseLocked();
+      await leaseRelease;
+    });
+    await leaseReady;
+    const waitingBegin = gmailArchiveRecoveryLeaseRepository.beginObservation(
+      recoveryFence(dispatchLease.lease),
+    );
+    await new Promise((resolve) => setTimeout(
+      resolve,
+      Math.max(0, expiresAt.getTime() - Date.now()) + 250,
+    ));
+    releaseLease();
+    await leaseHolder;
+    const beginResult = await waitingBegin;
+    expect(beginResult).toMatchObject({ ok: true });
+    const state = await getPool().query<{ observation_state: string }>(
+      `SELECT observation_state
+         FROM gmail_archive_recovery_leases WHERE admission_id = $1`,
+      [dispatch.command.admissionId],
+    );
+    if (beginResult.ok && beginResult.status === 'permitted') {
+      expect(state.rows[0]?.observation_state).toBe('started');
+    } else {
+      expect(beginResult).toEqual({ ok: true, status: 'evidence_recorded', permit: null });
+      expect(state.rows[0]?.observation_state).toBe('evidence_recorded');
+    }
+
+    const recordOwner = await seedRecoveryOwner(17);
+    const recordDispatch = await createClaimedProposal(
+      171,
+      recordOwner.ownerUserId,
+      recordOwner.ownerAccountId,
+      true,
+    );
+    await setRecoveryAnchor(
+      recordDispatch.command.admissionId,
+      'updated_at',
+      '2026-09-12T12:00:00.123Z',
+    );
+    const reacquired = await gmailArchiveRecoveryLeaseRepository.acquire({
+      userId: recordOwner.ownerUserId,
+      approvalId: recordDispatch.proposal.approval.id,
+      leaseMs: 60_000,
+    });
+    if (!reacquired.ok || reacquired.status !== 'acquired') {
+      throw new Error('Expired contended lease was not fenced.');
+    }
+    const begun = await gmailArchiveRecoveryLeaseRepository.beginObservation(
+      recoveryFence(reacquired.lease),
+    );
+    if (!begun.ok || begun.status !== 'permitted') throw new Error('Record contention permit failed.');
+    const shortened = await getPool().query<{ observation_deadline_at: Date }>(
+      `UPDATE gmail_archive_recovery_leases
+          SET observation_deadline_at = date_trunc(
+            'milliseconds', statement_timestamp() + INTERVAL '500 milliseconds'
+          )
+        WHERE admission_id = $1
+        RETURNING observation_deadline_at`,
+      [recordDispatch.command.admissionId],
+    );
+    const shortenedDeadline = shortened.rows[0]?.observation_deadline_at;
+    if (!shortenedDeadline) throw new Error('Record deadline was not shortened.');
+    const shortenedPermit = {
+      ...begun.permit,
+      deadlineAt: shortenedDeadline.toISOString(),
+    };
+    let releaseRecord!: () => void;
+    let recordLocked!: () => void;
+    const recordRelease = new Promise<void>((resolve) => { releaseRecord = resolve; });
+    const recordReady = new Promise<void>((resolve) => { recordLocked = resolve; });
+    const recordHolder = withTransaction(async (client) => {
+      await client.query('SELECT admission_id FROM gmail_archive_recovery_leases WHERE admission_id = $1 FOR UPDATE', [
+        recordDispatch.command.admissionId,
+      ]);
+      recordLocked();
+      await recordRelease;
+    });
+    await recordReady;
+    const waitingRecord = gmailArchiveRecoveryLeaseRepository.recordObservation({
+      permit: shortenedPermit,
+      evidence: {
+        kind: 'mailbox_observation_unavailable',
+        binding: mutationBinding(recordDispatch.command),
+        code: 'observation_unavailable',
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    releaseRecord();
+    await recordHolder;
+    await expect(waitingRecord).resolves.toMatchObject({ ok: true, recorded: true });
+    const recorded = await getPool().query<{
+      observation_evidence: unknown;
+      observation_state: string;
+    }>(
+      `SELECT observation_state, observation_evidence
+         FROM gmail_archive_recovery_leases WHERE admission_id = $1`,
+      [recordDispatch.command.admissionId],
+    );
+    expect(recorded.rows[0]).toMatchObject({ observation_state: 'evidence_recorded' });
+
+    const retryOwner = await seedRecoveryOwner(16);
+    const retryPrepared = await createPreparedProposal(
+      170,
+      retryOwner.ownerUserId,
+      retryOwner.ownerAccountId,
+    );
+    await setRecoveryAnchor(retryPrepared.prepared.barrier.id, 'updated_at');
+    let acquireAttempts = 0;
+    const retriedAcquire = await gmailArchiveRecoveryLeaseTestHooks.acquireWithTransition(
+      {
+        userId: retryOwner.ownerUserId,
+        approvalId: retryPrepared.proposal.approval.id,
+        leaseMs: 1_000,
+      },
+      gmailArchiveRecoveryLeaseTestHooks.acquireTransition,
+      async (callback) => {
+        const result = await withTransaction(callback);
+        acquireAttempts += 1;
+        if (acquireAttempts === 1) {
+          await new Promise((resolve) => setTimeout(resolve, 1_200));
+          throw Object.assign(new Error('retry after committed lease expired'), { code: '40001' });
+        }
+        return result;
+      },
+    );
+    expect(acquireAttempts).toBe(2);
+    expect(retriedAcquire).toMatchObject({
+      ok: true,
+      status: 'acquired',
+      created: false,
+      lease: { generation: 2 },
+    });
+    if (!retriedAcquire.ok || retriedAcquire.status !== 'acquired') {
+      throw new Error('Expired same-token acquire retry did not recover.');
+    }
+    const retriedLive = await getPool().query<{ live: boolean }>(
+      `SELECT expires_at > statement_timestamp() AS live
+         FROM gmail_archive_recovery_leases WHERE admission_id = $1`,
+      [retryPrepared.prepared.barrier.id],
+    );
+    expect(retriedLive.rows[0]?.live).toBe(true);
+  }, 120_000);
+
+  it('fails closed for proposal barriers, cross-owner authority, corrupt approval binding, and schema checks', async () => {
+    const { ownerUserId, ownerAccountId } = await seedRecoveryOwner(5);
+    const proposal = await createProposal(158, ownerUserId, ownerAccountId);
+    await expect(gmailArchiveRecoveryLeaseRepository.acquire({
+      userId: ownerUserId,
+      approvalId: proposal.approval.id,
+      leaseMs: 60_000,
+    })).resolves.toEqual({ ok: false, error: 'not_found' });
+    await expect(gmailArchiveRecoveryLeaseRepository.acquire({
+      userId: otherUserId,
+      approvalId: proposal.approval.id,
+      leaseMs: 60_000,
+    })).resolves.toEqual({ ok: false, error: 'not_found' });
+
+    const prepared = await createPreparedProposal(159, ownerUserId, ownerAccountId);
+    await setRecoveryAnchor(prepared.prepared.barrier.id, 'updated_at');
+    const acquired = await gmailArchiveRecoveryLeaseRepository.acquire({
+      userId: ownerUserId,
+      approvalId: prepared.proposal.approval.id,
+      leaseMs: 60_000,
+    });
+    expect(acquired).toMatchObject({ ok: true, status: 'acquired' });
+    await getPool().query(
+      'UPDATE gmail_archive_recovery_leases SET approval_id = $2 WHERE admission_id = $1',
+      [prepared.prepared.barrier.id, id('88', 159)],
+    );
+    await expect(gmailArchiveRecoveryLeaseRepository.acquire({
+      userId: ownerUserId,
+      approvalId: prepared.proposal.approval.id,
+      leaseMs: 60_000,
+    })).resolves.toEqual({ ok: false, error: 'integrity_conflict' });
+
+    await expect(getPool().query(
+      `INSERT INTO gmail_archive_recovery_leases (
+         admission_id, user_id, approval_id, message_ref_id, work_kind,
+         barrier_status, attempt_phase, phase_changed_at, lease_token, generation,
+         acquired_at, renewed_at, expires_at
+       ) VALUES ($1, $2, $3, $4, 'resume_claim', 'reserved', NULL, now(), $5, 1,
+         now(), now(), now() + INTERVAL '1 minute')`,
+      [id('99', 1), ownerUserId, id('99', 2), id('99', 3), id('99', 4)],
+    )).rejects.toMatchObject({ code: expect.stringMatching(/23503|23514/) });
   }, 120_000);
 });

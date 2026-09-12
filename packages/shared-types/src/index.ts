@@ -287,6 +287,23 @@ export type {
 } from './gmail-archive-recovery.js';
 
 export type {
+  AcquireGmailArchiveRecoveryLeaseInput,
+  AcquireGmailArchiveRecoveryLeaseResult,
+  BeginGmailArchiveRecoveryObservationResult,
+  GmailArchiveRecoveryLease,
+  GmailArchiveRecoveryLeaseFence,
+  GmailArchiveRecoveryLeaseRepository,
+  GmailArchiveRecoveryMailboxObservedEvidence,
+  GmailArchiveRecoveryObservationEvidence,
+  GmailArchiveRecoveryObservationPermit,
+  GmailArchiveRecoveryObservationState,
+  GmailArchiveRecoveryObservationUnavailableEvidence,
+  GmailArchiveRecoveryWorkKind,
+  RecordGmailArchiveRecoveryObservationInput,
+  RecordGmailArchiveRecoveryObservationResult,
+} from './gmail-archive-recovery-lease.js';
+
+export type {
   GmailArchiveInterruptedBeforeDispatchEvidence,
   GmailArchiveMailboxObservationUnavailableEvidence,
   GmailArchiveMailboxObservedEvidence,

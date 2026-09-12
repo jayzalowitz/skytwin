@@ -96,9 +96,10 @@ export interface BackupData {
   decisions: DecisionBundle[];
   /**
    * Connector identities, OAuth credentials, cursors, raw signals, and Gmail
-   * message references are intentionally excluded. They are installation-local
-   * operational evidence and provider targets are invalid without a live,
-   * freshly-authorized account binding on the restore destination.
+   * message references are intentionally excluded.
+   * Gmail archive recovery leases are intentionally excluded too. They are
+   * installation-local operational evidence, and provider targets are invalid
+   * without a live, freshly-authorized account binding on the restore destination.
    */
 }
 
