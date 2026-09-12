@@ -274,6 +274,7 @@ function snapshotPermit(value: unknown): Readonly<GmailArchiveRecoveryObservatio
       !validExternalTimestamp(permit['authorizedAt']) ||
       !validExternalTimestamp(permit['deadlineAt']) ||
       !validExternalTimestamp(permit['leaseExpiresAt']) ||
+      Date.parse(permit['authorizedAt']) < Date.parse(fence.phaseChangedAt) ||
       Date.parse(permit['authorizedAt']) >= Date.parse(permit['leaseExpiresAt']) ||
       Date.parse(permit['deadlineAt']) - Date.parse(permit['authorizedAt']) !==
         GMAIL_ARCHIVE_RECOVERY_OBSERVATION_DEADLINE_SECONDS * 1_000) return null;
@@ -1060,7 +1061,6 @@ async function recordTransition(
             observation_authorized_at = $8::TIMESTAMPTZ AND
             observation_deadline_at = $9::TIMESTAMPTZ AND
             expires_at = $10::TIMESTAMPTZ AND
-            expires_at > $7::TIMESTAMPTZ AND
             observation_deadline_at > $7::TIMESTAMPTZ
       RETURNING admission_id`,
     [

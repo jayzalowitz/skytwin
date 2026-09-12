@@ -26,6 +26,9 @@ vi.mock('../repositories/gmail-archive-terminalization-repository.js', () => ({
 const { gmailArchiveRecoveryLeaseTestHooks } = await import(
   '../repositories/gmail-archive-recovery-lease-repository.js'
 );
+const { gmailInboxObservationTargetTestHooks } = await import(
+  '../repositories/gmail-inbox-observation-target-repository.js'
+);
 const {
   consumeGmailArchiveRecoveryLeaseInTransaction,
   gmailArchiveRecoveryLeaseConsumerTestHooks,
@@ -275,18 +278,20 @@ describe('gmailArchiveRecoveryLeaseRepository boundary', () => {
     }
   });
 
-  it('keeps issuer and consumer permit parsers in exact parity', () => {
+  it('keeps issuer, consumer, and target permit parsers in exact parity', () => {
     const corpus: unknown[] = [
       permit,
       { ...permit, extra: true },
       { ...permit, observationAttemptId: 'invalid' },
+      { ...permit, authorizedAt: '2026-09-12T11:59:59.999Z',
+        deadlineAt: '2026-09-12T12:02:29.999Z' },
       { ...permit, leaseExpiresAt: permit.authorizedAt },
       { ...permit, deadlineAt: '2026-09-12T12:07:29.999Z' },
     ];
     for (const value of corpus) {
-      expect(gmailArchiveRecoveryLeaseConsumerTestHooks.snapshotPermit(value)).toEqual(
-        gmailArchiveRecoveryLeaseTestHooks.snapshotPermit(value),
-      );
+      const issued = gmailArchiveRecoveryLeaseTestHooks.snapshotPermit(value);
+      expect(gmailArchiveRecoveryLeaseConsumerTestHooks.snapshotPermit(value)).toEqual(issued);
+      expect(gmailInboxObservationTargetTestHooks.snapshotPermit(value)).toEqual(issued);
     }
   });
 

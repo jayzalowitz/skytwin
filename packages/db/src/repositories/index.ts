@@ -72,11 +72,7 @@ export {
   gmailArchiveRecoveryLeaseRepository,
 } from './gmail-archive-recovery-lease-repository.js';
 export { gmailInboxObservationTargetRepository } from './gmail-inbox-observation-target-repository.js';
-export type {
-  GmailArchiveRecoveryObservationFinalTargetInput,
-  GmailArchiveRecoveryObservationSelection,
-  GmailInboxObservationTarget,
-} from './gmail-inbox-observation-target-repository.js';
+export type { GmailInboxObservationTarget } from './gmail-inbox-observation-target-repository.js';
 export {
   buildGmailArchiveReconciliationTerminalEnvelope,
   gmailArchiveReconciliationEvidenceAllowedForPhase,

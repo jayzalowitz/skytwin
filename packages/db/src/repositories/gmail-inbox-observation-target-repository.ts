@@ -111,6 +111,7 @@ function snapshotPermit(value: unknown): Readonly<GmailArchiveRecoveryObservatio
       typeof permit['observationAttemptId'] !== 'string' ||
       !UUID.test(permit['observationAttemptId']) || !validTimestamp(permit['authorizedAt']) ||
       !validTimestamp(permit['deadlineAt']) || !validTimestamp(permit['leaseExpiresAt']) ||
+      Date.parse(permit['authorizedAt']) < Date.parse(permit['phaseChangedAt']) ||
       Date.parse(permit['authorizedAt']) >= Date.parse(permit['leaseExpiresAt']) ||
       Date.parse(permit['deadlineAt']) - Date.parse(permit['authorizedAt']) !==
         GMAIL_ARCHIVE_RECOVERY_OBSERVATION_DEADLINE_SECONDS * 1_000) return null;
@@ -212,6 +213,7 @@ async function resolvePermitInTransaction(
         AND lease.observation_authorized_at = $12::TIMESTAMPTZ
         AND lease.observation_deadline_at = $13::TIMESTAMPTZ
         AND lease.expires_at = $14::TIMESTAMPTZ AND lease.observation_state = 'started'
+        AND lease.observation_authorized_at >= lease.phase_changed_at
         AND lease.expires_at > statement_timestamp()
         AND lease.observation_deadline_at > statement_timestamp()
         AND barrier.status = 'in_progress' AND barrier.effect_type = 'event_execution'

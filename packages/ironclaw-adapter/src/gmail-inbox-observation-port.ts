@@ -7,8 +7,6 @@ import {
   GMAIL_ARCHIVE_RECOVERY_OBSERVATION_DEADLINE_SECONDS,
   gmailInboxObservationTargetRepository,
   oauthRepository,
-  type GmailArchiveRecoveryObservationFinalTargetInput,
-  type GmailArchiveRecoveryObservationSelection,
   type GmailInboxObservationTarget,
 } from '@skytwin/db';
 import type {
@@ -27,6 +25,18 @@ import {
   gmailMessageStateResponseLimits,
   parseExactGmailMessageState,
 } from './gmail-message-state-response.js';
+
+interface GmailArchiveRecoveryObservationSelection {
+  connectorAccountId: string;
+  credentialRevision: string;
+  providerMessageId: string;
+}
+
+interface GmailArchiveRecoveryObservationFinalTargetInput {
+  permit: GmailArchiveRecoveryObservationPermit;
+  selection: GmailArchiveRecoveryObservationSelection;
+  credentialRevision: string;
+}
 
 const GMAIL_MODIFY_SCOPE = 'https://www.googleapis.com/auth/gmail.modify';
 const GMAIL_API_ROOT = 'https://gmail.googleapis.com/gmail/v1/users/me/messages';
@@ -421,10 +431,13 @@ export type GmailArchiveRecoveryObservationCoordinatorResult =
       evidence: Readonly<GmailArchiveRecoveryObservationEvidence>;
     };
 
+const RECOVERY_FENCE_KEYS = [
+  'admissionId', 'approvalId', 'attemptPhase', 'barrierStatus', 'generation',
+  'leaseToken', 'messageRefId', 'phaseChangedAt', 'userId', 'workKind',
+] as const;
 const RECOVERY_PERMIT_KEYS = [
-  'admissionId', 'approvalId', 'attemptPhase', 'authorizedAt', 'barrierStatus',
-  'deadlineAt', 'generation', 'leaseExpiresAt', 'leaseToken', 'messageRefId',
-  'observationAttemptId', 'phaseChangedAt', 'userId', 'workKind',
+  ...RECOVERY_FENCE_KEYS, 'authorizedAt', 'deadlineAt', 'leaseExpiresAt',
+  'observationAttemptId',
 ] as const;
 
 function canonicalTimestamp(value: unknown): value is string {
@@ -447,6 +460,39 @@ function canonicalPhaseTimestamp(value: unknown): value is string {
   }
 }
 
+function snapshotRecoveryFence(
+  value: unknown,
+): Readonly<GmailArchiveRecoveryLeaseFence> | null {
+  const fence = ownData(value, RECOVERY_FENCE_KEYS);
+  if (!fence || typeof fence['userId'] !== 'string' || !UUID.test(fence['userId']) ||
+      typeof fence['approvalId'] !== 'string' || !UUID.test(fence['approvalId']) ||
+      typeof fence['admissionId'] !== 'string' || !UUID.test(fence['admissionId']) ||
+      typeof fence['messageRefId'] !== 'string' || !UUID.test(fence['messageRefId']) ||
+      fence['workKind'] !== 'observe_dispatch' || fence['barrierStatus'] !== 'in_progress' ||
+      fence['attemptPhase'] !== 'dispatch_may_have_started' ||
+      !canonicalPhaseTimestamp(fence['phaseChangedAt']) ||
+      typeof fence['leaseToken'] !== 'string' || !UUID.test(fence['leaseToken']) ||
+      !Number.isSafeInteger(fence['generation']) || (fence['generation'] as number) < 1) return null;
+  return Object.freeze({
+    userId: fence['userId'], approvalId: fence['approvalId'],
+    admissionId: fence['admissionId'], messageRefId: fence['messageRefId'],
+    workKind: 'observe_dispatch', barrierStatus: 'in_progress',
+    attemptPhase: 'dispatch_may_have_started', phaseChangedAt: fence['phaseChangedAt'],
+    leaseToken: fence['leaseToken'], generation: fence['generation'] as number,
+  });
+}
+
+function sameRecoveryFence(
+  permit: Readonly<GmailArchiveRecoveryObservationPermit>,
+  fence: Readonly<GmailArchiveRecoveryLeaseFence>,
+): boolean {
+  return permit.userId === fence.userId && permit.approvalId === fence.approvalId &&
+    permit.admissionId === fence.admissionId && permit.messageRefId === fence.messageRefId &&
+    permit.workKind === fence.workKind && permit.barrierStatus === fence.barrierStatus &&
+    permit.attemptPhase === fence.attemptPhase && permit.phaseChangedAt === fence.phaseChangedAt &&
+    permit.leaseToken === fence.leaseToken && permit.generation === fence.generation;
+}
+
 function snapshotRecoveryPermit(
   value: unknown,
 ): Readonly<GmailArchiveRecoveryObservationPermit> | null {
@@ -463,6 +509,7 @@ function snapshotRecoveryPermit(
       typeof permit['observationAttemptId'] !== 'string' ||
       !UUID.test(permit['observationAttemptId']) || !canonicalTimestamp(permit['authorizedAt']) ||
       !canonicalTimestamp(permit['deadlineAt']) || !canonicalTimestamp(permit['leaseExpiresAt']) ||
+      Date.parse(permit['authorizedAt']) < Date.parse(permit['phaseChangedAt']) ||
       Date.parse(permit['authorizedAt']) >= Date.parse(permit['leaseExpiresAt']) ||
       Date.parse(permit['deadlineAt']) - Date.parse(permit['authorizedAt']) !==
         GMAIL_ARCHIVE_RECOVERY_OBSERVATION_DEADLINE_SECONDS * 1_000) return null;
@@ -533,9 +580,11 @@ export class GmailArchiveRecoveryObservationCoordinator {
   async observe(
     submittedFence: GmailArchiveRecoveryLeaseFence,
   ): Promise<GmailArchiveRecoveryObservationCoordinatorResult> {
+    const fence = snapshotRecoveryFence(submittedFence);
+    if (!fence) return Object.freeze({ status: 'not_permitted' });
     let begun: Awaited<ReturnType<GmailArchiveRecoveryLeaseRepository['beginObservation']>>;
     try {
-      begun = await this.beginObservation(submittedFence);
+      begun = await this.beginObservation(fence);
     } catch {
       return Object.freeze({ status: 'not_permitted' });
     }
@@ -543,7 +592,9 @@ export class GmailArchiveRecoveryObservationCoordinator {
       return Object.freeze({ status: 'not_permitted' });
     }
     const permit = snapshotRecoveryPermit(begun.permit);
-    if (!permit) return Object.freeze({ status: 'not_permitted' });
+    if (!permit || !sameRecoveryFence(permit, fence)) {
+      return Object.freeze({ status: 'not_permitted' });
+    }
     const binding = Object.freeze({
       userId: permit.userId,
       admissionId: permit.admissionId,
@@ -636,6 +687,7 @@ export class GmailArchiveRecoveryObservationCoordinator {
 }
 
 export const gmailArchiveRecoveryObservationTestHooks = Object.freeze({
+  snapshotRecoveryFence,
   snapshotRecoveryPermit,
   snapshotSelection,
 });

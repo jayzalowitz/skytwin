@@ -97,6 +97,16 @@ describe('permit-bound Gmail Inbox observation target', () => {
     expect(args.slice(17)).toEqual([
       selection.connectorAccountId, selection.providerMessageId, credentialRevision,
     ]);
+    expect(args[14]).toBe(JSON.stringify({
+      schema: 'gmail_archive_attempt_v1', phase: 'dispatch_may_have_started',
+    }));
+    expect(args[15]).toBe(JSON.stringify({
+      schema: 'gmail_inbox_mutation_v1',
+      messageRefId: permit.messageRefId,
+      operation: 'archive', domain: 'email', costZeroIntent: 'verified_zero',
+      provenance: 'untrusted_external',
+    }));
+    expect(args[16]).toBe('https://www.googleapis.com/auth/gmail.modify');
   });
 
   it.each([
@@ -155,6 +165,19 @@ describe('permit-bound Gmail Inbox observation target', () => {
     }, transaction)).resolves.toEqual(resolvedSelection);
     expect(attempt).toBe(3);
     expect(queryClients).toHaveLength(1);
+  });
+
+  it.each(['40001', '08006'])('bounds or rejects an in-query %s failure', async (code) => {
+    const error = Object.assign(new Error('query failed'), { code });
+    let attempts = 0;
+    const transaction = async <T>(callback: (queryClient: PoolClient) => Promise<T>): Promise<T> => {
+      attempts += 1;
+      return callback({ query: vi.fn().mockRejectedValue(error) } as unknown as PoolClient);
+    };
+    await expect(gmailInboxObservationTargetTestHooks.resolveInitialWithTransaction(
+      permit, transaction,
+    )).rejects.toBe(error);
+    expect(attempts).toBe(code === '40001' ? 3 : 1);
   });
 
   it('freezes permit, selection, and revision snapshots across retry and caller mutation', async () => {

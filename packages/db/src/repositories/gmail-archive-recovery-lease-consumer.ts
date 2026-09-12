@@ -165,6 +165,7 @@ function snapshotObservationPermit(
       !validExternalTimestamp(permit['authorizedAt']) ||
       !validExternalTimestamp(permit['deadlineAt']) ||
       !validExternalTimestamp(permit['leaseExpiresAt']) ||
+      Date.parse(permit['authorizedAt']) < Date.parse(fence.phaseChangedAt) ||
       Date.parse(permit['authorizedAt']) >= Date.parse(permit['leaseExpiresAt']) ||
       Date.parse(permit['deadlineAt']) - Date.parse(permit['authorizedAt']) !==
         GMAIL_ARCHIVE_RECOVERY_OBSERVATION_DEADLINE_SECONDS * 1_000) return null;

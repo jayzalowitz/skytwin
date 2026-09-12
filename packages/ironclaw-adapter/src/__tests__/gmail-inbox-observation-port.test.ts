@@ -10,6 +10,7 @@ import type {
 } from '@skytwin/shared-types';
 import {
   GmailArchiveRecoveryObservationCoordinator,
+  gmailArchiveRecoveryObservationTestHooks,
   GmailInboxObservationService,
   gmailInboxObservationLimits,
   type GmailInboxObservationCredentialRequest,
@@ -238,6 +239,18 @@ describe('GmailInboxObservationService', () => {
       resolve: vi.fn().mockRejectedValueOnce(new Error('private database detail')),
     });
     await expect(service.observe(command)).resolves.toEqual(boundUnavailable('authority_unavailable'));
+    expect(materialize).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('fails closed before credentials or Gmail when no legacy resolver is injected', async () => {
+    const fetchMock = vi.fn();
+    const materialize = vi.fn();
+    const service = new GmailInboxObservationService({
+      credentials: { materialize } as unknown as GmailInboxObservationCredentialsPort,
+      fetch: fetchMock,
+    });
+    await expect(service.observe(command)).resolves.toEqual(boundUnavailable('not_observable'));
     expect(materialize).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -568,6 +581,9 @@ describe('GmailInboxObservationService', () => {
     expect(constructionSources).not.toContain('GmailInboxObservationService');
     expect(constructionSources).not.toContain('DbGmailInboxObservationCredentials');
     expect(constructionSources).not.toContain('GmailArchiveRecoveryObservationCoordinator');
+    const publicBarrel = await readFile(new URL('../index.ts', import.meta.url), 'utf8');
+    expect(publicBarrel).not.toContain('GmailArchiveRecoveryObservationCoordinator');
+    expect(publicBarrel).not.toContain('GmailArchiveRecoveryObservationTargetResolver');
   });
 });
 
@@ -645,6 +661,78 @@ function recoveryFixture(options: {
 }
 
 describe('GmailArchiveRecoveryObservationCoordinator', () => {
+  it('keeps its permit parser aligned on the shared canonical corpus', () => {
+    const corpus = [
+      [recoveryPermit, recoveryPermit],
+      [{ ...recoveryPermit, extra: true }, null],
+      [{ ...recoveryPermit, observationAttemptId: 'invalid' }, null],
+      [{ ...recoveryPermit, authorizedAt: '2026-09-12T11:59:59.999Z',
+        deadlineAt: '2026-09-12T12:02:29.999Z' }, null],
+      [{ ...recoveryPermit, leaseExpiresAt: recoveryPermit.authorizedAt }, null],
+      [{ ...recoveryPermit, deadlineAt: '2026-09-12T12:07:29.999Z' }, null],
+    ] as const;
+    for (const [value, expected] of corpus) {
+      expect(gmailArchiveRecoveryObservationTestHooks.snapshotRecoveryPermit(value))
+        .toEqual(expected);
+    }
+  });
+  it('strictly snapshots the submitted fence before beginning', async () => {
+    let release: (() => void) | undefined;
+    const entered = new Promise<void>((resolve) => { release = resolve; });
+    const begin = vi.fn(async (seen: typeof recoveryFence) => {
+      expect(seen).toEqual(recoveryFence);
+      expect(Object.isFrozen(seen)).toBe(true);
+      await entered;
+      return { ok: true as const, status: 'permitted' as const, permit: recoveryPermit };
+    });
+    const fixture = recoveryFixture({ begin });
+    const submitted = { ...recoveryFence };
+    const pending = fixture.coordinator.observe(submitted);
+    submitted.generation = 99;
+    release?.();
+    await pending;
+    expect(begin).toHaveBeenCalledTimes(1);
+  });
+
+  it('contains hostile fences before consuming a permit', async () => {
+    const getter = vi.fn(() => recoveryFence.userId);
+    const accessor = { ...recoveryFence } as Record<string, unknown>;
+    Object.defineProperty(accessor, 'userId', { enumerable: true, get: getter });
+    const revoked = Proxy.revocable({ ...recoveryFence }, {});
+    revoked.revoke();
+    const fixture = recoveryFixture();
+    for (const submitted of [accessor, revoked.proxy, { ...recoveryFence, extra: true }]) {
+      await expect(fixture.coordinator.observe(submitted as typeof recoveryFence)).resolves.toEqual({
+        status: 'not_permitted',
+      });
+    }
+    expect(getter).not.toHaveBeenCalled();
+    expect(fixture.begin).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['userId', 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'],
+    ['approvalId', 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'],
+    ['admissionId', 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'],
+    ['messageRefId', 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'],
+    ['workKind', 'resume_claim'],
+    ['barrierStatus', 'prepared'],
+    ['attemptPhase', 'pre_dispatch'],
+    ['phaseChangedAt', '2026-09-12T12:00:00.124000Z'],
+    ['leaseToken', 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'],
+    ['generation', 5],
+  ])('rejects a permit whose inherited %s differs from the submitted fence', async (field, value) => {
+    const fixture = recoveryFixture({ begin: vi.fn().mockResolvedValue({
+      ok: true, status: 'permitted', permit: { ...recoveryPermit, [field]: value },
+    }) });
+    await expect(fixture.coordinator.observe(recoveryFence)).resolves.toEqual({
+      status: 'not_permitted',
+    });
+    expect(fixture.resolveInitial).not.toHaveBeenCalled();
+    expect(fixture.materialize).not.toHaveBeenCalled();
+    expect(fixture.fetchMock).not.toHaveBeenCalled();
+  });
+
   it('consumes the permit before every dependency and records capability-free evidence', async () => {
     const events: string[] = [];
     const fixture = recoveryFixture({
@@ -678,11 +766,7 @@ describe('GmailArchiveRecoveryObservationCoordinator', () => {
     ]) expect(serialized).not.toContain(secret);
   });
 
-  it.each([
-    'disconnect', 'account', 'message ref', 'provider', 'account scope', 'token scope',
-    'credential revision', 'barrier', 'lease token', 'lease generation', 'attempt',
-    'authorization time', 'lease expiry', 'deadline', 'state',
-  ])('performs zero GETs when final authority rejects a %s change', async () => {
+  it('performs zero GETs when final authority rejects the permit or live target', async () => {
     const fixture = recoveryFixture({ resolveFinal: vi.fn().mockResolvedValue(null) });
     await expect(fixture.coordinator.observe(recoveryFence)).resolves.toMatchObject({
       status: 'evidence_recorded',

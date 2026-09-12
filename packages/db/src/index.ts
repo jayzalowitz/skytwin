@@ -169,8 +169,6 @@ export type {
   GmailArchiveRecoveryObservationPermit,
   RecordGmailArchiveRecoveryObservationInput,
   RecordGmailArchiveRecoveryObservationResult,
-  GmailArchiveRecoveryObservationFinalTargetInput,
-  GmailArchiveRecoveryObservationSelection,
   GmailInboxObservationTarget,
   GmailArchiveReconciliationBundle,
   GmailArchiveReconciliationExplanationSemantics,

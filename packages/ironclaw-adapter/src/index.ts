@@ -22,7 +22,6 @@ export { DirectExecutionAdapter } from './direct-execution-adapter.js';
 export { GmailInboxMutationService, gmailInboxMutationLimits } from './gmail-inbox-mutation-port.js';
 export {
   DbGmailInboxObservationCredentials,
-  GmailArchiveRecoveryObservationCoordinator,
   GmailInboxObservationService,
   gmailInboxObservationLimits,
 } from './gmail-inbox-observation-port.js';
@@ -49,9 +48,6 @@ export type {
 export type { GmailInboxMutationServiceOptions } from './gmail-inbox-mutation-port.js';
 export type {
   DbGmailInboxObservationCredentialsOptions,
-  GmailArchiveRecoveryObservationCoordinatorOptions,
-  GmailArchiveRecoveryObservationCoordinatorResult,
-  GmailArchiveRecoveryObservationTargetResolver,
   GmailInboxObservationCredential,
   GmailInboxObservationCredentialRequest,
   GmailInboxObservationCredentialsPort,

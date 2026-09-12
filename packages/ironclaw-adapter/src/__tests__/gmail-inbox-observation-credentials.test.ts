@@ -33,6 +33,7 @@ vi.mock('@skytwin/db', () => ({
 const { DbGmailInboxObservationCredentials } = await import(
   '../gmail-inbox-observation-port.js'
 );
+import type { DbGmailInboxObservationCredentialsOptions } from '../gmail-inbox-observation-port.js';
 
 const request = {
   userId: '11111111-1111-4111-8111-111111111111',
@@ -99,8 +100,12 @@ describe('DbGmailInboxObservationCredentials', () => {
     const googleOAuthConfig = {
       clientId: 'client', clientSecret: 'secret', redirectUri: 'http://localhost',
     };
-    const keyCache = { get: originalGet, has: vi.fn(() => false), set: vi.fn() };
-    const auditLog = { recordAccess: originalRecord };
+    const keyCache: NonNullable<DbGmailInboxObservationCredentialsOptions['keyCache']> = {
+      get: originalGet, has: vi.fn(() => false), set: vi.fn(),
+    };
+    const auditLog: NonNullable<DbGmailInboxObservationCredentialsOptions['auditLog']> = {
+      recordAccess: originalRecord,
+    };
     const credentials = new DbGmailInboxObservationCredentials({
       googleOAuthConfig, keyCache, auditLog, auditActor: 'bound_actor',
     });

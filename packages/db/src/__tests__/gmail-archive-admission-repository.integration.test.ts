@@ -400,6 +400,30 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     };
   }
 
+  async function permittedObservationTarget(
+    suffix: number,
+    ownerUserId = userId,
+    ownerAccountId = accountId,
+  ) {
+    const fixture = await createClaimedProposal(suffix, ownerUserId, ownerAccountId, true);
+    await setRecoveryAnchor(fixture.command.admissionId, 'updated_at');
+    const acquired = await gmailArchiveRecoveryLeaseRepository.acquire({
+      userId: ownerUserId,
+      approvalId: fixture.proposal.approval.id,
+      leaseMs: 60_000,
+    });
+    if (!acquired.ok || acquired.status !== 'acquired') {
+      throw new Error(`Observation target lease failed: ${JSON.stringify(acquired)}`);
+    }
+    const begun = await gmailArchiveRecoveryLeaseRepository.beginObservation(
+      recoveryFence(acquired.lease),
+    );
+    if (!begun.ok || begun.status !== 'permitted') {
+      throw new Error(`Observation target permit failed: ${JSON.stringify(begun)}`);
+    }
+    return { fixture, permit: begun.permit };
+  }
+
   async function fencedReconciliationInput(
     command: { userId: string; admissionId: string; messageRefId: string },
     approvalId: string,
@@ -1862,6 +1886,141 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     expect(initial).toMatchObject({ providerMessageId: 'native-117' });
     expect(current).toMatchObject({ providerMessageId: 'native-replaced-117' });
     expect(current).not.toEqual(initial);
+  }, 120_000);
+
+  it('executes permit-bound initial and final target SQL with exact authority', async () => {
+    const { fixture, permit } = await permittedObservationTarget(180);
+    const initial = await gmailInboxObservationTargetRepository.resolveInitial(permit);
+    expect(initial).toEqual({
+      connectorAccountId: accountId,
+      credentialRevision: expect.any(String),
+      providerMessageId: 'native-180',
+    });
+    if (!initial) throw new Error('Permit-bound initial target was not resolved.');
+    await expect(gmailInboxObservationTargetRepository.resolveFinal({
+      permit,
+      selection: initial,
+      credentialRevision: initial.credentialRevision,
+    })).resolves.toEqual(initial);
+    for (const changed of [
+      { selection: { ...initial, connectorAccountId: id('22', 99) },
+        credentialRevision: initial.credentialRevision },
+      { selection: { ...initial, providerMessageId: 'native-crossed' },
+        credentialRevision: initial.credentialRevision },
+      { selection: initial, credentialRevision: id('77', 99) },
+    ]) {
+      await expect(gmailInboxObservationTargetRepository.resolveFinal({
+        permit, ...changed,
+      })).resolves.toBeNull();
+    }
+    for (const crossedPermit of [
+      { ...permit, leaseToken: id('66', 99) },
+      { ...permit, generation: permit.generation + 1 },
+      { ...permit, observationAttemptId: id('66', 98) },
+      { ...permit, leaseExpiresAt: new Date(
+        Date.parse(permit.leaseExpiresAt) + 1,
+      ).toISOString() },
+    ]) {
+      await expect(gmailInboxObservationTargetRepository.resolveInitial(crossedPermit))
+        .resolves.toBeNull();
+    }
+
+    const evidence = {
+      kind: 'mailbox_observation_unavailable' as const,
+      binding: mutationBinding(fixture.command),
+      code: 'observation_unavailable' as const,
+    };
+    await expect(gmailArchiveRecoveryLeaseRepository.recordObservation({ permit, evidence }))
+      .resolves.toMatchObject({ ok: true, recorded: true });
+    await expect(gmailInboxObservationTargetRepository.resolveInitial(permit)).resolves.toBeNull();
+  }, 120_000);
+
+  it('rechecks live account, scopes, and credential revision after permit issuance', async () => {
+    const authorityUserId = id('11', 18);
+    const authorityAccountId = id('22', 18);
+    await seedOwner(authorityUserId, authorityAccountId, id('55', 18), 'permit-target@example.test');
+    const { permit } = await permittedObservationTarget(181, authorityUserId, authorityAccountId);
+    const initial = await gmailInboxObservationTargetRepository.resolveInitial(permit);
+    if (!initial) throw new Error('Permit-bound authority target was not resolved.');
+    const finalInput = { permit, selection: initial, credentialRevision: initial.credentialRevision };
+
+    await getPool().query(
+      'UPDATE connected_accounts SET disconnected_at = now() WHERE id = $1',
+      [authorityAccountId],
+    );
+    await expect(gmailInboxObservationTargetRepository.resolveFinal(finalInput)).resolves.toBeNull();
+    await getPool().query(
+      'UPDATE connected_accounts SET disconnected_at = NULL, scopes = ARRAY[$2]::STRING[] WHERE id = $1',
+      [authorityAccountId, gmailModifyScope],
+    );
+    await getPool().query(
+      `UPDATE oauth_tokens SET scopes = ARRAY['gmail.readonly']::STRING[]
+        WHERE connector_account_id = $1`,
+      [authorityAccountId],
+    );
+    await expect(gmailInboxObservationTargetRepository.resolveFinal(finalInput)).resolves.toBeNull();
+    await getPool().query(
+      `UPDATE oauth_tokens SET scopes = ARRAY[$2]::STRING[], credential_revision = gen_random_uuid()
+        WHERE connector_account_id = $1`,
+      [authorityAccountId, gmailModifyScope],
+    );
+    await expect(gmailInboxObservationTargetRepository.resolveFinal(finalInput)).resolves.toBeNull();
+  }, 120_000);
+
+  it('uses strict DB-clock lease and observation deadline boundaries', async () => {
+    const leaseBoundary = await permittedObservationTarget(182);
+    const expired = await getPool().query<{ expires_at: Date }>(
+      `UPDATE gmail_archive_recovery_leases
+          SET expires_at = date_trunc('milliseconds', statement_timestamp())
+        WHERE admission_id = $1 RETURNING expires_at`,
+      [leaseBoundary.fixture.command.admissionId],
+    );
+    const leaseExpiresAt = expired.rows[0]?.expires_at.toISOString();
+    if (!leaseExpiresAt) throw new Error('Lease boundary was not set.');
+    await expect(gmailInboxObservationTargetRepository.resolveInitial({
+      ...leaseBoundary.permit, leaseExpiresAt,
+    })).resolves.toBeNull();
+    await expect(gmailArchiveRecoveryLeaseRepository.recordObservation({
+      permit: { ...leaseBoundary.permit, leaseExpiresAt },
+      evidence: {
+        kind: 'mailbox_observation_unavailable',
+        binding: mutationBinding(leaseBoundary.fixture.command),
+        code: 'observation_unavailable',
+      },
+    })).resolves.toMatchObject({ ok: true, recorded: true });
+
+    const deadlineBoundary = await permittedObservationTarget(183);
+    const deadline = await getPool().query<{
+      observation_authorized_at: Date;
+      observation_deadline_at: Date;
+    }>(
+      `UPDATE gmail_archive_recovery_leases
+          SET observation_deadline_at = date_trunc('milliseconds', statement_timestamp()),
+              observation_authorized_at =
+                date_trunc('milliseconds', statement_timestamp()) - INTERVAL '150 seconds'
+        WHERE admission_id = $1
+        RETURNING observation_authorized_at, observation_deadline_at`,
+      [deadlineBoundary.fixture.command.admissionId],
+    );
+    await expect(gmailInboxObservationTargetRepository.resolveInitial({
+      ...deadlineBoundary.permit,
+      authorizedAt: deadline.rows[0]!.observation_authorized_at.toISOString(),
+      deadlineAt: deadline.rows[0]!.observation_deadline_at.toISOString(),
+    })).resolves.toBeNull();
+  }, 120_000);
+
+  it('rejects a permit after terminalization removes its recovery authority', async () => {
+    const { fixture, permit } = await permittedObservationTarget(184);
+    await expect(gmailArchiveTerminalizationRepository.terminalize({
+      command: fixture.command,
+      result: {
+        outcome: 'unknown',
+        code: 'remote_outcome_unknown',
+        compensationAvailable: false,
+        binding: mutationBinding(fixture.command),
+      },
+    })).resolves.toMatchObject({ ok: true, created: true });
+    await expect(gmailInboxObservationTargetRepository.resolveInitial(permit)).resolves.toBeNull();
   }, 120_000);
 
   it('rejects legacy marker-free and receipt-tampered dispatch attempts', async () => {
