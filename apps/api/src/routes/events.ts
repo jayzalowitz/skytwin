@@ -9,6 +9,8 @@ import {
   RuleBasedCandidateGenerator,
   SenderAwareCandidateGenerator,
   CompositeCandidateGenerator,
+  buildGmailArchiveProposal,
+  gmailArchiveProposalEnabled,
 } from '@skytwin/decision-engine';
 import { buildDraftEmailGenerator } from '../draft-email-setup.js';
 import { serializeApprovalCandidate } from './approval-candidate.js';
@@ -30,6 +32,7 @@ import {
   preEffectBarrierRepository,
   inferenceReceiptRepository,
   gmailMessageRefRepository,
+  gmailArchiveProposalRepository,
 } from '@skytwin/db';
 import type {
   DecisionContext,
@@ -47,7 +50,7 @@ import {
 import { emitInferenceReceipt } from '@skytwin/llm-client';
 import type { InferenceTrace, ReceiptSigningKey } from '@skytwin/llm-client';
 import { createLogger } from '@skytwin/core';
-import { generateKeyPairSync } from 'node:crypto';
+import { generateKeyPairSync, randomUUID } from 'node:crypto';
 
 const log = createLogger('api:events');
 import { WorkflowHandlerRegistry } from '../workflows/registry.js';
@@ -437,6 +440,7 @@ export function createEventsRouter(): Router {
       }
       const rawEvent = validation.event;
       const userId = validation.userId;
+      let gmailOwnedSignalId: string | null = null;
 
       // connectorEvidence is authority-bearing only on the loopback service
       // credential path. A human session presenting the same JSON shape must
@@ -512,20 +516,125 @@ export function createEventsRouter(): Router {
           res.status(409).json({ error: persisted.error });
           return;
         }
+        const canonicalSourceSignalId = persisted.signal.source_signal_id;
+        if (typeof canonicalSourceSignalId !== 'string' || canonicalSourceSignalId.length === 0) {
+          throw new Error('Persisted Gmail evidence is missing its connector signal identifier');
+        }
         // Interpretation always sees the immutable canonical signal row. On a
         // replay, modified request fields cannot alter the decision input even
         // though the request reached us before the idempotency lookup.
         for (const key of Object.keys(rawEvent)) delete rawEvent[key];
+        gmailOwnedSignalId = persisted.signal.id;
         Object.assign(rawEvent, sanitizedGmailSignalData(persisted.signal.data), {
           userId,
           source: 'gmail',
           type: persisted.signal.type,
-          signalId: persisted.signal.source_signal_id,
+          // Preserve the existing disabled-path interpretation contract. The
+          // gated proposal repository uses signals.id separately so its
+          // receipts do not include this connector source identifier.
+          signalId: canonicalSourceSignalId,
           authoringTier: persisted.messageRef.authoring_tier,
           receivedAt: persisted.signal.timestamp.toISOString(),
           observedAt: persisted.messageRef.first_observed_at.toISOString(),
           messageRefId: persisted.messageRef.id,
         });
+
+        if (gmailArchiveProposalEnabled() && persisted.messageRef.last_observed_inbox === true) {
+          // A signal evaluated before this rollout keeps its prior durable
+          // response. Do not manufacture a second decision graph merely
+          // because the proposal gate changed between observations.
+          if (decisionRepositoryAdapter.findBySignalId) {
+            const previous = await decisionRepositoryAdapter.findBySignalId(
+              userId,
+              canonicalSourceSignalId,
+            );
+            // Connector signal identifiers are not globally unique across
+            // linked accounts. Only replay a legacy response when it is bound
+            // to the same repository-issued message reference.
+            if (previous?.rawData['messageRefId'] === persisted.messageRef.id) {
+              const recovered = await recoverCompletedIngest(userId, previous);
+              if (recovered) {
+                res.json(recovered);
+                return;
+              }
+              res.status(409).json({ error: 'idempotency_conflict' });
+              return;
+            }
+          }
+          // Build exclusively from repository-issued identifiers. This branch
+          // deliberately returns before ordinary interpretation, LLM setup,
+          // policy execution, credentials, routing, memory writes, or spend.
+          const built = buildGmailArchiveProposal({
+            decision: {
+              id: randomUUID(),
+              situationType: SituationType.EMAIL_TRIAGE,
+              domain: 'email',
+              urgency: 'medium',
+              summary: 'An Inbox message may be archived.',
+              rawData: { messageRefId: persisted.messageRef.id },
+              interpretedAt: new Date(),
+              provenance: 'untrusted_external',
+            },
+          });
+          if (!built.ok) {
+            throw new Error(`Canonical Gmail archive proposal failed: ${built.error}`);
+          }
+
+          const stored = await gmailArchiveProposalRepository.persist({
+            userId,
+            connectorAccountId: evidence.connectorAccountId,
+            messageRefId: persisted.messageRef.id,
+            signalId: persisted.signal.id,
+            proposal: built.proposal,
+          });
+          if (!stored.ok) {
+            if (stored.error === 'invalid_input') {
+              throw new Error('Canonical Gmail archive proposal was rejected by persistence');
+            }
+            res.status(409).json({ error: stored.error });
+            return;
+          }
+
+          const proposal = stored.proposal;
+          if (stored.created) {
+            sseManager.emit(userId, 'approval:new', {
+              id: proposal.approval.id,
+              decisionId: proposal.decision.id,
+              reason: proposal.outcome.explanation,
+              urgency: proposal.decision.urgency,
+            });
+          }
+          res.json({
+            decision: {
+              id: proposal.decision.id,
+              situationType: proposal.decision.situation_type,
+              domain: proposal.decision.domain,
+              urgency: proposal.decision.urgency,
+              summary: 'An Inbox message may be archived.',
+            },
+            outcome: {
+              selectedAction: {
+                actionType: proposal.candidate.action_type,
+                description: proposal.candidate.description,
+              },
+              autoExecute: false,
+              requiresApproval: true,
+              reasoning: proposal.outcome.explanation,
+            },
+            explanation: {
+              summary: proposal.explanation.what_happened,
+              riskTier: proposal.candidate.risk_assessment['overallTier'],
+              confidence: proposal.outcome.confidence,
+            },
+            execution: null,
+            approval: {
+              id: proposal.approval.id,
+              status: proposal.approval.status,
+            },
+            ...(!stored.created ? { reIngested: true } : {}),
+          });
+          return;
+        }
       } else if (presentedEvidence !== undefined) {
         res.status(400).json({ error: 'connectorEvidence is only valid for Gmail signals' });
         return;
@@ -541,18 +650,30 @@ export function createEventsRouter(): Router {
       // A completed duplicate must short-circuit before any LLM-backed
       // interpretation. The later saveDecision check remains the race-loser
       // backstop for concurrent first ingestions.
-      const signalId = typeof rawEvent['signalId'] === 'string' &&
+      let signalId = typeof rawEvent['signalId'] === 'string' &&
         rawEvent['signalId'].trim().length > 0
         ? rawEvent['signalId']
         : '';
       if (signalId && decisionRepositoryAdapter.findBySignalId) {
-        const existingDecision = await decisionRepositoryAdapter.findBySignalId(userId, signalId);
-        if (existingDecision) {
+        const duplicateKeys = [signalId, gmailOwnedSignalId]
+          .filter((value, index, values): value is string =>
+            typeof value === 'string' && value.length > 0 && values.indexOf(value) === index);
+        for (const duplicateKey of duplicateKeys) {
+          const existingDecision = await decisionRepositoryAdapter.findBySignalId(userId, duplicateKey);
+          if (!existingDecision) continue;
           const recovered = await recoverCompletedIngest(userId, existingDecision);
           if (recovered) {
             res.json(recovered);
             return;
           }
+          // An incomplete gated proposal must not fall into the ordinary
+          // decision pipeline. The proposal graph is atomic, so this state
+          // indicates corruption or an incompatible historical row.
+          if (duplicateKey !== signalId) {
+            res.status(409).json({ error: 'idempotency_conflict' });
+            return;
+          }
+          break;
         }
       }
 

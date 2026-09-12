@@ -241,13 +241,15 @@ describe('gmailMessageRefRepository Inbox mutation binding', () => {
     expect(sql).toContain('candidate.parameters = $4::JSONB');
     expect(sql).toContain('candidate.reversible = true');
     expect(sql).toContain('candidate.estimated_cost IS NULL');
-    expect(sql).toContain('signal.source_signal_id = decision.signal_id');
+    expect(sql).toContain(
+      'signal.id::STRING = decision.signal_id OR signal.source_signal_id = decision.signal_id',
+    );
     expect(sql).toContain('ref.id = signal.resource_ref_id');
     expect(sql).toContain('ref.source_signal_id = signal.source_signal_id');
     expect(sql).toContain("decision.raw_event->>'messageRefId' = ref.id::STRING");
     expect(sql).toContain('account.identity_verified = true');
-    expect(sql).toContain('$5 = ANY(account.scopes)');
-    expect(sql).toContain('$5 = ANY(token.scopes)');
+    expect(sql).toContain('$5::STRING = ANY(account.scopes)');
+    expect(sql).toContain('$5::STRING = ANY(token.scopes)');
     expect(params).toEqual([
       mutationInput.admissionId,
       mutationInput.userId,

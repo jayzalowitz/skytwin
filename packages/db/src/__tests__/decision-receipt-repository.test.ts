@@ -301,6 +301,27 @@ describe('decisionReceiptRepository', () => {
     expect(result.success && result.revision.content_digest).toBe(joinedDecisionReceiptContentDigest(content));
   });
 
+  it('uses valid caller-owned root and revision IDs', async () => {
+    installHappyQueries();
+    const callerReceiptId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+    const callerRevisionId = 'bbbbbbbb-cccc-4ddd-8eee-ffffffffffff';
+    const result = await decisionReceiptRepository.appendForUser(userId, {
+      eventKey: eventKey('decision_created'),
+      expectedPreviousDigest: null,
+      content: baseContent(),
+      receiptId: callerReceiptId,
+      revisionId: callerRevisionId,
+    });
+
+    expect(result).toMatchObject({ success: true, revision: { id: callerRevisionId } });
+    const rootInsert = queryMock.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO decision_receipts'));
+    const revisionInsert = queryMock.mock.calls.find(
+      ([sql]) => String(sql).includes('INSERT INTO decision_receipt_revisions'),
+    );
+    expect(rootInsert?.[1]).toEqual([userId, decisionId, callerReceiptId]);
+    expect(revisionInsert?.[1]?.[0]).toBe(callerRevisionId);
+  });
+
   it('appends on a caller-owned transaction without opening a nested transaction', async () => {
     installHappyQueries();
     const client = { query: queryMock } as unknown as PoolClient;
@@ -612,6 +633,27 @@ describe('decisionReceiptRepository', () => {
       },
     )).resolves.toMatchObject({ success: true, created: true, revision: { sequence: 2 } });
     expect(queryMock.mock.calls.some(([sql]) => String(sql).includes('FROM signals WHERE'))).toBe(true);
+  });
+
+  it('binds opaque Gmail signal UUID decisions to their owned receipt evidence', async () => {
+    const scenario = gmailPolicyScenario({}, { signal_id: eventId });
+    installHappyQueries({
+      ...scenario.rows,
+      decision: scenario.decision,
+      signal: scenario.signal,
+      existingRoot: scenario.root,
+      existingRevisions: [scenario.previous],
+    });
+
+    await expect(decisionReceiptRepository.appendForUserInTransaction(
+      { query: queryMock } as unknown as PoolClient,
+      userId,
+      {
+        eventKey: eventKey('gmail_opaque_signal'),
+        expectedPreviousDigest: scenario.previousDigest,
+        content: scenario.content,
+      },
+    )).resolves.toMatchObject({ success: true, created: true, revision: { sequence: 2 } });
   });
 
   it.each([

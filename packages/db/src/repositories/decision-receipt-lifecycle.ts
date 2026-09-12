@@ -11,6 +11,9 @@ export interface AppendDecisionReceiptLifecycleInput {
   eventKind: string;
   expectedPreviousDigest: string | null;
   content: JoinedDecisionReceiptContentV1;
+  /** Optional caller-owned IDs keep a larger transaction stable across retries. */
+  receiptId?: string;
+  revisionId?: string;
 }
 
 /** Canonical first snapshot for a decision row persisted in the same unit of work. */
@@ -49,6 +52,8 @@ export const decisionReceiptLifecycleRepository = {
       eventKey,
       expectedPreviousDigest: input.expectedPreviousDigest,
       content: input.content,
+      receiptId: input.receiptId,
+      revisionId: input.revisionId,
     });
   },
 };

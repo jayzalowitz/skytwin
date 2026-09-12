@@ -10,8 +10,6 @@ import {
   type JoinedDecisionReceiptContentV1,
   type DecisionReceiptEventKey,
   type DecisionReceiptArtifactKind,
-  type DecisionReceiptApprovalSnapshotV1,
-  type DecisionReceiptBarrierSnapshotV1,
   type DecisionReceiptExecutionPlanSnapshotV1,
   type DecisionReceiptExecutionResultSnapshotV1,
   type DecisionReceiptPreferenceHistorySnapshotV1,
@@ -19,9 +17,12 @@ import {
 import type { PoolClient } from 'pg';
 import { randomUUID } from 'node:crypto';
 import { withTransaction } from '../connection.js';
-import type { DecisionReceiptRevisionRow, DecisionReceiptRow } from '../types.js';
+import type { ApprovalRequestRow, DecisionReceiptRevisionRow, DecisionReceiptRow } from '../types.js';
+import type { PreEffectBarrierRow } from './pre-effect-barrier-repository.js';
 import {
   decisionReceiptRowArtifactV1,
+  decisionReceiptApprovalRefV1,
+  decisionReceiptBarrierRefV1,
   type DecisionReceiptRowArtifactKind,
 } from './decision-receipt-artifacts.js';
 
@@ -49,6 +50,9 @@ export interface AppendDecisionReceiptInput {
   eventKey: DecisionReceiptEventKey;
   expectedPreviousDigest: string | null;
   content: JoinedDecisionReceiptContentV1;
+  /** Optional caller-owned IDs keep whole-transaction retries byte-stable. */
+  receiptId?: string;
+  revisionId?: string;
 }
 
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -95,32 +99,6 @@ async function hasExactly(
 
 function isoInstant(value: unknown): string {
   return value instanceof Date ? value.toISOString() : new Date(String(value)).toISOString();
-}
-
-function approvalSnapshot(row: Record<string, unknown>): DecisionReceiptApprovalSnapshotV1 {
-  const candidate = row['candidate_action'] as Record<string, unknown>;
-  return {
-    version: 1,
-    status: String(row['status']) as DecisionReceiptApprovalSnapshotV1['status'],
-    candidateActionId: String(candidate['id']),
-    requestedAt: isoInstant(row['requested_at']),
-    expiresAt: isoInstant(row['expires_at']),
-    respondedAt: row['responded_at'] == null ? null : isoInstant(row['responded_at']),
-  };
-}
-
-function barrierSnapshot(row: Record<string, unknown>): DecisionReceiptBarrierSnapshotV1 {
-  return {
-    version: 1,
-    status: String(row['status']) as DecisionReceiptBarrierSnapshotV1['status'],
-    effectType: String(row['effect_type']) as DecisionReceiptBarrierSnapshotV1['effectType'],
-    decisionId: String(row['decision_id']),
-    candidateActionId: row['action_id'] == null ? null : String(row['action_id']),
-    explanationId: row['explanation_id'] == null ? null : String(row['explanation_id']),
-    policyHash: joinedDecisionReceiptArtifactDigest('policy', row['policy_snapshot']),
-    createdAt: isoInstant(row['created_at']),
-    updatedAt: isoInstant(row['updated_at']),
-  };
 }
 
 function executionPlanSnapshot(row: Record<string, unknown>): DecisionReceiptExecutionPlanSnapshotV1 {
@@ -280,16 +258,18 @@ async function linkageIsOwned(
     const sameBarrier = previous?.barrier?.id === ref.id &&
       previous.barrier.canonicalHash === ref.canonicalHash;
     if (sameBarrier) continue;
-    const result = await client.query<Record<string, unknown>>(
+    const result = await client.query<PreEffectBarrierRow>(
       `SELECT * FROM pre_effect_barriers
         WHERE id = $1 AND user_id = $2 AND decision_id = $3
           AND ($4::UUID IS NULL OR action_id = $4)
           AND ($5::UUID IS NULL OR explanation_id = $5)`,
       [ref.id, userId, decisionId, ref.snapshot.candidateActionId, ref.snapshot.explanationId],
     );
-    if (!result.rows[0] || !snapshotMatches('barrier', ref, barrierSnapshot(result.rows[0]))) return false;
-    if (content.barrier?.id === ref.id) barrierStatus = result.rows[0]['status'];
-    if (content.policy?.barrierId === ref.id) barrierPolicySnapshot = result.rows[0]['policy_snapshot'];
+    const barrierRow = result.rows[0];
+    const barrier = barrierRow ? decisionReceiptBarrierRefV1(barrierRow) : null;
+    if (!barrier || !snapshotMatches('barrier', ref, barrier.snapshot)) return false;
+    if (content.barrier?.id === ref.id) barrierStatus = barrierRow!.status;
+    if (content.policy?.barrierId === ref.id) barrierPolicySnapshot = barrierRow!.policy_snapshot;
   }
 
   const evidenceByKind = new Map<'signal' | 'preference', string[]>([
@@ -320,9 +300,9 @@ async function linkageIsOwned(
           ref.kind,
           decisionReceiptRowArtifactV1(ref.kind, evidenceRow),
         ) !== ref.canonicalHash) return false;
-    // Legacy decisions can name signals.id directly. Account-bound Gmail
-    // decisions instead retain the stable connector source ID, so bind it to
-    // the opaque target in raw_event through the owned signals row. The
+    // Decisions may name signals.id directly. Earlier account-bound Gmail
+    // decisions retained the stable connector source ID, so accept both while
+    // binding either form to the opaque target through the owned signals row. The
     // database's composite signal -> gmail_message_refs FK enforces the
     // matching owner and connector account behind resource_ref_id.
     const isLegacyDecisionSignal = ref.kind === 'signal' && decisionSignalId === ref.id &&
@@ -330,7 +310,7 @@ async function linkageIsOwned(
       evidenceRow['resource_ref_id'] == null;
     const isGmailDecisionSignal = ref.kind === 'signal' && evidenceRow['source'] === 'gmail' &&
       typeof evidenceRow['source_signal_id'] === 'string' &&
-      evidenceRow['source_signal_id'] === decisionSignalId &&
+      (ref.id === decisionSignalId || evidenceRow['source_signal_id'] === decisionSignalId) &&
       typeof evidenceRow['connector_account_id'] === 'string' &&
       typeof evidenceRow['resource_ref_id'] === 'string' &&
       evidenceRow['resource_ref_id'] === decisionMessageRefId;
@@ -411,15 +391,15 @@ async function linkageIsOwned(
     const sameApproval = previous?.approvalRequest?.id === content.approvalRequest.id &&
       previous.approvalRequest.canonicalHash === content.approvalRequest.canonicalHash;
     if (!sameApproval) {
-    const approval = await client.query<Record<string, unknown>>(
+    const approval = await client.query<ApprovalRequestRow>(
       'SELECT * FROM approval_requests WHERE id = $1 AND user_id = $2 AND decision_id = $3',
       [content.approvalRequest.id, userId, decisionId],
     );
-    if (!approval.rows[0] || !snapshotMatches(
-      'approval', content.approvalRequest, approvalSnapshot(approval.rows[0]),
-    )) return false;
-    approvalStatus = approval.rows[0]['status'];
-    const approvedCandidate = approval.rows[0]['candidate_action'];
+    const approvalRow = approval.rows[0];
+    const approvalRef = approvalRow ? decisionReceiptApprovalRefV1(approvalRow) : null;
+    if (!approvalRef || !snapshotMatches('approval', content.approvalRequest, approvalRef.snapshot)) return false;
+    approvalStatus = approvalRow!.status;
+    const approvedCandidate = approvalRow!.candidate_action;
     if (content.candidateAction && (
       !approvedCandidate || typeof approvedCandidate !== 'object' ||
       (approvedCandidate as Record<string, unknown>)['id'] !== content.candidateAction.id
@@ -589,12 +569,12 @@ async function appendTransaction(
         return { success: false, code: 'chain_conflict' };
       }
       root = (await client.query<DecisionReceiptRow>(
-        `INSERT INTO decision_receipts (user_id, decision_id)
-         SELECT $1, decision.id FROM decisions decision
+        `INSERT INTO decision_receipts (id, user_id, decision_id)
+         SELECT $3, $1, decision.id FROM decisions decision
           WHERE decision.id = $2 AND decision.user_id = $1
          ON CONFLICT (decision_id) DO NOTHING
          RETURNING *`,
-        [userId, input.content.decision.id],
+        [userId, input.content.decision.id, input.receiptId ?? randomUUID()],
       )).rows[0];
       if (!root) {
         root = (await client.query<DecisionReceiptRow>(
@@ -634,7 +614,7 @@ async function appendTransaction(
       }
     }
 
-    const revisionId = randomUUID();
+    const revisionId = input.revisionId ?? randomUUID();
     const revisionDigest = joinedDecisionReceiptRevisionDigest({
       revisionId,
       receiptId: root.id,
@@ -675,7 +655,9 @@ function validateAppendInput(
   input: AppendDecisionReceiptInput,
 ): string | null {
   if (!UUID.test(userId) || !isDecisionReceiptEventKey(input.eventKey) ||
-      (input.expectedPreviousDigest !== null && !SHA256.test(input.expectedPreviousDigest))) {
+      (input.expectedPreviousDigest !== null && !SHA256.test(input.expectedPreviousDigest)) ||
+      (input.receiptId !== undefined && !UUID.test(input.receiptId)) ||
+      (input.revisionId !== undefined && !UUID.test(input.revisionId))) {
     return null;
   }
   try {

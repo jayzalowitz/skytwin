@@ -1,9 +1,15 @@
 import {
   joinedDecisionReceiptArtifactDigest,
+  type DecisionReceiptApprovalRef,
+  type DecisionReceiptApprovalSnapshotV1,
   type DecisionReceiptArtifactKind,
   type DecisionReceiptArtifactRef,
+  type DecisionReceiptBarrierRef,
+  type DecisionReceiptBarrierSnapshotV1,
   type DecisionReceiptEvidenceRef,
 } from '@skytwin/shared-types';
+import type { ApprovalRequestRow } from '../types.js';
+import type { PreEffectBarrierRow } from './pre-effect-barrier-repository.js';
 
 export type DecisionReceiptRowArtifactKind = Extract<
   DecisionReceiptArtifactKind,
@@ -48,6 +54,10 @@ function normalize(value: unknown): unknown {
   return value;
 }
 
+function isoInstant(value: Date): string {
+  return value.toISOString();
+}
+
 /**
  * Stable v1 projection for row-backed receipt artifacts. Unknown/future DB
  * columns are deliberately ignored; changing this allowlist requires v2.
@@ -84,4 +94,53 @@ export function decisionReceiptRowEvidenceRefV1(
   row: Record<string, unknown>,
 ): DecisionReceiptEvidenceRef {
   return { ...decisionReceiptRowArtifactRefV1(kind, row), kind };
+}
+
+/** Canonical approval snapshot/reference derived from the inserted database row. */
+export function decisionReceiptApprovalRefV1(
+  row: ApprovalRequestRow,
+): DecisionReceiptApprovalRef {
+  const candidate = row.candidate_action;
+  const candidateActionId = candidate['id'];
+  if (!UUID.test(row.id) || typeof candidateActionId !== 'string' || !UUID.test(candidateActionId)) {
+    throw new TypeError('cannot build approval receipt reference without a candidate UUID');
+  }
+  const snapshot: DecisionReceiptApprovalSnapshotV1 = {
+    version: 1,
+    status: row.status as DecisionReceiptApprovalSnapshotV1['status'],
+    candidateActionId,
+    requestedAt: isoInstant(row.requested_at),
+    expiresAt: isoInstant(row.expires_at),
+    respondedAt: row.responded_at === null ? null : isoInstant(row.responded_at),
+  };
+  return {
+    id: row.id,
+    canonicalHash: joinedDecisionReceiptArtifactDigest('approval', snapshot),
+    snapshot,
+  };
+}
+
+/** Canonical barrier snapshot/reference derived from the inserted database row. */
+export function decisionReceiptBarrierRefV1(
+  row: PreEffectBarrierRow,
+): DecisionReceiptBarrierRef {
+  const snapshot: DecisionReceiptBarrierSnapshotV1 = {
+    version: 1,
+    status: row.status,
+    effectType: row.effect_type,
+    decisionId: row.decision_id ?? '',
+    candidateActionId: row.action_id,
+    explanationId: row.explanation_id,
+    policyHash: joinedDecisionReceiptArtifactDigest('policy', row.policy_snapshot),
+    createdAt: isoInstant(row.created_at),
+    updatedAt: isoInstant(row.updated_at),
+  };
+  if (!UUID.test(row.id) || !UUID.test(snapshot.decisionId)) {
+    throw new TypeError('cannot build barrier receipt reference without a decision UUID');
+  }
+  return {
+    id: row.id,
+    canonicalHash: joinedDecisionReceiptArtifactDigest('barrier', snapshot),
+    snapshot,
+  };
 }

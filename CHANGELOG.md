@@ -1,5 +1,15 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [Unreleased] — Gated Inbox proposal persistence
+
+### Added
+
+- Service-authenticated Gmail ingestion can now persist one review-only archive proposal when `SKYTWIN_GMAIL_ARCHIVE_ENABLED=true` and repository truth says the owned message is currently in the Inbox. The decision, canonical candidate and complete risk, explanation, blocked pre-effect barrier, pending single-confirmation approval, and three-stage joined receipt are committed atomically. The route returns before ordinary interpretation, LLM composition, memory writes, credentials, routing, spend, or provider access, and replay returns the immutable graph without emitting a second approval event.
+
+### Changed
+
+- Gated proposal decisions use the repository-owned signal UUID as their idempotency key, keeping connector source IDs out of their receipts and allowing equal source IDs on two owned accounts. Disabled-path ingestion retains its existing connector-source contract and also recovers proposal UUIDs, so changing the gate does not duplicate completed work.
+
 ## [Unreleased] — Proposal-only Inbox boundary
 
 ### Fixed
