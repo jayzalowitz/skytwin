@@ -51,6 +51,12 @@ export type {
   RespondGmailArchiveApprovalInput,
   RespondGmailArchiveApprovalResult,
 } from './gmail-archive-approval-response-repository.js';
+export { gmailArchivePreparationRepository } from './gmail-archive-preparation-repository.js';
+export type {
+  GmailArchivePreparationBundle,
+  PrepareGmailArchiveInput,
+  PrepareGmailArchiveResult,
+} from './gmail-archive-preparation-repository.js';
 
 export { feedbackRepository } from './feedback-repository.js';
 export type { CreateFeedbackInput } from './feedback-repository.js';
