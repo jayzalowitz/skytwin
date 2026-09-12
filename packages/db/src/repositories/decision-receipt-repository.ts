@@ -228,7 +228,13 @@ async function linkageIsOwned(
   if (decisionResult.rows.length !== 1 || (!previous && joinedDecisionReceiptArtifactDigest('decision',
     decisionReceiptRowArtifactV1('decision', decisionResult.rows[0]!),
   ) !== content.decision.canonicalHash)) return false;
-  decisionSignalId = decisionResult.rows[0]!['signal_id'];
+  const decisionRow = decisionResult.rows[0]!;
+  decisionSignalId = decisionRow['signal_id'];
+  const rawEvent = decisionRow['raw_event'];
+  const decisionMessageRefId = rawEvent && typeof rawEvent === 'object' && !Array.isArray(rawEvent) &&
+    typeof (rawEvent as Record<string, unknown>)['messageRefId'] === 'string'
+    ? (rawEvent as Record<string, unknown>)['messageRefId']
+    : null;
   const actionId = content.candidateAction?.id ?? content.risk?.candidateActionId;
   if (content.candidateAction && !evaluationPreviouslyValidated && !await artifactMatches(
     client,
@@ -304,15 +310,32 @@ async function linkageIsOwned(
   for (const ref of content.evidence) {
     if (evaluationPreviouslyValidated) continue;
     const table = ref.kind === 'signal' ? 'signals' : 'preferences';
-    if (!await artifactMatches(
-      client,
+    const evidenceResult = await client.query<Record<string, unknown>>(
       `SELECT * FROM ${table} WHERE user_id = $1 AND id = $2`,
       [userId, ref.id],
-      ref.canonicalHash,
-      ref.kind,
-    )) return false;
+    );
+    const evidenceRow = evidenceResult.rows[0];
+    if (!evidenceRow || evidenceResult.rows.length !== 1 ||
+        joinedDecisionReceiptArtifactDigest(
+          ref.kind,
+          decisionReceiptRowArtifactV1(ref.kind, evidenceRow),
+        ) !== ref.canonicalHash) return false;
+    // Legacy decisions can name signals.id directly. Account-bound Gmail
+    // decisions instead retain the stable connector source ID, so bind it to
+    // the opaque target in raw_event through the owned signals row. The
+    // database's composite signal -> gmail_message_refs FK enforces the
+    // matching owner and connector account behind resource_ref_id.
+    const isLegacyDecisionSignal = ref.kind === 'signal' && decisionSignalId === ref.id &&
+      evidenceRow['source_signal_id'] == null && evidenceRow['connector_account_id'] == null &&
+      evidenceRow['resource_ref_id'] == null;
+    const isGmailDecisionSignal = ref.kind === 'signal' && evidenceRow['source'] === 'gmail' &&
+      typeof evidenceRow['source_signal_id'] === 'string' &&
+      evidenceRow['source_signal_id'] === decisionSignalId &&
+      typeof evidenceRow['connector_account_id'] === 'string' &&
+      typeof evidenceRow['resource_ref_id'] === 'string' &&
+      evidenceRow['resource_ref_id'] === decisionMessageRefId;
     const usedByExplanation = containsExactString(explanationEvidence, ref.id) ||
-      (ref.kind === 'signal' && decisionSignalId === ref.id &&
+      ((isLegacyDecisionSignal || isGmailDecisionSignal) &&
         containsExactString(explanationEvidence, `raw_${decisionId}`));
     if (!usedByExplanation) return false;
   }
@@ -522,8 +545,9 @@ async function appendTransaction(
   userId: string,
   input: AppendDecisionReceiptInput,
   contentDigest: string,
+  transactionClient?: PoolClient,
 ): Promise<AppendDecisionReceiptResult> {
-  return withTransaction(async (client) => {
+  const append = async (client: PoolClient): Promise<AppendDecisionReceiptResult> => {
     let root = (await client.query<DecisionReceiptRow>(
       `SELECT receipt.* FROM decision_receipts receipt
         JOIN decisions decision ON decision.id = receipt.decision_id
@@ -642,7 +666,24 @@ async function appendTransaction(
     const inserted = normalizeRevisionRow(insertedRaw);
     if (!inserted) throw new TypeError('database returned an invalid receipt sequence');
     return { success: true, created: true, receipt: root, revision: inserted };
-  });
+  };
+  return transactionClient ? append(transactionClient) : withTransaction(append);
+}
+
+function validateAppendInput(
+  userId: string,
+  input: AppendDecisionReceiptInput,
+): string | null {
+  if (!UUID.test(userId) || !isDecisionReceiptEventKey(input.eventKey) ||
+      (input.expectedPreviousDigest !== null && !SHA256.test(input.expectedPreviousDigest))) {
+    return null;
+  }
+  try {
+    validateJoinedDecisionReceiptContent(input.content);
+    return joinedDecisionReceiptContentDigest(input.content);
+  } catch {
+    return null;
+  }
 }
 
 export const decisionReceiptRepository = {
@@ -650,17 +691,8 @@ export const decisionReceiptRepository = {
     userId: string,
     input: AppendDecisionReceiptInput,
   ): Promise<AppendDecisionReceiptResult> {
-    if (!UUID.test(userId) || !isDecisionReceiptEventKey(input.eventKey) ||
-        (input.expectedPreviousDigest !== null && !SHA256.test(input.expectedPreviousDigest))) {
-      return { success: false, code: 'invalid_content' };
-    }
-    let contentDigest: string;
-    try {
-      validateJoinedDecisionReceiptContent(input.content);
-      contentDigest = joinedDecisionReceiptContentDigest(input.content);
-    } catch {
-      return { success: false, code: 'invalid_content' };
-    }
+    const contentDigest = validateAppendInput(userId, input);
+    if (!contentDigest) return { success: false, code: 'invalid_content' };
     // CockroachDB may restart either concurrent root creation or a competing
     // append. The event key makes a commit-then-retry converge on the existing
     // immutable revision rather than append twice.
@@ -674,6 +706,21 @@ export const decisionReceiptRepository = {
         if (code !== '40001' || attempt >= 2) throw error;
       }
     }
+  },
+
+  /**
+   * Append inside a caller-owned transaction. The caller owns CockroachDB
+   * serialization retries for the entire transaction; the immutable event
+   * key makes a commit-then-retry converge on the same revision.
+   */
+  async appendForUserInTransaction(
+    client: PoolClient,
+    userId: string,
+    input: AppendDecisionReceiptInput,
+  ): Promise<AppendDecisionReceiptResult> {
+    const contentDigest = validateAppendInput(userId, input);
+    if (!contentDigest) return { success: false, code: 'invalid_content' };
+    return appendTransaction(userId, input, contentDigest, client);
   },
 
   async findByDecisionForUser(

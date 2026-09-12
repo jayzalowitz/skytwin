@@ -13,6 +13,16 @@ All notable changes to SkyTwin will be documented in this file.
 - Approval first-confirmation, single-response, and batch-response transitions now require `expires_at > now()` in their atomic database updates. A route read made before expiry can no longer mint a confirmation token or resolve an approval after its consent window closes.
 - The web service worker no longer queues approval responses for offline replay. It also revalidates existing queue records before network access, dropping responses persisted by an older worker while leaving unrelated approval maintenance requests unchanged. Approval responses are sent only while online, preserving their time-bound user context instead of delivering a deferred click after reconnection.
 
+## [Unreleased] — Joined receipt lifecycle writes
+
+### Added
+
+- The joined decision receipt kernel now supports appends inside a caller-owned CockroachDB transaction, with deterministic lifecycle event keys and reusable canonical row-reference builders. Later decision, policy, approval, and execution lifecycles can therefore make their primary state change and immutable receipt revision one atomic unit while retaining the kernel's owner, artifact, compare-and-swap, and replay checks. No production decision or execution route is enabled by this prerequisite.
+
+### Fixed
+
+- Gmail receipt evidence now binds the decision's stable connector source ID to the owned `signals.id` UUID and exact opaque message reference used by the decision. Connector-account and message-reference ownership remain enforced relationally by the existing composite foreign key; the immutable v1 signal artifact projection is unchanged.
+
 ## [Unreleased] — Restricted Gmail Inbox mutation boundary
 
 ### Added

@@ -103,6 +103,7 @@ export {
   explanationRepository,
   inferenceReceiptRepository,
   decisionReceiptRepository,
+  decisionReceiptLifecycleRepository,
   feedbackRepository,
 } from './repositories/index.js';
 export type {
@@ -119,8 +120,15 @@ export type {
   AppendDecisionReceiptFailureCode,
   AppendDecisionReceiptInput,
   AppendDecisionReceiptResult,
+  AppendDecisionReceiptLifecycleInput,
   FindDecisionReceiptResult,
   CreateFeedbackInput,
+} from './repositories/index.js';
+
+export {
+  buildDecisionRecordedReceiptContentV1,
+  decisionReceiptRowArtifactRefV1,
+  decisionReceiptRowEvidenceRefV1,
 } from './repositories/index.js';
 
 export {

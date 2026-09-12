@@ -6,15 +6,26 @@ import {
   joinedDecisionReceiptRevisionDigest,
   type JoinedDecisionReceiptContentV1,
 } from '@skytwin/shared-types';
+import type { PoolClient } from 'pg';
 
-const { queryMock } = vi.hoisted(() => ({ queryMock: vi.fn() }));
+const { queryMock, withTransactionMock } = vi.hoisted(() => {
+  const queryMock = vi.fn();
+  return {
+    queryMock,
+    withTransactionMock: vi.fn(async (fn: (client: { query: typeof queryMock }) => unknown) =>
+      fn({ query: queryMock })),
+  };
+});
 vi.mock('../connection.js', () => ({
-  withTransaction: vi.fn(async (fn: (client: { query: typeof queryMock }) => unknown) =>
-    fn({ query: queryMock })),
+  withTransaction: withTransactionMock,
 }));
 
 import { decisionReceiptRepository } from '../repositories/decision-receipt-repository.js';
-import { decisionReceiptRowArtifactV1 } from '../repositories/decision-receipt-artifacts.js';
+import {
+  decisionReceiptRowArtifactRefV1,
+  decisionReceiptRowArtifactV1,
+  decisionReceiptRowEvidenceRefV1,
+} from '../repositories/decision-receipt-artifacts.js';
 
 const userId = '11111111-1111-4111-8111-111111111111';
 const decisionId = '22222222-2222-4222-8222-222222222222';
@@ -61,10 +72,13 @@ function installHappyQueries(options: {
   explanation?: Record<string, unknown>;
   barrier?: Record<string, unknown>;
   existingRoot?: Record<string, unknown>;
+  existingRevisions?: Record<string, unknown>[];
+  decision?: Record<string, unknown>;
+  signal?: Record<string, unknown>;
 } = {}): void {
   queryMock.mockImplementation(async (rawSql: string, params: unknown[] = []) => {
     const sql = String(rawSql);
-    if (sql.includes('FROM decisions WHERE')) return { rows: [decisionRow] };
+    if (sql.includes('FROM decisions WHERE')) return { rows: [options.decision ?? decisionRow] };
     if (sql.includes('SELECT risk_assessment FROM candidate_actions')) {
       return { rows: options.candidate ? [{ risk_assessment: options.candidate['risk_assessment'] }] : [] };
     }
@@ -81,6 +95,12 @@ function installHappyQueries(options: {
     if (sql.includes('FROM execution_plans')) {
       return { rows: options.executionPlan ? [options.executionPlan] : [] };
     }
+    if (sql.includes('count(*)') && sql.includes('FROM signals')) {
+      return { rows: [{ count: options.signal ? '1' : '0' }] };
+    }
+    if (sql.includes('FROM signals WHERE')) {
+      return { rows: options.signal ? [options.signal] : [] };
+    }
     if (sql.includes('FROM decision_receipts receipt')) {
       return { rows: options.existingRoot ? [options.existingRoot] : [] };
     }
@@ -89,16 +109,16 @@ function installHappyQueries(options: {
     }
     if (sql.includes('SELECT id FROM decision_receipts')) return { rows: [{ id: rootId }] };
     if (sql.includes('event_key = $2')) return { rows: [] };
-    if (sql.includes('ORDER BY sequence ASC')) return { rows: [] };
+    if (sql.includes('ORDER BY sequence ASC')) return { rows: options.existingRevisions ?? [] };
     if (sql.includes('ORDER BY sequence DESC')) return { rows: [] };
     if (sql.includes('INSERT INTO decision_receipt_revisions')) {
       return { rows: [{
-        id: params[0], receipt_id: rootId, sequence: 1, event_key: params[3],
-        previous_digest: null, content_digest: params[5], revision_digest: params[6], stage: params[7],
+        id: params[0], receipt_id: rootId, sequence: params[2], event_key: params[3],
+        previous_digest: params[4], content_digest: params[5], revision_digest: params[6], stage: params[7],
         disposition: params[8], content: JSON.parse(params[9] as string),
-        candidate_action_id: null, barrier_id: null, explanation_id: null,
-        approval_request_id: null, execution_plan_id: null, execution_result_id: null,
-        execution_disposition: null, correction_of_revision_id: null, trusted: true,
+        candidate_action_id: params[10], barrier_id: params[11], explanation_id: params[12],
+        approval_request_id: params[13], execution_plan_id: params[14], execution_result_id: params[15],
+        execution_disposition: params[16], correction_of_revision_id: params[17], trusted: true,
         created_at: new Date(),
       }] };
     }
@@ -189,9 +209,86 @@ function actionableContent(
   };
 }
 
+function gmailPolicyScenario(
+  signalOverrides: Record<string, unknown> = {},
+  decisionOverrides: Record<string, unknown> = {},
+): {
+  content: JoinedDecisionReceiptContentV1;
+  decision: Record<string, unknown>;
+  signal: Record<string, unknown>;
+  rows: ReturnType<typeof chainRows>;
+  root: Record<string, unknown>;
+  previous: Record<string, unknown>;
+  previousDigest: string;
+} {
+  const sourceSignalId = 'sig_gmail_opaque_source';
+  const messageRefId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const decision = {
+    ...decisionRow,
+    signal_id: sourceSignalId,
+    raw_event: { messageRefId },
+    ...decisionOverrides,
+  };
+  const policySnapshot = { allowed: true, requiresApproval: false, policyIds: [] };
+  const rows = chainRows(policySnapshot, 'prepared');
+  rows.explanation['evidence_used'] = [{ evidenceId: `raw_${decisionId}` }];
+  const signal = {
+    id: eventId, user_id: userId, source: 'gmail', type: 'email', domain: 'email', data: {},
+    timestamp: instant, retention_until: instant,
+    source_signal_id: sourceSignalId,
+    connector_account_id: planId,
+    resource_ref_id: messageRefId,
+    ...signalOverrides,
+  };
+  const content = actionableContent('execution_admitted', policySnapshot, 'prepared');
+  content.stage = 'policy_evaluated';
+  content.disposition = 'allowed';
+  delete content.executionPlan;
+  const evidenceRef = decisionReceiptRowEvidenceRefV1('signal', signal);
+  const explanationRef = decisionReceiptRowArtifactRefV1('explanation', rows.explanation);
+  content.decision = decisionReceiptRowArtifactRefV1('decision', decision);
+  content.explanation = explanationRef;
+  content.evidence = [evidenceRef];
+  content.policyEvaluations = [{
+    ...content.policyEvaluations[0]!, explanation: explanationRef, evidence: [evidenceRef],
+  }];
+
+  const previousContent = baseContent();
+  previousContent.decision = content.decision;
+  const previousContentDigest = joinedDecisionReceiptContentDigest(previousContent);
+  const previousEventKey = eventKey('gmail_decision_recorded');
+  const previousDigest = joinedDecisionReceiptRevisionDigest({
+    revisionId,
+    receiptId: rootId,
+    decisionId,
+    userId,
+    sequence: 1,
+    eventKey: previousEventKey,
+    previousDigest: null,
+    contentDigest: previousContentDigest,
+  });
+  return {
+    content,
+    decision,
+    signal,
+    rows,
+    root: { id: rootId, user_id: userId, decision_id: decisionId, created_at: instant },
+    previous: {
+      id: revisionId, receipt_id: rootId, sequence: 1, event_key: previousEventKey,
+      previous_digest: null, content_digest: previousContentDigest, revision_digest: previousDigest,
+      stage: 'decision_recorded', disposition: 'pending', content: previousContent, trusted: true,
+      candidate_action_id: null, barrier_id: null, explanation_id: null,
+      approval_request_id: null, execution_plan_id: null, execution_result_id: null,
+      execution_disposition: null, correction_of_revision_id: null, created_at: instant,
+    },
+    previousDigest,
+  };
+}
+
 describe('decisionReceiptRepository', () => {
   beforeEach(() => {
     queryMock.mockReset();
+    withTransactionMock.mockClear();
   });
 
   it('creates the owned root and first immutable revision atomically', async () => {
@@ -202,6 +299,29 @@ describe('decisionReceiptRepository', () => {
     });
     expect(result).toMatchObject({ success: true, created: true, revision: { sequence: 1 } });
     expect(result.success && result.revision.content_digest).toBe(joinedDecisionReceiptContentDigest(content));
+  });
+
+  it('appends on a caller-owned transaction without opening a nested transaction', async () => {
+    installHappyQueries();
+    const client = { query: queryMock } as unknown as PoolClient;
+    const result = await decisionReceiptRepository.appendForUserInTransaction(client, userId, {
+      eventKey: eventKey('decision_created'), expectedPreviousDigest: null, content: baseContent(),
+    });
+    expect(result).toMatchObject({ success: true, created: true, revision: { sequence: 1 } });
+    expect(queryMock).toHaveBeenCalled();
+    expect(withTransactionMock).not.toHaveBeenCalled();
+  });
+
+  it('propagates serialization failures to the caller transaction without an internal retry', async () => {
+    const serializationFailure = Object.assign(new Error('retry caller transaction'), { code: '40001' });
+    const clientQuery = vi.fn().mockRejectedValue(serializationFailure);
+    await expect(decisionReceiptRepository.appendForUserInTransaction(
+      { query: clientQuery } as unknown as PoolClient,
+      userId,
+      { eventKey: eventKey('transaction_retry'), expectedPreviousDigest: null, content: baseContent() },
+    )).rejects.toBe(serializationFailure);
+    expect(clientQuery).toHaveBeenCalledTimes(1);
+    expect(withTransactionMock).not.toHaveBeenCalled();
   });
 
   it('replays an immutable event without revalidating mutable source rows', async () => {
@@ -472,6 +592,90 @@ describe('decisionReceiptRepository', () => {
     })).resolves.toEqual({ success: false, code: 'linkage_mismatch' });
   });
 
+  it('binds Gmail source IDs to the owned signal UUID used by receipt evidence', async () => {
+    const scenario = gmailPolicyScenario();
+    installHappyQueries({
+      ...scenario.rows,
+      decision: scenario.decision,
+      signal: scenario.signal,
+      existingRoot: scenario.root,
+      existingRevisions: [scenario.previous],
+    });
+
+    await expect(decisionReceiptRepository.appendForUserInTransaction(
+      { query: queryMock } as unknown as PoolClient,
+      userId,
+      {
+        eventKey: eventKey('gmail_signal'),
+        expectedPreviousDigest: scenario.previousDigest,
+        content: scenario.content,
+      },
+    )).resolves.toMatchObject({ success: true, created: true, revision: { sequence: 2 } });
+    expect(queryMock.mock.calls.some(([sql]) => String(sql).includes('FROM signals WHERE'))).toBe(true);
+  });
+
+  it.each([
+    ['cross-account signal with the same source ID', {
+      connector_account_id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      resource_ref_id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+    }, {}],
+    ['wrong opaque resource', { resource_ref_id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd' }, {}],
+    ['wrong signal source type', { source: 'google_calendar' }, {}],
+    ['wrong connector source ID', { source_signal_id: 'sig_gmail_other_source' }, {}],
+    ['missing connector source ID', { source_signal_id: null }, {}],
+    ['missing signal resource', { resource_ref_id: null }, {}],
+    ['missing decision resource', {}, { raw_event: {} }],
+    ['mismatched decision resource', {}, {
+      raw_event: { messageRefId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd' },
+    }],
+  ] as const)('rejects Gmail receipt evidence with %s', async (_label, signalOverrides, decisionOverrides) => {
+    const scenario = gmailPolicyScenario(signalOverrides, decisionOverrides);
+    installHappyQueries({
+      ...scenario.rows,
+      decision: scenario.decision,
+      signal: scenario.signal,
+      existingRoot: scenario.root,
+      existingRevisions: [scenario.previous],
+    });
+    await expect(decisionReceiptRepository.appendForUserInTransaction(
+      { query: queryMock } as unknown as PoolClient,
+      userId,
+      {
+        eventKey: eventKey('gmail_signal_invalid'),
+        expectedPreviousDigest: scenario.previousDigest,
+        content: scenario.content,
+      },
+    )).resolves.toEqual({ success: false, code: 'linkage_mismatch' });
+  });
+
+  it('preserves legacy receipt evidence that directly names the signal UUID', async () => {
+    const scenario = gmailPolicyScenario({
+      source: 'legacy',
+      source_signal_id: null,
+      connector_account_id: null,
+      resource_ref_id: null,
+    }, {
+      signal_id: eventId,
+      raw_event: {},
+    });
+    installHappyQueries({
+      ...scenario.rows,
+      decision: scenario.decision,
+      signal: scenario.signal,
+      existingRoot: scenario.root,
+      existingRevisions: [scenario.previous],
+    });
+    await expect(decisionReceiptRepository.appendForUserInTransaction(
+      { query: queryMock } as unknown as PoolClient,
+      userId,
+      {
+        eventKey: eventKey('legacy_signal'),
+        expectedPreviousDigest: scenario.previousDigest,
+        content: scenario.content,
+      },
+    )).resolves.toMatchObject({ success: true, created: true, revision: { sequence: 2 } });
+  });
+
   it('binds execution status into the server-derived artifact hash', async () => {
     const policySnapshot = { allowed: true, requiresApproval: false, policyIds: [] };
     const rows = chainRows(policySnapshot, 'prepared');
@@ -515,5 +719,25 @@ describe('decision receipt artifact v1 projections', () => {
       id: actionId, user_id: userId, source: 'test', type: 'test', domain: 'test', data: {},
       timestamp: instant.toISOString(), retention_until: instant.toISOString(),
     }));
+  });
+
+  it('keeps connector linkage outside the immutable v1 signal projection', () => {
+    const base = {
+      id: eventId, user_id: userId, source: 'gmail', type: 'email', domain: 'email', data: {},
+      timestamp: instant, retention_until: instant, source_signal_id: 'sig_gmail_source',
+      connector_account_id: actionId, resource_ref_id: barrierId,
+    };
+    const original = joinedDecisionReceiptArtifactDigest(
+      'signal', decisionReceiptRowArtifactV1('signal', base),
+    );
+    expect(original).toBe(joinedDecisionReceiptArtifactDigest(
+      'signal', decisionReceiptRowArtifactV1('signal', { ...base, resource_ref_id: approvalId }),
+    ));
+    expect(decisionReceiptRowEvidenceRefV1('signal', base)).toMatchObject({
+      id: eventId, kind: 'signal', canonicalHash: original,
+    });
+    expect(decisionReceiptRowArtifactRefV1('inference_completion', {
+      decision_id: decisionId, explanation_id: explanationId, completed_at: instant,
+    })).toMatchObject({ id: decisionId, canonicalHash: expect.stringMatching(/^[0-9a-f]{64}$/) });
   });
 });
