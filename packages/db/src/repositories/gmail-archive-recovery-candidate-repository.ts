@@ -1,10 +1,20 @@
 import { GMAIL_INBOX_MUTATION_CANDIDATE_SCHEMA } from '@skytwin/shared-types';
+import { createHash } from 'node:crypto';
 import { query } from '../connection.js';
 import { GMAIL_ARCHIVE_RECOVERY_GRACE_SECONDS } from './gmail-archive-recovery-policy.js';
 
-const DEFAULT_LIMIT = 25;
-const MAX_LIMIT = 100;
+const DEFAULT_PAGE_LIMIT = 25;
+const MAX_PAGE_LIMIT = 25;
+const MAX_SWEEP_CANDIDATES = 100;
+const CURSOR_PREFIX = 'gmail_archive_recovery_v1';
+const MAX_CURSOR_LENGTH = 512;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const CURSOR_TIMESTAMP = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3})(?:([0-9]{3}))?Z$/;
+
+declare const gmailArchiveRecoveryCursorBrand: unique symbol;
+export type GmailArchiveRecoveryCursor = string & {
+  readonly [gmailArchiveRecoveryCursorBrand]: 'GmailArchiveRecoveryCursor';
+};
 
 export interface GmailArchiveRecoveryCandidate {
   readonly userId: string;
@@ -13,15 +23,35 @@ export interface GmailArchiveRecoveryCandidate {
 
 export interface ListGmailArchiveRecoveryCandidatesInput {
   readonly limit: number;
+  /** Opaque continuation returned by the preceding page; never recovery authority. */
+  readonly cursor?: GmailArchiveRecoveryCursor;
 }
 
 export type ListGmailArchiveRecoveryCandidatesResult =
-  | { ok: true; candidates: readonly Readonly<GmailArchiveRecoveryCandidate>[] }
+  | {
+    ok: true;
+    candidates: readonly Readonly<GmailArchiveRecoveryCandidate>[];
+    /** Scheduling continuation only. Its opacity is not a confidentiality guarantee. */
+    nextCursor: GmailArchiveRecoveryCursor | null;
+  }
   | { ok: false; error: 'invalid_input' | 'integrity_conflict' };
 
 interface CandidateRow {
   user_id: string;
   approval_id: string;
+  barrier_id: string;
+  updated_at_text: string;
+}
+
+interface CursorState {
+  readonly updatedAt: string;
+  readonly barrierId: string;
+  readonly remaining: number;
+}
+
+interface CandidatePage {
+  readonly candidates: readonly Readonly<GmailArchiveRecoveryCandidate>[];
+  readonly lastKey: Readonly<Pick<CursorState, 'updatedAt' | 'barrierId'>> | null;
 }
 
 type QueryCandidates = (
@@ -53,32 +83,134 @@ function ownData(value: unknown, keys: readonly string[]): Record<string, unknow
 }
 
 function snapshotInput(value: unknown): Readonly<ListGmailArchiveRecoveryCandidatesInput> | null {
-  const input = ownData(value, ['limit']);
+  const input = ownData(value, ['limit']) ?? ownData(value, ['cursor', 'limit']);
   if (!input || !Number.isSafeInteger(input['limit']) ||
-      (input['limit'] as number) < 1 || (input['limit'] as number) > MAX_LIMIT) return null;
-  return Object.freeze({ limit: input['limit'] as number });
+      (input['limit'] as number) < 1 ||
+      (input['limit'] as number) > MAX_PAGE_LIMIT) return null;
+  if (Object.prototype.hasOwnProperty.call(input, 'cursor') &&
+      typeof input['cursor'] !== 'string') return null;
+  return Object.freeze({
+    limit: input['limit'] as number,
+    ...(typeof input['cursor'] === 'string'
+      ? { cursor: input['cursor'] as GmailArchiveRecoveryCursor }
+      : {}),
+  });
 }
 
-function snapshotRows(
+function validCursorTimestamp(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  const match = CURSOR_TIMESTAMP.exec(value);
+  if (!match || match[2] === '000') return false;
+  const millisecondForm = `${match[1]}Z`;
+  try {
+    return new Date(millisecondForm).toISOString() === millisecondForm;
+  } catch {
+    return false;
+  }
+}
+
+function canonicalDbTimestamp(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const match = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(?:\.(\d{1,6}))?$/.exec(value);
+  if (!match) return null;
+  const microseconds = (match[3] ?? '').padEnd(6, '0');
+  const fraction = microseconds.slice(3) === '000'
+    ? microseconds.slice(0, 3)
+    : microseconds;
+  const canonical = `${match[1]}T${match[2]}.${fraction}Z`;
+  return validCursorTimestamp(canonical) ? canonical : null;
+}
+
+function cursorChecksum(encodedPayload: string): string {
+  return createHash('sha256')
+    .update(`${CURSOR_PREFIX}.${encodedPayload}`, 'utf8')
+    .digest('base64url');
+}
+
+// The checksum rejects corruption and noncanonical encodings. It is not a
+// secret or an authorization tag; cursor opacity is data minimization only.
+function encodeCursor(state: CursorState): GmailArchiveRecoveryCursor {
+  const payload = JSON.stringify([state.updatedAt, state.barrierId, state.remaining]);
+  const encodedPayload = Buffer.from(payload, 'utf8').toString('base64url');
+  return `${CURSOR_PREFIX}.${encodedPayload}.${cursorChecksum(encodedPayload)}` as
+    GmailArchiveRecoveryCursor;
+}
+
+function parseCursor(value: unknown): Readonly<CursorState> | null {
+  if (typeof value !== 'string' || value.length > MAX_CURSOR_LENGTH) return null;
+  const parts = value.split('.');
+  if (parts.length !== 3 || parts[0] !== CURSOR_PREFIX ||
+      !/^[A-Za-z0-9_-]+$/.test(parts[1] ?? '') ||
+      !/^[A-Za-z0-9_-]{43}$/.test(parts[2] ?? '')) return null;
+  const encodedPayload = parts[1]!;
+  if (parts[2] !== cursorChecksum(encodedPayload)) return null;
+  try {
+    const decoded = Buffer.from(encodedPayload, 'base64url');
+    if (decoded.toString('base64url') !== encodedPayload) return null;
+    const payload = JSON.parse(decoded.toString('utf8')) as unknown;
+    if (!Array.isArray(payload) || payload.length !== 3 ||
+        Object.getPrototypeOf(payload) !== Array.prototype ||
+        !validCursorTimestamp(payload[0]) ||
+        typeof payload[1] !== 'string' || !UUID.test(payload[1]) ||
+        !Number.isSafeInteger(payload[2]) || (payload[2] as number) < 1 ||
+        (payload[2] as number) >= MAX_SWEEP_CANDIDATES) return null;
+    const state = Object.freeze({
+      updatedAt: payload[0],
+      barrierId: payload[1],
+      remaining: payload[2] as number,
+    });
+    return encodeCursor(state) === value ? state : null;
+  } catch {
+    return null;
+  }
+}
+
+function compareKey(
+  left: Readonly<Pick<CursorState, 'updatedAt' | 'barrierId'>>,
+  right: Readonly<Pick<CursorState, 'updatedAt' | 'barrierId'>>,
+): number {
+  const leftInstant = left.updatedAt.length === 24
+    ? `${left.updatedAt.slice(0, -1)}000Z`
+    : left.updatedAt;
+  const rightInstant = right.updatedAt.length === 24
+    ? `${right.updatedAt.slice(0, -1)}000Z`
+    : right.updatedAt;
+  if (leftInstant !== rightInstant) return leftInstant < rightInstant ? -1 : 1;
+  if (left.barrierId === right.barrierId) return 0;
+  return left.barrierId < right.barrierId ? -1 : 1;
+}
+
+function snapshotPage(
   rows: unknown,
-  limit: number = MAX_LIMIT,
-): readonly Readonly<GmailArchiveRecoveryCandidate>[] | null {
+  limit: number = MAX_PAGE_LIMIT,
+  after: Readonly<Pick<CursorState, 'updatedAt' | 'barrierId'>> | null = null,
+): Readonly<CandidatePage> | null {
   if (!Array.isArray(rows) || !Number.isSafeInteger(limit) ||
-      limit < 1 || limit > MAX_LIMIT || rows.length > limit) return null;
+      limit < 1 || limit > MAX_PAGE_LIMIT || rows.length > limit) return null;
   const candidates: Readonly<GmailArchiveRecoveryCandidate>[] = [];
   const seen = new Set<string>();
+  let previous = after;
   for (const value of rows) {
-    const row = ownData(value, ['approval_id', 'user_id']);
+    const row = ownData(value, ['approval_id', 'barrier_id', 'updated_at_text', 'user_id']);
     const userId = row?.['user_id'];
     const approvalId = row?.['approval_id'];
+    const barrierId = row?.['barrier_id'];
+    const updatedAt = canonicalDbTimestamp(row?.['updated_at_text']);
     if (typeof userId !== 'string' || !UUID.test(userId) ||
-        typeof approvalId !== 'string' || !UUID.test(approvalId)) return null;
+        typeof approvalId !== 'string' || !UUID.test(approvalId) ||
+        typeof barrierId !== 'string' || !UUID.test(barrierId) || !updatedAt) return null;
+    const key = Object.freeze({ updatedAt, barrierId });
+    if (previous && compareKey(previous, key) >= 0) return null;
     const identity = `${userId}:${approvalId}`;
     if (seen.has(identity)) return null;
     seen.add(identity);
     candidates.push(Object.freeze({ userId, approvalId }));
+    previous = key;
   }
-  return Object.freeze(candidates);
+  return Object.freeze({
+    candidates: Object.freeze(candidates),
+    lastKey: previous === after ? null : previous,
+  });
 }
 
 /**
@@ -93,9 +225,17 @@ async function listWithQuery(
 ): Promise<ListGmailArchiveRecoveryCandidatesResult> {
   const input = snapshotInput(submitted);
   if (!input) return Object.freeze({ ok: false, error: 'invalid_input' });
+  const cursor = input.cursor === undefined ? null : parseCursor(input.cursor);
+  if (input.cursor !== undefined && !cursor) {
+    return Object.freeze({ ok: false, error: 'invalid_input' });
+  }
+  const remaining = cursor?.remaining ?? MAX_SWEEP_CANDIDATES;
+  const pageLimit = Math.min(input.limit, remaining);
   const result = await queryFn(
     `SELECT barrier.user_id::STRING AS user_id,
-            approval.id::STRING AS approval_id
+            approval.id::STRING AS approval_id,
+            barrier.id::STRING AS barrier_id,
+            (barrier.updated_at AT TIME ZONE 'UTC')::STRING AS updated_at_text
        FROM pre_effect_barriers AS barrier
        JOIN approval_requests AS approval
          ON approval.id::STRING = barrier.idempotency_key
@@ -130,26 +270,38 @@ async function listWithQuery(
              CASE WHEN lease.observation_state = 'started'
                   THEN lease.observation_deadline_at <= statement_timestamp()
                   ELSE lease.expires_at <= statement_timestamp() END)
+        AND ($3::BOOL = false OR
+             (barrier.updated_at, barrier.id) > ($4::TIMESTAMPTZ, $5::UUID))
       ORDER BY barrier.updated_at ASC, barrier.id ASC
-      LIMIT $3`,
+      LIMIT $6`,
     [
       GMAIL_INBOX_MUTATION_CANDIDATE_SCHEMA,
       GMAIL_ARCHIVE_RECOVERY_GRACE_SECONDS,
-      input.limit,
+      cursor !== null,
+      cursor?.updatedAt ?? null,
+      cursor?.barrierId ?? null,
+      pageLimit,
     ],
   );
-  const candidates = snapshotRows(result.rows, input.limit);
-  return candidates
-    ? Object.freeze({ ok: true, candidates })
-    : Object.freeze({ ok: false, error: 'integrity_conflict' });
+  const page = snapshotPage(result.rows, pageLimit, cursor);
+  if (!page) return Object.freeze({ ok: false, error: 'integrity_conflict' });
+  const remainingAfterPage = remaining - page.candidates.length;
+  const nextCursor = page.lastKey && page.candidates.length === pageLimit &&
+      remainingAfterPage > 0
+    ? encodeCursor({ ...page.lastKey, remaining: remainingAfterPage })
+    : null;
+  return Object.freeze({ ok: true, candidates: page.candidates, nextCursor });
 }
 
 export const gmailArchiveRecoveryCandidateTestHooks = Object.freeze({
-  defaultLimit: DEFAULT_LIMIT,
+  defaultPageLimit: DEFAULT_PAGE_LIMIT,
+  encodeCursor,
   listWithQuery,
-  maxLimit: MAX_LIMIT,
+  maxPageLimit: MAX_PAGE_LIMIT,
+  maxSweepCandidates: MAX_SWEEP_CANDIDATES,
+  parseCursor,
   snapshotInput,
-  snapshotRows,
+  snapshotPage,
 });
 
 export const gmailArchiveRecoveryCandidateRepository = Object.freeze({

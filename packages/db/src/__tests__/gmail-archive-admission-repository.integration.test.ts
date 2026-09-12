@@ -6601,6 +6601,177 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     expect(normalizedStatement).toContain("WHERE (effect_type = 'event_execution') AND (status IN ('reserved', 'prepared', 'in_progress'))");
   });
 
+  it('continues beyond a full corrupt first page without granting recovery authority', async () => {
+    const corruptOwner = await seedRecoveryOwner(76);
+    const healthyOwner = await seedRecoveryOwner(77);
+    const corrupt: Array<{ approvalId: string; barrierId: string }> = [];
+
+    for (let index = 0; index < 25; index++) {
+      const proposal = await createProposal(
+        800 + index,
+        corruptOwner.ownerUserId,
+        corruptOwner.ownerAccountId,
+      );
+      const response = await gmailArchiveApprovalResponseRepository.respond({
+        userId: corruptOwner.ownerUserId,
+        approvalId: proposal.approval.id,
+        action: 'approve',
+      });
+      if (!response.ok || !response.response.reservedBarrier) {
+        throw new Error('Corrupt pagination fixture did not reserve a barrier.');
+      }
+      corrupt.push({
+        approvalId: proposal.approval.id,
+        barrierId: response.response.reservedBarrier.id,
+      });
+      await getPool().query(
+        `UPDATE candidate_actions SET description = 'acquisition-invalid description'
+          WHERE id = $1`,
+        [proposal.candidate.id],
+      );
+      await getPool().query(
+        `UPDATE pre_effect_barriers
+            SET created_at = '1970-01-01T00:00:00.000Z',
+                updated_at = '1970-01-01T00:00:00.000Z'
+          WHERE id = $1`,
+        [response.response.reservedBarrier.id],
+      );
+    }
+
+    const healthy = await createProposal(
+      825,
+      healthyOwner.ownerUserId,
+      healthyOwner.ownerAccountId,
+    );
+    const healthyResponse = await gmailArchiveApprovalResponseRepository.respond({
+      userId: healthyOwner.ownerUserId,
+      approvalId: healthy.approval.id,
+      action: 'approve',
+    });
+    if (!healthyResponse.ok || !healthyResponse.response.reservedBarrier) {
+      throw new Error('Healthy pagination fixture did not reserve a barrier.');
+    }
+    await getPool().query(
+      `UPDATE pre_effect_barriers
+          SET created_at = '1971-01-01T00:00:00.000Z',
+              updated_at = '1971-01-01T00:00:00.000Z'
+        WHERE id = $1`,
+      [healthyResponse.response.reservedBarrier.id],
+    );
+
+    const first = await gmailArchiveRecoveryCandidateRepository.list({ limit: 25 });
+    expect(first).toMatchObject({ ok: true });
+    if (!first.ok || first.nextCursor === null) throw new Error('First page did not continue.');
+    expect(first.candidates).toHaveLength(25);
+    expect(first.candidates).not.toContainEqual({
+      userId: healthyOwner.ownerUserId,
+      approvalId: healthy.approval.id,
+    });
+    expect(first.candidates.every((candidate) =>
+      Object.keys(candidate).sort().join(',') === 'approvalId,userId')).toBe(true);
+    await expect(gmailArchiveRecoveryLeaseRepository.acquire({
+      userId: corruptOwner.ownerUserId,
+      approvalId: first.candidates[0]!.approvalId,
+      leaseMs: 60_000,
+    })).resolves.toEqual({ ok: false, error: 'integrity_conflict' });
+    await expect(gmailArchiveRecoveryCandidateRepository.list({ limit: 25 }))
+      .resolves.toEqual(first);
+
+    const continued = await gmailArchiveRecoveryCandidateRepository.list({
+      limit: 25,
+      cursor: first.nextCursor,
+    });
+    expect(continued).toMatchObject({ ok: true, nextCursor: null });
+    if (!continued.ok) throw new Error('Continuation query failed.');
+    expect(continued.candidates[0]).toEqual({
+      userId: healthyOwner.ownerUserId,
+      approvalId: healthy.approval.id,
+    });
+
+    await getPool().query(
+      `UPDATE pre_effect_barriers
+          SET created_at = statement_timestamp(), updated_at = statement_timestamp()
+        WHERE id = ANY($1::UUID[])`,
+      [[...corrupt.map((candidate) => candidate.barrierId),
+        healthyResponse.response.reservedBarrier.id]],
+    );
+  }, 120_000);
+
+  it('does not emit a cross-owner barrier-to-approval link', async () => {
+    const victimOwner = await seedRecoveryOwner(78);
+    const otherOwner = await seedRecoveryOwner(79);
+    const healthyOwner = await seedRecoveryOwner(80);
+    const mismatched = await createProposal(
+      826,
+      victimOwner.ownerUserId,
+      victimOwner.ownerAccountId,
+    );
+    const mismatchedResponse = await gmailArchiveApprovalResponseRepository.respond({
+      userId: victimOwner.ownerUserId,
+      approvalId: mismatched.approval.id,
+      action: 'approve',
+    });
+    if (!mismatchedResponse.ok || !mismatchedResponse.response.reservedBarrier) {
+      throw new Error('Mismatched owner fixture did not reserve a barrier.');
+    }
+    const other = await createProposal(
+      828,
+      otherOwner.ownerUserId,
+      otherOwner.ownerAccountId,
+    );
+    await expect(gmailArchiveApprovalResponseRepository.respond({
+      userId: otherOwner.ownerUserId,
+      approvalId: other.approval.id,
+      action: 'approve',
+    })).resolves.toMatchObject({ ok: true, created: true });
+    const healthy = await createProposal(
+      827,
+      healthyOwner.ownerUserId,
+      healthyOwner.ownerAccountId,
+    );
+    const healthyResponse = await gmailArchiveApprovalResponseRepository.respond({
+      userId: healthyOwner.ownerUserId,
+      approvalId: healthy.approval.id,
+      action: 'approve',
+    });
+    if (!healthyResponse.ok || !healthyResponse.response.reservedBarrier) {
+      throw new Error('Owner-paired fixture did not reserve a barrier.');
+    }
+    await getPool().query(
+      `UPDATE pre_effect_barriers
+          SET idempotency_key = $2,
+              created_at = '1960-01-01T00:00:00.000Z',
+              updated_at = '1960-01-01T00:00:00.000Z'
+        WHERE id = $1`,
+      [mismatchedResponse.response.reservedBarrier.id, other.approval.id],
+    );
+    await getPool().query(
+      `UPDATE pre_effect_barriers
+          SET created_at = '1961-01-01T00:00:00.000Z',
+              updated_at = '1961-01-01T00:00:00.000Z'
+        WHERE id = $1`,
+      [healthyResponse.response.reservedBarrier.id],
+    );
+
+    const listed = await gmailArchiveRecoveryCandidateRepository.list({ limit: 25 });
+    expect(listed).toMatchObject({ ok: true });
+    if (!listed.ok) throw new Error('Owner-paired selector failed.');
+    expect(listed.candidates).toContainEqual({
+      userId: healthyOwner.ownerUserId,
+      approvalId: healthy.approval.id,
+    });
+    expect(listed.candidates).not.toContainEqual({
+      userId: victimOwner.ownerUserId,
+      approvalId: other.approval.id,
+    });
+    await getPool().query(
+      `UPDATE pre_effect_barriers
+          SET created_at = statement_timestamp(), updated_at = statement_timestamp()
+        WHERE id = $1`,
+      [healthyResponse.response.reservedBarrier.id],
+    );
+  }, 120_000);
+
   it('discovers bounded owner-paired recovery hints after connector deletion and skips older corruption', async () => {
     const disconnectedOwner = await seedRecoveryOwner(70);
     const secondOwner = await seedRecoveryOwner(71);
@@ -6657,7 +6828,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     }
 
     const listed = await gmailArchiveRecoveryCandidateRepository.list({ limit: 2 });
-    expect(listed).toEqual({
+    expect(listed).toMatchObject({
       ok: true,
       candidates: [
         {
@@ -6725,7 +6896,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       );
     }
 
-    await expect(gmailArchiveRecoveryCandidateRepository.list({ limit: 1 })).resolves.toEqual({
+    await expect(gmailArchiveRecoveryCandidateRepository.list({ limit: 1 })).resolves.toMatchObject({
       ok: true,
       candidates: [{ userId: firstOwner.ownerUserId, approvalId: first.proposal.approval.id }],
     });
@@ -6734,7 +6905,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       approvalId: first.proposal.approval.id,
       leaseMs: 300_000,
     })).resolves.toMatchObject({ ok: true, status: 'acquired' });
-    await expect(gmailArchiveRecoveryCandidateRepository.list({ limit: 1 })).resolves.toEqual({
+    await expect(gmailArchiveRecoveryCandidateRepository.list({ limit: 1 })).resolves.toMatchObject({
       ok: true,
       candidates: [{ userId: laterOwner.ownerUserId, approvalId: later.proposal.approval.id }],
     });
