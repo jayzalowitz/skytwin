@@ -58,6 +58,11 @@ import {
   gmailArchiveResultAllowedForAttemptPhase,
   parseGmailArchiveTerminalExplanationBinding,
 } from '../repositories/gmail-archive-terminalization-repository.js';
+import {
+  gmailArchiveReconciliationExplanationSemantics,
+  parseGmailArchiveReconciliationExplanationEvidence,
+} from '../repositories/gmail-archive-reconciliation-repository.js';
+import { GMAIL_ARCHIVE_RECOVERY_GRACE_SECONDS } from '../repositories/gmail-archive-recovery-policy.js';
 
 /** Bumped when the JSON shape changes in a non-back-compatible way. */
 export const BACKUP_SCHEMA_VERSION = 1;
@@ -524,13 +529,50 @@ export function validateBackupData(value: unknown): string[] {
           if (terminalCandidate?.action_type === 'archive_email') {
             const binding = parseGmailArchiveTerminalExplanationBinding(row?.evidence_used);
             const result = binding?.result;
+            const reconciliation = result ? null :
+              parseGmailArchiveReconciliationExplanationEvidence(row?.evidence_used);
             const expectedDisposition = result?.outcome === 'confirmed' ? 'succeeded'
               : result?.outcome === 'known_failure' ? 'failed'
-                : result?.outcome === 'unknown' ? 'unknown' : null;
-            const semantics = result ? gmailArchiveTerminalExplanationSemantics(result) : null;
-            if (!row || !result ||
-                (binding?.attemptPhase !== null && binding?.attemptPhase !== undefined &&
+                : result?.outcome === 'unknown' ? 'unknown'
+                  : reconciliation?.outcome ?? null;
+            const semantics = result ? gmailArchiveTerminalExplanationSemantics(result)
+              : reconciliation
+                ? gmailArchiveReconciliationExplanationSemantics(reconciliation)
+                : null;
+            const observationBinding = reconciliation?.evidence.kind === 'mailbox_observed' ||
+              reconciliation?.evidence.kind === 'mailbox_observation_unavailable'
+              ? reconciliation.evidence
+              : null;
+            const candidateMessageRefId = terminalCandidate.parameters?.['messageRefId'];
+            const executionRecorded = revisions.filter(
+              (revision) => revision.stage === 'execution_recorded',
+            );
+            const r7 = executionRecorded.length === 1 ? executionRecorded[0] : undefined;
+            const r7Content = r7?.content.version === 2 ? r7.content : undefined;
+            const terminalAt = r7 ? new Date(r7.created_at).getTime() : Number.NaN;
+            const terminalIso = Number.isFinite(terminalAt)
+              ? new Date(terminalAt).toISOString()
+              : null;
+            const reconciliationTimeInvalid = reconciliation !== null && (
+              terminalIso === null || !r7Content ||
+              r7Content.barrier?.snapshot.updatedAt !== terminalIso ||
+              r7Content.executionPlan?.snapshot.updatedAt !== terminalIso ||
+              new Date(row?.created_at ?? Number.NaN).getTime() !== terminalAt ||
+              (r7Content.executionResult !== undefined &&
+                r7Content.executionResult.snapshot.completedAt !== terminalIso) ||
+              Date.parse(reconciliation.phaseChangedAt) +
+                GMAIL_ARCHIVE_RECOVERY_GRACE_SECONDS * 1_000 > terminalAt ||
+              (reconciliation.evidence.kind === 'mailbox_observed' &&
+                Date.parse(reconciliation.evidence.observedAt) > terminalAt)
+            );
+            if (!row || (!result && !reconciliation) ||
+                (result && binding?.attemptPhase !== null && binding?.attemptPhase !== undefined &&
                   !gmailArchiveResultAllowedForAttemptPhase(result, binding.attemptPhase)) ||
+                (observationBinding !== null &&
+                  (observationBinding.binding.userId !== data.user?.id ||
+                    observationBinding.binding.admissionId !== tail.barrier?.id ||
+                    observationBinding.binding.messageRefId !== candidateMessageRefId)) ||
+                reconciliationTimeInvalid ||
                 expectedDisposition !== tail.executionDisposition ||
                 expectedDisposition !== tail.disposition ||
                 row.what_happened !== semantics?.whatHappened ||

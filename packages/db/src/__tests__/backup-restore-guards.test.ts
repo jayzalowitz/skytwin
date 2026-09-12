@@ -20,7 +20,14 @@ import {
   type JoinedDecisionReceiptContentV1,
   type JoinedDecisionReceiptContentV2,
 } from '@skytwin/shared-types';
-import { decisionReceiptRowArtifactV1 } from '../repositories/decision-receipt-artifacts.js';
+import {
+  decisionReceiptRowArtifactRefV1,
+  decisionReceiptRowArtifactV1,
+} from '../repositories/decision-receipt-artifacts.js';
+import {
+  buildGmailArchiveReconciliationTerminalEnvelope,
+  gmailArchiveReconciliationExplanationSemantics,
+} from '../repositories/gmail-archive-reconciliation-repository.js';
 
 let userExists = false;
 const poolQuery = vi.fn(async (..._args: unknown[]): Promise<{ rows: unknown[]; rowCount: number }> => ({
@@ -265,6 +272,102 @@ function terminalReceiptPayload(): {
   return { payload, executionExplanation };
 }
 
+function rehashTerminalReceipt(payload: Record<string, unknown>): void {
+  const bundle = (payload['decisions'] as Array<Record<string, unknown>>)[0]!;
+  const revisions = (bundle['joinedReceipt'] as {
+    revisions: Array<Record<string, unknown>>;
+  }).revisions;
+  let previousDigest: string | null = null;
+  for (const revision of revisions) {
+    const content = revision['content'] as JoinedDecisionReceiptContent;
+    const contentDigest = joinedDecisionReceiptContentDigest(content);
+    revision['previous_digest'] = previousDigest;
+    revision['content_digest'] = contentDigest;
+    revision['revision_digest'] = joinedDecisionReceiptRevisionDigest({
+      revisionId: revision['id'] as string,
+      receiptId: revision['receipt_id'] as string,
+      decisionId: (bundle['decision'] as Record<string, unknown>)['id'] as string,
+      userId: (payload['user'] as Record<string, unknown>)['id'] as string,
+      sequence: revision['sequence'] as number,
+      eventKey: revision['event_key'] as DecisionReceiptEventKey,
+      previousDigest,
+      contentDigest,
+    });
+    previousDigest = revision['revision_digest'] as string;
+  }
+}
+
+function reconciliationTerminalReceiptPayload(): {
+  payload: Record<string, unknown>;
+  executionExplanation: Record<string, unknown>;
+} {
+  const { payload, executionExplanation } = terminalReceiptPayload();
+  const bundle = (payload['decisions'] as Array<Record<string, unknown>>)[0]!;
+  const candidate = (bundle['candidateActions'] as Array<Record<string, unknown>>)[0]!;
+  const revisions = (bundle['joinedReceipt'] as {
+    revisions: Array<Record<string, unknown>>;
+  }).revisions;
+  const terminal = revisions.at(-1)!;
+  const terminalContent = terminal['content'] as JoinedDecisionReceiptContentV2;
+  const ownerId = (payload['user'] as Record<string, unknown>)['id'] as string;
+  const messageRefId = '12121212-1212-4212-8212-121212121212';
+  const terminalAt = terminalContent.barrier!.snapshot.updatedAt;
+  candidate['parameters'] = { messageRefId };
+  const candidateHash = joinedDecisionReceiptArtifactDigest(
+    'candidate_action',
+    decisionReceiptRowArtifactV1('candidate_action', candidate),
+  );
+  for (const revision of revisions) {
+    const content = revision['content'] as JoinedDecisionReceiptContent;
+    if (content.candidateAction) content.candidateAction.canonicalHash = candidateHash;
+  }
+  const envelope = buildGmailArchiveReconciliationTerminalEnvelope({
+    phase: 'dispatch_may_have_started',
+    phaseChangedAt: new Date(Date.parse(terminalAt) - 600_000).toISOString(),
+    evidence: {
+      kind: 'mailbox_observed',
+      binding: {
+        userId: ownerId,
+        admissionId: terminalContent.barrier!.id,
+        messageRefId,
+      },
+      inbox: false,
+      observedAt: new Date(Date.parse(terminalAt) - 1_000).toISOString(),
+    },
+  });
+  const semantics = gmailArchiveReconciliationExplanationSemantics(envelope);
+  executionExplanation['evidence_used'] = [envelope];
+  executionExplanation['what_happened'] = semantics.whatHappened;
+  executionExplanation['confidence_reasoning'] = semantics.confidenceReasoning;
+  executionExplanation['escalation_rationale'] = semantics.escalationRationale;
+  executionExplanation['correction_guidance'] = semantics.correctionGuidance;
+  terminalContent.executionExplanation.canonicalHash = joinedDecisionReceiptArtifactDigest(
+    'explanation',
+    decisionReceiptRowArtifactV1('explanation', executionExplanation),
+  );
+  rehashTerminalReceipt(payload);
+  return { payload, executionExplanation };
+}
+
+function rehashReconciliationExplanation(
+  payload: Record<string, unknown>,
+  executionExplanation: Record<string, unknown>,
+): void {
+  const bundle = (payload['decisions'] as Array<Record<string, unknown>>)[0]!;
+  const revisions = (bundle['joinedReceipt'] as {
+    revisions: Array<Record<string, unknown>>;
+  }).revisions;
+  const explanationHash = joinedDecisionReceiptArtifactDigest(
+    'explanation',
+    decisionReceiptRowArtifactV1('explanation', executionExplanation),
+  );
+  for (const revision of revisions) {
+    const content = revision['content'] as JoinedDecisionReceiptContent;
+    if (content.version === 2) content.executionExplanation.canonicalHash = explanationHash;
+  }
+  rehashTerminalReceipt(payload);
+}
+
 describe('validateBackupData', () => {
   it('accepts a well-formed payload', () => {
     expect(validateBackupData(validPayload())).toEqual([]);
@@ -497,6 +600,131 @@ describe('validateBackupData', () => {
       previousDigest: terminal['previous_digest'] as string,
       contentDigest: terminal['content_digest'] as string,
     });
+
+    expect(validateBackupData(payload)).toContain(
+      'decisions[0].joinedReceipt has invalid Gmail terminal explanation',
+    );
+  });
+
+  it('accepts a causal-unknown reconciliation envelope with exact authority and time bounds', () => {
+    const { payload } = reconciliationTerminalReceiptPayload();
+    expect(validateBackupData(payload)).toEqual([]);
+  });
+
+  it.each([
+    ['under grace', (envelope: Record<string, unknown>, terminalAt: string) => {
+      envelope['phaseChangedAt'] = new Date(Date.parse(terminalAt) - 299_999).toISOString();
+    }],
+    ['future observation', (envelope: Record<string, unknown>, terminalAt: string) => {
+      const evidence = envelope['evidence'] as Record<string, unknown>;
+      evidence['observedAt'] = new Date(Date.parse(terminalAt) + 1).toISOString();
+    }],
+    ['wrong owner binding', (envelope: Record<string, unknown>) => {
+      const evidence = envelope['evidence'] as Record<string, unknown>;
+      const binding = evidence['binding'] as Record<string, unknown>;
+      binding['userId'] = '99999999-9999-4999-8999-999999999999';
+    }],
+    ['wrong admission binding', (envelope: Record<string, unknown>) => {
+      const evidence = envelope['evidence'] as Record<string, unknown>;
+      const binding = evidence['binding'] as Record<string, unknown>;
+      binding['admissionId'] = '99999999-9999-4999-8999-999999999999';
+    }],
+    ['wrong message binding', (envelope: Record<string, unknown>) => {
+      const evidence = envelope['evidence'] as Record<string, unknown>;
+      const binding = evidence['binding'] as Record<string, unknown>;
+      binding['messageRefId'] = '99999999-9999-4999-8999-999999999999';
+    }],
+  ] as const)('rejects rehashed reconciliation evidence %s', (_label, tamper) => {
+    const { payload, executionExplanation } = reconciliationTerminalReceiptPayload();
+    const bundle = (payload['decisions'] as Array<Record<string, unknown>>)[0]!;
+    const revisions = (bundle['joinedReceipt'] as {
+      revisions: Array<Record<string, unknown>>;
+    }).revisions;
+    const terminalContent = revisions.at(-1)!['content'] as JoinedDecisionReceiptContentV2;
+    const terminalAt = terminalContent.barrier!.snapshot.updatedAt;
+    const envelope = (executionExplanation['evidence_used'] as Array<Record<string, unknown>>)[0]!;
+    tamper(envelope, terminalAt);
+    const parsed = buildGmailArchiveReconciliationTerminalEnvelope({
+      phase: envelope['attemptPhase'] as 'dispatch_may_have_started',
+      phaseChangedAt: envelope['phaseChangedAt'] as string,
+      evidence: envelope['evidence'] as never,
+    });
+    const semantics = gmailArchiveReconciliationExplanationSemantics(parsed);
+    executionExplanation['what_happened'] = semantics.whatHappened;
+    executionExplanation['confidence_reasoning'] = semantics.confidenceReasoning;
+    executionExplanation['escalation_rationale'] = semantics.escalationRationale;
+    executionExplanation['correction_guidance'] = semantics.correctionGuidance;
+    rehashReconciliationExplanation(payload, executionExplanation);
+
+    expect(validateBackupData(payload)).toContain(
+      'decisions[0].joinedReceipt has invalid Gmail terminal explanation',
+    );
+  });
+
+  it('uses the unique execution-recorded instant despite a later continuation timestamp', () => {
+    const { payload, executionExplanation } = reconciliationTerminalReceiptPayload();
+    const bundle = (payload['decisions'] as Array<Record<string, unknown>>)[0]!;
+    const revisions = (bundle['joinedReceipt'] as {
+      revisions: Array<Record<string, unknown>>;
+    }).revisions;
+    const r7 = revisions.at(-1)!;
+    const r7Content = r7['content'] as JoinedDecisionReceiptContentV2;
+    const r7At = r7Content.barrier!.snapshot.updatedAt;
+    const laterAt = new Date(Date.parse(r7At) + 600_000).toISOString();
+    const feedback = {
+      id: '13131313-1313-4313-8313-131313131313',
+      user_id: (payload['user'] as Record<string, unknown>)['id'],
+      decision_id: (bundle['decision'] as Record<string, unknown>)['id'],
+      type: 'approval',
+      data: {},
+      created_at: new Date(laterAt),
+    };
+    const laterBarrierSnapshot = { ...r7Content.barrier!.snapshot, updatedAt: laterAt };
+    const continuation: JoinedDecisionReceiptContentV2 = {
+      ...r7Content,
+      stage: 'feedback_recorded',
+      barrier: {
+        ...r7Content.barrier!,
+        snapshot: laterBarrierSnapshot,
+        canonicalHash: joinedDecisionReceiptArtifactDigest('barrier', laterBarrierSnapshot),
+      },
+      feedbackEvents: [decisionReceiptRowArtifactRefV1('feedback', feedback)],
+    };
+    revisions.push({
+      id: '14141414-1414-4414-8414-141414141414',
+      receipt_id: r7['receipt_id'],
+      sequence: 5,
+      event_key: buildDecisionReceiptEventKey('feedback_recorded', feedback.id),
+      previous_digest: r7['revision_digest'],
+      content_digest: '',
+      revision_digest: '',
+      stage: 'feedback_recorded',
+      disposition: continuation.disposition,
+      content: continuation,
+      candidate_action_id: continuation.candidateAction?.id ?? null,
+      barrier_id: continuation.barrier?.id ?? null,
+      explanation_id: continuation.explanation?.id ?? null,
+      approval_request_id: continuation.approvalRequest?.id ?? null,
+      execution_plan_id: continuation.executionPlan?.id ?? null,
+      execution_result_id: continuation.executionResult?.id ?? null,
+      execution_disposition: continuation.executionDisposition ?? null,
+      correction_of_revision_id: continuation.correctionOfRevision?.id ?? null,
+      trusted: true,
+      created_at: new Date(laterAt),
+    });
+    const envelope = (executionExplanation['evidence_used'] as Array<Record<string, unknown>>)[0]!;
+    envelope['phaseChangedAt'] = new Date(Date.parse(r7At) - 299_999).toISOString();
+    const rebuilt = buildGmailArchiveReconciliationTerminalEnvelope({
+      phase: 'dispatch_may_have_started',
+      phaseChangedAt: envelope['phaseChangedAt'] as string,
+      evidence: envelope['evidence'] as never,
+    });
+    const semantics = gmailArchiveReconciliationExplanationSemantics(rebuilt);
+    executionExplanation['what_happened'] = semantics.whatHappened;
+    executionExplanation['confidence_reasoning'] = semantics.confidenceReasoning;
+    executionExplanation['escalation_rationale'] = semantics.escalationRationale;
+    executionExplanation['correction_guidance'] = semantics.correctionGuidance;
+    rehashReconciliationExplanation(payload, executionExplanation);
 
     expect(validateBackupData(payload)).toContain(
       'decisions[0].joinedReceipt has invalid Gmail terminal explanation',

@@ -70,6 +70,24 @@ export {
 export { gmailInboxObservationTargetRepository } from './gmail-inbox-observation-target-repository.js';
 export type { GmailInboxObservationTarget } from './gmail-inbox-observation-target-repository.js';
 export {
+  buildGmailArchiveReconciliationTerminalEnvelope,
+  gmailArchiveReconciliationEvidenceAllowedForPhase,
+  gmailArchiveReconciliationExplanationSemantics,
+  gmailArchiveReconciliationRepository,
+  parseGmailArchiveReconciliationExplanationEvidence,
+  parseGmailArchiveReconciliationTerminalEnvelope,
+  validateStoredGmailArchiveReconciliationTerminal,
+  validateStoredGmailArchiveTerminalGraph,
+} from './gmail-archive-reconciliation-repository.js';
+export type {
+  GmailArchiveReconciliationBundle,
+  GmailArchiveReconciliationExplanationSemantics,
+  GmailArchiveReconciliationStableValues,
+  GmailArchiveReconciliationTerminalEnvelope,
+  ReconcileAbandonedGmailArchiveResult,
+} from './gmail-archive-reconciliation-repository.js';
+export {
+  buildGmailArchiveTerminalContent,
   buildGmailArchiveTerminalResultEnvelope,
   gmailArchiveResultAllowedForAttemptPhase,
   gmailArchiveTerminalizationRepository,

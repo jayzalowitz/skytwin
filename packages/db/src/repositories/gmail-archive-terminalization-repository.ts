@@ -457,7 +457,7 @@ function sameCanonical(left: unknown, right: unknown): boolean {
     joinedDecisionReceiptArtifactDigest('policy', right);
 }
 
-function terminalContent(input: {
+export function buildGmailArchiveTerminalContent(input: {
   admitted: JoinedDecisionReceiptContentV1;
   barrier: PreEffectBarrierRow;
   plan: ExecutionPlanRow;
@@ -804,7 +804,7 @@ async function exactTerminalReplay(
       decisionReceiptRowArtifactRefV1('explanation', { ...expectedExplanation }).canonicalHash) {
     return null;
   }
-  const expectedContent = terminalContent({
+  const expectedContent = buildGmailArchiveTerminalContent({
     admitted: state.revisions[5]!.content as JoinedDecisionReceiptContentV1,
     barrier,
     plan,
@@ -1037,7 +1037,7 @@ async function transition(
       new Date(stable.persistedAt),
     )) fail({ ok: false, error: 'idempotency_conflict' });
   }
-  const content = terminalContent({
+  const content = buildGmailArchiveTerminalContent({
     admitted: state.revisions[5]!.content as JoinedDecisionReceiptContentV1,
     barrier: terminalBarrier,
     plan: terminalPlan,
