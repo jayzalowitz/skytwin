@@ -221,14 +221,14 @@ beforeEach(() => {
     id: 'app-1',
     user_id: USER_ID,
     decision_id: 'dec-1',
-    candidate_action: { id: 'aaaaaaaa-bbbb-cccc-dddd-000000000abc', actionType: 'archive_email', description: 'Archive', domain: 'email', parameters: {}, reversible: true },
+    candidate_action: { id: 'aaaaaaaa-bbbb-cccc-dddd-000000000abc', actionType: 'label_email', description: 'Label', domain: 'email', parameters: {}, reversible: true },
     status: 'pending',
   });
   fakeApprovalRepo.respond.mockResolvedValue({
     id: 'app-1',
     user_id: USER_ID,
     decision_id: 'dec-1',
-    candidate_action: { id: 'aaaaaaaa-bbbb-cccc-dddd-000000000abc', actionType: 'archive_email', description: 'Archive', domain: 'email', parameters: {}, reversible: true },
+    candidate_action: { id: 'aaaaaaaa-bbbb-cccc-dddd-000000000abc', actionType: 'label_email', description: 'Label', domain: 'email', parameters: {}, reversible: true },
     status: 'approved',
     responded_at: new Date(),
   });
@@ -240,7 +240,7 @@ beforeEach(() => {
     user_id: USER_ID,
     situation_type: 'email_triage',
     raw_event: {},
-    interpreted_situation: { summary: 'archive newsletter from sender X' },
+    interpreted_situation: { summary: 'label newsletter from sender X' },
     domain: 'email',
     urgency: 'low',
     metadata: {},
@@ -330,6 +330,63 @@ describe('feedback loop — approval records an episode for memory boost', () =>
     },
   );
 
+  it.each([
+    { label: 'parameter-free', action: { actionType: 'archive_email' } },
+    { label: 'legacy', action: {
+      actionType: 'archive_email', parameters: { emailId: 'provider-id', folder: 'archive' },
+    } },
+    { label: 'empty', action: { actionType: 'archive_email', parameters: {} } },
+    { label: 'mixed', action: {
+      actionType: 'archive_email', parameters: { schema: 'other', operation: 'restore' },
+    } },
+  ])('quarantines a $label archive approval before every generic side effect', async ({ action }) => {
+    fakeApprovalRepo.findById.mockResolvedValueOnce({
+      id: 'app-1', user_id: USER_ID, decision_id: 'dec-1',
+      candidate_action: action, status: 'pending',
+    });
+    const response = await postJson(buildApp(), '/api/approvals/app-1/respond', {
+      action: 'approve', userId: USER_ID,
+    });
+    expect(response.status).toBe(409);
+    expect(response.body).toMatchObject({ error: 'gmail_archive_execution_not_enabled' });
+    expect(fakeApprovalRepo.respond).not.toHaveBeenCalled();
+    expect(fakeFeedbackRepo.create).not.toHaveBeenCalled();
+    expect(fakeMempalaceRepo.createEpisode).not.toHaveBeenCalled();
+    expect(fakeOauthRepo.getToken).not.toHaveBeenCalled();
+    expect(fakePolicyGetAll).not.toHaveBeenCalled();
+    expect(fakeBarrierRepo.reserve).not.toHaveBeenCalled();
+    expect(fakeExplanationRepo.save).not.toHaveBeenCalled();
+    expect(fakeExecutionRouter.route).not.toHaveBeenCalled();
+    expect(fakeExecutionRouter.prepareExecution).not.toHaveBeenCalled();
+    expect(fakeExecutionRouter.executeWithRouting).not.toHaveBeenCalled();
+    expect(fakeExecutionRouter.executePrepared).not.toHaveBeenCalled();
+  });
+
+  it('fails closed on a hostile stored action without invoking its accessor', async () => {
+    const getter = vi.fn(() => 'archive_email');
+    const candidateAction = Object.defineProperty({}, 'actionType', {
+      enumerable: true,
+      get: getter,
+    });
+    fakeApprovalRepo.findById.mockResolvedValueOnce({
+      id: 'app-1', user_id: USER_ID, decision_id: 'dec-1',
+      candidate_action: candidateAction, status: 'pending',
+    });
+
+    const response = await postJson(buildApp(), '/api/approvals/app-1/respond', {
+      action: 'approve', userId: USER_ID,
+    });
+
+    expect(response.status).toBe(409);
+    expect(response.body).toMatchObject({ error: 'approval_action_invalid' });
+    expect(getter).not.toHaveBeenCalled();
+    expect(fakeApprovalRepo.respond).not.toHaveBeenCalled();
+    expect(fakeOauthRepo.getToken).not.toHaveBeenCalled();
+    expect(fakeBarrierRepo.reserve).not.toHaveBeenCalled();
+    expect(fakeExecutionRouter.route).not.toHaveBeenCalled();
+    expect(fakeExecutionRouter.executeWithRouting).not.toHaveBeenCalled();
+  });
+
   it('approve → mempalaceRepository.createEpisode is called with utility 0.9', async () => {
     const app = buildApp();
     await postJson(app, '/api/approvals/app-1/respond', {
@@ -339,13 +396,13 @@ describe('feedback loop — approval records an episode for memory boost', () =>
     expect(fakeMempalaceRepo.createEpisode).toHaveBeenCalledTimes(1);
     const call = fakeMempalaceRepo.createEpisode.mock.calls[0]![0];
     expect(call.userId).toBe(USER_ID);
-    expect(call.actionTaken).toBe('archive_email');
+    expect(call.actionTaken).toBe('label_email');
     expect(call.feedbackType).toBe('approve');
     expect(call.utilityScore).toBe(0.9);
     expect(call.decisionId).toBe('dec-1');
     expect(call.domain).toBe('email');
     expect(call.situationType).toBe('email_triage');
-    expect(call.situationSummary).toBe('archive newsletter from sender X');
+    expect(call.situationSummary).toBe('label newsletter from sender X');
     expect(fakePolicyGetAll).toHaveBeenCalledWith(USER_ID);
   });
 
@@ -354,7 +411,7 @@ describe('feedback loop — approval records an episode for memory boost', () =>
       id: 'app-1',
       user_id: USER_ID,
       decision_id: 'dec-1',
-      candidate_action: { id: 'aaaaaaaa-bbbb-cccc-dddd-000000000abc', actionType: 'archive_email', description: 'Archive', domain: 'email', parameters: {}, reversible: true },
+      candidate_action: { id: 'aaaaaaaa-bbbb-cccc-dddd-000000000abc', actionType: 'label_email', description: 'Label', domain: 'email', parameters: {}, reversible: true },
       status: 'rejected',
       responded_at: new Date(),
     });
@@ -394,7 +451,7 @@ describe('feedback loop — approval records an episode for memory boost', () =>
     const memoryEvent = calls.find((c) => c[1] === 'memory:episode-recorded');
     expect(memoryEvent).toBeDefined();
     const payload = memoryEvent![2] as Record<string, unknown>;
-    expect(payload['actionType']).toBe('archive_email');
+    expect(payload['actionType']).toBe('label_email');
     expect(payload['feedbackType']).toBe('approve');
     expect(payload['decisionId']).toBe('dec-1');
   });
@@ -419,7 +476,7 @@ describe('feedback loop — approval records an episode for memory boost', () =>
     });
     const call = fakeMempalaceRepo.createEpisode.mock.calls[0]![0];
     // Synthetic summary mentions the user action and the action type
-    expect(call.situationSummary).toMatch(/approved.*archive_email|archive_email/);
+    expect(call.situationSummary).toMatch(/approved.*label_email|label_email/);
   });
 
   it('approve preserves stored cost intent and provenance when reconstructing the candidate', async () => {

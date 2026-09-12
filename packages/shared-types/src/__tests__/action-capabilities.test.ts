@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { buildExecutableActionPlan, OPENCLAW_ACTION_TYPES } from '../action-capabilities.js';
+import {
+  buildExecutableActionPlan,
+  IRONCLAW_CORE_ACTION_TYPES,
+  OPENCLAW_ACTION_TYPES,
+} from '../action-capabilities.js';
 
 describe('buildExecutableActionPlan', () => {
   it('routes core high-trust actions through IronClaw first', () => {
@@ -38,5 +42,10 @@ describe('buildExecutableActionPlan', () => {
   it('keeps OpenClaw email vocabulary aligned with decision-engine action names', () => {
     expect(OPENCLAW_ACTION_TYPES.has('draft_email')).toBe(true);
     expect(OPENCLAW_ACTION_TYPES.has('send_reply')).toBe(true);
+  });
+
+  it('does not advertise archive_email through either generic capability catalog', () => {
+    expect(IRONCLAW_CORE_ACTION_TYPES.has('archive_email')).toBe(false);
+    expect(OPENCLAW_ACTION_TYPES.has('archive_email')).toBe(false);
   });
 });
