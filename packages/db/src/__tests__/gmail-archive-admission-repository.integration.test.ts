@@ -44,6 +44,10 @@ import {
   gmailArchiveRecoveryLeaseRepository,
   gmailArchiveRecoveryLeaseTestHooks,
 } from '../repositories/gmail-archive-recovery-lease-repository.js';
+import {
+  gmailArchiveRecoveryCandidateRepository,
+  gmailArchiveRecoveryCandidateTestHooks,
+} from '../repositories/gmail-archive-recovery-candidate-repository.js';
 import { gmailInboxObservationTargetRepository } from '../repositories/gmail-inbox-observation-target-repository.js';
 import {
   reconcileRecordedGmailArchiveObservationInTransaction,
@@ -6578,5 +6582,484 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       [newerPlanId, fixture.decision.id],
     );
     await expectNoQualifiedPlan();
+  }, 120_000);
+
+  it('applies the recovery selector index on real CockroachDB', async () => {
+    const indexes = await getPool().query<{
+      index_name: string;
+      storing: boolean;
+      implicit: boolean;
+    }>('SHOW INDEXES FROM pre_effect_barriers');
+    const rows = indexes.rows.filter(
+      (row) => row.index_name === 'pre_effect_barriers_gmail_archive_recovery_scan_idx',
+    );
+    expect(rows.length).toBeGreaterThan(0);
+    const create = await getPool().query<{ create_statement: string }>(
+      'SHOW CREATE TABLE pre_effect_barriers',
+    );
+    const statement = create.rows[0]?.create_statement ?? '';
+    const normalizedStatement = statement.replaceAll(':::STRING', '');
+    expect(statement).toContain('pre_effect_barriers_gmail_archive_recovery_scan_idx');
+    expect(statement).toContain('STORING (user_id, status, created_at)');
+    expect(normalizedStatement).toContain("WHERE (effect_type = 'event_execution') AND (status IN ('reserved', 'prepared', 'in_progress'))");
+
+    let selectorSql = '';
+    let selectorParams: unknown[] = [];
+    await gmailArchiveRecoveryCandidateTestHooks.listWithQuery(
+      { limit: 25 },
+      async (sql, params) => {
+        selectorSql = sql;
+        selectorParams = params;
+        return { rows: [] };
+      },
+    );
+    const explained = await getPool().query<{ info: string }>(
+      `EXPLAIN ${selectorSql}`,
+      selectorParams,
+    );
+    expect(explained.rows.map((row) => row.info).join('\n')).toContain(
+      'pre_effect_barriers_gmail_archive_recovery_scan_idx',
+    );
+  });
+
+  it('wraps past a finite upper bound so a delayed older hint survives a continuous tail', async () => {
+    // This file deliberately retains durable fixtures across tests. Neutralize
+    // all earlier nonterminal anchors before asserting an exact global order;
+    // later fixtures do not exist yet and are therefore unaffected.
+    await getPool().query(
+      `UPDATE pre_effect_barriers
+          SET created_at = statement_timestamp(), updated_at = statement_timestamp()
+        WHERE effect_type = 'event_execution'
+          AND status IN ('reserved', 'prepared', 'in_progress')`,
+    );
+
+    // Keep these identities outside every other seedRecoveryOwner suffix in
+    // this integration file so even a failed assertion cannot collide later.
+    const delayedOwner = await seedRecoveryOwner(900);
+    const corruptOwner = await seedRecoveryOwner(901);
+    const healthyOwner = await seedRecoveryOwner(902);
+    const corrupt: Array<{ approvalId: string; barrierId: string; candidateId: string }> = [];
+
+    try {
+    const delayed = await createProposal(
+      1999,
+      delayedOwner.ownerUserId,
+      delayedOwner.ownerAccountId,
+    );
+    const delayedResponse = await gmailArchiveApprovalResponseRepository.respond({
+      userId: delayedOwner.ownerUserId,
+      approvalId: delayed.approval.id,
+      action: 'approve',
+    });
+    if (!delayedResponse.ok || !delayedResponse.response.reservedBarrier) {
+      throw new Error('Delayed pagination fixture did not reserve a barrier.');
+    }
+    await getPool().query(
+      `UPDATE pre_effect_barriers
+          SET created_at = '1969-01-01T00:00:00.000Z',
+              updated_at = '1969-01-01T00:00:00.000Z'
+        WHERE id = $1`,
+      [delayedResponse.response.reservedBarrier.id],
+    );
+    const delayedLease = await gmailArchiveRecoveryLeaseRepository.acquire({
+      userId: delayedOwner.ownerUserId,
+      approvalId: delayed.approval.id,
+      leaseMs: 60_000,
+    });
+    expect(delayedLease).toMatchObject({ ok: true, status: 'acquired' });
+
+    for (let index = 0; index < 101; index++) {
+      const proposal = await createProposal(
+        2000 + index,
+        corruptOwner.ownerUserId,
+        corruptOwner.ownerAccountId,
+      );
+      const response = await gmailArchiveApprovalResponseRepository.respond({
+        userId: corruptOwner.ownerUserId,
+        approvalId: proposal.approval.id,
+        action: 'approve',
+      });
+      if (!response.ok || !response.response.reservedBarrier) {
+        throw new Error('Corrupt pagination fixture did not reserve a barrier.');
+      }
+      corrupt.push({
+        approvalId: proposal.approval.id,
+        barrierId: response.response.reservedBarrier.id,
+        candidateId: proposal.candidate.id,
+      });
+    }
+    await getPool().query(
+      `UPDATE candidate_actions SET description = 'acquisition-invalid description'
+        WHERE id = ANY($1::UUID[])`,
+      [corrupt.map((candidate) => candidate.candidateId)],
+    );
+    await getPool().query(
+      `UPDATE pre_effect_barriers
+          SET created_at = '1970-01-01T00:00:00.000Z',
+              updated_at = '1970-01-01T00:00:00.000Z'
+        WHERE id = ANY($1::UUID[])`,
+      [corrupt.map((candidate) => candidate.barrierId)],
+    );
+
+    const healthy = await createProposal(
+      2200,
+      healthyOwner.ownerUserId,
+      healthyOwner.ownerAccountId,
+    );
+    const healthyResponse = await gmailArchiveApprovalResponseRepository.respond({
+      userId: healthyOwner.ownerUserId,
+      approvalId: healthy.approval.id,
+      action: 'approve',
+    });
+    if (!healthyResponse.ok || !healthyResponse.response.reservedBarrier) {
+      throw new Error('Healthy pagination fixture did not reserve a barrier.');
+    }
+    await getPool().query(
+      `UPDATE pre_effect_barriers
+          SET created_at = '1971-01-01T00:00:00.000Z',
+              updated_at = '1971-01-01T00:00:00.000Z'
+        WHERE id = $1`,
+      [healthyResponse.response.reservedBarrier.id],
+    );
+
+    let cursor: Parameters<typeof gmailArchiveRecoveryCandidateRepository.list>[0]['cursor'];
+    let nextSweepCursor: NonNullable<typeof cursor> | null = null;
+    const firstSweepCandidates: Array<{ userId: string; approvalId: string }> = [];
+    for (let pageIndex = 0; pageIndex < 4; pageIndex++) {
+      const page = await gmailArchiveRecoveryCandidateRepository.list({
+        limit: 25,
+        ...(cursor ? { cursor } : {}),
+      });
+      expect(page).toMatchObject({ ok: true });
+      if (!page.ok || page.resumeCursor === null) throw new Error('Sweep page did not continue.');
+      expect(page.candidates).toHaveLength(25);
+      expect(page.candidates.every((candidate) =>
+        candidate.userId === corruptOwner.ownerUserId &&
+        Object.keys(candidate).sort().join(',') === 'approvalId,userId')).toBe(true);
+      firstSweepCandidates.push(...page.candidates);
+      nextSweepCursor = page.resumeCursor;
+      if (pageIndex < 3) {
+        if (page.nextCursor === null) throw new Error('Sweep ended before its hard bound.');
+        cursor = page.nextCursor;
+      } else {
+        expect(page.nextCursor).toBeNull();
+      }
+    }
+    expect(firstSweepCandidates).toHaveLength(100);
+    expect(firstSweepCandidates).not.toContainEqual({
+      userId: healthyOwner.ownerUserId,
+      approvalId: healthy.approval.id,
+    });
+    await expect(gmailArchiveRecoveryLeaseRepository.acquire({
+      userId: corruptOwner.ownerUserId,
+      approvalId: firstSweepCandidates[0]!.approvalId,
+      leaseMs: 60_000,
+    })).resolves.toEqual({ ok: false, error: 'integrity_conflict' });
+    if (nextSweepCursor === null) throw new Error('Missing next-sweep high-water cursor.');
+    const rotation = gmailArchiveRecoveryCandidateTestHooks.parseCursor(nextSweepCursor);
+    if (!rotation) throw new Error('Next-sweep cursor was not canonical.');
+
+    const lastCorruptPage = await gmailArchiveRecoveryCandidateRepository.list({
+      limit: 1,
+      cursor: nextSweepCursor,
+    });
+    if (!lastCorruptPage.ok || lastCorruptPage.nextCursor === null) {
+      throw new Error('Rotation did not reach the final corrupt hint.');
+    }
+    expect(lastCorruptPage.candidates).toEqual([
+      expect.objectContaining({ userId: corruptOwner.ownerUserId }),
+    ]);
+
+    const healthyPage = await gmailArchiveRecoveryCandidateRepository.list({
+      limit: 1,
+      cursor: lastCorruptPage.nextCursor,
+    });
+    if (!healthyPage.ok || healthyPage.nextCursor === null) {
+      throw new Error('Rotation did not reach the healthy hint.');
+    }
+    expect(healthyPage.candidates).toEqual([{
+      userId: healthyOwner.ownerUserId,
+      approvalId: healthy.approval.id,
+    }]);
+    expect(healthyPage.candidates).not.toContainEqual({
+      userId: corruptOwner.ownerUserId,
+      approvalId: healthy.approval.id,
+    });
+
+    // Make the skipped, older row eligible only after the cursor has passed it.
+    // Also add a newly eligible row strictly beyond this rotation's DB-clock
+    // upper bound. Without the bound, a continuous tail can keep every page full
+    // forever and prevent the cursor from wrapping to the delayed row.
+    await getPool().query(
+      `UPDATE gmail_archive_recovery_leases
+          SET expires_at = statement_timestamp()
+        WHERE admission_id = $1`,
+      [delayedResponse.response.reservedBarrier.id],
+    );
+    const tail = await createProposal(
+      2201,
+      healthyOwner.ownerUserId,
+      healthyOwner.ownerAccountId,
+    );
+    const tailResponse = await gmailArchiveApprovalResponseRepository.respond({
+      userId: healthyOwner.ownerUserId,
+      approvalId: tail.approval.id,
+      action: 'approve',
+    });
+    if (!tailResponse.ok || !tailResponse.response.reservedBarrier) {
+      throw new Error('Tail pagination fixture did not reserve a barrier.');
+    }
+    await getPool().query(
+      `UPDATE pre_effect_barriers
+          SET created_at = '1972-01-01T00:00:00.000Z',
+              updated_at = $2::TIMESTAMPTZ + INTERVAL '1 microsecond'
+        WHERE id = $1`,
+      [tailResponse.response.reservedBarrier.id, rotation.rotationUpper],
+    );
+
+    const exhaustedRotation = await gmailArchiveRecoveryCandidateRepository.list({
+      limit: 1,
+      cursor: healthyPage.nextCursor,
+    });
+    expect(exhaustedRotation).toEqual({
+      ok: true,
+      candidates: [],
+      nextCursor: null,
+      resumeCursor: null,
+    });
+    const wrapped = await gmailArchiveRecoveryCandidateRepository.list({ limit: 1 });
+    expect(wrapped).toMatchObject({
+      ok: true,
+      candidates: [{
+        userId: delayedOwner.ownerUserId,
+        approvalId: delayed.approval.id,
+      }],
+    });
+
+    } finally {
+      // Restore every anchor owned by this test to not-due using the DB clock,
+      // including partial setup if an assertion throws before the tail exists.
+      await getPool().query(
+        `UPDATE pre_effect_barriers
+            SET created_at = statement_timestamp(), updated_at = statement_timestamp()
+          WHERE effect_type = 'event_execution'
+            AND user_id = ANY($1::UUID[])`,
+        [[delayedOwner.ownerUserId, corruptOwner.ownerUserId, healthyOwner.ownerUserId]],
+      );
+    }
+  }, 300_000);
+
+  it('does not emit a cross-owner barrier-to-approval link', async () => {
+    const victimOwner = await seedRecoveryOwner(78);
+    const otherOwner = await seedRecoveryOwner(79);
+    const healthyOwner = await seedRecoveryOwner(80);
+    const mismatched = await createProposal(
+      826,
+      victimOwner.ownerUserId,
+      victimOwner.ownerAccountId,
+    );
+    const mismatchedResponse = await gmailArchiveApprovalResponseRepository.respond({
+      userId: victimOwner.ownerUserId,
+      approvalId: mismatched.approval.id,
+      action: 'approve',
+    });
+    if (!mismatchedResponse.ok || !mismatchedResponse.response.reservedBarrier) {
+      throw new Error('Mismatched owner fixture did not reserve a barrier.');
+    }
+    const other = await createProposal(
+      828,
+      otherOwner.ownerUserId,
+      otherOwner.ownerAccountId,
+    );
+    await expect(gmailArchiveApprovalResponseRepository.respond({
+      userId: otherOwner.ownerUserId,
+      approvalId: other.approval.id,
+      action: 'approve',
+    })).resolves.toMatchObject({ ok: true, created: true });
+    const healthy = await createProposal(
+      827,
+      healthyOwner.ownerUserId,
+      healthyOwner.ownerAccountId,
+    );
+    const healthyResponse = await gmailArchiveApprovalResponseRepository.respond({
+      userId: healthyOwner.ownerUserId,
+      approvalId: healthy.approval.id,
+      action: 'approve',
+    });
+    if (!healthyResponse.ok || !healthyResponse.response.reservedBarrier) {
+      throw new Error('Owner-paired fixture did not reserve a barrier.');
+    }
+    await getPool().query(
+      `UPDATE pre_effect_barriers
+          SET idempotency_key = $2,
+              created_at = '1960-01-01T00:00:00.000Z',
+              updated_at = '1960-01-01T00:00:00.000Z'
+        WHERE id = $1`,
+      [mismatchedResponse.response.reservedBarrier.id, other.approval.id],
+    );
+    await getPool().query(
+      `UPDATE pre_effect_barriers
+          SET created_at = '1961-01-01T00:00:00.000Z',
+              updated_at = '1961-01-01T00:00:00.000Z'
+        WHERE id = $1`,
+      [healthyResponse.response.reservedBarrier.id],
+    );
+
+    const listed = await gmailArchiveRecoveryCandidateRepository.list({ limit: 25 });
+    expect(listed).toMatchObject({ ok: true });
+    if (!listed.ok) throw new Error('Owner-paired selector failed.');
+    expect(listed.candidates).toContainEqual({
+      userId: healthyOwner.ownerUserId,
+      approvalId: healthy.approval.id,
+    });
+    expect(listed.candidates).not.toContainEqual({
+      userId: victimOwner.ownerUserId,
+      approvalId: other.approval.id,
+    });
+    await getPool().query(
+      `UPDATE pre_effect_barriers
+          SET created_at = statement_timestamp(), updated_at = statement_timestamp()
+        WHERE id = $1`,
+      [healthyResponse.response.reservedBarrier.id],
+    );
+  }, 120_000);
+
+  it('discovers bounded owner-paired recovery hints after connector deletion and skips older corruption', async () => {
+    const disconnectedOwner = await seedRecoveryOwner(70);
+    const secondOwner = await seedRecoveryOwner(71);
+    const corruptOwner = await seedRecoveryOwner(72);
+    const terminalOwner = await seedRecoveryOwner(73);
+
+    const disconnected = await createPreparedProposal(
+      700,
+      disconnectedOwner.ownerUserId,
+      disconnectedOwner.ownerAccountId,
+    );
+    const second = await createProposal(701, secondOwner.ownerUserId, secondOwner.ownerAccountId);
+    await expect(gmailArchiveApprovalResponseRepository.respond({
+      userId: secondOwner.ownerUserId,
+      approvalId: second.approval.id,
+      action: 'approve',
+    })).resolves.toMatchObject({ ok: true, created: true });
+    const corrupt = await createPreparedProposal(
+      702,
+      corruptOwner.ownerUserId,
+      corruptOwner.ownerAccountId,
+    );
+    const terminal = await createPreparedProposal(
+      703,
+      terminalOwner.ownerUserId,
+      terminalOwner.ownerAccountId,
+    );
+
+    await getPool().query(
+      'DELETE FROM connected_accounts WHERE id = $1 AND user_id = $2',
+      [disconnectedOwner.ownerAccountId, disconnectedOwner.ownerUserId],
+    );
+    await getPool().query(
+      `UPDATE candidate_actions SET parameters = '{}'::JSONB WHERE id = $1`,
+      [corrupt.proposal.candidate.id],
+    );
+    await getPool().query(
+      `UPDATE pre_effect_barriers SET status = 'failed'
+        WHERE user_id = $1 AND effect_type = 'event_execution' AND idempotency_key = $2`,
+      [terminalOwner.ownerUserId, terminal.proposal.approval.id],
+    );
+
+    for (const [timestamp, ownerId, approvalId] of [
+      ['1989-01-01T00:00:00.000Z', corruptOwner.ownerUserId, corrupt.proposal.approval.id],
+      ['1990-01-01T00:00:00.000Z', disconnectedOwner.ownerUserId, disconnected.proposal.approval.id],
+      ['1990-01-02T00:00:00.000Z', secondOwner.ownerUserId, second.approval.id],
+      ['1988-01-01T00:00:00.000Z', terminalOwner.ownerUserId, terminal.proposal.approval.id],
+    ] as const) {
+      await getPool().query(
+        `UPDATE pre_effect_barriers SET created_at = $3, updated_at = $3
+          WHERE user_id = $1 AND effect_type = 'event_execution' AND idempotency_key = $2`,
+        [ownerId, approvalId, timestamp],
+      );
+    }
+
+    const listed = await gmailArchiveRecoveryCandidateRepository.list({ limit: 2 });
+    expect(listed).toMatchObject({
+      ok: true,
+      candidates: [
+        {
+          userId: disconnectedOwner.ownerUserId,
+          approvalId: disconnected.proposal.approval.id,
+        },
+        { userId: secondOwner.ownerUserId, approvalId: second.approval.id },
+      ],
+    });
+    expect(Object.isFrozen(listed)).toBe(true);
+    if (listed.ok) {
+      expect(Object.isFrozen(listed.candidates)).toBe(true);
+      expect(listed.candidates.every(Object.isFrozen)).toBe(true);
+      expect(listed.candidates.every((candidate) =>
+        Object.keys(candidate).sort().join(',') === 'approvalId,userId')).toBe(true);
+      expect(listed.candidates).not.toContainEqual({
+        userId: corruptOwner.ownerUserId,
+        approvalId: corrupt.proposal.approval.id,
+      });
+      expect(listed.candidates).not.toContainEqual({
+        userId: terminalOwner.ownerUserId,
+        approvalId: terminal.proposal.approval.id,
+      });
+    }
+    await getPool().query(
+      `UPDATE pre_effect_barriers
+          SET created_at = statement_timestamp(), updated_at = statement_timestamp()
+        WHERE user_id IN ($1, $2)
+          AND effect_type = 'event_execution'
+          AND idempotency_key IN ($3, $4)`,
+      [
+        disconnectedOwner.ownerUserId,
+        secondOwner.ownerUserId,
+        disconnected.proposal.approval.id,
+        second.approval.id,
+      ],
+    );
+  }, 120_000);
+
+  it('discovers in-progress work but skips its live lease so later owners are not starved', async () => {
+    const firstOwner = await seedRecoveryOwner(74);
+    const laterOwner = await seedRecoveryOwner(75);
+    const first = await createPreparedProposal(
+      704,
+      firstOwner.ownerUserId,
+      firstOwner.ownerAccountId,
+    );
+    const later = await createPreparedProposal(
+      705,
+      laterOwner.ownerUserId,
+      laterOwner.ownerAccountId,
+    );
+    await expect(gmailArchiveClaimRepository.claim({
+      userId: firstOwner.ownerUserId,
+      approvalId: first.proposal.approval.id,
+    })).resolves.toMatchObject({ ok: true, claimed: true });
+    for (const [timestamp, ownerId, approvalId] of [
+      ['1991-01-01T00:00:00.000Z', firstOwner.ownerUserId, first.proposal.approval.id],
+      ['1991-01-02T00:00:00.000Z', laterOwner.ownerUserId, later.proposal.approval.id],
+    ] as const) {
+      await getPool().query(
+        `UPDATE pre_effect_barriers SET updated_at = $3
+          WHERE user_id = $1 AND effect_type = 'event_execution' AND idempotency_key = $2`,
+        [ownerId, approvalId, timestamp],
+      );
+    }
+
+    await expect(gmailArchiveRecoveryCandidateRepository.list({ limit: 1 })).resolves.toMatchObject({
+      ok: true,
+      candidates: [{ userId: firstOwner.ownerUserId, approvalId: first.proposal.approval.id }],
+    });
+    await expect(gmailArchiveRecoveryLeaseRepository.acquire({
+      userId: firstOwner.ownerUserId,
+      approvalId: first.proposal.approval.id,
+      leaseMs: 300_000,
+    })).resolves.toMatchObject({ ok: true, status: 'acquired' });
+    await expect(gmailArchiveRecoveryCandidateRepository.list({ limit: 1 })).resolves.toMatchObject({
+      ok: true,
+      candidates: [{ userId: laterOwner.ownerUserId, approvalId: later.proposal.approval.id }],
+    });
   }, 120_000);
 });

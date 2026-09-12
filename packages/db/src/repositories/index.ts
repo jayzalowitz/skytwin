@@ -121,6 +121,7 @@ export type {
   TerminalizeGmailArchiveInput,
   TerminalizeGmailArchiveResult,
 } from './gmail-archive-terminalization-repository.js';
+export { gmailArchiveRuntimeRepositories } from './gmail-archive-runtime-repositories.js';
 
 export { feedbackRepository } from './feedback-repository.js';
 export type { CreateFeedbackInput } from './feedback-repository.js';

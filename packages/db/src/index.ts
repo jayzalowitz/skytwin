@@ -130,6 +130,7 @@ export {
   parseGmailArchiveTerminalExplanationBinding,
   parseGmailArchiveTerminalExplanationEvidence,
   parseGmailArchiveTerminalResultEnvelope,
+  gmailArchiveRuntimeRepositories,
   feedbackRepository,
 } from './repositories/index.js';
 export type {
