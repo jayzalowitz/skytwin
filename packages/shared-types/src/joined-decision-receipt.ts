@@ -518,9 +518,6 @@ export function validateJoinedDecisionReceiptContent(
     if (!['execution_recorded', 'feedback_recorded', 'corrected'].includes(content.stage)) {
       throw new TypeError('execution explanation cannot precede execution recording');
     }
-    if (content.executionExplanation.id === content.explanation?.id) {
-      throw new TypeError('execution explanation must be distinct from the policy explanation');
-    }
   }
   if (!new Set<DecisionReceiptStage>([
     'decision_recorded', 'policy_evaluated', 'approval_recorded',
@@ -533,6 +530,11 @@ export function validateJoinedDecisionReceiptContent(
   assertRef(content.decision, 'decision');
   if (!Array.isArray(content.policyEvaluations)) throw new TypeError('policy evaluations must be an array');
   content.policyEvaluations.forEach(assertPolicyEvaluation);
+  if (content.version === 2 && content.policyEvaluations.some(
+    (evaluation) => evaluation.explanation.id === content.executionExplanation.id,
+  )) {
+    throw new TypeError('execution explanation must be distinct from every policy explanation');
+  }
   if (content.policyEvaluations.length > 2) {
     throw new TypeError('joined receipt supports at most one post-approval policy phase');
   }

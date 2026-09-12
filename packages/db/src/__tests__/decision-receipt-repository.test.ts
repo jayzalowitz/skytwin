@@ -4,6 +4,7 @@ import {
   joinedDecisionReceiptArtifactDigest,
   joinedDecisionReceiptContentDigest,
   joinedDecisionReceiptRevisionDigest,
+  type DecisionReceiptPolicyEvaluationV1,
   type JoinedDecisionReceiptContentV1,
   type JoinedDecisionReceiptContentV2,
 } from '@skytwin/shared-types';
@@ -920,6 +921,58 @@ describe('decisionReceiptRepository', () => {
       eventKey: eventKey('swapped_terminal_explanation'),
       expectedPreviousDigest: scenario.previousDigest,
       content: swapped,
+    })).resolves.toEqual({ success: false, code: 'invalid_content' });
+    expect(queryMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects reusing the r2 explanation after a distinct post-approval policy phase', async () => {
+    const scenario = terminalScenario('succeeded');
+    const current = scenario.terminal.policyEvaluations[0]!;
+    const initialPolicyHash = 'b'.repeat(64);
+    const initialBarrierSnapshot = {
+      ...current.barrier.snapshot,
+      status: 'blocked' as const,
+      explanationId: revisionId,
+      policyHash: initialPolicyHash,
+    };
+    const initial: DecisionReceiptPolicyEvaluationV1 = {
+      ...current,
+      phase: 'pre_effect',
+      disposition: 'requires_approval',
+      policy: { barrierId: rootId, policyIds: [], canonicalHash: initialPolicyHash },
+      barrier: {
+        id: rootId,
+        snapshot: initialBarrierSnapshot,
+        canonicalHash: joinedDecisionReceiptArtifactDigest('barrier', initialBarrierSnapshot),
+      },
+      explanation: { id: revisionId, canonicalHash: 'c'.repeat(64) },
+    };
+    const approvalSnapshot = {
+      version: 1 as const, status: 'approved' as const, candidateActionId: actionId,
+      requestedAt: instant.toISOString(),
+      expiresAt: new Date('2026-01-02T00:00:00.000Z').toISOString(),
+      respondedAt: instant.toISOString(),
+    };
+    const approvalRequest = {
+      id: approvalId,
+      snapshot: approvalSnapshot,
+      canonicalHash: joinedDecisionReceiptArtifactDigest('approval', approvalSnapshot),
+    };
+    const terminal: JoinedDecisionReceiptContentV2 = {
+      ...scenario.terminal,
+      policyEvaluations: [initial, {
+        ...current,
+        phase: 'post_approval',
+        approvalSatisfied: approvalRequest,
+      }],
+      approvalRequest,
+      executionExplanation: initial.explanation,
+    };
+
+    await expect(decisionReceiptRepository.appendForUser(userId, {
+      eventKey: eventKey('reused_initial_policy_explanation'),
+      expectedPreviousDigest: scenario.previousDigest,
+      content: terminal,
     })).resolves.toEqual({ success: false, code: 'invalid_content' });
     expect(queryMock).not.toHaveBeenCalled();
   });

@@ -15,7 +15,11 @@ import {
   joinedDecisionReceiptArtifactDigest,
   joinedDecisionReceiptContentDigest,
   joinedDecisionReceiptRevisionDigest,
+  type JoinedDecisionReceiptContent,
+  type JoinedDecisionReceiptContentV1,
+  type JoinedDecisionReceiptContentV2,
 } from '@skytwin/shared-types';
+import { decisionReceiptRowArtifactV1 } from '../repositories/decision-receipt-artifacts.js';
 
 let userExists = false;
 const poolQuery = vi.fn(async (..._args: unknown[]): Promise<{ rows: unknown[]; rowCount: number }> => ({
@@ -76,6 +80,177 @@ function validPayload(): Record<string, unknown> {
     preferences: [],
     decisions: [],
   };
+}
+
+function terminalReceiptPayload(): {
+  payload: Record<string, unknown>;
+  executionExplanation: Record<string, unknown>;
+} {
+  const ownerId = '11111111-1111-4111-8111-111111111111';
+  const decisionId = '22222222-2222-4222-8222-222222222222';
+  const rootId = '33333333-3333-4333-8333-333333333333';
+  const candidateId = '44444444-4444-4444-8444-444444444444';
+  const policyExplanationId = '55555555-5555-4555-8555-555555555555';
+  const barrierId = '66666666-6666-4666-8666-666666666666';
+  const planId = '77777777-7777-4777-8777-777777777777';
+  const executionExplanationId = '88888888-8888-4888-8888-888888888888';
+  const now = new Date('2026-06-15T00:00:00.000Z');
+  const decision = {
+    id: decisionId, user_id: ownerId, situation_type: 'email', raw_event: {},
+    interpreted_situation: {}, domain: 'email', urgency: 'normal', metadata: {},
+    signal_id: null, created_at: now,
+  };
+  const candidate = {
+    id: candidateId, decision_id: decisionId, action_type: 'archive_email',
+    description: 'Archive the selected message', parameters: {},
+    predicted_user_preference: 'positive', risk_assessment: {}, reversible: true,
+    estimated_cost: null, created_at: now,
+  };
+  const policyExplanation = {
+    id: policyExplanationId, decision_id: decisionId, what_happened: 'Policy allowed the action',
+    evidence_used: [], preferences_invoked: [], confidence_reasoning: 'Explicit policy',
+    action_rationale: 'The action is within scope', escalation_rationale: null,
+    correction_guidance: 'Change the archive policy', capability_provenance_node_id: null,
+    created_at: now,
+  };
+  const executionExplanation = {
+    id: executionExplanationId, decision_id: decisionId, what_happened: 'Remote outcome is unknown',
+    evidence_used: [], preferences_invoked: [], confidence_reasoning: 'No terminal response',
+    action_rationale: 'The admitted action was dispatched', escalation_rationale: 'Review provider state',
+    correction_guidance: 'Confirm the message state', capability_provenance_node_id: null,
+    created_at: now,
+  };
+  const policySnapshot = { allowed: true, requiresApproval: false, policyIds: [] };
+  const policyHash = joinedDecisionReceiptArtifactDigest('policy', policySnapshot);
+  const candidateAction = {
+    id: candidateId,
+    canonicalHash: joinedDecisionReceiptArtifactDigest(
+      'candidate_action',
+      decisionReceiptRowArtifactV1('candidate_action', candidate),
+    ),
+  };
+  const risk = {
+    candidateActionId: candidateId,
+    canonicalHash: joinedDecisionReceiptArtifactDigest('risk', candidate.risk_assessment),
+  };
+  const explanation = {
+    id: policyExplanationId,
+    canonicalHash: joinedDecisionReceiptArtifactDigest(
+      'explanation',
+      decisionReceiptRowArtifactV1('explanation', policyExplanation),
+    ),
+  };
+  const barrierSnapshot = {
+    version: 1 as const, status: 'prepared' as const, effectType: 'event_execution' as const,
+    decisionId, candidateActionId: candidateId, explanationId: policyExplanationId,
+    policyHash, createdAt: now.toISOString(), updatedAt: now.toISOString(),
+  };
+  const barrier = {
+    id: barrierId, snapshot: barrierSnapshot,
+    canonicalHash: joinedDecisionReceiptArtifactDigest('barrier', barrierSnapshot),
+  };
+  const evaluation = {
+    version: 1 as const, phase: 'pre_effect' as const, disposition: 'allowed' as const,
+    candidateAction, risk, policy: { barrierId, policyIds: [], canonicalHash: policyHash },
+    barrier, explanation, evidence: [],
+  };
+  const base: JoinedDecisionReceiptContentV1 = {
+    version: 1, stage: 'decision_recorded', disposition: 'pending',
+    decision: {
+      id: decisionId,
+      canonicalHash: joinedDecisionReceiptArtifactDigest(
+        'decision',
+        decisionReceiptRowArtifactV1('decision', decision),
+      ),
+    },
+    policyEvaluations: [], evidence: [], inference: { receipts: [] },
+    feedbackEvents: [], corrections: [],
+  };
+  const evaluated: JoinedDecisionReceiptContentV1 = {
+    ...base, stage: 'policy_evaluated', disposition: 'allowed',
+    policyEvaluations: [evaluation], candidateAction, risk, policy: evaluation.policy,
+    barrier, explanation,
+  };
+  const planSnapshot = {
+    version: 1 as const, status: 'pending' as const, decisionId,
+    candidateActionId: candidateId, createdAt: now.toISOString(), updatedAt: now.toISOString(),
+  };
+  const admitted: JoinedDecisionReceiptContentV1 = {
+    ...evaluated, stage: 'execution_admitted', disposition: 'pending',
+    executionPlan: {
+      id: planId, snapshot: planSnapshot,
+      canonicalHash: joinedDecisionReceiptArtifactDigest('execution_plan', planSnapshot),
+    },
+  };
+  const terminalBarrierSnapshot = { ...barrierSnapshot, status: 'unknown' as const };
+  const terminalPlanSnapshot = { ...planSnapshot, status: 'failed' as const };
+  const terminal: JoinedDecisionReceiptContentV2 = {
+    ...admitted, version: 2, stage: 'execution_recorded', disposition: 'unknown',
+    barrier: {
+      id: barrierId, snapshot: terminalBarrierSnapshot,
+      canonicalHash: joinedDecisionReceiptArtifactDigest('barrier', terminalBarrierSnapshot),
+    },
+    executionPlan: {
+      id: planId, snapshot: terminalPlanSnapshot,
+      canonicalHash: joinedDecisionReceiptArtifactDigest('execution_plan', terminalPlanSnapshot),
+    },
+    executionDisposition: 'unknown',
+    executionExplanation: {
+      id: executionExplanationId,
+      canonicalHash: joinedDecisionReceiptArtifactDigest(
+        'explanation',
+        decisionReceiptRowArtifactV1('explanation', executionExplanation),
+      ),
+    },
+  };
+  let previousDigest: string | null = null;
+  const revisionIds = [
+    '99999999-9999-4999-8999-999999999999',
+    'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+  ];
+  const revisions = ([base, evaluated, admitted, terminal] as JoinedDecisionReceiptContent[])
+    .map((content, index) => {
+      const revisionId = revisionIds[index]!;
+      const eventKey = buildDecisionReceiptEventKey(`backup_${index + 1}`, revisionId);
+      const contentDigest = joinedDecisionReceiptContentDigest(content);
+      const revisionDigest = joinedDecisionReceiptRevisionDigest({
+        revisionId, receiptId: rootId, decisionId, userId: ownerId,
+        sequence: index + 1, eventKey, previousDigest, contentDigest,
+      });
+      const revision = {
+        id: revisionId, receipt_id: rootId, sequence: index + 1, event_key: eventKey,
+        previous_digest: previousDigest, content_digest: contentDigest, revision_digest: revisionDigest,
+        stage: content.stage, disposition: content.disposition, content,
+        candidate_action_id: content.candidateAction?.id ?? null,
+        barrier_id: content.barrier?.id ?? null,
+        explanation_id: content.explanation?.id ?? null,
+        approval_request_id: content.approvalRequest?.id ?? null,
+        execution_plan_id: content.executionPlan?.id ?? null,
+        execution_result_id: content.executionResult?.id ?? null,
+        execution_disposition: content.executionDisposition ?? null,
+        correction_of_revision_id: content.correctionOfRevision?.id ?? null,
+        trusted: true, created_at: now,
+      };
+      previousDigest = revisionDigest;
+      return revision;
+    });
+  const payload = validPayload();
+  payload['user'] = { ...(payload['user'] as object), id: ownerId };
+  payload['decisions'] = [{
+    decision, candidateActions: [candidate], outcome: null,
+    explanations: [policyExplanation, executionExplanation], inferenceReceipts: [],
+    executionPlans: [{
+      id: planId, decision_id: decisionId, action_id: candidateId, status: 'failed', steps: [],
+      created_at: now, updated_at: now,
+    }],
+    joinedReceipt: {
+      root: { id: rootId, user_id: ownerId, decision_id: decisionId, created_at: now },
+      revisions,
+    },
+  }];
+  return { payload, executionExplanation };
 }
 
 describe('validateBackupData', () => {
@@ -208,6 +383,28 @@ describe('validateBackupData', () => {
     revision['previous_digest'] = 'f'.repeat(64);
     expect(validateBackupData(payload)).toContain(
       'decisions[0].joinedReceipt.revisions[0] has inconsistent chain',
+    );
+  });
+
+  it('requires a v2 terminal explanation row in the exported decision bundle', () => {
+    const { payload, executionExplanation } = terminalReceiptPayload();
+    expect(validateBackupData(payload)).toEqual([]);
+    const bundle = (payload['decisions'] as Array<Record<string, unknown>>)[0]!;
+    bundle['explanations'] = (bundle['explanations'] as Array<Record<string, unknown>>)
+      .filter((row) => row['id'] !== executionExplanation['id']);
+
+    expect(validateBackupData(payload)).toContain(
+      'decisions[0].joinedReceipt has inconsistent execution explanation snapshot',
+    );
+  });
+
+  it('rejects a v2 terminal explanation whose exported canonical projection was tampered', () => {
+    const { payload, executionExplanation } = terminalReceiptPayload();
+    expect(validateBackupData(payload)).toEqual([]);
+    executionExplanation['what_happened'] = 'tampered after receipt creation';
+
+    expect(validateBackupData(payload)).toContain(
+      'decisions[0].joinedReceipt has inconsistent execution explanation snapshot',
     );
   });
 

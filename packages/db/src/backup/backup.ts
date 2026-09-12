@@ -488,6 +488,19 @@ export function validateBackupData(value: unknown): string[] {
             break;
           }
         }
+        if (tail?.version === 2) {
+          const ref = tail.executionExplanation as Partial<typeof tail.executionExplanation> | undefined;
+          const row = typeof ref?.id === 'string' ? explanationById.get(ref.id) : undefined;
+          if (!row || typeof ref?.canonicalHash !== 'string' || joinedDecisionReceiptArtifactDigest(
+            'explanation', decisionReceiptRowArtifactV1(
+              'explanation', row as unknown as Record<string, unknown>,
+            ),
+          ) !== ref.canonicalHash) {
+            problems.push(
+              `decisions[${index}].joinedReceipt has inconsistent execution explanation snapshot`,
+            );
+          }
+        }
         for (const ref of tail?.inference.receipts ?? []) {
           const row = inferenceById.get(ref.id);
           // User-deleted inference bytes are intentionally absent; the joined
