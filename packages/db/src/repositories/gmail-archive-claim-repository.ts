@@ -4,11 +4,9 @@ import {
 } from '@skytwin/policy-engine';
 import {
   TrustTier,
-  buildDecisionReceiptEventKey,
   joinedDecisionReceiptArtifactDigest,
   joinedDecisionReceiptContentDigest,
   parseAutonomySettings,
-  verifyJoinedDecisionReceiptChain,
   type CandidateAction,
   type GmailInboxMutationCommand,
   type JoinedDecisionReceiptContentV1,
@@ -22,9 +20,6 @@ import type {
   UserRow,
 } from '../types.js';
 import {
-  decisionReceiptRowArtifactRefV1,
-} from './decision-receipt-artifacts.js';
-import {
   canonicalGmailArchiveApprovalContent,
   loadCanonicalGmailArchiveApprovalState,
   type GmailArchiveApprovalCanonicalState,
@@ -37,6 +32,11 @@ import {
   createGmailArchiveTransactionPolicyPort,
   loadGmailArchivePreparationReplay,
 } from './gmail-archive-preparation-repository.js';
+import {
+  exactClaimedGmailArchiveReceipt,
+  exactGmailArchiveBarrierIdentity,
+} from './gmail-archive-claim-integrity.js';
+import { validateStoredGmailArchiveTerminal } from './gmail-archive-terminalization-repository.js';
 import type { PreEffectBarrierRow } from './pre-effect-barrier-repository.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -110,86 +110,6 @@ function exactApprovalResponse(value: unknown): boolean {
     (response['reason'] === null || typeof response['reason'] === 'string');
 }
 
-function exactBarrierIdentity(
-  barrier: PreEffectBarrierRow,
-  input: ClaimPreparedGmailArchiveInput,
-  state: Pick<GmailArchiveApprovalCanonicalState, 'candidate' | 'decision'>,
-): boolean {
-  return barrier.user_id === input.userId && barrier.effect_type === 'event_execution' &&
-    barrier.idempotency_key === input.approvalId && barrier.decision_id === state.decision.id &&
-    barrier.action_id === state.candidate.id && barrier.explanation_id !== null;
-}
-
-function iso(value: Date): string {
-  return value.toISOString();
-}
-
-/** Exact immutable r1-r6 admission graph shared with terminalization. */
-export function exactClaimedGmailArchiveReceipt(
-  input: ClaimPreparedGmailArchiveInput,
-  state: Pick<
-    GmailArchiveApprovalCanonicalState,
-    'approval' | 'candidate' | 'decision' | 'receipt' | 'revisions'
-  >,
-  barrier: PreEffectBarrierRow,
-  plan: ExecutionPlanRow,
-  policyExplanation: ExplanationRecordRow,
-  approved: JoinedDecisionReceiptContentV1,
-): boolean {
-  const candidate = canonicalGmailArchiveCandidate(state);
-  const revisions = state.revisions;
-  const r4 = revisions[3];
-  const r5 = revisions[4];
-  const r6 = revisions[5];
-  const barrierRef = r6?.content.barrier;
-  const planRef = r6?.content.executionPlan;
-  const policyRef = r6?.content.policy;
-  const explanationRef = r6?.content.explanation;
-  const candidateRef = r6?.content.candidateAction;
-  if (!candidate || !exactBarrierIdentity(barrier, input, state) ||
-      revisions.length !== 6 || revisions.some((revision) => revision.trusted !== true) ||
-      !verifyJoinedDecisionReceiptChain({
-        receiptId: state.receipt.id,
-        decisionId: state.decision.id,
-        userId: input.userId,
-        revisions,
-      }) || !r4 || !r5 || !r6 ||
-      r4.content_digest !== joinedDecisionReceiptContentDigest(approved) ||
-      r5.event_key !== buildDecisionReceiptEventKey('policy_evaluated', barrier.id) ||
-      r5.stage !== 'policy_evaluated' || r5.disposition !== 'allowed' ||
-      r6.event_key !== buildDecisionReceiptEventKey('execution_admitted', plan.id) ||
-      r6.stage !== 'execution_admitted' || r6.disposition !== 'pending' ||
-      !barrierRef || barrierRef.id !== barrier.id || barrierRef.snapshot.status !== 'prepared' ||
-      barrierRef.snapshot.effectType !== 'event_execution' ||
-      barrierRef.snapshot.decisionId !== state.decision.id ||
-      barrierRef.snapshot.candidateActionId !== state.candidate.id ||
-      barrierRef.snapshot.explanationId !== barrier.explanation_id ||
-      barrierRef.snapshot.policyHash !== joinedDecisionReceiptArtifactDigest('policy', barrier.policy_snapshot) ||
-      barrierRef.snapshot.createdAt !== iso(barrier.created_at) ||
-      ownData(barrier.effect_result, []) === null || barrier.failure_reason !== null ||
-      !planRef || planRef.id !== plan.id || planRef.snapshot.status !== 'pending' ||
-      planRef.snapshot.decisionId !== state.decision.id ||
-      planRef.snapshot.candidateActionId !== state.candidate.id ||
-      planRef.snapshot.createdAt !== iso(plan.created_at) ||
-      joinedDecisionReceiptArtifactDigest('policy', plan.steps) !==
-        joinedDecisionReceiptArtifactDigest('policy', canonicalGmailArchivePlanSteps(candidate)) ||
-      !policyRef || policyRef.barrierId !== barrier.id ||
-      policyRef.canonicalHash !== joinedDecisionReceiptArtifactDigest('policy', barrier.policy_snapshot) ||
-      !explanationRef || explanationRef.id !== barrier.explanation_id ||
-      policyExplanation.id !== barrier.explanation_id ||
-      policyExplanation.decision_id !== state.decision.id ||
-      explanationRef.canonicalHash !==
-        decisionReceiptRowArtifactRefV1('explanation', { ...policyExplanation }).canonicalHash ||
-      !candidateRef || candidateRef.id !== state.candidate.id ||
-      candidateRef.canonicalHash !==
-        decisionReceiptRowArtifactRefV1('candidate_action', { ...state.candidate }).canonicalHash) {
-    return false;
-  }
-  return r5.content.barrier?.canonicalHash === barrierRef.canonicalHash &&
-    r5.content.policy?.canonicalHash === policyRef.canonicalHash &&
-    r5.content.explanation?.canonicalHash === explanationRef.canonicalHash;
-}
-
 async function loadPlans(client: PoolClient, decisionId: string): Promise<ExecutionPlanRow[]> {
   return (await client.query<ExecutionPlanRow>(
     'SELECT * FROM execution_plans WHERE decision_id = $1 ORDER BY id ASC FOR UPDATE',
@@ -226,7 +146,7 @@ async function classifyNonPrepared(
     return { ok: true, claimed: false, state: 'not_ready', command: null };
   }
   if (barrier.status === 'blocked') {
-    if (!exactBarrierIdentity(barrier, input, state)) {
+    if (!exactGmailArchiveBarrierIdentity(barrier, input, state)) {
       return { ok: false, error: 'idempotency_conflict' };
     }
     const replay = await loadGmailArchivePreparationReplay(client, input, state, barrier, approved);
@@ -235,13 +155,22 @@ async function classifyNonPrepared(
     }
     return { ok: true, claimed: false, state: 'terminal', command: null };
   }
-  // No Gmail terminalizer is part of the v1 r6 lifecycle yet. Until that
-  // boundary defines and persists an exact r7 graph, execution-shaped terminal
-  // barrier states are corruption rather than proof of a completed workflow.
   if (['succeeded', 'failed', 'unknown'].includes(barrier.status)) {
-    return { ok: false, error: 'idempotency_conflict' };
+    const terminal = await validateStoredGmailArchiveTerminal(
+      client,
+      input,
+      {
+        ...state,
+        proposalExplanation: state.explanation,
+      },
+      barrier,
+      approved,
+    );
+    return terminal
+      ? { ok: true, claimed: false, state: 'terminal', command: null }
+      : { ok: false, error: 'idempotency_conflict' };
   }
-  if (barrier.status !== 'in_progress' || !exactBarrierIdentity(barrier, input, state)) {
+  if (barrier.status !== 'in_progress' || !exactGmailArchiveBarrierIdentity(barrier, input, state)) {
     return { ok: false, error: 'idempotency_conflict' };
   }
   const plans = await loadPlans(client, state.decision.id);
@@ -420,7 +349,7 @@ async function transition(
   if (barrier.status !== 'prepared') {
     return classifyNonPrepared(client, input, state, barrier, approved);
   }
-  if (!exactBarrierIdentity(barrier, input, state)) {
+  if (!exactGmailArchiveBarrierIdentity(barrier, input, state)) {
     return { ok: false, error: 'idempotency_conflict' };
   }
   const replay = await loadGmailArchivePreparationReplay(client, input, state, barrier, approved);

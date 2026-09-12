@@ -28,6 +28,7 @@ import {
   decisionReceiptRowArtifactRefV1,
 } from './decision-receipt-artifacts.js';
 import { decisionReceiptLifecycleRepository } from './decision-receipt-lifecycle.js';
+import { normalizeDecisionReceiptRevisionRow } from './decision-receipt-repository.js';
 import {
   buildGmailArchiveProposalReceiptContents,
   GMAIL_ARCHIVE_PROPOSAL_REASON,
@@ -349,10 +350,13 @@ export async function loadCanonicalGmailArchiveApprovalState(
     [input.userId, decision.id],
   )).rows[0];
   if (!receipt) return null;
-  const revisions = (await client.query<DecisionReceiptRevisionRow>(
+  const rawRevisions = (await client.query<DecisionReceiptRevisionRow>(
     'SELECT * FROM decision_receipt_revisions WHERE receipt_id = $1 ORDER BY sequence ASC',
     [receipt.id],
   )).rows;
+  const normalizedRevisions = rawRevisions.map(normalizeDecisionReceiptRevisionRow);
+  if (normalizedRevisions.some((revision) => revision === null)) return null;
+  const revisions = normalizedRevisions as DecisionReceiptRevisionRow[];
   return {
     approval,
     decision,

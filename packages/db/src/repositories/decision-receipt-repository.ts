@@ -68,7 +68,7 @@ function isCanonicalIsoInstant(value: string): boolean {
   }
 }
 
-function normalizeRevisionRow(
+export function normalizeDecisionReceiptRevisionRow(
   row: DecisionReceiptRevisionRow | undefined,
 ): DecisionReceiptRevisionRow | null {
   if (!row) return null;
@@ -84,7 +84,7 @@ async function loadVerifiedRetainedChain(
     'SELECT * FROM decision_receipt_revisions WHERE receipt_id = $1 ORDER BY sequence ASC',
     [receipt.id],
   )).rows;
-  const normalized = raw.map((revision) => normalizeRevisionRow(revision));
+  const normalized = raw.map((revision) => normalizeDecisionReceiptRevisionRow(revision));
   if (normalized.some((revision) => revision === null)) return null;
   const revisions = normalized as DecisionReceiptRevisionRow[];
   if (revisions.some((revision) => !revision.trusted)) return null;
@@ -669,7 +669,7 @@ async function appendTransaction(
         input.content.executionDisposition ?? null, input.content.correctionOfRevision?.id ?? null,
         input.createdAt ?? null],
     )).rows[0]!;
-    const inserted = normalizeRevisionRow(insertedRaw);
+    const inserted = normalizeDecisionReceiptRevisionRow(insertedRaw);
     if (!inserted) throw new TypeError('database returned an invalid receipt sequence');
     return { success: true, created: true, receipt: root, revision: inserted };
   };
@@ -749,7 +749,7 @@ export const decisionReceiptRepository = {
         'SELECT * FROM decision_receipt_revisions WHERE receipt_id = $1 ORDER BY sequence ASC',
         [receipt.id],
       )).rows;
-      const revisions = rawRevisions.map((revision) => normalizeRevisionRow(revision));
+      const revisions = rawRevisions.map((revision) => normalizeDecisionReceiptRevisionRow(revision));
       if (revisions.some((revision) => revision === null)) {
         return { success: false, code: 'verification_failed' };
       }

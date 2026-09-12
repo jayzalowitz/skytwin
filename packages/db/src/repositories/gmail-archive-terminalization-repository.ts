@@ -10,7 +10,7 @@ import {
   type JoinedDecisionReceiptContentV2,
 } from '@skytwin/shared-types';
 import type { PoolClient } from 'pg';
-import { withTransaction } from '../connection.js';
+import { query, withTransaction } from '../connection.js';
 import type {
   DecisionReceiptRevisionRow,
   DecisionReceiptRow,
@@ -30,10 +30,14 @@ import {
   decisionReceiptRowArtifactRefV1,
 } from './decision-receipt-artifacts.js';
 import { decisionReceiptLifecycleRepository } from './decision-receipt-lifecycle.js';
+import { normalizeDecisionReceiptRevisionRow } from './decision-receipt-repository.js';
 import {
   canonicalGmailArchiveCandidateMessageRef,
 } from './gmail-archive-approval-response-repository.js';
-import { exactClaimedGmailArchiveReceipt } from './gmail-archive-claim-repository.js';
+import {
+  exactClaimedGmailArchiveReceipt,
+  type GmailArchiveClaimAuthority,
+} from './gmail-archive-claim-integrity.js';
 import { canonicalGmailArchiveCandidate } from './gmail-archive-preparation-repository.js';
 import { GMAIL_ARCHIVE_PROPOSAL_REASON } from './gmail-archive-proposal-repository.js';
 import type { PreEffectBarrierRow } from './pre-effect-barrier-repository.js';
@@ -80,12 +84,9 @@ export interface TerminalizeGmailArchiveInput {
   result: GmailInboxMutationResult;
 }
 
-interface TerminalAuthority {
-  userId: string;
-  approvalId: string;
-}
+type TerminalAuthority = GmailArchiveClaimAuthority;
 
-interface GmailArchiveTerminalStableState {
+export interface GmailArchiveTerminalStableState {
   approval: ApprovalRequestRow;
   decision: DecisionRow;
   candidate: CandidateActionRow;
@@ -296,17 +297,20 @@ function failureReason(result: GmailInboxMutationResult): string | null {
   return result.outcome === 'confirmed' ? null : result.code;
 }
 
-function terminalExplanation(input: {
-  id: string;
-  createdAt: string;
-  state: GmailArchiveTerminalStableState;
-  barrier: PreEffectBarrierRow;
-  plan: ExecutionPlanRow;
-  result: GmailInboxMutationResult;
-}): ExplanationRecordRow {
-  const outcome = disposition(input.result);
-  const effect = input.result.outcome === 'confirmed' ? input.result.effect : null;
-  const code = input.result.outcome === 'confirmed' ? null : input.result.code;
+export interface GmailArchiveTerminalExplanationSemantics {
+  whatHappened: string;
+  confidenceReasoning: string;
+  escalationRationale: string | null;
+  correctionGuidance: string;
+}
+
+/** Result-bound prose fields used by both persistence and portable validation. */
+export function gmailArchiveTerminalExplanationSemantics(
+  result: GmailInboxMutationResult,
+): GmailArchiveTerminalExplanationSemantics {
+  const outcome = disposition(result);
+  const effect = result.outcome === 'confirmed' ? result.effect : null;
+  const code = result.outcome === 'confirmed' ? null : result.code;
   const whatHappened = effect === 'already_in_state'
     ? 'A confirming read found the message already outside the Inbox; no mutation POST was sent.'
     : effect === 'reconciled'
@@ -317,7 +321,7 @@ function terminalExplanation(input: {
           ? 'The approved Gmail Inbox archive stopped before any mutation request with a known failure classification.'
           : outcome === 'failed'
             ? 'The approved Gmail Inbox archive stopped with the remote_rejected classification.'
-          : 'The mutation POST outcome remains unknown after the confirming read.';
+            : 'The mutation POST outcome remains unknown after the confirming read.';
   const confidenceReasoning = effect === 'already_in_state'
     ? 'The execution port returned already_in_state after a read and reported no POST.'
     : effect === 'reconciled'
@@ -327,21 +331,38 @@ function terminalExplanation(input: {
         : code === 'remote_outcome_unknown'
           ? 'The execution port returned remote_outcome_unknown after one POST and one inconclusive confirming read.'
           : `The execution port returned the known failure classification ${code}.`;
+  return {
+    whatHappened,
+    confidenceReasoning,
+    escalationRationale: outcome === 'succeeded' ? null : `Terminal classification: ${code}.`,
+    correctionGuidance: outcome === 'unknown'
+      ? 'Reconcile the mailbox state before considering any new archive request; automated restore and compensation are unavailable.'
+      : 'Review the recorded terminal classification before creating any follow-up request; automated restore and compensation are unavailable.',
+  };
+}
+
+function terminalExplanation(input: {
+  id: string;
+  createdAt: string;
+  state: GmailArchiveTerminalStableState;
+  barrier: PreEffectBarrierRow;
+  plan: ExecutionPlanRow;
+  result: GmailInboxMutationResult;
+}): ExplanationRecordRow {
+  const semantics = gmailArchiveTerminalExplanationSemantics(input.result);
   const policyIds = Array.isArray(input.barrier.policy_snapshot['policyIds'])
     ? input.barrier.policy_snapshot['policyIds'].filter((id): id is string => typeof id === 'string')
     : [];
   return {
     id: input.id,
     decision_id: input.state.decision.id,
-    what_happened: whatHappened,
+    what_happened: semantics.whatHappened,
     evidence_used: [buildGmailArchiveTerminalResultEnvelope(input.result)],
     preferences_invoked: [...policyIds].sort(),
-    confidence_reasoning: confidenceReasoning,
+    confidence_reasoning: semantics.confidenceReasoning,
     action_rationale: `Record the terminal state of the explicitly approved Gmail Inbox archive. Preserved policy rationale: ${input.state.approval.candidate_action['reasoning'] as string}. Policy snapshot: ${joinedDecisionReceiptArtifactDigest('policy', input.barrier.policy_snapshot)}.`,
-    escalation_rationale: outcome === 'succeeded' ? null : `Terminal classification: ${code}.`,
-    correction_guidance: outcome === 'unknown'
-      ? 'Reconcile the mailbox state before considering any new archive request; automated restore and compensation are unavailable.'
-      : 'Review the recorded terminal classification before creating any follow-up request; automated restore and compensation are unavailable.',
+    escalation_rationale: semantics.escalationRationale,
+    correction_guidance: semantics.correctionGuidance,
     capability_provenance_node_id: null,
     created_at: new Date(input.createdAt),
   };
@@ -457,10 +478,13 @@ async function loadStableState(
     [authority.userId, decision.id],
   )).rows[0];
   if (!receipt) return null;
-  const revisions = (await client.query<DecisionReceiptRevisionRow>(
+  const rawRevisions = (await client.query<DecisionReceiptRevisionRow>(
     'SELECT * FROM decision_receipt_revisions WHERE receipt_id = $1 ORDER BY sequence ASC',
     [receipt.id],
   )).rows;
+  const normalizedRevisions = rawRevisions.map(normalizeDecisionReceiptRevisionRow);
+  if (normalizedRevisions.some((revision) => revision === null)) return null;
+  const revisions = normalizedRevisions as DecisionReceiptRevisionRow[];
   const state = {
     approval,
     decision,
@@ -586,34 +610,32 @@ async function exactBaseline(
 
 function exactExecutionResult(
   row: ExecutionResultRow,
-  input: TerminalizeGmailArchiveInput,
+  result: GmailInboxMutationResult,
   plan: ExecutionPlanRow,
   terminalAt: Date,
 ): boolean {
   if (row.plan_id !== plan.id || row.rollback_available !== false ||
       row.completed_at.getTime() !== terminalAt.getTime()) return false;
-  if (input.result.outcome === 'confirmed') {
+  if (result.outcome === 'confirmed') {
     return row.success === true && row.error === null &&
-      sameCanonical(row.outputs, buildGmailArchiveTerminalResultEnvelope(input.result));
+      sameCanonical(row.outputs, buildGmailArchiveTerminalResultEnvelope(result));
   }
-  return input.result.outcome === 'known_failure' && row.success === false &&
-    row.error === input.result.code &&
-    sameCanonical(row.outputs, buildGmailArchiveTerminalResultEnvelope(input.result));
+  return result.outcome === 'known_failure' && row.success === false &&
+    row.error === result.code &&
+    sameCanonical(row.outputs, buildGmailArchiveTerminalResultEnvelope(result));
 }
 
-async function replayTerminal(
+async function exactTerminalReplay(
   client: PoolClient,
   authority: TerminalAuthority,
-  input: TerminalizeGmailArchiveInput,
+  result: GmailInboxMutationResult,
   state: GmailArchiveTerminalStableState,
   barrier: PreEffectBarrierRow,
   approved: JoinedDecisionReceiptContentV1,
-): Promise<TerminalizeGmailArchiveResult> {
-  const expectedDisposition = disposition(input.result);
-  if (barrier.status !== expectedDisposition || !sameCanonical(barrier.effect_result, effectResult(input.result)) ||
-      barrier.failure_reason !== failureReason(input.result)) {
-    return { ok: false, error: 'idempotency_conflict' };
-  }
+): Promise<GmailArchiveTerminalizationBundle | null> {
+  const expectedDisposition = disposition(result);
+  if (barrier.status !== expectedDisposition || !sameCanonical(barrier.effect_result, effectResult(result)) ||
+      barrier.failure_reason !== failureReason(result)) return null;
   const plans = (await client.query<ExecutionPlanRow>(
     'SELECT * FROM execution_plans WHERE decision_id = $1 ORDER BY id ASC FOR UPDATE',
     [state.decision.id],
@@ -621,7 +643,7 @@ async function replayTerminal(
   const expectedPlanStatus = expectedDisposition === 'succeeded' ? 'completed' : 'failed';
   if (plans.length !== 1 || plans[0]!.status !== expectedPlanStatus ||
       plans[0]!.id !== state.outcome.execution_plan_id || plans[0]!.action_id !== state.candidate.id) {
-    return { ok: false, error: 'idempotency_conflict' };
+    return null;
   }
   const plan = plans[0]!;
   const results = (await client.query<ExecutionResultRow>(
@@ -634,7 +656,7 @@ async function replayTerminal(
   );
   if (events.rows[0]?.count !== '0' ||
       (expectedDisposition === 'unknown' ? results.length !== 0 : results.length !== 1)) {
-    return { ok: false, error: 'idempotency_conflict' };
+    return null;
   }
   const policyExplanation = await loadPolicyExplanation(client, barrier, state.decision.id);
   if (!policyExplanation || !await exactBaseline(
@@ -647,14 +669,14 @@ async function replayTerminal(
     approved,
     true,
   )) {
-    return { ok: false, error: 'idempotency_conflict' };
+    return null;
   }
   const r7 = state.revisions[6];
   const executionExplanationId = r7?.content.version === 2
     ? r7.content.executionExplanation.id
     : null;
   if (!r7 || !executionExplanationId || executionExplanationId === barrier.explanation_id) {
-    return { ok: false, error: 'idempotency_conflict' };
+    return null;
   }
   const executionExplanation = (await client.query<ExplanationRecordRow>(
     'SELECT * FROM explanation_records WHERE id = $1 AND decision_id = $2',
@@ -668,11 +690,11 @@ async function replayTerminal(
   if (!executionExplanation || barrier.updated_at.getTime() !== terminalAt.getTime() ||
       plan.updated_at.getTime() !== terminalAt.getTime() ||
       executionExplanation.created_at.getTime() !== terminalAt.getTime() ||
-      (input.result.outcome === 'confirmed' &&
-        Date.parse(input.result.observedAt) > terminalAt.getTime()) ||
-      !retainedResult || !sameCanonical(retainedResult, input.result) ||
-      (executionResult && !exactExecutionResult(executionResult, input, plan, terminalAt))) {
-    return { ok: false, error: 'idempotency_conflict' };
+      (result.outcome === 'confirmed' &&
+        Date.parse(result.observedAt) > terminalAt.getTime()) ||
+      !retainedResult || !sameCanonical(retainedResult, result) ||
+      (executionResult && !exactExecutionResult(executionResult, result, plan, terminalAt))) {
+    return null;
   }
   const expectedExplanation = terminalExplanation({
     id: executionExplanation.id,
@@ -680,11 +702,11 @@ async function replayTerminal(
     state,
     barrier,
     plan,
-    result: input.result,
+    result,
   });
   if (decisionReceiptRowArtifactRefV1('explanation', { ...executionExplanation }).canonicalHash !==
       decisionReceiptRowArtifactRefV1('explanation', { ...expectedExplanation }).canonicalHash) {
-    return { ok: false, error: 'idempotency_conflict' };
+    return null;
   }
   const expectedContent = terminalContent({
     admitted: state.revisions[5]!.content as JoinedDecisionReceiptContentV1,
@@ -711,20 +733,40 @@ async function replayTerminal(
       r7.execution_plan_id !== plan.id ||
       r7.execution_result_id !== (executionResult?.id ?? null) ||
       r7.execution_disposition !== expectedDisposition || r7.correction_of_revision_id !== null) {
-    return { ok: false, error: 'idempotency_conflict' };
+    return null;
   }
   return {
-    ok: true,
-    created: false,
-    terminalization: {
-      status: expectedDisposition,
-      barrier,
-      plan,
-      executionResult,
-      executionExplanation,
-      revision: r7,
-    },
+    status: expectedDisposition,
+    barrier,
+    plan,
+    executionResult,
+    executionExplanation,
+    revision: r7,
   };
+}
+
+/** Validate the exact r7 terminal graph plus any trusted, valid continuation. */
+export async function validateStoredGmailArchiveTerminal(
+  client: PoolClient,
+  authority: TerminalAuthority,
+  state: GmailArchiveTerminalStableState,
+  barrier: PreEffectBarrierRow,
+  approved: JoinedDecisionReceiptContentV1,
+  expectedResult?: GmailInboxMutationResult,
+): Promise<GmailArchiveTerminalizationBundle | null> {
+  let result = expectedResult;
+  if (!result) {
+    const r7 = state.revisions[6];
+    const explanationId = r7?.content.version === 2 ? r7.content.executionExplanation.id : null;
+    if (!explanationId || explanationId === barrier.explanation_id) return null;
+    const explanation = (await client.query<ExplanationRecordRow>(
+      'SELECT * FROM explanation_records WHERE id = $1 AND decision_id = $2',
+      [explanationId, state.decision.id],
+    )).rows[0];
+    result = parseGmailArchiveTerminalExplanationEvidence(explanation?.evidence_used) ?? undefined;
+    if (!result) return null;
+  }
+  return exactTerminalReplay(client, authority, result, state, barrier, approved);
 }
 
 function fail(result: TerminalizeGmailArchiveResult): never {
@@ -761,7 +803,12 @@ async function transition(
   const approved = exactStableApprovedPrefix(state);
   if (!approved) return { ok: false, error: 'idempotency_conflict' };
   if (['succeeded', 'failed', 'unknown'].includes(barrier.status)) {
-    return replayTerminal(client, authority, input, state, barrier, approved);
+    const terminalization = await validateStoredGmailArchiveTerminal(
+      client, authority, state, barrier, approved, input.result,
+    );
+    return terminalization
+      ? { ok: true, created: false, terminalization }
+      : { ok: false, error: 'idempotency_conflict' };
   }
   if (barrier.status !== 'in_progress') return { ok: false, error: 'not_ready' };
   const plans = (await client.query<ExecutionPlanRow>(
@@ -882,7 +929,7 @@ async function transition(
     )).rows[0] ?? null;
     if (!executionResult || !exactExecutionResult(
       executionResult,
-      input,
+      input.result,
       terminalPlan,
       new Date(stable.persistedAt),
     )) fail({ ok: false, error: 'idempotency_conflict' });
@@ -921,13 +968,24 @@ async function transition(
   };
 }
 
-function allocateStableValues(): GmailArchiveTerminalizationStableValues {
+function allocateStableValues(persistedAt: string): GmailArchiveTerminalizationStableValues {
   return Object.freeze({
     explanationId: randomUUID(),
     resultId: randomUUID(),
     revisionId: randomUUID(),
-    persistedAt: new Date().toISOString(),
+    persistedAt,
   });
+}
+
+async function loadDatabasePersistedAt(): Promise<string> {
+  const value = (await query<{ persisted_at: Date | string }>(
+    'SELECT now() AS persisted_at',
+  )).rows[0]?.persisted_at;
+  const persistedAt = value instanceof Date ? value.toISOString() : value;
+  if (!canonicalIsoInstant(persistedAt)) {
+    throw new Error('Database did not return a canonical terminal timestamp');
+  }
+  return persistedAt;
 }
 
 function snapshotStableValues(value: unknown): Readonly<GmailArchiveTerminalizationStableValues> | null {
@@ -948,11 +1006,13 @@ function snapshotStableValues(value: unknown): Readonly<GmailArchiveTerminalizat
 async function terminalizeWithTransition(
   input: TerminalizeGmailArchiveInput,
   transitionFn: GmailArchiveTerminalizationTransition,
-  stableFactory: () => GmailArchiveTerminalizationStableValues = allocateStableValues,
+  stableFactory: (persistedAt: string) => GmailArchiveTerminalizationStableValues = allocateStableValues,
+  persistedAtFactory: () => Promise<string> = loadDatabasePersistedAt,
 ): Promise<TerminalizeGmailArchiveResult> {
   const snapshot = snapshotInput(input);
   if (!snapshot) return { ok: false, error: 'invalid_input' };
-  const stable = snapshotStableValues(stableFactory());
+  const persistedAt = await persistedAtFactory();
+  const stable = snapshotStableValues(stableFactory(persistedAt));
   if (!stable || (snapshot.result.outcome === 'confirmed' &&
       Date.parse(snapshot.result.observedAt) > Date.parse(stable.persistedAt))) {
     return { ok: false, error: 'invalid_input' };
