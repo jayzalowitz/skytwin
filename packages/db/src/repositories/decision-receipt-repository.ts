@@ -19,10 +19,13 @@ import { randomUUID } from 'node:crypto';
 import { withTransaction } from '../connection.js';
 import type { ApprovalRequestRow, DecisionReceiptRevisionRow, DecisionReceiptRow } from '../types.js';
 import type { PreEffectBarrierRow } from './pre-effect-barrier-repository.js';
+import { canonicalGmailArchiveFeedbackSqlTimestamp } from
+  './gmail-archive-feedback-application-repository.js';
 import {
   decisionReceiptRowArtifactV1,
   decisionReceiptApprovalRefV1,
   decisionReceiptBarrierRefV1,
+  decisionReceiptFeedbackApplicationRefV1,
   type DecisionReceiptRowArtifactKind,
 } from './decision-receipt-artifacts.js';
 
@@ -109,6 +112,11 @@ async function hasExactly(
 
 function isoInstant(value: unknown): string {
   return value instanceof Date ? value.toISOString() : new Date(String(value)).toISOString();
+}
+
+function positiveSafeInteger(value: unknown): number | null {
+  const parsed = typeof value === 'string' && /^[1-9][0-9]*$/.test(value) ? Number(value) : value;
+  return Number.isSafeInteger(parsed) && (parsed as number) > 0 ? parsed as number : null;
 }
 
 function executionPlanSnapshot(row: Record<string, unknown>): DecisionReceiptExecutionPlanSnapshotV1 {
@@ -263,18 +271,21 @@ async function linkageIsOwned(
     ];
   }
 
-  // The terminal explanation is a new v2 artifact, not an alias for the
+  // The terminal explanation is a v2 artifact retained by v3, not an alias for the
   // policy explanation stored in revision.explanation_id. Verify it
-  // independently against the same owned decision on every v2 append.
-  if (content.version === 2) {
+  // policy explanation. Verify it against the owned decision on every append.
+  if (content.version === 2 ||
+      (content.version === 3 && content.executionExplanation !== undefined)) {
+    const expectedExecutionExplanation = content.executionExplanation;
+    if (!expectedExecutionExplanation) return false;
     const executionExplanation = await client.query<Record<string, unknown>>(
       'SELECT * FROM explanation_records WHERE id = $1 AND decision_id = $2',
-      [content.executionExplanation.id, decisionId],
+      [expectedExecutionExplanation.id, decisionId],
     );
     if (executionExplanation.rows.length !== 1 ||
         joinedDecisionReceiptArtifactDigest('explanation',
           decisionReceiptRowArtifactV1('explanation', executionExplanation.rows[0]!),
-        ) !== content.executionExplanation.canonicalHash) return false;
+        ) !== expectedExecutionExplanation.canonicalHash) return false;
   }
 
   const joinedBarriers = content.barrier ? [content.barrier] : [];
@@ -484,6 +495,57 @@ async function linkageIsOwned(
       ref.canonicalHash,
       'feedback',
     )) return false;
+  }
+
+
+  if (content.version === 3) {
+    const applications = (await client.query<Record<string, unknown>>(
+      `SELECT application.*,
+              application.input_profile_version::STRING AS input_version_text,
+              application.output_profile_version::STRING AS output_version_text,
+              (application.applied_at AT TIME ZONE 'UTC')::STRING AS applied_at_text
+         FROM twin_feedback_applications application
+         JOIN feedback_events feedback
+           ON feedback.id = application.feedback_event_id
+          AND feedback.user_id = application.user_id
+          AND feedback.decision_id = application.decision_id
+         JOIN twin_profiles profile
+           ON profile.id = application.profile_id AND profile.user_id = application.user_id
+        WHERE application.id = $1 AND application.feedback_event_id = $2
+          AND application.user_id = $3 AND application.decision_id = $4
+        LIMIT 2`,
+      [content.feedbackApplication.id, content.feedbackApplication.snapshot.feedbackEventId,
+        userId, decisionId],
+    )).rows;
+    const application = applications[0];
+    const inputProfileVersion = positiveSafeInteger(application?.['input_version_text']);
+    const outputProfileVersion = positiveSafeInteger(application?.['output_version_text']);
+    if (applications.length !== 1 || !application || !inputProfileVersion || !outputProfileVersion) {
+      return false;
+    }
+    let derived;
+    try {
+      const appliedAt = canonicalGmailArchiveFeedbackSqlTimestamp(application['applied_at_text']);
+      if (!appliedAt) return false;
+      derived = decisionReceiptFeedbackApplicationRefV1({
+        id: String(application['id']),
+        feedbackEventId: String(application['feedback_event_id']),
+        userId: String(application['user_id']),
+        decisionId: String(application['decision_id']),
+        profileId: String(application['profile_id']),
+        inputProfileVersion,
+        outputProfileVersion,
+        changed: application['changed'] === true,
+        outputDigest: String(application['output_digest']),
+        appliedAt,
+      });
+    } catch {
+      return false;
+    }
+    if (derived.id !== content.feedbackApplication.id ||
+        derived.canonicalHash !== content.feedbackApplication.canonicalHash ||
+        joinedDecisionReceiptArtifactDigest('feedback_application',
+          content.feedbackApplication.snapshot) !== derived.canonicalHash) return false;
   }
 
   const currentCorrection = content.stage === 'corrected'

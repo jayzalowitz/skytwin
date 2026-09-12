@@ -11,6 +11,8 @@ import {
   type DecisionReceiptExecutionPlanSnapshotV1,
   type DecisionReceiptExecutionResultRef,
   type DecisionReceiptExecutionResultSnapshotV1,
+  type DecisionReceiptFeedbackApplicationRef,
+  type DecisionReceiptFeedbackApplicationSnapshotV1,
 } from '@skytwin/shared-types';
 import type { ApprovalRequestRow, ExecutionPlanRow, ExecutionResultRow } from '../types.js';
 import type { PreEffectBarrierRow } from './pre-effect-barrier-repository.js';
@@ -47,6 +49,20 @@ const V1_FIELDS: Record<DecisionReceiptRowArtifactKind, readonly string[]> = {
 };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const SHA256 = /^[0-9a-f]{64}$/;
+
+export interface FeedbackApplicationArtifactInput {
+  readonly id: string;
+  readonly feedbackEventId: string;
+  readonly userId: string;
+  readonly decisionId: string;
+  readonly profileId: string;
+  readonly inputProfileVersion: number;
+  readonly outputProfileVersion: number;
+  readonly changed: boolean;
+  readonly outputDigest: string;
+  readonly appliedAt: string;
+}
 
 function normalize(value: unknown): unknown {
   if (value instanceof Date) return value.toISOString();
@@ -89,6 +105,42 @@ export function decisionReceiptRowArtifactRefV1(
   return {
     id,
     canonicalHash: joinedDecisionReceiptArtifactDigest(kind, decisionReceiptRowArtifactV1(kind, row)),
+  };
+}
+
+/** Canonical receipt reference for a verified DB-owned twin feedback application. */
+export function decisionReceiptFeedbackApplicationRefV1(
+  application: FeedbackApplicationArtifactInput,
+): DecisionReceiptFeedbackApplicationRef {
+  if (!UUID.test(application.id) || !UUID.test(application.feedbackEventId) ||
+      !UUID.test(application.userId) || !UUID.test(application.decisionId) ||
+      !UUID.test(application.profileId) ||
+      !Number.isSafeInteger(application.inputProfileVersion) ||
+      application.inputProfileVersion < 1 ||
+      !Number.isSafeInteger(application.outputProfileVersion) ||
+      application.outputProfileVersion < 1 || typeof application.changed !== 'boolean' ||
+      !SHA256.test(application.outputDigest) ||
+      (application.changed
+        ? application.outputProfileVersion !== application.inputProfileVersion + 1
+        : application.outputProfileVersion !== application.inputProfileVersion)) {
+    throw new TypeError('cannot build an invalid feedback application reference');
+  }
+  const snapshot: DecisionReceiptFeedbackApplicationSnapshotV1 = {
+    version: 1,
+    feedbackEventId: application.feedbackEventId,
+    userId: application.userId,
+    decisionId: application.decisionId,
+    profileId: application.profileId,
+    inputProfileVersion: application.inputProfileVersion,
+    outputProfileVersion: application.outputProfileVersion,
+    changed: application.changed,
+    outputDigest: application.outputDigest,
+    appliedAt: application.appliedAt,
+  };
+  return {
+    id: application.id,
+    canonicalHash: joinedDecisionReceiptArtifactDigest('feedback_application', snapshot),
+    snapshot,
   };
 }
 

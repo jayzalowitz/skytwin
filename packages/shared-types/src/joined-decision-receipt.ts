@@ -7,6 +7,7 @@ export type DecisionReceiptArtifactKind =
   | 'decision' | 'candidate_action' | 'risk' | 'policy' | 'barrier' | 'explanation'
   | 'signal' | 'preference' | 'inference_receipt' | 'inference_completion'
   | 'approval' | 'execution_plan' | 'execution_result' | 'feedback'
+  | 'feedback_application'
   | 'preference_history' | 'preference_history_value' | 'policy_evaluation' | 'correction';
 
 export type DecisionReceiptStage =
@@ -157,6 +158,24 @@ export interface DecisionReceiptCorrectionV1 {
   }[];
 }
 
+/** Immutable identity and output commitment for one DB-owned feedback projection. */
+export interface DecisionReceiptFeedbackApplicationSnapshotV1 {
+  version: 1;
+  feedbackEventId: string;
+  userId: string;
+  decisionId: string;
+  profileId: string;
+  inputProfileVersion: number;
+  outputProfileVersion: number;
+  changed: boolean;
+  outputDigest: DecisionReceiptDigest;
+  appliedAt: string;
+}
+
+export interface DecisionReceiptFeedbackApplicationRef extends DecisionReceiptArtifactRef {
+  snapshot: DecisionReceiptFeedbackApplicationSnapshotV1;
+}
+
 /**
  * Versioned metadata-only content joined by a receipt revision. Deliberately
  * excludes prompts, responses, chain-of-thought, credentials, provider error
@@ -198,9 +217,22 @@ export interface JoinedDecisionReceiptContentV2
   executionExplanation: DecisionReceiptArtifactRef;
 }
 
+/**
+ * Feedback lifecycle content. Version 3 binds the canonical feedback event to
+ * the exact DB-owned projection application. Terminal execution explanations
+ * remain present when the preceding terminal revision was v2.
+ */
+export interface JoinedDecisionReceiptContentV3
+  extends Omit<JoinedDecisionReceiptContentV1, 'version'> {
+  version: 3;
+  feedbackApplication: DecisionReceiptFeedbackApplicationRef;
+  executionExplanation?: DecisionReceiptArtifactRef;
+}
+
 export type JoinedDecisionReceiptContent =
   | JoinedDecisionReceiptContentV1
-  | JoinedDecisionReceiptContentV2;
+  | JoinedDecisionReceiptContentV2
+  | JoinedDecisionReceiptContentV3;
 
 export interface DecisionReceiptRevisionDigestInput {
   revisionId: string;
@@ -353,6 +385,43 @@ function assertIsoInstant(value: unknown, label: string): asserts value is strin
       new Date(value).toISOString() !== value) {
     throw new TypeError(`${label} must be a canonical ISO instant`);
   }
+}
+
+function assertCanonicalSqlInstant(value: unknown, label: string): asserts value is string {
+  if (typeof value !== 'string') throw new TypeError(`${label} must be a canonical SQL instant`);
+  const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\.(\d{3}|\d{6})Z$/.exec(value);
+  if (!match || (match[2]!.length === 6 && match[2]!.slice(3) === '000') ||
+      Number.isNaN(Date.parse(value)) ||
+      new Date(`${match[1]}.${match[2]!.slice(0, 3)}Z`).toISOString() !==
+        `${match[1]}.${match[2]!.slice(0, 3)}Z`) {
+    throw new TypeError(`${label} must be a canonical SQL instant`);
+  }
+}
+
+function assertFeedbackApplicationRef(ref: DecisionReceiptFeedbackApplicationRef): void {
+  assertRef(ref, 'feedback application', ['id', 'canonicalHash', 'snapshot']);
+  if (!ref.snapshot || typeof ref.snapshot !== 'object' ||
+      Object.getPrototypeOf(ref.snapshot) !== Object.prototype) {
+    throw new TypeError('feedback application snapshot must be a plain object');
+  }
+  assertExactKeys(ref.snapshot, [
+    'version', 'feedbackEventId', 'userId', 'decisionId', 'profileId',
+    'inputProfileVersion', 'outputProfileVersion', 'changed', 'outputDigest', 'appliedAt',
+  ], 'feedback application snapshot');
+  const snapshot = ref.snapshot;
+  if (snapshot.version !== 1 || !UUID.test(snapshot.feedbackEventId) ||
+      !UUID.test(snapshot.userId) || !UUID.test(snapshot.decisionId) ||
+      !UUID.test(snapshot.profileId) || !Number.isSafeInteger(snapshot.inputProfileVersion) ||
+      snapshot.inputProfileVersion < 1 || !Number.isSafeInteger(snapshot.outputProfileVersion) ||
+      snapshot.outputProfileVersion < 1 || typeof snapshot.changed !== 'boolean' ||
+      !SHA256.test(snapshot.outputDigest) ||
+      (snapshot.changed
+        ? snapshot.outputProfileVersion !== snapshot.inputProfileVersion + 1
+        : snapshot.outputProfileVersion !== snapshot.inputProfileVersion) ||
+      joinedDecisionReceiptArtifactDigest('feedback_application', snapshot) !== ref.canonicalHash) {
+    throw new TypeError('feedback application snapshot is invalid');
+  }
+  assertCanonicalSqlInstant(snapshot.appliedAt, 'feedback application appliedAt');
 }
 
 function assertSnapshotRef(
@@ -509,14 +578,30 @@ export function validateJoinedDecisionReceiptContent(
   ];
   assertExactKeys(content, content.version === 2
     ? [...contentKeys, 'executionExplanation']
-    : contentKeys, 'joined receipt content');
-  if (content.version !== 1 && content.version !== 2) {
+    : content.version === 3
+      ? [...contentKeys, 'feedbackApplication', 'executionExplanation']
+      : contentKeys, 'joined receipt content');
+  if (content.version !== 1 && content.version !== 2 && content.version !== 3) {
     throw new TypeError('unsupported joined receipt version');
   }
-  if (content.version === 2) {
-    assertRef(content.executionExplanation, 'execution explanation');
+  if (content.version === 2 ||
+      (content.version === 3 && content.executionExplanation !== undefined)) {
+    const executionExplanation = content.executionExplanation;
+    if (!executionExplanation) throw new TypeError('execution explanation is required');
+    assertRef(executionExplanation, 'execution explanation');
     if (!['execution_recorded', 'feedback_recorded', 'corrected'].includes(content.stage)) {
       throw new TypeError('execution explanation cannot precede execution recording');
+    }
+  }
+  if (content.version === 3) {
+    if (content.stage !== 'feedback_recorded') {
+      throw new TypeError('feedback application cannot precede feedback recording');
+    }
+    assertFeedbackApplicationRef(content.feedbackApplication);
+    if (content.feedbackEvents.length !== 1 ||
+        content.feedbackEvents[0]?.id !== content.feedbackApplication.snapshot.feedbackEventId ||
+        content.feedbackApplication.snapshot.decisionId !== content.decision.id) {
+      throw new TypeError('feedback application must bind the joined feedback event and decision');
     }
   }
   if (!new Set<DecisionReceiptStage>([
@@ -530,8 +615,10 @@ export function validateJoinedDecisionReceiptContent(
   assertRef(content.decision, 'decision');
   if (!Array.isArray(content.policyEvaluations)) throw new TypeError('policy evaluations must be an array');
   content.policyEvaluations.forEach(assertPolicyEvaluation);
-  if (content.version === 2 && content.policyEvaluations.some(
-    (evaluation) => evaluation.explanation.id === content.executionExplanation.id,
+  if ((content.version === 2 ||
+      (content.version === 3 && content.executionExplanation !== undefined)) &&
+      content.policyEvaluations.some(
+    (evaluation) => evaluation.explanation.id === content.executionExplanation!.id,
   )) {
     throw new TypeError('execution explanation must be distinct from every policy explanation');
   }
@@ -877,6 +964,8 @@ export function isJoinedDecisionReceiptTransition(
   previous: JoinedDecisionReceiptContent,
   next: JoinedDecisionReceiptContent,
 ): boolean {
+  if (previous.version === 3 && next.version !== 3) return false;
+  if (previous.version !== 3 && next.version === 3 && next.stage !== 'feedback_recorded') return false;
   if (previous.version === 2 && next.version === 1) return false;
   if (previous.version === 1 && next.version === 2 &&
       (previous.stage !== 'execution_admitted' || next.stage !== 'execution_recorded')) {
@@ -1000,10 +1089,10 @@ export function preservesJoinedDecisionReceiptLinks(
       !planMayAdvance(previous.executionPlan, next.executionPlan) ||
       !sameReceiptRef(previous.executionResult, next.executionResult) ||
       !sameReceiptRef(previous.inference.completion, next.inference.completion)) return false;
-  const previousExecutionExplanation = previous.version === 2
+  const previousExecutionExplanation = previous.version === 2 || previous.version === 3
     ? previous.executionExplanation
     : undefined;
-  const nextExecutionExplanation = next.version === 2
+  const nextExecutionExplanation = next.version === 2 || next.version === 3
     ? next.executionExplanation
     : undefined;
   if (previousExecutionExplanation &&
@@ -1011,6 +1100,9 @@ export function preservesJoinedDecisionReceiptLinks(
   if (!previousExecutionExplanation && nextExecutionExplanation &&
       !(previous.version === 1 && previous.stage === 'execution_admitted' &&
         next.version === 2 && next.stage === 'execution_recorded')) return false;
+  if (previous.version === 3 && next.version === 3 && (
+      next.feedbackApplication.id !== previous.feedbackApplication.id ||
+      next.feedbackApplication.canonicalHash !== previous.feedbackApplication.canonicalHash)) return false;
   if (previous.barrier && next.barrier && !addsEvaluation &&
       !barrierMayAdvance(previous.barrier, next.barrier)) return false;
   if (previous.barrier && !next.barrier) return false;

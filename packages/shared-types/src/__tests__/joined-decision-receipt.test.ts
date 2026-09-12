@@ -11,6 +11,7 @@ import {
   type JoinedDecisionReceiptContent,
   type JoinedDecisionReceiptContentV1,
   type JoinedDecisionReceiptContentV2,
+  type JoinedDecisionReceiptContentV3,
 } from '../index.js';
 
 const hash = 'a'.repeat(64);
@@ -25,6 +26,8 @@ const secondBarrierId = '66666666-6666-4666-8666-666666666666';
 const approvalId = '77777777-7777-4777-8777-777777777777';
 const planId = '88888888-8888-4888-8888-888888888888';
 const resultId = '99999999-9999-4999-8999-999999999999';
+const profileId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+const applicationId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const instant = '2026-01-01T00:00:00.000Z';
 
 function content(): JoinedDecisionReceiptContentV1 {
@@ -190,7 +193,83 @@ function terminalContent(
   };
 }
 
+function rejectedContent(): JoinedDecisionReceiptContentV1 {
+  const pending = approval('pending');
+  const snapshot = { ...pending.snapshot, status: 'rejected' as const, respondedAt: instant };
+  return {
+    ...policySnapshot(),
+    stage: 'approval_recorded',
+    disposition: 'rejected',
+    approvalRequest: {
+      id: approvalId,
+      snapshot,
+      canonicalHash: joinedDecisionReceiptArtifactDigest('approval', snapshot),
+    },
+  };
+}
+
+function feedbackContent(previous: JoinedDecisionReceiptContentV1 | JoinedDecisionReceiptContentV2) {
+  const applicationSnapshot = {
+    version: 1 as const,
+    feedbackEventId: resultId,
+    userId,
+    decisionId,
+    profileId,
+    inputProfileVersion: 2,
+    outputProfileVersion: 3,
+    changed: true,
+    outputDigest: '8'.repeat(64),
+    appliedAt: '2026-01-01T00:00:00.123456Z',
+  };
+  const result: JoinedDecisionReceiptContentV3 = {
+    ...previous,
+    version: 3 as const,
+    stage: 'feedback_recorded' as const,
+    feedbackEvents: [{ id: resultId, canonicalHash: '7'.repeat(64) }],
+    feedbackApplication: {
+      id: applicationId,
+      snapshot: applicationSnapshot,
+      canonicalHash: joinedDecisionReceiptArtifactDigest(
+        'feedback_application', applicationSnapshot,
+      ),
+    },
+  };
+  return result;
+}
+
 describe('joined decision receipt content', () => {
+  it('binds feedback v3 to one exact application while preserving terminal truth', () => {
+    const rejected = rejectedContent();
+    const rejectedFeedback = feedbackContent(rejected);
+    expect(() => canonicalJoinedDecisionReceiptContent(rejectedFeedback)).not.toThrow();
+    expect(preservesJoinedDecisionReceiptLinks(rejected, rejectedFeedback)).toBe(true);
+
+    const terminal = terminalContent('succeeded');
+    const terminalFeedback = feedbackContent(terminal);
+    expect(() => canonicalJoinedDecisionReceiptContent(terminalFeedback)).not.toThrow();
+    expect(terminalFeedback.executionExplanation).toEqual(terminal.executionExplanation);
+    expect(preservesJoinedDecisionReceiptLinks(terminal, terminalFeedback)).toBe(true);
+  });
+
+  it('rejects mismatched, malformed, or prematurely attached feedback applications', () => {
+    const valid = feedbackContent(rejectedContent());
+    expect(() => canonicalJoinedDecisionReceiptContent({
+      ...valid,
+      feedbackEvents: [{ id: approvalId, canonicalHash: '7'.repeat(64) }],
+    })).toThrow('must bind');
+    expect(() => canonicalJoinedDecisionReceiptContent({
+      ...valid,
+      feedbackApplication: {
+        ...valid.feedbackApplication,
+        snapshot: { ...valid.feedbackApplication.snapshot, outputDigest: 'BAD' },
+      },
+    })).toThrow('invalid');
+    expect(() => canonicalJoinedDecisionReceiptContent({
+      ...valid,
+      stage: 'approval_recorded',
+    } as never)).toThrow('cannot precede');
+  });
+
   it('normalizes only safe positive integer numbers and canonical decimal strings', () => {
     expect(normalizeDecisionReceiptSequence(1)).toBe(1);
     expect(normalizeDecisionReceiptSequence('2')).toBe(2);
