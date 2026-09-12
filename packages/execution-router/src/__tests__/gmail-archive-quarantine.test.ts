@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import {
   ConfidenceLevel,
   RiskDimension,
@@ -72,10 +72,10 @@ function statefulActionType(safeDescriptorReads: number): CandidateAction {
 
 describe('ExecutionRouter Gmail archive quarantine', () => {
   let router: ExecutionRouter;
-  let buildPlan: ReturnType<typeof vi.fn>;
-  let execute: ReturnType<typeof vi.fn>;
-  let fallbackBuildPlan: ReturnType<typeof vi.fn>;
-  let fallbackExecute: ReturnType<typeof vi.fn>;
+  let buildPlan: Mock<IronClawAdapter['buildPlan']>;
+  let execute: Mock<IronClawAdapter['execute']>;
+  let fallbackBuildPlan: Mock<IronClawAdapter['buildPlan']>;
+  let fallbackExecute: Mock<IronClawAdapter['execute']>;
 
   beforeEach(() => {
     buildPlan = vi.fn(async (candidate: CandidateAction): Promise<ExecutionPlan> => ({
