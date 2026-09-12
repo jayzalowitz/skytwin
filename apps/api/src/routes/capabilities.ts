@@ -6,7 +6,10 @@ import { createLogger } from '@skytwin/core';
 import { RegistryClient } from '@skytwin/registry-client';
 import { TrustTierEngine } from '@skytwin/policy-engine';
 import type { TrustTier } from '@skytwin/shared-types';
-import { PROMOTION_THRESHOLDS } from '@skytwin/shared-types';
+import {
+  classifyGmailArchiveGenericAction,
+  PROMOTION_THRESHOLDS,
+} from '@skytwin/shared-types';
 import { runPrompt } from '@skytwin/policy-prompts';
 import { resolveUserLlmClient } from '../lib/user-llm-client.js';
 import { getExecutionRouter } from '../execution-setup.js';
@@ -22,6 +25,31 @@ void _SSE_CAP_PROMO;
 const log = createLogger('api:capabilities');
 
 import { UUID_REGEX } from '../middleware/validate-uuid.js';
+
+interface RegretActionIdentity {
+  readonly actionId: string;
+  readonly actionType: string;
+}
+
+function snapshotRegretActionIdentity(value: unknown): Readonly<RegretActionIdentity> | null {
+  try {
+    if (!value || typeof value !== 'object' || Array.isArray(value) ||
+        Object.getPrototypeOf(value) !== Object.prototype ||
+        Object.getOwnPropertySymbols(value).length !== 0) return null;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const actionId = descriptors['actionId'];
+    const actionType = descriptors['actionType'];
+    if (!actionId || !Object.prototype.hasOwnProperty.call(actionId, 'value') ||
+        actionId.enumerable !== true || typeof actionId.value !== 'string' ||
+        actionId.value.length === 0 ||
+        !actionType || !Object.prototype.hasOwnProperty.call(actionType, 'value') ||
+        actionType.enumerable !== true || typeof actionType.value !== 'string' ||
+        actionType.value.length === 0) return null;
+    return Object.freeze({ actionId: actionId.value, actionType: actionType.value });
+  } catch {
+    return null;
+  }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PII redaction helper — shared by audit (#183), provenance-graph (#184), and
@@ -628,6 +656,14 @@ export function createCapabilitiesRouter(): Router {
         userId,
         since: sinceDate,
       });
+      const boundTargets = targets.map((target) => {
+        const actionIdentity = snapshotRegretActionIdentity(target);
+        return Object.freeze({
+          target,
+          actionIdentity,
+          classification: classifyGmailArchiveGenericAction(actionIdentity),
+        });
+      });
 
       // Result enum:
       //   - 'rolled_back'      — adapter.rollback(planId) succeeded.
@@ -652,8 +688,10 @@ export function createCapabilitiesRouter(): Router {
       // still gets an honest per-action report.
       let router: Awaited<ReturnType<typeof getExecutionRouter>> | null = null;
       let routerError: string | null = null;
-      const hasReversibleTarget = targets.some(
-        (t) => (t.payload?.['reversible'] === true) && t.executionPlanId,
+      const hasReversibleTarget = boundTargets.some(
+        ({ target, actionIdentity, classification }) =>
+          actionIdentity !== null && classification.kind === 'other' &&
+          target.payload?.['reversible'] === true && Boolean(target.executionPlanId),
       );
       if (hasReversibleTarget) {
         try {
@@ -664,7 +702,7 @@ export function createCapabilitiesRouter(): Router {
         }
       }
 
-      for (const target of targets) {
+      for (const { target, actionIdentity, classification } of boundTargets) {
         const payload = target.payload;
         const reversible = payload?.['reversible'] === true;
 
@@ -674,6 +712,22 @@ export function createCapabilitiesRouter(): Router {
             reason: typeof payload?.['irreversibleReason'] === 'string'
               ? payload['irreversibleReason']
               : 'Action was marked irreversible at execution time',
+          });
+          continue;
+        }
+
+        // Dedicated archive rollback must never re-enter a generic adapter,
+        // including legacy rows that predate archive quarantine. Missing or
+        // malformed action identity also carries no rollback authority.
+        if (!actionIdentity || classification.kind !== 'other') {
+          undone.push({
+            actionId: actionIdentity?.actionId ?? target.actionId,
+            planId: target.executionPlanId,
+            adapterUsed: target.adapterUsed,
+            result: 'rollback_failed',
+            message: classification.kind === 'archive'
+              ? 'Archive rollback is reserved for its dedicated execution lifecycle.'
+              : 'Rollback action identity could not be validated.',
           });
           continue;
         }
@@ -703,7 +757,11 @@ export function createCapabilitiesRouter(): Router {
           continue;
         }
 
-        const rollback = await router.rollback(target.executionPlanId, target.adapterUsed);
+        const rollback = await router.rollback(
+          target.executionPlanId,
+          target.adapterUsed,
+          actionIdentity,
+        );
 
         undone.push({
           actionId: target.actionId,

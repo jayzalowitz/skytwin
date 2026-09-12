@@ -463,6 +463,7 @@ describe('Capabilities API routes', () => {
       mockExecutionRepository.getRollbackTargetsByServer.mockResolvedValue([
         {
           actionId: 'action-aaa',
+          actionType: 'label_email',
           payload: { reversible: true },
           occurredAt: new Date(),
           executionPlanId: null,
@@ -470,6 +471,7 @@ describe('Capabilities API routes', () => {
         },
         {
           actionId: 'action-bbb',
+          actionType: 'send_email',
           payload: { reversible: false, irreversibleReason: 'Sent email' },
           occurredAt: new Date(),
           executionPlanId: null,
@@ -509,6 +511,7 @@ describe('Capabilities API routes', () => {
       mockExecutionRepository.getRollbackTargetsByServer.mockResolvedValue([
         {
           actionId: 'action-ccc',
+          actionType: 'label_email',
           payload: { reversible: true },
           occurredAt: new Date(),
           executionPlanId: 'plan-xyz',
@@ -534,7 +537,10 @@ describe('Capabilities API routes', () => {
       expect(body.undone[0]!.result).toBe('rolled_back');
       // The router was asked to roll back the resolved plan, targeting the
       // adapter recorded at execution time.
-      expect(mockRouterRollback).toHaveBeenCalledWith('plan-xyz', 'ironclaw');
+      expect(mockRouterRollback).toHaveBeenCalledWith('plan-xyz', 'ironclaw', {
+        actionId: 'action-ccc',
+        actionType: 'label_email',
+      });
       // Audit trail: a rollback provenance node was written (Safety Invariant #2).
       const auditCall = mockQuery.mock.calls.find(
         (c) => typeof c[0] === 'string' && c[0].includes('capability_provenance_nodes'),
@@ -547,6 +553,7 @@ describe('Capabilities API routes', () => {
       mockExecutionRepository.getRollbackTargetsByServer.mockResolvedValue([
         {
           actionId: 'action-ddd',
+          actionType: 'label_email',
           payload: { reversible: true },
           occurredAt: new Date(),
           executionPlanId: 'plan-fail',
@@ -576,6 +583,38 @@ describe('Capabilities API routes', () => {
       expect(body.undone[0]!.planId).toBe('plan-fail');
       expect(body.undone[0]!.result).toBe('rollback_failed');
       expect(body.undone[0]!.message).toContain('not reversible');
+    });
+
+    it('never routes a legacy archive rollback through a generic adapter', async () => {
+      mockMcpServerRepository.getById.mockResolvedValue(makeMcpServer({ user_id: USER_ID }));
+      mockExecutionRepository.getRollbackTargetsByServer.mockResolvedValue([{
+        actionId: 'legacy-archive-action',
+        actionType: 'archive_email',
+        payload: { reversible: true },
+        occurredAt: new Date(),
+        executionPlanId: 'legacy-archive-plan',
+        adapterUsed: 'ironclaw',
+      }]);
+
+      const res = await request(
+        buildApp(USER_ID),
+        'POST',
+        `/api/capabilities/${SERVER_ID}/regret`,
+        { withinHours: 48 },
+      );
+
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({
+        undone: [{
+          actionId: 'legacy-archive-action',
+          planId: 'legacy-archive-plan',
+          adapterUsed: 'ironclaw',
+          result: 'rollback_failed',
+          message: expect.stringContaining('dedicated execution lifecycle'),
+        }],
+      });
+      expect(mockGetExecutionRouter).not.toHaveBeenCalled();
+      expect(mockRouterRollback).not.toHaveBeenCalled();
     });
 
     it('returns 403 when requester is not the owner', async () => {
