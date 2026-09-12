@@ -1674,7 +1674,11 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     };
     const terminalized = await gmailArchiveTerminalizationRepository.terminalize(input);
     expect(terminalized).toMatchObject({ ok: true, created: true });
-    if (!terminalized.ok || terminalized.terminalization.revision.content.version !== 2) {
+    if (!terminalized.ok) {
+      throw new Error('Feedback continuation fixture failed.');
+    }
+    const terminalContent = terminalized.terminalization.revision.content;
+    if (terminalContent.version !== 2) {
       throw new Error('Feedback continuation fixture failed.');
     }
     await withTransaction(async (client) => {
@@ -1684,7 +1688,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
         [id('96', 101), userId, fixture.proposal.decision.id],
       )).rows[0]!;
       const content: JoinedDecisionReceiptContentV2 = {
-        ...terminalized.terminalization.revision.content,
+        ...terminalContent,
         stage: 'feedback_recorded',
         feedbackEvents: [decisionReceiptRowArtifactRefV1('feedback', feedback)],
       };
