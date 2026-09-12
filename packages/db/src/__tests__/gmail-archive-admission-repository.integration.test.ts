@@ -4904,7 +4904,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
   }, 120_000);
 
   it('closes a permit that expires immediately after its begin transaction commits', async () => {
-    const { ownerUserId, ownerAccountId } = await seedRecoveryOwner(19);
+    const { ownerUserId, ownerAccountId } = await seedRecoveryOwner(20);
     const fixture = await createClaimedProposal(215, ownerUserId, ownerAccountId, true);
     await ageClaimedAttempt(fixture.command.admissionId);
     const acquired = await gmailArchiveRecoveryLeaseRepository.acquire({
