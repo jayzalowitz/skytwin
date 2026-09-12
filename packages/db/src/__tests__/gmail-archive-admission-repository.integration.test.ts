@@ -24,6 +24,7 @@ import {
   gmailArchiveDispatchGateRepository,
   gmailArchiveDispatchGateTestHooks,
 } from '../repositories/gmail-archive-dispatch-gate-repository.js';
+import { gmailArchiveRecoveryRepository } from '../repositories/gmail-archive-recovery-repository.js';
 import {
   gmailArchiveTerminalizationRepository,
   gmailArchiveTerminalizationTestHooks,
@@ -1077,6 +1078,129 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     );
     expect(result).toEqual({ status: 'entered' });
     expect(attempts).toBe(2);
+  }, 120_000);
+
+  it('uses B1 phase time and DB clock to expose a frozen abandoned-claim command without writes', async () => {
+    const fixture = await createClaimedProposal(106);
+    const input = { userId, approvalId: fixture.proposal.approval.id };
+    const before = await artifactCounts(fixture.proposal.decision.id, input.approvalId);
+    await expect(gmailArchiveRecoveryRepository.query(input)).resolves.toEqual({
+      ok: true,
+      status: 'not_due',
+      recovery: null,
+    });
+    await getPool().query(
+      `UPDATE pre_effect_barriers SET updated_at = now() - INTERVAL '5 minutes 1 second'
+        WHERE id = $1`,
+      [fixture.command.admissionId],
+    );
+    const recovered = await gmailArchiveRecoveryRepository.query(input);
+    expect(recovered).toMatchObject({
+      ok: true,
+      status: 'eligible',
+      recovery: {
+        command: fixture.command,
+        phase: 'pre_dispatch',
+      },
+    });
+    if (!recovered.ok || recovered.status !== 'eligible') {
+      throw new Error('Expected an eligible abandoned claim.');
+    }
+    expect(new Date(recovered.recovery.phaseChangedAt).toISOString())
+      .toBe(recovered.recovery.phaseChangedAt);
+    expect(Object.isFrozen(recovered.recovery)).toBe(true);
+    expect(Object.isFrozen(recovered.recovery.command)).toBe(true);
+    expect(Object.keys(recovered.recovery.command).sort())
+      .toEqual(['admissionId', 'messageRefId', 'operation', 'userId']);
+    expect(await artifactCounts(fixture.proposal.decision.id, input.approvalId)).toEqual(before);
+  }, 120_000);
+
+  it('recovers the exact dispatch boundary and durable command after connector evidence cascades', async () => {
+    const portableUserId = id('11', 4);
+    const portableAccountId = id('22', 4);
+    await seedOwner(portableUserId, portableAccountId, id('55', 4), 'recovery-owner@example.test');
+    const fixture = await createClaimedProposal(107, portableUserId, portableAccountId, true);
+    await getPool().query(
+      'DELETE FROM connected_accounts WHERE id = $1 AND user_id = $2',
+      [portableAccountId, portableUserId],
+    );
+    await getPool().query(
+      `UPDATE pre_effect_barriers SET updated_at = now() - INTERVAL '6 minutes' WHERE id = $1`,
+      [fixture.command.admissionId],
+    );
+    const recovered = await gmailArchiveRecoveryRepository.query({
+      userId: portableUserId,
+      approvalId: fixture.proposal.approval.id,
+    });
+    expect(recovered).toMatchObject({
+      ok: true,
+      status: 'eligible',
+      recovery: {
+        command: fixture.command,
+        phase: 'dispatch_may_have_started',
+      },
+    });
+    const connectorEvidence = await getPool().query<{ refs: string; signals: string }>(`SELECT
+      (SELECT count(*)::STRING FROM gmail_message_refs WHERE id = $1) AS refs,
+      (SELECT count(*)::STRING FROM signals WHERE resource_ref_id = $1) AS signals`,
+    [fixture.proposal.messageRefId]);
+    expect(connectorEvidence.rows[0]).toEqual({ refs: '0', signals: '0' });
+  }, 120_000);
+
+  it('distinguishes legacy markers, owner misses, graph conflicts, and canonical terminals', async () => {
+    const legacy = await createClaimedProposal(108);
+    await getPool().query(
+      `UPDATE pre_effect_barriers
+          SET effect_result = '{}'::JSONB, updated_at = now() - INTERVAL '6 minutes'
+        WHERE id = $1`,
+      [legacy.command.admissionId],
+    );
+    await expect(gmailArchiveRecoveryRepository.query({
+      userId,
+      approvalId: legacy.proposal.approval.id,
+    })).resolves.toEqual({ ok: false, error: 'legacy_untracked' });
+    await expect(gmailArchiveRecoveryRepository.query({
+      userId: otherUserId,
+      approvalId: legacy.proposal.approval.id,
+    })).resolves.toEqual({ ok: false, error: 'not_found' });
+
+    const tampered = await createClaimedProposal(109);
+    await getPool().query(
+      `UPDATE decision_receipt_revisions SET trusted = false
+        WHERE receipt_id = $1 AND sequence = 6`,
+      [tampered.prepared.receipt.id],
+    );
+    await getPool().query(
+      `UPDATE pre_effect_barriers SET updated_at = now() - INTERVAL '6 minutes' WHERE id = $1`,
+      [tampered.command.admissionId],
+    );
+    await expect(gmailArchiveRecoveryRepository.query({
+      userId,
+      approvalId: tampered.proposal.approval.id,
+    })).resolves.toEqual({ ok: false, error: 'integrity_conflict' });
+
+    const terminal = await createClaimedProposal(110);
+    await expect(gmailArchiveTerminalizationRepository.terminalize({
+      command: terminal.command,
+      result: {
+        outcome: 'known_failure',
+        code: 'preflight_unavailable',
+        compensationAvailable: false,
+      },
+    })).resolves.toMatchObject({ ok: true, created: true });
+    await expect(gmailArchiveRecoveryRepository.query({
+      userId,
+      approvalId: terminal.proposal.approval.id,
+    })).resolves.toEqual({ ok: true, status: 'terminal', recovery: null });
+    await getPool().query(
+      `UPDATE decision_receipt_revisions SET trusted = false
+        WHERE receipt_id = $1 AND sequence = 7`,
+      [terminal.prepared.receipt.id],
+    );
+    await expect(gmailArchiveRecoveryRepository.query({
+      userId,
+      approvalId: terminal.proposal.approval.id,
+    })).resolves.toEqual({ ok: false, error: 'integrity_conflict' });
   }, 120_000);
 
   it('rejects legacy marker-free and receipt-tampered dispatch attempts', async () => {
