@@ -186,6 +186,22 @@ export interface JoinedDecisionReceiptContentV1 {
   corrections: readonly DecisionReceiptCorrectionV1[];
 }
 
+/**
+ * Terminal lifecycle content. Version 2 leaves every v1 field and artifact
+ * meaning unchanged, and adds a distinct explanation of what execution
+ * actually did. The policy explanation remains bound to the latest immutable
+ * policy evaluation; it must never be replaced with this terminal record.
+ */
+export interface JoinedDecisionReceiptContentV2
+  extends Omit<JoinedDecisionReceiptContentV1, 'version'> {
+  version: 2;
+  executionExplanation: DecisionReceiptArtifactRef;
+}
+
+export type JoinedDecisionReceiptContent =
+  | JoinedDecisionReceiptContentV1
+  | JoinedDecisionReceiptContentV2;
+
 export interface DecisionReceiptRevisionDigestInput {
   revisionId: string;
   receiptId: string;
@@ -206,7 +222,7 @@ export interface DecisionReceiptChainRevisionV1 {
   revision_digest: string;
   stage: DecisionReceiptStage;
   disposition: DecisionReceiptDisposition;
-  content: JoinedDecisionReceiptContentV1;
+  content: JoinedDecisionReceiptContent;
   candidate_action_id: string | null;
   barrier_id: string | null;
   explanation_id: string | null;
@@ -480,18 +496,29 @@ function assertPolicyEvaluation(evaluation: DecisionReceiptPolicyEvaluationV1, i
 }
 
 export function validateJoinedDecisionReceiptContent(
-  content: JoinedDecisionReceiptContentV1,
+  content: JoinedDecisionReceiptContent,
 ): void {
   if (!content || typeof content !== 'object' || Object.getPrototypeOf(content) !== Object.prototype) {
     throw new TypeError('joined receipt content must be a plain object');
   }
-  assertExactKeys(content, [
+  const contentKeys = [
     'version', 'stage', 'disposition', 'decision', 'policyEvaluations', 'evidence', 'candidateAction',
     'risk', 'policy', 'barrier', 'explanation', 'inference', 'approvalRequest',
     'executionPlan', 'executionResult', 'executionDisposition', 'feedbackEvents',
     'correctionOfRevision', 'corrections',
-  ], 'joined receipt content');
-  if (content.version !== 1) throw new TypeError('unsupported joined receipt version');
+  ];
+  assertExactKeys(content, content.version === 2
+    ? [...contentKeys, 'executionExplanation']
+    : contentKeys, 'joined receipt content');
+  if (content.version !== 1 && content.version !== 2) {
+    throw new TypeError('unsupported joined receipt version');
+  }
+  if (content.version === 2) {
+    assertRef(content.executionExplanation, 'execution explanation');
+    if (!['execution_recorded', 'feedback_recorded', 'corrected'].includes(content.stage)) {
+      throw new TypeError('execution explanation cannot precede execution recording');
+    }
+  }
   if (!new Set<DecisionReceiptStage>([
     'decision_recorded', 'policy_evaluated', 'approval_recorded',
     'execution_admitted', 'execution_recorded', 'feedback_recorded', 'corrected',
@@ -503,6 +530,11 @@ export function validateJoinedDecisionReceiptContent(
   assertRef(content.decision, 'decision');
   if (!Array.isArray(content.policyEvaluations)) throw new TypeError('policy evaluations must be an array');
   content.policyEvaluations.forEach(assertPolicyEvaluation);
+  if (content.version === 2 && content.policyEvaluations.some(
+    (evaluation) => evaluation.explanation.id === content.executionExplanation.id,
+  )) {
+    throw new TypeError('execution explanation must be distinct from every policy explanation');
+  }
   if (content.policyEvaluations.length > 2) {
     throw new TypeError('joined receipt supports at most one post-approval policy phase');
   }
@@ -842,9 +874,14 @@ export function validateJoinedDecisionReceiptContent(
 
 /** Legal cumulative-snapshot lifecycle edge for an immutable receipt chain. */
 export function isJoinedDecisionReceiptTransition(
-  previous: JoinedDecisionReceiptContentV1,
-  next: JoinedDecisionReceiptContentV1,
+  previous: JoinedDecisionReceiptContent,
+  next: JoinedDecisionReceiptContent,
 ): boolean {
+  if (previous.version === 2 && next.version === 1) return false;
+  if (previous.version === 1 && next.version === 2 &&
+      (previous.stage !== 'execution_admitted' || next.stage !== 'execution_recorded')) {
+    return false;
+  }
   if (previous.stage === 'decision_recorded') return next.stage === 'policy_evaluated';
   if (previous.stage === 'policy_evaluated') {
     if (previous.disposition === 'allowed') return next.stage === 'execution_admitted';
@@ -921,8 +958,8 @@ function planMayAdvance(previous: DecisionReceiptExecutionPlanRef | undefined, n
 
 /** Preserve every established artifact and known terminal fact across snapshots. */
 export function preservesJoinedDecisionReceiptLinks(
-  previous: JoinedDecisionReceiptContentV1,
-  next: JoinedDecisionReceiptContentV1,
+  previous: JoinedDecisionReceiptContent,
+  next: JoinedDecisionReceiptContent,
 ): boolean {
   if (!isJoinedDecisionReceiptTransition(previous, next)) return false;
   // The approval request is a historical event, not optional context that a
@@ -963,6 +1000,17 @@ export function preservesJoinedDecisionReceiptLinks(
       !planMayAdvance(previous.executionPlan, next.executionPlan) ||
       !sameReceiptRef(previous.executionResult, next.executionResult) ||
       !sameReceiptRef(previous.inference.completion, next.inference.completion)) return false;
+  const previousExecutionExplanation = previous.version === 2
+    ? previous.executionExplanation
+    : undefined;
+  const nextExecutionExplanation = next.version === 2
+    ? next.executionExplanation
+    : undefined;
+  if (previousExecutionExplanation &&
+      !sameReceiptRef(previousExecutionExplanation, nextExecutionExplanation)) return false;
+  if (!previousExecutionExplanation && nextExecutionExplanation &&
+      !(previous.version === 1 && previous.stage === 'execution_admitted' &&
+        next.version === 2 && next.stage === 'execution_recorded')) return false;
   if (previous.barrier && next.barrier && !addsEvaluation &&
       !barrierMayAdvance(previous.barrier, next.barrier)) return false;
   if (previous.barrier && !next.barrier) return false;
@@ -1006,14 +1054,14 @@ export function buildDecisionReceiptEventKey(kind: string, eventId: string): Dec
 }
 
 export function canonicalJoinedDecisionReceiptContent(
-  content: JoinedDecisionReceiptContentV1,
+  content: JoinedDecisionReceiptContent,
 ): string {
   validateJoinedDecisionReceiptContent(content);
   return canonicalJson(content);
 }
 
 export function joinedDecisionReceiptContentDigest(
-  content: JoinedDecisionReceiptContentV1,
+  content: JoinedDecisionReceiptContent,
 ): DecisionReceiptDigest {
   return createHash('sha256')
     .update(canonicalJoinedDecisionReceiptContent(content), 'utf8')
@@ -1059,7 +1107,7 @@ export function verifyJoinedDecisionReceiptChain(input: {
   if (!UUID.test(input.receiptId) || !UUID.test(input.decisionId) ||
       !UUID.test(input.userId) || input.revisions.length === 0) return false;
   let previousDigest: string | null = null;
-  let previousContent: JoinedDecisionReceiptContentV1 | null = null;
+  let previousContent: JoinedDecisionReceiptContent | null = null;
   const eventKeys = new Set<string>();
   const revisionIds = new Set<string>();
   const revisionDigests = new Map<string, string>();

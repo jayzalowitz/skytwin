@@ -8,7 +8,9 @@ import {
   preservesJoinedDecisionReceiptLinks,
   type DecisionReceiptApprovalRef,
   type DecisionReceiptPolicyEvaluationV1,
+  type JoinedDecisionReceiptContent,
   type JoinedDecisionReceiptContentV1,
+  type JoinedDecisionReceiptContentV2,
 } from '../index.js';
 
 const hash = 'a'.repeat(64);
@@ -16,6 +18,8 @@ const decisionId = '22222222-2222-4222-8222-222222222222';
 const userId = '11111111-1111-4111-8111-111111111111';
 const actionId = '33333333-3333-4333-8333-333333333333';
 const explanationId = '44444444-4444-4444-8444-444444444444';
+const postApprovalExplanationId = '44444444-aaaa-4444-8444-444444444444';
+const executionExplanationId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
 const firstBarrierId = '55555555-5555-4555-8555-555555555555';
 const secondBarrierId = '66666666-6666-4666-8666-666666666666';
 const approvalId = '77777777-7777-4777-8777-777777777777';
@@ -48,6 +52,7 @@ function approval(status: 'pending' | 'approved'): DecisionReceiptApprovalRef {
 function evaluation(
   phase: 'pre_effect' | 'post_approval',
   disposition: 'allowed' | 'requires_approval',
+  policyExplanationId = explanationId,
 ): DecisionReceiptPolicyEvaluationV1 {
   const policyHash = disposition === 'allowed' ? 'b'.repeat(64) : 'c'.repeat(64);
   const barrierSnapshot = {
@@ -56,7 +61,7 @@ function evaluation(
     effectType: 'event_execution' as const,
     decisionId,
     candidateActionId: actionId,
-    explanationId,
+    explanationId: policyExplanationId,
     policyHash,
     createdAt: instant,
     updatedAt: instant,
@@ -76,7 +81,7 @@ function evaluation(
       snapshot: barrierSnapshot,
       canonicalHash: joinedDecisionReceiptArtifactDigest('barrier', barrierSnapshot),
     },
-    explanation: { id: explanationId, canonicalHash: 'f'.repeat(64) },
+    explanation: { id: policyExplanationId, canonicalHash: 'f'.repeat(64) },
     evidence: [],
     ...(phase === 'post_approval' ? { approvalSatisfied: approval('approved') } : {}),
   };
@@ -97,6 +102,94 @@ function policySnapshot(): JoinedDecisionReceiptContentV1 {
   };
 }
 
+function approvalContent(status: 'pending' | 'approved'): JoinedDecisionReceiptContentV1 {
+  const initial = policySnapshot();
+  return {
+    ...initial,
+    stage: 'approval_recorded',
+    disposition: status === 'pending' ? 'requires_approval' : 'approved',
+    approvalRequest: approval(status),
+  };
+}
+
+function postApprovalContent(): JoinedDecisionReceiptContentV1 {
+  const approved = approvalContent('approved');
+  const initial = policySnapshot();
+  const postApproval = evaluation('post_approval', 'allowed', postApprovalExplanationId);
+  return {
+    ...approved, stage: 'policy_evaluated', disposition: 'allowed',
+    policyEvaluations: [initial.policyEvaluations[0]!, postApproval],
+    candidateAction: postApproval.candidateAction,
+    risk: postApproval.risk,
+    policy: postApproval.policy,
+    barrier: postApproval.barrier,
+    explanation: postApproval.explanation,
+  };
+}
+
+function admittedContent(): JoinedDecisionReceiptContentV1 {
+  const rechecked = postApprovalContent();
+  const planSnapshot = {
+    version: 1 as const, status: 'pending' as const, decisionId,
+    candidateActionId: actionId, createdAt: instant, updatedAt: instant,
+  };
+  return {
+    ...rechecked, stage: 'execution_admitted', disposition: 'pending',
+    executionPlan: {
+      id: planId, snapshot: planSnapshot,
+      canonicalHash: joinedDecisionReceiptArtifactDigest('execution_plan', planSnapshot),
+    },
+  };
+}
+
+function terminalContent(
+  outcome: 'succeeded' | 'failed' | 'unknown',
+): JoinedDecisionReceiptContentV2 {
+  const admitted = admittedContent();
+  const barrierSnapshot = {
+    ...admitted.barrier!.snapshot,
+    status: outcome,
+  };
+  const planSnapshot = {
+    ...admitted.executionPlan!.snapshot,
+    status: outcome === 'succeeded' ? 'completed' as const : 'failed' as const,
+  };
+  const resultSnapshot = {
+    version: 1 as const,
+    planId,
+    success: outcome === 'succeeded',
+    outcome,
+    rollbackAvailable: false,
+    completedAt: instant,
+  };
+  return {
+    ...admitted,
+    version: 2,
+    stage: 'execution_recorded',
+    disposition: outcome,
+    barrier: {
+      id: admitted.barrier!.id,
+      snapshot: barrierSnapshot,
+      canonicalHash: joinedDecisionReceiptArtifactDigest('barrier', barrierSnapshot),
+    },
+    executionPlan: {
+      id: planId,
+      snapshot: planSnapshot,
+      canonicalHash: joinedDecisionReceiptArtifactDigest('execution_plan', planSnapshot),
+    },
+    executionResult: {
+      id: resultId,
+      snapshot: resultSnapshot,
+      canonicalHash: joinedDecisionReceiptArtifactDigest('execution_result', resultSnapshot),
+    },
+    executionDisposition: outcome,
+    executionExplanation: {
+      id: executionExplanationId,
+      canonicalHash: '9'.repeat(64),
+    },
+  };
+}
+
 describe('joined decision receipt content', () => {
   it('normalizes only safe positive integer numbers and canonical decimal strings', () => {
     expect(normalizeDecisionReceiptSequence(1)).toBe(1);
@@ -113,6 +206,136 @@ describe('joined decision receipt content', () => {
       decision: first.decision, policyEvaluations: [], corrections: [], disposition: 'pending', stage: 'decision_recorded', version: 1,
     } as JoinedDecisionReceiptContentV1;
     expect(joinedDecisionReceiptContentDigest(first)).toBe(joinedDecisionReceiptContentDigest(reordered));
+  });
+
+  it.each(['succeeded', 'failed', 'unknown'] as const)(
+    'upgrades an admitted v1 receipt to a terminal v2 %s receipt',
+    (outcome) => {
+      const admitted = admittedContent();
+      const terminal = terminalContent(outcome);
+      expect(() => canonicalJoinedDecisionReceiptContent(terminal)).not.toThrow();
+      expect(preservesJoinedDecisionReceiptLinks(admitted, terminal)).toBe(true);
+    },
+  );
+
+  it('allows v2 only at execution recording and keeps its exact field set', () => {
+    const terminal = terminalContent('succeeded');
+    expect(() => canonicalJoinedDecisionReceiptContent({
+      ...terminal,
+      providerResponse: 'must not persist',
+    } as JoinedDecisionReceiptContent)).toThrow('unsupported field');
+    const missing = { ...terminal } as Record<string, unknown>;
+    delete missing['executionExplanation'];
+    expect(() => canonicalJoinedDecisionReceiptContent(
+      missing as unknown as JoinedDecisionReceiptContent,
+    )).toThrow('execution explanation');
+    expect(() => canonicalJoinedDecisionReceiptContent({
+      ...terminal,
+      stage: 'execution_admitted',
+      disposition: 'pending',
+      executionDisposition: undefined,
+      executionResult: undefined,
+    } as unknown as JoinedDecisionReceiptContentV2)).toThrow('cannot precede');
+    expect(preservesJoinedDecisionReceiptLinks(policySnapshot(), terminal)).toBe(false);
+  });
+
+  it('rejects terminal explanation drop, replacement, downgrade, and policy-ref swaps', () => {
+    const terminal = terminalContent('failed');
+    const feedback = { id: approvalId, canonicalHash: '1'.repeat(64) };
+    const preserved: JoinedDecisionReceiptContentV2 = {
+      ...terminal,
+      stage: 'feedback_recorded',
+      feedbackEvents: [feedback],
+    };
+    expect(() => canonicalJoinedDecisionReceiptContent(preserved)).not.toThrow();
+    expect(preservesJoinedDecisionReceiptLinks(terminal, preserved)).toBe(true);
+
+    const correctionOfRevision = { id: firstBarrierId, canonicalHash: '2'.repeat(64) };
+    const historySnapshot = {
+      version: 1 as const,
+      learnedSubjectId: actionId,
+      attributionType: 'feedback' as const,
+      attributionId: feedback.id,
+      changedAt: instant,
+      previousValueHash: null,
+      newValueHash: '3'.repeat(64),
+      previousConfidence: null,
+      newConfidence: '0.8',
+    };
+    const corrected: JoinedDecisionReceiptContentV2 = {
+      ...preserved,
+      stage: 'corrected',
+      disposition: 'corrected',
+      correctionOfRevision,
+      corrections: [{
+        version: 1,
+        correctionOfRevision,
+        feedbackEvent: feedback,
+        preferenceChanges: [{
+          learnedSubjectId: actionId,
+          preferenceHistory: {
+            id: 'phist_1_abcdefg',
+            snapshot: historySnapshot,
+            canonicalHash: joinedDecisionReceiptArtifactDigest('preference_history', historySnapshot),
+          },
+        }],
+      }],
+    };
+    expect(() => canonicalJoinedDecisionReceiptContent(corrected)).not.toThrow();
+    expect(preservesJoinedDecisionReceiptLinks(preserved, corrected)).toBe(true);
+
+    const changed: JoinedDecisionReceiptContentV2 = {
+      ...preserved,
+      executionExplanation: { id: userId, canonicalHash: '8'.repeat(64) },
+    };
+    expect(preservesJoinedDecisionReceiptLinks(terminal, changed)).toBe(false);
+    const downgraded: JoinedDecisionReceiptContentV1 = {
+      ...terminal,
+      version: 1,
+    } as unknown as JoinedDecisionReceiptContentV1;
+    delete (downgraded as unknown as Record<string, unknown>)['executionExplanation'];
+    expect(preservesJoinedDecisionReceiptLinks(terminal, downgraded)).toBe(false);
+
+    const swapped: JoinedDecisionReceiptContentV2 = {
+      ...terminal,
+      explanation: terminal.executionExplanation,
+      executionExplanation: terminal.explanation!,
+    };
+    expect(preservesJoinedDecisionReceiptLinks(admittedContent(), swapped)).toBe(false);
+    expect(() => canonicalJoinedDecisionReceiptContent({
+      ...terminal,
+      executionExplanation: terminal.explanation!,
+    })).toThrow('distinct');
+  });
+
+  it('rejects reusing the earlier policy explanation as the terminal explanation', () => {
+    const initial = policySnapshot();
+    const pending = approvalContent('pending');
+    const approved = approvalContent('approved');
+    const postApproval = postApprovalContent();
+    const admitted = admittedContent();
+    const gmailPhases = [content(), initial, pending, approved, postApproval, admitted];
+    gmailPhases.forEach((snapshot) => {
+      expect(() => canonicalJoinedDecisionReceiptContent(snapshot)).not.toThrow();
+    });
+    for (let index = 1; index < gmailPhases.length; index += 1) {
+      expect(preservesJoinedDecisionReceiptLinks(
+        gmailPhases[index - 1]!,
+        gmailPhases[index]!,
+      )).toBe(true);
+    }
+    expect(admitted.policyEvaluations.map((evaluation) => evaluation.explanation.id)).toEqual([
+      explanationId,
+      postApprovalExplanationId,
+    ]);
+    const terminal = {
+      ...terminalContent('succeeded'),
+      executionExplanation: admitted.policyEvaluations[0]!.explanation,
+    } satisfies JoinedDecisionReceiptContentV2;
+
+    expect(() => canonicalJoinedDecisionReceiptContent(terminal)).toThrow(
+      'distinct from every policy explanation',
+    );
   });
 
   it('rejects receipt fields that could carry protected inference or provider material', () => {

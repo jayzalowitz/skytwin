@@ -185,7 +185,9 @@ export type {
   DecisionReceiptCorrectionV1,
   DecisionReceiptRiskRef,
   DecisionReceiptStage,
+  JoinedDecisionReceiptContent,
   JoinedDecisionReceiptContentV1,
+  JoinedDecisionReceiptContentV2,
   DecisionReceiptRevisionDigestInput,
   DecisionReceiptChainRevisionV1,
 } from './joined-decision-receipt.js';

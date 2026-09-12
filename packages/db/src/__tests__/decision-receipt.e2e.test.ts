@@ -1,6 +1,14 @@
 /**
- * Real CockroachDB proof for migration 081. Run with E2E=true and DATABASE_URL.
- * The default unit suite truthfully skips this file when no live DB is selected.
+ * Real CockroachDB proof for migration 081. The default unit suite truthfully
+ * skips this file when no live DB is selected. Reliable disposable local run:
+ *
+ *   cockroach start-single-node --insecure --listen-addr=127.0.0.1:26359 \
+ *     --http-addr=127.0.0.1:28081 --store=type=mem,size=1GiB \
+ *     --cache=128MiB --max-sql-memory=512MiB
+ *   cockroach sql --insecure --host=127.0.0.1:26359 -e 'CREATE DATABASE skytwin'
+ *   DATABASE_URL='postgresql://root@127.0.0.1:26359/skytwin?sslmode=disable' pnpm db:migrate
+ *   DATABASE_URL='postgresql://root@127.0.0.1:26359/skytwin?sslmode=disable' \
+ *     E2E=true pnpm --filter @skytwin/db test -- decision-receipt.e2e.test.ts
  */
 import { randomUUID } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
@@ -8,25 +16,28 @@ import { Pool } from 'pg';
 import {
   buildDecisionReceiptEventKey,
   joinedDecisionReceiptArtifactDigest,
-  type DecisionReceiptArtifactKind,
   type JoinedDecisionReceiptContentV1,
+  type JoinedDecisionReceiptContentV2,
 } from '@skytwin/shared-types';
 import { closePool } from '../connection.js';
-import { decisionReceiptRepository } from '../repositories/decision-receipt-repository.js';
+import {
+  decisionReceiptRepository,
+  type AppendDecisionReceiptResult,
+} from '../repositories/decision-receipt-repository.js';
+import { decisionReceiptRowArtifactRefV1 } from '../repositories/decision-receipt-artifacts.js';
 
 const E2E = process.env['E2E'] === 'true';
 let pool: Pool;
 const users: string[] = [];
 const eventKey = (kind: string) => buildDecisionReceiptEventKey(kind, randomUUID());
 
-function artifact(kind: DecisionReceiptArtifactKind, row: Record<string, unknown>): string {
-  const copy = { ...row };
-  delete copy['created_at'];
-  delete copy['updated_at'];
-  delete copy['completed_at'];
-  delete copy['requested_at'];
-  delete copy['responded_at'];
-  return joinedDecisionReceiptArtifactDigest(kind, copy);
+function requireSuccessfulAppend(
+  result: AppendDecisionReceiptResult,
+  label: string,
+): asserts result is Extract<AppendDecisionReceiptResult, { success: true }> {
+  if (!result.success) {
+    throw new Error(`${label} failed: ${JSON.stringify(result)}`);
+  }
 }
 
 async function createUser(): Promise<string> {
@@ -79,9 +90,7 @@ async function policyContentFor(
      VALUES ($1, 'event_execution', $2, 'prepared', $3, $4, $5, $6) RETURNING *`,
     [userId, randomUUID(), decision['id'], action['id'], explanation['id'], policySnapshot],
   )).rows[0]!;
-  const candidateAction = {
-    id: String(action['id']), canonicalHash: artifact('candidate_action', action),
-  };
+  const candidateAction = decisionReceiptRowArtifactRefV1('candidate_action', action);
   const risk = {
     candidateActionId: String(action['id']),
     canonicalHash: joinedDecisionReceiptArtifactDigest('risk', action['risk_assessment']),
@@ -101,9 +110,7 @@ async function policyContentFor(
     id: String(barrier['id']), snapshot: barrierSnapshot,
     canonicalHash: joinedDecisionReceiptArtifactDigest('barrier', barrierSnapshot),
   };
-  const explanationRef = {
-    id: String(explanation['id']), canonicalHash: artifact('explanation', explanation),
-  };
+  const explanationRef = decisionReceiptRowArtifactRefV1('explanation', explanation);
   return {
     ...contentFor(decision), stage: 'policy_evaluated', disposition: 'allowed',
     policyEvaluations: [{
@@ -119,12 +126,135 @@ function contentFor(decision: Record<string, unknown>): JoinedDecisionReceiptCon
     version: 1,
     stage: 'decision_recorded',
     disposition: 'pending',
-    decision: { id: String(decision['id']), canonicalHash: artifact('decision', decision) },
+    decision: decisionReceiptRowArtifactRefV1('decision', decision),
     policyEvaluations: [],
     evidence: [],
     inference: { receipts: [] },
     feedbackEvents: [],
     corrections: [],
+  };
+}
+
+async function createAdmittedChain(userId: string, decision: Record<string, unknown>) {
+  const decisionContent = contentFor(decision);
+  const r1 = await decisionReceiptRepository.appendForUser(userId, {
+    eventKey: eventKey('decision_created'), expectedPreviousDigest: null, content: decisionContent,
+  });
+  requireSuccessfulAppend(r1, 'decision receipt append');
+  const policyContent = await policyContentFor(userId, decision);
+  const r2 = await decisionReceiptRepository.appendForUser(userId, {
+    eventKey: eventKey('policy_evaluated'),
+    expectedPreviousDigest: r1.revision.revision_digest,
+    content: policyContent,
+  });
+  requireSuccessfulAppend(r2, 'policy receipt append');
+  const plan = (await pool.query<Record<string, unknown>>(
+    `INSERT INTO execution_plans (decision_id, action_id, status, steps)
+     VALUES ($1, $2, 'pending', '[]') RETURNING *`,
+    [decision['id'], policyContent.candidateAction!.id],
+  )).rows[0]!;
+  const planSnapshot = {
+    version: 1 as const,
+    status: 'pending' as const,
+    decisionId: String(decision['id']),
+    candidateActionId: policyContent.candidateAction!.id,
+    createdAt: (plan['created_at'] as Date).toISOString(),
+    updatedAt: (plan['updated_at'] as Date).toISOString(),
+  };
+  const admitted: JoinedDecisionReceiptContentV1 = {
+    ...policyContent,
+    stage: 'execution_admitted',
+    disposition: 'pending',
+    executionPlan: {
+      id: String(plan['id']),
+      snapshot: planSnapshot,
+      canonicalHash: joinedDecisionReceiptArtifactDigest('execution_plan', planSnapshot),
+    },
+  };
+  const r3 = await decisionReceiptRepository.appendForUser(userId, {
+    eventKey: eventKey('execution_admitted'),
+    expectedPreviousDigest: r2.revision.revision_digest,
+    content: admitted,
+  });
+  requireSuccessfulAppend(r3, 'admission receipt append');
+  return { admitted, plan, previousDigest: r3.revision.revision_digest };
+}
+
+async function terminalContentFor(
+  admitted: JoinedDecisionReceiptContentV1,
+  plan: Record<string, unknown>,
+  outcome: 'succeeded' | 'failed' | 'unknown',
+): Promise<JoinedDecisionReceiptContentV2> {
+  const barrier = (await pool.query<Record<string, unknown>>(
+    `UPDATE pre_effect_barriers SET status = $2, updated_at = now()
+      WHERE id = $1 RETURNING *`,
+    [admitted.barrier!.id, outcome],
+  )).rows[0]!;
+  const planStatus: 'completed' | 'failed' = outcome === 'succeeded' ? 'completed' : 'failed';
+  const terminalPlan = (await pool.query<Record<string, unknown>>(
+    `UPDATE execution_plans SET status = $2, updated_at = now()
+      WHERE id = $1 RETURNING *`,
+    [plan['id'], planStatus],
+  )).rows[0]!;
+  const result = (await pool.query<Record<string, unknown>>(
+    `INSERT INTO execution_results (plan_id, success, outputs, error, rollback_available)
+     VALUES ($1, $2, '{}', $3, false) RETURNING *`,
+    [plan['id'], outcome === 'succeeded', outcome === 'succeeded' ? null : outcome],
+  )).rows[0]!;
+  const executionExplanation = (await pool.query<Record<string, unknown>>(
+    `INSERT INTO explanation_records
+       (decision_id, what_happened, evidence_used, preferences_invoked,
+        confidence_reasoning, action_rationale, escalation_rationale, correction_guidance)
+     VALUES ($1, $2, '[]', '{}', 'provider result', 'approved execution', $3, 'review result')
+     RETURNING *`,
+    [admitted.decision.id, `execution ${outcome}`, outcome === 'succeeded' ? null : outcome],
+  )).rows[0]!;
+  const barrierSnapshot = {
+    version: 1 as const,
+    status: outcome,
+    effectType: barrier['effect_type'] as 'event_execution',
+    decisionId: String(barrier['decision_id']),
+    candidateActionId: String(barrier['action_id']),
+    explanationId: String(barrier['explanation_id']),
+    policyHash: joinedDecisionReceiptArtifactDigest('policy', barrier['policy_snapshot']),
+    createdAt: (barrier['created_at'] as Date).toISOString(),
+    updatedAt: (barrier['updated_at'] as Date).toISOString(),
+  };
+  const planSnapshot = {
+    version: 1 as const,
+    status: planStatus,
+    decisionId: String(terminalPlan['decision_id']),
+    candidateActionId: String(terminalPlan['action_id']),
+    createdAt: (terminalPlan['created_at'] as Date).toISOString(),
+    updatedAt: (terminalPlan['updated_at'] as Date).toISOString(),
+  };
+  const resultSnapshot = {
+    version: 1 as const,
+    planId: String(plan['id']),
+    success: outcome === 'succeeded',
+    outcome,
+    rollbackAvailable: false,
+    completedAt: (result['completed_at'] as Date).toISOString(),
+  };
+  return {
+    ...admitted,
+    version: 2,
+    stage: 'execution_recorded',
+    disposition: outcome,
+    barrier: {
+      id: String(barrier['id']), snapshot: barrierSnapshot,
+      canonicalHash: joinedDecisionReceiptArtifactDigest('barrier', barrierSnapshot),
+    },
+    executionPlan: {
+      id: String(plan['id']), snapshot: planSnapshot,
+      canonicalHash: joinedDecisionReceiptArtifactDigest('execution_plan', planSnapshot),
+    },
+    executionResult: {
+      id: String(result['id']), snapshot: resultSnapshot,
+      canonicalHash: joinedDecisionReceiptArtifactDigest('execution_result', resultSnapshot),
+    },
+    executionDisposition: outcome,
+    executionExplanation: decisionReceiptRowArtifactRefV1('explanation', executionExplanation),
   };
 }
 
@@ -142,6 +272,22 @@ describe.skipIf(!E2E)('E2E: joined decision receipt identity and CAS', () => {
            (SELECT id FROM decision_receipts WHERE user_id = $1)`, [userId],
       );
       await pool.query('DELETE FROM decision_receipts WHERE user_id = $1', [userId]);
+      await pool.query(
+        `DELETE FROM execution_events WHERE plan_id IN
+           (SELECT plan.id FROM execution_plans plan
+             JOIN decisions decision ON decision.id = plan.decision_id
+            WHERE decision.user_id = $1)`, [userId],
+      );
+      await pool.query(
+        `DELETE FROM execution_results WHERE plan_id IN
+           (SELECT plan.id FROM execution_plans plan
+             JOIN decisions decision ON decision.id = plan.decision_id
+            WHERE decision.user_id = $1)`, [userId],
+      );
+      await pool.query(
+        `DELETE FROM execution_plans WHERE decision_id IN
+           (SELECT id FROM decisions WHERE user_id = $1)`, [userId],
+      );
       await pool.query(
         `DELETE FROM inference_receipt_completions WHERE decision_id IN
            (SELECT id FROM decisions WHERE user_id = $1)`, [userId],
@@ -173,12 +319,16 @@ describe.skipIf(!E2E)('E2E: joined decision receipt identity and CAS', () => {
     const owner = await createUser();
     const decision = await createDecision(owner);
     const content = contentFor(decision);
+    expect(decisionReceiptRowArtifactRefV1('decision', {
+      ...decision,
+      future_schema_column: 'must not alter the v1 artifact',
+    })).toEqual(content.decision);
     const firstEventKey = eventKey('decision_created');
     const first = await decisionReceiptRepository.appendForUser(owner, {
       eventKey: firstEventKey, expectedPreviousDigest: null, content,
     });
+    requireSuccessfulAppend(first, 'first decision receipt append');
     expect(first).toMatchObject({ success: true, created: true, revision: { sequence: 1 } });
-    if (!first.success) throw new Error('first receipt append failed');
 
     const replay = await decisionReceiptRepository.appendForUser(owner, {
       eventKey: firstEventKey, expectedPreviousDigest: null, content,
@@ -266,5 +416,52 @@ describe.skipIf(!E2E)('E2E: joined decision receipt identity and CAS', () => {
       [falseHashDecision['id'], completedDecision['id']],
     );
     expect(roots.rows).toHaveLength(0);
+  });
+
+  it.each(['succeeded', 'failed', 'unknown'] as const)(
+    'persists an owned terminal explanation in a v2 %s receipt without overloading explanation_id',
+    async (outcome) => {
+      const owner = await createUser();
+      const decision = await createDecision(owner);
+      const { admitted, plan, previousDigest } = await createAdmittedChain(owner, decision);
+      const terminal = await terminalContentFor(admitted, plan, outcome);
+      const result = await decisionReceiptRepository.appendForUser(owner, {
+        eventKey: eventKey(`execution_${outcome}`),
+        expectedPreviousDigest: previousDigest,
+        content: terminal,
+      });
+      requireSuccessfulAppend(result, `${outcome} terminal receipt append`);
+      expect(result).toMatchObject({ success: true, created: true, revision: { sequence: 4 } });
+      const stored = await pool.query<{
+        explanation_id: string;
+        content: JoinedDecisionReceiptContentV2;
+      }>(
+        'SELECT explanation_id, content FROM decision_receipt_revisions WHERE id = $1',
+        [result.revision.id],
+      );
+      expect(stored.rows[0]?.explanation_id).toBe(admitted.explanation!.id);
+      expect(stored.rows[0]?.content.executionExplanation).toEqual(terminal.executionExplanation);
+    },
+  );
+
+  it('rejects a terminal explanation from a different owned decision', async () => {
+    const owner = await createUser();
+    const decision = await createDecision(owner);
+    const otherDecision = await createDecision(owner);
+    const { admitted, plan, previousDigest } = await createAdmittedChain(owner, decision);
+    const terminal = await terminalContentFor(admitted, plan, 'failed');
+    const otherExplanation = (await pool.query<Record<string, unknown>>(
+      `INSERT INTO explanation_records
+         (decision_id, what_happened, evidence_used, preferences_invoked,
+          confidence_reasoning, action_rationale, correction_guidance)
+       VALUES ($1, 'other decision', '[]', '{}', 'test', 'test', 'test') RETURNING *`,
+      [otherDecision['id']],
+    )).rows[0]!;
+    terminal.executionExplanation = decisionReceiptRowArtifactRefV1('explanation', otherExplanation);
+    await expect(decisionReceiptRepository.appendForUser(owner, {
+      eventKey: eventKey('cross_decision_terminal_explanation'),
+      expectedPreviousDigest: previousDigest,
+      content: terminal,
+    })).resolves.toEqual({ success: false, code: 'linkage_mismatch' });
   });
 });
