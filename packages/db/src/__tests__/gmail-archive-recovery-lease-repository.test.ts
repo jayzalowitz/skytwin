@@ -279,12 +279,18 @@ describe('gmailArchiveRecoveryLeaseRepository boundary', () => {
   });
 
   it('keeps issuer, consumer, and target permit parsers in exact parity', () => {
+    const authorizationBeforeMicrosecondPhase = {
+      ...permit,
+      authorizedAt: '2026-09-12T12:00:00.123Z',
+      deadlineAt: '2026-09-12T12:02:30.123Z',
+    };
     const corpus: unknown[] = [
       permit,
       { ...permit, extra: true },
       { ...permit, observationAttemptId: 'invalid' },
       { ...permit, authorizedAt: '2026-09-12T11:59:59.999Z',
         deadlineAt: '2026-09-12T12:02:29.999Z' },
+      authorizationBeforeMicrosecondPhase,
       { ...permit, leaseExpiresAt: permit.authorizedAt },
       { ...permit, deadlineAt: '2026-09-12T12:07:29.999Z' },
     ];
@@ -293,6 +299,9 @@ describe('gmailArchiveRecoveryLeaseRepository boundary', () => {
       expect(gmailArchiveRecoveryLeaseConsumerTestHooks.snapshotPermit(value)).toEqual(issued);
       expect(gmailInboxObservationTargetTestHooks.snapshotPermit(value)).toEqual(issued);
     }
+    expect(gmailArchiveRecoveryLeaseTestHooks.snapshotPermit(
+      authorizationBeforeMicrosecondPhase,
+    )).toBeNull();
   });
 
   it('canonicalizes only exact UTC DB phase strings while preserving microseconds', () => {
@@ -421,6 +430,32 @@ describe('gmailArchiveRecoveryLeaseRepository boundary', () => {
       ...row,
       observation_deadline_at: new Date('2026-09-12T12:07:29.999Z'),
     } as never, fence.phaseChangedAt)).toBeNull();
+    expect(gmailArchiveRecoveryLeaseTestHooks.leaseFromRow({
+      ...row,
+      observation_authorized_at: new Date('2026-09-12T12:00:00.123Z'),
+      observation_deadline_at: new Date('2026-09-12T12:02:30.123Z'),
+    } as never, fence.phaseChangedAt)).toBeNull();
+  });
+
+  it('rejects a stored authorization in the truncated millisecond before its phase', async () => {
+    const row = recoveryLeaseRow({
+      observation_authorized_at: new Date('2026-09-12T12:00:00.123Z'),
+      observation_deadline_at: new Date('2026-09-12T12:02:30.123Z'),
+      observation_evidence: {
+        schema: 'gmail_archive_recovery_observation_v1',
+        evidence: { ...observedEvidence, observedAt: '2026-09-12T12:00:00.124Z' },
+      },
+    });
+    const query = vi.fn().mockResolvedValueOnce({ rows: [row] });
+    await expect(consumeGmailArchiveRecoveryLeaseInTransaction(
+      { query } as unknown as PoolClient,
+      {
+        fence,
+        observationAttemptId: permit.observationAttemptId,
+        evidence: { ...observedEvidence, observedAt: '2026-09-12T12:00:00.124Z' },
+      },
+    )).resolves.toEqual({ ok: false, error: 'integrity_conflict' });
+    expect(query).toHaveBeenCalledTimes(1);
   });
 
   it('consumes an exact recorded observation with every fence and evidence predicate', async () => {

@@ -7,6 +7,7 @@ import type {
 } from '@skytwin/shared-types';
 import type { PoolClient } from 'pg';
 import { GMAIL_ARCHIVE_RECOVERY_OBSERVATION_DEADLINE_SECONDS } from './gmail-archive-recovery-policy.js';
+import { exactTimestampEpochMicroseconds } from './gmail-archive-recovery-time.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const OBSERVATION_EVIDENCE_SCHEMA = 'gmail_archive_recovery_observation_v1';
@@ -164,11 +165,15 @@ function snapshotObservationPermit(
       !UUID.test(permit['observationAttemptId']) ||
       !validExternalTimestamp(permit['authorizedAt']) ||
       !validExternalTimestamp(permit['deadlineAt']) ||
-      !validExternalTimestamp(permit['leaseExpiresAt']) ||
-      Date.parse(permit['authorizedAt']) < Date.parse(fence.phaseChangedAt) ||
-      Date.parse(permit['authorizedAt']) >= Date.parse(permit['leaseExpiresAt']) ||
-      Date.parse(permit['deadlineAt']) - Date.parse(permit['authorizedAt']) !==
-        GMAIL_ARCHIVE_RECOVERY_OBSERVATION_DEADLINE_SECONDS * 1_000) return null;
+      !validExternalTimestamp(permit['leaseExpiresAt'])) return null;
+  const authorizedAt = exactTimestampEpochMicroseconds(permit['authorizedAt']);
+  const deadlineAt = exactTimestampEpochMicroseconds(permit['deadlineAt']);
+  const leaseExpiresAt = exactTimestampEpochMicroseconds(permit['leaseExpiresAt']);
+  const phaseChangedAt = exactTimestampEpochMicroseconds(fence.phaseChangedAt);
+  if (authorizedAt === null || deadlineAt === null || leaseExpiresAt === null ||
+      phaseChangedAt === null || authorizedAt < phaseChangedAt ||
+      authorizedAt >= leaseExpiresAt || deadlineAt - authorizedAt !==
+        BigInt(GMAIL_ARCHIVE_RECOVERY_OBSERVATION_DEADLINE_SECONDS) * 1_000_000n) return null;
   return Object.freeze({
     ...fence,
     observationAttemptId: permit['observationAttemptId'],
@@ -325,21 +330,27 @@ export async function consumeGmailArchiveRecoveryLeaseInTransaction(
     if (row.observation_state !== 'evidence_recorded') return { ok: false, error: 'not_ready' };
     if (row.observation_attempt_id !== attemptId) return { ok: false, error: 'stale_lease' };
     const retained = parseEvidenceEnvelope(row.observation_evidence);
+    const phaseChangedAtMicros = exactTimestampEpochMicroseconds(fence.phaseChangedAt);
+    const observationAuthorizedAtMicros = row.observation_authorized_at
+      ? exactTimestampEpochMicroseconds(row.observation_authorized_at) : null;
     if (!row.observation_authorized_at || !row.observation_deadline_at ||
         row.observation_authorized_at.getTime() > row.observation_deadline_at.getTime() ||
         row.observation_deadline_at.getTime() - row.observation_authorized_at.getTime() !==
           GMAIL_ARCHIVE_RECOVERY_OBSERVATION_DEADLINE_SECONDS * 1_000 ||
-        row.observation_authorized_at.getTime() < Date.parse(fence.phaseChangedAt) || !retained ||
+        phaseChangedAtMicros === null || observationAuthorizedAtMicros === null ||
+        observationAuthorizedAtMicros < phaseChangedAtMicros ||
+        !retained ||
         retained.binding.userId !== fence.userId ||
         retained.binding.admissionId !== fence.admissionId ||
         retained.binding.messageRefId !== fence.messageRefId) {
       return { ok: false, error: 'integrity_conflict' };
     }
     if (retained.kind === 'mailbox_observed') {
-      const observedAt = Date.parse(retained.observedAt);
-      if (observedAt < row.observation_authorized_at.getTime() ||
-          observedAt < Date.parse(fence.phaseChangedAt) ||
-          observedAt > row.observation_deadline_at.getTime()) {
+      const observedAt = exactTimestampEpochMicroseconds(retained.observedAt);
+      const deadlineAt = exactTimestampEpochMicroseconds(row.observation_deadline_at);
+      if (observedAt === null || observationAuthorizedAtMicros === null || deadlineAt === null ||
+          observedAt < observationAuthorizedAtMicros || observedAt < phaseChangedAtMicros ||
+          observedAt > deadlineAt) {
         return { ok: false, error: 'integrity_conflict' };
       }
     }

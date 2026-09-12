@@ -460,6 +460,13 @@ function canonicalPhaseTimestamp(value: unknown): value is string {
   }
 }
 
+function exactTimestampEpochMicroseconds(value: string): bigint | null {
+  const epochMilliseconds = Date.parse(value);
+  if (!Number.isFinite(epochMilliseconds)) return null;
+  const subMilliseconds = /\.\d{3}(\d{3})?Z$/.exec(value)?.[1] ?? '0';
+  return BigInt(epochMilliseconds) * 1_000n + BigInt(subMilliseconds);
+}
+
 function snapshotRecoveryFence(
   value: unknown,
 ): Readonly<GmailArchiveRecoveryLeaseFence> | null {
@@ -508,11 +515,16 @@ function snapshotRecoveryPermit(
       !Number.isSafeInteger(permit['generation']) || (permit['generation'] as number) < 1 ||
       typeof permit['observationAttemptId'] !== 'string' ||
       !UUID.test(permit['observationAttemptId']) || !canonicalTimestamp(permit['authorizedAt']) ||
-      !canonicalTimestamp(permit['deadlineAt']) || !canonicalTimestamp(permit['leaseExpiresAt']) ||
-      Date.parse(permit['authorizedAt']) < Date.parse(permit['phaseChangedAt']) ||
-      Date.parse(permit['authorizedAt']) >= Date.parse(permit['leaseExpiresAt']) ||
-      Date.parse(permit['deadlineAt']) - Date.parse(permit['authorizedAt']) !==
-        GMAIL_ARCHIVE_RECOVERY_OBSERVATION_DEADLINE_SECONDS * 1_000) return null;
+      !canonicalTimestamp(permit['deadlineAt']) ||
+      !canonicalTimestamp(permit['leaseExpiresAt'])) return null;
+  const authorizedAt = exactTimestampEpochMicroseconds(permit['authorizedAt']);
+  const deadlineAt = exactTimestampEpochMicroseconds(permit['deadlineAt']);
+  const leaseExpiresAt = exactTimestampEpochMicroseconds(permit['leaseExpiresAt']);
+  const phaseChangedAt = exactTimestampEpochMicroseconds(permit['phaseChangedAt']);
+  if (authorizedAt === null || deadlineAt === null || leaseExpiresAt === null ||
+      phaseChangedAt === null || authorizedAt < phaseChangedAt ||
+      authorizedAt >= leaseExpiresAt || deadlineAt - authorizedAt !==
+        BigInt(GMAIL_ARCHIVE_RECOVERY_OBSERVATION_DEADLINE_SECONDS) * 1_000_000n) return null;
   return Object.freeze({
     userId: permit['userId'], approvalId: permit['approvalId'],
     admissionId: permit['admissionId'], messageRefId: permit['messageRefId'],

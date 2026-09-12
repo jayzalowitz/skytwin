@@ -28,6 +28,7 @@ import {
   GMAIL_ARCHIVE_RECOVERY_GRACE_SECONDS,
   GMAIL_ARCHIVE_RECOVERY_OBSERVATION_DEADLINE_SECONDS,
 } from './gmail-archive-recovery-policy.js';
+import { exactTimestampEpochMicroseconds } from './gmail-archive-recovery-time.js';
 export { GMAIL_ARCHIVE_RECOVERY_OBSERVATION_DEADLINE_SECONDS } from './gmail-archive-recovery-policy.js';
 import { exactClaimedGmailArchiveReceipt } from './gmail-archive-claim-integrity.js';
 import {
@@ -273,11 +274,15 @@ function snapshotPermit(value: unknown): Readonly<GmailArchiveRecoveryObservatio
       !UUID.test(permit['observationAttemptId']) ||
       !validExternalTimestamp(permit['authorizedAt']) ||
       !validExternalTimestamp(permit['deadlineAt']) ||
-      !validExternalTimestamp(permit['leaseExpiresAt']) ||
-      Date.parse(permit['authorizedAt']) < Date.parse(fence.phaseChangedAt) ||
-      Date.parse(permit['authorizedAt']) >= Date.parse(permit['leaseExpiresAt']) ||
-      Date.parse(permit['deadlineAt']) - Date.parse(permit['authorizedAt']) !==
-        GMAIL_ARCHIVE_RECOVERY_OBSERVATION_DEADLINE_SECONDS * 1_000) return null;
+      !validExternalTimestamp(permit['leaseExpiresAt'])) return null;
+  const authorizedAt = exactTimestampEpochMicroseconds(permit['authorizedAt']);
+  const deadlineAt = exactTimestampEpochMicroseconds(permit['deadlineAt']);
+  const leaseExpiresAt = exactTimestampEpochMicroseconds(permit['leaseExpiresAt']);
+  const phaseChangedAt = exactTimestampEpochMicroseconds(fence.phaseChangedAt);
+  if (authorizedAt === null || deadlineAt === null || leaseExpiresAt === null ||
+      phaseChangedAt === null || authorizedAt < phaseChangedAt ||
+      authorizedAt >= leaseExpiresAt || deadlineAt - authorizedAt !==
+        BigInt(GMAIL_ARCHIVE_RECOVERY_OBSERVATION_DEADLINE_SECONDS) * 1_000_000n) return null;
   return Object.freeze({
     ...fence,
     observationAttemptId: permit['observationAttemptId'],
@@ -609,6 +614,9 @@ function validLeaseObservationState(
   evidence: Readonly<GmailArchiveRecoveryObservationEvidence> | null,
   phaseChangedAt: string,
 ): boolean {
+  const phaseChangedAtMicros = exactTimestampEpochMicroseconds(phaseChangedAt);
+  const observationAuthorizedAtMicros = row.observation_authorized_at
+    ? exactTimestampEpochMicroseconds(row.observation_authorized_at) : null;
   if (row.observation_state === 'not_started') {
     return row.observation_attempt_id === null && row.observation_authorized_at === null &&
       row.observation_deadline_at === null && evidence === null;
@@ -618,17 +626,21 @@ function validLeaseObservationState(
       row.observation_authorized_at.getTime() > row.observation_deadline_at.getTime() ||
       row.observation_deadline_at.getTime() - row.observation_authorized_at.getTime() !==
         GMAIL_ARCHIVE_RECOVERY_OBSERVATION_DEADLINE_SECONDS * 1_000 ||
-      row.observation_authorized_at.getTime() < Date.parse(phaseChangedAt)) return false;
+      phaseChangedAtMicros === null || observationAuthorizedAtMicros === null ||
+      observationAuthorizedAtMicros < phaseChangedAtMicros) {
+    return false;
+  }
   if (row.observation_state === 'started') return evidence === null;
   if (row.observation_state !== 'evidence_recorded' || !evidence ||
       evidence.binding.userId !== row.user_id ||
       evidence.binding.admissionId !== row.admission_id ||
       evidence.binding.messageRefId !== row.message_ref_id) return false;
   if (evidence.kind === 'mailbox_observation_unavailable') return true;
-  const observedAt = Date.parse(evidence.observedAt);
-  return observedAt >= row.observation_authorized_at.getTime() &&
-    observedAt >= Date.parse(phaseChangedAt) &&
-    observedAt <= row.observation_deadline_at.getTime();
+  const observedAt = exactTimestampEpochMicroseconds(evidence.observedAt);
+  const deadlineAt = exactTimestampEpochMicroseconds(row.observation_deadline_at);
+  return observedAt !== null && observationAuthorizedAtMicros !== null && deadlineAt !== null &&
+    phaseChangedAtMicros !== null && observedAt >= observationAuthorizedAtMicros &&
+    observedAt >= phaseChangedAtMicros && observedAt <= deadlineAt;
 }
 
 function expiredObservationEvidence(stage: EligibleStage, userId: string) {

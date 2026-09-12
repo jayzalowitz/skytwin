@@ -668,6 +668,8 @@ describe('GmailArchiveRecoveryObservationCoordinator', () => {
       [{ ...recoveryPermit, observationAttemptId: 'invalid' }, null],
       [{ ...recoveryPermit, authorizedAt: '2026-09-12T11:59:59.999Z',
         deadlineAt: '2026-09-12T12:02:29.999Z' }, null],
+      [{ ...recoveryPermit, authorizedAt: '2026-09-12T12:00:00.123Z',
+        deadlineAt: '2026-09-12T12:02:30.123Z' }, null],
       [{ ...recoveryPermit, leaseExpiresAt: recoveryPermit.authorizedAt }, null],
       [{ ...recoveryPermit, deadlineAt: '2026-09-12T12:07:29.999Z' }, null],
     ] as const;

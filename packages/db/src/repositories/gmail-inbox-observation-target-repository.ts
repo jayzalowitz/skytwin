@@ -8,6 +8,7 @@ import type { PoolClient } from 'pg';
 import { withTransaction } from '../connection.js';
 import { GMAIL_ARCHIVE_RECOVERY_OBSERVATION_DEADLINE_SECONDS } from './gmail-archive-recovery-policy.js';
 import { queryAbandonedGmailArchiveInTransaction } from './gmail-archive-recovery-repository.js';
+import { exactTimestampEpochMicroseconds } from './gmail-archive-recovery-time.js';
 
 const GMAIL_MODIFY_SCOPE = 'https://www.googleapis.com/auth/gmail.modify';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -110,11 +111,15 @@ function snapshotPermit(value: unknown): Readonly<GmailArchiveRecoveryObservatio
       !Number.isSafeInteger(permit['generation']) || (permit['generation'] as number) < 1 ||
       typeof permit['observationAttemptId'] !== 'string' ||
       !UUID.test(permit['observationAttemptId']) || !validTimestamp(permit['authorizedAt']) ||
-      !validTimestamp(permit['deadlineAt']) || !validTimestamp(permit['leaseExpiresAt']) ||
-      Date.parse(permit['authorizedAt']) < Date.parse(permit['phaseChangedAt']) ||
-      Date.parse(permit['authorizedAt']) >= Date.parse(permit['leaseExpiresAt']) ||
-      Date.parse(permit['deadlineAt']) - Date.parse(permit['authorizedAt']) !==
-        GMAIL_ARCHIVE_RECOVERY_OBSERVATION_DEADLINE_SECONDS * 1_000) return null;
+      !validTimestamp(permit['deadlineAt']) || !validTimestamp(permit['leaseExpiresAt'])) return null;
+  const authorizedAt = exactTimestampEpochMicroseconds(permit['authorizedAt']);
+  const deadlineAt = exactTimestampEpochMicroseconds(permit['deadlineAt']);
+  const leaseExpiresAt = exactTimestampEpochMicroseconds(permit['leaseExpiresAt']);
+  const phaseChangedAt = exactTimestampEpochMicroseconds(permit['phaseChangedAt']);
+  if (authorizedAt === null || deadlineAt === null || leaseExpiresAt === null ||
+      phaseChangedAt === null || authorizedAt < phaseChangedAt ||
+      authorizedAt >= leaseExpiresAt || deadlineAt - authorizedAt !==
+        BigInt(GMAIL_ARCHIVE_RECOVERY_OBSERVATION_DEADLINE_SECONDS) * 1_000_000n) return null;
   return Object.freeze({
     userId: permit['userId'], approvalId: permit['approvalId'],
     admissionId: permit['admissionId'], messageRefId: permit['messageRefId'],
