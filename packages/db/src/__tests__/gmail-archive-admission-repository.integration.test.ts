@@ -74,6 +74,30 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
   let cockroach: ChildProcess | undefined;
   let previousDatabaseUrl: string | undefined;
 
+  async function seedOwner(): Promise<void> {
+    await getPool().query(
+      `INSERT INTO users (id, email, name)
+       VALUES ($1, 'admission-owner@example.test', 'Admission Owner')`,
+      [userId],
+    );
+    await getPool().query(
+      `INSERT INTO connected_accounts (
+         id, user_id, provider, account_id, scopes, is_active,
+         provider_subject_digest, account_display, identity_verified
+       ) VALUES ($2, $1, 'google', 'owned-account', ARRAY[$3]::STRING[], true,
+         $4, 'Owned account', true)`,
+      [userId, accountId, gmailModifyScope, 'a'.repeat(64)],
+    );
+    await getPool().query(
+      `INSERT INTO oauth_tokens (
+         id, user_id, provider, access_token, refresh_token, expires_at, scopes,
+         account_email, account_provider_id, connector_account_id
+       ) VALUES ($2, $1, 'google', NULL, NULL, now() + INTERVAL '1 hour',
+         ARRAY[$3]::STRING[], 'owner@example.test', 'owner', $4)`,
+      [userId, id('55', 1), gmailModifyScope, accountId],
+    );
+  }
+
   beforeAll(async () => {
     const sqlPort = await reservePort(28_000 + (process.pid % 3_000));
     const httpPort = await reservePort(48_000 + (process.pid % 3_000));
@@ -87,31 +111,11 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     process.env['DATABASE_URL'] = `postgresql://root@127.0.0.1:${sqlPort}/defaultdb?sslmode=disable`;
     await up();
     await getPool().query(
-      `INSERT INTO users (id, email, name) VALUES
-       ($1, 'admission-owner@example.test', 'Admission Owner'),
-       ($2, 'other-owner@example.test', 'Other Owner')`,
-      [userId, otherUserId],
+      `INSERT INTO users (id, email, name)
+       VALUES ($1, 'other-owner@example.test', 'Other Owner')`,
+      [otherUserId],
     );
-    await getPool().query(
-      `INSERT INTO connected_accounts (
-         id, user_id, provider, account_id, scopes, is_active,
-         provider_subject_digest, account_display, identity_verified
-       ) VALUES ($2, $1, 'google', 'owned-account', ARRAY[]::STRING[], true,
-         $3, 'Owned account', true)`,
-      [userId, accountId, 'a'.repeat(64)],
-    );
-    await getPool().query(
-      `UPDATE connected_accounts SET scopes = ARRAY[$2]::STRING[] WHERE id = $1`,
-      [accountId, gmailModifyScope],
-    );
-    await getPool().query(
-      `INSERT INTO oauth_tokens (
-         id, user_id, provider, access_token, refresh_token, expires_at, scopes,
-         account_email, account_provider_id, connector_account_id
-       ) VALUES ($2, $1, 'google', NULL, NULL, now() + INTERVAL '1 hour',
-         ARRAY[$3]::STRING[], 'owner@example.test', 'owner', $4)`,
-      [userId, id('55', 1), gmailModifyScope, accountId],
-    );
+    await seedOwner();
   }, 300_000);
 
   afterAll(async () => {
@@ -1831,6 +1835,10 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
   }, 120_000);
 
   it('terminalizes after connector evidence is cascaded post-claim', async () => {
+    // Earlier fail-closed cases deliberately retain malformed graphs. Re-seed
+    // this owner so export validation exercises one clean portable lifecycle.
+    await getPool().query('DELETE FROM users WHERE id = $1', [userId]);
+    await seedOwner();
     const fixture = await createClaimedProposal(102);
     await getPool().query('DELETE FROM connected_accounts WHERE id = $1 AND user_id = $2', [accountId, userId]);
     const evidence = await getPool().query<{ refs: string; signals: string }>(`SELECT
@@ -1853,12 +1861,6 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     });
     if (!terminalized.ok) throw new Error('Portable terminal fixture failed.');
 
-    // Keep one exact lifecycle so the portable round-trip is not obscured by
-    // intentionally corrupted fixtures created by earlier fail-closed tests.
-    await getPool().query(
-      'DELETE FROM decisions WHERE user_id = $1 AND id <> $2',
-      [userId, fixture.proposal.decision.id],
-    );
     const backup = await collectBackup(userId);
     expect(backup).toMatchObject({ success: true });
     if (!backup.success) throw new Error(`Terminal backup failed: ${backup.message}`);
