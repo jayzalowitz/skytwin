@@ -210,6 +210,78 @@ describe('microsoft-oauth', () => {
       );
     });
 
+    const malformedPersistedScopes: Array<[
+      string,
+      () => readonly string[],
+    ]> = [
+      ['empty array', () => []],
+      ['empty entry', () => ['']],
+      ['duplicate entry', () => ['Mail.Read', 'Mail.Read']],
+      ['oversized entry', () => ['x'.repeat(513)]],
+      ['sparse array', () => new Array<string>(1)],
+      ['accessor entry', () => {
+        const scopes = ['Mail.Read'];
+        Object.defineProperty(scopes, '0', {
+          configurable: true,
+          enumerable: true,
+          get: () => 'Mail.Read',
+        });
+        return scopes;
+      }],
+      ['symbol property', () => {
+        const scopes = ['Mail.Read'];
+        Object.defineProperty(scopes, Symbol('unexpected'), { value: true });
+        return scopes;
+      }],
+      ['null prototype', () => Object.setPrototypeOf(['Mail.Read'], null) as string[]],
+    ];
+
+    it.each([
+      ['omitted', undefined],
+      ['empty', ''],
+    ])('rejects malformed persisted-scope fallbacks when provider scope is %s', async (
+      _providerScopeName,
+      providerScope,
+    ) => {
+      for (const [fallbackName, makePersistedScopes] of malformedPersistedScopes) {
+        fetchMock.mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({
+            access_token: 'at-3',
+            expires_in: 3600,
+            scope: providerScope,
+          }),
+        });
+
+        await expect(refreshAccessToken(baseConfig, 'stored-rt', {
+          persistedScopes: makePersistedScopes(),
+        }), fallbackName).rejects.toThrow(/invalid scope grant/);
+      }
+    });
+
+    it('snapshots persisted scopes before awaiting the provider response', async () => {
+      let resolveFetch: ((response: {
+        ok: boolean;
+        json: () => Promise<Record<string, unknown>>;
+      }) => void) | undefined;
+      fetchMock.mockImplementationOnce(() => new Promise((resolve) => {
+        resolveFetch = resolve;
+      }));
+      const persistedScopes = ['Mail.Read', 'offline_access'];
+
+      const pending = refreshAccessToken(baseConfig, 'stored-rt', { persistedScopes });
+      persistedScopes[0] = 'Calendars.Read';
+      persistedScopes.push('User.Read');
+      resolveFetch?.({
+        ok: true,
+        json: async () => ({ access_token: 'at-3', expires_in: 3600 }),
+      });
+
+      await expect(pending).resolves.toMatchObject({
+        scopes: ['Mail.Read', 'offline_access'],
+      });
+    });
+
     it('classifies a 401 as permanent (re-auth required)', async () => {
       fetchMock.mockResolvedValue({ ok: false, status: 401, text: async () => 'invalid_grant' });
       const err = await refreshAccessToken(baseConfig, 'rt').catch((e: unknown) => e);
