@@ -122,7 +122,10 @@ function exactApprovalResponse(value: unknown): boolean {
     (response['reason'] === null || typeof response['reason'] === 'string');
 }
 
-function exactReservedBarrier(barrier: PreEffectBarrierRow, input: PrepareGmailArchiveInput): boolean {
+export function exactReservedGmailArchiveBarrier(
+  barrier: PreEffectBarrierRow,
+  input: PrepareGmailArchiveInput,
+): boolean {
   return barrier.user_id === input.userId && barrier.effect_type === 'event_execution' &&
     barrier.idempotency_key === input.approvalId && barrier.status === 'reserved' &&
     barrier.decision_id === null && barrier.action_id === null && barrier.explanation_id === null &&
@@ -562,7 +565,7 @@ async function transition(
   );
   if (barriers.rows.length !== 1) return { ok: false, error: 'not_ready' };
   const barrier = barriers.rows[0]!;
-  if (!exactReservedBarrier(barrier, input)) {
+  if (!exactReservedGmailArchiveBarrier(barrier, input)) {
     return loadGmailArchivePreparationReplay(client, input, state, barrier, approved);
   }
 

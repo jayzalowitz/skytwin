@@ -42,6 +42,7 @@ import {
   loadGmailArchiveStableState,
   parseGmailArchiveTerminalEvidence,
   validateStoredGmailArchiveTerminal,
+  validateStoredGmailArchiveTerminalReadOnly,
   type GmailArchiveTerminalizationBundle,
   type GmailArchiveTerminalStableState,
 } from './gmail-archive-terminalization-repository.js';
@@ -463,6 +464,7 @@ async function exactTerminalReplay(
   state: GmailArchiveTerminalStableState,
   barrier: PreEffectBarrierRow,
   approved: JoinedDecisionReceiptContentV1,
+  lockRows: boolean,
 ): Promise<GmailArchiveReconciliationBundle | null> {
   const retained = parseGmailArchiveReconciliationTerminalEnvelope(barrier.effect_result);
   const messageRefId = canonicalGmailArchiveCandidateMessageRef(state.approval, state.candidate);
@@ -473,7 +475,9 @@ async function exactTerminalReplay(
           retained.evidence.binding.admissionId !== barrier.id ||
           retained.evidence.binding.messageRefId !== messageRefId))) return null;
   const plans = (await client.query<ExecutionPlanRow>(
-    'SELECT * FROM execution_plans WHERE decision_id = $1 ORDER BY id ASC FOR UPDATE',
+    `SELECT * FROM execution_plans WHERE decision_id = $1 ORDER BY id ASC${
+      lockRows ? ' FOR UPDATE' : ''
+    }`,
     [state.decision.id],
   )).rows;
   if (plans.length !== 1 || plans[0]!.status !== 'failed' ||
@@ -481,7 +485,9 @@ async function exactTerminalReplay(
       plans[0]!.action_id !== state.candidate.id) return null;
   const plan = plans[0]!;
   const results = (await client.query<ExecutionResultRow>(
-    'SELECT * FROM execution_results WHERE plan_id = $1 ORDER BY id ASC FOR UPDATE',
+    `SELECT * FROM execution_results WHERE plan_id = $1 ORDER BY id ASC${
+      lockRows ? ' FOR UPDATE' : ''
+    }`,
     [plan.id],
   )).rows;
   const events = await client.query<{ count: string }>(
@@ -577,6 +583,26 @@ async function exactTerminalReplay(
   };
 }
 
+async function validateStoredGmailArchiveReconciliationTerminalWithLockMode(
+  client: PoolClient,
+  authority: TerminalAuthority,
+  state: GmailArchiveTerminalStableState,
+  barrier: PreEffectBarrierRow,
+  approved: JoinedDecisionReceiptContentV1,
+  expected?: GmailArchiveReconciliationTerminalEnvelope,
+  lockRows = true,
+): Promise<GmailArchiveReconciliationBundle | null> {
+  return exactTerminalReplay(
+    client,
+    authority,
+    expected ?? null,
+    state,
+    barrier,
+    approved,
+    lockRows,
+  );
+}
+
 /** Validate an exact reconciliation r7 terminal graph and trusted continuation. */
 export async function validateStoredGmailArchiveReconciliationTerminal(
   client: PoolClient,
@@ -586,7 +612,15 @@ export async function validateStoredGmailArchiveReconciliationTerminal(
   approved: JoinedDecisionReceiptContentV1,
   expected?: GmailArchiveReconciliationTerminalEnvelope,
 ): Promise<GmailArchiveReconciliationBundle | null> {
-  return exactTerminalReplay(client, authority, expected ?? null, state, barrier, approved);
+  return validateStoredGmailArchiveReconciliationTerminalWithLockMode(
+    client,
+    authority,
+    state,
+    barrier,
+    approved,
+    expected,
+    true,
+  );
 }
 
 /** Validate either supported, immutable Gmail archive terminal graph. */
@@ -610,6 +644,32 @@ export async function validateStoredGmailArchiveTerminalGraph(
     state,
     barrier,
     approved,
+  );
+}
+
+/** DB-internal SELECT-only terminal graph validation for the unwired status reader. */
+export async function validateStoredGmailArchiveTerminalGraphReadOnly(
+  client: PoolClient,
+  authority: TerminalAuthority,
+  state: GmailArchiveTerminalStableState,
+  barrier: PreEffectBarrierRow,
+  approved: JoinedDecisionReceiptContentV1,
+): Promise<GmailArchiveTerminalizationBundle | GmailArchiveReconciliationBundle | null> {
+  const mutationTerminal = await validateStoredGmailArchiveTerminalReadOnly(
+    client,
+    authority,
+    state,
+    barrier,
+    approved,
+  );
+  return mutationTerminal ?? validateStoredGmailArchiveReconciliationTerminalWithLockMode(
+    client,
+    authority,
+    state,
+    barrier,
+    approved,
+    undefined,
+    false,
   );
 }
 

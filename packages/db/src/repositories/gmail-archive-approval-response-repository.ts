@@ -74,6 +74,10 @@ export interface GmailArchiveApprovalCanonicalState {
   unexpired: boolean;
 }
 
+export interface LoadCanonicalGmailArchiveApprovalStateOptions {
+  allowExecutionPlan?: boolean;
+}
+
 interface LockedApprovalRow extends ApprovalRequestRow {
   unexpired: boolean;
 }
@@ -261,16 +265,18 @@ export function canonicalGmailArchiveApprovalContent(
   return content;
 }
 
-export async function loadCanonicalGmailArchiveApprovalState(
+async function loadCanonicalGmailArchiveApprovalStateWithLockMode(
   client: PoolClient,
   input: RespondGmailArchiveApprovalInput,
-  options: { allowExecutionPlan?: boolean } = {},
+  options: LoadCanonicalGmailArchiveApprovalStateOptions = {},
+  lockRows = true,
 ): Promise<GmailArchiveApprovalCanonicalState | null> {
+  const lock = lockRows ? ' FOR UPDATE' : '';
   const lockedApproval = (await client.query<LockedApprovalRow>(
     `SELECT approval.*, approval.expires_at > now() AS unexpired
        FROM approval_requests AS approval
       WHERE approval.id = $1 AND approval.user_id = $2
-      FOR UPDATE`,
+      ${lock}`,
     [input.approvalId, input.userId],
   )).rows[0];
   const approval: ApprovalRequestRow | undefined = lockedApproval;
@@ -330,7 +336,7 @@ export async function loadCanonicalGmailArchiveApprovalState(
       WHERE user_id = $1 AND decision_id = $2 AND action_id = $3
         AND effect_type = 'event_execution' AND idempotency_key = $2::STRING
         AND status = 'blocked' AND failure_reason = 'proposal_only_boundary'
-      FOR UPDATE`,
+      ${lock}`,
     [input.userId, decision.id, candidate.id],
   );
   if (barriers.rows.length !== 1) return null;
@@ -369,6 +375,23 @@ export async function loadCanonicalGmailArchiveApprovalState(
     revisions,
     unexpired: lockedApproval!.unexpired,
   };
+}
+
+export async function loadCanonicalGmailArchiveApprovalState(
+  client: PoolClient,
+  input: RespondGmailArchiveApprovalInput,
+  options: LoadCanonicalGmailArchiveApprovalStateOptions = {},
+): Promise<GmailArchiveApprovalCanonicalState | null> {
+  return loadCanonicalGmailArchiveApprovalStateWithLockMode(client, input, options, true);
+}
+
+/** DB-internal SELECT-only canonical graph load for the unwired status reader. */
+export async function loadCanonicalGmailArchiveApprovalStateReadOnly(
+  client: PoolClient,
+  input: RespondGmailArchiveApprovalInput,
+  options: LoadCanonicalGmailArchiveApprovalStateOptions = {},
+): Promise<GmailArchiveApprovalCanonicalState | null> {
+  return loadCanonicalGmailArchiveApprovalStateWithLockMode(client, input, options, false);
 }
 
 function exactReservedBarrier(

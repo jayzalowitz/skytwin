@@ -894,6 +894,7 @@ async function exactTerminalReplay(
   state: GmailArchiveTerminalStableState,
   barrier: PreEffectBarrierRow,
   approved: JoinedDecisionReceiptContentV1,
+  lockRows: boolean,
 ): Promise<GmailArchiveTerminalizationBundle | null> {
   const expectedDisposition = disposition(result);
   const binding = resultBinding(result);
@@ -906,7 +907,9 @@ async function exactTerminalReplay(
       barrier.failure_reason !== failureReason(result)) return null;
   const attemptPhase = retainedBarrier.attemptPhase;
   const plans = (await client.query<ExecutionPlanRow>(
-    'SELECT * FROM execution_plans WHERE decision_id = $1 ORDER BY id ASC FOR UPDATE',
+    `SELECT * FROM execution_plans WHERE decision_id = $1 ORDER BY id ASC${
+      lockRows ? ' FOR UPDATE' : ''
+    }`,
     [state.decision.id],
   )).rows;
   const expectedPlanStatus = expectedDisposition === 'succeeded' ? 'completed' : 'failed';
@@ -916,7 +919,9 @@ async function exactTerminalReplay(
   }
   const plan = plans[0]!;
   const results = (await client.query<ExecutionResultRow>(
-    'SELECT * FROM execution_results WHERE plan_id = $1 ORDER BY id ASC FOR UPDATE',
+    `SELECT * FROM execution_results WHERE plan_id = $1 ORDER BY id ASC${
+      lockRows ? ' FOR UPDATE' : ''
+    }`,
     [plan.id],
   )).rows;
   const events = await client.query<{ count: string }>(
@@ -1017,14 +1022,14 @@ async function exactTerminalReplay(
   };
 }
 
-/** Validate the exact r7 terminal graph plus any trusted, valid continuation. */
-export async function validateStoredGmailArchiveTerminal(
+async function validateStoredGmailArchiveTerminalWithLockMode(
   client: PoolClient,
   authority: TerminalAuthority,
   state: GmailArchiveTerminalStableState,
   barrier: PreEffectBarrierRow,
   approved: JoinedDecisionReceiptContentV1,
   expectedResult?: GmailInboxMutationResult,
+  lockRows = true,
 ): Promise<GmailArchiveTerminalizationBundle | null> {
   let result: StoredGmailArchiveMutationResult | undefined = expectedResult;
   if (!result) {
@@ -1038,7 +1043,54 @@ export async function validateStoredGmailArchiveTerminal(
     result = parseGmailArchiveTerminalExplanationEvidence(explanation?.evidence_used) ?? undefined;
     if (!result) return null;
   }
-  return exactTerminalReplay(client, authority, result, state, barrier, approved);
+  return exactTerminalReplay(
+    client,
+    authority,
+    result,
+    state,
+    barrier,
+    approved,
+    lockRows,
+  );
+}
+
+/** Validate the exact r7 terminal graph plus any trusted, valid continuation. */
+export async function validateStoredGmailArchiveTerminal(
+  client: PoolClient,
+  authority: TerminalAuthority,
+  state: GmailArchiveTerminalStableState,
+  barrier: PreEffectBarrierRow,
+  approved: JoinedDecisionReceiptContentV1,
+  expectedResult?: GmailInboxMutationResult,
+): Promise<GmailArchiveTerminalizationBundle | null> {
+  return validateStoredGmailArchiveTerminalWithLockMode(
+    client,
+    authority,
+    state,
+    barrier,
+    approved,
+    expectedResult,
+    true,
+  );
+}
+
+/** DB-internal SELECT-only validator used by the unwired status reader. */
+export async function validateStoredGmailArchiveTerminalReadOnly(
+  client: PoolClient,
+  authority: TerminalAuthority,
+  state: GmailArchiveTerminalStableState,
+  barrier: PreEffectBarrierRow,
+  approved: JoinedDecisionReceiptContentV1,
+): Promise<GmailArchiveTerminalizationBundle | null> {
+  return validateStoredGmailArchiveTerminalWithLockMode(
+    client,
+    authority,
+    state,
+    barrier,
+    approved,
+    undefined,
+    false,
+  );
 }
 
 function fail(result: TerminalizeGmailArchiveResult): never {
