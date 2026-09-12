@@ -310,7 +310,7 @@ describe.runIf(cockroachAvailable)('gmailArchiveProposalRepository on CockroachD
     expect(countsAfter.rows[0]).toEqual(countsBefore.rows[0]);
   });
 
-  it('keeps equal connector source IDs isolated across two owned accounts', async () => {
+  it('keeps equal connector source IDs isolated and non-dispatchable at the proposal boundary', async () => {
     const scope = 'https://www.googleapis.com/auth/gmail.modify';
     const pool = getPool();
     await pool.query(
@@ -401,11 +401,8 @@ describe.runIf(cockroachAvailable)('gmailArchiveProposalRepository on CockroachD
       messageRefId: secondMessageRefId,
       operation: 'archive',
     });
-    expect(firstTarget).toEqual({ connectorAccountId: accountId, providerMessageId: 'native-message' });
-    expect(secondTarget).toEqual({
-      connectorAccountId: secondAccountId,
-      providerMessageId: 'native-message-second-account',
-    });
+    expect(firstTarget).toBeNull();
+    expect(secondTarget).toBeNull();
     await expect(gmailMessageRefRepository.resolveInboxMutationTarget({
       userId,
       admissionId: firstBarrier.rows[0]!.id,

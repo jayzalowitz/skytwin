@@ -65,7 +65,10 @@ function signal(overrides: Record<string, unknown> = {}) {
 }
 
 describe('gmailMessageRefRepository.persistEvidence', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    clientQuery.mockReset();
+    databaseQuery.mockReset();
+  });
 
   it('persists the owned message reference before the Watch-visible signal', async () => {
     clientQuery
@@ -156,9 +159,13 @@ const mutationInput = {
   messageRefId: messageRef().id,
   operation: 'archive' as const,
 };
+const credentialRevision = '88888888-8888-4888-8888-888888888888';
 
 describe('gmailMessageRefRepository Inbox mutation binding', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    clientQuery.mockReset();
+    databaseQuery.mockReset();
+  });
 
   it('matches the exact six-key shape written by the production candidate serializer', async () => {
     const storedParameters = {
@@ -207,22 +214,24 @@ describe('gmailMessageRefRepository Inbox mutation binding', () => {
     const persistedJson = (databaseQuery.mock.calls[0]?.[1] as unknown[])[4];
     expect(JSON.parse(String(persistedJson))).toEqual(storedParameters);
 
-    databaseQuery.mockResolvedValueOnce({
+    clientQuery.mockResolvedValueOnce({
       rows: [{
         connector_account_id: input.connectorAccountId,
+        credential_revision: credentialRevision,
         provider_message_id: input.providerMessageId,
       }],
       rowCount: 1,
     });
     await gmailMessageRefRepository.resolveInboxMutationTarget(mutationInput);
-    const resolverJson = (databaseQuery.mock.calls[1]?.[1] as unknown[])[3];
+    const resolverJson = (clientQuery.mock.calls[0]?.[1] as unknown[])[3];
     expect(JSON.parse(String(resolverJson))).toEqual(storedParameters);
   });
 
   it('requires one exact event admission, canonical candidate, evidence chain, account, and scope', async () => {
-    databaseQuery.mockResolvedValueOnce({
+    clientQuery.mockResolvedValueOnce({
       rows: [{
         connector_account_id: input.connectorAccountId,
+        credential_revision: credentialRevision,
         provider_message_id: input.providerMessageId,
       }],
       rowCount: 1,
@@ -232,11 +241,14 @@ describe('gmailMessageRefRepository Inbox mutation binding', () => {
 
     expect(result).toEqual({
       connectorAccountId: input.connectorAccountId,
+      credentialRevision,
       providerMessageId: input.providerMessageId,
     });
-    const [sql, params] = databaseQuery.mock.calls[0] as [string, unknown[]];
+    const [sql, params] = clientQuery.mock.calls[0] as [string, unknown[]];
     expect(sql).toContain("barrier.status = 'in_progress'");
     expect(sql).toContain("barrier.effect_type = 'event_execution'");
+    expect(sql).toContain('barrier.failure_reason IS NULL');
+    expect(sql).toContain('barrier.effect_result = $5::JSONB');
     expect(sql).toContain("candidate.action_type = 'archive_email'");
     expect(sql).toContain('candidate.parameters = $4::JSONB');
     expect(sql).toContain('candidate.reversible = true');
@@ -248,8 +260,10 @@ describe('gmailMessageRefRepository Inbox mutation binding', () => {
     expect(sql).toContain('ref.source_signal_id = signal.source_signal_id');
     expect(sql).toContain("decision.raw_event->>'messageRefId' = ref.id::STRING");
     expect(sql).toContain('account.identity_verified = true');
-    expect(sql).toContain('$5::STRING = ANY(account.scopes)');
-    expect(sql).toContain('$5::STRING = ANY(token.scopes)');
+    expect(sql).toContain('account.disconnected_at IS NULL');
+    expect(sql).toContain('$6::STRING = ANY(account.scopes)');
+    expect(sql).toContain('$6::STRING = ANY(token.scopes)');
+    expect(sql).toContain('token.credential_revision');
     expect(params).toEqual([
       mutationInput.admissionId,
       mutationInput.userId,
@@ -262,37 +276,46 @@ describe('gmailMessageRefRepository Inbox mutation binding', () => {
         costZeroIntent: 'verified_zero',
         provenance: 'untrusted_external',
       }),
+      JSON.stringify({ schema: 'gmail_archive_attempt_v1', phase: 'pre_dispatch' }),
       'https://www.googleapis.com/auth/gmail.modify',
     ]);
   });
 
   it('cannot let a same-user, same-source-id signal from another account choose the target', async () => {
-    databaseQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    clientQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
 
     await expect(gmailMessageRefRepository.resolveInboxMutationTarget(mutationInput)).resolves.toBeNull();
 
-    const sql = databaseQuery.mock.calls[0]?.[0] as string;
+    const sql = clientQuery.mock.calls[0]?.[0] as string;
     expect(sql).toContain("decision.raw_event->>'messageRefId' = ref.id::STRING");
     expect(sql).toContain('ref.connector_account_id = signal.connector_account_id');
     expect(sql).toContain('ref.id = $3');
   });
 
   it('rejects a corrupt signal-to-reference source binding', async () => {
-    databaseQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    clientQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
 
     await expect(gmailMessageRefRepository.resolveInboxMutationTarget(mutationInput)).resolves.toBeNull();
 
-    expect(databaseQuery.mock.calls[0]?.[0]).toContain(
+    expect(clientQuery.mock.calls[0]?.[0]).toContain(
       'ref.source_signal_id = signal.source_signal_id',
     );
   });
 
   it('returns no target unless the binding resolves to exactly one row', async () => {
-    databaseQuery
+    clientQuery
       .mockResolvedValueOnce({ rows: [], rowCount: 0 })
       .mockResolvedValueOnce({ rows: [
-        { connector_account_id: input.connectorAccountId, provider_message_id: 'one' },
-        { connector_account_id: input.connectorAccountId, provider_message_id: 'two' },
+        {
+          connector_account_id: input.connectorAccountId,
+          credential_revision: credentialRevision,
+          provider_message_id: 'one',
+        },
+        {
+          connector_account_id: input.connectorAccountId,
+          credential_revision: credentialRevision,
+          provider_message_id: 'two',
+        },
       ], rowCount: 2 });
 
     await expect(gmailMessageRefRepository.resolveInboxMutationTarget(mutationInput)).resolves.toBeNull();

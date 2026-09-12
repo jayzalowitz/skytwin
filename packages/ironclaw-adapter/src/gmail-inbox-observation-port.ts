@@ -15,6 +15,11 @@ import type {
   GmailInboxObservationResult,
   GmailInboxObservationUnavailableCode,
 } from '@skytwin/shared-types';
+import {
+  cancelGmailResponseBody,
+  gmailMessageStateResponseLimits,
+  parseExactGmailMessageState,
+} from './gmail-message-state-response.js';
 
 const GMAIL_MODIFY_SCOPE = 'https://www.googleapis.com/auth/gmail.modify';
 const GMAIL_API_ROOT = 'https://gmail.googleapis.com/gmail/v1/users/me/messages';
@@ -22,9 +27,6 @@ const COMMAND_KEYS = ['admissionId', 'messageRefId', 'operation', 'userId'] as c
 const TARGET_KEYS = ['connectorAccountId', 'credentialRevision', 'providerMessageId'] as const;
 const CREDENTIAL_KEYS = ['accessToken', 'scopes'] as const;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const MAX_RESPONSE_BYTES = 16 * 1024;
-const MAX_LABEL_IDS = 128;
-const MAX_LABEL_ID_LENGTH = 256;
 const MAX_ACCESS_TOKEN_LENGTH = 16 * 1024;
 
 interface KeyCacheLike {
@@ -233,77 +235,6 @@ function unavailable(
   return Object.freeze({ outcome: 'unavailable', code, binding });
 }
 
-async function readBoundedBody(response: Response): Promise<string | null> {
-  if (response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase() !==
-      'application/json') {
-    await cancelBody(response);
-    return null;
-  }
-  const declaredLength = response.headers.get('content-length');
-  if (declaredLength !== null) {
-    const parsedLength = Number(declaredLength);
-    if (!Number.isSafeInteger(parsedLength) || parsedLength < 0 ||
-        parsedLength > MAX_RESPONSE_BYTES) {
-      await cancelBody(response);
-      return null;
-    }
-  }
-  if (!response.body) return null;
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  try {
-    for (;;) {
-      const chunk = await reader.read();
-      if (chunk.done) break;
-      total += chunk.value.byteLength;
-      if (total > MAX_RESPONSE_BYTES) {
-        await reader.cancel();
-        return null;
-      }
-      chunks.push(chunk.value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  try {
-    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-  } catch {
-    return null;
-  }
-}
-
-async function cancelBody(response: Response): Promise<void> {
-  try {
-    await response.body?.cancel();
-  } catch {
-    // Cancellation is best-effort and never changes the secret-free result.
-  }
-}
-
-async function parseObservation(
-  response: Response,
-  expectedProviderMessageId: string,
-): Promise<boolean | null> {
-  const body = await readBoundedBody(response);
-  if (body === null) return null;
-  try {
-    const parsed = JSON.parse(body) as unknown;
-    const object = ownData(parsed, ['id', 'labelIds']);
-    if (!object || object['id'] !== expectedProviderMessageId) return null;
-    const labels = snapshotStringArray(object['labelIds'], MAX_LABEL_IDS, MAX_LABEL_ID_LENGTH);
-    return labels ? labels.includes('INBOX') : null;
-  } catch {
-    return null;
-  }
-}
-
 /**
  * Unregistered Gmail-mailbox observation boundary. It performs no Gmail
  * mutation and issues at most one Gmail resource GET. Credential
@@ -393,18 +324,18 @@ export class GmailInboxObservationService implements GmailInboxObservationPort {
         redirect: 'error',
       });
       if (response.status === 401) {
-        await cancelBody(response);
+        await cancelGmailResponseBody(response);
         return unavailable('credentials_unavailable', binding);
       }
       if ([400, 403, 404, 409].includes(response.status)) {
-        await cancelBody(response);
+        await cancelGmailResponseBody(response);
         return unavailable('observation_rejected', binding);
       }
       if (response.status !== 200) {
-        await cancelBody(response);
+        await cancelGmailResponseBody(response);
         return unavailable('observation_unavailable', binding);
       }
-      const inbox = await parseObservation(response, providerMessageId);
+      const inbox = await parseExactGmailMessageState(response, providerMessageId);
       if (inbox === null) return unavailable('observation_unavailable', binding);
       // This is local evidence-acceptance time: only a completely received,
       // bounded, exact provider representation qualifies as an observation.
@@ -425,7 +356,5 @@ export class GmailInboxObservationService implements GmailInboxObservationPort {
 }
 
 export const gmailInboxObservationLimits = Object.freeze({
-  maxResponseBytes: MAX_RESPONSE_BYTES,
-  maxLabelIds: MAX_LABEL_IDS,
-  maxLabelIdLength: MAX_LABEL_ID_LENGTH,
+  ...gmailMessageStateResponseLimits,
 });

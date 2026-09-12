@@ -102,6 +102,8 @@ export type {
 } from '@skytwin/shared-types';
 export type {
   GmailArchiveTerminalEvidence,
+  LegacyGmailArchiveTerminalResultPayload,
+  StoredGmailArchiveMutationResult,
   GmailArchiveTerminalResultEnvelope,
   GmailArchiveTerminalizationBundle,
   TerminalizeGmailArchiveInput,
