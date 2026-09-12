@@ -44,6 +44,9 @@ import {
   loadCanonicalGmailArchiveApprovalState,
   type GmailArchiveApprovalCanonicalState,
 } from './gmail-archive-approval-response-repository.js';
+import {
+  inspectGmailArchiveApprovalFeedbackApplication,
+} from './gmail-archive-feedback-application-repository.js';
 import type { PreEffectBarrierRow } from './pre-effect-barrier-repository.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -516,10 +519,16 @@ export async function loadGmailArchivePreparationReplay(
   const expectedLast = plan
     ? { ...r5, stage: 'execution_admitted' as const, disposition: 'pending' as const, executionPlan: executionPlanRef(plan) }
     : r5;
+  const continuation = revisions[expectedLength];
   const continuationOkay = options.allowSingleFeedbackContinuation === true &&
     revisions.length === expectedLength + 1 &&
-    revisions[expectedLength]?.content.version === 3 &&
-    revisions[expectedLength]?.stage === 'feedback_recorded';
+    continuation?.content.version === 3 &&
+    continuation.stage === 'feedback_recorded' &&
+    continuation.disposition === disposition &&
+    continuation.event_key === buildDecisionReceiptEventKey(
+      'feedback_recorded',
+      continuation.content.feedbackApplication.snapshot.feedbackEventId,
+    );
   if ((revisions.length !== expectedLength && !continuationOkay) ||
       revisions.some((revision) => revision.trusted !== true) ||
       !verifyJoinedDecisionReceiptChain({
@@ -561,6 +570,17 @@ async function transition(
     'approved',
   );
   if (!approved) return { ok: false, error: 'idempotency_conflict' };
+
+  // Approval and its feedback event committed atomically. Only the application
+  // marker may lag; validate it before touching the execution barrier or any
+  // mutable eligibility/policy authority.
+  const feedbackApplication = await inspectGmailArchiveApprovalFeedbackApplication(client, state);
+  if (feedbackApplication.status === 'not_applied') {
+    return { ok: false, error: 'not_ready' };
+  }
+  if (feedbackApplication.status !== 'verified') {
+    return { ok: false, error: 'idempotency_conflict' };
+  }
 
   const barriers = await client.query<PreEffectBarrierRow>(
     `SELECT * FROM pre_effect_barriers
