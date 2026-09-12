@@ -137,20 +137,23 @@ async function within<T>(operation: Promise<T>, milliseconds: number): Promise<T
   }
 }
 
-async function waitForActiveClusterQuery(prefix: string): Promise<void> {
+async function waitForActiveApprovalResponse(approvalId: string): Promise<void> {
   const deadline = Date.now() + 5_000;
   while (Date.now() < deadline) {
     const observed = await getPool().query<{ active: boolean }>(
       `SELECT EXISTS (
          SELECT 1 FROM [SHOW CLUSTER QUERIES]
-          WHERE btrim(query) LIKE $1
+          WHERE phase = 'executing'
+            AND btrim(query) LIKE 'UPDATE approval_requests SET status = %'
+            AND query LIKE '%candidate_action%'
+            AND query LIKE $1
        ) AS active`,
-      [`${prefix}%`],
+      [`%${approvalId}%`],
     );
     if (observed.rows[0]?.active === true) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  throw new Error(`CockroachDB did not expose active query prefix: ${prefix}`);
+  throw new Error(`CockroachDB did not expose active approval response for ${approvalId}`);
 }
 
 function pauseTransactionAfterQuery(
@@ -6348,9 +6351,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       responsePromise = approvalRepository.respond(
         changed.approval.id, 'approve', owner.ownerUserId,
       );
-      await waitForActiveClusterQuery(
-        'UPDATE approval_requests%SET status = $1%candidate_action',
-      );
+      await waitForActiveApprovalResponse(changed.approval.id);
       await writer.query('COMMIT');
       writerCommitted = true;
       await expect(within(responsePromise, 5_000)).resolves.toBeNull();
