@@ -24,6 +24,11 @@ const command = {
   messageRefId: '33333333-3333-4333-8333-333333333333',
   operation: 'archive' as const,
 };
+const binding = {
+  userId: command.userId,
+  admissionId: command.admissionId,
+  messageRefId: command.messageRefId,
+};
 const confirmed = {
   outcome: 'confirmed' as const,
   operation: 'archive' as const,
@@ -31,16 +36,19 @@ const confirmed = {
   effect: 'changed' as const,
   compensationAvailable: false as const,
   observedAt: '2026-09-12T12:00:00.000Z',
+  binding,
 };
 const knownFailure = {
   outcome: 'known_failure' as const,
   code: 'remote_rejected' as const,
   compensationAvailable: false as const,
+  binding,
 };
 const unknown = {
   outcome: 'unknown' as const,
   code: 'remote_outcome_unknown' as const,
   compensationAvailable: false as const,
+  binding,
 };
 const stable = {
   explanationId: '44444444-4444-4444-8444-444444444444',
@@ -190,18 +198,49 @@ describe('gmailArchiveTerminalizationRepository boundary', () => {
   });
 
   it('retains strict historical v1 parsing without accepting a missing v2 attempt phase', () => {
+    const { binding: _binding, ...legacyUnknown } = unknown;
     const legacy = {
       schema: 'gmail_archive_terminal_result_v1',
-      ...unknown,
+      ...legacyUnknown,
     };
     expect(parseGmailArchiveTerminalExplanationBinding([legacy])).toEqual({
-      result: unknown,
+      result: legacyUnknown,
       attemptPhase: null,
     });
     expect(parseGmailArchiveTerminalResultEnvelope({
       schema: 'gmail_archive_terminal_result_v2',
-      ...unknown,
+      ...legacyUnknown,
     })).toBeNull();
+  });
+
+  it('matches a valid legacy v2 replay only to the same bound canonical outcome', () => {
+    const { binding: _binding, ...legacyUnknown } = unknown;
+    const parsed = parseGmailArchiveTerminalResultEnvelope({
+      schema: 'gmail_archive_terminal_result_v2',
+      attemptPhase: 'dispatch_may_have_started',
+      ...legacyUnknown,
+    });
+    expect(parsed).not.toBeNull();
+    expect(gmailArchiveTerminalizationTestHooks.sameTerminalResultForReplay(
+      parsed!,
+      unknown,
+    )).toBe(true);
+    expect(gmailArchiveTerminalizationTestHooks.sameTerminalResultForReplay(
+      parsed!,
+      knownFailure,
+    )).toBe(false);
+  });
+
+  it('rejects crossed result authority before any database work', async () => {
+    await expect(gmailArchiveTerminalizationRepository.terminalize({
+      command,
+      result: {
+        ...confirmed,
+        binding: { ...binding, messageRefId: '77777777-7777-4777-8777-777777777777' },
+      },
+    })).resolves.toEqual({ ok: false, error: 'invalid_input' });
+    expect(queryMock).not.toHaveBeenCalled();
+    expect(withTransactionMock).not.toHaveBeenCalled();
   });
 
   it('snapshots command/result and reuses stable IDs and time across bounded 40001 retries', async () => {

@@ -11,6 +11,11 @@ const command = {
   messageRefId: '33333333-3333-4333-8333-333333333333',
   operation: 'archive' as const,
 };
+const target = {
+  connectorAccountId: '44444444-4444-4444-8444-444444444444',
+  credentialRevision: '55555555-5555-4555-8555-555555555555',
+  providerMessageId: 'provider-message',
+};
 
 describe('gmailArchiveDispatchGateRepository boundary', () => {
   it.each([
@@ -31,6 +36,7 @@ describe('gmailArchiveDispatchGateRepository boundary', () => {
     };
     await expect(gmailArchiveDispatchGateTestHooks.enterWithTransition(
       input as never,
+      target,
       vi.fn(),
       transaction,
     )).resolves.toEqual({
@@ -66,6 +72,7 @@ describe('gmailArchiveDispatchGateRepository boundary', () => {
     for (const input of [symbol, accessor, revoked.proxy, throwing, nullPrototype]) {
       await expect(gmailArchiveDispatchGateTestHooks.enterWithTransition(
         input as never,
+        target,
         vi.fn(),
         transaction,
       )).resolves.toEqual({ status: 'conflict' });
@@ -87,8 +94,9 @@ describe('gmailArchiveDispatchGateRepository boundary', () => {
     let attempts = 0;
     const pending = gmailArchiveDispatchGateTestHooks.enterWithTransition(
       submitted,
-      async (_client, snapshot) => {
-        seen.push(snapshot);
+      target,
+      async (_client, snapshot, targetSnapshot) => {
+        seen.push({ snapshot, targetSnapshot });
         attempts += 1;
         if (attempts < 3) throw Object.assign(new Error('restart'), { code: '40001' });
         return { status: 'entered' };
@@ -100,9 +108,32 @@ describe('gmailArchiveDispatchGateRepository boundary', () => {
     await expect(pending).resolves.toEqual({ status: 'entered' });
     expect(transactionCalls).toBe(3);
     expect(seen).toHaveLength(3);
-    expect(seen.every((value) => value === seen[0])).toBe(true);
-    expect(seen[0]).toEqual(command);
-    expect(Object.isFrozen(seen[0])).toBe(true);
+    expect(seen).toEqual(Array(3).fill({ snapshot: command, targetSnapshot: target }));
+    const first = seen[0] as { snapshot: typeof command; targetSnapshot: typeof target };
+    expect(Object.isFrozen(first.snapshot)).toBe(true);
+    expect(Object.isFrozen(first.targetSnapshot)).toBe(true);
+  });
+
+  it.each([
+    null,
+    {},
+    { ...target, extra: true },
+    { ...target, connectorAccountId: 'invalid' },
+    { ...target, credentialRevision: 'invalid' },
+    { ...target, providerMessageId: '' },
+    { ...target, providerMessageId: 'malformed-\ud800-surrogate' },
+  ])('contains malformed target input without a transaction: %o', async (input) => {
+    const transaction = vi.fn(async <T>(_callback: (client: PoolClient) => Promise<T>) => {
+      throw new Error('transaction must not run');
+    });
+
+    await expect(gmailArchiveDispatchGateTestHooks.enterWithTransition(
+      command,
+      input as never,
+      vi.fn(),
+      transaction,
+    )).resolves.toEqual({ status: 'conflict' });
+    expect(transaction).not.toHaveBeenCalled();
   });
 
   it('does not retry an ambiguous commit failure', async () => {
@@ -117,6 +148,7 @@ describe('gmailArchiveDispatchGateRepository boundary', () => {
 
     await expect(gmailArchiveDispatchGateTestHooks.enterWithTransition(
       command,
+      target,
       vi.fn(),
       transaction,
     )).rejects.toBe(ambiguous);

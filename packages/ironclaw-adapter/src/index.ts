@@ -19,7 +19,7 @@ export {
 
 // Direct execution adapter: local handler dispatch (fallback when IronClaw is unavailable)
 export { DirectExecutionAdapter } from './direct-execution-adapter.js';
-export { GmailInboxMutationService } from './gmail-inbox-mutation-port.js';
+export { GmailInboxMutationService, gmailInboxMutationLimits } from './gmail-inbox-mutation-port.js';
 export {
   DbGmailInboxObservationCredentials,
   GmailInboxObservationService,
@@ -32,11 +32,13 @@ export {
 export type {
   GmailArchiveAttemptPhase,
   GmailArchiveAttemptStateV1,
+  GmailInboxMutationBinding,
   GmailInboxMutationCommand,
   GmailInboxMutationDispatchGate,
   GmailInboxMutationDispatchGateResult,
   GmailInboxMutationPort,
   GmailInboxMutationResult,
+  GmailInboxMutationTarget,
   GmailInboxObservationBinding,
   GmailInboxObservationCommand,
   GmailInboxObservationPort,

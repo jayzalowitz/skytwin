@@ -8,6 +8,7 @@ import { encrypt, decrypt, IV_LENGTH, TAG_LENGTH } from '@skytwin/credential-vau
 import { createLogger } from '@skytwin/core';
 
 const log = createLogger('connectors:db-token-store');
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 /**
  * Counter for lazy-migration failures, exposed for observability tests.
@@ -151,6 +152,33 @@ export interface KeyCacheLike {
   get(userId: string): Buffer | null;
   has(userId: string): boolean;
   set(userId: string, key: Buffer): void;
+}
+
+/** Minimum account-bound bearer snapshot plus the exact revision that materialized it. */
+export interface RevisionBoundOAuthTokenSet {
+  accessToken: string;
+  expiresAt: Date;
+  scopes: string[];
+  provider: OAuthTokenSet['provider'];
+  credentialRevision: string;
+}
+
+function canonicalScopes(scopes: string[]): string[] | null {
+  if (scopes.some((scope) => typeof scope !== 'string' || scope.length === 0)) return null;
+  const unique = new Set(scopes);
+  return unique.size === scopes.length ? [...unique].sort() : null;
+}
+
+function sameTokenSnapshot(left: OAuthTokenSet, right: OAuthTokenSet): boolean {
+  const leftScopes = canonicalScopes(left.scopes);
+  const rightScopes = canonicalScopes(right.scopes);
+  return left.accessToken === right.accessToken &&
+    left.refreshToken === right.refreshToken &&
+    left.expiresAt.getTime() === right.expiresAt.getTime() &&
+    left.provider === right.provider &&
+    leftScopes !== null && rightScopes !== null &&
+    leftScopes.length === rightScopes.length &&
+    leftScopes.every((scope, index) => scope === rightScopes[index]);
 }
 
 /**
@@ -438,7 +466,11 @@ export class DbTokenStore implements OAuthTokenStore {
     await this.repo.deleteToken(userId, provider);
   }
 
-  async refreshIfExpired(userId: string, provider: string): Promise<OAuthTokenSet> {
+  async refreshIfExpired(
+    userId: string,
+    provider: string,
+    options?: { lazyMigrate?: boolean },
+  ): Promise<OAuthTokenSet> {
     // Validate the provider up-front — fail loud on an unsupported provider
     // BEFORE fetching (and potentially decrypting) any stored secret. The
     // switch below keeps a defensive `default: throw` as a backstop.
@@ -487,9 +519,9 @@ export class DbTokenStore implements OAuthTokenStore {
       : false;
     const existing = refreshSnapshot
       ? await this.materializeToken(userId, provider, refreshSnapshot, {
-          key: operationKey,
-          lazyMigrate: !needsRefresh,
-        })
+        key: operationKey,
+        lazyMigrate: !needsRefresh && options?.lazyMigrate !== false,
+      })
       : null;
     if (!existing) {
       throw new Error(`No OAuth token found for user ${userId} provider ${provider}`);
@@ -613,5 +645,41 @@ export class DbTokenStore implements OAuthTokenStore {
       ...refreshed,
       refreshToken: existing.refreshToken,
     };
+  }
+
+  /**
+   * Materialize an account-bound bearer and prove which credential revision
+   * currently stores that exact bearer. Lazy migration is disabled for this
+   * operation so it cannot rotate the revision after the proof is returned.
+   */
+  async refreshIfExpiredWithRevision(
+    userId: string,
+    provider: string,
+  ): Promise<RevisionBoundOAuthTokenSet> {
+    if (!this.connectorAccountId) {
+      throw new Error('Revision-bound token materialization requires a connector account.');
+    }
+    const token = await this.refreshIfExpired(userId, provider, { lazyMigrate: false });
+    const row = await this.getBoundRow(userId, provider);
+    if (!row?.credential_revision || !UUID.test(row.credential_revision)) {
+      throw new Error('Account-bound OAuth row is missing its credential revision.');
+    }
+    const key = this.keyCache?.get(userId) ?? null;
+    const current = await this.materializeToken(userId, provider, row, {
+      key,
+      lazyMigrate: false,
+    });
+    if (!current || !sameTokenSnapshot(current, token)) {
+      throw new Error('OAuth credential changed during token materialization.');
+    }
+    const scopes = [...current.scopes];
+    Object.freeze(scopes);
+    return Object.freeze({
+      accessToken: current.accessToken,
+      expiresAt: current.expiresAt,
+      provider: current.provider,
+      scopes,
+      credentialRevision: row.credential_revision,
+    });
   }
 }

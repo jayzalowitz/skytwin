@@ -5,6 +5,7 @@ import {
   joinedDecisionReceiptContentDigest,
   verifyJoinedDecisionReceiptChain,
   type GmailArchiveAttemptPhase,
+  type GmailInboxMutationBinding,
   type GmailInboxMutationCommand,
   type GmailInboxMutationResult,
   type JoinedDecisionReceiptContentV1,
@@ -58,8 +59,9 @@ type KnownFailureCode = (typeof KNOWN_FAILURE_CODES)[number];
 type TerminalDisposition = 'succeeded' | 'failed' | 'unknown';
 const TERMINAL_RESULT_SCHEMA_V1 = 'gmail_archive_terminal_result_v1';
 const TERMINAL_RESULT_SCHEMA_V2 = 'gmail_archive_terminal_result_v2';
+const TERMINAL_RESULT_SCHEMA_V3 = 'gmail_archive_terminal_result_v3';
 
-type GmailArchiveTerminalResultPayload =
+export type LegacyGmailArchiveTerminalResultPayload =
   | {
       outcome: 'confirmed';
       operation: 'archive';
@@ -79,12 +81,20 @@ type GmailArchiveTerminalResultPayload =
       compensationAvailable: false;
     };
 
+export type StoredGmailArchiveMutationResult =
+  | Readonly<GmailInboxMutationResult>
+  | Readonly<LegacyGmailArchiveTerminalResultPayload>;
+
 export type GmailArchiveTerminalResultEnvelope =
-  | ({ schema: typeof TERMINAL_RESULT_SCHEMA_V1 } & GmailArchiveTerminalResultPayload)
+  | ({ schema: typeof TERMINAL_RESULT_SCHEMA_V1 } & LegacyGmailArchiveTerminalResultPayload)
   | ({
       schema: typeof TERMINAL_RESULT_SCHEMA_V2;
       attemptPhase: GmailArchiveAttemptPhase;
-    } & GmailArchiveTerminalResultPayload);
+    } & LegacyGmailArchiveTerminalResultPayload)
+  | ({
+      schema: typeof TERMINAL_RESULT_SCHEMA_V3;
+      attemptPhase: GmailArchiveAttemptPhase;
+    } & Exclude<GmailInboxMutationResult, { code: 'invalid_command' }>);
 
 export interface TerminalizeGmailArchiveInput {
   command: GmailInboxMutationCommand;
@@ -92,7 +102,7 @@ export interface TerminalizeGmailArchiveInput {
 }
 
 export interface GmailArchiveTerminalEvidence {
-  result: Readonly<GmailInboxMutationResult>;
+  result: StoredGmailArchiveMutationResult;
   attemptPhase: GmailArchiveAttemptPhase | null;
 }
 
@@ -172,12 +182,34 @@ function canonicalIsoInstant(value: unknown): value is string {
   }
 }
 
+function snapshotBinding(value: unknown): Readonly<GmailInboxMutationBinding> | null {
+  const binding = ownData(value, ['admissionId', 'messageRefId', 'userId']);
+  if (!binding || typeof binding['userId'] !== 'string' || !UUID.test(binding['userId']) ||
+      typeof binding['admissionId'] !== 'string' || !UUID.test(binding['admissionId']) ||
+      typeof binding['messageRefId'] !== 'string' || !UUID.test(binding['messageRefId'])) return null;
+  return Object.freeze({
+    userId: binding['userId'],
+    admissionId: binding['admissionId'],
+    messageRefId: binding['messageRefId'],
+  });
+}
+
 function snapshotMutationResult(value: unknown): Readonly<GmailInboxMutationResult> | null {
-  const outcome = ownData(value, ['compensationAvailable', 'effect', 'inbox', 'observedAt', 'operation', 'outcome']);
+  const invalid = ownData(value, ['code', 'compensationAvailable', 'outcome']);
+  if (invalid?.['outcome'] === 'known_failure' && invalid['code'] === 'invalid_command' &&
+      invalid['compensationAvailable'] === false) {
+    return Object.freeze({
+      outcome: 'known_failure', code: 'invalid_command', compensationAvailable: false,
+    });
+  }
+  const outcome = ownData(value, [
+    'binding', 'compensationAvailable', 'effect', 'inbox', 'observedAt', 'operation', 'outcome',
+  ]);
+  const outcomeBinding = snapshotBinding(outcome?.['binding']);
   if (outcome?.['outcome'] === 'confirmed' && outcome['operation'] === 'archive' &&
       outcome['inbox'] === false && outcome['compensationAvailable'] === false &&
       (['changed', 'already_in_state', 'reconciled'] as unknown[]).includes(outcome['effect']) &&
-      canonicalIsoInstant(outcome['observedAt'])) {
+      canonicalIsoInstant(outcome['observedAt']) && outcomeBinding) {
     return Object.freeze({
       outcome: 'confirmed',
       operation: 'archive',
@@ -185,26 +217,100 @@ function snapshotMutationResult(value: unknown): Readonly<GmailInboxMutationResu
       effect: outcome['effect'] as 'changed' | 'already_in_state' | 'reconciled',
       compensationAvailable: false,
       observedAt: outcome['observedAt'],
+      binding: outcomeBinding,
+    });
+  }
+  const failure = ownData(value, ['binding', 'code', 'compensationAvailable', 'outcome']);
+  const failureBinding = snapshotBinding(failure?.['binding']);
+  if (failure?.['outcome'] === 'known_failure' && failure['compensationAvailable'] === false &&
+      failure['code'] !== 'invalid_command' &&
+      KNOWN_FAILURE_CODES.includes(failure['code'] as KnownFailureCode) && failureBinding) {
+    return Object.freeze({
+      outcome: 'known_failure',
+      code: failure['code'] as Exclude<KnownFailureCode, 'invalid_command'>,
+      compensationAvailable: false,
+      binding: failureBinding,
+    });
+  }
+  if (failure?.['outcome'] === 'unknown' && failure['code'] === 'remote_outcome_unknown' &&
+      failure['compensationAvailable'] === false && failureBinding) {
+    return Object.freeze({
+      outcome: 'unknown',
+      code: 'remote_outcome_unknown',
+      compensationAvailable: false,
+      binding: failureBinding,
+    });
+  }
+  return null;
+}
+
+function snapshotLegacyMutationResult(
+  value: unknown,
+): Readonly<LegacyGmailArchiveTerminalResultPayload> | null {
+  const confirmed = ownData(value, [
+    'compensationAvailable', 'effect', 'inbox', 'observedAt', 'operation', 'outcome',
+  ]);
+  if (confirmed?.['outcome'] === 'confirmed' && confirmed['operation'] === 'archive' &&
+      confirmed['inbox'] === false && confirmed['compensationAvailable'] === false &&
+      (['changed', 'already_in_state', 'reconciled'] as unknown[]).includes(confirmed['effect']) &&
+      canonicalIsoInstant(confirmed['observedAt'])) {
+    return Object.freeze({
+      outcome: 'confirmed', operation: 'archive', inbox: false,
+      effect: confirmed['effect'] as 'changed' | 'already_in_state' | 'reconciled',
+      compensationAvailable: false, observedAt: confirmed['observedAt'],
     });
   }
   const failure = ownData(value, ['code', 'compensationAvailable', 'outcome']);
   if (failure?.['outcome'] === 'known_failure' && failure['compensationAvailable'] === false &&
       KNOWN_FAILURE_CODES.includes(failure['code'] as KnownFailureCode)) {
     return Object.freeze({
-      outcome: 'known_failure',
-      code: failure['code'] as KnownFailureCode,
+      outcome: 'known_failure', code: failure['code'] as KnownFailureCode,
       compensationAvailable: false,
     });
   }
   if (failure?.['outcome'] === 'unknown' && failure['code'] === 'remote_outcome_unknown' &&
       failure['compensationAvailable'] === false) {
     return Object.freeze({
-      outcome: 'unknown',
-      code: 'remote_outcome_unknown',
-      compensationAvailable: false,
+      outcome: 'unknown', code: 'remote_outcome_unknown', compensationAvailable: false,
     });
   }
   return null;
+}
+
+function resultBinding(
+  value: StoredGmailArchiveMutationResult,
+): Readonly<GmailInboxMutationBinding> | null {
+  return 'binding' in value ? value.binding : null;
+}
+
+function legacyResultPayload(
+  value: StoredGmailArchiveMutationResult,
+): Readonly<LegacyGmailArchiveTerminalResultPayload> {
+  if (value.outcome === 'confirmed') return Object.freeze({
+    outcome: value.outcome,
+    operation: value.operation,
+    inbox: value.inbox,
+    effect: value.effect,
+    compensationAvailable: value.compensationAvailable,
+    observedAt: value.observedAt,
+  });
+  if (value.outcome === 'known_failure') return Object.freeze({
+    outcome: value.outcome,
+    code: value.code,
+    compensationAvailable: value.compensationAvailable,
+  });
+  return Object.freeze({
+    outcome: value.outcome,
+    code: value.code,
+    compensationAvailable: value.compensationAvailable,
+  });
+}
+
+function sameTerminalResultForReplay(
+  retained: StoredGmailArchiveMutationResult,
+  requested: GmailInboxMutationResult,
+): boolean {
+  return sameCanonical(legacyResultPayload(retained), legacyResultPayload(requested));
 }
 
 function snapshotCommand(value: unknown): Readonly<GmailInboxMutationCommand> | null {
@@ -221,19 +327,48 @@ function snapshotCommand(value: unknown): Readonly<GmailInboxMutationCommand> | 
   });
 }
 
-/** Secret-free canonical envelope committed by the v2 terminal explanation. */
+/** Secret-free canonical envelope committed by terminal explanations. */
 function buildTerminalResultEnvelope(
-  value: GmailInboxMutationResult,
+  value: StoredGmailArchiveMutationResult,
   attemptPhase: GmailArchiveAttemptPhase | null,
 ): GmailArchiveTerminalResultEnvelope {
-  const result = snapshotMutationResult(value);
+  const result = snapshotMutationResult(value) ?? snapshotLegacyMutationResult(value);
   if (!result) throw new TypeError('cannot build a terminal envelope from an invalid result');
-  const header: { schema: typeof TERMINAL_RESULT_SCHEMA_V1 } | {
-    schema: typeof TERMINAL_RESULT_SCHEMA_V2;
-    attemptPhase: GmailArchiveAttemptPhase;
-  } = attemptPhase === null
-    ? { schema: TERMINAL_RESULT_SCHEMA_V1 }
-    : { schema: TERMINAL_RESULT_SCHEMA_V2, attemptPhase };
+  const binding = resultBinding(result);
+  if (binding && (attemptPhase === null || result.outcome === 'known_failure' &&
+      result.code === 'invalid_command')) {
+    throw new TypeError('bound terminal evidence requires an attempt phase and canonical command');
+  }
+  if (binding) {
+    const header = { schema: TERMINAL_RESULT_SCHEMA_V3, attemptPhase: attemptPhase! } as const;
+    if (result.outcome === 'confirmed') return {
+      ...header,
+      outcome: result.outcome,
+      operation: result.operation,
+      inbox: result.inbox,
+      effect: result.effect,
+      compensationAvailable: result.compensationAvailable,
+      observedAt: result.observedAt,
+      binding,
+    };
+    if (result.outcome === 'known_failure') return {
+      ...header,
+      outcome: result.outcome,
+      code: result.code as Exclude<KnownFailureCode, 'invalid_command'>,
+      compensationAvailable: result.compensationAvailable,
+      binding,
+    };
+    return {
+      ...header,
+      outcome: result.outcome,
+      code: result.code,
+      compensationAvailable: result.compensationAvailable,
+      binding,
+    };
+  }
+  const header = attemptPhase === null
+    ? { schema: TERMINAL_RESULT_SCHEMA_V1 } as const
+    : { schema: TERMINAL_RESULT_SCHEMA_V2, attemptPhase } as const;
   return result.outcome === 'confirmed' ? {
     ...header,
     outcome: result.outcome,
@@ -266,14 +401,39 @@ export function buildGmailArchiveTerminalResultEnvelope(
 /** Strict parser for the result evidence retained in terminal explanations. */
 export function parseGmailArchiveTerminalResultEnvelope(
   value: unknown,
-): Readonly<GmailInboxMutationResult> | null {
+): StoredGmailArchiveMutationResult | null {
   return parseGmailArchiveTerminalEvidence(value)?.result ?? null;
 }
 
-/** Strict parser retaining the durable attempt boundary carried by v2. */
+/** Strict parser retaining the durable attempt boundary carried by v2/v3. */
 export function parseGmailArchiveTerminalEvidence(
   value: unknown,
 ): Readonly<GmailArchiveTerminalEvidence> | null {
+  const confirmedV3 = ownData(value, [
+    'attemptPhase', 'binding', 'compensationAvailable', 'effect', 'inbox', 'observedAt',
+    'operation', 'outcome', 'schema',
+  ]);
+  if (confirmedV3?.['schema'] === TERMINAL_RESULT_SCHEMA_V3) {
+    const attemptPhase = confirmedV3['attemptPhase'];
+    const { schema: _schema, attemptPhase: _attemptPhase, ...result } = confirmedV3;
+    const parsed = snapshotMutationResult(result);
+    if (!parsed || parsed.outcome === 'known_failure' && parsed.code === 'invalid_command' ||
+        (attemptPhase !== 'pre_dispatch' && attemptPhase !== 'dispatch_may_have_started') ||
+        !gmailArchiveResultAllowedForAttemptPhase(parsed, attemptPhase)) return null;
+    return Object.freeze({ result: parsed, attemptPhase });
+  }
+  const failureV3 = ownData(value, [
+    'attemptPhase', 'binding', 'code', 'compensationAvailable', 'outcome', 'schema',
+  ]);
+  if (failureV3?.['schema'] === TERMINAL_RESULT_SCHEMA_V3) {
+    const attemptPhase = failureV3['attemptPhase'];
+    const { schema: _schema, attemptPhase: _attemptPhase, ...result } = failureV3;
+    const parsed = snapshotMutationResult(result);
+    if (!parsed || parsed.outcome === 'known_failure' && parsed.code === 'invalid_command' ||
+        (attemptPhase !== 'pre_dispatch' && attemptPhase !== 'dispatch_may_have_started') ||
+        !gmailArchiveResultAllowedForAttemptPhase(parsed, attemptPhase)) return null;
+    return Object.freeze({ result: parsed, attemptPhase });
+  }
   const confirmedV2 = ownData(value, [
     'attemptPhase', 'compensationAvailable', 'effect', 'inbox', 'observedAt',
     'operation', 'outcome', 'schema',
@@ -281,7 +441,7 @@ export function parseGmailArchiveTerminalEvidence(
   if (confirmedV2?.['schema'] === TERMINAL_RESULT_SCHEMA_V2) {
     const attemptPhase = confirmedV2['attemptPhase'];
     const { schema: _schema, attemptPhase: _attemptPhase, ...result } = confirmedV2;
-    const parsed = snapshotMutationResult(result);
+    const parsed = snapshotLegacyMutationResult(result);
     if (!parsed || (attemptPhase !== 'pre_dispatch' && attemptPhase !== 'dispatch_may_have_started') ||
         !gmailArchiveResultAllowedForAttemptPhase(parsed, attemptPhase)) return null;
     return Object.freeze({ result: parsed, attemptPhase });
@@ -292,7 +452,7 @@ export function parseGmailArchiveTerminalEvidence(
   if (failureV2?.['schema'] === TERMINAL_RESULT_SCHEMA_V2) {
     const attemptPhase = failureV2['attemptPhase'];
     const { schema: _schema, attemptPhase: _attemptPhase, ...result } = failureV2;
-    const parsed = snapshotMutationResult(result);
+    const parsed = snapshotLegacyMutationResult(result);
     if (!parsed || (attemptPhase !== 'pre_dispatch' && attemptPhase !== 'dispatch_may_have_started') ||
         !gmailArchiveResultAllowedForAttemptPhase(parsed, attemptPhase)) return null;
     return Object.freeze({ result: parsed, attemptPhase });
@@ -302,20 +462,20 @@ export function parseGmailArchiveTerminalEvidence(
   ]);
   if (confirmed?.['schema'] === TERMINAL_RESULT_SCHEMA_V1) {
     const { schema: _schema, ...result } = confirmed;
-    const parsed = snapshotMutationResult(result);
+    const parsed = snapshotLegacyMutationResult(result);
     return parsed ? Object.freeze({ result: parsed, attemptPhase: null }) : null;
   }
   const failure = ownData(value, ['code', 'compensationAvailable', 'outcome', 'schema']);
   if (failure?.['schema'] !== TERMINAL_RESULT_SCHEMA_V1) return null;
   const { schema: _schema, ...result } = failure;
-  const parsed = snapshotMutationResult(result);
+  const parsed = snapshotLegacyMutationResult(result);
   return parsed ? Object.freeze({ result: parsed, attemptPhase: null }) : null;
 }
 
 /** Exact one-envelope explanation evidence retained by terminal receipt v2. */
 export function parseGmailArchiveTerminalExplanationEvidence(
   value: unknown,
-): Readonly<GmailInboxMutationResult> | null {
+): StoredGmailArchiveMutationResult | null {
   return parseGmailArchiveTerminalExplanationBinding(value)?.result ?? null;
 }
 
@@ -340,7 +500,10 @@ function snapshotInput(value: unknown): Readonly<TerminalizeGmailArchiveInput> |
   if (!input) return null;
   const command = snapshotCommand(input['command']);
   const result = snapshotMutationResult(input['result']);
-  if (!command || !result) return null;
+  const binding = result ? resultBinding(result) : null;
+  if (!command || !result || !binding || binding.userId !== command.userId ||
+      binding.admissionId !== command.admissionId ||
+      binding.messageRefId !== command.messageRefId) return null;
   return Object.freeze({ command, result });
 }
 
@@ -350,7 +513,7 @@ function exactApprovalResponse(value: unknown): boolean {
     (response['reason'] === null || typeof response['reason'] === 'string');
 }
 
-function disposition(result: GmailInboxMutationResult): TerminalDisposition {
+function disposition(result: StoredGmailArchiveMutationResult): TerminalDisposition {
   return result.outcome === 'confirmed' ? 'succeeded' :
     result.outcome === 'known_failure' ? 'failed' : 'unknown';
 }
@@ -362,12 +525,12 @@ function effectResult(
   return buildGmailArchiveTerminalResultEnvelope(result, attemptPhase);
 }
 
-function failureReason(result: GmailInboxMutationResult): string | null {
+function failureReason(result: StoredGmailArchiveMutationResult): string | null {
   return result.outcome === 'confirmed' ? null : result.code;
 }
 
 export function gmailArchiveResultAllowedForAttemptPhase(
-  result: GmailInboxMutationResult,
+  result: StoredGmailArchiveMutationResult,
   attemptPhase: GmailArchiveAttemptPhase,
 ): boolean {
   if (result.outcome === 'unknown') return attemptPhase === 'dispatch_may_have_started';
@@ -389,7 +552,7 @@ export interface GmailArchiveTerminalExplanationSemantics {
 
 /** Result-bound prose fields used by both persistence and portable validation. */
 export function gmailArchiveTerminalExplanationSemantics(
-  result: GmailInboxMutationResult,
+  result: StoredGmailArchiveMutationResult,
 ): GmailArchiveTerminalExplanationSemantics {
   const outcome = disposition(result);
   const effect = result.outcome === 'confirmed' ? result.effect : null;
@@ -430,7 +593,7 @@ function terminalExplanation(input: {
   state: GmailArchiveTerminalStableState;
   barrier: PreEffectBarrierRow;
   plan: ExecutionPlanRow;
-  result: GmailInboxMutationResult;
+  result: StoredGmailArchiveMutationResult;
   attemptPhase: GmailArchiveAttemptPhase | null;
 }): ExplanationRecordRow {
   const semantics = gmailArchiveTerminalExplanationSemantics(input.result);
@@ -699,7 +862,7 @@ export async function exactGmailArchiveInProgressBaseline(
 
 function exactExecutionResult(
   row: ExecutionResultRow,
-  result: GmailInboxMutationResult,
+  result: StoredGmailArchiveMutationResult,
   attemptPhase: GmailArchiveAttemptPhase | null,
   plan: ExecutionPlanRow,
   terminalAt: Date,
@@ -718,12 +881,16 @@ function exactExecutionResult(
 async function exactTerminalReplay(
   client: PoolClient,
   authority: TerminalAuthority,
-  result: GmailInboxMutationResult,
+  result: StoredGmailArchiveMutationResult,
   state: GmailArchiveTerminalStableState,
   barrier: PreEffectBarrierRow,
   approved: JoinedDecisionReceiptContentV1,
 ): Promise<GmailArchiveTerminalizationBundle | null> {
   const expectedDisposition = disposition(result);
+  const binding = resultBinding(result);
+  const messageRefId = canonicalGmailArchiveCandidateMessageRef(state.approval, state.candidate);
+  if (binding && (binding.userId !== authority.userId || binding.admissionId !== barrier.id ||
+      binding.messageRefId !== messageRefId)) return null;
   const retainedBarrier = parseGmailArchiveTerminalEvidence(barrier.effect_result);
   if (!retainedBarrier || !sameCanonical(retainedBarrier.result, result) ||
       barrier.status !== expectedDisposition ||
@@ -850,7 +1017,7 @@ export async function validateStoredGmailArchiveTerminal(
   approved: JoinedDecisionReceiptContentV1,
   expectedResult?: GmailInboxMutationResult,
 ): Promise<GmailArchiveTerminalizationBundle | null> {
-  let result = expectedResult;
+  let result: StoredGmailArchiveMutationResult | undefined = expectedResult;
   if (!result) {
     const r7 = state.revisions[6];
     const explanationId = r7?.content.version === 2 ? r7.content.executionExplanation.id : null;
@@ -899,8 +1066,12 @@ async function transition(
   const approved = exactGmailArchiveApprovedPrefix(state);
   if (!approved) return { ok: false, error: 'idempotency_conflict' };
   if (['succeeded', 'failed', 'unknown'].includes(barrier.status)) {
+    const retained = parseGmailArchiveTerminalEvidence(barrier.effect_result);
+    if (!retained || !sameTerminalResultForReplay(retained.result, input.result)) {
+      return { ok: false, error: 'idempotency_conflict' };
+    }
     const terminalization = await validateStoredGmailArchiveTerminal(
-      client, authority, state, barrier, approved, input.result,
+      client, authority, state, barrier, approved,
     );
     return terminalization
       ? { ok: true, created: false, terminalization }
@@ -1137,6 +1308,7 @@ async function terminalizeWithTransition(
 export const gmailArchiveTerminalizationTestHooks = {
   terminalizeWithTransition,
   transition,
+  sameTerminalResultForReplay,
 };
 
 export const gmailArchiveTerminalizationRepository = {

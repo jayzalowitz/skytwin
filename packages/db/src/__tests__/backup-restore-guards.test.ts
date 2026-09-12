@@ -606,6 +606,30 @@ describe('validateBackupData', () => {
     );
   });
 
+  it('retains strict compatibility for a valid phase-bound legacy v2 terminal envelope', () => {
+    const { payload, executionExplanation } = terminalReceiptPayload();
+    executionExplanation['evidence_used'] = [{
+      schema: 'gmail_archive_terminal_result_v2',
+      attemptPhase: 'dispatch_may_have_started',
+      outcome: 'unknown',
+      code: 'remote_outcome_unknown',
+      compensationAvailable: false,
+    }];
+    const bundle = (payload['decisions'] as Array<Record<string, unknown>>)[0]!;
+    const revisions = (bundle['joinedReceipt'] as {
+      revisions: Array<Record<string, unknown>>;
+    }).revisions;
+    const terminal = revisions.at(-1)!;
+    const content = terminal['content'] as JoinedDecisionReceiptContentV2;
+    content.executionExplanation.canonicalHash = joinedDecisionReceiptArtifactDigest(
+      'explanation',
+      decisionReceiptRowArtifactV1('explanation', executionExplanation),
+    );
+    rehashTerminalReceipt(payload);
+
+    expect(validateBackupData(payload)).toEqual([]);
+  });
+
   it('accepts a causal-unknown reconciliation envelope with exact authority and time bounds', () => {
     const { payload } = reconciliationTerminalReceiptPayload();
     expect(validateBackupData(payload)).toEqual([]);

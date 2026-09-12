@@ -262,11 +262,13 @@ export {
 export type {
   GmailArchiveAttemptPhase,
   GmailArchiveAttemptStateV1,
+  GmailInboxMutationBinding,
   GmailInboxMutationCommand,
   GmailInboxMutationDispatchGate,
   GmailInboxMutationDispatchGateResult,
   GmailInboxMutationPort,
   GmailInboxMutationResult,
+  GmailInboxMutationTarget,
 } from './gmail-inbox-mutation.js';
 
 export type {

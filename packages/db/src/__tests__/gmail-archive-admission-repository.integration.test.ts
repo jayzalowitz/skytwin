@@ -282,11 +282,37 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     expect(claimed).toMatchObject({ ok: true, claimed: true });
     if (!claimed.ok || !claimed.claimed) throw new Error('Terminal fixture was not claimed.');
     if (dispatch) {
-      await expect(gmailArchiveDispatchGateRepository.enter(claimed.command)).resolves.toEqual({
+      await expect(enterDispatchGate(claimed.command)).resolves.toEqual({
         status: 'entered',
       });
     }
     return { ...fixture, command: claimed.command };
+  }
+
+  function mutationBinding(command: {
+    userId: string;
+    admissionId: string;
+    messageRefId: string;
+  }) {
+    return {
+      userId: command.userId,
+      admissionId: command.admissionId,
+      messageRefId: command.messageRefId,
+    };
+  }
+
+  async function currentMutationTarget(command: Parameters<
+    typeof gmailMessageRefRepository.resolveInboxMutationTarget
+  >[0]) {
+    const target = await gmailMessageRefRepository.resolveInboxMutationTarget(command);
+    if (!target) throw new Error('Mutation target was not observable.');
+    return target;
+  }
+
+  async function enterDispatchGate(command: Parameters<
+    typeof gmailArchiveDispatchGateRepository.enter
+  >[0]) {
+    return gmailArchiveDispatchGateRepository.enter(command, await currentMutationTarget(command));
   }
 
   async function ageClaimedAttempt(admissionId: string): Promise<string> {
@@ -1041,6 +1067,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     });
     await expect(gmailMessageRefRepository.resolveInboxMutationTarget(winner.command)).resolves.toEqual({
       connectorAccountId: accountId,
+      credentialRevision: expect.any(String),
       providerMessageId: 'native-40',
     });
     await expect(gmailArchiveClaimRepository.claim(input)).resolves.toEqual({
@@ -1053,13 +1080,14 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
 
   it('admits exactly one concurrent dispatch gate and preserves the exact durable phase', async () => {
     const fixture = await createClaimedProposal(64);
+    const target = await currentMutationTarget(fixture.command);
     const results = await Promise.all([
-      gmailArchiveDispatchGateRepository.enter(fixture.command),
-      gmailArchiveDispatchGateRepository.enter(fixture.command),
+      gmailArchiveDispatchGateRepository.enter(fixture.command, target),
+      gmailArchiveDispatchGateRepository.enter(fixture.command, target),
     ]);
     expect(results.filter((result) => result.status === 'entered')).toHaveLength(1);
     expect(results.filter((result) => result.status === 'not_admitted')).toHaveLength(1);
-    await expect(gmailArchiveDispatchGateRepository.enter(fixture.command)).resolves.toEqual({
+    await expect(gmailArchiveDispatchGateRepository.enter(fixture.command, target)).resolves.toEqual({
       status: 'not_admitted',
     });
     const durable = await getPool().query<{ status: string; effect_result: Record<string, unknown> }>(
@@ -1075,13 +1103,142 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     });
   }, 120_000);
 
+  it('keeps a stale dispatch target before the uncertainty boundary across authority drift', async () => {
+    const authorityUserId = id('11', 16);
+    const authorityAccountId = id('22', 16);
+    await seedOwner(
+      authorityUserId,
+      authorityAccountId,
+      id('55', 16),
+      'mutation-gate-authority@example.test',
+    );
+    const fixture = await createClaimedProposal(130, authorityUserId, authorityAccountId);
+    const staleTarget = await currentMutationTarget(fixture.command);
+    const cases: Array<{
+      name: string;
+      mutate: () => Promise<unknown>;
+      restore: () => Promise<unknown>;
+    }> = [
+      {
+        name: 'inactive account',
+        mutate: () => getPool().query(
+          'UPDATE connected_accounts SET is_active = false WHERE id = $1', [authorityAccountId],
+        ),
+        restore: () => getPool().query(
+          'UPDATE connected_accounts SET is_active = true WHERE id = $1', [authorityAccountId],
+        ),
+      },
+      {
+        name: 'unverified account',
+        mutate: () => getPool().query(
+          'UPDATE connected_accounts SET identity_verified = false WHERE id = $1', [authorityAccountId],
+        ),
+        restore: () => getPool().query(
+          'UPDATE connected_accounts SET identity_verified = true WHERE id = $1', [authorityAccountId],
+        ),
+      },
+      {
+        name: 'disconnected account',
+        mutate: () => getPool().query(
+          'UPDATE connected_accounts SET disconnected_at = now() WHERE id = $1', [authorityAccountId],
+        ),
+        restore: () => getPool().query(
+          'UPDATE connected_accounts SET disconnected_at = NULL WHERE id = $1', [authorityAccountId],
+        ),
+      },
+      {
+        name: 'account scope replacement',
+        mutate: () => getPool().query(
+          `UPDATE connected_accounts SET scopes = ARRAY['gmail.readonly']::STRING[] WHERE id = $1`,
+          [authorityAccountId],
+        ),
+        restore: () => getPool().query(
+          'UPDATE connected_accounts SET scopes = ARRAY[$2]::STRING[] WHERE id = $1',
+          [authorityAccountId, gmailModifyScope],
+        ),
+      },
+      {
+        name: 'token scope replacement',
+        mutate: () => getPool().query(
+          `UPDATE oauth_tokens SET scopes = ARRAY['gmail.readonly']::STRING[]
+            WHERE connector_account_id = $1`,
+          [authorityAccountId],
+        ),
+        restore: () => getPool().query(
+          `UPDATE oauth_tokens SET scopes = ARRAY[$2]::STRING[] WHERE connector_account_id = $1`,
+          [authorityAccountId, gmailModifyScope],
+        ),
+      },
+      {
+        name: 'credential revision rotation',
+        mutate: () => getPool().query(
+          'UPDATE oauth_tokens SET credential_revision = gen_random_uuid() WHERE connector_account_id = $1',
+          [authorityAccountId],
+        ),
+        restore: () => getPool().query(
+          'UPDATE oauth_tokens SET credential_revision = $2 WHERE connector_account_id = $1',
+          [authorityAccountId, staleTarget.credentialRevision],
+        ),
+      },
+      {
+        name: 'native target replacement',
+        mutate: () => getPool().query(
+          `UPDATE gmail_message_refs SET provider_message_id = 'replacement-native-130' WHERE id = $1`,
+          [fixture.command.messageRefId],
+        ),
+        restore: () => getPool().query(
+          `UPDATE gmail_message_refs SET provider_message_id = 'native-130' WHERE id = $1`,
+          [fixture.command.messageRefId],
+        ),
+      },
+      {
+        name: 'source binding replacement',
+        mutate: () => getPool().query(
+          `UPDATE gmail_message_refs SET source_signal_id = 'replacement-source-130' WHERE id = $1`,
+          [fixture.command.messageRefId],
+        ),
+        restore: () => getPool().query(
+          `UPDATE gmail_message_refs SET source_signal_id = 'source-130' WHERE id = $1`,
+          [fixture.command.messageRefId],
+        ),
+      },
+    ];
+
+    for (const testCase of cases) {
+      await testCase.mutate();
+      await expect(gmailArchiveDispatchGateRepository.enter(
+        fixture.command,
+        staleTarget,
+      ), testCase.name).resolves.toEqual({ status: 'not_admitted' });
+      const durable = await getPool().query<{ effect_result: Record<string, unknown> }>(
+        'SELECT effect_result FROM pre_effect_barriers WHERE id = $1',
+        [fixture.command.admissionId],
+      );
+      expect(durable.rows[0]?.effect_result, testCase.name).toEqual({
+        schema: 'gmail_archive_attempt_v1', phase: 'pre_dispatch',
+      });
+      await testCase.restore();
+    }
+
+    await expect(gmailArchiveDispatchGateRepository.enter(
+      fixture.command,
+      staleTarget,
+    )).resolves.toEqual({ status: 'entered' });
+  }, 120_000);
+
   it('rolls back a 40001 dispatch transition and retries the whole gate transaction', async () => {
     const fixture = await createClaimedProposal(69);
+    const target = await currentMutationTarget(fixture.command);
     let attempts = 0;
     const result = await gmailArchiveDispatchGateTestHooks.enterWithTransition(
       fixture.command,
-      async (client, command) => {
-        const entered = await gmailArchiveDispatchGateTestHooks.transition(client, command);
+      target,
+      async (client, command, targetSnapshot) => {
+        const entered = await gmailArchiveDispatchGateTestHooks.transition(
+          client,
+          command,
+          targetSnapshot,
+        );
         attempts += 1;
         if (attempts === 1) {
           expect(entered).toEqual({ status: 'entered' });
@@ -1205,6 +1362,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
         outcome: 'known_failure',
         code: 'preflight_unavailable',
         compensationAvailable: false,
+        binding: mutationBinding(terminal.command),
       },
     })).resolves.toMatchObject({ ok: true, created: true });
     await expect(gmailArchiveRecoveryRepository.query({
@@ -1231,7 +1389,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       operation: 'observe_inbox' as const,
     };
     await expect(gmailInboxObservationTargetRepository.resolve(observation)).resolves.toBeNull();
-    await expect(gmailArchiveDispatchGateRepository.enter(fixture.command)).resolves.toEqual({
+    await expect(enterDispatchGate(fixture.command)).resolves.toEqual({
       status: 'entered',
     });
     await expect(gmailInboxObservationTargetRepository.resolve(observation)).resolves.toBeNull();
@@ -1311,6 +1469,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
         outcome: 'unknown',
         code: 'remote_outcome_unknown',
         compensationAvailable: false,
+        binding: mutationBinding(terminal.command),
       },
     })).resolves.toMatchObject({ ok: true, created: true });
     await expect(gmailInboxObservationTargetRepository.resolve({
@@ -1468,11 +1627,12 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
 
   it('rejects legacy marker-free and receipt-tampered dispatch attempts', async () => {
     const legacy = await createClaimedProposal(65);
+    const legacyTarget = await currentMutationTarget(legacy.command);
     await getPool().query(
       `UPDATE pre_effect_barriers SET effect_result = '{}'::JSONB WHERE id = $1`,
       [legacy.command.admissionId],
     );
-    await expect(gmailArchiveDispatchGateRepository.enter(legacy.command)).resolves.toEqual({
+    await expect(gmailArchiveDispatchGateRepository.enter(legacy.command, legacyTarget)).resolves.toEqual({
       status: 'conflict',
     });
     await expect(gmailArchiveClaimRepository.claim({
@@ -1481,11 +1641,15 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     })).resolves.toEqual({ ok: false, error: 'idempotency_conflict' });
 
     const tampered = await createClaimedProposal(66);
+    const tamperedTarget = await currentMutationTarget(tampered.command);
     await getPool().query(
       'UPDATE decision_receipt_revisions SET trusted = false WHERE receipt_id = $1 AND sequence = 6',
       [tampered.prepared.receipt.id],
     );
-    await expect(gmailArchiveDispatchGateRepository.enter(tampered.command)).resolves.toEqual({
+    await expect(gmailArchiveDispatchGateRepository.enter(
+      tampered.command,
+      tamperedTarget,
+    )).resolves.toEqual({
       status: 'conflict',
     });
     const unchanged = await getPool().query<{ effect_result: Record<string, unknown> }>(
@@ -1839,6 +2003,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       effect,
       compensationAvailable: false as const,
       observedAt: new Date(Date.now() - 1_000).toISOString(),
+      binding: mutationBinding(fixture.command),
     };
     const input = { command: fixture.command, result };
     const terminalized = await gmailArchiveTerminalizationRepository.terminalize(input);
@@ -1923,18 +2088,21 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       result: {
         outcome: 'confirmed', operation: 'archive', inbox: false, effect: 'changed',
         compensationAvailable: false, observedAt: new Date(Date.now() - 1_000).toISOString(),
+        binding: mutationBinding(beforeDispatch.command),
       },
     })).resolves.toEqual({ ok: false, error: 'idempotency_conflict' });
 
     const afterDispatch = await createClaimedProposal(68, userId, accountId, true);
     await expect(gmailArchiveTerminalizationRepository.terminalize({
       command: afterDispatch.command,
-      result: { outcome: 'known_failure', code: 'preflight_unavailable', compensationAvailable: false },
+      result: {
+        outcome: 'known_failure', code: 'preflight_unavailable', compensationAvailable: false,
+        binding: mutationBinding(afterDispatch.command),
+      },
     })).resolves.toEqual({ ok: false, error: 'idempotency_conflict' });
   }, 120_000);
 
   it.each([
-    'invalid_command',
     'not_admitted',
     'admission_unavailable',
     'credentials_unavailable',
@@ -1942,7 +2110,6 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     'remote_rejected',
   ] as const)('terminalizes known failure %s with only the safe enum', async (code) => {
     const suffix = 80 + [
-      'invalid_command',
       'not_admitted',
       'admission_unavailable',
       'credentials_unavailable',
@@ -1950,7 +2117,12 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       'remote_rejected',
     ].indexOf(code);
     const fixture = await createClaimedProposal(suffix);
-    const result = { outcome: 'known_failure' as const, code, compensationAvailable: false as const };
+    const result = {
+      outcome: 'known_failure' as const,
+      code,
+      compensationAvailable: false as const,
+      binding: mutationBinding(fixture.command),
+    };
     const terminalized = await gmailArchiveTerminalizationRepository.terminalize({
       command: fixture.command,
       result,
@@ -1965,7 +2137,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
         executionResult: {
           success: false,
           outputs: {
-            schema: 'gmail_archive_terminal_result_v2',
+            schema: 'gmail_archive_terminal_result_v3',
             attemptPhase: 'pre_dispatch',
             outcome: 'known_failure',
             code,
@@ -1992,12 +2164,25 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     }
   }, 120_000);
 
+  it('does not terminalize unbound invalid-command output for a canonical command', async () => {
+    const fixture = await createClaimedProposal(86);
+    await expect(gmailArchiveTerminalizationRepository.terminalize({
+      command: fixture.command,
+      result: {
+        outcome: 'known_failure',
+        code: 'invalid_command',
+        compensationAvailable: false,
+      },
+    })).resolves.toEqual({ ok: false, error: 'invalid_input' });
+  }, 120_000);
+
   it('terminalizes an unknown remote outcome without fabricating a result row', async () => {
     const fixture = await createClaimedProposal(90, userId, accountId, true);
     const result = {
       outcome: 'unknown' as const,
       code: 'remote_outcome_unknown' as const,
       compensationAvailable: false as const,
+      binding: mutationBinding(fixture.command),
     };
     const input = { command: fixture.command, result };
     const terminalized = await gmailArchiveTerminalizationRepository.terminalize(input);
@@ -2049,6 +2234,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       effect: 'changed' as const,
       compensationAvailable: false as const,
       observedAt: new Date(Date.now() - 2_000).toISOString(),
+      binding: mutationBinding(donor.command),
     };
     const donorTerminal = await gmailArchiveTerminalizationRepository.terminalize({
       command: donor.command,
@@ -2064,7 +2250,11 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     await expect(gmailArchiveTerminalizationTestHooks.terminalizeWithTransition(
       {
         command: target.command,
-        result: { ...donorResult, observedAt: new Date(Date.now() - 1_000).toISOString() },
+        result: {
+          ...donorResult,
+          observedAt: new Date(Date.now() - 1_000).toISOString(),
+          binding: mutationBinding(target.command),
+        },
       },
       gmailArchiveTerminalizationTestHooks.transition,
       () => ({
@@ -2116,6 +2306,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
           effect: 'changed',
           compensationAvailable: false,
           observedAt: new Date(Date.parse(persistedAt) - 1_000).toISOString(),
+          binding: mutationBinding(fixture.command),
         },
       },
       async (client, input, stableValues) => {
@@ -2164,6 +2355,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
         outcome: 'known_failure' as const,
         code: 'remote_rejected' as const,
         compensationAvailable: false as const,
+        binding: mutationBinding(same.command),
       },
     };
     const sameResults = await Promise.all([
@@ -2178,11 +2370,19 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     const differentResults = await Promise.all([
       gmailArchiveTerminalizationRepository.terminalize({
         command: different.command,
-        result: { ...sameInput.result, code: 'remote_rejected' },
+        result: {
+          ...sameInput.result,
+          code: 'remote_rejected',
+          binding: mutationBinding(different.command),
+        },
       }),
       gmailArchiveTerminalizationRepository.terminalize({
         command: different.command,
-        result: { ...sameInput.result, code: 'preflight_unavailable' },
+        result: {
+          ...sameInput.result,
+          code: 'preflight_unavailable',
+          binding: mutationBinding(different.command),
+        },
       }),
     ]);
     expect(differentResults.filter((result) => result.ok && result.created)).toHaveLength(1);
@@ -2191,24 +2391,81 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     )).toHaveLength(1);
   }, 120_000);
 
+  it('rejects crossed canonical results of every class concurrently without durable writes', async () => {
+    const targetFixture = await createClaimedProposal(131);
+    const donorFixture = await createClaimedProposal(132);
+    const before = await artifactCounts(
+      targetFixture.proposal.decision.id,
+      targetFixture.proposal.approval.id,
+    );
+    const donorBinding = mutationBinding(donorFixture.command);
+    const results = await Promise.all([
+      gmailArchiveTerminalizationRepository.terminalize({
+        command: targetFixture.command,
+        result: {
+          outcome: 'confirmed', operation: 'archive', inbox: false, effect: 'already_in_state',
+          compensationAvailable: false,
+          observedAt: new Date(Date.now() - 1_000).toISOString(),
+          binding: donorBinding,
+        },
+      }),
+      gmailArchiveTerminalizationRepository.terminalize({
+        command: targetFixture.command,
+        result: {
+          outcome: 'known_failure', code: 'preflight_unavailable',
+          compensationAvailable: false, binding: donorBinding,
+        },
+      }),
+      gmailArchiveTerminalizationRepository.terminalize({
+        command: targetFixture.command,
+        result: {
+          outcome: 'unknown', code: 'remote_outcome_unknown',
+          compensationAvailable: false, binding: donorBinding,
+        },
+      }),
+    ]);
+
+    expect(results).toEqual([
+      { ok: false, error: 'invalid_input' },
+      { ok: false, error: 'invalid_input' },
+      { ok: false, error: 'invalid_input' },
+    ]);
+    await expect(artifactCounts(
+      targetFixture.proposal.decision.id,
+      targetFixture.proposal.approval.id,
+    )).resolves.toEqual(before);
+    const barrier = await getPool().query<{ status: string; effect_result: Record<string, unknown> }>(
+      'SELECT status, effect_result FROM pre_effect_barriers WHERE id = $1',
+      [targetFixture.command.admissionId],
+    );
+    expect(barrier.rows[0]).toEqual({
+      status: 'in_progress',
+      effect_result: { schema: 'gmail_archive_attempt_v1', phase: 'pre_dispatch' },
+    });
+  }, 120_000);
+
   it('binds terminalization to the exact winning command and owner', async () => {
     const fixture = await createClaimedProposal(93);
-    const result = {
+    const resultFor = (attemptCommand: typeof fixture.command) => ({
       outcome: 'known_failure' as const,
       code: 'remote_rejected' as const,
       compensationAvailable: false as const,
-    };
+      binding: mutationBinding(attemptCommand),
+    });
+    const wrongOwner = { ...fixture.command, userId: otherUserId };
     await expect(gmailArchiveTerminalizationRepository.terminalize({
-      command: { ...fixture.command, userId: otherUserId },
-      result,
+      command: wrongOwner,
+      result: resultFor(wrongOwner),
     })).resolves.toEqual({ ok: false, error: 'not_found' });
+    const wrongMessage = { ...fixture.command, messageRefId: id('33', 999) };
     await expect(gmailArchiveTerminalizationRepository.terminalize({
-      command: { ...fixture.command, messageRefId: id('33', 999) },
-      result,
+      command: wrongMessage,
+      result: resultFor(wrongMessage),
     })).resolves.toEqual({ ok: false, error: 'idempotency_conflict' });
+    const wrongAdmission = { ...fixture.command, admissionId: id('12', 999) };
     await expect(gmailArchiveTerminalizationRepository.terminalize({
-      command: { ...fixture.command, admissionId: id('12', 999) },
-      result,
+      command: wrongAdmission,
+      result: resultFor(wrongAdmission),
     })).resolves.toEqual({ ok: false, error: 'not_found' });
     const barrier = await getPool().query<{ status: string }>(
       'SELECT status FROM pre_effect_barriers WHERE id = $1',
@@ -2226,7 +2483,10 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     );
     await expect(gmailArchiveTerminalizationRepository.terminalize({
       command: untrusted.command,
-      result: { outcome: 'known_failure', code: 'remote_rejected', compensationAvailable: false },
+      result: {
+        outcome: 'known_failure', code: 'remote_rejected', compensationAvailable: false,
+        binding: mutationBinding(untrusted.command),
+      },
     })).resolves.toEqual({ ok: false, error: 'idempotency_conflict' });
 
     const attempted = await createClaimedProposal(95);
@@ -2237,7 +2497,10 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     );
     await expect(gmailArchiveTerminalizationRepository.terminalize({
       command: attempted.command,
-      result: { outcome: 'known_failure', code: 'remote_rejected', compensationAvailable: false },
+      result: {
+        outcome: 'known_failure', code: 'remote_rejected', compensationAvailable: false,
+        binding: mutationBinding(attempted.command),
+      },
     })).resolves.toEqual({ ok: false, error: 'idempotency_conflict' });
   }, 120_000);
 
@@ -2259,6 +2522,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
         outcome: 'known_failure' as const,
         code: 'remote_rejected' as const,
         compensationAvailable: false as const,
+        binding: mutationBinding(fixture.command),
       },
     };
     const terminalized = await gmailArchiveTerminalizationRepository.terminalize(input);
@@ -2286,6 +2550,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
         outcome: 'unknown' as const,
         code: 'remote_outcome_unknown' as const,
         compensationAvailable: false as const,
+        binding: mutationBinding(fixture.command),
       },
     };
     await expect(gmailArchiveTerminalizationRepository.terminalize(input)).resolves.toMatchObject({
@@ -2315,6 +2580,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
         outcome: 'known_failure' as const,
         code: 'remote_rejected' as const,
         compensationAvailable: false as const,
+        binding: mutationBinding(fixture.command),
       },
     };
     const terminalized = await gmailArchiveTerminalizationRepository.terminalize(input);
@@ -2364,6 +2630,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
 
   it('atomically reconciles a pre-dispatch interruption as a known no-request failure', async () => {
     const fixture = await createClaimedProposal(120);
+    const staleTarget = await currentMutationTarget(fixture.command);
     const phaseChangedAt = await ageClaimedAttempt(fixture.command.admissionId);
     const input = {
       command: { ...fixture.command, operation: 'reconcile_archive' as const },
@@ -2442,7 +2709,10 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       userId,
       approvalId: fixture.proposal.approval.id,
     })).resolves.toEqual({ ok: true, claimed: false, state: 'terminal', command: null });
-    await expect(gmailArchiveDispatchGateRepository.enter(fixture.command)).resolves.toEqual({
+    await expect(gmailArchiveDispatchGateRepository.enter(
+      fixture.command,
+      staleTarget,
+    )).resolves.toEqual({
       status: 'not_admitted',
     });
     await expect(gmailArchiveTerminalizationRepository.terminalize({
@@ -2451,6 +2721,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
         outcome: 'known_failure',
         code: 'preflight_unavailable',
         compensationAvailable: false,
+        binding: mutationBinding(fixture.command),
       },
     })).resolves.toEqual({ ok: false, error: 'idempotency_conflict' });
     await expect(artifactCounts(
@@ -2657,6 +2928,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
         outcome: 'unknown',
         code: 'remote_outcome_unknown',
         compensationAvailable: false,
+        binding: mutationBinding(crossSchema.command),
       },
     })).resolves.toMatchObject({ ok: true, created: true });
     await expect(gmailArchiveReconciliationRepository.reconcile({
@@ -2678,7 +2950,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
   it('loses cleanly when the durable attempt advances after the recovery snapshot', async () => {
     const fixture = await createClaimedProposal(126);
     const phaseChangedAt = await ageClaimedAttempt(fixture.command.admissionId);
-    await expect(gmailArchiveDispatchGateRepository.enter(fixture.command)).resolves.toEqual({
+    await expect(enterDispatchGate(fixture.command)).resolves.toEqual({
       status: 'entered',
     });
     await expect(gmailArchiveReconciliationRepository.reconcile({
@@ -2778,6 +3050,48 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       matching_explanations: '1',
       matching_results: '1',
       matching_revisions: '1',
+    });
+  }, 120_000);
+
+  it('backs up, validates, and restores a bound mutation-terminal graph', async () => {
+    const portableUserId = id('11', 7);
+    const portableAccountId = id('22', 7);
+    await seedOwner(
+      portableUserId,
+      portableAccountId,
+      id('55', 7),
+      'mutation-portable-owner@example.test',
+    );
+    const fixture = await createClaimedProposal(133, portableUserId, portableAccountId);
+    const result = {
+      outcome: 'known_failure' as const,
+      code: 'preflight_unavailable' as const,
+      compensationAvailable: false as const,
+      binding: mutationBinding(fixture.command),
+    };
+    const terminalized = await gmailArchiveTerminalizationRepository.terminalize({
+      command: fixture.command,
+      result,
+    });
+    expect(terminalized).toMatchObject({ ok: true, created: true });
+    if (!terminalized.ok) throw new Error('Portable mutation terminal fixture failed.');
+
+    const backup = await collectBackup(portableUserId);
+    expect(backup).toMatchObject({ success: true });
+    if (!backup.success) throw new Error(`Terminal backup failed: ${backup.message}`);
+    expect(validateBackupData(backup.data)).toEqual([]);
+
+    await getPool().query('TRUNCATE TABLE users CASCADE');
+    await expect(restoreBackup(backup.data)).resolves.toMatchObject({ success: true });
+    const restoredExplanation = await getPool().query<{ evidence_used: unknown }>(
+      'SELECT evidence_used FROM explanation_records WHERE id = $1 AND decision_id = $2',
+      [terminalized.terminalization.executionExplanation.id, fixture.proposal.decision.id],
+    );
+    expect(parseGmailArchiveTerminalExplanationBinding(
+      restoredExplanation.rows[0]?.evidence_used,
+    )).toEqual({
+      result,
+      attemptPhase: 'pre_dispatch',
     });
   }, 120_000);
 

@@ -3,6 +3,7 @@ import {
   type GmailInboxMutationCommand,
   type GmailInboxMutationDispatchGate,
   type GmailInboxMutationDispatchGateResult,
+  type GmailInboxMutationTarget,
   type JoinedDecisionReceiptContentV1,
 } from '@skytwin/shared-types';
 import type { PoolClient } from 'pg';
@@ -19,12 +20,14 @@ import {
   exactGmailArchiveBarrierIdentity,
 } from './gmail-archive-claim-integrity.js';
 import type { PreEffectBarrierRow } from './pre-effect-barrier-repository.js';
+import { resolveInboxMutationTargetInTransaction } from './gmail-message-ref-repository.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 export type GmailArchiveDispatchGateTransition = (
   client: PoolClient,
   command: Readonly<GmailInboxMutationCommand>,
+  expectedTarget: Readonly<GmailInboxMutationTarget>,
 ) => Promise<GmailInboxMutationDispatchGateResult>;
 
 type GmailArchiveDispatchGateTransaction = <T>(
@@ -67,6 +70,25 @@ function snapshotCommand(value: unknown): Readonly<GmailInboxMutationCommand> | 
   });
 }
 
+function snapshotTarget(value: unknown): Readonly<GmailInboxMutationTarget> | null {
+  const target = ownData(value, ['connectorAccountId', 'credentialRevision', 'providerMessageId']);
+  if (!target || typeof target['connectorAccountId'] !== 'string' ||
+      !UUID.test(target['connectorAccountId']) ||
+      typeof target['credentialRevision'] !== 'string' || !UUID.test(target['credentialRevision']) ||
+      typeof target['providerMessageId'] !== 'string' || target['providerMessageId'].length === 0 ||
+      target['providerMessageId'].length > 2_048) return null;
+  try {
+    encodeURIComponent(target['providerMessageId']);
+  } catch {
+    return null;
+  }
+  return Object.freeze({
+    connectorAccountId: target['connectorAccountId'],
+    credentialRevision: target['credentialRevision'],
+    providerMessageId: target['providerMessageId'],
+  });
+}
+
 function exactApprovalResponse(value: unknown): boolean {
   const response = ownData(value, ['action', 'reason']);
   return response?.['action'] === 'approve' &&
@@ -76,6 +98,7 @@ function exactApprovalResponse(value: unknown): boolean {
 async function transition(
   client: PoolClient,
   command: Readonly<GmailInboxMutationCommand>,
+  expectedTarget: Readonly<GmailInboxMutationTarget>,
 ): Promise<GmailInboxMutationDispatchGateResult> {
   const barriers = (await client.query<PreEffectBarrierRow>(
     `SELECT * FROM pre_effect_barriers
@@ -137,6 +160,16 @@ async function transition(
       )) return { status: 'conflict' };
   if (attempt.phase === 'dispatch_may_have_started') return { status: 'not_admitted' };
 
+  // Resolve the connector, credential revision, and private provider target in
+  // this same serializable transaction. The following CAS is forbidden when
+  // any authority component differs from the caller's preflight snapshot.
+  const currentTarget = await resolveInboxMutationTargetInTransaction(client, command);
+  if (!currentTarget || currentTarget.connectorAccountId !== expectedTarget.connectorAccountId ||
+      currentTarget.credentialRevision !== expectedTarget.credentialRevision ||
+      currentTarget.providerMessageId !== expectedTarget.providerMessageId) {
+    return { status: 'not_admitted' };
+  }
+
   const entered = (await client.query<PreEffectBarrierRow>(
     `UPDATE pre_effect_barriers
         SET effect_result = $3::JSONB, updated_at = date_trunc('milliseconds', now())
@@ -161,14 +194,16 @@ async function transition(
 
 async function enterWithTransition(
   submitted: GmailInboxMutationCommand,
+  submittedTarget: GmailInboxMutationTarget,
   transitionFn: GmailArchiveDispatchGateTransition,
   transactionFn: GmailArchiveDispatchGateTransaction = withTransaction,
 ): Promise<GmailInboxMutationDispatchGateResult> {
   const command = snapshotCommand(submitted);
-  if (!command) return { status: 'conflict' };
+  const expectedTarget = snapshotTarget(submittedTarget);
+  if (!command || !expectedTarget) return { status: 'conflict' };
   for (let attempt = 0; ; attempt += 1) {
     try {
-      return await transactionFn((client) => transitionFn(client, command));
+      return await transactionFn((client) => transitionFn(client, command, expectedTarget));
     } catch (error) {
       const code = typeof error === 'object' && error !== null && 'code' in error
         ? (error as { code?: unknown }).code
@@ -181,7 +216,7 @@ async function enterWithTransition(
 export const gmailArchiveDispatchGateTestHooks = { enterWithTransition, transition };
 
 export const gmailArchiveDispatchGateRepository: GmailInboxMutationDispatchGate = {
-  async enter(command): Promise<GmailInboxMutationDispatchGateResult> {
-    return enterWithTransition(command, transition);
+  async enter(command, expectedTarget): Promise<GmailInboxMutationDispatchGateResult> {
+    return enterWithTransition(command, expectedTarget, transition);
   },
 };

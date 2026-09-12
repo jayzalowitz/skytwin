@@ -56,4 +56,4 @@ export { fetchGoogleProfileSync } from './google-profile-sync.js';
 export type { GoogleProfileSyncResult, FetchLike } from './google-profile-sync.js';
 export type { OAuthTokenStore } from './oauth/token-store.js';
 export { DbTokenStore } from './oauth/db-token-store.js';
-export type { AuditLogPort } from './oauth/db-token-store.js';
+export type { AuditLogPort, RevisionBoundOAuthTokenSet } from './oauth/db-token-store.js';

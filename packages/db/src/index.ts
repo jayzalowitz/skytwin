@@ -166,6 +166,8 @@ export type {
   GmailArchiveReconciliationTerminalEnvelope,
   ReconcileAbandonedGmailArchiveResult,
   GmailArchiveTerminalEvidence,
+  LegacyGmailArchiveTerminalResultPayload,
+  StoredGmailArchiveMutationResult,
   GmailArchiveTerminalResultEnvelope,
   GmailArchiveTerminalizationBundle,
   TerminalizeGmailArchiveInput,

@@ -543,6 +543,7 @@ export function validateBackupData(value: unknown): string[] {
               reconciliation?.evidence.kind === 'mailbox_observation_unavailable'
               ? reconciliation.evidence
               : null;
+            const mutationBinding = result && 'binding' in result ? result.binding : null;
             const candidateMessageRefId = terminalCandidate.parameters?.['messageRefId'];
             const executionRecorded = revisions.filter(
               (revision) => revision.stage === 'execution_recorded',
@@ -572,6 +573,10 @@ export function validateBackupData(value: unknown): string[] {
                   (observationBinding.binding.userId !== data.user?.id ||
                     observationBinding.binding.admissionId !== tail.barrier?.id ||
                     observationBinding.binding.messageRefId !== candidateMessageRefId)) ||
+                (mutationBinding !== null &&
+                  (mutationBinding.userId !== data.user?.id ||
+                    mutationBinding.admissionId !== tail.barrier?.id ||
+                    mutationBinding.messageRefId !== candidateMessageRefId)) ||
                 reconciliationTimeInvalid ||
                 expectedDisposition !== tail.executionDisposition ||
                 expectedDisposition !== tail.disposition ||

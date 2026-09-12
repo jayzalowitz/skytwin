@@ -17,6 +17,20 @@ export interface GmailInboxMutationCommand {
   operation: 'archive';
 }
 
+/** Secret-free authority tuple copied from the exact canonical command. */
+export interface GmailInboxMutationBinding {
+  userId: string;
+  admissionId: string;
+  messageRefId: string;
+}
+
+/** Exact private provider target held only across the mutation/gate boundary. */
+export interface GmailInboxMutationTarget {
+  connectorAccountId: string;
+  credentialRevision: string;
+  providerMessageId: string;
+}
+
 export type GmailInboxMutationResult =
   | {
       outcome: 'confirmed';
@@ -27,18 +41,29 @@ export type GmailInboxMutationResult =
       compensationAvailable: false;
       /** Provider-response time carried into durable lifecycle finalization. */
       observedAt: string;
+      /** Exact command authority this same-call provider result belongs to. */
+      binding: Readonly<GmailInboxMutationBinding>;
     }
   | {
       outcome: 'known_failure';
-      code: 'invalid_command' | 'not_admitted' | 'admission_unavailable' |
+      code: 'invalid_command';
+      compensationAvailable: false;
+    }
+  | {
+      outcome: 'known_failure';
+      code: 'not_admitted' | 'admission_unavailable' |
         'credentials_unavailable' | 'preflight_unavailable' | 'remote_rejected';
       compensationAvailable: false;
+      /** Exact command authority this same-call failure belongs to. */
+      binding: Readonly<GmailInboxMutationBinding>;
     }
   | {
       outcome: 'unknown';
       /** Reserved for a mutation POST whose external effect cannot be proven. */
       code: 'remote_outcome_unknown';
       compensationAvailable: false;
+      /** Exact command authority this same-call unknown outcome belongs to. */
+      binding: Readonly<GmailInboxMutationBinding>;
     };
 
 export interface GmailInboxMutationPort {
@@ -55,5 +80,8 @@ export type GmailInboxMutationDispatchGateResult =
  * request. A provider request is forbidden unless `entered` was returned.
  */
 export interface GmailInboxMutationDispatchGate {
-  enter(command: GmailInboxMutationCommand): Promise<GmailInboxMutationDispatchGateResult>;
+  enter(
+    command: GmailInboxMutationCommand,
+    expectedTarget: GmailInboxMutationTarget,
+  ): Promise<GmailInboxMutationDispatchGateResult>;
 }
