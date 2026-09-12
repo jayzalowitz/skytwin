@@ -509,8 +509,8 @@ The user can inspect:
 4. Adapter protocol support, including
    [`ExecutionRouter.rollback`](../packages/execution-router/src/execution-router.ts), remains
    separate from the currently exposed user and API behavior.
-5. Irreversible or unavailable work is reported to the user and recorded as feedback for future
-   avoidance; the system does not claim that an external reversal occurred.
+5. Capability regret reports irreversible or unavailable status only; it does not record corrective
+   feedback or claim or dispatch an external reversal. Decision Undo is the corrective-feedback path.
 
 ## What the System Must NEVER Do Without Explicit Approval
 
