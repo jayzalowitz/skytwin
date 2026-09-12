@@ -3,6 +3,7 @@ import {
   buildExecutableActionPlan,
   IRONCLAW_CORE_ACTION_TYPES,
   OPENCLAW_ACTION_TYPES,
+  ReservedActionCapabilityError,
 } from '../action-capabilities.js';
 
 describe('buildExecutableActionPlan', () => {
@@ -47,5 +48,17 @@ describe('buildExecutableActionPlan', () => {
   it('does not advertise archive_email through either generic capability catalog', () => {
     expect(IRONCLAW_CORE_ACTION_TYPES.has('archive_email')).toBe(false);
     expect(OPENCLAW_ACTION_TYPES.has('archive_email')).toBe(false);
+    expect(() => buildExecutableActionPlan('archive_email', 'archive this email'))
+      .toThrow(ReservedActionCapabilityError);
+    try {
+      buildExecutableActionPlan('archive_email', 'archive this email');
+      throw new Error('expected reserved capability failure');
+    } catch (error) {
+      expect(error).toMatchObject({
+        name: 'ReservedActionCapabilityError',
+        code: 'reserved_action_type',
+        actionType: 'archive_email',
+      });
+    }
   });
 });

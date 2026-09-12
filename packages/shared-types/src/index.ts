@@ -108,6 +108,7 @@ export {
   buildExecutableActionPlan,
   IRONCLAW_CORE_ACTION_TYPES,
   OPENCLAW_ACTION_TYPES,
+  ReservedActionCapabilityError,
 } from './action-capabilities.js';
 export type {
   ActionPlanReadiness,
