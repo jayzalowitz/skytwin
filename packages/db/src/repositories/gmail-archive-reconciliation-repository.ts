@@ -5,8 +5,10 @@ import {
   joinedDecisionReceiptContentDigest,
   verifyJoinedDecisionReceiptChain,
   type GmailArchiveAttemptPhase,
+  type GmailArchiveAttemptStateV1,
   type GmailArchiveReconciliationCommand,
   type GmailArchiveReconciliationEvidence,
+  type GmailArchiveRecoveryLeaseFence,
   type GmailArchiveRecoveryObservationEvidence,
   type JoinedDecisionReceiptContentV1,
   type ReconcileAbandonedGmailArchiveInput,
@@ -26,7 +28,9 @@ import { decisionReceiptLifecycleRepository } from './decision-receipt-lifecycle
 import { canonicalGmailArchiveCandidateMessageRef } from './gmail-archive-approval-response-repository.js';
 import { snapshotGmailArchiveAttemptState } from './gmail-archive-attempt-state.js';
 import { GMAIL_ARCHIVE_RECOVERY_GRACE_SECONDS } from './gmail-archive-recovery-policy.js';
+import { exactTimestampEpochMicroseconds } from './gmail-archive-recovery-time.js';
 import {
+  consumeRecordedGmailArchiveObservationInTransaction,
   consumeGmailArchiveRecoveryLeaseInTransaction,
   snapshotGmailArchiveRecoveryLeaseFence,
 } from './gmail-archive-recovery-lease-consumer.js';
@@ -36,6 +40,7 @@ import {
   buildGmailArchiveTerminalContent,
   loadGmailArchivePolicyExplanation,
   loadGmailArchiveStableState,
+  parseGmailArchiveTerminalEvidence,
   validateStoredGmailArchiveTerminal,
   type GmailArchiveTerminalizationBundle,
   type GmailArchiveTerminalStableState,
@@ -84,6 +89,19 @@ export type ReconcileAbandonedGmailArchiveResult =
         'integrity_conflict' | 'idempotency_conflict' | 'commit_unverified';
     };
 
+export type RecordedGmailArchiveObservationReconciliationTransitionResult =
+  | { ok: true; reconciled: true }
+  | {
+      ok: true;
+      reconciled: false;
+      state: 'reconciliation_replay' | 'already_terminal' | 'terminal';
+    }
+  | {
+      ok: false;
+      error: 'invalid_input' | 'not_found' | 'not_ready' | 'stale_lease' |
+        'integrity_conflict' | 'idempotency_conflict' | 'commit_unverified';
+    };
+
 export interface GmailArchiveReconciliationStableValues {
   explanationId: string;
   resultId: string;
@@ -110,7 +128,7 @@ export interface GmailArchiveReconciliationExplanationSemantics {
 }
 
 class RollbackResult extends Error {
-  constructor(readonly result: ReconcileAbandonedGmailArchiveResult) {
+  constructor(readonly result: Extract<ReconcileAbandonedGmailArchiveResult, { ok: false }>) {
     super('Gmail archive reconciliation rolled back');
   }
 }
@@ -154,6 +172,21 @@ function canonicalIsoInstant(value: unknown): value is string {
     return new Date(value).toISOString() === value;
   } catch {
     return false;
+  }
+}
+
+function canonicalDbPhaseTimestamp(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const match = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(?:\.(\d{1,6}))?$/.exec(value);
+  if (!match) return null;
+  const microseconds = (match[3] ?? '').padEnd(6, '0');
+  const fraction = microseconds.slice(3) === '000' ? microseconds.slice(0, 3) : microseconds;
+  const canonical = `${match[1]}T${match[2]}.${fraction}Z`;
+  const millisecondForm = `${canonical.slice(0, 23)}Z`;
+  try {
+    return new Date(millisecondForm).toISOString() === millisecondForm ? canonical : null;
+  } catch {
+    return null;
   }
 }
 
@@ -297,13 +330,18 @@ export function parseGmailArchiveReconciliationTerminalEnvelope(
     return null;
   }
   const evidence = snapshotEvidence(envelope['evidence']);
+  const phaseChangedAtMicros = typeof envelope['phaseChangedAt'] === 'string'
+    ? exactTimestampEpochMicroseconds(envelope['phaseChangedAt']) : null;
+  const observedAtMicros = evidence?.kind === 'mailbox_observed'
+    ? exactTimestampEpochMicroseconds(evidence.observedAt) : null;
   if (!evidence || !gmailArchiveReconciliationEvidenceAllowedForPhase(
     evidence,
     envelope['attemptPhase'],
   ) || envelope['outcome'] !== reconciliationDisposition(envelope['attemptPhase']) ||
       envelope['code'] !== reconciliationCode(envelope['attemptPhase']) ||
+      phaseChangedAtMicros === null ||
       (evidence.kind === 'mailbox_observed' &&
-        Date.parse(evidence.observedAt) < Date.parse(envelope['phaseChangedAt']))) return null;
+        (observedAtMicros === null || observedAtMicros < phaseChangedAtMicros))) return null;
   const attemptPhase = envelope['attemptPhase'];
   const outcome = reconciliationDisposition(attemptPhase);
   const code = reconciliationCode(attemptPhase);
@@ -467,14 +505,19 @@ async function exactTerminalReplay(
   const explanationEvidence = parseGmailArchiveReconciliationExplanationEvidence(
     explanation?.evidence_used,
   );
+  const retainedPhaseMicros = exactTimestampEpochMicroseconds(retained.phaseChangedAt);
+  const terminalAtMicros = exactTimestampEpochMicroseconds(terminalAt);
+  const retainedObservedAtMicros = retained.evidence.kind === 'mailbox_observed'
+    ? exactTimestampEpochMicroseconds(retained.evidence.observedAt) : null;
   if (!explanation || !explanationEvidence || !sameCanonical(explanationEvidence, retained) ||
       barrier.updated_at.getTime() !== terminalAt.getTime() ||
       plan.updated_at.getTime() !== terminalAt.getTime() ||
       explanation.created_at.getTime() !== terminalAt.getTime() ||
-      Date.parse(retained.phaseChangedAt) + GMAIL_ARCHIVE_RECOVERY_GRACE_SECONDS * 1_000 >
-        terminalAt.getTime() ||
+      retainedPhaseMicros === null || terminalAtMicros === null ||
+      retainedPhaseMicros + BigInt(GMAIL_ARCHIVE_RECOVERY_GRACE_SECONDS) * 1_000_000n >
+        terminalAtMicros ||
       (retained.evidence.kind === 'mailbox_observed' &&
-        Date.parse(retained.evidence.observedAt) > terminalAt.getTime()) ||
+        (retainedObservedAtMicros === null || retainedObservedAtMicros > terminalAtMicros)) ||
       (executionResult && !exactExecutionResult(executionResult, retained, plan, terminalAt))) return null;
   const expectedExplanation = reconciliationExplanation({
     id: explanation.id,
@@ -558,123 +601,36 @@ export async function validateStoredGmailArchiveTerminalGraph(
   );
 }
 
-function fail(result: ReconcileAbandonedGmailArchiveResult): never {
+function fail(result: Extract<ReconcileAbandonedGmailArchiveResult, { ok: false }>): never {
   throw new RollbackResult(result);
 }
 
-async function transition(
+export function gmailArchiveReconciliationRollbackResult(
+  error: unknown,
+): Extract<ReconcileAbandonedGmailArchiveResult, { ok: false }> | null {
+  return error instanceof RollbackResult ? error.result : null;
+}
+
+interface GmailArchiveReconciliationReadyContext {
+  authority: Readonly<TerminalAuthority>;
+  state: GmailArchiveTerminalStableState;
+  barrier: PreEffectBarrierRow;
+  attempt: GmailArchiveAttemptStateV1;
+  plan: ExecutionPlanRow;
+  fence: Readonly<GmailArchiveRecoveryLeaseFence>;
+}
+
+interface GmailArchiveReconciliationBarrierRow extends PreEffectBarrierRow {
+  updated_at_text: string;
+}
+
+async function persistReconciliationTerminal(
   client: PoolClient,
-  input: Readonly<ReconcileAbandonedGmailArchiveInput>,
+  context: Readonly<GmailArchiveReconciliationReadyContext>,
+  envelope: Readonly<GmailArchiveReconciliationTerminalEnvelope>,
   stable: Readonly<GmailArchiveReconciliationStableValues>,
 ): Promise<ReconcileAbandonedGmailArchiveResult> {
-  const barriers = (await client.query<PreEffectBarrierRow>(
-    `SELECT * FROM pre_effect_barriers
-      WHERE id = $1 AND user_id = $2 AND effect_type = 'event_execution'
-      FOR UPDATE`,
-    [input.command.admissionId, input.command.userId],
-  )).rows;
-  if (barriers.length !== 1 || !UUID.test(barriers[0]!.idempotency_key)) {
-    return { ok: false, error: 'not_found' };
-  }
-  const barrier = barriers[0]!;
-  const fence = input.recovery.fence;
-  const phase = fence.attemptPhase;
-  if (phase === null) return { ok: false, error: 'invalid_input' };
-  const authority = Object.freeze({
-    userId: input.command.userId,
-    approvalId: barrier.idempotency_key,
-  });
-  const state = await loadGmailArchiveStableState(client, authority);
-  if (!state) return { ok: false, error: 'not_found' };
-  const messageRefId = canonicalGmailArchiveCandidateMessageRef(state.approval, state.candidate);
-  if (!messageRefId || input.command.messageRefId !== messageRefId ||
-      input.command.operation !== 'reconcile_archive' || barrier.decision_id !== state.decision.id ||
-      barrier.action_id !== state.candidate.id || barrier.explanation_id === null ||
-      fence.approvalId !== authority.approvalId) {
-    return { ok: false, error: 'idempotency_conflict' };
-  }
-  const approved = exactGmailArchiveApprovedPrefix(state);
-  if (!approved) return { ok: false, error: 'idempotency_conflict' };
-  const envelope = buildGmailArchiveReconciliationTerminalEnvelope({
-    phase,
-    phaseChangedAt: fence.phaseChangedAt,
-    evidence: input.evidence,
-  });
-  if (barrier.status === 'succeeded' || barrier.status === 'failed' || barrier.status === 'unknown') {
-    const reconciliation = await validateStoredGmailArchiveReconciliationTerminal(
-      client,
-      authority,
-      state,
-      barrier,
-      approved,
-      envelope,
-    );
-    return reconciliation
-      ? { ok: true, created: false, reconciliation }
-      : { ok: false, error: 'idempotency_conflict' };
-  }
-  if (barrier.status !== 'in_progress') return { ok: false, error: 'not_ready' };
-  const attempt = snapshotGmailArchiveAttemptState(barrier.effect_result);
-  if (!attempt || attempt.phase !== phase ||
-      barrier.updated_at.toISOString() !== fence.phaseChangedAt ||
-      !gmailArchiveReconciliationEvidenceAllowedForPhase(input.evidence, phase)) {
-    return { ok: false, error: 'idempotency_conflict' };
-  }
-  const due = (await client.query<{ due: boolean }>(
-    `SELECT $1::TIMESTAMPTZ + ($2::INT * INTERVAL '1 second') <= now() AS due`,
-    [fence.phaseChangedAt, GMAIL_ARCHIVE_RECOVERY_GRACE_SECONDS],
-  )).rows[0]?.due;
-  if (due !== true) return { ok: false, error: 'not_ready' };
-  const plans = (await client.query<ExecutionPlanRow>(
-    'SELECT * FROM execution_plans WHERE decision_id = $1 ORDER BY id ASC FOR UPDATE',
-    [state.decision.id],
-  )).rows;
-  if (plans.length !== 1 || plans[0]!.status !== 'in_progress' ||
-      plans[0]!.id !== state.outcome.execution_plan_id ||
-      plans[0]!.action_id !== state.candidate.id) {
-    return { ok: false, error: 'idempotency_conflict' };
-  }
-  const plan = plans[0]!;
-  const counts = await client.query<{ results: string; events: string }>(
-    `SELECT
-       (SELECT count(*) FROM execution_results WHERE plan_id = $1) AS results,
-       (SELECT count(*) FROM execution_events WHERE plan_id = $1) AS events`,
-    [plan.id],
-  );
-  if (counts.rows[0]?.results !== '0' || counts.rows[0]?.events !== '0' ||
-      state.revisions.length !== 6) {
-    return { ok: false, error: 'idempotency_conflict' };
-  }
-  const policyExplanation = await loadGmailArchivePolicyExplanation(
-    client,
-    barrier,
-    state.decision.id,
-  );
-  if (!policyExplanation || !await exactGmailArchiveInProgressBaseline(
-    client,
-    authority,
-    state,
-    barrier,
-    plan,
-    policyExplanation,
-    approved,
-    false,
-  )) {
-    return { ok: false, error: 'idempotency_conflict' };
-  }
-  const consumed = await consumeGmailArchiveRecoveryLeaseInTransaction(client, {
-    fence,
-    observationAttemptId: input.recovery.observationAttemptId,
-    evidence: input.evidence.kind === 'interrupted_before_dispatch'
-      ? null
-      : input.evidence as GmailArchiveRecoveryObservationEvidence,
-  });
-  if (!consumed.ok) return {
-    ok: false,
-    error: consumed.error === 'evidence_conflict'
-      ? 'idempotency_conflict'
-      : consumed.error,
-  };
+  const { authority, state, barrier, attempt, plan, fence } = context;
   const explanation = reconciliationExplanation({
     id: stable.explanationId,
     createdAt: stable.persistedAt,
@@ -804,6 +760,296 @@ async function transition(
   };
 }
 
+async function transition(
+  client: PoolClient,
+  input: Readonly<ReconcileAbandonedGmailArchiveInput>,
+  stable: Readonly<GmailArchiveReconciliationStableValues>,
+): Promise<ReconcileAbandonedGmailArchiveResult> {
+  const barriers = (await client.query<GmailArchiveReconciliationBarrierRow>(
+    `SELECT barrier.*,
+            (barrier.updated_at AT TIME ZONE 'UTC')::STRING AS updated_at_text
+       FROM pre_effect_barriers AS barrier
+      WHERE barrier.id = $1 AND barrier.user_id = $2
+        AND barrier.effect_type = 'event_execution'
+      FOR UPDATE`,
+    [input.command.admissionId, input.command.userId],
+  )).rows;
+  if (barriers.length !== 1 || !UUID.test(barriers[0]!.idempotency_key)) {
+    return { ok: false, error: 'not_found' };
+  }
+  const barrier = barriers[0]!;
+  const fence = input.recovery.fence;
+  const phase = fence.attemptPhase;
+  if (phase === null) return { ok: false, error: 'invalid_input' };
+  const authority = Object.freeze({
+    userId: input.command.userId,
+    approvalId: barrier.idempotency_key,
+  });
+  const state = await loadGmailArchiveStableState(client, authority);
+  if (!state) return { ok: false, error: 'not_found' };
+  const messageRefId = canonicalGmailArchiveCandidateMessageRef(state.approval, state.candidate);
+  if (!messageRefId || input.command.messageRefId !== messageRefId ||
+      input.command.operation !== 'reconcile_archive' || barrier.decision_id !== state.decision.id ||
+      barrier.action_id !== state.candidate.id || barrier.explanation_id === null ||
+      fence.approvalId !== authority.approvalId) {
+    return { ok: false, error: 'idempotency_conflict' };
+  }
+  const approved = exactGmailArchiveApprovedPrefix(state);
+  if (!approved) return { ok: false, error: 'idempotency_conflict' };
+  const envelope = buildGmailArchiveReconciliationTerminalEnvelope({
+    phase,
+    phaseChangedAt: fence.phaseChangedAt,
+    evidence: input.evidence,
+  });
+  if (barrier.status === 'succeeded' || barrier.status === 'failed' || barrier.status === 'unknown') {
+    const reconciliation = await validateStoredGmailArchiveReconciliationTerminal(
+      client,
+      authority,
+      state,
+      barrier,
+      approved,
+      envelope,
+    );
+    return reconciliation
+      ? { ok: true, created: false, reconciliation }
+      : { ok: false, error: 'idempotency_conflict' };
+  }
+  if (barrier.status !== 'in_progress') return { ok: false, error: 'not_ready' };
+  const attempt = snapshotGmailArchiveAttemptState(barrier.effect_result);
+  if (!attempt || attempt.phase !== phase ||
+      canonicalDbPhaseTimestamp(barrier.updated_at_text) !== fence.phaseChangedAt ||
+      !gmailArchiveReconciliationEvidenceAllowedForPhase(input.evidence, phase)) {
+    return { ok: false, error: 'idempotency_conflict' };
+  }
+  const due = (await client.query<{ due: boolean }>(
+    `SELECT $1::TIMESTAMPTZ + ($2::INT * INTERVAL '1 second') <= now() AS due`,
+    [fence.phaseChangedAt, GMAIL_ARCHIVE_RECOVERY_GRACE_SECONDS],
+  )).rows[0]?.due;
+  if (due !== true) return { ok: false, error: 'not_ready' };
+  const plans = (await client.query<ExecutionPlanRow>(
+    'SELECT * FROM execution_plans WHERE decision_id = $1 ORDER BY id ASC FOR UPDATE',
+    [state.decision.id],
+  )).rows;
+  if (plans.length !== 1 || plans[0]!.status !== 'in_progress' ||
+      plans[0]!.id !== state.outcome.execution_plan_id ||
+      plans[0]!.action_id !== state.candidate.id) {
+    return { ok: false, error: 'idempotency_conflict' };
+  }
+  const plan = plans[0]!;
+  const counts = await client.query<{ results: string; events: string }>(
+    `SELECT
+       (SELECT count(*) FROM execution_results WHERE plan_id = $1) AS results,
+       (SELECT count(*) FROM execution_events WHERE plan_id = $1) AS events`,
+    [plan.id],
+  );
+  if (counts.rows[0]?.results !== '0' || counts.rows[0]?.events !== '0' ||
+      state.revisions.length !== 6) {
+    return { ok: false, error: 'idempotency_conflict' };
+  }
+  const policyExplanation = await loadGmailArchivePolicyExplanation(
+    client,
+    barrier,
+    state.decision.id,
+  );
+  if (!policyExplanation || !await exactGmailArchiveInProgressBaseline(
+    client,
+    authority,
+    state,
+    barrier,
+    plan,
+    policyExplanation,
+    approved,
+    false,
+  )) {
+    return { ok: false, error: 'idempotency_conflict' };
+  }
+  const consumed = await consumeGmailArchiveRecoveryLeaseInTransaction(client, {
+    fence,
+    observationAttemptId: input.recovery.observationAttemptId,
+    evidence: input.evidence.kind === 'interrupted_before_dispatch'
+      ? null
+      : input.evidence as GmailArchiveRecoveryObservationEvidence,
+  });
+  if (!consumed.ok) return {
+    ok: false,
+    error: consumed.error === 'evidence_conflict'
+      ? 'idempotency_conflict'
+      : consumed.error,
+  };
+  return persistReconciliationTerminal(client, {
+    authority,
+    state,
+    barrier,
+    attempt,
+    plan,
+    fence,
+  }, envelope, stable);
+}
+
+/**
+ * Barrier-first transaction core for capability-free recorded observation
+ * reconciliation. The observation attempt and evidence are derived only after
+ * the complete in-progress graph has been validated.
+ */
+export async function reconcileRecordedGmailArchiveObservationInTransaction(
+  client: PoolClient,
+  fence: Readonly<GmailArchiveRecoveryLeaseFence>,
+  stable: Readonly<GmailArchiveReconciliationStableValues>,
+): Promise<RecordedGmailArchiveObservationReconciliationTransitionResult> {
+  const barriers = (await client.query<GmailArchiveReconciliationBarrierRow>(
+    `SELECT barrier.*,
+            (barrier.updated_at AT TIME ZONE 'UTC')::STRING AS updated_at_text
+       FROM pre_effect_barriers AS barrier
+      WHERE barrier.id = $1 AND barrier.user_id = $2
+        AND barrier.effect_type = 'event_execution'
+      FOR UPDATE`,
+    [fence.admissionId, fence.userId],
+  )).rows;
+  if (barriers.length !== 1 || !UUID.test(barriers[0]!.idempotency_key)) {
+    return { ok: false, error: 'not_found' };
+  }
+  const barrier = barriers[0]!;
+  const authority = Object.freeze({
+    userId: fence.userId,
+    approvalId: barrier.idempotency_key,
+  });
+  const state = await loadGmailArchiveStableState(client, authority);
+  if (!state) return { ok: false, error: 'not_found' };
+  const messageRefId = canonicalGmailArchiveCandidateMessageRef(state.approval, state.candidate);
+  if (!messageRefId || messageRefId !== fence.messageRefId ||
+      fence.approvalId !== authority.approvalId ||
+      fence.workKind !== 'observe_dispatch' || fence.barrierStatus !== 'in_progress' ||
+      fence.attemptPhase !== 'dispatch_may_have_started' ||
+      barrier.decision_id !== state.decision.id || barrier.action_id !== state.candidate.id ||
+      barrier.explanation_id === null) {
+    return { ok: false, error: 'idempotency_conflict' };
+  }
+  const approved = exactGmailArchiveApprovedPrefix(state);
+  if (!approved) return { ok: false, error: 'idempotency_conflict' };
+  if (barrier.status === 'succeeded' || barrier.status === 'failed' ||
+      barrier.status === 'unknown') {
+    const retainedReconciliation = parseGmailArchiveReconciliationTerminalEnvelope(
+      barrier.effect_result,
+    );
+    if (retainedReconciliation) {
+      if (retainedReconciliation.attemptPhase !== 'dispatch_may_have_started' ||
+          retainedReconciliation.phaseChangedAt !== fence.phaseChangedAt ||
+          retainedReconciliation.evidence.kind === 'interrupted_before_dispatch' ||
+          retainedReconciliation.evidence.binding.userId !== fence.userId ||
+          retainedReconciliation.evidence.binding.admissionId !== fence.admissionId ||
+          retainedReconciliation.evidence.binding.messageRefId !== fence.messageRefId) {
+        return { ok: false, error: 'idempotency_conflict' };
+      }
+      const replay = await validateStoredGmailArchiveReconciliationTerminal(
+        client,
+        authority,
+        state,
+        barrier,
+        approved,
+        retainedReconciliation,
+      );
+      return replay
+        ? { ok: true, reconciled: false, state: 'reconciliation_replay' }
+        : { ok: false, error: 'idempotency_conflict' };
+    }
+    const retainedMutation = parseGmailArchiveTerminalEvidence(barrier.effect_result);
+    if (!retainedMutation) return { ok: false, error: 'idempotency_conflict' };
+    const terminal = await validateStoredGmailArchiveTerminal(
+      client,
+      authority,
+      state,
+      barrier,
+      approved,
+    );
+    if (!terminal) return { ok: false, error: 'idempotency_conflict' };
+    if (retainedMutation.attemptPhase === null) {
+      return { ok: true, reconciled: false, state: 'terminal' };
+    }
+    const mutationResult = retainedMutation.result;
+    const mutationBinding = 'binding' in mutationResult ? mutationResult.binding : null;
+    if (retainedMutation.attemptPhase !== 'dispatch_may_have_started' || !mutationBinding ||
+        mutationBinding.userId !== fence.userId ||
+        mutationBinding.admissionId !== fence.admissionId ||
+        mutationBinding.messageRefId !== fence.messageRefId) {
+      return { ok: false, error: 'idempotency_conflict' };
+    }
+    return { ok: true, reconciled: false, state: 'already_terminal' };
+  }
+  if (barrier.status !== 'in_progress') return { ok: false, error: 'not_ready' };
+  const attempt = snapshotGmailArchiveAttemptState(barrier.effect_result);
+  if (!attempt || attempt.phase !== 'dispatch_may_have_started' ||
+      canonicalDbPhaseTimestamp(barrier.updated_at_text) !== fence.phaseChangedAt) {
+    return { ok: false, error: 'idempotency_conflict' };
+  }
+  const due = (await client.query<{ due: boolean }>(
+    `SELECT $1::TIMESTAMPTZ + ($2::INT * INTERVAL '1 second') <= now() AS due`,
+    [fence.phaseChangedAt, GMAIL_ARCHIVE_RECOVERY_GRACE_SECONDS],
+  )).rows[0]?.due;
+  if (due !== true) return { ok: false, error: 'not_ready' };
+  const plans = (await client.query<ExecutionPlanRow>(
+    'SELECT * FROM execution_plans WHERE decision_id = $1 ORDER BY id ASC FOR UPDATE',
+    [state.decision.id],
+  )).rows;
+  if (plans.length !== 1 || plans[0]!.status !== 'in_progress' ||
+      plans[0]!.id !== state.outcome.execution_plan_id ||
+      plans[0]!.action_id !== state.candidate.id) {
+    return { ok: false, error: 'idempotency_conflict' };
+  }
+  const plan = plans[0]!;
+  const counts = await client.query<{ results: string; events: string }>(
+    `SELECT
+       (SELECT count(*) FROM execution_results WHERE plan_id = $1) AS results,
+       (SELECT count(*) FROM execution_events WHERE plan_id = $1) AS events`,
+    [plan.id],
+  );
+  if (counts.rows[0]?.results !== '0' || counts.rows[0]?.events !== '0' ||
+      state.revisions.length !== 6) {
+    return { ok: false, error: 'idempotency_conflict' };
+  }
+  const policyExplanation = await loadGmailArchivePolicyExplanation(
+    client,
+    barrier,
+    state.decision.id,
+  );
+  if (!policyExplanation || !await exactGmailArchiveInProgressBaseline(
+    client,
+    authority,
+    state,
+    barrier,
+    plan,
+    policyExplanation,
+    approved,
+    false,
+  )) {
+    return { ok: false, error: 'idempotency_conflict' };
+  }
+  const consumed = await consumeRecordedGmailArchiveObservationInTransaction(client, fence);
+  if (!consumed.ok) return consumed;
+  const observedAt = consumed.evidence.kind === 'mailbox_observed'
+    ? exactTimestampEpochMicroseconds(consumed.evidence.observedAt)
+    : null;
+  const persistedAt = exactTimestampEpochMicroseconds(stable.persistedAt);
+  if (persistedAt === null || (observedAt !== null && observedAt > persistedAt)) {
+    fail({ ok: false, error: 'integrity_conflict' });
+  }
+  const envelope = buildGmailArchiveReconciliationTerminalEnvelope({
+    phase: 'dispatch_may_have_started',
+    phaseChangedAt: fence.phaseChangedAt,
+    evidence: consumed.evidence,
+  });
+  const persisted = await persistReconciliationTerminal(client, {
+    authority,
+    state,
+    barrier,
+    attempt,
+    plan,
+    fence,
+  }, envelope, stable);
+  return persisted.ok
+    ? { ok: true, reconciled: true }
+    : persisted;
+}
+
 function allocateStableValues(persistedAt: string): GmailArchiveReconciliationStableValues {
   return Object.freeze({
     explanationId: randomUUID(),
@@ -854,14 +1100,22 @@ async function reconcileWithTransition(
   const persistedAt = await persistedAtFactory();
   const stable = snapshotStableValues(stableFactory(persistedAt));
   const phaseChangedAt = input.recovery.fence.phaseChangedAt;
-  if (!stable || Date.parse(phaseChangedAt) > Date.parse(stable.persistedAt) ||
+  const phaseChangedAtMicros = exactTimestampEpochMicroseconds(phaseChangedAt);
+  const persistedAtMicros = stable
+    ? exactTimestampEpochMicroseconds(stable.persistedAt) : null;
+  const observedAtMicros = input.evidence.kind === 'mailbox_observed'
+    ? exactTimestampEpochMicroseconds(input.evidence.observedAt) : null;
+  if (!stable || phaseChangedAtMicros === null || persistedAtMicros === null ||
+      phaseChangedAtMicros > persistedAtMicros ||
       (input.evidence.kind === 'mailbox_observed' &&
-        (Date.parse(input.evidence.observedAt) < Date.parse(phaseChangedAt) ||
-          Date.parse(input.evidence.observedAt) > Date.parse(stable.persistedAt)))) {
+        (observedAtMicros === null || observedAtMicros < phaseChangedAtMicros ||
+          observedAtMicros > persistedAtMicros))) {
     return { ok: false, error: 'invalid_input' };
   }
-  if (Date.parse(phaseChangedAt) + GMAIL_ARCHIVE_RECOVERY_GRACE_SECONDS * 1_000 >
-      Date.parse(stable.persistedAt)) return { ok: false, error: 'not_ready' };
+  if (phaseChangedAtMicros +
+      BigInt(GMAIL_ARCHIVE_RECOVERY_GRACE_SECONDS) * 1_000_000n > persistedAtMicros) {
+    return { ok: false, error: 'not_ready' };
+  }
   for (let attempt = 0; ; attempt += 1) {
     try {
       return await transactionFn((client) => transitionFn(client, input, stable));

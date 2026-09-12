@@ -55,6 +55,13 @@ export type ConsumeGmailArchiveRecoveryLeaseResult =
         'integrity_conflict';
     };
 
+export type ConsumeRecordedGmailArchiveObservationResult =
+  | { ok: true; evidence: Readonly<GmailArchiveRecoveryObservationEvidence> }
+  | {
+      ok: false;
+      error: 'invalid_input' | 'stale_lease' | 'not_ready' | 'integrity_conflict';
+    };
+
 function ownData(value: unknown, keys: readonly string[]): Record<string, unknown> | null {
   try {
     if (!value || typeof value !== 'object' || Array.isArray(value) ||
@@ -256,6 +263,32 @@ function sameEvidence(
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+function recordedObservationEvidenceFromRow(
+  row: RecoveryLeaseConsumptionRow,
+  fence: GmailArchiveRecoveryLeaseFence,
+): Readonly<GmailArchiveRecoveryObservationEvidence> | null {
+  if (row.observation_state !== 'evidence_recorded' ||
+      typeof row.observation_attempt_id !== 'string' ||
+      !UUID.test(row.observation_attempt_id) || !row.observation_authorized_at ||
+      !row.observation_deadline_at) return null;
+  const retained = parseEvidenceEnvelope(row.observation_evidence);
+  const phaseChangedAtMicros = exactTimestampEpochMicroseconds(fence.phaseChangedAt);
+  const authorizedAtMicros = exactTimestampEpochMicroseconds(row.observation_authorized_at);
+  const deadlineAtMicros = exactTimestampEpochMicroseconds(row.observation_deadline_at);
+  if (phaseChangedAtMicros === null || authorizedAtMicros === null || deadlineAtMicros === null ||
+      authorizedAtMicros < phaseChangedAtMicros || deadlineAtMicros - authorizedAtMicros !==
+        BigInt(GMAIL_ARCHIVE_RECOVERY_OBSERVATION_DEADLINE_SECONDS) * 1_000_000n ||
+      !retained || retained.binding.userId !== fence.userId ||
+      retained.binding.admissionId !== fence.admissionId ||
+      retained.binding.messageRefId !== fence.messageRefId) return null;
+  if (retained.kind === 'mailbox_observed') {
+    const observedAtMicros = exactTimestampEpochMicroseconds(retained.observedAt);
+    if (observedAtMicros === null || observedAtMicros < authorizedAtMicros ||
+        observedAtMicros < phaseChangedAtMicros || observedAtMicros > deadlineAtMicros) return null;
+  }
+  return retained;
+}
+
 function exactRowFence(
   row: RecoveryLeaseConsumptionRow,
   fence: GmailArchiveRecoveryLeaseFence,
@@ -329,31 +362,8 @@ export async function consumeGmailArchiveRecoveryLeaseInTransaction(
   } else {
     if (row.observation_state !== 'evidence_recorded') return { ok: false, error: 'not_ready' };
     if (row.observation_attempt_id !== attemptId) return { ok: false, error: 'stale_lease' };
-    const retained = parseEvidenceEnvelope(row.observation_evidence);
-    const phaseChangedAtMicros = exactTimestampEpochMicroseconds(fence.phaseChangedAt);
-    const observationAuthorizedAtMicros = row.observation_authorized_at
-      ? exactTimestampEpochMicroseconds(row.observation_authorized_at) : null;
-    if (!row.observation_authorized_at || !row.observation_deadline_at ||
-        row.observation_authorized_at.getTime() > row.observation_deadline_at.getTime() ||
-        row.observation_deadline_at.getTime() - row.observation_authorized_at.getTime() !==
-          GMAIL_ARCHIVE_RECOVERY_OBSERVATION_DEADLINE_SECONDS * 1_000 ||
-        phaseChangedAtMicros === null || observationAuthorizedAtMicros === null ||
-        observationAuthorizedAtMicros < phaseChangedAtMicros ||
-        !retained ||
-        retained.binding.userId !== fence.userId ||
-        retained.binding.admissionId !== fence.admissionId ||
-        retained.binding.messageRefId !== fence.messageRefId) {
-      return { ok: false, error: 'integrity_conflict' };
-    }
-    if (retained.kind === 'mailbox_observed') {
-      const observedAt = exactTimestampEpochMicroseconds(retained.observedAt);
-      const deadlineAt = exactTimestampEpochMicroseconds(row.observation_deadline_at);
-      if (observedAt === null || observationAuthorizedAtMicros === null || deadlineAt === null ||
-          observedAt < observationAuthorizedAtMicros || observedAt < phaseChangedAtMicros ||
-          observedAt > deadlineAt) {
-        return { ok: false, error: 'integrity_conflict' };
-      }
-    }
+    const retained = recordedObservationEvidenceFromRow(row, fence);
+    if (!retained) return { ok: false, error: 'integrity_conflict' };
     if (!evidence || !sameEvidence(retained, evidence)) {
       return { ok: false, error: 'evidence_conflict' };
     }
@@ -380,6 +390,68 @@ export async function consumeGmailArchiveRecoveryLeaseInTransaction(
   );
   if (deleted.rows.length !== 1) return { ok: false, error: 'integrity_conflict' };
   return { ok: true, evidence };
+}
+
+/**
+ * Derive and consume recorded observation evidence after the matching barrier
+ * graph has been locked and validated by the caller. The attempt and evidence
+ * never cross the repository boundary.
+ */
+export async function consumeRecordedGmailArchiveObservationInTransaction(
+  client: PoolClient,
+  submitted: GmailArchiveRecoveryLeaseFence,
+): Promise<ConsumeRecordedGmailArchiveObservationResult> {
+  const fence = snapshotGmailArchiveRecoveryLeaseFence(submitted);
+  if (!fence || fence.workKind !== 'observe_dispatch' ||
+      fence.barrierStatus !== 'in_progress' ||
+      fence.attemptPhase !== 'dispatch_may_have_started') {
+    return { ok: false, error: 'invalid_input' };
+  }
+  const rows = (await client.query<RecoveryLeaseConsumptionRow>(
+    `SELECT lease.*,
+            (lease.phase_changed_at AT TIME ZONE 'UTC')::STRING AS phase_changed_at_text
+       FROM gmail_archive_recovery_leases AS lease
+      WHERE admission_id = $1 AND user_id = $2
+      FOR UPDATE`,
+    [fence.admissionId, fence.userId],
+  )).rows;
+  if (rows.length === 0) return { ok: false, error: 'stale_lease' };
+  if (rows.length !== 1) return { ok: false, error: 'integrity_conflict' };
+  const row = rows[0]!;
+  if (!exactRowFence(row, fence)) return { ok: false, error: 'stale_lease' };
+  if (!Number.isSafeInteger(Number(row.generation)) || Number(row.generation) < 1) {
+    return { ok: false, error: 'integrity_conflict' };
+  }
+  if (row.observation_state !== 'evidence_recorded') {
+    return { ok: false, error: 'not_ready' };
+  }
+  const retained = recordedObservationEvidenceFromRow(row, fence);
+  if (!retained || !row.observation_attempt_id || !row.observation_authorized_at ||
+      !row.observation_deadline_at) return { ok: false, error: 'integrity_conflict' };
+  const expectedEvidence = evidenceEnvelope(retained);
+  const deleted = await client.query(
+    `DELETE FROM gmail_archive_recovery_leases
+      WHERE admission_id = $1 AND user_id = $2 AND approval_id = $3
+        AND message_ref_id = $4 AND work_kind = $5 AND barrier_status = $6
+        AND attempt_phase IS NOT DISTINCT FROM $7::STRING
+        AND phase_changed_at = $8::TIMESTAMPTZ
+        AND lease_token = $9 AND generation = $10::INT8
+        AND observation_state = 'evidence_recorded'
+        AND observation_attempt_id = $11::UUID
+        AND observation_authorized_at = $12::TIMESTAMPTZ
+        AND observation_deadline_at = $13::TIMESTAMPTZ
+        AND observation_evidence = $14::JSONB
+      RETURNING admission_id`,
+    [
+      fence.admissionId, fence.userId, fence.approvalId, fence.messageRefId,
+      fence.workKind, fence.barrierStatus, fence.attemptPhase, fence.phaseChangedAt,
+      fence.leaseToken, fence.generation, row.observation_attempt_id,
+      row.observation_authorized_at.toISOString(), row.observation_deadline_at.toISOString(),
+      JSON.stringify(expectedEvidence),
+    ],
+  );
+  if (deleted.rows.length !== 1) return { ok: false, error: 'integrity_conflict' };
+  return { ok: true, evidence: retained };
 }
 
 /**
