@@ -220,7 +220,8 @@ function riskProjection(risk: RiskAssessment): Record<string, unknown> {
   return { ...risk, assessedAt: risk.assessedAt.toISOString() };
 }
 
-function createTransactionPolicyPort(
+/** DB-internal owner-scoped policy view shared with the claim lifecycle. */
+export function createGmailArchiveTransactionPolicyPort(
   ownerId: string,
   rows: readonly ActionPolicyRow[],
 ): PolicyRepositoryPort {
@@ -329,7 +330,8 @@ function exactExplanation(
     row.capability_provenance_node_id === null;
 }
 
-function planSteps(candidate: CandidateAction): Record<string, unknown>[] {
+/** Exact persisted plan projection shared with the claim lifecycle. */
+export function canonicalGmailArchivePlanSteps(candidate: CandidateAction): Record<string, unknown>[] {
   return [{
     type: 'archive_email',
     status: 'pending',
@@ -435,7 +437,8 @@ function exactCompletedBarrier(barrier: PreEffectBarrierRow): boolean {
     result?.['dispatched'] === false;
 }
 
-async function loadReplay(
+/** Validate and recover the exact immutable preparation graph without opening a transaction. */
+export async function loadGmailArchivePreparationReplay(
   client: PoolClient,
   input: PrepareGmailArchiveInput,
   state: GmailArchiveApprovalCanonicalState,
@@ -492,7 +495,7 @@ async function loadReplay(
     if (state.outcome.execution_plan_id !== plan.id || plan.action_id !== state.candidate.id ||
         plan.status !== 'pending' ||
         joinedDecisionReceiptArtifactDigest('policy', plan.steps) !==
-          joinedDecisionReceiptArtifactDigest('policy', planSteps(candidate))) {
+          joinedDecisionReceiptArtifactDigest('policy', canonicalGmailArchivePlanSteps(candidate))) {
       return { ok: false, error: 'idempotency_conflict' };
     }
   } else {
@@ -560,7 +563,7 @@ async function transition(
   if (barriers.rows.length !== 1) return { ok: false, error: 'not_ready' };
   const barrier = barriers.rows[0]!;
   if (!exactReservedBarrier(barrier, input)) {
-    return loadReplay(client, input, state, barrier, approved);
+    return loadGmailArchivePreparationReplay(client, input, state, barrier, approved);
   }
 
   if (state.outcome.execution_plan_id !== null) {
@@ -612,7 +615,7 @@ async function transition(
     'SELECT * FROM action_policies WHERE user_id = $1 ORDER BY priority DESC, id ASC FOR UPDATE',
     [input.userId],
   )).rows;
-  const policyPort = createTransactionPolicyPort(input.userId, policyRows);
+  const policyPort = createGmailArchiveTransactionPolicyPort(input.userId, policyRows);
   const evaluator = new PolicyEvaluator(policyPort);
   const policies = await policyPort.getAllPolicies(input.userId);
   const policyDecision = await evaluator.evaluate(
@@ -720,7 +723,7 @@ async function transition(
     `INSERT INTO execution_plans (id, decision_id, action_id, status, steps)
      VALUES ($1, $2, $3, 'pending', $4)
      RETURNING *`,
-    [ids.plan, state.decision.id, state.candidate.id, JSON.stringify(planSteps(candidate))],
+    [ids.plan, state.decision.id, state.candidate.id, JSON.stringify(canonicalGmailArchivePlanSteps(candidate))],
   )).rows[0];
   if (!insertedPlan) fail({ ok: false, error: 'idempotency_conflict' });
   const linked = await client.query(

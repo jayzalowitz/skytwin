@@ -57,6 +57,11 @@ export type {
   PrepareGmailArchiveInput,
   PrepareGmailArchiveResult,
 } from './gmail-archive-preparation-repository.js';
+export { gmailArchiveClaimRepository } from './gmail-archive-claim-repository.js';
+export type {
+  ClaimPreparedGmailArchiveInput,
+  ClaimPreparedGmailArchiveResult,
+} from './gmail-archive-claim-repository.js';
 
 export { feedbackRepository } from './feedback-repository.js';
 export type { CreateFeedbackInput } from './feedback-repository.js';
