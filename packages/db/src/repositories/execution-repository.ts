@@ -203,12 +203,11 @@ export const executionRepository = {
    * result's recorded adapter. The `regret` endpoint uses this for a truthful
    * report only; it does not authorize or dispatch a rollback.
    *
-   * The lateral subquery also binds the candidate identity/type through its
-   * owner-scoped decision and requires the current outcome plan to identify
-   * that same decision and action. A malformed cross-owner or cross-action
-   * graph therefore produces no plan/type authority. `LIMIT 1` keeps one row
-   * per provenance node, and the adapter lookup selects the latest result for
-   * only that exactly bound plan.
+   * The outer lateral subquery independently binds candidate identity/type and
+   * reversibility through its owner-scoped decision. Its nested lateral lookup
+   * exposes plan/adapter metadata only when the current outcome plan identifies
+   * that same action and has a qualifying result. This preserves archive and
+   * reversibility classification even when plan metadata must fail closed.
    */
   async getRollbackTargetsByServer(input: {
     serverId: string;
@@ -233,10 +232,10 @@ export const executionRepository = {
               link.adapter_used
          FROM capability_provenance_nodes pn
          LEFT JOIN LATERAL (
-                SELECT plan.id AS execution_plan_id,
-                       candidate.action_type,
+                SELECT candidate.action_type,
                        candidate.reversible,
-                       result.outputs->>'adapter_used' AS adapter_used
+                       qualified.execution_plan_id,
+                       qualified.adapter_used
                   FROM candidate_actions candidate
                   JOIN decisions decision
                     ON decision.id = candidate.decision_id
@@ -244,18 +243,23 @@ export const executionRepository = {
                   JOIN decision_outcomes doc
                     ON doc.decision_id = decision.id
                    AND doc.selected_action_id = candidate.id
-                  JOIN execution_plans plan
-                    ON plan.id = doc.execution_plan_id
-                   AND plan.decision_id = decision.id
-                   AND plan.action_id = candidate.id
-                   AND plan.status = 'completed'
-                  JOIN execution_results result
-                    ON result.plan_id = plan.id
-                   AND result.success = true
-                   AND result.rollback_available = true
-                   AND nullif(result.outputs->>'adapter_used', '') IS NOT NULL
-                 WHERE candidate.id::STRING = pn.ref_id
-                 ORDER BY result.completed_at DESC, result.id DESC
+                  LEFT JOIN LATERAL (
+                    SELECT plan.id AS execution_plan_id,
+                           result.outputs->>'adapter_used' AS adapter_used
+                      FROM execution_plans plan
+                      JOIN execution_results result
+                        ON result.plan_id = plan.id
+                       AND result.success = true
+                       AND result.rollback_available = true
+                       AND nullif(result.outputs->>'adapter_used', '') IS NOT NULL
+                     WHERE plan.id = doc.execution_plan_id
+                       AND plan.decision_id = decision.id
+                       AND plan.action_id = candidate.id
+                       AND plan.status = 'completed'
+                     ORDER BY result.completed_at DESC, result.id DESC
+                     LIMIT 1
+                  ) qualified ON true
+                 WHERE candidate.id = pn.ref_id
                  LIMIT 1
               ) link ON true
         WHERE pn.server_id = $1

@@ -692,9 +692,8 @@ export function createCapabilitiesRouter(): Router {
       // `rolled_back` remains in the response union for compatibility but is
       // never emitted by this endpoint while dispatch is disabled.
       //   - 'rollback_failed'  — rollback was not dispatched.
-      //   - 'no_plan_linkage'  — the #324 FK lookup returned NULL; no plan to
-      //                          target, so nothing to dispatch. Honest
-      //                          reporting beats claiming a rollback happened.
+      //   - 'no_plan_linkage'  — no completed, successful, rollback-enabled
+      //                          plan/result report qualified.
       const undone: Array<{
         actionId: string;
         planId: string | null;
@@ -706,14 +705,6 @@ export function createCapabilitiesRouter(): Router {
 
       for (const { target, actionIdentity, irreversibleReason, classification } of boundTargets) {
         const reversible = target.reversible === true;
-
-        if (!reversible) {
-          irreversible.push({
-            actionId: target.actionId,
-            reason: irreversibleReason ?? 'Action was marked irreversible at execution time',
-          });
-          continue;
-        }
 
         // Dedicated archive rollback must never re-enter a generic adapter,
         // including legacy rows that predate archive quarantine. Missing or
@@ -727,6 +718,14 @@ export function createCapabilitiesRouter(): Router {
             message: classification.kind === 'archive'
               ? 'Archive rollback is reserved for its dedicated execution lifecycle.'
               : 'Rollback action identity could not be validated.',
+          });
+          continue;
+        }
+
+        if (!reversible) {
+          irreversible.push({
+            actionId: target.actionId,
+            reason: irreversibleReason ?? 'Action was marked irreversible at execution time',
           });
           continue;
         }
