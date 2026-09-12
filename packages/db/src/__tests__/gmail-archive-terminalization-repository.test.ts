@@ -1,11 +1,12 @@
 import { readFile } from 'node:fs/promises';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { withTransactionMock } = vi.hoisted(() => ({
+const { queryMock, withTransactionMock } = vi.hoisted(() => ({
+  queryMock: vi.fn(),
   withTransactionMock: vi.fn(),
 }));
 
-vi.mock('../connection.js', () => ({ withTransaction: withTransactionMock }));
+vi.mock('../connection.js', () => ({ query: queryMock, withTransaction: withTransactionMock }));
 
 const {
   buildGmailArchiveTerminalResultEnvelope,
@@ -48,6 +49,8 @@ const stable = {
 
 describe('gmailArchiveTerminalizationRepository boundary', () => {
   beforeEach(() => {
+    queryMock.mockReset();
+    queryMock.mockResolvedValue({ rows: [{ persisted_at: new Date(stable.persistedAt) }] });
     withTransactionMock.mockReset();
   });
 
@@ -190,6 +193,8 @@ describe('gmailArchiveTerminalizationRepository boundary', () => {
     expect(Object.isFrozen(first.snapshot.result)).toBe(true);
     expect(first.stableSnapshot).toEqual(stable);
     expect(Object.isFrozen(first.stableSnapshot)).toBe(true);
+    expect(queryMock).toHaveBeenCalledTimes(1);
+    expect(queryMock).toHaveBeenCalledWith('SELECT now() AS persisted_at');
   });
 
   it('rejects a provider observation after the preallocated terminal timestamp', async () => {

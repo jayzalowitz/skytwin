@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { RiskAssessor } from '@skytwin/decision-engine';
 import { verifyJoinedDecisionReceiptChain, type JoinedDecisionReceiptContentV2 } from '@skytwin/shared-types';
 import { closePool, getPool, withTransaction } from '../connection.js';
+import { collectBackup, restoreBackup, validateBackupData } from '../backup/backup.js';
 import { decisionReceiptLifecycleRepository } from '../repositories/decision-receipt-lifecycle.js';
 import { decisionReceiptRowArtifactRefV1 } from '../repositories/decision-receipt-artifacts.js';
 import { up } from '../migrations/001-initial.js';
@@ -1397,6 +1398,10 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       created: false,
       terminalization: { status: 'succeeded' },
     });
+    await expect(gmailArchiveClaimRepository.claim({
+      userId,
+      approvalId: fixture.proposal.approval.id,
+    })).resolves.toEqual({ ok: true, claimed: false, state: 'terminal', command: null });
     await expect(artifactCounts(
       fixture.proposal.decision.id,
       fixture.proposal.approval.id,
@@ -1497,6 +1502,10 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       created: false,
       terminalization: { status: 'unknown', executionResult: null },
     });
+    await expect(gmailArchiveClaimRepository.claim({
+      userId,
+      approvalId: fixture.proposal.approval.id,
+    })).resolves.toEqual({ ok: true, claimed: false, state: 'terminal', command: null });
   }, 120_000);
 
   it('rolls back the barrier and plan when a later result insert cannot commit', async () => {
@@ -1552,6 +1561,102 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       plan_status: 'in_progress',
       results: '0',
     });
+  }, 120_000);
+
+  it('rolls back a real terminal transition on 40001 and retries with stable artifacts', async () => {
+    const fixture = await createClaimedProposal(103);
+    const persistedAt = new Date().toISOString();
+    const retryStable = {
+      explanationId: id('91', 103),
+      resultId: id('92', 103),
+      revisionId: id('93', 103),
+      persistedAt,
+    };
+    let attempts = 0;
+    const seenStable: unknown[] = [];
+    const terminalized = await gmailArchiveTerminalizationTestHooks.terminalizeWithTransition(
+      {
+        command: fixture.command,
+        result: {
+          outcome: 'confirmed',
+          operation: 'archive',
+          inbox: false,
+          effect: 'changed',
+          compensationAvailable: false,
+          observedAt: new Date(Date.parse(persistedAt) - 1_000).toISOString(),
+        },
+      },
+      async (client, input, stableValues) => {
+        seenStable.push(stableValues);
+        const result = await gmailArchiveTerminalizationTestHooks.transition(
+          client, input, stableValues,
+        );
+        attempts += 1;
+        if (attempts === 1) {
+          expect(result).toMatchObject({ ok: true, created: true });
+          const inside = await client.query<{ revisions: string; results: string }>(`SELECT
+            (SELECT count(*)::STRING FROM decision_receipt_revisions
+              WHERE receipt_id = $1) AS revisions,
+            (SELECT count(*)::STRING FROM execution_results WHERE plan_id = $2) AS results`,
+          [fixture.prepared.receipt.id, fixture.prepared.plan.id]);
+          expect(inside.rows[0]).toEqual({ revisions: '7', results: '1' });
+          throw Object.assign(new Error('restart after writes'), { code: '40001' });
+        }
+        return result;
+      },
+      () => retryStable,
+      async () => persistedAt,
+    );
+    expect(terminalized).toMatchObject({
+      ok: true,
+      created: true,
+      terminalization: {
+        executionExplanation: { id: retryStable.explanationId },
+        executionResult: { id: retryStable.resultId },
+        revision: { id: retryStable.revisionId, sequence: 7 },
+      },
+    });
+    expect(attempts).toBe(2);
+    expect(seenStable).toEqual([retryStable, retryStable]);
+    await expect(artifactCounts(
+      fixture.proposal.decision.id,
+      fixture.proposal.approval.id,
+    )).resolves.toEqual({ barriers: '2', explanations: '3', plans: '1', revisions: '7' });
+  }, 120_000);
+
+  it('serializes concurrent terminal replay and rejects a conflicting result', async () => {
+    const same = await createClaimedProposal(104);
+    const sameInput = {
+      command: same.command,
+      result: {
+        outcome: 'known_failure' as const,
+        code: 'remote_rejected' as const,
+        compensationAvailable: false as const,
+      },
+    };
+    const sameResults = await Promise.all([
+      gmailArchiveTerminalizationRepository.terminalize(sameInput),
+      gmailArchiveTerminalizationRepository.terminalize(sameInput),
+    ]);
+    expect(sameResults.every((result) => result.ok)).toBe(true);
+    expect(sameResults.filter((result) => result.ok && result.created)).toHaveLength(1);
+    expect(sameResults.filter((result) => result.ok && !result.created)).toHaveLength(1);
+
+    const different = await createClaimedProposal(105);
+    const differentResults = await Promise.all([
+      gmailArchiveTerminalizationRepository.terminalize({
+        command: different.command,
+        result: { ...sameInput.result, code: 'remote_rejected' },
+      }),
+      gmailArchiveTerminalizationRepository.terminalize({
+        command: different.command,
+        result: { ...sameInput.result, code: 'preflight_unavailable' },
+      }),
+    ]);
+    expect(differentResults.filter((result) => result.ok && result.created)).toHaveLength(1);
+    expect(differentResults.filter(
+      (result) => !result.ok && result.error === 'idempotency_conflict',
+    )).toHaveLength(1);
   }, 120_000);
 
   it('binds terminalization to the exact winning command and owner', async () => {
@@ -1635,6 +1740,10 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       ok: false,
       error: 'idempotency_conflict',
     });
+    await expect(gmailArchiveClaimRepository.claim({
+      userId,
+      approvalId: fixture.proposal.approval.id,
+    })).resolves.toEqual({ ok: false, error: 'idempotency_conflict' });
   }, 120_000);
 
   it('rejects a synthetic result added after an unknown terminal outcome', async () => {
@@ -1660,6 +1769,10 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       ok: false,
       error: 'idempotency_conflict',
     });
+    await expect(gmailArchiveClaimRepository.claim({
+      userId,
+      approvalId: fixture.proposal.approval.id,
+    })).resolves.toEqual({ ok: false, error: 'idempotency_conflict' });
   }, 120_000);
 
   it('replays through a valid later feedback continuation without adding artifacts', async () => {
@@ -1707,6 +1820,10 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       created: false,
       terminalization: { revision: { sequence: 7 } },
     });
+    await expect(gmailArchiveClaimRepository.claim({
+      userId,
+      approvalId: fixture.proposal.approval.id,
+    })).resolves.toEqual({ ok: true, claimed: false, state: 'terminal', command: null });
     await expect(artifactCounts(
       fixture.proposal.decision.id,
       fixture.proposal.approval.id,
@@ -1721,17 +1838,58 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       (SELECT count(*)::STRING FROM signals WHERE resource_ref_id = $1) AS signals`,
     [fixture.proposal.messageRefId]);
     expect(evidence.rows[0]).toEqual({ refs: '0', signals: '0' });
-    await expect(gmailArchiveTerminalizationRepository.terminalize({
+    const terminalized = await gmailArchiveTerminalizationRepository.terminalize({
       command: fixture.command,
       result: {
         outcome: 'known_failure',
         code: 'remote_rejected',
         compensationAvailable: false,
       },
-    })).resolves.toMatchObject({
+    });
+    expect(terminalized).toMatchObject({
       ok: true,
       created: true,
       terminalization: { status: 'failed' },
+    });
+    if (!terminalized.ok) throw new Error('Portable terminal fixture failed.');
+
+    // Keep one exact lifecycle so the portable round-trip is not obscured by
+    // intentionally corrupted fixtures created by earlier fail-closed tests.
+    await getPool().query(
+      'DELETE FROM decisions WHERE user_id = $1 AND id <> $2',
+      [userId, fixture.proposal.decision.id],
+    );
+    const backup = await collectBackup(userId);
+    expect(backup).toMatchObject({ success: true });
+    if (!backup.success) throw new Error(`Terminal backup failed: ${backup.message}`);
+    expect(validateBackupData(backup.data)).toEqual([]);
+
+    await getPool().query('DELETE FROM users WHERE id = $1', [userId]);
+    await expect(restoreBackup(backup.data)).resolves.toMatchObject({ success: true });
+    const restored = await getPool().query<{
+      explanations: string;
+      revisions: string;
+      trusted: string;
+    }>(`SELECT
+      (SELECT count(*)::STRING FROM explanation_records WHERE decision_id = $1) AS explanations,
+      (SELECT count(*)::STRING FROM decision_receipt_revisions revision
+        JOIN decision_receipts receipt ON receipt.id = revision.receipt_id
+       WHERE receipt.decision_id = $1) AS revisions,
+      (SELECT count(*)::STRING FROM decision_receipt_revisions revision
+        JOIN decision_receipts receipt ON receipt.id = revision.receipt_id
+       WHERE receipt.decision_id = $1 AND revision.trusted = true) AS trusted`,
+    [fixture.proposal.decision.id]);
+    expect(restored.rows[0]).toEqual({ explanations: '3', revisions: '7', trusted: '0' });
+    const restoredExplanation = await getPool().query<{ evidence_used: unknown }>(
+      'SELECT evidence_used FROM explanation_records WHERE id = $1 AND decision_id = $2',
+      [terminalized.terminalization.executionExplanation.id, fixture.proposal.decision.id],
+    );
+    expect(parseGmailArchiveTerminalExplanationEvidence(
+      restoredExplanation.rows[0]?.evidence_used,
+    )).toEqual({
+      outcome: 'known_failure',
+      code: 'remote_rejected',
+      compensationAvailable: false,
     });
   }, 120_000);
 });
