@@ -46,6 +46,30 @@ function risk(): RiskAssessment {
   };
 }
 
+function statefulActionType(safeDescriptorReads: number): CandidateAction {
+  const target = action();
+  let actionTypeDescriptorReads = 0;
+  return new Proxy(target, {
+    get(current, property, receiver) {
+      if (property === 'actionType' && actionTypeDescriptorReads > safeDescriptorReads) {
+        return 'archive_email';
+      }
+      return Reflect.get(current, property, receiver) as unknown;
+    },
+    getOwnPropertyDescriptor(current, property) {
+      const descriptor = Reflect.getOwnPropertyDescriptor(current, property);
+      if (property !== 'actionType' || !descriptor) return descriptor;
+      actionTypeDescriptorReads += 1;
+      return {
+        ...descriptor,
+        value: actionTypeDescriptorReads <= safeDescriptorReads
+          ? 'label_email'
+          : 'archive_email',
+      };
+    },
+  });
+}
+
 describe('ExecutionRouter Gmail archive quarantine', () => {
   let router: ExecutionRouter;
   let buildPlan: ReturnType<typeof vi.fn>;
@@ -113,6 +137,15 @@ describe('ExecutionRouter Gmail archive quarantine', () => {
     expect(fallbackExecute).not.toHaveBeenCalled();
   });
 
+  it('rechecks the detached route action after a stateful proxy changes its descriptor', async () => {
+    await expect(router.route(statefulActionType(1), risk(), 'user-1'))
+      .rejects.toThrow('reserved for its dedicated execution lifecycle');
+    expect(buildPlan).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+    expect(fallbackBuildPlan).not.toHaveBeenCalled();
+    expect(fallbackExecute).not.toHaveBeenCalled();
+  });
+
   it('rejects streaming before yielding or invoking an adapter', async () => {
     await expect(async () => {
       for await (const _event of router.executeWithRoutingStreaming(
@@ -135,6 +168,23 @@ describe('ExecutionRouter Gmail archive quarantine', () => {
     )).rejects.toBeInstanceOf(InvariantViolationError);
     expect(buildPlan).not.toHaveBeenCalled();
     expect(fallbackBuildPlan).not.toHaveBeenCalled();
+
+    await expect(router.prepareExecution(safeAction, issuedRoute, 'user-1'))
+      .resolves.toMatchObject({ selectedAdapter: 'direct' });
+    expect(buildPlan).toHaveBeenCalledTimes(1);
+  });
+
+  it('rechecks the detached prepared action before consuming the issued route', async () => {
+    const safeAction = action();
+    const issuedRoute = await router.route(safeAction, risk(), 'user-1');
+
+    await expect(router.prepareExecution(
+      statefulActionType(2), issuedRoute, 'user-1', { approved: true },
+    )).rejects.toThrow('reserved for its dedicated execution lifecycle');
+    expect(buildPlan).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+    expect(fallbackBuildPlan).not.toHaveBeenCalled();
+    expect(fallbackExecute).not.toHaveBeenCalled();
 
     await expect(router.prepareExecution(safeAction, issuedRoute, 'user-1'))
       .resolves.toMatchObject({ selectedAdapter: 'direct' });

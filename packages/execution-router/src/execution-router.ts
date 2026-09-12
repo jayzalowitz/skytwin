@@ -473,6 +473,7 @@ export class ExecutionRouter {
   ): Promise<RoutingDecision> {
     assertGenericExecutionActionAllowed(action);
     const boundAction = bindExecutionOwner(action, userId);
+    assertGenericExecutionActionAllowed(boundAction);
     const capableNames = this.registry.getCapableAdapters(boundAction.actionType);
 
     if (capableNames.length === 0) {
@@ -632,6 +633,7 @@ export class ExecutionRouter {
     let mutationAttempted = false;
     const noteMutation = (): void => { mutationAttempted = true; };
     const boundAction = bindExecutionOwner(action, userId, noteMutation);
+    assertGenericExecutionActionAllowed(boundAction);
     const routeBinding = this.routingDecisions.get(routingDecision);
     if (!routeBinding) {
       throw new InvariantViolationError('Routing decision was not issued by this router or was already consumed.');
