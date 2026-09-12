@@ -58,6 +58,7 @@ interface ReaderDependencies {
   loadTerminalState: typeof loadGmailArchiveStableState;
   exactApprovedPrefix: typeof exactGmailArchiveApprovedPrefix;
   validateTerminalGraph: typeof validateStoredGmailArchiveTerminalGraphReadOnly;
+  correlatedBlockedTimestamps: typeof correlatedBlockedTimestamps;
   canonicalTerminalTimestamps: typeof canonicalTerminalTimestamps;
 }
 
@@ -70,6 +71,7 @@ const dependencies: Readonly<ReaderDependencies> = Object.freeze({
   loadTerminalState: loadGmailArchiveStableState,
   exactApprovedPrefix: exactGmailArchiveApprovedPrefix,
   validateTerminalGraph: validateStoredGmailArchiveTerminalGraphReadOnly,
+  correlatedBlockedTimestamps,
   canonicalTerminalTimestamps,
 });
 
@@ -128,6 +130,27 @@ function uuidField(value: unknown, field: string): string | null {
   const data = exactDataObject(value);
   const candidate = data?.[field];
   return typeof candidate === 'string' && UUID.test(candidate) ? candidate : null;
+}
+
+async function correlatedBlockedTimestamps(client: PoolClient, value: unknown): Promise<boolean> {
+  const preparation = exactDataObject(value);
+  const barrierId = uuidField(preparation?.['barrier'], 'id');
+  const explanationId = uuidField(preparation?.['explanation'], 'id');
+  const revisions = preparation?.['revisions'];
+  const revisionId = Array.isArray(revisions) ? uuidField(revisions[4], 'id') : null;
+  if (!barrierId || !explanationId || !revisionId) return false;
+  const row = (await client.query<{ correlated: boolean }>(`SELECT COALESCE((SELECT
+      barrier.updated_at = explanation.created_at
+        AND explanation.created_at = revision.created_at
+      FROM pre_effect_barriers AS barrier
+      JOIN explanation_records AS explanation ON explanation.id = $2
+      JOIN decision_receipt_revisions AS revision ON revision.id = $3
+      WHERE barrier.id = $1), false) AS correlated`, [
+    barrierId,
+    explanationId,
+    revisionId,
+  ])).rows[0];
+  return row?.correlated === true;
 }
 
 async function canonicalTerminalTimestamps(client: PoolClient, value: unknown): Promise<boolean> {
@@ -271,6 +294,9 @@ async function readTransition(
     const r5: DecisionReceiptRevisionRow | undefined = Array.isArray(revisions)
       ? revisions[4] as DecisionReceiptRevisionRow | undefined
       : undefined;
+    if (!await readerDependencies.correlatedBlockedTimestamps(client, replayData?.['preparation'])) {
+      return integrityConflict();
+    }
     return visibleTerminal('blocked', r5) ?? integrityConflict();
   }
 

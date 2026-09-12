@@ -4343,21 +4343,25 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     if (!blockedRevision) throw new Error('Blocked precision fixture omitted r5.');
     await getPool().query(
       `UPDATE decision_receipt_revisions
-          SET created_at = date_trunc('milliseconds', created_at) + INTERVAL '1 microsecond'
+          SET created_at = (SELECT date_trunc('milliseconds', updated_at)
+              + INTERVAL '1 microsecond'
+            FROM pre_effect_barriers WHERE id = $2)
         WHERE id = $1`,
-      [blockedRevision.id],
+      [blockedRevision.id, blocked.blocked.barrier.id],
+    );
+    await getPool().query(
+      `UPDATE explanation_records
+          SET created_at = (SELECT date_trunc('milliseconds', updated_at)
+              + INTERVAL '1 microsecond'
+            FROM pre_effect_barriers WHERE id = $2)
+        WHERE id = $1`,
+      [blocked.blocked.explanation.id, blocked.blocked.barrier.id],
     );
     await getPool().query(
       `UPDATE pre_effect_barriers
           SET updated_at = date_trunc('milliseconds', updated_at) + INTERVAL '1 microsecond'
         WHERE id = $1`,
       [blocked.blocked.barrier.id],
-    );
-    await getPool().query(
-      `UPDATE explanation_records
-          SET created_at = date_trunc('milliseconds', created_at) + INTERVAL '1 microsecond'
-        WHERE id = $1`,
-      [blocked.blocked.explanation.id],
     );
     const historicalPrecision = (await getPool().query<{
       barrier: boolean;
@@ -4375,10 +4379,11 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       blockedRevision.id,
     ])).rows[0];
     expect(historicalPrecision).toEqual({ barrier: true, explanation: true, revision: true });
-    await expect(gmailArchiveTerminalStatusRepository.read({
+    const blockedAuthority = {
       userId,
       approvalId: blocked.proposal.approval.id,
-    })).resolves.toEqual({
+    };
+    const expectedBlocked = {
       ok: true,
       status: 'terminal',
       terminal: {
@@ -4386,7 +4391,43 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
         receiptRevisionId: blockedRevision.id,
         recordedAt: blockedRevision.created_at.toISOString(),
       },
-    });
+    } as const;
+    await expect(gmailArchiveTerminalStatusRepository.read(blockedAuthority))
+      .resolves.toEqual(expectedBlocked);
+
+    await getPool().query(
+      `UPDATE pre_effect_barriers SET updated_at = updated_at + INTERVAL '1 microsecond'
+        WHERE id = $1`,
+      [blocked.blocked.barrier.id],
+    );
+    await expect(gmailArchiveTerminalStatusRepository.read(blockedAuthority))
+      .resolves.toEqual({ ok: false, error: 'integrity_conflict' });
+    await getPool().query(
+      `UPDATE pre_effect_barriers SET updated_at = updated_at - INTERVAL '1 microsecond'
+        WHERE id = $1`,
+      [blocked.blocked.barrier.id],
+    );
+
+    await getPool().query(
+      `UPDATE explanation_records SET created_at = created_at + INTERVAL '1 microsecond'
+        WHERE id = $1`,
+      [blocked.blocked.explanation.id],
+    );
+    await expect(gmailArchiveTerminalStatusRepository.read(blockedAuthority))
+      .resolves.toEqual({ ok: false, error: 'integrity_conflict' });
+    await getPool().query(
+      `UPDATE explanation_records SET created_at = created_at - INTERVAL '1 microsecond'
+        WHERE id = $1`,
+      [blocked.blocked.explanation.id],
+    );
+
+    await getPool().query(
+      `UPDATE decision_receipt_revisions SET created_at = created_at + INTERVAL '1 microsecond'
+        WHERE id = $1`,
+      [blockedRevision.id],
+    );
+    await expect(gmailArchiveTerminalStatusRepository.read(blockedAuthority))
+      .resolves.toEqual({ ok: false, error: 'integrity_conflict' });
 
     const fixture = await createClaimedProposal(240, userId, accountId, true);
     const terminalized = await gmailArchiveTerminalizationRepository.terminalize({
