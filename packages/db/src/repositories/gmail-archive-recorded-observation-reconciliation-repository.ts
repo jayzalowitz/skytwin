@@ -161,7 +161,7 @@ export const gmailArchiveRecordedObservationReconciliationTestHooks = Object.fre
  */
 export const gmailArchiveRecordedObservationReconciliationRepository:
 ReconcileRecordedGmailArchiveObservationPort = Object.freeze({
-  reconcileRecordedObservation(fence) {
+  reconcileRecordedObservation(fence: GmailArchiveRecoveryLeaseFence) {
     return reconcileRecordedObservationWithTransition(fence);
   },
 });
