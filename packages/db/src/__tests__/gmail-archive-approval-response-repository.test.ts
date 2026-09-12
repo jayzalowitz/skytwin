@@ -1,10 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { PoolClient } from 'pg';
+import type {
+  GmailArchiveApprovalResponseStableIds,
+  RespondGmailArchiveApprovalInput,
+  RespondGmailArchiveApprovalResult,
+} from '../repositories/gmail-archive-approval-response-repository.js';
 
 const { withTransactionMock } = vi.hoisted(() => ({ withTransactionMock: vi.fn() }));
 
 vi.mock('../connection.js', () => ({ withTransaction: withTransactionMock }));
 
-const { gmailArchiveApprovalResponseRepository } = await import(
+const {
+  gmailArchiveApprovalResponseRepository,
+  gmailArchiveApprovalResponseTestHooks,
+} = await import(
   '../repositories/gmail-archive-approval-response-repository.js'
 );
 
@@ -78,5 +87,41 @@ describe('gmailArchiveApprovalResponseRepository input boundary', () => {
       action: 'approve',
     })).rejects.toMatchObject({ code: '08006' });
     expect(withTransactionMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('allocates one stable feedback UUID before a 40001 transaction retry', async () => {
+    const observedIds: unknown[] = [];
+    const transition = vi.fn(async (
+      _client: PoolClient,
+      _input: RespondGmailArchiveApprovalInput,
+      ids: Readonly<GmailArchiveApprovalResponseStableIds>,
+    ): Promise<RespondGmailArchiveApprovalResult> => {
+      observedIds.push(ids);
+      return { ok: false as const, error: 'not_found' as const };
+    });
+    withTransactionMock
+      .mockImplementationOnce(async (callback: (client: PoolClient) => Promise<unknown>) => {
+        await callback({} as PoolClient);
+        throw Object.assign(new Error('restart transaction'), { code: '40001' });
+      })
+      .mockImplementationOnce(async (callback: (client: PoolClient) => Promise<unknown>) =>
+        callback({} as PoolClient));
+
+    await expect(gmailArchiveApprovalResponseTestHooks.respondWithTransition({
+      approvalId,
+      userId,
+      action: 'approve',
+      reason: 'Archive it',
+    }, transition)).resolves.toEqual({ ok: false, error: 'not_found' });
+
+    expect(transition).toHaveBeenCalledTimes(2);
+    expect(observedIds[0]).toBe(observedIds[1]);
+    expect(observedIds[0]).toMatchObject({
+      barrier: expect.stringMatching(/^[0-9a-f-]{36}$/i),
+      feedback: expect.stringMatching(/^[0-9a-f-]{36}$/i),
+      revision: expect.stringMatching(/^[0-9a-f-]{36}$/i),
+    });
+    const stable = observedIds[0] as { barrier: string; feedback: string; revision: string };
+    expect(new Set(Object.values(stable)).size).toBe(3);
   });
 });

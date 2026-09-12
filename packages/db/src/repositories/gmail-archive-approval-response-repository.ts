@@ -20,6 +20,7 @@ import type {
   DecisionReceiptRow,
   DecisionRow,
   ExplanationRecordRow,
+  FeedbackEventRow,
   SignalRow,
 } from '../types.js';
 import {
@@ -46,6 +47,7 @@ export interface RespondGmailArchiveApprovalInput {
 
 export interface GmailArchiveApprovalResponseBundle {
   approval: ApprovalRequestRow;
+  feedback: FeedbackEventRow;
   proposalBarrier: PreEffectBarrierRow;
   reservedBarrier: PreEffectBarrierRow | null;
   receipt: DecisionReceiptRow;
@@ -56,10 +58,17 @@ export type RespondGmailArchiveApprovalResult =
   | { ok: true; created: boolean; response: GmailArchiveApprovalResponseBundle }
   | { ok: false; error: 'invalid_input' | 'not_found' | 'not_pending_or_expired' | 'idempotency_conflict' };
 
-interface StableIds {
+export interface GmailArchiveApprovalResponseStableIds {
   barrier: string;
+  feedback: string;
   revision: string;
 }
+
+export type GmailArchiveApprovalResponseTransition = (
+  client: PoolClient,
+  input: RespondGmailArchiveApprovalInput,
+  ids: Readonly<GmailArchiveApprovalResponseStableIds>,
+) => Promise<RespondGmailArchiveApprovalResult>;
 
 export interface GmailArchiveApprovalCanonicalState {
   approval: ApprovalRequestRow;
@@ -196,6 +205,51 @@ function sameResponse(
   return exactKeys(response, ['action', 'reason']) &&
     response['action'] === input.action &&
     response['reason'] === (input.reason ?? null);
+}
+
+function exactApprovalFeedback(
+  feedback: FeedbackEventRow,
+  approval: ApprovalRequestRow,
+  input: RespondGmailArchiveApprovalInput,
+  responseTimestampMatches: boolean,
+): boolean {
+  return UUID.test(feedback.id) &&
+    feedback.user_id === input.userId &&
+    feedback.decision_id === approval.decision_id &&
+    feedback.approval_request_id === approval.id &&
+    feedback.type === input.action &&
+    exactKeys(feedback.data, ['reason']) &&
+    feedback.data['reason'] === (input.reason ?? null) &&
+    feedback.created_at instanceof Date &&
+    Number.isFinite(feedback.created_at.getTime()) &&
+    approval.responded_at instanceof Date &&
+    responseTimestampMatches;
+}
+
+interface LoadedApprovalFeedback {
+  feedback: FeedbackEventRow;
+  responseTimestampMatches: boolean;
+}
+
+async function loadApprovalFeedback(
+  client: PoolClient,
+  approvalId: string,
+): Promise<LoadedApprovalFeedback[]> {
+  const rows = (await client.query<FeedbackEventRow & { response_timestamp_matches: boolean }>(
+    `SELECT feedback.*,
+            feedback.created_at = approval.responded_at AS response_timestamp_matches
+       FROM feedback_events feedback
+       JOIN approval_requests approval
+         ON approval.id = feedback.approval_request_id
+      WHERE feedback.approval_request_id = $1
+      ORDER BY feedback.id
+      LIMIT 2`,
+    [approvalId],
+  )).rows;
+  return rows.map((row) => {
+    const { response_timestamp_matches: responseTimestampMatches, ...feedback } = row;
+    return { feedback, responseTimestampMatches };
+  });
 }
 
 export function canonicalGmailArchiveApprovalContent(
@@ -417,7 +471,7 @@ function fail(result: RespondGmailArchiveApprovalResult): never {
 async function transition(
   client: PoolClient,
   input: RespondGmailArchiveApprovalInput,
-  ids: StableIds,
+  ids: GmailArchiveApprovalResponseStableIds,
 ): Promise<RespondGmailArchiveApprovalResult> {
   const state = await loadCanonicalGmailArchiveApprovalState(client, input);
   if (!state) return { ok: false, error: 'not_found' };
@@ -440,11 +494,22 @@ async function transition(
         (input.action === 'reject' && reserved.length !== 0)) {
       return { ok: false, error: 'idempotency_conflict' };
     }
+    const feedbackRows = await loadApprovalFeedback(client, input.approvalId);
+    if (feedbackRows.length !== 1 ||
+        !exactApprovalFeedback(
+          feedbackRows[0]!.feedback,
+          state.approval,
+          input,
+          feedbackRows[0]!.responseTimestampMatches,
+        )) {
+      return { ok: false, error: 'idempotency_conflict' };
+    }
     return {
       ok: true,
       created: false,
       response: {
         approval: state.approval,
+        feedback: feedbackRows[0]!.feedback,
         proposalBarrier: state.proposalBarrier,
         reservedBarrier: reserved[0] ?? null,
         receipt: state.receipt,
@@ -464,6 +529,9 @@ async function transition(
   if (priorReservation.rows.length !== 0) {
     return { ok: false, error: 'idempotency_conflict' };
   }
+  if ((await loadApprovalFeedback(client, input.approvalId)).length !== 0) {
+    return { ok: false, error: 'idempotency_conflict' };
+  }
   const updatedApproval = (await client.query<ApprovalRequestRow>(
     `UPDATE approval_requests
         SET status = $1, responded_at = now(), response = $2, confirmation_token = NULL
@@ -477,6 +545,33 @@ async function transition(
     ],
   )).rows[0];
   if (!updatedApproval) return { ok: false, error: 'not_pending_or_expired' };
+  const insertedFeedback = (await client.query<FeedbackEventRow>(
+    `INSERT INTO feedback_events (
+       id, user_id, decision_id, approval_request_id, type, data
+     ) VALUES ($1, $2, $3, $4, $5, $6)
+     ON CONFLICT DO NOTHING
+     RETURNING *`,
+    [
+      ids.feedback,
+      input.userId,
+      updatedApproval.decision_id,
+      updatedApproval.id,
+      input.action,
+      JSON.stringify({ reason: input.reason ?? null }),
+    ],
+  )).rows[0];
+  const feedbackRows = await loadApprovalFeedback(client, input.approvalId);
+  const feedback = feedbackRows[0]?.feedback;
+  if (!insertedFeedback || insertedFeedback.id !== ids.feedback || feedbackRows.length !== 1 ||
+      !feedback || feedback.id !== insertedFeedback.id ||
+      !exactApprovalFeedback(
+        feedback,
+        updatedApproval,
+        input,
+        feedbackRows[0]!.responseTimestampMatches,
+      )) {
+    fail({ ok: false, error: 'idempotency_conflict' });
+  }
   const responseContent: JoinedDecisionReceiptContentV1 = {
     ...pendingContent,
     stage: 'approval_recorded',
@@ -510,6 +605,7 @@ async function transition(
     created: true,
     response: {
       approval: updatedApproval,
+      feedback,
       proposalBarrier: state.proposalBarrier,
       reservedBarrier,
       receipt: appended.receipt,
@@ -522,19 +618,35 @@ export const gmailArchiveApprovalResponseRepository = {
   async respond(
     input: RespondGmailArchiveApprovalInput,
   ): Promise<RespondGmailArchiveApprovalResult> {
-    const snapshot = snapshotInput(input);
-    if (!snapshot) return { ok: false, error: 'invalid_input' };
-    const ids: StableIds = { barrier: randomUUID(), revision: randomUUID() };
-    for (let attempt = 0; ; attempt += 1) {
-      try {
-        return await withTransaction((client) => transition(client, snapshot, ids));
-      } catch (error) {
-        if (error instanceof RollbackResult) return error.result;
-        const code = typeof error === 'object' && error !== null && 'code' in error
-          ? (error as { code?: unknown }).code
-          : undefined;
-        if (code !== '40001' || attempt >= 2) throw error;
-      }
-    }
+    return respondWithTransition(input, transition);
   },
 };
+
+async function respondWithTransition(
+  input: RespondGmailArchiveApprovalInput,
+  runTransition: GmailArchiveApprovalResponseTransition,
+): Promise<RespondGmailArchiveApprovalResult> {
+  const snapshot = snapshotInput(input);
+  if (!snapshot) return { ok: false, error: 'invalid_input' };
+  const ids: GmailArchiveApprovalResponseStableIds = {
+    barrier: randomUUID(),
+    feedback: randomUUID(),
+    revision: randomUUID(),
+  };
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await withTransaction((client) => runTransition(client, snapshot, ids));
+    } catch (error) {
+      if (error instanceof RollbackResult) return error.result;
+      const code = typeof error === 'object' && error !== null && 'code' in error
+        ? (error as { code?: unknown }).code
+        : undefined;
+      if (code !== '40001' || attempt >= 2) throw error;
+    }
+  }
+}
+
+export const gmailArchiveApprovalResponseTestHooks = Object.freeze({
+  respondWithTransition,
+  transition,
+});
