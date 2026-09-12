@@ -6314,16 +6314,45 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       status: 'pending',
     });
 
-    // Simulate a concurrent writer changing the row after the route's safe
-    // read but before the generic response UPDATE acquires it.
-    await getPool().query(
-      `UPDATE approval_requests
-          SET candidate_action = jsonb_set(candidate_action, '{actionType}', '"archive_email"')
-        WHERE id = $1`,
-      [changed.approval.id],
-    );
-    await expect(approvalRepository.respond(
-      changed.approval.id, 'approve', owner.ownerUserId,
+    // Hold the concurrent rewrite's row lock after the route's safe read.
+    // The generic responder must wait, then re-evaluate its archive exclusion
+    // against the committed value instead of updating from its stale read.
+    const writer = await getPool().connect();
+    let writerCommitted = false;
+    let responderSettled = false;
+    let responsePromise: Promise<Awaited<ReturnType<typeof approvalRepository.respond>>> | null = null;
+    try {
+      await writer.query('BEGIN');
+      await writer.query(
+        `UPDATE approval_requests
+            SET candidate_action = jsonb_set(candidate_action, '{actionType}', '"archive_email"'),
+                confirmation_level = 'dual'
+          WHERE id = $1`,
+        [changed.approval.id],
+      );
+      responsePromise = approvalRepository.respond(
+        changed.approval.id, 'approve', owner.ownerUserId,
+      ).then((result) => {
+        responderSettled = true;
+        return result;
+      }, (error: unknown) => {
+        responderSettled = true;
+        throw error;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(responderSettled).toBe(false);
+      await writer.query('COMMIT');
+      writerCommitted = true;
+      await expect(within(responsePromise, 5_000)).resolves.toBeNull();
+    } finally {
+      if (!writerCommitted) await writer.query('ROLLBACK').catch(() => undefined);
+      writer.release();
+      if (responsePromise && !responderSettled) {
+        await responsePromise.catch(() => undefined);
+      }
+    }
+    await expect(approvalRepository.recordFirstConfirmation(
+      changed.approval.id, owner.ownerUserId,
     )).resolves.toBeNull();
 
     const malformed = await createProposal(254, owner.ownerUserId, owner.ownerAccountId);
