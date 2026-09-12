@@ -327,6 +327,10 @@ export class GmailInboxMutationService implements GmailInboxMutationPort {
       );
     }
 
+    // Do not move the uncertainty boundary by re-reading after the committed
+    // gate. A disconnect or revision change in the unavoidable commit-to-POST
+    // interval is handled as a dispatch-uncertain recovery case; no POST is
+    // retried and no third authority snapshot is treated as a new admission.
     const mutation = await this.request(
       `${this.messageUrl(currentTarget.providerMessageId)}/modify?fields=id%2ClabelIds`,
       currentTarget.providerMessageId,

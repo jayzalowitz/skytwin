@@ -112,7 +112,9 @@ describe('google-oauth PKCE support', () => {
     let fetchSpy: any;
     beforeEach(() => {
       fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
-        JSON.stringify({ access_token: 'new-at', expires_in: 3600, scope: 'openid' }),
+        JSON.stringify({
+          access_token: 'new-at', expires_in: 3600, scope: 'openid', token_type: 'Bearer',
+        }),
         { status: 200, headers: { 'Content-Type': 'application/json' } },
       ));
     });
@@ -137,6 +139,159 @@ describe('google-oauth PKCE support', () => {
       );
       const body = (fetchSpy.mock.calls[0]![1] as RequestInit).body as URLSearchParams;
       expect(body.get('client_secret')).toBe('keep');
+    });
+
+    it('uses one fixed-origin request with redirect rejection and an owned timeout signal', async () => {
+      await refreshAccessToken(
+        { clientId: 'public.apps', clientSecret: '', redirectUri: 'http://127.0.0.1/cb' },
+        'refresh-token',
+      );
+
+      expect(fetchSpy).toHaveBeenCalledWith('https://oauth2.googleapis.com/token', {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Cache-Control': 'no-store',
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: expect.any(URLSearchParams),
+        redirect: 'error',
+        signal: expect.any(AbortSignal),
+      });
+    });
+
+    it('retains only a bounded sanitized provider error code', async () => {
+      const response = new Response(JSON.stringify({
+        error: 'invalid_grant',
+        error_description: 'secret provider detail must not flow',
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+      const refreshFetch = vi.fn().mockResolvedValue(response);
+
+      const error = await refreshAccessToken(
+        { clientId: 'public.apps', clientSecret: '', redirectUri: 'http://127.0.0.1/cb' },
+        'refresh-token',
+        { fetch: refreshFetch },
+      ).catch((cause: unknown) => cause);
+      expect(error).toMatchObject({ errorCode: 'invalid_grant', permanent: true });
+      expect((error as Error).message).toContain('{"error":"invalid_grant"}');
+      expect((error as Error).message).not.toContain('secret provider detail');
+    });
+
+    it('cancels an invalid error body and exposes no provider detail', async () => {
+      const response = new Response('secret provider detail', {
+        status: 401,
+        headers: { 'Content-Type': 'text/plain' },
+      });
+      const cancel = vi.spyOn(response.body!, 'cancel');
+      const error = await refreshAccessToken(
+        { clientId: 'public.apps', clientSecret: '', redirectUri: 'http://127.0.0.1/cb' },
+        'refresh-token',
+        { fetch: vi.fn().mockResolvedValue(response) },
+      ).catch((cause: unknown) => cause);
+
+      expect(error).toMatchObject({ errorCode: null, permanent: true });
+      expect((error as Error).message).not.toContain('secret provider detail');
+      expect(cancel).toHaveBeenCalledOnce();
+    });
+
+    it.each([
+      ['missing content type', new Response(JSON.stringify({
+        access_token: 'new-at', expires_in: 3600, scope: 'openid', token_type: 'Bearer',
+      }), { status: 200 })],
+      ['wrong content type', new Response(JSON.stringify({
+        access_token: 'new-at', expires_in: 3600, scope: 'openid', token_type: 'Bearer',
+      }), { status: 200, headers: { 'Content-Type': 'text/plain' } })],
+      ['missing field', new Response(JSON.stringify({
+        access_token: 'new-at', expires_in: 3600, token_type: 'Bearer',
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })],
+      ['missing token type', new Response(JSON.stringify({
+        access_token: 'new-at', expires_in: 3600, scope: 'openid',
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })],
+      ['wrong token type', new Response(JSON.stringify({
+        access_token: 'new-at', expires_in: 3600, scope: 'openid', token_type: 'MAC',
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })],
+      ['wrong field type', new Response(JSON.stringify({
+        access_token: 'new-at', expires_in: '3600', scope: 'openid', token_type: 'Bearer',
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })],
+      ['invalid UTF-8', new Response(new Uint8Array([0xc3, 0x28]), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      })],
+      ['oversized body', new Response('x'.repeat(16 * 1024 + 1), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      })],
+    ])('rejects a bounded refresh response with %s', async (_name, response) => {
+      await expect(refreshAccessToken(
+        { clientId: 'public.apps', clientSecret: '', redirectUri: 'http://127.0.0.1/cb' },
+        'refresh-token',
+        { fetch: vi.fn().mockResolvedValue(response) },
+      )).rejects.toThrow(/invalid provider response/);
+    });
+
+    it('ignores bounded unconsumed response fields without persisting returned secrets', async () => {
+      const result = await refreshAccessToken(
+        { clientId: 'public.apps', clientSecret: '', redirectUri: 'http://127.0.0.1/cb' },
+        'stored-refresh-token',
+        { fetch: vi.fn().mockResolvedValue(new Response(JSON.stringify({
+          access_token: 'new-at',
+          expires_in: 3600,
+          scope: 'openid email',
+          token_type: 'Bearer',
+          refresh_token: 'provider-rotated-secret',
+          refresh_token_expires_in: 604800,
+          id_token: 'unconsumed-id-secret',
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } })) },
+      );
+
+      expect(result).toMatchObject({
+        accessToken: 'new-at',
+        refreshToken: 'stored-refresh-token',
+        scopes: ['openid', 'email'],
+        provider: 'google',
+      });
+      expect(JSON.stringify(result)).not.toContain('provider-rotated-secret');
+      expect(JSON.stringify(result)).not.toContain('unconsumed-id-secret');
+    });
+
+    it.each(['not-a-number', '-1', String(16 * 1024 + 1)])(
+      'rejects declared refresh body length %s before parsing',
+      async (contentLength) => {
+        const response = new Response(JSON.stringify({
+          access_token: 'new-at', expires_in: 3600, scope: 'openid', token_type: 'Bearer',
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json', 'Content-Length': contentLength },
+        });
+        const cancel = vi.spyOn(response.body!, 'cancel');
+        await expect(refreshAccessToken(
+          { clientId: 'public.apps', clientSecret: '', redirectUri: 'http://127.0.0.1/cb' },
+          'refresh-token',
+          { fetch: vi.fn().mockResolvedValue(response) },
+        )).rejects.toThrow(/invalid provider response/);
+        expect(cancel).toHaveBeenCalledOnce();
+      },
+    );
+
+    it('keeps its timeout active while the refresh response body is streaming', async () => {
+      let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) { streamController = controller; },
+      });
+      const refreshFetch = vi.fn(async (_url: string, init?: RequestInit) => {
+        init?.signal?.addEventListener('abort', () => {
+          streamController?.error(new DOMException('aborted', 'AbortError'));
+        });
+        return new Response(stream, {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+
+      await expect(refreshAccessToken(
+        { clientId: 'public.apps', clientSecret: '', redirectUri: 'http://127.0.0.1/cb' },
+        'refresh-token',
+        { fetch: refreshFetch, timeoutMs: 10 },
+      )).rejects.toThrow(/transport unavailable/);
+      expect((refreshFetch.mock.calls[0]?.[1]?.signal as AbortSignal).aborted).toBe(true);
     });
   });
 });

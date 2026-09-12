@@ -39,7 +39,7 @@ export type GmailInboxMutationResult =
       effect: 'changed' | 'already_in_state' | 'reconciled';
       /** Restore is not implemented by this archive-only boundary. */
       compensationAvailable: false;
-      /** Provider-response time carried into durable lifecycle finalization. */
+      /** Local acceptance time after the complete bounded provider representation validates. */
       observedAt: string;
       /** Exact command authority this same-call provider result belongs to. */
       binding: Readonly<GmailInboxMutationBinding>;
