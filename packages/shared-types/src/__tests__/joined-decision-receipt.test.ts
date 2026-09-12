@@ -212,6 +212,7 @@ function feedbackContent(previous: JoinedDecisionReceiptContentV1 | JoinedDecisi
   const applicationSnapshot = {
     version: 1 as const,
     feedbackEventId: resultId,
+    approvalRequestId: approvalId,
     userId,
     decisionId,
     profileId,
@@ -256,6 +257,20 @@ describe('joined decision receipt content', () => {
     expect(() => canonicalJoinedDecisionReceiptContent({
       ...valid,
       feedbackEvents: [{ id: approvalId, canonicalHash: '7'.repeat(64) }],
+    })).toThrow('must bind');
+    const wrongApprovalSnapshot = {
+      ...valid.feedbackApplication.snapshot,
+      approvalRequestId: firstBarrierId,
+    };
+    expect(() => canonicalJoinedDecisionReceiptContent({
+      ...valid,
+      feedbackApplication: {
+        ...valid.feedbackApplication,
+        snapshot: wrongApprovalSnapshot,
+        canonicalHash: joinedDecisionReceiptArtifactDigest(
+          'feedback_application', wrongApprovalSnapshot,
+        ),
+      },
     })).toThrow('must bind');
     expect(() => canonicalJoinedDecisionReceiptContent({
       ...valid,

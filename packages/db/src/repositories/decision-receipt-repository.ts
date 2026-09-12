@@ -501,6 +501,7 @@ async function linkageIsOwned(
   if (content.version === 3) {
     const applications = (await client.query<Record<string, unknown>>(
       `SELECT application.*,
+              feedback.approval_request_id::STRING AS approval_request_id_text,
               application.input_profile_version::STRING AS input_version_text,
               application.output_profile_version::STRING AS output_version_text,
               (application.applied_at AT TIME ZONE 'UTC')::STRING AS applied_at_text
@@ -530,6 +531,7 @@ async function linkageIsOwned(
       derived = decisionReceiptFeedbackApplicationRefV1({
         id: String(application['id']),
         feedbackEventId: String(application['feedback_event_id']),
+        approvalRequestId: String(application['approval_request_id_text']),
         userId: String(application['user_id']),
         decisionId: String(application['decision_id']),
         profileId: String(application['profile_id']),

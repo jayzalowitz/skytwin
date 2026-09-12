@@ -54,6 +54,7 @@ const SHA256 = /^[0-9a-f]{64}$/;
 export interface FeedbackApplicationArtifactInput {
   readonly id: string;
   readonly feedbackEventId: string;
+  readonly approvalRequestId: string;
   readonly userId: string;
   readonly decisionId: string;
   readonly profileId: string;
@@ -113,6 +114,7 @@ export function decisionReceiptFeedbackApplicationRefV1(
   application: FeedbackApplicationArtifactInput,
 ): DecisionReceiptFeedbackApplicationRef {
   if (!UUID.test(application.id) || !UUID.test(application.feedbackEventId) ||
+      !UUID.test(application.approvalRequestId) ||
       !UUID.test(application.userId) || !UUID.test(application.decisionId) ||
       !UUID.test(application.profileId) ||
       !Number.isSafeInteger(application.inputProfileVersion) ||
@@ -128,6 +130,7 @@ export function decisionReceiptFeedbackApplicationRefV1(
   const snapshot: DecisionReceiptFeedbackApplicationSnapshotV1 = {
     version: 1,
     feedbackEventId: application.feedbackEventId,
+    approvalRequestId: application.approvalRequestId,
     userId: application.userId,
     decisionId: application.decisionId,
     profileId: application.profileId,

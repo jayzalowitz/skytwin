@@ -137,7 +137,10 @@ function feedbackContent(
     stage: 'feedback_recorded',
     disposition: previous.disposition,
     feedbackEvents: [decisionReceiptRowArtifactRefV1('feedback', { ...verified.feedback })],
-    feedbackApplication: decisionReceiptFeedbackApplicationRefV1(verified.application),
+    feedbackApplication: decisionReceiptFeedbackApplicationRefV1({
+      ...verified.application,
+      approvalRequestId: verified.feedback.approval_request_id!,
+    }),
   };
 }
 

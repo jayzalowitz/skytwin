@@ -7624,6 +7624,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       ]);
       expect(content.feedbackApplication.snapshot).toMatchObject({
         feedbackEventId,
+        approvalRequestId: proposal.approval.id,
         userId: owner.ownerUserId,
         decisionId: proposal.decision.id,
       });

@@ -162,6 +162,7 @@ export interface DecisionReceiptCorrectionV1 {
 export interface DecisionReceiptFeedbackApplicationSnapshotV1 {
   version: 1;
   feedbackEventId: string;
+  approvalRequestId: string;
   userId: string;
   decisionId: string;
   profileId: string;
@@ -405,11 +406,12 @@ function assertFeedbackApplicationRef(ref: DecisionReceiptFeedbackApplicationRef
     throw new TypeError('feedback application snapshot must be a plain object');
   }
   assertExactKeys(ref.snapshot, [
-    'version', 'feedbackEventId', 'userId', 'decisionId', 'profileId',
+    'version', 'feedbackEventId', 'approvalRequestId', 'userId', 'decisionId', 'profileId',
     'inputProfileVersion', 'outputProfileVersion', 'changed', 'outputDigest', 'appliedAt',
   ], 'feedback application snapshot');
   const snapshot = ref.snapshot;
   if (snapshot.version !== 1 || !UUID.test(snapshot.feedbackEventId) ||
+      !UUID.test(snapshot.approvalRequestId) ||
       !UUID.test(snapshot.userId) || !UUID.test(snapshot.decisionId) ||
       !UUID.test(snapshot.profileId) || !Number.isSafeInteger(snapshot.inputProfileVersion) ||
       snapshot.inputProfileVersion < 1 || !Number.isSafeInteger(snapshot.outputProfileVersion) ||
@@ -600,8 +602,9 @@ export function validateJoinedDecisionReceiptContent(
     assertFeedbackApplicationRef(content.feedbackApplication);
     if (content.feedbackEvents.length !== 1 ||
         content.feedbackEvents[0]?.id !== content.feedbackApplication.snapshot.feedbackEventId ||
-        content.feedbackApplication.snapshot.decisionId !== content.decision.id) {
-      throw new TypeError('feedback application must bind the joined feedback event and decision');
+        content.feedbackApplication.snapshot.decisionId !== content.decision.id ||
+        content.feedbackApplication.snapshot.approvalRequestId !== content.approvalRequest?.id) {
+      throw new TypeError('feedback application must bind the joined feedback, approval, and decision');
     }
   }
   if (!new Set<DecisionReceiptStage>([
