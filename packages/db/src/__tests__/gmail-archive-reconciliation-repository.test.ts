@@ -224,7 +224,7 @@ describe('gmailArchiveReconciliationRepository boundary', () => {
     );
     submitted.command = { ...command, messageRefId: stable.resultId };
     if (submitted.evidence.kind !== 'mailbox_observed') throw new Error('test setup');
-    submitted.evidence.binding.userId = stable.resultId;
+    (submitted.evidence.binding as { userId: string }).userId = stable.resultId;
     await expect(pending).resolves.toEqual({ ok: false, error: 'not_ready' });
     expect(withTransactionMock).toHaveBeenCalledTimes(3);
     expect(observations[0]).toEqual(observations[1]);

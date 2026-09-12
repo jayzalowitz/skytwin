@@ -290,7 +290,6 @@ export type {
   GmailArchiveMailboxObservedEvidence,
   GmailArchiveReconciliationCommand,
   GmailArchiveReconciliationEvidence,
-  GmailArchiveReconciliationObservationBinding,
   ReconcileAbandonedGmailArchiveInput,
 } from './gmail-archive-reconciliation.js';
 

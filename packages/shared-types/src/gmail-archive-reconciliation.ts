@@ -1,4 +1,8 @@
 import type { GmailArchiveAttemptPhase } from './gmail-inbox-mutation.js';
+import type {
+  GmailInboxObservationBinding,
+  GmailInboxObservationUnavailableCode,
+} from './gmail-inbox-observation.js';
 
 /**
  * A recovery-only command. It is intentionally incompatible with both the
@@ -21,15 +25,9 @@ export interface GmailArchiveInterruptedBeforeDispatchEvidence {
  * A factual mailbox state accepted after a complete, bounded observation.
  * This state does not attribute the state to the abandoned archive attempt.
  */
-export interface GmailArchiveReconciliationObservationBinding {
-  userId: string;
-  admissionId: string;
-  messageRefId: string;
-}
-
 export interface GmailArchiveMailboxObservedEvidence {
   kind: 'mailbox_observed';
-  binding: GmailArchiveReconciliationObservationBinding;
+  binding: Readonly<GmailInboxObservationBinding>;
   inbox: boolean;
   observedAt: string;
 }
@@ -37,13 +35,8 @@ export interface GmailArchiveMailboxObservedEvidence {
 /** A safe reason that a mailbox state could not be accepted. */
 export interface GmailArchiveMailboxObservationUnavailableEvidence {
   kind: 'mailbox_observation_unavailable';
-  binding: GmailArchiveReconciliationObservationBinding;
-  code:
-    | 'not_observable'
-    | 'authority_unavailable'
-    | 'credentials_unavailable'
-    | 'observation_rejected'
-    | 'observation_unavailable';
+  binding: Readonly<GmailInboxObservationBinding>;
+  code: GmailInboxObservationUnavailableCode;
 }
 
 /**
