@@ -21,6 +21,11 @@ export {
 export { DirectExecutionAdapter } from './direct-execution-adapter.js';
 export { GmailInboxMutationService } from './gmail-inbox-mutation-port.js';
 export {
+  DbGmailInboxObservationCredentials,
+  GmailInboxObservationService,
+  gmailInboxObservationLimits,
+} from './gmail-inbox-observation-port.js';
+export {
   GMAIL_ARCHIVE_ATTEMPT_SCHEMA,
   GMAIL_INBOX_MUTATION_CANDIDATE_SCHEMA,
 } from '@skytwin/shared-types';
@@ -32,8 +37,21 @@ export type {
   GmailInboxMutationDispatchGateResult,
   GmailInboxMutationPort,
   GmailInboxMutationResult,
+  GmailInboxObservationBinding,
+  GmailInboxObservationCommand,
+  GmailInboxObservationPort,
+  GmailInboxObservationResult,
+  GmailInboxObservationUnavailableCode,
 } from '@skytwin/shared-types';
 export type { GmailInboxMutationServiceOptions } from './gmail-inbox-mutation-port.js';
+export type {
+  DbGmailInboxObservationCredentialsOptions,
+  GmailInboxObservationCredential,
+  GmailInboxObservationCredentialRequest,
+  GmailInboxObservationCredentialsPort,
+  GmailInboxObservationServiceOptions,
+  GmailInboxObservationTargetResolver,
+} from './gmail-inbox-observation-port.js';
 export { ActionHandlerRegistry } from './handler-registry.js';
 export { DbCredentialProvider, NoopCredentialProvider } from './credential-provider.js';
 export type { CredentialProvider } from './credential-provider.js';

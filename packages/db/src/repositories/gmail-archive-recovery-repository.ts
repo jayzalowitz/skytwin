@@ -71,7 +71,8 @@ function frozenCommand(input: Readonly<QueryAbandonedGmailArchiveInput>, admissi
   });
 }
 
-async function transition(
+/** Internal transaction-scoped form reused by read-only recovery consumers. */
+export async function queryAbandonedGmailArchiveInTransaction(
   client: PoolClient,
   input: Readonly<QueryAbandonedGmailArchiveInput>,
 ): Promise<QueryAbandonedGmailArchiveResult> {
@@ -185,10 +186,13 @@ async function queryWithTransition(
 }
 
 /** Narrow seam for authority-snapshot and Cockroach retry tests. */
-export const gmailArchiveRecoveryTestHooks = { queryWithTransition, transition };
+export const gmailArchiveRecoveryTestHooks = {
+  queryWithTransition,
+  transition: queryAbandonedGmailArchiveInTransaction,
+};
 
 export const gmailArchiveRecoveryRepository: AbandonedGmailArchiveRecoveryQuery = {
   async query(input): Promise<QueryAbandonedGmailArchiveResult> {
-    return queryWithTransition(input, transition);
+    return queryWithTransition(input, queryAbandonedGmailArchiveInTransaction);
   },
 };

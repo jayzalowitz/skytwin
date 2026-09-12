@@ -67,6 +67,8 @@ export {
   GMAIL_ARCHIVE_RECOVERY_GRACE_SECONDS,
   gmailArchiveRecoveryRepository,
 } from './gmail-archive-recovery-repository.js';
+export { gmailInboxObservationTargetRepository } from './gmail-inbox-observation-target-repository.js';
+export type { GmailInboxObservationTarget } from './gmail-inbox-observation-target-repository.js';
 export {
   buildGmailArchiveTerminalResultEnvelope,
   gmailArchiveResultAllowedForAttemptPhase,
