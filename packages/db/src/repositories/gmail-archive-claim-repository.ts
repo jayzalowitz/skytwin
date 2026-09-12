@@ -18,6 +18,7 @@ import { withTransaction } from '../connection.js';
 import type {
   ActionPolicyRow,
   ExecutionPlanRow,
+  ExplanationRecordRow,
   UserRow,
 } from '../types.js';
 import {
@@ -112,7 +113,7 @@ function exactApprovalResponse(value: unknown): boolean {
 function exactBarrierIdentity(
   barrier: PreEffectBarrierRow,
   input: ClaimPreparedGmailArchiveInput,
-  state: GmailArchiveApprovalCanonicalState,
+  state: Pick<GmailArchiveApprovalCanonicalState, 'candidate' | 'decision'>,
 ): boolean {
   return barrier.user_id === input.userId && barrier.effect_type === 'event_execution' &&
     barrier.idempotency_key === input.approvalId && barrier.decision_id === state.decision.id &&
@@ -123,11 +124,16 @@ function iso(value: Date): string {
   return value.toISOString();
 }
 
-function exactClaimedAdmissionReceipt(
+/** Exact immutable r1-r6 admission graph shared with terminalization. */
+export function exactClaimedGmailArchiveReceipt(
   input: ClaimPreparedGmailArchiveInput,
-  state: GmailArchiveApprovalCanonicalState,
+  state: Pick<
+    GmailArchiveApprovalCanonicalState,
+    'approval' | 'candidate' | 'decision' | 'receipt' | 'revisions'
+  >,
   barrier: PreEffectBarrierRow,
   plan: ExecutionPlanRow,
+  policyExplanation: ExplanationRecordRow,
   approved: JoinedDecisionReceiptContentV1,
 ): boolean {
   const candidate = canonicalGmailArchiveCandidate(state);
@@ -140,7 +146,8 @@ function exactClaimedAdmissionReceipt(
   const policyRef = r6?.content.policy;
   const explanationRef = r6?.content.explanation;
   const candidateRef = r6?.content.candidateAction;
-  if (!candidate || revisions.length !== 6 || revisions.some((revision) => revision.trusted !== true) ||
+  if (!candidate || !exactBarrierIdentity(barrier, input, state) ||
+      revisions.length !== 6 || revisions.some((revision) => revision.trusted !== true) ||
       !verifyJoinedDecisionReceiptChain({
         receiptId: state.receipt.id,
         decisionId: state.decision.id,
@@ -169,6 +176,10 @@ function exactClaimedAdmissionReceipt(
       !policyRef || policyRef.barrierId !== barrier.id ||
       policyRef.canonicalHash !== joinedDecisionReceiptArtifactDigest('policy', barrier.policy_snapshot) ||
       !explanationRef || explanationRef.id !== barrier.explanation_id ||
+      policyExplanation.id !== barrier.explanation_id ||
+      policyExplanation.decision_id !== state.decision.id ||
+      explanationRef.canonicalHash !==
+        decisionReceiptRowArtifactRefV1('explanation', { ...policyExplanation }).canonicalHash ||
       !candidateRef || candidateRef.id !== state.candidate.id ||
       candidateRef.canonicalHash !==
         decisionReceiptRowArtifactRefV1('candidate_action', { ...state.candidate }).canonicalHash) {
@@ -234,9 +245,15 @@ async function classifyNonPrepared(
     return { ok: false, error: 'idempotency_conflict' };
   }
   const plans = await loadPlans(client, state.decision.id);
+  const policyExplanation = barrier.explanation_id === null ? undefined :
+    (await client.query<ExplanationRecordRow>(
+      'SELECT * FROM explanation_records WHERE id = $1 AND decision_id = $2',
+      [barrier.explanation_id, state.decision.id],
+    )).rows[0];
   if (plans.length !== 1 || state.outcome.execution_plan_id !== plans[0]!.id ||
       plans[0]!.action_id !== state.candidate.id || plans[0]!.status !== 'in_progress' ||
-      !exactClaimedAdmissionReceipt(input, state, barrier, plans[0]!, approved) ||
+      !policyExplanation ||
+      !exactClaimedGmailArchiveReceipt(input, state, barrier, plans[0]!, policyExplanation, approved) ||
       await hasExecutionAttempt(client, plans[0]!.id)) {
     return { ok: false, error: 'idempotency_conflict' };
   }

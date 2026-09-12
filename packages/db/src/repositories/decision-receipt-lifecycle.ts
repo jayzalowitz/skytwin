@@ -18,6 +18,8 @@ export interface AppendDecisionReceiptLifecycleInput {
   /** Optional caller-owned IDs keep a larger transaction stable across retries. */
   receiptId?: string;
   revisionId?: string;
+  /** Optional caller-owned timestamp keeps a larger transaction stable across retries. */
+  createdAt?: string;
 }
 
 /** Canonical first snapshot for a decision row persisted in the same unit of work. */
@@ -58,6 +60,7 @@ export const decisionReceiptLifecycleRepository = {
       content: input.content,
       receiptId: input.receiptId,
       revisionId: input.revisionId,
+      createdAt: input.createdAt,
     });
   },
 };

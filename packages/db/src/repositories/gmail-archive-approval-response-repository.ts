@@ -148,7 +148,8 @@ function exactRisk(value: unknown, candidateId: string): boolean {
   });
 }
 
-function canonicalCandidateMatches(
+/** Exact stable candidate/message identity shared with post-effect lifecycles. */
+export function canonicalGmailArchiveCandidateMessageRef(
   approval: ApprovalRequestRow,
   candidate: CandidateActionRow,
 ): string | null {
@@ -291,7 +292,7 @@ export async function loadCanonicalGmailArchiveApprovalState(
     [candidateId, decision.id],
   )).rows[0];
   if (!candidate) return null;
-  const messageRefId = canonicalCandidateMatches(approval, candidate);
+  const messageRefId = canonicalGmailArchiveCandidateMessageRef(approval, candidate);
   const rawEvent = decision.raw_event;
   if (!messageRefId ||
       !exactKeys(rawEvent, ['source', 'type', 'signalId', 'messageRefId', 'authoringTier']) ||

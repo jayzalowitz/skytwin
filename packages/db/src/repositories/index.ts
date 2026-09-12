@@ -62,6 +62,18 @@ export type {
   ClaimPreparedGmailArchiveInput,
   ClaimPreparedGmailArchiveResult,
 } from './gmail-archive-claim-repository.js';
+export {
+  buildGmailArchiveTerminalResultEnvelope,
+  gmailArchiveTerminalizationRepository,
+  parseGmailArchiveTerminalExplanationEvidence,
+  parseGmailArchiveTerminalResultEnvelope,
+} from './gmail-archive-terminalization-repository.js';
+export type {
+  GmailArchiveTerminalResultEnvelope,
+  GmailArchiveTerminalizationBundle,
+  TerminalizeGmailArchiveInput,
+  TerminalizeGmailArchiveResult,
+} from './gmail-archive-terminalization-repository.js';
 
 export { feedbackRepository } from './feedback-repository.js';
 export type { CreateFeedbackInput } from './feedback-repository.js';

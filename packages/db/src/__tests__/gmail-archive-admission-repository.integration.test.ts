@@ -2,9 +2,10 @@ import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:net';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { RiskAssessor } from '@skytwin/decision-engine';
-import { verifyJoinedDecisionReceiptChain } from '@skytwin/shared-types';
+import { verifyJoinedDecisionReceiptChain, type JoinedDecisionReceiptContentV2 } from '@skytwin/shared-types';
 import { closePool, getPool, withTransaction } from '../connection.js';
 import { decisionReceiptLifecycleRepository } from '../repositories/decision-receipt-lifecycle.js';
+import { decisionReceiptRowArtifactRefV1 } from '../repositories/decision-receipt-artifacts.js';
 import { up } from '../migrations/001-initial.js';
 import {
   gmailArchiveApprovalResponseRepository,
@@ -18,6 +19,11 @@ import {
   gmailArchiveClaimRepository,
   gmailArchiveClaimTestHooks,
 } from '../repositories/gmail-archive-claim-repository.js';
+import {
+  gmailArchiveTerminalizationRepository,
+  gmailArchiveTerminalizationTestHooks,
+  parseGmailArchiveTerminalExplanationEvidence,
+} from '../repositories/gmail-archive-terminalization-repository.js';
 import {
   buildGmailArchiveProposalCandidate,
   gmailArchiveProposalRepository,
@@ -151,6 +157,22 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     return { ...proposal.proposal, messageRefId };
   }
 
+  async function artifactCounts(decisionId: string, approvalId: string) {
+    const result = await getPool().query<{
+      barriers: string;
+      explanations: string;
+      plans: string;
+      revisions: string;
+    }>(`SELECT
+      (SELECT count(*) FROM pre_effect_barriers WHERE decision_id = $1 OR idempotency_key = $2) AS barriers,
+      (SELECT count(*) FROM execution_plans WHERE decision_id = $1) AS plans,
+      (SELECT count(*) FROM explanation_records WHERE decision_id = $1) AS explanations,
+      (SELECT count(*) FROM decision_receipt_revisions revision
+        JOIN decision_receipts receipt ON receipt.id = revision.receipt_id
+       WHERE receipt.decision_id = $1) AS revisions`, [decisionId, approvalId]);
+    return result.rows[0]!;
+  }
+
   async function createPreparedProposal(suffix: number) {
     const proposal = await createProposal(suffix);
     const approved = await gmailArchiveApprovalResponseRepository.respond({
@@ -214,6 +236,17 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     } finally {
       await getPool().query('DELETE FROM action_policies WHERE id = $1', [policyId]);
     }
+  }
+
+  async function createClaimedProposal(suffix: number) {
+    const fixture = await createPreparedProposal(suffix);
+    const claimed = await gmailArchiveClaimRepository.claim({
+      userId,
+      approvalId: fixture.proposal.approval.id,
+    });
+    expect(claimed).toMatchObject({ ok: true, claimed: true });
+    if (!claimed.ok || !claimed.claimed) throw new Error('Terminal fixture was not claimed.');
+    return { ...fixture, command: claimed.command };
   }
 
   it('atomically records approval and reserves a distinct, non-executable barrier', async () => {
@@ -696,21 +729,6 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
   });
 
   it('rejects foreign outcome links for reserved and blocked preparations without new artifacts', async () => {
-    const artifactCounts = async (decisionId: string, approvalId: string) => {
-      const result = await getPool().query<{
-        barriers: string;
-        explanations: string;
-        plans: string;
-        revisions: string;
-      }>(`SELECT
-        (SELECT count(*) FROM pre_effect_barriers WHERE decision_id = $1 OR idempotency_key = $2) AS barriers,
-        (SELECT count(*) FROM execution_plans WHERE decision_id = $1) AS plans,
-        (SELECT count(*) FROM explanation_records WHERE decision_id = $1) AS explanations,
-        (SELECT count(*) FROM decision_receipt_revisions revision
-          JOIN decision_receipts receipt ON receipt.id = revision.receipt_id
-         WHERE receipt.decision_id = $1) AS revisions`, [decisionId, approvalId]);
-      return result.rows[0]!;
-    };
     const donor = await createProposal(33);
     await gmailArchiveApprovalResponseRepository.respond({
       approvalId: donor.approval.id,
@@ -1304,5 +1322,412 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       userId,
       approvalId: eventAfterClaim.proposal.approval.id,
     })).resolves.toEqual({ ok: false, error: 'idempotency_conflict' });
+  }, 120_000);
+
+  it.each([
+    ['changed', 70],
+    ['already_in_state', 71],
+    ['reconciled', 72],
+  ] as const)('terminalizes and exactly replays a confirmed %s result', async (effect, suffix) => {
+    const fixture = await createClaimedProposal(suffix);
+    const result = {
+      outcome: 'confirmed' as const,
+      operation: 'archive' as const,
+      inbox: false as const,
+      effect,
+      compensationAvailable: false as const,
+      observedAt: new Date(Date.now() - 1_000).toISOString(),
+    };
+    const input = { command: fixture.command, result };
+    const terminalized = await gmailArchiveTerminalizationRepository.terminalize(input);
+    expect(terminalized).toMatchObject({
+      ok: true,
+      created: true,
+      terminalization: {
+        status: 'succeeded',
+        barrier: { status: 'succeeded', failure_reason: null },
+        plan: { status: 'completed' },
+        executionResult: { success: true, error: null, rollback_available: false },
+        revision: { sequence: 7, stage: 'execution_recorded', disposition: 'succeeded' },
+      },
+    });
+    if (!terminalized.ok) throw new Error(`terminalization failed: ${terminalized.error}`);
+    expect(terminalized.terminalization.barrier.explanation_id).toBe(fixture.prepared.barrier.explanation_id);
+    expect(terminalized.terminalization.executionExplanation.id)
+      .not.toBe(fixture.prepared.barrier.explanation_id);
+    expect(parseGmailArchiveTerminalExplanationEvidence(
+      terminalized.terminalization.executionExplanation.evidence_used,
+    )).toEqual(result);
+    if (effect === 'already_in_state') {
+      expect(terminalized.terminalization.executionExplanation.what_happened).toContain('no mutation POST');
+    }
+    if (effect === 'reconciled') {
+      expect(terminalized.terminalization.executionExplanation.what_happened)
+        .toContain('ambiguous outcome');
+      expect(terminalized.terminalization.executionExplanation.what_happened)
+        .toContain('confirming read');
+    }
+    expect(terminalized.terminalization.executionExplanation.correction_guidance)
+      .toContain('automated restore and compensation are unavailable');
+    const revisions = (await getPool().query(
+      'SELECT * FROM decision_receipt_revisions WHERE receipt_id = $1 ORDER BY sequence ASC',
+      [fixture.prepared.receipt.id],
+    )).rows;
+    expect(revisions).toHaveLength(7);
+    expect(verifyJoinedDecisionReceiptChain({
+      receiptId: fixture.prepared.receipt.id,
+      decisionId: fixture.proposal.decision.id,
+      userId,
+      revisions,
+    })).toBe(true);
+    expect(terminalized.terminalization.revision.content).toMatchObject({
+      version: 2,
+      executionDisposition: 'succeeded',
+      executionExplanation: { id: terminalized.terminalization.executionExplanation.id },
+      executionResult: { id: terminalized.terminalization.executionResult?.id },
+    });
+    const terminalAt = terminalized.terminalization.revision.created_at.getTime();
+    expect(terminalized.terminalization.barrier.updated_at.getTime()).toBe(terminalAt);
+    expect(terminalized.terminalization.plan.updated_at.getTime()).toBe(terminalAt);
+    expect(terminalized.terminalization.executionResult?.completed_at.getTime()).toBe(terminalAt);
+    expect(terminalized.terminalization.executionExplanation.created_at.getTime()).toBe(terminalAt);
+    const countsBefore = await artifactCounts(fixture.proposal.decision.id, fixture.proposal.approval.id);
+    await expect(gmailArchiveTerminalizationRepository.terminalize(input)).resolves.toMatchObject({
+      ok: true,
+      created: false,
+      terminalization: { status: 'succeeded' },
+    });
+    await expect(artifactCounts(
+      fixture.proposal.decision.id,
+      fixture.proposal.approval.id,
+    )).resolves.toEqual(countsBefore);
+    await expect(gmailArchiveTerminalizationRepository.terminalize({
+      command: fixture.command,
+      result: { ...result, effect: effect === 'changed' ? 'reconciled' : 'changed' },
+    })).resolves.toEqual({ ok: false, error: 'idempotency_conflict' });
+  }, 120_000);
+
+  it.each([
+    'invalid_command',
+    'not_admitted',
+    'admission_unavailable',
+    'credentials_unavailable',
+    'preflight_unavailable',
+    'remote_rejected',
+  ] as const)('terminalizes known failure %s with only the safe enum', async (code) => {
+    const suffix = 80 + [
+      'invalid_command',
+      'not_admitted',
+      'admission_unavailable',
+      'credentials_unavailable',
+      'preflight_unavailable',
+      'remote_rejected',
+    ].indexOf(code);
+    const fixture = await createClaimedProposal(suffix);
+    const result = { outcome: 'known_failure' as const, code, compensationAvailable: false as const };
+    const terminalized = await gmailArchiveTerminalizationRepository.terminalize({
+      command: fixture.command,
+      result,
+    });
+    expect(terminalized).toMatchObject({
+      ok: true,
+      created: true,
+      terminalization: {
+        status: 'failed',
+        barrier: { status: 'failed', failure_reason: code },
+        plan: { status: 'failed' },
+        executionResult: {
+          success: false,
+          outputs: { schema: 'gmail_archive_terminal_result_v1', outcome: 'known_failure', code },
+          error: code,
+          rollback_available: false,
+        },
+        revision: { sequence: 7, disposition: 'failed' },
+      },
+    });
+    if (!terminalized.ok) throw new Error(`terminalization failed: ${terminalized.error}`);
+    expect(parseGmailArchiveTerminalExplanationEvidence(
+      terminalized.terminalization.executionExplanation.evidence_used,
+    )).toEqual(result);
+    if (code === 'remote_rejected') {
+      expect(terminalized.terminalization.executionExplanation.what_happened)
+        .not.toContain('before any mutation');
+    } else {
+      expect(terminalized.terminalization.executionExplanation.what_happened)
+        .toContain('before any mutation');
+    }
+  }, 120_000);
+
+  it('terminalizes an unknown remote outcome without fabricating a result row', async () => {
+    const fixture = await createClaimedProposal(90);
+    const result = {
+      outcome: 'unknown' as const,
+      code: 'remote_outcome_unknown' as const,
+      compensationAvailable: false as const,
+    };
+    const input = { command: fixture.command, result };
+    const terminalized = await gmailArchiveTerminalizationRepository.terminalize(input);
+    expect(terminalized).toMatchObject({
+      ok: true,
+      created: true,
+      terminalization: {
+        status: 'unknown',
+        barrier: { status: 'unknown', failure_reason: 'remote_outcome_unknown' },
+        plan: { status: 'failed' },
+        executionResult: null,
+        revision: {
+          sequence: 7,
+          disposition: 'unknown',
+          execution_result_id: null,
+          execution_disposition: 'unknown',
+        },
+      },
+    });
+    if (!terminalized.ok) throw new Error(`terminalization failed: ${terminalized.error}`);
+    expect(parseGmailArchiveTerminalExplanationEvidence(
+      terminalized.terminalization.executionExplanation.evidence_used,
+    )).toEqual(result);
+    const resultCount = await getPool().query<{ count: string }>(
+      'SELECT count(*)::STRING AS count FROM execution_results WHERE plan_id = $1',
+      [fixture.prepared.plan.id],
+    );
+    expect(resultCount.rows[0]?.count).toBe('0');
+    await expect(gmailArchiveTerminalizationRepository.terminalize(input)).resolves.toMatchObject({
+      ok: true,
+      created: false,
+      terminalization: { status: 'unknown', executionResult: null },
+    });
+  }, 120_000);
+
+  it('rolls back the barrier and plan when a later result insert cannot commit', async () => {
+    const donor = await createClaimedProposal(91);
+    const donorResult = {
+      outcome: 'confirmed' as const,
+      operation: 'archive' as const,
+      inbox: false as const,
+      effect: 'changed' as const,
+      compensationAvailable: false as const,
+      observedAt: new Date(Date.now() - 2_000).toISOString(),
+    };
+    const donorTerminal = await gmailArchiveTerminalizationRepository.terminalize({
+      command: donor.command,
+      result: donorResult,
+    });
+    expect(donorTerminal).toMatchObject({ ok: true, created: true });
+    if (!donorTerminal.ok || !donorTerminal.terminalization.executionResult) {
+      throw new Error('Rollback donor did not create an execution result.');
+    }
+
+    const target = await createClaimedProposal(92);
+    const before = await artifactCounts(target.proposal.decision.id, target.proposal.approval.id);
+    await expect(gmailArchiveTerminalizationTestHooks.terminalizeWithTransition(
+      {
+        command: target.command,
+        result: { ...donorResult, observedAt: new Date(Date.now() - 1_000).toISOString() },
+      },
+      gmailArchiveTerminalizationTestHooks.transition,
+      () => ({
+        explanationId: id('91', 92),
+        resultId: donorTerminal.terminalization.executionResult!.id,
+        revisionId: id('93', 92),
+        persistedAt: new Date().toISOString(),
+      }),
+    )).rejects.toMatchObject({ code: '23505' });
+
+    await expect(artifactCounts(
+      target.proposal.decision.id,
+      target.proposal.approval.id,
+    )).resolves.toEqual(before);
+    const graph = await getPool().query<{
+      barrier_status: string;
+      plan_status: string;
+      results: string;
+    }>(`SELECT barrier.status AS barrier_status, plan.status AS plan_status,
+               (SELECT count(*)::STRING FROM execution_results WHERE plan_id = plan.id) AS results
+          FROM pre_effect_barriers barrier
+          JOIN execution_plans plan ON plan.id = $2
+         WHERE barrier.id = $1`, [target.command.admissionId, target.prepared.plan.id]);
+    expect(graph.rows[0]).toEqual({
+      barrier_status: 'in_progress',
+      plan_status: 'in_progress',
+      results: '0',
+    });
+  }, 120_000);
+
+  it('binds terminalization to the exact winning command and owner', async () => {
+    const fixture = await createClaimedProposal(93);
+    const result = {
+      outcome: 'known_failure' as const,
+      code: 'remote_rejected' as const,
+      compensationAvailable: false as const,
+    };
+    await expect(gmailArchiveTerminalizationRepository.terminalize({
+      command: { ...fixture.command, userId: otherUserId },
+      result,
+    })).resolves.toEqual({ ok: false, error: 'not_found' });
+    await expect(gmailArchiveTerminalizationRepository.terminalize({
+      command: { ...fixture.command, messageRefId: id('33', 999) },
+      result,
+    })).resolves.toEqual({ ok: false, error: 'idempotency_conflict' });
+    await expect(gmailArchiveTerminalizationRepository.terminalize({
+      command: { ...fixture.command, admissionId: id('12', 999) },
+      result,
+    })).resolves.toEqual({ ok: false, error: 'not_found' });
+    const barrier = await getPool().query<{ status: string }>(
+      'SELECT status FROM pre_effect_barriers WHERE id = $1',
+      [fixture.command.admissionId],
+    );
+    expect(barrier.rows[0]?.status).toBe('in_progress');
+  }, 120_000);
+
+  it('fails closed on untrusted or pre-populated claimed graphs', async () => {
+    const untrusted = await createClaimedProposal(94);
+    await getPool().query(
+      `UPDATE decision_receipt_revisions SET trusted = false
+        WHERE receipt_id = $1 AND sequence = 6`,
+      [untrusted.prepared.receipt.id],
+    );
+    await expect(gmailArchiveTerminalizationRepository.terminalize({
+      command: untrusted.command,
+      result: { outcome: 'known_failure', code: 'remote_rejected', compensationAvailable: false },
+    })).resolves.toEqual({ ok: false, error: 'idempotency_conflict' });
+
+    const attempted = await createClaimedProposal(95);
+    await getPool().query(
+      `INSERT INTO execution_events (id, plan_id, event_type, payload)
+       VALUES ($1, $2, 'started', '{}')`,
+      [id('98', 95), attempted.prepared.plan.id],
+    );
+    await expect(gmailArchiveTerminalizationRepository.terminalize({
+      command: attempted.command,
+      result: { outcome: 'known_failure', code: 'remote_rejected', compensationAvailable: false },
+    })).resolves.toEqual({ ok: false, error: 'idempotency_conflict' });
+  }, 120_000);
+
+  it.each([
+    ['missing', []],
+    ['extra', [{ schema: 'gmail_archive_terminal_result_v1' }, { extra: true }]],
+    ['changed', [{
+      schema: 'gmail_archive_terminal_result_v1',
+      outcome: 'known_failure',
+      code: 'preflight_unavailable',
+      compensationAvailable: false,
+    }]],
+  ] as const)('rejects replay when terminal evidence is %s', async (_label, evidence) => {
+    const suffix = 96 + ['missing', 'extra', 'changed'].indexOf(_label);
+    const fixture = await createClaimedProposal(suffix);
+    const input = {
+      command: fixture.command,
+      result: {
+        outcome: 'known_failure' as const,
+        code: 'remote_rejected' as const,
+        compensationAvailable: false as const,
+      },
+    };
+    const terminalized = await gmailArchiveTerminalizationRepository.terminalize(input);
+    expect(terminalized).toMatchObject({ ok: true, created: true });
+    if (!terminalized.ok) throw new Error('Terminal evidence fixture failed.');
+    await getPool().query(
+      'UPDATE explanation_records SET evidence_used = $2::JSONB WHERE id = $1',
+      [terminalized.terminalization.executionExplanation.id, JSON.stringify(evidence)],
+    );
+    await expect(gmailArchiveTerminalizationRepository.terminalize(input)).resolves.toEqual({
+      ok: false,
+      error: 'idempotency_conflict',
+    });
+  }, 120_000);
+
+  it('rejects a synthetic result added after an unknown terminal outcome', async () => {
+    const fixture = await createClaimedProposal(100);
+    const input = {
+      command: fixture.command,
+      result: {
+        outcome: 'unknown' as const,
+        code: 'remote_outcome_unknown' as const,
+        compensationAvailable: false as const,
+      },
+    };
+    await expect(gmailArchiveTerminalizationRepository.terminalize(input)).resolves.toMatchObject({
+      ok: true,
+      created: true,
+    });
+    await getPool().query(
+      `INSERT INTO execution_results (id, plan_id, success, outputs, error, rollback_available)
+       VALUES ($1, $2, false, '{}', 'remote_rejected', false)`,
+      [id('97', 100), fixture.prepared.plan.id],
+    );
+    await expect(gmailArchiveTerminalizationRepository.terminalize(input)).resolves.toEqual({
+      ok: false,
+      error: 'idempotency_conflict',
+    });
+  }, 120_000);
+
+  it('replays through a valid later feedback continuation without adding artifacts', async () => {
+    const fixture = await createClaimedProposal(101);
+    const input = {
+      command: fixture.command,
+      result: {
+        outcome: 'known_failure' as const,
+        code: 'remote_rejected' as const,
+        compensationAvailable: false as const,
+      },
+    };
+    const terminalized = await gmailArchiveTerminalizationRepository.terminalize(input);
+    expect(terminalized).toMatchObject({ ok: true, created: true });
+    if (!terminalized.ok || terminalized.terminalization.revision.content.version !== 2) {
+      throw new Error('Feedback continuation fixture failed.');
+    }
+    await withTransaction(async (client) => {
+      const feedback = (await client.query<Record<string, unknown>>(
+        `INSERT INTO feedback_events (id, user_id, decision_id, type, data)
+         VALUES ($1, $2, $3, 'approval', '{}') RETURNING *`,
+        [id('96', 101), userId, fixture.proposal.decision.id],
+      )).rows[0]!;
+      const content: JoinedDecisionReceiptContentV2 = {
+        ...terminalized.terminalization.revision.content,
+        stage: 'feedback_recorded',
+        feedbackEvents: [decisionReceiptRowArtifactRefV1('feedback', feedback)],
+      };
+      const appended = await decisionReceiptLifecycleRepository.appendForUser(client, userId, {
+        eventId: feedback['id'] as string,
+        eventKind: 'feedback_recorded',
+        expectedPreviousDigest: terminalized.terminalization.revision.revision_digest,
+        content,
+        receiptId: fixture.prepared.receipt.id,
+      });
+      expect(appended).toMatchObject({ success: true, created: true, revision: { sequence: 8 } });
+    });
+    const before = await artifactCounts(fixture.proposal.decision.id, fixture.proposal.approval.id);
+    await expect(gmailArchiveTerminalizationRepository.terminalize(input)).resolves.toMatchObject({
+      ok: true,
+      created: false,
+      terminalization: { revision: { sequence: 7 } },
+    });
+    await expect(artifactCounts(
+      fixture.proposal.decision.id,
+      fixture.proposal.approval.id,
+    )).resolves.toEqual(before);
+  }, 120_000);
+
+  it('terminalizes after connector evidence is cascaded post-claim', async () => {
+    const fixture = await createClaimedProposal(102);
+    await getPool().query('DELETE FROM connected_accounts WHERE id = $1 AND user_id = $2', [accountId, userId]);
+    const evidence = await getPool().query<{ refs: string; signals: string }>(`SELECT
+      (SELECT count(*)::STRING FROM gmail_message_refs WHERE id = $1) AS refs,
+      (SELECT count(*)::STRING FROM signals WHERE resource_ref_id = $1) AS signals`,
+    [fixture.proposal.messageRefId]);
+    expect(evidence.rows[0]).toEqual({ refs: '0', signals: '0' });
+    await expect(gmailArchiveTerminalizationRepository.terminalize({
+      command: fixture.command,
+      result: {
+        outcome: 'known_failure',
+        code: 'remote_rejected',
+        compensationAvailable: false,
+      },
+    })).resolves.toMatchObject({
+      ok: true,
+      created: true,
+      terminalization: { status: 'failed' },
+    });
   }, 120_000);
 });
