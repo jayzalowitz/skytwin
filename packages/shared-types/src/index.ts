@@ -270,6 +270,12 @@ export type {
 } from './gmail-inbox-mutation.js';
 
 export type {
+  GmailInboxObservationCommand,
+  GmailInboxObservationPort,
+  GmailInboxObservationResult,
+} from './gmail-inbox-observation.js';
+
+export type {
   AbandonedGmailArchiveRecovery,
   AbandonedGmailArchiveRecoveryQuery,
   QueryAbandonedGmailArchiveInput,

@@ -25,6 +25,7 @@ import {
   gmailArchiveDispatchGateTestHooks,
 } from '../repositories/gmail-archive-dispatch-gate-repository.js';
 import { gmailArchiveRecoveryRepository } from '../repositories/gmail-archive-recovery-repository.js';
+import { gmailInboxObservationTargetRepository } from '../repositories/gmail-inbox-observation-target-repository.js';
 import {
   gmailArchiveTerminalizationRepository,
   gmailArchiveTerminalizationTestHooks,
@@ -1201,6 +1202,250 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       userId,
       approvalId: terminal.proposal.approval.id,
     })).resolves.toEqual({ ok: false, error: 'integrity_conflict' });
+  }, 120_000);
+
+  it('resolves only a grace-due dispatch-uncertain graph to its live verified Gmail target', async () => {
+    const fixture = await createClaimedProposal(111);
+    const observation = {
+      userId: fixture.command.userId,
+      admissionId: fixture.command.admissionId,
+      messageRefId: fixture.command.messageRefId,
+      operation: 'observe_inbox' as const,
+    };
+    await expect(gmailInboxObservationTargetRepository.resolve(observation)).resolves.toBeNull();
+    await expect(gmailArchiveDispatchGateRepository.enter(fixture.command)).resolves.toEqual({
+      status: 'entered',
+    });
+    await expect(gmailInboxObservationTargetRepository.resolve(observation)).resolves.toBeNull();
+    await getPool().query(
+      `UPDATE pre_effect_barriers SET updated_at = now() - INTERVAL '6 minutes' WHERE id = $1`,
+      [fixture.command.admissionId],
+    );
+
+    const resolved = await gmailInboxObservationTargetRepository.resolve(observation);
+    expect(resolved).toEqual({
+      connectorAccountId: accountId,
+      credentialRevision: expect.any(String),
+      providerMessageId: 'native-111',
+    });
+    expect(Object.isFrozen(resolved)).toBe(true);
+    await expect(gmailInboxObservationTargetRepository.resolve({
+      ...observation,
+      admissionId: id('88', 111),
+    })).resolves.toBeNull();
+    await expect(gmailInboxObservationTargetRepository.resolve({
+      ...observation,
+      messageRefId: id('33', 999),
+    })).resolves.toBeNull();
+    await expect(gmailInboxObservationTargetRepository.resolve({
+      ...observation,
+      userId: otherUserId,
+    })).resolves.toBeNull();
+
+    const alternateAccountId = id('22', 6);
+    await getPool().query(
+      `INSERT INTO connected_accounts (
+         id, user_id, provider, account_id, scopes, is_active,
+         provider_subject_digest, account_display, identity_verified
+       ) VALUES ($2, $1, 'google', 'alternate-owned-account', ARRAY[$3]::STRING[], true,
+         $4, 'Alternate owned account', true)`,
+      [userId, alternateAccountId, gmailModifyScope, 'b'.repeat(64)],
+    );
+    await getPool().query(
+      `INSERT INTO oauth_tokens (
+         id, user_id, provider, access_token, refresh_token, expires_at, scopes,
+         account_email, account_provider_id, connector_account_id
+       ) VALUES ($2, $1, 'google', NULL, NULL, now() + INTERVAL '1 hour',
+         ARRAY[$3]::STRING[], 'alternate@example.test', 'alternate', $4)`,
+      [userId, id('55', 6), gmailModifyScope, alternateAccountId],
+    );
+    const alternate = await createProposal(118, userId, alternateAccountId);
+    await expect(gmailInboxObservationTargetRepository.resolve({
+      ...observation,
+      messageRefId: alternate.messageRefId,
+    })).resolves.toBeNull();
+  }, 120_000);
+
+  it('rejects legacy, terminal, and receipt-tampered durable graphs for observation', async () => {
+    const legacy = await createClaimedProposal(112, userId, accountId, true);
+    const legacyObservation = {
+      userId,
+      admissionId: legacy.command.admissionId,
+      messageRefId: legacy.command.messageRefId,
+      operation: 'observe_inbox' as const,
+    };
+    await getPool().query(
+      `UPDATE pre_effect_barriers
+          SET effect_result = '{}'::JSONB, updated_at = now() - INTERVAL '6 minutes'
+        WHERE id = $1`,
+      [legacy.command.admissionId],
+    );
+    await expect(gmailInboxObservationTargetRepository.resolve(legacyObservation)).resolves.toBeNull();
+
+    const terminal = await createClaimedProposal(113, userId, accountId, true);
+    await getPool().query(
+      `UPDATE pre_effect_barriers SET updated_at = now() - INTERVAL '6 minutes' WHERE id = $1`,
+      [terminal.command.admissionId],
+    );
+    await expect(gmailArchiveTerminalizationRepository.terminalize({
+      command: terminal.command,
+      result: {
+        outcome: 'unknown',
+        code: 'remote_outcome_unknown',
+        compensationAvailable: false,
+      },
+    })).resolves.toMatchObject({ ok: true, created: true });
+    await expect(gmailInboxObservationTargetRepository.resolve({
+      userId,
+      admissionId: terminal.command.admissionId,
+      messageRefId: terminal.command.messageRefId,
+      operation: 'observe_inbox',
+    })).resolves.toBeNull();
+
+    const tampered = await createClaimedProposal(114, userId, accountId, true);
+    await getPool().query(
+      `UPDATE pre_effect_barriers SET updated_at = now() - INTERVAL '6 minutes' WHERE id = $1`,
+      [tampered.command.admissionId],
+    );
+    await getPool().query(
+      `UPDATE decision_receipt_revisions SET trusted = false
+        WHERE receipt_id = $1 AND sequence = 6`,
+      [tampered.prepared.receipt.id],
+    );
+    await expect(gmailInboxObservationTargetRepository.resolve({
+      userId,
+      admissionId: tampered.command.admissionId,
+      messageRefId: tampered.command.messageRefId,
+      operation: 'observe_inbox',
+    })).resolves.toBeNull();
+  }, 120_000);
+
+  it('requires a current active verified account and exact account/token Gmail scope', async () => {
+    const authorityUserId = id('11', 5);
+    const authorityAccountId = id('22', 5);
+    await seedOwner(
+      authorityUserId,
+      authorityAccountId,
+      id('55', 5),
+      'observation-authority@example.test',
+    );
+    const fixture = await createClaimedProposal(115, authorityUserId, authorityAccountId, true);
+    const observation = {
+      userId: authorityUserId,
+      admissionId: fixture.command.admissionId,
+      messageRefId: fixture.command.messageRefId,
+      operation: 'observe_inbox' as const,
+    };
+    await getPool().query(
+      `UPDATE pre_effect_barriers SET updated_at = now() - INTERVAL '6 minutes' WHERE id = $1`,
+      [fixture.command.admissionId],
+    );
+    await expect(gmailInboxObservationTargetRepository.resolve(observation)).resolves.toMatchObject({
+      connectorAccountId: authorityAccountId,
+    });
+
+    for (const [column, value] of [
+      ['is_active', false],
+      ['identity_verified', false],
+    ] as const) {
+      await getPool().query(
+        `UPDATE connected_accounts SET ${column} = $2 WHERE id = $1`,
+        [authorityAccountId, value],
+      );
+      await expect(gmailInboxObservationTargetRepository.resolve(observation)).resolves.toBeNull();
+      await getPool().query(
+        `UPDATE connected_accounts SET ${column} = true WHERE id = $1`,
+        [authorityAccountId],
+      );
+    }
+    await getPool().query(
+      'UPDATE connected_accounts SET disconnected_at = now() WHERE id = $1',
+      [authorityAccountId],
+    );
+    await expect(gmailInboxObservationTargetRepository.resolve(observation)).resolves.toBeNull();
+    await getPool().query(
+      'UPDATE connected_accounts SET disconnected_at = NULL WHERE id = $1',
+      [authorityAccountId],
+    );
+    await getPool().query(
+      `UPDATE connected_accounts SET scopes = ARRAY['gmail.readonly']::STRING[] WHERE id = $1`,
+      [authorityAccountId],
+    );
+    await expect(gmailInboxObservationTargetRepository.resolve(observation)).resolves.toBeNull();
+    await getPool().query(
+      'UPDATE connected_accounts SET scopes = ARRAY[$2]::STRING[] WHERE id = $1',
+      [authorityAccountId, gmailModifyScope],
+    );
+    await getPool().query(
+      `UPDATE oauth_tokens SET scopes = ARRAY['gmail.readonly']::STRING[]
+        WHERE connector_account_id = $1`,
+      [authorityAccountId],
+    );
+    await expect(gmailInboxObservationTargetRepository.resolve(observation)).resolves.toBeNull();
+    await getPool().query(
+      'UPDATE oauth_tokens SET scopes = ARRAY[$2]::STRING[] WHERE connector_account_id = $1',
+      [authorityAccountId, gmailModifyScope],
+    );
+    await expect(gmailInboxObservationTargetRepository.resolve(observation)).resolves.toMatchObject({
+      connectorAccountId: authorityAccountId,
+    });
+    await getPool().query(
+      'DELETE FROM oauth_tokens WHERE connector_account_id = $1',
+      [authorityAccountId],
+    );
+    await expect(gmailInboxObservationTargetRepository.resolve(observation)).resolves.toBeNull();
+    await getPool().query(
+      `INSERT INTO oauth_tokens (
+         id, user_id, provider, access_token, refresh_token, expires_at, scopes,
+         account_email, account_provider_id, connector_account_id
+       ) VALUES ($2, $1, 'google', NULL, NULL, now() + INTERVAL '1 hour',
+         ARRAY[$3]::STRING[], 'observation-authority@example.test', 'observation-authority', $4)`,
+      [authorityUserId, id('55', 115), gmailModifyScope, authorityAccountId],
+    );
+    await getPool().query(
+      'DELETE FROM connected_accounts WHERE id = $1 AND user_id = $2',
+      [authorityAccountId, authorityUserId],
+    );
+    await expect(gmailInboxObservationTargetRepository.resolve(observation)).resolves.toBeNull();
+  }, 120_000);
+
+  it('rejects source-binding drift and reflects a fresh opaque provider target for race comparison', async () => {
+    const sourceDrift = await createClaimedProposal(116, userId, accountId, true);
+    await getPool().query(
+      `UPDATE pre_effect_barriers SET updated_at = now() - INTERVAL '6 minutes' WHERE id = $1`,
+      [sourceDrift.command.admissionId],
+    );
+    await getPool().query(
+      `UPDATE signals SET source_signal_id = 'drifted-observation-source' WHERE resource_ref_id = $1`,
+      [sourceDrift.command.messageRefId],
+    );
+    await expect(gmailInboxObservationTargetRepository.resolve({
+      userId,
+      admissionId: sourceDrift.command.admissionId,
+      messageRefId: sourceDrift.command.messageRefId,
+      operation: 'observe_inbox',
+    })).resolves.toBeNull();
+
+    const changed = await createClaimedProposal(117, userId, accountId, true);
+    await getPool().query(
+      `UPDATE pre_effect_barriers SET updated_at = now() - INTERVAL '6 minutes' WHERE id = $1`,
+      [changed.command.admissionId],
+    );
+    const changedObservation = {
+      userId,
+      admissionId: changed.command.admissionId,
+      messageRefId: changed.command.messageRefId,
+      operation: 'observe_inbox' as const,
+    };
+    const initial = await gmailInboxObservationTargetRepository.resolve(changedObservation);
+    await getPool().query(
+      `UPDATE gmail_message_refs SET provider_message_id = 'native-replaced-117' WHERE id = $1`,
+      [changed.command.messageRefId],
+    );
+    const current = await gmailInboxObservationTargetRepository.resolve(changedObservation);
+    expect(initial).toMatchObject({ providerMessageId: 'native-117' });
+    expect(current).toMatchObject({ providerMessageId: 'native-replaced-117' });
+    expect(current).not.toEqual(initial);
   }, 120_000);
 
   it('rejects legacy marker-free and receipt-tampered dispatch attempts', async () => {
