@@ -3905,6 +3905,180 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     expect(durable.rows[0]).toEqual({ status: 'unknown', leases: '0' });
   }, 120_000);
 
+  it('serializes reconciliation behind an observation record holding the barrier and lease', async () => {
+    const { fixture, permit } = await permittedObservationTarget(225);
+    const evidence = {
+      kind: 'mailbox_observation_unavailable' as const,
+      binding: mutationBinding(fixture.command),
+      code: 'observation_unavailable' as const,
+    };
+    let releaseRecord!: () => void;
+    let recordLocked!: () => void;
+    const resumeRecord = new Promise<void>((resolve) => { releaseRecord = resolve; });
+    const recordPaused = new Promise<void>((resolve) => { recordLocked = resolve; });
+    const record = gmailArchiveRecoveryLeaseTestHooks.recordWithTransition(
+      { permit, evidence },
+      gmailArchiveRecoveryLeaseTestHooks.recordTransition,
+      pauseTransactionAfterQuery(
+        /FROM gmail_archive_recovery_leases AS lease WHERE admission_id = \$1 AND user_id = \$2 FOR UPDATE/,
+        recordLocked,
+        resumeRecord,
+      ),
+    );
+    await within(recordPaused, 5_000);
+    let reconciliationSettled = false;
+    const reconciliation = gmailArchiveRecordedObservationReconciliationRepository
+      .reconcileRecordedObservation(recoveryFence(permit))
+      .finally(() => { reconciliationSettled = true; });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(reconciliationSettled).toBe(false);
+    releaseRecord();
+    const [recorded, reconciled] = await within(Promise.all([
+      record,
+      reconciliation,
+    ]), 20_000);
+    expect(recorded).toMatchObject({ ok: true, recorded: true });
+    expect(reconciled).toEqual({ ok: true, reconciled: true });
+    await expect(artifactCounts(
+      fixture.proposal.decision.id,
+      fixture.proposal.approval.id,
+    )).resolves.toEqual({ barriers: '2', explanations: '3', plans: '1', revisions: '7' });
+  }, 120_000);
+
+  it('lets a barrier-first not-ready reconciliation release recording before a final reconcile', async () => {
+    const { fixture, permit } = await permittedObservationTarget(226);
+    const evidence = {
+      kind: 'mailbox_observation_unavailable' as const,
+      binding: mutationBinding(fixture.command),
+      code: 'observation_unavailable' as const,
+    };
+    const persistedAtRow = (await getPool().query<{ persisted_at: Date }>(
+      'SELECT now() AS persisted_at',
+    )).rows[0];
+    if (!persistedAtRow) throw new Error('Recorded reconciliation clock was unavailable.');
+    const persistedAt = persistedAtRow.persisted_at.toISOString();
+    let releaseReconciliation!: () => void;
+    let barrierLocked!: () => void;
+    const resumeReconciliation = new Promise<void>((resolve) => {
+      releaseReconciliation = resolve;
+    });
+    const reconciliationPaused = new Promise<void>((resolve) => { barrierLocked = resolve; });
+    const firstReconciliation = gmailArchiveRecordedObservationReconciliationTestHooks
+      .reconcileRecordedObservationWithTransition(
+        recoveryFence(permit),
+        reconcileRecordedGmailArchiveObservationInTransaction,
+        () => ({
+          explanationId: id('91', 226),
+          resultId: id('92', 226),
+          revisionId: id('93', 226),
+          persistedAt,
+        }),
+        async () => persistedAt,
+        pauseTransactionAfterQuery(
+          /FROM pre_effect_barriers AS barrier WHERE barrier.id = \$1 AND barrier.user_id = \$2 .*FOR UPDATE/,
+          barrierLocked,
+          resumeReconciliation,
+        ),
+      );
+    await within(reconciliationPaused, 5_000);
+    let recordSettled = false;
+    const record = gmailArchiveRecoveryLeaseRepository.recordObservation({ permit, evidence })
+      .finally(() => { recordSettled = true; });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(recordSettled).toBe(false);
+    releaseReconciliation();
+    const [notReady, recorded] = await within(Promise.all([
+      firstReconciliation,
+      record,
+    ]), 20_000);
+    expect(notReady).toEqual({ ok: false, error: 'not_ready' });
+    expect(recorded).toMatchObject({ ok: true, recorded: true });
+    await expect(gmailArchiveRecordedObservationReconciliationRepository
+      .reconcileRecordedObservation(recoveryFence(permit)))
+      .resolves.toEqual({ ok: true, reconciled: true });
+    await expect(artifactCounts(
+      fixture.proposal.decision.id,
+      fixture.proposal.approval.id,
+    )).resolves.toEqual({ barriers: '2', explanations: '3', plans: '1', revisions: '7' });
+  }, 120_000);
+
+  it('reports a valid phase-less legacy terminal with the minimal terminal control state', async () => {
+    const { fixture, permit } = await permittedObservationTarget(227);
+    await expect(gmailArchiveRecoveryLeaseRepository.recordObservation({
+      permit,
+      evidence: {
+        kind: 'mailbox_observation_unavailable',
+        binding: mutationBinding(fixture.command),
+        code: 'observation_unavailable',
+      },
+    })).resolves.toMatchObject({ ok: true, recorded: true });
+    const terminalized = await gmailArchiveTerminalizationRepository.terminalize({
+      command: fixture.command,
+      result: {
+        outcome: 'unknown',
+        code: 'remote_outcome_unknown',
+        compensationAvailable: false,
+        binding: mutationBinding(fixture.command),
+      },
+    });
+    if (!terminalized.ok) throw new Error('Legacy terminal fixture failed to terminalize.');
+    const legacyEnvelope = {
+      schema: 'gmail_archive_terminal_result_v1' as const,
+      outcome: 'unknown' as const,
+      code: 'remote_outcome_unknown' as const,
+      compensationAvailable: false as const,
+    };
+    const legacyBarrier = {
+      ...terminalized.terminalization.barrier,
+      effect_result: legacyEnvelope,
+    };
+    const legacyExplanation = {
+      ...terminalized.terminalization.executionExplanation,
+      evidence_used: [legacyEnvelope],
+    };
+    const priorContent = terminalized.terminalization.revision.content;
+    if (priorContent.version !== 2) throw new Error('Legacy terminal receipt fixture was invalid.');
+    const legacyContent: JoinedDecisionReceiptContentV2 = {
+      ...priorContent,
+      barrier: decisionReceiptBarrierRefV1(legacyBarrier),
+      executionExplanation: decisionReceiptRowArtifactRefV1(
+        'explanation',
+        { ...legacyExplanation },
+      ),
+    };
+    const contentDigest = joinedDecisionReceiptContentDigest(legacyContent);
+    const revision = terminalized.terminalization.revision;
+    const revisionDigest = joinedDecisionReceiptRevisionDigest({
+      revisionId: revision.id,
+      receiptId: revision.receipt_id,
+      decisionId: fixture.proposal.decision.id,
+      userId,
+      sequence: revision.sequence,
+      eventKey: revision.event_key,
+      previousDigest: revision.previous_digest,
+      contentDigest,
+    });
+    await withTransaction(async (client) => {
+      await client.query(
+        'UPDATE pre_effect_barriers SET effect_result = $2::JSONB WHERE id = $1',
+        [fixture.command.admissionId, JSON.stringify(legacyEnvelope)],
+      );
+      await client.query(
+        'UPDATE explanation_records SET evidence_used = $2::JSONB WHERE id = $1',
+        [legacyExplanation.id, JSON.stringify([legacyEnvelope])],
+      );
+      await client.query(
+        `UPDATE decision_receipt_revisions
+            SET content = $2::JSONB, content_digest = $3, revision_digest = $4
+          WHERE id = $1`,
+        [revision.id, JSON.stringify(legacyContent), contentDigest, revisionDigest],
+      );
+    });
+    await expect(gmailArchiveRecordedObservationReconciliationRepository
+      .reconcileRecordedObservation(recoveryFence(permit)))
+      .resolves.toEqual({ ok: true, reconciled: false, state: 'terminal' });
+  }, 120_000);
+
   it('retains the lease and graph on stale or conflicting dispatch proofs', async () => {
     const owner = await seedRecoveryOwner(30);
     const fixture = await createClaimedProposal(

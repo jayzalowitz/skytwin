@@ -386,6 +386,12 @@ describe('gmailArchiveRecordedObservationReconciliationRepository', () => {
     for (const barrel of barrels) {
       expect(barrel).not.toContain('gmailArchiveRecordedObservationReconciliationRepository');
       expect(barrel).not.toContain('gmail-archive-recorded-observation-reconciliation-repository');
+      expect(barrel).not.toContain('reconcileRecordedGmailArchiveObservationInTransaction');
+      expect(barrel).not.toContain('consumeRecordedGmailArchiveObservationInTransaction');
+      expect(barrel).not.toContain(
+        'RecordedGmailArchiveObservationReconciliationTransitionResult',
+      );
+      expect(barrel).not.toContain('gmailArchiveReconciliationRollbackResult');
     }
     const roots = [
       new URL('../../../../apps/api/', import.meta.url),
