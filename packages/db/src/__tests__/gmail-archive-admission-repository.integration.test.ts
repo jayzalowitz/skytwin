@@ -137,6 +137,22 @@ async function within<T>(operation: Promise<T>, milliseconds: number): Promise<T
   }
 }
 
+async function waitForActiveClusterQuery(prefix: string): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const observed = await getPool().query<{ active: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM [SHOW CLUSTER QUERIES]
+          WHERE btrim(query) LIKE $1
+       ) AS active`,
+      [`${prefix}%`],
+    );
+    if (observed.rows[0]?.active === true) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`CockroachDB did not expose active query prefix: ${prefix}`);
+}
+
 function pauseTransactionAfterQuery(
   pattern: RegExp,
   onPaused: () => void,
@@ -6319,7 +6335,6 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     // against the committed value instead of updating from its stale read.
     const writer = await getPool().connect();
     let writerCommitted = false;
-    let responderSettled = false;
     let responsePromise: Promise<Awaited<ReturnType<typeof approvalRepository.respond>>> | null = null;
     try {
       await writer.query('BEGIN');
@@ -6332,24 +6347,17 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       );
       responsePromise = approvalRepository.respond(
         changed.approval.id, 'approve', owner.ownerUserId,
-      ).then((result) => {
-        responderSettled = true;
-        return result;
-      }, (error: unknown) => {
-        responderSettled = true;
-        throw error;
-      });
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      expect(responderSettled).toBe(false);
+      );
+      await waitForActiveClusterQuery(
+        'UPDATE approval_requests%SET status = $1%candidate_action',
+      );
       await writer.query('COMMIT');
       writerCommitted = true;
       await expect(within(responsePromise, 5_000)).resolves.toBeNull();
     } finally {
       if (!writerCommitted) await writer.query('ROLLBACK').catch(() => undefined);
       writer.release();
-      if (responsePromise && !responderSettled) {
-        await responsePromise.catch(() => undefined);
-      }
+      if (responsePromise) await responsePromise.catch(() => undefined);
     }
     await expect(approvalRepository.recordFirstConfirmation(
       changed.approval.id, owner.ownerUserId,
