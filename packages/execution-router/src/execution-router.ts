@@ -8,7 +8,10 @@ import type {
   RoutingDecision,
   SkillGap,
 } from '@skytwin/shared-types';
-import { evaluateInjectionGuard } from '@skytwin/shared-types';
+import {
+  classifyGmailArchiveGenericAction,
+  evaluateInjectionGuard,
+} from '@skytwin/shared-types';
 import type { IronClawAdapter } from '@skytwin/ironclaw-adapter';
 import type { AdapterRegistry } from './adapter-registry.js';
 import { applyAdapterRiskModifier } from './risk-modifier.js';
@@ -401,6 +404,7 @@ function assertExecutionPermitted(
   action: CandidateAction,
   context?: ExecutionContext,
 ): void {
+  assertGenericExecutionActionAllowed(action);
   const verdict = evaluateInjectionGuard(action);
   if (verdict.escalate && !context?.approved) {
     throw new InvariantViolationError(
@@ -412,6 +416,18 @@ function assertExecutionPermitted(
         `A policy-engine or decision-engine change let an escalation-worthy ` +
         `action through with autoExecute — that upstream bug must be fixed. ` +
         `Safety Invariant #1.`,
+    );
+  }
+}
+
+/** The dedicated Gmail archive lifecycle is never a generic router skill. */
+function assertGenericExecutionActionAllowed(action: unknown): asserts action is CandidateAction {
+  const classification = classifyGmailArchiveGenericAction(action);
+  if (classification.kind !== 'other') {
+    throw new InvariantViolationError(
+      classification.kind === 'archive'
+        ? 'The archive_email action is reserved for its dedicated execution lifecycle.'
+        : 'The generic execution action could not be inspected safely.',
     );
   }
 }
@@ -452,6 +468,7 @@ export class ExecutionRouter {
     riskAssessment: RiskAssessment,
     userId: string,
   ): Promise<RoutingDecision> {
+    assertGenericExecutionActionAllowed(action);
     const boundAction = bindExecutionOwner(action, userId);
     const capableNames = this.registry.getCapableAdapters(boundAction.actionType);
 
@@ -535,6 +552,7 @@ export class ExecutionRouter {
     userId: string,
     context?: ExecutionContext,
   ): Promise<ExecutionResult> {
+    assertGenericExecutionActionAllowed(action);
     assertValidExecutionInputs(action, riskAssessment);
     assertExecutionPermitted(action, context);
     const boundAction = bindExecutionOwner(action, userId);
@@ -605,6 +623,7 @@ export class ExecutionRouter {
     userId: string,
     context?: ExecutionContext,
   ): Promise<PreparedExecution> {
+    assertGenericExecutionActionAllowed(action);
     assertValidExecutionInputs(action, routingDecision.modifiedRiskAssessment);
     assertExecutionPermitted(action, context);
     let mutationAttempted = false;
@@ -672,6 +691,7 @@ export class ExecutionRouter {
         'Prepared execution handle was not issued by this router or was already consumed.',
       );
     }
+    assertGenericExecutionActionAllowed(binding.plan.action);
     const entry = this.registry.get(binding.selectedAdapter);
     if (
       userId !== binding.userId ||
@@ -804,6 +824,7 @@ export class ExecutionRouter {
     userId: string,
     context?: ExecutionContext,
   ): AsyncIterable<ExecutionEvent> {
+    assertGenericExecutionActionAllowed(action);
     assertValidExecutionInputs(action, riskAssessment);
     assertExecutionPermitted(action, context);
     const boundAction = bindExecutionOwner(action, userId);

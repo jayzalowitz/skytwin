@@ -115,6 +115,11 @@ export type {
   ExecutionAdapterName,
 } from './action-capabilities.js';
 
+export { classifyGmailArchiveGenericAction } from './gmail-archive-quarantine.js';
+export type {
+  GmailArchiveGenericActionClassification,
+} from './gmail-archive-quarantine.js';
+
 export {
   EXECUTION_RUNTIME_VERSION_CHECKED_AT,
   EXECUTION_RUNTIME_VERSIONS,

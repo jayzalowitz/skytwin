@@ -19,7 +19,6 @@ export interface ExecutableActionPlan {
 }
 
 export const IRONCLAW_CORE_ACTION_TYPES = new Set([
-  'archive_email',
   'label_email',
   'send_reply',
   'reply_email',
@@ -55,7 +54,6 @@ export const IRONCLAW_CORE_ACTION_TYPES = new Set([
 
 export const OPENCLAW_ACTION_TYPES = new Set([
   'send_email',
-  'archive_email',
   'label_email',
   'reply_email',
   'send_reply',

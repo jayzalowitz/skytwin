@@ -6,7 +6,8 @@ const GMAIL_API = 'https://gmail.googleapis.com/gmail/v1';
 
 /**
  * Handler for email actions via the Gmail API.
- * Handles archive, label, send_reply, draft_email, send_email, and delete operations.
+ * Handles label, send_reply, draft_email, send_email, and delete operations.
+ * Archive is reserved for the dedicated Gmail archive lifecycle.
  */
 export class EmailActionHandler implements ActionHandler {
   readonly actionType = 'email';
@@ -16,7 +17,6 @@ export class EmailActionHandler implements ActionHandler {
 
   canHandle(actionType: string): boolean {
     return [
-      'archive_email',
       'label_email',
       'send_reply',
       'reply_email',
@@ -28,13 +28,13 @@ export class EmailActionHandler implements ActionHandler {
 
   async execute(step: ExecutionStep): Promise<StepResult> {
     const actionType = (step.parameters['actionType'] as string) ?? step.type;
+    if (step.type === 'archive_email' || actionType === 'archive_email') {
+      return { success: false, error: 'archive_email is reserved for its dedicated lifecycle' };
+    }
     const accessToken = await this.resolveAccessToken(step);
     const messageId = step.parameters['emailId'] as string | undefined;
 
     switch (actionType) {
-      case 'archive_email':
-        if (!messageId) throw new Error('Missing emailId in step parameters');
-        return this.archiveEmail(accessToken, messageId);
       case 'label_email':
         if (!messageId) throw new Error('Missing emailId in step parameters');
         return this.labelEmail(
@@ -64,6 +64,10 @@ export class EmailActionHandler implements ActionHandler {
 
   async rollback(step: ExecutionStep): Promise<StepResult> {
     const originalAction = (step.parameters['originalActionType'] as string) ?? step.type;
+    if (step.type === 'archive_email' || step.type === 'rollback_archive_email' ||
+        originalAction === 'archive_email') {
+      return { success: false, error: 'archive_email rollback requires its dedicated lifecycle' };
+    }
     const accessToken = await this.resolveAccessToken(step);
     const messageId = step.parameters['emailId'] as string | undefined;
 
@@ -72,9 +76,6 @@ export class EmailActionHandler implements ActionHandler {
     }
 
     switch (originalAction) {
-      case 'archive_email':
-        // Un-archive: add INBOX label back
-        return this.modifyLabels(accessToken, messageId, ['INBOX'], []);
       case 'label_email':
         // Remove added labels
         return this.modifyLabels(
@@ -101,10 +102,6 @@ export class EmailActionHandler implements ActionHandler {
       throw new Error('Missing accessToken — no OAuth token available for Gmail. Falling back to next adapter.');
     }
     return accessToken;
-  }
-
-  private async archiveEmail(accessToken: string, messageId: string): Promise<StepResult> {
-    return this.modifyLabels(accessToken, messageId, [], ['INBOX']);
   }
 
   private async labelEmail(accessToken: string, messageId: string, labels: string[]): Promise<StepResult> {
