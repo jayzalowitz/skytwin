@@ -340,6 +340,8 @@ export interface FeedbackEventRow {
   id: string;
   user_id: string;
   decision_id: string;
+  /** Dedicated approval source; null for historical and generic feedback. */
+  approval_request_id: string | null;
   type: string;
   data: Record<string, unknown>;
   created_at: Date;

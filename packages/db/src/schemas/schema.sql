@@ -175,6 +175,7 @@ CREATE TABLE IF NOT EXISTS approval_requests (
   requested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   responded_at TIMESTAMPTZ,
   response JSONB,
+  CONSTRAINT approval_requests_id_owner_decision_idx UNIQUE (id, user_id, decision_id),
   INDEX (user_id, status)
 );
 
@@ -426,11 +427,17 @@ CREATE TABLE IF NOT EXISTS feedback_events (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID NOT NULL REFERENCES users(id),
   decision_id UUID NOT NULL REFERENCES decisions(id),
+  approval_request_id UUID,
   type STRING NOT NULL,
   data JSONB NOT NULL DEFAULT '{}',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT feedback_events_approval_owner_decision_fk
+    FOREIGN KEY (approval_request_id, user_id, decision_id)
+    REFERENCES approval_requests (id, user_id, decision_id) ON DELETE CASCADE,
   INDEX (user_id, created_at DESC),
-  INDEX (decision_id)
+  INDEX (decision_id),
+  UNIQUE INDEX feedback_events_approval_request_unique_idx (approval_request_id)
+    WHERE approval_request_id IS NOT NULL
 );
 
 -- ============================================================================
