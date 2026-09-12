@@ -1,5 +1,6 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:net';
+import type { PoolClient } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { RiskAssessor } from '@skytwin/decision-engine';
 import {
@@ -94,6 +95,49 @@ async function waitForCockroach(port: number, processHandle: ChildProcess): Prom
 
 function id(prefix: string, suffix: number): string {
   return `${prefix}000000-0000-4000-8000-${String(suffix).padStart(12, '0')}`;
+}
+
+async function within<T>(operation: Promise<T>, milliseconds: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error('concurrent operation timed out')), milliseconds);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function pauseTransactionAfterQuery(
+  pattern: RegExp,
+  onPaused: () => void,
+  resume: Promise<void>,
+) {
+  return async <T>(callback: (client: PoolClient) => Promise<T>): Promise<T> =>
+    withTransaction(async (client) => {
+      let paused = false;
+      const wrapped = new Proxy(client, {
+        get(target, property, receiver): unknown {
+          if (property !== 'query') {
+            const value: unknown = Reflect.get(target, property, receiver);
+            return typeof value === 'function' ? value.bind(target) : value;
+          }
+          return async (text: string, values?: unknown[]) => {
+            const result = await target.query(text, values);
+            if (!paused && pattern.test(text.replace(/\s+/g, ' '))) {
+              paused = true;
+              onPaused();
+              await resume;
+            }
+            return result;
+          };
+        },
+      });
+      return callback(wrapped);
+    });
 }
 
 describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repositories on CockroachDB', () => {
@@ -3362,6 +3406,109 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
         },
       });
     }
+  }, 120_000);
+
+  it('shares preparation lock order with reserved recovery acquisition', async () => {
+    const { ownerUserId, ownerAccountId } = await seedRecoveryOwner(18);
+    const proposal = await createProposal(172, ownerUserId, ownerAccountId);
+    const approved = await gmailArchiveApprovalResponseRepository.respond({
+      approvalId: proposal.approval.id,
+      userId: ownerUserId,
+      action: 'approve',
+    });
+    if (!approved.ok || !approved.response.reservedBarrier) {
+      throw new Error('Concurrent preparation fixture was not reserved.');
+    }
+    await setRecoveryAnchor(approved.response.reservedBarrier.id, 'created_at');
+
+    let releaseRecovery!: () => void;
+    let authorityLocked!: () => void;
+    const resumeRecovery = new Promise<void>((resolve) => { releaseRecovery = resolve; });
+    const recoveryPaused = new Promise<void>((resolve) => { authorityLocked = resolve; });
+    const acquisition = gmailArchiveRecoveryLeaseTestHooks.acquireWithTransition(
+      {
+        userId: ownerUserId,
+        approvalId: proposal.approval.id,
+        leaseMs: 60_000,
+      },
+      gmailArchiveRecoveryLeaseTestHooks.acquireTransition,
+      pauseTransactionAfterQuery(
+        /FROM decision_receipts WHERE user_id = \$1 AND decision_id = \$2 FOR UPDATE/,
+        authorityLocked,
+        resumeRecovery,
+      ),
+    );
+    await within(recoveryPaused, 5_000);
+    const preparation = gmailArchivePreparationRepository.prepare({
+      userId: ownerUserId,
+      approvalId: proposal.approval.id,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    releaseRecovery();
+    const [acquired, prepared] = await within(Promise.all([
+      acquisition,
+      preparation,
+    ]), 20_000);
+
+    expect(prepared).toMatchObject({
+      ok: true,
+      preparation: { status: 'prepared' },
+    });
+    expect(acquired).toMatchObject({ ok: true });
+    if (!acquired.ok || (acquired.status !== 'acquired' && acquired.status !== 'not_due')) {
+      throw new Error('Reserved recovery returned an unexpected concurrent result.');
+    }
+    const barrier = await getPool().query<{ status: string }>(
+      'SELECT status FROM pre_effect_barriers WHERE id = $1',
+      [approved.response.reservedBarrier.id],
+    );
+    expect(barrier.rows[0]?.status).toBe('prepared');
+  }, 120_000);
+
+  it('shares claim lock order with prepared recovery acquisition', async () => {
+    const { ownerUserId, ownerAccountId } = await seedRecoveryOwner(19);
+    const fixture = await createPreparedProposal(173, ownerUserId, ownerAccountId);
+    await setRecoveryAnchor(fixture.prepared.barrier.id, 'updated_at');
+
+    let releaseRecovery!: () => void;
+    let authorityLocked!: () => void;
+    const resumeRecovery = new Promise<void>((resolve) => { releaseRecovery = resolve; });
+    const recoveryPaused = new Promise<void>((resolve) => { authorityLocked = resolve; });
+    const acquisition = gmailArchiveRecoveryLeaseTestHooks.acquireWithTransition(
+      {
+        userId: ownerUserId,
+        approvalId: fixture.proposal.approval.id,
+        leaseMs: 60_000,
+      },
+      gmailArchiveRecoveryLeaseTestHooks.acquireTransition,
+      pauseTransactionAfterQuery(
+        /FROM decision_receipts WHERE user_id = \$1 AND decision_id = \$2 FOR UPDATE/,
+        authorityLocked,
+        resumeRecovery,
+      ),
+    );
+    await within(recoveryPaused, 5_000);
+    const claim = gmailArchiveClaimRepository.claim({
+      userId: ownerUserId,
+      approvalId: fixture.proposal.approval.id,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    releaseRecovery();
+    const [acquired, claimed] = await within(Promise.all([
+      acquisition,
+      claim,
+    ]), 20_000);
+
+    expect(claimed).toMatchObject({ ok: true, claimed: true });
+    expect(acquired).toMatchObject({ ok: true });
+    if (!acquired.ok || (acquired.status !== 'acquired' && acquired.status !== 'not_due')) {
+      throw new Error('Prepared recovery returned an unexpected concurrent result.');
+    }
+    const barrier = await getPool().query<{ status: string }>(
+      'SELECT status FROM pre_effect_barriers WHERE id = $1',
+      [fixture.prepared.barrier.id],
+    );
+    expect(barrier.rows[0]?.status).toBe('in_progress');
   }, 120_000);
 
   it('has one concurrent holder and one fresh observation permit', async () => {

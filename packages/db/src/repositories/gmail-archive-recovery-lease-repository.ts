@@ -356,23 +356,51 @@ async function liveCapability(
   return row?.live === true;
 }
 
-async function classifyStage(
+async function loadAdmissionBarriers(
   client: PoolClient,
   authority: Readonly<{ userId: string; approvalId: string }>,
-): Promise<StageResult> {
-  const barriers = (await client.query<LockedBarrierRow>(
+  lock: boolean,
+): Promise<LockedBarrierRow[]> {
+  return (await client.query<LockedBarrierRow>(
     `SELECT barrier.*,
             (CASE WHEN barrier.status = 'reserved' THEN barrier.created_at
                   ELSE barrier.updated_at END AT TIME ZONE 'UTC')::STRING AS phase_changed_at_text
        FROM pre_effect_barriers AS barrier
       WHERE barrier.user_id = $1 AND barrier.effect_type = 'event_execution'
-        AND barrier.idempotency_key = $2
-      FOR UPDATE`,
+        AND barrier.idempotency_key = $2${lock ? ' FOR UPDATE' : ''}`,
     [authority.userId, authority.approvalId],
   )).rows;
-  if (barriers.length === 0) return { status: 'error', error: 'not_found' };
-  if (barriers.length !== 1) return { status: 'error', error: 'integrity_conflict' };
+}
+
+async function classifyStage(
+  client: PoolClient,
+  authority: Readonly<{ userId: string; approvalId: string }>,
+): Promise<StageResult> {
+  // The first read routes lock order but grants no authority. Preparation and
+  // claim lock the approval/proposal graph before the admission barrier, so
+  // reserved/prepared recovery must do the same and revalidate after locking.
+  // In-progress recovery has no competing forward writer and remains
+  // barrier-first so its attempt phase is fenced before graph inspection.
+  const observed = await loadAdmissionBarriers(client, authority, false);
+  if (observed.length === 0) return { status: 'error', error: 'not_found' };
+  if (observed.length !== 1) return { status: 'error', error: 'integrity_conflict' };
+  const observedBarrier = observed[0]!;
+  const portableStage = observedBarrier.status === 'reserved' ||
+    observedBarrier.status === 'prepared';
+  const authorityState = portableStage
+    ? await loadGmailArchiveStableState(client, authority, true, true)
+    : null;
+  const barriers = await loadAdmissionBarriers(client, authority, true);
+  if (barriers.length !== 1 || barriers[0]!.id !== observedBarrier.id) {
+    return { status: 'error', error: 'integrity_conflict' };
+  }
   const barrier = barriers[0]!;
+  if (portableStage && barrier.status !== observedBarrier.status) {
+    // A normal preparation/claim transition won the race while we acquired its
+    // earlier approval/proposal locks. A later recovery pass classifies the new
+    // stage without reversing lock order in this transaction.
+    return { status: 'not_due' };
+  }
   const phaseChangedAt = canonicalDbPhaseTimestamp(barrier.phase_changed_at_text);
   if (!UUID.test(barrier.id) || !phaseChangedAt) {
     return { status: 'error', error: 'integrity_conflict' };
@@ -406,7 +434,6 @@ async function classifyStage(
     };
   }
 
-  const authorityState = await loadGmailArchiveStableState(client, authority, true, true);
   const authorityApproved = authorityState
     ? exactGmailArchiveApprovedPrefix(authorityState)
     : null;
