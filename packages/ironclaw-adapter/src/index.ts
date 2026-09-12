@@ -37,9 +37,11 @@ export type {
   GmailInboxMutationDispatchGateResult,
   GmailInboxMutationPort,
   GmailInboxMutationResult,
+  GmailInboxObservationBinding,
   GmailInboxObservationCommand,
   GmailInboxObservationPort,
   GmailInboxObservationResult,
+  GmailInboxObservationUnavailableCode,
 } from '@skytwin/shared-types';
 export type { GmailInboxMutationServiceOptions } from './gmail-inbox-mutation-port.js';
 export type {

@@ -10,8 +10,10 @@ import {
 } from '@skytwin/db';
 import type {
   GmailInboxObservationCommand,
+  GmailInboxObservationBinding,
   GmailInboxObservationPort,
   GmailInboxObservationResult,
+  GmailInboxObservationUnavailableCode,
 } from '@skytwin/shared-types';
 
 const GMAIL_MODIFY_SCOPE = 'https://www.googleapis.com/auth/gmail.modify';
@@ -214,10 +216,21 @@ function snapshotCredential(value: unknown): Readonly<GmailInboxObservationCrede
   });
 }
 
-function unavailable(code: Extract<GmailInboxObservationResult, {
-  outcome: 'unavailable';
-}>['code']): GmailInboxObservationResult {
-  return Object.freeze({ outcome: 'unavailable', code });
+function observationBinding(
+  command: Readonly<GmailInboxObservationCommand>,
+): Readonly<GmailInboxObservationBinding> {
+  return Object.freeze({
+    userId: command.userId,
+    admissionId: command.admissionId,
+    messageRefId: command.messageRefId,
+  });
+}
+
+function unavailable(
+  code: GmailInboxObservationUnavailableCode,
+  binding: Readonly<GmailInboxObservationBinding>,
+): GmailInboxObservationResult {
+  return Object.freeze({ outcome: 'unavailable', code, binding });
 }
 
 async function readBoundedBody(response: Response): Promise<string | null> {
@@ -315,15 +328,16 @@ export class GmailInboxObservationService implements GmailInboxObservationPort {
     submittedCommand: GmailInboxObservationCommand,
   ): Promise<GmailInboxObservationResult> {
     const command = snapshotCommand(submittedCommand);
-    if (!command) return unavailable('invalid_command');
+    if (!command) return Object.freeze({ outcome: 'unavailable', code: 'invalid_command' });
+    const binding = observationBinding(command);
 
     let initialTarget: Readonly<GmailInboxObservationTarget> | null;
     try {
       initialTarget = snapshotTarget(await this.targetResolver.resolve(command));
     } catch {
-      return unavailable('authority_unavailable');
+      return unavailable('authority_unavailable', binding);
     }
-    if (!initialTarget) return unavailable('not_observable');
+    if (!initialTarget) return unavailable('not_observable', binding);
 
     let credential: Readonly<GmailInboxObservationCredential> | null;
     try {
@@ -333,10 +347,10 @@ export class GmailInboxObservationService implements GmailInboxObservationPort {
         requiredScope: GMAIL_MODIFY_SCOPE,
       })));
     } catch {
-      return unavailable('credentials_unavailable');
+      return unavailable('credentials_unavailable', binding);
     }
     if (!credential || !credential.scopes.includes(GMAIL_MODIFY_SCOPE)) {
-      return unavailable('credentials_unavailable');
+      return unavailable('credentials_unavailable', binding);
     }
 
     // Credential refresh can race with disconnect, scope changes, graph
@@ -346,21 +360,22 @@ export class GmailInboxObservationService implements GmailInboxObservationPort {
     try {
       currentTarget = snapshotTarget(await this.targetResolver.resolve(command));
     } catch {
-      return unavailable('authority_unavailable');
+      return unavailable('authority_unavailable', binding);
     }
     if (!currentTarget ||
         currentTarget.connectorAccountId !== initialTarget.connectorAccountId ||
         currentTarget.credentialRevision !== initialTarget.credentialRevision ||
         currentTarget.providerMessageId !== initialTarget.providerMessageId) {
-      return unavailable('not_observable');
+      return unavailable('not_observable', binding);
     }
 
-    return this.request(currentTarget.providerMessageId, credential.accessToken);
+    return this.request(currentTarget.providerMessageId, credential.accessToken, binding);
   }
 
   private async request(
     providerMessageId: string,
     accessToken: string,
+    binding: Readonly<GmailInboxObservationBinding>,
   ): Promise<GmailInboxObservationResult> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
@@ -379,18 +394,18 @@ export class GmailInboxObservationService implements GmailInboxObservationPort {
       });
       if (response.status === 401) {
         await cancelBody(response);
-        return unavailable('credentials_unavailable');
+        return unavailable('credentials_unavailable', binding);
       }
       if ([400, 403, 404, 409].includes(response.status)) {
         await cancelBody(response);
-        return unavailable('observation_rejected');
+        return unavailable('observation_rejected', binding);
       }
       if (response.status !== 200) {
         await cancelBody(response);
-        return unavailable('observation_unavailable');
+        return unavailable('observation_unavailable', binding);
       }
       const inbox = await parseObservation(response, providerMessageId);
-      if (inbox === null) return unavailable('observation_unavailable');
+      if (inbox === null) return unavailable('observation_unavailable', binding);
       // This is local evidence-acceptance time: only a completely received,
       // bounded, exact provider representation qualifies as an observation.
       const observedAt = new Date().toISOString();
@@ -399,9 +414,10 @@ export class GmailInboxObservationService implements GmailInboxObservationPort {
         operation: 'observe_inbox',
         inbox,
         observedAt,
+        binding,
       });
     } catch {
-      return unavailable('observation_unavailable');
+      return unavailable('observation_unavailable', binding);
     } finally {
       clearTimeout(timeout);
     }

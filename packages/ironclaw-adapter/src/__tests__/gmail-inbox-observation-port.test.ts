@@ -2,8 +2,10 @@ import { readFile, readdir } from 'node:fs/promises';
 import { describe, expect, expectTypeOf, it, vi } from 'vitest';
 import type {
   GmailInboxMutationCommand,
+  GmailInboxObservationBinding,
   GmailInboxObservationCommand,
   GmailInboxObservationResult,
+  GmailInboxObservationUnavailableCode,
 } from '@skytwin/shared-types';
 import {
   GmailInboxObservationService,
@@ -20,11 +22,20 @@ const command: GmailInboxObservationCommand = {
   messageRefId: '33333333-3333-4333-8333-333333333333',
   operation: 'observe_inbox',
 };
+const binding: GmailInboxObservationBinding = {
+  userId: command.userId,
+  admissionId: command.admissionId,
+  messageRefId: command.messageRefId,
+};
 const target = {
   connectorAccountId: '44444444-4444-4444-8444-444444444444',
   credentialRevision: '55555555-5555-4555-8555-555555555555',
   providerMessageId: 'native/message id',
 };
+
+function boundUnavailable(code: GmailInboxObservationUnavailableCode): GmailInboxObservationResult {
+  return { outcome: 'unavailable', code, binding };
+}
 
 function jsonResponse(value: unknown, status = 200, headers?: Record<string, string>): Response {
   return new Response(JSON.stringify(value), {
@@ -89,9 +100,12 @@ describe('GmailInboxObservationService', () => {
   ])('rejects malformed commands before authority, credentials, or Gmail: %o', async (submitted) => {
     const { fetchMock, materialize, resolve, service } = fixture();
 
-    await expect(service.observe(submitted as GmailInboxObservationCommand)).resolves.toEqual({
+    const result = await service.observe(submitted as GmailInboxObservationCommand);
+    expect(result).toEqual({
       outcome: 'unavailable', code: 'invalid_command',
     });
+    expect(result).not.toHaveProperty('binding');
+    expect(Object.isFrozen(result)).toBe(true);
     expect(resolve).not.toHaveBeenCalled();
     expect(materialize).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
@@ -130,9 +144,12 @@ describe('GmailInboxObservationService', () => {
 
     const pending = service.observe(submitted as GmailInboxObservationCommand);
     submitted.operation = 'archive';
+    submitted.userId = '77777777-7777-4777-8777-777777777777';
+    submitted.admissionId = '88888888-8888-4888-8888-888888888888';
     submitted.messageRefId = '99999999-9999-4999-8999-999999999999';
     release?.(target);
-    await expect(pending).resolves.toMatchObject({ outcome: 'observed' });
+    const result = await pending;
+    expect(result).toMatchObject({ outcome: 'observed', binding });
 
     expect(resolve).toHaveBeenCalledTimes(2);
     for (const [seen] of resolve.mock.calls) {
@@ -140,6 +157,57 @@ describe('GmailInboxObservationService', () => {
       expect(seen).not.toBe(submitted);
       expect(Object.isFrozen(seen)).toBe(true);
     }
+    expect(Object.isFrozen(result)).toBe(true);
+    if (result.outcome === 'observed') expect(Object.isFrozen(result.binding)).toBe(true);
+  });
+
+  it('returns an exact frozen secret-free authority binding on observed evidence', async () => {
+    const { service } = fixture();
+    const result = await service.observe(command);
+
+    expect(result).toEqual({
+      outcome: 'observed',
+      operation: 'observe_inbox',
+      inbox: true,
+      observedAt: expect.any(String),
+      binding,
+    });
+    expect(Object.isFrozen(result)).toBe(true);
+    if (result.outcome !== 'observed') throw new Error('expected an observation');
+    expect(Object.isFrozen(result.binding)).toBe(true);
+    expect(Object.getPrototypeOf(result.binding)).toBe(Object.prototype);
+    expect(Object.getOwnPropertySymbols(result.binding)).toEqual([]);
+    expect(Object.keys(result.binding).sort()).toEqual([
+      'admissionId', 'messageRefId', 'userId',
+    ]);
+    for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(result.binding))) {
+      expect(descriptor).toHaveProperty('value');
+      expect(descriptor.enumerable).toBe(true);
+      expect(descriptor.get).toBeUndefined();
+      expect(descriptor.set).toBeUndefined();
+    }
+    expect(JSON.stringify(result)).not.toContain(target.connectorAccountId);
+    expect(JSON.stringify(result)).not.toContain(target.credentialRevision);
+    expect(JSON.stringify(result)).not.toContain(target.providerMessageId);
+    expect(JSON.stringify(result)).not.toContain('secret-access-token');
+  });
+
+  it('returns the same exact frozen binding on canonical-command unavailability', async () => {
+    const { service } = fixture({
+      resolve: vi.fn().mockRejectedValueOnce(new Error('private database detail')),
+    });
+    const result = await service.observe(command);
+
+    expect(result).toEqual(boundUnavailable('authority_unavailable'));
+    expect(Object.isFrozen(result)).toBe(true);
+    if (result.outcome !== 'unavailable' || result.code === 'invalid_command') {
+      throw new Error('expected bound unavailability');
+    }
+    expect(Object.isFrozen(result.binding)).toBe(true);
+    expect(Object.keys(result).sort()).toEqual(['binding', 'code', 'outcome']);
+    expect(Object.keys(result.binding).sort()).toEqual([
+      'admissionId', 'messageRefId', 'userId',
+    ]);
   });
 
   it.each([
@@ -153,7 +221,7 @@ describe('GmailInboxObservationService', () => {
     const { fetchMock, materialize, service } = fixture({
       resolve: vi.fn().mockResolvedValueOnce(resolved),
     });
-    await expect(service.observe(command)).resolves.toEqual({ outcome: 'unavailable', code });
+    await expect(service.observe(command)).resolves.toEqual(boundUnavailable(code));
     expect(materialize).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -162,9 +230,7 @@ describe('GmailInboxObservationService', () => {
     const { fetchMock, materialize, service } = fixture({
       resolve: vi.fn().mockRejectedValueOnce(new Error('private database detail')),
     });
-    await expect(service.observe(command)).resolves.toEqual({
-      outcome: 'unavailable', code: 'authority_unavailable',
-    });
+    await expect(service.observe(command)).resolves.toEqual(boundUnavailable('authority_unavailable'));
     expect(materialize).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -194,7 +260,7 @@ describe('GmailInboxObservationService', () => {
   ])('returns a secret-free credential failure for %s', async (_name, materialize) => {
     const { fetchMock, service } = fixture({ materialize });
     const result = await service.observe(command);
-    expect(result).toEqual({ outcome: 'unavailable', code: 'credentials_unavailable' });
+    expect(result).toEqual(boundUnavailable('credentials_unavailable'));
     expect(JSON.stringify(result)).not.toContain('token');
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -210,9 +276,7 @@ describe('GmailInboxObservationService', () => {
   ])('performs zero Gmail requests after credential materialization on %s', async (_name, second) => {
     const resolve = vi.fn().mockResolvedValueOnce(target).mockResolvedValueOnce(second);
     const { fetchMock, materialize, service } = fixture({ resolve });
-    await expect(service.observe(command)).resolves.toEqual({
-      outcome: 'unavailable', code: 'not_observable',
-    });
+    await expect(service.observe(command)).resolves.toEqual(boundUnavailable('not_observable'));
     expect(materialize).toHaveBeenCalledTimes(1);
     expect(resolve).toHaveBeenCalledTimes(2);
     expect(fetchMock).not.toHaveBeenCalled();
@@ -221,7 +285,7 @@ describe('GmailInboxObservationService', () => {
   it('performs exactly one fixed-origin encoded GET with no request body', async () => {
     const { fetchMock, service } = fixture();
     await expect(service.observe(command)).resolves.toMatchObject({
-      outcome: 'observed', operation: 'observe_inbox', inbox: true,
+      outcome: 'observed', operation: 'observe_inbox', inbox: true, binding,
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -275,9 +339,7 @@ describe('GmailInboxObservationService', () => {
     });
     const { service } = fixture({ fetch: fetchMock, materialize, resolve });
 
-    await expect(service.observe(command)).resolves.toEqual({
-      outcome: 'unavailable', code: 'not_observable',
-    });
+    await expect(service.observe(command)).resolves.toEqual(boundUnavailable('not_observable'));
     expect(materialize).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -303,7 +365,7 @@ describe('GmailInboxObservationService', () => {
     const fetchMock = vi.fn().mockResolvedValue(response);
     const { service } = fixture({ fetch: fetchMock });
 
-    await expect(service.observe(command)).resolves.toEqual({ outcome: 'unavailable', code });
+    await expect(service.observe(command)).resolves.toEqual(boundUnavailable(code));
     expect(cancel).toHaveBeenCalledTimes(1);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
@@ -324,9 +386,7 @@ describe('GmailInboxObservationService', () => {
     }],
   ])('rejects a 200 response with %s', async (_name, body) => {
     const { service } = fixture({ fetch: vi.fn().mockResolvedValue(jsonResponse(body)) });
-    await expect(service.observe(command)).resolves.toEqual({
-      outcome: 'unavailable', code: 'observation_unavailable',
-    });
+    await expect(service.observe(command)).resolves.toEqual(boundUnavailable('observation_unavailable'));
   });
 
   it('bounds provider response bytes before JSON parsing', async () => {
@@ -337,9 +397,7 @@ describe('GmailInboxObservationService', () => {
         headers: { 'Content-Type': 'application/json' },
       })),
     });
-    await expect(service.observe(command)).resolves.toEqual({
-      outcome: 'unavailable', code: 'observation_unavailable',
-    });
+    await expect(service.observe(command)).resolves.toEqual(boundUnavailable('observation_unavailable'));
   });
 
   it.each([
@@ -352,9 +410,7 @@ describe('GmailInboxObservationService', () => {
         headers: { 'Content-Type': 'application/json' },
       })),
     });
-    await expect(service.observe(command)).resolves.toEqual({
-      outcome: 'unavailable', code: 'observation_unavailable',
-    });
+    await expect(service.observe(command)).resolves.toEqual(boundUnavailable('observation_unavailable'));
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
@@ -369,9 +425,7 @@ describe('GmailInboxObservationService', () => {
         headers: contentType ? { 'Content-Type': contentType } : undefined,
       });
       const { service } = fixture({ fetch: vi.fn().mockResolvedValue(response) });
-      await expect(service.observe(command)).resolves.toEqual({
-        outcome: 'unavailable', code: 'observation_unavailable',
-      });
+      await expect(service.observe(command)).resolves.toEqual(boundUnavailable('observation_unavailable'));
     },
   );
 
@@ -391,9 +445,7 @@ describe('GmailInboxObservationService', () => {
     });
     const { service } = fixture({ fetch: fetchMock, timeoutMs: 10 });
 
-    await expect(service.observe(command)).resolves.toEqual({
-      outcome: 'unavailable', code: 'observation_unavailable',
-    });
+    await expect(service.observe(command)).resolves.toEqual(boundUnavailable('observation_unavailable'));
     expect((fetchMock.mock.calls[0]?.[1]?.signal as AbortSignal).aborted).toBe(true);
   });
 
@@ -437,6 +489,7 @@ describe('GmailInboxObservationService', () => {
         operation: 'observe_inbox',
         inbox: false,
         observedAt: '2026-09-12T12:00:30.000Z',
+        binding,
       });
     } finally {
       vi.useRealTimers();
@@ -458,6 +511,7 @@ describe('GmailInboxObservationService', () => {
       operation: 'observe_inbox',
       inbox,
       observedAt: expect.any(String),
+      binding,
     });
     if (result.outcome === 'observed') {
       expect(new Date(result.observedAt).toISOString()).toBe(result.observedAt);
@@ -473,7 +527,7 @@ describe('GmailInboxObservationService', () => {
       )),
     });
     const result = await service.observe(command);
-    expect(result).toEqual({ outcome: 'unavailable', code: 'observation_unavailable' });
+    expect(result).toEqual(boundUnavailable('observation_unavailable'));
     expect(JSON.stringify(result)).not.toContain('secret-access-token');
     expect(JSON.stringify(result)).not.toContain(target.providerMessageId);
   });

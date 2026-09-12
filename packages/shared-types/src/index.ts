@@ -270,9 +270,11 @@ export type {
 } from './gmail-inbox-mutation.js';
 
 export type {
+  GmailInboxObservationBinding,
   GmailInboxObservationCommand,
   GmailInboxObservationPort,
   GmailInboxObservationResult,
+  GmailInboxObservationUnavailableCode,
 } from './gmail-inbox-observation.js';
 
 export type {
