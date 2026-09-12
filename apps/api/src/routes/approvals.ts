@@ -54,6 +54,7 @@ import {
   isOutboundEmailAction,
   prepareEmailActionForExecution,
 } from '../email-attribution.js';
+import { isReservedGmailArchiveApproval } from './gmail-archive-approval.js';
 
 const log = createLogger('api:approvals');
 
@@ -462,6 +463,22 @@ export function createApprovalsRouter(): Router {
       }
       if (existing.user_id !== body.userId) {
         res.status(403).json({ error: 'You can only respond to your own approval requests.' });
+        return;
+      }
+
+      // This bounded Inbox workflow remains proposal-only. Keep its approval
+      // rows out of the generic responder even if the feature flag changes or
+      // a partially migrated row carries malformed reserved parameters. The
+      // dedicated lifecycle will later own the atomic consent-to-admission
+      // transition; until then no response, feedback, token lookup, routing,
+      // or external call is permitted here.
+      if (isReservedGmailArchiveApproval(existing.candidate_action)) {
+        res.status(409).json({
+          error: 'gmail_archive_execution_not_enabled',
+          message: 'This Inbox proposal cannot be acted on in the current build.',
+          approvalId: existing.id,
+          requestId,
+        });
         return;
       }
 

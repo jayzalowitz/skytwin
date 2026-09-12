@@ -15,8 +15,8 @@ function makeAction(overrides: Partial<CandidateAction> = {}): CandidateAction {
   return {
     id: 'action-1',
     decisionId: 'decision-1',
-    actionType: 'archive_email',
-    description: 'Archive an email',
+    actionType: 'label_email',
+    description: 'Label an email',
     domain: 'email',
     parameters: {},
     estimatedCostCents: 0,
@@ -111,6 +111,13 @@ describe('ExecutionRouter — injection-guard backstop', () => {
     const action = makeAction({ id: 'action-3', actionType: 'delete_email' });
     await expect(
       router.executeWithRouting(action, makeRisk({ actionId: 'action-3' }), 'user-1'),
+    ).rejects.toThrow(InvariantViolationError);
+  });
+
+  it('refuses archive_email on the auto-execute path', async () => {
+    const action = makeAction({ id: 'action-archive', actionType: 'archive_email' });
+    await expect(
+      router.executeWithRouting(action, makeRisk({ actionId: 'action-archive' }), 'user-1'),
     ).rejects.toThrow(InvariantViolationError);
   });
 

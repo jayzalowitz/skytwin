@@ -7,9 +7,6 @@ import {
 
 describe('classifyActionSeverity', () => {
   it('returns none for an ordinary reversible action', () => {
-    expect(
-      classifyActionSeverity({ actionType: 'archive_email', parameters: {} }),
-    ).toBe('none');
     expect(classifyActionSeverity({ actionType: 'label_email' })).toBe('none');
     expect(classifyActionSeverity({ actionType: 'snooze_thread' })).toBe('none');
   });
@@ -43,10 +40,14 @@ describe('classifyActionSeverity', () => {
     ).toBe('destructive');
   });
 
-  it('does not flag a bulk key that is set falsy', () => {
+  it('does not flag a falsy bulk key on an otherwise ordinary action', () => {
     expect(
-      classifyActionSeverity({ actionType: 'archive_email', parameters: { all: false } }),
+      classifyActionSeverity({ actionType: 'label_email', parameters: { all: false } }),
     ).toBe('none');
+  });
+
+  it('classifies a single-message archive as destructive', () => {
+    expect(classifyActionSeverity({ actionType: 'archive_email' })).toBe('destructive');
   });
 
   it('catches destructive command signatures smuggled through string parameters', () => {
@@ -77,7 +78,7 @@ describe('classifyActionSeverity', () => {
   });
 
   it('handles missing / empty parameters without throwing', () => {
-    expect(classifyActionSeverity({ actionType: 'archive_email' })).toBe('none');
+    expect(classifyActionSeverity({ actionType: 'archive_email' })).toBe('destructive');
     expect(classifyActionSeverity({ actionType: '' })).toBe('none');
   });
 });
@@ -125,7 +126,7 @@ describe('resolveActionProvenance', () => {
 });
 
 describe('evaluateInjectionGuard — the provenance x severity matrix', () => {
-  const base = { actionType: 'archive_email', reversible: true, parameters: {} };
+  const base = { actionType: 'label_email', reversible: true, parameters: {} };
 
   it('does not escalate a reversible, none-severity, user-originated action', () => {
     const v = evaluateInjectionGuard({ ...base, provenance: 'user_originated' });
@@ -133,8 +134,7 @@ describe('evaluateInjectionGuard — the provenance x severity matrix', () => {
   });
 
   it('does not escalate a reversible, none-severity, untrusted action (the carve-out)', () => {
-    // The newsletter that triggered the decision is untrusted, but archiving
-    // *it* reversibly cannot escape its own blast radius — stays in normal flow.
+    // A non-destructive reversible action stays in normal flow.
     const v = evaluateInjectionGuard({ ...base, provenance: 'untrusted_external' });
     expect(v.escalate).toBe(false);
   });
@@ -173,6 +173,17 @@ describe('evaluateInjectionGuard — the provenance x severity matrix', () => {
       expect(v.escalate).toBe(true);
       expect(v.confirmationLevel).toBe('single');
     }
+  });
+
+  it('requires single confirmation for archive_email and never permits auto-execution', () => {
+    const verdict = evaluateInjectionGuard({
+      actionType: 'archive_email',
+      reversible: true,
+      parameters: {},
+      provenance: 'untrusted_external',
+    });
+    expect(verdict).toMatchObject({ escalate: true, confirmationLevel: 'single' });
+    expect(verdict.reason).toContain('never auto-execute');
   });
 
   it('escalates any extreme-severity action to dual confirmation, regardless of provenance', () => {

@@ -15,7 +15,7 @@
  * This is the "would the system do the email" check the user asked for.
  *
  * What this proves end-to-end:
- *   1. Routine newsletters auto-archive at MODERATE_AUTONOMY (low risk, reversible).
+ *   1. Routine newsletter archives remain behind explicit confirmation.
  *   2. Board / CFO threads escalate to approval (high relationship risk).
  *   3. Calendar invites route via the same path with their own candidates.
  *   4. The episodicMemories field on DecisionContext — populated from gbrain —
@@ -392,7 +392,7 @@ function makeDecision(args: {
 
 function buildInbox(): DecisionObject[] {
   return [
-    // Newsletter — should auto-archive at MODERATE_AUTONOMY
+    // Newsletter — archive may be selected, but must require confirmation.
     makeDecision({
       id: 'd-newsletter-001',
       situationType: SituationType.EMAIL_TRIAGE,
@@ -576,21 +576,21 @@ describe('full E2E — fake user driven through DecisionMaker', () => {
     harness = await buildHarness();
   });
 
-  it('newsletter → twin auto-archives at MODERATE_AUTONOMY', async () => {
+  it('newsletter archive requires confirmation at MODERATE_AUTONOMY', async () => {
     const decision = buildInbox().find((d) => d.id === 'd-newsletter-001')!;
     const ctx = await buildContext(harness, decision, TrustTier.MODERATE_AUTONOMY);
     const outcome = await harness.decisionMaker.evaluate(ctx);
 
     expect(outcome.selectedAction).not.toBeNull();
     expect(outcome.selectedAction?.actionType).toBe('archive_email');
-    expect(outcome.autoExecute).toBe(true);
-    expect(outcome.requiresApproval).toBe(false);
+    expect(outcome.autoExecute).toBe(false);
+    expect(outcome.requiresApproval).toBe(true);
 
     // Twin remembers it
     await harness.brainPort.recordEpisode({
       id: 'ep-' + decision.id,
       userId: BOB_USER_ID,
-      summary: `Auto-archived newsletter: ${decision.summary}`,
+      summary: `Proposed newsletter archive: ${decision.summary}`,
       startedAt: new Date(),
       endedAt: new Date(),
     });
@@ -630,8 +630,7 @@ describe('full E2E — fake user driven through DecisionMaker', () => {
     if (outcome.selectedAction?.actionType === 'send_reply') {
       expect(outcome.autoExecute).toBe(false);
     }
-    // archive_email could auto-execute at HIGH_AUTONOMY; what we want to verify
-    // is the user can see ALL candidates and the selected one is sane.
+    // Archive and send candidates remain visible while their safety gates hold.
     expect(outcome.allCandidates.length).toBeGreaterThan(0);
     expect(Object.values(outcome.policyVerdicts ?? {}).length).toBe(
       outcome.allCandidates.length,
@@ -792,9 +791,10 @@ describe('full E2E — fake user driven through DecisionMaker', () => {
     expect(log).toHaveLength(inbox.length);
     expect(log.every((r) => r.selectedAction !== null)).toBe(true);
 
-    // Newsletter should auto-execute; that's the canary.
+    // Archive proposals always require confirmation, even at a higher trust tier.
     const newsletter = log.find((r) => r.summary.includes('Stratechery'));
-    expect(newsletter?.autoExecute).toBe(true);
+    expect(newsletter?.autoExecute).toBe(false);
+    expect(newsletter?.requiresApproval).toBe(true);
   });
 });
 
@@ -803,13 +803,14 @@ describe('full E2E — fake user driven through DecisionMaker', () => {
 // The rule-based EMAIL_TRIAGE generator produces (archive, label, [reply])
 // for every email. It cannot read the sender to differentiate "newsletter"
 // from "board chair" — that's the LLM strategy's job. Result: at MODERATE
-// autonomy the rule-based path will auto-archive board emails the same way
-// it archives newsletters. The two production safeguards against this:
+// autonomy the rule-based path can select archive for board emails the same way
+// it selects archive for newsletters. The two production safeguards against this:
 //
 //   1. Trust tier OBSERVER/SUGGEST gates every action behind approval
 //      regardless of action type. This is the FIRST-WEEK safety floor.
 //
-//   2. A `CandidateGenerator` (LLM-backed in production) replaces the
+//   2. Archive actions require confirmation at every trust tier, while a
+//      `CandidateGenerator` (LLM-backed in production) replaces the
 //      rule-based generator and reads sender + content. Demonstrated below.
 
 describe('full E2E — sender-aware CandidateGenerator closes the rule-based gap', () => {
@@ -897,7 +898,7 @@ describe('full E2E — sender-aware CandidateGenerator closes the rule-based gap
     expect(outcome.autoExecute).toBe(false);
   });
 
-  it('with the sender-aware generator, newsletter still auto-archives', async () => {
+  it('with the sender-aware generator, newsletter archive still requires confirmation', async () => {
     const decisionMaker = new DecisionMaker(
       harness.twinService,
       harness.policyEvaluator,
@@ -910,7 +911,8 @@ describe('full E2E — sender-aware CandidateGenerator closes the rule-based gap
     const outcome = await decisionMaker.evaluate(ctx);
 
     expect(outcome.selectedAction?.actionType).toBe('archive_email');
-    expect(outcome.autoExecute).toBe(true);
+    expect(outcome.autoExecute).toBe(false);
+    expect(outcome.requiresApproval).toBe(true);
   });
 
   it('protective generator + memory: inbox sweep is correct end-to-end', async () => {
@@ -952,11 +954,11 @@ describe('full E2E — sender-aware CandidateGenerator closes the rule-based gap
       console.log(`  [${verdict}] ${(r.action ?? '<none>').padEnd(25)} — ${r.summary}`);
     }
 
-    // Newsletter auto-archives, board + CFO need approval.
+    // Archive, board, and CFO dispositions all remain behind approval.
     const news = log.find((r) => r.summary.includes('Stratechery'))!;
     const board = log.find((r) => r.summary.toLowerCase().includes('board'))!;
     const cfo = log.find((r) => r.summary.includes('CFO'))!;
-    expect(news.auto).toBe(true);
+    expect(news.auto).toBe(false);
     expect(board.auto).toBe(false);
     expect(cfo.auto).toBe(false);
 

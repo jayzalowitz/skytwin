@@ -14,8 +14,8 @@ function createContext(overrides?: Partial<EscalationContext>): EscalationContex
     action: {
       id: 'action1',
       decisionId: 'dec1',
-      actionType: 'archive_email',
-      description: 'Archive email',
+      actionType: 'label_email',
+      description: 'Label email',
       domain: 'email',
       parameters: {},
       estimatedCostCents: 0,

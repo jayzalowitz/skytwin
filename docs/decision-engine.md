@@ -404,18 +404,21 @@ Candidates:
   2. label_email (confidence: MODERATE, risk: negligible, reversible: true)
 
 Selected: archive_email
-Auto-execute check:
-  - Confidence rank (CONFIRMED) >= MODERATE? YES
-  - Trust tier LOW_AUTONOMY allows risk <= LOW; action risk is NEGLIGIBLE? YES
-Auto-execute: YES
+Injection guard:
+  - Archive changes mailbox state? YES
+  - Explicit confirmation required regardless of trust tier? YES
+Auto-execute: NO
 
 Policy check: email domain allowed, trust tier LOW_AUTONOMY, no spend, reversible
-Policy verdict: ALLOW
+Policy verdict: ALLOW WITH SINGLE CONFIRMATION
 
-Outcome: Auto-archive. Log explanation: "Archived newsletter from TechCrunch Daily.
-Based on: user has archived all 47 previous emails from this sender. Action is
-reversible (can unarchive)."
+Outcome: Propose archive. Log explanation: "Suggested archiving the newsletter
+from TechCrunch Daily. Based on: user has archived all 47 previous emails from
+this sender. Confirmation is required before the Inbox changes."
 ```
+
+The confirmation rule is enforced by
+[`evaluateInjectionGuard`](../packages/shared-types/src/action-safety.ts).
 
 ### Calendar Conflict: Standup vs. Skip-Level
 

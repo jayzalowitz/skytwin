@@ -188,8 +188,8 @@ function createAction(overrides?: Partial<CandidateAction>): CandidateAction {
   return {
     id: 'act_test',
     decisionId: 'dec_test',
-    actionType: 'archive_email',
-    description: 'Archive an email',
+    actionType: 'label_email',
+    description: 'Label an email',
     domain: 'email',
     parameters: {},
     estimatedCostCents: 0,
@@ -282,6 +282,20 @@ describe('Safety Invariant 1: Never auto-execute without a policy check', () => 
     expect(decision.allowed).toBe(true);
     expect(decision.requiresApproval).toBe(true);
     expect(decision.reason).toContain('Observer');
+  });
+
+  it('requires explicit confirmation for an untrusted archive even at high autonomy', async () => {
+    const policyEvaluator = new PolicyEvaluator(createMockPolicyRepo());
+    const decision = await policyEvaluator.evaluate(
+      createAction({ actionType: 'archive_email', provenance: 'untrusted_external' }),
+      [],
+      TrustTier.HIGH_AUTONOMY,
+      createRisk(),
+    );
+
+    expect(decision.allowed).toBe(true);
+    expect(decision.requiresApproval).toBe(true);
+    expect(decision.confirmationLevel).toBe('single');
   });
 });
 

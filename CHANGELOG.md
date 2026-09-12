@@ -1,5 +1,11 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [Unreleased] — Proposal-only Inbox boundary
+
+### Fixed
+
+- Gmail Inbox proposals using the reserved mutation schema now fail closed in the generic approval responder. Until the dedicated consent-to-admission lifecycle is enabled, those rows cannot be resolved, produce feedback, read credentials, enter the execution router, or contact a provider.
+
 ## [Unreleased] — Owner-scoped policy loading
 
 ### Fixed
@@ -22,6 +28,16 @@ All notable changes to SkyTwin will be documented in this file.
 ### Fixed
 
 - Gmail receipt evidence now binds the decision's stable connector source ID to the owned `signals.id` UUID and exact opaque message reference used by the decision. Connector-account and message-reference ownership remain enforced relationally by the existing composite foreign key; the immutable v1 signal artifact projection is unchanged.
+
+## [Unreleased] — Canonical Gmail archive proposals
+
+### Added
+
+- Added a default-off, proposal-only builder for one canonical Gmail Inbox archive candidate. The builder derives its opaque target solely from a trusted decision's repository-issued message reference, rejects alternate authority fields, emits the exact downstream persistence shape and a complete risk assessment, and leaves capability provenance unset. `SKYTWIN_GMAIL_ARCHIVE_ENABLED=true` enables proposal construction only; no route, persistence, dispatch, worker, provider call, or runtime registration is included.
+
+### Changed
+
+- A single-message `archive_email` action is now classified as destructive and requires one explicit confirmation, including when reversible and triggered by untrusted inbound content. It cannot pass the injection guard for auto-execution.
 
 ## [Unreleased] — Restricted Gmail Inbox mutation boundary
 

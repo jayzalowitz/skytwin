@@ -162,19 +162,18 @@ const EXTREME_ACTION_MARKERS: readonly string[] = [
  * Destructive-severity action-type markers. Matched case-insensitively as
  * substrings of `actionType`.
  *
- * `send` and `forward` are included deliberately: an outbound message cannot
- * be unsent, and sending or forwarding is exactly the exfiltration shape a
- * documentary-poisoning attack aims for ("forward all my mail to …", "email
- * my boss I quit"). Marking them `destructive` means a `send_*` candidate
- * always takes one explicit confirmation and never auto-executes — even when
- * a candidate generator marks it `reversible: true`, which would otherwise
- * let it slip through the reversible carve-out in `evaluateInjectionGuard`.
+ * `archive_email`, `send`, and `forward` are included deliberately. Moving an
+ * inbound message out of view can hide correspondence; outbound messages
+ * cannot be unsent and are an exfiltration shape. Marking these candidates
+ * `destructive` means they always take one explicit confirmation and never
+ * auto-execute, even when marked reversible.
  */
 const DESTRUCTIVE_ACTION_MARKERS: readonly string[] = [
   'delete',
   'remove',
   'revoke',
   'unsubscribe',
+  'archive_email',
   'archive_all',
   'empty_trash',
   'permanently',
@@ -295,9 +294,8 @@ export interface InjectionGuardVerdict {
  *   - extreme severity (any provenance)      → dual-confirmation
  *   - destructive severity (any provenance)  → single-confirmation
  *   - untrusted provenance + irreversible    → single-confirmation
- *   - untrusted provenance + reversible/none → no escalation (the carve-out
- *       that keeps reversible, low-risk auto-archiving working — content
- *       cannot escape its own blast radius when the action is reversible)
+ *   - untrusted provenance + reversible/none → no escalation for action
+ *       shapes not separately classified as destructive
  *   - everything else                        → no escalation
  *
  * Provenance is the load-bearing security boundary: it does not inspect what
@@ -333,7 +331,7 @@ export function evaluateInjectionGuard(action: {
       escalate: true,
       confirmationLevel: 'single',
       reason:
-        'Injection guard: this action destroys or sends data and requires ' +
+        'Injection guard: this action changes, destroys, or sends data and requires ' +
         'explicit confirmation — it will never auto-execute.',
     };
   }
