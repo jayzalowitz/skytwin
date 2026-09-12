@@ -171,6 +171,19 @@ describe('ExecutionRouter Gmail archive quarantine', () => {
     expect(fallbackExecute).not.toHaveBeenCalled();
   });
 
+  it('preserves the established missing CandidateAction invariant before classification', async () => {
+    await expect(router.executeWithRouting(
+      null as unknown as CandidateAction,
+      risk(),
+      'user-1',
+      { approved: true },
+    )).rejects.toThrow('ExecutionRouter called without a CandidateAction.');
+    expect(buildPlan).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+    expect(fallbackBuildPlan).not.toHaveBeenCalled();
+    expect(fallbackExecute).not.toHaveBeenCalled();
+  });
+
   it('does not affect an unrelated email action', async () => {
     await expect(router.executeWithRouting(action(), risk(), 'user-1'))
       .resolves.toMatchObject({ status: 'completed' });

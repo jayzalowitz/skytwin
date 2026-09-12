@@ -422,6 +422,9 @@ function assertExecutionPermitted(
 
 /** The dedicated Gmail archive lifecycle is never a generic router skill. */
 function assertGenericExecutionActionAllowed(action: unknown): asserts action is CandidateAction {
+  if (!action) {
+    throw new InvariantViolationError('ExecutionRouter called without a CandidateAction.');
+  }
   const classification = classifyGmailArchiveGenericAction(action);
   if (classification.kind !== 'other') {
     throw new InvariantViolationError(
