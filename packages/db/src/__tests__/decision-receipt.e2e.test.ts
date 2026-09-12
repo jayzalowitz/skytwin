@@ -1,6 +1,14 @@
 /**
- * Real CockroachDB proof for migration 081. Run with E2E=true and DATABASE_URL.
- * The default unit suite truthfully skips this file when no live DB is selected.
+ * Real CockroachDB proof for migration 081. The default unit suite truthfully
+ * skips this file when no live DB is selected. Reliable disposable local run:
+ *
+ *   cockroach start-single-node --insecure --listen-addr=127.0.0.1:26359 \
+ *     --http-addr=127.0.0.1:28081 --store=type=mem,size=1GiB \
+ *     --cache=128MiB --max-sql-memory=512MiB
+ *   cockroach sql --insecure --host=127.0.0.1:26359 -e 'CREATE DATABASE skytwin'
+ *   DATABASE_URL='postgresql://root@127.0.0.1:26359/skytwin?sslmode=disable' pnpm db:migrate
+ *   DATABASE_URL='postgresql://root@127.0.0.1:26359/skytwin?sslmode=disable' \
+ *     E2E=true pnpm --filter @skytwin/db test -- decision-receipt.e2e.test.ts
  */
 import { randomUUID } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
@@ -8,26 +16,28 @@ import { Pool } from 'pg';
 import {
   buildDecisionReceiptEventKey,
   joinedDecisionReceiptArtifactDigest,
-  type DecisionReceiptArtifactKind,
   type JoinedDecisionReceiptContentV1,
   type JoinedDecisionReceiptContentV2,
 } from '@skytwin/shared-types';
 import { closePool } from '../connection.js';
-import { decisionReceiptRepository } from '../repositories/decision-receipt-repository.js';
+import {
+  decisionReceiptRepository,
+  type AppendDecisionReceiptResult,
+} from '../repositories/decision-receipt-repository.js';
+import { decisionReceiptRowArtifactRefV1 } from '../repositories/decision-receipt-artifacts.js';
 
 const E2E = process.env['E2E'] === 'true';
 let pool: Pool;
 const users: string[] = [];
 const eventKey = (kind: string) => buildDecisionReceiptEventKey(kind, randomUUID());
 
-function artifact(kind: DecisionReceiptArtifactKind, row: Record<string, unknown>): string {
-  const copy = { ...row };
-  delete copy['created_at'];
-  delete copy['updated_at'];
-  delete copy['completed_at'];
-  delete copy['requested_at'];
-  delete copy['responded_at'];
-  return joinedDecisionReceiptArtifactDigest(kind, copy);
+function requireSuccessfulAppend(
+  result: AppendDecisionReceiptResult,
+  label: string,
+): asserts result is Extract<AppendDecisionReceiptResult, { success: true }> {
+  if (!result.success) {
+    throw new Error(`${label} failed: ${JSON.stringify(result)}`);
+  }
 }
 
 async function createUser(): Promise<string> {
@@ -80,9 +90,7 @@ async function policyContentFor(
      VALUES ($1, 'event_execution', $2, 'prepared', $3, $4, $5, $6) RETURNING *`,
     [userId, randomUUID(), decision['id'], action['id'], explanation['id'], policySnapshot],
   )).rows[0]!;
-  const candidateAction = {
-    id: String(action['id']), canonicalHash: artifact('candidate_action', action),
-  };
+  const candidateAction = decisionReceiptRowArtifactRefV1('candidate_action', action);
   const risk = {
     candidateActionId: String(action['id']),
     canonicalHash: joinedDecisionReceiptArtifactDigest('risk', action['risk_assessment']),
@@ -102,9 +110,7 @@ async function policyContentFor(
     id: String(barrier['id']), snapshot: barrierSnapshot,
     canonicalHash: joinedDecisionReceiptArtifactDigest('barrier', barrierSnapshot),
   };
-  const explanationRef = {
-    id: String(explanation['id']), canonicalHash: artifact('explanation', explanation),
-  };
+  const explanationRef = decisionReceiptRowArtifactRefV1('explanation', explanation);
   return {
     ...contentFor(decision), stage: 'policy_evaluated', disposition: 'allowed',
     policyEvaluations: [{
@@ -120,7 +126,7 @@ function contentFor(decision: Record<string, unknown>): JoinedDecisionReceiptCon
     version: 1,
     stage: 'decision_recorded',
     disposition: 'pending',
-    decision: { id: String(decision['id']), canonicalHash: artifact('decision', decision) },
+    decision: decisionReceiptRowArtifactRefV1('decision', decision),
     policyEvaluations: [],
     evidence: [],
     inference: { receipts: [] },
@@ -134,14 +140,14 @@ async function createAdmittedChain(userId: string, decision: Record<string, unkn
   const r1 = await decisionReceiptRepository.appendForUser(userId, {
     eventKey: eventKey('decision_created'), expectedPreviousDigest: null, content: decisionContent,
   });
-  if (!r1.success) throw new Error('failed to append decision receipt');
+  requireSuccessfulAppend(r1, 'decision receipt append');
   const policyContent = await policyContentFor(userId, decision);
   const r2 = await decisionReceiptRepository.appendForUser(userId, {
     eventKey: eventKey('policy_evaluated'),
     expectedPreviousDigest: r1.revision.revision_digest,
     content: policyContent,
   });
-  if (!r2.success) throw new Error('failed to append policy receipt');
+  requireSuccessfulAppend(r2, 'policy receipt append');
   const plan = (await pool.query<Record<string, unknown>>(
     `INSERT INTO execution_plans (decision_id, action_id, status, steps)
      VALUES ($1, $2, 'pending', '[]') RETURNING *`,
@@ -170,7 +176,7 @@ async function createAdmittedChain(userId: string, decision: Record<string, unkn
     expectedPreviousDigest: r2.revision.revision_digest,
     content: admitted,
   });
-  if (!r3.success) throw new Error('failed to append admission receipt');
+  requireSuccessfulAppend(r3, 'admission receipt append');
   return { admitted, plan, previousDigest: r3.revision.revision_digest };
 }
 
@@ -248,10 +254,7 @@ async function terminalContentFor(
       canonicalHash: joinedDecisionReceiptArtifactDigest('execution_result', resultSnapshot),
     },
     executionDisposition: outcome,
-    executionExplanation: {
-      id: String(executionExplanation['id']),
-      canonicalHash: artifact('explanation', executionExplanation),
-    },
+    executionExplanation: decisionReceiptRowArtifactRefV1('explanation', executionExplanation),
   };
 }
 
@@ -316,12 +319,16 @@ describe.skipIf(!E2E)('E2E: joined decision receipt identity and CAS', () => {
     const owner = await createUser();
     const decision = await createDecision(owner);
     const content = contentFor(decision);
+    expect(decisionReceiptRowArtifactRefV1('decision', {
+      ...decision,
+      future_schema_column: 'must not alter the v1 artifact',
+    })).toEqual(content.decision);
     const firstEventKey = eventKey('decision_created');
     const first = await decisionReceiptRepository.appendForUser(owner, {
       eventKey: firstEventKey, expectedPreviousDigest: null, content,
     });
+    requireSuccessfulAppend(first, 'first decision receipt append');
     expect(first).toMatchObject({ success: true, created: true, revision: { sequence: 1 } });
-    if (!first.success) throw new Error('first receipt append failed');
 
     const replay = await decisionReceiptRepository.appendForUser(owner, {
       eventKey: firstEventKey, expectedPreviousDigest: null, content,
@@ -423,8 +430,8 @@ describe.skipIf(!E2E)('E2E: joined decision receipt identity and CAS', () => {
         expectedPreviousDigest: previousDigest,
         content: terminal,
       });
+      requireSuccessfulAppend(result, `${outcome} terminal receipt append`);
       expect(result).toMatchObject({ success: true, created: true, revision: { sequence: 4 } });
-      if (!result.success) return;
       const stored = await pool.query<{
         explanation_id: string;
         content: JoinedDecisionReceiptContentV2;
@@ -450,10 +457,7 @@ describe.skipIf(!E2E)('E2E: joined decision receipt identity and CAS', () => {
        VALUES ($1, 'other decision', '[]', '{}', 'test', 'test', 'test') RETURNING *`,
       [otherDecision['id']],
     )).rows[0]!;
-    terminal.executionExplanation = {
-      id: String(otherExplanation['id']),
-      canonicalHash: artifact('explanation', otherExplanation),
-    };
+    terminal.executionExplanation = decisionReceiptRowArtifactRefV1('explanation', otherExplanation);
     await expect(decisionReceiptRepository.appendForUser(owner, {
       eventKey: eventKey('cross_decision_terminal_explanation'),
       expectedPreviousDigest: previousDigest,
