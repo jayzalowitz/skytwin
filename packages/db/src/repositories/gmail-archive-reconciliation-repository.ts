@@ -44,6 +44,7 @@ import {
   validateStoredGmailArchiveTerminal,
   type GmailArchiveTerminalizationBundle,
   type GmailArchiveTerminalStableState,
+  type GmailArchiveTerminalValidationOptions,
 } from './gmail-archive-terminalization-repository.js';
 import type { PreEffectBarrierRow } from './pre-effect-barrier-repository.js';
 
@@ -463,6 +464,7 @@ async function exactTerminalReplay(
   state: GmailArchiveTerminalStableState,
   barrier: PreEffectBarrierRow,
   approved: JoinedDecisionReceiptContentV1,
+  lockRows: boolean,
 ): Promise<GmailArchiveReconciliationBundle | null> {
   const retained = parseGmailArchiveReconciliationTerminalEnvelope(barrier.effect_result);
   const messageRefId = canonicalGmailArchiveCandidateMessageRef(state.approval, state.candidate);
@@ -473,7 +475,9 @@ async function exactTerminalReplay(
           retained.evidence.binding.admissionId !== barrier.id ||
           retained.evidence.binding.messageRefId !== messageRefId))) return null;
   const plans = (await client.query<ExecutionPlanRow>(
-    'SELECT * FROM execution_plans WHERE decision_id = $1 ORDER BY id ASC FOR UPDATE',
+    `SELECT * FROM execution_plans WHERE decision_id = $1 ORDER BY id ASC${
+      lockRows ? ' FOR UPDATE' : ''
+    }`,
     [state.decision.id],
   )).rows;
   if (plans.length !== 1 || plans[0]!.status !== 'failed' ||
@@ -481,7 +485,9 @@ async function exactTerminalReplay(
       plans[0]!.action_id !== state.candidate.id) return null;
   const plan = plans[0]!;
   const results = (await client.query<ExecutionResultRow>(
-    'SELECT * FROM execution_results WHERE plan_id = $1 ORDER BY id ASC FOR UPDATE',
+    `SELECT * FROM execution_results WHERE plan_id = $1 ORDER BY id ASC${
+      lockRows ? ' FOR UPDATE' : ''
+    }`,
     [plan.id],
   )).rows;
   const events = await client.query<{ count: string }>(
@@ -585,8 +591,17 @@ export async function validateStoredGmailArchiveReconciliationTerminal(
   barrier: PreEffectBarrierRow,
   approved: JoinedDecisionReceiptContentV1,
   expected?: GmailArchiveReconciliationTerminalEnvelope,
+  options: GmailArchiveTerminalValidationOptions = {},
 ): Promise<GmailArchiveReconciliationBundle | null> {
-  return exactTerminalReplay(client, authority, expected ?? null, state, barrier, approved);
+  return exactTerminalReplay(
+    client,
+    authority,
+    expected ?? null,
+    state,
+    barrier,
+    approved,
+    options.lockRows !== false,
+  );
 }
 
 /** Validate either supported, immutable Gmail archive terminal graph. */
@@ -596,6 +611,7 @@ export async function validateStoredGmailArchiveTerminalGraph(
   state: GmailArchiveTerminalStableState,
   barrier: PreEffectBarrierRow,
   approved: JoinedDecisionReceiptContentV1,
+  options: GmailArchiveTerminalValidationOptions = {},
 ): Promise<GmailArchiveTerminalizationBundle | GmailArchiveReconciliationBundle | null> {
   const mutationTerminal = await validateStoredGmailArchiveTerminal(
     client,
@@ -603,6 +619,8 @@ export async function validateStoredGmailArchiveTerminalGraph(
     state,
     barrier,
     approved,
+    undefined,
+    options,
   );
   return mutationTerminal ?? validateStoredGmailArchiveReconciliationTerminal(
     client,
@@ -610,6 +628,8 @@ export async function validateStoredGmailArchiveTerminalGraph(
     state,
     barrier,
     approved,
+    undefined,
+    options,
   );
 }
 

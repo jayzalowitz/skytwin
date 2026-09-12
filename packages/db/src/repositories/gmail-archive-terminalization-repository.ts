@@ -146,6 +146,10 @@ export interface GmailArchiveTerminalizationStableValues {
   persistedAt: string;
 }
 
+export interface GmailArchiveTerminalValidationOptions {
+  readonly lockRows?: boolean;
+}
+
 export type GmailArchiveTerminalizationTransition = (
   client: PoolClient,
   input: Readonly<TerminalizeGmailArchiveInput>,
@@ -894,6 +898,7 @@ async function exactTerminalReplay(
   state: GmailArchiveTerminalStableState,
   barrier: PreEffectBarrierRow,
   approved: JoinedDecisionReceiptContentV1,
+  lockRows: boolean,
 ): Promise<GmailArchiveTerminalizationBundle | null> {
   const expectedDisposition = disposition(result);
   const binding = resultBinding(result);
@@ -906,7 +911,9 @@ async function exactTerminalReplay(
       barrier.failure_reason !== failureReason(result)) return null;
   const attemptPhase = retainedBarrier.attemptPhase;
   const plans = (await client.query<ExecutionPlanRow>(
-    'SELECT * FROM execution_plans WHERE decision_id = $1 ORDER BY id ASC FOR UPDATE',
+    `SELECT * FROM execution_plans WHERE decision_id = $1 ORDER BY id ASC${
+      lockRows ? ' FOR UPDATE' : ''
+    }`,
     [state.decision.id],
   )).rows;
   const expectedPlanStatus = expectedDisposition === 'succeeded' ? 'completed' : 'failed';
@@ -916,7 +923,9 @@ async function exactTerminalReplay(
   }
   const plan = plans[0]!;
   const results = (await client.query<ExecutionResultRow>(
-    'SELECT * FROM execution_results WHERE plan_id = $1 ORDER BY id ASC FOR UPDATE',
+    `SELECT * FROM execution_results WHERE plan_id = $1 ORDER BY id ASC${
+      lockRows ? ' FOR UPDATE' : ''
+    }`,
     [plan.id],
   )).rows;
   const events = await client.query<{ count: string }>(
@@ -1025,6 +1034,7 @@ export async function validateStoredGmailArchiveTerminal(
   barrier: PreEffectBarrierRow,
   approved: JoinedDecisionReceiptContentV1,
   expectedResult?: GmailInboxMutationResult,
+  options: GmailArchiveTerminalValidationOptions = {},
 ): Promise<GmailArchiveTerminalizationBundle | null> {
   let result: StoredGmailArchiveMutationResult | undefined = expectedResult;
   if (!result) {
@@ -1038,7 +1048,15 @@ export async function validateStoredGmailArchiveTerminal(
     result = parseGmailArchiveTerminalExplanationEvidence(explanation?.evidence_used) ?? undefined;
     if (!result) return null;
   }
-  return exactTerminalReplay(client, authority, result, state, barrier, approved);
+  return exactTerminalReplay(
+    client,
+    authority,
+    result,
+    state,
+    barrier,
+    approved,
+    options.lockRows !== false,
+  );
 }
 
 function fail(result: TerminalizeGmailArchiveResult): never {

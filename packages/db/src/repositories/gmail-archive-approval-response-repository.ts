@@ -74,6 +74,11 @@ export interface GmailArchiveApprovalCanonicalState {
   unexpired: boolean;
 }
 
+export interface LoadCanonicalGmailArchiveApprovalStateOptions {
+  allowExecutionPlan?: boolean;
+  lockRows?: boolean;
+}
+
 interface LockedApprovalRow extends ApprovalRequestRow {
   unexpired: boolean;
 }
@@ -264,13 +269,14 @@ export function canonicalGmailArchiveApprovalContent(
 export async function loadCanonicalGmailArchiveApprovalState(
   client: PoolClient,
   input: RespondGmailArchiveApprovalInput,
-  options: { allowExecutionPlan?: boolean } = {},
+  options: LoadCanonicalGmailArchiveApprovalStateOptions = {},
 ): Promise<GmailArchiveApprovalCanonicalState | null> {
+  const lock = options.lockRows === false ? '' : ' FOR UPDATE';
   const lockedApproval = (await client.query<LockedApprovalRow>(
     `SELECT approval.*, approval.expires_at > now() AS unexpired
        FROM approval_requests AS approval
       WHERE approval.id = $1 AND approval.user_id = $2
-      FOR UPDATE`,
+      ${lock}`,
     [input.approvalId, input.userId],
   )).rows[0];
   const approval: ApprovalRequestRow | undefined = lockedApproval;
@@ -330,7 +336,7 @@ export async function loadCanonicalGmailArchiveApprovalState(
       WHERE user_id = $1 AND decision_id = $2 AND action_id = $3
         AND effect_type = 'event_execution' AND idempotency_key = $2::STRING
         AND status = 'blocked' AND failure_reason = 'proposal_only_boundary'
-      FOR UPDATE`,
+      ${lock}`,
     [input.userId, decision.id, candidate.id],
   );
   if (barriers.rows.length !== 1) return null;
