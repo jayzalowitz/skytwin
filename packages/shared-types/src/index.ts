@@ -270,6 +270,13 @@ export type {
 } from './gmail-inbox-mutation.js';
 
 export type {
+  AbandonedGmailArchiveRecovery,
+  AbandonedGmailArchiveRecoveryQuery,
+  QueryAbandonedGmailArchiveInput,
+  QueryAbandonedGmailArchiveResult,
+} from './gmail-archive-recovery.js';
+
+export type {
   BehavioralPattern,
   PatternTrigger,
   TemporalProfile,

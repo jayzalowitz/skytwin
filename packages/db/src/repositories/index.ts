@@ -64,6 +64,10 @@ export type {
 } from './gmail-archive-claim-repository.js';
 export { gmailArchiveDispatchGateRepository } from './gmail-archive-dispatch-gate-repository.js';
 export {
+  GMAIL_ARCHIVE_RECOVERY_GRACE_SECONDS,
+  gmailArchiveRecoveryRepository,
+} from './gmail-archive-recovery-repository.js';
+export {
   buildGmailArchiveTerminalResultEnvelope,
   gmailArchiveResultAllowedForAttemptPhase,
   gmailArchiveTerminalizationRepository,
@@ -72,6 +76,10 @@ export {
   parseGmailArchiveTerminalExplanationEvidence,
   parseGmailArchiveTerminalResultEnvelope,
 } from './gmail-archive-terminalization-repository.js';
+export type {
+  QueryAbandonedGmailArchiveInput,
+  QueryAbandonedGmailArchiveResult,
+} from '@skytwin/shared-types';
 export type {
   GmailArchiveTerminalEvidence,
   GmailArchiveTerminalResultEnvelope,

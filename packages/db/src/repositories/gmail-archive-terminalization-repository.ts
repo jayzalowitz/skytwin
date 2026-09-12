@@ -494,14 +494,20 @@ function exactProposalBarrier(
     result?.['proposalOnly'] === true && result['dispatched'] === false;
 }
 
-async function loadStableState(
+/**
+ * Load the portable archive lifecycle graph without consulting connector
+ * evidence. Terminalization takes row locks; read-only recovery uses the same
+ * canonical loader against a serializable snapshot without locks.
+ */
+export async function loadGmailArchiveStableState(
   client: PoolClient,
   authority: TerminalAuthority,
+  lockRows = true,
 ): Promise<GmailArchiveTerminalStableState | null> {
+  const lock = lockRows ? ' FOR UPDATE' : '';
   const approval = (await client.query<ApprovalRequestRow>(
     `SELECT * FROM approval_requests
-      WHERE id = $1 AND user_id = $2
-      FOR UPDATE`,
+      WHERE id = $1 AND user_id = $2${lock}`,
     [authority.approvalId, authority.userId],
   )).rows[0];
   if (!approval || approval.status !== 'approved' || approval.responded_at === null ||
@@ -547,8 +553,7 @@ async function loadStableState(
   const proposalBarriers = (await client.query<PreEffectBarrierRow>(
     `SELECT * FROM pre_effect_barriers
       WHERE user_id = $1 AND decision_id = $2 AND action_id = $3
-        AND effect_type = 'event_execution' AND idempotency_key = $2::STRING
-      FOR UPDATE`,
+        AND effect_type = 'event_execution' AND idempotency_key = $2::STRING${lock}`,
     [authority.userId, decision.id, candidate.id],
   )).rows;
   if (proposalBarriers.length !== 1 || proposalBarriers[0]!.explanation_id === null) return null;
@@ -558,7 +563,7 @@ async function loadStableState(
   )).rows[0];
   if (!proposalExplanation) return null;
   const receipt = (await client.query<DecisionReceiptRow>(
-    'SELECT * FROM decision_receipts WHERE user_id = $1 AND decision_id = $2 FOR UPDATE',
+    `SELECT * FROM decision_receipts WHERE user_id = $1 AND decision_id = $2${lock}`,
     [authority.userId, decision.id],
   )).rows[0];
   if (!receipt) return null;
@@ -582,7 +587,7 @@ async function loadStableState(
   return exactProposalBarrier(proposalBarriers[0]!, state, authority.userId) ? state : null;
 }
 
-function exactStableApprovedPrefix(
+export function exactGmailArchiveApprovedPrefix(
   state: GmailArchiveTerminalStableState,
 ): JoinedDecisionReceiptContentV1 | null {
   const revisions = state.revisions;
@@ -643,7 +648,7 @@ function exactStableApprovedPrefix(
   return content;
 }
 
-async function loadPolicyExplanation(
+export async function loadGmailArchivePolicyExplanation(
   client: PoolClient,
   barrier: PreEffectBarrierRow,
   decisionId: string,
@@ -659,7 +664,7 @@ function baselineState(state: GmailArchiveTerminalStableState) {
   return { ...state, revisions: state.revisions.slice(0, 6) };
 }
 
-async function exactBaseline(
+export async function exactGmailArchiveInProgressBaseline(
   client: PoolClient,
   authority: TerminalAuthority,
   state: GmailArchiveTerminalStableState,
@@ -746,8 +751,8 @@ async function exactTerminalReplay(
       (expectedDisposition === 'unknown' ? results.length !== 0 : results.length !== 1)) {
     return null;
   }
-  const policyExplanation = await loadPolicyExplanation(client, barrier, state.decision.id);
-  if (!policyExplanation || !await exactBaseline(
+  const policyExplanation = await loadGmailArchivePolicyExplanation(client, barrier, state.decision.id);
+  if (!policyExplanation || !await exactGmailArchiveInProgressBaseline(
     client,
     authority,
     state,
@@ -883,7 +888,7 @@ async function transition(
     userId: input.command.userId,
     approvalId: barrier.idempotency_key,
   });
-  const state = await loadStableState(client, authority);
+  const state = await loadGmailArchiveStableState(client, authority);
   if (!state) return { ok: false, error: 'not_found' };
   const messageRefId = canonicalGmailArchiveCandidateMessageRef(state.approval, state.candidate);
   if (!messageRefId || input.command.messageRefId !== messageRefId ||
@@ -891,7 +896,7 @@ async function transition(
       barrier.action_id !== state.candidate.id || barrier.explanation_id === null) {
     return { ok: false, error: 'idempotency_conflict' };
   }
-  const approved = exactStableApprovedPrefix(state);
+  const approved = exactGmailArchiveApprovedPrefix(state);
   if (!approved) return { ok: false, error: 'idempotency_conflict' };
   if (['succeeded', 'failed', 'unknown'].includes(barrier.status)) {
     const terminalization = await validateStoredGmailArchiveTerminal(
@@ -923,8 +928,8 @@ async function transition(
   );
   if (attemptCounts.rows[0]?.results !== '0' || attemptCounts.rows[0]?.events !== '0' ||
       state.revisions.length !== 6) return { ok: false, error: 'idempotency_conflict' };
-  const policyExplanation = await loadPolicyExplanation(client, barrier, state.decision.id);
-  if (!policyExplanation || !await exactBaseline(
+  const policyExplanation = await loadGmailArchivePolicyExplanation(client, barrier, state.decision.id);
+  if (!policyExplanation || !await exactGmailArchiveInProgressBaseline(
     client,
     authority,
     state,
