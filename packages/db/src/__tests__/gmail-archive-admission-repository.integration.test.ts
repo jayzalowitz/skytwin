@@ -6455,16 +6455,26 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
         `INSERT INTO mcp_servers (
            id, user_id, registry_id, display_name, transport, status
          ) VALUES ($1, $2, $3, 'Rollback report fixture', 'stdio', 'active')`,
-        [serverId, userId, `rollback-report-${serverId}`],
+        [serverId, owner.ownerUserId, `rollback-report-${serverId}`],
       );
       await client.query(
         `INSERT INTO capability_provenance_nodes (
            id, user_id, node_type, ref_table, ref_id, server_id, occurred_at, payload
          ) VALUES ($1, $2, 'action', 'candidate_actions', $3, $4, now(), $5)`,
-        [provenanceId, userId, fixture.candidate.id, serverId, JSON.stringify({ reversible: true })],
+        [
+          provenanceId,
+          owner.ownerUserId,
+          fixture.candidate.id,
+          serverId,
+          JSON.stringify({ reversible: true }),
+        ],
       );
     });
-    const input = { serverId, userId, since: new Date(Date.now() - 60_000) };
+    const input = {
+      serverId,
+      userId: owner.ownerUserId,
+      since: new Date(Date.now() - 60_000),
+    };
     const expectNoQualifiedPlan = async (): Promise<void> => {
       await expect(executionRepository.getRollbackTargetsByServer(input)).resolves.toEqual([
         expect.objectContaining({
@@ -6501,7 +6511,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     })]);
     await getPool().query(
       'UPDATE capability_provenance_nodes SET user_id = $2 WHERE id = $1',
-      [provenanceId, userId],
+      [provenanceId, owner.ownerUserId],
     );
 
     await getPool().query(
