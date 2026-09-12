@@ -654,8 +654,9 @@ async function transition(
     `INSERT INTO explanation_records (
        id, decision_id, what_happened, evidence_used, preferences_invoked,
        confidence_reasoning, action_rationale, escalation_rationale,
-       correction_guidance, capability_provenance_node_id
-     ) VALUES ($1, $2, $3, $4, $5::STRING[], $6, $7, $8, $9, NULL)
+       correction_guidance, capability_provenance_node_id, created_at
+     ) VALUES ($1, $2, $3, $4, $5::STRING[], $6, $7, $8, $9, NULL,
+       date_trunc('milliseconds', now()))
      RETURNING *`,
     [
       ids.explanation,
@@ -674,7 +675,8 @@ async function transition(
   const updatedBarrier = (await client.query<PreEffectBarrierRow>(
     `UPDATE pre_effect_barriers
         SET status = $3, decision_id = $4, action_id = $5, explanation_id = $6,
-            policy_snapshot = $7, effect_result = $8, failure_reason = $9, updated_at = now()
+            policy_snapshot = $7, effect_result = $8, failure_reason = $9,
+            updated_at = date_trunc('milliseconds', now())
       WHERE id = $1 AND user_id = $2 AND status = 'reserved'
         AND decision_id IS NULL AND action_id IS NULL AND explanation_id IS NULL
       RETURNING *`,
@@ -705,6 +707,7 @@ async function transition(
     expectedPreviousDigest: state.revisions.at(-1)!.revision_digest,
     content: r5Content,
     revisionId: ids.policyRevision,
+    createdAt: updatedBarrier.updated_at.toISOString(),
   });
   if (!r5.success) fail({ ok: false, error: 'idempotency_conflict' });
   if (!policyDecision.allowed) {
