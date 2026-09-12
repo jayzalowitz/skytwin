@@ -11,6 +11,7 @@ import type { ExplanationGenerator } from '@skytwin/explanations';
 import type { IronClawAdapter } from '@skytwin/ironclaw-adapter';
 import { userRepository } from '@skytwin/db';
 import { createLogger } from '@skytwin/core';
+import { assertGenericWorkflowActionAllowed } from './gmail-archive-quarantine.js';
 
 const log = createLogger('api:workflow:email-triage');
 
@@ -120,6 +121,7 @@ export async function processEmailEvent(
   let executionResult: ExecutionResult | null = null;
 
   if (outcome.autoExecute && outcome.selectedAction) {
+    assertGenericWorkflowActionAllowed(outcome.selectedAction);
     log.info(
       `Auto-executing: ${outcome.selectedAction.actionType} - ${outcome.selectedAction.description}`,
     );
