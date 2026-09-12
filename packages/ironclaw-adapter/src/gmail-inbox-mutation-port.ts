@@ -192,14 +192,41 @@ function sameResource(
 export class GmailInboxMutationService implements GmailInboxMutationPort {
   private readonly fetchFn: FetchLike;
   private readonly timeoutMs: number;
+  private readonly googleOAuthConfig: Readonly<GoogleOAuthConfig>;
+  private readonly dispatchGateEnter: GmailInboxMutationDispatchGate['enter'];
+  private readonly keyCache: KeyCacheLike | undefined;
+  private readonly auditLog: AuditLogPort | undefined;
+  private readonly auditActor: string;
 
-  constructor(private readonly options: GmailInboxMutationServiceOptions) {
+  constructor(options: GmailInboxMutationServiceOptions) {
     this.fetchFn = options.fetch ?? globalThis.fetch;
     const timeoutMs = options.timeoutMs ?? 10_000;
     if (!Number.isFinite(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000) {
       throw new TypeError('timeoutMs must be a finite value between 1 and 60000');
     }
     this.timeoutMs = timeoutMs;
+    this.googleOAuthConfig = Object.freeze({
+      clientId: options.googleOAuthConfig.clientId,
+      clientSecret: options.googleOAuthConfig.clientSecret,
+      redirectUri: options.googleOAuthConfig.redirectUri,
+    });
+    const gate = options.dispatchGate;
+    this.dispatchGateEnter = gate.enter.bind(gate);
+    if (options.keyCache) {
+      const cache = options.keyCache;
+      this.keyCache = Object.freeze({
+        get: cache.get.bind(cache),
+        has: cache.has.bind(cache),
+        set: cache.set.bind(cache),
+      });
+    }
+    if (options.auditLog) {
+      const auditLog = options.auditLog;
+      this.auditLog = Object.freeze({
+        recordAccess: auditLog.recordAccess.bind(auditLog),
+      });
+    }
+    this.auditActor = options.auditActor ?? 'gmail_inbox_mutation';
   }
 
   async mutate(submittedCommand: GmailInboxMutationCommand): Promise<GmailInboxMutationResult> {
@@ -230,13 +257,13 @@ export class GmailInboxMutationService implements GmailInboxMutationPort {
     try {
       const store = new DbTokenStore(
         oauthRepository,
-        this.options.googleOAuthConfig,
+        this.googleOAuthConfig,
         undefined,
         initialTarget.connectorAccountId,
       );
-      if (this.options.keyCache) store.setKeyCache(this.options.keyCache);
-      if (this.options.auditLog) {
-        store.setAuditLog(this.options.auditLog, this.options.auditActor ?? 'gmail_inbox_mutation');
+      if (this.keyCache) store.setKeyCache(this.keyCache);
+      if (this.auditLog) {
+        store.setAuditLog(this.auditLog, this.auditActor);
       }
       const token = await store.refreshIfExpiredWithRevision(command.userId, 'google');
       if (!token.scopes.includes(GMAIL_MODIFY_SCOPE)) {
@@ -316,7 +343,7 @@ export class GmailInboxMutationService implements GmailInboxMutationPort {
     // commit ambiguity is classified conservatively but still precedes POST.
     let gateResult: Awaited<ReturnType<GmailInboxMutationDispatchGate['enter']>>;
     try {
-      gateResult = await this.options.dispatchGate.enter(command, currentTarget);
+      gateResult = await this.dispatchGateEnter(command, currentTarget);
     } catch {
       return knownFailure(binding, 'admission_unavailable');
     }

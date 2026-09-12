@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { GmailInboxMutationServiceOptions } from '../gmail-inbox-mutation-port.js';
 
 const resolveTargetMock = vi.fn();
 const refreshIfExpiredMock = vi.fn();
@@ -291,7 +292,21 @@ describe('GmailInboxMutationService', () => {
     admitOnce();
     await configured.mutate(command);
 
-    expect(tokenStoreAuditMock).toHaveBeenLastCalledWith(auditLog, 'archive-kernel');
+    expect(tokenStoreAuditMock).toHaveBeenLastCalledWith(
+      { recordAccess: expect.any(Function) },
+      'archive-kernel',
+    );
+    const snapshottedAudit = tokenStoreAuditMock.mock.calls.at(-1)?.[0] as {
+      recordAccess(input: Parameters<typeof auditLog.recordAccess>[0]): void;
+    };
+    const auditInput = {
+      userId: command.userId,
+      actor: 'archive-kernel',
+      action: 'decrypt_oauth_token',
+      resourceType: 'oauth_token',
+    };
+    snapshottedAudit.recordAccess(auditInput);
+    expect(auditLog.recordAccess).toHaveBeenCalledWith(auditInput);
   });
 
   it('accepts a credential refresh only after the resolver reaches the materialized revision', async () => {
@@ -498,6 +513,51 @@ describe('GmailInboxMutationService', () => {
     releaseGate?.({ status: 'entered' });
     await expect(pending).resolves.toMatchObject({ outcome: 'confirmed', effect: 'changed' });
     expect(fetchMock.mock.calls.filter((call) => call[1]?.method === 'POST')).toHaveLength(1);
+  });
+
+  it('retains the original refusing gate when caller-owned construction options mutate in flight', async () => {
+    let releaseFirst: ((value: {
+      connectorAccountId: string;
+      credentialRevision: string;
+      providerMessageId: string;
+    }) => void) | undefined;
+    const resolvedTarget = {
+      connectorAccountId: target.connector_account_id,
+      credentialRevision: target.credential_revision,
+      providerMessageId: target.provider_message_id,
+    };
+    resolveTargetMock
+      .mockImplementationOnce(() => new Promise((resolve) => { releaseFirst = resolve; }))
+      .mockResolvedValueOnce(resolvedTarget)
+      .mockResolvedValueOnce(resolvedTarget);
+    const refusingGate = vi.fn().mockResolvedValue({ status: 'not_admitted' as const });
+    const replacementGate = vi.fn().mockResolvedValue({ status: 'entered' as const });
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ labelIds: ['INBOX'] }));
+    const options: GmailInboxMutationServiceOptions = {
+      googleOAuthConfig: {
+        clientId: 'original-client', clientSecret: '', redirectUri: 'http://localhost/original',
+      },
+      dispatchGate: { enter: refusingGate },
+      fetch: fetchMock as unknown as (input: string, init?: RequestInit) => Promise<Response>,
+      timeoutMs: 1_000,
+    };
+    const mutationService = new GmailInboxMutationService(options);
+
+    const pending = mutationService.mutate(command);
+    options.dispatchGate = { enter: replacementGate };
+    options.googleOAuthConfig.clientId = 'replacement-client';
+    options.googleOAuthConfig.redirectUri = 'https://attacker.example/callback';
+    releaseFirst?.(resolvedTarget);
+
+    await expect(pending).resolves.toEqual({
+      outcome: 'known_failure', code: 'not_admitted', compensationAvailable: false, binding,
+    });
+    expect(refusingGate).toHaveBeenCalledWith(command, resolvedTarget);
+    expect(replacementGate).not.toHaveBeenCalled();
+    expect(tokenStoreConstructorMock.mock.calls[0]?.[1]).toEqual({
+      clientId: 'original-client', clientSecret: '', redirectUri: 'http://localhost/original',
+    });
+    expect(fetchMock.mock.calls.filter((call) => call[1]?.method === 'POST')).toHaveLength(0);
   });
 
   it.each([
