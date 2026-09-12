@@ -1,4 +1,5 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import type { PoolClient } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -22,7 +23,7 @@ import {
   decisionReceiptBarrierRefV1,
   decisionReceiptRowArtifactRefV1,
 } from '../repositories/decision-receipt-artifacts.js';
-import { up } from '../migrations/001-initial.js';
+import { splitSqlStatements, up } from '../migrations/001-initial.js';
 import {
   gmailArchiveApprovalResponseRepository,
   gmailArchiveApprovalResponseTestHooks,
@@ -908,6 +909,12 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     const second = await createProposal(11);
     const feedbackId = id('96', 10);
     await expect(getPool().query(
+      `INSERT INTO approval_requests (
+         id, user_id, decision_id, candidate_action, reason
+       ) VALUES ($1, $2, $3, '{}', 'cross-owner fixture')`,
+      [id('95', 10), otherUserId, first.decision.id],
+    )).rejects.toMatchObject({ code: '23503' });
+    await expect(getPool().query(
       `INSERT INTO feedback_events (
          id, user_id, decision_id, approval_request_id, type, data
        ) VALUES ($1, $2, $3, $4, 'approve', '{"reason":null}')`,
@@ -934,6 +941,32 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       [id('96', 11), userId, first.decision.id, first.approval.id],
     )).rejects.toMatchObject({ code: '23505' });
   });
+
+  it('reruns migration 086 without replacing healthy ownership constraints', async () => {
+    const migration = readFileSync(
+      new URL('../migrations/086-gmail-archive-feedback-intent.sql', import.meta.url),
+      'utf8',
+    );
+    const constraintOids = async () => (await getPool().query<{ name: string; oid: string }>(
+      `SELECT conname AS name, oid::STRING AS oid
+         FROM pg_catalog.pg_constraint
+        WHERE conname IN (
+          'approval_requests_decision_owner_fk',
+          'feedback_events_approval_owner_decision_fk'
+        )
+        ORDER BY conname`,
+    )).rows;
+    const before = await constraintOids();
+    expect(before).toHaveLength(2);
+
+    for (let pass = 0; pass < 2; pass += 1) {
+      for (const statement of splitSqlStatements(migration)) {
+        await getPool().query(statement);
+      }
+    }
+
+    expect(await constraintOids()).toEqual(before);
+  }, 120_000);
 
   it('leaves expired approvals unchanged', async () => {
     const expired = await createProposal(3);

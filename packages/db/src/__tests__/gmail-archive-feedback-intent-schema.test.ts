@@ -20,8 +20,10 @@ describe('Gmail archive feedback intent schema', () => {
   });
 
   it('fails dirty links before enforcing exact owner, decision, and approval identity', () => {
+    const ownerPreflight = migration.indexOf('migration_086_approval_owner_preflight');
     const preflight = migration.indexOf('migration_086_feedback_relationship_preflight');
     const foreignKey = migration.indexOf('feedback_events_approval_owner_decision_fk');
+    expect(ownerPreflight).toBeGreaterThan(-1);
     expect(preflight).toBeGreaterThan(-1);
     expect(foreignKey).toBeGreaterThan(preflight);
     expect(migration).toContain('approval.user_id <> feedback.user_id');
@@ -33,14 +35,50 @@ describe('Gmail archive feedback intent schema', () => {
       'REFERENCES approval_requests (id, user_id, decision_id)',
     );
     expect(migration).toContain('ON DELETE CASCADE');
+    expect(migration).toContain(
+      'FOREIGN KEY (decision_id, user_id)',
+    );
+    expect(migration).toContain(
+      'REFERENCES decisions (id, user_id)',
+    );
   });
 
-  it('permits at most one source feedback event for a non-null approval', () => {
+  it('reruns without dropping either healthy ownership constraint', () => {
+    expect(migration).not.toMatch(/DROP\s+CONSTRAINT/i);
+    expect(migration).toContain(
+      'ADD CONSTRAINT IF NOT EXISTS approval_requests_decision_owner_fk',
+    );
+    expect(migration).toContain(
+      'ADD CONSTRAINT IF NOT EXISTS feedback_events_approval_owner_decision_fk',
+    );
+    expect(migration).toContain('migration_086_approval_owner_fk_preflight');
+    expect(migration).toContain('migration_086_feedback_relationship_fk_preflight');
+  });
+
+  it('verifies exact unique key sequences and the partial predicate', () => {
     expect(migration).toContain(
       'CREATE UNIQUE INDEX IF NOT EXISTS feedback_events_approval_request_unique_idx',
     );
     expect(migration).toContain('WHERE approval_request_id IS NOT NULL');
     expect(migration).toContain('migration_086_feedback_unique_index_preflight');
+    expect(migration).toContain("index_metadata.indnkeyatts = 3");
+    expect(migration).toContain("index_metadata.indnkeyatts = 1");
+    expect(migration).toContain("'approval_request_id IS NOT NULL'");
+    expect(migration).toContain("column_name = 'user_id' AND direction = 'ASC'");
+    expect(migration).toContain("column_name = 'decision_id' AND direction = 'ASC'");
+  });
+
+  it('reuses the receipt-era decision owner index without creating an equivalent duplicate', () => {
+    const receiptMigration = read('../migrations/081-joined-decision-receipts.sql');
+    expect(receiptMigration).toContain(
+      'CREATE UNIQUE INDEX IF NOT EXISTS decisions_id_user_id_idx',
+    );
+    expect(schema).toContain(
+      'CONSTRAINT decisions_id_user_id_idx UNIQUE (id, user_id)',
+    );
+    expect(migration).toContain("index_name = 'decisions_id_user_id_idx'");
+    expect(migration).not.toContain('decisions_id_owner_idx');
+    expect(schema).not.toContain('decisions_id_owner_idx');
   });
 
   it('keeps feedback source rows nonportable and user-purgeable', () => {
