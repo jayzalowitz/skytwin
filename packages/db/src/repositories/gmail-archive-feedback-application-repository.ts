@@ -63,6 +63,14 @@ export interface VerifiedGmailArchiveFeedbackApplication {
   readonly application: GmailArchiveFeedbackApplication;
 }
 
+export type InspectGmailArchiveFeedbackApplicationResult =
+  | {
+    readonly status: 'verified';
+    readonly value: VerifiedGmailArchiveFeedbackApplication;
+  }
+  | { readonly status: 'not_applied' }
+  | { readonly status: 'conflict' };
+
 declare const gmailArchiveFeedbackPendingCursorBrand: unique symbol;
 export type GmailArchiveFeedbackPendingCursor = string & {
   readonly [gmailArchiveFeedbackPendingCursorBrand]: 'GmailArchiveFeedbackPendingCursor';
@@ -413,6 +421,84 @@ async function loadFeedback(
   )).rows;
 }
 
+async function inspectLoadedGmailArchiveFeedbackApplication(
+  client: PoolClient,
+  input: Readonly<ApplyGmailArchiveApprovalFeedbackInput>,
+  source: GmailArchiveApprovalCanonicalState,
+  feedbackRows: readonly FeedbackWithTime[],
+): Promise<InspectGmailArchiveFeedbackApplicationResult> {
+  if (!UUID.test(input.feedbackEventId) || !UUID.test(input.userId) ||
+      source.approval.user_id !== input.userId || feedbackRows.length !== 1) {
+    return Object.freeze({ status: 'conflict' });
+  }
+  const feedback = feedbackRows[0]!;
+  const timestamp = (await client.query<{ matches: boolean }>(
+    `SELECT feedback.created_at = approval.responded_at AS matches
+       FROM feedback_events feedback
+       JOIN approval_requests approval ON approval.id = feedback.approval_request_id
+      WHERE feedback.id = $1 AND feedback.user_id = $2`,
+    [input.feedbackEventId, input.userId],
+  )).rows[0];
+  if (!exactFeedback(feedback, source, input, timestamp?.matches === true)) {
+    return Object.freeze({ status: 'conflict' });
+  }
+  const applications = await loadApplications(client, input.feedbackEventId);
+  if (applications.length === 0) return Object.freeze({ status: 'not_applied' });
+  if (applications.length !== 1) return Object.freeze({ status: 'conflict' });
+  const application = await verifyReplay(client, source, feedback, applications[0]!);
+  if (!application) return Object.freeze({ status: 'conflict' });
+  return Object.freeze({
+    status: 'verified',
+    value: Object.freeze({
+      feedback: Object.freeze({
+        id: feedback.id,
+        user_id: feedback.user_id,
+        decision_id: feedback.decision_id,
+        approval_request_id: feedback.approval_request_id,
+        type: feedback.type,
+        data: Object.freeze({ ...feedback.data }),
+        created_at: feedback.created_at,
+      }),
+      application,
+    }),
+  });
+}
+
+/**
+ * Deep-only preparation seam. Selects the one approval-owned feedback event,
+ * then distinguishes clean application lag from malformed or inconsistent
+ * committed state. It opens no transaction and performs no writes.
+ */
+export async function inspectGmailArchiveApprovalFeedbackApplication(
+  client: PoolClient,
+  source: GmailArchiveApprovalCanonicalState,
+): Promise<InspectGmailArchiveFeedbackApplicationResult> {
+  if (!UUID.test(source.approval.id) || !UUID.test(source.approval.user_id) ||
+      !UUID.test(source.decision.id) || source.approval.decision_id !== source.decision.id) {
+    return Object.freeze({ status: 'conflict' });
+  }
+  const feedbackRows = (await client.query<FeedbackWithTime>(
+    `SELECT feedback.*,
+            (feedback.created_at AT TIME ZONE 'UTC')::STRING AS created_at_text
+       FROM feedback_events feedback
+      WHERE feedback.user_id = $1 AND feedback.decision_id = $2
+        AND feedback.approval_request_id = $3
+      ORDER BY feedback.id
+      LIMIT 2 FOR UPDATE`,
+    [source.approval.user_id, source.decision.id, source.approval.id],
+  )).rows;
+  if (feedbackRows.length !== 1) return Object.freeze({ status: 'conflict' });
+  return inspectLoadedGmailArchiveFeedbackApplication(
+    client,
+    Object.freeze({
+      userId: source.approval.user_id,
+      feedbackEventId: feedbackRows[0]!.id,
+    }),
+    source,
+    feedbackRows,
+  );
+}
+
 function feedbackInput(feedback: FeedbackWithTime): {
   approvalId: string;
   userId: string;
@@ -576,32 +662,10 @@ export async function loadVerifiedGmailArchiveFeedbackApplication(
   if (!UUID.test(input.feedbackEventId) || !UUID.test(input.userId) ||
       source.approval.user_id !== input.userId) return null;
   const feedbackRows = await loadFeedback(client, input, true);
-  if (feedbackRows.length !== 1) return null;
-  const feedback = feedbackRows[0]!;
-  const timestamp = (await client.query<{ matches: boolean }>(
-    `SELECT feedback.created_at = approval.responded_at AS matches
-       FROM feedback_events feedback
-       JOIN approval_requests approval ON approval.id = feedback.approval_request_id
-      WHERE feedback.id = $1 AND feedback.user_id = $2`,
-    [input.feedbackEventId, input.userId],
-  )).rows[0];
-  if (!exactFeedback(feedback, source, input, timestamp?.matches === true)) return null;
-  const applications = await loadApplications(client, input.feedbackEventId);
-  if (applications.length !== 1) return null;
-  const application = await verifyReplay(client, source, feedback, applications[0]!);
-  if (!application) return null;
-  return Object.freeze({
-    feedback: Object.freeze({
-      id: feedback.id,
-      user_id: feedback.user_id,
-      decision_id: feedback.decision_id,
-      approval_request_id: feedback.approval_request_id,
-      type: feedback.type,
-      data: Object.freeze({ ...feedback.data }),
-      created_at: feedback.created_at,
-    }),
-    application,
-  });
+  const result = await inspectLoadedGmailArchiveFeedbackApplication(
+    client, input, source, feedbackRows,
+  );
+  return result.status === 'verified' ? result.value : null;
 }
 
 async function transition(

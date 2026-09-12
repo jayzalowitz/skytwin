@@ -283,6 +283,7 @@ async function readTransition(
       state,
       barrier,
       approved,
+      { allowSingleFeedbackContinuation: barrier.status === 'blocked' },
     );
     const replayData = exactDataObject(replay);
     const preparation = exactDataObject(replayData?.['preparation']);
