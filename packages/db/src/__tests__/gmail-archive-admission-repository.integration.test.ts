@@ -646,8 +646,15 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       userId,
       approvalId: donor.approval.id,
     });
-    expect(donorPreparation).toMatchObject({ ok: true, created: true });
-    if (!donorPreparation.ok || !donorPreparation.preparation.plan) return;
+    expect(donorPreparation).toMatchObject({
+      ok: true,
+      created: true,
+      preparation: { status: 'prepared', plan: { status: 'pending' } },
+    });
+    if (!donorPreparation.ok || donorPreparation.preparation.status !== 'prepared' ||
+        !donorPreparation.preparation.plan) {
+      throw new Error('Donor preparation fixture did not produce its required plan.');
+    }
 
     const reserved = await createProposal(34);
     await gmailArchiveApprovalResponseRepository.respond({
