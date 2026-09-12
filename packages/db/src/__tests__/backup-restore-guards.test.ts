@@ -115,7 +115,12 @@ function terminalReceiptPayload(): {
   };
   const executionExplanation = {
     id: executionExplanationId, decision_id: decisionId, what_happened: 'Remote outcome is unknown',
-    evidence_used: [], preferences_invoked: [], confidence_reasoning: 'No terminal response',
+    evidence_used: [{
+      schema: 'gmail_archive_terminal_result_v1',
+      outcome: 'unknown',
+      code: 'remote_outcome_unknown',
+      compensationAvailable: false,
+    }], preferences_invoked: [], confidence_reasoning: 'No terminal response',
     action_rationale: 'The admitted action was dispatched', escalation_rationale: 'Review provider state',
     correction_guidance: 'Confirm the message state', capability_provenance_node_id: null,
     created_at: now,
@@ -403,6 +408,22 @@ describe('validateBackupData', () => {
     expect(validateBackupData(payload)).toEqual([]);
     executionExplanation['what_happened'] = 'tampered after receipt creation';
 
+    expect(validateBackupData(payload)).toContain(
+      'decisions[0].joinedReceipt has inconsistent execution explanation snapshot',
+    );
+  });
+
+  it('retains and verifies the canonical terminal result envelope', () => {
+    const { payload, executionExplanation } = terminalReceiptPayload();
+    expect(validateBackupData(payload)).toEqual([]);
+    expect(executionExplanation['evidence_used']).toEqual([{
+      schema: 'gmail_archive_terminal_result_v1',
+      outcome: 'unknown',
+      code: 'remote_outcome_unknown',
+      compensationAvailable: false,
+    }]);
+    (executionExplanation['evidence_used'] as Array<Record<string, unknown>>)[0]!['code'] =
+      'remote_rejected';
     expect(validateBackupData(payload)).toContain(
       'decisions[0].joinedReceipt has inconsistent execution explanation snapshot',
     );
