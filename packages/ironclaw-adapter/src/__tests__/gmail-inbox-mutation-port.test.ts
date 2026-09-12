@@ -1,3 +1,4 @@
+import { readFile, readdir } from 'node:fs/promises';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { GmailInboxMutationServiceOptions } from '../gmail-inbox-mutation-port.js';
 
@@ -64,6 +65,16 @@ function jsonResponse(value: unknown, status = 200): Response {
     status,
     headers: { 'Content-Type': 'application/json' },
   });
+}
+
+async function sourceFilesBelow(directory: URL): Promise<string[]> {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const nested = await Promise.all(entries.map(async (entry) => {
+    const child = new URL(`${entry.name}${entry.isDirectory() ? '/' : ''}`, directory);
+    if (entry.isDirectory()) return sourceFilesBelow(child);
+    return /\.(?:ts|js)$/.test(entry.name) ? [await readFile(child, 'utf8')] : [];
+  }));
+  return nested.flat();
 }
 
 function service(fetchMock: ReturnType<typeof vi.fn>, timeoutMs = 1_000) {
@@ -994,5 +1005,15 @@ describe('GmailInboxMutationService', () => {
       effect: 'already_in_state', compensationAvailable: false, observedAt: expect.any(String),
       binding,
     });
+  });
+
+  it('is not constructed by API, worker, or execution-router runtime code', async () => {
+    const roots = [
+      new URL('../../../../apps/api/', import.meta.url),
+      new URL('../../../../apps/worker/', import.meta.url),
+      new URL('../../../execution-router/', import.meta.url),
+    ];
+    const runtimeSources = (await Promise.all(roots.map(sourceFilesBelow))).flat().join('\n');
+    expect(runtimeSources).not.toContain('GmailInboxMutationService');
   });
 });

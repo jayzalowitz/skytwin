@@ -252,6 +252,77 @@ describe('google-oauth PKCE support', () => {
       expect(JSON.stringify(result)).not.toContain('unconsumed-id-secret');
     });
 
+    it('accepts bearer token type case-insensitively', async () => {
+      const result = await refreshAccessToken(
+        { clientId: 'public.apps', clientSecret: '', redirectUri: 'http://127.0.0.1/cb' },
+        'stored-refresh-token',
+        { fetch: vi.fn().mockResolvedValue(new Response(JSON.stringify({
+          access_token: 'new-at',
+          expires_in: 3600,
+          scope: 'openid email',
+          token_type: 'bearer',
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } })) },
+      );
+
+      expect(result.scopes).toEqual(['openid', 'email']);
+    });
+
+    it('preserves the validated persisted grant when the provider omits scope', async () => {
+      const persistedScopes = ['openid', 'https://www.googleapis.com/auth/gmail.modify'];
+      const result = await refreshAccessToken(
+        { clientId: 'public.apps', clientSecret: '', redirectUri: 'http://127.0.0.1/cb' },
+        'stored-refresh-token',
+        {
+          persistedScopes,
+          fetch: vi.fn().mockResolvedValue(new Response(JSON.stringify({
+            access_token: 'new-at',
+            expires_in: 3600,
+            token_type: 'Bearer',
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } })),
+        },
+      );
+
+      expect(result.scopes).toEqual(persistedScopes);
+      expect(result.scopes).not.toBe(persistedScopes);
+    });
+
+    it.each([
+      ['absent', undefined],
+      ['empty', []],
+      ['empty entry', ['']],
+      ['duplicate', ['openid', 'openid']],
+      ['oversized entry', ['x'.repeat(513)]],
+    ])('rejects omitted provider scope with %s persisted scopes', async (_name, persistedScopes) => {
+      await expect(refreshAccessToken(
+        { clientId: 'public.apps', clientSecret: '', redirectUri: 'http://127.0.0.1/cb' },
+        'stored-refresh-token',
+        {
+          persistedScopes,
+          fetch: vi.fn().mockResolvedValue(new Response(JSON.stringify({
+            access_token: 'new-at',
+            expires_in: 3600,
+            token_type: 'Bearer',
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } })),
+        },
+      )).rejects.toThrow(/invalid provider response/);
+    });
+
+    it('rejects an explicit empty provider scope instead of inheriting persisted scopes', async () => {
+      await expect(refreshAccessToken(
+        { clientId: 'public.apps', clientSecret: '', redirectUri: 'http://127.0.0.1/cb' },
+        'stored-refresh-token',
+        {
+          persistedScopes: ['openid'],
+          fetch: vi.fn().mockResolvedValue(new Response(JSON.stringify({
+            access_token: 'new-at',
+            expires_in: 3600,
+            scope: '',
+            token_type: 'Bearer',
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } })),
+        },
+      )).rejects.toThrow(/invalid provider response/);
+    });
+
     it.each(['not-a-number', '-1', String(16 * 1024 + 1)])(
       'rejects declared refresh body length %s before parsing',
       async (contentLength) => {

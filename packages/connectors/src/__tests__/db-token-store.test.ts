@@ -125,10 +125,39 @@ describe('DbTokenStore', () => {
 
     const result = await store.refreshIfExpired('user1', 'google');
     expect(result.accessToken).toBe('new-access-token');
-    expect(mockRefresh).toHaveBeenCalledWith(oauthConfig, 'refresh-456');
+    expect(mockRefresh).toHaveBeenCalledWith(oauthConfig, 'refresh-456', {
+      persistedScopes: ['email'],
+    });
     expect(repo.updateAccessToken).toHaveBeenCalledWith(
       'user1', 'google', 'new-access-token', newExpiry,
     );
+  });
+
+  it('supplies the persisted grant when refreshing so omitted provider scope is preserved', async () => {
+    const pastDate = new Date(Date.now() - 60 * 1000);
+    const persistedScopes = ['openid', 'https://www.googleapis.com/auth/gmail.modify'];
+    repo.getToken.mockResolvedValue({
+      access_token: 'expired-token',
+      refresh_token: 'refresh-456',
+      expires_at: pastDate,
+      scopes: persistedScopes,
+    });
+    const newExpiry = new Date(Date.now() + 3600 * 1000);
+    mockRefresh.mockImplementation(async (_config, refreshToken, transport) => ({
+      accessToken: 'new-access-token',
+      refreshToken,
+      expiresAt: newExpiry,
+      scopes: [...(transport?.persistedScopes ?? [])],
+      provider: 'google',
+    }));
+    repo.updateAccessToken.mockResolvedValue({});
+
+    const result = await store.refreshIfExpired('user1', 'google');
+
+    expect(result.scopes).toEqual(persistedScopes);
+    expect(mockRefresh).toHaveBeenCalledWith(oauthConfig, 'refresh-456', {
+      persistedScopes,
+    });
   });
 
   it('refreshIfExpired throws when no token exists', async () => {

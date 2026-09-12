@@ -560,7 +560,9 @@ export class DbTokenStore implements OAuthTokenStore {
               'Construct DbTokenStore with a googleConfig.',
           );
         }
-        refreshed = await refreshAccessToken(this.oauthConfig, existing.refreshToken);
+        refreshed = await refreshAccessToken(this.oauthConfig, existing.refreshToken, {
+          persistedScopes: [...existing.scopes],
+        });
         break;
       default:
         throw new Error(`DbTokenStore: unsupported provider '${provider}' for token refresh.`);

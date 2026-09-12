@@ -39,6 +39,12 @@ type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 export interface GoogleOAuthRefreshTransportOptions {
   fetch?: FetchLike;
   timeoutMs?: number;
+  /**
+   * The exact scopes on the persisted grant. RFC 6749 permits a refresh
+   * response to omit `scope` when the grant is unchanged, so callers that
+   * own the persisted credential may supply that authority snapshot.
+   */
+  persistedScopes?: readonly string[];
 }
 
 async function cancelResponseBody(response: Response): Promise<void> {
@@ -95,7 +101,36 @@ async function readBoundedJsonBody(response: Response): Promise<unknown | null> 
   }
 }
 
-function snapshotRefreshResponse(value: unknown): {
+function snapshotScopes(value: unknown): string[] | null {
+  try {
+    if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype ||
+        Object.getOwnPropertySymbols(value).length !== 0 ||
+        value.length < 1 || value.length > MAX_REFRESH_SCOPES) return null;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const names = Object.getOwnPropertyNames(descriptors);
+    if (names.length !== value.length + 1 || !names.includes('length')) return null;
+    const scopes: string[] = [];
+    const seen = new Set<string>();
+    for (let index = 0; index < value.length; index += 1) {
+      const descriptor = descriptors[String(index)];
+      if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, 'value') ||
+          descriptor.enumerable !== true) return null;
+      const scope = descriptor.value as unknown;
+      if (typeof scope !== 'string' || scope.length === 0 ||
+          scope.length > MAX_REFRESH_SCOPE_LENGTH || seen.has(scope)) return null;
+      seen.add(scope);
+      scopes.push(scope);
+    }
+    return scopes;
+  } catch {
+    return null;
+  }
+}
+
+function snapshotRefreshResponse(
+  value: unknown,
+  persistedScopes: readonly string[] | null | undefined,
+): {
   accessToken: string;
   expiresIn: number;
   scopes: string[];
@@ -107,8 +142,7 @@ function snapshotRefreshResponse(value: unknown): {
     const descriptors = Object.getOwnPropertyDescriptors(value);
     const names = Object.getOwnPropertyNames(descriptors).sort();
     if (names.length > 32 || !names.includes('access_token') ||
-        !names.includes('expires_in') || !names.includes('scope') ||
-        !names.includes('token_type')) {
+        !names.includes('expires_in') || !names.includes('token_type')) {
       return null;
     }
     for (const name of names) {
@@ -118,18 +152,25 @@ function snapshotRefreshResponse(value: unknown): {
     }
     const accessToken = descriptors['access_token']!.value as unknown;
     const expiresIn = descriptors['expires_in']!.value as unknown;
-    const scope = descriptors['scope']!.value as unknown;
     const tokenType = descriptors['token_type']!.value as unknown;
     if (typeof accessToken !== 'string' || accessToken.length === 0 ||
         accessToken.length > MAX_REFRESH_RESPONSE_BYTES ||
         !Number.isSafeInteger(expiresIn) || (expiresIn as number) < 1 ||
         (expiresIn as number) > 7 * 24 * 60 * 60 ||
-        typeof scope !== 'string' || scope.length === 0 ||
-        scope.length > MAX_REFRESH_RESPONSE_BYTES ||
-        tokenType !== 'Bearer') return null;
-    const scopes = scope.split(' ');
-    if (scopes.length > MAX_REFRESH_SCOPES || scopes.some((item) =>
-      item.length === 0 || item.length > MAX_REFRESH_SCOPE_LENGTH)) return null;
+        typeof tokenType !== 'string' || !/^[Bb][Ee][Aa][Rr][Ee][Rr]$/.test(tokenType)) return null;
+    const scopeDescriptor = descriptors['scope'];
+    let scopes: string[] | null;
+    if (scopeDescriptor) {
+      const scope = scopeDescriptor.value as unknown;
+      if (typeof scope !== 'string' || scope.length === 0 ||
+          scope.length > MAX_REFRESH_RESPONSE_BYTES) return null;
+      scopes = snapshotScopes(scope.split(' '));
+    } else {
+      scopes = persistedScopes === null || persistedScopes === undefined
+        ? null
+        : [...persistedScopes];
+    }
+    if (!scopes) return null;
     return { accessToken, expiresIn: expiresIn as number, scopes };
   } catch {
     return null;
@@ -280,6 +321,13 @@ export async function refreshAccessToken(
   refreshToken: string,
   transport: GoogleOAuthRefreshTransportOptions = {},
 ): Promise<OAuthTokenSet> {
+  // Snapshot caller-owned options before the first await. An omitted provider
+  // scope may only inherit the exact, validated persisted grant supplied here.
+  const fetchImpl = transport.fetch ?? globalThis.fetch;
+  const persistedScopesInput = transport.persistedScopes;
+  const persistedScopes = persistedScopesInput === undefined
+    ? undefined
+    : snapshotScopes(persistedScopesInput);
   const body = new URLSearchParams({
     refresh_token: refreshToken,
     client_id: config.clientId,
@@ -300,7 +348,7 @@ export async function refreshAccessToken(
   let response: Response;
   let data: ReturnType<typeof snapshotRefreshResponse>;
   try {
-    response = await (transport.fetch ?? globalThis.fetch)(GOOGLE_TOKEN_URL, {
+    response = await fetchImpl(GOOGLE_TOKEN_URL, {
       method: 'POST',
       headers: {
         Accept: 'application/json',
@@ -321,7 +369,7 @@ export async function refreshAccessToken(
       const detail = errorCode ? JSON.stringify({ error: errorCode }) : 'provider rejected refresh';
       throw new OAuthRefreshError(response.status, detail, errorCode);
     }
-    data = snapshotRefreshResponse(await readBoundedJsonBody(response));
+    data = snapshotRefreshResponse(await readBoundedJsonBody(response), persistedScopes);
     if (!data) throw new OAuthRefreshError(200, 'invalid provider response');
   } catch (error) {
     if (error instanceof OAuthRefreshError) throw error;

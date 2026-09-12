@@ -42,7 +42,11 @@ export {
   revokeToken,
   OAuthRefreshError,
 } from './oauth/google-oauth.js';
-export type { GoogleOAuthConfig, PkcePair } from './oauth/google-oauth.js';
+export type {
+  GoogleOAuthConfig,
+  GoogleOAuthRefreshTransportOptions,
+  PkcePair,
+} from './oauth/google-oauth.js';
 
 // Microsoft Entra OAuth — foundation for the Outlook (Graph) connector.
 // Namespaced because its function names (generateAuthUrl, exchangeCode,
