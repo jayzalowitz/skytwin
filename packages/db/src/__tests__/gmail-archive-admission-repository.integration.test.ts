@@ -74,11 +74,16 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
   let cockroach: ChildProcess | undefined;
   let previousDatabaseUrl: string | undefined;
 
-  async function seedOwner(): Promise<void> {
+  async function seedOwner(
+    ownerUserId = userId,
+    ownerAccountId = accountId,
+    ownerTokenId = id('55', 1),
+    ownerEmail = 'admission-owner@example.test',
+  ): Promise<void> {
     await getPool().query(
       `INSERT INTO users (id, email, name)
-       VALUES ($1, 'admission-owner@example.test', 'Admission Owner')`,
-      [userId],
+       VALUES ($1, $2, 'Admission Owner')`,
+      [ownerUserId, ownerEmail],
     );
     await getPool().query(
       `INSERT INTO connected_accounts (
@@ -86,7 +91,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
          provider_subject_digest, account_display, identity_verified
        ) VALUES ($2, $1, 'google', 'owned-account', ARRAY[$3]::STRING[], true,
          $4, 'Owned account', true)`,
-      [userId, accountId, gmailModifyScope, 'a'.repeat(64)],
+      [ownerUserId, ownerAccountId, gmailModifyScope, 'a'.repeat(64)],
     );
     await getPool().query(
       `INSERT INTO oauth_tokens (
@@ -94,7 +99,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
          account_email, account_provider_id, connector_account_id
        ) VALUES ($2, $1, 'google', NULL, NULL, now() + INTERVAL '1 hour',
          ARRAY[$3]::STRING[], 'owner@example.test', 'owner', $4)`,
-      [userId, id('55', 1), gmailModifyScope, accountId],
+      [ownerUserId, ownerTokenId, gmailModifyScope, ownerAccountId],
     );
   }
 
@@ -125,7 +130,11 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     cockroach?.kill('SIGTERM');
   });
 
-  async function createProposal(suffix: number) {
+  async function createProposal(
+    suffix: number,
+    ownerUserId = userId,
+    ownerAccountId = accountId,
+  ) {
     const messageRefId = id('33', suffix);
     const signalId = id('44', suffix);
     const decisionId = id('66', suffix);
@@ -137,19 +146,19 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
          last_observed_inbox, first_observed_at, last_observed_at
        ) VALUES ($3, $1, $2, 'google', $4, NULL, $5,
          'inbox_automated', true, now(), now())`,
-      [userId, accountId, messageRefId, `native-${suffix}`, `source-${suffix}`],
+      [ownerUserId, ownerAccountId, messageRefId, `native-${suffix}`, `source-${suffix}`],
     );
     await getPool().query(
       `INSERT INTO signals (
          id, user_id, source, type, domain, data, timestamp,
          source_signal_id, connector_account_id, resource_ref_id
        ) VALUES ($4, $1, 'gmail', 'email', 'email', '{}', now(), $5, $2, $3)`,
-      [userId, accountId, messageRefId, signalId, `source-${suffix}`],
+      [ownerUserId, ownerAccountId, messageRefId, signalId, `source-${suffix}`],
     );
     const candidate = buildGmailArchiveProposalCandidate(decisionId, candidateId, messageRefId);
     const proposal = await gmailArchiveProposalRepository.persist({
-      userId,
-      connectorAccountId: accountId,
+      userId: ownerUserId,
+      connectorAccountId: ownerAccountId,
       messageRefId,
       signalId,
       proposal: {
@@ -178,16 +187,20 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     return result.rows[0]!;
   }
 
-  async function createPreparedProposal(suffix: number) {
-    const proposal = await createProposal(suffix);
+  async function createPreparedProposal(
+    suffix: number,
+    ownerUserId = userId,
+    ownerAccountId = accountId,
+  ) {
+    const proposal = await createProposal(suffix, ownerUserId, ownerAccountId);
     const approved = await gmailArchiveApprovalResponseRepository.respond({
       approvalId: proposal.approval.id,
-      userId,
+      userId: ownerUserId,
       action: 'approve',
     });
     expect(approved).toMatchObject({ ok: true, response: { reservedBarrier: { status: 'reserved' } } });
     const prepared = await gmailArchivePreparationRepository.prepare({
-      userId,
+      userId: ownerUserId,
       approvalId: proposal.approval.id,
     });
     expect(prepared).toMatchObject({
@@ -243,10 +256,14 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     }
   }
 
-  async function createClaimedProposal(suffix: number) {
-    const fixture = await createPreparedProposal(suffix);
+  async function createClaimedProposal(
+    suffix: number,
+    ownerUserId = userId,
+    ownerAccountId = accountId,
+  ) {
+    const fixture = await createPreparedProposal(suffix, ownerUserId, ownerAccountId);
     const claimed = await gmailArchiveClaimRepository.claim({
-      userId,
+      userId: ownerUserId,
       approvalId: fixture.proposal.approval.id,
     });
     expect(claimed).toMatchObject({ ok: true, claimed: true });
@@ -1835,12 +1852,16 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
   }, 120_000);
 
   it('terminalizes after connector evidence is cascaded post-claim', async () => {
-    // Earlier fail-closed cases deliberately retain malformed graphs. Re-seed
-    // this owner so export validation exercises one clean portable lifecycle.
-    await getPool().query('DELETE FROM users WHERE id = $1', [userId]);
-    await seedOwner();
-    const fixture = await createClaimedProposal(102);
-    await getPool().query('DELETE FROM connected_accounts WHERE id = $1 AND user_id = $2', [accountId, userId]);
+    // Use a dedicated owner so earlier fail-closed cases can retain their
+    // intentionally malformed graphs without polluting this portable export.
+    const portableUserId = id('11', 3);
+    const portableAccountId = id('22', 3);
+    await seedOwner(portableUserId, portableAccountId, id('55', 3), 'portable-owner@example.test');
+    const fixture = await createClaimedProposal(102, portableUserId, portableAccountId);
+    await getPool().query(
+      'DELETE FROM connected_accounts WHERE id = $1 AND user_id = $2',
+      [portableAccountId, portableUserId],
+    );
     const evidence = await getPool().query<{ refs: string; signals: string }>(`SELECT
       (SELECT count(*)::STRING FROM gmail_message_refs WHERE id = $1) AS refs,
       (SELECT count(*)::STRING FROM signals WHERE resource_ref_id = $1) AS signals`,
@@ -1861,12 +1882,12 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     });
     if (!terminalized.ok) throw new Error('Portable terminal fixture failed.');
 
-    const backup = await collectBackup(userId);
+    const backup = await collectBackup(portableUserId);
     expect(backup).toMatchObject({ success: true });
     if (!backup.success) throw new Error(`Terminal backup failed: ${backup.message}`);
     expect(validateBackupData(backup.data)).toEqual([]);
 
-    await getPool().query('DELETE FROM users WHERE id = $1', [userId]);
+    await getPool().query('TRUNCATE TABLE users CASCADE');
     await expect(restoreBackup(backup.data)).resolves.toMatchObject({ success: true });
     const restored = await getPool().query<{
       explanations: string;
