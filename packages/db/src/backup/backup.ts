@@ -411,6 +411,8 @@ export function validateBackupData(value: unknown): string[] {
         );
         let priorDigest: string | null = null;
         let priorContent: DecisionReceiptRevisionRow['content'] | null = null;
+        let priorContentValid = false;
+        let tailContentValid = false;
         for (const [revisionIndex, revision] of revisions.entries()) {
           if (!revision || typeof revision !== 'object' ||
               !uuid.test(revision.id) || !uuid.test(revision.receipt_id) ||
@@ -420,6 +422,7 @@ export function validateBackupData(value: unknown): string[] {
           }
           let computed = '';
           let computedRevision = '';
+          let contentValid = false;
           const sequence = normalizeDecisionReceiptSequence(revision.sequence);
           try {
             if (sequence === null) throw new TypeError('invalid receipt sequence');
@@ -434,17 +437,22 @@ export function validateBackupData(value: unknown): string[] {
               previousDigest: priorDigest,
               contentDigest: computed,
             });
+            contentValid = true;
           } catch {
             problems.push(`decisions[${index}].joinedReceipt.revisions[${revisionIndex}] has invalid content`);
           }
           const correctionId = revision.content?.correctionOfRevision?.id;
+          const transitionValid = revisionIndex === 0 || (
+            priorContent !== null && priorContentValid && contentValid &&
+            preservesJoinedDecisionReceiptLinks(priorContent, revision.content)
+          );
           if (revision.receipt_id !== root.id || sequence !== revisionIndex + 1 ||
               revision.previous_digest !== priorDigest || revision.content_digest !== computed ||
               revision.revision_digest !== computedRevision ||
               revision.content?.decision?.id !== bundle.decision.id ||
               revision.content?.decision?.canonicalHash !== decisionHash ||
               (revisionIndex === 0 && revision.content.stage !== 'decision_recorded') ||
-              (priorContent !== null && !preservesJoinedDecisionReceiptLinks(priorContent, revision.content)) ||
+              !transitionValid ||
               !isDecisionReceiptEventKey(revision.event_key) || eventKeys.has(revision.event_key) ||
               typeof revision.trusted !== 'boolean' ||
               revision.stage !== revision.content?.stage ||
@@ -465,8 +473,13 @@ export function validateBackupData(value: unknown): string[] {
           priorRevisionDigests.set(revision.id, revision.revision_digest);
           priorDigest = revision.revision_digest;
           priorContent = revision.content;
+          priorContentValid = contentValid;
+          if (revisionIndex === revisions.length - 1) tailContentValid = contentValid;
         }
-        const tail = revisions[revisions.length - 1]?.content;
+        // Never traverse nested artifact references until the tail has passed
+        // exact-key and semantic content validation. Chain errors are reported
+        // above; malformed archive input must not escape as a runtime error.
+        const tail = tailContentValid ? revisions[revisions.length - 1]?.content : undefined;
         if (tail?.candidateAction) {
           const row = candidateById.get(tail.candidateAction.id);
           if (!row || joinedDecisionReceiptArtifactDigest(

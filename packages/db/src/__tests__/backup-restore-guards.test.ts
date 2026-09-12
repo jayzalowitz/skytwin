@@ -408,6 +408,38 @@ describe('validateBackupData', () => {
     );
   });
 
+  it('reports a malformed v2 tail with missing inference instead of throwing', () => {
+    const { payload } = terminalReceiptPayload();
+    const bundle = (payload['decisions'] as Array<Record<string, unknown>>)[0]!;
+    const revisions = (bundle['joinedReceipt'] as {
+      revisions: Array<{ content: Record<string, unknown> }>;
+    }).revisions;
+    delete revisions.at(-1)!.content['inference'];
+
+    expect(() => validateBackupData(payload)).not.toThrow();
+    expect(validateBackupData(payload)).toEqual(expect.arrayContaining([
+      'decisions[0].joinedReceipt failed chain verification',
+      'decisions[0].joinedReceipt.revisions[3] has invalid content',
+      'decisions[0].joinedReceipt.revisions[3] has inconsistent chain',
+    ]));
+  });
+
+  it('reports a malformed nested policy evaluation instead of traversing it', () => {
+    const { payload } = terminalReceiptPayload();
+    const bundle = (payload['decisions'] as Array<Record<string, unknown>>)[0]!;
+    const revisions = (bundle['joinedReceipt'] as {
+      revisions: Array<{ content: Record<string, unknown> }>;
+    }).revisions;
+    revisions.at(-1)!.content['policyEvaluations'] = [{}];
+
+    expect(() => validateBackupData(payload)).not.toThrow();
+    expect(validateBackupData(payload)).toEqual(expect.arrayContaining([
+      'decisions[0].joinedReceipt failed chain verification',
+      'decisions[0].joinedReceipt.revisions[3] has invalid content',
+      'decisions[0].joinedReceipt.revisions[3] has inconsistent chain',
+    ]));
+  });
+
   it('rejects execution-plan payloads instead of exporting portable provider content', () => {
     const payload = validPayload();
     const decisionId = '22222222-2222-4222-8222-222222222222';
