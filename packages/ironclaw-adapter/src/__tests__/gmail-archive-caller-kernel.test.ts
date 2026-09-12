@@ -103,12 +103,16 @@ function notTerminal() {
   return { ok: true, status: 'not_terminal', terminal: null } as const;
 }
 
-async function sourceFilesBelow(directory: URL): Promise<string[]> {
+async function sourceFilesBelow(
+  directory: URL,
+  excludedFiles: ReadonlySet<string> = new Set(),
+): Promise<string[]> {
   const entries = await readdir(directory, { withFileTypes: true });
   const nested = await Promise.all(entries.map(async (entry) => {
     if (entry.isDirectory() && ['__tests__', 'dist', 'node_modules'].includes(entry.name)) return [];
+    if (!entry.isDirectory() && excludedFiles.has(entry.name)) return [];
     const child = new URL(`${entry.name}${entry.isDirectory() ? '/' : ''}`, directory);
-    if (entry.isDirectory()) return sourceFilesBelow(child);
+    if (entry.isDirectory()) return sourceFilesBelow(child, excludedFiles);
     return entry.name.endsWith('.ts') ? [await readFile(child, 'utf8')] : [];
   }));
   return nested.flat();
@@ -158,25 +162,23 @@ describe('GmailArchiveCallerKernel', () => {
   });
 
   it.each([
-    confirmed,
-    { ...confirmed, effect: 'already_in_state' as const },
-    { ...confirmed, effect: 'reconciled' as const },
+    { name: 'changed', result: confirmed },
+    { name: 'already in state', result: { ...confirmed, effect: 'already_in_state' as const } },
+    { name: 'reconciled', result: { ...confirmed, effect: 'reconciled' as const } },
     ...[
       'not_admitted', 'admission_unavailable', 'credentials_unavailable',
       'preflight_unavailable', 'remote_rejected',
-    ].map((code) => ({
-      outcome: 'known_failure' as const,
-      code,
-      compensationAvailable: false as const,
-      binding,
-    })),
-    {
+    ].map((code) => ({ name: code, result: {
+      outcome: 'known_failure' as const, code,
+      compensationAvailable: false as const, binding,
+    } })),
+    { name: 'unknown', result: {
       outcome: 'unknown' as const,
       code: 'remote_outcome_unknown' as const,
       compensationAvailable: false as const,
       binding,
-    },
-  ])('terminalizes each exact bound mutation result: %o', async (result) => {
+    } },
+  ])('terminalizes an exact frozen command/result snapshot for $name', async ({ result }) => {
     const { calls, kernel } = dependencySet({ mutate: vi.fn().mockResolvedValue(result) });
     await expect(kernel.executeApproved(authority)).resolves.toMatchObject({
       ok: true,
@@ -184,7 +186,28 @@ describe('GmailArchiveCallerKernel', () => {
     });
     expect(calls.mutate).toHaveBeenCalledTimes(1);
     expect(calls.terminalize).toHaveBeenCalledTimes(1);
+    const submitted = calls.terminalize.mock.calls[0]?.[0];
+    expect(submitted).toEqual({ command, result });
+    expect(Object.isFrozen(submitted)).toBe(true);
+    expect(Object.isFrozen(submitted.command)).toBe(true);
+    expect(Object.isFrozen(submitted.result)).toBe(true);
+    if ('binding' in submitted.result) expect(Object.isFrozen(submitted.result.binding)).toBe(true);
   });
+
+  it.each(['blocked', 'succeeded', 'failed', 'unknown'] as const)(
+    'passes through only reader-validated %s terminal status',
+    async (disposition) => {
+      const visible = { ...terminal, disposition };
+      const { kernel } = dependencySet({
+        read: vi.fn().mockResolvedValue({ ok: true, status: 'terminal', terminal: visible }),
+      });
+      await expect(kernel.executeApproved(authority)).resolves.toEqual({
+        ok: true,
+        status: 'terminal',
+        terminal: visible,
+      });
+    },
+  );
 
   it('handles every non-claim state without invoking mutation', async () => {
     for (const [claim, expected, reads] of [
@@ -227,6 +250,20 @@ describe('GmailArchiveCallerKernel', () => {
       expect(calls.read).not.toHaveBeenCalled();
     },
   );
+
+  it('fails closed on a thrown claim without mutation or status work', async () => {
+    const { calls, kernel } = dependencySet({
+      claim: vi.fn().mockRejectedValue(new Error('claim reply unavailable')),
+    });
+    await expect(kernel.executeApproved(authority)).resolves.toEqual({
+      ok: false,
+      error: 'unverified',
+      stage: 'claim',
+    });
+    expect(calls.mutate).not.toHaveBeenCalled();
+    expect(calls.terminalize).not.toHaveBeenCalled();
+    expect(calls.read).not.toHaveBeenCalled();
+  });
 
   it('rejects malformed authority before claim without invoking getters', async () => {
     const getter = vi.fn(() => authority.userId);
@@ -474,6 +511,49 @@ describe('GmailArchiveCallerKernel', () => {
       expect(calls.reconcile).toHaveBeenCalledTimes(1);
       expect(calls.read).toHaveBeenCalledTimes(1);
     }
+  });
+
+  it('fails closed on recovery terminal-status failure or malformed truth', async () => {
+    for (const read of [
+      vi.fn().mockRejectedValue(new Error('reader unavailable')),
+      vi.fn().mockResolvedValue({ ok: false, error: 'not_found' }),
+      vi.fn().mockResolvedValue({ ok: true, status: 'terminal', terminal: { ...terminal, extra: true } }),
+      vi.fn().mockResolvedValue({ ok: true, status: 'unexpected', terminal: null }),
+    ]) {
+      const { calls, kernel } = dependencySet({ read });
+      await expect(kernel.reconcileObserved(fence)).resolves.toEqual({
+        ok: false,
+        error: 'unverified',
+        stage: 'terminal_status',
+      });
+      expect(calls.observe).toHaveBeenCalledTimes(1);
+      expect(calls.reconcile).toHaveBeenCalledTimes(1);
+      expect(calls.read).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it.each([
+    { name: 'new reconciliation', result: { ok: true, reconciled: true } },
+    { name: 'reconciliation replay', result: {
+      ok: true, reconciled: false, state: 'reconciliation_replay',
+    } },
+    { name: 'ordinary terminal', result: {
+      ok: true, reconciled: false, state: 'already_terminal',
+    } },
+    { name: 'minimal terminal', result: { ok: true, reconciled: false, state: 'terminal' } },
+  ] as const)('does not treat $name control as visible terminal truth', async ({ result }) => {
+    const { calls, kernel } = dependencySet({
+      reconcile: vi.fn().mockResolvedValue(result),
+      read: vi.fn().mockResolvedValue(notTerminal()),
+    });
+    await expect(kernel.reconcileObserved(fence)).resolves.toEqual({
+      ok: false,
+      error: 'unverified',
+      stage: 'reconciliation',
+    });
+    expect(calls.observe).toHaveBeenCalledTimes(1);
+    expect(calls.reconcile).toHaveBeenCalledTimes(1);
+    expect(calls.read).toHaveBeenCalledTimes(1);
   });
 
   it('rejects every invalid recovery fence field before observation', async () => {
@@ -799,8 +879,14 @@ describe('GmailArchiveCallerKernel', () => {
       new URL('../../../execution-router/', import.meta.url),
       new URL('../handlers/', import.meta.url),
     ];
-    const runtime = (await Promise.all(roots.map(sourceFilesBelow))).flat().join('\n');
+    const runtime = (await Promise.all(roots.map((root) => sourceFilesBelow(root)))).flat().join('\n');
     expect(runtime).not.toContain('GmailArchiveCallerKernel');
     expect(runtime).not.toContain('gmail-archive-caller-kernel');
+    const genericAdapterRuntime = (await sourceFilesBelow(
+      new URL('../', import.meta.url),
+      new Set(['gmail-archive-caller-kernel.ts']),
+    )).join('\n');
+    expect(genericAdapterRuntime).not.toContain('GmailArchiveCallerKernel');
+    expect(genericAdapterRuntime).not.toContain('gmail-archive-caller-kernel');
   });
 });
