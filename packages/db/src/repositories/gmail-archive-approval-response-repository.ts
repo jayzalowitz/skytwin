@@ -237,7 +237,8 @@ export function canonicalGmailArchiveApprovalContent(
   } catch {
     return null;
   }
-  if (content.stage !== 'approval_recorded' || content.disposition !== disposition ||
+  if (content.version !== 1 || content.stage !== 'approval_recorded' ||
+      content.disposition !== disposition ||
       content.decision.id !== state.decision.id ||
       content.decision.canonicalHash !==
         decisionReceiptRowArtifactRefV1('decision', { ...state.decision }).canonicalHash ||

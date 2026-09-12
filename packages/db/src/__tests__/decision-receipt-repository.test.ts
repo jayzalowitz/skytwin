@@ -5,6 +5,7 @@ import {
   joinedDecisionReceiptContentDigest,
   joinedDecisionReceiptRevisionDigest,
   type JoinedDecisionReceiptContentV1,
+  type JoinedDecisionReceiptContentV2,
 } from '@skytwin/shared-types';
 import type { PoolClient } from 'pg';
 
@@ -34,6 +35,7 @@ const revisionId = '44444444-4444-4444-8444-444444444444';
 const eventId = '55555555-5555-4555-8555-555555555555';
 const actionId = '66666666-6666-4666-8666-666666666666';
 const explanationId = '77777777-7777-4777-8777-777777777777';
+const executionExplanationId = '77777777-aaaa-4777-8777-777777777777';
 const barrierId = '88888888-8888-4888-8888-888888888888';
 const approvalId = '99999999-9999-4999-8999-999999999999';
 const planId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -67,9 +69,11 @@ function installHappyQueries(options: {
   completion?: Record<string, unknown>;
   approval?: Record<string, unknown>;
   executionPlan?: Record<string, unknown>;
+  executionResult?: Record<string, unknown>;
   inference?: Array<{ id: string; receipt: unknown }>;
   candidate?: Record<string, unknown>;
   explanation?: Record<string, unknown>;
+  executionExplanation?: Record<string, unknown>;
   barrier?: Record<string, unknown>;
   existingRoot?: Record<string, unknown>;
   existingRevisions?: Record<string, unknown>[];
@@ -83,7 +87,14 @@ function installHappyQueries(options: {
       return { rows: options.candidate ? [{ risk_assessment: options.candidate['risk_assessment'] }] : [] };
     }
     if (sql.includes('SELECT * FROM candidate_actions')) return { rows: options.candidate ? [options.candidate] : [] };
-    if (sql.includes('FROM explanation_records')) return { rows: options.explanation ? [options.explanation] : [] };
+    if (sql.includes('FROM explanation_records')) {
+      const explanation = params[0] === executionExplanationId
+        ? options.executionExplanation
+        : options.explanation;
+      return {
+        rows: explanation && explanation['decision_id'] === params[1] ? [explanation] : [],
+      };
+    }
     if (sql.includes('FROM pre_effect_barriers')) return { rows: options.barrier ? [options.barrier] : [] };
     if (sql.includes('FROM inference_receipt_completions')) {
       return { rows: options.completion ? [options.completion] : [] };
@@ -94,6 +105,9 @@ function installHappyQueries(options: {
     }
     if (sql.includes('FROM execution_plans')) {
       return { rows: options.executionPlan ? [options.executionPlan] : [] };
+    }
+    if (sql.includes('FROM execution_results')) {
+      return { rows: options.executionResult ? [options.executionResult] : [] };
     }
     if (sql.includes('count(*)') && sql.includes('FROM signals')) {
       return { rows: [{ count: options.signal ? '1' : '0' }] };
@@ -206,6 +220,116 @@ function actionableContent(
         }),
       },
     }),
+  };
+}
+
+function retainedRevisionRows(contents: readonly JoinedDecisionReceiptContentV1[]): Record<string, unknown>[] {
+  let previousDigest: string | null = null;
+  return contents.map((content, index) => {
+    const id = [revisionId, eventId, approvalId][index]!;
+    const key = buildDecisionReceiptEventKey(`retained_${index + 1}`, id);
+    const contentDigest = joinedDecisionReceiptContentDigest(content);
+    const revisionDigest = joinedDecisionReceiptRevisionDigest({
+      revisionId: id,
+      receiptId: rootId,
+      decisionId,
+      userId,
+      sequence: index + 1,
+      eventKey: key,
+      previousDigest,
+      contentDigest,
+    });
+    const row = {
+      id, receipt_id: rootId, sequence: index + 1, event_key: key,
+      previous_digest: previousDigest, content_digest: contentDigest, revision_digest: revisionDigest,
+      stage: content.stage, disposition: content.disposition, content, trusted: true,
+      candidate_action_id: content.candidateAction?.id ?? null,
+      barrier_id: content.barrier?.id ?? null,
+      explanation_id: content.explanation?.id ?? null,
+      approval_request_id: content.approvalRequest?.id ?? null,
+      execution_plan_id: content.executionPlan?.id ?? null,
+      execution_result_id: content.executionResult?.id ?? null,
+      execution_disposition: content.executionDisposition ?? null,
+      correction_of_revision_id: content.correctionOfRevision?.id ?? null,
+      created_at: instant,
+    };
+    previousDigest = revisionDigest;
+    return row;
+  });
+}
+
+function terminalScenario(outcome: 'succeeded' | 'failed' | 'unknown') {
+  const policySnapshot = { allowed: true, requiresApproval: false, policyIds: [] };
+  const rows = chainRows(policySnapshot, outcome);
+  const admitted = actionableContent('execution_admitted', policySnapshot, 'prepared');
+  const evaluated: JoinedDecisionReceiptContentV1 = {
+    ...admitted,
+    stage: 'policy_evaluated',
+    disposition: 'allowed',
+  };
+  delete evaluated.executionPlan;
+  const contents = [baseContent(), evaluated, admitted];
+  const existingRevisions = retainedRevisionRows(contents);
+  const planStatus: 'completed' | 'failed' = outcome === 'succeeded' ? 'completed' : 'failed';
+  const executionPlan = {
+    id: planId, decision_id: decisionId, action_id: actionId,
+    status: planStatus, steps: [], created_at: instant, updated_at: instant,
+  };
+  const executionResult = {
+    id: eventId, plan_id: planId, success: outcome === 'succeeded', outputs: {},
+    error: outcome === 'succeeded' ? null : outcome, rollback_available: false,
+    completed_at: instant,
+  };
+  const executionExplanation = {
+    id: executionExplanationId, decision_id: decisionId,
+    what_happened: `execution ${outcome}`, evidence_used: [], preferences_invoked: [],
+    confidence_reasoning: 'provider result', action_rationale: 'approved action',
+    escalation_rationale: outcome === 'succeeded' ? null : outcome,
+    correction_guidance: 'review the terminal result', capability_provenance_node_id: null,
+    created_at: instant,
+  };
+  const barrierSnapshot = {
+    version: 1 as const, status: outcome, effectType: 'event_execution' as const,
+    decisionId, candidateActionId: actionId, explanationId,
+    policyHash: joinedDecisionReceiptArtifactDigest('policy', policySnapshot),
+    createdAt: instant.toISOString(), updatedAt: instant.toISOString(),
+  };
+  const planSnapshot = {
+    version: 1 as const, status: planStatus, decisionId, candidateActionId: actionId,
+    createdAt: instant.toISOString(), updatedAt: instant.toISOString(),
+  };
+  const resultSnapshot = {
+    version: 1 as const, planId, success: outcome === 'succeeded', outcome,
+    rollbackAvailable: false, completedAt: instant.toISOString(),
+  };
+  const terminal: JoinedDecisionReceiptContentV2 = {
+    ...admitted,
+    version: 2,
+    stage: 'execution_recorded',
+    disposition: outcome,
+    barrier: {
+      id: barrierId, snapshot: barrierSnapshot,
+      canonicalHash: joinedDecisionReceiptArtifactDigest('barrier', barrierSnapshot),
+    },
+    executionPlan: {
+      id: planId, snapshot: planSnapshot,
+      canonicalHash: joinedDecisionReceiptArtifactDigest('execution_plan', planSnapshot),
+    },
+    executionResult: {
+      id: eventId, snapshot: resultSnapshot,
+      canonicalHash: joinedDecisionReceiptArtifactDigest('execution_result', resultSnapshot),
+    },
+    executionDisposition: outcome,
+    executionExplanation: decisionReceiptRowArtifactRefV1('explanation', executionExplanation),
+  };
+  return {
+    terminal,
+    existingRevisions,
+    previousDigest: existingRevisions.at(-1)!['revision_digest'] as string,
+    rows,
+    executionPlan,
+    executionResult,
+    executionExplanation,
   };
 }
 
@@ -730,6 +854,74 @@ describe('decisionReceiptRepository', () => {
     await expect(decisionReceiptRepository.appendForUser(userId, {
       eventKey: eventKey('stale_execution'), expectedPreviousDigest: null, content,
     })).resolves.toEqual({ success: false, code: 'linkage_mismatch' });
+  });
+
+  it.each(['succeeded', 'failed', 'unknown'] as const)(
+    'appends a v2 %s terminal with an independently owned execution explanation',
+    async (outcome) => {
+      const scenario = terminalScenario(outcome);
+      installHappyQueries({
+        ...scenario.rows,
+        executionPlan: scenario.executionPlan,
+        executionResult: scenario.executionResult,
+        executionExplanation: scenario.executionExplanation,
+        existingRoot: { id: rootId, user_id: userId, decision_id: decisionId, created_at: instant },
+        existingRevisions: scenario.existingRevisions,
+      });
+
+      const result = await decisionReceiptRepository.appendForUser(userId, {
+        eventKey: eventKey(`execution_${outcome}`),
+        expectedPreviousDigest: scenario.previousDigest,
+        content: scenario.terminal,
+      });
+      expect(result).toMatchObject({ success: true, created: true, revision: { sequence: 4 } });
+      const terminalExplanationRead = queryMock.mock.calls.find(([sql, params]) =>
+        String(sql).includes('FROM explanation_records') && params?.[0] === executionExplanationId);
+      expect(terminalExplanationRead?.[1]).toEqual([executionExplanationId, decisionId]);
+      const revisionInsert = queryMock.mock.calls.find(([sql]) =>
+        String(sql).includes('INSERT INTO decision_receipt_revisions'));
+      expect(revisionInsert?.[1]?.[12]).toBe(explanationId);
+      expect(JSON.parse(revisionInsert?.[1]?.[9] as string)).toMatchObject({
+        version: 2,
+        executionExplanation: { id: executionExplanationId },
+      });
+    },
+  );
+
+  it('rejects a terminal explanation owned by another decision', async () => {
+    const scenario = terminalScenario('failed');
+    installHappyQueries({
+      ...scenario.rows,
+      executionPlan: scenario.executionPlan,
+      executionResult: scenario.executionResult,
+      executionExplanation: {
+        ...scenario.executionExplanation,
+        decision_id: rootId,
+      },
+      existingRoot: { id: rootId, user_id: userId, decision_id: decisionId, created_at: instant },
+      existingRevisions: scenario.existingRevisions,
+    });
+    await expect(decisionReceiptRepository.appendForUser(userId, {
+      eventKey: eventKey('cross_decision_terminal_explanation'),
+      expectedPreviousDigest: scenario.previousDigest,
+      content: scenario.terminal,
+    })).resolves.toEqual({ success: false, code: 'linkage_mismatch' });
+    expect(queryMock.mock.calls.some(([sql]) =>
+      String(sql).includes('INSERT INTO decision_receipt_revisions'))).toBe(false);
+  });
+
+  it('rejects swapping the terminal and policy explanations before SQL', async () => {
+    const scenario = terminalScenario('succeeded');
+    const swapped: JoinedDecisionReceiptContentV2 = {
+      ...scenario.terminal,
+      executionExplanation: scenario.terminal.explanation!,
+    };
+    await expect(decisionReceiptRepository.appendForUser(userId, {
+      eventKey: eventKey('swapped_terminal_explanation'),
+      expectedPreviousDigest: scenario.previousDigest,
+      content: swapped,
+    })).resolves.toEqual({ success: false, code: 'invalid_content' });
+    expect(queryMock).not.toHaveBeenCalled();
   });
 });
 

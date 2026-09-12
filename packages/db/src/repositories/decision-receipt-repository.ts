@@ -7,7 +7,7 @@ import {
   normalizeDecisionReceiptSequence,
   verifyJoinedDecisionReceiptChain,
   validateJoinedDecisionReceiptContent,
-  type JoinedDecisionReceiptContentV1,
+  type JoinedDecisionReceiptContent,
   type DecisionReceiptEventKey,
   type DecisionReceiptArtifactKind,
   type DecisionReceiptExecutionPlanSnapshotV1,
@@ -49,7 +49,7 @@ export type FindDecisionReceiptResult =
 export interface AppendDecisionReceiptInput {
   eventKey: DecisionReceiptEventKey;
   expectedPreviousDigest: string | null;
-  content: JoinedDecisionReceiptContentV1;
+  content: JoinedDecisionReceiptContent;
   /** Optional caller-owned IDs keep whole-transaction retries byte-stable. */
   receiptId?: string;
   revisionId?: string;
@@ -183,8 +183,8 @@ async function artifactMatches(
 async function linkageIsOwned(
   client: PoolClient,
   userId: string,
-  content: JoinedDecisionReceiptContentV1,
-  previous?: JoinedDecisionReceiptContentV1,
+  content: JoinedDecisionReceiptContent,
+  previous?: JoinedDecisionReceiptContent,
 ): Promise<boolean> {
   const decisionId = content.decision.id;
   let barrierStatus: unknown = content.barrier?.snapshot.status;
@@ -251,6 +251,20 @@ async function linkageIsOwned(
       explanation.rows[0]['evidence_used'],
       explanation.rows[0]['preferences_invoked'],
     ];
+  }
+
+  // The terminal explanation is a new v2 artifact, not an alias for the
+  // policy explanation stored in revision.explanation_id. Verify it
+  // independently against the same owned decision on every v2 append.
+  if (content.version === 2) {
+    const executionExplanation = await client.query<Record<string, unknown>>(
+      'SELECT * FROM explanation_records WHERE id = $1 AND decision_id = $2',
+      [content.executionExplanation.id, decisionId],
+    );
+    if (executionExplanation.rows.length !== 1 ||
+        joinedDecisionReceiptArtifactDigest('explanation',
+          decisionReceiptRowArtifactV1('explanation', executionExplanation.rows[0]!),
+        ) !== content.executionExplanation.canonicalHash) return false;
   }
 
   const joinedBarriers = content.barrier ? [content.barrier] : [];

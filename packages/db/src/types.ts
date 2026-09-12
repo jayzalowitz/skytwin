@@ -319,7 +319,7 @@ export interface DecisionReceiptRevisionRow {
   revision_digest: string;
   stage: import('@skytwin/shared-types').DecisionReceiptStage;
   disposition: import('@skytwin/shared-types').DecisionReceiptDisposition;
-  content: import('@skytwin/shared-types').JoinedDecisionReceiptContentV1;
+  content: import('@skytwin/shared-types').JoinedDecisionReceiptContent;
   trusted: boolean;
   candidate_action_id: string | null;
   barrier_id: string | null;

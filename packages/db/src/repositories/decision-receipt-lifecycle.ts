@@ -1,4 +1,8 @@
-import { buildDecisionReceiptEventKey, type JoinedDecisionReceiptContentV1 } from '@skytwin/shared-types';
+import {
+  buildDecisionReceiptEventKey,
+  type JoinedDecisionReceiptContent,
+  type JoinedDecisionReceiptContentV1,
+} from '@skytwin/shared-types';
 import type { PoolClient } from 'pg';
 import type { DecisionRow } from '../types.js';
 import { decisionReceiptRowArtifactRefV1 } from './decision-receipt-artifacts.js';
@@ -10,7 +14,7 @@ export interface AppendDecisionReceiptLifecycleInput {
   /** Lower-case lifecycle namespace, for example decision_created. */
   eventKind: string;
   expectedPreviousDigest: string | null;
-  content: JoinedDecisionReceiptContentV1;
+  content: JoinedDecisionReceiptContent;
   /** Optional caller-owned IDs keep a larger transaction stable across retries. */
   receiptId?: string;
   revisionId?: string;
