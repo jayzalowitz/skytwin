@@ -7,14 +7,12 @@ import {
 
 const owner = '11111111-1111-4111-8111-111111111111';
 const approval = '22222222-2222-4222-8222-222222222222';
-const barrier = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const updatedAtText = '2026-09-12 12:34:56.123456';
 
 function row(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     user_id: owner,
     approval_id: approval,
-    barrier_id: barrier,
     updated_at_text: updatedAtText,
     ...overrides,
   };
@@ -67,7 +65,6 @@ describe('Gmail archive recovery candidate discovery', () => {
         row({
           user_id: '33333333-3333-4333-8333-333333333333',
           approval_id: '44444444-4444-4444-8444-444444444444',
-          barrier_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
           updated_at_text: '2026-09-12 12:34:57.123456',
         }),
       ],
@@ -86,6 +83,7 @@ describe('Gmail archive recovery candidate discovery', () => {
         },
       ],
       nextCursor: null,
+      resumeCursor: null,
     });
     expect(Object.isFrozen(result)).toBe(true);
     if (result.ok) {
@@ -96,9 +94,14 @@ describe('Gmail archive recovery candidate discovery', () => {
     expect(query).toHaveBeenCalledTimes(1);
     const [sql, params] = query.mock.calls[0]!;
     expect(sql).toContain("barrier.status IN ('reserved', 'prepared', 'in_progress')");
-    expect(sql).toContain('ORDER BY barrier.updated_at ASC, barrier.id ASC');
+    expect(sql).toContain(
+      'FORCE_INDEX=pre_effect_barriers_gmail_archive_recovery_scan_idx',
+    );
+    expect(sql).toContain('ORDER BY barrier.updated_at ASC, barrier.idempotency_key ASC');
     expect(sql).toContain("(barrier.updated_at AT TIME ZONE 'UTC')::STRING");
-    expect(sql).toContain('(barrier.updated_at, barrier.id) > ($4::TIMESTAMPTZ, $5::UUID)');
+    expect(sql).toContain(
+      '(barrier.updated_at, barrier.idempotency_key) > ($4::TIMESTAMPTZ, $5::STRING)',
+    );
     expect(sql).toContain('LIMIT $6');
     expect(sql).toContain("lease.observation_state = 'started'");
     expect(sql).not.toContain('FOR UPDATE');
@@ -111,7 +114,7 @@ describe('Gmail archive recovery candidate discovery', () => {
     [row(), row()],
     [row({ updated_at_text: '2026-09-12 12:34:56.1234567' })],
     Array.from({ length: 26 }, (_, index) => row({
-      barrier_id: `${String(index).padStart(8, '0')}-aaaa-4aaa-8aaa-aaaaaaaaaaaa`,
+      approval_id: `${String(index + 1).padStart(8, '0')}-2222-4222-8222-222222222222`,
     })),
   ];
 
@@ -131,7 +134,6 @@ describe('Gmail archive recovery candidate discovery', () => {
       rows: Array.from({ length: 2 }, (_, index) => ({
         user_id: `${index + 1}1111111-1111-4111-8111-111111111111`,
         approval_id: `${index + 3}2222222-2222-4222-8222-222222222222`,
-        barrier_id: `${index + 5}aaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa`,
         updated_at_text: `2026-09-12 12:34:5${index}.123456`,
       })),
     });
@@ -146,7 +148,6 @@ describe('Gmail archive recovery candidate discovery', () => {
       row({ updated_at_text: '2026-09-12 12:34:56.123' }),
       row({
         approval_id: '33333333-3333-4333-8333-333333333333',
-        barrier_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
         updated_at_text: '2026-09-12 12:34:56.123001',
       }),
     ], 25)).not.toBeNull();
@@ -154,10 +155,38 @@ describe('Gmail archive recovery candidate discovery', () => {
       row({ updated_at_text: '2026-09-12 12:34:56.123001' }),
       row({
         approval_id: '33333333-3333-4333-8333-333333333333',
-        barrier_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
         updated_at_text: '2026-09-12 12:34:56.123',
       }),
     ], 25)).toBeNull();
+  });
+
+  it('uses approval id as the stable tie-breaker across an equal timestamp page boundary', async () => {
+    const laterApproval = '33333333-3333-4333-8333-333333333333';
+    const query = vi.fn()
+      .mockResolvedValueOnce({ rows: [row()] })
+      .mockResolvedValueOnce({ rows: [row({ approval_id: laterApproval })] });
+    const first = await gmailArchiveRecoveryCandidateTestHooks.listWithQuery(
+      { limit: 1 },
+      query,
+    );
+    if (!first.ok || first.nextCursor === null) throw new Error('expected continuation');
+
+    const second = await gmailArchiveRecoveryCandidateTestHooks.listWithQuery(
+      { limit: 1, cursor: first.nextCursor },
+      query,
+    );
+    expect(second).toMatchObject({
+      ok: true,
+      candidates: [{ userId: owner, approvalId: laterApproval }],
+    });
+    expect(query.mock.calls[1]![1]).toEqual([
+      'gmail_inbox_mutation_v1',
+      300,
+      true,
+      '2026-09-12T12:34:56.123456Z',
+      approval,
+      1,
+    ]);
   });
 
   it('issues an opaque continuation with a decreasing hard sweep budget', async () => {
@@ -165,7 +194,6 @@ describe('Gmail archive recovery candidate discovery', () => {
       .mockResolvedValueOnce({ rows: [row()] })
       .mockResolvedValueOnce({ rows: [row({
         approval_id: '33333333-3333-4333-8333-333333333333',
-        barrier_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
         updated_at_text: '2026-09-12 12:34:57.123456',
       })] });
     const first = await gmailArchiveRecoveryCandidateTestHooks.listWithQuery(
@@ -177,11 +205,17 @@ describe('Gmail archive recovery candidate discovery', () => {
     expect(typeof first.nextCursor).toBe('string');
     expect(Object.isFrozen(first.nextCursor)).toBe(true);
     expect(first.nextCursor).not.toContain(updatedAtText);
-    expect(first.nextCursor).not.toContain(barrier);
+    expect(first.nextCursor).not.toContain(approval);
     expect(gmailArchiveRecoveryCandidateTestHooks.parseCursor(first.nextCursor)).toEqual({
       updatedAt: '2026-09-12T12:34:56.123456Z',
-      barrierId: barrier,
+      approvalId: approval,
       remaining: 99,
+    });
+    expect(first.resumeCursor).not.toBeNull();
+    expect(gmailArchiveRecoveryCandidateTestHooks.parseCursor(first.resumeCursor)).toEqual({
+      updatedAt: '2026-09-12T12:34:56.123456Z',
+      approvalId: approval,
+      remaining: 100,
     });
     expect(Object.keys(first.candidates[0]!).sort()).toEqual(['approvalId', 'userId']);
 
@@ -199,7 +233,7 @@ describe('Gmail archive recovery candidate discovery', () => {
       300,
       true,
       '2026-09-12T12:34:56.123456Z',
-      barrier,
+      approval,
       1,
     ]);
   });
@@ -207,23 +241,36 @@ describe('Gmail archive recovery candidate discovery', () => {
   it('fails closed for tampered, noncanonical, and exhausted cursors', async () => {
     const valid = gmailArchiveRecoveryCandidateTestHooks.encodeCursor({
       updatedAt: '2026-09-12T12:34:56.123456Z',
-      barrierId: barrier,
+      approvalId: approval,
       remaining: 75,
     });
     const tampered = `${valid.slice(0, -1)}${valid.endsWith('A') ? 'B' : 'A'}`;
     const noncanonical = `${valid}=`;
+    const staleVersion = valid.replace('gmail_archive_recovery_v2', 'gmail_archive_recovery_v1');
     const noncanonicalTimestamp = gmailArchiveRecoveryCandidateTestHooks.encodeCursor({
       updatedAt: '2026-09-12T12:34:56.123000Z',
-      barrierId: barrier,
+      approvalId: approval,
       remaining: 75,
     });
     const exhausted = gmailArchiveRecoveryCandidateTestHooks.encodeCursor({
       updatedAt: '2026-09-12T12:34:56.123456Z',
-      barrierId: barrier,
+      approvalId: approval,
       remaining: 0,
     });
+    const overBudget = gmailArchiveRecoveryCandidateTestHooks.encodeCursor({
+      updatedAt: '2026-09-12T12:34:56.123456Z',
+      approvalId: approval,
+      remaining: 101,
+    });
     const query = vi.fn();
-    for (const cursor of [tampered, noncanonical, noncanonicalTimestamp, exhausted]) {
+    for (const cursor of [
+      tampered,
+      noncanonical,
+      staleVersion,
+      noncanonicalTimestamp,
+      exhausted,
+      overBudget,
+    ]) {
       await expect(gmailArchiveRecoveryCandidateTestHooks.listWithQuery(
         { limit: 25, cursor } as never,
         query,
@@ -235,17 +282,24 @@ describe('Gmail archive recovery candidate discovery', () => {
   it('cannot emit a continuation beyond the cursor sweep budget', async () => {
     const cursor = gmailArchiveRecoveryCandidateTestHooks.encodeCursor({
       updatedAt: '2026-09-12T12:34:55.123456Z',
-      barrierId: '99999999-9999-4999-8999-999999999999',
+      approvalId: '99999999-9999-4999-8999-999999999999',
       remaining: 1,
     });
     const query = vi.fn().mockResolvedValue({ rows: [row()] });
-    await expect(gmailArchiveRecoveryCandidateTestHooks.listWithQuery(
+    const result = await gmailArchiveRecoveryCandidateTestHooks.listWithQuery(
       { limit: 25, cursor },
       query,
-    )).resolves.toEqual({
+    );
+    expect(result).toMatchObject({
       ok: true,
       candidates: [{ userId: owner, approvalId: approval }],
       nextCursor: null,
+    });
+    if (!result.ok || result.resumeCursor === null) throw new Error('expected next-sweep cursor');
+    expect(gmailArchiveRecoveryCandidateTestHooks.parseCursor(result.resumeCursor)).toEqual({
+      updatedAt: '2026-09-12T12:34:56.123456Z',
+      approvalId: approval,
+      remaining: 100,
     });
     expect(query.mock.calls[0]![1]?.[5]).toBe(1);
   });

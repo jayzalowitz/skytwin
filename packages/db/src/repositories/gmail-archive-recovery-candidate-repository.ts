@@ -6,7 +6,7 @@ import { GMAIL_ARCHIVE_RECOVERY_GRACE_SECONDS } from './gmail-archive-recovery-p
 const DEFAULT_PAGE_LIMIT = 25;
 const MAX_PAGE_LIMIT = 25;
 const MAX_SWEEP_CANDIDATES = 100;
-const CURSOR_PREFIX = 'gmail_archive_recovery_v1';
+const CURSOR_PREFIX = 'gmail_archive_recovery_v2';
 const MAX_CURSOR_LENGTH = 512;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const CURSOR_TIMESTAMP = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3})(?:([0-9]{3}))?Z$/;
@@ -23,7 +23,10 @@ export interface GmailArchiveRecoveryCandidate {
 
 export interface ListGmailArchiveRecoveryCandidatesInput {
   readonly limit: number;
-  /** Opaque continuation returned by the preceding page; never recovery authority. */
+  /**
+   * Opaque continuation returned by this trusted in-process scheduler port.
+   * Never accept it from an HTTP/client boundary or treat it as recovery authority.
+   */
   readonly cursor?: GmailArchiveRecoveryCursor;
 }
 
@@ -31,27 +34,31 @@ export type ListGmailArchiveRecoveryCandidatesResult =
   | {
     ok: true;
     candidates: readonly Readonly<GmailArchiveRecoveryCandidate>[];
-    /** Scheduling continuation only. Its opacity is not a confidentiality guarantee. */
+    /** Continue the current sweep, which is capped at 100 candidates. */
     nextCursor: GmailArchiveRecoveryCursor | null;
+    /**
+     * Persist this high-water mark for the next scheduled sweep when
+     * `nextCursor` is null. Scheduling only; opacity is not confidentiality.
+     */
+    resumeCursor: GmailArchiveRecoveryCursor | null;
   }
   | { ok: false; error: 'invalid_input' | 'integrity_conflict' };
 
 interface CandidateRow {
   user_id: string;
   approval_id: string;
-  barrier_id: string;
   updated_at_text: string;
 }
 
 interface CursorState {
   readonly updatedAt: string;
-  readonly barrierId: string;
+  readonly approvalId: string;
   readonly remaining: number;
 }
 
 interface CandidatePage {
   readonly candidates: readonly Readonly<GmailArchiveRecoveryCandidate>[];
-  readonly lastKey: Readonly<Pick<CursorState, 'updatedAt' | 'barrierId'>> | null;
+  readonly lastKey: Readonly<Pick<CursorState, 'updatedAt' | 'approvalId'>> | null;
 }
 
 type QueryCandidates = (
@@ -127,10 +134,11 @@ function cursorChecksum(encodedPayload: string): string {
     .digest('base64url');
 }
 
-// The checksum rejects corruption and noncanonical encodings. It is not a
-// secret or an authorization tag; cursor opacity is data minimization only.
+// The checksum rejects accidental corruption and noncanonical encodings. It is
+// forgeable by design, not a secret/authentication tag. This cursor is confined
+// to a trusted in-process scheduler port and grants no recovery authority.
 function encodeCursor(state: CursorState): GmailArchiveRecoveryCursor {
-  const payload = JSON.stringify([state.updatedAt, state.barrierId, state.remaining]);
+  const payload = JSON.stringify([state.updatedAt, state.approvalId, state.remaining]);
   const encodedPayload = Buffer.from(payload, 'utf8').toString('base64url');
   return `${CURSOR_PREFIX}.${encodedPayload}.${cursorChecksum(encodedPayload)}` as
     GmailArchiveRecoveryCursor;
@@ -153,10 +161,10 @@ function parseCursor(value: unknown): Readonly<CursorState> | null {
         !validCursorTimestamp(payload[0]) ||
         typeof payload[1] !== 'string' || !UUID.test(payload[1]) ||
         !Number.isSafeInteger(payload[2]) || (payload[2] as number) < 1 ||
-        (payload[2] as number) >= MAX_SWEEP_CANDIDATES) return null;
+        (payload[2] as number) > MAX_SWEEP_CANDIDATES) return null;
     const state = Object.freeze({
       updatedAt: payload[0],
-      barrierId: payload[1],
+      approvalId: payload[1],
       remaining: payload[2] as number,
     });
     return encodeCursor(state) === value ? state : null;
@@ -166,8 +174,8 @@ function parseCursor(value: unknown): Readonly<CursorState> | null {
 }
 
 function compareKey(
-  left: Readonly<Pick<CursorState, 'updatedAt' | 'barrierId'>>,
-  right: Readonly<Pick<CursorState, 'updatedAt' | 'barrierId'>>,
+  left: Readonly<Pick<CursorState, 'updatedAt' | 'approvalId'>>,
+  right: Readonly<Pick<CursorState, 'updatedAt' | 'approvalId'>>,
 ): number {
   const leftInstant = left.updatedAt.length === 24
     ? `${left.updatedAt.slice(0, -1)}000Z`
@@ -176,14 +184,14 @@ function compareKey(
     ? `${right.updatedAt.slice(0, -1)}000Z`
     : right.updatedAt;
   if (leftInstant !== rightInstant) return leftInstant < rightInstant ? -1 : 1;
-  if (left.barrierId === right.barrierId) return 0;
-  return left.barrierId < right.barrierId ? -1 : 1;
+  if (left.approvalId === right.approvalId) return 0;
+  return left.approvalId < right.approvalId ? -1 : 1;
 }
 
 function snapshotPage(
   rows: unknown,
   limit: number = MAX_PAGE_LIMIT,
-  after: Readonly<Pick<CursorState, 'updatedAt' | 'barrierId'>> | null = null,
+  after: Readonly<Pick<CursorState, 'updatedAt' | 'approvalId'>> | null = null,
 ): Readonly<CandidatePage> | null {
   if (!Array.isArray(rows) || !Number.isSafeInteger(limit) ||
       limit < 1 || limit > MAX_PAGE_LIMIT || rows.length > limit) return null;
@@ -191,15 +199,14 @@ function snapshotPage(
   const seen = new Set<string>();
   let previous = after;
   for (const value of rows) {
-    const row = ownData(value, ['approval_id', 'barrier_id', 'updated_at_text', 'user_id']);
+    const row = ownData(value, ['approval_id', 'updated_at_text', 'user_id']);
     const userId = row?.['user_id'];
     const approvalId = row?.['approval_id'];
-    const barrierId = row?.['barrier_id'];
     const updatedAt = canonicalDbTimestamp(row?.['updated_at_text']);
     if (typeof userId !== 'string' || !UUID.test(userId) ||
         typeof approvalId !== 'string' || !UUID.test(approvalId) ||
-        typeof barrierId !== 'string' || !UUID.test(barrierId) || !updatedAt) return null;
-    const key = Object.freeze({ updatedAt, barrierId });
+        !updatedAt) return null;
+    const key = Object.freeze({ updatedAt, approvalId });
     if (previous && compareKey(previous, key) >= 0) return null;
     const identity = `${userId}:${approvalId}`;
     if (seen.has(identity)) return null;
@@ -234,9 +241,10 @@ async function listWithQuery(
   const result = await queryFn(
     `SELECT barrier.user_id::STRING AS user_id,
             approval.id::STRING AS approval_id,
-            barrier.id::STRING AS barrier_id,
             (barrier.updated_at AT TIME ZONE 'UTC')::STRING AS updated_at_text
-       FROM pre_effect_barriers AS barrier
+       FROM pre_effect_barriers@{
+              FORCE_INDEX=pre_effect_barriers_gmail_archive_recovery_scan_idx
+            } AS barrier
        JOIN approval_requests AS approval
          ON approval.id::STRING = barrier.idempotency_key
         AND approval.user_id = barrier.user_id
@@ -271,15 +279,15 @@ async function listWithQuery(
                   THEN lease.observation_deadline_at <= statement_timestamp()
                   ELSE lease.expires_at <= statement_timestamp() END)
         AND ($3::BOOL = false OR
-             (barrier.updated_at, barrier.id) > ($4::TIMESTAMPTZ, $5::UUID))
-      ORDER BY barrier.updated_at ASC, barrier.id ASC
+             (barrier.updated_at, barrier.idempotency_key) > ($4::TIMESTAMPTZ, $5::STRING))
+      ORDER BY barrier.updated_at ASC, barrier.idempotency_key ASC
       LIMIT $6`,
     [
       GMAIL_INBOX_MUTATION_CANDIDATE_SCHEMA,
       GMAIL_ARCHIVE_RECOVERY_GRACE_SECONDS,
       cursor !== null,
       cursor?.updatedAt ?? null,
-      cursor?.barrierId ?? null,
+      cursor?.approvalId ?? null,
       pageLimit,
     ],
   );
@@ -290,7 +298,18 @@ async function listWithQuery(
       remainingAfterPage > 0
     ? encodeCursor({ ...page.lastKey, remaining: remainingAfterPage })
     : null;
-  return Object.freeze({ ok: true, candidates: page.candidates, nextCursor });
+  // Retain the latest high-water cursor for the next scheduled sweep. Resetting
+  // its embedded budget preserves the per-sweep cap without restarting forever
+  // at an acquisition-invalid oldest prefix after candidate 100.
+  const resumeCursor = page.lastKey && page.candidates.length === pageLimit
+    ? encodeCursor({ ...page.lastKey, remaining: MAX_SWEEP_CANDIDATES })
+    : null;
+  return Object.freeze({
+    ok: true,
+    candidates: page.candidates,
+    nextCursor,
+    resumeCursor,
+  });
 }
 
 export const gmailArchiveRecoveryCandidateTestHooks = Object.freeze({

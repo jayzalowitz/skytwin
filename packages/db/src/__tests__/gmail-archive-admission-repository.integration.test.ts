@@ -44,7 +44,10 @@ import {
   gmailArchiveRecoveryLeaseRepository,
   gmailArchiveRecoveryLeaseTestHooks,
 } from '../repositories/gmail-archive-recovery-lease-repository.js';
-import { gmailArchiveRecoveryCandidateRepository } from '../repositories/gmail-archive-recovery-candidate-repository.js';
+import {
+  gmailArchiveRecoveryCandidateRepository,
+  gmailArchiveRecoveryCandidateTestHooks,
+} from '../repositories/gmail-archive-recovery-candidate-repository.js';
 import { gmailInboxObservationTargetRepository } from '../repositories/gmail-inbox-observation-target-repository.js';
 import {
   reconcileRecordedGmailArchiveObservationInTransaction,
@@ -6597,18 +6600,36 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     const statement = create.rows[0]?.create_statement ?? '';
     const normalizedStatement = statement.replaceAll(':::STRING', '');
     expect(statement).toContain('pre_effect_barriers_gmail_archive_recovery_scan_idx');
-    expect(statement).toContain('STORING (user_id, idempotency_key, status)');
+    expect(statement).toContain('STORING (user_id, status, created_at)');
     expect(normalizedStatement).toContain("WHERE (effect_type = 'event_execution') AND (status IN ('reserved', 'prepared', 'in_progress'))");
+
+    let selectorSql = '';
+    let selectorParams: unknown[] = [];
+    await gmailArchiveRecoveryCandidateTestHooks.listWithQuery(
+      { limit: 25 },
+      async (sql, params) => {
+        selectorSql = sql;
+        selectorParams = params;
+        return { rows: [] };
+      },
+    );
+    const explained = await getPool().query<{ info: string }>(
+      `EXPLAIN ${selectorSql}`,
+      selectorParams,
+    );
+    expect(explained.rows.map((row) => row.info).join('\n')).toContain(
+      'pre_effect_barriers_gmail_archive_recovery_scan_idx',
+    );
   });
 
-  it('continues beyond a full corrupt first page without granting recovery authority', async () => {
+  it('rotates beyond 100 acquisition-invalid older hints to a healthy later owner', async () => {
     const corruptOwner = await seedRecoveryOwner(76);
     const healthyOwner = await seedRecoveryOwner(77);
-    const corrupt: Array<{ approvalId: string; barrierId: string }> = [];
+    const corrupt: Array<{ approvalId: string; barrierId: string; candidateId: string }> = [];
 
-    for (let index = 0; index < 25; index++) {
+    for (let index = 0; index < 101; index++) {
       const proposal = await createProposal(
-        800 + index,
+        2000 + index,
         corruptOwner.ownerUserId,
         corruptOwner.ownerAccountId,
       );
@@ -6623,23 +6644,24 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       corrupt.push({
         approvalId: proposal.approval.id,
         barrierId: response.response.reservedBarrier.id,
+        candidateId: proposal.candidate.id,
       });
-      await getPool().query(
-        `UPDATE candidate_actions SET description = 'acquisition-invalid description'
-          WHERE id = $1`,
-        [proposal.candidate.id],
-      );
-      await getPool().query(
-        `UPDATE pre_effect_barriers
-            SET created_at = '1970-01-01T00:00:00.000Z',
-                updated_at = '1970-01-01T00:00:00.000Z'
-          WHERE id = $1`,
-        [response.response.reservedBarrier.id],
-      );
     }
+    await getPool().query(
+      `UPDATE candidate_actions SET description = 'acquisition-invalid description'
+        WHERE id = ANY($1::UUID[])`,
+      [corrupt.map((candidate) => candidate.candidateId)],
+    );
+    await getPool().query(
+      `UPDATE pre_effect_barriers
+          SET created_at = '1970-01-01T00:00:00.000Z',
+              updated_at = '1970-01-01T00:00:00.000Z'
+        WHERE id = ANY($1::UUID[])`,
+      [corrupt.map((candidate) => candidate.barrierId)],
+    );
 
     const healthy = await createProposal(
-      825,
+      2200,
       healthyOwner.ownerUserId,
       healthyOwner.ownerAccountId,
     );
@@ -6659,32 +6681,54 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       [healthyResponse.response.reservedBarrier.id],
     );
 
-    const first = await gmailArchiveRecoveryCandidateRepository.list({ limit: 25 });
-    expect(first).toMatchObject({ ok: true });
-    if (!first.ok || first.nextCursor === null) throw new Error('First page did not continue.');
-    expect(first.candidates).toHaveLength(25);
-    expect(first.candidates).not.toContainEqual({
+    let cursor: Parameters<typeof gmailArchiveRecoveryCandidateRepository.list>[0]['cursor'];
+    let nextSweepCursor: NonNullable<typeof cursor> | null = null;
+    const firstSweepCandidates: Array<{ userId: string; approvalId: string }> = [];
+    for (let pageIndex = 0; pageIndex < 4; pageIndex++) {
+      const page = await gmailArchiveRecoveryCandidateRepository.list({
+        limit: 25,
+        ...(cursor ? { cursor } : {}),
+      });
+      expect(page).toMatchObject({ ok: true });
+      if (!page.ok || page.resumeCursor === null) throw new Error('Sweep page did not continue.');
+      expect(page.candidates).toHaveLength(25);
+      expect(page.candidates.every((candidate) =>
+        candidate.userId === corruptOwner.ownerUserId &&
+        Object.keys(candidate).sort().join(',') === 'approvalId,userId')).toBe(true);
+      firstSweepCandidates.push(...page.candidates);
+      nextSweepCursor = page.resumeCursor;
+      if (pageIndex < 3) {
+        if (page.nextCursor === null) throw new Error('Sweep ended before its hard bound.');
+        cursor = page.nextCursor;
+      } else {
+        expect(page.nextCursor).toBeNull();
+      }
+    }
+    expect(firstSweepCandidates).toHaveLength(100);
+    expect(firstSweepCandidates).not.toContainEqual({
       userId: healthyOwner.ownerUserId,
       approvalId: healthy.approval.id,
     });
-    expect(first.candidates.every((candidate) =>
-      Object.keys(candidate).sort().join(',') === 'approvalId,userId')).toBe(true);
     await expect(gmailArchiveRecoveryLeaseRepository.acquire({
       userId: corruptOwner.ownerUserId,
-      approvalId: first.candidates[0]!.approvalId,
+      approvalId: firstSweepCandidates[0]!.approvalId,
       leaseMs: 60_000,
     })).resolves.toEqual({ ok: false, error: 'integrity_conflict' });
-    await expect(gmailArchiveRecoveryCandidateRepository.list({ limit: 25 }))
-      .resolves.toEqual(first);
-
-    const continued = await gmailArchiveRecoveryCandidateRepository.list({
+    if (nextSweepCursor === null) throw new Error('Missing next-sweep high-water cursor.');
+    const nextSweep = await gmailArchiveRecoveryCandidateRepository.list({
       limit: 25,
-      cursor: first.nextCursor,
+      cursor: nextSweepCursor,
     });
-    expect(continued).toMatchObject({ ok: true, nextCursor: null });
-    if (!continued.ok) throw new Error('Continuation query failed.');
-    expect(continued.candidates[0]).toEqual({
+    expect(nextSweep).toMatchObject({ ok: true, nextCursor: null, resumeCursor: null });
+    if (!nextSweep.ok) throw new Error('Next scheduled sweep failed.');
+    expect(nextSweep.candidates).toHaveLength(2);
+    expect(nextSweep.candidates[0]).toMatchObject({ userId: corruptOwner.ownerUserId });
+    expect(nextSweep.candidates[1]).toEqual({
       userId: healthyOwner.ownerUserId,
+      approvalId: healthy.approval.id,
+    });
+    expect(nextSweep.candidates).not.toContainEqual({
+      userId: corruptOwner.ownerUserId,
       approvalId: healthy.approval.id,
     });
 
@@ -6695,7 +6739,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       [[...corrupt.map((candidate) => candidate.barrierId),
         healthyResponse.response.reservedBarrier.id]],
     );
-  }, 120_000);
+  }, 300_000);
 
   it('does not emit a cross-owner barrier-to-approval link', async () => {
     const victimOwner = await seedRecoveryOwner(78);

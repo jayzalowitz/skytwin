@@ -12,8 +12,8 @@ describe('Gmail archive recovery work selector migration', () => {
     expect(migration).toContain(
       'CREATE INDEX IF NOT EXISTS pre_effect_barriers_gmail_archive_recovery_scan_idx',
     );
-    expect(migration).toContain('ON pre_effect_barriers (updated_at, id)');
-    expect(migration).toContain('STORING (user_id, idempotency_key, status)');
+    expect(migration).toContain('ON pre_effect_barriers (updated_at, idempotency_key)');
+    expect(migration).toContain('STORING (user_id, status, created_at)');
     expect(migration).toContain("effect_type = 'event_execution'");
     expect(migration).toContain("status IN ('reserved', 'prepared', 'in_progress')");
   });
