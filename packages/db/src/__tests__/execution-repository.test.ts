@@ -147,7 +147,8 @@ describe('executionRepository.getRollbackTargetsByServer — #324 rollback join'
     expect(sql).toContain('result.rollback_available = true');
     expect(sql).toContain("nullif(result.outputs->>'adapter_used', '') IS NOT NULL");
     expect(sql).toContain('ORDER BY result.completed_at DESC, result.id DESC');
-    expect(sql).toContain('candidate.id::STRING = pn.ref_id');
+    expect(sql).toContain('candidate.id = pn.ref_id');
+    expect(sql).not.toContain('candidate.id::STRING = pn.ref_id');
     expect(sql).toContain("outputs->>'adapter_used'");
     expect(params).toEqual(['server-1', since, 'user-1']);
 
@@ -166,7 +167,7 @@ describe('executionRepository.getRollbackTargetsByServer — #324 rollback join'
     expect(Object.isFrozen(targets[0])).toBe(true);
   });
 
-  it('passes through NULL plan id + adapter (no decision_outcomes / result linkage)', async () => {
+  it('preserves exact candidate identity when no result qualifies the plan report', async () => {
     mockQuery.mockResolvedValueOnce({
       rows: [
         {
@@ -175,8 +176,8 @@ describe('executionRepository.getRollbackTargetsByServer — #324 rollback join'
           occurred_at: new Date(),
           execution_plan_id: null,
           adapter_used: null,
-          action_type: null,
-          reversible: null,
+          action_type: 'label_email',
+          reversible: true,
         },
       ],
       rowCount: 1,
@@ -191,8 +192,8 @@ describe('executionRepository.getRollbackTargetsByServer — #324 rollback join'
     expect(targets).toHaveLength(1);
     expect(targets[0]!.executionPlanId).toBeNull();
     expect(targets[0]!.adapterUsed).toBeNull();
-    expect(targets[0]!.actionType).toBeNull();
-    expect(targets[0]!.reversible).toBeNull();
+    expect(targets[0]!.actionType).toBe('label_email');
+    expect(targets[0]!.reversible).toBe(true);
     expect(targets[0]!.payload).toEqual({ reversible: false, irreversibleReason: 'sent' });
   });
 });

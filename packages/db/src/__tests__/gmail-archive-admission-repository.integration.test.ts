@@ -6462,12 +6462,12 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       );
     });
     const input = { serverId, userId, since: new Date(Date.now() - 60_000) };
-    const expectNoResolvedReportTarget = async (): Promise<void> => {
+    const expectNoQualifiedPlan = async (): Promise<void> => {
       await expect(executionRepository.getRollbackTargetsByServer(input)).resolves.toEqual([
         expect.objectContaining({
           actionId: fixture.candidate.id,
-          actionType: null,
-          reversible: null,
+          actionType: 'label_email',
+          reversible: true,
           executionPlanId: null,
           adapterUsed: null,
         }),
@@ -6513,28 +6513,28 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     await getPool().query('UPDATE execution_plans SET action_id = $2 WHERE id = $1', [
       planId, otherActionId,
     ]);
-    await expectNoResolvedReportTarget();
+    await expectNoQualifiedPlan();
 
     await getPool().query('UPDATE execution_plans SET action_id = $2 WHERE id = $1', [
       planId, fixture.candidate.id,
     ]);
     await getPool().query('UPDATE execution_results SET success = false WHERE id = $1', [resultId]);
-    await expectNoResolvedReportTarget();
+    await expectNoQualifiedPlan();
     await getPool().query(
       'UPDATE execution_results SET success = true, rollback_available = false WHERE id = $1',
       [resultId],
     );
-    await expectNoResolvedReportTarget();
+    await expectNoQualifiedPlan();
     await getPool().query(
       `UPDATE execution_results SET rollback_available = true, outputs = '{}'::JSONB WHERE id = $1`,
       [resultId],
     );
-    await expectNoResolvedReportTarget();
+    await expectNoQualifiedPlan();
     await getPool().query(
       `UPDATE execution_results SET outputs = '{"adapter_used":"direct"}'::JSONB WHERE id = $1`,
       [resultId],
     );
     await getPool().query("UPDATE execution_plans SET status = 'failed' WHERE id = $1", [planId]);
-    await expectNoResolvedReportTarget();
+    await expectNoQualifiedPlan();
   }, 120_000);
 });

@@ -456,7 +456,8 @@ describe('Capabilities API routes', () => {
       const server = makeMcpServer();
       mockMcpServerRepository.getById.mockResolvedValue(server);
 
-      // Two rollback targets — one reversible (no plan linkage), one not.
+      // Two rollback targets — one reversible whose result did not qualify a
+      // plan report (for example rollback_available=false), one not reversible.
       // #324: the route resolves targets via the join repo method now. A
       // reversible action with NULL executionPlanId reports
       // `result: 'no_plan_linkage'` — honest reporting, no plan to target.
@@ -596,16 +597,16 @@ describe('Capabilities API routes', () => {
       expect(mockRouterRollback).not.toHaveBeenCalled();
     });
 
-    it('never routes a legacy archive rollback through a generic adapter', async () => {
+    it('reports a failed/unqualified legacy archive as reserved before reversibility', async () => {
       mockMcpServerRepository.getById.mockResolvedValue(makeMcpServer({ user_id: USER_ID }));
       mockExecutionRepository.getRollbackTargetsByServer.mockResolvedValue([{
         actionId: 'legacy-archive-action',
         actionType: 'archive_email',
-        reversible: true,
-        payload: { reversible: true },
+        reversible: false,
+        payload: { reversible: true, irreversibleReason: 'untrusted display value' },
         occurredAt: new Date(),
-        executionPlanId: 'legacy-archive-plan',
-        adapterUsed: 'ironclaw',
+        executionPlanId: null,
+        adapterUsed: null,
       }]);
 
       const res = await request(
@@ -619,12 +620,13 @@ describe('Capabilities API routes', () => {
       expect(res.body).toMatchObject({
         undone: [{
           actionId: 'legacy-archive-action',
-          planId: 'legacy-archive-plan',
-          adapterUsed: 'ironclaw',
+          planId: null,
+          adapterUsed: null,
           result: 'rollback_failed',
           message: expect.stringContaining('dedicated execution lifecycle'),
         }],
       });
+      expect(res.body).toMatchObject({ irreversible: [] });
       expect(mockGetExecutionRouter).not.toHaveBeenCalled();
       expect(mockRouterRollback).not.toHaveBeenCalled();
     });
