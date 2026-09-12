@@ -4,11 +4,16 @@ import {
   type GoogleOAuthConfig,
 } from '@skytwin/connectors';
 import {
+  GMAIL_ARCHIVE_RECOVERY_OBSERVATION_DEADLINE_SECONDS,
   gmailInboxObservationTargetRepository,
   oauthRepository,
   type GmailInboxObservationTarget,
 } from '@skytwin/db';
 import type {
+  GmailArchiveRecoveryLeaseFence,
+  GmailArchiveRecoveryLeaseRepository,
+  GmailArchiveRecoveryObservationEvidence,
+  GmailArchiveRecoveryObservationPermit,
   GmailInboxObservationCommand,
   GmailInboxObservationBinding,
   GmailInboxObservationPort,
@@ -21,11 +26,23 @@ import {
   parseExactGmailMessageState,
 } from './gmail-message-state-response.js';
 
+interface GmailArchiveRecoveryObservationSelection {
+  connectorAccountId: string;
+  credentialRevision: string;
+  providerMessageId: string;
+}
+
+interface GmailArchiveRecoveryObservationFinalTargetInput {
+  permit: GmailArchiveRecoveryObservationPermit;
+  selection: GmailArchiveRecoveryObservationSelection;
+  credentialRevision: string;
+}
+
 const GMAIL_MODIFY_SCOPE = 'https://www.googleapis.com/auth/gmail.modify';
 const GMAIL_API_ROOT = 'https://gmail.googleapis.com/gmail/v1/users/me/messages';
 const COMMAND_KEYS = ['admissionId', 'messageRefId', 'operation', 'userId'] as const;
 const TARGET_KEYS = ['connectorAccountId', 'credentialRevision', 'providerMessageId'] as const;
-const CREDENTIAL_KEYS = ['accessToken', 'scopes'] as const;
+const CREDENTIAL_KEYS = ['accessToken', 'credentialRevision', 'scopes'] as const;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const MAX_ACCESS_TOKEN_LENGTH = 16 * 1024;
 
@@ -45,6 +62,7 @@ export interface GmailInboxObservationCredentialRequest {
 
 export interface GmailInboxObservationCredential {
   accessToken: string;
+  credentialRevision: string;
   scopes: readonly string[];
 }
 
@@ -81,7 +99,27 @@ export interface DbGmailInboxObservationCredentialsOptions {
 
 /** Account-bound DbTokenStore adapter; not constructed by any runtime yet. */
 export class DbGmailInboxObservationCredentials implements GmailInboxObservationCredentialsPort {
-  constructor(private readonly options: DbGmailInboxObservationCredentialsOptions) {}
+  private readonly googleOAuthConfig: Readonly<GoogleOAuthConfig>;
+  private readonly keyCache: KeyCacheLike | null;
+  private readonly auditLog: AuditLogPort | null;
+  private readonly auditActor: string;
+
+  constructor(options: DbGmailInboxObservationCredentialsOptions) {
+    this.googleOAuthConfig = Object.freeze({
+      clientId: options.googleOAuthConfig.clientId,
+      clientSecret: options.googleOAuthConfig.clientSecret,
+      redirectUri: options.googleOAuthConfig.redirectUri,
+    });
+    this.keyCache = options.keyCache ? Object.freeze({
+      get: options.keyCache.get.bind(options.keyCache),
+      has: options.keyCache.has.bind(options.keyCache),
+      set: options.keyCache.set.bind(options.keyCache),
+    }) : null;
+    this.auditLog = options.auditLog ? Object.freeze({
+      recordAccess: options.auditLog.recordAccess.bind(options.auditLog),
+    }) : null;
+    this.auditActor = options.auditActor ?? 'gmail_inbox_observation';
+  }
 
   async materialize(
     request: GmailInboxObservationCredentialRequest,
@@ -90,21 +128,18 @@ export class DbGmailInboxObservationCredentials implements GmailInboxObservation
     if (!input) throw new TypeError('invalid Gmail Inbox observation credential request');
     const store = new DbTokenStore(
       oauthRepository,
-      this.options.googleOAuthConfig,
+      this.googleOAuthConfig,
       undefined,
       input.connectorAccountId,
     );
-    if (this.options.keyCache) store.setKeyCache(this.options.keyCache);
-    if (this.options.auditLog) {
-      store.setAuditLog(this.options.auditLog, this.options.auditActor ?? 'gmail_inbox_observation');
+    if (this.keyCache) store.setKeyCache(this.keyCache);
+    if (this.auditLog) {
+      store.setAuditLog(this.auditLog, this.auditActor);
     }
-    const token = await store.refreshIfExpired(input.userId, 'google');
-    // Do not claim a database revision produced this bearer: refresh or lazy
-    // migration may rotate it. The service's mandatory second target resolve
-    // compares the database's current revision with the initial authority
-    // snapshot and fails closed on any change.
+    const token = await store.refreshIfExpiredWithRevision(input.userId, 'google');
     return Object.freeze({
       accessToken: token.accessToken,
+      credentialRevision: token.credentialRevision,
       scopes: Object.freeze([...token.scopes]),
     });
   }
@@ -209,11 +244,14 @@ function snapshotCredential(value: unknown): Readonly<GmailInboxObservationCrede
   const credential = ownData(value, CREDENTIAL_KEYS);
   if (!credential || typeof credential['accessToken'] !== 'string' ||
       credential['accessToken'].length === 0 ||
-      credential['accessToken'].length > MAX_ACCESS_TOKEN_LENGTH) return null;
+      credential['accessToken'].length > MAX_ACCESS_TOKEN_LENGTH ||
+      typeof credential['credentialRevision'] !== 'string' ||
+      !UUID.test(credential['credentialRevision'])) return null;
   const scopes = snapshotStringArray(credential['scopes'], 128, 512);
   if (!scopes) return null;
   return Object.freeze({
     accessToken: credential['accessToken'],
+    credentialRevision: credential['credentialRevision'],
     scopes,
   });
 }
@@ -243,11 +281,15 @@ function unavailable(
 export class GmailInboxObservationService implements GmailInboxObservationPort {
   private readonly fetchFn: FetchLike;
   private readonly targetResolver: GmailInboxObservationTargetResolver;
+  private readonly materializeCredential: GmailInboxObservationCredentialsPort['materialize'];
   private readonly timeoutMs: number;
 
-  constructor(private readonly options: GmailInboxObservationServiceOptions) {
+  constructor(options: GmailInboxObservationServiceOptions) {
     this.fetchFn = options.fetch ?? globalThis.fetch;
-    this.targetResolver = options.targetResolver ?? gmailInboxObservationTargetRepository;
+    this.materializeCredential = options.credentials.materialize.bind(options.credentials);
+    this.targetResolver = options.targetResolver ?? Object.freeze({
+      resolve: async () => null,
+    });
     const timeoutMs = options.timeoutMs ?? 10_000;
     if (!Number.isFinite(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000) {
       throw new TypeError('timeoutMs must be a finite value between 1 and 60000');
@@ -272,7 +314,7 @@ export class GmailInboxObservationService implements GmailInboxObservationPort {
 
     let credential: Readonly<GmailInboxObservationCredential> | null;
     try {
-      credential = snapshotCredential(await this.options.credentials.materialize(Object.freeze({
+      credential = snapshotCredential(await this.materializeCredential(Object.freeze({
         userId: command.userId,
         connectorAccountId: initialTarget.connectorAccountId,
         requiredScope: GMAIL_MODIFY_SCOPE,
@@ -295,25 +337,35 @@ export class GmailInboxObservationService implements GmailInboxObservationPort {
     }
     if (!currentTarget ||
         currentTarget.connectorAccountId !== initialTarget.connectorAccountId ||
-        currentTarget.credentialRevision !== initialTarget.credentialRevision ||
+        currentTarget.credentialRevision !== credential.credentialRevision ||
         currentTarget.providerMessageId !== initialTarget.providerMessageId) {
       return unavailable('not_observable', binding);
     }
 
-    return this.request(currentTarget.providerMessageId, credential.accessToken, binding);
+    return requestGmailInbox(
+      currentTarget.providerMessageId,
+      credential.accessToken,
+      binding,
+      this.fetchFn,
+      this.timeoutMs,
+    );
   }
+}
 
-  private async request(
-    providerMessageId: string,
-    accessToken: string,
-    binding: Readonly<GmailInboxObservationBinding>,
-  ): Promise<GmailInboxObservationResult> {
+function requestGmailInbox(
+  providerMessageId: string,
+  accessToken: string,
+  binding: Readonly<GmailInboxObservationBinding>,
+  fetchFn: FetchLike,
+  timeoutMs: number,
+): Promise<GmailInboxObservationResult> {
+  return (async () => {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const url = `${GMAIL_API_ROOT}/${encodeURIComponent(providerMessageId)}` +
         '?format=minimal&fields=id%2ClabelIds';
-      const response = await this.fetchFn(url, {
+      const response = await fetchFn(url, {
         method: 'GET',
         headers: {
           Authorization: `Bearer ${accessToken}`,
@@ -352,8 +404,305 @@ export class GmailInboxObservationService implements GmailInboxObservationPort {
     } finally {
       clearTimeout(timeout);
     }
+  })();
+}
+
+export interface GmailArchiveRecoveryObservationTargetResolver {
+  resolveInitial(
+    permit: GmailArchiveRecoveryObservationPermit,
+  ): Promise<Readonly<GmailArchiveRecoveryObservationSelection> | null>;
+  resolveFinal(
+    input: GmailArchiveRecoveryObservationFinalTargetInput,
+  ): Promise<Readonly<GmailArchiveRecoveryObservationSelection> | null>;
+}
+
+export interface GmailArchiveRecoveryObservationCoordinatorOptions {
+  leaseRepository: GmailArchiveRecoveryLeaseRepository;
+  credentials: GmailInboxObservationCredentialsPort;
+  targetResolver?: GmailArchiveRecoveryObservationTargetResolver;
+  fetch?: FetchLike;
+  timeoutMs?: number;
+}
+
+export type GmailArchiveRecoveryObservationCoordinatorResult =
+  | { status: 'not_permitted' }
+  | {
+      status: 'evidence_recorded' | 'evidence_unverified';
+      evidence: Readonly<GmailArchiveRecoveryObservationEvidence>;
+    };
+
+const RECOVERY_FENCE_KEYS = [
+  'admissionId', 'approvalId', 'attemptPhase', 'barrierStatus', 'generation',
+  'leaseToken', 'messageRefId', 'phaseChangedAt', 'userId', 'workKind',
+] as const;
+const RECOVERY_PERMIT_KEYS = [
+  ...RECOVERY_FENCE_KEYS, 'authorizedAt', 'deadlineAt', 'leaseExpiresAt',
+  'observationAttemptId',
+] as const;
+
+function canonicalTimestamp(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  try {
+    return new Date(value).toISOString() === value;
+  } catch {
+    return false;
   }
 }
+
+function canonicalPhaseTimestamp(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3})(?:\d{3})?Z$/.exec(value);
+  if (!match) return false;
+  try {
+    return new Date(`${match[1]}Z`).toISOString() === `${match[1]}Z`;
+  } catch {
+    return false;
+  }
+}
+
+function exactTimestampEpochMicroseconds(value: string): bigint | null {
+  const epochMilliseconds = Date.parse(value);
+  if (!Number.isFinite(epochMilliseconds)) return null;
+  const subMilliseconds = /\.\d{3}(\d{3})?Z$/.exec(value)?.[1] ?? '0';
+  return BigInt(epochMilliseconds) * 1_000n + BigInt(subMilliseconds);
+}
+
+function snapshotRecoveryFence(
+  value: unknown,
+): Readonly<GmailArchiveRecoveryLeaseFence> | null {
+  const fence = ownData(value, RECOVERY_FENCE_KEYS);
+  if (!fence || typeof fence['userId'] !== 'string' || !UUID.test(fence['userId']) ||
+      typeof fence['approvalId'] !== 'string' || !UUID.test(fence['approvalId']) ||
+      typeof fence['admissionId'] !== 'string' || !UUID.test(fence['admissionId']) ||
+      typeof fence['messageRefId'] !== 'string' || !UUID.test(fence['messageRefId']) ||
+      fence['workKind'] !== 'observe_dispatch' || fence['barrierStatus'] !== 'in_progress' ||
+      fence['attemptPhase'] !== 'dispatch_may_have_started' ||
+      !canonicalPhaseTimestamp(fence['phaseChangedAt']) ||
+      typeof fence['leaseToken'] !== 'string' || !UUID.test(fence['leaseToken']) ||
+      !Number.isSafeInteger(fence['generation']) || (fence['generation'] as number) < 1) return null;
+  return Object.freeze({
+    userId: fence['userId'], approvalId: fence['approvalId'],
+    admissionId: fence['admissionId'], messageRefId: fence['messageRefId'],
+    workKind: 'observe_dispatch', barrierStatus: 'in_progress',
+    attemptPhase: 'dispatch_may_have_started', phaseChangedAt: fence['phaseChangedAt'],
+    leaseToken: fence['leaseToken'], generation: fence['generation'] as number,
+  });
+}
+
+function sameRecoveryFence(
+  permit: Readonly<GmailArchiveRecoveryObservationPermit>,
+  fence: Readonly<GmailArchiveRecoveryLeaseFence>,
+): boolean {
+  return permit.userId === fence.userId && permit.approvalId === fence.approvalId &&
+    permit.admissionId === fence.admissionId && permit.messageRefId === fence.messageRefId &&
+    permit.workKind === fence.workKind && permit.barrierStatus === fence.barrierStatus &&
+    permit.attemptPhase === fence.attemptPhase && permit.phaseChangedAt === fence.phaseChangedAt &&
+    permit.leaseToken === fence.leaseToken && permit.generation === fence.generation;
+}
+
+function snapshotRecoveryPermit(
+  value: unknown,
+): Readonly<GmailArchiveRecoveryObservationPermit> | null {
+  const permit = ownData(value, RECOVERY_PERMIT_KEYS);
+  if (!permit || typeof permit['userId'] !== 'string' || !UUID.test(permit['userId']) ||
+      typeof permit['approvalId'] !== 'string' || !UUID.test(permit['approvalId']) ||
+      typeof permit['admissionId'] !== 'string' || !UUID.test(permit['admissionId']) ||
+      typeof permit['messageRefId'] !== 'string' || !UUID.test(permit['messageRefId']) ||
+      permit['workKind'] !== 'observe_dispatch' || permit['barrierStatus'] !== 'in_progress' ||
+      permit['attemptPhase'] !== 'dispatch_may_have_started' ||
+      !canonicalPhaseTimestamp(permit['phaseChangedAt']) ||
+      typeof permit['leaseToken'] !== 'string' || !UUID.test(permit['leaseToken']) ||
+      !Number.isSafeInteger(permit['generation']) || (permit['generation'] as number) < 1 ||
+      typeof permit['observationAttemptId'] !== 'string' ||
+      !UUID.test(permit['observationAttemptId']) || !canonicalTimestamp(permit['authorizedAt']) ||
+      !canonicalTimestamp(permit['deadlineAt']) ||
+      !canonicalTimestamp(permit['leaseExpiresAt'])) return null;
+  const authorizedAt = exactTimestampEpochMicroseconds(permit['authorizedAt']);
+  const deadlineAt = exactTimestampEpochMicroseconds(permit['deadlineAt']);
+  const leaseExpiresAt = exactTimestampEpochMicroseconds(permit['leaseExpiresAt']);
+  const phaseChangedAt = exactTimestampEpochMicroseconds(permit['phaseChangedAt']);
+  if (authorizedAt === null || deadlineAt === null || leaseExpiresAt === null ||
+      phaseChangedAt === null || authorizedAt < phaseChangedAt ||
+      authorizedAt >= leaseExpiresAt || deadlineAt - authorizedAt !==
+        BigInt(GMAIL_ARCHIVE_RECOVERY_OBSERVATION_DEADLINE_SECONDS) * 1_000_000n) return null;
+  return Object.freeze({
+    userId: permit['userId'], approvalId: permit['approvalId'],
+    admissionId: permit['admissionId'], messageRefId: permit['messageRefId'],
+    workKind: 'observe_dispatch', barrierStatus: 'in_progress',
+    attemptPhase: 'dispatch_may_have_started', phaseChangedAt: permit['phaseChangedAt'],
+    leaseToken: permit['leaseToken'], generation: permit['generation'] as number,
+    observationAttemptId: permit['observationAttemptId'], authorizedAt: permit['authorizedAt'],
+    leaseExpiresAt: permit['leaseExpiresAt'], deadlineAt: permit['deadlineAt'],
+  });
+}
+
+function snapshotSelection(
+  value: unknown,
+): Readonly<GmailArchiveRecoveryObservationSelection> | null {
+  const selection = ownData(value, [
+    'connectorAccountId', 'credentialRevision', 'providerMessageId',
+  ]);
+  if (!selection || typeof selection['connectorAccountId'] !== 'string' ||
+      !UUID.test(selection['connectorAccountId']) ||
+      typeof selection['credentialRevision'] !== 'string' ||
+      !UUID.test(selection['credentialRevision']) ||
+      typeof selection['providerMessageId'] !== 'string' ||
+      selection['providerMessageId'].length === 0 ||
+      selection['providerMessageId'].length > 2_048) return null;
+  try {
+    encodeURIComponent(selection['providerMessageId']);
+  } catch {
+    return null;
+  }
+  return Object.freeze({
+    connectorAccountId: selection['connectorAccountId'],
+    credentialRevision: selection['credentialRevision'],
+    providerMessageId: selection['providerMessageId'],
+  });
+}
+
+/**
+ * Unregistered one-shot recovery coordinator. The permit is consumed before
+ * any connector authority or credential work and is never returned as data.
+ */
+export class GmailArchiveRecoveryObservationCoordinator {
+  private readonly beginObservation: GmailArchiveRecoveryLeaseRepository['beginObservation'];
+  private readonly recordObservation: GmailArchiveRecoveryLeaseRepository['recordObservation'];
+  private readonly materializeCredential: GmailInboxObservationCredentialsPort['materialize'];
+  private readonly resolveInitial: GmailArchiveRecoveryObservationTargetResolver['resolveInitial'];
+  private readonly resolveFinal: GmailArchiveRecoveryObservationTargetResolver['resolveFinal'];
+  private readonly fetchFn: FetchLike;
+  private readonly timeoutMs: number;
+
+  constructor(options: GmailArchiveRecoveryObservationCoordinatorOptions) {
+    this.beginObservation = options.leaseRepository.beginObservation.bind(options.leaseRepository);
+    this.recordObservation = options.leaseRepository.recordObservation.bind(options.leaseRepository);
+    this.materializeCredential = options.credentials.materialize.bind(options.credentials);
+    const resolver = options.targetResolver ?? gmailInboxObservationTargetRepository;
+    this.resolveInitial = resolver.resolveInitial.bind(resolver);
+    this.resolveFinal = resolver.resolveFinal.bind(resolver);
+    this.fetchFn = options.fetch ?? globalThis.fetch;
+    const timeoutMs = options.timeoutMs ?? 10_000;
+    if (!Number.isFinite(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000) {
+      throw new TypeError('timeoutMs must be a finite value between 1 and 60000');
+    }
+    this.timeoutMs = timeoutMs;
+  }
+
+  async observe(
+    submittedFence: GmailArchiveRecoveryLeaseFence,
+  ): Promise<GmailArchiveRecoveryObservationCoordinatorResult> {
+    const fence = snapshotRecoveryFence(submittedFence);
+    if (!fence) return Object.freeze({ status: 'not_permitted' });
+    let begun: Awaited<ReturnType<GmailArchiveRecoveryLeaseRepository['beginObservation']>>;
+    try {
+      begun = await this.beginObservation(fence);
+    } catch {
+      return Object.freeze({ status: 'not_permitted' });
+    }
+    if (!begun.ok || begun.status !== 'permitted') {
+      return Object.freeze({ status: 'not_permitted' });
+    }
+    const permit = snapshotRecoveryPermit(begun.permit);
+    if (!permit || !sameRecoveryFence(permit, fence)) {
+      return Object.freeze({ status: 'not_permitted' });
+    }
+    const binding = Object.freeze({
+      userId: permit.userId,
+      admissionId: permit.admissionId,
+      messageRefId: permit.messageRefId,
+    });
+
+    let selection: Readonly<GmailArchiveRecoveryObservationSelection> | null;
+    try {
+      selection = snapshotSelection(await this.resolveInitial(permit));
+    } catch {
+      return this.recordUnavailable(permit, binding, 'authority_unavailable');
+    }
+    if (!selection) return this.recordUnavailable(permit, binding, 'not_observable');
+
+    let credential: Readonly<GmailInboxObservationCredential> | null;
+    try {
+      credential = snapshotCredential(await this.materializeCredential(Object.freeze({
+        userId: permit.userId,
+        connectorAccountId: selection.connectorAccountId,
+        requiredScope: GMAIL_MODIFY_SCOPE,
+      })));
+    } catch {
+      return this.recordUnavailable(permit, binding, 'credentials_unavailable');
+    }
+    if (!credential || !credential.scopes.includes(GMAIL_MODIFY_SCOPE)) {
+      return this.recordUnavailable(permit, binding, 'credentials_unavailable');
+    }
+
+    let finalSelection: Readonly<GmailArchiveRecoveryObservationSelection> | null;
+    try {
+      finalSelection = snapshotSelection(await this.resolveFinal(Object.freeze({
+        permit,
+        selection,
+        credentialRevision: credential.credentialRevision,
+      })));
+    } catch {
+      return this.recordUnavailable(permit, binding, 'authority_unavailable');
+    }
+    if (!finalSelection || finalSelection.connectorAccountId !== selection.connectorAccountId ||
+        finalSelection.credentialRevision !== credential.credentialRevision ||
+        finalSelection.providerMessageId !== selection.providerMessageId) {
+      return this.recordUnavailable(permit, binding, 'not_observable');
+    }
+
+    // Do not insert an await, callback, audit, cache, or dependency lookup
+    // between this final exact authority result and invoking the only GET.
+    const providerRequest = requestGmailInbox(
+      finalSelection.providerMessageId,
+      credential.accessToken,
+      binding,
+      this.fetchFn,
+      this.timeoutMs,
+    );
+    const result = await providerRequest;
+    const evidence: Readonly<GmailArchiveRecoveryObservationEvidence> = result.outcome === 'observed'
+      ? Object.freeze({
+          kind: 'mailbox_observed', binding, inbox: result.inbox, observedAt: result.observedAt,
+        })
+      : Object.freeze({
+          kind: 'mailbox_observation_unavailable', binding,
+          code: result.code === 'invalid_command' ? 'observation_unavailable' : result.code,
+        });
+    return this.recordEvidence(permit, evidence);
+  }
+
+  private recordUnavailable(
+    permit: Readonly<GmailArchiveRecoveryObservationPermit>,
+    binding: Readonly<GmailInboxObservationBinding>,
+    code: GmailInboxObservationUnavailableCode,
+  ): Promise<GmailArchiveRecoveryObservationCoordinatorResult> {
+    return this.recordEvidence(permit, Object.freeze({
+      kind: 'mailbox_observation_unavailable', binding, code,
+    }));
+  }
+
+  private async recordEvidence(
+    permit: Readonly<GmailArchiveRecoveryObservationPermit>,
+    evidence: Readonly<GmailArchiveRecoveryObservationEvidence>,
+  ): Promise<GmailArchiveRecoveryObservationCoordinatorResult> {
+    try {
+      const recorded = await this.recordObservation({ permit, evidence });
+      return Object.freeze({
+        status: recorded.ok ? 'evidence_recorded' : 'evidence_unverified',
+        evidence,
+      });
+    } catch {
+      return Object.freeze({ status: 'evidence_unverified', evidence });
+    }
+  }
+}
+
+export const gmailArchiveRecoveryObservationTestHooks = Object.freeze({
+  snapshotRecoveryFence,
+  snapshotRecoveryPermit,
+  snapshotSelection,
+});
 
 export const gmailInboxObservationLimits = Object.freeze({
   ...gmailMessageStateResponseLimits,

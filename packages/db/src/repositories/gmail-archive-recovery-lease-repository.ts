@@ -28,6 +28,7 @@ import {
   GMAIL_ARCHIVE_RECOVERY_GRACE_SECONDS,
   GMAIL_ARCHIVE_RECOVERY_OBSERVATION_DEADLINE_SECONDS,
 } from './gmail-archive-recovery-policy.js';
+import { exactTimestampEpochMicroseconds } from './gmail-archive-recovery-time.js';
 export { GMAIL_ARCHIVE_RECOVERY_OBSERVATION_DEADLINE_SECONDS } from './gmail-archive-recovery-policy.js';
 import { exactClaimedGmailArchiveReceipt } from './gmail-archive-claim-integrity.js';
 import {
@@ -261,7 +262,9 @@ function sameEvidence(
 }
 
 function snapshotPermit(value: unknown): Readonly<GmailArchiveRecoveryObservationPermit> | null {
-  const permit = ownData(value, [...FENCE_KEYS, 'authorizedAt', 'deadlineAt', 'observationAttemptId']);
+  const permit = ownData(value, [
+    ...FENCE_KEYS, 'authorizedAt', 'deadlineAt', 'leaseExpiresAt', 'observationAttemptId',
+  ]);
   if (!permit) return null;
   const fenceValues: Record<string, unknown> = {};
   for (const key of FENCE_KEYS) fenceValues[key] = permit[key];
@@ -271,11 +274,20 @@ function snapshotPermit(value: unknown): Readonly<GmailArchiveRecoveryObservatio
       !UUID.test(permit['observationAttemptId']) ||
       !validExternalTimestamp(permit['authorizedAt']) ||
       !validExternalTimestamp(permit['deadlineAt']) ||
-      Date.parse(permit['authorizedAt']) > Date.parse(permit['deadlineAt'])) return null;
+      !validExternalTimestamp(permit['leaseExpiresAt'])) return null;
+  const authorizedAt = exactTimestampEpochMicroseconds(permit['authorizedAt']);
+  const deadlineAt = exactTimestampEpochMicroseconds(permit['deadlineAt']);
+  const leaseExpiresAt = exactTimestampEpochMicroseconds(permit['leaseExpiresAt']);
+  const phaseChangedAt = exactTimestampEpochMicroseconds(fence.phaseChangedAt);
+  if (authorizedAt === null || deadlineAt === null || leaseExpiresAt === null ||
+      phaseChangedAt === null || authorizedAt < phaseChangedAt ||
+      authorizedAt >= leaseExpiresAt || deadlineAt - authorizedAt !==
+        BigInt(GMAIL_ARCHIVE_RECOVERY_OBSERVATION_DEADLINE_SECONDS) * 1_000_000n) return null;
   return Object.freeze({
     ...fence,
     observationAttemptId: permit['observationAttemptId'],
     authorizedAt: permit['authorizedAt'],
+    leaseExpiresAt: permit['leaseExpiresAt'],
     deadlineAt: permit['deadlineAt'],
   });
 }
@@ -329,6 +341,7 @@ async function liveCapability(
          observation_state = 'started' AND observation_attempt_id = $11::UUID AND
          observation_authorized_at = $12::TIMESTAMPTZ AND
          observation_deadline_at = $13::TIMESTAMPTZ AND
+         expires_at = $14::TIMESTAMPTZ AND
          expires_at > statement_timestamp() AND
          observation_deadline_at > statement_timestamp()
        WHEN observation_state = 'started' THEN
@@ -354,6 +367,7 @@ async function liveCapability(
       permit?.observationAttemptId ?? null,
       permit?.authorizedAt ?? null,
       permit?.deadlineAt ?? null,
+      permit?.leaseExpiresAt ?? null,
     ],
   )).rows[0];
   return row?.live === true;
@@ -600,6 +614,9 @@ function validLeaseObservationState(
   evidence: Readonly<GmailArchiveRecoveryObservationEvidence> | null,
   phaseChangedAt: string,
 ): boolean {
+  const phaseChangedAtMicros = exactTimestampEpochMicroseconds(phaseChangedAt);
+  const observationAuthorizedAtMicros = row.observation_authorized_at
+    ? exactTimestampEpochMicroseconds(row.observation_authorized_at) : null;
   if (row.observation_state === 'not_started') {
     return row.observation_attempt_id === null && row.observation_authorized_at === null &&
       row.observation_deadline_at === null && evidence === null;
@@ -609,17 +626,21 @@ function validLeaseObservationState(
       row.observation_authorized_at.getTime() > row.observation_deadline_at.getTime() ||
       row.observation_deadline_at.getTime() - row.observation_authorized_at.getTime() !==
         GMAIL_ARCHIVE_RECOVERY_OBSERVATION_DEADLINE_SECONDS * 1_000 ||
-      row.observation_authorized_at.getTime() < Date.parse(phaseChangedAt)) return false;
+      phaseChangedAtMicros === null || observationAuthorizedAtMicros === null ||
+      observationAuthorizedAtMicros < phaseChangedAtMicros) {
+    return false;
+  }
   if (row.observation_state === 'started') return evidence === null;
   if (row.observation_state !== 'evidence_recorded' || !evidence ||
       evidence.binding.userId !== row.user_id ||
       evidence.binding.admissionId !== row.admission_id ||
       evidence.binding.messageRefId !== row.message_ref_id) return false;
   if (evidence.kind === 'mailbox_observation_unavailable') return true;
-  const observedAt = Date.parse(evidence.observedAt);
-  return observedAt >= row.observation_authorized_at.getTime() &&
-    observedAt >= Date.parse(phaseChangedAt) &&
-    observedAt <= row.observation_deadline_at.getTime();
+  const observedAt = exactTimestampEpochMicroseconds(evidence.observedAt);
+  const deadlineAt = exactTimestampEpochMicroseconds(row.observation_deadline_at);
+  return observedAt !== null && observationAuthorizedAtMicros !== null && deadlineAt !== null &&
+    phaseChangedAtMicros !== null && observedAt >= observationAuthorizedAtMicros &&
+    observedAt >= phaseChangedAtMicros && observedAt <= deadlineAt;
 }
 
 function expiredObservationEvidence(stage: EligibleStage, userId: string) {
@@ -942,6 +963,7 @@ async function beginTransition(
           ...fence,
           observationAttemptId,
           authorizedAt: row.observation_authorized_at.toISOString(),
+          leaseExpiresAt: row.expires_at.toISOString(),
           deadlineAt: row.observation_deadline_at.toISOString(),
         }),
       };
@@ -976,6 +998,7 @@ async function beginTransition(
     ...fence,
     observationAttemptId,
     authorizedAt: updated.observation_authorized_at.toISOString(),
+    leaseExpiresAt: updated.expires_at.toISOString(),
     deadlineAt: updated.observation_deadline_at.toISOString(),
   });
   return { ok: true, status: 'permitted', permit };
@@ -1005,6 +1028,7 @@ async function recordTransition(
   const row = await loadExactLease(client, input.permit);
   if (!row || row.observation_attempt_id !== input.permit.observationAttemptId ||
       row.observation_authorized_at?.toISOString() !== input.permit.authorizedAt ||
+      row.expires_at.toISOString() !== input.permit.leaseExpiresAt ||
       row.observation_deadline_at?.toISOString() !== input.permit.deadlineAt) {
     return { ok: false, error: 'stale_lease' };
   }
@@ -1046,6 +1070,9 @@ async function recordTransition(
       WHERE admission_id = $1 AND user_id = $2 AND lease_token = $3
         AND generation = $4::INT8 AND observation_state = 'started'
         AND observation_attempt_id = $6 AND
+            observation_authorized_at = $8::TIMESTAMPTZ AND
+            observation_deadline_at = $9::TIMESTAMPTZ AND
+            expires_at = $10::TIMESTAMPTZ AND
             observation_deadline_at > $7::TIMESTAMPTZ
       RETURNING admission_id`,
     [
@@ -1053,6 +1080,9 @@ async function recordTransition(
       input.permit.generation, JSON.stringify(evidenceEnvelope(input.evidence)),
       input.permit.observationAttemptId,
       requestTime,
+      input.permit.authorizedAt,
+      input.permit.deadlineAt,
+      input.permit.leaseExpiresAt,
     ],
   );
   return updated.rows.length === 1

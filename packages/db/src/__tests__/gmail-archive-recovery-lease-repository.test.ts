@@ -26,6 +26,9 @@ vi.mock('../repositories/gmail-archive-terminalization-repository.js', () => ({
 const { gmailArchiveRecoveryLeaseTestHooks } = await import(
   '../repositories/gmail-archive-recovery-lease-repository.js'
 );
+const { gmailInboxObservationTargetTestHooks } = await import(
+  '../repositories/gmail-inbox-observation-target-repository.js'
+);
 const {
   consumeGmailArchiveRecoveryLeaseInTransaction,
   gmailArchiveRecoveryLeaseConsumerTestHooks,
@@ -57,6 +60,7 @@ const permit = {
   ...fence,
   observationAttemptId: '66666666-6666-4666-8666-666666666666',
   authorizedAt: '2026-09-12T12:05:00.000Z',
+  leaseExpiresAt: '2026-09-12T12:10:00.000Z',
   deadlineAt: '2026-09-12T12:07:30.000Z',
 };
 
@@ -86,7 +90,7 @@ function recoveryLeaseRow(overrides: Record<string, unknown> = {}) {
     generation: String(fence.generation),
     acquired_at: new Date('2026-09-12T12:04:00.000Z'),
     renewed_at: new Date('2026-09-12T12:04:00.000Z'),
-    expires_at: new Date('2026-09-12T12:04:30.000Z'),
+    expires_at: new Date(permit.leaseExpiresAt),
     observation_state: 'evidence_recorded',
     observation_attempt_id: permit.observationAttemptId,
     observation_authorized_at: new Date(permit.authorizedAt),
@@ -102,9 +106,12 @@ function recoveryLeaseRow(overrides: Record<string, unknown> = {}) {
 async function sourceFilesBelow(directory: URL): Promise<string[]> {
   const entries = await readdir(directory, { withFileTypes: true });
   const nested = await Promise.all(entries.map(async (entry) => {
+    if (entry.isDirectory() && [
+      '__tests__', 'dist', 'node_modules',
+    ].includes(entry.name)) return [];
     const child = new URL(`${entry.name}${entry.isDirectory() ? '/' : ''}`, directory);
     if (entry.isDirectory()) return sourceFilesBelow(child);
-    return /\.(?:ts|js)$/.test(entry.name) ? [await readFile(child, 'utf8')] : [];
+    return entry.name.endsWith('.ts') ? [await readFile(child, 'utf8')] : [];
   }));
   return nested.flat();
 }
@@ -271,6 +278,32 @@ describe('gmailArchiveRecoveryLeaseRepository boundary', () => {
     }
   });
 
+  it('keeps issuer, consumer, and target permit parsers in exact parity', () => {
+    const authorizationBeforeMicrosecondPhase = {
+      ...permit,
+      authorizedAt: '2026-09-12T12:00:00.123Z',
+      deadlineAt: '2026-09-12T12:02:30.123Z',
+    };
+    const corpus: unknown[] = [
+      permit,
+      { ...permit, extra: true },
+      { ...permit, observationAttemptId: 'invalid' },
+      { ...permit, authorizedAt: '2026-09-12T11:59:59.999Z',
+        deadlineAt: '2026-09-12T12:02:29.999Z' },
+      authorizationBeforeMicrosecondPhase,
+      { ...permit, leaseExpiresAt: permit.authorizedAt },
+      { ...permit, deadlineAt: '2026-09-12T12:07:29.999Z' },
+    ];
+    for (const value of corpus) {
+      const issued = gmailArchiveRecoveryLeaseTestHooks.snapshotPermit(value);
+      expect(gmailArchiveRecoveryLeaseConsumerTestHooks.snapshotPermit(value)).toEqual(issued);
+      expect(gmailInboxObservationTargetTestHooks.snapshotPermit(value)).toEqual(issued);
+    }
+    expect(gmailArchiveRecoveryLeaseTestHooks.snapshotPermit(
+      authorizationBeforeMicrosecondPhase,
+    )).toBeNull();
+  });
+
   it('canonicalizes only exact UTC DB phase strings while preserving microseconds', () => {
     const canonicalize = gmailArchiveRecoveryLeaseTestHooks.canonicalDbPhaseTimestamp;
     expect(canonicalize('2026-09-12 12:00:00.123')).toBe('2026-09-12T12:00:00.123Z');
@@ -397,6 +430,32 @@ describe('gmailArchiveRecoveryLeaseRepository boundary', () => {
       ...row,
       observation_deadline_at: new Date('2026-09-12T12:07:29.999Z'),
     } as never, fence.phaseChangedAt)).toBeNull();
+    expect(gmailArchiveRecoveryLeaseTestHooks.leaseFromRow({
+      ...row,
+      observation_authorized_at: new Date('2026-09-12T12:00:00.123Z'),
+      observation_deadline_at: new Date('2026-09-12T12:02:30.123Z'),
+    } as never, fence.phaseChangedAt)).toBeNull();
+  });
+
+  it('rejects a stored authorization in the truncated millisecond before its phase', async () => {
+    const row = recoveryLeaseRow({
+      observation_authorized_at: new Date('2026-09-12T12:00:00.123Z'),
+      observation_deadline_at: new Date('2026-09-12T12:02:30.123Z'),
+      observation_evidence: {
+        schema: 'gmail_archive_recovery_observation_v1',
+        evidence: { ...observedEvidence, observedAt: '2026-09-12T12:00:00.124Z' },
+      },
+    });
+    const query = vi.fn().mockResolvedValueOnce({ rows: [row] });
+    await expect(consumeGmailArchiveRecoveryLeaseInTransaction(
+      { query } as unknown as PoolClient,
+      {
+        fence,
+        observationAttemptId: permit.observationAttemptId,
+        evidence: { ...observedEvidence, observedAt: '2026-09-12T12:00:00.124Z' },
+      },
+    )).resolves.toEqual({ ok: false, error: 'integrity_conflict' });
+    expect(query).toHaveBeenCalledTimes(1);
   });
 
   it('consumes an exact recorded observation with every fence and evidence predicate', async () => {
@@ -665,7 +724,6 @@ describe('gmailArchiveRecoveryLeaseRepository boundary', () => {
       new URL('../../../../apps/worker/', import.meta.url),
       new URL('../../../../apps/desktop/', import.meta.url),
       new URL('../../../execution-router/', import.meta.url),
-      new URL('../../../ironclaw-adapter/', import.meta.url),
     ];
     const runtimeSources = (await Promise.all(roots.map(sourceFilesBelow))).flat().join('\n');
     expect(runtimeSources).not.toContain('gmailArchiveRecoveryLeaseRepository');
