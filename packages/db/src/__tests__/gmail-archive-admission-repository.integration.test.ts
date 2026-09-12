@@ -1002,6 +1002,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       events: string;
     }>(
       `SELECT barrier.status AS barrier_status, barrier.effect_result AS attempt_state,
+         plan.status AS plan_status,
          (SELECT count(*) FROM decision_receipt_revisions WHERE receipt_id = $3) AS revisions,
          (SELECT count(*) FROM execution_results WHERE plan_id = plan.id) AS results,
          (SELECT count(*) FROM execution_events WHERE plan_id = plan.id) AS events

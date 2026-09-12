@@ -27,6 +27,10 @@ export type GmailArchiveDispatchGateTransition = (
   command: Readonly<GmailInboxMutationCommand>,
 ) => Promise<GmailInboxMutationDispatchGateResult>;
 
+type GmailArchiveDispatchGateTransaction = <T>(
+  callback: (client: PoolClient) => Promise<T>,
+) => Promise<T>;
+
 function ownData(value: unknown, keys: readonly string[]): Record<string, unknown> | null {
   try {
     if (!value || typeof value !== 'object' || Array.isArray(value) ||
@@ -158,12 +162,13 @@ async function transition(
 async function enterWithTransition(
   submitted: GmailInboxMutationCommand,
   transitionFn: GmailArchiveDispatchGateTransition,
+  transactionFn: GmailArchiveDispatchGateTransaction = withTransaction,
 ): Promise<GmailInboxMutationDispatchGateResult> {
   const command = snapshotCommand(submitted);
   if (!command) return { status: 'conflict' };
   for (let attempt = 0; ; attempt += 1) {
     try {
-      return await withTransaction((client) => transitionFn(client, command));
+      return await transactionFn((client) => transitionFn(client, command));
     } catch (error) {
       const code = typeof error === 'object' && error !== null && 'code' in error
         ? (error as { code?: unknown }).code
