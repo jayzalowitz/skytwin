@@ -50,14 +50,20 @@ export interface ExecutionPlanWithResult {
  */
 export interface RollbackTarget {
   /** The provenance node's `ref_id` — the candidate action id. */
-  actionId: string;
+  readonly actionId: string;
+  /**
+   * Action type read through the exact owner/decision/outcome/plan binding.
+   * NULL means that immutable graph is absent or inconsistent and therefore
+   * cannot authorize generic rollback dispatch.
+   */
+  readonly actionType: string | null;
   /** Raw provenance payload (carries `reversible` + `irreversibleReason`). */
-  payload: Record<string, unknown> | null;
-  occurredAt: Date;
+  readonly payload: Record<string, unknown> | null;
+  readonly occurredAt: Date;
   /** Real execution plan id resolved via the #324 FK, or NULL if unlinked. */
-  executionPlanId: string | null;
+  readonly executionPlanId: string | null;
   /** Adapter that executed the plan, or NULL if not recorded / no result. */
-  adapterUsed: string | null;
+  readonly adapterUsed: string | null;
 }
 
 /**
@@ -196,11 +202,12 @@ export const executionRepository = {
    * uses this to dispatch `IronClawAdapter.rollback(planId)` through the
    * execution router, targeting the SAME adapter that ran the action.
    *
-   * SUBQUERY (not LEFT JOIN) for `execution_plan_id`: `selected_action_id`
-   * should be unique per outcome but there is no DB constraint enforcing it, so
-   * a LEFT JOIN could duplicate the provenance row. `LIMIT 1` keeps one row per
-   * provenance node regardless. The adapter lookup is similarly a scalar
-   * subquery against the latest result for the resolved plan.
+   * The lateral subquery also binds the candidate identity/type through its
+   * owner-scoped decision and requires the current outcome plan to identify
+   * that same decision and action. A malformed cross-owner or cross-action
+   * graph therefore produces no plan/type authority. `LIMIT 1` keeps one row
+   * per provenance node, and the adapter lookup selects the latest result for
+   * only that exactly bound plan.
    */
   async getRollbackTargetsByServer(input: {
     serverId: string;
@@ -213,11 +220,13 @@ export const executionRepository = {
       occurred_at: Date;
       execution_plan_id: string | null;
       adapter_used: string | null;
+      action_type: string | null;
     }>(
       `SELECT pn.ref_id,
               pn.payload,
               pn.occurred_at,
               link.execution_plan_id,
+              link.action_type,
               (SELECT er.outputs->>'adapter_used'
                  FROM execution_results er
                 WHERE er.plan_id = link.execution_plan_id
@@ -225,9 +234,20 @@ export const executionRepository = {
                 LIMIT 1) AS adapter_used
          FROM capability_provenance_nodes pn
          LEFT JOIN LATERAL (
-                SELECT doc.execution_plan_id
-                  FROM decision_outcomes doc
-                 WHERE doc.selected_action_id = pn.ref_id
+                SELECT plan.id AS execution_plan_id,
+                       candidate.action_type
+                  FROM candidate_actions candidate
+                  JOIN decisions decision
+                    ON decision.id = candidate.decision_id
+                   AND decision.user_id = pn.user_id
+                  JOIN decision_outcomes doc
+                    ON doc.decision_id = decision.id
+                   AND doc.selected_action_id = candidate.id
+                  JOIN execution_plans plan
+                    ON plan.id = doc.execution_plan_id
+                   AND plan.decision_id = decision.id
+                   AND plan.action_id = candidate.id
+                 WHERE candidate.id::STRING = pn.ref_id
                  LIMIT 1
               ) link ON true
         WHERE pn.server_id = $1
@@ -238,13 +258,14 @@ export const executionRepository = {
       [input.serverId, input.since, input.userId],
     );
 
-    return result.rows.map((row) => ({
+    return Object.freeze(result.rows.map((row) => Object.freeze({
       actionId: row.ref_id,
+      actionType: row.action_type,
       payload: row.payload,
       occurredAt: row.occurred_at,
       executionPlanId: row.execution_plan_id,
       adapterUsed: row.adapter_used,
-    }));
+    })));
   },
 
   /**
