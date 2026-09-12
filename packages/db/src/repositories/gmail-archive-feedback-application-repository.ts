@@ -58,6 +58,11 @@ export type ApplyGmailArchiveApprovalFeedbackResult =
   | { readonly ok: true; readonly created: boolean; readonly application: GmailArchiveFeedbackApplication }
   | { readonly ok: false; readonly error: 'invalid_input' | 'not_found' | 'integrity_conflict' };
 
+export interface VerifiedGmailArchiveFeedbackApplication {
+  readonly feedback: FeedbackEventRow;
+  readonly application: GmailArchiveFeedbackApplication;
+}
+
 declare const gmailArchiveFeedbackPendingCursorBrand: unique symbol;
 export type GmailArchiveFeedbackPendingCursor = string & {
   readonly [gmailArchiveFeedbackPendingCursorBrand]: 'GmailArchiveFeedbackPendingCursor';
@@ -234,7 +239,7 @@ function canonicalJson(value: JsonValue): string {
     `${JSON.stringify(key)}:${canonicalJson(record[key]!)}`).join(',')}}`;
 }
 
-function canonicalTimestamp(value: unknown): string | null {
+export function canonicalGmailArchiveFeedbackSqlTimestamp(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const match = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(?:\.(\d{1,6}))?Z?$/.exec(value);
   if (!match) return null;
@@ -248,6 +253,8 @@ function canonicalTimestamp(value: unknown): string | null {
     return null;
   }
 }
+
+const canonicalTimestamp = canonicalGmailArchiveFeedbackSqlTimestamp;
 
 function profileTimestamp(appliedAt: string): string {
   return new Date(appliedAt).toISOString();
@@ -553,6 +560,48 @@ async function verifyReplay(
         canonicalJson(snapshotJson(history.snapshot)!) !== canonicalJson(snapshotJson(inputState)!)) return null;
   }
   return application;
+}
+
+/**
+ * Lock and verify the complete application graph for a larger DB transaction.
+ * Callers must first lock the canonical approval/proposal barrier so every
+ * archive lifecycle uses the same approval -> feedback -> application ->
+ * profile lock order.
+ */
+export async function loadVerifiedGmailArchiveFeedbackApplication(
+  client: PoolClient,
+  input: Readonly<ApplyGmailArchiveApprovalFeedbackInput>,
+  source: GmailArchiveApprovalCanonicalState,
+): Promise<VerifiedGmailArchiveFeedbackApplication | null> {
+  if (!UUID.test(input.feedbackEventId) || !UUID.test(input.userId) ||
+      source.approval.user_id !== input.userId) return null;
+  const feedbackRows = await loadFeedback(client, input, true);
+  if (feedbackRows.length !== 1) return null;
+  const feedback = feedbackRows[0]!;
+  const timestamp = (await client.query<{ matches: boolean }>(
+    `SELECT feedback.created_at = approval.responded_at AS matches
+       FROM feedback_events feedback
+       JOIN approval_requests approval ON approval.id = feedback.approval_request_id
+      WHERE feedback.id = $1 AND feedback.user_id = $2`,
+    [input.feedbackEventId, input.userId],
+  )).rows[0];
+  if (!exactFeedback(feedback, source, input, timestamp?.matches === true)) return null;
+  const applications = await loadApplications(client, input.feedbackEventId);
+  if (applications.length !== 1) return null;
+  const application = await verifyReplay(client, source, feedback, applications[0]!);
+  if (!application) return null;
+  return Object.freeze({
+    feedback: Object.freeze({
+      id: feedback.id,
+      user_id: feedback.user_id,
+      decision_id: feedback.decision_id,
+      approval_request_id: feedback.approval_request_id,
+      type: feedback.type,
+      data: Object.freeze({ ...feedback.data }),
+      created_at: feedback.created_at,
+    }),
+    application,
+  });
 }
 
 async function transition(

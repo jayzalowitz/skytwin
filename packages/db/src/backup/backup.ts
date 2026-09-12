@@ -512,7 +512,8 @@ export function validateBackupData(value: unknown): string[] {
             break;
           }
         }
-        if (tail?.version === 2) {
+        if (tail?.version === 2 ||
+            (tail?.version === 3 && tail.executionExplanation !== undefined)) {
           const ref = tail.executionExplanation as Partial<typeof tail.executionExplanation> | undefined;
           const row = typeof ref?.id === 'string' ? explanationById.get(ref.id) : undefined;
           if (!row || typeof ref?.canonicalHash !== 'string' || joinedDecisionReceiptArtifactDigest(

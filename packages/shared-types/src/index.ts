@@ -183,6 +183,8 @@ export type {
   DecisionReceiptExecutionPlanSnapshotV1,
   DecisionReceiptExecutionResultRef,
   DecisionReceiptExecutionResultSnapshotV1,
+  DecisionReceiptFeedbackApplicationRef,
+  DecisionReceiptFeedbackApplicationSnapshotV1,
   DecisionReceiptInferenceSet,
   DecisionReceiptPolicyRef,
   DecisionReceiptPolicyEvaluationV1,
@@ -194,6 +196,7 @@ export type {
   JoinedDecisionReceiptContent,
   JoinedDecisionReceiptContentV1,
   JoinedDecisionReceiptContentV2,
+  JoinedDecisionReceiptContentV3,
   DecisionReceiptRevisionDigestInput,
   DecisionReceiptChainRevisionV1,
 } from './joined-decision-receipt.js';

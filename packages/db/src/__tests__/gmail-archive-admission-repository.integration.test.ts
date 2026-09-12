@@ -35,6 +35,10 @@ import {
   gmailArchiveFeedbackApplicationTestHooks,
 } from '../repositories/gmail-archive-feedback-application-repository.js';
 import {
+  finalizeGmailArchiveFeedbackReceipt,
+  gmailArchiveFeedbackReceiptTestHooks,
+} from '../repositories/gmail-archive-feedback-receipt-repository.js';
+import {
   canonicalGmailArchiveCandidate,
   gmailArchivePreparationRepository,
 } from '../repositories/gmail-archive-preparation-repository.js';
@@ -356,11 +360,15 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     };
   }
 
-  async function createPolicyBlockedProposal(suffix: number) {
-    const proposal = await createProposal(suffix);
+  async function createPolicyBlockedProposal(
+    suffix: number,
+    ownerUserId = userId,
+    ownerAccountId = accountId,
+  ) {
+    const proposal = await createProposal(suffix, ownerUserId, ownerAccountId);
     const approved = await gmailArchiveApprovalResponseRepository.respond({
       approvalId: proposal.approval.id,
-      userId,
+      userId: ownerUserId,
       action: 'approve',
     });
     expect(approved).toMatchObject({ ok: true, response: { reservedBarrier: { status: 'reserved' } } });
@@ -368,7 +376,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     await getPool().query(
       `INSERT INTO action_policies (id, user_id, name, domain, rules, priority, is_active)
        VALUES ($1, $2, 'Block archive claim', 'email', $3, 500, true)`,
-      [policyId, userId, JSON.stringify([{
+      [policyId, ownerUserId, JSON.stringify([{
         id: `block-archive-claim-${suffix}`,
         policyId,
         condition: { field: 'actionType', operator: 'eq', value: 'archive_email' },
@@ -378,7 +386,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     );
     try {
       const blocked = await gmailArchivePreparationRepository.prepare({
-        userId,
+        userId: ownerUserId,
         approvalId: proposal.approval.id,
       });
       expect(blocked).toMatchObject({
@@ -7555,5 +7563,265 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     for (const statement of splitSqlStatements(migration)) {
       await getPool().query(statement);
     }
+  }, 120_000);
+
+  async function applyFeedbackFor(
+    ownerUserId: string,
+    approvalId: string,
+  ): Promise<{ feedbackEventId: string }> {
+    const feedback = await getPool().query<{ id: string }>(
+      'SELECT id FROM feedback_events WHERE approval_request_id = $1 AND user_id = $2',
+      [approvalId, ownerUserId],
+    );
+    if (feedback.rows.length !== 1) throw new Error('Expected one canonical approval feedback event.');
+    const feedbackEventId = feedback.rows[0]!.id;
+    await expect(applyGmailArchiveApprovalFeedbackOnce({
+      userId: ownerUserId,
+      feedbackEventId,
+    })).resolves.toMatchObject({ ok: true, created: true });
+    return { feedbackEventId };
+  }
+
+  it('finalizes rejected feedback once under concurrent replay and preserves rejection truth', async () => {
+    const owner = await seedRecoveryOwner(950);
+    const proposal = await createProposal(4000, owner.ownerUserId, owner.ownerAccountId);
+    const response = await gmailArchiveApprovalResponseRepository.respond({
+      userId: owner.ownerUserId,
+      approvalId: proposal.approval.id,
+      action: 'reject',
+      reason: 'Do not archive this sender.',
+    });
+    if (!response.ok) throw new Error('Rejected feedback receipt fixture failed.');
+    const { feedbackEventId } = await applyFeedbackFor(owner.ownerUserId, proposal.approval.id);
+    const input = { userId: owner.ownerUserId, approvalId: proposal.approval.id, feedbackEventId };
+    const results = await Promise.all([
+      finalizeGmailArchiveFeedbackReceipt(input),
+      finalizeGmailArchiveFeedbackReceipt(input),
+    ]);
+    expect(results.filter((result) => result.ok && result.created)).toHaveLength(1);
+    expect(results.filter((result) => result.ok && !result.created)).toHaveLength(1);
+    for (const result of results) {
+      expect(result).toMatchObject({
+        ok: true,
+        finalization: {
+          revision: {
+            sequence: 5,
+            stage: 'feedback_recorded',
+            disposition: 'rejected',
+            approval_request_id: proposal.approval.id,
+            execution_plan_id: null,
+            execution_result_id: null,
+            execution_disposition: null,
+          },
+        },
+      });
+      if (!result.ok) throw new Error('Rejected finalization failed.');
+      const content = result.finalization.revision.content;
+      expect(content.version).toBe(3);
+      if (content.version !== 3) throw new Error('Expected feedback receipt v3.');
+      expect(content.feedbackEvents).toEqual([
+        decisionReceiptRowArtifactRefV1('feedback', { ...response.response.feedback }),
+      ]);
+      expect(content.feedbackApplication.snapshot).toMatchObject({
+        feedbackEventId,
+        approvalRequestId: proposal.approval.id,
+        userId: owner.ownerUserId,
+        decisionId: proposal.decision.id,
+      });
+    }
+    await expect(finalizeGmailArchiveFeedbackReceipt({
+      ...input,
+      userId: userId,
+    })).resolves.toEqual({ ok: false, error: 'not_found' });
+  }, 120_000);
+
+  it('finalizes only a canonical post-policy blocked approval and rolls the append back atomically', async () => {
+    const owner = await seedRecoveryOwner(956);
+    const blocked = await createPolicyBlockedProposal(
+      4001,
+      owner.ownerUserId,
+      owner.ownerAccountId,
+    );
+    const { feedbackEventId } = await applyFeedbackFor(
+      owner.ownerUserId,
+      blocked.proposal.approval.id,
+    );
+    const input = {
+      userId: owner.ownerUserId,
+      approvalId: blocked.proposal.approval.id,
+      feedbackEventId,
+    };
+    await expect(gmailArchiveFeedbackReceiptTestHooks.finalizeWithTransition(
+      input,
+      gmailArchiveFeedbackReceiptTestHooks.transition,
+      withTransaction,
+      { afterAppend: () => { throw new Error('forced post-append rollback'); } },
+    )).rejects.toThrow('forced post-append rollback');
+    const afterRollback = await getPool().query<{ revisions: string }>(
+      `SELECT count(*)::STRING AS revisions FROM decision_receipt_revisions revision
+        JOIN decision_receipts receipt ON receipt.id = revision.receipt_id
+       WHERE receipt.decision_id = $1`,
+      [blocked.proposal.decision.id],
+    );
+    expect(afterRollback.rows[0]?.revisions).toBe('5');
+    const finalized = await finalizeGmailArchiveFeedbackReceipt(input);
+    expect(finalized).toMatchObject({
+      ok: true,
+      created: true,
+      finalization: { revision: { sequence: 6, disposition: 'blocked' } },
+    });
+    await expect(finalizeGmailArchiveFeedbackReceipt(input)).resolves.toMatchObject({
+      ok: true,
+      created: false,
+      finalization: { revision: { sequence: 6, disposition: 'blocked' } },
+    });
+  }, 120_000);
+
+  it.each([
+    ['succeeded', 4002],
+    ['failed', 4003],
+    ['unknown', 4004],
+  ] as const)('preserves canonical terminal %s truth when recording feedback', async (status, suffix) => {
+    const owner = await seedRecoveryOwner(950 + (suffix - 4001));
+    const fixture = await createClaimedProposal(
+      suffix,
+      owner.ownerUserId,
+      owner.ownerAccountId,
+      status !== 'failed',
+    );
+    const { feedbackEventId } = await applyFeedbackFor(
+      owner.ownerUserId,
+      fixture.proposal.approval.id,
+    );
+    const result = status === 'succeeded'
+      ? {
+        outcome: 'confirmed' as const,
+        operation: 'archive' as const,
+        inbox: false as const,
+        effect: 'changed' as const,
+        compensationAvailable: false as const,
+        observedAt: new Date(Date.now() - 1_000).toISOString(),
+        binding: mutationBinding(fixture.command),
+      }
+      : status === 'failed'
+        ? {
+          outcome: 'known_failure' as const,
+          code: 'remote_rejected' as const,
+          compensationAvailable: false as const,
+          binding: mutationBinding(fixture.command),
+        }
+        : {
+          outcome: 'unknown' as const,
+          code: 'remote_outcome_unknown' as const,
+          compensationAvailable: false as const,
+          binding: mutationBinding(fixture.command),
+        };
+    const terminalized = await gmailArchiveTerminalizationRepository.terminalize({
+      command: fixture.command,
+      result,
+    });
+    if (!terminalized.ok) throw new Error(`Terminal feedback fixture failed: ${terminalized.error}`);
+    const prior = terminalized.terminalization.revision;
+    const finalized = await finalizeGmailArchiveFeedbackReceipt({
+      userId: owner.ownerUserId,
+      approvalId: fixture.proposal.approval.id,
+      feedbackEventId,
+    });
+    expect(finalized).toMatchObject({
+      ok: true,
+      created: true,
+      finalization: {
+        revision: {
+          sequence: 8,
+          disposition: status,
+          barrier_id: prior.barrier_id,
+          explanation_id: prior.explanation_id,
+          approval_request_id: prior.approval_request_id,
+          execution_plan_id: prior.execution_plan_id,
+          execution_result_id: prior.execution_result_id,
+          execution_disposition: status,
+        },
+      },
+    });
+    if (!finalized.ok || finalized.finalization.revision.content.version !== 3) {
+      throw new Error('Expected terminal feedback receipt v3.');
+    }
+    expect(finalized.finalization.revision.content.executionExplanation).toEqual(
+      prior.content.version === 2 ? prior.content.executionExplanation : undefined,
+    );
+    expect(finalized.finalization.revision.previous_digest).toBe(prior.revision_digest);
+    if (status === 'succeeded') {
+      const backup = await collectBackup(owner.ownerUserId);
+      expect(backup).toMatchObject({ success: true });
+      if (!backup.success) throw new Error(`Feedback receipt backup failed: ${backup.message}`);
+      expect(validateBackupData(backup.data)).toEqual([]);
+      const bundle = backup.data.decisions.find(
+        (item) => item.decision.id === fixture.proposal.decision.id,
+      );
+      if (!bundle) throw new Error('Feedback receipt backup omitted its decision bundle.');
+      bundle.explanations = bundle.explanations.filter(
+        (row) => row.id !== terminalized.terminalization.executionExplanation.id,
+      );
+      expect(validateBackupData(backup.data)).toContain(
+        `decisions[0].joinedReceipt has inconsistent execution explanation snapshot`,
+      );
+    }
+  }, 120_000);
+
+  it('rejects premature approved feedback without changing receipt history', async () => {
+    const owner = await seedRecoveryOwner(954);
+    const proposal = await createProposal(4005, owner.ownerUserId, owner.ownerAccountId);
+    const response = await gmailArchiveApprovalResponseRepository.respond({
+      userId: owner.ownerUserId,
+      approvalId: proposal.approval.id,
+      action: 'approve',
+    });
+    if (!response.ok) throw new Error('Premature feedback fixture failed.');
+    const { feedbackEventId } = await applyFeedbackFor(owner.ownerUserId, proposal.approval.id);
+    await expect(finalizeGmailArchiveFeedbackReceipt({
+      userId: owner.ownerUserId,
+      approvalId: proposal.approval.id,
+      feedbackEventId,
+    })).resolves.toEqual({ ok: false, error: 'not_ready' });
+    const revisions = await getPool().query<{ count: string }>(
+      `SELECT count(*)::STRING AS count FROM decision_receipt_revisions revision
+        JOIN decision_receipts receipt ON receipt.id = revision.receipt_id
+       WHERE receipt.decision_id = $1`,
+      [proposal.decision.id],
+    );
+    expect(revisions.rows[0]?.count).toBe('4');
+  }, 120_000);
+
+  it('fails closed on a corrupt or mismatched application marker without appending', async () => {
+    const owner = await seedRecoveryOwner(955);
+    const proposal = await createProposal(4006, owner.ownerUserId, owner.ownerAccountId);
+    const response = await gmailArchiveApprovalResponseRepository.respond({
+      userId: owner.ownerUserId,
+      approvalId: proposal.approval.id,
+      action: 'reject',
+    });
+    if (!response.ok) throw new Error('Corrupt feedback fixture failed.');
+    const { feedbackEventId } = await applyFeedbackFor(owner.ownerUserId, proposal.approval.id);
+    await getPool().query(
+      'UPDATE twin_feedback_applications SET output_digest = $2 WHERE feedback_event_id = $1',
+      [feedbackEventId, '0'.repeat(64)],
+    );
+    await expect(finalizeGmailArchiveFeedbackReceipt({
+      userId: owner.ownerUserId,
+      approvalId: proposal.approval.id,
+      feedbackEventId,
+    })).resolves.toEqual({ ok: false, error: 'integrity_conflict' });
+    await expect(finalizeGmailArchiveFeedbackReceipt({
+      userId: owner.ownerUserId,
+      approvalId: id('91', 4006),
+      feedbackEventId,
+    })).resolves.toEqual({ ok: false, error: 'not_found' });
+    const revisions = await getPool().query<{ count: string }>(
+      `SELECT count(*)::STRING AS count FROM decision_receipt_revisions revision
+        JOIN decision_receipts receipt ON receipt.id = revision.receipt_id
+       WHERE receipt.decision_id = $1`,
+      [proposal.decision.id],
+    );
+    expect(revisions.rows[0]?.count).toBe('4');
   }, 120_000);
 });
