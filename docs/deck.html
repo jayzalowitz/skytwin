@@ -1168,7 +1168,7 @@ const provenance: ActionProvenance = action.provenance ?? 'untrusted_external';<
         <h3 class="flush">What “Undo” actually does</h3>
         <div class="two-up">
           <p>Every row of the decision log carries an Undo button, and it does not un-send the email. Clicking it opens a form — what went wrong, how bad, what you'd have preferred — and writes that as feedback against the decision. The twin reads it and adjusts. The toast is honest about which of the two it is: “Walked back. I'll remember: …”.</p>
-          <p>Real reversal of an executed action exists in exactly one place in this codebase, <span class="mono">POST /api/capabilities/:id/regret</span>, and it only reaches actions taken through an MCP server. The decision log never calls it. Undoing the send itself is not shipped, and Safety Invariant #5 is why we won't write the word “reversible” on this slide until it is.</p>
+          <p><span class="mono">POST /api/capabilities/:id/regret</span> is report-only: it inspects rollback availability but does not reverse an executed action. Generic reversal remains unavailable until it has a durable at-most-once lifecycle. Undoing the send itself is not shipped, and Safety Invariant #5 is why we won't write the word “reversible” on this slide until it is.</p>
         </div>
 
         <h3>Can I get out?</h3>

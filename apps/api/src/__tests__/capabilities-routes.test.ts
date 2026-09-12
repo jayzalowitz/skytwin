@@ -48,9 +48,8 @@ vi.mock('@skytwin/db', () => ({
   query: mockQuery,
 }));
 
-// #324: the regret endpoint resolves the execution router to dispatch
-// IronClawAdapter.rollback(planId). Mock it so tests assert the wiring without
-// constructing real adapters.
+// Sentinel mocks prove the report-only regret endpoint does not construct an
+// execution router or dispatch rollback work.
 vi.mock('../execution-setup.js', () => ({
   getExecutionRouter: mockGetExecutionRouter,
 }));
@@ -211,14 +210,9 @@ describe('Capabilities API routes', () => {
     mockAppSuggestionRepository.markSnoozed.mockResolvedValue(null);
     // Default: listForUser returns empty array
     mockMcpServerRepository.listForUser.mockResolvedValue([]);
-    // #324: default router resolves with a rollback() that succeeds.
-    mockRouterRollback.mockResolvedValue({
-      result: { success: true, message: 'Rolled back by ironclaw' },
-      adapterUsed: 'ironclaw',
-      noAdapter: false,
-    });
-    mockGetExecutionRouter.mockResolvedValue({ rollback: mockRouterRollback });
-    // #324: default rollback targets are empty unless a test sets them.
+    mockRouterRollback.mockRejectedValue(new Error('rollback dispatch must remain disabled'));
+    mockGetExecutionRouter.mockRejectedValue(new Error('router construction must remain disabled'));
+    // Report targets are empty unless a test sets them.
     mockExecutionRepository.getRollbackTargetsByServer.mockResolvedValue([]);
   });
 
@@ -506,7 +500,7 @@ describe('Capabilities API routes', () => {
       expect(mockRouterRollback).not.toHaveBeenCalled();
     });
 
-    it('reports rollback unavailable on repeated requests without constructing a router', async () => {
+    it('reports rollback unavailable on concurrent requests without constructing a router', async () => {
       mockMcpServerRepository.getById.mockResolvedValue(makeMcpServer({ user_id: USER_ID }));
 
       // Even a reversible action with a resolved report target cannot dispatch
@@ -533,14 +527,21 @@ describe('Capabilities API routes', () => {
       ]);
 
       const app = buildApp(USER_ID);
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        const res = await request(
+      const responses = await Promise.all([
+        request(
           app,
           'POST',
           `/api/capabilities/${SERVER_ID}/regret`,
           { withinHours: 48 },
-        );
-
+        ),
+        request(
+          app,
+          'POST',
+          `/api/capabilities/${SERVER_ID}/regret`,
+          { withinHours: 48 },
+        ),
+      ]);
+      for (const res of responses) {
         expect(res.status).toBe(200);
         expect(res.body).toMatchObject({
           undone: [{
