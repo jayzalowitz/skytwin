@@ -6428,6 +6428,8 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     const serverId = id('98', 256);
     const provenanceId = id('97', 256);
     const otherActionId = id('79', 256);
+    const newerPlanId = id('87', 256);
+    const newerResultId = id('86', 256);
     await withTransaction(async (client) => {
       await client.query(
         `UPDATE candidate_actions SET action_type = 'label_email' WHERE id = $1`,
@@ -6535,6 +6537,34 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       [resultId],
     );
     await getPool().query("UPDATE execution_plans SET status = 'failed' WHERE id = $1", [planId]);
+    await expectNoQualifiedPlan();
+
+    // A historical successful plan must not be selected when the outcome now
+    // points at a newer failed/nonrollbackable plan for the same action.
+    await getPool().query("UPDATE execution_plans SET status = 'completed' WHERE id = $1", [planId]);
+    await getPool().query(
+      `UPDATE execution_results
+          SET success = true, rollback_available = true,
+              outputs = '{"adapter_used":"direct"}'::JSONB
+        WHERE id = $1`,
+      [resultId],
+    );
+    await getPool().query(
+      `INSERT INTO execution_plans (id, decision_id, action_id, status, steps, created_at)
+       VALUES ($1, $2, $3, 'failed', '[]'::JSONB, now() + INTERVAL '1 millisecond')`,
+      [newerPlanId, fixture.decision.id, fixture.candidate.id],
+    );
+    await getPool().query(
+      `INSERT INTO execution_results (
+         id, plan_id, success, outputs, rollback_available, completed_at
+       ) VALUES ($1, $2, false, '{"adapter_used":"direct"}'::JSONB, false,
+                 now() + INTERVAL '1 millisecond')`,
+      [newerResultId, newerPlanId],
+    );
+    await getPool().query(
+      'UPDATE decision_outcomes SET execution_plan_id = $1 WHERE decision_id = $2',
+      [newerPlanId, fixture.decision.id],
+    );
     await expectNoQualifiedPlan();
   }, 120_000);
 });
