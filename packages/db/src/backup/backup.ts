@@ -565,7 +565,9 @@ export function validateBackupData(value: unknown): string[] {
               Date.parse(reconciliation.phaseChangedAt) +
                 GMAIL_ARCHIVE_RECOVERY_GRACE_SECONDS * 1_000 > terminalAt ||
               (reconciliation.evidence.kind === 'mailbox_observed' &&
-                Date.parse(reconciliation.evidence.observedAt) > terminalAt)
+                (Date.parse(reconciliation.evidence.observedAt) <
+                  Date.parse(reconciliation.phaseChangedAt) ||
+                 Date.parse(reconciliation.evidence.observedAt) > terminalAt))
             );
             if (!row || (!result && !reconciliation) ||
                 (result && binding?.attemptPhase !== null && binding?.attemptPhase !== undefined &&

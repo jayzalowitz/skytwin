@@ -26,6 +26,12 @@ vi.mock('../repositories/gmail-archive-terminalization-repository.js', () => ({
 const { gmailArchiveRecoveryLeaseTestHooks } = await import(
   '../repositories/gmail-archive-recovery-lease-repository.js'
 );
+const {
+  consumeGmailArchiveRecoveryLeaseInTransaction,
+  gmailArchiveRecoveryLeaseConsumerTestHooks,
+} = await import(
+  '../repositories/gmail-archive-recovery-lease-consumer.js'
+);
 
 const authority = {
   userId: '11111111-1111-4111-8111-111111111111',
@@ -50,8 +56,47 @@ const permit = {
   ...fence,
   observationAttemptId: '66666666-6666-4666-8666-666666666666',
   authorizedAt: '2026-09-12T12:05:00.000Z',
-  deadlineAt: '2026-09-12T12:05:30.000Z',
+  deadlineAt: '2026-09-12T12:07:30.000Z',
 };
+
+const observedEvidence = {
+  kind: 'mailbox_observed' as const,
+  binding: {
+    userId: fence.userId,
+    admissionId: fence.admissionId,
+    messageRefId: fence.messageRefId,
+  },
+  inbox: false,
+  observedAt: '2026-09-12T12:05:10.000Z',
+};
+
+function recoveryLeaseRow(overrides: Record<string, unknown> = {}) {
+  return {
+    admission_id: fence.admissionId,
+    user_id: fence.userId,
+    approval_id: fence.approvalId,
+    message_ref_id: fence.messageRefId,
+    work_kind: fence.workKind,
+    barrier_status: fence.barrierStatus,
+    attempt_phase: fence.attemptPhase,
+    phase_changed_at: new Date('2026-09-12T12:00:00.123Z'),
+    phase_changed_at_text: '2026-09-12 12:00:00.123456',
+    lease_token: fence.leaseToken,
+    generation: String(fence.generation),
+    acquired_at: new Date('2026-09-12T12:04:00.000Z'),
+    renewed_at: new Date('2026-09-12T12:04:00.000Z'),
+    expires_at: new Date('2026-09-12T12:04:30.000Z'),
+    observation_state: 'evidence_recorded',
+    observation_attempt_id: permit.observationAttemptId,
+    observation_authorized_at: new Date(permit.authorizedAt),
+    observation_deadline_at: new Date(permit.deadlineAt),
+    observation_evidence: {
+      schema: 'gmail_archive_recovery_observation_v1',
+      evidence: observedEvidence,
+    },
+    ...overrides,
+  };
+}
 
 async function sourceFilesBelow(directory: URL): Promise<string[]> {
   const entries = await readdir(directory, { withFileTypes: true });
@@ -192,6 +237,39 @@ describe('gmailArchiveRecoveryLeaseRepository boundary', () => {
     expect(gmailArchiveRecoveryLeaseTestHooks.snapshotFence(submitted)).toBeNull();
   });
 
+  it('keeps issuer and consumer fence parsers in exact parity', () => {
+    const corpus: unknown[] = [
+      fence,
+      { ...fence, workKind: 'reconcile_pre_dispatch', attemptPhase: 'pre_dispatch' },
+      {
+        ...fence,
+        workKind: 'resume_preparation',
+        barrierStatus: 'reserved',
+        attemptPhase: null,
+      },
+      {
+        ...fence,
+        workKind: 'resume_claim',
+        barrierStatus: 'prepared',
+        attemptPhase: null,
+      },
+      null,
+      {},
+      { ...fence, extra: true },
+      { ...fence, generation: 0 },
+      { ...fence, generation: Number.MAX_SAFE_INTEGER + 1 },
+      { ...fence, leaseToken: 'invalid' },
+      { ...fence, attemptPhase: 'pre_dispatch' },
+      { ...fence, phaseChangedAt: '2026-02-31T12:00:00.123456Z' },
+      { ...fence, phaseChangedAt: '2026-09-12T12:00:00.123456+00:00' },
+    ];
+    for (const value of corpus) {
+      expect(gmailArchiveRecoveryLeaseConsumerTestHooks.snapshotFence(value)).toEqual(
+        gmailArchiveRecoveryLeaseTestHooks.snapshotFence(value),
+      );
+    }
+  });
+
   it('canonicalizes only exact UTC DB phase strings while preserving microseconds', () => {
     const canonicalize = gmailArchiveRecoveryLeaseTestHooks.canonicalDbPhaseTimestamp;
     expect(canonicalize('2026-09-12 12:00:00.123')).toBe('2026-09-12T12:00:00.123Z');
@@ -225,6 +303,31 @@ describe('gmailArchiveRecoveryLeaseRepository boundary', () => {
       ...evidence,
       binding: { ...evidence.binding, admissionId: authority.approvalId },
     })).not.toBeNull();
+  });
+
+  it('keeps issuer and consumer evidence parsers in exact parity', () => {
+    const unavailable = {
+      kind: 'mailbox_observation_unavailable',
+      binding: observedEvidence.binding,
+      code: 'observation_unavailable',
+    };
+    const corpus: unknown[] = [
+      observedEvidence,
+      unavailable,
+      null,
+      {},
+      { ...observedEvidence, extra: true },
+      { ...observedEvidence, inbox: 'false' },
+      { ...observedEvidence, observedAt: '2026-09-12T12:05:10.123456Z' },
+      { ...observedEvidence, binding: { ...observedEvidence.binding, userId: 'invalid' } },
+      { ...unavailable, code: 'invalid_command' },
+      { ...unavailable, accessToken: 'secret' },
+    ];
+    for (const value of corpus) {
+      expect(gmailArchiveRecoveryLeaseConsumerTestHooks.snapshotEvidence(value)).toEqual(
+        gmailArchiveRecoveryLeaseTestHooks.snapshotEvidence(value),
+      );
+    }
   });
 
   it('rejects retained evidence with crossed authority or impossible timing', () => {
@@ -286,9 +389,134 @@ describe('gmailArchiveRecoveryLeaseRepository boundary', () => {
       ...row,
       observation_evidence: {
         ...evidence,
-        evidence: { ...evidence.evidence, observedAt: '2026-09-12T12:05:30.001Z' },
+        evidence: { ...evidence.evidence, observedAt: '2026-09-12T12:07:30.001Z' },
       },
     } as never, fence.phaseChangedAt)).toBeNull();
+    expect(gmailArchiveRecoveryLeaseTestHooks.leaseFromRow({
+      ...row,
+      observation_deadline_at: new Date('2026-09-12T12:07:29.999Z'),
+    } as never, fence.phaseChangedAt)).toBeNull();
+  });
+
+  it('consumes an exact recorded observation with every fence and evidence predicate', async () => {
+    const row = recoveryLeaseRow();
+    const query = vi.fn()
+      .mockResolvedValueOnce({ rows: [row] })
+      .mockResolvedValueOnce({ rows: [{ admission_id: fence.admissionId }] });
+    await expect(consumeGmailArchiveRecoveryLeaseInTransaction(
+      { query } as unknown as PoolClient,
+      {
+        fence,
+        observationAttemptId: permit.observationAttemptId,
+        evidence: observedEvidence,
+      },
+    )).resolves.toEqual({ ok: true, evidence: observedEvidence });
+    expect(query).toHaveBeenCalledTimes(2);
+    expect(query.mock.calls[1]?.[0]).toContain('DELETE FROM gmail_archive_recovery_leases');
+    expect(query.mock.calls[1]?.[0]).toContain('lease_token = $9 AND generation = $10::INT8');
+    expect(query.mock.calls[1]?.[0]).toContain('observation_attempt_id IS NOT DISTINCT FROM $12::UUID');
+    expect(query.mock.calls[1]?.[0]).toContain('observation_evidence IS NOT DISTINCT FROM $13::JSONB');
+    expect(query.mock.calls[1]?.[1]).toEqual(expect.arrayContaining([
+      fence.leaseToken,
+      fence.generation,
+      permit.observationAttemptId,
+      JSON.stringify(row.observation_evidence),
+    ]));
+  });
+
+  it('rejects hostile consumer inputs without invoking accessors or querying', async () => {
+    const getter = vi.fn(() => fence);
+    const accessor = {
+      observationAttemptId: permit.observationAttemptId,
+      evidence: observedEvidence,
+    } as Record<string, unknown>;
+    Object.defineProperty(accessor, 'fence', { enumerable: true, get: getter });
+    const revoked = Proxy.revocable({
+      fence,
+      observationAttemptId: permit.observationAttemptId,
+      evidence: observedEvidence,
+    }, {});
+    revoked.revoke();
+    for (const submitted of [
+      accessor,
+      { fence, observationAttemptId: permit.observationAttemptId, evidence: observedEvidence, extra: true },
+      revoked.proxy,
+    ]) {
+      const query = vi.fn();
+      await expect(consumeGmailArchiveRecoveryLeaseInTransaction(
+        { query } as unknown as PoolClient,
+        submitted as never,
+      )).resolves.toEqual({ ok: false, error: 'invalid_input' });
+      expect(query).not.toHaveBeenCalled();
+    }
+    expect(getter).not.toHaveBeenCalled();
+  });
+
+  it('consumes an expired but unsuperseded pre-dispatch generation without observation state', async () => {
+    const preFence = {
+      ...fence,
+      workKind: 'reconcile_pre_dispatch' as const,
+      attemptPhase: 'pre_dispatch' as const,
+    };
+    const row = recoveryLeaseRow({
+      work_kind: preFence.workKind,
+      attempt_phase: preFence.attemptPhase,
+      observation_state: 'not_started',
+      observation_attempt_id: null,
+      observation_authorized_at: null,
+      observation_deadline_at: null,
+      observation_evidence: null,
+    });
+    const query = vi.fn()
+      .mockResolvedValueOnce({ rows: [row] })
+      .mockResolvedValueOnce({ rows: [{ admission_id: fence.admissionId }] });
+    await expect(consumeGmailArchiveRecoveryLeaseInTransaction(
+      { query } as unknown as PoolClient,
+      { fence: preFence, observationAttemptId: null, evidence: null },
+    )).resolves.toEqual({ ok: true, evidence: null });
+    expect((query.mock.calls[1]?.[0] as string)).not.toContain('expires_at >');
+  });
+
+  it('does not delete a stale generation, unfinished observation, or conflicting evidence', async () => {
+    const cases = [
+      {
+        row: recoveryLeaseRow({ generation: String(fence.generation + 1) }),
+        input: { fence, observationAttemptId: permit.observationAttemptId, evidence: observedEvidence },
+        error: 'stale_lease',
+      },
+      {
+        row: recoveryLeaseRow({
+          observation_state: 'started',
+          observation_evidence: null,
+        }),
+        input: { fence, observationAttemptId: permit.observationAttemptId, evidence: observedEvidence },
+        error: 'not_ready',
+      },
+      {
+        row: recoveryLeaseRow(),
+        input: {
+          fence,
+          observationAttemptId: permit.observationAttemptId,
+          evidence: { ...observedEvidence, inbox: true },
+        },
+        error: 'evidence_conflict',
+      },
+      {
+        row: recoveryLeaseRow({
+          observation_deadline_at: new Date('2026-09-12T12:07:29.999Z'),
+        }),
+        input: { fence, observationAttemptId: permit.observationAttemptId, evidence: observedEvidence },
+        error: 'integrity_conflict',
+      },
+    ] as const;
+    for (const current of cases) {
+      const query = vi.fn().mockResolvedValue({ rows: [current.row] });
+      await expect(consumeGmailArchiveRecoveryLeaseInTransaction(
+        { query } as unknown as PoolClient,
+        current.input,
+      )).resolves.toEqual({ ok: false, error: current.error });
+      expect(query).toHaveBeenCalledTimes(1);
+    }
   });
 
   it('rejects crossed evidence before a transaction', async () => {
@@ -361,9 +589,15 @@ describe('gmailArchiveRecoveryLeaseRepository boundary', () => {
       new URL('../repositories/gmail-archive-recovery-lease-repository.ts', import.meta.url),
       'utf8',
     );
-    expect(source).not.toMatch(/@skytwin\/(?:connectors|credential-vault|execution-router|ironclaw-adapter)/);
-    expect(source).not.toMatch(/\bfetch\s*\(|https?:\/\/|\/modify\b|\bPOST\b/);
-    expect(source).not.toMatch(/apps\/(?:api|worker)/);
+    const consumer = await readFile(
+      new URL('../repositories/gmail-archive-recovery-lease-consumer.ts', import.meta.url),
+      'utf8',
+    );
+    for (const boundary of [source, consumer]) {
+      expect(boundary).not.toMatch(/@skytwin\/(?:connectors|credential-vault|execution-router|ironclaw-adapter)/);
+      expect(boundary).not.toMatch(/\bfetch\s*\(|https?:\/\/|\/modify\b|\bPOST\b/);
+      expect(boundary).not.toMatch(/apps\/(?:api|worker)/);
+    }
     const roots = [
       new URL('../../../../apps/api/', import.meta.url),
       new URL('../../../../apps/worker/', import.meta.url),
@@ -374,5 +608,15 @@ describe('gmailArchiveRecoveryLeaseRepository boundary', () => {
     const runtimeSources = (await Promise.all(roots.map(sourceFilesBelow))).flat().join('\n');
     expect(runtimeSources).not.toContain('gmailArchiveRecoveryLeaseRepository');
     expect(runtimeSources).not.toContain('GmailArchiveRecoveryLeaseFence');
+    expect(runtimeSources).not.toContain('gmail-archive-recovery-lease-consumer');
+    expect(runtimeSources).not.toContain('consumeGmailArchiveRecoveryLeaseInTransaction');
+    const barrels = await Promise.all([
+      readFile(new URL('../repositories/index.ts', import.meta.url), 'utf8'),
+      readFile(new URL('../index.ts', import.meta.url), 'utf8'),
+    ]);
+    for (const barrel of barrels) {
+      expect(barrel).not.toContain('gmail-archive-recovery-lease-consumer');
+      expect(barrel).not.toContain('consumeGmailArchiveRecoveryLeaseInTransaction');
+    }
   });
 });

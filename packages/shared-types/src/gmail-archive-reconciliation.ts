@@ -1,4 +1,4 @@
-import type { GmailArchiveAttemptPhase } from './gmail-inbox-mutation.js';
+import type { GmailArchiveRecoveryLeaseFence } from './gmail-archive-recovery-lease.js';
 import type {
   GmailInboxObservationBinding,
   GmailInboxObservationUnavailableCode,
@@ -48,13 +48,16 @@ export type GmailArchiveReconciliationEvidence =
   | GmailArchiveMailboxObservedEvidence
   | GmailArchiveMailboxObservationUnavailableEvidence;
 
-/**
- * The exact recovery snapshot that may be reconciled. `phaseChangedAt` is the
- * DB timestamp at which the durable attempt entered `phase`.
- */
+/** Installation-local authority proving which recovery worker may terminalize. */
+export interface GmailArchiveReconciliationRecoveryProof {
+  fence: GmailArchiveRecoveryLeaseFence;
+  /** Null before dispatch; exact one-shot attempt after dispatch may have begun. */
+  observationAttemptId: string | null;
+}
+
+/** The exact fenced recovery snapshot that may be reconciled. */
 export interface ReconcileAbandonedGmailArchiveInput {
   command: GmailArchiveReconciliationCommand;
-  phase: GmailArchiveAttemptPhase;
-  phaseChangedAt: string;
+  recovery: GmailArchiveReconciliationRecoveryProof;
   evidence: GmailArchiveReconciliationEvidence;
 }

@@ -309,6 +309,7 @@ export type {
   GmailArchiveMailboxObservedEvidence,
   GmailArchiveReconciliationCommand,
   GmailArchiveReconciliationEvidence,
+  GmailArchiveReconciliationRecoveryProof,
   ReconcileAbandonedGmailArchiveInput,
 } from './gmail-archive-reconciliation.js';
 
