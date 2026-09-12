@@ -1224,6 +1224,8 @@ export function verifyJoinedDecisionReceiptChain(input: {
         contentDigest,
       });
       const correction = revision.content.correctionOfRevision;
+      const feedbackOwnerMismatch = revision.content.version === 3 &&
+        revision.content.feedbackApplication.snapshot.userId !== input.userId;
       if (sequence !== index + 1 ||
           revision.previous_digest !== previousDigest ||
           revision.content_digest !== contentDigest || revision.revision_digest !== revisionDigest ||
@@ -1236,7 +1238,8 @@ export function verifyJoinedDecisionReceiptChain(input: {
           revision.execution_result_id !== (revision.content.executionResult?.id ?? null) ||
           revision.execution_disposition !== (revision.content.executionDisposition ?? null) ||
           revision.correction_of_revision_id !== (correction?.id ?? null) ||
-          revision.content.decision.id !== input.decisionId || eventKeys.has(revision.event_key) ||
+          revision.content.decision.id !== input.decisionId || feedbackOwnerMismatch ||
+          eventKeys.has(revision.event_key) ||
           revisionIds.has(revision.id) ||
           (index === 0 && revision.content.stage !== 'decision_recorded') ||
           (previousContent !== null && !preservesJoinedDecisionReceiptLinks(previousContent, revision.content)) ||

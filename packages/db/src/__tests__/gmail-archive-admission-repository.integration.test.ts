@@ -7750,6 +7750,22 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       prior.content.version === 2 ? prior.content.executionExplanation : undefined,
     );
     expect(finalized.finalization.revision.previous_digest).toBe(prior.revision_digest);
+    if (status === 'succeeded') {
+      const backup = await collectBackup(owner.ownerUserId);
+      expect(backup).toMatchObject({ success: true });
+      if (!backup.success) throw new Error(`Feedback receipt backup failed: ${backup.message}`);
+      expect(validateBackupData(backup.data)).toEqual([]);
+      const bundle = backup.data.decisions.find(
+        (item) => item.decision.id === fixture.proposal.decision.id,
+      );
+      if (!bundle) throw new Error('Feedback receipt backup omitted its decision bundle.');
+      bundle.explanations = bundle.explanations.filter(
+        (row) => row.id !== terminalized.terminalization.executionExplanation.id,
+      );
+      expect(validateBackupData(backup.data)).toContain(
+        `decisions[0].joinedReceipt has inconsistent execution explanation snapshot`,
+      );
+    }
   }, 120_000);
 
   it('rejects premature approved feedback without changing receipt history', async () => {
