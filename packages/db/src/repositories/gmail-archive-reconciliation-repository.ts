@@ -317,7 +317,7 @@ export function gmailArchiveReconciliationExplanationSemantics(
     const currentState = envelope.evidence.inbox ? 'in Inbox' : 'outside Inbox';
     return {
       whatHappened: `The approved Gmail Inbox archive attempt has an unknown outcome. A later mailbox observation found the message ${currentState}, but does not establish what caused that state.`,
-      confidenceReasoning: 'The durable dispatch boundary may have been crossed, and a later mailbox read can establish current state but not causal execution outcome.',
+      confidenceReasoning: 'The durable dispatch boundary may have been crossed, and a later mailbox read can establish mailbox state at the observation time but not causal execution outcome.',
       escalationRationale: 'The prior request must not be replayed because it may already have reached Gmail.',
       correctionGuidance: 'Review the current mailbox state before deciding whether to take a new action.',
     };

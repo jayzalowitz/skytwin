@@ -28,6 +28,7 @@ import { gmailArchiveRecoveryRepository } from '../repositories/gmail-archive-re
 import { gmailInboxObservationTargetRepository } from '../repositories/gmail-inbox-observation-target-repository.js';
 import {
   gmailArchiveReconciliationRepository,
+  gmailArchiveReconciliationTestHooks,
   parseGmailArchiveReconciliationExplanationEvidence,
 } from '../repositories/gmail-archive-reconciliation-repository.js';
 import {
@@ -2709,13 +2710,85 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     });
   }, 120_000);
 
-  it('terminalizes after connector evidence is cascaded post-claim', async () => {
+  it('rolls back a post-write 40001 and retries with one stable reconciliation graph', async () => {
+    const fixture = await createClaimedProposal(127);
+    const phaseChangedAt = await ageClaimedAttempt(fixture.command.admissionId);
+    const stableIds = {
+      explanationId: id('94', 127),
+      resultId: id('95', 127),
+      revisionId: id('96', 127),
+    };
+    let transitions = 0;
+    const terminalized = await gmailArchiveReconciliationTestHooks.reconcileWithTransition(
+      {
+        command: { ...fixture.command, operation: 'reconcile_archive' },
+        phase: 'pre_dispatch',
+        phaseChangedAt,
+        evidence: { kind: 'interrupted_before_dispatch' },
+      },
+      async (client, input, stable) => {
+        const result = await gmailArchiveReconciliationTestHooks.transition(client, input, stable);
+        transitions += 1;
+        if (transitions === 1) {
+          throw Object.assign(new Error('restart after reconciliation writes'), { code: '40001' });
+        }
+        return result;
+      },
+      (persistedAt) => ({ ...stableIds, persistedAt }),
+    );
+    expect(transitions).toBe(2);
+    expect(terminalized).toMatchObject({
+      ok: true,
+      created: true,
+      reconciliation: {
+        status: 'failed',
+        executionExplanation: { id: stableIds.explanationId },
+        executionResult: { id: stableIds.resultId },
+        revision: { id: stableIds.revisionId, sequence: 7 },
+      },
+    });
+    const durable = await getPool().query<{
+      explanations: string;
+      results: string;
+      revisions: string;
+      matching_explanations: string;
+      matching_results: string;
+      matching_revisions: string;
+    }>(
+      `SELECT
+        (SELECT count(*)::STRING FROM explanation_records WHERE decision_id = $1) AS explanations,
+        (SELECT count(*)::STRING FROM execution_results WHERE plan_id = $2) AS results,
+        (SELECT count(*)::STRING FROM decision_receipt_revisions WHERE receipt_id = $3) AS revisions,
+        (SELECT count(*)::STRING FROM explanation_records WHERE id = $4) AS matching_explanations,
+        (SELECT count(*)::STRING FROM execution_results WHERE id = $5) AS matching_results,
+        (SELECT count(*)::STRING FROM decision_receipt_revisions WHERE id = $6) AS matching_revisions`,
+      [
+        fixture.proposal.decision.id,
+        fixture.prepared.plan.id,
+        fixture.prepared.receipt.id,
+        stableIds.explanationId,
+        stableIds.resultId,
+        stableIds.revisionId,
+      ],
+    );
+    expect(durable.rows[0]).toEqual({
+      explanations: '3',
+      results: '1',
+      revisions: '7',
+      matching_explanations: '1',
+      matching_results: '1',
+      matching_revisions: '1',
+    });
+  }, 120_000);
+
+  it('backs up, validates, and restores a reconciled graph after connector evidence is removed', async () => {
     // Use a dedicated owner so earlier fail-closed cases can retain their
     // intentionally malformed graphs without polluting this portable export.
     const portableUserId = id('11', 3);
     const portableAccountId = id('22', 3);
     await seedOwner(portableUserId, portableAccountId, id('55', 3), 'portable-owner@example.test');
-    const fixture = await createClaimedProposal(102, portableUserId, portableAccountId);
+    const fixture = await createClaimedProposal(102, portableUserId, portableAccountId, true);
+    const phaseChangedAt = await ageClaimedAttempt(fixture.command.admissionId);
     await getPool().query(
       'DELETE FROM connected_accounts WHERE id = $1 AND user_id = $2',
       [portableAccountId, portableUserId],
@@ -2725,20 +2798,26 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       (SELECT count(*)::STRING FROM signals WHERE resource_ref_id = $1) AS signals`,
     [fixture.proposal.messageRefId]);
     expect(evidence.rows[0]).toEqual({ refs: '0', signals: '0' });
-    const terminalized = await gmailArchiveTerminalizationRepository.terminalize({
-      command: fixture.command,
-      result: {
-        outcome: 'known_failure',
-        code: 'remote_rejected',
-        compensationAvailable: false,
+    const terminalized = await gmailArchiveReconciliationRepository.reconcile({
+      command: { ...fixture.command, operation: 'reconcile_archive' },
+      phase: 'dispatch_may_have_started',
+      phaseChangedAt,
+      evidence: {
+        kind: 'mailbox_observation_unavailable',
+        binding: {
+          userId: portableUserId,
+          admissionId: fixture.command.admissionId,
+          messageRefId: fixture.command.messageRefId,
+        },
+        code: 'not_observable',
       },
     });
     expect(terminalized).toMatchObject({
       ok: true,
       created: true,
-      terminalization: { status: 'failed' },
+      reconciliation: { status: 'unknown', executionResult: null },
     });
-    if (!terminalized.ok) throw new Error('Portable terminal fixture failed.');
+    if (!terminalized.ok) throw new Error('Portable reconciliation fixture failed.');
 
     const backup = await collectBackup(portableUserId);
     expect(backup).toMatchObject({ success: true });
@@ -2763,14 +2842,26 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     expect(restored.rows[0]).toEqual({ explanations: '3', revisions: '7', trusted: '0' });
     const restoredExplanation = await getPool().query<{ evidence_used: unknown }>(
       'SELECT evidence_used FROM explanation_records WHERE id = $1 AND decision_id = $2',
-      [terminalized.terminalization.executionExplanation.id, fixture.proposal.decision.id],
+      [terminalized.reconciliation.executionExplanation.id, fixture.proposal.decision.id],
     );
-    expect(parseGmailArchiveTerminalExplanationEvidence(
+    expect(parseGmailArchiveReconciliationExplanationEvidence(
       restoredExplanation.rows[0]?.evidence_used,
     )).toEqual({
-      outcome: 'known_failure',
-      code: 'remote_rejected',
+      schema: 'gmail_archive_reconciliation_terminal_v1',
+      attemptPhase: 'dispatch_may_have_started',
+      phaseChangedAt,
+      outcome: 'unknown',
+      code: 'recovery_causal_outcome_unknown',
       compensationAvailable: false,
+      evidence: {
+        kind: 'mailbox_observation_unavailable',
+        binding: {
+          userId: portableUserId,
+          admissionId: fixture.command.admissionId,
+          messageRefId: fixture.command.messageRefId,
+        },
+        code: 'not_observable',
+      },
     });
   }, 120_000);
 });

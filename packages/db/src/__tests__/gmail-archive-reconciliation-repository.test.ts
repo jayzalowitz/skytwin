@@ -191,6 +191,14 @@ describe('gmailArchiveReconciliationRepository boundary', () => {
       .toContain('before any Gmail mutation request began');
   });
 
+  it('describes an observation as state at its observation time, not timeless current state', () => {
+    const semantics = gmailArchiveReconciliationExplanationSemantics(
+      buildGmailArchiveReconciliationTerminalEnvelope(input(observedOutsideInbox)),
+    );
+    expect(semantics.confidenceReasoning).toContain('mailbox state at the observation time');
+    expect(semantics.confidenceReasoning).not.toContain('establish current state');
+  });
+
   it('rejects tampered envelopes and non-exact explanation arrays', () => {
     const envelope = buildGmailArchiveReconciliationTerminalEnvelope(input());
     for (const value of [
