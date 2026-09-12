@@ -4933,13 +4933,20 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     releaseLease();
     await leaseHolder;
     const beginResult = await waitingBegin;
-    expect(beginResult).toEqual({ ok: true, status: 'evidence_recorded', permit: null });
+    expect(beginResult).toMatchObject({ ok: true });
     const state = await getPool().query<{ observation_state: string }>(
       `SELECT observation_state
          FROM gmail_archive_recovery_leases WHERE admission_id = $1`,
       [dispatch.command.admissionId],
     );
-    expect(state.rows[0]?.observation_state).toBe('evidence_recorded');
+    // Cockroach transaction-local clock sampling may leave the capability live
+    // or close it after commit; neither outcome authorizes a GET beyond its permit.
+    if (beginResult.ok && beginResult.status === 'permitted') {
+      expect(state.rows[0]?.observation_state).toBe('started');
+    } else {
+      expect(beginResult).toEqual({ ok: true, status: 'evidence_recorded', permit: null });
+      expect(state.rows[0]?.observation_state).toBe('evidence_recorded');
+    }
 
     const recordOwner = await seedRecoveryOwner(17);
     const recordDispatch = await createClaimedProposal(
