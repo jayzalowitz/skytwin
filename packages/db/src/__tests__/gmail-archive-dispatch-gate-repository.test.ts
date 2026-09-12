@@ -18,7 +18,7 @@ describe('gmailArchiveDispatchGateRepository boundary', () => {
     {},
     { ...command, extra: true },
     { ...command, userId: 'invalid' },
-    { ...command, admissionId: command.admissionId.toUpperCase() },
+    { ...command, admissionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'.toUpperCase() },
     { ...command, messageRefId: 'invalid' },
     { ...command, operation: 'restore' },
   ])('contains malformed command input without a transaction: %o', async (input) => {
