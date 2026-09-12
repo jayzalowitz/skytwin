@@ -139,7 +139,7 @@ async function transition(
 
   const entered = (await client.query<PreEffectBarrierRow>(
     `UPDATE pre_effect_barriers
-        SET effect_result = $3::JSONB, updated_at = now()
+        SET effect_result = $3::JSONB, updated_at = date_trunc('milliseconds', now())
       WHERE id = $1 AND user_id = $2 AND effect_type = 'event_execution'
         AND status = 'in_progress' AND idempotency_key = $4
         AND decision_id = $5 AND action_id = $6 AND explanation_id = $7

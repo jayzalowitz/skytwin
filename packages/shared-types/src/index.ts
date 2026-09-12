@@ -285,6 +285,16 @@ export type {
 } from './gmail-archive-recovery.js';
 
 export type {
+  GmailArchiveInterruptedBeforeDispatchEvidence,
+  GmailArchiveMailboxObservationUnavailableEvidence,
+  GmailArchiveMailboxObservedEvidence,
+  GmailArchiveReconciliationCommand,
+  GmailArchiveReconciliationEvidence,
+  GmailArchiveReconciliationObservationBinding,
+  ReconcileAbandonedGmailArchiveInput,
+} from './gmail-archive-reconciliation.js';
+
+export type {
   BehavioralPattern,
   PatternTrigger,
   TemporalProfile,

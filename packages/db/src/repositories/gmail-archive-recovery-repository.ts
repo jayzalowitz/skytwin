@@ -9,19 +9,18 @@ import { withTransaction } from '../connection.js';
 import type { ExecutionPlanRow } from '../types.js';
 import { canonicalGmailArchiveCandidateMessageRef } from './gmail-archive-approval-response-repository.js';
 import { snapshotGmailArchiveAttemptState } from './gmail-archive-attempt-state.js';
+import { validateStoredGmailArchiveTerminalGraph } from './gmail-archive-reconciliation-repository.js';
+export { GMAIL_ARCHIVE_RECOVERY_GRACE_SECONDS } from './gmail-archive-recovery-policy.js';
+import { GMAIL_ARCHIVE_RECOVERY_GRACE_SECONDS } from './gmail-archive-recovery-policy.js';
 import {
   exactGmailArchiveApprovedPrefix,
   exactGmailArchiveInProgressBaseline,
   loadGmailArchivePolicyExplanation,
   loadGmailArchiveStableState,
-  validateStoredGmailArchiveTerminal,
 } from './gmail-archive-terminalization-repository.js';
 import type { PreEffectBarrierRow } from './pre-effect-barrier-repository.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-
-/** Fixed DB-clock grace before an in-progress attempt is recovery-eligible. */
-export const GMAIL_ARCHIVE_RECOVERY_GRACE_SECONDS = 300;
 
 export type GmailArchiveRecoveryTransition = (
   client: PoolClient,
@@ -92,7 +91,7 @@ export async function queryAbandonedGmailArchiveInTransaction(
   if (!approved) return { ok: false, error: 'integrity_conflict' };
 
   if (barrier.status === 'succeeded' || barrier.status === 'failed' || barrier.status === 'unknown') {
-    const terminal = await validateStoredGmailArchiveTerminal(
+    const terminal = await validateStoredGmailArchiveTerminalGraph(
       client,
       authority,
       state,

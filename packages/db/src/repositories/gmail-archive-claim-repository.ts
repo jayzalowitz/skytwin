@@ -37,7 +37,7 @@ import {
   exactClaimedGmailArchiveReceipt,
   exactGmailArchiveBarrierIdentity,
 } from './gmail-archive-claim-integrity.js';
-import { validateStoredGmailArchiveTerminal } from './gmail-archive-terminalization-repository.js';
+import { validateStoredGmailArchiveTerminalGraph } from './gmail-archive-reconciliation-repository.js';
 import type { PreEffectBarrierRow } from './pre-effect-barrier-repository.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -157,7 +157,7 @@ async function classifyNonPrepared(
     return { ok: true, claimed: false, state: 'terminal', command: null };
   }
   if (['succeeded', 'failed', 'unknown'].includes(barrier.status)) {
-    const terminal = await validateStoredGmailArchiveTerminal(
+    const terminal = await validateStoredGmailArchiveTerminalGraph(
       client,
       input,
       {
@@ -277,7 +277,8 @@ async function claimPreparedPair(
   }
   const updatedBarrier = (await client.query<PreEffectBarrierRow>(
     `UPDATE pre_effect_barriers
-        SET status = 'in_progress', effect_result = $8::JSONB, updated_at = now()
+        SET status = 'in_progress', effect_result = $8::JSONB,
+            updated_at = date_trunc('milliseconds', now())
       WHERE id = $1 AND user_id = $2 AND effect_type = 'event_execution'
         AND idempotency_key = $3 AND status = 'prepared'
         AND decision_id = $4 AND action_id = $5 AND explanation_id = $6
@@ -299,7 +300,7 @@ async function claimPreparedPair(
 
   const updatedPlan = (await client.query<ExecutionPlanRow>(
     `UPDATE execution_plans AS plan
-        SET status = 'in_progress', updated_at = now()
+        SET status = 'in_progress', updated_at = date_trunc('milliseconds', now())
       WHERE plan.id = $1 AND plan.decision_id = $2 AND plan.action_id = $3
         AND plan.status = 'pending' AND plan.steps = $4::JSONB
         AND NOT EXISTS (SELECT 1 FROM execution_results WHERE plan_id = plan.id)
