@@ -6422,7 +6422,8 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
   }, 120_000);
 
   it('resolves only an owner/action-bound completed reversible rollback report target', async () => {
-    const fixture = await createProposal(256);
+    const owner = await seedRecoveryOwner(25);
+    const fixture = await createProposal(256, owner.ownerUserId, owner.ownerAccountId);
     const planId = id('88', 256);
     const resultId = id('89', 256);
     const serverId = id('98', 256);
