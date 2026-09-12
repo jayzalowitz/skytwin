@@ -15,6 +15,7 @@ import { withTransaction } from '../connection.js';
 import type {
   ApprovalRequestRow,
   CandidateActionRow,
+  DecisionOutcomeRow,
   DecisionReceiptRevisionRow,
   DecisionReceiptRow,
   DecisionRow,
@@ -59,10 +60,11 @@ interface StableIds {
   revision: string;
 }
 
-interface CanonicalState {
+export interface GmailArchiveApprovalCanonicalState {
   approval: ApprovalRequestRow;
   decision: DecisionRow;
   candidate: CandidateActionRow;
+  outcome: DecisionOutcomeRow;
   explanation: ExplanationRecordRow;
   signal: SignalRow;
   proposalBarrier: PreEffectBarrierRow;
@@ -190,12 +192,13 @@ function sameResponse(
     response['reason'] === (input.reason ?? null);
 }
 
-function latestCanonicalContent(
-  state: CanonicalState,
+export function canonicalGmailArchiveApprovalContent(
+  state: GmailArchiveApprovalCanonicalState,
   disposition: 'requires_approval' | 'approved' | 'rejected',
 ): JoinedDecisionReceiptContentV1 | null {
   const expectedLength = disposition === 'requires_approval' ? 3 : 4;
-  if (state.revisions.length !== expectedLength) return null;
+  if (state.revisions.length !== expectedLength ||
+      state.revisions.some((revision) => revision.trusted !== true)) return null;
   if (!verifyJoinedDecisionReceiptChain({
     receiptId: state.receipt.id,
     decisionId: state.decision.id,
@@ -222,8 +225,7 @@ function latestCanonicalContent(
   ];
   if (state.revisions.slice(0, 3).some((revision, index) =>
     revision.event_key !== expectedEventKeys[index] ||
-    revision.content_digest !== joinedDecisionReceiptContentDigest(expectedPrefix[index]!) ||
-    revision.trusted !== true
+    revision.content_digest !== joinedDecisionReceiptContentDigest(expectedPrefix[index]!)
   )) return null;
   if (disposition !== 'requires_approval' &&
       state.revisions[3]?.event_key !==
@@ -256,10 +258,11 @@ function latestCanonicalContent(
   return content;
 }
 
-async function loadCanonicalState(
+export async function loadCanonicalGmailArchiveApprovalState(
   client: PoolClient,
   input: RespondGmailArchiveApprovalInput,
-): Promise<CanonicalState | null> {
+  options: { allowExecutionPlan?: boolean } = {},
+): Promise<GmailArchiveApprovalCanonicalState | null> {
   const lockedApproval = (await client.query<LockedApprovalRow>(
     `SELECT approval.*, approval.expires_at > now() AS unexpired
        FROM approval_requests AS approval
@@ -310,18 +313,21 @@ async function loadCanonicalState(
   );
   if (evidence.rows.length !== 1) return null;
   const signal = evidence.rows[0]!;
-  const outcome = await client.query<{ count: string }>(
-    `SELECT count(*)::STRING AS count FROM decision_outcomes
+  const outcomes = await client.query<DecisionOutcomeRow>(
+    `SELECT * FROM decision_outcomes
       WHERE decision_id = $1 AND selected_action_id = $2
-        AND auto_executed = false AND requires_approval = true AND execution_plan_id IS NULL`,
+        AND auto_executed = false AND requires_approval = true`,
     [decision.id, candidate.id],
   );
-  if (outcome.rows[0]?.count !== '1') return null;
+  if (outcomes.rows.length !== 1) return null;
+  const outcome = outcomes.rows[0]!;
+  if (options.allowExecutionPlan !== true && outcome.execution_plan_id !== null) return null;
   const barriers = await client.query<PreEffectBarrierRow>(
     `SELECT * FROM pre_effect_barriers
       WHERE user_id = $1 AND decision_id = $2 AND action_id = $3
         AND effect_type = 'event_execution' AND idempotency_key = $2::STRING
-        AND status = 'blocked' AND failure_reason = 'proposal_only_boundary'`,
+        AND status = 'blocked' AND failure_reason = 'proposal_only_boundary'
+      FOR UPDATE`,
     [input.userId, decision.id, candidate.id],
   );
   if (barriers.rows.length !== 1) return null;
@@ -349,6 +355,7 @@ async function loadCanonicalState(
     approval,
     decision,
     candidate,
+    outcome,
     explanation,
     signal,
     proposalBarrier,
@@ -383,7 +390,7 @@ async function transition(
   input: RespondGmailArchiveApprovalInput,
   ids: StableIds,
 ): Promise<RespondGmailArchiveApprovalResult> {
-  const state = await loadCanonicalState(client, input);
+  const state = await loadCanonicalGmailArchiveApprovalState(client, input);
   if (!state) return { ok: false, error: 'not_found' };
 
   if (state.approval.status !== 'pending') {
@@ -391,7 +398,7 @@ async function transition(
       return { ok: false, error: 'not_pending_or_expired' };
     }
     if (!sameResponse(state.approval, input) ||
-        !latestCanonicalContent(state, input.action === 'approve' ? 'approved' : 'rejected')) {
+        !canonicalGmailArchiveApprovalContent(state, input.action === 'approve' ? 'approved' : 'rejected')) {
       return { ok: false, error: 'idempotency_conflict' };
     }
     const reserved = (await client.query<PreEffectBarrierRow>(
@@ -418,7 +425,7 @@ async function transition(
   }
 
   if (!state.unexpired) return { ok: false, error: 'not_pending_or_expired' };
-  const pendingContent = latestCanonicalContent(state, 'requires_approval');
+  const pendingContent = canonicalGmailArchiveApprovalContent(state, 'requires_approval');
   if (!pendingContent) return { ok: false, error: 'idempotency_conflict' };
   const priorReservation = await client.query<{ id: string }>(
     `SELECT id FROM pre_effect_barriers

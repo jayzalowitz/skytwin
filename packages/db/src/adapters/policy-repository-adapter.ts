@@ -22,7 +22,8 @@ function isStructuredRule(raw: unknown): raw is PolicyRule {
  * Maps a database `ActionPolicyRow` to the domain `ActionPolicy` type
  * expected by the policy engine.
  */
-function toDomain(row: ActionPolicyRow): ActionPolicy {
+/** Shared row mapper for transaction-bound policy evaluation coordinators. */
+export function actionPolicyRowToDomain(row: ActionPolicyRow): ActionPolicy {
   const rawRules = (Array.isArray(row.rules) ? row.rules : []) as unknown[];
   return {
     id: row.id,
@@ -60,7 +61,7 @@ export const policyRepositoryAdapter: PolicyRepositoryPort = {
       'SELECT * FROM action_policies WHERE user_id = $1 ORDER BY priority DESC',
       [ownerId],
     );
-    return result.rows.map(toDomain);
+    return result.rows.map(actionPolicyRowToDomain);
   },
 
   async getEnabledPolicies(userId: string): Promise<ActionPolicy[]> {
@@ -69,7 +70,7 @@ export const policyRepositoryAdapter: PolicyRepositoryPort = {
       'SELECT * FROM action_policies WHERE user_id = $1 AND is_active = true ORDER BY priority DESC',
       [ownerId],
     );
-    return result.rows.map(toDomain);
+    return result.rows.map(actionPolicyRowToDomain);
   },
 
   async getPolicy(policyId: string, userId: string): Promise<ActionPolicy | null> {
@@ -79,7 +80,7 @@ export const policyRepositoryAdapter: PolicyRepositoryPort = {
       [policyId, ownerId],
     );
     const row = result.rows[0];
-    return row ? toDomain(row) : null;
+    return row ? actionPolicyRowToDomain(row) : null;
   },
 
   async getPoliciesByDomain(domain: string, userId: string): Promise<ActionPolicy[]> {
@@ -88,7 +89,7 @@ export const policyRepositoryAdapter: PolicyRepositoryPort = {
       'SELECT * FROM action_policies WHERE domain = $1 AND user_id = $2 AND is_active = true ORDER BY priority DESC',
       [domain, ownerId],
     );
-    return result.rows.map(toDomain);
+    return result.rows.map(actionPolicyRowToDomain);
   },
 
   async savePolicy(policy: ActionPolicy): Promise<ActionPolicy> {
@@ -100,7 +101,7 @@ export const policyRepositoryAdapter: PolicyRepositoryPort = {
       priority: policy.priority,
       isActive: policy.enabled,
     });
-    return toDomain(row);
+    return actionPolicyRowToDomain(row);
   },
 
   async updatePolicy(policy: ActionPolicy): Promise<ActionPolicy> {
@@ -113,7 +114,7 @@ export const policyRepositoryAdapter: PolicyRepositoryPort = {
     if (!row) {
       throw new Error(`Policy not found: ${policy.id}`);
     }
-    return toDomain(row);
+    return actionPolicyRowToDomain(row);
   },
 
   async deletePolicy(policyId: string): Promise<void> {
