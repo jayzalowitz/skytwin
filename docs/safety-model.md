@@ -485,7 +485,9 @@ The user can inspect:
 1. **Twin model changes:** Revert to any previous twin profile version
 2. **Policy changes:** Revert policy configurations
 3. **Trust tier changes:** Manual trust tier adjustment (user-initiated)
-4. **Executed actions (where possible):** Request rollback via IronClaw for reversible actions
+4. **Executed actions:** Generic reversal is currently unavailable; execution adapters expose a
+   rollback protocol primitive, but no user-facing route dispatches it without a durable
+   at-most-once lifecycle
 
 ### What Cannot Be Rolled Back
 
@@ -493,14 +495,22 @@ The user can inspect:
 2. **Financial transactions (usually):** Refunds may be possible but aren't guaranteed
 3. **Expired time-sensitive opportunities:** If a deadline passed while the system waited for approval
 4. **Information disclosure:** Once information is shared, it's shared
+5. **Generic executed actions (currently):** Reversal is deferred until it can be admitted and
+   terminalized through a durable at-most-once lifecycle
 
 ### Rollback Process
 
-1. User requests undo for a specific decision
-2. System checks reversibility classification
-3. If reversible: send rollback request to IronClaw, record undo as feedback
-4. If partially reversible: present user with what can and cannot be undone
-5. If irreversible: notify user that rollback is not possible, record as feedback for future avoidance
+1. Decision **Undo** records corrective feedback; it does not reverse the executed action.
+2. Capability **regret** inspects validated rollback availability and reports it; the
+   [capability route](../apps/api/src/routes/capabilities.ts) neither constructs the execution
+   router nor calls its rollback primitive.
+3. Generic executed-action reversal remains unavailable until it has a durable at-most-once
+   admission and terminal lifecycle.
+4. Adapter protocol support, including
+   [`ExecutionRouter.rollback`](../packages/execution-router/src/execution-router.ts), remains
+   separate from the currently exposed user and API behavior.
+5. Irreversible or unavailable work is reported to the user and recorded as feedback for future
+   avoidance; the system does not claim that an external reversal occurred.
 
 ## What the System Must NEVER Do Without Explicit Approval
 
@@ -536,7 +546,7 @@ These are hardcoded safety invariants, not configurable policies. They exist to 
 ### Failure: IronClaw executes the wrong action
 
 **Symptom:** The action sent to IronClaw was correct, but IronClaw did something different.
-**Mitigation:** Record both the execution plan (what we sent) and the execution result (what happened). Flag discrepancies. Initiate rollback if possible.
+**Mitigation:** Record both the execution plan (what we sent) and the execution result (what happened). Flag discrepancies and report them without claiming or initiating external reversal. Generic rollback remains unavailable until a durable at-most-once lifecycle exists.
 **Design defense:** The adapter validates execution results against expected outcomes.
 
 ### Failure: Policy engine has a bug that allows an action it should block
