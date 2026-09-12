@@ -213,7 +213,7 @@ export const executionRepository = {
     serverId: string;
     userId: string;
     since: Date;
-  }): Promise<RollbackTarget[]> {
+  }): Promise<readonly RollbackTarget[]> {
     const result = await query<{
       ref_id: string;
       payload: Record<string, unknown> | null;
