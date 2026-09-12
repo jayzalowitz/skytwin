@@ -221,7 +221,7 @@ export class DecisionMaker {
     }
 
     // Step 5: Load policies
-    const policies = await this.policyEvaluator.loadPolicies();
+    const policies = await this.policyEvaluator.loadPolicies(context.userId);
 
     // Step 6: Score and rank candidates
     const scoredCandidates = candidates

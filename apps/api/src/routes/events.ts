@@ -1002,7 +1002,7 @@ export function createEventsRouter(): Router {
 
             const freshUser = await userRepository.findById(userId);
             if (!freshUser) throw new Error(EXECUTION_FAILURE_CODES.pipelineFailed);
-            const freshPolicies = await policyRepositoryAdapter.getEnabledPolicies();
+            const freshPolicies = await policyRepositoryAdapter.getEnabledPolicies(userId);
             const finalPolicy = await policyEvaluator.evaluate(
               admittedAction,
               freshPolicies,

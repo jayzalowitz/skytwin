@@ -143,6 +143,21 @@ describe('DecisionMaker', () => {
     });
   });
 
+  describe('policy ownership', () => {
+    it('loads policies for the decision context owner', async () => {
+      const policyEvaluator = createMockPolicyEvaluator();
+      const dm = new DecisionMaker(
+        createMockTwinService({ preferences: [] }) as never,
+        policyEvaluator as never,
+        createMockDecisionRepository() as never,
+      );
+
+      await dm.evaluate(createContext(TrustTier.OBSERVER));
+
+      expect(policyEvaluator.loadPolicies).toHaveBeenCalledWith('user_test');
+    });
+  });
+
   describe('Low-risk action on trusted user', () => {
     it('should auto-execute a low-risk action for a trusted user', async () => {
       const twinService = createMockTwinService({

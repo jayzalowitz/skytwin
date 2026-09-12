@@ -84,7 +84,7 @@ export function createRoutinesRouter(): Router {
         return;
       }
       const userTier = user.trust_tier as TrustTier ?? TrustTier.OBSERVER;
-      const policies = await policyRepositoryAdapter.getAllPolicies();
+      const policies = await policyRepositoryAdapter.getAllPolicies(userId);
       // A routine auto-executes unattended on a schedule, so its action must
       // clear the FULL policy gate — including the spend hard-limit and the
       // reversibility / risk-dimension escalations, which only fire when BOTH a

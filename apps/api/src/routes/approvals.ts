@@ -759,7 +759,7 @@ export function createApprovalsRouter(): Router {
         // approvals evaluate the adapter-adjusted risk and exact prepared
         // action; ordinary approvals retain the same mandatory policy gate.
         const freshUser = await userRepository.findById(body.userId);
-        const policies = await policyRepositoryAdapter.getAllPolicies();
+        const policies = await policyRepositoryAdapter.getAllPolicies(body.userId);
         const policyResult = await policyEvaluator.evaluate(
           admittedAction,
           policies,

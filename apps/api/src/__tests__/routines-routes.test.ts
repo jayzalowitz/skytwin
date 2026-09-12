@@ -206,6 +206,9 @@ describe('Routines API routes', () => {
         error: expect.stringContaining('not available'),
         reason: expect.stringContaining('runtime policy and explanation admission'),
       }));
+      expect(mockPolicyRepositoryAdapter.getAllPolicies).toHaveBeenCalledWith(
+        'aaaaaaaa-bbbb-cccc-dddd-000000000001',
+      );
       expect(mockAdapter.createRoutine).not.toHaveBeenCalled();
       expect(mockDecisionRepositoryAdapter.saveOutcome).toHaveBeenLastCalledWith(
         expect.objectContaining({ autoExecute: false, requiresApproval: false }),
