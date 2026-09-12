@@ -1935,7 +1935,7 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     await expect(gmailInboxObservationTargetRepository.resolveInitial(permit)).resolves.toBeNull();
   }, 120_000);
 
-  it('rechecks live account, scopes, and credential revision after permit issuance', async () => {
+  it('rechecks barrier, account, ref, scopes, and credential authority after permit issuance', async () => {
     const authorityUserId = id('11', 18);
     const authorityAccountId = id('22', 18);
     await seedOwner(authorityUserId, authorityAccountId, id('55', 18), 'permit-target@example.test');
@@ -1943,6 +1943,78 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     const initial = await gmailInboxObservationTargetRepository.resolveInitial(permit);
     if (!initial) throw new Error('Permit-bound authority target was not resolved.');
     const finalInput = { permit, selection: initial, credentialRevision: initial.credentialRevision };
+
+    const mutations: Array<{
+      name: string;
+      mutate: () => Promise<unknown>;
+      restore: () => Promise<unknown>;
+    }> = [
+      {
+        name: 'terminal barrier state',
+        mutate: () => getPool().query(
+          `UPDATE pre_effect_barriers SET status = 'unknown' WHERE id = $1`,
+          [permit.admissionId],
+        ),
+        restore: () => getPool().query(
+          `UPDATE pre_effect_barriers SET status = 'in_progress' WHERE id = $1`,
+          [permit.admissionId],
+        ),
+      },
+      {
+        name: 'unverified account',
+        mutate: () => getPool().query(
+          'UPDATE connected_accounts SET identity_verified = false WHERE id = $1',
+          [authorityAccountId],
+        ),
+        restore: () => getPool().query(
+          'UPDATE connected_accounts SET identity_verified = true WHERE id = $1',
+          [authorityAccountId],
+        ),
+      },
+      {
+        name: 'account scope replacement',
+        mutate: () => getPool().query(
+          `UPDATE connected_accounts SET scopes = ARRAY['gmail.readonly']::STRING[] WHERE id = $1`,
+          [authorityAccountId],
+        ),
+        restore: () => getPool().query(
+          'UPDATE connected_accounts SET scopes = ARRAY[$2]::STRING[] WHERE id = $1',
+          [authorityAccountId, gmailModifyScope],
+        ),
+      },
+      {
+        name: 'ref source binding replacement',
+        mutate: () => getPool().query(
+          `UPDATE gmail_message_refs SET source_signal_id = 'replacement-source-211' WHERE id = $1`,
+          [permit.messageRefId],
+        ),
+        restore: () => getPool().query(
+          `UPDATE gmail_message_refs SET source_signal_id = 'source-211' WHERE id = $1`,
+          [permit.messageRefId],
+        ),
+      },
+      {
+        name: 'signal provider source replacement',
+        // A ref/account/token provider mismatch is prevented by schema checks
+        // and composite FKs; the signal source discriminator is the mutable edge.
+        mutate: () => getPool().query(
+          `UPDATE signals SET source = 'calendar' WHERE resource_ref_id = $1`,
+          [permit.messageRefId],
+        ),
+        restore: () => getPool().query(
+          `UPDATE signals SET source = 'gmail' WHERE resource_ref_id = $1`,
+          [permit.messageRefId],
+        ),
+      },
+    ];
+    for (const mutation of mutations) {
+      await mutation.mutate();
+      await expect(
+        gmailInboxObservationTargetRepository.resolveFinal(finalInput),
+        mutation.name,
+      ).resolves.toBeNull();
+      await mutation.restore();
+    }
 
     await getPool().query(
       'UPDATE connected_accounts SET disconnected_at = now() WHERE id = $1',
