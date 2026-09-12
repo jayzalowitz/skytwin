@@ -22,7 +22,13 @@ describe('gmailArchiveDispatchGateRepository boundary', () => {
     { ...command, messageRefId: 'invalid' },
     { ...command, operation: 'restore' },
   ])('contains malformed command input without a transaction: %o', async (input) => {
-    const transaction = vi.fn();
+    let transactionCalls = 0;
+    const transaction = async <T>(
+      _callback: (client: PoolClient) => Promise<T>,
+    ): Promise<T> => {
+      transactionCalls += 1;
+      throw new Error('transaction must not run');
+    };
     await expect(gmailArchiveDispatchGateTestHooks.enterWithTransition(
       input as never,
       vi.fn(),
@@ -30,11 +36,17 @@ describe('gmailArchiveDispatchGateRepository boundary', () => {
     )).resolves.toEqual({
       status: 'conflict',
     });
-    expect(transaction).not.toHaveBeenCalled();
+    expect(transactionCalls).toBe(0);
   });
 
   it('rejects symbols, accessors, and hostile proxies without reading authority getters', async () => {
-    const transaction = vi.fn();
+    let transactionCalls = 0;
+    const transaction = async <T>(
+      _callback: (client: PoolClient) => Promise<T>,
+    ): Promise<T> => {
+      transactionCalls += 1;
+      throw new Error('transaction must not run');
+    };
     const symbol = { ...command };
     Object.defineProperty(symbol, Symbol('extra'), { enumerable: true, value: true });
     const getter = vi.fn(() => command.userId);
@@ -59,13 +71,17 @@ describe('gmailArchiveDispatchGateRepository boundary', () => {
       )).resolves.toEqual({ status: 'conflict' });
     }
     expect(getter).not.toHaveBeenCalled();
-    expect(transaction).not.toHaveBeenCalled();
+    expect(transactionCalls).toBe(0);
   });
 
   it('snapshots the command and retries the whole transaction twice on 40001', async () => {
-    const transaction = vi.fn(async <T>(
+    let transactionCalls = 0;
+    const transaction = async <T>(
       callback: (client: PoolClient) => Promise<T>,
-    ): Promise<T> => callback({} as PoolClient));
+    ): Promise<T> => {
+      transactionCalls += 1;
+      return callback({} as PoolClient);
+    };
     const submitted = { ...command };
     const seen: unknown[] = [];
     let attempts = 0;
@@ -82,7 +98,7 @@ describe('gmailArchiveDispatchGateRepository boundary', () => {
     submitted.messageRefId = '44444444-4444-4444-8444-444444444444';
 
     await expect(pending).resolves.toEqual({ status: 'entered' });
-    expect(transaction).toHaveBeenCalledTimes(3);
+    expect(transactionCalls).toBe(3);
     expect(seen).toHaveLength(3);
     expect(seen.every((value) => value === seen[0])).toBe(true);
     expect(seen[0]).toEqual(command);
@@ -91,18 +107,20 @@ describe('gmailArchiveDispatchGateRepository boundary', () => {
 
   it('does not retry an ambiguous commit failure', async () => {
     const ambiguous = Object.assign(new Error('commit response lost'), { code: '08006' });
-    const transaction = vi.fn(async <T>(
+    let transactionCalls = 0;
+    const transaction = async <T>(
       _callback: (client: PoolClient) => Promise<T>,
     ): Promise<T> => {
+      transactionCalls += 1;
       throw ambiguous;
-    });
+    };
 
     await expect(gmailArchiveDispatchGateTestHooks.enterWithTransition(
       command,
       vi.fn(),
       transaction,
     )).rejects.toBe(ambiguous);
-    expect(transaction).toHaveBeenCalledTimes(1);
+    expect(transactionCalls).toBe(1);
   });
 
   it('strictly parses only the two exact versioned attempt states', () => {
