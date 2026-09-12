@@ -78,7 +78,9 @@ function fixture(options: {
 async function sourceFilesBelow(directory: URL): Promise<string[]> {
   const entries = await readdir(directory, { withFileTypes: true });
   const nested = await Promise.all(entries.map(async (entry) => {
-    if (entry.isDirectory() && (entry.name === 'dist' || entry.name === 'node_modules')) return [];
+    if (entry.isDirectory() && [
+      '__tests__', 'dist', 'node_modules',
+    ].includes(entry.name)) return [];
     const child = new URL(`${entry.name}${entry.isDirectory() ? '/' : ''}`, directory);
     if (entry.isDirectory()) return sourceFilesBelow(child);
     return entry.name.endsWith('.ts') ? [await readFile(child, 'utf8')] : [];
@@ -559,9 +561,13 @@ describe('GmailInboxObservationService', () => {
       new URL('../../../execution-router/', import.meta.url),
     ];
     const runtimeSources = (await Promise.all(roots.map(sourceFilesBelow))).flat().join('\n');
-    expect(runtimeSources).not.toContain('GmailInboxObservationService');
-    expect(runtimeSources).not.toContain('DbGmailInboxObservationCredentials');
-    expect(runtimeSources).not.toContain('GmailArchiveRecoveryObservationCoordinator');
+    const genericAdapters = (await Promise.all([
+      '../direct-execution-adapter.ts', '../real-adapter.ts', '../ironclaw-adapter.ts',
+    ].map((path) => readFile(new URL(path, import.meta.url), 'utf8')))).join('\n');
+    const constructionSources = `${runtimeSources}\n${genericAdapters}`;
+    expect(constructionSources).not.toContain('GmailInboxObservationService');
+    expect(constructionSources).not.toContain('DbGmailInboxObservationCredentials');
+    expect(constructionSources).not.toContain('GmailArchiveRecoveryObservationCoordinator');
   });
 });
 
@@ -693,6 +699,9 @@ describe('GmailArchiveRecoveryObservationCoordinator', () => {
         accessToken: 'refreshed-bearer', credentialRevision: refreshedRevision,
         scopes: [MODIFY_SCOPE],
       }),
+      resolveFinal: vi.fn().mockResolvedValue({
+        ...recoverySelection, credentialRevision: refreshedRevision,
+      }),
     });
     await fixture.coordinator.observe(recoveryFence);
     expect(fixture.resolveFinal).toHaveBeenCalledWith({
@@ -701,6 +710,22 @@ describe('GmailArchiveRecoveryObservationCoordinator', () => {
       credentialRevision: refreshedRevision,
     });
     expect(Object.isFrozen(fixture.resolveFinal.mock.calls[0]?.[0])).toBe(true);
+    expect(fixture.fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('performs no GET when an injected final resolver returns a different revision', async () => {
+    const fixture = recoveryFixture({
+      resolveFinal: vi.fn().mockResolvedValue({
+        ...recoverySelection,
+        credentialRevision: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      }),
+    });
+    await expect(fixture.coordinator.observe(recoveryFence)).resolves.toMatchObject({
+      status: 'evidence_recorded',
+      evidence: { kind: 'mailbox_observation_unavailable', code: 'not_observable' },
+    });
+    expect(fixture.fetchMock).not.toHaveBeenCalled();
+    expect(fixture.record).toHaveBeenCalledTimes(1);
   });
 
   it.each([

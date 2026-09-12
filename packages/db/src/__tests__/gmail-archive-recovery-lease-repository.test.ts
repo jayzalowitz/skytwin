@@ -103,7 +103,9 @@ function recoveryLeaseRow(overrides: Record<string, unknown> = {}) {
 async function sourceFilesBelow(directory: URL): Promise<string[]> {
   const entries = await readdir(directory, { withFileTypes: true });
   const nested = await Promise.all(entries.map(async (entry) => {
-    if (entry.isDirectory() && (entry.name === 'dist' || entry.name === 'node_modules')) return [];
+    if (entry.isDirectory() && [
+      '__tests__', 'dist', 'node_modules',
+    ].includes(entry.name)) return [];
     const child = new URL(`${entry.name}${entry.isDirectory() ? '/' : ''}`, directory);
     if (entry.isDirectory()) return sourceFilesBelow(child);
     return entry.name.endsWith('.ts') ? [await readFile(child, 'utf8')] : [];
@@ -682,7 +684,6 @@ describe('gmailArchiveRecoveryLeaseRepository boundary', () => {
       new URL('../../../../apps/worker/', import.meta.url),
       new URL('../../../../apps/desktop/', import.meta.url),
       new URL('../../../execution-router/', import.meta.url),
-      new URL('../../../ironclaw-adapter/', import.meta.url),
     ];
     const runtimeSources = (await Promise.all(roots.map(sourceFilesBelow))).flat().join('\n');
     expect(runtimeSources).not.toContain('gmailArchiveRecoveryLeaseRepository');

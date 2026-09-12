@@ -583,6 +583,7 @@ export class GmailArchiveRecoveryObservationCoordinator {
       return this.recordUnavailable(permit, binding, 'authority_unavailable');
     }
     if (!finalSelection || finalSelection.connectorAccountId !== selection.connectorAccountId ||
+        finalSelection.credentialRevision !== credential.credentialRevision ||
         finalSelection.providerMessageId !== selection.providerMessageId) {
       return this.recordUnavailable(permit, binding, 'not_observable');
     }
