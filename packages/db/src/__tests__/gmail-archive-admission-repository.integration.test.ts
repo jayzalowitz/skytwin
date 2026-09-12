@@ -17,6 +17,7 @@ import { closePool, getPool, withTransaction } from '../connection.js';
 import { collectBackup, restoreBackup, validateBackupData } from '../backup/backup.js';
 import { decisionReceiptLifecycleRepository } from '../repositories/decision-receipt-lifecycle.js';
 import { approvalRepository } from '../repositories/approval-repository.js';
+import { executionRepository } from '../repositories/execution-repository.js';
 import {
   decisionReceiptBarrierRefV1,
   decisionReceiptRowArtifactRefV1,
@@ -6418,5 +6419,122 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       status: 'approved', confirmation_token: null,
     });
     expect(storedById.get(generic.approval.id)?.responded_at).toBeInstanceOf(Date);
+  }, 120_000);
+
+  it('resolves only an owner/action-bound completed reversible rollback report target', async () => {
+    const fixture = await createProposal(256);
+    const planId = id('88', 256);
+    const resultId = id('89', 256);
+    const serverId = id('98', 256);
+    const provenanceId = id('97', 256);
+    const otherActionId = id('79', 256);
+    await withTransaction(async (client) => {
+      await client.query(
+        `UPDATE candidate_actions SET action_type = 'label_email' WHERE id = $1`,
+        [fixture.candidate.id],
+      );
+      await client.query(
+        `INSERT INTO execution_plans (id, decision_id, action_id, status, steps)
+         VALUES ($1, $2, $3, 'completed', '[]'::JSONB)`,
+        [planId, fixture.decision.id, fixture.candidate.id],
+      );
+      await client.query(
+        `UPDATE decision_outcomes SET execution_plan_id = $1 WHERE decision_id = $2`,
+        [planId, fixture.decision.id],
+      );
+      await client.query(
+        `INSERT INTO execution_results (
+           id, plan_id, success, outputs, rollback_available
+         ) VALUES ($1, $2, true, '{"adapter_used":"direct"}'::JSONB, true)`,
+        [resultId, planId],
+      );
+      await client.query(
+        `INSERT INTO mcp_servers (
+           id, user_id, registry_id, display_name, transport, status
+         ) VALUES ($1, $2, $3, 'Rollback report fixture', 'stdio', 'active')`,
+        [serverId, userId, `rollback-report-${serverId}`],
+      );
+      await client.query(
+        `INSERT INTO capability_provenance_nodes (
+           id, user_id, node_type, ref_table, ref_id, server_id, occurred_at, payload
+         ) VALUES ($1, $2, 'action', 'candidate_actions', $3, $4, now(), $5)`,
+        [provenanceId, userId, fixture.candidate.id, serverId, JSON.stringify({ reversible: true })],
+      );
+    });
+    const input = { serverId, userId, since: new Date(Date.now() - 60_000) };
+    const expectNoResolvedReportTarget = async (): Promise<void> => {
+      await expect(executionRepository.getRollbackTargetsByServer(input)).resolves.toEqual([
+        expect.objectContaining({
+          actionId: fixture.candidate.id,
+          actionType: null,
+          reversible: null,
+          executionPlanId: null,
+          adapterUsed: null,
+        }),
+      ]);
+    };
+    await expect(executionRepository.getRollbackTargetsByServer(input)).resolves.toEqual([{
+      actionId: fixture.candidate.id,
+      actionType: 'label_email',
+      reversible: true,
+      payload: { reversible: true },
+      occurredAt: expect.any(Date),
+      executionPlanId: planId,
+      adapterUsed: 'direct',
+    }]);
+
+    await getPool().query(
+      'UPDATE capability_provenance_nodes SET user_id = $2 WHERE id = $1',
+      [provenanceId, otherUserId],
+    );
+    await expect(executionRepository.getRollbackTargetsByServer({
+      ...input, userId: otherUserId,
+    })).resolves.toEqual([expect.objectContaining({
+      actionId: fixture.candidate.id,
+      actionType: null,
+      reversible: null,
+      executionPlanId: null,
+      adapterUsed: null,
+    })]);
+    await getPool().query(
+      'UPDATE capability_provenance_nodes SET user_id = $2 WHERE id = $1',
+      [provenanceId, userId],
+    );
+
+    await getPool().query(
+      `INSERT INTO candidate_actions (
+         id, decision_id, action_type, description, parameters,
+         predicted_user_preference, risk_assessment, reversible
+       ) SELECT $1, decision_id, 'move_email', description, parameters,
+                predicted_user_preference, risk_assessment, reversible
+           FROM candidate_actions WHERE id = $2`,
+      [otherActionId, fixture.candidate.id],
+    );
+    await getPool().query('UPDATE execution_plans SET action_id = $2 WHERE id = $1', [
+      planId, otherActionId,
+    ]);
+    await expectNoResolvedReportTarget();
+
+    await getPool().query('UPDATE execution_plans SET action_id = $2 WHERE id = $1', [
+      planId, fixture.candidate.id,
+    ]);
+    await getPool().query('UPDATE execution_results SET success = false WHERE id = $1', [resultId]);
+    await expectNoResolvedReportTarget();
+    await getPool().query(
+      'UPDATE execution_results SET success = true, rollback_available = false WHERE id = $1',
+      [resultId],
+    );
+    await expectNoResolvedReportTarget();
+    await getPool().query(
+      `UPDATE execution_results SET rollback_available = true, outputs = '{}'::JSONB WHERE id = $1`,
+      [resultId],
+    );
+    await expectNoResolvedReportTarget();
+    await getPool().query(
+      `UPDATE execution_results SET outputs = '{"adapter_used":"direct"}'::JSONB WHERE id = $1`,
+      [resultId],
+    );
+    await getPool().query("UPDATE execution_plans SET status = 'failed' WHERE id = $1", [planId]);
+    await expectNoResolvedReportTarget();
   }, 120_000);
 });

@@ -33,6 +33,7 @@ const {
   fakeBarrierRepo,
   fakeExplanationRepo,
   fakePolicyGetAll,
+  fakeTransactionQuery,
 } = vi.hoisted(() => ({
   fakeApprovalRepo: {
     findById: vi.fn(),
@@ -72,6 +73,7 @@ const {
   },
   fakeExplanationRepo: { save: vi.fn() },
   fakePolicyGetAll: vi.fn().mockResolvedValue([]),
+  fakeTransactionQuery: vi.fn(),
 }));
 
 vi.mock('@skytwin/db', () => ({
@@ -142,7 +144,7 @@ vi.mock('@skytwin/db', () => ({
     deletePolicy: vi.fn(),
   },
   withTransaction: vi.fn().mockImplementation(async (fn: (client: unknown) => Promise<unknown>) =>
-    fn({ query: vi.fn() }),
+    fn({ query: fakeTransactionQuery }),
   ),
 }));
 
@@ -217,6 +219,7 @@ async function postJson(
 
 beforeEach(() => {
   vi.clearAllMocks();
+  fakeTransactionQuery.mockResolvedValue({ rows: [], rowCount: 0 });
   fakeApprovalRepo.findById.mockResolvedValue({
     id: 'app-1',
     user_id: USER_ID,
@@ -404,6 +407,70 @@ describe('feedback loop — approval records an episode for memory boost', () =>
     expect(call.situationType).toBe('email_triage');
     expect(call.situationSummary).toBe('label newsletter from sender X');
     expect(fakePolicyGetAll).toHaveBeenCalledWith(USER_ID);
+  });
+
+  it('binds a completed execution ledger to the exact preflight candidate identity', async () => {
+    const candidateId = 'aaaaaaaa-bbbb-cccc-dddd-000000000abc';
+    fakeApprovalRepo.respond.mockResolvedValueOnce({
+      id: 'app-1',
+      user_id: USER_ID,
+      decision_id: 'dec-1',
+      candidate_action: {
+        id: 'bbbbbbbb-cccc-4ddd-8eee-000000000def',
+        actionType: 'label_email', description: 'Label', domain: 'email',
+        parameters: {}, reversible: true,
+      },
+      status: 'approved',
+      responded_at: new Date(),
+    });
+    fakeExecutionRouter.executeWithRouting.mockResolvedValueOnce({
+      planId: 'adapter-plan',
+      status: 'completed',
+      startedAt: new Date(),
+      completedAt: new Date(),
+      output: { adapter_used: 'direct', stepsCompleted: 1 },
+    });
+    fakeTransactionQuery
+      .mockResolvedValueOnce({ rows: [{ id: 'ledger-plan' }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 });
+
+    const response = await postJson(buildApp(), '/api/approvals/app-1/respond', {
+      action: 'approve', userId: USER_ID,
+    });
+
+    expect(response.status).toBe(200);
+    const [insertSql, insertParameters] = fakeTransactionQuery.mock.calls[0]!;
+    expect(insertSql).toContain('INSERT INTO execution_plans');
+    expect(insertSql).toContain('VALUES (gen_random_uuid(), $1, $2, $3, $4, now())');
+    expect(insertParameters).toEqual([
+      'dec-1', candidateId, 'completed',
+      JSON.stringify([{ type: 'label_email', status: 'completed' }]),
+    ]);
+  });
+
+  it('binds an ambiguous ordinary execution ledger to the exact preflight candidate identity', async () => {
+    const candidateId = 'aaaaaaaa-bbbb-cccc-dddd-000000000abc';
+    fakeExecutionRouter.executeWithRouting.mockRejectedValueOnce(
+      new AmbiguousExecutionError('direct', new Error('reply was unavailable after dispatch')),
+    );
+    fakeTransactionQuery
+      .mockResolvedValueOnce({ rows: [{ id: 'failed-ledger-plan' }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 });
+
+    const response = await postJson(buildApp(), '/api/approvals/app-1/respond', {
+      action: 'approve', userId: USER_ID,
+    });
+
+    expect(response.status).toBe(200);
+    const [insertSql, insertParameters] = fakeTransactionQuery.mock.calls[0]!;
+    expect(insertSql).toContain('INSERT INTO execution_plans');
+    expect(insertSql).toContain("VALUES (gen_random_uuid(), $1, $2, 'failed', $3, now())");
+    expect(insertParameters).toEqual([
+      'dec-1', candidateId,
+      JSON.stringify([{ type: 'label_email', status: 'error' }]),
+    ]);
   });
 
   it('reject → mempalaceRepository.createEpisode is called with utility 0.0', async () => {
