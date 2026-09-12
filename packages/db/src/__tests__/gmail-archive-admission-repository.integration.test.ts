@@ -4903,6 +4903,61 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     )).resolves.toEqual({ ok: true, status: 'evidence_recorded', permit: null });
   }, 120_000);
 
+  it('closes a permit that expires immediately after its begin transaction commits', async () => {
+    const { ownerUserId, ownerAccountId } = await seedRecoveryOwner(19);
+    const fixture = await createClaimedProposal(215, ownerUserId, ownerAccountId, true);
+    await ageClaimedAttempt(fixture.command.admissionId);
+    const acquired = await gmailArchiveRecoveryLeaseRepository.acquire({
+      userId: ownerUserId,
+      approvalId: fixture.proposal.approval.id,
+      leaseMs: 60_000,
+    });
+    if (!acquired.ok || acquired.status !== 'acquired') {
+      throw new Error('Post-commit expiry fixture did not acquire.');
+    }
+    let transactions = 0;
+    const result = await gmailArchiveRecoveryLeaseTestHooks.beginWithTransition(
+      recoveryFence(acquired.lease),
+      gmailArchiveRecoveryLeaseTestHooks.beginTransition,
+      async (callback) => {
+        const committed = await withTransaction(callback);
+        transactions += 1;
+        if (transactions === 1) {
+          expect(committed).toMatchObject({ ok: true, status: 'permitted' });
+          await getPool().query(
+            `UPDATE gmail_archive_recovery_leases
+                SET expires_at = date_trunc(
+                  'milliseconds', statement_timestamp() - INTERVAL '1 second'
+                )
+              WHERE admission_id = $1`,
+            [fixture.command.admissionId],
+          );
+        }
+        return committed;
+      },
+    );
+    expect(transactions).toBe(2);
+    expect(result).toEqual({ ok: true, status: 'evidence_recorded', permit: null });
+    const stored = await getPool().query<{
+      observation_state: string;
+      observation_evidence: unknown;
+    }>(
+      `SELECT observation_state, observation_evidence
+         FROM gmail_archive_recovery_leases WHERE admission_id = $1`,
+      [fixture.command.admissionId],
+    );
+    expect(stored.rows[0]).toMatchObject({
+      observation_state: 'evidence_recorded',
+      observation_evidence: {
+        schema: 'gmail_archive_recovery_observation_v1',
+        evidence: {
+          kind: 'mailbox_observation_unavailable',
+          code: 'observation_unavailable',
+        },
+      },
+    });
+  }, 120_000);
+
   it('samples wall-clock time after barrier and lease lock contention', async () => {
     const acquireOwner = await seedRecoveryOwner(14);
     const prepared = await createPreparedProposal(
@@ -5017,16 +5072,18 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
          FROM gmail_archive_recovery_leases WHERE admission_id = $1`,
       [dispatch.command.admissionId],
     );
-    // Cockroach transaction-local clock sampling may leave the capability live
-    // or close it after commit; neither outcome authorizes a GET beyond its permit.
+    // A DB-clock boundary can move between statements. The final resolver, not
+    // this diagnostic sample, is the authority immediately before any GET.
     if (beginResult.ok && beginResult.status === 'permitted') {
-      expect(state.rows[0]).toMatchObject({
-        observation_state: 'started',
-        deadline_live: true,
-        lease_live: true,
-      });
-      await expect(gmailInboxObservationTargetRepository.resolveInitial(beginResult.permit))
-        .resolves.toMatchObject({ providerMessageId: 'native-169' });
+      expect(state.rows[0]?.observation_state).toBe('started');
+      const resolved = await gmailInboxObservationTargetRepository.resolveInitial(
+        beginResult.permit,
+      );
+      if (state.rows[0]?.lease_live !== true || state.rows[0]?.deadline_live !== true) {
+        expect(resolved).toBeNull();
+      } else if (resolved) {
+        expect(resolved).toMatchObject({ providerMessageId: 'native-169' });
+      }
     } else {
       expect(beginResult).toEqual({ ok: true, status: 'evidence_recorded', permit: null });
       expect(state.rows[0]?.observation_state).toBe('evidence_recorded');
