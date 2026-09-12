@@ -259,6 +259,9 @@ describe('approvalRepository', () => {
       // Expiry is evaluated by the database in this same UPDATE. A stale API
       // read must not mint a first-confirmation token after the consent window.
       expect(sql).toContain('expires_at > now()');
+      expect(sql).toContain("jsonb_typeof(candidate_action) = 'object'");
+      expect(sql).toContain("jsonb_typeof(candidate_action->'actionType') = 'string'");
+      expect(sql).toContain("candidate_action->>'actionType' <> 'archive_email'");
       expect(sql).toContain("confirmation_level = 'dual'");
       // Strictly single-shot: the `first_confirmed_at IS NULL` guard means a
       // token is minted exactly once per request. Re-calling never re-mints,
@@ -362,6 +365,9 @@ describe('approvalRepository', () => {
       expect(sql).toContain("status = 'pending'");
       expect(sql).toContain('AND user_id = $4');
       expect(sql).toContain('AND expires_at > now()');
+      expect(sql).toContain("jsonb_typeof(candidate_action) = 'object'");
+      expect(sql).toContain("jsonb_typeof(candidate_action->'actionType') = 'string'");
+      expect(sql).toContain("candidate_action->>'actionType' <> 'archive_email'");
       expect(sql).toContain('RETURNING *');
       expect(params![0]).toBe('approved');
       expect(params![2]).toBe('ar-001');

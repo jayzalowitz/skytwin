@@ -16,6 +16,7 @@ import {
 import { closePool, getPool, withTransaction } from '../connection.js';
 import { collectBackup, restoreBackup, validateBackupData } from '../backup/backup.js';
 import { decisionReceiptLifecycleRepository } from '../repositories/decision-receipt-lifecycle.js';
+import { approvalRepository } from '../repositories/approval-repository.js';
 import {
   decisionReceiptBarrierRefV1,
   decisionReceiptRowArtifactRefV1,
@@ -6297,5 +6298,60 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     });
     expect(mutationCount).toBe(1);
     expect(terminalizationCount).toBe(1);
+  }, 120_000);
+
+  it('atomically excludes changed archive and malformed actions from generic approval response', async () => {
+    const owner = await seedRecoveryOwner(24);
+    const changed = await createProposal(253, owner.ownerUserId, owner.ownerAccountId);
+    await getPool().query(
+      `UPDATE approval_requests
+          SET candidate_action = jsonb_set(candidate_action, '{actionType}', '"label_email"')
+        WHERE id = $1`,
+      [changed.approval.id],
+    );
+    await expect(approvalRepository.findById(changed.approval.id)).resolves.toMatchObject({
+      candidate_action: { actionType: 'label_email' },
+      status: 'pending',
+    });
+
+    // Simulate a concurrent writer changing the row after the route's safe
+    // read but before the generic response UPDATE acquires it.
+    await getPool().query(
+      `UPDATE approval_requests
+          SET candidate_action = jsonb_set(candidate_action, '{actionType}', '"archive_email"')
+        WHERE id = $1`,
+      [changed.approval.id],
+    );
+    await expect(approvalRepository.respond(
+      changed.approval.id, 'approve', owner.ownerUserId,
+    )).resolves.toBeNull();
+
+    const malformed = await createProposal(254, owner.ownerUserId, owner.ownerAccountId);
+    await getPool().query(
+      `UPDATE approval_requests
+          SET candidate_action = '{}'::JSONB, confirmation_level = 'dual'
+        WHERE id = $1`,
+      [malformed.approval.id],
+    );
+    await expect(approvalRepository.respond(
+      malformed.approval.id, 'reject', owner.ownerUserId,
+    )).resolves.toBeNull();
+    await expect(approvalRepository.recordFirstConfirmation(
+      malformed.approval.id, owner.ownerUserId,
+    )).resolves.toBeNull();
+
+    const stored = await getPool().query<{
+      id: string;
+      status: string;
+      responded_at: Date | null;
+      confirmation_token: string | null;
+    }>(
+      `SELECT id, status, responded_at, confirmation_token
+         FROM approval_requests WHERE id IN ($1, $2) ORDER BY id`,
+      [changed.approval.id, malformed.approval.id],
+    );
+    expect(stored.rows).toHaveLength(2);
+    expect(stored.rows.every((row) => row.status === 'pending' &&
+      row.responded_at === null && row.confirmation_token === null)).toBe(true);
   }, 120_000);
 });
