@@ -78,9 +78,10 @@ function fixture(options: {
 async function sourceFilesBelow(directory: URL): Promise<string[]> {
   const entries = await readdir(directory, { withFileTypes: true });
   const nested = await Promise.all(entries.map(async (entry) => {
+    if (entry.isDirectory() && (entry.name === 'dist' || entry.name === 'node_modules')) return [];
     const child = new URL(`${entry.name}${entry.isDirectory() ? '/' : ''}`, directory);
     if (entry.isDirectory()) return sourceFilesBelow(child);
-    return /\.(?:ts|js)$/.test(entry.name) ? [await readFile(child, 'utf8')] : [];
+    return entry.name.endsWith('.ts') ? [await readFile(child, 'utf8')] : [];
   }));
   return nested.flat();
 }

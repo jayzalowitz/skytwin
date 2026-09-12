@@ -99,9 +99,13 @@ describe('permit-bound Gmail Inbox observation target', () => {
     ]);
   });
 
-  it.each([[], [row, row], [{ ...row, credential_revision: 'invalid' }]])(
-    'rejects non-unique or malformed rows: %o',
-    async (rows) => {
+  it.each([
+    { name: 'missing', rows: [] },
+    { name: 'duplicated', rows: [row, row] },
+    { name: 'malformed', rows: [{ ...row, credential_revision: 'invalid' }] },
+  ])(
+    'rejects $name rows',
+    async ({ rows }) => {
       await expect(gmailInboxObservationTargetTestHooks.resolvePermitInTransaction(
         client(rows), permit, null,
       )).resolves.toBeNull();
