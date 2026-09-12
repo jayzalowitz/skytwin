@@ -52,7 +52,10 @@ export type {
 // Namespaced because its function names (generateAuthUrl, exchangeCode,
 // refreshAccessToken) intentionally mirror the Google module's.
 export * as microsoftOAuth from './oauth/microsoft-oauth.js';
-export type { MicrosoftOAuthConfig } from './oauth/microsoft-oauth.js';
+export type {
+  MicrosoftOAuthConfig,
+  MicrosoftOAuthRefreshOptions,
+} from './oauth/microsoft-oauth.js';
 export { MicrosoftOAuthRefreshError, MICROSOFT_GRAPH_SCOPES } from './oauth/microsoft-oauth.js';
 
 // Profile sync — capture per-user language + timezone from the Google identity (#486).

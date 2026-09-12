@@ -574,7 +574,9 @@ export class DbTokenStore implements OAuthTokenStore {
               'Construct DbTokenStore with a microsoftConfig to support Outlook.',
           );
         }
-        refreshed = await refreshMicrosoftAccessToken(this.microsoftConfig, existing.refreshToken);
+        refreshed = await refreshMicrosoftAccessToken(this.microsoftConfig, existing.refreshToken, {
+          persistedScopes: [...existing.scopes],
+        });
         break;
       case 'google':
         if (!this.oauthConfig) {

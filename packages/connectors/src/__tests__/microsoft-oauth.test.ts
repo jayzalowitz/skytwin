@@ -173,19 +173,41 @@ describe('microsoft-oauth', () => {
         ok: true,
         json: async () => ({ access_token: 'at', expires_in: 3600, scope: '' }),
       });
-      await refreshAccessToken(baseConfig, 'stored-rt'); // baseConfig.clientSecret === ''
+      await refreshAccessToken(baseConfig, 'stored-rt', {
+        persistedScopes: ['Mail.Read'],
+      }); // baseConfig.clientSecret === ''
       const [, opts] = fetchMock.mock.calls[0] as [string, { body: URLSearchParams }];
       expect(opts.body.get('client_secret')).toBeNull();
     });
 
-    it('adopts a rotated refresh token when the response returns one', async () => {
+    it.each([
+      ['omits scope', { access_token: 'at-3', refresh_token: 'rotated-rt', expires_in: 3600 }],
+      ['returns an empty scope value', {
+        access_token: 'at-3', refresh_token: 'rotated-rt', expires_in: 3600, scope: '',
+      }],
+    ])('preserves persisted scopes when Microsoft %s', async (_name, responseBody) => {
       fetchMock.mockResolvedValue({
         ok: true,
-        json: async () => ({ access_token: 'at-3', refresh_token: 'rotated-rt', expires_in: 3600, scope: '' }),
+        json: async () => responseBody,
       });
-      const result = await refreshAccessToken(baseConfig, 'stored-rt');
+      const persistedScopes = ['Mail.Read', 'offline_access'];
+      const result = await refreshAccessToken(baseConfig, 'stored-rt', { persistedScopes });
       expect(result.refreshToken).toBe('rotated-rt');
-      expect(result.scopes).toEqual([]);
+      expect(result.scopes).toEqual(persistedScopes);
+      expect(result.scopes).not.toBe(persistedScopes);
+    });
+
+    it.each([
+      ['omitted', undefined],
+      ['empty', ''],
+    ])('rejects %s scope without a persisted authority snapshot', async (_name, scope) => {
+      fetchMock.mockResolvedValue({
+        ok: true,
+        json: async () => ({ access_token: 'at-3', expires_in: 3600, scope }),
+      });
+      await expect(refreshAccessToken(baseConfig, 'stored-rt')).rejects.toThrow(
+        /invalid scope grant/,
+      );
     });
 
     it('classifies a 401 as permanent (re-auth required)', async () => {
