@@ -276,6 +276,31 @@ describe('gmailArchiveTerminalizationRepository boundary', () => {
     expect(queryMock).toHaveBeenCalledWith('SELECT now() AS persisted_at');
   });
 
+  it.each([
+    '08000', '08001', '08003', '08004', '08006', '08007', '40003', '57P01',
+  ])('maps ambiguous terminal commit code %s without retrying', async (code) => {
+    const error = Object.assign(new Error('commit outcome unavailable'), { code });
+    withTransactionMock.mockRejectedValue(error);
+    const transition = vi.fn();
+    await expect(gmailArchiveTerminalizationTestHooks.terminalizeWithTransition(
+      { command, result: confirmed },
+      transition,
+      () => stable,
+    )).resolves.toEqual({ ok: false, error: 'commit_unverified' });
+    expect(withTransactionMock).toHaveBeenCalledTimes(1);
+    expect(transition).not.toHaveBeenCalled();
+  });
+
+  it('does not mask an ordinary terminal database error as commit ambiguity', async () => {
+    const error = Object.assign(new Error('check violation'), { code: '23514' });
+    withTransactionMock.mockRejectedValue(error);
+    await expect(gmailArchiveTerminalizationTestHooks.terminalizeWithTransition(
+      { command, result: confirmed },
+      vi.fn(),
+      () => stable,
+    )).rejects.toBe(error);
+  });
+
   it('rejects a provider observation after the preallocated terminal timestamp', async () => {
     await expect(gmailArchiveTerminalizationTestHooks.terminalizeWithTransition(
       {

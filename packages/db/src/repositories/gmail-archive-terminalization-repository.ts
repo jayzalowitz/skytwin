@@ -43,6 +43,9 @@ import {
 import { snapshotGmailArchiveAttemptState } from './gmail-archive-attempt-state.js';
 import { canonicalGmailArchiveCandidate } from './gmail-archive-preparation-repository.js';
 import { GMAIL_ARCHIVE_PROPOSAL_REASON } from './gmail-archive-proposal-repository.js';
+import {
+  retireGmailArchiveRecoveryLeaseForTerminalInTransaction,
+} from './gmail-archive-recovery-lease-consumer.js';
 import type { PreEffectBarrierRow } from './pre-effect-barrier-repository.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -130,7 +133,11 @@ export interface GmailArchiveTerminalizationBundle {
 
 export type TerminalizeGmailArchiveResult =
   | { ok: true; created: boolean; terminalization: GmailArchiveTerminalizationBundle }
-  | { ok: false; error: 'invalid_input' | 'not_found' | 'not_ready' | 'idempotency_conflict' };
+  | {
+      ok: false;
+      error: 'invalid_input' | 'not_found' | 'not_ready' | 'idempotency_conflict' |
+        'integrity_conflict' | 'commit_unverified';
+    };
 
 export interface GmailArchiveTerminalizationStableValues {
   explanationId: string;
@@ -1075,9 +1082,15 @@ async function transition(
     const terminalization = await validateStoredGmailArchiveTerminal(
       client, authority, state, barrier, approved,
     );
-    return terminalization
-      ? { ok: true, created: false, terminalization }
-      : { ok: false, error: 'idempotency_conflict' };
+    if (!terminalization) return { ok: false, error: 'idempotency_conflict' };
+    const retired = await retireGmailArchiveRecoveryLeaseForTerminalInTransaction(client, {
+      userId: authority.userId,
+      approvalId: authority.approvalId,
+      admissionId: barrier.id,
+      messageRefId,
+    });
+    if (!retired.ok) fail(retired);
+    return { ok: true, created: false, terminalization };
   }
   if (barrier.status !== 'in_progress') return { ok: false, error: 'not_ready' };
   const attemptState = snapshotGmailArchiveAttemptState(barrier.effect_result);
@@ -1114,6 +1127,13 @@ async function transition(
   )) {
     return { ok: false, error: 'idempotency_conflict' };
   }
+  const retired = await retireGmailArchiveRecoveryLeaseForTerminalInTransaction(client, {
+    userId: authority.userId,
+    approvalId: authority.approvalId,
+    admissionId: barrier.id,
+    messageRefId,
+  });
+  if (!retired.ok) fail(retired);
   const terminalStatus = disposition(input.result);
   const terminalPlanStatus = terminalStatus === 'succeeded' ? 'completed' : 'failed';
   const expectedEffectResult = effectResult(input.result, attemptState.phase);
@@ -1284,6 +1304,7 @@ async function terminalizeWithTransition(
   transitionFn: GmailArchiveTerminalizationTransition,
   stableFactory: (persistedAt: string) => GmailArchiveTerminalizationStableValues = allocateStableValues,
   persistedAtFactory: () => Promise<string> = loadDatabasePersistedAt,
+  transactionFn: <T>(callback: (client: PoolClient) => Promise<T>) => Promise<T> = withTransaction,
 ): Promise<TerminalizeGmailArchiveResult> {
   const snapshot = snapshotInput(input);
   if (!snapshot) return { ok: false, error: 'invalid_input' };
@@ -1295,13 +1316,17 @@ async function terminalizeWithTransition(
   }
   for (let attempt = 0; ; attempt += 1) {
     try {
-      return await withTransaction((client) => transitionFn(client, snapshot, stable));
+      return await transactionFn((client) => transitionFn(client, snapshot, stable));
     } catch (error) {
       if (error instanceof RollbackResult) return error.result;
       const code = typeof error === 'object' && error !== null && 'code' in error
         ? (error as { code?: unknown }).code
         : undefined;
-      if (code !== '40001' || attempt >= 2) throw error;
+      if (code === '40001' && attempt < 2) continue;
+      if (typeof code === 'string' && [
+        '08000', '08001', '08003', '08004', '08006', '08007', '40003', '57P01',
+      ].includes(code)) return { ok: false, error: 'commit_unverified' };
+      throw error;
     }
   }
 }

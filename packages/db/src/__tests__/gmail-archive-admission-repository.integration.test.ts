@@ -445,6 +445,25 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     };
   }
 
+  async function insertOrphanRecoveryLease(
+    command: { userId: string; admissionId: string; messageRefId: string },
+    approvalId: string,
+    suffix: number,
+  ): Promise<void> {
+    await getPool().query(
+      `INSERT INTO gmail_archive_recovery_leases (
+         admission_id, user_id, approval_id, message_ref_id, work_kind,
+         barrier_status, attempt_phase, phase_changed_at, lease_token, generation,
+         acquired_at, renewed_at, expires_at
+       ) VALUES (
+         $1, $2, $3, $4, 'observe_dispatch', 'in_progress',
+         'dispatch_may_have_started', now() - INTERVAL '10 minutes', $5, 1,
+         now(), now(), now() + INTERVAL '1 minute'
+       )`,
+      [command.admissionId, command.userId, approvalId, command.messageRefId, id('97', suffix)],
+    );
+  }
+
   async function currentMutationTarget(command: Parameters<
     typeof gmailMessageRefRepository.resolveInboxMutationTarget
   >[0]) {
@@ -2301,6 +2320,186 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     })).resolves.toEqual({ ok: false, error: 'idempotency_conflict' });
   }, 120_000);
 
+  it.each([
+    ['not_started', 200],
+    ['started', 201],
+    ['evidence_recorded', 202],
+  ] as const)(
+    'terminalization retires a %s recovery row without leaking recovery evidence',
+    async (observationState, suffix) => {
+      const fixture = await createClaimedProposal(suffix, userId, accountId, true);
+      await ageClaimedAttempt(fixture.command.admissionId);
+      const acquired = await gmailArchiveRecoveryLeaseRepository.acquire({
+        userId,
+        approvalId: fixture.proposal.approval.id,
+        leaseMs: 60_000,
+      });
+      if (!acquired.ok || acquired.status !== 'acquired') {
+        throw new Error(`Recovery lease was not acquired: ${JSON.stringify(acquired)}`);
+      }
+      if (observationState !== 'not_started') {
+        const begun = await gmailArchiveRecoveryLeaseRepository.beginObservation(
+          recoveryFence(acquired.lease),
+        );
+        if (!begun.ok || begun.status !== 'permitted') {
+          throw new Error(`Recovery observation was not permitted: ${JSON.stringify(begun)}`);
+        }
+        if (observationState === 'evidence_recorded') {
+          const evidence = {
+            kind: 'mailbox_observation_unavailable' as const,
+            binding: mutationBinding(fixture.command),
+            code: 'observation_unavailable' as const,
+          };
+          await expect(gmailArchiveRecoveryLeaseRepository.recordObservation({
+            permit: begun.permit,
+            evidence,
+          })).resolves.toEqual({ ok: true, recorded: true, evidence });
+        }
+      }
+      const result = {
+        outcome: 'known_failure' as const,
+        code: 'remote_rejected' as const,
+        compensationAvailable: false as const,
+        binding: mutationBinding(fixture.command),
+      };
+      const terminalized = await gmailArchiveTerminalizationRepository.terminalize({
+        command: fixture.command,
+        result,
+      });
+      expect(terminalized).toMatchObject({ ok: true, created: true });
+      if (!terminalized.ok) throw new Error(`Terminalization failed: ${terminalized.error}`);
+      const durable = await getPool().query<{ count: string }>(
+        'SELECT count(*)::STRING AS count FROM gmail_archive_recovery_leases WHERE admission_id = $1',
+        [fixture.command.admissionId],
+      );
+      expect(durable.rows[0]?.count).toBe('0');
+      expect(parseGmailArchiveTerminalExplanationEvidence(
+        terminalized.terminalization.executionExplanation.evidence_used,
+      )).toEqual(result);
+      expect(JSON.stringify(terminalized.terminalization)).not.toContain(
+        'gmail_archive_recovery_observation_v1',
+      );
+      expect(JSON.stringify(terminalized.terminalization)).not.toContain('observation_unavailable');
+    },
+    120_000,
+  );
+
+  it('exact terminal replay heals an exact-lineage orphan recovery lease', async () => {
+    const fixture = await createClaimedProposal(203, userId, accountId, true);
+    const input = {
+      command: fixture.command,
+      result: {
+        outcome: 'known_failure' as const,
+        code: 'remote_rejected' as const,
+        compensationAvailable: false as const,
+        binding: mutationBinding(fixture.command),
+      },
+    };
+    await expect(gmailArchiveTerminalizationRepository.terminalize(input)).resolves.toMatchObject({
+      ok: true,
+      created: true,
+    });
+    await insertOrphanRecoveryLease(
+      fixture.command,
+      fixture.proposal.approval.id,
+      203,
+    );
+    await expect(gmailArchiveTerminalizationRepository.terminalize(input)).resolves.toMatchObject({
+      ok: true,
+      created: false,
+    });
+    const durable = await getPool().query<{ count: string }>(
+      'SELECT count(*)::STRING AS count FROM gmail_archive_recovery_leases WHERE admission_id = $1',
+      [fixture.command.admissionId],
+    );
+    expect(durable.rows[0]?.count).toBe('0');
+  }, 120_000);
+
+  it('a conflicting terminal replay preserves an orphan recovery lease', async () => {
+    const fixture = await createClaimedProposal(204, userId, accountId, true);
+    const input = {
+      command: fixture.command,
+      result: {
+        outcome: 'known_failure' as const,
+        code: 'remote_rejected' as const,
+        compensationAvailable: false as const,
+        binding: mutationBinding(fixture.command),
+      },
+    };
+    await expect(gmailArchiveTerminalizationRepository.terminalize(input)).resolves.toMatchObject({
+      ok: true,
+      created: true,
+    });
+    await insertOrphanRecoveryLease(
+      fixture.command,
+      fixture.proposal.approval.id,
+      204,
+    );
+    await expect(gmailArchiveTerminalizationRepository.terminalize({
+      ...input,
+      result: { ...input.result, code: 'preflight_unavailable' },
+    })).resolves.toEqual({ ok: false, error: 'idempotency_conflict' });
+    const durable = await getPool().query<{ count: string }>(
+      'SELECT count(*)::STRING AS count FROM gmail_archive_recovery_leases WHERE admission_id = $1',
+      [fixture.command.admissionId],
+    );
+    expect(durable.rows[0]?.count).toBe('1');
+  }, 120_000);
+
+  it.each([
+    ['approval_id', id('99', 205), 205],
+    ['message_ref_id', id('99', 206), 206],
+  ] as const)(
+    'fails closed on wrong recovery %s lineage and preserves graph and lease',
+    async (column, crossedId, suffix) => {
+      const fixture = await createClaimedProposal(suffix, userId, accountId, true);
+      await ageClaimedAttempt(fixture.command.admissionId);
+      const acquired = await gmailArchiveRecoveryLeaseRepository.acquire({
+        userId,
+        approvalId: fixture.proposal.approval.id,
+        leaseMs: 60_000,
+      });
+      if (!acquired.ok || acquired.status !== 'acquired') {
+        throw new Error(`Recovery lease was not acquired: ${JSON.stringify(acquired)}`);
+      }
+      await getPool().query(
+        `UPDATE gmail_archive_recovery_leases SET ${column} = $2 WHERE admission_id = $1`,
+        [fixture.command.admissionId, crossedId],
+      );
+      const before = await artifactCounts(
+        fixture.proposal.decision.id,
+        fixture.proposal.approval.id,
+      );
+      await expect(gmailArchiveTerminalizationRepository.terminalize({
+        command: fixture.command,
+        result: {
+          outcome: 'known_failure',
+          code: 'remote_rejected',
+          compensationAvailable: false,
+          binding: mutationBinding(fixture.command),
+        },
+      })).resolves.toEqual({ ok: false, error: 'integrity_conflict' });
+      await expect(artifactCounts(
+        fixture.proposal.decision.id,
+        fixture.proposal.approval.id,
+      )).resolves.toEqual(before);
+      const durable = await getPool().query<{
+        barrier: string;
+        leases: string;
+        plan: string;
+      }>(`SELECT
+        (SELECT status FROM pre_effect_barriers WHERE id = $1) AS barrier,
+        (SELECT count(*)::STRING FROM gmail_archive_recovery_leases
+          WHERE admission_id = $1) AS leases,
+        (SELECT status FROM execution_plans WHERE id = $2) AS plan`, [
+        fixture.command.admissionId,
+        fixture.prepared.plan.id,
+      ]);
+      expect(durable.rows[0]).toEqual({ barrier: 'in_progress', leases: '1', plan: 'in_progress' });
+    },
+    120_000,
+  );
+
   it('rejects terminal results that contradict the durable dispatch phase', async () => {
     const beforeDispatch = await createClaimedProposal(67);
     await expect(gmailArchiveTerminalizationRepository.terminalize({
@@ -2466,6 +2665,13 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     }
 
     const target = await createClaimedProposal(92, userId, accountId, true);
+    await ageClaimedAttempt(target.command.admissionId);
+    const targetLease = await gmailArchiveRecoveryLeaseRepository.acquire({
+      userId,
+      approvalId: target.proposal.approval.id,
+      leaseMs: 60_000,
+    });
+    expect(targetLease).toMatchObject({ ok: true, status: 'acquired' });
     const before = await artifactCounts(target.proposal.decision.id, target.proposal.approval.id);
     await expect(gmailArchiveTerminalizationTestHooks.terminalizeWithTransition(
       {
@@ -2503,6 +2709,115 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       plan_status: 'in_progress',
       results: '0',
     });
+    const retainedLease = await getPool().query<{ count: string }>(
+      'SELECT count(*)::STRING AS count FROM gmail_archive_recovery_leases WHERE admission_id = $1',
+      [target.command.admissionId],
+    );
+    expect(retainedLease.rows[0]?.count).toBe('1');
+  }, 120_000);
+
+  it('committed ambiguity atomically retains terminal truth, deletes the lease, and replays', async () => {
+    const fixture = await createClaimedProposal(207, userId, accountId, true);
+    await ageClaimedAttempt(fixture.command.admissionId);
+    const acquired = await gmailArchiveRecoveryLeaseRepository.acquire({
+      userId,
+      approvalId: fixture.proposal.approval.id,
+      leaseMs: 60_000,
+    });
+    expect(acquired).toMatchObject({ ok: true, status: 'acquired' });
+    const input = {
+      command: fixture.command,
+      result: {
+        outcome: 'known_failure' as const,
+        code: 'remote_rejected' as const,
+        compensationAvailable: false as const,
+        binding: mutationBinding(fixture.command),
+      },
+    };
+    const committedThenUnacknowledged = async <T>(
+      callback: (client: PoolClient) => Promise<T>,
+    ): Promise<T> => {
+      await withTransaction(callback);
+      throw Object.assign(new Error('commit response lost'), { code: '08006' });
+    };
+    await expect(gmailArchiveTerminalizationTestHooks.terminalizeWithTransition(
+      input,
+      gmailArchiveTerminalizationTestHooks.transition,
+      undefined,
+      undefined,
+      committedThenUnacknowledged,
+    )).resolves.toEqual({ ok: false, error: 'commit_unverified' });
+    const durable = await getPool().query<{
+      barrier: string;
+      leases: string;
+      revisions: string;
+    }>(`SELECT
+      (SELECT status FROM pre_effect_barriers WHERE id = $1) AS barrier,
+      (SELECT count(*)::STRING FROM gmail_archive_recovery_leases
+        WHERE admission_id = $1) AS leases,
+      (SELECT count(*)::STRING FROM decision_receipt_revisions
+        WHERE receipt_id = $2) AS revisions`, [
+      fixture.command.admissionId,
+      fixture.prepared.receipt.id,
+    ]);
+    expect(durable.rows[0]).toEqual({ barrier: 'failed', leases: '0', revisions: '7' });
+    await expect(gmailArchiveTerminalizationRepository.terminalize(input)).resolves.toMatchObject({
+      ok: true,
+      created: false,
+    });
+  }, 120_000);
+
+  it('serializes terminalization ahead of recovery work and retires its capability', async () => {
+    const fixture = await createClaimedProposal(208, userId, accountId, true);
+    await ageClaimedAttempt(fixture.command.admissionId);
+    const acquired = await gmailArchiveRecoveryLeaseRepository.acquire({
+      userId,
+      approvalId: fixture.proposal.approval.id,
+      leaseMs: 60_000,
+    });
+    if (!acquired.ok || acquired.status !== 'acquired') {
+      throw new Error(`Recovery lease was not acquired: ${JSON.stringify(acquired)}`);
+    }
+    let signalPaused: (() => void) | undefined;
+    const paused = new Promise<void>((resolve) => { signalPaused = resolve; });
+    let releaseTerminal: (() => void) | undefined;
+    const resume = new Promise<void>((resolve) => { releaseTerminal = resolve; });
+    const transaction = pauseTransactionAfterQuery(
+      /DELETE FROM gmail_archive_recovery_leases/,
+      () => signalPaused?.(),
+      resume,
+    );
+    const input = {
+      command: fixture.command,
+      result: {
+        outcome: 'known_failure' as const,
+        code: 'remote_rejected' as const,
+        compensationAvailable: false as const,
+        binding: mutationBinding(fixture.command),
+      },
+    };
+    const terminal = gmailArchiveTerminalizationTestHooks.terminalizeWithTransition(
+      input,
+      gmailArchiveTerminalizationTestHooks.transition,
+      undefined,
+      undefined,
+      transaction,
+    );
+    await within(paused, 5_000);
+    let recoverySettled = false;
+    const recovery = gmailArchiveRecoveryLeaseRepository.beginObservation(
+      recoveryFence(acquired.lease),
+    ).finally(() => { recoverySettled = true; });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(recoverySettled).toBe(false);
+    releaseTerminal?.();
+    await expect(within(terminal, 5_000)).resolves.toMatchObject({ ok: true, created: true });
+    await expect(within(recovery, 5_000)).resolves.toEqual({ ok: false, error: 'stale_lease' });
+    const durable = await getPool().query<{ count: string }>(
+      'SELECT count(*)::STRING AS count FROM gmail_archive_recovery_leases WHERE admission_id = $1',
+      [fixture.command.admissionId],
+    );
+    expect(durable.rows[0]?.count).toBe('0');
   }, 120_000);
 
   it('rolls back a real terminal transition on 40001 and retries with stable artifacts', async () => {

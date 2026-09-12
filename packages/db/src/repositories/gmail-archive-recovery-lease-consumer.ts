@@ -28,6 +28,17 @@ interface RecoveryLeaseConsumptionRow {
   observation_evidence: unknown;
 }
 
+interface GmailArchiveTerminalLeaseLineage {
+  userId: string;
+  approvalId: string;
+  admissionId: string;
+  messageRefId: string;
+}
+
+type RetireGmailArchiveRecoveryLeaseForTerminalResult =
+  | { ok: true; retired: boolean }
+  | { ok: false; error: 'integrity_conflict' };
+
 export interface ConsumeGmailArchiveRecoveryLeaseInput {
   fence: GmailArchiveRecoveryLeaseFence;
   observationAttemptId: string | null;
@@ -327,4 +338,40 @@ export async function consumeGmailArchiveRecoveryLeaseInTransaction(
   );
   if (deleted.rows.length !== 1) return { ok: false, error: 'integrity_conflict' };
   return { ok: true, evidence };
+}
+
+/**
+ * Revoke installation-local recovery capability after canonical terminal truth
+ * has been established. The caller supplies only lineage from its locked graph;
+ * no recovery fence, token, generation, permit, or observation evidence is
+ * accepted as authority here.
+ */
+export async function retireGmailArchiveRecoveryLeaseForTerminalInTransaction(
+  client: PoolClient,
+  lineage: Readonly<GmailArchiveTerminalLeaseLineage>,
+): Promise<RetireGmailArchiveRecoveryLeaseForTerminalResult> {
+  const rows = (await client.query<Pick<RecoveryLeaseConsumptionRow,
+    'admission_id' | 'user_id' | 'approval_id' | 'message_ref_id'>>(
+    `SELECT admission_id, user_id, approval_id, message_ref_id
+       FROM gmail_archive_recovery_leases
+      WHERE admission_id = $1
+      FOR UPDATE`,
+    [lineage.admissionId],
+  )).rows;
+  if (rows.length === 0) return { ok: true, retired: false };
+  if (rows.length !== 1) return { ok: false, error: 'integrity_conflict' };
+  const row = rows[0]!;
+  if (row.admission_id !== lineage.admissionId || row.user_id !== lineage.userId ||
+      row.approval_id !== lineage.approvalId || row.message_ref_id !== lineage.messageRefId) {
+    return { ok: false, error: 'integrity_conflict' };
+  }
+  const deleted = await client.query(
+    `DELETE FROM gmail_archive_recovery_leases
+      WHERE admission_id = $1 AND user_id = $2 AND approval_id = $3 AND message_ref_id = $4
+      RETURNING admission_id`,
+    [lineage.admissionId, lineage.userId, lineage.approvalId, lineage.messageRefId],
+  );
+  return deleted.rows.length === 1
+    ? { ok: true, retired: true }
+    : { ok: false, error: 'integrity_conflict' };
 }

@@ -29,6 +29,7 @@ const { gmailArchiveRecoveryLeaseTestHooks } = await import(
 const {
   consumeGmailArchiveRecoveryLeaseInTransaction,
   gmailArchiveRecoveryLeaseConsumerTestHooks,
+  retireGmailArchiveRecoveryLeaseForTerminalInTransaction,
 } = await import(
   '../repositories/gmail-archive-recovery-lease-consumer.js'
 );
@@ -477,6 +478,67 @@ describe('gmailArchiveRecoveryLeaseRepository boundary', () => {
     expect((query.mock.calls[1]?.[0] as string)).not.toContain('expires_at >');
   });
 
+  it.each(['not_started', 'started', 'evidence_recorded'] as const)(
+    'retires exact terminal lineage in the %s state without caller recovery authority',
+    async (observationState) => {
+      const row = recoveryLeaseRow({ observation_state: observationState });
+      const query = vi.fn()
+        .mockResolvedValueOnce({ rows: [row] })
+        .mockResolvedValueOnce({ rows: [{ admission_id: fence.admissionId }] });
+      const lineage = {
+        userId: fence.userId,
+        approvalId: fence.approvalId,
+        admissionId: fence.admissionId,
+        messageRefId: fence.messageRefId,
+      };
+      await expect(retireGmailArchiveRecoveryLeaseForTerminalInTransaction(
+        { query } as unknown as PoolClient,
+        lineage,
+      )).resolves.toEqual({ ok: true, retired: true });
+      expect(query.mock.calls[0]?.[0]).toContain('WHERE admission_id = $1');
+      expect(query.mock.calls[0]?.[0]).toContain('FOR UPDATE');
+      expect(query.mock.calls[0]?.[1]).toEqual([fence.admissionId]);
+      expect(query.mock.calls[1]?.[0]).toContain('DELETE FROM gmail_archive_recovery_leases');
+      expect(query.mock.calls[1]?.[1]).toEqual([
+        lineage.admissionId, lineage.userId, lineage.approvalId, lineage.messageRefId,
+      ]);
+      expect(Object.keys(lineage).sort()).toEqual([
+        'admissionId', 'approvalId', 'messageRefId', 'userId',
+      ]);
+    },
+  );
+
+  it('treats an absent terminal lease as idempotent success', async () => {
+    const query = vi.fn().mockResolvedValue({ rows: [] });
+    await expect(retireGmailArchiveRecoveryLeaseForTerminalInTransaction(
+      { query } as unknown as PoolClient,
+      {
+        userId: fence.userId,
+        approvalId: fence.approvalId,
+        admissionId: fence.admissionId,
+        messageRefId: fence.messageRefId,
+      },
+    )).resolves.toEqual({ ok: true, retired: false });
+    expect(query).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { approval_id: authority.userId },
+    { message_ref_id: authority.userId },
+  ])('fails closed on crossed terminal lineage and does not delete: %o', async (crossed) => {
+    const query = vi.fn().mockResolvedValue({ rows: [recoveryLeaseRow(crossed)] });
+    await expect(retireGmailArchiveRecoveryLeaseForTerminalInTransaction(
+      { query } as unknown as PoolClient,
+      {
+        userId: fence.userId,
+        approvalId: fence.approvalId,
+        admissionId: fence.admissionId,
+        messageRefId: fence.messageRefId,
+      },
+    )).resolves.toEqual({ ok: false, error: 'integrity_conflict' });
+    expect(query).toHaveBeenCalledTimes(1);
+  });
+
   it('does not delete a stale generation, unfinished observation, or conflicting evidence', async () => {
     const cases = [
       {
@@ -610,6 +672,9 @@ describe('gmailArchiveRecoveryLeaseRepository boundary', () => {
     expect(runtimeSources).not.toContain('GmailArchiveRecoveryLeaseFence');
     expect(runtimeSources).not.toContain('gmail-archive-recovery-lease-consumer');
     expect(runtimeSources).not.toContain('consumeGmailArchiveRecoveryLeaseInTransaction');
+    expect(runtimeSources).not.toContain(
+      'retireGmailArchiveRecoveryLeaseForTerminalInTransaction',
+    );
     const barrels = await Promise.all([
       readFile(new URL('../repositories/index.ts', import.meta.url), 'utf8'),
       readFile(new URL('../index.ts', import.meta.url), 'utf8'),
@@ -617,6 +682,9 @@ describe('gmailArchiveRecoveryLeaseRepository boundary', () => {
     for (const barrel of barrels) {
       expect(barrel).not.toContain('gmail-archive-recovery-lease-consumer');
       expect(barrel).not.toContain('consumeGmailArchiveRecoveryLeaseInTransaction');
+      expect(barrel).not.toContain(
+        'retireGmailArchiveRecoveryLeaseForTerminalInTransaction',
+      );
     }
   });
 });
