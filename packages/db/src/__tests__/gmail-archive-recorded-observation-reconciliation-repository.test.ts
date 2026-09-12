@@ -76,12 +76,16 @@ function leaseRow(overrides: Record<string, unknown> = {}) {
   };
 }
 
-async function sourceFilesBelow(directory: URL): Promise<string[]> {
+async function sourceFilesBelow(
+  directory: URL,
+  excludedFiles: ReadonlySet<string> = new Set(),
+): Promise<string[]> {
   const entries = await readdir(directory, { withFileTypes: true });
   const nested = await Promise.all(entries.map(async (entry) => {
     if (entry.isDirectory() && ['__tests__', 'dist', 'node_modules'].includes(entry.name)) return [];
+    if (!entry.isDirectory() && excludedFiles.has(entry.name)) return [];
     const child = new URL(`${entry.name}${entry.isDirectory() ? '/' : ''}`, directory);
-    if (entry.isDirectory()) return sourceFilesBelow(child);
+    if (entry.isDirectory()) return sourceFilesBelow(child, excludedFiles);
     return entry.name.endsWith('.ts') ? [await readFile(child, 'utf8')] : [];
   }));
   return nested.flat();
@@ -398,9 +402,14 @@ describe('gmailArchiveRecordedObservationReconciliationRepository', () => {
       new URL('../../../../apps/worker/', import.meta.url),
       new URL('../../../../apps/desktop/', import.meta.url),
       new URL('../../../execution-router/', import.meta.url),
-      new URL('../../../ironclaw-adapter/', import.meta.url),
     ];
-    const runtimeSources = (await Promise.all(roots.map(sourceFilesBelow))).flat().join('\n');
+    const runtimeSources = [
+      ...(await Promise.all(roots.map((root) => sourceFilesBelow(root)))).flat(),
+      ...await sourceFilesBelow(
+        new URL('../../../ironclaw-adapter/', import.meta.url),
+        new Set(['gmail-archive-caller-kernel.ts']),
+      ),
+    ].join('\n');
     expect(runtimeSources).not.toContain('gmailArchiveRecordedObservationReconciliationRepository');
     expect(runtimeSources).not.toContain('reconcileRecordedObservation');
   });

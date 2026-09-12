@@ -70,6 +70,19 @@ import {
 import { gmailMessageRefRepository } from '../repositories/gmail-message-ref-repository.js';
 import type { PreEffectBarrierRow } from '../repositories/pre-effect-barrier-repository.js';
 
+interface TestGmailArchiveCallerKernel {
+  executeApproved(input: { userId: string; approvalId: string }): Promise<unknown>;
+}
+
+const callerKernelModuleUrl = new URL(
+  '../../../ironclaw-adapter/src/gmail-archive-caller-kernel.ts',
+  import.meta.url,
+).href;
+// Test-local runtime import preserves the leaf-only contract without a DB or adapter barrel export.
+const { GmailArchiveCallerKernel } = await import(callerKernelModuleUrl) as {
+  GmailArchiveCallerKernel: new (options: never) => TestGmailArchiveCallerKernel;
+};
+
 const cockroachAvailable = spawnSync('cockroach', ['version'], { encoding: 'utf8' }).status === 0;
 const userId = '11000000-0000-4000-8000-000000000001';
 const otherUserId = '11000000-0000-4000-8000-000000000002';
@@ -6110,5 +6123,179 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
          now(), now(), now() + INTERVAL '1 minute')`,
       [id('99', 1), ownerUserId, id('99', 2), id('99', 3), id('99', 4)],
     )).rejects.toMatchObject({ code: expect.stringMatching(/23503|23514/) });
+  }, 120_000);
+
+  it('composes the unwired caller with real repositories so concurrent and successive calls mutate once', async () => {
+    const owner = await seedRecoveryOwner(21);
+    const fixture = await createPreparedProposal(250, owner.ownerUserId, owner.ownerAccountId);
+    let releaseMutation!: () => void;
+    let mutationStarted!: () => void;
+    const mutationPaused = new Promise<void>((resolve) => { mutationStarted = resolve; });
+    const mutationRelease = new Promise<void>((resolve) => { releaseMutation = resolve; });
+    let postCount = 0;
+    const mutation = {
+      async mutate(submitted: {
+        userId: string;
+        admissionId: string;
+        messageRefId: string;
+        operation: 'archive';
+      }) {
+        await enterDispatchGate(submitted);
+        postCount += 1;
+        mutationStarted();
+        await mutationRelease;
+        return {
+          outcome: 'confirmed' as const,
+          operation: 'archive' as const,
+          inbox: false as const,
+          effect: 'changed' as const,
+          compensationAvailable: false as const,
+          observedAt: new Date().toISOString(),
+          binding: mutationBinding(submitted),
+        };
+      },
+    };
+    const claim = {
+      calls: 0,
+      claimed: 0,
+      async claim(input: { userId: string; approvalId: string }) {
+        this.calls += 1;
+        const result = await gmailArchiveClaimRepository.claim(input);
+        if (result.ok && result.claimed) this.claimed += 1;
+        return result;
+      },
+    };
+    const kernel = new GmailArchiveCallerKernel({
+      claimRepository: claim,
+      mutation,
+      terminalizationRepository: gmailArchiveTerminalizationRepository,
+      terminalStatusReader: gmailArchiveTerminalStatusRepository,
+      observation: { observe: async () => ({ status: 'not_permitted' }) },
+      recordedObservationReconciler: {
+        reconcileRecordedObservation: async () => ({ ok: false, error: 'not_ready' }),
+      },
+    } as never);
+    const input = { userId: owner.ownerUserId, approvalId: fixture.proposal.approval.id };
+    const first = kernel.executeApproved(input);
+    await mutationPaused;
+    const concurrent = await within(kernel.executeApproved(input), 5_000);
+    expect(concurrent).toEqual({ ok: true, status: 'not_started', reason: 'in_progress' });
+    expect(postCount).toBe(1);
+    releaseMutation();
+    await expect(first).resolves.toMatchObject({
+      ok: true,
+      status: 'terminal',
+      terminal: { disposition: 'succeeded' },
+    });
+    await expect(kernel.executeApproved(input)).resolves.toMatchObject({
+      ok: true,
+      status: 'terminal',
+      terminal: { disposition: 'succeeded' },
+    });
+    expect(claim.calls).toBe(3);
+    expect(claim.claimed).toBe(1);
+    expect(postCount).toBe(1);
+  }, 120_000);
+
+  it('does not redispatch after a committed claim loses its reply', async () => {
+    const owner = await seedRecoveryOwner(22);
+    const fixture = await createPreparedProposal(251, owner.ownerUserId, owner.ownerAccountId);
+    let firstClaim = true;
+    let mutationCount = 0;
+    const claimRepository = {
+      async claim(input: { userId: string; approvalId: string }) {
+        const claimed = await gmailArchiveClaimRepository.claim(input);
+        if (firstClaim) {
+          firstClaim = false;
+          throw new Error('claim reply lost after commit');
+        }
+        return claimed;
+      },
+    };
+    const kernel = new GmailArchiveCallerKernel({
+      claimRepository,
+      mutation: { mutate: async () => { mutationCount += 1; throw new Error('unexpected'); } },
+      terminalizationRepository: gmailArchiveTerminalizationRepository,
+      terminalStatusReader: gmailArchiveTerminalStatusRepository,
+      observation: { observe: async () => ({ status: 'not_permitted' }) },
+      recordedObservationReconciler: {
+        reconcileRecordedObservation: async () => ({ ok: false, error: 'not_ready' }),
+      },
+    } as never);
+    const input = { userId: owner.ownerUserId, approvalId: fixture.proposal.approval.id };
+    await expect(kernel.executeApproved(input)).resolves.toEqual({
+      ok: false,
+      error: 'unverified',
+      stage: 'claim',
+    });
+    await expect(kernel.executeApproved(input)).resolves.toEqual({
+      ok: true,
+      status: 'not_started',
+      reason: 'in_progress',
+    });
+    expect(mutationCount).toBe(0);
+    const graph = await getPool().query<{ barrier_status: string; plan_status: string }>(
+      `SELECT barrier.status AS barrier_status, plan.status AS plan_status
+         FROM pre_effect_barriers barrier
+         JOIN execution_plans plan ON plan.decision_id = barrier.decision_id
+        WHERE barrier.id = $1`,
+      [fixture.prepared.barrier.id],
+    );
+    expect(graph.rows[0]).toEqual({ barrier_status: 'in_progress', plan_status: 'in_progress' });
+  }, 120_000);
+
+  it('resolves terminalization post-commit ambiguity from real status without later redispatch', async () => {
+    const owner = await seedRecoveryOwner(23);
+    const fixture = await createPreparedProposal(252, owner.ownerUserId, owner.ownerAccountId);
+    let mutationCount = 0;
+    let terminalizationCount = 0;
+    const terminalizationRepository = {
+      async terminalize(input: Parameters<typeof gmailArchiveTerminalizationRepository.terminalize>[0]) {
+        terminalizationCount += 1;
+        const result = await gmailArchiveTerminalizationRepository.terminalize(input);
+        throw Object.assign(new Error('terminalization reply lost after commit'), {
+          cause: result,
+        });
+      },
+    };
+    const kernel = new GmailArchiveCallerKernel({
+      claimRepository: gmailArchiveClaimRepository,
+      mutation: {
+        async mutate(submitted: {
+          userId: string;
+          admissionId: string;
+          messageRefId: string;
+          operation: 'archive';
+        }) {
+          mutationCount += 1;
+          await enterDispatchGate(submitted);
+          return {
+            outcome: 'known_failure' as const,
+            code: 'remote_rejected' as const,
+            compensationAvailable: false as const,
+            binding: mutationBinding(submitted),
+          };
+        },
+      },
+      terminalizationRepository,
+      terminalStatusReader: gmailArchiveTerminalStatusRepository,
+      observation: { observe: async () => ({ status: 'not_permitted' }) },
+      recordedObservationReconciler: {
+        reconcileRecordedObservation: async () => ({ ok: false, error: 'not_ready' }),
+      },
+    } as never);
+    const input = { userId: owner.ownerUserId, approvalId: fixture.proposal.approval.id };
+    await expect(kernel.executeApproved(input)).resolves.toMatchObject({
+      ok: true,
+      status: 'terminal',
+      terminal: { disposition: 'failed' },
+    });
+    await expect(kernel.executeApproved(input)).resolves.toMatchObject({
+      ok: true,
+      status: 'terminal',
+      terminal: { disposition: 'failed' },
+    });
+    expect(mutationCount).toBe(1);
+    expect(terminalizationCount).toBe(1);
   }, 120_000);
 });
