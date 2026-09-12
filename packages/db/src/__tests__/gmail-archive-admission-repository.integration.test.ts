@@ -4925,10 +4925,14 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
         if (transactions === 1) {
           expect(committed).toMatchObject({ ok: true, status: 'permitted' });
           await getPool().query(
-            `UPDATE gmail_archive_recovery_leases
-                SET expires_at = date_trunc(
-                  'milliseconds', statement_timestamp() - INTERVAL '1 second'
-                )
+            `WITH fresh_clock AS MATERIALIZED (
+               SELECT date_trunc('milliseconds', statement_timestamp()) AS db_now
+             )
+             UPDATE gmail_archive_recovery_leases
+                SET acquired_at = fresh_clock.db_now - INTERVAL '3 seconds',
+                    renewed_at = fresh_clock.db_now - INTERVAL '2 seconds',
+                    expires_at = fresh_clock.db_now - INTERVAL '1 second'
+               FROM fresh_clock
               WHERE admission_id = $1`,
             [fixture.command.admissionId],
           );
