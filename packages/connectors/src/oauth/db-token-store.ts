@@ -164,21 +164,44 @@ export interface RevisionBoundOAuthTokenSet {
 }
 
 function canonicalScopes(scopes: string[]): string[] | null {
-  if (scopes.some((scope) => typeof scope !== 'string' || scope.length === 0)) return null;
-  const unique = new Set(scopes);
-  return unique.size === scopes.length ? [...unique].sort() : null;
+  try {
+    if (!Array.isArray(scopes) || Object.getPrototypeOf(scopes) !== Array.prototype ||
+        Object.getOwnPropertySymbols(scopes).length !== 0 ||
+        scopes.length < 1 || scopes.length > 128) return null;
+    const descriptors = Object.getOwnPropertyDescriptors(scopes);
+    if (Object.getOwnPropertyNames(descriptors).length !== scopes.length + 1) return null;
+    const canonical: string[] = [];
+    const unique = new Set<string>();
+    for (let index = 0; index < scopes.length; index += 1) {
+      const descriptor = descriptors[String(index)];
+      if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, 'value') ||
+          descriptor.enumerable !== true) return null;
+      const scope = descriptor.value as unknown;
+      if (typeof scope !== 'string' || scope.length === 0 || scope.length > 512 ||
+          unique.has(scope)) return null;
+      unique.add(scope);
+      canonical.push(scope);
+    }
+    return canonical.sort();
+  } catch {
+    return null;
+  }
+}
+
+function sameScopeSet(left: string[], right: string[]): boolean {
+  const leftScopes = canonicalScopes(left);
+  const rightScopes = canonicalScopes(right);
+  return leftScopes !== null && rightScopes !== null &&
+    leftScopes.length === rightScopes.length &&
+    leftScopes.every((scope, index) => scope === rightScopes[index]);
 }
 
 function sameTokenSnapshot(left: OAuthTokenSet, right: OAuthTokenSet): boolean {
-  const leftScopes = canonicalScopes(left.scopes);
-  const rightScopes = canonicalScopes(right.scopes);
   return left.accessToken === right.accessToken &&
     left.refreshToken === right.refreshToken &&
     left.expiresAt.getTime() === right.expiresAt.getTime() &&
     left.provider === right.provider &&
-    leftScopes !== null && rightScopes !== null &&
-    leftScopes.length === rightScopes.length &&
-    leftScopes.every((scope, index) => scope === rightScopes[index]);
+    sameScopeSet(left.scopes, right.scopes);
 }
 
 /**
@@ -566,6 +589,14 @@ export class DbTokenStore implements OAuthTokenStore {
         break;
       default:
         throw new Error(`DbTokenStore: unsupported provider '${provider}' for token refresh.`);
+    }
+
+    // This repository updates bearer material and expiry, but not the stored
+    // authority grant. Persisting a bearer returned with a changed scope set
+    // would pair it with stale scopes on the next materialization. Reject any
+    // added, removed, duplicated, or malformed scope before the credential CAS.
+    if (!sameScopeSet(existing.scopes, refreshed.scopes)) {
+      throw new Error('OAuth token refresh returned a changed or invalid scope grant.');
     }
 
     // Persist the new access token. If the row is currently stored

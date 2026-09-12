@@ -160,6 +160,32 @@ describe('DbTokenStore', () => {
     });
   });
 
+  it.each([
+    ['added', ['email', 'profile']],
+    ['duplicate', ['email', 'email']],
+    ['empty', []],
+    ['malformed', ['']],
+  ])('rejects %s refreshed scopes before writing credentials', async (_name, scopes) => {
+    repo.getToken.mockResolvedValue({
+      access_token: 'expired-token',
+      refresh_token: 'refresh-456',
+      expires_at: new Date(Date.now() - 60 * 1000),
+      scopes: ['email'],
+    });
+    mockRefresh.mockResolvedValue({
+      accessToken: 'new-access-token',
+      refreshToken: 'refresh-456',
+      expiresAt: new Date(Date.now() + 3600 * 1000),
+      scopes,
+      provider: 'google',
+    });
+
+    await expect(store.refreshIfExpired('user1', 'google')).rejects.toThrow(
+      /changed or invalid scope grant/,
+    );
+    expect(repo.updateAccessToken).not.toHaveBeenCalled();
+  });
+
   it('refreshIfExpired throws when no token exists', async () => {
     repo.getToken.mockResolvedValue(null);
     await expect(store.refreshIfExpired('user1', 'google')).rejects.toThrow(
@@ -352,6 +378,40 @@ describe('DbTokenStore', () => {
       credentialRevision: '13131313-1313-4313-8313-131313131313',
       scopes: ['gmail.modify', 'openid'],
     });
+  });
+
+  it('rejects a narrower refreshed grant before persistence on consecutive bound materializations', async () => {
+    const row = {
+      id: 'token-2',
+      credential_revision: '16161616-1616-4616-8616-161616161616',
+      access_token: 'expired-token',
+      refresh_token: 'refresh',
+      expires_at: new Date(Date.now() - 1_000),
+      scopes: ['openid', 'gmail.modify'],
+    };
+    const bound = new DbTokenStore(repo, oauthConfig, undefined, 'account-2');
+    repo.getTokenByConnectorAccount.mockResolvedValue(row);
+    mockRefresh.mockResolvedValue({
+      accessToken: 'narrower-token',
+      refreshToken: 'refresh',
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      scopes: ['openid'],
+      provider: 'google',
+    });
+
+    await expect(bound.refreshIfExpiredWithRevision('user1', 'google')).rejects.toThrow(
+      /changed or invalid scope grant/,
+    );
+    await expect(bound.refreshIfExpiredWithRevision('user1', 'google')).rejects.toThrow(
+      /changed or invalid scope grant/,
+    );
+
+    expect(mockRefresh).toHaveBeenCalledTimes(2);
+    expect(repo.updateAccessTokenByConnectorAccount).not.toHaveBeenCalled();
+    expect(repo.updateAccessToken).not.toHaveBeenCalled();
+    expect(repo.updateEncryptedAccessToken).not.toHaveBeenCalled();
+    expect(repo.updateEncrypted).not.toHaveBeenCalled();
+    expect(repo.getTokenByConnectorAccount).toHaveBeenCalledTimes(2);
   });
 
   it('rejects a concurrent credential change between refresh and revision reread', async () => {
