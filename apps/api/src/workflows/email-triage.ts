@@ -51,7 +51,7 @@ export interface EmailTriageResult {
  * 3. TwinService retrieves relevant preferences
  * 4. DecisionMaker evaluates (generates candidates, assesses risk, checks policies)
  * 5. PolicyEngine validates (done inside DecisionMaker)
- * 6. If approved: IronClaw adapter executes (archive, draft reply, etc.)
+ * 6. If approved: the selected generic adapter executes (for example, draft reply)
  * 7. ExplanationGenerator creates audit record
  * 8. All state persisted to DB (done by services internally)
  */
